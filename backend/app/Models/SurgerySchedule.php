@@ -1,0 +1,58 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+
+class SurgerySchedule extends Model
+{
+    use HasUuids, SoftDeletes;
+
+    protected $keyType = 'string';
+    public $incrementing = false;
+
+    protected $fillable = [
+        'surgery_package_id',
+        'lead_surgeon_id',
+        'anesthesiologist_id',
+        'scheduled_date',
+        'scheduled_time',
+        'operation_room',
+        'status',
+        'notes',
+    ];
+
+    protected $casts = [
+        'scheduled_date' => 'date',
+    ];
+
+    public function surgeryPackage(): BelongsTo
+    {
+        return $this->belongsTo(SurgeryPackage::class);
+    }
+
+    public function leadSurgeon(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'lead_surgeon_id');
+    }
+
+    public function anesthesiologist(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'anesthesiologist_id');
+    }
+
+    public function surgeryRecord(): HasOne
+    {
+        return $this->hasOne(SurgeryRecord::class);
+    }
+
+    public function surgeryRequests(): HasMany
+    {
+        return $this->hasMany(SurgeryRequest::class);
+    }
+}

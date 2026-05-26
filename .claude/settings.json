@@ -1,0 +1,21 @@
+{
+  "defaultMode": "auto",
+  "search.exclude": {
+    "node_modules": true,
+    "dist": true
+  },
+  "files.exclude": {
+    "node_modules": true,
+    "dist": true
+  },
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[php]": {
+    "editor.defaultFormatter": "bmewburn.vscode-intelephp-client"
+  },
+  "permissions": {
+    "allow": [
+      "WebSearch"
+    ]
+  }
+}

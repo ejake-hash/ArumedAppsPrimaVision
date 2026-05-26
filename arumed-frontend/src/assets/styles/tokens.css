@@ -1,0 +1,57 @@
+/* Arumed Apps design tokens
+ * Single source of truth for colors, spacing, and surfaces.
+ * Mirrors the palette established across the static HTML prototypes. */
+
+:root {
+  /* Greens (primary brand) */
+  --gd: #0d3d2e;
+  --gm: #145e38;
+  --ga: #1f7d4a;
+  --gl: #eaf6ef;
+  --gb: #d1ddd5;
+
+  /* Lime accent */
+  --lm: #8abf44;
+  --ld: #5a8228;
+
+  /* Backgrounds & surfaces */
+  --bg: #f0f5f1;
+  --bp: #f4f7f4;
+  --bc: #ffffff;
+  --bs: #f8fbf9;
+  --bi: #f4f8f5;
+
+  /* Text */
+  --td: #082b20;
+  --tm: #3d5248;
+  --tu: #7a8a7e;
+  --th: #9eb5a5;
+
+  /* Semantic — success */
+  --sb: #f0fdf4;
+  --sbd: #86efac;
+  --st: #15803d;
+
+  /* Semantic — error */
+  --eb: #fef2f2;
+  --ebd: #fca5a5;
+  --et: #dc2626;
+
+  /* Semantic — warning */
+  --wb: #fffbeb;
+  --wbd: #fcd34d;
+  --wt: #b45309;
+
+  /* Semantic — info */
+  --ib: #eff6ff;
+  --ibd: #93c5fd;
+  --it: #1d4ed8;
+
+  /* Semantic — purple (ASN/special) */
+  --pb: #fdf4ff;
+  --pbd: #d946ef;
+  --pt: #7e22ce;
+
+  /* Layout */
+  --sidebar: 240px;
+}

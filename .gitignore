@@ -1,0 +1,25 @@
+﻿# Backend Laravel
+backend/.env
+backend/vendor/
+backend/node_modules/
+backend/storage/logs/*.log
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/bootstrap/cache/*.php
+backend/.phpunit.result.cache
+
+# Frontend Vue
+arumed-frontend/.env
+arumed-frontend/node_modules/
+arumed-frontend/dist/
+arumed-frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
+Thumbs.db
+*.log
