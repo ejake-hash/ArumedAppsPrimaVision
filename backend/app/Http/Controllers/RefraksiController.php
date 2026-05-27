@@ -87,7 +87,16 @@ class RefraksiController extends Controller
      */
     public function showPemeriksaan(string $visitId): JsonResponse
     {
-        return $this->ok($this->service->getRefractionRecord($visitId));
+        $record = $this->service->getRefractionRecord($visitId);
+
+        // Repopulate tiket Dokter (D-NNN) saat pasien yang sudah finalized dipilih ulang,
+        // supaya tombol "Cetak Tiket Dokter" tetap aktif (cetak ulang). Null kalau partner
+        // TR belum selesai — getDoctorTicket() hanya menemukan antrian DOKTER bila gate lolos.
+        if ($record?->is_finalized) {
+            $record->doctor_ticket = $this->service->doctorTicket($visitId);
+        }
+
+        return $this->ok($record);
     }
 
     /**
@@ -240,6 +249,10 @@ class RefraksiController extends Controller
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
+
+        // Sertakan tiket Dokter (D-NNN) bila gate TR sudah lolos & antrian DOKTER dibuat.
+        // Frontend (RefraksionisView) memunculkan tombol "Cetak Tiket Dokter" bila ada.
+        $record->doctor_ticket = $this->service->doctorTicket($record->visit_id);
 
         return $this->ok($record, 'Data refraksi dikunci. Tidak bisa diubah.');
     }

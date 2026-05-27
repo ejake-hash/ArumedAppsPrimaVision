@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRefraksiStore } from '@/stores/refraksiStore'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 const store = useRefraksiStore()
 
@@ -52,6 +53,7 @@ function mapQueueRow(q) {
     qNum:         q.queue_number,
     name:         patient.name ?? '—',
     rm:           patient.no_rm ?? '—',
+    photo:        patient.photo_url ?? null,
     nik:          patient.nik ?? '',
     age:          patient.age ?? calcAge(patient.date_of_birth),
     gender:       patient.gender ?? '',
@@ -146,6 +148,12 @@ function fillFormFromRecord(rec, presc) {
   if (!rec) { resetForm(); return }
 
   const v = (x) => x === null || x === undefined ? '' : String(x)
+  // Buang nol desimal di belakang utk nilai numerik (mis. "15.00" → "15", "15.50" → "15.5")
+  const vnum = (x) => {
+    if (x === null || x === undefined || x === '') return ''
+    const n = Number(x)
+    return Number.isFinite(n) ? String(n) : String(x)
+  }
 
   autoref.value = {
     od_s:     v(rec.autoref_od_sph),
@@ -162,8 +170,8 @@ function fillFormFromRecord(rec, presc) {
     k_add_os: v(rec.keratometri_axis_os),
   }
   iop.value = {
-    od:     v(rec.iop_od),
-    os:     v(rec.iop_os),
+    od:     vnum(rec.iop_od),
+    os:     vnum(rec.iop_os),
     method: rec.iop_method ?? 'NCT',
   }
   visus.value = {
@@ -185,7 +193,7 @@ function fillFormFromRecord(rec, presc) {
     os_ax: v(rec.refraksi_subjektif_os_axis),
     add_od: v(rec.add_power_od),
     add_os: v(rec.add_power_os),
-    pd:    v(rec.pd_distance) || '64',
+    pd:    vnum(rec.pd_distance) || '64',
   }
   oldGlasses.value = {
     od_s:   v(rec.old_glasses_od_sph),
@@ -379,15 +387,71 @@ async function sendToDoctor() {
       toast('w', `Resep kacamata belum tersimpan: ${err.message}`)
     }
 
-    // 3. Finalize (gate untuk advance ke DOKTER)
+    // 3. Finalize (gate untuk advance ke DOKTER). Backend balikkan doctor_ticket
+    //    (D-NNN) bila Triase JUGA sudah finalize — dipakai tombol "Cetak Tiket Dokter".
     await store.finalizePemeriksaan()
-    toast('s', 'Resep dikirim ke dokter untuk tanda tangan')
-    store.clearSelected()
-    resetForm()
     qFilter.value = 'done'
+    if (store.doctorTicket) {
+      toast('s', `Pasien lengkap (TR) — antrean dokter ${store.doctorTicket.queue_number} dibuat. Cetak tiket pasien.`)
+    } else {
+      toast('s', 'Refraksi dikunci. Menunggu Triase selesai sebelum tiket dokter bisa dicetak.')
+    }
+    // Pasien tetap terpilih agar tombol "Cetak Tiket Dokter" tampil di kartu aksi.
   } catch (err) {
     toast('w', err.message ?? 'Gagal menyimpan / mengirim ke dokter')
   }
+}
+
+/* ============================================================
+   CETAK TIKET DOKTER (80mm) — tampil setelah TR selesai keduanya.
+   Sumber data: store.doctorTicket (D-NNN + poliklinik/ruang/dokter).
+   ============================================================ */
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
+function printDoctorTicket() {
+  const t = store.doctorTicket
+  if (!t?.queue_number) { toast('w', 'Antrean dokter belum dibuat — tunggu Triase selesai.'); return }
+  const patientName = selP.value?.name ?? ''
+  const dest = [
+    t.poliklinik ? `Poli ${escHtml(t.poliklinik)}` : null,
+    t.room ? `Ruang ${escHtml(t.room)}` : null,
+  ].filter(Boolean).join(' · ') || 'Poliklinik Dokter'
+  const ticketHtml = `
+    <html><head><title>Antrean ${escHtml(t.queue_number)}</title>
+    <style>
+      @page { size: 80mm auto; margin: 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:'Helvetica Neue',Arial,sans-serif; color:#000; }
+      body { width:80mm; padding:4mm 0; }
+      .h { text-align:center; padding:2mm 4mm; font-size:13pt; font-weight:700; border-bottom:1px dashed #000; }
+      .sub { text-align:center; font-size:8pt; padding:2mm 4mm 1mm; letter-spacing:0.05em; text-transform:uppercase; }
+      .num { text-align:center; font-size:56pt; font-weight:700; padding:2mm 0; line-height:1; }
+      .sep { border-top:1px dashed #000; margin:2mm 4mm; }
+      .b { text-align:center; padding:2mm 4mm; font-size:10pt; line-height:1.5; }
+      .b strong { font-size:11pt; }
+      .ft { text-align:center; padding:2mm 4mm 0; font-size:8pt; }
+    </style></head><body>
+      <div class="h">Klinik Mata Arunika</div>
+      <div class="sub">Tiket Antrean Dokter</div>
+      <div class="num">${escHtml(t.queue_number)}</div>
+      <div class="sep"></div>
+      <div class="b">
+        ${patientName ? `<div style="margin-bottom:2mm">${escHtml(patientName)}</div>` : ''}
+        Menuju <strong>${dest}</strong>
+        ${t.doctor_name ? `<div style="margin-top:2mm">${escHtml(t.doctor_name)}</div>` : ''}
+      </div>
+      <div class="ft">Simpan tiket ini sampai dipanggil</div>
+    </body></html>`
+  const w = window.open('', '_blank', 'width=320,height=480')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk cetak tiket'); return }
+  w.document.write(ticketHtml)
+  w.document.close()
+  w.focus()
+  w.onload = () => { try { w.print() } catch {} }
+  setTimeout(() => { try { w.print() } catch {} }, 400)
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
@@ -552,7 +616,7 @@ function toast(type, msg) {
         <div v-else>
           <!-- BANNER -->
           <div class="banner" role="region" :aria-label="`Pasien aktif: ${selP.name}`">
-            <div class="b-av" aria-hidden="true">{{ selP.name.charAt(0) }}</div>
+            <PatientAvatar :name="selP.name" :src="selP.photo" :size="46" radius="50%" style="margin-top:2px" />
             <div class="b-info">
               <div class="b-name">{{ selP.name }}</div>
               <div class="b-meta">RM: {{ selP.rm }} · {{ selP.age }} th · {{ selP.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</div>
@@ -789,12 +853,12 @@ function toast(type, msg) {
 
               <div class="sec">Catatan Refraksionis</div>
               <div class="fg">
-                <label class="fl sr-only" for="refraksionis-notes">Catatan refraksionis</label>
                 <textarea
                   id="refraksionis-notes"
                   v-model="clinicalNotes"
                   class="form-input ta"
                   rows="3"
+                  aria-label="Catatan refraksionis"
                   placeholder="Observasi visus, koreksi yang dicoba, kesulitan pasien, rekomendasi pemeriksaan lanjutan…"
                 ></textarea>
               </div>
@@ -1014,23 +1078,37 @@ function toast(type, msg) {
                 </div>
                 <div class="send-card-sub">
                   <template v-if="store.pemeriksaanLoading">Memuat data refraksi…</template>
-                  <template v-else-if="store.isFinalized">Pemeriksaan sudah dikunci — pasien sudah berada di antrean dokter.</template>
+                  <template v-else-if="store.isFinalized && store.doctorTicket">Pasien selesai Triase &amp; Refraksionis — antrean dokter <strong>{{ store.doctorTicket.queue_number }}</strong> dibuat. Cetak tiket pasien.</template>
+                  <template v-else-if="store.isFinalized">Refraksi dikunci. Menunggu <strong>Triase</strong> selesai sebelum tiket dokter bisa dicetak.</template>
                   <template v-else-if="!refine.od_s && !refine.os_s">Isi hasil refraksi (OD/OS) terlebih dahulu sebelum mengirim.</template>
                   <template v-else>Klik untuk mengunci rekam refraksi dan kirim resep ke dokter.</template>
                 </div>
               </div>
-              <button
-                type="button"
-                class="btn btn-success btn-lg send-btn"
-                :disabled="store.finalizing || store.saving || store.pemeriksaanLoading || store.isFinalized"
-                @click="sendToDoctor"
-              >
-                <div v-if="store.finalizing || store.saving || store.pemeriksaanLoading" class="sp" role="status" aria-label="Memproses…"></div>
-                <template v-else>
-                  Kirim ke Dokter
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-                </template>
-              </button>
+              <div class="send-actions">
+                <button
+                  type="button"
+                  class="btn btn-success btn-lg send-btn"
+                  :disabled="store.finalizing || store.saving || store.pemeriksaanLoading || store.isFinalized"
+                  @click="sendToDoctor"
+                >
+                  <div v-if="store.finalizing || store.saving || store.pemeriksaanLoading" class="sp" role="status" aria-label="Memproses…"></div>
+                  <template v-else>
+                    Kirim ke Dokter
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  </template>
+                </button>
+                <button
+                  v-if="store.isFinalized"
+                  type="button"
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="!store.doctorTicket"
+                  :title="store.doctorTicket ? `Cetak tiket antrean ${store.doctorTicket.queue_number}` : 'Tombol aktif setelah Triase juga selesai (antrean dokter dibuat)'"
+                  @click="printDoctorTicket"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  Cetak Tiket Dokter
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1247,6 +1325,8 @@ function toast(type, msg) {
 .send-card-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2.5; stroke-linecap: round; }
 .send-card-sub { font-size: 11.5px; color: var(--tm); margin-top: 3px; line-height: 1.5; }
 .send-btn { flex-shrink: 0; }
+.send-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.send-actions .btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .sp { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; animation: ref-spin 0.7s linear infinite; }
 @keyframes ref-spin { to { transform: rotate(360deg); } }
 

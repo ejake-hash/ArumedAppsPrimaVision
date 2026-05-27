@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { kasirApi } from '@/services/api'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 // ─── Antrean Kasir ──────────────────────────────────────────────────────────
 const queue        = ref([])
@@ -240,6 +241,37 @@ async function prosesBayar() {
   }
 }
 
+// ─── Cetak Rincian Biaya (A4) ────────────────────────────────────────────────
+// Ambil data terstruktur dari backend (kop surat klinik + invoice + item),
+// render ke template tersembunyi `.rincian-print`, lalu panggil dialog cetak
+// browser. User dapat memilih "Save as PDF" untuk menghasilkan PDF A4.
+const printData = ref(null)
+const printing  = ref(false)
+
+async function cetakRincian() {
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  printing.value = true
+  try {
+    const { data } = await kasirApi.cetakInvoice(selInv.value.id)
+    printData.value = data.data
+    await nextTick()
+    window.print()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyiapkan dokumen cetak')
+  } finally {
+    printing.value = false
+  }
+}
+
+function rupiah(v) { return 'Rp ' + Number(v ?? 0).toLocaleString('id-ID') }
+function penjaminLabel(g) {
+  const t = (g ?? '').toUpperCase()
+  if (t === 'BPJS') return 'BPJS Kesehatan'
+  if (t === 'ASURANSI') return 'Asuransi'
+  if (t === 'PERUSAHAAN') return 'Perusahaan'
+  return 'Umum'
+}
+
 // ─── History pembayaran ─────────────────────────────────────────────────────
 const history       = ref([])
 const historyLoading = ref(false)
@@ -382,7 +414,7 @@ function toast(type, msg) {
           <template v-else-if="selInv">
             <!-- Patient header -->
             <div class="pt-banner">
-              <div class="pt-av">{{ (selQ.visit?.patient?.name ?? '—').charAt(0) }}</div>
+              <PatientAvatar :name="selQ.visit?.patient?.name" :src="selQ.visit?.patient?.photo_url" :size="46" radius="50%" />
               <div class="pt-info">
                 <div class="pt-name">{{ selQ.visit?.patient?.name ?? '—' }}</div>
                 <div class="pt-meta">{{ selQ.visit?.patient?.no_rm ?? '—' }} · {{ selInv.invoice_number ?? 'Invoice' }}</div>
@@ -421,9 +453,9 @@ function toast(type, msg) {
                         <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         {{ editTagihan ? 'Selesai Edit' : 'Edit Tagihan' }}
                       </button>
-                      <button class="btn btn-sm btn-secondary" @click="toast('i', 'Cetak rincian tagihan')">
+                      <button class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
                         <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                        Cetak
+                        {{ printing ? 'Menyiapkan…' : 'Cetak Rincian' }}
                       </button>
                     </div>
                   </div>
@@ -542,9 +574,9 @@ function toast(type, msg) {
                       <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                       {{ selInv.status === 'PAID' ? 'Sudah Lunas' : paying ? 'Memproses...' : 'Proses Pembayaran' }}
                     </button>
-                    <button v-if="selInv.status === 'PAID'" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" @click="toast('i', `Lihat kwitansi ${selInv.invoice_number}`)">
+                    <button v-if="selInv.status === 'PAID'" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" :disabled="printing" @click="cetakRincian">
                       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
-                      Lihat Kwitansi {{ selInv.invoice_number }}
+                      Cetak Kwitansi {{ selInv.invoice_number }}
                     </button>
                   </div>
                 </div>
@@ -628,6 +660,112 @@ function toast(type, msg) {
 
     <div class="toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
+    </div>
+
+    <!-- ═══ DOKUMEN CETAK A4 — RINCIAN BIAYA (tampil hanya saat print) ═══ -->
+    <div v-if="printData" class="rincian-print">
+      <div v-if="printData.clinic?.watermark_type" class="rp-watermark">{{ printData.clinic.watermark_type }}</div>
+
+      <!-- Kop surat -->
+      <header class="rp-kop">
+        <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
+        <div class="rp-kop-text">
+          <div class="rp-clinic">{{ printData.clinic?.name ?? 'Klinik' }}</div>
+          <div v-if="printData.clinic?.address" class="rp-line">{{ printData.clinic.address }}</div>
+          <div class="rp-line">
+            <span v-if="printData.clinic?.phone">Telp: {{ printData.clinic.phone }}</span>
+            <span v-if="printData.clinic?.email"> · Email: {{ printData.clinic.email }}</span>
+          </div>
+        </div>
+      </header>
+
+      <h1 class="rp-title">RINCIAN BIAYA PELAYANAN</h1>
+      <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
+
+      <!-- Identitas -->
+      <table class="rp-meta">
+        <tbody>
+          <tr>
+            <td class="k">No. Rekam Medis</td><td class="s">:</td><td class="v">{{ printData.patient?.no_rm ?? '—' }}</td>
+            <td class="k">Tanggal</td><td class="s">:</td><td class="v">{{ printData.invoice?.date ?? '—' }}</td>
+          </tr>
+          <tr>
+            <td class="k">Nama Pasien</td><td class="s">:</td><td class="v">{{ printData.patient?.name ?? '—' }}</td>
+            <td class="k">Metode Bayar</td><td class="s">:</td><td class="v">{{ printData.invoice?.payment_method ? metodeLabel(printData.invoice.payment_method) : '—' }}</td>
+          </tr>
+          <tr>
+            <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
+            <td class="k">Penjamin</td><td class="s">:</td>
+            <td class="v">{{ penjaminLabel(printData.patient?.guarantor_type) }}<span v-if="printData.patient?.insurer"> — {{ printData.patient.insurer }}</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Rincian item -->
+      <table class="rp-items">
+        <thead>
+          <tr>
+            <th class="c-no">No</th>
+            <th>Keterangan</th>
+            <th class="c-kat">Kategori</th>
+            <th class="c-num">Qty</th>
+            <th class="c-num">Harga Satuan</th>
+            <th class="c-num">Jumlah</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, i) in (printData.items ?? [])" :key="item.id ?? i">
+            <td class="c-no">{{ i + 1 }}</td>
+            <td>{{ item.description }}</td>
+            <td class="c-kat">{{ item.item_type }}</td>
+            <td class="c-num">{{ item.quantity }}</td>
+            <td class="c-num">{{ rupiah(item.unit_price) }}</td>
+            <td class="c-num">{{ rupiah(item.total_price) }}</td>
+          </tr>
+          <tr v-if="!(printData.items ?? []).length"><td colspan="6" class="rp-empty">Tidak ada item</td></tr>
+        </tbody>
+      </table>
+
+      <!-- Ringkasan -->
+      <div class="rp-summary">
+        <table>
+          <tbody>
+            <tr><td>Subtotal</td><td class="c-num">{{ rupiah(printData.summary?.subtotal) }}</td></tr>
+            <tr v-if="Number(printData.summary?.discount)"><td>Diskon</td><td class="c-num">− {{ rupiah(printData.summary?.discount) }}</td></tr>
+            <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
+            <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
+            <tr><td>Dibayar</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
+            <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
+            <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div :class="['rp-status', printData.invoice?.is_paid ? 'lunas' : 'belum']">
+        {{ printData.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS / PRO FORMA' }}
+      </div>
+
+      <!-- Tanda tangan -->
+      <div class="rp-sign">
+        <div class="rp-sign-col">
+          <div class="rp-sign-lbl">Penanggung Jawab / Pasien</div>
+          <div class="rp-sign-space"></div>
+          <div class="rp-sign-name">( ......................................... )</div>
+        </div>
+        <div class="rp-sign-col">
+          <div class="rp-sign-lbl">Kasir</div>
+          <img v-if="printData.clinic?.stamp_url" :src="printData.clinic.stamp_url" alt="Stempel" class="rp-stamp" />
+          <div v-else class="rp-sign-space"></div>
+          <div class="rp-sign-name">( {{ printData.cashier ?? '.........................................' }} )</div>
+        </div>
+      </div>
+
+      <footer class="rp-footer">
+        <span v-if="printData.clinic?.director_name">
+          Penanggung Jawab Klinik: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
+        </span>
+        Dicetak: {{ new Date().toLocaleString('id-ID') }} · Arumed Apps
+      </footer>
     </div>
   </div>
 </template>
@@ -833,4 +971,72 @@ function toast(type, msg) {
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+
+/* ─── DOKUMEN CETAK A4 — Rincian Biaya ─────────────────────────────────────── */
+.rincian-print { display: none; }
+
+@media print {
+  /* Sembunyikan UI kasir; hanya dokumen yang tercetak */
+  .kasir > .grid, .toast-wrap { display: none !important; }
+
+  @page { size: A4 portrait; margin: 14mm 15mm; }
+
+  .rincian-print {
+    display: block !important;
+    position: relative;
+    color: #000;
+    font-family: 'DM Sans', Arial, sans-serif;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .rp-watermark {
+    position: fixed; top: 45%; left: 50%;
+    transform: translate(-50%, -50%) rotate(-30deg);
+    font-size: 92px; font-weight: 800; letter-spacing: .12em;
+    color: rgba(0, 0, 0, 0.06); z-index: 0; pointer-events: none;
+  }
+
+  .rp-kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 9px; }
+  .rp-logo { height: 62px; width: auto; object-fit: contain; }
+  .rp-clinic { font-size: 19px; font-weight: 800; letter-spacing: .02em; }
+  .rp-line { font-size: 10.5px; }
+
+  .rp-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: .06em; text-decoration: underline; margin: 12px 0 1px; }
+  .rp-subtitle { text-align: center; font-size: 11px; margin-bottom: 12px; }
+
+  .rp-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .rp-meta td { padding: 1.5px 0; vertical-align: top; font-size: 11px; }
+  .rp-meta .k { width: 15%; color: #333; }
+  .rp-meta .s { width: 10px; }
+  .rp-meta .v { width: 35%; font-weight: 600; }
+
+  .rp-items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  .rp-items th, .rp-items td { border: 1px solid #000; padding: 5px 7px; font-size: 10.5px; }
+  .rp-items th { background: #eee !important; text-align: left; font-weight: 700; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rp-items .c-no { width: 26px; text-align: center; }
+  .rp-items .c-kat { width: 78px; }
+  .rp-items .c-num { text-align: right; white-space: nowrap; }
+  .rp-empty { text-align: center; font-style: italic; }
+
+  .rp-summary { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+  .rp-summary table { border-collapse: collapse; min-width: 280px; }
+  .rp-summary td { padding: 2.5px 7px; font-size: 11px; }
+  .rp-summary td.c-num { text-align: right; white-space: nowrap; }
+  .rp-summary .rp-grand td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 800; font-size: 12.5px; }
+  .rp-summary .rp-sisa td { font-weight: 700; }
+
+  .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
+  .rp-status.lunas { color: #15803d; border-color: #15803d; }
+  .rp-status.belum { color: #b45309; border-color: #b45309; }
+
+  .rp-sign { display: flex; justify-content: space-between; gap: 40px; page-break-inside: avoid; }
+  .rp-sign-col { width: 45%; text-align: center; }
+  .rp-sign-lbl { font-size: 11px; margin-bottom: 4px; }
+  .rp-sign-space { height: 62px; }
+  .rp-stamp { height: 62px; object-fit: contain; }
+  .rp-sign-name { font-size: 11px; }
+
+  .rp-footer { margin-top: 28px; padding-top: 7px; border-top: 1px solid #999; text-align: center; font-size: 9px; color: #444; }
+}
 </style>

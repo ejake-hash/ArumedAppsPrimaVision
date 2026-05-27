@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import api from '@/services/api'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 function fmtTgl(d) {
@@ -243,6 +244,7 @@ function printDoc(doc) {
           <template v-else>
             <div v-for="p in searchResults" :key="p.id" class="rsb-item" @mousedown.prevent="pickPatient(p)">
               <div :class="['rsi-bar', guarantorCls(p.last_guarantor_type)]"></div>
+              <PatientAvatar :name="p.nama" :src="p.photo_url" :size="34" radius="50%" :zoomable="false" />
               <div class="rsi-body">
                 <div class="rsi-top">
                   <span class="rsi-rm">{{ p.no_rm }}</span>
@@ -272,7 +274,7 @@ function printDoc(doc) {
 
         <!-- PATIENT PROFILE BAR -->
         <div class="ptb">
-          <div class="ptav">{{ patient.nama?.charAt(0) }}</div>
+          <PatientAvatar :name="patient.nama" :src="patient.photo_url" :size="40" radius="50%" />
           <div class="pti">
             <div class="ptn">{{ patient.nama }}</div>
             <div class="ptm">{{ hitungUsia(patient.date_of_birth) }} th · {{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }} · {{ patient.address }}</div>

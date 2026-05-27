@@ -75,7 +75,16 @@ class PerawatController extends Controller
 
     public function showAsesmen(string $visitId): JsonResponse
     {
-        return $this->ok($this->service->getAsesmen($visitId));
+        $assessment = $this->service->getAsesmen($visitId);
+
+        // Repopulate tiket Dokter (D-NNN) saat pasien yang sudah finalized dipilih ulang,
+        // supaya tombol "Cetak Tiket Dokter" tetap aktif (cetak ulang). Null kalau partner
+        // TR belum selesai — getDoctorTicket() hanya menemukan antrian DOKTER bila gate lolos.
+        if ($assessment?->is_finalized) {
+            $assessment->doctor_ticket = $this->service->doctorTicket($visitId);
+        }
+
+        return $this->ok($assessment);
     }
 
     public function storeAsesmen(Request $request): JsonResponse
@@ -146,6 +155,10 @@ class PerawatController extends Controller
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
+
+        // Sertakan tiket Dokter (D-NNN) bila gate TR sudah lolos & antrian DOKTER dibuat.
+        // Frontend (PerawatView) memunculkan tombol "Cetak Tiket Dokter" bila ada.
+        $assessment->doctor_ticket = $this->service->doctorTicket($assessment->visit_id);
 
         return $this->ok($assessment, 'Asesmen dikunci. Data tidak bisa diubah.');
     }

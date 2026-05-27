@@ -15,6 +15,20 @@ class RekamMedisController extends Controller
     // =========================================================================
 
     /**
+     * GET /rekam-medis/pasien?keyword=&mode=
+     * Pencarian pasien untuk modul RME (mode: nama | rm | nik).
+     */
+    public function cariPasien(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'keyword' => 'required|string|min:1',
+            'mode'    => 'nullable|in:nama,rm,nik',
+        ]);
+
+        return $this->ok($this->service->searchPatient($validated['keyword'], $validated['mode'] ?? null));
+    }
+
+    /**
      * GET /rekam-medis/pasien/{patientId}
      * Full clinical timeline for a patient.
      */

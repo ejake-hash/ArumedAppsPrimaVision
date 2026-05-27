@@ -84,7 +84,8 @@ class AdmisiController extends Controller
     public function storePasien(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'nik'          => 'required|string|size:16|unique:patients,nik',
+            'identity_type' => 'nullable|in:KTP,PASPOR,SIM,KIA,TANPA_IDENTITAS,LAINNYA',
+            'nik'          => $this->nikRules($request, required: true),
             'name'         => 'required|string|max:255',
             'gender'       => 'required|in:L,P',
             'date_of_birth' => 'required|date|before:today',
@@ -94,6 +95,7 @@ class AdmisiController extends Controller
             'bpjs_number'  => 'nullable|string|max:20|unique:patients,bpjs_number',
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
+            'photo'        => 'nullable|string',
         ]);
 
         $patient = $this->service->storePasien($validated);
@@ -101,14 +103,68 @@ class AdmisiController extends Controller
         return $this->ok($patient, 'Pasien berhasil didaftarkan', 201);
     }
 
+    /**
+     * Aturan validasi NIK yang bergantung pada jenis identitas:
+     *  - KTP        → wajib (kecuali patient_id sudah ada), tepat 16 digit
+     *  - selain KTP → opsional, maks 50 char (paspor/SIM/KIA/dll)
+     *  - Tanpa Identitas → boleh kosong
+     * Selalu unique (NULL diabaikan otomatis oleh Laravel).
+     *
+     * @return array<int,string>
+     */
+    private function nikRules(Request $request, bool $required, ?string $ignoreId = null): array
+    {
+        $isKtp        = $request->input('identity_type', 'KTP') === 'KTP';
+        $needRequired = $required && $isKtp && ! $request->filled('patient_id');
+
+        $rules = [$needRequired ? 'required' : 'nullable', 'string', $isKtp ? 'size:16' : 'max:50'];
+
+        $rules[] = $ignoreId
+            ? 'unique:patients,nik,' . $ignoreId
+            : 'unique:patients,nik';
+
+        return $rules;
+    }
+
+    /**
+     * Varian aturan NIK untuk walk-in: keunikan dicek manual di service
+     * (terhadap placeholder), jadi tanpa rule `unique` di sini.
+     *
+     * @return array<int,string>
+     */
+    private function nikRulesWalkIn(Request $request): array
+    {
+        $isKtp        = $request->input('identity_type', 'KTP') === 'KTP';
+        $needRequired = $isKtp && ! $request->filled('patient_id');
+
+        return [$needRequired ? 'required' : 'nullable', 'string', $isKtp ? 'size:16' : 'max:50'];
+    }
+
     public function showPasien(string $id): JsonResponse
     {
         return $this->ok($this->service->getPasienById($id));
     }
 
+    /**
+     * GET /admisi/pasien/{id}/kunjungan?page=&per_page=&tanggal=
+     * Riwayat kunjungan pasien (paginated, filter tanggal) untuk tab Riwayat.
+     */
+    public function indexKunjunganPasien(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'tanggal'  => 'nullable|date',
+            'per_page' => 'nullable|integer|min:1|max:50',
+            'page'     => 'nullable|integer|min:1',
+        ]);
+
+        return $this->ok($this->service->getKunjunganPasien($id, $validated));
+    }
+
     public function updatePasien(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
+            'identity_type' => 'nullable|in:KTP,PASPOR,SIM,KIA,TANPA_IDENTITAS,LAINNYA',
+            'nik'          => $this->nikRules($request, required: false, ignoreId: $id),
             'name'         => 'sometimes|string|max:255',
             'gender'       => 'sometimes|in:L,P',
             'date_of_birth' => 'sometimes|date|before:today',
@@ -118,6 +174,7 @@ class AdmisiController extends Controller
             'bpjs_number'  => 'nullable|string|max:20|unique:patients,bpjs_number,' . $id,
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
+            'photo'        => 'nullable|string',
         ]);
 
         return $this->ok($this->service->updatePasien($id, $validated), 'Data pasien diperbarui');
@@ -138,7 +195,8 @@ class AdmisiController extends Controller
             'patient_id'   => 'nullable|uuid|exists:patients,id',
 
             // Data pasien baru (wajib jika patient_id kosong)
-            'nik'          => 'required_without:patient_id|string|size:16|unique:patients,nik',
+            'identity_type' => 'nullable|in:KTP,PASPOR,SIM,KIA,TANPA_IDENTITAS,LAINNYA',
+            'nik'          => $this->nikRules($request, required: true),
             'name'         => 'required_without:patient_id|string|max:255',
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
@@ -148,6 +206,7 @@ class AdmisiController extends Controller
             'bpjs_number'  => 'nullable|string|max:20',
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
+            'photo'        => 'nullable|string',
 
             // Data kunjungan
             'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol',
@@ -224,7 +283,8 @@ class AdmisiController extends Controller
 
             // Pasien baru (wajib jika patient_id kosong) — NIK unique dicek di service
             // (kecuali placeholder sendiri)
-            'nik'          => 'required_without:patient_id|string|size:16',
+            'identity_type' => 'nullable|in:KTP,PASPOR,SIM,KIA,TANPA_IDENTITAS,LAINNYA',
+            'nik'          => $this->nikRulesWalkIn($request),
             'name'         => 'required_without:patient_id|string|max:255',
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
@@ -234,6 +294,7 @@ class AdmisiController extends Controller
             'bpjs_number'  => 'nullable|string|max:20',
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
+            'photo'        => 'nullable|string',
 
             // Data kunjungan
             'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol',

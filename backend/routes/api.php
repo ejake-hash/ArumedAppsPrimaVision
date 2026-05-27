@@ -29,6 +29,7 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
 use App\Http\Controllers\TvDisplaySettingController;
 use App\Http\Controllers\TvAudioSettingController;
+use App\Http\Controllers\TvBrandingSettingController;
 
 /*
 |--------------------------------------------------------------------------
@@ -77,6 +78,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/display-settings',  [TvDisplaySettingController::class, 'index']);
         // Audio settings (sound preset, volume, TTS voice, flash duration) — public read
         Route::get('/audio-settings',    [TvAudioSettingController::class, 'show']);
+        // Branding (logo + nama klinik) — public read
+        Route::get('/branding-settings', [TvBrandingSettingController::class, 'show']);
     });
 
     // =========================================================================
@@ -94,6 +97,9 @@ Route::prefix('v1')->group(function () {
         });
         // Antrean TV — audio settings (singleton)
         Route::put('/antrean-tv/audio-settings', [TvAudioSettingController::class, 'update']);
+        // Antrean TV — branding settings (singleton: logo + nama klinik)
+        Route::put('/antrean-tv/branding-settings',        [TvBrandingSettingController::class, 'update']);
+        Route::post('/antrean-tv/branding-settings/reset', [TvBrandingSettingController::class, 'reset']);
 
         // -----------------------------------------------------------------
         // AUTH
@@ -132,6 +138,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien',                 [AdmisiController::class, 'cariPasien']);
             Route::post('/pasien',                [AdmisiController::class, 'storePasien']);
             Route::get('/pasien/{id}',            [AdmisiController::class, 'showPasien']);
+            Route::get('/pasien/{id}/kunjungan',  [AdmisiController::class, 'indexKunjunganPasien']);
             Route::put('/pasien/{id}',            [AdmisiController::class, 'updatePasien']);
 
             Route::post('/daftar',                [AdmisiController::class, 'daftarKunjungan']);
@@ -213,6 +220,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/antrian',                              [DokterController::class, 'indexAntrian']);
             Route::put('/antrian/{id}/panggil',                 [DokterController::class, 'panggilAntrian']);
             Route::put('/antrian/{id}/selesai',                 [DokterController::class, 'selesaiAntrian']);
+            Route::put('/antrian/{id}/ke-penunjang',            [DokterController::class, 'kirimKePenunjang']);
+
+            // Referensi Tab 3: tarif tindakan per metode bayar + daftar obat ber-harga
+            Route::get('/tarif-tindakan',                       [DokterController::class, 'tarifTindakan']);
+            Route::get('/obat',                                 [DokterController::class, 'daftarObat']);
 
             Route::get('/kunjungan/{visitId}',                  [DokterController::class, 'showKunjungan']);
 
@@ -425,6 +437,7 @@ Route::prefix('v1')->group(function () {
         // REKAM MEDIS (Protected Data)
         // -----------------------------------------------------------------
         Route::prefix('rekam-medis')->group(function () {
+            Route::get('/pasien',                          [RekamMedisController::class, 'cariPasien']);
             Route::get('/pasien/{patientId}',              [RekamMedisController::class, 'riwayatPasien']);
             Route::get('/pasien/{patientId}/kunjungan',    [RekamMedisController::class, 'indexKunjungan']);
 
@@ -528,6 +541,12 @@ Route::prefix('v1')->group(function () {
             Route::post('/icd9',                            [MasterDataController::class, 'storeIcd9'])->middleware('permission:master_icd.write');
             Route::put('/icd9/{id}',                        [MasterDataController::class, 'updateIcd9'])->middleware('permission:master_icd.write');
             Route::delete('/icd9/{id}',                     [MasterDataController::class, 'deleteIcd9'])->middleware('permission:master_icd.delete');
+
+            // Jenis Penunjang (diagnostic_test_types) — master dikelola di modul Penunjang
+            Route::get('/diagnostic-test-type',             [MasterDataController::class, 'indexDiagnosticTestType']);
+            Route::post('/diagnostic-test-type',            [MasterDataController::class, 'storeDiagnosticTestType']);
+            Route::put('/diagnostic-test-type/{id}',        [MasterDataController::class, 'updateDiagnosticTestType']);
+            Route::delete('/diagnostic-test-type/{id}',     [MasterDataController::class, 'deleteDiagnosticTestType']);
 
             Route::get('/obat/template-csv',                [MasterDataController::class, 'templateCsv'])->defaults('type', 'obat')->middleware('permission:master_obat.read');
             Route::get('/obat/export-csv',                  [MasterDataController::class, 'exportCsv'])->defaults('type', 'obat')->middleware('permission:master_obat.read');
@@ -761,6 +780,9 @@ Route::prefix('v1')->group(function () {
             // Permissions (read-only, seeded)
             Route::get('/permissions',          [PermissionController::class, 'index']);
             Route::get('/permissions/flat',     [PermissionController::class, 'flat']);
+            // Override nama tampilan modul (UI-only) untuk matriks
+            Route::put('/permissions/module-label/{module}',        [PermissionController::class, 'updateLabel']);
+            Route::post('/permissions/module-label/{module}/reset', [PermissionController::class, 'resetLabel']);
 
             // Roles
             Route::get('/roles',                [RoleController::class, 'index']);

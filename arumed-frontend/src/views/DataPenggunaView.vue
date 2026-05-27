@@ -84,10 +84,20 @@ const filtUsers = computed(() => {
   return list
 })
 
-// ─── Modules untuk matrix (dari permissionGroups) ────────────────────────────
-const modules = computed(() => store.permissionGroups.map((g) => ({
-  id: g.module, nama: g.label, sub: '',
-})))
+// ─── Modules untuk matrix (dari permissionGroups, urut abjad) ────────────────
+const modules = computed(() =>
+  store.permissionGroups
+    .map((g) => ({ id: g.module, nama: g.label, sub: '' }))
+    .sort((a, b) => a.nama.localeCompare(b.nama, 'id')),
+)
+
+// Modul yang tampil di matriks (terfilter pencarian)
+const srMod = ref('')
+const matrixModules = computed(() => {
+  const s = srMod.value.trim().toLowerCase()
+  if (! s) return modules.value
+  return modules.value.filter((m) => m.nama.toLowerCase().includes(s))
+})
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -196,6 +206,36 @@ async function toggleMatrixPerm(role, modId, code) {
 function hasPerm(role, modId, code) {
   if (role?.permission_keys?.includes('*')) return true
   return role?.permission_keys?.includes(`${modId}.${ACTION_CODE_TO_KEY[code]}`)
+}
+
+// ─── Edit nama modul (label-only, matriks) ───────────────────────────────────
+const editingMod      = ref(null)   // modId yang sedang diedit
+const editingModLabel = ref('')
+function startEditMod(mod) {
+  editingMod.value = mod.id
+  editingModLabel.value = mod.nama
+}
+async function saveModLabel(mod) {
+  const label = editingModLabel.value.trim()
+  if (! label || label === mod.nama) { editingMod.value = null; return }
+  try {
+    await store.updateModuleLabel(mod.id, label)
+    toast('s', `Nama modul diperbarui → ${label}`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengubah nama modul'))
+  } finally {
+    editingMod.value = null
+  }
+}
+async function resetModLabel(mod) {
+  try {
+    await store.resetModuleLabel(mod.id)
+    toast('s', 'Nama modul dikembalikan ke default')
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal reset nama modul'))
+  } finally {
+    editingMod.value = null
+  }
 }
 
 // ─── User actions ────────────────────────────────────────────────────────────
@@ -503,7 +543,8 @@ function lastLoginText(u) {
     <!-- ─── TAB: MATRIKS HAK AKSES ─── -->
     <div v-if="pgTab === 'matrix'" class="pg">
       <div class="matrix-info">
-        <span><b>R</b> = Baca · <b>W</b> = Tulis · <b>D</b> = Hapus. Klik kotak untuk toggle (langsung tersimpan). Superadmin bypass — tidak perlu di-set.</span>
+        <span><b>R</b> = Baca · <b>W</b> = Tulis · <b>D</b> = Hapus. Klik kotak untuk toggle (langsung tersimpan). Klik nama modul untuk ubah label tampilan. Superadmin bypass — tidak perlu di-set.</span>
+        <input v-model="srMod" class="fi" style="width:200px;height:28px;flex-shrink:0" placeholder="Cari modul..."/>
       </div>
       <div v-if="store.rolesLoading || store.permissionsLoading" class="loading-state">Memuat matriks...</div>
       <div v-else class="card">
@@ -512,6 +553,7 @@ function lastLoginText(u) {
             <table class="matrix-tbl">
               <thead>
                 <tr>
+                  <th class="col-no" rowspan="2">No.</th>
                   <th class="sticky mod-head" style="background:var(--gd)">Modul / Fitur</th>
                   <th v-for="r in store.roles" :key="r.id" :colspan="3" class="mod-head" :style="{ background: colorOf(r) + 'dd' }">
                     <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px">{{ r.display_name || r.name }}</div>
@@ -525,9 +567,23 @@ function lastLoginText(u) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="mod in modules" :key="mod.id">
+                <tr v-if="!matrixModules.length">
+                  <td :colspan="2 + store.roles.length * 3" style="text-align:center;padding:1rem;color:var(--tu);font-size:11px">Tidak ada modul cocok dengan "{{ srMod }}".</td>
+                </tr>
+                <tr v-for="(mod, idx) in matrixModules" :key="mod.id">
+                  <td class="col-no">{{ idx + 1 }}</td>
                   <td class="sticky">
-                    <div style="font-size:11.5px;font-weight:500">{{ mod.nama }}</div>
+                    <div v-if="editingMod === mod.id" class="mod-edit">
+                      <input v-model="editingModLabel" class="fi mod-edit-inp"
+                             @keyup.enter="saveModLabel(mod)" @keyup.esc="editingMod = null" autofocus/>
+                      <button class="mod-edit-btn ok" @click="saveModLabel(mod)" title="Simpan">✓</button>
+                      <button class="mod-edit-btn" @click="resetModLabel(mod)" title="Kembalikan ke default">↺</button>
+                      <button class="mod-edit-btn" @click="editingMod = null" title="Batal">✕</button>
+                    </div>
+                    <div v-else class="mod-name-cell" @click="startEditMod(mod)" title="Klik untuk ubah nama tampilan">
+                      <span>{{ mod.nama }}</span>
+                      <svg class="mod-edit-ic" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </div>
                   </td>
                   <template v-for="r in store.roles" :key="r.id">
                     <td v-for="p in ['R','W','D']" :key="p">
@@ -679,10 +735,13 @@ function lastLoginText(u) {
 .matrix-wrap { overflow-x: auto; }
 .matrix-tbl { border-collapse: collapse; min-width: 900px; }
 .matrix-tbl th { font-size: 9px; font-weight: 600; color: var(--tu); text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 2px solid var(--gb); white-space: nowrap; text-align: center; }
-.matrix-tbl th.sticky { text-align: left; position: sticky; left: 0; background: var(--bc); z-index: 2; min-width: 160px; }
+.matrix-tbl th.sticky { text-align: left; position: sticky; left: 34px; background: var(--bc); z-index: 2; min-width: 160px; }
+.matrix-tbl th.col-no, .matrix-tbl td.col-no { position: sticky; left: 0; width: 34px; min-width: 34px; max-width: 34px; text-align: center; background: var(--bc); font-size: 10px; font-weight: 600; color: var(--tu); font-variant-numeric: tabular-nums; }
+.matrix-tbl th.col-no { z-index: 3; border-bottom: 2px solid var(--gb); }
+.matrix-tbl td.col-no { z-index: 2; }
 .matrix-tbl th.mod-head { background: linear-gradient(135deg, var(--gm), var(--gd)); color: rgba(255,255,255,.8); font-size: 8.5px; border-bottom: none; }
 .matrix-tbl td { padding: 4px 6px; border-bottom: 1px solid rgba(0,0,0,.04); text-align: center; vertical-align: middle; }
-.matrix-tbl td.sticky { text-align: left; position: sticky; left: 0; background: var(--bc); z-index: 1; font-size: 11.5px; font-weight: 500; padding: 4px 8px; }
+.matrix-tbl td.sticky { text-align: left; position: sticky; left: 34px; background: var(--bc); z-index: 1; font-size: 11.5px; font-weight: 500; padding: 4px 8px; }
 .matrix-tbl tr:hover td { background: var(--bi); }
 .matrix-tbl tr:hover td.sticky { background: var(--bi); }
 .perm-toggle { width: 24px; height: 24px; border-radius: 6px; border: 1.5px solid var(--gb); display: flex; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto; transition: all .14s; font-size: 10px; font-weight: 700; user-select: none; }
@@ -691,6 +750,16 @@ function lastLoginText(u) {
 .perm-toggle.off { background: var(--bs); color: var(--th); }
 .perm-toggle.off:hover { background: var(--gl); border-color: var(--ga); }
 .perm-toggle.locked { opacity: .4; cursor: not-allowed; }
+
+/* Edit nama modul (kolom sticky matriks) */
+.mod-name-cell { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11.5px; font-weight: 500; }
+.mod-name-cell:hover .mod-edit-ic { opacity: 1; }
+.mod-edit-ic { width: 10px; height: 10px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; opacity: 0; transition: opacity .12s; flex-shrink: 0; }
+.mod-edit { display: flex; align-items: center; gap: 3px; }
+.mod-edit-inp { width: 140px; height: 26px; font-size: 11.5px; padding: 2px 6px; }
+.mod-edit-btn { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--gb); background: var(--bc); cursor: pointer; font-size: 11px; color: var(--tm); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.mod-edit-btn:hover { border-color: var(--ga); color: var(--ga); }
+.mod-edit-btn.ok:hover { background: var(--ga); border-color: var(--ga); color: #fff; }
 
 /* ─── TOOLBAR ROW ─── */
 .tb-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }

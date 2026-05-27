@@ -42,6 +42,18 @@ class DokterController extends Controller
         return $this->ok($queue, 'Antrian selesai');
     }
 
+    /** PUT /dokter/antrian/{id}/ke-penunjang */
+    public function kirimKePenunjang(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->kirimKePenunjang($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien dikirim ke pemeriksaan penunjang');
+    }
+
     // =========================================================================
     // TAB 1 — OVERVIEW (readonly: triase + refraksi)
     // =========================================================================
@@ -115,6 +127,20 @@ class DokterController extends Controller
     // TAB 3 — TINDAKAN + RESEP OBAT
     // =========================================================================
 
+    /** GET /dokter/tarif-tindakan?visit_id=… — daftar tindakan + tarif per metode bayar */
+    public function tarifTindakan(Request $request): JsonResponse
+    {
+        $request->validate(['visit_id' => 'required|uuid|exists:visits,id']);
+
+        return $this->ok($this->service->getTarifTindakan($request->query('visit_id')));
+    }
+
+    /** GET /dokter/obat?search=… — daftar obat ber-harga (inventori farmasi) */
+    public function daftarObat(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getDaftarObat($request->query('search')));
+    }
+
     /** GET /dokter/kunjungan/{visitId}/tindakan */
     public function indexTindakan(string $visitId): JsonResponse
     {
@@ -128,7 +154,7 @@ class DokterController extends Controller
     public function storeTindakan(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate([
-            'services'                  => 'required|array|min:1',
+            'services'                  => 'present|array',
             'services.*.procedure_id'   => 'required|uuid|exists:procedures,id',
             'services.*.quantity'       => 'nullable|integer|min:1',
             'services.*.price'          => 'nullable|numeric|min:0',
@@ -170,7 +196,7 @@ class DokterController extends Controller
     {
         $validated = $request->validate([
             'notes'                       => 'nullable|string|max:500',
-            'items'                       => 'required|array|min:1',
+            'items'                       => 'present|array',
             'items.*.medication_id'       => 'required|uuid|exists:medications,id',
             'items.*.quantity'            => 'required|integer|min:1',
             'items.*.dose'                => 'nullable|string|max:100',
@@ -333,7 +359,8 @@ class DokterController extends Controller
     {
         $validated = $request->validate([
             'visit_id'  => 'required|uuid|exists:visits,id',
-            'test_type' => 'required|in:OCT,USG,Biometri,Topografi',
+            // Nama/jenis pemeriksaan diambil dari master diagnostic_test_types (atau "Lainnya").
+            'test_type' => 'required|string|max:150',
             'eye_side'  => 'nullable|in:OD,OS,OU',
             'notes'     => 'nullable|string|max:500',
         ]);

@@ -375,29 +375,38 @@ class PenunjangService
      */
     private function requeueToDokter(string $visitId): void
     {
-        // Only re-queue if visit is currently routed to PENUNJANG
-        $visit = Visit::findOrFail($visitId);
+        // Pindah ke PALING ATAS antrean DOKTER hari ini (prioritas pembacaan hasil).
+        $minSeq = Queue::byStation(Queue::STATION_DOKTER)->whereDate('created_at', today())->min('queue_sequence') ?? 1;
+        $topSeq = $minSeq - 1;
 
-        // Avoid duplicate active DOKTER queue
-        $activeQueue = Queue::where('visit_id', $visitId)
-            ->where('station', 'DOKTER')
-            ->whereIn('status', ['WAITING', 'CALLED'])
-            ->exists();
+        // Reuse baris DOKTER yang masih hidup (di-pause saat dikirim ke penunjang),
+        // bukan membuat baris baru → satu pasien tetap satu baris.
+        $dokterQueue = Queue::byStation(Queue::STATION_DOKTER)
+            ->where('visit_id', $visitId)
+            ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
+            ->orderByDesc('created_at')
+            ->first();
 
-        if ($activeQueue) {
+        if ($dokterQueue) {
+            $dokterQueue->update([
+                'status'         => Queue::STATUS_PENUNJANG_DONE,
+                'queue_sequence' => $topSeq,
+                'called_at'      => null,
+                'started_at'     => null,
+            ]);
+            $this->log(null, 'REQUEUE_DOKTER', Visit::class, $visitId, 'Semua order penunjang selesai — pasien naik ke atas antrian Dokter (Selesai Penunjang)');
             return;
         }
 
-        $lastSeq  = Queue::where('station', 'DOKTER')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
-        $sequence = $lastSeq + 1;
-
+        // Fallback: tak ada baris DOKTER hidup → buat baru di atas.
+        $num = (Queue::byStation(Queue::STATION_DOKTER)->whereDate('created_at', today())->max('queue_sequence') ?? 0) + 1;
         Queue::create([
             'visit_id'       => $visitId,
-            'station'        => 'DOKTER',
+            'station'        => Queue::STATION_DOKTER,
             'queue_prefix'   => 'D',
-            'queue_sequence' => $sequence,
-            'queue_number'   => 'D-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
-            'status'         => 'WAITING',
+            'queue_sequence' => $topSeq,
+            'queue_number'   => 'D-' . str_pad($num, 3, '0', STR_PAD_LEFT),
+            'status'         => Queue::STATUS_PENUNJANG_DONE,
         ]);
 
         $this->log(null, 'REQUEUE_DOKTER', Visit::class, $visitId, 'Semua order penunjang selesai — pasien kembali ke antrian Dokter');

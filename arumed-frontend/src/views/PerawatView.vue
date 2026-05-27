@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePerawatStore } from '@/stores/perawatStore'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 const store = usePerawatStore()
 
@@ -49,16 +50,16 @@ function emptyForm() {
 watch(() => store.asesmen, (a) => {
   if (!a) { Object.assign(form.value, emptyForm()); return }
   form.value = {
-    td_s:             a.td_sistol        ?? '',
-    td_d:             a.td_diastol       ?? '',
-    nadi:             a.nadi             ?? '',
-    spo2:             a.spo2             ?? '',
-    suhu:             a.suhu             ?? '',
-    respirasi:        a.respirasi        ?? '',
-    bb:               a.berat_badan      ?? '',
-    tb:               a.tinggi_badan     ?? '',
+    td_s:             fmtNum(a.td_sistol)    ?? '',
+    td_d:             fmtNum(a.td_diastol)   ?? '',
+    nadi:             fmtNum(a.nadi)         ?? '',
+    spo2:             fmtNum(a.spo2)         ?? '',
+    suhu:             fmtNum(a.suhu)         ?? '',
+    respirasi:        fmtNum(a.respirasi)    ?? '',
+    bb:               fmtNum(a.berat_badan)  ?? '',
+    tb:               fmtNum(a.tinggi_badan) ?? '',
     pain:             a.pain_scale       ?? 0,
-    kgd:              a.kgd              ?? '',
+    kgd:              fmtNum(a.kgd)          ?? '',
     keluhan:          a.chief_complaint  ?? '',
     rps:              a.rps              ?? '',
     assessment_notes: a.assessment_notes ?? '',
@@ -230,12 +231,69 @@ async function saveAssessment() {
 async function sendToDoctor() {
   if (!store.asesmen?.id) { toast('w', 'Simpan asesmen dulu'); return }
   try {
+    // Backend balikkan doctor_ticket (D-NNN) bila Refraksionis JUGA sudah finalize —
+    // dipakai tombol "Cetak Tiket Dokter". Pasien tetap terpilih agar tombol tampil.
     await store.finalizeAsesmen()
-    toast('s', `${store.selectedQueue?.patient?.name} dikirim ke antrean dokter`)
-    store.clearSelected()
+    if (store.doctorTicket) {
+      toast('s', `Pasien lengkap (TR) — antrean dokter ${store.doctorTicket.queue_number} dibuat. Cetak tiket pasien.`)
+    } else {
+      toast('s', 'Asesmen dikunci. Menunggu Refraksionis selesai sebelum tiket dokter bisa dicetak.')
+    }
   } catch (err) {
     toast('w', err.message)
   }
+}
+
+/* ============================================================
+   CETAK TIKET DOKTER (80mm) — tampil setelah TR selesai keduanya.
+   Sumber data: store.doctorTicket (D-NNN + poliklinik/ruang/dokter).
+   ============================================================ */
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
+function printDoctorTicket() {
+  const t = store.doctorTicket
+  if (!t?.queue_number) { toast('w', 'Antrean dokter belum dibuat — tunggu Refraksionis selesai.'); return }
+  const patientName = store.selectedQueue?.patient?.name ?? ''
+  const dest = [
+    t.poliklinik ? `Poli ${escHtml(t.poliklinik)}` : null,
+    t.room ? `Ruang ${escHtml(t.room)}` : null,
+  ].filter(Boolean).join(' · ') || 'Poliklinik Dokter'
+  const ticketHtml = `
+    <html><head><title>Antrean ${escHtml(t.queue_number)}</title>
+    <style>
+      @page { size: 80mm auto; margin: 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:'Helvetica Neue',Arial,sans-serif; color:#000; }
+      body { width:80mm; padding:4mm 0; }
+      .h { text-align:center; padding:2mm 4mm; font-size:13pt; font-weight:700; border-bottom:1px dashed #000; }
+      .sub { text-align:center; font-size:8pt; padding:2mm 4mm 1mm; letter-spacing:0.05em; text-transform:uppercase; }
+      .num { text-align:center; font-size:56pt; font-weight:700; padding:2mm 0; line-height:1; }
+      .sep { border-top:1px dashed #000; margin:2mm 4mm; }
+      .b { text-align:center; padding:2mm 4mm; font-size:10pt; line-height:1.5; }
+      .b strong { font-size:11pt; }
+      .ft { text-align:center; padding:2mm 4mm 0; font-size:8pt; }
+    </style></head><body>
+      <div class="h">Klinik Mata Arunika</div>
+      <div class="sub">Tiket Antrean Dokter</div>
+      <div class="num">${escHtml(t.queue_number)}</div>
+      <div class="sep"></div>
+      <div class="b">
+        ${patientName ? `<div style="margin-bottom:2mm">${escHtml(patientName)}</div>` : ''}
+        Menuju <strong>${dest}</strong>
+        ${t.doctor_name ? `<div style="margin-top:2mm">${escHtml(t.doctor_name)}</div>` : ''}
+      </div>
+      <div class="ft">Simpan tiket ini sampai dipanggil</div>
+    </body></html>`
+  const w = window.open('', '_blank', 'width=320,height=480')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk cetak tiket'); return }
+  w.document.write(ticketHtml)
+  w.document.close()
+  w.focus()
+  w.onload = () => { try { w.print() } catch {} }
+  setTimeout(() => { try { w.print() } catch {} }, 400)
 }
 
 // ─── CPPT handlers ───────────────────────────────────────────────────────────
@@ -254,13 +312,13 @@ function startEditCppt(entry) {
   // Hydrate form dari entry yang mau di-edit
   form.value = {
     ...form.value,
-    td_s:             entry.td_sistol  ?? '',
-    td_d:             entry.td_diastol ?? '',
-    nadi:             entry.nadi       ?? '',
-    suhu:             entry.suhu       ?? '',
-    respirasi:        entry.respirasi  ?? '',
-    spo2:             entry.spo2       ?? '',
-    kgd:              entry.kgd        ?? '',
+    td_s:             fmtNum(entry.td_sistol)  ?? '',
+    td_d:             fmtNum(entry.td_diastol) ?? '',
+    nadi:             fmtNum(entry.nadi)       ?? '',
+    suhu:             fmtNum(entry.suhu)       ?? '',
+    respirasi:        fmtNum(entry.respirasi)  ?? '',
+    spo2:             fmtNum(entry.spo2)       ?? '',
+    kgd:              fmtNum(entry.kgd)        ?? '',
     pain:             entry.pain_scale ?? 0,
     assessment_notes: entry.notes      ?? '',
   }
@@ -272,16 +330,16 @@ function cancelCpptMode() {
   if (store.asesmen) {
     const a = store.asesmen
     form.value = {
-      td_s:             a.td_sistol        ?? '',
-      td_d:             a.td_diastol       ?? '',
-      nadi:             a.nadi             ?? '',
-      spo2:             a.spo2             ?? '',
-      suhu:             a.suhu             ?? '',
-      respirasi:        a.respirasi        ?? '',
-      bb:               a.berat_badan      ?? '',
-      tb:               a.tinggi_badan     ?? '',
+      td_s:             fmtNum(a.td_sistol)    ?? '',
+      td_d:             fmtNum(a.td_diastol)   ?? '',
+      nadi:             fmtNum(a.nadi)         ?? '',
+      spo2:             fmtNum(a.spo2)         ?? '',
+      suhu:             fmtNum(a.suhu)         ?? '',
+      respirasi:        fmtNum(a.respirasi)    ?? '',
+      bb:               fmtNum(a.berat_badan)  ?? '',
+      tb:               fmtNum(a.tinggi_badan) ?? '',
       pain:             a.pain_scale       ?? 0,
-      kgd:              a.kgd              ?? '',
+      kgd:              fmtNum(a.kgd)          ?? '',
       keluhan:          a.chief_complaint  ?? '',
       rps:              a.rps              ?? '',
       assessment_notes: a.assessment_notes ?? '',
@@ -370,6 +428,15 @@ function fmtDateTime(d) {
   if (!d) return '—'
   const dt = new Date(d)
   return `${dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })} · ${dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`
+}
+
+// Backend mengirim kolom decimal:2 sebagai string "120.00" / "36.50".
+// Coerce ke Number agar nol desimal yang tidak perlu hilang: 120.00 → 120, 36.50 → 36.5.
+// Null/kosong dikembalikan apa adanya supaya pemanggil tetap bisa pakai `?? '—'`.
+function fmtNum(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isNaN(n) ? v : n
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -552,9 +619,11 @@ onUnmounted(() => {
 
           <!-- Patient header -->
           <div class="pt-header">
-            <div class="pt-avatar" :aria-label="`Inisial ${store.selectedQueue.patient?.name}`">
-              {{ store.selectedQueue.patient?.name?.charAt(0) ?? '?' }}
-            </div>
+            <PatientAvatar
+              :name="store.selectedQueue.patient?.name"
+              :src="store.selectedQueue.patient?.photo_url"
+              :size="44" radius="50%" style="margin-top:2px"
+            />
             <div class="pt-info">
               <div class="pt-name">{{ store.selectedQueue.patient?.name ?? '—' }}</div>
               <div class="pt-meta">
@@ -604,10 +673,10 @@ onUnmounted(() => {
 
             <!-- Inline saved vitals summary -->
             <div v-if="store.asesmen" class="pt-vitals" aria-label="Ringkasan tanda vital tersimpan">
-              <div class="pvi">TD <b>{{ store.asesmen.td_sistol ?? '—' }}/{{ store.asesmen.td_diastol ?? '—' }}</b></div>
-              <div class="pvi">N <b>{{ store.asesmen.nadi ?? '—' }}</b></div>
-              <div class="pvi">SpO₂ <b>{{ store.asesmen.spo2 ? store.asesmen.spo2 + '%' : '—' }}</b></div>
-              <div v-if="store.asesmen.kgd" class="pvi">KGD <b>{{ store.asesmen.kgd }}</b></div>
+              <div class="pvi">TD <b>{{ fmtNum(store.asesmen.td_sistol) ?? '—' }}/{{ fmtNum(store.asesmen.td_diastol) ?? '—' }}</b></div>
+              <div class="pvi">N <b>{{ fmtNum(store.asesmen.nadi) ?? '—' }}</b></div>
+              <div class="pvi">SpO₂ <b>{{ store.asesmen.spo2 ? fmtNum(store.asesmen.spo2) + '%' : '—' }}</b></div>
+              <div v-if="store.asesmen.kgd" class="pvi">KGD <b>{{ fmtNum(store.asesmen.kgd) }}</b></div>
             </div>
           </div>
 
@@ -632,11 +701,11 @@ onUnmounted(() => {
                     {{ fmtDate(h.visit?.visit_date ?? h.created_at) }}
                   </div>
                   <div class="hi-vitals">
-                    <span>TD <b>{{ h.td_sistol }}/{{ h.td_diastol }}</b></span>
-                    <span>N <b>{{ h.nadi }}</b></span>
-                    <span>SpO₂ <b>{{ h.spo2 ?? '—' }}%</b></span>
-                    <span>Suhu <b>{{ h.suhu ?? '—' }}°C</b></span>
-                    <span v-if="h.kgd">KGD <b>{{ h.kgd }}</b></span>
+                    <span>TD <b>{{ fmtNum(h.td_sistol) }}/{{ fmtNum(h.td_diastol) }}</b></span>
+                    <span>N <b>{{ fmtNum(h.nadi) }}</b></span>
+                    <span>SpO₂ <b>{{ fmtNum(h.spo2) ?? '—' }}%</b></span>
+                    <span>Suhu <b>{{ fmtNum(h.suhu) ?? '—' }}°C</b></span>
+                    <span v-if="h.kgd">KGD <b>{{ fmtNum(h.kgd) }}</b></span>
                   </div>
                   <div v-if="h.chief_complaint" class="hi-complaint">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
@@ -668,7 +737,7 @@ onUnmounted(() => {
               <div class="sec-title">Kardiovaskular</div>
               <div class="form-grid g4">
                 <div class="fg span2">
-                  <label class="fl" for="td-s">Tekanan Darah <span class="hint">90–120 / 60–80</span></label>
+                  <label class="fl" for="td-s">Tekanan Darah <span class="req">*</span> <span class="hint">90–120 / 60–80</span></label>
                   <div class="td-row">
                     <input id="td-s" v-model="form.td_s" type="number" :class="['form-input', `vital-${tdStatus}`]" placeholder="Sistolik" :disabled="formLocked" />
                     <span aria-hidden="true">/</span>
@@ -714,7 +783,7 @@ onUnmounted(() => {
               <div class="sec-title">Metabolik</div>
               <div class="form-grid g4">
                 <div class="fg">
-                  <label class="fl" for="inp-kgd">KGD <span class="hint">70–200 mg/dL</span></label>
+                  <label class="fl" for="inp-kgd">KGD <span class="req">*</span> <span class="hint">70–200 mg/dL</span></label>
                   <input id="inp-kgd" v-model="form.kgd" type="number" :class="['form-input', `vital-${kgdStatus}`]" placeholder="120" :disabled="formLocked" />
                 </div>
                 <div class="fg" style="grid-column:span 3">
@@ -750,7 +819,7 @@ onUnmounted(() => {
                   <textarea id="inp-rps" v-model="form.rps" class="form-input ta" rows="3" placeholder="Onset, durasi, faktor pencetus, terapi sebelumnya…" :disabled="formLocked"></textarea>
                 </div>
                 <div class="fg">
-                  <label class="fl" for="inp-notes">Catatan Tambahan Perawat</label>
+                  <label class="fl" for="inp-notes">Catatan Tambahan Perawat <span v-if="isCpptMode" class="req">*</span></label>
                   <textarea id="inp-notes" v-model="form.assessment_notes" class="form-input ta" rows="2" placeholder="Observasi tambahan, kondisi umum pasien…" :disabled="formLocked"></textarea>
                 </div>
               </div>
@@ -848,22 +917,36 @@ onUnmounted(() => {
                   Kirim ke Dokter
                 </div>
                 <div class="send-card-sub">
-                  <template v-if="store.isFinalized">Asesmen sudah dikunci — pasien sudah berada di antrean dokter.</template>
+                  <template v-if="store.isFinalized && store.doctorTicket">Pasien selesai Triase &amp; Refraksionis — antrean dokter <strong>{{ store.doctorTicket.queue_number }}</strong> dibuat. Cetak tiket pasien.</template>
+                  <template v-else-if="store.isFinalized">Asesmen dikunci. Menunggu <strong>Refraksionis</strong> selesai sebelum tiket dokter bisa dicetak.</template>
                   <template v-else-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu sebelum mengirim.</template>
                   <template v-else>Klik untuk mengunci asesmen dan masukkan pasien ke antrean dokter.</template>
                 </div>
               </div>
-              <button
-                class="btn btn-success btn-lg send-btn"
-                :disabled="!store.asesmen?.id || store.finalizing || store.isFinalized"
-                @click="sendToDoctor"
-              >
-                <div v-if="store.finalizing" class="sp" role="status" aria-label="Mengirim…"></div>
-                <template v-else>
-                  Kirim ke Dokter
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-                </template>
-              </button>
+              <div class="send-actions">
+                <button
+                  class="btn btn-success btn-lg send-btn"
+                  :disabled="!store.asesmen?.id || store.finalizing || store.isFinalized"
+                  @click="sendToDoctor"
+                >
+                  <div v-if="store.finalizing" class="sp" role="status" aria-label="Mengirim…"></div>
+                  <template v-else>
+                    Kirim ke Dokter
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  </template>
+                </button>
+                <button
+                  v-if="store.isFinalized"
+                  type="button"
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="!store.doctorTicket"
+                  :title="store.doctorTicket ? `Cetak tiket antrean ${store.doctorTicket.queue_number}` : 'Tombol aktif setelah Refraksionis juga selesai (antrean dokter dibuat)'"
+                  @click="printDoctorTicket"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  Cetak Tiket Dokter
+                </button>
+              </div>
             </div>
           </div>
 
@@ -917,27 +1000,27 @@ onUnmounted(() => {
                   <div class="soap-vitals">
                     <div class="sv-item">
                       <span class="sv-k">TD</span>
-                      <span class="sv-v">{{ store.asesmen.td_sistol }}/{{ store.asesmen.td_diastol }}<em> mmHg</em></span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.td_sistol) }}/{{ fmtNum(store.asesmen.td_diastol) }}<em> mmHg</em></span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.kgd">
                       <span class="sv-k">KGD</span>
-                      <span class="sv-v">{{ store.asesmen.kgd }}<em> mg/dL</em></span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.kgd) }}<em> mg/dL</em></span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.nadi">
                       <span class="sv-k">Nadi</span>
-                      <span class="sv-v">{{ store.asesmen.nadi }}<em> bpm</em></span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.nadi) }}<em> bpm</em></span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.spo2">
                       <span class="sv-k">SpO₂</span>
-                      <span class="sv-v">{{ store.asesmen.spo2 }}%</span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.spo2) }}%</span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.suhu">
                       <span class="sv-k">Suhu</span>
-                      <span class="sv-v">{{ store.asesmen.suhu }}°C</span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.suhu) }}°C</span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.respirasi">
                       <span class="sv-k">Resp</span>
-                      <span class="sv-v">{{ store.asesmen.respirasi }}<em> /mnt</em></span>
+                      <span class="sv-v">{{ fmtNum(store.asesmen.respirasi) }}<em> /mnt</em></span>
                     </div>
                     <div class="sv-item" v-if="store.asesmen.assessment_notes" style="grid-column: 1/-1">
                       <span class="sv-k">Catatan</span>
@@ -978,27 +1061,27 @@ onUnmounted(() => {
                   <div class="soap-vitals">
                     <div class="sv-item" v-if="entry.td_sistol && entry.td_diastol">
                       <span class="sv-k">TD</span>
-                      <span class="sv-v">{{ entry.td_sistol }}/{{ entry.td_diastol }}<em> mmHg</em></span>
+                      <span class="sv-v">{{ fmtNum(entry.td_sistol) }}/{{ fmtNum(entry.td_diastol) }}<em> mmHg</em></span>
                     </div>
                     <div class="sv-item" v-if="entry.kgd">
                       <span class="sv-k">KGD</span>
-                      <span class="sv-v">{{ entry.kgd }}<em> mg/dL</em></span>
+                      <span class="sv-v">{{ fmtNum(entry.kgd) }}<em> mg/dL</em></span>
                     </div>
                     <div class="sv-item" v-if="entry.nadi">
                       <span class="sv-k">Nadi</span>
-                      <span class="sv-v">{{ entry.nadi }}<em> bpm</em></span>
+                      <span class="sv-v">{{ fmtNum(entry.nadi) }}<em> bpm</em></span>
                     </div>
                     <div class="sv-item" v-if="entry.spo2">
                       <span class="sv-k">SpO₂</span>
-                      <span class="sv-v">{{ entry.spo2 }}%</span>
+                      <span class="sv-v">{{ fmtNum(entry.spo2) }}%</span>
                     </div>
                     <div class="sv-item" v-if="entry.suhu">
                       <span class="sv-k">Suhu</span>
-                      <span class="sv-v">{{ entry.suhu }}°C</span>
+                      <span class="sv-v">{{ fmtNum(entry.suhu) }}°C</span>
                     </div>
                     <div class="sv-item" v-if="entry.respirasi">
                       <span class="sv-k">Resp</span>
-                      <span class="sv-v">{{ entry.respirasi }}<em> /mnt</em></span>
+                      <span class="sv-v">{{ fmtNum(entry.respirasi) }}<em> /mnt</em></span>
                     </div>
                   </div>
                   <div class="cppt-notes">{{ entry.notes }}</div>
@@ -1371,6 +1454,8 @@ onUnmounted(() => {
 .send-card-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2.5; stroke-linecap: round; }
 .send-card-sub { font-size: 11.5px; color: var(--tm); margin-top: 3px; line-height: 1.5; }
 .send-btn { flex-shrink: 0; }
+.send-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.send-actions .btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ── Allergy ─────────────────────────────────────────────────────────────── */
 .allergy-known { display: flex; gap: 6px; align-items: flex-start; background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--wt); font-weight: 500; margin-bottom: 0.75rem; }

@@ -58,6 +58,7 @@ const arcOffset = computed(() => 264 * (1 - countdown.value / 15))
 
 // ─── UMUM flow ──────────────────────────────────────────────────────────────
 async function goUmum() {
+  if (screen.value === 'umum-loading') return // cegah double-submit
   if (backendStatus.value === 'offline') {
     umumError.value = 'Sistem sedang tidak terhubung. Silakan hubungi petugas loket.'
     screen.value = 'umum-error'
@@ -86,9 +87,13 @@ async function goUmum() {
       poli: 'Loket Admisi',
     }
     screen.value = 'ticket'
-    startCountdown()
-    // Auto-print ke printer thermal
-    nextTick(() => triggerPrint())
+    // Auto-print dulu (window.print() blocking di sebagian browser). Countdown
+    // 15s baru mulai setelah dialog print ditutup, supaya timer tidak berjalan
+    // di balik dialog dan layar tidak ke-reset saat dialog masih terbuka.
+    nextTick(() => {
+      triggerPrint()
+      startCountdown()
+    })
   } catch (err) {
     umumError.value = err?.response?.data?.message
                    ?? err?.message
@@ -111,6 +116,7 @@ function triggerPrint() {
 
 // ─── Countdown auto-reset ───────────────────────────────────────────────────
 function startCountdown() {
+  clearInterval(cdTimer) // jaga-jaga bila timer lama belum dibersihkan
   countdown.value = 15
   cdTimer = setInterval(() => {
     countdown.value--
@@ -206,7 +212,7 @@ onUnmounted(() => {
                 <path d="M9 56c0-12.7 10.3-23 23-23s23 10.3 23 23" stroke="rgba(255,255,255,0.75)" stroke-width="2.5" stroke-linecap="round"/>
               </svg>
             </div>
-            <span class="cc-label">Umum / Pasien Baru</span>
+            <span class="cc-label">Loket Admisi</span>
             <span class="cc-desc">Bayar mandiri, asuransi swasta, atau kunjungan pertama</span>
             <span class="cc-badge umum">Antrean Admisi</span>
           </button>
@@ -243,7 +249,6 @@ onUnmounted(() => {
           <div class="ticket" id="thermal-ticket">
             <div class="tkt-header">
               <span class="tkt-clinic">Klinik Mata Arunika</span>
-              <span class="tkt-type u">Pasien Umum</span>
             </div>
             <div class="tkt-perf"></div>
             <div class="tkt-num">{{ ticket.qNum }}</div>

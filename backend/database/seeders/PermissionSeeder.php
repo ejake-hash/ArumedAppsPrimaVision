@@ -8,7 +8,7 @@ use Illuminate\Database\Seeder;
 class PermissionSeeder extends Seeder
 {
     /**
-     * 24 modul × 3 aksi (R/W/D) = 72 permission baris.
+     * 23 modul × 3 aksi (R/W/D) = 69 permission baris.
      * Key format: "{module}.{action_lower}".
      * Frontend DataPenggunaView.vue ambil modul dari store.permissionGroups
      * (otomatis sinkron dengan seeder ini).
@@ -23,7 +23,6 @@ class PermissionSeeder extends Seeder
             'rme_dokter'         => 'RME Dokter',
             'bedah'              => 'Unit Bedah',
             'farmasi'            => 'Farmasi Unit',
-            'gudang'             => 'Gudang Sentral',
             'kasir'              => 'Kasir & Billing',
             'bpjs'               => 'BPJS & Klaim',
             'laporan'            => 'Laporan & Analitik',

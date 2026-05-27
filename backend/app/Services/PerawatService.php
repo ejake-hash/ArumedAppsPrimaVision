@@ -126,6 +126,15 @@ class PerawatService
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_TRIASE);
     }
 
+    /**
+     * Data tiket Dokter (D-NNN + poliklinik/ruang/dokter) untuk dicetak di stasiun
+     * TR setelah finalize. Null kalau antrian DOKTER belum dibuat (partner belum selesai).
+     */
+    public function doctorTicket(string $visitId): ?array
+    {
+        return $this->queueService->getDoctorTicket($visitId);
+    }
+
     public function lewatiAntrian(string $queueId): array
     {
         $queue = Queue::where('station', 'TRIASE')

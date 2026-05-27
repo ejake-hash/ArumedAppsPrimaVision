@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Facades\Storage;
 
 class Visit extends Model
 {
@@ -22,7 +23,9 @@ class Visit extends Model
         'registered_by_id',
         'doctor_schedule_id',
         'no_antreen',
+        'no_registrasi',
         'no_sep',
+        'photo_path',
         'visit_date',
         'classification',
         'current_station',
@@ -51,6 +54,16 @@ class Visit extends Model
         'planning_follow_up'   => 'boolean',
         'follow_up_date'       => 'date',
     ];
+
+    /** Foto kunjungan ini ikut diserialisasi (riwayat kunjungan per-tanggal). */
+    protected $appends = ['photo_url'];
+
+    public function getPhotoUrlAttribute(): ?string
+    {
+        return $this->photo_path
+            ? Storage::disk('public')->url($this->photo_path)
+            : null;
+    }
 
     // --- Scopes ---
 

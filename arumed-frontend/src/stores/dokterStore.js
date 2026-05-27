@@ -54,6 +54,17 @@ export const useDokterStore = defineStore('dokter', () => {
     }
   }
 
+  // Kirim pasien ke pemeriksaan penunjang (baris DOKTER di-pause + turun ke bawah)
+  async function kirimKePenunjang(queueId) {
+    try {
+      const { data } = await dokterApi.kePenunjang(queueId)
+      _updateQueueItem(data.data)
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal mengirim ke penunjang')
+    }
+  }
+
   // ─── Patient Selection ──────────────────────────────────────────────────────
   function pickPatient(queueItem) {
     selectedQueue.value = queueItem
@@ -116,7 +127,7 @@ export const useDokterStore = defineStore('dokter', () => {
     selectedVisitId, selectedPatientId,
 
     // actions
-    fetchAntrian, panggilAntrian, selesaiAntrian,
+    fetchAntrian, panggilAntrian, selesaiAntrian, kirimKePenunjang,
     pickPatient, clearSelected,
     startPolling, stopPolling,
   }

@@ -1,9 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useDokterStore } from '@/stores/dokterStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/auth'
+import { masterApi, dokterApi } from '@/services/api'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 const store      = useDokterStore()
 const jadwalStore = useJadwalDokterStore()
@@ -67,9 +69,21 @@ function ptypeOf(visit) {
 function uiStatus(s) {
   if (s === 'WAITING') return 'waiting'
   if (s === 'CALLED' || s === 'IN_PROGRESS') return 'progress'
+  if (s === 'DI_PENUNJANG') return 'penunjang'
+  if (s === 'SELESAI_PENUNJANG') return 'penunjang_done'
   if (s === 'COMPLETED') return 'done'
   return 'skip'
 }
+const STATUS_LABEL = {
+  waiting: 'Menunggu', progress: 'Proses', done: 'Selesai', skip: 'Dilewati',
+  penunjang: 'Pemeriksaan Penunjang', penunjang_done: 'Selesai Penunjang',
+}
+const STATUS_PILL = {
+  waiting: 'pill-waiting', progress: 'pill-in_progress', done: 'pill-completed', skip: 'pill-completed',
+  penunjang: 'pill-penunjang', penunjang_done: 'pill-penunjang-done',
+}
+function statusLabel(s) { return STATUS_LABEL[s] ?? s }
+function statusPillClass(s) { return STATUS_PILL[s] ?? 'pill-waiting' }
 function calcAge(dob) {
   if (!dob) return null
   const d = new Date(dob), n = new Date()
@@ -86,6 +100,28 @@ function fmtRx(sph, cyl, ax) {
   const c = cyl != null ? ` C${cyl >= 0 ? '+' : ''}${cyl}` : ''
   const a = ax  != null ? ` ×${ax}°` : ''
   return (s + c + a).trim() || '—'
+}
+// Bulatkan ke bilangan bulat; biarkan nilai non-numerik ('—', visus '6/6') apa adanya.
+function toInt(v) {
+  if (v == null || v === '—' || v === '') return v
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.round(n) : v
+}
+// Keratometri: "43.50 / 44.00 @ 180°"
+function fmtK(k1, k2, axis) {
+  if (k1 == null && k2 == null) return '—'
+  const ax = axis != null ? ` @ ${axis}°` : ''
+  return `${k1 ?? '—'} / ${k2 ?? '—'}${ax}`
+}
+// ADD power: "+2.00" atau "—"
+function fmtAdd(v) { return v != null ? `+${v}` : '—' }
+// Kacamata lama: Rx (+ ADD bila ada)
+function fmtGlasses(sph, cyl, ax, add) {
+  const base = fmtRx(sph, cyl, ax)
+  const a = add != null ? `Add +${add}` : ''
+  if (base === '—' && !a) return '—'
+  if (base === '—') return a
+  return a ? `${base} · ${a}` : base
 }
 
 // Map satu baris queue dari API → bentuk yang dipakai template.
@@ -104,6 +140,7 @@ function mapPatient(q) {
     qNum:    q.queue_number,
     name:    p.name ?? '—',
     rm:      p.no_rm ?? '—',
+    photo:   p.photo_url ?? null,
     nik:     p.nik ?? '—',
     age:     p.age ?? calcAge(p.date_of_birth) ?? '—',
     gender:  p.gender ?? '—',
@@ -136,12 +173,25 @@ function mapPatient(q) {
     rd: {
       ucva_od: refr?.visus_awal_od  ?? '—',
       ucva_os: refr?.visus_awal_os  ?? '—',
+      pinhole_od: refr?.pinhole_od ?? '—',
+      pinhole_os: refr?.pinhole_os ?? '—',
       bcva_od: refr?.visus_akhir_od ?? '—',
       bcva_os: refr?.visus_akhir_os ?? '—',
-      iop_od:  refr?.iop_od ?? '—',
-      iop_os:  refr?.iop_os ?? '—',
+      autoref_od: fmtRx(refr?.autoref_od_sph, refr?.autoref_od_cyl, refr?.autoref_od_axis),
+      autoref_os: fmtRx(refr?.autoref_os_sph, refr?.autoref_os_cyl, refr?.autoref_os_axis),
+      kerato_od: fmtK(refr?.keratometri1_od, refr?.keratometri2_od, refr?.keratometri_axis_od),
+      kerato_os: fmtK(refr?.keratometri1_os, refr?.keratometri2_os, refr?.keratometri_axis_os),
       rx_od:   fmtRx(refr?.refraksi_subjektif_od_sph, refr?.refraksi_subjektif_od_cyl, refr?.refraksi_subjektif_od_axis),
       rx_os:   fmtRx(refr?.refraksi_subjektif_os_sph, refr?.refraksi_subjektif_os_cyl, refr?.refraksi_subjektif_os_axis),
+      add_od:  fmtAdd(refr?.add_power_od),
+      add_os:  fmtAdd(refr?.add_power_os),
+      old_od:  fmtGlasses(refr?.old_glasses_od_sph, refr?.old_glasses_od_cyl, refr?.old_glasses_od_axis, refr?.old_glasses_add_od),
+      old_os:  fmtGlasses(refr?.old_glasses_os_sph, refr?.old_glasses_os_cyl, refr?.old_glasses_os_axis, refr?.old_glasses_add_os),
+      iop_od:  refr?.iop_od ?? '—',
+      iop_os:  refr?.iop_os ?? '—',
+      iop_method: refr?.iop_method ?? '',
+      pd:      refr?.pd_distance ?? '',
+      perception: refr?.perception_type ?? '',
       note:    refr?.clinical_notes ?? '',
     },
     // List berikut belum di-fetch dari API saat antrian list (perlu separate call ke
@@ -155,6 +205,50 @@ function mapPatient(q) {
 
 const patients = computed(() => store.antrian.map(mapPatient))
 const selP     = computed(() => store.selectedQueue ? mapPatient(store.selectedQueue) : null)
+
+// Baris tabel RO untuk Tab 1. Baris non-inti disembunyikan bila kedua mata kosong
+// agar kartu tetap ringkas tapi tetap memuat seluruh data yang ada.
+const roRows = computed(() => {
+  const r = selP.value?.rd
+  if (!r) return []
+  const rows = [
+    { label: 'Autoref',            od: r.autoref_od, os: r.autoref_os, always: true },
+    { label: 'Keratometri',        od: r.kerato_od,  os: r.kerato_os,  always: true },
+    { label: 'IOP', unit: 'mmHg', note: r.iop_method || null, cls: 'strong',
+      od: toInt(r.iop_od), os: toInt(r.iop_os),
+      odWarn: r.iop_od >= 22, osWarn: r.iop_os >= 22, always: true },
+    { label: 'Visus Awal (UCVA)',  od: r.ucva_od,    os: r.ucva_os,    cls: 'strong', always: true },
+    { label: 'Visus Akhir (BCVA)', od: r.bcva_od,    os: r.bcva_os,    cls: 'strong success', always: true },
+    { label: 'Pinhole',            od: r.pinhole_od, os: r.pinhole_os },
+    { label: 'Refraksi Subjektif', od: r.rx_od,      os: r.rx_os,      cls: 'strong', always: true },
+    { label: 'Adisi (ADD)',        od: r.add_od,     os: r.add_os },
+    { label: 'Kacamata Lama',      od: r.old_od,     os: r.old_os },
+  ]
+  return rows.filter((row) => row.always || row.od !== '—' || row.os !== '—')
+})
+
+// ─── SOAP / CPPT: paginasi per tanggal kunjungan ─────────────────────────────
+// 1 halaman = 1 tanggal. Entri perawat + dokter di hari yang sama tetap 1 halaman.
+// Urutan descending (kunjungan terbaru = halaman pertama).
+const soapPages = computed(() => {
+  const list = selP.value?.soapHistory ?? []
+  const groups = new Map()
+  for (const e of list) {
+    const key = e.date ?? '—'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(e)
+  }
+  return [...groups.entries()]
+    .sort((a, b) => {
+      const ta = Date.parse(a[0]), tb = Date.parse(b[0])
+      if (!Number.isNaN(ta) && !Number.isNaN(tb)) return tb - ta            // tanggal terbaru dulu
+      return a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0                          // fallback string desc
+    })
+    .map(([date, entries]) => ({ date, entries }))
+})
+const soapPageIdx = ref(0)
+const currentSoapPage = computed(() => soapPages.value[soapPageIdx.value] ?? soapPages.value[0] ?? null)
+
 const tab = ref('data') // 'data' | 'pemeriksaan' | 'tindakan' | 'soap'
 const dw = ref(null)
 const finalized = ref(false)
@@ -177,7 +271,7 @@ const filtQ = computed(() => {
   return list
 })
 
-const cWait = computed(() => patients.value.filter((p) => p.status === 'waiting' || p.status === 'progress').length)
+const cWait = computed(() => patients.value.filter((p) => ['waiting', 'progress', 'penunjang', 'penunjang_done'].includes(p.status)).length)
 const cDone = computed(() => patients.value.filter((p) => p.status === 'done').length)
 const bpjsCount = computed(() => patients.value.filter((p) => p.ptype === 'bpjs' && p.status !== 'done' && p.status !== 'skip').length)
 const umumCount = computed(() => patients.value.filter((p) => p.ptype === 'umum' && p.status !== 'done' && p.status !== 'skip').length)
@@ -196,6 +290,7 @@ function toast(type, msg) {
 
 function resetFormState() {
   tab.value = 'data'
+  soapPageIdx.value = 0
   dw.value = null
   finalized.value = false
   resetExam()
@@ -204,6 +299,8 @@ function resetFormState() {
   tindakanSearch.value = ''
   showTarifList.value = false
   rxList.value = []
+  obatSearch.value = ''
+  newRx.value = makeRx()
   diagnosisUtama.value = null
   diagnosisSekunder.value = []
   icd9List.value = []
@@ -223,6 +320,8 @@ function resetFormState() {
   showPinForm.value = false
   penunjangOrders.value = []
   showPenunjangModal.value = false
+  showCustomPenunjang.value = false
+  customPenunjang.value = { name: '', category: '' }
   selectedHasil.value = null
   showHasilModal.value = false
 }
@@ -269,6 +368,10 @@ onMounted(async () => {
   store.startPolling()
   // Load jadwal dokter agar "Status Saya Hari Ini" terisi
   jadwalStore.fetchAll()
+  // Load master jenis penunjang untuk modal order
+  loadPenunjangTypes()
+  // Load daftar obat ber-harga (inventori farmasi → penentuan harga)
+  loadObat()
 })
 
 onUnmounted(() => {
@@ -307,28 +410,121 @@ const exam = ref(makeExam())
 function resetExam() { exam.value = makeExam() }
 
 // ── PENUNJANG ────────────────────────────────────────────────────────────────
-const penunjangTypes = [
-  { id: 'OCT',   name: 'OCT Macula / Saraf',        category: 'Imaging' },
-  { id: 'FP',    name: 'Foto Fundus',                category: 'Imaging' },
-  { id: 'VF',    name: 'Visual Field Test',          category: 'Fungsional' },
-  { id: 'USG',   name: 'USG B-Scan',                 category: 'Imaging' },
-  { id: 'TOPOG', name: 'Topografi Kornea',           category: 'Imaging' },
-  { id: 'FFA',   name: 'Fluorescein Angiografi',     category: 'Vaskular' },
-  { id: 'ORA',   name: 'ORA Biomekanikal',           category: 'Biomekanikal' },
-  { id: 'GDX',   name: 'GDx Fiber Analysis',         category: 'Glaukoma' },
-]
-const penunjangOrders = ref([])
+// Daftar jenis penunjang diambil dari master (modul Penunjang → tab "Jenis Penunjang").
+const penunjangTypes = ref([])
+async function loadPenunjangTypes() {
+  try {
+    const { data } = await masterApi.diagnosticTestType.list({ active: 1, per_page: 200 })
+    const rows = data.data?.data ?? data.data ?? []
+    penunjangTypes.value = rows.map((r) => ({ id: r.code, name: r.name, category: r.category ?? '' }))
+  } catch {
+    penunjangTypes.value = []
+  }
+}
+const penunjangOrders = ref([])   // order REQUESTED (pending) dari DB
+const hasilPenunjang  = ref([])   // hasil IN_PROGRESS/COMPLETED dari DB
 const showPenunjangModal = ref(false)
 const selectedHasil = ref(null)
 const showHasilModal = ref(false)
+const pendingOrderKeys = ref([])  // guard agar tidak double-submit per jenis
 
-function orderPenunjang(t) {
-  if (penunjangOrders.value.find((x) => x.id === t.id)) { toast('w', `${t.name} sudah dipesan`); return }
-  penunjangOrders.value.push({ ...t, status: 'ordered' })
-  toast('s', `${t.name} dipesan`)
+function _categoryOf(name) {
+  return penunjangTypes.value.find((t) => t.name === name)?.category ?? ''
 }
-function removePenunjang(id) { penunjangOrders.value = penunjangOrders.value.filter((x) => x.id !== id) }
+function _mapOrder(o) {
+  return { id: o.id, name: o.test_type, category: _categoryOf(o.test_type), status: o.status }
+}
+
+// Muat order + hasil penunjang milik kunjungan yang dipilih.
+async function loadPenunjangData() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { penunjangOrders.value = []; hasilPenunjang.value = []; return }
+  try {
+    const { data } = await dokterApi.indexOrderPenunjang(visitId)
+    penunjangOrders.value = (data.data ?? [])
+      .filter((o) => o.status === 'REQUESTED')
+      .map(_mapOrder)
+  } catch { /* abaikan, biarkan list apa adanya */ }
+  try {
+    const { data } = await dokterApi.indexHasilPenunjang(visitId)
+    hasilPenunjang.value = (data.data ?? []).map((o) => {
+      const r = o.results?.[0] ?? null
+      return {
+        name:   o.test_type,
+        date:   (r?.uploaded_at ?? o.created_at ?? '').slice(0, 10) || '—',
+        result: r?.notes ?? (o.status === 'IN_PROGRESS' ? 'Sedang diproses' : '(lihat detail hasil)'),
+      }
+    })
+  } catch { /* abaikan */ }
+}
+
+async function orderPenunjang(t) {
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
+  if (penunjangOrders.value.find((x) => x.name === t.name)) { toast('w', `${t.name} sudah dipesan`); return }
+  if (pendingOrderKeys.value.includes(t.name)) return
+  pendingOrderKeys.value.push(t.name)
+  try {
+    const { data } = await dokterApi.storeOrderPenunjang({ visit_id: visitId, test_type: t.name })
+    penunjangOrders.value.push(_mapOrder(data.data))
+    toast('s', `${t.name} dipesan`)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memesan penunjang')
+  } finally {
+    pendingOrderKeys.value = pendingOrderKeys.value.filter((k) => k !== t.name)
+  }
+}
+
+async function removePenunjang(id) {
+  try {
+    await dokterApi.cancelOrderPenunjang(id)
+    penunjangOrders.value = penunjangOrders.value.filter((x) => x.id !== id)
+    toast('i', 'Order penunjang dibatalkan')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal membatalkan order')
+  }
+}
+
+// "Lainnya" — pemeriksaan di luar master (teks bebas).
+const showCustomPenunjang = ref(false)
+const customPenunjang = ref({ name: '', category: '' })
+async function addCustomPenunjang() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
+  const name = customPenunjang.value.name.trim()
+  if (!name) { toast('w', 'Nama pemeriksaan wajib diisi'); return }
+  try {
+    const { data } = await dokterApi.storeOrderPenunjang({ visit_id: visitId, test_type: name })
+    penunjangOrders.value.push(_mapOrder(data.data))
+    toast('s', `${name} dipesan`)
+    customPenunjang.value = { name: '', category: '' }
+    showCustomPenunjang.value = false
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memesan penunjang')
+  }
+}
 function viewHasil(h) { selectedHasil.value = h; showHasilModal.value = true }
+
+// Konfirmasi: kirim pasien ke pemeriksaan penunjang → baris DOKTER pause + turun ke bawah.
+async function confirmPenunjang() {
+  if (!penunjangOrders.value.length) { showPenunjangModal.value = false; return }
+  if (!store.selectedQueue) return
+  try {
+    await store.kirimKePenunjang(store.selectedQueue.id)
+    toast('s', 'Pasien dikirim ke pemeriksaan penunjang')
+    showPenunjangModal.value = false
+    store.clearSelected()
+    await store.fetchAntrian()
+  } catch (e) {
+    toast('e', e.message ?? 'Gagal mengirim ke penunjang')
+  }
+}
+
+// Muat order + hasil penunjang setiap kali kunjungan yang dipilih berganti.
+watch(() => selP.value?.visitId, loadPenunjangData, { immediate: true })
+
+// Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
+watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep() }, { immediate: true })
 
 function segClass(val) {
   if (val === 'Normal') return 'seg-ok'
@@ -339,80 +535,218 @@ function segClass(val) {
 
 // ── TAB 3: TINDAKAN (Master Tarif Tindakan) ─────────────────────────────────
 
-const masterTarif = [
-  { kode: 'JM-001', nama: 'Konsultasi Sp. Mata',               kategori: 'Jasa Medis', tarifUmum: 150000,  tarifBpjs: 55000,   satuan: 'kunjungan' },
-  { kode: 'JM-002', nama: 'Konsultasi Sp. Mata Sub-spesialis', kategori: 'Jasa Medis', tarifUmum: 200000,  tarifBpjs: 80000,   satuan: 'kunjungan' },
-  { kode: 'JM-003', nama: 'Konsultasi Follow-up / Kontrol',    kategori: 'Jasa Medis', tarifUmum: 100000,  tarifBpjs: 35000,   satuan: 'kunjungan' },
-  { kode: 'TD-001', nama: 'Tonometri NCT',                     kategori: 'Tindakan',   tarifUmum: 75000,   tarifBpjs: 30000,   satuan: 'tindakan'  },
-  { kode: 'TD-002', nama: 'Funduskopi Direk / Indirek',        kategori: 'Tindakan',   tarifUmum: 150000,  tarifBpjs: 60000,   satuan: 'tindakan'  },
-  { kode: 'TD-003', nama: 'Pterigium Eksisi + MMC',            kategori: 'Tindakan',   tarifUmum: 2500000, tarifBpjs: 1200000, satuan: 'tindakan'  },
-  { kode: 'TD-004', nama: 'Fakoemulsifikasi + IOL Standar',    kategori: 'Tindakan',   tarifUmum: 5800000, tarifBpjs: 3200000, satuan: 'tindakan'  },
-  { kode: 'TD-005', nama: 'Injeksi Intravitreal Anti-VEGF',    kategori: 'Tindakan',   tarifUmum: 3500000, tarifBpjs: 2200000, satuan: 'tindakan'  },
-  { kode: 'TD-006', nama: 'Laser Argon / YAG',                kategori: 'Tindakan',   tarifUmum: 1800000, tarifBpjs: 900000,  satuan: 'tindakan'  },
-]
-
+const tarifTindakanList = ref([])  // {id, code, name, category, price} dari backend
 const tindakanSearch = ref('')
-const tindakanList = ref([]) // { ...tarif, qty: number }
+const tindakanList = ref([])       // {id, code, name, category, price, qty}
 const showTarifList = ref(false)
 
+async function loadTarifTindakan(visitId) {
+  if (!visitId) { tarifTindakanList.value = []; return }
+  try {
+    const { data } = await dokterApi.tarifTindakan(visitId)
+    tarifTindakanList.value = data.data ?? []
+  } catch { tarifTindakanList.value = [] }
+}
+
 const filteredTarif = computed(() => {
-  if (!tindakanSearch.value) return masterTarif
-  const s = tindakanSearch.value.toLowerCase()
-  return masterTarif.filter((t) => t.nama.toLowerCase().includes(s) || t.kode.toLowerCase().includes(s))
+  const s = tindakanSearch.value.trim().toLowerCase()
+  if (!s) return tarifTindakanList.value
+  return tarifTindakanList.value.filter((t) =>
+    t.name.toLowerCase().includes(s) || (t.code ?? '').toLowerCase().includes(s))
 })
 
 const tindakanSubtotal = computed(() =>
-  tindakanList.value.reduce((sum, t) => {
-    const rate = selP.value?.ptype === 'bpjs' ? t.tarifBpjs : t.tarifUmum
-    return sum + rate * t.qty
-  }, 0)
+  tindakanList.value.reduce((sum, t) => sum + (Number(t.price) || 0) * t.qty, 0)
 )
 
 function fmtRp(v) { return 'Rp ' + Number(v).toLocaleString('id-ID') }
 
 function addTindakan(t) {
-  const existing = tindakanList.value.find((x) => x.kode === t.kode)
-  if (existing) { existing.qty++; toast('s', `Qty ${t.nama} +1`); return }
-  tindakanList.value.push({ ...t, qty: 1 })
-  toast('s', `${t.nama} ditambahkan`)
+  const existing = tindakanList.value.find((x) => x.id === t.id)
+  if (existing) { existing.qty++; scheduleSaveTindakan(); toast('s', `Qty ${t.name} +1`); return }
+  tindakanList.value.push({ id: t.id, code: t.code, name: t.name, category: t.category, price: Number(t.price) || 0, qty: 1 })
+  scheduleSaveTindakan()
+  toast('s', `${t.name} ditambahkan`)
 }
-function removeTindakan(kode) {
-  tindakanList.value = tindakanList.value.filter((t) => t.kode !== kode)
+function removeTindakan(id) {
+  tindakanList.value = tindakanList.value.filter((t) => t.id !== id)
+  scheduleSaveTindakan()
 }
+function incTindakan(t) { t.qty++; scheduleSaveTindakan() }
+function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 
 // ── TAB 3: E-RESEP ──────────────────────────────────────────────────────────
 
 const rxList = ref([])
-const drugDB = [
-  { name: 'Ciprofloxacin 0.3% ED', form: 'Tetes', stock: 24 },
-  { name: 'Dexamethasone 0.1% ED', form: 'Tetes', stock: 18 },
-  { name: 'Timolol 0.5% ED', form: 'Tetes', stock: 15 },
-  { name: 'Latanoprost 0.005% ED', form: 'Tetes', stock: 8 },
-  { name: 'Artificial Tears HEC', form: 'Tetes', stock: 32 },
-]
-const newRx = ref({ name: '', jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'Tetes ODS' })
+const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja}
+const obatSearch = ref('')
+
+async function loadObat() {
+  try {
+    const { data } = await dokterApi.daftarObat()
+    obatList.value = data.data ?? []
+  } catch { obatList.value = [] }
+}
+
+const filteredObat = computed(() => {
+  const s = obatSearch.value.trim().toLowerCase()
+  if (!s) return []
+  return obatList.value
+    .filter((d) => d.name.toLowerCase().includes(s) || (d.code ?? '').toLowerCase().includes(s))
+    .slice(0, 50)
+})
+
+function pickObat(d) {
+  newRx.value.medication_id = d.id
+  newRx.value.name = d.name
+  newRx.value.form = d.form
+  newRx.value.hja  = d.hja
+  obatSearch.value = ''
+}
+function makeRx() {
+  return { medication_id: null, name: '', form: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'Tetes ODS' }
+}
+const newRx = ref(makeRx())
+
 function addRx() {
-  if (!newRx.value.name.trim()) { toast('w', 'Nama obat wajib'); return }
+  if (!newRx.value.medication_id) { toast('w', 'Pilih obat dari daftar dulu'); return }
   rxList.value.push({ ...newRx.value })
-  newRx.value = { name: '', jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'Tetes ODS' }
+  newRx.value = makeRx()
+  scheduleSaveResep()
   toast('s', 'Obat ditambahkan ke resep')
 }
-function removeRx(idx) { rxList.value.splice(idx, 1) }
+function removeRx(idx) { rxList.value.splice(idx, 1); scheduleSaveResep() }
+
+// ── Tab 3: muat data tersimpan + autosave (replace) ke DB ───────────────────
+async function loadTindakanResep() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { tindakanList.value = []; rxList.value = []; return }
+  try {
+    const { data } = await dokterApi.indexTindakan(visitId)
+    tindakanList.value = (data.data ?? []).map((vs) => ({
+      id: vs.procedure_id,
+      code: vs.procedure?.code ?? '',
+      name: vs.procedure?.name ?? '—',
+      category: vs.procedure?.category ?? '',
+      price: Number(vs.price) || 0,
+      qty: vs.quantity ?? 1,
+    }))
+  } catch { /* biarkan */ }
+  try {
+    const { data } = await dokterApi.indexResep(visitId)
+    const list = data.data ?? []
+    const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
+    rxList.value = (presc?.items ?? []).map((it) => ({
+      medication_id: it.medication_id,
+      name: it.medication?.name ?? '—',
+      form: it.medication?.form_sediaan ?? '',
+      hja: 0,
+      qty: it.quantity ?? 1,
+      jumlah: it.dose ?? '',
+      signa: it.frequency ?? '',
+      dur: it.duration_days ? `${it.duration_days} hari` : '',
+      posisi: it.route ?? '',
+    }))
+  } catch { /* biarkan */ }
+}
+
+let _saveTindakanTimer = null
+function scheduleSaveTindakan() { clearTimeout(_saveTindakanTimer); _saveTindakanTimer = setTimeout(saveTindakan, 600) }
+async function saveTindakan() {
+  const visitId = selP.value?.visitId
+  if (!visitId) return
+  try {
+    await dokterApi.storeTindakan(visitId, {
+      services: tindakanList.value.map((t) => ({ procedure_id: t.id, quantity: t.qty, price: t.price })),
+    })
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan tindakan') }
+}
+
+function _parseDur(s) { const m = String(s ?? '').match(/\d+/); return m ? parseInt(m[0], 10) : null }
+let _saveResepTimer = null
+function scheduleSaveResep() { clearTimeout(_saveResepTimer); _saveResepTimer = setTimeout(saveResep, 600) }
+async function saveResep() {
+  const visitId = selP.value?.visitId
+  if (!visitId) return
+  try {
+    await dokterApi.storeResep(visitId, {
+      items: rxList.value.map((r) => ({
+        medication_id: r.medication_id,
+        quantity: Number(r.qty) || 1,
+        dose: r.jumlah || null,
+        frequency: r.signa || null,
+        route: r.posisi || null,
+        duration_days: _parseDur(r.dur),
+      })),
+    })
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan resep') }
+}
 
 // ── TAB 4: SOAP ─────────────────────────────────────────────────────────────
 
 const soap = ref({ S: '', O: '', A: '', P: '' })
 function resetSoap() { soap.value = { S: '', O: '', A: '', P: '' } }
-function autoO() {
-  if (!selP.value) return
+
+// Hanya tampilkan item yang punya nilai (bukan null / '—' / string kosong).
+function hasVal(v) { return v != null && v !== '—' && v !== '' }
+
+// Objektif (O) disusun otomatis dari triase/RO + segmen abnormal + catatan slitlamp.
+// Item tanpa nilai tidak dimunculkan (mis. SpO₂/T yang kosong tidak ditampilkan).
+const objectiveText = computed(() => {
+  if (!selP.value) return ''
   const { nd, rd } = selP.value
-  soap.value.O =
-    `TD: ${nd.td_s}/${nd.td_d}, N: ${nd.nadi}, SpO₂: ${nd.spo2}%, T: ${nd.suhu}°C\n` +
-    `Visus: UCVA OD ${rd.ucva_od} OS ${rd.ucva_os} | BCVA OD ${rd.bcva_od} OS ${rd.bcva_os}\n` +
-    `IOP: OD ${rd.iop_od} OS ${rd.iop_os} mmHg\n` +
-    `Rx: OD ${rd.rx_od} | OS ${rd.rx_os}`
-  toast('s', 'Data objektif dimuat dari triase & RO')
-}
+  const lines = []
+
+  // Tanda vital — hanya yang terisi.
+  const vitals = []
+  if (hasVal(nd.td_s) && hasVal(nd.td_d)) vitals.push(`TD: ${toInt(nd.td_s)}/${toInt(nd.td_d)} mmHg`)
+  if (hasVal(nd.nadi)) vitals.push(`N: ${nd.nadi} bpm`)
+  if (hasVal(nd.spo2)) vitals.push(`SpO₂: ${nd.spo2}%`)
+  if (hasVal(nd.suhu)) vitals.push(`T: ${nd.suhu}°C`)
+  if (vitals.length) lines.push(vitals.join(', '))
+
+  // Visus — UCVA/BCVA, hanya baris yang punya nilai pada salah satu mata.
+  const visus = []
+  if (hasVal(rd.ucva_od) || hasVal(rd.ucva_os)) visus.push(`UCVA OD ${rd.ucva_od} / OS ${rd.ucva_os}`)
+  if (hasVal(rd.bcva_od) || hasVal(rd.bcva_os)) visus.push(`BCVA OD ${rd.bcva_od} / OS ${rd.bcva_os}`)
+  if (visus.length) lines.push(`Visus: ${visus.join(' | ')}`)
+
+  // IOP & Rx — tampil hanya bila ada nilai.
+  if (hasVal(rd.iop_od) || hasVal(rd.iop_os)) lines.push(`IOP: OD ${toInt(rd.iop_od)} / OS ${toInt(rd.iop_os)} mmHg`)
+  if (hasVal(rd.rx_od) || hasVal(rd.rx_os)) lines.push(`Rx: OD ${rd.rx_od} | OS ${rd.rx_os}`)
+
+  const segAbn = []
+  const collect = (fields, group) => {
+    for (const f of fields) {
+      const od = group[f.key].od, os = group[f.key].os
+      if ((od && od !== 'Normal') || (os && os !== 'Normal')) {
+        segAbn.push(`${f.label} OD ${od || '-'}/OS ${os || '-'}`)
+      }
+    }
+  }
+  collect(saFields, exam.value.sa)
+  collect(spFields, exam.value.sp)
+  if (segAbn.length) lines.push(`Segmen abnormal: ${segAbn.join('; ')}`)
+  const sl = exam.value.slitlamp_notes?.trim()
+  if (sl) lines.push(`Slitlamp: ${sl}`)
+  return lines.join('\n')
+})
+
+// Sinkron live: O mengikuti perubahan pemeriksaan (termasuk slitlamp) secara otomatis.
+watch(objectiveText, (v) => { soap.value.O = v })
+function autoO() { soap.value.O = objectiveText.value }
+
+// Subjektif (S) terisi otomatis dari Anamnese (Tab Pemeriksaan); tetap bisa diedit/dihapus.
+watch(() => exam.value.anamnese, (v) => { soap.value.S = v })
+
+// Planning (P) disusun otomatis dari e-resep: satu baris per obat → "Nama, Signa, Posisi".
+const planningText = computed(() =>
+  rxList.value
+    .filter((r) => r.name)
+    .map((r) => [r.name, r.signa, r.posisi].filter(Boolean).join(', '))
+    .join('\n')
+)
+watch(planningText, (v) => { soap.value.P = v })
 
 // ── TAB 4: DIAGNOSIS ICD-10 ─────────────────────────────────────────────────
 
@@ -693,8 +1027,8 @@ async function doFinalize() {
           >
             <div class="qi-left">
               <div class="q-num">{{ p.qNum }}</div>
-              <span :class="['pill', p.status === 'waiting' ? 'pill-waiting' : p.status === 'progress' ? 'pill-in_progress' : 'pill-completed']">
-                {{ p.status === 'waiting' ? 'Menunggu' : p.status === 'progress' ? 'Proses' : 'Selesai' }}
+              <span :class="['pill', statusPillClass(p.status)]">
+                {{ statusLabel(p.status) }}
               </span>
               <span class="qi-time">{{ p.time }}</span>
             </div>
@@ -715,10 +1049,17 @@ async function doFinalize() {
                 </span>
                 <span v-if="p.allergies?.length" class="pill pill-allergy">⚠ Alergi</span>
               </div>
-              <div v-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
-                <button class="q-act-btn call" @click.stop="callPt(p)">
+              <!-- Pasien sedang di penunjang — tidak ada aksi panggil -->
+              <div v-if="p.status === 'penunjang'" class="q-actions" @click.stop>
+                <span class="q-at-penunjang">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+                  Sedang di Penunjang
+                </span>
+              </div>
+              <div v-else-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
+                <button :class="['q-act-btn', p.status === 'penunjang_done' ? 'resume' : 'call']" @click.stop="callPt(p)">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
-                  Panggil
+                  {{ p.status === 'penunjang_done' ? 'Lanjutkan' : 'Panggil' }}
                 </button>
                 <button class="q-act-btn skip" @click.stop="skipPt(p)">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
@@ -745,7 +1086,7 @@ async function doFinalize() {
       <template v-if="selP">
         <!-- PATIENT BAR -->
         <div class="ptb">
-          <div class="ptav">{{ selP.name.charAt(0) }}</div>
+          <PatientAvatar :name="selP.name" :src="selP.photo" :size="42" radius="50%" />
           <div class="pti">
             <div class="ptn">{{ selP.name }}</div>
             <div class="ptm">RM: {{ selP.rm }} · NIK: {{ selP.nik }} · {{ selP.age }} th · {{ selP.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</div>
@@ -762,21 +1103,29 @@ async function doFinalize() {
           <div class="vit">
             <div class="vdv"></div>
             <div class="vi">
-              <div :class="['viv', Number(selP.nd.td_s) >= 140 ? 'w' : '']">{{ selP.nd.td_s }}/{{ selP.nd.td_d }}</div>
+              <div :class="['viv', Number(selP.nd.td_s) >= 140 ? 'w' : '']">{{ toInt(selP.nd.td_s) }}/{{ toInt(selP.nd.td_d) }}</div>
               <div class="vil">TD</div>
             </div>
-            <div class="vi"><div class="viv">{{ selP.nd.nadi }}</div><div class="vil">Nadi</div></div>
             <div class="vi">
-              <div :class="['viv', selP.nd.kgd > 200 ? 'w' : selP.nd.kgd < 70 ? 'lo' : '']">{{ selP.nd.kgd }}</div>
+              <div :class="['viv', selP.nd.kgd > 200 ? 'w' : selP.nd.kgd < 70 ? 'lo' : '']">{{ toInt(selP.nd.kgd) }}</div>
               <div class="vil">KGD</div>
             </div>
             <div class="vdv"></div>
             <div class="vi">
-              <div :class="['viv', selP.rd.iop_od >= 22 || selP.rd.iop_os >= 22 ? 'w' : '']">{{ selP.rd.iop_od }}/{{ selP.rd.iop_os }}</div>
+              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
+              <div :class="['viv', selP.rd.iop_od >= 22 || selP.rd.iop_os >= 22 ? 'w' : '']">{{ toInt(selP.rd.iop_od) }}/{{ toInt(selP.rd.iop_os) }}</div>
               <div class="vil">IOP</div>
             </div>
-            <div class="vi"><div class="viv small">{{ selP.rd.ucva_od }}/{{ selP.rd.ucva_os }}</div><div class="vil">UCVA</div></div>
-            <div class="vi"><div class="viv small">{{ selP.rd.bcva_od }}/{{ selP.rd.bcva_os }}</div><div class="vil">BCVA</div></div>
+            <div class="vi">
+              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
+              <div class="viv small viv-pair"><span>{{ selP.rd.ucva_od }}</span><span>{{ selP.rd.ucva_os }}</span></div>
+              <div class="vil">UCVA</div>
+            </div>
+            <div class="vi">
+              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
+              <div class="viv small viv-pair"><span>{{ selP.rd.bcva_od }}</span><span>{{ selP.rd.bcva_os }}</span></div>
+              <div class="vil">BCVA</div>
+            </div>
             <div class="vdv"></div>
           </div>
           <div class="dbtns">
@@ -795,12 +1144,12 @@ async function doFinalize() {
                 Triase Perawat
               </div>
               <div class="dw-grid">
-                <div class="dwr2"><span class="dwl">TD</span><span :class="['dwv', selP.nd.td_s >= 140 ? 'w' : 'ok']">{{ selP.nd.td_s }}/{{ selP.nd.td_d }} mmHg</span></div>
-                <div class="dwr2"><span class="dwl">Nadi</span><span class="dwv">{{ selP.nd.nadi }} bpm</span></div>
-                <div class="dwr2"><span class="dwl">SpO₂</span><span :class="['dwv', selP.nd.spo2 < 95 ? 'hi' : 'ok']">{{ selP.nd.spo2 }}%</span></div>
-                <div class="dwr2"><span class="dwl">Suhu</span><span class="dwv">{{ selP.nd.suhu }}°C</span></div>
-                <div class="dwr2"><span class="dwl">Nyeri</span><span class="dwv">{{ selP.nd.pain }}/10</span></div>
-                <div class="dwr2"><span class="dwl">KGD</span><span :class="['dwv', selP.nd.kgd > 200 ? 'hi' : selP.nd.kgd > 140 ? 'w' : 'ok']">{{ selP.nd.kgd }} mg/dL</span></div>
+                <div class="dwr2"><span class="dwl">TD</span><span :class="['dwv', selP.nd.td_s >= 140 ? 'w' : 'ok']">{{ toInt(selP.nd.td_s) }}/{{ toInt(selP.nd.td_d) }} mmHg</span></div>
+                <div class="dwr2"><span class="dwl">Nadi</span><span class="dwv">{{ toInt(selP.nd.nadi) }} bpm</span></div>
+                <div class="dwr2"><span class="dwl">SpO₂</span><span :class="['dwv', selP.nd.spo2 < 95 ? 'hi' : 'ok']">{{ toInt(selP.nd.spo2) }}%</span></div>
+                <div class="dwr2"><span class="dwl">Suhu</span><span class="dwv">{{ toInt(selP.nd.suhu) }}°C</span></div>
+                <div class="dwr2"><span class="dwl">Nyeri</span><span class="dwv">{{ toInt(selP.nd.pain) }}/10</span></div>
+                <div class="dwr2"><span class="dwl">KGD</span><span :class="['dwv', selP.nd.kgd > 200 ? 'hi' : selP.nd.kgd > 140 ? 'w' : 'ok']">{{ toInt(selP.nd.kgd) }} mg/dL</span></div>
               </div>
               <div class="dw-keluhan"><b>Keluhan:</b> {{ selP.nd.keluhan }}</div>
             </div>
@@ -814,8 +1163,8 @@ async function doFinalize() {
                 <div class="roi"><div class="roi-l">UCVA OS</div><div class="roi-v">{{ selP.rd.ucva_os }}</div></div>
                 <div class="roi"><div class="roi-l">BCVA OD</div><div class="roi-v">{{ selP.rd.bcva_od }}</div></div>
                 <div class="roi"><div class="roi-l">BCVA OS</div><div class="roi-v">{{ selP.rd.bcva_os }}</div></div>
-                <div class="roi"><div class="roi-l">IOP OD</div><div class="roi-v" :class="{ warn: selP.rd.iop_od >= 22 }">{{ selP.rd.iop_od }} mmHg</div></div>
-                <div class="roi"><div class="roi-l">IOP OS</div><div class="roi-v" :class="{ warn: selP.rd.iop_os >= 22 }">{{ selP.rd.iop_os }} mmHg</div></div>
+                <div class="roi"><div class="roi-l">IOP OD</div><div class="roi-v" :class="{ warn: selP.rd.iop_od >= 22 }">{{ toInt(selP.rd.iop_od) }} mmHg</div></div>
+                <div class="roi"><div class="roi-l">IOP OS</div><div class="roi-v" :class="{ warn: selP.rd.iop_os >= 22 }">{{ toInt(selP.rd.iop_os) }} mmHg</div></div>
               </div>
               <div class="rx-line"><b>Rx OD:</b> {{ selP.rd.rx_od }}</div>
               <div class="rx-line"><b>Rx OS:</b> {{ selP.rd.rx_os }}</div>
@@ -877,38 +1226,29 @@ async function doFinalize() {
                 <span class="ro-badge">Read-only</span>
               </div>
               <div class="cb">
-                <div class="g4">
-                  <div class="fg">
-                    <label class="fl">TD (mmHg)</label>
-                    <div :class="['ro-field', selP.nd.td_s >= 140 ? 'warn' : '']">{{ selP.nd.td_s }}/{{ selP.nd.td_d }}</div>
-                  </div>
-                  <div class="fg">
-                    <label class="fl">Nadi (bpm)</label>
-                    <div class="ro-field">{{ selP.nd.nadi }}</div>
-                  </div>
-                  <div class="fg">
-                    <label class="fl">SpO₂ (%)</label>
-                    <div :class="['ro-field', selP.nd.spo2 < 95 ? 'warn' : '']">{{ selP.nd.spo2 }}</div>
-                  </div>
-                  <div class="fg">
-                    <label class="fl">Suhu (°C)</label>
-                    <div class="ro-field">{{ selP.nd.suhu }}</div>
-                  </div>
-                </div>
-                <div class="g3" style="margin-top:0.5rem">
-                  <div class="fg">
-                    <label class="fl">KGD (mg/dL)</label>
-                    <div :class="['ro-field', selP.nd.kgd > 200 ? 'warn' : '']">{{ selP.nd.kgd }}</div>
-                  </div>
-                  <div class="fg">
-                    <label class="fl">Skala Nyeri</label>
-                    <div class="ro-field">{{ selP.nd.pain }}/10</div>
-                  </div>
-                  <div class="fg">
-                    <label class="fl">Keluhan Utama</label>
-                    <div class="ro-field left">{{ selP.nd.keluhan }}</div>
-                  </div>
-                </div>
+                <table class="tr-table">
+                  <thead>
+                    <tr>
+                      <th>TD <small>mmHg</small></th>
+                      <th>Nadi <small>bpm</small></th>
+                      <th>SpO₂ <small>%</small></th>
+                      <th>Suhu <small>°C</small></th>
+                      <th>KGD <small>mg/dL</small></th>
+                      <th>Nyeri</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td :class="{ warn: selP.nd.td_s >= 140 }">{{ selP.nd.td_s }}/{{ selP.nd.td_d }}</td>
+                      <td>{{ selP.nd.nadi }}</td>
+                      <td :class="{ warn: selP.nd.spo2 < 95 }">{{ selP.nd.spo2 }}</td>
+                      <td>{{ selP.nd.suhu }}</td>
+                      <td :class="{ warn: selP.nd.kgd > 200 }">{{ toInt(selP.nd.kgd) }}</td>
+                      <td>{{ selP.nd.pain }}<small>/10</small></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="tr-keluhan"><b>Keluhan Utama:</b> {{ selP.nd.keluhan }}</div>
               </div>
             </div>
 
@@ -921,23 +1261,26 @@ async function doFinalize() {
                 <span class="ro-badge">Read-only</span>
               </div>
               <div class="cb">
-                <div class="odos">
-                  <div class="eyec od">
-                    <div class="eyeh"><span class="elbl el-od">OD</span><span class="esub">Mata Kanan</span></div>
-                    <div class="ef"><label>UCVA</label><div class="ro-field strong">{{ selP.rd.ucva_od }}</div></div>
-                    <div class="ef"><label>BCVA</label><div class="ro-field strong success">{{ selP.rd.bcva_od }}</div></div>
-                    <div class="ef"><label>IOP</label><div class="ro-field strong" :class="{ warn: selP.rd.iop_od >= 22 }">{{ selP.rd.iop_od }} mmHg</div></div>
-                    <div class="divider"></div>
-                    <div class="rx-line"><b>Rx RO:</b> {{ selP.rd.rx_od }}</div>
-                  </div>
-                  <div class="eyec os">
-                    <div class="eyeh"><span class="elbl el-os">OS</span><span class="esub">Mata Kiri</span></div>
-                    <div class="ef"><label>UCVA</label><div class="ro-field strong">{{ selP.rd.ucva_os }}</div></div>
-                    <div class="ef"><label>BCVA</label><div class="ro-field strong success">{{ selP.rd.bcva_os }}</div></div>
-                    <div class="ef"><label>IOP</label><div class="ro-field strong" :class="{ warn: selP.rd.iop_os >= 22 }">{{ selP.rd.iop_os }} mmHg</div></div>
-                    <div class="divider"></div>
-                    <div class="rx-line"><b>Rx RO:</b> {{ selP.rd.rx_os }}</div>
-                  </div>
+                <table class="ro-table">
+                  <thead>
+                    <tr>
+                      <th class="rt-param">Parameter</th>
+                      <th><span class="rt-eye el-od">OD</span> <span class="rt-side">Kanan</span></th>
+                      <th><span class="rt-eye el-os">OS</span> <span class="rt-side">Kiri</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in roRows" :key="row.label">
+                      <td class="rt-param">{{ row.label }}<small v-if="row.note"> · {{ row.note }}</small></td>
+                      <td :class="[row.cls, row.odWarn && 'warn']">{{ row.od }}<small v-if="row.unit"> {{ row.unit }}</small></td>
+                      <td :class="[row.cls, row.osWarn && 'warn']">{{ row.os }}<small v-if="row.unit"> {{ row.unit }}</small></td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div v-if="selP.rd.pd || selP.rd.perception" class="ro-foot">
+                  <span v-if="selP.rd.pd">PD <b>{{ toInt(selP.rd.pd) }} mm</b></span>
+                  <span v-if="selP.rd.perception">Persepsi <b>{{ selP.rd.perception }}</b></span>
                 </div>
                 <div v-if="selP.rd.note" class="ro-note"><b>Catatan RO:</b> {{ selP.rd.note }}</div>
               </div>
@@ -972,6 +1315,8 @@ async function doFinalize() {
                 </div>
               </div>
 
+              <!-- Segmen Anterior & Posterior — 2 kolom agar ringkas -->
+              <div class="seg-2col">
               <!-- Segmen Anterior -->
               <div class="card">
                 <div class="ch">
@@ -1033,6 +1378,7 @@ async function doFinalize() {
                   </div>
                 </div>
               </div>
+              </div><!-- /seg-2col -->
 
               <!-- Catatan Slitlamp -->
               <div class="card">
@@ -1051,37 +1397,6 @@ async function doFinalize() {
                 </div>
               </div>
 
-              <!-- Pemeriksaan Penunjang -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
-                    Pemeriksaan Penunjang
-                    <span v-if="penunjangOrders.length" class="rmt-count">{{ penunjangOrders.length }}</span>
-                  </div>
-                  <button class="btn btn-sm btn-primary" @click="showPenunjangModal = true">
-                    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    Order Penunjang
-                  </button>
-                </div>
-
-                <!-- Order list -->
-                <div v-if="penunjangOrders.length" class="penunjang-list">
-                  <div v-for="o in penunjangOrders" :key="o.id" class="penunjang-item">
-                    <svg viewBox="0 0 24 24" class="penunjang-item-icon"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
-                    <div class="penunjang-item-info">
-                      <div class="penunjang-item-name">{{ o.name }}</div>
-                      <div class="penunjang-item-cat">{{ o.category }}</div>
-                    </div>
-                    <span class="penunjang-item-status ordered">Dipesan</span>
-                    <button class="penunjang-item-del" @click="removePenunjang(o.id)" title="Batalkan">×</button>
-                  </div>
-                </div>
-                <div v-else class="penunjang-empty">
-                  Belum ada pemeriksaan penunjang dipesan
-                </div>
-              </div>
-
               <button class="btn btn-primary" @click="tab = 'tindakan'">
                 Lanjut ke Tindakan &amp; Resep
                 <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
@@ -1096,26 +1411,44 @@ async function doFinalize() {
                 <div class="ch">
                   <div class="cht">
                     <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    Riwayat SOAP
+                    SOAP / CPPT
                   </div>
-                  <span class="card-counter">{{ selP.soapHistory?.length ?? 0 }} kunjungan</span>
+                  <span class="card-counter">{{ soapPages.length }} kunjungan</span>
                 </div>
-                <div v-if="!selP.soapHistory?.length" class="penunjang-empty">
-                  Belum ada riwayat SOAP
+
+                <div v-if="!soapPages.length" class="penunjang-empty">
+                  Belum ada catatan SOAP/CPPT
                 </div>
-                <div v-else class="soap-history-list">
-                  <div
-                    v-for="h in [...(selP.soapHistory ?? [])].reverse()"
-                    :key="h.date"
-                    class="soap-history-item"
-                  >
-                    <div class="soap-history-date">{{ h.date }}</div>
-                    <div class="soap-history-row"><span class="soap-mini-key s">S</span><span class="soap-history-val">{{ h.S }}</span></div>
-                    <div class="soap-history-row"><span class="soap-mini-key o">O</span><span class="soap-history-val">{{ h.O }}</span></div>
-                    <div class="soap-history-row"><span class="soap-mini-key a">A</span><span class="soap-history-val soap-a">{{ h.A }}</span></div>
-                    <div class="soap-history-row"><span class="soap-mini-key p">P</span><span class="soap-history-val">{{ h.P }}</span></div>
+
+                <template v-else-if="currentSoapPage">
+                  <!-- Navigasi per tanggal kunjungan (descending) -->
+                  <div class="soap-pager">
+                    <button
+                      class="soap-pager-btn" title="Kunjungan lebih lama"
+                      :disabled="soapPageIdx >= soapPages.length - 1"
+                      @click="soapPageIdx++"
+                    >‹</button>
+                    <div class="soap-pager-info">
+                      <div class="soap-pager-date">{{ currentSoapPage.date }}</div>
+                      <div class="soap-pager-count">Kunjungan {{ soapPageIdx + 1 }} / {{ soapPages.length }}</div>
+                    </div>
+                    <button
+                      class="soap-pager-btn" title="Kunjungan lebih baru"
+                      :disabled="soapPageIdx <= 0"
+                      @click="soapPageIdx--"
+                    >›</button>
                   </div>
-                </div>
+
+                  <div class="soap-history-list">
+                    <div v-for="(h, i) in currentSoapPage.entries" :key="i" class="soap-history-item">
+                      <div v-if="h.role" class="soap-entry-role" :class="h.role === 'Dokter' ? 'r-dok' : 'r-prw'">{{ h.role }}</div>
+                      <div v-if="h.S" class="soap-history-row"><span class="soap-mini-key s">S</span><span class="soap-history-val">{{ h.S }}</span></div>
+                      <div v-if="h.O" class="soap-history-row"><span class="soap-mini-key o">O</span><span class="soap-history-val">{{ h.O }}</span></div>
+                      <div v-if="h.A" class="soap-history-row"><span class="soap-mini-key a">A</span><span class="soap-history-val soap-a">{{ h.A }}</span></div>
+                      <div v-if="h.P" class="soap-history-row"><span class="soap-mini-key p">P</span><span class="soap-history-val">{{ h.P }}</span></div>
+                    </div>
+                  </div>
+                </template>
                 <div class="soap-mini-footer">
                   <button class="btn btn-sm btn-secondary" style="width:100%;justify-content:center" @click="tab = 'soap'">
                     Tulis SOAP Kunjungan Ini →
@@ -1123,19 +1456,40 @@ async function doFinalize() {
                 </div>
               </div>
 
-              <!-- Hasil Penunjang card -->
+              <!-- Pemeriksaan Penunjang card (order + dipesan + hasil) -->
               <div class="card">
                 <div class="ch">
                   <div class="cht">
-                    <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    Hasil Penunjang
+                    <svg viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
+                    Pemeriksaan Penunjang
                   </div>
-                  <span class="card-counter">{{ selP.penunjang?.length ?? 0 }} hasil</span>
+                  <button class="btn btn-sm btn-primary" @click="showPenunjangModal = true">
+                    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Order
+                  </button>
                 </div>
 
-                <template v-if="selP.penunjang?.length">
+                <!-- Dipesan (pending) -->
+                <template v-if="penunjangOrders.length">
+                  <div class="hasil-pending-title">Dipesan</div>
                   <div class="hasil-list">
-                    <div v-for="h in selP.penunjang" :key="h.name" class="hasil-item">
+                    <div v-for="o in penunjangOrders" :key="o.id" class="hasil-item pending">
+                      <div class="hasil-meta">
+                        <span class="hasil-name">{{ o.name }}</span>
+                        <div class="hasil-meta-right">
+                          <span class="hasil-pending-badge">Menunggu hasil</span>
+                          <button class="penunjang-item-del" @click="removePenunjang(o.id)" title="Batalkan order">×</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Hasil -->
+                <template v-if="hasilPenunjang.length">
+                  <div class="hasil-pending-title">Hasil</div>
+                  <div class="hasil-list">
+                    <div v-for="h in hasilPenunjang" :key="h.name" class="hasil-item">
                       <div class="hasil-meta">
                         <span class="hasil-name">{{ h.name }}</span>
                         <div class="hasil-meta-right">
@@ -1151,20 +1505,8 @@ async function doFinalize() {
                   </div>
                 </template>
 
-                <template v-if="penunjangOrders.length">
-                  <div class="hasil-pending-title">Dipesan hari ini</div>
-                  <div class="hasil-list">
-                    <div v-for="o in penunjangOrders" :key="o.id" class="hasil-item pending">
-                      <div class="hasil-meta">
-                        <span class="hasil-name">{{ o.name }}</span>
-                        <span class="hasil-pending-badge">Menunggu hasil</span>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-
-                <div v-if="!selP.penunjang?.length && !penunjangOrders.length" class="penunjang-empty">
-                  Belum ada hasil penunjang
+                <div v-if="!hasilPenunjang.length && !penunjangOrders.length" class="penunjang-empty">
+                  Belum ada pemeriksaan penunjang. Klik <b>Order</b> untuk memesan.
                 </div>
               </div>
 
@@ -1182,8 +1524,9 @@ async function doFinalize() {
                   Tindakan Medis
                 </div>
                 <div style="display:flex;align-items:center;gap:0.5rem">
-                  <span v-if="selP?.ptype === 'bpjs'" class="tarif-type-badge bpjs">Tarif BPJS</span>
-                  <span v-else class="tarif-type-badge umum">Tarif Umum</span>
+                  <span :class="['tarif-type-badge', selP?.ptype === 'bpjs' ? 'bpjs' : 'umum']">
+                    Tarif {{ selP?.ptype === 'bpjs' ? 'BPJS' : selP?.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
+                  </span>
                   <span class="card-counter">{{ tindakanList.length }} item</span>
                 </div>
               </div>
@@ -1203,21 +1546,20 @@ async function doFinalize() {
                   <input v-model="tindakanSearch" class="form-input" style="margin-bottom:0.5rem" placeholder="Cari tindakan..." />
                   <div class="tarif-list">
                     <div
-                      v-for="t in filteredTarif" :key="t.kode"
-                      :class="['tarif-list-item', tindakanList.find(x=>x.kode===t.kode) ? 'in-list' : '']"
+                      v-for="t in filteredTarif" :key="t.id"
+                      :class="['tarif-list-item', tindakanList.find(x=>x.id===t.id) ? 'in-list' : '']"
                       @click="addTindakan(t)"
                     >
-                      <span class="tarif-kode">{{ t.kode }}</span>
-                      <span :class="['tarif-kat', t.kategori === 'Jasa Medis' ? 'jm' : 'td']">{{ t.kategori }}</span>
-                      <span class="tarif-list-name">{{ t.nama }}</span>
-                      <span class="tarif-list-price">
-                        {{ selP?.ptype === 'bpjs' ? fmtRp(t.tarifBpjs) : fmtRp(t.tarifUmum) }}
-                        <em>/ {{ t.satuan }}</em>
-                      </span>
-                      <svg v-if="tindakanList.find(x=>x.kode===t.kode)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                      <span class="tarif-kode">{{ t.code }}</span>
+                      <span v-if="t.category" :class="['tarif-kat', t.category === 'Jasa Medis' ? 'jm' : 'td']">{{ t.category }}</span>
+                      <span class="tarif-list-name">{{ t.name }}</span>
+                      <span class="tarif-list-price">{{ fmtRp(t.price) }}</span>
+                      <svg v-if="tindakanList.find(x=>x.id===t.id)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                       <svg v-else class="tarif-list-icon add" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     </div>
-                    <div v-if="!filteredTarif.length" class="tarif-empty">Tidak ditemukan</div>
+                    <div v-if="!filteredTarif.length" class="tarif-empty">
+                      {{ tarifTindakanList.length ? 'Tidak ditemukan' : 'Belum ada master tarif tindakan' }}
+                    </div>
                   </div>
                 </div>
 
@@ -1230,23 +1572,23 @@ async function doFinalize() {
                     <div>Subtotal</div>
                     <div></div>
                   </div>
-                  <div v-for="t in tindakanList" :key="t.kode" class="tindakan-row">
+                  <div v-for="t in tindakanList" :key="t.id" class="tindakan-row">
                     <div class="tindakan-info">
-                      <span class="tarif-kode">{{ t.kode }}</span>
-                      <span class="tindakan-nama">{{ t.nama }}</span>
+                      <span class="tarif-kode">{{ t.code }}</span>
+                      <span class="tindakan-nama">{{ t.name }}</span>
                     </div>
                     <div class="tindakan-rate">
-                      {{ selP?.ptype === 'bpjs' ? fmtRp(t.tarifBpjs) : fmtRp(t.tarifUmum) }}
+                      {{ fmtRp(t.price) }}
                     </div>
                     <div class="tindakan-qty">
-                      <button class="qty-btn" @click="t.qty > 1 && t.qty--">−</button>
+                      <button class="qty-btn" @click="decTindakan(t)">−</button>
                       <span class="qty-val">{{ t.qty }}</span>
-                      <button class="qty-btn" @click="t.qty++">+</button>
+                      <button class="qty-btn" @click="incTindakan(t)">+</button>
                     </div>
                     <div class="tindakan-subtotal">
-                      {{ fmtRp((selP?.ptype === 'bpjs' ? t.tarifBpjs : t.tarifUmum) * t.qty) }}
+                      {{ fmtRp(t.price * t.qty) }}
                     </div>
-                    <button class="dx-remove" @click="removeTindakan(t.kode)">
+                    <button class="dx-remove" @click="removeTindakan(t.id)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   </div>
@@ -1269,25 +1611,30 @@ async function doFinalize() {
                 <span class="card-counter">{{ rxList.length }} obat</span>
               </div>
               <div class="cb">
-                <!-- Header kolom -->
-                <div class="rx-form-header">
-                  <span class="rx-h-name">Nama Obat</span>
-                  <span class="rx-h-qty">Jumlah</span>
-                  <span class="rx-h-sig">Signa</span>
-                  <span class="rx-h-dur">Durasi</span>
-                  <span class="rx-h-pos">Posisi</span>
-                  <span style="width:80px"></span>
+                <!-- Cari & pilih obat dari inventori (harga = HJA penentuan harga) -->
+                <div class="rx-picker">
+                  <input v-model="obatSearch" class="form-input" placeholder="Cari obat dari inventori (nama / kode)…" />
+                  <div v-if="obatSearch && filteredObat.length" class="rx-drop">
+                    <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @click="pickObat(d)">
+                      <span class="rx-drop-name">{{ d.name }}</span>
+                      <span class="rx-drop-meta">{{ d.form }} · stok {{ d.stock }}</span>
+                      <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
+                    </div>
+                  </div>
+                  <div v-else-if="obatSearch" class="tarif-empty">Obat tidak ditemukan di inventori</div>
                 </div>
-                <!-- Input row -->
-                <div class="rx-add-row">
-                  <input v-model="newRx.name" class="form-input rx-f-name" placeholder="Nama obat…" list="drug-list" />
-                  <datalist id="drug-list">
-                    <option v-for="d in drugDB" :key="d.name" :value="d.name">{{ d.form }} · stok {{ d.stock }}</option>
-                  </datalist>
-                  <input v-model="newRx.jumlah" class="form-input rx-f-qty" placeholder="1 tetes" />
-                  <input v-model="newRx.signa"  class="form-input rx-f-sig" placeholder="2×/hari" />
-                  <input v-model="newRx.dur"    class="form-input rx-f-dur" placeholder="7 hari" />
-                  <input v-model="newRx.posisi" class="form-input rx-f-pos" placeholder="Tetes ODS" />
+
+                <!-- Detail obat terpilih + aturan pakai -->
+                <div v-if="newRx.medication_id" class="rx-add-row">
+                  <div class="rx-f-name rx-picked">
+                    <span class="rx-picked-name">{{ newRx.name }}</span>
+                    <span class="rx-picked-meta">{{ newRx.form }} · {{ fmtRp(newRx.hja) }}</span>
+                  </div>
+                  <input v-model.number="newRx.qty" type="number" min="1" class="form-input rx-f-num" title="Jumlah unit diberikan" placeholder="Qty" />
+                  <input v-model="newRx.jumlah" class="form-input rx-f-qty" placeholder="Dosis" />
+                  <input v-model="newRx.signa"  class="form-input rx-f-sig" placeholder="Signa" />
+                  <input v-model="newRx.dur"    class="form-input rx-f-dur" placeholder="Durasi" />
+                  <input v-model="newRx.posisi" class="form-input rx-f-pos" placeholder="Posisi" />
                   <button class="btn btn-success rx-f-btn" @click="addRx">
                     <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     Tambah
@@ -1301,7 +1648,7 @@ async function doFinalize() {
                     </div>
                     <div class="rx-body">
                       <div class="rx-name">{{ r.name }}</div>
-                      <div class="rx-meta">{{ r.jumlah }} · {{ r.signa }} · {{ r.dur }} · {{ r.posisi }}</div>
+                      <div class="rx-meta">{{ r.qty }} unit · {{ r.jumlah }} · {{ r.signa }} · {{ r.dur }} · {{ r.posisi }}</div>
                     </div>
                     <button class="dx-remove" @click="removeRx(i)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1338,26 +1685,26 @@ async function doFinalize() {
                   <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                   SOAP
                 </div>
-                <button class="btn btn-sm btn-secondary" @click="autoO">
-                  <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                  Auto-isi O dari triase
+                <button class="btn btn-sm btn-secondary" @click="autoO" title="Susun ulang O dari data pemeriksaan terbaru">
+                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+                  Muat ulang O
                 </button>
               </div>
               <div class="cb stack">
                 <div class="soap-row">
                   <div class="soap-letter s">S</div>
                   <div class="fg" style="flex:1">
-                    <label class="fl">Subjektif — keluhan pasien</label>
+                    <label class="fl">Subjektif — keluhan pasien <span class="auto-tag">otomatis dari anamnese</span></label>
                     <textarea v-model="soap.S" class="form-textarea" rows="3"
-                      placeholder="Keluhan pasien, lama keluhan, onset..."></textarea>
+                      placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
                   </div>
                 </div>
                 <div class="soap-row">
                   <div class="soap-letter o">O</div>
                   <div class="fg" style="flex:1">
-                    <label class="fl">Objektif — hasil pemeriksaan</label>
+                    <label class="fl">Objektif <span class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span></label>
                     <textarea v-model="soap.O" class="form-textarea" rows="5"
-                      placeholder="Visus, IOP, Rx, segmen anterior/posterior..."></textarea>
+                      placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
                   </div>
                 </div>
                 <div class="soap-row">
@@ -1371,9 +1718,9 @@ async function doFinalize() {
                 <div class="soap-row">
                   <div class="soap-letter p">P</div>
                   <div class="fg" style="flex:1">
-                    <label class="fl">Planning — rencana tindakan</label>
+                    <label class="fl">Planning — rencana tindakan <span class="auto-tag">otomatis dari e-resep</span></label>
                     <textarea v-model="soap.P" class="form-textarea" rows="2"
-                      placeholder="Terapi, edukasi, follow-up, rujukan..."></textarea>
+                      placeholder="Terisi otomatis dari e-resep (Nama Obat, Signa, Posisi)…"></textarea>
                   </div>
                 </div>
               </div>
@@ -1727,7 +2074,36 @@ async function doFinalize() {
                   Dipesan
                 </div>
               </div>
+              <!-- Pemeriksaan di luar master -->
+              <div
+                class="penunjang-modal-chip chip-lainnya"
+                :class="{ ordered: showCustomPenunjang }"
+                @click="showCustomPenunjang = !showCustomPenunjang"
+              >
+                <div class="penunjang-modal-chip-name">+ Lainnya</div>
+                <div class="penunjang-modal-chip-cat">Di luar daftar master</div>
+              </div>
             </div>
+
+            <div v-if="!penunjangTypes.length" class="penunjang-empty">
+              Master jenis penunjang masih kosong — atur di modul <b>Penunjang → tab "Jenis Penunjang"</b>.
+            </div>
+
+            <!-- Input pemeriksaan custom (Lainnya) -->
+            <div v-if="showCustomPenunjang" class="custom-penunjang">
+              <input
+                v-model="customPenunjang.name" class="cp-input"
+                placeholder="Nama pemeriksaan (mis. Pachymetry)"
+                @keydown.enter="addCustomPenunjang"
+              />
+              <input
+                v-model="customPenunjang.category" class="cp-input cp-cat"
+                placeholder="Kategori (opsional)"
+                @keydown.enter="addCustomPenunjang"
+              />
+              <button class="btn btn-sm btn-primary" @click="addCustomPenunjang">Tambah</button>
+            </div>
+
             <div v-if="penunjangOrders.length" class="penunjang-modal-ordered">
               <div class="penunjang-modal-ordered-title">Dipesan ({{ penunjangOrders.length }})</div>
               <div class="penunjang-modal-tags">
@@ -1740,7 +2116,7 @@ async function doFinalize() {
           </div>
           <div class="modal-box-foot">
             <button class="btn btn-secondary" @click="showPenunjangModal = false">Tutup</button>
-            <button class="btn btn-primary" :disabled="!penunjangOrders.length" @click="showPenunjangModal = false">
+            <button class="btn btn-primary" :disabled="!penunjangOrders.length" @click="confirmPenunjang">
               Konfirmasi {{ penunjangOrders.length }} Pemeriksaan
             </button>
           </div>
@@ -1899,6 +2275,8 @@ async function doFinalize() {
 .pill-waiting     { background: #fef3c7; color: #92400e; }
 .pill-in_progress { background: #dbeafe; color: #1e40af; }
 .pill-completed   { background: var(--sb); color: var(--st); }
+.pill-penunjang      { background: #fef9c3; color: #854d0e; }
+.pill-penunjang-done { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
 .pill-bpjs   { background: #dbeafe; color: #1e40af; }
 .pill-umum   { background: var(--gl); color: var(--ga); }
 .pill-asn    { background: var(--pb); color: var(--pt); }
@@ -1913,6 +2291,10 @@ async function doFinalize() {
 .q-act-btn.call:hover { background: var(--ga); color: #fff; }
 .q-act-btn.skip { color: var(--tu); border-color: var(--gb); }
 .q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.q-act-btn.resume { color: #fff; border-color: var(--ga); background: var(--ga); }
+.q-act-btn.resume:hover { filter: brightness(1.07); }
+.q-at-penunjang { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; color: #854d0e; }
+.q-at-penunjang svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* RME */
 .rme { flex: 1; display: flex; flex-direction: column; min-width: 0; margin: 0.75rem 0.75rem 0.75rem 0; }
@@ -1950,7 +2332,7 @@ async function doFinalize() {
 .cls-preop   { background: #fef3c7; color: #92400e; }
 .cls-postop  { background: var(--sb); color: var(--st); }
 .cls-kontrol { background: #f3e8ff; color: #7e22ce; }
-.vit { display: flex; align-items: center; gap: 0.6rem; padding: 0 0.8rem; align-self: center; }
+.vit { display: flex; align-items: flex-end; gap: 0.6rem; padding: 0 0.8rem; align-self: center; }
 .vdv { width: 1px; height: 38px; background: var(--gb); }
 .vi { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 50px; }
 .viv { font-size: 14.5px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; line-height: 1; }
@@ -1958,6 +2340,8 @@ async function doFinalize() {
 .viv.w { color: var(--wt); }
 .viv.lo { color: var(--it); }
 .vil { font-size: 9px; color: var(--tu); letter-spacing: 0.05em; text-transform: uppercase; }
+.vi-eyes { display: flex; justify-content: space-between; width: 100%; max-width: 48px; padding: 0 2px; margin: 0 auto; font-size: 7.5px; font-weight: 700; color: var(--tu); letter-spacing: 0.04em; line-height: 1; }
+.viv-pair { display: flex; justify-content: space-between; width: 100%; max-width: 48px; padding: 0 2px; margin: 0 auto; }
 .dbtns { display: flex; gap: 4px; flex-shrink: 0; }
 .db {
   padding: 5px 10px; font-size: 10.5px; font-weight: 600; border-radius: 7px;
@@ -1981,7 +2365,7 @@ async function doFinalize() {
 .dwt.n svg { stroke: #5b21b6; }
 .dwt.r svg { stroke: var(--ga); }
 .dw-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 0.4rem 0.85rem; }
-.dwr2 { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+.dwr2 { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
 .dwl { color: var(--tu); }
 .dwv { font-weight: 600; font-variant-numeric: tabular-nums; }
 .dwv.ok { color: var(--st); }
@@ -1990,7 +2374,7 @@ async function doFinalize() {
 .dw-keluhan { margin-top: 0.5rem; font-size: 11px; color: var(--tm); }
 .dw-keluhan b { color: var(--td); }
 .rog { display: grid; grid-template-columns: repeat(2,1fr); gap: 0.35rem 1rem; margin-bottom: 0.5rem; }
-.roi { display: flex; align-items: center; justify-content: space-between; }
+.roi { display: flex; align-items: baseline; gap: 6px; }
 .roi-l { font-size: 10px; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; }
 .roi-v { font-size: 12px; font-weight: 600; color: var(--td); }
 .roi-v.warn { color: var(--wt); }
@@ -2000,6 +2384,29 @@ async function doFinalize() {
   background: var(--ib); border: 1px solid var(--ibd); border-radius: 7px;
   padding: 0.45rem 0.65rem; font-size: 11px; color: var(--it); margin-top: 0.5rem;
 }
+.ro-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.ro-table th, .ro-table td { padding: 5px 8px; text-align: center; border-bottom: 1px solid var(--gb); }
+.ro-table thead th { font-size: 10px; color: var(--tu); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.ro-table tbody tr:last-child td { border-bottom: none; }
+.ro-table tbody tr:hover td { background: var(--bs); }
+.ro-table td { color: var(--tm); font-variant-numeric: tabular-nums; }
+.ro-table td.strong { font-weight: 700; color: var(--td); }
+.ro-table td.success { color: var(--ga); }
+.ro-table td.warn { color: var(--wt); font-weight: 700; }
+.ro-table small { font-size: 9px; color: var(--tu); font-weight: 500; }
+.rt-param { text-align: left !important; color: var(--tm); font-weight: 600; white-space: nowrap; }
+.rt-eye { display: inline-flex; align-items: center; justify-content: center; padding: 1px 6px; border-radius: 5px; font-size: 10px; font-weight: 700; }
+.rt-side { font-size: 9px; color: var(--tu); font-weight: 500; }
+.ro-foot { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; margin-top: 0.55rem; font-size: 11px; color: var(--tm); }
+.ro-foot b { color: var(--td); font-weight: 600; }
+.tr-table { width: 100%; border-collapse: collapse; }
+.tr-table th { font-size: 9.5px; color: var(--tu); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; padding: 4px 6px; text-align: center; border-bottom: 1px solid var(--gb); }
+.tr-table th small { font-weight: 500; opacity: 0.8; }
+.tr-table td { padding: 8px 6px; text-align: center; font-size: 14px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+.tr-table td small { font-size: 9px; color: var(--tu); font-weight: 500; }
+.tr-table td.warn { color: var(--wt); }
+.tr-keluhan { margin-top: 0.55rem; font-size: 11.5px; color: var(--tm); border-top: 1px solid var(--gb); padding-top: 0.5rem; }
+.tr-keluhan b { color: var(--td); font-weight: 600; }
 .histi { padding: 0.45rem 0.55rem; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); margin-bottom: 4px; }
 .hd { font-size: 10.5px; font-weight: 600; color: var(--gd); }
 .hdx { font-size: 11px; color: var(--td); margin-top: 2px; }
@@ -2037,6 +2444,18 @@ async function doFinalize() {
 .soap-history-item { padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--gb); }
 .soap-history-item:last-child { border-bottom: none; }
 .soap-history-date { font-size: 10px; font-weight: 700; color: var(--ga); letter-spacing: 0.04em; margin-bottom: 0.45rem; }
+
+/* Pager SOAP/CPPT per tanggal kunjungan */
+.soap-pager { display: flex; align-items: center; gap: 8px; padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--gb); background: var(--bs); }
+.soap-pager-btn { width: 28px; height: 28px; flex-shrink: 0; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); color: var(--td); font-size: 16px; line-height: 1; cursor: pointer; transition: all .13s; }
+.soap-pager-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); background: var(--gl); }
+.soap-pager-btn:disabled { opacity: .35; cursor: not-allowed; }
+.soap-pager-info { flex: 1; text-align: center; }
+.soap-pager-date { font-size: 11.5px; font-weight: 700; color: var(--ga); letter-spacing: 0.03em; }
+.soap-pager-count { font-size: 9.5px; color: var(--tu); margin-top: 1px; }
+.soap-entry-role { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 4px; margin-bottom: 5px; }
+.soap-entry-role.r-dok { background: var(--gl); color: var(--ga); }
+.soap-entry-role.r-prw { background: var(--ib); color: var(--it); }
 .soap-history-row { display: flex; gap: 7px; margin-bottom: 3px; }
 .soap-history-val { font-size: 10.5px; color: var(--tm); line-height: 1.45; word-break: break-word; }
 .soap-history-val.soap-a { color: #7e22ce; font-weight: 600; }
@@ -2054,6 +2473,12 @@ async function doFinalize() {
 .modal-box-foot { padding: 0.75rem 1.2rem; border-top: 1px solid var(--gb); display: flex; justify-content: flex-end; gap: 0.5rem; flex-shrink: 0; }
 
 .penunjang-modal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 1rem; }
+.chip-lainnya { border-style: dashed; }
+.chip-lainnya.ordered { border-color: var(--ga); background: var(--gl); }
+.custom-penunjang { display: flex; gap: 8px; align-items: center; margin-bottom: 1rem; }
+.cp-input { flex: 1; min-width: 0; height: 34px; border: 1.5px solid var(--gb); border-radius: 8px; padding: 0 11px; font-size: 12.5px; font-family: 'DM Sans', sans-serif; color: var(--td); background: var(--bs); outline: none; }
+.cp-input:focus { border-color: var(--ga); background: #fff; }
+.cp-cat { max-width: 150px; }
 .penunjang-modal-chip { padding: 0.65rem 0.8rem; border: 1.5px solid var(--gb); border-radius: 10px; cursor: pointer; background: var(--bs); transition: all .14s; position: relative; }
 .penunjang-modal-chip:hover { border-color: var(--ga); background: var(--gl); }
 .penunjang-modal-chip.ordered { border-color: var(--ga); background: var(--gl); cursor: default; }
@@ -2223,7 +2648,23 @@ async function doFinalize() {
   border-bottom: 1px solid var(--bs);
 }
 .seg-row:last-child { border-bottom: none; }
-.seg-label { font-size: 12px; font-weight: 500; color: var(--td); }
+.seg-label { font-size: 11.5px; font-weight: 500; color: var(--td); }
+
+/* Segmen 2 kolom + kompak */
+.seg-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.seg-2col .seg-head,
+.seg-2col .seg-row { grid-template-columns: 64px 1fr 1fr; gap: 0.35rem; }
+.seg-2col .seg-row { padding: 0.2rem 0; }
+.seg-2col .seg-eye-lbl { font-size: 10px; gap: 4px; }
+.seg-2col .seg-eye-lbl .elbl { width: 24px; height: 19px; font-size: 10px; }
+.seg-row .form-select { padding: 5px 7px; font-size: 11.5px; }
+@media (max-width: 1180px) { .seg-2col { grid-template-columns: 1fr; } }
+
+/* Tag "otomatis" pada label field */
+.auto-tag {
+  font-size: 9px; font-weight: 600; color: var(--ga); text-transform: none;
+  letter-spacing: 0; background: var(--gl); border-radius: 4px; padding: 1px 6px; margin-left: 5px;
+}
 
 /* SOAP */
 .soap-row { display: flex; gap: 0.75rem; align-items: flex-start; }
@@ -2358,11 +2799,25 @@ async function doFinalize() {
 
 .rx-add-row { display: flex; gap: 6px; align-items: center; margin-bottom: 0.75rem; }
 .rx-f-name { flex: 2.5; min-width: 0; }
+.rx-f-num  { flex: 0; flex-basis: 54px; min-width: 0; text-align: center; }
 .rx-f-qty  { flex: 0.9; min-width: 0; }
 .rx-f-sig  { flex: 1.1; min-width: 0; }
 .rx-f-dur  { flex: 1;   min-width: 0; }
 .rx-f-pos  { flex: 1.1; min-width: 0; }
 .rx-f-btn  { flex-shrink: 0; white-space: nowrap; height: 34px; padding: 0 12px; font-size: 12px; }
+
+/* Picker obat dari inventori */
+.rx-picker { position: relative; margin-bottom: 0.6rem; }
+.rx-drop { margin-top: 4px; border: 1px solid var(--gb); border-radius: 9px; background: var(--bc); max-height: 240px; overflow-y: auto; box-shadow: 0 6px 18px rgba(0,0,0,.07); }
+.rx-drop-item { display: flex; align-items: center; gap: 8px; padding: 8px 11px; cursor: pointer; border-bottom: 1px solid var(--gb); transition: background .12s; }
+.rx-drop-item:last-child { border-bottom: none; }
+.rx-drop-item:hover { background: var(--gl); }
+.rx-drop-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rx-drop-meta { font-size: 10px; color: var(--tu); flex-shrink: 0; }
+.rx-drop-price { font-size: 11.5px; font-weight: 700; color: var(--ga); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.rx-picked { display: flex; flex-direction: column; justify-content: center; padding: 4px 10px; background: var(--gl); border: 1px solid var(--sbd); border-radius: 8px; }
+.rx-picked-name { font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rx-picked-meta { font-size: 9.5px; color: var(--ga); font-weight: 600; }
 
 /* ── Locked state ───────────────────────────────────────────────────────── */
 .pane-locked { pointer-events: none; opacity: 0.65; user-select: none; }

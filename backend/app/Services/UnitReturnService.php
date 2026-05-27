@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\InventoriUnitNotified;
 use App\Models\BhpItem;
 use App\Models\InventoryStock;
 use App\Models\IolItem;
@@ -141,9 +142,10 @@ class UnitReturnService
             abort(422, 'Hanya retur SUBMITTED yang bisa di-receive.');
         }
 
-        return DB::transaction(function () use ($ret) {
+        $result = DB::transaction(function () use ($ret) {
             foreach ($ret->items as $item) {
-                $this->returnStock($item);
+                $this->returnStock($item);                              // gudang bertambah
+                $this->removeUnitStock($item->item_type, $item->item_id, (float) $item->qty_returned); // stok unit berkurang
             }
 
             $ret->update([
@@ -154,6 +156,10 @@ class UnitReturnService
 
             return $ret->fresh('items');
         });
+
+        $this->notifyUnit($result, 'received', "Retur {$result->return_number} diterima gudang. Stok unit telah disesuaikan.");
+
+        return $result;
     }
 
     /**
@@ -171,6 +177,8 @@ class UnitReturnService
             'status' => UnitReturn::STATUS_REJECTED,
             'notes'  => trim(($ret->notes ? $ret->notes . "\n" : '') . '[REJECT] ' . ($reason ?? '')),
         ]);
+
+        $this->notifyUnit($ret, 'rejected', trim("Retur {$ret->return_number} ditolak gudang. " . ($reason ?? '')));
 
         return $ret->fresh('items');
     }
@@ -241,6 +249,37 @@ class UnitReturnService
         $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + (float) $item->qty_returned;
         $stock->last_received_at = now();
         $stock->save();
+    }
+
+    /**
+     * Kurangi stok master unit saat retur diterima gudang (clamp ≥ 0).
+     * MEDICATION/BHP punya kolom `stock`; IOL serialized → diabaikan.
+     */
+    private function removeUnitStock(string $type, string $itemId, float $qty): void
+    {
+        $model = match ($type) {
+            'MEDICATION' => Medication::find($itemId),
+            'BHP'        => BhpItem::find($itemId),
+            default      => null,
+        };
+        if (!$model) return;
+
+        $newStock = max(0, (float) $model->stock - $qty);
+        $model->update(['stock' => $newStock]);
+    }
+
+    /**
+     * Pancarkan notifikasi realtime ke unit peretur.
+     */
+    private function notifyUnit(UnitReturn $ret, string $action, string $message): void
+    {
+        broadcast(new InventoriUnitNotified($ret->returning_station, [
+            'kind'    => 'return',
+            'action'  => $action,
+            'number'  => $ret->return_number,
+            'status'  => $ret->status,
+            'message' => $message,
+        ]));
     }
 
     private function itemExists(string $type, string $itemId): bool

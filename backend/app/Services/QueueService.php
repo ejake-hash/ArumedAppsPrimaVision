@@ -131,6 +131,34 @@ class QueueService
     }
 
     /**
+     * Data tiket Dokter (D-NNN) untuk sebuah visit — dipakai stasiun TR untuk
+     * mencetak tiket lanjutan setelah gate Triase+Refraksionis lolos & antrian
+     * DOKTER otomatis dibuat (lihat checkReadyForDoctor di Perawat/RefraksiService).
+     * Return null kalau antrian DOKTER belum ada (partner TR belum finalize).
+     */
+    public function getDoctorTicket(string $visitId): ?array
+    {
+        $queue = Queue::byStation(Queue::STATION_DOKTER)
+            ->where('visit_id', $visitId)
+            ->whereDate('created_at', today())
+            ->latest('created_at')
+            ->first();
+
+        if (! $queue) {
+            return null;
+        }
+
+        $sched = Visit::with('doctorSchedule.employee')->find($visitId)?->doctorSchedule;
+
+        return [
+            'queue_number' => $queue->queue_number,
+            'poliklinik'   => $sched?->poliklinik,
+            'room'         => $sched?->room,
+            'doctor_name'  => $sched?->employee?->name,
+        ];
+    }
+
+    /**
      * Panggil antrian:
      *   - WAITING     → CALLED (panggilan awal)
      *   - CALLED      → CALLED (panggil ulang, pasien belum hadir/menjawab)
@@ -143,7 +171,9 @@ class QueueService
     {
         $queue = Queue::findOrFail($queueId);
 
-        if (! in_array($queue->status, Queue::ACTIVE_STATUSES, true)) {
+        // SELESAI_PENUNJANG (& DI_PENUNJANG) tetap bisa dipanggil — dokter melanjutkan pemeriksaan.
+        $callable = array_merge(Queue::ACTIVE_STATUSES, [Queue::STATUS_AT_PENUNJANG, Queue::STATUS_PENUNJANG_DONE]);
+        if (! in_array($queue->status, $callable, true)) {
             throw new \Exception('Antrian sudah selesai atau dibatalkan — tidak bisa dipanggil.', 422);
         }
 
@@ -326,7 +356,7 @@ class QueueService
             Queue::STATION_TRIASE       => $this->nextAfterTriaseOrRefraksi($visit),
             Queue::STATION_REFRAKSIONIS => $this->nextAfterTriaseOrRefraksi($visit),
             Queue::STATION_DOKTER       => $this->nextAfterDokter($visit),
-            Queue::STATION_PENUNJANG    => Queue::STATION_DOKTER, // balik untuk pembacaan
+            Queue::STATION_PENUNJANG    => $this->nextAfterPenunjang($visit), // balik ke dokter (anti-duplikat)
             Queue::STATION_BEDAH        => Queue::STATION_KASIR,
             Queue::STATION_KASIR        => $this->nextAfterKasir($visit),
             Queue::STATION_FARMASI      => self::END_OF_FLOW, // pasien pulang
@@ -396,6 +426,22 @@ class QueueService
 
         // 3. Default
         return Queue::STATION_KASIR;
+    }
+
+    /**
+     * PENUNJANG selesai → balik ke DOKTER. Tapi bila baris DOKTER pasien masih hidup
+     * (di-pause saat dikirim ke penunjang), jangan buat baris baru — PenunjangService
+     * ::requeueToDokter yang menaikkannya kembali. NO_OP mencegah duplikat.
+     */
+    private function nextAfterPenunjang(Visit $visit): string
+    {
+        $hasLiveDokter = Queue::byStation(Queue::STATION_DOKTER)
+            ->where('visit_id', $visit->id)
+            ->today()
+            ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
+            ->exists();
+
+        return $hasLiveDokter ? self::NO_OP : Queue::STATION_DOKTER;
     }
 
     /**

@@ -28,17 +28,52 @@ class RekamMedisService
     // PASIEN — search & history
     // =========================================================================
 
-    public function searchPatient(string $keyword): Collection
+    /**
+     * Cari pasien untuk modul RME.
+     * $mode: 'nama' | 'rm' | 'nik' (default: semua field).
+     * Mengembalikan bentuk siap-pakai untuk RekamMedisView (termasuk foto,
+     * jumlah kunjungan, dan penjamin terakhir).
+     */
+    public function searchPatient(string $keyword, ?string $mode = null): \Illuminate\Support\Collection
     {
-        return Patient::active()
-            ->where(fn ($q) => $q
-                ->where('name', 'ilike', "%{$keyword}%")
-                ->orWhere('no_rm', 'ilike', "%{$keyword}%")
-                ->orWhere('nik', 'like', "%{$keyword}%")
-                ->orWhere('bpjs_number', 'like', "%{$keyword}%")
-            )
+        $kw = trim($keyword);
+
+        $query = Patient::active()
+            ->withCount('visits')
+            ->with(['visits' => fn ($q) => $q->orderByDesc('visit_date')->limit(1)]);
+
+        if ($mode === 'rm') {
+            $query->where('no_rm', 'ilike', "%{$kw}%");
+        } elseif ($mode === 'nik') {
+            $query->where('nik', 'like', "%{$kw}%");
+        } elseif ($mode === 'nama') {
+            $query->where('name', 'ilike', "%{$kw}%");
+        } else {
+            $query->where(fn ($q) => $q
+                ->where('name', 'ilike', "%{$kw}%")
+                ->orWhere('no_rm', 'ilike', "%{$kw}%")
+                ->orWhere('nik', 'like', "%{$kw}%")
+                ->orWhere('bpjs_number', 'like', "%{$kw}%")
+            );
+        }
+
+        return $query
             ->limit(15)
-            ->get();
+            ->get()
+            ->map(fn (Patient $p) => [
+                'id'                  => $p->id,
+                'no_rm'               => $p->no_rm,
+                'nama'                => $p->name,
+                'nik'                 => $p->nik,
+                'identity_type'       => $p->identity_type,
+                'date_of_birth'       => $p->date_of_birth?->toDateString(),
+                'gender'              => $p->gender,
+                'address'             => $p->address,
+                'allergy'             => $p->allergy_notes,
+                'last_guarantor_type' => $p->visits->first()?->guarantor_type,
+                'visit_count'         => $p->visits_count,
+                'photo_url'           => $p->photo_url,
+            ]);
     }
 
     /**

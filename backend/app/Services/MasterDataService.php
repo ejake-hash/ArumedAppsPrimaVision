@@ -7,6 +7,7 @@ use App\Models\BhpTariff;
 use App\Models\ClinicProfile;
 use App\Models\DocumentNumberConfig;
 use App\Models\DocumentTemplate;
+use App\Models\DiagnosticTestType;
 use App\Models\DocumentType;
 use App\Models\Employee;
 use App\Models\Icd10Code;
@@ -520,6 +521,55 @@ class MasterDataService
     {
         Icd9Code::findOrFail($id)->delete();
         $this->log(auth('api')->id(), 'DELETE_ICD9', Icd9Code::class, $id);
+    }
+
+    // =========================================================================
+    // JENIS PENUNJANG (diagnostic_test_types) — master
+    // =========================================================================
+
+    public function indexDiagnosticTestType(array $filters = []): LengthAwarePaginator
+    {
+        $query = DiagnosticTestType::query();
+        if (! empty($filters['search'])) {
+            $kw = $filters['search'];
+            $query->where(fn ($q) => $q
+                ->where('code', 'ilike', "%{$kw}%")
+                ->orWhere('name', 'ilike', "%{$kw}%")
+                ->orWhere('category', 'ilike', "%{$kw}%")
+            );
+        }
+        if (! empty($filters['category'])) {
+            $query->where('category', $filters['category']);
+        }
+        if (isset($filters['active'])) {
+            $query->where('is_active', (bool) $filters['active']);
+        }
+        return $query->orderBy('sort_order')->orderBy('name')->paginate($filters['per_page'] ?? 25);
+    }
+
+    public function storeDiagnosticTestType(array $data): DiagnosticTestType
+    {
+        // Urutan tidak diatur admin — auto-append ke akhir (No. mengikuti urutan ini).
+        if (! isset($data['sort_order'])) {
+            $data['sort_order'] = (int) DiagnosticTestType::max('sort_order') + 1;
+        }
+        $row = DiagnosticTestType::create($data);
+        $this->log(auth('api')->id(), 'CREATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $row->id);
+        return $row;
+    }
+
+    public function updateDiagnosticTestType(string $id, array $data): DiagnosticTestType
+    {
+        $row = DiagnosticTestType::findOrFail($id);
+        $row->update($data);
+        $this->log(auth('api')->id(), 'UPDATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
+        return $row->fresh();
+    }
+
+    public function deleteDiagnosticTestType(string $id): void
+    {
+        DiagnosticTestType::findOrFail($id)->delete();
+        $this->log(auth('api')->id(), 'DELETE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
     }
 
     // =========================================================================

@@ -1,9 +1,11 @@
 <script setup>
-import { ref, computed, reactive, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdmisiStore } from '@/stores/admisiStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
 
 const admisiStore   = useAdmisiStore()
 const jadwalStore   = useJadwalDokterStore()
@@ -61,11 +63,18 @@ function mapQueueItem(q) {
     station:    q.visit?.current_station ?? '—',
     classification: q.visit?.classification ?? '—',
     status:     q.status,
-    doctor:     null,
+    doctor:     q.visit?.doctor_schedule?.employee?.name ?? null,
     arrivedAt:  fmtTime(q.created_at),
     arrivedDate: fmtDate(q.visit?.visit_date ?? q.created_at),
     visitId:    q.visit_id,
     patientId:  p.id                   ?? null,
+    photo:      walkIn ? null          : (q.visit?.photo_url ?? p.photo_url ?? null),
+    noRegistrasi: q.visit?.no_registrasi ?? '—',
+    noSep:      q.visit?.no_sep        ?? null,
+    controlLetter: q.visit?.bpjs_control_letter_id ?? null,
+    insurer:    q.visit?.insurer?.name ?? null,
+    callQueueId: q.id,
+    callStatus:  q.status,
     gcSigned:   !!q.visit?.general_consent_signed_at,
     walkIn,
   }
@@ -135,10 +144,10 @@ const bpjsStatusList = computed(() => {
   const nameMap = {
     VCLAIM:    'VClaim — Penerbitan SEP',
     ANTREAN:   'Antrean Online BPJS',
-    ICARE:     'LUPIS — Lap. Utilisasi',
     SATUSEHAT: 'Satu Sehat (FHIR R4)',
   }
-  const raw = admisiStore.bpjsStatus ?? []
+  // LUPIS/iCare disembunyikan dari panel ini.
+  const raw = (admisiStore.bpjsStatus ?? []).filter(s => s.system !== 'ICARE')
   const items = raw.map(s => ({
     name: nameMap[s.system] ?? s.system,
     ok:   s.is_enabled && s.last_test_status === 'SUCCESS',
@@ -169,6 +178,11 @@ const callableQueue = computed(() => mappedAntrian.value.filter(p => p.status ==
 function mapVisitRow(v) {
   const p      = v.patient ?? {}
   const walkIn = p.name === 'Belum Terdaftar'
+  // Queue ADMISI yang masih bisa dipanggil (untuk tombol Panggil di tabel).
+  // Hanya relevan selama pasien masih di stasiun ADMISI.
+  const admisiQ = (v.queues ?? []).find(
+    q => q.station === 'ADMISI' && (q.status === 'WAITING' || q.status === 'CALLED'),
+  )
   // status untuk pewarnaan pill — derive dari current_station saja
   // (queue ADMISI mungkin sudah completed, tidak relevan di sini)
   return {
@@ -191,6 +205,13 @@ function mapVisitRow(v) {
     arrivedAt:  fmtTime(v.created_at),
     arrivedDate: fmtDate(v.visit_date ?? v.created_at),
     patientId:  p.id ?? null,
+    photo:      walkIn ? null : (v.photo_url ?? p.photo_url ?? null),
+    noRegistrasi: v.no_registrasi ?? '—',
+    noSep:      v.no_sep ?? null,
+    controlLetter: v.bpjs_control_letter_id ?? null,
+    insurer:    v.insurer?.name ?? null,
+    callQueueId: admisiQ?.id ?? null,
+    callStatus:  admisiQ?.status ?? null,
     gcSigned:   !!v.general_consent_signed,
     walkIn,
   }
@@ -205,7 +226,7 @@ function ptypeClass(g) {
 }
 
 /* ============================================================
-   FILTERS + TABLE
+   FILTERS + TABLE — server-side (filter, search, pagination)
    ============================================================ */
 const filterStation   = ref('all')
 const filterGuarantor = ref('all')
@@ -222,29 +243,35 @@ const stationOptions = [
   { key: 'BEDAH',        label: 'Bedah' },
 ]
 
-function matchesStation(p, key) {
-  if (key === 'all')    return true
-  if (key === 'TRIASE') return ['TRIASE','REFRAKSIONIS'].includes(p.station)
-  return p.station === key
+// Baris tabel = halaman kunjungan dari server (sudah difilter & dipaginasi).
+const filteredQueue = computed(() =>
+  mappedVisits.value.map(p => ({ ...p, ui: uiStatus(p) })),
+)
+
+// Offset nomor urut global mengikuti halaman aktif.
+const rowOffset = computed(() =>
+  (admisiStore.visitsMeta.current_page - 1) * admisiStore.visitsPerPage,
+)
+
+// Terapkan filter/search ke server, selalu balik ke halaman 1.
+function applyVisitFilters() {
+  admisiStore.visitsFilter.station   = filterStation.value === 'all' ? 'SEMUA' : filterStation.value
+  admisiStore.visitsFilter.guarantor = filterGuarantor.value === 'all' ? '' : filterGuarantor.value
+  admisiStore.visitsFilter.search    = tableSearch.value.trim()
+  admisiStore.fetchVisits({ page: 1 })
 }
 
-const filteredQueue = computed(() => {
-  const search = tableSearch.value.trim().toLowerCase()
+function goPage(n) {
+  const last = admisiStore.visitsMeta.last_page || 1
+  if (n < 1 || n > last || admisiStore.visitsLoading) return
+  admisiStore.fetchVisits({ page: n })
+}
 
-  // Union: semua visits hari ini + walk-in kiosk yang belum punya visit terdaftar
-  // (mappedAntrian masih dipakai supaya pasien dari kiosk yang status WAITING/CALLED
-  // tetap kelihatan di tabel kunjungan walaupun visit-nya belum lengkap)
-  const visitIds = new Set(mappedVisits.value.map(v => v.visitId))
-  const walkInOnly = mappedAntrian.value.filter(
-    p => p.walkIn && p.visitId && ! visitIds.has(p.visitId),
-  )
-
-  return [...mappedVisits.value, ...walkInOnly]
-    .filter(p => p.status !== 'CANCELLED')
-    .map(p => ({ ...p, ui: uiStatus(p) }))
-    .filter(p => matchesStation(p, filterStation.value))
-    .filter(p => filterGuarantor.value === 'all' || p.guarantor === filterGuarantor.value)
-    .filter(p => !search || p.name.toLowerCase().includes(search) || p.noRm.toLowerCase().includes(search))
+let _visitSearchTimer = null
+watch([filterStation, filterGuarantor], applyVisitFilters)
+watch(tableSearch, () => {
+  clearTimeout(_visitSearchTimer)
+  _visitSearchTimer = setTimeout(applyVisitFilters, 350)
 })
 
 /* ============================================================
@@ -269,9 +296,12 @@ function removeToast(id) { toasts.value = toasts.value.filter(t => t.id !== id) 
    QUEUE ACTIONS
    ============================================================ */
 async function callPatient(p) {
-  const isRecall = p.status === 'CALLED'
+  // Pakai id queue ADMISI yang callable (bukan visit id). Fallback ke p.id untuk
+  // baris yang memang berasal dari antrean (callQueueId === id).
+  const queueId  = p.callQueueId ?? p.id
+  const isRecall = (p.callStatus ?? p.status) === 'CALLED'
   try {
-    await admisiStore.panggilAntrian(p.id)
+    await admisiStore.panggilAntrian(queueId)
     const label = p.walkIn ? `Pasien ${p.queueNo}` : `${p.name} (${p.queueNo})`
     toast('s', `${label} ${isRecall ? 'dipanggil ulang' : 'dipanggil'} ke loket admisi`)
   } catch (e) {
@@ -457,6 +487,7 @@ function selectPatient(pt) {
     found:         true,
     patientId:     pt.id,
     noRm:          pt.no_rm,
+    identityType:  pt.identity_type ?? 'KTP',
     nik:           pt.nik,
     name:          pt.name,
     sex:           pt.gender,
@@ -472,6 +503,7 @@ function selectPatient(pt) {
     insurer_id:    '',
     insuranceName: '',
     insuranceNo:   '',
+    photo:         pt.photo_url    ?? null,
   })
   insuranceSearch.value = ''
   showSearchDrop.value  = false
@@ -479,6 +511,109 @@ function selectPatient(pt) {
 }
 
 function onSearchBlur() { setTimeout(() => { showSearchDrop.value = false }, 200) }
+
+/* ============================================================
+   PATIENT LOOKUP (toolbar searchbar → modal Profil Pasien)
+   Lihat data pasien yang sudah pernah terdaftar tanpa harus
+   mendaftarkan kunjungan baru. Klik hasil → modal 2 tab.
+   ============================================================ */
+const lookupKey      = ref('')
+const lookupResults  = ref([])
+const lookupLoading  = ref(false)
+const lookupDropOpen  = ref(false)
+let   _lookupTimer   = null
+
+async function runLookup() {
+  const key = lookupKey.value.trim()
+  if (!key) { lookupResults.value = []; lookupDropOpen.value = false; return }
+  lookupLoading.value  = true
+  lookupDropOpen.value = true
+  try {
+    lookupResults.value = await admisiStore.cariPasien(key)
+  } catch (e) {
+    toast('e', e.message)
+  } finally {
+    lookupLoading.value = false
+  }
+}
+
+function onLookupInput() {
+  clearTimeout(_lookupTimer)
+  const key = lookupKey.value.trim()
+  if (key.length >= 1) {
+    _lookupTimer = setTimeout(runLookup, 300)
+  } else {
+    lookupResults.value  = []
+    lookupDropOpen.value = false
+  }
+}
+
+function onLookupBlur() { setTimeout(() => { lookupDropOpen.value = false }, 200) }
+
+/* Modal Profil Pasien — Tab 1: detail data, Tab 2: riwayat kunjungan (paginated) */
+const profileOpen    = ref(false)
+const profileTab     = ref('detail')   // 'detail' | 'history'
+const profilePatient = ref(null)
+const profileLoading = ref(false)
+
+// Riwayat kunjungan — server-side pagination + filter tanggal
+const RIWAYAT_PER_PAGE = 8
+const profileVisits   = ref([])
+const riwayatDate     = ref('')   // filter tanggal (YYYY-MM-DD)
+const riwayatLoading  = ref(false)
+const riwayatMeta     = ref({ total: 0, current_page: 1, last_page: 1 })
+
+async function loadRiwayat(page = 1) {
+  if (!profilePatient.value?.id) return
+  riwayatLoading.value = true
+  try {
+    const res = await admisiStore.fetchKunjunganPasien(profilePatient.value.id, {
+      page,
+      per_page: RIWAYAT_PER_PAGE,
+      tanggal:  riwayatDate.value || undefined,
+    })
+    profileVisits.value = res.data.map(v => ({
+      id:             v.id,
+      date:           fmtDate(v.visit_date ?? v.created_at),
+      photo:          v.photo_url ?? null,
+      classification: v.classification ?? '—',
+      guarantor:      v.guarantor_type ?? '—',
+      station:        v.current_station ?? '—',
+      doctor:         v.doctor_schedule?.employee?.name ?? '—',
+      poliklinik:     v.doctor_schedule?.poliklinik ?? null,
+      insurer:        v.insurer?.name ?? null,
+      noSep:          v.no_sep ?? null,
+    }))
+    riwayatMeta.value = res.meta
+  } catch (e) {
+    toast('e', e.message)
+  } finally {
+    riwayatLoading.value = false
+  }
+}
+
+async function openProfile(pt) {
+  lookupDropOpen.value = false
+  lookupKey.value      = ''
+  lookupResults.value  = []
+  profileTab.value     = 'detail'
+  profilePatient.value = pt          // tampilkan data ringkas dulu sambil fetch detail
+  profileOpen.value    = true
+  profileLoading.value = true
+  // reset riwayat
+  profileVisits.value = []
+  riwayatDate.value   = ''
+  riwayatMeta.value   = { total: 0, current_page: 1, last_page: 1 }
+  try {
+    profilePatient.value = await admisiStore.fetchPasienDetail(pt.id)
+    loadRiwayat(1)   // muat riwayat (juga untuk angka badge tab)
+  } catch (e) {
+    toast('e', e.message)
+  } finally {
+    profileLoading.value = false
+  }
+}
+function closeProfile() { profileOpen.value = false }
 
 /* ============================================================
    REGISTRATION WIZARD (3 steps)
@@ -497,7 +632,9 @@ const blankForm = () => ({
   found:         false,
   patientId:     '',
   noRm:          '',
+  identityType:  'KTP',
   nik:           '',
+  photo:         null,
   name:          '',
   sex:           'L',
   birthDate:     '',
@@ -522,10 +659,31 @@ const blankForm = () => ({
 })
 const form = reactive(blankForm())
 
+/* Jenis identitas — KTP wajib 16 digit, lainnya nomor bebas, Tanpa Identitas boleh kosong */
+const identityTypes = [
+  { value: 'KTP',             label: 'KTP (NIK)',        numberLabel: 'NIK',            ph: '16 digit NIK' },
+  { value: 'PASPOR',          label: 'Paspor',           numberLabel: 'No. Paspor',     ph: 'Nomor paspor' },
+  { value: 'SIM',             label: 'SIM',              numberLabel: 'No. SIM',        ph: 'Nomor SIM' },
+  { value: 'KIA',             label: 'KIA (Anak)',       numberLabel: 'No. KIA',        ph: 'Nomor Kartu Identitas Anak' },
+  { value: 'TANPA_IDENTITAS', label: 'Tanpa Identitas',  numberLabel: 'No. Identitas',  ph: 'Tidak ada identitas' },
+  { value: 'LAINNYA',         label: 'Identitas Lain',   numberLabel: 'No. Identitas',  ph: 'Nomor identitas' },
+]
+const activeIdentity = computed(() => identityTypes.find(t => t.value === form.identityType) ?? identityTypes[0])
+const noIdentity     = computed(() => form.identityType === 'TANPA_IDENTITAS')
+
+function onIdentityTypeChange() {
+  if (noIdentity.value) form.nik = ''
+}
+
+/* Foto pasien — modal kamera/upload */
+const photoModalOpen = ref(false)
+function onPhotoCaptured(dataUrl) { form.photo = dataUrl }
+
 const canProceedStep1 = computed(() => {
+  const idOk = noIdentity.value || !!form.nik
   const base = form.patientMode === 'existing'
     ? form.found && form.name
-    : form.name && form.nik && form.birthDate
+    : form.name && form.birthDate && idOk
   return base && form.province
 })
 
@@ -574,6 +732,15 @@ function guarantorLabel(g) {
   return { BPJS:'BPJS Kesehatan', UMUM:'Umum / Mandiri', ASURANSI:'Asuransi Swasta', PERUSAHAAN:'Perusahaan / Rekanan', SOSIAL:'Sosial / Gratis' }[g] ?? g
 }
 
+/* Ambil nomor antrean TR (TRIASE/REFRAKSIONIS) dari visit hasil pendaftaran.
+   Untuk walk-in, visit.queues juga berisi queue ADMISI lama (A-xxx) yang sudah
+   COMPLETED — jadi nomor ADMISI tidak boleh dipakai untuk tiket. */
+function pickTrQueueNo(visit) {
+  const qs = visit?.queues ?? []
+  const tr = qs.find(q => q.station === 'TRIASE' || q.station === 'REFRAKSIONIS')
+  return tr?.queue_number ?? qs.find(q => q.station !== 'ADMISI')?.queue_number ?? '—'
+}
+
 const submitting = ref(false)
 async function submitRegistration() {
   submitting.value = true
@@ -594,11 +761,16 @@ async function submitRegistration() {
       payload.insurer_id = form.insurer_id
     }
 
+    // Foto kunjungan ini — selalu dikirim di payload (baru maupun lama).
+    // Backend menyimpannya ke visits.photo_path (per-kunjungan) + patients.photo_path (terbaru).
+    payload.photo = form.photo?.startsWith('data:') ? form.photo : null
+
     if (form.patientId) {
       payload.patient_id = form.patientId
     } else {
       Object.assign(payload, {
-        nik:           form.nik,
+        identity_type: form.identityType,
+        nik:           form.nik      || null,
         name:          form.name,
         gender:        form.sex,
         date_of_birth: form.birthDate,
@@ -609,15 +781,17 @@ async function submitRegistration() {
       })
     }
 
-    // Branch: walk-in merge vs registrasi baru
-    let visit, queueNo
+    // Branch: walk-in merge vs registrasi baru.
+    // Tiket dicetak dengan nomor TR (Triase & Refraksionis) — tujuan pasien
+    // setelah admisi — BUKAN nomor A-xxx dari kiosk. Walk-in maupun daftar
+    // langsung sama-sama menuju TR-NNN.
+    let visit
     if (walkInVisitId.value) {
       visit = await admisiStore.daftarkanWalkIn(walkInVisitId.value, payload)
-      queueNo = walkInQueueNo.value
     } else {
       visit = await admisiStore.daftarKunjungan(payload)
-      queueNo = visit?.queues?.[0]?.queue_number ?? '—'
     }
+    const queueNo = pickTrQueueNo(visit)
 
     // Capture nama+dokter untuk tiket sebelum closeWizard reset form
     const ticketData = {
@@ -653,11 +827,11 @@ async function submitRegistration() {
 /* ============================================================
    PRINT THERMAL TIKET ANTREAN (80mm, sama style dgn AnjunganView)
    ============================================================ */
-function printAdmisiTicket({ queueNo, patientName, doctor, poliklinik, room }) {
+function printAdmisiTicket({ queueNo, patientName }) {
   if (!queueNo || queueNo === '—') return
-  const stationDest = poliklinik
-    ? `Poli ${escHtml(poliklinik)}${room ? ' · Ruang ' + escHtml(room) : ''}`
-    : 'Triase / Refraksionis'
+  // Setelah admisi, pasien SELALU menuju Triase & Refraksionis (nomor TR-NNN).
+  // Info poliklinik/ruang/dokter baru dicetak di tiket Dokter (D-NNN) setelah TR selesai.
+  const stationDest = 'Triase &amp; Refraksionis'
   const ticketHtml = `
     <html><head><title>Antrean ${escHtml(queueNo)}</title>
     <style>
@@ -679,7 +853,6 @@ function printAdmisiTicket({ queueNo, patientName, doctor, poliklinik, room }) {
       <div class="b">
         ${patientName ? `<div style="margin-bottom:2mm">${escHtml(patientName)}</div>` : ''}
         Menuju <strong>${stationDest}</strong>
-        ${doctor ? `<div style="margin-top:2mm">${escHtml(doctor)}</div>` : ''}
       </div>
       <div class="ft">Simpan tiket ini sampai dipanggil</div>
     </body></html>`
@@ -699,32 +872,22 @@ function printAdmisiTicket({ queueNo, patientName, doctor, poliklinik, room }) {
 function onBirthChange() { form.age = calcAge(form.birthDate) }
 
 /* ============================================================
-   DETAIL MODAL + CETAK LABEL
+   DETAIL KUNJUNGAN MODAL
+   Menggantikan modal "Detail Pasien" + "Rekam Medis" lama.
    ============================================================ */
-const detailOpen    = ref(false)
-const detailPatient = ref(null)
+const visitDetailOpen = ref(false)
+const visitDetailRow  = ref(null)
 
-function openDetail(p)  { detailPatient.value = p; detailOpen.value = true }
-function closeDetail()  { detailOpen.value = false }
+function openVisitDetail(p) { visitDetailRow.value = p; visitDetailOpen.value = true }
+function closeVisitDetail() { visitDetailOpen.value = false }
 
-/* ============================================================
-   REKAM MEDIS — open RM list modal for a patient
-   ============================================================ */
-const rmOpen    = ref(false)
-const rmPatient = ref(null)
+// Klik nama pasien di Detail Kunjungan → buka Profil Pasien (detail + riwayat).
+function openPatientFromVisit() {
+  const p = visitDetailRow.value
+  if (!p?.patientId) { toast('w', 'Pasien walk-in belum terdaftar — tidak ada profil'); return }
+  openProfile({ id: p.patientId, name: p.name })
+}
 
-const rmDocs = [
-  { code:'RM-0.1', name:'General Consent',         category:'Administrasi' },
-  { code:'RM-1.1', name:'Rekam Medis Rawat Jalan', category:'Klinis' },
-  { code:'RM-2.1', name:'Asesmen Perawat',         category:'Klinis' },
-  { code:'RM-3.1', name:'Pemeriksaan Refraksi',    category:'Klinis' },
-  { code:'RM-4.1', name:'Pemeriksaan Dokter Sp.M', category:'Klinis' },
-  { code:'RM-5.1', name:'Resep Obat',              category:'Farmasi' },
-  { code:'RM-6.1', name:'Surat Kontrol',           category:'Administrasi' },
-]
-
-function openRekamMedis(p) { rmPatient.value = p; rmOpen.value = true }
-function closeRekamMedis() { rmOpen.value = false }
 function gotoRekamMedis(p) {
   if (!p?.patientId) { toast('w', 'Pasien belum memiliki ID — coba reload data'); return }
   router.push({ name: 'rekam-medis', query: { patient: p.patientId } })
@@ -757,7 +920,7 @@ async function signGeneralConsent() {
 }
 
 function printLabel(p) {
-  const t = p ?? detailPatient.value
+  const t = p
   if (!t) return
   const labelHtml = `
     <html><head><title>Label ${escHtml(t.name)}</title>
@@ -796,11 +959,11 @@ function printLabel(p) {
    ============================================================ */
 function onKeydown(e) {
   if (e.key !== 'Escape') return
-  if (gcOpen.value)       { gcOpen.value = false;       return }
-  if (rmOpen.value)       { rmOpen.value = false;       return }
-  if (editOpen.value)     { closeEditPasien();          return }
-  if (detailOpen.value)   { detailOpen.value = false;   return }
-  if (wizardOpen.value)   { closeWizard();              return }
+  if (profileOpen.value)     { profileOpen.value = false;     return }
+  if (gcOpen.value)          { gcOpen.value = false;          return }
+  if (editOpen.value)        { closeEditPasien();             return }
+  if (visitDetailOpen.value) { visitDetailOpen.value = false; return }
+  if (wizardOpen.value)      { closeWizard();                 return }
 }
 
 /* ============================================================
@@ -826,6 +989,8 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(dateTimer)
   clearTimeout(_searchTimer)
+  clearTimeout(_lookupTimer)
+  clearTimeout(_visitSearchTimer)
   window.removeEventListener('keydown', onKeydown)
   admisiStore.disconnectWs()
 })
@@ -845,10 +1010,56 @@ onUnmounted(() => {
           {{ admisiStore.stats.total }} pasien terdaftar
         </p>
       </div>
-      <button class="btn btn-primary btn-lg" @click="openWizard">
-        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Daftarkan Pasien
-      </button>
+      <div class="toolbar-actions">
+        <!-- Searchbar: lihat data pasien yang sudah pernah terdaftar -->
+        <div class="lookup">
+          <svg class="lookup-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input
+            v-model="lookupKey"
+            class="lookup-input"
+            placeholder="Cari data pasien (nama / NIK / No. RM)"
+            @input="onLookupInput"
+            @keyup.enter="runLookup"
+            @focus="lookupKey.trim() && (lookupDropOpen = true)"
+            @blur="onLookupBlur"
+          />
+          <span v-if="lookupLoading" class="spin-xs lookup-spin"></span>
+          <transition name="modal-fade">
+            <div v-if="lookupDropOpen && lookupKey.trim()" class="combo-dropdown lookup-drop">
+              <div v-if="lookupLoading && !lookupResults.length" class="combo-empty">
+                <span class="spin-xs"></span> Mencari pasien…
+              </div>
+              <div
+                v-for="pt in lookupResults"
+                :key="pt.id"
+                class="combo-item preview"
+                @mousedown="openProfile(pt)"
+              >
+                <PatientAvatar :name="pt.name" :src="pt.photo_url" :size="32" :zoomable="false" radius="50%" />
+                <div class="combo-info">
+                  <div class="combo-name">{{ pt.name }}</div>
+                  <div class="combo-meta">
+                    <span class="combo-rm">RM {{ pt.no_rm }}</span>
+                    <span v-if="pt.nik">· NIK {{ pt.nik }}</span>
+                  </div>
+                  <div v-if="pt.address" class="combo-addr">
+                    <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    {{ pt.address }}
+                  </div>
+                </div>
+              </div>
+              <div v-if="!lookupLoading && !lookupResults.length" class="combo-empty">
+                Tidak ada pasien yang cocok
+              </div>
+            </div>
+          </transition>
+        </div>
+
+        <button class="btn btn-primary btn-lg" @click="openWizard">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Daftarkan Pasien
+        </button>
+      </div>
     </div>
 
     <!-- ===================== DASHBOARD STATS ===================== -->
@@ -960,8 +1171,8 @@ onUnmounted(() => {
                 <div class="call-station-val">{{ p.station }}</div>
               </div>
               <div class="call-actions">
-                <button v-if="!p.walkIn" class="btn btn-secondary btn-icon" title="Lihat detail pasien" aria-label="Lihat detail pasien" @click="openDetail(p)">
-                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+                <button v-if="!p.walkIn" class="btn btn-secondary btn-icon" title="Detail kunjungan" aria-label="Detail kunjungan" @click="openVisitDetail(p)">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
                 </button>
                 <button v-if="!p.walkIn" class="btn btn-secondary btn-icon" title="Edit data pasien" aria-label="Edit data pasien" @click="openEditPasien(p)">
                   <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
@@ -1006,7 +1217,7 @@ onUnmounted(() => {
                 <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
                 Seluruh Kunjungan Hari Ini
               </div>
-              <div class="card-head-sub">{{ filteredQueue.length }} data · klik untuk {{ tableExpanded ? 'sembunyikan' : 'tampilkan' }}</div>
+              <div class="card-head-sub">{{ admisiStore.visitsMeta.total }} kunjungan · klik untuk {{ tableExpanded ? 'sembunyikan' : 'tampilkan' }}</div>
             </div>
             <button class="collapse-btn" :class="{ open: tableExpanded }" @click.stop="tableExpanded = !tableExpanded">
               <span>{{ tableExpanded ? 'Sembunyikan' : 'Tampilkan' }}</span>
@@ -1052,7 +1263,7 @@ onUnmounted(() => {
                   </thead>
                   <tbody>
                     <tr v-for="(p, i) in filteredQueue" :key="p.id" :class="{ 'walk-in-row': p.walkIn }">
-                      <td class="td-rownum">{{ i + 1 }}</td>
+                      <td class="td-rownum">{{ rowOffset + i + 1 }}</td>
                       <td><span class="q-no">{{ p.queueNo }}</span></td>
                       <td class="muted">{{ p.noRm }}</td>
                       <td>
@@ -1087,19 +1298,8 @@ onUnmounted(() => {
                       <td class="td-time">{{ p.arrivedAt }}</td>
                       <td>
                         <div class="action-row">
-                          <button class="btn btn-sm btn-secondary btn-icon" title="Detail lengkap pasien (NIK, alamat, dll)" aria-label="Detail lengkap pasien" @click="openDetail(p)">
-                            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
-                          </button>
-                          <button class="btn btn-sm btn-secondary btn-icon" title="Lihat Rekam Medis" aria-label="Lihat Rekam Medis" @click="openRekamMedis(p)">
+                          <button class="btn btn-sm btn-secondary btn-icon" title="Detail kunjungan" aria-label="Detail kunjungan" @click="openVisitDetail(p)">
                             <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
-                          </button>
-                          <button
-                            class="btn btn-sm btn-icon btn-gc-open"
-                            disabled
-                            title="General Consent — menunggu modul Form Rekam Medis"
-                            aria-label="General Consent (segera hadir)"
-                          >
-                            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 17l2 2 4-4"/></svg>
                           </button>
                           <button class="btn btn-sm btn-secondary btn-icon" title="Cetak label pasien" aria-label="Cetak label pasien" @click="printLabel(p)">
                             <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
@@ -1115,24 +1315,53 @@ onUnmounted(() => {
                           </button>
                           <button
                             class="btn btn-sm btn-primary call-btn"
-                            :disabled="p.status === 'COMPLETED' || p.status === 'CANCELLED' || p.status === 'IN_PROGRESS'"
-                            :title="p.status === 'CALLED' ? 'Panggil ulang pasien' : 'Panggil pasien'"
+                            :disabled="!(p.station === 'ADMISI' && p.callQueueId)"
+                            :title="p.station !== 'ADMISI'
+                              ? 'Pasien sudah pindah stasiun — panggil di stasiun terkait'
+                              : (p.callStatus === 'CALLED' ? 'Panggil ulang pasien' : 'Panggil pasien')"
                             @click="callPatient(p)"
                           >
                             <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
-                            {{ p.status === 'CALLED' ? 'Panggil Ulang' : 'Panggil' }}
+                            {{ p.callStatus === 'CALLED' ? 'Panggil Ulang' : 'Panggil' }}
                           </button>
                         </div>
                       </td>
                     </tr>
                     <tr v-if="filteredQueue.length === 0">
-                      <td colspan="9" class="empty-row">
+                      <td colspan="11" class="empty-row">
                         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-                        <span>Tidak ada data</span>
+                        <span>{{ admisiStore.visitsLoading ? 'Memuat data…' : 'Tidak ada data' }}</span>
                       </td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+
+              <!-- PAGER — server-side pagination -->
+              <div v-if="admisiStore.visitsMeta.total > 0" class="table-pager">
+                <div class="pager-info">
+                  Menampilkan {{ rowOffset + 1 }}–{{ rowOffset + filteredQueue.length }}
+                  dari {{ admisiStore.visitsMeta.total }} kunjungan
+                </div>
+                <div class="pager-ctrl">
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    :disabled="admisiStore.visitsMeta.current_page <= 1 || admisiStore.visitsLoading"
+                    @click="goPage(admisiStore.visitsMeta.current_page - 1)"
+                  >
+                    <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                    Sebelumnya
+                  </button>
+                  <span class="pager-page">Hal {{ admisiStore.visitsMeta.current_page }} / {{ admisiStore.visitsMeta.last_page }}</span>
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    :disabled="admisiStore.visitsMeta.current_page >= admisiStore.visitsMeta.last_page || admisiStore.visitsLoading"
+                    @click="goPage(admisiStore.visitsMeta.current_page + 1)"
+                  >
+                    Berikutnya
+                    <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
           </transition>
@@ -1153,11 +1382,6 @@ onUnmounted(() => {
             <button class="btn btn-secondary btn-full" disabled title="Menunggu bridging BPJS VClaim">
               <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
               Cek Status BPJS
-              <span class="badge-soon" style="margin-left:auto">Segera Hadir</span>
-            </button>
-            <button class="btn btn-secondary btn-full muted-btn" disabled title="Menunggu integrasi layar TV ruang tunggu">
-              <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="13" rx="2"/><path d="M16 21H8M12 17v4"/></svg>
-              Sinkron ke Layar TV
               <span class="badge-soon" style="margin-left:auto">Segera Hadir</span>
             </button>
           </div>
@@ -1308,9 +1532,7 @@ onUnmounted(() => {
                           class="combo-item preview"
                           @mousedown="selectPatient(pt)"
                         >
-                          <div class="combo-avatar">
-                            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                          </div>
+                          <PatientAvatar :name="pt.name" :src="pt.photo_url" :size="32" :zoomable="false" radius="50%" />
                           <div class="combo-info">
                             <div class="combo-name">{{ pt.name }}</div>
                             <div class="combo-meta">
@@ -1339,13 +1561,28 @@ onUnmounted(() => {
               </template>
 
               <div class="section-label full">Identitas</div>
-              <div class="field" :class="{ full: form.patientMode === 'new' }">
+              <div class="field full">
                 <label class="field-lbl">Nama Lengkap</label>
-                <input v-model="form.name" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="Nama sesuai KTP" />
+                <input v-model="form.name" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="Nama sesuai identitas" />
               </div>
               <div class="field">
-                <label class="field-lbl">NIK</label>
-                <input v-model="form.nik" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="16 digit NIK" />
+                <label class="field-lbl">Jenis Identitas</label>
+                <select v-model="form.identityType" class="form-select" :disabled="form.patientMode === 'existing'" @change="onIdentityTypeChange">
+                  <option v-for="t in identityTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-lbl">
+                  {{ activeIdentity.numberLabel }}
+                  <span v-if="form.identityType === 'KTP'" style="color:#ef4444">*</span>
+                </label>
+                <input
+                  v-model="form.nik"
+                  class="form-input"
+                  :readonly="form.patientMode === 'existing' || noIdentity"
+                  :placeholder="activeIdentity.ph"
+                  :maxlength="form.identityType === 'KTP' ? 16 : 50"
+                />
               </div>
               <div class="field">
                 <label class="field-lbl">No. Rekam Medis</label>
@@ -1371,7 +1608,22 @@ onUnmounted(() => {
                 <input v-model="form.phone" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="08xx-xxxx-xxxx" />
               </div>
 
-              <div class="section-label full">Alamat <span class="lbl-note">(sesuai data NIK)</span></div>
+              <div v-if="form.patientMode === 'new'" class="field full">
+                <label class="field-lbl">Foto Pasien</label>
+                <div class="photo-field">
+                  <PatientAvatar :name="form.name" :src="form.photo" :size="64" :zoomable="!!form.photo" />
+                  <div class="photo-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="photoModalOpen = true">
+                      <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                      {{ form.photo ? 'Ganti Foto' : 'Ambil Foto' }}
+                    </button>
+                    <button v-if="form.photo" type="button" class="btn btn-secondary btn-sm" @click="form.photo = null">Hapus</button>
+                    <span class="photo-hint">Dari kamera/HP atau unggah file · opsional</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-label full">Alamat <span class="lbl-note">(sesuai data identitas)</span></div>
               <div class="field full">
                 <WilayahPicker
                   v-model:province="form.province"
@@ -1596,11 +1848,24 @@ onUnmounted(() => {
             <!-- ===== STEP 3: KONFIRMASI ===== -->
             <div v-if="wizardStep === 3" class="confirm-wrap">
               <div class="confirm-card">
-                <div class="confirm-sec-title">Data Pasien</div>
+                <div class="confirm-sec-head">
+                  <div>
+                    <div class="confirm-sec-title">Data Pasien</div>
+                    <div v-if="form.patientMode === 'existing'" class="confirm-photo-note">Ambil foto pasien sebelum konfirmasi</div>
+                  </div>
+                  <div class="confirm-photo">
+                    <PatientAvatar :name="form.name" :src="form.photo" :size="52" :zoomable="!!form.photo" />
+                    <button v-if="form.patientMode === 'existing'" type="button" class="btn btn-secondary btn-sm" @click="photoModalOpen = true">
+                      <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                      {{ form.photo ? 'Ganti Foto' : 'Ambil Foto' }}
+                    </button>
+                  </div>
+                </div>
                 <div class="confirm-grid">
                   <div class="cf"><span class="cf-k">Nama</span><span class="cf-v">{{ form.name || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">No. RM</span><span class="cf-v">{{ form.noRm || 'Baru (auto)' }}</span></div>
-                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ form.nik || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Jenis Identitas</span><span class="cf-v">{{ activeIdentity.label }}</span></div>
+                  <div class="cf"><span class="cf-k">{{ activeIdentity.numberLabel }}</span><span class="cf-v">{{ form.nik || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ form.sex === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
                   <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ form.birthDate || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Usia</span><span class="cf-v">{{ form.age ? form.age + ' th' : '—' }}</span></div>
@@ -1720,108 +1985,237 @@ onUnmounted(() => {
       </div>
     </transition>
 
-    <!-- ===================== DETAIL MODAL + CETAK LABEL ===================== -->
+    <!-- ===================== DETAIL KUNJUNGAN MODAL ===================== -->
     <transition name="modal-fade">
-      <div v-if="detailOpen && detailPatient" class="modal-backdrop" @click.self="closeDetail">
+      <div v-if="visitDetailOpen && visitDetailRow" class="modal-backdrop" @click.self="closeVisitDetail">
         <div class="modal-shell modal-sm">
           <div class="modal-head">
             <div>
-              <div class="modal-title">Detail Pasien</div>
-              <div class="modal-sub">{{ detailPatient.noRm }} · Antrean {{ detailPatient.queueNo }}</div>
+              <div class="modal-title">Detail Kunjungan</div>
+              <div class="modal-sub">{{ visitDetailRow.noRegistrasi }} · {{ visitDetailRow.arrivedDate }}</div>
             </div>
-            <button class="modal-x" aria-label="Tutup detail pasien" @click="closeDetail">
+            <button class="modal-x" aria-label="Tutup detail kunjungan" @click="closeVisitDetail">
               <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
 
           <div class="modal-body">
-            <div class="detail-hero">
-              <div class="detail-avatar">{{ detailPatient.name.charAt(0) }}</div>
-              <div>
-                <div class="detail-name">{{ detailPatient.name }}</div>
-                <div class="detail-sub">
-                  {{ detailPatient.age }} th · {{ detailPatient.sex === 'L' ? 'Laki-laki' : 'Perempuan' }}
-                </div>
+            <div class="detail-grid">
+              <div class="cf"><span class="cf-k">No. Registrasi / Pendaftaran</span><span class="cf-v">{{ visitDetailRow.noRegistrasi }}</span></div>
+              <div class="cf"><span class="cf-k">No. Antrean</span><span class="cf-v">{{ visitDetailRow.queueNo }}</span></div>
+              <div class="cf"><span class="cf-k">Dokter / DPJP</span><span class="cf-v">{{ visitDetailRow.doctor ?? '—' }}</span></div>
+              <div class="cf"><span class="cf-k">Metode Pembayaran</span>
+                <span class="cf-v">
+                  <span :class="['ptype-tag', visitDetailRow.walkIn ? 'pt-walkin' : ptypeClass(visitDetailRow.guarantor)]">
+                    {{ visitDetailRow.walkIn ? 'WALK-IN' : visitDetailRow.guarantor }}
+                  </span>
+                  <span v-if="visitDetailRow.insurer" class="vd-insurer"> · {{ visitDetailRow.insurer }}</span>
+                </span>
               </div>
-              <span :class="['ptype-tag', ptypeClass(detailPatient.guarantor)]" style="margin-left:auto">
-                {{ detailPatient.guarantor }}
-              </span>
+              <div class="cf full">
+                <span class="cf-k">Nama Pasien</span>
+                <span class="cf-v">
+                  <button
+                    class="vd-name-link"
+                    :disabled="!visitDetailRow.patientId"
+                    :title="visitDetailRow.patientId ? 'Lihat detail & riwayat pasien' : 'Pasien walk-in belum terdaftar'"
+                    @click="openPatientFromVisit"
+                  >
+                    {{ visitDetailRow.name }}
+                    <svg v-if="visitDetailRow.patientId" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  </button>
+                </span>
+              </div>
             </div>
 
-            <div class="detail-grid">
-              <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ detailPatient.noRm }}</span></div>
-              <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ detailPatient.nik }}</span></div>
-              <div class="cf"><span class="cf-k">No. Antrean</span><span class="cf-v">{{ detailPatient.queueNo }}</span></div>
-              <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ detailPatient.birthDate ?? '—' }}</span></div>
-              <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ detailPatient.phone }}</span></div>
-              <div class="cf"><span class="cf-k">Klasifikasi</span><span class="cf-v">{{ detailPatient.classification }}</span></div>
-              <div class="cf"><span class="cf-k">Stasiun Saat Ini</span><span class="cf-v">{{ detailPatient.station }}</span></div>
-              <div class="cf"><span class="cf-k">Dokter</span><span class="cf-v">{{ detailPatient.doctor ?? '—' }}</span></div>
-              <div class="cf"><span class="cf-k">Status</span><span class="cf-v">{{ statusLabel(uiStatus(detailPatient)) }}</span></div>
-              <div class="cf"><span class="cf-k">Jam Tiba</span><span class="cf-v">{{ detailPatient.arrivedAt }}</span></div>
-              <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ detailPatient.address }}</span></div>
-              <div class="cf full"><span class="cf-k">General Consent</span>
-                <span class="cf-v">
-                  <span v-if="detailPatient.gcSigned" class="gc-state gc-ok">Sudah ditandatangani</span>
-                  <span v-else class="gc-state gc-pending">Belum ditandatangani</span>
-                </span>
+            <!-- SEP — hanya untuk pasien BPJS -->
+            <div v-if="visitDetailRow.guarantor === 'BPJS'" class="vd-section">
+              <div class="vd-section-row">
+                <div>
+                  <div class="vd-section-title">SEP (Surat Eligibilitas Peserta)</div>
+                  <div class="vd-section-val">{{ visitDetailRow.noSep ?? 'Belum terbit' }}</div>
+                </div>
+                <span class="badge-soon">Segera Hadir</span>
+              </div>
+              <div class="vd-actions">
+                <button class="btn btn-sm btn-secondary" disabled title="Cetak SEP — aktif setelah bridging BPJS VClaim">
+                  <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
+                  Cetak SEP
+                </button>
+                <button class="btn btn-sm btn-secondary" disabled title="Update SEP — aktif setelah bridging BPJS VClaim">
+                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                  Update SEP
+                </button>
+                <button class="btn btn-sm btn-danger" disabled title="Hapus SEP — aktif setelah bridging BPJS VClaim">
+                  <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                  Hapus SEP
+                </button>
+              </div>
+            </div>
+
+            <!-- SKDP / Surat Kontrol — hanya pasien BPJS -->
+            <div v-if="visitDetailRow.guarantor === 'BPJS'" class="vd-section">
+              <div class="vd-section-row">
+                <div>
+                  <div class="vd-section-title">SKDP / Surat Kontrol</div>
+                  <div class="vd-section-val">{{ visitDetailRow.controlLetter ?? 'Belum ada' }}</div>
+                </div>
+                <span class="badge-soon">Segera Hadir</span>
+              </div>
+              <div class="vd-actions">
+                <button class="btn btn-sm btn-secondary" disabled title="Buat SKDP — aktif setelah bridging BPJS VClaim">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                  Buat SKDP
+                </button>
+                <button class="btn btn-sm btn-secondary" disabled title="Update SKDP — aktif setelah bridging BPJS VClaim">
+                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                  Update SKDP
+                </button>
               </div>
             </div>
           </div>
 
           <div class="modal-foot">
-            <button class="btn btn-secondary" @click="closeDetail">Tutup</button>
+            <button class="btn btn-secondary" @click="closeVisitDetail">Tutup</button>
             <span class="foot-spacer"></span>
-            <button class="btn btn-secondary" @click="printLabel(detailPatient)">
+            <button class="btn btn-secondary" @click="printLabel(visitDetailRow)">
               <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
               Cetak Label
             </button>
-            <button class="btn btn-secondary" @click="openRekamMedis(detailPatient); closeDetail()">
+            <button class="btn btn-primary" :disabled="!visitDetailRow.patientId" @click="gotoRekamMedis(visitDetailRow); closeVisitDetail()">
               <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              Rekam Medis
-            </button>
-            <button class="btn btn-primary" @click="callPatient(detailPatient); closeDetail()">
-              <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
-              Panggil Pasien
+              Buka Rekam Medis
             </button>
           </div>
         </div>
       </div>
     </transition>
 
-    <!-- ===================== REKAM MEDIS MODAL ===================== -->
+    <!-- ===================== PROFIL PASIEN MODAL (2 TAB) ===================== -->
     <transition name="modal-fade">
-      <div v-if="rmOpen && rmPatient" class="modal-backdrop" @click.self="closeRekamMedis">
+      <div v-if="profileOpen && profilePatient" class="modal-backdrop" @click.self="closeProfile">
         <div class="modal-shell modal-sm">
           <div class="modal-head">
             <div>
-              <div class="modal-title">Rekam Medis</div>
-              <div class="modal-sub">{{ rmPatient.name }} · {{ rmPatient.noRm }}</div>
+              <div class="modal-title">Profil Pasien</div>
+              <div class="modal-sub">{{ profilePatient.no_rm ?? '—' }} · {{ profilePatient.name }}</div>
             </div>
-            <button class="modal-x" aria-label="Tutup rekam medis" @click="closeRekamMedis">
+            <button class="modal-x" aria-label="Tutup profil pasien" @click="closeProfile">
               <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
-          <div class="modal-body">
-            <div class="rm-docs">
-              <div v-for="doc in rmDocs" :key="doc.code" class="rm-doc">
-                <div class="rm-doc-icon">
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                </div>
-                <div class="rm-doc-info">
-                  <div class="rm-doc-name">{{ doc.name }}</div>
-                  <div class="rm-doc-meta">{{ doc.code }} · {{ doc.category }}</div>
-                </div>
-                <span v-if="doc.code === 'RM-0.1' && rmPatient.gcSigned" class="rm-doc-tag rm-signed">Signed</span>
-              </div>
-            </div>
+
+          <!-- Tabs -->
+          <div class="profile-tabs">
+            <button :class="['profile-tab', { active: profileTab === 'detail' }]" @click="profileTab = 'detail'">
+              Detail Pasien
+            </button>
+            <button :class="['profile-tab', { active: profileTab === 'history' }]" @click="profileTab = 'history'">
+              Riwayat Kunjungan
+              <span v-if="riwayatMeta.total" class="profile-tab-count">{{ riwayatMeta.total }}</span>
+            </button>
           </div>
+
+          <div class="modal-body">
+            <div v-if="profileLoading" class="profile-loading">
+              <span class="spin-xs"></span> Memuat data pasien…
+            </div>
+
+            <!-- TAB 1: Detail data pasien -->
+            <template v-else-if="profileTab === 'detail'">
+              <div class="detail-hero">
+                <PatientAvatar :name="profilePatient.name" :src="profilePatient.photo_url" :size="46" />
+                <div>
+                  <div class="detail-name">{{ profilePatient.name }}</div>
+                  <div class="detail-sub">
+                    {{ calcAge(profilePatient.date_of_birth) || '—' }} th ·
+                    {{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
+                  </div>
+                </div>
+                <span :class="['ptype-tag', profilePatient.bpjs_number ? 'pt-bpjs' : 'pt-umum']" style="margin-left:auto">
+                  {{ profilePatient.bpjs_number ? 'BPJS' : 'UMUM' }}
+                </span>
+              </div>
+
+              <div class="detail-grid">
+                <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ profilePatient.no_rm ?? '—' }}</span></div>
+                <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik ?? '—' }}</span></div>
+                <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
+                <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
+                <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone ?? '—' }}</span></div>
+                <div class="cf"><span class="cf-k">Golongan Darah</span><span class="cf-v">{{ profilePatient.blood_type ?? '—' }}</span></div>
+                <div class="cf"><span class="cf-k">Provinsi</span><span class="cf-v">{{ profilePatient.province ?? '—' }}</span></div>
+                <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ profilePatient.address ?? '—' }}</span></div>
+              </div>
+            </template>
+
+            <!-- TAB 2: Riwayat kunjungan — paginated + filter tanggal -->
+            <template v-else>
+              <div class="riwayat-toolbar">
+                <label class="riwayat-date-lbl">Cari tanggal kunjungan</label>
+                <input type="date" v-model="riwayatDate" class="form-input compact" @change="loadRiwayat(1)" />
+                <button v-if="riwayatDate" class="btn btn-sm btn-secondary" @click="riwayatDate = ''; loadRiwayat(1)">Reset</button>
+              </div>
+
+              <div v-if="riwayatLoading" class="profile-loading">
+                <span class="spin-xs"></span> Memuat riwayat…
+              </div>
+              <div v-else-if="!profileVisits.length" class="profile-empty">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+                {{ riwayatDate ? 'Tidak ada kunjungan pada tanggal itu' : 'Belum ada riwayat kunjungan' }}
+              </div>
+              <template v-else>
+                <div class="visit-history">
+                  <div v-for="(v, i) in profileVisits" :key="v.id" class="vh-row">
+                    <div class="vh-num">{{ (riwayatMeta.current_page - 1) * RIWAYAT_PER_PAGE + i + 1 }}</div>
+                    <PatientAvatar :name="profilePatient.name" :src="v.photo" :size="48" radius="10px" />
+                    <div class="vh-body">
+                      <div class="vh-top">
+                        <span class="vh-date-inline">{{ v.date }}</span>
+                        <span class="vh-class">{{ v.classification }}</span>
+                        <span :class="['ptype-tag', ptypeClass(v.guarantor)]">{{ v.guarantor }}</span>
+                        <span class="vh-station">{{ v.station }}</span>
+                      </div>
+                      <div class="vh-meta">
+                        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        <span>{{ v.doctor }}</span>
+                        <span v-if="v.poliklinik">· {{ v.poliklinik }}</span>
+                      </div>
+                      <div v-if="v.insurer || v.noSep" class="vh-meta vh-sub">
+                        <span v-if="v.insurer">{{ v.insurer }}</span>
+                        <span v-if="v.noSep">· SEP {{ v.noSep }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="riwayatMeta.last_page > 1" class="table-pager">
+                  <div class="pager-info">Hal {{ riwayatMeta.current_page }} / {{ riwayatMeta.last_page }} · {{ riwayatMeta.total }} kunjungan</div>
+                  <div class="pager-ctrl">
+                    <button class="btn btn-sm btn-secondary" :disabled="riwayatMeta.current_page <= 1 || riwayatLoading" @click="loadRiwayat(riwayatMeta.current_page - 1)">
+                      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                      Sebelumnya
+                    </button>
+                    <button class="btn btn-sm btn-secondary" :disabled="riwayatMeta.current_page >= riwayatMeta.last_page || riwayatLoading" @click="loadRiwayat(riwayatMeta.current_page + 1)">
+                      Berikutnya
+                      <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </template>
+          </div>
+
           <div class="modal-foot">
-            <button class="btn btn-secondary" @click="closeRekamMedis">Tutup</button>
+            <button class="btn btn-secondary" @click="closeProfile">Tutup</button>
             <span class="foot-spacer"></span>
-            <button class="btn btn-primary" @click="gotoRekamMedis(rmPatient); closeRekamMedis()">
-              <svg viewBox="0 0 24 24"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>
-              Buka Modul RME
+            <button
+              class="btn btn-primary"
+              :disabled="!profilePatient.id"
+              @click="gotoRekamMedis({ patientId: profilePatient.id }); closeProfile()"
+            >
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              Buka Rekam Medis
             </button>
           </div>
         </div>
@@ -1865,6 +2259,9 @@ onUnmounted(() => {
       </div>
     </transition>
 
+    <!-- ===================== FOTO PASIEN (kamera/upload) ===================== -->
+    <PhotoCaptureModal v-model:open="photoModalOpen" :patient-name="form.name" @captured="onPhotoCaptured" />
+
     <!-- ===================== TOASTS ===================== -->
     <div class="toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['toast', 'toast-' + t.type]">
@@ -1885,6 +2282,22 @@ onUnmounted(() => {
 .toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
 .toolbar-title { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--gd); line-height: 1.1; font-weight: 400; }
 .toolbar-sub { font-size: 12px; color: var(--tu); margin-top: 4px; }
+.toolbar-actions { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+
+/* Searchbar lihat data pasien (di kiri tombol Daftarkan) */
+.lookup { position: relative; display: flex; align-items: center; }
+.lookup-icon { position: absolute; left: 11px; width: 15px; height: 15px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+.lookup-input {
+  width: 280px; height: 40px; padding: 0 32px 0 34px;
+  border: 1.5px solid var(--gb); border-radius: 10px;
+  background: var(--bc); font-size: 13px; color: var(--td);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.lookup-input::placeholder { color: var(--tu); }
+.lookup-input:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 3px var(--gl); }
+.lookup-spin { position: absolute; right: 11px; }
+.lookup-drop { min-width: 320px; }
+@media (max-width: 720px) { .lookup-input { width: 180px; } }
 .dot-sep { margin: 0 6px; color: var(--th); }
 .clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tm); }
 
@@ -2046,6 +2459,13 @@ onUnmounted(() => {
 .table-wrap { overflow-x: auto; }
 .table-scroll { max-height: 460px; overflow-y: auto; }
 .table-scroll thead th { position: sticky; top: 0; background: var(--bc); z-index: 1; box-shadow: 0 1px 0 var(--gb); }
+
+/* Pager tabel kunjungan (server-side) */
+.table-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0.7rem 1rem; border-top: 1px solid var(--gb); flex-wrap: wrap; }
+.pager-info { font-size: 12px; color: var(--tu); font-variant-numeric: tabular-nums; }
+.pager-ctrl { display: flex; align-items: center; gap: 8px; }
+.pager-page { font-size: 12px; font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; min-width: 64px; text-align: center; }
+.table-pager .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .queue-table { width: 100%; border-collapse: collapse; }
 .queue-table th { font-size: 10px; font-weight: 600; color: var(--tu); letter-spacing: 0.06em; text-transform: uppercase; padding: 10px 14px; border-bottom: 1px solid var(--gb); text-align: left; white-space: nowrap; }
 .queue-table td { padding: 11px 14px; border-bottom: 1px solid rgba(0,0,0,0.04); font-size: 12.5px; color: var(--td); vertical-align: middle; }
@@ -2200,6 +2620,28 @@ onUnmounted(() => {
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field.full, .full { grid-column: 1 / -1; }
 .field-lbl { font-size: 11.5px; font-weight: 600; color: var(--tm); }
+
+/* Foto pasien — field di wizard Step 1 */
+.photo-field { display: flex; align-items: center; gap: 14px; }
+.photo-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.photo-hint { font-size: 11px; color: var(--tu); flex-basis: 100%; }
+
+/* Header section konfirmasi dengan avatar */
+.confirm-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.confirm-photo { display: flex; align-items: center; gap: 10px; }
+.confirm-photo-note { font-size: 11px; color: var(--ga); margin-top: 3px; font-weight: 500; }
+
+/* Detail Kunjungan — nama pasien klik + section SEP/SKDP */
+.vd-name-link { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ga); }
+.vd-name-link:hover:not(:disabled) { text-decoration: underline; }
+.vd-name-link:disabled { color: var(--td); cursor: default; font-weight: 500; }
+.vd-name-link svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.vd-insurer { font-size: 12px; color: var(--tu); }
+.vd-section { margin-top: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--gb); border-radius: 12px; background: var(--bi); }
+.vd-section-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.vd-section-title { font-size: 11px; font-weight: 700; color: var(--tm); text-transform: uppercase; letter-spacing: 0.03em; }
+.vd-section-val { font-size: 14px; font-weight: 600; color: var(--td); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.vd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .section-label { font-size: 11px; font-weight: 700; color: var(--gd); text-transform: uppercase; letter-spacing: 0.05em; padding-top: 0.4rem; border-top: 1px solid var(--gb); margin-top: 0.2rem; }
 .section-label:first-child { border-top: none; padding-top: 0; margin-top: 0; }
 .lbl-note { font-weight: 500; color: var(--tu); text-transform: none; letter-spacing: 0; font-size: 10px; }
@@ -2242,6 +2684,39 @@ onUnmounted(() => {
 .detail-avatar { width: 46px; height: 46px; border-radius: 12px; background: var(--gl); color: var(--gd); display: flex; align-items: center; justify-content: center; font-family: 'DM Serif Display', serif; font-size: 20px; flex-shrink: 0; }
 .detail-name { font-size: 16px; font-weight: 600; color: var(--td); }
 .detail-sub { font-size: 12px; color: var(--tu); margin-top: 2px; }
+
+/* Profil Pasien — tabs */
+.profile-tabs { display: flex; gap: 4px; padding: 0 1.5rem; border-bottom: 1px solid var(--gb); }
+.profile-tab {
+  position: relative; background: none; border: none; cursor: pointer;
+  padding: 12px 4px; margin-right: 18px; font-size: 13px; font-weight: 500;
+  color: var(--tu); display: inline-flex; align-items: center; gap: 6px;
+  transition: color 0.15s;
+}
+.profile-tab:hover { color: var(--td); }
+.profile-tab.active { color: var(--gd); font-weight: 600; }
+.profile-tab.active::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--ga); border-radius: 2px; }
+.profile-tab-count { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px; background: var(--gl); color: var(--ga); }
+.profile-loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 2rem; font-size: 13px; color: var(--tu); }
+.profile-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 2.5rem 1rem; font-size: 13px; color: var(--tu); }
+.profile-empty svg { width: 34px; height: 34px; fill: none; stroke: var(--gb); stroke-width: 1.6; stroke-linecap: round; }
+
+/* Profil Pasien — riwayat kunjungan */
+.riwayat-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 0.9rem; flex-wrap: wrap; }
+.riwayat-date-lbl { font-size: 11.5px; font-weight: 600; color: var(--tm); }
+.riwayat-toolbar .form-input.compact { width: auto; }
+.visit-history { display: flex; flex-direction: column; gap: 8px; }
+.vh-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--gb); border-radius: 12px; background: var(--bc); transition: border-color 0.15s; }
+.vh-row:hover { border-color: var(--ga); }
+.vh-num { flex-shrink: 0; width: 20px; font-size: 12px; font-weight: 700; color: var(--tu); font-variant-numeric: tabular-nums; text-align: right; }
+.vh-date, .vh-date-inline { font-size: 12px; font-weight: 700; color: var(--gd); font-variant-numeric: tabular-nums; }
+.vh-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.vh-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.vh-class { font-size: 12.5px; font-weight: 600; color: var(--td); }
+.vh-station { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px; background: var(--bi); color: var(--tm); }
+.vh-meta { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--tu); }
+.vh-meta svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+.vh-meta.vh-sub { font-variant-numeric: tabular-nums; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem 1.1rem; }
 
 /* MODAL FOOTER */

@@ -14,6 +14,9 @@ export const usePerawatStore = defineStore('perawat', () => {
   const selectedQueue = ref(null)   // full queue item from list
   const asesmen       = ref(null)   // existing NurseAssessment or null
   const asesmenLoading = ref(false)
+  // Tiket Dokter (D-NNN) hasil finalize — diisi backend bila gate TR lolos.
+  // Dipakai tombol "Cetak Tiket Dokter". Persist setelah clearSelected, direset saat pilih pasien.
+  const doctorTicket   = ref(null)
 
   // ─── Assessment form save/finalize state ────────────────────────────────────
   const saving      = ref(false)
@@ -96,6 +99,7 @@ export const usePerawatStore = defineStore('perawat', () => {
 
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
+    doctorTicket.value  = null   // reset tiket dari pasien sebelumnya
 
     // CALLED → IN_PROGRESS via /mulai endpoint (bukan /selesai — itu finalize+advance)
     if (queueItem.status === 'CALLED') {
@@ -107,7 +111,10 @@ export const usePerawatStore = defineStore('perawat', () => {
     try {
       if (queueItem.visit?.id) {
         const { data } = await perawatApi.showAsesmen(queueItem.visit.id)
-        asesmen.value = data.data
+        asesmen.value      = data.data
+        // Repopulate tiket dokter bila pasien sudah finalized (cetak ulang). Backend
+        // hanya menyertakan doctor_ticket bila gate TR lolos; null selama belum.
+        doctorTicket.value = data.data?.doctor_ticket ?? null
       }
     } catch {
       asesmen.value = null
@@ -175,7 +182,8 @@ export const usePerawatStore = defineStore('perawat', () => {
     finalizing.value = true
     try {
       const { data } = await perawatApi.finalizeAsesmen(asesmen.value.id)
-      asesmen.value = data.data
+      asesmen.value      = data.data
+      doctorTicket.value = data.data?.doctor_ticket ?? null
 
       // Mark queue COMPLETED locally
       const idx = antrian.value.findIndex((q) => q.id === selectedQueue.value?.id)
@@ -364,6 +372,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     // state
     antrian, stats, queueLoading, queueError,
     selectedQueue, asesmen, asesmenLoading,
+    doctorTicket,
     saving, finalizing,
     vitalHistory, vitalHistoryLoading,
     rekamMedis, rekamMedisLoading, rekamMedisError,

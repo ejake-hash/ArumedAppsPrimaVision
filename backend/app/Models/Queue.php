@@ -62,6 +62,12 @@ class Queue extends Model
     public const STATUS_COMPLETED   = 'COMPLETED';
     public const STATUS_CANCELLED   = 'CANCELLED';
 
+    // Sub-status khusus baris DOKTER saat alur penunjang (pasien tetap milik dokter):
+    //   DI_PENUNJANG      = pasien sedang di stasiun penunjang (baris turun ke bawah)
+    //   SELESAI_PENUNJANG = semua hasil selesai, siap dilanjut dokter (baris naik ke atas)
+    public const STATUS_AT_PENUNJANG    = 'DI_PENUNJANG';
+    public const STATUS_PENUNJANG_DONE  = 'SELESAI_PENUNJANG';
+
     public const ACTIVE_STATUSES = [
         self::STATUS_WAITING,
         self::STATUS_CALLED,

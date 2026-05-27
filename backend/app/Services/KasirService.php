@@ -537,6 +537,9 @@ class KasirService
     /**
      * Generate receipt data for PDF rendering (via Puppeteer on frontend).
      * Returns structured data + clinic profile for PDF template.
+     *
+     * Boleh dicetak pada status apa pun (termasuk DRAFT / belum lunas) — dokumen
+     * yang belum PAID ditandai "PRO FORMA / BELUM LUNAS" di sisi frontend.
      */
     public function generateReceipt(string $invoiceId): array
     {
@@ -547,25 +550,29 @@ class KasirService
             'cashier',
         ])->findOrFail($invoiceId);
 
-        if ($invoice->status === 'DRAFT') {
-            throw new \Exception('Invoice masih DRAFT, tidak bisa dicetak.', 422);
-        }
-
         $clinic = ClinicProfile::first();
+        $total  = (float) $invoice->total;
+        $paid   = (float) $invoice->paid_amount;
 
         return [
             'clinic' => [
                 'name'           => $clinic?->clinic_name,
                 'address'        => $clinic?->address,
                 'phone'          => $clinic?->phone,
+                'email'          => $clinic?->email,
+                'director_name'  => $clinic?->director_name,
+                'director_sip'   => $clinic?->director_sip,
                 'logo_path'      => $clinic?->logo_path,
+                'logo_url'       => $this->resolveAssetUrl($clinic?->logo_path),
                 'stamp_path'     => $clinic?->stamp_path,
+                'stamp_url'      => $this->resolveAssetUrl($clinic?->stamp_path),
                 'watermark_type' => $clinic?->watermark_enabled ? $clinic?->watermark_type : null,
             ],
             'invoice' => [
                 'number'         => $invoice->invoice_number,
                 'date'           => $invoice->created_at?->format('d/m/Y'),
                 'status'         => $invoice->status,
+                'is_paid'        => $invoice->status === 'PAID',
                 'payment_method' => $invoice->payment_method,
                 'paid_at'        => $invoice->paid_at?->format('d/m/Y H:i'),
             ],
@@ -583,10 +590,27 @@ class KasirService
                 'tax'         => $invoice->tax,
                 'total'       => $invoice->total,
                 'paid_amount' => $invoice->paid_amount,
-                'change'      => max(0, $invoice->paid_amount - $invoice->total),
+                'change'      => max(0, $paid - $total),
+                'sisa'        => max(0, $total - $paid),
             ],
             'cashier' => $invoice->cashier?->name,
         ];
+    }
+
+    /**
+     * Ubah path logo/stempel (relatif storage) menjadi URL absolut yang bisa
+     * dimuat di jendela cetak. Data URI / URL penuh dikembalikan apa adanya.
+     */
+    private function resolveAssetUrl(?string $path): ?string
+    {
+        if (! $path) {
+            return null;
+        }
+        if (str_starts_with($path, 'http') || str_starts_with($path, 'data:')) {
+            return $path;
+        }
+
+        return asset('storage/' . ltrim($path, '/'));
     }
 
     // =========================================================================

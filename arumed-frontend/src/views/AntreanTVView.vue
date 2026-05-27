@@ -87,6 +87,102 @@ async function fetchAudioDefaults() {
   }
 }
 
+// ─── Branding (logo + nama klinik) ──────────────────────────────────────────
+// Singleton di backend; dipakai di bar atas & panel placeholder (panel kiri).
+// Logo disimpan sebagai data URL base64 (≤512 KB) supaya tidak perlu storage file.
+const brandingDefaults = {
+  logo_data:           null,
+  clinic_name:         'Klinik Mata Arunika',
+  clinic_subtitle:     'Cilegon · Layar Antrean',
+  placeholder_title:   'Klinik Mata Arunika Cilegon',
+  placeholder_tagline: 'Spesialis kesehatan mata terpadu — PMK No. 24/2022',
+}
+const branding = ref({ ...brandingDefaults })
+
+async function fetchBrandingSettings() {
+  try {
+    const { data } = await antreanTvApi.brandingSettings()
+    branding.value = { ...brandingDefaults, ...(data.data ?? {}) }
+  } catch {
+    branding.value = { ...brandingDefaults }
+  }
+}
+
+// Editor (tab "Klinik"). Draft di-load saat tab dibuka, baru di-save ke backend.
+const brandingDraft = ref(null)
+const brandingSaveMsg = ref('')
+const brandingSaveMsgType = ref('')   // 'ok' | 'err'
+const MAX_LOGO_BYTES = 512 * 1024
+
+function loadBrandingDraft() {
+  brandingDraft.value = { ...brandingDefaults, ...branding.value }
+}
+
+function handleLogoFile(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''   // reset supaya file yang sama bisa dipilih ulang
+  if (!file) return
+  const okTypes = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp']
+  if (!okTypes.includes(file.type)) {
+    brandingSaveMsg.value = 'Format logo harus PNG, JPG, SVG, atau WebP.'
+    brandingSaveMsgType.value = 'err'
+    return
+  }
+  if (file.size > MAX_LOGO_BYTES) {
+    brandingSaveMsg.value = `Ukuran logo maksimal 512 KB (file ini ${(file.size / 1024).toFixed(0)} KB).`
+    brandingSaveMsgType.value = 'err'
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (brandingDraft.value) brandingDraft.value.logo_data = reader.result
+    brandingSaveMsg.value = ''
+  }
+  reader.onerror = () => {
+    brandingSaveMsg.value = 'Gagal membaca file logo.'
+    brandingSaveMsgType.value = 'err'
+  }
+  reader.readAsDataURL(file)
+}
+
+function removeLogo() {
+  if (brandingDraft.value) brandingDraft.value.logo_data = null
+}
+
+// Reset ke default DAN langsung persist ke backend (berlaku semua TV).
+// Mengisi ulang draft + branding live supaya operator bisa langsung tweak lalu
+// Simpan kalau mau. Mirror resetDisplaySetting di tab "Tampilan".
+async function resetBrandingToDefault() {
+  brandingSaveMsg.value = ''
+  try {
+    const { data } = await antreanTvApi.resetBranding()
+    const fresh = { ...brandingDefaults, ...(data.data ?? {}) }
+    branding.value = fresh
+    brandingDraft.value = { ...fresh }
+    brandingSaveMsg.value = data.message ?? 'Dikembalikan ke default untuk semua TV.'
+    brandingSaveMsgType.value = 'ok'
+  } catch (err) {
+    brandingSaveMsg.value = err.response?.data?.message ?? 'Gagal reset (perlu login).'
+    brandingSaveMsgType.value = 'err'
+  }
+  setTimeout(() => { brandingSaveMsg.value = '' }, 4000)
+}
+
+async function saveBranding() {
+  if (!brandingDraft.value) return
+  brandingSaveMsg.value = ''
+  try {
+    const { data } = await antreanTvApi.updateBranding(brandingDraft.value)
+    branding.value = { ...brandingDefaults, ...(data.data ?? {}) }
+    brandingSaveMsg.value = data.message ?? 'Tersimpan untuk semua TV.'
+    brandingSaveMsgType.value = 'ok'
+  } catch (err) {
+    brandingSaveMsg.value = err.response?.data?.message ?? 'Gagal menyimpan (perlu login).'
+    brandingSaveMsgType.value = 'err'
+  }
+  setTimeout(() => { brandingSaveMsg.value = '' }, 4000)
+}
+
 // Resolve template variabel {nomor}, {nama}, {poli}, {stasiun} dari payload q.
 function renderTemplate(tmpl, q) {
   if (!tmpl) return ''
@@ -387,7 +483,7 @@ function disconnectWs() {
 
 onMounted(async () => {
   timer = setInterval(updateClock, 1000)
-  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults()])
+  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings()])
   connectWs()
   // Refresh dokter aktif tiap 2 menit (toggle aktif/non-aktif dari menu dokter)
   doctorPollInterval = setInterval(fetchActiveDoctors, 120_000)
@@ -498,12 +594,6 @@ function applyYoutube() {
   youtubeEmbedUrl.value = `https://www.youtube.com/embed/${id}?mute=1${auto}${loop}`
   stopSlideshow()
   mediaMode.value = 'youtube'
-}
-
-function setMediaMode(mode) {
-  if (mode !== 'slideshow') stopSlideshow()
-  mediaMode.value = mode
-  if (mode === 'slideshow' && slides.value.length > 0) startSlideshow()
 }
 
 // --- VIDEO LOKAL ---
@@ -1076,7 +1166,8 @@ async function saveAudioDefaults() {
     <!-- TOP BAR -->
     <div class="tv-topbar">
       <div class="tv-logo">
-        <svg viewBox="0 0 90 90" fill="none">
+        <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="tv-logo-img" />
+        <svg v-else viewBox="0 0 90 90" fill="none">
           <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.15)" stroke-width="1" />
           <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.22)" stroke-width="1" />
           <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.32)" stroke-width="1.5" />
@@ -1086,8 +1177,8 @@ async function saveAudioDefaults() {
           <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round" />
         </svg>
         <div class="tv-brand">
-          <span class="tv-brand-name">Klinik Mata Arunika</span>
-          <span class="tv-brand-sub">Cilegon · Layar Antrean</span>
+          <span class="tv-brand-name">{{ branding.clinic_name }}</span>
+          <span v-if="branding.clinic_subtitle" class="tv-brand-sub">{{ branding.clinic_subtitle }}</span>
         </div>
       </div>
       <div class="tv-right">
@@ -1113,7 +1204,8 @@ async function saveAudioDefaults() {
       <div class="video-panel">
         <!-- Placeholder -->
         <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
-          <svg viewBox="0 0 90 90" fill="none">
+          <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="video-logo-img" />
+          <svg v-else viewBox="0 0 90 90" fill="none">
             <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.08)" stroke-width="1" />
             <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.12)" stroke-width="1" />
             <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.18)" stroke-width="1.5" />
@@ -1122,8 +1214,8 @@ async function saveAudioDefaults() {
             <line x1="45" y1="39" x2="45" y2="51" stroke="rgba(138,191,68,0.4)" stroke-width="1.5" stroke-linecap="round" />
             <line x1="39" y1="45" x2="51" y2="45" stroke="rgba(138,191,68,0.4)" stroke-width="1.5" stroke-linecap="round" />
           </svg>
-          <h2 class="video-title">Klinik Mata Arunika Cilegon</h2>
-          <p class="video-tagline">Spesialis kesehatan mata terpadu — PMK No. 24/2022</p>
+          <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
+          <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
         </div>
 
         <!-- YouTube Embed -->
@@ -1181,7 +1273,7 @@ async function saveAudioDefaults() {
             :class="['station-card', stationView[key].called ? 'has-called' : '']"
           >
             <div class="sc-head">
-              <span class="sc-name">{{ stationLabel[key] }}</span>
+              <span class="sc-name">{{ key === 'DOKTER' ? 'POLIKLINIK' : stationLabel[key] }}</span>
               <span class="sc-count">{{ stationView[key].waiting.length }} menunggu</span>
             </div>
             <template v-if="stationView[key].called">
@@ -1311,6 +1403,10 @@ async function saveAudioDefaults() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
             Media
           </button>
+          <button :class="['ctrl-tab', { active: activeTab === 'branding' }]" @click="activeTab = 'branding'; loadBrandingDraft()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="9" y1="13" x2="9" y2="13.01"/></svg>
+            Klinik
+          </button>
           <button :class="['ctrl-tab', { active: activeTab === 'slideshow' }]" @click="activeTab = 'slideshow'">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             Slideshow
@@ -1338,24 +1434,10 @@ async function saveAudioDefaults() {
           <div v-if="activeTab === 'media'" class="ctrl-section">
             <p class="ctrl-lbl">Mode Tampilan Panel Kiri</p>
             <div class="mode-grid">
-              <button :class="['mode-card', { active: mediaMode === 'placeholder' }]" @click="setMediaMode('placeholder')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-                <span>Placeholder</span>
-                <small>Logo & nama klinik</small>
-              </button>
               <button :class="['mode-card', { active: mediaMode === 'youtube' }]" @click="activeTab = 'media'">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 001.46 6.42 29 29 0 001 12a29 29 0 00.46 5.58 2.78 2.78 0 001.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.96A29 29 0 0023 12a29 29 0 00-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
                 <span>YouTube</span>
                 <small>Embed video YouTube</small>
-              </button>
-              <button
-                :class="['mode-card', { active: mediaMode === 'slideshow' }]"
-                @click="applySlideshowMode"
-                :disabled="slides.length === 0"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                <span>Slideshow</span>
-                <small>{{ slides.length ? `${slides.length} gambar` : 'Belum ada gambar' }}</small>
               </button>
               <button :class="['mode-card', { active: mediaMode === 'localvideo' }]" @click="$refs.videoFileInput.click()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -1729,6 +1811,53 @@ async function saveAudioDefaults() {
             <div v-else class="ctrl-empty">Memuat...</div>
           </div>
 
+          <!-- TAB: BRANDING / KLINIK -->
+          <div v-if="activeTab === 'branding'" class="ctrl-section">
+            <template v-if="brandingDraft">
+              <!-- LOGO -->
+              <div class="ctrl-sub-section">
+                <p class="ctrl-lbl">Logo Klinik</p>
+                <div class="brand-logo-row">
+                  <div class="brand-logo-preview">
+                    <img v-if="brandingDraft.logo_data" :src="brandingDraft.logo_data" alt="Pratinjau logo" />
+                    <span v-else class="brand-logo-empty">Belum ada logo<br>(pakai logo bawaan)</span>
+                  </div>
+                  <div class="brand-logo-actions">
+                    <input ref="logoFileInput" type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp" style="display:none" @change="handleLogoFile" />
+                    <button class="ctrl-action-btn" @click="$refs.logoFileInput.click()">Pilih / Ganti Logo</button>
+                    <button v-if="brandingDraft.logo_data" class="ctrl-action-btn brand-btn-muted" @click="removeLogo">Hapus Logo</button>
+                    <p class="ctrl-hint">Format PNG, JPG, SVG, atau WebP. Disarankan persegi (mis. 512×512 px) dengan latar transparan. Maksimal 512 KB. Logo tampil ~56 px di bar atas dan ~180 px di panel placeholder.</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- TEKS BAR ATAS -->
+              <div class="ctrl-sub-section">
+                <p class="ctrl-lbl">Teks Bar Atas (Header)</p>
+                <label class="ctrl-field-lbl">Nama Klinik</label>
+                <input v-model="brandingDraft.clinic_name" class="ctrl-input" type="text" maxlength="120" :placeholder="brandingDefaults.clinic_name" />
+                <label class="ctrl-field-lbl" style="margin-top:12px">Sub-judul Header</label>
+                <input v-model="brandingDraft.clinic_subtitle" class="ctrl-input" type="text" maxlength="160" :placeholder="brandingDefaults.clinic_subtitle" />
+              </div>
+
+              <!-- TEKS PLACEHOLDER -->
+              <div class="ctrl-sub-section">
+                <p class="ctrl-lbl">Teks Panel Placeholder (Panel Kiri)</p>
+                <label class="ctrl-field-lbl">Judul</label>
+                <input v-model="brandingDraft.placeholder_title" class="ctrl-input" type="text" maxlength="160" :placeholder="brandingDefaults.placeholder_title" />
+                <label class="ctrl-field-lbl" style="margin-top:12px">Tagline / Keterangan</label>
+                <textarea v-model="brandingDraft.placeholder_tagline" class="ctrl-textarea" rows="2" maxlength="300" :placeholder="brandingDefaults.placeholder_tagline"></textarea>
+              </div>
+
+              <div class="ctrl-sub-section" style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center">
+                <button class="ctrl-action-btn" style="background:#8abf44; color:#061d15" @click="saveBranding">Simpan</button>
+                <button class="ctrl-action-btn brand-btn-muted" @click="resetBrandingToDefault">Set ke Default</button>
+                <p v-if="brandingSaveMsg" :class="['ctrl-feedback', brandingSaveMsgType]" style="margin-left:.5rem">{{ brandingSaveMsg }}</p>
+              </div>
+            </template>
+            <div v-else class="ctrl-empty">Memuat...</div>
+          </div>
+
           <!-- TAB: SECURITY / PIN -->
           <div v-if="activeTab === 'pin'" class="ctrl-section">
             <p class="ctrl-lbl">Ubah PIN Kontrol</p>
@@ -1772,6 +1901,7 @@ async function saveAudioDefaults() {
 }
 .tv-logo { display: flex; align-items: center; gap: 1rem; }
 .tv-logo svg { width: 56px; height: 56px; }
+.tv-logo-img { width: 56px; height: 56px; object-fit: contain; }
 .tv-brand { display: flex; flex-direction: column; }
 .tv-brand-name {
   font-family: 'DM Serif Display', serif;
@@ -1862,6 +1992,7 @@ async function saveAudioDefaults() {
   text-align: center;
 }
 .video-placeholder svg { width: 180px; height: 180px; }
+.video-logo-img { width: 200px; height: 200px; object-fit: contain; }
 .video-title {
   font-family: 'DM Serif Display', serif;
   font-size: 30px;
@@ -2631,6 +2762,36 @@ async function saveAudioDefaults() {
   color: rgba(255, 255, 255, 0.55);
   display: block;
 }
+.ctrl-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 4px 0 0;
+}
+/* Branding tab */
+.brand-logo-row { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.brand-logo-preview {
+  width: 120px;
+  height: 120px;
+  flex-shrink: 0;
+  border: 1px dashed rgba(138, 191, 68, 0.3);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.brand-logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.brand-logo-empty {
+  font-size: 11px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.3);
+  line-height: 1.5;
+  padding: 0 8px;
+}
+.brand-logo-actions { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 200px; }
+.brand-btn-muted { background: rgba(255, 255, 255, 0.08) !important; color: rgba(255, 255, 255, 0.7) !important; }
 .ctrl-row { display: flex; gap: 8px; }
 .ctrl-input {
   flex: 1;
@@ -2710,7 +2871,7 @@ async function saveAudioDefaults() {
 /* Mode cards */
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
 }
 .mode-card {

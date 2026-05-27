@@ -37,6 +37,7 @@ export const REGISTRY = {
   tarifTindakan: { api: masterApi.tarifTindakan, csvType: 'tarif/tindakan', label: 'Tarif Tindakan' },
   paketBedah:    { api: masterApi.paketBedah,    csvType: null,             label: 'Paket Bedah' },
   supplier:      { api: masterApi.supplier,      csvType: null,             label: 'Supplier' },
+  diagnosticTestType: { api: masterApi.diagnosticTestType, csvType: null,    label: 'Jenis Penunjang' },
 }
 
 function blankSlot() {

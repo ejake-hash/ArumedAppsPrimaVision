@@ -78,6 +78,13 @@ function renderCell(col, row) {
   if (raw === null || raw === undefined || raw === '') return '—'
   return raw
 }
+
+// Nomor baris absolut (memperhitungkan halaman aktif).
+function rowNumber(idx) {
+  const page = Number(props.meta?.current_page) || 1
+  const per  = Number(props.meta?.per_page) || props.rows.length || 0
+  return (page - 1) * per + idx + 1
+}
 </script>
 
 <template>
@@ -131,13 +138,13 @@ function renderCell(col, row) {
               {{ emptyText }}
             </td>
           </tr>
-          <tr v-for="row in rows" :key="row[rowKey]" v-else>
+          <tr v-for="(row, idx) in rows" :key="row[rowKey]" v-else>
             <td
               v-for="col in columns"
               :key="col.key"
               :style="{ textAlign: col.align ?? 'left' }"
             >
-              <slot :name="`cell-${col.key}`" :row="row" :value="row[col.key]">
+              <slot :name="`cell-${col.key}`" :row="row" :value="row[col.key]" :index="idx" :number="rowNumber(idx)">
                 {{ renderCell(col, row) }}
               </slot>
             </td>

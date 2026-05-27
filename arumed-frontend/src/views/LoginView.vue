@@ -9,7 +9,6 @@ const auth = useAuthStore()
 
 const sel = ref('dokter')
 const showPw = ref(false)
-const doctorModal = ref(false)
 const form = ref({ username: '', password: '', remember: false })
 const errors = ref({ username: '', password: '' })
 const alert = ref({ show: false, type: 'e', message: '' })
@@ -40,34 +39,6 @@ const alertIcon = computed(() => alertIcons[alert.value.type] || alertIcons.e)
 
 const passwordInput = ref(null)
 function focusPassword() { passwordInput.value?.focus() }
-
-const doctors = [
-  {
-    name: 'dr. Ahmad Fauzi, Sp.M',
-    spec: 'Spesialis Mata',
-    avatar: 'AF',
-    schedule: [
-      { days: 'Senin – Jumat', hours: '08:00 – 14:00' },
-      { days: 'Sabtu',         hours: '08:00 – 12:00' },
-    ],
-  },
-  {
-    name: 'dr. Sari Dewi, Sp.M(K)',
-    spec: 'Konsultan Retina & Vitreus',
-    avatar: 'SD',
-    schedule: [
-      { days: 'Selasa & Kamis', hours: '14:00 – 19:00' },
-    ],
-  },
-  {
-    name: 'dr. Ridwan Hakim, Sp.M',
-    spec: 'Spesialis Glaukoma',
-    avatar: 'RH',
-    schedule: [
-      { days: 'Rabu & Jumat', hours: '09:00 – 13:00' },
-    ],
-  },
-]
 
 // Routing per role setelah login berhasil
 const roleRouteMap = {
@@ -162,10 +133,6 @@ async function login() {
 
     <!-- RIGHT FORM PANEL -->
     <div class="rp">
-      <button class="jadwal-corner" type="button" @click="doctorModal = true">
-        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        Jadwal Dokter
-      </button>
       <div class="card">
         <img :src="logoKlinik" alt="Klinik Mata Arunika" class="card-logo" />
 
@@ -277,45 +244,6 @@ async function login() {
       </div>
     </div>
   </div>
-
-  <!-- Doctor Schedule Modal -->
-  <Teleport to="body">
-    <div v-if="doctorModal" class="dm-overlay" @click.self="doctorModal = false">
-      <div class="dm">
-        <div class="dm-head">
-          <div class="dm-title">
-            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            Jadwal Praktek Dokter
-          </div>
-          <button class="dm-close" @click="doctorModal = false">
-            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <div class="dm-notice">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".6" fill="currentColor"/></svg>
-          Jadwal ini belum terhubung ke backend. Data bersifat ilustrasi.
-        </div>
-        <div class="dm-body">
-          <div v-for="d in doctors" :key="d.name" class="dm-card">
-            <div class="dm-card-head">
-              <div class="dm-avatar">{{ d.avatar }}</div>
-              <div class="dm-info">
-                <div class="dm-name">{{ d.name }}</div>
-                <div class="dm-spec">{{ d.spec }}</div>
-              </div>
-            </div>
-            <div class="dm-schedule">
-              <div v-for="s in d.schedule" :key="s.days" class="dm-row">
-                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                <span class="dm-days">{{ s.days }}</span>
-                <span class="dm-hours">{{ s.hours }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </Teleport>
 </template>
 
 <style scoped>
@@ -496,28 +424,6 @@ async function login() {
   background: var(--bp);
   position: relative;
 }
-.jadwal-corner {
-  position: absolute;
-  top: 1.1rem;
-  right: 1.5rem;
-  z-index: 10;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 13px;
-  background: var(--bc);
-  border: 1px solid var(--gb);
-  border-radius: 20px;
-  color: var(--tm);
-  font-family: 'DM Sans', sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
-}
-.jadwal-corner:hover { border-color: var(--ga); color: var(--gd); box-shadow: 0 3px 12px rgba(31,125,74,0.12); }
-.jadwal-corner svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .card {
   width: 100%;
   max-width: 430px;
@@ -816,63 +722,5 @@ async function login() {
   font-size: 10.5px;
   color: #c0cfc6;
   margin-top: 6px;
-}
-
-/* ─── DOCTOR MODAL ─── */
-.dm-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.45); backdrop-filter: blur(3px);
-  display: flex; align-items: center; justify-content: center;
-  padding: 1rem;
-}
-.dm {
-  background: var(--bc); border-radius: 16px;
-  width: 100%; max-width: 440px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
-  overflow: hidden;
-}
-.dm-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 1rem 1.25rem; border-bottom: 1px solid var(--gb);
-}
-.dm-title {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 14px; font-weight: 600; color: var(--td);
-}
-.dm-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
-.dm-close {
-  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-  border: none; background: var(--bs); border-radius: 7px; cursor: pointer; transition: background 0.15s;
-}
-.dm-close:hover { background: var(--eb); }
-.dm-close svg { width: 14px; height: 14px; fill: none; stroke: var(--tm); stroke-width: 2; stroke-linecap: round; }
-.dm-notice {
-  display: flex; align-items: center; gap: 7px;
-  background: var(--wb); border-bottom: 1px solid var(--wbd);
-  color: var(--wt); font-size: 11.5px; padding: 8px 1.25rem;
-}
-.dm-notice svg { width: 13px; height: 13px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-.dm-body { padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 10px; }
-.dm-card {
-  border: 1px solid var(--gb); border-radius: 11px; padding: 0.85rem 1rem;
-  background: var(--bs);
-}
-.dm-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 0.6rem; }
-.dm-avatar {
-  width: 36px; height: 36px; border-radius: 50%;
-  background: var(--gl); border: 1.5px solid var(--ga);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: var(--gd); flex-shrink: 0;
-}
-.dm-name { font-size: 13px; font-weight: 600; color: var(--td); }
-.dm-spec { font-size: 11px; color: var(--tu); margin-top: 1px; }
-.dm-schedule { display: flex; flex-direction: column; gap: 5px; }
-.dm-row { display: flex; align-items: center; gap: 7px; }
-.dm-row svg { width: 12px; height: 12px; flex-shrink: 0; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
-.dm-days { font-size: 12px; color: var(--tm); flex: 1; }
-.dm-hours {
-  font-size: 11.5px; font-weight: 600; color: var(--gd);
-  background: var(--gl); padding: 2px 8px; border-radius: 6px;
-  font-variant-numeric: tabular-nums;
 }
 </style>

@@ -385,6 +385,51 @@ class MasterDataController extends Controller
     }
 
     // =========================================================================
+    // JENIS PENUNJANG (diagnostic_test_types)
+    // =========================================================================
+
+    public function indexDiagnosticTestType(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->indexDiagnosticTestType(
+            $request->only(['search', 'category', 'active', 'per_page'])
+        ));
+    }
+
+    public function storeDiagnosticTestType(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'code'       => 'required|string|max:30|unique:diagnostic_test_types,code',
+            'name'       => 'required|string|max:150',
+            'category'   => 'nullable|string|max:50',
+            'is_active'  => 'nullable|boolean',
+            'sort_order' => 'nullable|integer|min:0',
+        ]);
+
+        return $this->ok($this->service->storeDiagnosticTestType($validated), 'Jenis penunjang dibuat', 201);
+    }
+
+    public function updateDiagnosticTestType(Request $request, string $id): JsonResponse
+    {
+        // `code` dipakai relasi tarif — boleh diubah tapi tetap unik (abaikan diri sendiri).
+        $validated = $request->validate([
+            'code'       => "sometimes|string|max:30|unique:diagnostic_test_types,code,{$id}",
+            'name'       => 'sometimes|string|max:150',
+            'category'   => 'nullable|string|max:50',
+            'is_active'  => 'nullable|boolean',
+            'sort_order' => 'nullable|integer|min:0',
+        ]);
+
+        return $this->ok($this->service->updateDiagnosticTestType($id, $validated), 'Jenis penunjang diperbarui');
+    }
+
+    public function deleteDiagnosticTestType(string $id): JsonResponse
+    {
+        $this->service->deleteDiagnosticTestType($id);
+
+        return $this->ok(null, 'Jenis penunjang dihapus');
+    }
+
+    // =========================================================================
     // OBAT / BHP / IOL
     // =========================================================================
 

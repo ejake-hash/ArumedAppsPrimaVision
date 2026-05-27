@@ -14,6 +14,7 @@ use App\Models\Notification;
 use App\Models\PatientDocument;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
+use App\Models\Procedure;
 use App\Models\Queue;
 use App\Models\SystemLog;
 use App\Models\Visit;
@@ -29,6 +30,7 @@ class DokterService
     public function __construct(
         private readonly Request $request,
         private readonly QueueService $queueService,
+        private readonly KasirService $kasirService,
     ) {}
 
     // =========================================================================
@@ -37,16 +39,33 @@ class DokterService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.nurseAssessment', 'visit.refractionRecord'])
+        $user = auth('api')->user();
+
+        $query = Queue::with(['visit.patient', 'visit.nurseAssessment', 'visit.refractionRecord'])
             ->where('station', 'DOKTER')
-            ->whereDate('created_at', today())
-            ->orderBy('queue_sequence')
-            ->get();
+            ->whereDate('created_at', today());
+
+        // Superadmin melihat seluruh antrean DOKTER. Dokter biasa hanya melihat
+        // pasien yang memilih dirinya saat admisi
+        // (visits.doctor_schedule_id → doctor_schedules.employee_id).
+        if (! $user?->isSuperadmin()) {
+            $employeeId = $user?->employee_id;
+            $query->whereHas('visit.doctorSchedule', function ($q) use ($employeeId) {
+                // employeeId null (user tanpa employee) → tidak match apa pun → antrean kosong.
+                $q->where('employee_id', $employeeId);
+            });
+        }
+
+        return $query->orderBy('queue_sequence')->get();
     }
 
     public function panggilAntrian(string $queueId): Queue
     {
-        $queue = Queue::byStation(Queue::STATION_DOKTER)->findOrFail($queueId);
+        $queue = Queue::byStation(Queue::STATION_DOKTER)
+            ->with('visit.doctorSchedule')
+            ->findOrFail($queueId);
+        $this->authorizeQueueOwnership($queue);
+
         return $this->queueService->panggil($queue->id);
     }
 
@@ -56,8 +75,85 @@ class DokterService
      */
     public function selesaiAntrian(string $queueId): array
     {
-        $queue = Queue::byStation(Queue::STATION_DOKTER)->findOrFail($queueId);
+        $queue = Queue::byStation(Queue::STATION_DOKTER)
+            ->with('visit.doctorSchedule')
+            ->findOrFail($queueId);
+        $this->authorizeQueueOwnership($queue);
+
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_DOKTER);
+    }
+
+    /**
+     * Kirim pasien ke pemeriksaan penunjang: baris DOKTER di-pause (status DI_PENUNJANG)
+     * dan diturunkan ke paling bawah antrean. Baris tetap milik dokter — saat semua
+     * order penunjang selesai, PenunjangService menaikkannya kembali (SELESAI_PENUNJANG).
+     */
+    public function kirimKePenunjang(string $queueId): Queue
+    {
+        $queue = Queue::byStation(Queue::STATION_DOKTER)
+            ->with('visit.doctorSchedule')
+            ->findOrFail($queueId);
+        $this->authorizeQueueOwnership($queue);
+
+        $hasOpenOrder = DiagnosticOrder::where('visit_id', $queue->visit_id)
+            ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
+            ->exists();
+        if (! $hasOpenOrder) {
+            throw new \Exception('Belum ada order penunjang untuk pasien ini.', 422);
+        }
+
+        $maxSeq = Queue::byStation(Queue::STATION_DOKTER)
+            ->whereDate('created_at', today())
+            ->max('queue_sequence') ?? 0;
+
+        $queue->update([
+            'status'         => Queue::STATUS_AT_PENUNJANG,
+            'queue_sequence' => $maxSeq + 1,
+            'called_at'      => null,
+            'started_at'     => null,
+        ]);
+
+        return $queue->fresh(['visit.patient']);
+    }
+
+    /**
+     * Pastikan queue ini milik dokter yang sedang login.
+     * Superadmin dikecualikan (boleh memanggil/menyelesaikan antrean siapa pun).
+     * Dokter lain → tolak (403), konsisten dengan filter di getPatientQueue().
+     */
+    private function authorizeQueueOwnership(Queue $queue): void
+    {
+        $this->assertOwnedByCurrentDoctor($queue->visit?->doctorSchedule?->employee_id);
+    }
+
+    /**
+     * Pastikan dokter login berhak atas kunjungan (visit) ini, lalu kembalikan
+     * Visit-nya (doctorSchedule sudah ter-load) agar bisa dipakai ulang pemanggil.
+     * Dipakai semua endpoint per-visit supaya dokter tidak bisa melihat / mengubah
+     * pasien milik dokter lain. Superadmin dikecualikan.
+     */
+    private function authorizeVisitOwnership(string $visitId): Visit
+    {
+        $visit = Visit::with('doctorSchedule')->findOrFail($visitId);
+        $this->assertOwnedByCurrentDoctor($visit->doctorSchedule?->employee_id);
+
+        return $visit;
+    }
+
+    /**
+     * Inti pengecekan kepemilikan: bandingkan employee_id pemilik kunjungan dengan
+     * dokter login. Superadmin selalu lolos; pemilik null / berbeda → 403.
+     */
+    private function assertOwnedByCurrentDoctor(?string $ownerEmployeeId): void
+    {
+        $user = auth('api')->user();
+        if ($user?->isSuperadmin()) {
+            return;
+        }
+
+        if (! $ownerEmployeeId || $ownerEmployeeId !== $user?->employee_id) {
+            throw new \Exception('Pasien ini bukan pasien Anda.', 403);
+        }
     }
 
     // =========================================================================
@@ -66,6 +162,8 @@ class DokterService
 
     public function getPatientData(string $visitId): Visit
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return Visit::with([
             'patient',
             'insurer',
@@ -84,6 +182,8 @@ class DokterService
 
     public function getTab2(string $visitId): ?DoctorExamination
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return DoctorExamination::where('visit_id', $visitId)->first();
     }
 
@@ -92,7 +192,7 @@ class DokterService
      */
     public function storeExamination(string $visitId, array $data): DoctorExamination
     {
-        Visit::findOrFail($visitId);
+        $this->authorizeVisitOwnership($visitId);
 
         if (DoctorExamination::where('visit_id', $visitId)->exists()) {
             throw new \Exception('Data pemeriksaan sudah ada. Gunakan update.', 422);
@@ -142,6 +242,8 @@ class DokterService
 
     public function updateExamination(string $visitId, array $data): DoctorExamination
     {
+        $this->authorizeVisitOwnership($visitId);
+
         $examination = DoctorExamination::where('visit_id', $visitId)->firstOrFail();
 
         if ($examination->is_finalized) {
@@ -159,31 +261,96 @@ class DokterService
     // TAB 3 — TINDAKAN + RESEP OBAT
     // =========================================================================
 
+    /**
+     * Daftar tindakan + tarif sesuai metode bayar kunjungan (guarantor_type + insurer).
+     * Tarif diresolusi pakai logika kanonik KasirService::getPrice (fallback 3-level).
+     */
+    public function getTarifTindakan(string $visitId): array
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+
+        return Procedure::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'code', 'name', 'category'])
+            ->map(fn ($p) => [
+                'id'       => $p->id,
+                'code'     => $p->code,
+                'name'     => $p->name,
+                'category' => $p->category,
+                'price'    => $this->kasirService->getPrice('procedure', $p->id, $visit->guarantor_type, $visit->insurer_id),
+            ])
+            ->all();
+    }
+
+    /**
+     * Daftar obat yang sudah punya harga jual (inventori farmasi → penentuan harga).
+     * Hanya obat ber-harga (inner join inventory_prices) yang bisa diresepkan dokter.
+     */
+    public function getDaftarObat(?string $search = null): array
+    {
+        return DB::table('medications as m')
+            ->join('inventory_prices as ip', function ($j) {
+                $j->on('ip.item_id', '=', 'm.id')->where('ip.item_type', '=', 'MEDICATION');
+            })
+            ->whereNull('m.deleted_at')
+            ->where('m.is_active', true)
+            ->when($search, function ($q) use ($search) {
+                $q->where(function ($w) use ($search) {
+                    $w->where('m.name', 'ilike', "%{$search}%")
+                      ->orWhere('m.code', 'ilike', "%{$search}%")
+                      ->orWhere('m.generic_name', 'ilike', "%{$search}%");
+                });
+            })
+            ->orderBy('m.name')
+            ->limit(100)
+            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'm.stock', 'ip.hja'])
+            ->map(fn ($r) => [
+                'id'       => $r->id,
+                'code'     => $r->code,
+                'name'     => $r->name,
+                'form'     => $r->form_sediaan,
+                'golongan' => $r->golongan,
+                'unit'     => $r->unit,
+                'stock'    => $r->stock,
+                'hja'      => (float) $r->hja,
+            ])
+            ->all();
+    }
+
     public function getVisitServices(string $visitId): Collection
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return VisitService::with('procedure')->where('visit_id', $visitId)->get();
     }
 
+    /**
+     * Replace seluruh tindakan kunjungan dengan daftar baru (sinkron dgn UI dokter).
+     * Aman: di tahap dokter belum ada billing yang merujuk visit_services.
+     * Array kosong = hapus semua tindakan.
+     */
     public function storeVisitServices(string $visitId, array $services): Collection
     {
-        $visit = Visit::findOrFail($visitId);
-        $user  = auth('api')->user();
+        $this->authorizeVisitOwnership($visitId);
+        $user = auth('api')->user();
 
         return DB::transaction(function () use ($visitId, $services, $user) {
-            $created = [];
+            // Bersihkan tindakan lama lalu tulis ulang dari daftar terkini.
+            VisitService::where('visit_id', $visitId)->delete();
 
+            $created = [];
             foreach ($services as $item) {
                 $created[] = VisitService::create([
-                    'visit_id'       => $visitId,
-                    'procedure_id'   => $item['procedure_id'],
+                    'visit_id'        => $visitId,
+                    'procedure_id'    => $item['procedure_id'],
                     'performed_by_id' => $user->employee_id,
-                    'quantity'       => $item['quantity'] ?? 1,
-                    'price'          => $item['price'] ?? 0,
-                    'notes'          => $item['notes'] ?? null,
+                    'quantity'        => $item['quantity'] ?? 1,
+                    'price'           => $item['price'] ?? 0,
+                    'notes'           => $item['notes'] ?? null,
                 ]);
             }
 
-            $this->log($user->id, 'STORE_TINDAKAN', Visit::class, $visitId, count($created) . ' tindakan disimpan');
+            $this->log($user->id, 'STORE_TINDAKAN', Visit::class, $visitId, count($created) . ' tindakan disimpan (replace)');
 
             return collect($created)->load('procedure');
         });
@@ -192,32 +359,54 @@ class DokterService
     public function deleteVisitService(string $id): void
     {
         $service = VisitService::findOrFail($id);
+        $this->authorizeVisitOwnership($service->visit_id);
         $service->delete();
         $this->log(auth('api')->id(), 'DELETE_TINDAKAN', VisitService::class, $id);
     }
 
     public function getPrescriptions(string $visitId): Collection
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return Prescription::with('items.medication')->where('visit_id', $visitId)->get();
     }
 
-    public function storePrescription(string $visitId, array $data): Prescription
+    /**
+     * Replace resep DRAFT kunjungan dengan daftar baru (sinkron dgn UI dokter).
+     * Hanya menyentuh resep berstatus DRAFT (yang sudah SUBMITTED/DISPENSING tidak diutak-atik).
+     * items kosong = kosongkan resep (hapus draft, tidak buat baru).
+     */
+    public function storePrescription(string $visitId, array $data): ?Prescription
     {
+        $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
         return DB::transaction(function () use ($visitId, $data, $user) {
+            // Bersihkan resep DRAFT lama + itemnya.
+            $drafts = Prescription::where('visit_id', $visitId)->where('status', 'DRAFT')->get();
+            foreach ($drafts as $d) {
+                PrescriptionItem::where('prescription_id', $d->id)->delete();
+                $d->delete();
+            }
+
+            $items = $data['items'] ?? [];
+            if (empty($items)) {
+                $this->log($user->id, 'STORE_RESEP', Prescription::class, $visitId, 'Resep dikosongkan');
+                return null;
+            }
+
             $prescription = Prescription::create([
-                'visit_id'        => $visitId,
+                'visit_id'         => $visitId,
                 'prescribed_by_id' => $user->employee_id,
-                'status'          => 'DRAFT',
-                'notes'           => $data['notes'] ?? null,
+                'status'           => 'DRAFT',
+                'notes'            => $data['notes'] ?? null,
             ]);
 
-            foreach ($data['items'] ?? [] as $item) {
+            foreach ($items as $item) {
                 PrescriptionItem::create([
                     'prescription_id' => $prescription->id,
                     'medication_id'   => $item['medication_id'],
-                    'quantity'        => $item['quantity'],
+                    'quantity'        => $item['quantity'] ?? 1,
                     'dose'            => $item['dose'] ?? null,
                     'frequency'       => $item['frequency'] ?? null,
                     'route'           => $item['route'] ?? null,
@@ -226,7 +415,7 @@ class DokterService
                 ]);
             }
 
-            $this->log($user->id, 'STORE_RESEP', Prescription::class, $prescription->id, "Resep dibuat untuk kunjungan {$visitId}");
+            $this->log($user->id, 'STORE_RESEP', Prescription::class, $prescription->id, "Resep disimpan (replace) untuk kunjungan {$visitId}");
 
             return $prescription->load('items.medication');
         });
@@ -238,6 +427,8 @@ class DokterService
 
     public function getTab4(string $visitId): ?DoctorExamination
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return DoctorExamination::with(['doctor', 'surgeryPackage', 'surgerySchedule'])
             ->where('visit_id', $visitId)
             ->first();
@@ -249,6 +440,7 @@ class DokterService
      */
     public function storePlanning(string $visitId, array $data): array
     {
+        $this->authorizeVisitOwnership($visitId);
         $visit = Visit::with('patient')->findOrFail($visitId);
         $user  = auth('api')->user();
 
@@ -373,6 +565,7 @@ class DokterService
 
     public function storeFollowUp(string $visitId, array $data): Visit
     {
+        $this->authorizeVisitOwnership($visitId);
         $visit = Visit::findOrFail($visitId);
 
         if ($visit->guarantor_type !== 'BPJS' && empty($data['follow_up_date'])) {
@@ -395,6 +588,7 @@ class DokterService
 
     public function deleteFollowUp(string $visitId): Visit
     {
+        $this->authorizeVisitOwnership($visitId);
         $visit = Visit::findOrFail($visitId);
 
         $visit->update([
@@ -431,6 +625,8 @@ class DokterService
 
     public function finalizeKunjungan(string $visitId): DoctorExamination
     {
+        $this->authorizeVisitOwnership($visitId);
+
         $examination = DoctorExamination::where('visit_id', $visitId)->firstOrFail();
 
         if ($examination->is_finalized) {
@@ -487,6 +683,8 @@ class DokterService
 
     public function getOrderPenunjang(string $visitId): Collection
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return DiagnosticOrder::with(['orderedBy', 'results'])
             ->where('visit_id', $visitId)
             ->get();
@@ -494,6 +692,8 @@ class DokterService
 
     public function storeOrderPenunjang(array $data): DiagnosticOrder
     {
+        $this->authorizeVisitOwnership($data['visit_id']);
+
         $user  = auth('api')->user();
         $order = DiagnosticOrder::create([
             'visit_id'      => $data['visit_id'],
@@ -526,6 +726,7 @@ class DokterService
     public function cancelOrderPenunjang(string $id): void
     {
         $order = DiagnosticOrder::findOrFail($id);
+        $this->authorizeVisitOwnership($order->visit_id);
 
         if ($order->status !== 'REQUESTED') {
             throw new \Exception('Order tidak bisa dibatalkan — sudah diproses.', 422);
@@ -537,6 +738,8 @@ class DokterService
 
     public function getHasilPenunjang(string $visitId): Collection
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return DiagnosticOrder::with('results')
             ->where('visit_id', $visitId)
             ->whereIn('status', ['COMPLETED', 'IN_PROGRESS'])
@@ -545,6 +748,8 @@ class DokterService
 
     public function getIolRekomendasi(string $visitId): Collection
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return IolRecommendation::with('approvedBy')
             ->where('visit_id', $visitId)
             ->get();
@@ -556,6 +761,8 @@ class DokterService
 
     public function getResumeMedis(string $visitId): ?MedicalResume
     {
+        $this->authorizeVisitOwnership($visitId);
+
         return MedicalResume::where('visit_id', $visitId)->first();
     }
 
@@ -564,6 +771,8 @@ class DokterService
      */
     public function generateMedicalResume(string $visitId): MedicalResume
     {
+        $this->authorizeVisitOwnership($visitId);
+
         $visit = Visit::with([
             'patient',
             'nurseAssessment',
@@ -670,6 +879,7 @@ class DokterService
     public function updateResumeMedis(string $id, array $data): MedicalResume
     {
         $resume = MedicalResume::findOrFail($id);
+        $this->authorizeVisitOwnership($resume->visit_id);
 
         if ($resume->is_finalized) {
             throw new \Exception('Resume medis sudah dikunci, tidak bisa diubah.', 422);
@@ -689,6 +899,7 @@ class DokterService
     public function finalizeResumeMedis(string $id): MedicalResume
     {
         $resume = MedicalResume::findOrFail($id);
+        $this->authorizeVisitOwnership($resume->visit_id);
 
         if ($resume->is_finalized) {
             throw new \Exception('Resume medis sudah dikunci.', 422);
@@ -711,6 +922,8 @@ class DokterService
 
     public function storeRujukanKeluar(array $data): BpjsReferralOut
     {
+        $this->authorizeVisitOwnership($data['visit_id']);
+
         $user     = auth('api')->user();
         $rujukan  = BpjsReferralOut::create([
             'visit_id'            => $data['visit_id'],

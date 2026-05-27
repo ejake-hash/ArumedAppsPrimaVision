@@ -18,6 +18,8 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class AdmisiService
 {
@@ -128,7 +130,12 @@ class AdmisiService
         ])->whereDate('visit_date', $filters['tanggal'] ?? today());
 
         if (! empty($filters['station'])) {
-            $query->where('current_station', $filters['station']);
+            // "TRIASE" di UI mencakup stasiun paralel TRIASE + REFRAKSIONIS.
+            if ($filters['station'] === 'TRIASE') {
+                $query->whereIn('current_station', ['TRIASE', 'REFRAKSIONIS']);
+            } else {
+                $query->where('current_station', $filters['station']);
+            }
         }
 
         if (! empty($filters['guarantor_type'])) {
@@ -270,18 +277,20 @@ class AdmisiService
         $noRm = $this->generateNoRM();
 
         $patient = Patient::create([
-            'no_rm'        => $noRm,
-            'nik'          => $data['nik'],
-            'name'         => $data['name'],
-            'gender'       => $data['gender'],
+            'no_rm'         => $noRm,
+            'identity_type' => $data['identity_type'] ?? 'KTP',
+            'nik'           => $data['nik'] ?? null,
+            'name'          => $data['name'],
+            'gender'        => $data['gender'],
             'date_of_birth' => $data['date_of_birth'],
-            'phone'        => $data['phone'] ?? null,
-            'address'      => $data['address'] ?? null,
-            'province'     => $data['province'] ?? null,
-            'bpjs_number'  => $data['bpjs_number'] ?? null,
-            'blood_type'   => $data['blood_type'] ?? null,
+            'phone'         => $data['phone'] ?? null,
+            'address'       => $data['address'] ?? null,
+            'province'      => $data['province'] ?? null,
+            'bpjs_number'   => $data['bpjs_number'] ?? null,
+            'blood_type'    => $data['blood_type'] ?? null,
             'allergy_notes' => $data['allergy_notes'] ?? null,
-            'is_active'    => true,
+            'photo_path'    => $this->savePatientPhoto($data['photo'] ?? null, $data['name']),
+            'is_active'     => true,
         ]);
 
         $this->log(auth('api')->id(), 'CREATE_PASIEN', Patient::class, $patient->id, "Pasien baru: {$patient->name}");
@@ -289,14 +298,79 @@ class AdmisiService
         return $patient;
     }
 
+    /**
+     * Simpan foto pasien (data URL base64 dari webcam/upload) ke disk `public`.
+     * Nama file: {tanggal}-{nama}-{rand}.{ext} sesuai format yang diminta.
+     * Mengembalikan path relatif untuk disimpan di kolom patients.photo_path,
+     * atau null jika tidak ada foto / data tidak valid.
+     */
+    private function savePatientPhoto(?string $dataUrl, ?string $name): ?string
+    {
+        if (empty($dataUrl)) {
+            return null;
+        }
+
+        $ext = 'jpg';
+        if (preg_match('/^data:image\/([a-zA-Z0-9.+-]+);base64,/', $dataUrl, $m)) {
+            $ext     = strtolower($m[1]) === 'png' ? 'png' : 'jpg';
+            $dataUrl = substr($dataUrl, strpos($dataUrl, ',') + 1);
+        }
+
+        $binary = base64_decode($dataUrl, true);
+        if ($binary === false || $binary === '') {
+            return null;
+        }
+
+        $slug = Str::slug($name ?: 'pasien') ?: 'pasien';
+        $path = 'patients/' . today()->format('Y-m-d') . '-' . $slug . '-' . Str::random(6) . '.' . $ext;
+
+        Storage::disk('public')->put($path, $binary);
+
+        return $path;
+    }
+
     public function getPasienById(string $id): Patient
     {
-        return Patient::with(['visits' => fn ($q) => $q->latest()->limit(5)])->findOrFail($id);
+        // Riwayat kunjungan dimuat terpisah & terpaginasi via getKunjunganPasien().
+        return Patient::findOrFail($id);
+    }
+
+    /**
+     * Riwayat kunjungan satu pasien — paginated + filter tanggal (untuk tab Riwayat).
+     */
+    public function getKunjunganPasien(string $patientId, array $filters): LengthAwarePaginator
+    {
+        $query = Visit::with(['doctorSchedule.employee', 'insurer'])
+            ->where('patient_id', $patientId)
+            ->orderByDesc('visit_date')
+            ->orderByDesc('created_at');
+
+        if (! empty($filters['tanggal'])) {
+            $query->whereDate('visit_date', $filters['tanggal']);
+        }
+
+        return $query->paginate(
+            $filters['per_page'] ?? 8,
+            ['*'],
+            'page',
+            $filters['page'] ?? 1,
+        );
     }
 
     public function updatePasien(string $id, array $data): Patient
     {
         $patient = Patient::findOrFail($id);
+
+        // Foto baru (re-take) — simpan file baru. JANGAN hapus file lama:
+        // file lama masih dirujuk oleh visits.photo_path (riwayat per-kunjungan).
+        if (! empty($data['photo'])) {
+            $newPath = $this->savePatientPhoto($data['photo'], $data['name'] ?? $patient->name);
+            if ($newPath) {
+                $data['photo_path'] = $newPath;
+            }
+        }
+        unset($data['photo']); // bukan kolom DB
+
         $patient->update($data);
 
         $this->log(auth('api')->id(), 'UPDATE_PASIEN', Patient::class, $id);
@@ -322,10 +396,18 @@ class AdmisiService
     {
         return DB::transaction(function () use ($data) {
             // Resolve patient
+            // Foto untuk kunjungan ini. File disimpan sekali, dirujuk oleh
+            // visits.photo_path (riwayat per-kunjungan) DAN patients.photo_path (terbaru).
+            $photoPath = null;
             if (! empty($data['patient_id'])) {
                 $patient = Patient::findOrFail($data['patient_id']);
+                if (! empty($data['photo'])) {
+                    $photoPath = $this->savePatientPhoto($data['photo'], $patient->name);
+                    $patient->update(['photo_path' => $photoPath]); // foto terbaru pasien
+                }
             } else {
-                $patient = $this->storePasien($data);
+                $patient   = $this->storePasien($data);   // storePasien sudah simpan foto
+                $photoPath = $patient->photo_path;
             }
 
             $user = auth('api')->user();
@@ -335,6 +417,8 @@ class AdmisiService
                 'insurer_id'         => $data['insurer_id'] ?? null,
                 'registered_by_id'   => $user->employee_id,
                 'doctor_schedule_id' => $data['doctor_schedule_id'],
+                'no_registrasi'      => $this->generateNoRegistrasi(),
+                'photo_path'         => $photoPath,
                 'visit_date'         => today(),
                 'classification'     => $data['classification'],
                 'current_station'    => 'TRIASE',       // skip ADMISI, langsung ke TR
@@ -409,30 +493,44 @@ class AdmisiService
             $placeholder = $visit->patient;
             $user        = auth('api')->user();
 
+            // Foto kunjungan ini — disimpan sekali, dipakai visit + patient (terbaru).
+            $photoPath = null;
+
             // ─── Resolve Patient ─────────────────────────────────────────
             if (! empty($data['patient_id'])) {
                 // Skenario A — pasien lama
                 $real = Patient::findOrFail($data['patient_id']);
+
+                if (! empty($data['photo'])) {
+                    $photoPath = $this->savePatientPhoto($data['photo'], $real->name);
+                    $real->update(['photo_path' => $photoPath]);
+                }
 
                 $visit->patient_id = $real->id;
 
                 // Placeholder tidak dipakai lagi → soft-delete
                 $placeholder->delete();
             } else {
-                // Skenario B — pasien baru: cek NIK unique (kecuali placeholder sendiri)
-                $existing = Patient::where('nik', $data['nik'])
-                    ->where('id', '!=', $placeholder->id)
-                    ->first();
+                // Skenario B — pasien baru: cek NIK unique (kecuali placeholder sendiri).
+                // Lewati cek jika tanpa NIK (mis. identitas Paspor/SIM/KIA/Tanpa Identitas).
+                if (! empty($data['nik'])) {
+                    $existing = Patient::where('nik', $data['nik'])
+                        ->where('id', '!=', $placeholder->id)
+                        ->first();
 
-                if ($existing) {
-                    throw new \Exception("NIK {$data['nik']} sudah terdaftar atas nama {$existing->name}. Gunakan mode 'Pasien Lama'.", 422);
+                    if ($existing) {
+                        throw new \Exception("NIK {$data['nik']} sudah terdaftar atas nama {$existing->name}. Gunakan mode 'Pasien Lama'.", 422);
+                    }
                 }
+
+                $photoPath = $this->savePatientPhoto($data['photo'] ?? null, $data['name']);
 
                 // Generate no_rm SEKARANG — kiosk hanya kasih nomor antrean, RM dibuat
                 // begitu pasien resmi terdaftar.
                 $placeholder->update([
                     'no_rm'         => $placeholder->no_rm ?? $this->generateNoRM(),
-                    'nik'           => $data['nik'],
+                    'identity_type' => $data['identity_type'] ?? 'KTP',
+                    'nik'           => $data['nik']           ?? null,
                     'name'          => $data['name'],
                     'gender'        => $data['gender'],
                     'date_of_birth' => $data['date_of_birth'],
@@ -442,6 +540,7 @@ class AdmisiService
                     'bpjs_number'   => $data['bpjs_number']   ?? null,
                     'blood_type'    => $data['blood_type']    ?? null,
                     'allergy_notes' => $data['allergy_notes'] ?? null,
+                    'photo_path'    => $photoPath,
                 ]);
 
                 $real = $placeholder->fresh();
@@ -452,6 +551,8 @@ class AdmisiService
                 'patient_id'        => $real->id,
                 'insurer_id'        => $data['insurer_id'] ?? null,
                 'registered_by_id'  => $user?->employee_id,
+                'no_registrasi'     => $visit->no_registrasi ?? $this->generateNoRegistrasi(),
+                'photo_path'        => $photoPath ?? $visit->photo_path,
                 'classification'    => $data['classification'],
                 'guarantor_type'    => $data['guarantor_type'],
                 'bpjs_booking_code' => $data['bpjs_booking_code'] ?? null,
@@ -612,7 +713,7 @@ class AdmisiService
 
     public function getAntrian(): Collection
     {
-        return Queue::with(['visit.patient'])
+        return Queue::with(['visit.patient', 'visit.doctorSchedule.employee:id,name', 'visit.insurer'])
             ->where('station', 'ADMISI')
             ->whereDate('created_at', today())
             ->where('status', '!=', Queue::STATUS_CANCELLED)
@@ -788,6 +889,26 @@ class AdmisiService
      * Resilient: kalau counter clinic.rm_last_seq drift (mis. seeder insert pasien
      * langsung tanpa update sequence), retry-loop skip nomor yg sudah dipakai.
      */
+    /**
+     * Nomor registrasi resmi per kunjungan: REG-YYYYMMDD-NNN (sequence harian).
+     * Berbasis nomor terakhir hari ini (termasuk yang trashed) agar tidak
+     * mengulang nomor kunjungan yang sudah dibatalkan. Dipanggil di dalam
+     * transaksi registerVisit/daftarkanWalkIn.
+     */
+    private function generateNoRegistrasi(): string
+    {
+        $prefix = 'REG-' . today()->format('Ymd') . '-';
+
+        $last = Visit::withTrashed()
+            ->where('no_registrasi', 'like', $prefix . '%')
+            ->orderByDesc('no_registrasi')
+            ->value('no_registrasi');
+
+        $next = $last ? ((int) substr($last, strrpos($last, '-') + 1)) + 1 : 1;
+
+        return $prefix . str_pad((string) $next, 3, '0', STR_PAD_LEFT);
+    }
+
     private function generateNoRM(): string
     {
         $noRm = '';

@@ -135,9 +135,13 @@ export const dokterApi = {
   antrian:          ()                    => api.get('/dokter/antrian'),
   panggil:          (id)                  => api.put(`/dokter/antrian/${id}/panggil`),
   selesai:          (id)                  => api.put(`/dokter/antrian/${id}/selesai`),
+  kePenunjang:      (id)                  => api.put(`/dokter/antrian/${id}/ke-penunjang`),
 
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
   finalize:         (visitId)             => api.post(`/dokter/kunjungan/${visitId}/finalize`),
+
+  tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
+  daftarObat:       (search)              => api.get('/dokter/obat', { params: { search } }),
 
   showTab2:         (visitId)             => api.get(`/dokter/kunjungan/${visitId}/tab2`),
   storeTab2:        (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/tab2`, data),
@@ -154,8 +158,10 @@ export const dokterApi = {
   indexResep:       (visitId)             => api.get(`/dokter/kunjungan/${visitId}/resep`),
   storeResep:       (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/resep`, data),
 
+  indexOrderPenunjang:  (visitId)         => api.get(`/dokter/kunjungan/${visitId}/order-penunjang`),
   indexHasilPenunjang: (visitId)          => api.get(`/dokter/kunjungan/${visitId}/hasil-penunjang`),
   storeOrderPenunjang: (data)             => api.post('/dokter/order-penunjang', data),
+  cancelOrderPenunjang: (id)              => api.delete(`/dokter/order-penunjang/${id}`),
 }
 
 /** Refraksionis */
@@ -265,6 +271,14 @@ export const masterApi = {
     create: (data)     => api.post('/master/iol', data),
     update: (id, data) => api.put(`/master/iol/${id}`, data),
     remove: (id)       => api.delete(`/master/iol/${id}`),
+  },
+
+  // Jenis Penunjang (diagnostic_test_types) — master jenis pemeriksaan penunjang
+  diagnosticTestType: {
+    list:   (params)   => api.get('/master/diagnostic-test-type', { params }),
+    create: (data)     => api.post('/master/diagnostic-test-type', data),
+    update: (id, data) => api.put(`/master/diagnostic-test-type/${id}`, data),
+    remove: (id)       => api.delete(`/master/diagnostic-test-type/${id}`),
   },
 
   // ICD-10
@@ -386,6 +400,9 @@ export const antreanTvApi = {
   resetDisplay:        (station) => api.post(`/antrean-tv/display-settings/${station}/reset`),
   audioSettings:       () => api.get('/antrean-tv/audio-settings'),
   updateAudio:         (payload) => api.put('/antrean-tv/audio-settings', payload),
+  brandingSettings:    () => api.get('/antrean-tv/branding-settings'),
+  updateBranding:      (payload) => api.put('/antrean-tv/branding-settings', payload),
+  resetBranding:       () => api.post('/antrean-tv/branding-settings/reset'),
 }
 
 /** Jadwal Dokter */
@@ -410,6 +427,7 @@ export const admisiApi = {
   cancelKunjungan: (id)         => api.put(`/admisi/kunjungan/${id}/cancel`),
   cariPasien:    (keyword)      => api.get('/admisi/pasien', { params: { keyword } }),
   showPasien:    (id)           => api.get(`/admisi/pasien/${id}`),
+  kunjunganPasien: (id, params) => api.get(`/admisi/pasien/${id}/kunjungan`, { params }),
   updatePasien:  (id, data)     => api.put(`/admisi/pasien/${id}`, data),
   daftar:        (data)         => api.post('/admisi/daftar', data),
   daftarkanWalkIn: (visitId, data) => api.put(`/admisi/kunjungan/${visitId}/daftarkan-walkin`, data),
@@ -568,6 +586,8 @@ export const roleApi = {
 export const permissionApi = {
   list: () => api.get('/rbac/permissions'),
   flat: () => api.get('/rbac/permissions/flat'),
+  updateModuleLabel: (module, label) => api.put(`/rbac/permissions/module-label/${module}`, { label }),
+  resetModuleLabel:  (module)        => api.post(`/rbac/permissions/module-label/${module}/reset`),
 }
 
 export default api

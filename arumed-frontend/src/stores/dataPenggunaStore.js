@@ -47,6 +47,18 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     }
   }
 
+  async function updateModuleLabel(module, label) {
+    const { data } = await permissionApi.updateModuleLabel(module, label)
+    permissionGroups.value = data.data ?? permissionGroups.value
+    return data.data
+  }
+
+  async function resetModuleLabel(module) {
+    const { data } = await permissionApi.resetModuleLabel(module)
+    permissionGroups.value = data.data ?? permissionGroups.value
+    return data.data
+  }
+
   // ─── Roles ──────────────────────────────────────────────────────────────
   async function fetchRoles() {
     rolesLoading.value = true
@@ -153,7 +165,7 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     roleById, permissionFlat,
 
     // actions
-    fetchPermissions,
+    fetchPermissions, updateModuleLabel, resetModuleLabel,
     fetchRoles, createRole, updateRole, deleteRole, syncRolePermissions,
     fetchUsers, createUser, updateUser, deleteUser, toggleUserAktif, resetUserPassword,
     loadAll,

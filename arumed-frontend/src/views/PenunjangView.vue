@@ -1,8 +1,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePenunjangStore } from '@/stores/penunjangStore'
+import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import JenisPenunjangView from '@/views/master-data/JenisPenunjangView.vue'
 
 const store = usePenunjangStore()
+
+// ─── Tab utama modul: operasional antrean vs master jenis penunjang ───────────
+const mainTab = ref('antrean')   // 'antrean' | 'jenis'
 
 // ─── Local UI state ─────────────────────────────────────────────────────────
 const qTab    = ref('SEMUA')     // 'SEMUA' | 'BPJS' | 'UMUM' | 'SELESAI'
@@ -140,7 +145,20 @@ onUnmounted(() => {
 
 <template>
   <div class="penunjang">
-    <div class="main-grid">
+
+    <!-- ══════════════════ TAB MODUL ══════════════════ -->
+    <div class="pj-maintabs">
+      <button :class="['pj-maintab', mainTab === 'antrean' ? 'a' : '']" @click="mainTab = 'antrean'">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Antrean Penunjang
+      </button>
+      <button :class="['pj-maintab', mainTab === 'jenis' ? 'a' : '']" @click="mainTab = 'jenis'">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4"/></svg>
+        Jenis Penunjang
+      </button>
+    </div>
+
+    <div v-if="mainTab === 'antrean'" class="main-grid">
 
       <!-- ══════════════════ LEFT: QUEUE ══════════════════ -->
       <aside class="col-queue">
@@ -292,9 +310,11 @@ onUnmounted(() => {
         <template v-else>
           <!-- Patient header -->
           <div class="pt-header">
-            <div class="pt-avatar">
-              {{ store.selectedQueue.patient?.name?.charAt(0) ?? '?' }}
-            </div>
+            <PatientAvatar
+              :name="store.selectedQueue.patient?.name"
+              :src="store.selectedQueue.patient?.photo_url"
+              :size="44" radius="50%" style="margin-top:2px"
+            />
             <div class="pt-info">
               <div class="pt-name">{{ store.selectedQueue.patient?.name ?? '—' }}</div>
               <div class="pt-meta">
@@ -387,6 +407,9 @@ onUnmounted(() => {
       </section>
     </div>
 
+    <!-- ══════════════════ MASTER: JENIS PENUNJANG ══════════════════ -->
+    <JenisPenunjangView v-else-if="mainTab === 'jenis'" />
+
     <!-- ══════════════════ TOAST ══════════════════ -->
     <div class="toast-wrap" aria-live="polite" role="status">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
@@ -395,6 +418,18 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── Tab modul (Antrean | Jenis Penunjang) ───────────────────────────────── */
+.pj-maintabs { display: flex; gap: 6px; margin-bottom: 1rem; }
+.pj-maintab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 16px; font-size: 12.5px; font-weight: 600;
+  border: 1.5px solid var(--gb); border-radius: 9px; background: var(--bs);
+  color: var(--tu); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .14s;
+}
+.pj-maintab svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pj-maintab:hover { border-color: var(--ga); color: var(--ga); }
+.pj-maintab.a { background: var(--gd); border-color: var(--gd); color: #fff; }
+
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 .penunjang { padding: 0; }
 .main-grid { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; }

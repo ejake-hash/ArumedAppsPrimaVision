@@ -38,6 +38,8 @@ class AuthService
             throw new \Exception('Akun tidak aktif. Hubungi administrator.', 403);
         }
 
+        // Token kedaluwarsa tepat jam 24.00 WIB (bukan 60 menit setelah login).
+        auth('api')->factory()->setTTL($this->minutesUntilMidnight());
         $token = auth('api')->login($user);
 
         $user->update(['last_login_at' => now()]);
@@ -80,6 +82,8 @@ class AuthService
     public function refresh(): array
     {
         try {
+            // Token hasil refresh juga ikut kedaluwarsa jam 24.00 WIB.
+            auth('api')->factory()->setTTL($this->minutesUntilMidnight());
             $token = auth('api')->refresh();
         } catch (TokenExpiredException) {
             throw new \Exception('Token sudah kadaluarsa, silakan login ulang.', 401);
@@ -130,6 +134,22 @@ class AuthService
     }
 
     // -------------------------------------------------------------------------
+
+    /**
+     * Selisih menit dari sekarang sampai tengah malam (00:00) WIB berikutnya.
+     *
+     * Dipakai sebagai TTL JWT supaya token kedaluwarsa tepat jam 24.00 waktu
+     * Cilegon, bukan 60 menit setelah login. app.timezone = UTC, jadi tengah
+     * malam dihitung eksplisit di Asia/Jakarta. Minimal 1 menit untuk
+     * menghindari TTL 0 saat login persis tengah malam.
+     */
+    private function minutesUntilMidnight(): int
+    {
+        $now      = now('Asia/Jakarta');
+        $midnight = $now->copy()->startOfDay()->addDay();
+
+        return max(1, (int) ceil($midnight->diffInSeconds($now, true) / 60));
+    }
 
     private function formatUser(User $user): array
     {

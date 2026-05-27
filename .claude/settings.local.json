@@ -58,7 +58,14 @@
       "Bash(php -r 'require '\\\\''vendor/autoload.php'\\\\''; $app = require '\\\\''bootstrap/app.php'\\\\''; $app->make\\('\\\\''Illuminate\\\\Contracts\\\\Console\\\\Kernel'\\\\''\\)->bootstrap\\(\\); echo get_parent_class\\('\\\\''App\\\\Models\\\\SurgeryPackageItem'\\\\''\\) . PHP_EOL; echo get_parent_class\\('\\\\''App\\\\Models\\\\SurgeryPackageTariff'\\\\''\\) . PHP_EOL; $p = new App\\\\Models\\\\SurgeryPackage\\(\\); echo '\\\\''SurgeryPackage methods: '\\\\'' . \\(method_exists\\($p, '\\\\''items'\\\\''\\) && method_exists\\($p, '\\\\''packageTariffs'\\\\''\\) && method_exists\\($p, '\\\\''recalcTotalBasePrice'\\\\''\\) ? '\\\\''OK'\\\\'' : '\\\\''MISSING'\\\\''\\) . PHP_EOL;')",
       "Bash(php -r 'require '\\\\''vendor/autoload.php'\\\\''; $app = require '\\\\''bootstrap/app.php'\\\\''; $app->make\\('\\\\''Illuminate\\\\Contracts\\\\Console\\\\Kernel'\\\\''\\)->bootstrap\\(\\); $svc = app\\('\\\\''App\\\\Services\\\\TarifPaketService'\\\\''\\); $ctl = app\\('\\\\''App\\\\Http\\\\Controllers\\\\TarifPaketController'\\\\''\\); echo '\\\\''Service: '\\\\'' . get_class\\($svc\\) . PHP_EOL; echo '\\\\''Controller: '\\\\'' . get_class\\($ctl\\) . PHP_EOL; echo '\\\\''Methods OK: '\\\\'' . \\(method_exists\\($svc, '\\\\''addItem'\\\\''\\) && method_exists\\($svc, '\\\\''upsertTariff'\\\\''\\) && method_exists\\($ctl, '\\\\''showPaket'\\\\''\\) ? '\\\\''YES'\\\\'' : '\\\\''NO'\\\\''\\) . PHP_EOL;')",
       "Bash(node -e ' *)",
-      "Bash(php -r ' *)"
+      "Bash(php -r ' *)",
+      "PowerShell($p = \"C:\\\\Users\\\\Lenovo\\\\.claude\\\\projects\"; \\(Get-ChildItem $p -Directory -Force\\).Name)",
+      "PowerShell($base = \"C:\\\\Users\\\\Lenovo\\\\.claude\\\\projects\"; foreach \\($d in Get-ChildItem $base -Directory\\) { $mem = Join-Path $d.FullName \"memory\"; if \\(Test-Path $mem\\) { $files = Get-ChildItem $mem -File -ErrorAction SilentlyContinue; Write-Output \"==> $\\($d.Name\\) : $\\($files.Count\\) file\\(s\\)\"; $files | Select-Object -ExpandProperty Name } else { Write-Output \"==> $\\($d.Name\\) : \\(no memory folder\\)\" } })",
+      "Bash(grep -n 'stock\\\\|protected $fillable\\\\|'\\\\''stock'\\\\''' app/Models/Medication.php)",
+      "Bash(grep -n 'stock\\\\|protected $fillable\\\\|'\\\\''stock'\\\\''' app/Models/BhpItem.php)",
+      "Bash(php -l app/Events/InventoriUnitNotified.php)",
+      "Bash(php -l app/Services/UnitRequestService.php)",
+      "Bash(php -l app/Services/UnitReturnService.php)"
     ]
   }
 }

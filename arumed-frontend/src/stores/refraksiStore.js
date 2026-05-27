@@ -14,6 +14,9 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   const pemeriksaan         = ref(null)   // RefractionRecord existing
   const prescription        = ref(null)   // RefractionPrescription existing
   const pemeriksaanLoading  = ref(false)
+  // Tiket Dokter (D-NNN) hasil finalize — diisi backend bila gate TR lolos.
+  // Dipakai tombol "Cetak Tiket Dokter". Persist setelah clearSelected, direset saat pilih pasien.
+  const doctorTicket        = ref(null)
 
   const saving      = ref(false)
   const finalizing  = ref(false)
@@ -77,6 +80,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   // ─── Patient Selection ──────────────────────────────────────────────────────
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
+    doctorTicket.value  = null   // reset tiket dari pasien sebelumnya
 
     if (queueItem.status === 'CALLED') {
       try { await mulaiAntrian(queueItem.id) } catch { /* ignore */ }
@@ -92,6 +96,9 @@ export const useRefraksiStore = defineStore('refraksi', () => {
         // Backend load('prescription') saat showPemeriksaan, jadi prescription
         // sudah ikut dalam payload kalau ada.
         prescription.value = data.data?.prescription ?? null
+        // Repopulate tiket dokter bila pasien sudah finalized (cetak ulang). Backend
+        // hanya menyertakan doctor_ticket bila gate TR lolos; null selama belum.
+        doctorTicket.value = data.data?.doctor_ticket ?? null
       }
     } catch {
       pemeriksaan.value  = null
@@ -163,7 +170,8 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     finalizing.value = true
     try {
       const { data } = await refraksiApi.finalizePemeriksaan(pemeriksaan.value.id)
-      pemeriksaan.value = data.data
+      pemeriksaan.value  = data.data
+      doctorTicket.value = data.data?.doctor_ticket ?? null
 
       const idx = antrian.value.findIndex((q) => q.id === selectedQueue.value?.id)
       if (idx !== -1) {
@@ -246,6 +254,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     // state
     antrian, queueLoading, queueError,
     selectedQueue, pemeriksaan, prescription, pemeriksaanLoading,
+    doctorTicket,
     saving, finalizing,
 
     // getters

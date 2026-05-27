@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\InventoriUnitNotified;
 use App\Models\BhpItem;
 use App\Models\InventoryStock;
 use App\Models\IolItem;
@@ -131,6 +132,8 @@ class UnitRequestService
             'approved_at' => now(),
         ]);
 
+        $this->notifyUnit($req, 'approved', "Permintaan {$req->request_number} disetujui gudang.");
+
         return $req->fresh('items');
     }
 
@@ -146,6 +149,8 @@ class UnitRequestService
             'status' => UnitRequest::STATUS_REJECTED,
             'notes'  => trim(($req->notes ? $req->notes . "\n" : '') . '[REJECT] ' . ($reason ?? '')),
         ]);
+
+        $this->notifyUnit($req, 'rejected', trim("Permintaan {$req->request_number} ditolak gudang. " . ($reason ?? '')));
 
         return $req->fresh('items');
     }
@@ -164,7 +169,7 @@ class UnitRequestService
 
         $deliveryByItemId = collect($data['items'] ?? [])->keyBy('id');
 
-        return DB::transaction(function () use ($req, $deliveryByItemId) {
+        $result = DB::transaction(function () use ($req, $deliveryByItemId) {
             foreach ($req->items as $item) {
                 $row = $deliveryByItemId->get($item->id);
                 if (!$row) continue;
@@ -192,16 +197,33 @@ class UnitRequestService
 
             return $req->fresh('items');
         });
+
+        $this->notifyUnit($result, 'delivered', "Permintaan {$result->request_number} dikirim gudang — silakan terima barang.");
+
+        return $result;
     }
 
+    /**
+     * Tutup request oleh unit (terima barang) — stok unit BERTAMBAH sebesar qty_delivered.
+     */
     public function close(string $id): UnitRequest
     {
-        $req = UnitRequest::findOrFail($id);
+        $req = UnitRequest::with('items')->findOrFail($id);
         if ($req->status !== UnitRequest::STATUS_DELIVERED) {
             abort(422, 'Hanya request DELIVERED yang bisa ditutup.');
         }
-        $req->update(['status' => UnitRequest::STATUS_CLOSED]);
-        return $req->fresh('items');
+
+        return DB::transaction(function () use ($req) {
+            foreach ($req->items as $item) {
+                $qty = (float) $item->qty_delivered;
+                if ($qty > 0) {
+                    $this->addUnitStock($item->item_type, $item->item_id, $qty);
+                }
+            }
+
+            $req->update(['status' => UnitRequest::STATUS_CLOSED]);
+            return $req->fresh('items');
+        });
     }
 
     public function delete(string $id): void
@@ -292,6 +314,34 @@ class UnitRequestService
         if ($remaining > 0.001) {
             abort(422, "Stok tidak cukup untuk item {$type}. Kurang {$remaining} unit.");
         }
+    }
+
+    /**
+     * Tambah stok master unit saat barang diterima (close).
+     * MEDICATION/BHP punya kolom `stock`; IOL serialized → diabaikan.
+     */
+    private function addUnitStock(string $type, string $itemId, float $qty): void
+    {
+        $model = match ($type) {
+            'MEDICATION' => Medication::find($itemId),
+            'BHP'        => BhpItem::find($itemId),
+            default      => null,
+        };
+        $model?->increment('stock', $qty);
+    }
+
+    /**
+     * Pancarkan notifikasi realtime ke unit pemohon.
+     */
+    private function notifyUnit(UnitRequest $req, string $action, string $message): void
+    {
+        broadcast(new InventoriUnitNotified($req->requesting_station, [
+            'kind'    => 'request',
+            'action'  => $action,
+            'number'  => $req->request_number,
+            'status'  => $req->status,
+            'message' => $message,
+        ]));
     }
 
     private function itemExists(string $type, string $itemId): bool

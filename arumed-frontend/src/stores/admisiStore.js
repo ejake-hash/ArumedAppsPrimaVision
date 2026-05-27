@@ -19,12 +19,13 @@ export const useAdmisiStore = defineStore('admisi', () => {
   const antrianLoading = ref(false)
   const antrianError = ref(null)
 
-  // ─── Visits (accordion table) ─────────────────────────────────────────────────
+  // ─── Visits (accordion table) — server-side filter + pagination ────────────────
   const visits = ref([])
   const visitsMeta = ref({ total: 0, current_page: 1, last_page: 1 })
   const visitsLoading = ref(false)
   const visitsError = ref(null)
   const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '' })
+  const visitsPerPage = ref(15)
 
   // ─── Visit Detail Modal ───────────────────────────────────────────────────────
   const selectedVisit = ref(null)
@@ -121,14 +122,18 @@ export const useAdmisiStore = defineStore('admisi', () => {
 
   // ─── Actions: Visits ──────────────────────────────────────────────────────────
 
+  // overrides._silent = true → refresh latar belakang (WS/polling) tanpa
+  // memunculkan indikator loading / flicker pager.
   async function fetchVisits(overrides = {}) {
-    visitsLoading.value = true
+    const { _silent = false, ...rest } = overrides
+    if (!_silent) visitsLoading.value = true
     visitsError.value = null
     try {
       const params = {
         tanggal: new Date().toISOString().split('T')[0],
-        per_page: 30,
-        ...overrides,
+        per_page: visitsPerPage.value,
+        page: 1,
+        ...rest,
       }
       if (visitsFilter.value.station && visitsFilter.value.station !== 'SEMUA') {
         params.station = visitsFilter.value.station
@@ -147,8 +152,18 @@ export const useAdmisiStore = defineStore('admisi', () => {
     } catch (err) {
       visitsError.value = err.response?.data?.message ?? 'Gagal memuat kunjungan'
     } finally {
-      visitsLoading.value = false
+      if (!_silent) visitsLoading.value = false
     }
+  }
+
+  // Refresh diam-diam halaman kunjungan yang sedang aktif (untuk WS/polling),
+  // di-debounce agar burst event tidak memicu banyak request.
+  let _visitsRefreshTimer = null
+  function scheduleVisitsRefresh() {
+    clearTimeout(_visitsRefreshTimer)
+    _visitsRefreshTimer = setTimeout(() => {
+      fetchVisits({ _silent: true, page: visitsMeta.value.current_page || 1 })
+    }, 500)
   }
 
   async function fetchVisitDetail(id) {
@@ -191,6 +206,34 @@ export const useAdmisiStore = defineStore('admisi', () => {
       return data.data ?? []
     } catch (err) {
       throw new Error(err.response?.data?.message ?? 'Gagal mencari pasien')
+    }
+  }
+
+  // Detail satu pasien (untuk tab Detail di modal Profil Pasien)
+  async function fetchPasienDetail(id) {
+    try {
+      const { data } = await admisiApi.showPasien(id)
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal memuat data pasien')
+    }
+  }
+
+  // Riwayat kunjungan pasien — paginated + filter tanggal (untuk tab Riwayat)
+  async function fetchKunjunganPasien(id, params = {}) {
+    try {
+      const { data } = await admisiApi.kunjunganPasien(id, params)
+      const p = data.data ?? {}
+      return {
+        data: p.data ?? [],
+        meta: {
+          total:        p.total ?? 0,
+          current_page: p.current_page ?? 1,
+          last_page:    p.last_page ?? 1,
+        },
+      }
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal memuat riwayat kunjungan')
     }
   }
 
@@ -315,6 +358,8 @@ export const useAdmisiStore = defineStore('admisi', () => {
           } else {
             _updateAntrianItem(queue)
           }
+          // Tabel "Seluruh Kunjungan" ikut ter-refresh (mis. walk-in kiosk baru).
+          scheduleVisitsRefresh()
         })
 
         _pusher.connection.bind('error', () => startPolling())
@@ -330,11 +375,17 @@ export const useAdmisiStore = defineStore('admisi', () => {
     _pusher = null
     _channel = null
     stopPolling()
+    clearTimeout(_visitsRefreshTimer)
   }
 
-  function startPolling(intervalMs = 30_000) {
+  // Fallback tanpa WebSocket: polling cepat (10s) untuk antrian "Siap Dipanggil"
+  // + refresh diam-diam tabel kunjungan, supaya walk-in kiosk muncul mendekati realtime.
+  function startPolling(intervalMs = 10_000) {
     stopPolling()
-    _pollInterval = setInterval(fetchAntrian, intervalMs)
+    _pollInterval = setInterval(() => {
+      fetchAntrian()
+      scheduleVisitsRefresh()
+    }, intervalMs)
   }
 
   function stopPolling() {
@@ -360,7 +411,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
     // state
     stats, bpjsStatus, dashboardLoading, dashboardError,
     antrian, antrianLoading, antrianError,
-    visits, visitsMeta, visitsLoading, visitsError, visitsFilter,
+    visits, visitsMeta, visitsLoading, visitsError, visitsFilter, visitsPerPage,
     selectedVisit, visitDetailLoading,
     rekamMedisData, rekamMedisLoading, rekamMedisError,
     consentLoading,
@@ -379,7 +430,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
     fetchVisits, fetchVisitDetail, cancelKunjungan,
 
     // patient
-    cariPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,
+    cariPasien, fetchPasienDetail, fetchKunjunganPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,
 
     // rekam medis
     fetchRekamMedis,

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Storage;
 
 class Patient extends Model
 {
@@ -16,6 +17,7 @@ class Patient extends Model
 
     protected $fillable = [
         'no_rm',
+        'identity_type',
         'nik',
         'name',
         'gender',
@@ -26,6 +28,7 @@ class Patient extends Model
         'bpjs_number',
         'blood_type',
         'allergy_notes',
+        'photo_path',
         'is_active',
     ];
 
@@ -33,6 +36,16 @@ class Patient extends Model
         'date_of_birth' => 'date:Y-m-d',
         'is_active'     => 'boolean',
     ];
+
+    /** URL foto pasien ikut diserialisasi ke semua response (search, visit.patient, dll). */
+    protected $appends = ['photo_url'];
+
+    public function getPhotoUrlAttribute(): ?string
+    {
+        return $this->photo_path
+            ? Storage::disk('public')->url($this->photo_path)
+            : null;
+    }
 
     public function scopeActive($query)
     {
