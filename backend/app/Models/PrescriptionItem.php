@@ -21,6 +21,12 @@ class PrescriptionItem extends Model
         'dosage',
         'instructions',
         'notes',
+        // Aturan pakai granular (dikirim & dibaca DokterView) — lihat migration
+        // 2026_05_31_000010. Sebelumnya hilang krn belum fillable + kolom belum ada.
+        'dose',
+        'frequency',
+        'route',
+        'duration_days',
     ];
 
     public function prescription(): BelongsTo
