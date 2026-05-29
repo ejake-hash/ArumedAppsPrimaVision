@@ -104,6 +104,55 @@ class InventoryStockService
     }
 
     /**
+     * Total stok on-hand suatu item (semua batch) di `inventory_stocks`.
+     */
+    public function onHand(string $type, string $itemId): float
+    {
+        return (float) InventoryStock::where('item_type', $type)
+            ->where('item_id', $itemId)
+            ->sum('qty_on_hand');
+    }
+
+    /**
+     * Konsumsi stok item sebanyak $qty dari `inventory_stocks` secara FEFO
+     * (batch paling cepat kedaluwarsa lebih dulu). Dipakai dispensing farmasi
+     * & alur lain yang mengeluarkan stok. Throw 422 kalau stok total tak cukup.
+     *
+     * Catatan: ini sumber stok yang BENAR pasca-redesign inventori. Kolom
+     * legacy `medications.stock`/`bhp_items.stock` TIDAK lagi otoritatif.
+     *
+     * @return list<array{batch_no:?string,expiry_date:mixed,qty:float}> batch yg dipakai
+     */
+    public function consume(string $type, string $itemId, float $qty): array
+    {
+        if ($qty <= 0) return [];
+
+        $remaining = $qty;
+        $used = [];
+
+        $stocks = InventoryStock::where('item_type', $type)
+            ->where('item_id', $itemId)
+            ->where('qty_on_hand', '>', 0)
+            ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($stocks as $st) {
+            if ($remaining <= 0) break;
+            $take = min($remaining, (float) $st->qty_on_hand);
+            $st->decrement('qty_on_hand', $take);
+            $remaining -= $take;
+            $used[] = ['batch_no' => $st->batch_no, 'expiry_date' => $st->expiry_date, 'qty' => $take];
+        }
+
+        if ($remaining > 0.001) {
+            abort(422, "Stok tidak mencukupi untuk item {$type}. Kurang " . round($remaining, 2) . " unit.");
+        }
+
+        return $used;
+    }
+
+    /**
      * Tambah / kurangi total stok item lewat selisih.
      * - delta > 0 → batch baru OPNAME-{tgl}.
      * - delta < 0 → kurangi FEFO dari batch existing.

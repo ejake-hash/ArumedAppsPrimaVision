@@ -13,6 +13,7 @@ use App\Models\SurgeryRequestBhp;
 use App\Models\SurgeryRequestIol;
 use App\Models\SystemLog;
 use App\Services\QueueService;
+use App\Services\InventoryStockService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -23,6 +24,7 @@ class FarmasiService
     public function __construct(
         private readonly Request $request,
         private readonly QueueService $queueService,
+        private readonly InventoryStockService $stockService,
     ) {}
 
     // =========================================================================
@@ -117,11 +119,15 @@ class FarmasiService
             throw new \Exception('Resep harus dalam status DISPENSING sebelum diselesaikan.', 422);
         }
 
-        // Cek stok kecukupan sebelum deduct
+        // Cek stok kecukupan sebelum deduct — sumber stok = `inventory_stocks`
+        // (per-batch FEFO), BUKAN kolom legacy `medications.stock` yang sudah
+        // tidak otoritatif pasca-redesign inventori.
         foreach ($prescription->items as $item) {
-            if ($item->medication && $item->medication->stock < $item->quantity) {
+            if (! $item->medication) continue;
+            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id);
+            if ($onHand < $item->quantity) {
                 throw new \Exception(
-                    "Stok {$item->medication->name} tidak mencukupi. Tersedia: {$item->medication->stock}, dibutuhkan: {$item->quantity}.",
+                    "Stok {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}.",
                     422
                 );
             }
@@ -130,10 +136,11 @@ class FarmasiService
         $user = auth('api')->user();
 
         DB::transaction(function () use ($prescription, $user) {
-            // Deduct medication stock
+            // Deduct dari inventory_stocks (FEFO, per-batch). consume() throw 422
+            // bila stok berubah & jadi tak cukup (race) — tetap atomik dalam transaksi.
             foreach ($prescription->items as $item) {
                 if ($item->medication) {
-                    Medication::where('id', $item->medication_id)->decrement('stock', $item->quantity);
+                    $this->stockService->consume('MEDICATION', $item->medication_id, (float) $item->quantity);
                 }
             }
 
@@ -353,16 +360,18 @@ class FarmasiService
         }
 
         DB::transaction(function () use ($surgeryRequest) {
-            // Deduct BHP stock
+            // Deduct BHP dari inventory_stocks (FEFO, per-batch) — bukan kolom
+            // legacy bhp_items.stock. Sama dengan perbaikan dispensing obat.
             foreach ($surgeryRequest->bhpItems as $item) {
                 if ($item->bhpItem) {
-                    if ($item->bhpItem->stock < $item->quantity) {
+                    $onHand = $this->stockService->onHand('BHP', $item->bhp_item_id);
+                    if ($onHand < $item->quantity) {
                         throw new \Exception(
-                            "Stok BHP {$item->bhpItem->name} tidak mencukupi. Tersedia: {$item->bhpItem->stock}.",
+                            "Stok BHP {$item->bhpItem->name} tidak mencukupi. Tersedia: {$onHand}.",
                             422
                         );
                     }
-                    BhpItem::where('id', $item->bhp_item_id)->decrement('stock', $item->quantity);
+                    $this->stockService->consume('BHP', $item->bhp_item_id, (float) $item->quantity);
                 }
             }
 
