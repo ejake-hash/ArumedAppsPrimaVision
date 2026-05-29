@@ -36,6 +36,7 @@ class FarmasiService
         return Queue::with(['visit.patient', 'visit.prescriptions'])
             ->where('station', 'FARMASI')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
     }

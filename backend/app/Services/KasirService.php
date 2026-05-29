@@ -41,6 +41,7 @@ class KasirService
         return Queue::with(['visit.patient', 'visit.billingInvoice'])
             ->where('station', 'KASIR')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
     }

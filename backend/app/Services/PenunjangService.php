@@ -32,6 +32,7 @@ class PenunjangService
         return Queue::with(['visit.patient', 'visit.diagnosticOrders'])
             ->where('station', 'PENUNJANG')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
     }

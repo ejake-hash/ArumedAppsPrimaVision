@@ -30,6 +30,7 @@ class RefraksiService
         return Queue::with(['visit.patient', 'visit.refractionRecord'])
             ->where('station', 'REFRAKSIONIS')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
     }

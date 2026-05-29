@@ -45,7 +45,8 @@ class DokterService
 
         $query = Queue::with(['visit.patient', 'visit.nurseAssessment', 'visit.refractionRecord'])
             ->where('station', 'DOKTER')
-            ->whereDate('created_at', today());
+            ->whereDate('created_at', today())
+            ->whereHas('visit');   // exclude zombie row (visit soft-deleted)
 
         // Superadmin melihat seluruh antrean DOKTER. Dokter biasa hanya melihat
         // pasien yang memilih dirinya saat admisi

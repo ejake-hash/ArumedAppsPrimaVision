@@ -34,6 +34,7 @@ class PerawatService
         ])
             ->where('station', 'TRIASE')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get()
             ->map(fn ($q) => $this->formatQueueItem($q));

@@ -40,6 +40,7 @@ class BedahService
         ])
             ->where('station', 'BEDAH')
             ->whereDate('created_at', today())
+            ->whereHas('visit')   // exclude baris dgn visit soft-deleted (zombie row) — sama spt AdmisiView
             ->orderBy('queue_sequence')
             ->get();
 
