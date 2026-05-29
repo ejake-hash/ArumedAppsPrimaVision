@@ -20,6 +20,30 @@ class DokterController extends Controller
         return $this->ok($this->service->getPatientQueue());
     }
 
+    /**
+     * POST /dokter/verify-pin
+     * Verifikasi PIN tanda tangan dokter yang sedang login.
+     */
+    public function verifyPin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'pin' => 'required|string',
+        ]);
+
+        $user = $request->user();
+        $pin  = $user?->pin;
+
+        if (! $pin) {
+            return $this->error('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
+        }
+
+        if (! hash_equals((string) $pin, (string) $validated['pin'])) {
+            return $this->error('PIN salah.', 422);
+        }
+
+        return $this->ok(['verified' => true], 'PIN valid');
+    }
+
     public function panggilAntrian(string $id): JsonResponse
     {
         try {
@@ -253,6 +277,20 @@ class DokterController extends Controller
         return $this->ok($result, 'Tab 4 diperbarui');
     }
 
+    /**
+     * GET /dokter/bedah/slot?tanggal=YYYY-MM-DD
+     * Preview ringkas jadwal bedah pada tanggal tertentu (untuk Tab 4 → Jadwalkan Bedah):
+     * total terjadwal + daftar jam yang sudah terisi. Tidak menarik relasi berat.
+     */
+    public function bedahSlot(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'tanggal' => 'required|date',
+        ]);
+
+        return $this->ok($this->service->getBedahSlot($validated['tanggal']));
+    }
+
     private function validateTab4(Request $request): array
     {
         return $request->validate([
@@ -268,6 +306,9 @@ class DokterController extends Controller
             'planning'           => 'required|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK',
             'surgery_package_id' => 'nullable|uuid|exists:surgery_packages,id',
             'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
+            'surgery_date'       => 'nullable|date|after_or_equal:today',
+            'surgery_time'       => 'nullable|string|max:8',
+            'operation_room'     => 'nullable|string|max:60',
 
             // Follow-up (opsional, hanya dalam PULANG_BEROBAT_JALAN)
             'follow_up_date'     => 'nullable|date|after_or_equal:today',
@@ -390,6 +431,12 @@ class DokterController extends Controller
     public function indexHasilPenunjang(string $visitId): JsonResponse
     {
         return $this->ok($this->service->getHasilPenunjang($visitId));
+    }
+
+    /** GET /dokter/kunjungan/{visitId}/penunjang-billing — preview tagihan penunjang COMPLETED + harga per penjamin */
+    public function penunjangBilling(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getPenunjangBilling($visitId));
     }
 
     /** GET /dokter/kunjungan/{visitId}/iol-rekomendasi */

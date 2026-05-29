@@ -1,0 +1,285 @@
+<script setup>
+/**
+ * FormDocsBrowser — daftar terpadu dokumen rekam medis untuk satu kunjungan.
+ *
+ * Menggabungkan 3 section (Resume / Surat / Consent) jadi SATU daftar yang bisa
+ * dicari + difilter status, dikelompokkan per kategori. Logika isi/cetak/TTD
+ * tetap di FormRMRenderer (di-reuse apa adanya per item).
+ *
+ * Endpoint /rekam-medis/forms mewajibkan `section`, jadi fetch dilakukan paralel
+ * per section lalu di-merge di sisi client (tidak menyentuh backend).
+ */
+import { computed, onMounted, ref, watch } from 'vue'
+import { formTemplateApi } from '@/services/api'
+import FormRMRenderer from './FormRMRenderer.vue'
+
+const props = defineProps({
+  visitId:   { type: String, required: true },
+  patientId: { type: String, default: null },
+})
+
+// Urutan & label kategori (dipertahankan untuk grouping).
+const SECTIONS = [
+  { key: 'resume_output', label: 'Resume Medis' },
+  { key: 'surat',         label: 'Surat-Surat' },
+  { key: 'consent',       label: 'Consent & Persetujuan' },
+]
+
+const allForms = ref([])
+const loading  = ref(false)
+const error    = ref('')
+
+const searchText   = ref('')
+const statusFilter = ref('all')   // all | todo | draft | final
+
+const STATUS_FILTERS = [
+  { key: 'all',   label: 'Semua' },
+  { key: 'todo',  label: 'Perlu diisi' },
+  { key: 'draft', label: 'Draft' },
+  { key: 'final', label: 'Final' },
+]
+
+async function load() {
+  if (!props.visitId) return
+  loading.value = true
+  error.value = ''
+  try {
+    const results = await Promise.all(
+      SECTIONS.map((s) =>
+        formTemplateApi
+          .forms({ station: 'dokter', section: s.key, visit_id: props.visitId })
+          .then((res) => (res.data?.data ?? []).map((f) => ({
+            ...f,
+            _section: s.key,
+            _sectionLabel: s.label,
+          }))),
+      ),
+    )
+    allForms.value = results.flat()
+  } catch (e) {
+    error.value = e.response?.data?.message ?? 'Gagal memuat dokumen.'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+watch(() => props.visitId, load)
+
+// Status existing doc → bucket intent. existing_document null = belum ada doc.
+function bucketOf(form) {
+  const st = form.existing_document?.status
+  if (!st) return 'todo'
+  if (st === 'FINALIZED' || st === 'FINAL') return 'final'
+  if (['DRAFT', 'RENDERED', 'WAITING_SIGNATURE', 'PENDING_SIGNATURE'].includes(st)) return 'draft'
+  // VOID / REJECTED / lainnya → bisa dikerjakan ulang.
+  return 'todo'
+}
+
+const groupedForms = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  const sf = statusFilter.value
+
+  const match = (f) => {
+    if (sf !== 'all' && bucketOf(f) !== sf) return false
+    if (q) {
+      const hay = `${f.name ?? ''} ${f.code ?? ''}`.toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    return true
+  }
+
+  return SECTIONS
+    .map((s) => ({
+      key: s.key,
+      label: s.label,
+      items: allForms.value.filter((f) => f._section === s.key && match(f)),
+    }))
+    .filter((g) => g.items.length > 0)
+})
+
+const totalMatches = computed(() =>
+  groupedForms.value.reduce((n, g) => n + g.items.length, 0),
+)
+
+function resetFilters() {
+  searchText.value = ''
+  statusFilter.value = 'all'
+}
+</script>
+
+<template>
+  <div class="fdb">
+    <!-- Sticky toolbar: search + filter status -->
+    <div class="fdb-toolbar">
+      <div class="fdb-search">
+        <svg class="fdb-search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input
+          v-model="searchText"
+          class="fdb-search-input"
+          type="text"
+          placeholder="Cari dokumen (nama / kode)…"
+          aria-label="Cari dokumen"
+        />
+        <button
+          v-if="searchText"
+          class="fdb-search-clear"
+          type="button"
+          aria-label="Hapus pencarian"
+          @click="searchText = ''"
+        >×</button>
+      </div>
+
+      <div class="fdb-chips" role="group" aria-label="Filter status dokumen">
+        <button
+          v-for="sf in STATUS_FILTERS" :key="sf.key"
+          type="button"
+          :class="['fdb-chip', statusFilter === sf.key ? 'active' : '']"
+          :aria-pressed="statusFilter === sf.key"
+          @click="statusFilter = sf.key"
+        >{{ sf.label }}</button>
+      </div>
+    </div>
+
+    <!-- States -->
+    <div v-if="loading" class="fdb-state fdb-loading">
+      <span class="fdb-spin" aria-hidden="true"></span>
+      Memuat dokumen…
+    </div>
+    <div v-else-if="error" class="fdb-state fdb-error">{{ error }}</div>
+
+    <div v-else-if="!allForms.length" class="fdb-state fdb-empty">
+      <svg class="fdb-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <div>
+        <div class="fdb-empty-title">Belum ada template aktif</div>
+        <div class="fdb-empty-hint">Tambahkan template di <em>Master Form RM</em> untuk station Dokter.</div>
+      </div>
+    </div>
+
+    <div v-else-if="!totalMatches" class="fdb-state fdb-empty">
+      <svg class="fdb-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <div>
+        <div class="fdb-empty-title">Tidak ada dokumen yang cocok</div>
+        <div class="fdb-empty-hint">Coba ubah kata kunci atau filter status.</div>
+      </div>
+      <button class="fdb-reset-btn" type="button" @click="resetFilters">Reset filter</button>
+    </div>
+
+    <!-- Grouped list -->
+    <div v-else class="fdb-groups">
+      <section v-for="g in groupedForms" :key="g.key" class="fdb-group">
+        <h4 class="fdb-group-title">{{ g.label }} <span class="fdb-group-count">{{ g.items.length }}</span></h4>
+        <div class="fdb-list">
+          <FormRMRenderer
+            v-for="t in g.items"
+            :key="t.id"
+            :template="t"
+            :visit-id="visitId"
+            :patient-id="patientId"
+          />
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.fdb { display: flex; flex-direction: column; gap: 0; }
+
+/* ── Toolbar (sticky) ─────────────────────────────────────────────────────── */
+.fdb-toolbar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 0.55rem;
+  padding-bottom: 0.75rem; margin-bottom: 0.25rem;
+  background: var(--bc);
+  border-bottom: 1px solid var(--gb);
+}
+.fdb-search {
+  position: relative; display: flex; align-items: center;
+}
+.fdb-search-icon {
+  position: absolute; left: 10px; width: 15px; height: 15px;
+  fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; pointer-events: none;
+}
+.fdb-search-input {
+  width: 100%; padding: 0.55rem 2rem 0.55rem 2rem;
+  border: 1px solid var(--gb); border-radius: 9px;
+  font: inherit; font-size: 13px; color: var(--td); background: var(--bs);
+  transition: border-color .15s, box-shadow .15s;
+}
+.fdb-search-input::placeholder { color: var(--tu); }
+.fdb-search-input:focus {
+  outline: none; border-color: #1763d4;
+  box-shadow: 0 0 0 3px rgba(23, 99, 212, 0.12);
+  background: var(--bc);
+}
+.fdb-search-clear {
+  position: absolute; right: 6px; width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 6px; background: transparent;
+  font-size: 17px; line-height: 1; color: var(--tu); cursor: pointer;
+}
+.fdb-search-clear:hover { background: var(--bg); color: var(--td); }
+
+.fdb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fdb-chip {
+  padding: 5px 12px; min-height: 30px;
+  border: 1.5px solid var(--gb); border-radius: 999px;
+  background: var(--bc); color: var(--tm);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: all .15s;
+}
+.fdb-chip:hover { border-color: #c6dcfb; color: var(--td); }
+.fdb-chip:focus-visible { outline: 2px solid #1763d4; outline-offset: 2px; }
+.fdb-chip.active {
+  background: #1763d4; color: #fff !important; border-color: #1763d4;
+}
+
+/* ── States ───────────────────────────────────────────────────────────────── */
+.fdb-state { padding: 1.5rem 1rem; font-size: 13px; color: var(--tm); }
+.fdb-loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.fdb-spin {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--gb); border-top-color: #1763d4;
+  animation: fdb-spin .7s linear infinite;
+}
+@keyframes fdb-spin { to { transform: rotate(360deg); } }
+.fdb-error {
+  color: #b42323; background: #fff0f0; border: 1px solid #fbb;
+  border-radius: 8px; padding: 0.7rem 1rem;
+}
+.fdb-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
+  text-align: center; padding: 2rem 1rem;
+}
+.fdb-empty-icon {
+  width: 34px; height: 34px; fill: none; stroke: var(--th);
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.fdb-empty-title { font-size: 13px; font-weight: 700; color: var(--tm); }
+.fdb-empty-hint { margin-top: 2px; font-size: 11.5px; color: var(--th); line-height: 1.4; }
+.fdb-empty-hint em { color: var(--tm); font-style: normal; font-weight: 600; }
+.fdb-reset-btn {
+  margin-top: 0.3rem; padding: 6px 14px;
+  border: 1px solid #1763d4; border-radius: 8px;
+  background: #1763d4; color: #fff !important;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.fdb-reset-btn:hover { filter: brightness(1.08); }
+
+/* ── Grouped list ─────────────────────────────────────────────────────────── */
+.fdb-groups { display: flex; flex-direction: column; gap: 1rem; padding-top: 0.5rem; }
+.fdb-group { display: flex; flex-direction: column; gap: 0.45rem; }
+.fdb-group-title {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--tu);
+}
+.fdb-group-count {
+  padding: 1px 8px; border-radius: 999px;
+  background: var(--bg); color: var(--tm);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.fdb-list { display: flex; flex-direction: column; gap: 0.5rem; }
+</style>

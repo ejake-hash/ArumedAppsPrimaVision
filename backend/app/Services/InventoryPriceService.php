@@ -7,6 +7,7 @@ use App\Models\InventoryPrice;
 use App\Models\InventoryPriceSetting;
 use App\Models\IolItem;
 use App\Models\Medication;
+use App\Models\SystemLog;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 
@@ -204,6 +205,229 @@ class InventoryPriceService
         };
         if (!$exists) {
             throw new \Exception('Item tidak ditemukan untuk tipe ' . $itemType, 404);
+        }
+    }
+
+    // =========================================================================
+    // CSV — Template / Export / Import
+    // =========================================================================
+    //
+    // Format kolom (case-insensitive header):
+    //   kode, nama, hpp, margin_persen, ppn, hja
+    // - `kode`        : kunci lookup item ke master (WAJIB). MEDICATION/BHP pakai
+    //                   kolom `code`; IOL pakai `serial_number`.
+    // - `nama`        : referensi saja (di-ignore saat import).
+    // - `hpp`         : harga pokok (>= 0).
+    // - `margin_persen`: margin % (0–1000).
+    // - `ppn`         : 1/0 / ya/tidak / true/false — apakah HJA kena PPN.
+    // - `hja`         : hanya di export (auto-compute), di-ignore saat import.
+    //
+    // RULE: item dengan `kode` yang tidak ada di master data DILEWATI (skipped)
+    //       dan dicatat di errors[]. Harga hanya boleh diset untuk item master.
+
+    private const CSV_HEADERS = ['kode', 'nama', 'hpp', 'margin_persen', 'ppn', 'hja'];
+
+    public function templateCsv(string $type): string
+    {
+        $this->assertType($type);
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
+        // Satu baris contoh (komentar) supaya user paham format.
+        fputcsv($output, ['(isi kode item)', '(nama — opsional)', '0', '0', '1', '(auto)'], ',', '"', '\\');
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    public function exportCsv(string $type): string
+    {
+        $this->assertType($type);
+        $rows = $this->listForType($type, ['per_page' => 100000])->items();
+
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
+        foreach ($rows as $r) {
+            // Hanya export item yang sudah punya harga (price_id != null).
+            if (($r->price_id ?? null) === null) {
+                continue;
+            }
+            fputcsv($output, [
+                $this->rowKode($type, $r),
+                $this->rowNama($type, $r),
+                (string) $r->hpp,
+                (string) $r->margin_percent,
+                $r->ppn_enabled ? '1' : '0',
+                (string) $r->hja,
+            ], ',', '"', '\\');
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    public function importCsv(string $type, string $csvContent): array
+    {
+        $this->assertType($type);
+
+        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        if (empty($lines)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['kode', 'hpp', 'margin_persen'] as $required) {
+            if (! in_array($required, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
+            }
+        }
+
+        $ppnRate  = $this->getPpnRate();
+        $keyCol   = $this->lookupKeyColumn($type);
+        $itemTable = $this->itemTable($type);
+
+        $inserted = 0;
+        $updated  = 0;
+        $skipped  = 0;
+        $errors   = [];
+
+        DB::beginTransaction();
+        try {
+            foreach ($lines as $idx => $line) {
+                $lineNum = $idx + 2;
+                if (trim($line) === '') continue;
+
+                $values = str_getcsv($line, ',', '"', '\\');
+                if (count($values) !== count($headers)) {
+                    $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                    $skipped++;
+                    continue;
+                }
+                $row = array_combine($headers, $values);
+
+                $kode   = trim((string) ($row['kode'] ?? ''));
+                $hppRaw = trim((string) ($row['hpp'] ?? ''));
+                $mrgRaw = trim((string) ($row['margin_persen'] ?? ''));
+
+                // Lewati baris contoh dari template.
+                if ($kode === '' || str_starts_with($kode, '(')) {
+                    $skipped++;
+                    continue;
+                }
+                if ($hppRaw === '' || $mrgRaw === '') {
+                    $errors[] = "Baris {$lineNum}: 'hpp' atau 'margin_persen' kosong";
+                    $skipped++;
+                    continue;
+                }
+                if (! is_numeric($hppRaw) || (float) $hppRaw < 0) {
+                    $errors[] = "Baris {$lineNum}: 'hpp' harus angka >= 0";
+                    $skipped++;
+                    continue;
+                }
+                if (! is_numeric($mrgRaw) || (float) $mrgRaw < 0 || (float) $mrgRaw > 1000) {
+                    $errors[] = "Baris {$lineNum}: 'margin_persen' harus angka 0–1000";
+                    $skipped++;
+                    continue;
+                }
+
+                // RULE: item harus ada di master data.
+                $item = DB::table($itemTable)
+                    ->whereRaw("LOWER({$keyCol}) = ?", [strtolower($kode)])
+                    ->whereNull('deleted_at')
+                    ->first();
+
+                if (! $item) {
+                    $errors[] = "Baris {$lineNum}: item dengan {$keyCol} '{$kode}' tidak ditemukan di master {$type}";
+                    $skipped++;
+                    continue;
+                }
+
+                $ppnEnabled = $this->parseBool($row['ppn'] ?? '1');
+                $hpp        = (float) $hppRaw;
+                $margin     = (float) $mrgRaw;
+                $hja        = InventoryPrice::computeHja($hpp, $margin, $ppnEnabled, $ppnRate);
+
+                $existing = InventoryPrice::where('item_type', $type)->where('item_id', $item->id)->first();
+                InventoryPrice::updateOrCreate(
+                    ['item_type' => $type, 'item_id' => $item->id],
+                    [
+                        'hpp'            => $hpp,
+                        'margin_percent' => $margin,
+                        'ppn_enabled'    => $ppnEnabled,
+                        'hja'            => $hja,
+                        'updated_by'     => auth('api')->id(),
+                    ]
+                );
+                if ($existing) $updated++; else $inserted++;
+            }
+            DB::commit();
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            throw $e;
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_HARGA_CSV', null, null, "type:{$type} new:{$inserted} upd:{$updated} skip:{$skipped}");
+
+        return compact('inserted', 'updated', 'skipped', 'errors');
+    }
+
+    // ---- CSV helpers ---------------------------------------------------------
+
+    private function assertType(string $type): void
+    {
+        if (! in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
+            throw new \Exception('Tipe harus MEDICATION, BHP, atau IOL', 422);
+        }
+    }
+
+    private function itemTable(string $type): string
+    {
+        return match ($type) {
+            'MEDICATION' => 'medications',
+            'BHP'        => 'bhp_items',
+            'IOL'        => 'iol_items',
+        };
+    }
+
+    /** Kolom kunci untuk lookup item dari CSV. IOL tidak punya code → serial_number. */
+    private function lookupKeyColumn(string $type): string
+    {
+        return $type === 'IOL' ? 'serial_number' : 'code';
+    }
+
+    private function rowKode(string $type, $r): string
+    {
+        return (string) ($type === 'IOL' ? ($r->serial_number ?? '') : ($r->code ?? ''));
+    }
+
+    private function rowNama(string $type, $r): string
+    {
+        if ($type === 'IOL') {
+            return trim(($r->brand ?? '') . ' ' . ($r->model ?? '') . ($r->power !== null ? " ({$r->power}D)" : ''));
+        }
+        return (string) ($r->name ?? '');
+    }
+
+    private function parseBool($v): bool
+    {
+        $s = strtolower(trim((string) $v));
+        return in_array($s, ['1', 'true', 'ya', 'y', 'yes', 'aktif'], true);
+    }
+
+    /** Audit log helper — pakai SystemLog (selaras MasterDataService). */
+    private function log(?string $userId, string $action, ?string $model = null, ?string $modelId = null, ?string $description = null): void
+    {
+        try {
+            SystemLog::create([
+                'user_id'     => $userId,
+                'action'      => $action,
+                'model'       => $model,
+                'model_id'    => $modelId,
+                'description' => $description,
+            ]);
+        } catch (\Throwable $e) {
+            // Logging tidak boleh menggagalkan operasi utama.
         }
     }
 

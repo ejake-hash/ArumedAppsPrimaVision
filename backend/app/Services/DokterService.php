@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\BpjsControlLetter;
 use App\Models\BpjsReferralOut;
+use App\Models\ClinicProfile;
 use App\Models\DiagnosticOrder;
 use App\Models\DoctorExamination;
 use App\Models\DocumentType;
@@ -16,6 +17,7 @@ use App\Models\Prescription;
 use App\Models\PrescriptionItem;
 use App\Models\Procedure;
 use App\Models\Queue;
+use App\Models\SurgerySchedule;
 use App\Models\SystemLog;
 use App\Models\Visit;
 use App\Models\VisitService;
@@ -352,7 +354,7 @@ class DokterService
 
             $this->log($user->id, 'STORE_TINDAKAN', Visit::class, $visitId, count($created) . ' tindakan disimpan (replace)');
 
-            return collect($created)->load('procedure');
+            return Collection::make($created)->load('procedure');
         });
     }
 
@@ -455,6 +457,11 @@ class DokterService
                 throw new \Exception('Pemeriksaan sudah dikunci, tidak bisa diubah.', 422);
             }
 
+            // Planning BEDAH: buat/perbarui SurgerySchedule dari paket + tanggal yang dipilih
+            // dokter. Routing ke stasiun BEDAH (jika tanggal = hari ini) bergantung pada
+            // surgery_schedule_id ini (lihat QueueService::nextAfterDokter).
+            $scheduleId = $this->resolveSurgerySchedule($examination, $data);
+
             $examination->update([
                 'soap_subjective'    => $data['soap_subjective'] ?? null,
                 'soap_objective'     => $data['soap_objective'] ?? null,
@@ -464,8 +471,8 @@ class DokterService
                 'diagnosis_sekunder' => $data['diagnosis_sekunder'] ?? [],
                 'tindakan_codes'     => $data['tindakan_codes'] ?? [],
                 'planning'           => $data['planning'],
-                'surgery_package_id' => $data['surgery_package_id'] ?? null,
-                'surgery_schedule_id' => $data['surgery_schedule_id'] ?? null,
+                'surgery_package_id' => $data['planning'] === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
+                'surgery_schedule_id' => $scheduleId,
             ]);
 
             // Handle planning-specific side-effects
@@ -559,6 +566,91 @@ class DokterService
         }
     }
 
+    /**
+     * Tentukan surgery_schedule_id untuk planning Tab 4.
+     *
+     * - planning != BEDAH               → null (dan jadwal lama yang masih SCHEDULED dibatalkan).
+     * - surgery_schedule_id eksplisit   → dipakai apa adanya (preop flow / pilih jadwal existing).
+     * - BEDAH + paket + tanggal         → buat baru, atau perbarui jadwal yang sudah terhubung
+     *                                     ke examination ini selama belum mulai (status SCHEDULED).
+     * - BEDAH tanpa paket/tanggal       → biarkan jadwal lama apa adanya (dokter belum lengkap isi).
+     */
+    private function resolveSurgerySchedule(DoctorExamination $examination, array $data): ?string
+    {
+        // Bukan bedah → lepas & batalkan jadwal yang sebelumnya dibuat dari examination ini.
+        if (($data['planning'] ?? null) !== 'BEDAH') {
+            if ($examination->surgery_schedule_id) {
+                SurgerySchedule::where('id', $examination->surgery_schedule_id)
+                    ->where('status', 'SCHEDULED')
+                    ->update(['status' => 'CANCELLED']);
+            }
+            return null;
+        }
+
+        // Jadwal dipilih eksplisit (mis. preop flow) → hormati.
+        if (! empty($data['surgery_schedule_id'])) {
+            return $data['surgery_schedule_id'];
+        }
+
+        $packageId = $data['surgery_package_id'] ?? null;
+        $date      = $data['surgery_date'] ?? null;
+
+        // Belum lengkap untuk membuat jadwal → pertahankan yang lama (kalau ada).
+        if (! $packageId || ! $date) {
+            return $examination->surgery_schedule_id;
+        }
+
+        // Default ruang OK dari Profil Klinik (ambil yang pertama bila ada).
+        $defaultRoom = ClinicProfile::query()->value('operating_rooms');
+        $defaultRoom = is_array($defaultRoom) ? ($defaultRoom[0] ?? null) : null;
+
+        $payload = [
+            'surgery_package_id' => $packageId,
+            'scheduled_date'     => $date,
+            'scheduled_time'     => $data['surgery_time'] ?? null,
+            'operation_room'     => $data['operation_room'] ?? $defaultRoom,
+            'status'             => 'SCHEDULED',
+        ];
+
+        // Perbarui jadwal yang sudah terhubung & belum mulai; selain itu buat baru.
+        $existing = $examination->surgery_schedule_id
+            ? SurgerySchedule::where('id', $examination->surgery_schedule_id)
+                ->where('status', 'SCHEDULED')
+                ->first()
+            : null;
+
+        if ($existing) {
+            $existing->update($payload);
+            return $existing->id;
+        }
+
+        return SurgerySchedule::create($payload)->id;
+    }
+
+    /**
+     * Preview ringkas jadwal bedah pada satu tanggal (Tab 4 → Jadwalkan Bedah).
+     * Hanya jadwal aktif (status SCHEDULED). Mengembalikan total + daftar jam terisi
+     * (untuk menandai slot bentrok di dropdown jam dokter).
+     */
+    public function getBedahSlot(string $tanggal): array
+    {
+        $rows = SurgerySchedule::with('surgeryPackage:id,name')
+            ->whereDate('scheduled_date', $tanggal)
+            ->where('status', 'SCHEDULED')
+            ->orderBy('scheduled_time')
+            ->get(['id', 'scheduled_time', 'operation_room', 'surgery_package_id']);
+
+        return [
+            'tanggal' => $tanggal,
+            'total'   => $rows->count(),
+            'slots'   => $rows->map(fn ($s) => [
+                'time'         => $s->scheduled_time ? substr($s->scheduled_time, 0, 5) : null,
+                'room'         => $s->operation_room,
+                'package_name' => $s->surgeryPackage?->name,
+            ])->values()->all(),
+        ];
+    }
+
     // =========================================================================
     // FOLLOW-UP STANDALONE ENDPOINTS
     // =========================================================================
@@ -637,40 +729,27 @@ class DokterService
             throw new \Exception('Diagnosis utama dan planning wajib diisi sebelum mengunci.', 422);
         }
 
-        DB::transaction(function () use ($examination, $visitId) {
-            $examination->update([
-                'is_finalized' => true,
-                'finalized_at' => now(),
-            ]);
+        // Tanda tangan digital = identitas akun dokter yang sedang login (otoritatif
+        // di server, tidak bergantung input klien). Sekaligus pastikan doctor_id terikat
+        // ke penandatangan walau record sempat dibuat oleh tab lain.
+        $user      = auth('api')->user();
+        $employee  = $user?->employee;
+        $signer    = $employee?->name ?? $user?->name ?? 'Dokter';
+        if ($employee?->sip) {
+            $signer .= " (SIP: {$employee->sip})";
+        }
 
-            // Route to next station based on planning
-            $nextStation = match ($examination->planning) {
-                'BEDAH'              => 'BEDAH',
-                'RUJUK'              => 'FARMASI',
-                default              => 'FARMASI', // PULANG_BEROBAT_JALAN
-            };
-
-            // Queue for PENUNJANG is handled separately per order
-            // Here we route to FARMASI (or BEDAH) after doctor is done
-            Visit::where('id', $visitId)->update(['current_station' => $nextStation]);
-
-            $lastSeq  = Queue::where('station', $nextStation)->whereDate('created_at', today())->max('queue_sequence') ?? 0;
-            $sequence = $lastSeq + 1;
-            $prefix   = match ($nextStation) {
-                'BEDAH'   => 'B',
-                'FARMASI' => 'F',
-                default   => 'F',
-            };
-
-            Queue::create([
-                'visit_id'       => $visitId,
-                'station'        => $nextStation,
-                'queue_prefix'   => $prefix,
-                'queue_sequence' => $sequence,
-                'queue_number'   => $prefix . '-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
-                'status'         => 'WAITING',
-            ]);
-        });
+        // Hanya kunci pemeriksaan. Routing & pembuatan baris antrean stasiun
+        // berikutnya adalah tanggung jawab tunggal QueueService::advanceFromStation
+        // (dipanggil via selesaiAntrian). Jangan buat baris antrean di sini agar
+        // pasien tidak ter-enqueue ganda. Lihat [[queue-advance-station-pattern]].
+        $examination->update([
+            'is_finalized'        => true,
+            'finalized_at'        => now(),
+            'digital_signature'   => $signer,
+            'signature_timestamp' => now(),
+            'doctor_id'           => $examination->doctor_id ?? $employee?->id,
+        ]);
 
         $this->log(auth('api')->id(), 'FINALIZE_KUNJUNGAN', DoctorExamination::class, $examination->id, "Planning: {$examination->planning}");
 
@@ -753,6 +832,59 @@ class DokterService
         return IolRecommendation::with('approvedBy')
             ->where('visit_id', $visitId)
             ->get();
+    }
+
+    /**
+     * Preview tagihan penunjang yang sudah COMPLETED untuk satu kunjungan.
+     *
+     * Dipakai Tab 3 dokter agar melihat penunjang + harga (sesuai penjamin)
+     * SEBELUM kirim ke kasir. Penunjang = procedure kategori "Penunjang":
+     * diagnostic_orders.test_type menyimpan KODE procedure, harga di-resolve
+     * via procedure_tariffs (getPrice 'procedure') — mirror persis dengan
+     * KasirService::buildPenunjangLines supaya preview == invoice. Order
+     * "Lainnya" (kode tak terdaftar di procedures) dilewati.
+     *
+     * @return array<int, array{id:string, code:string, name:string, category:?string, eye_side:?string, price:float}>
+     */
+    public function getPenunjangBilling(string $visitId): array
+    {
+        $visit  = $this->authorizeVisitOwnership($visitId);
+        $orders = DiagnosticOrder::where('visit_id', $visitId)
+            ->where('status', 'COMPLETED')
+            ->get();
+
+        if ($orders->isEmpty()) {
+            return [];
+        }
+
+        $codes   = $orders->pluck('test_type')->unique()->filter()->values()->all();
+        $procMap = Procedure::whereIn('code', $codes)
+            ->get(['id', 'code', 'name', 'category'])
+            ->keyBy('code');
+
+        $rows = [];
+        foreach ($orders as $order) {
+            $proc = $procMap->get($order->test_type);
+            if (! $proc) {
+                continue; // kode tak terdaftar di procedures (mis. "Lainnya") — tidak ditarifkan
+            }
+            $price = $this->kasirService->getPrice(
+                'procedure',
+                $proc->id,
+                $visit->guarantor_type,
+                $visit->insurer_id,
+            );
+            $rows[] = [
+                'id'       => $order->id,
+                'code'     => $proc->code,
+                'name'     => $proc->name,
+                'category' => $proc->category,
+                'eye_side' => $order->eye_side,
+                'price'    => (float) $price,
+            ];
+        }
+
+        return $rows;
     }
 
     // =========================================================================

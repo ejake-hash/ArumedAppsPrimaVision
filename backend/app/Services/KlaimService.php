@@ -362,8 +362,7 @@ class KlaimService
 
     public function getVclaimLog(array $filters = []): \Illuminate\Pagination\LengthAwarePaginator
     {
-        $query = DB::table('bpjs_vclaim_logs')
-            ->whereNull('deleted_at');
+        $query = DB::table('bpjs_vclaim_logs');
 
         if (! empty($filters['action'])) {
             $query->where('action', $filters['action']);

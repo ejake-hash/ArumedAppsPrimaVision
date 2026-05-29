@@ -2,14 +2,25 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DocumentTemplate;
+use App\Services\FormRegistry\FieldRegistry;
+use App\Services\FormRegistry\FormParserService;
+use App\Services\FormRegistry\FormRegistryAudit;
+use App\Services\FormRegistry\FormRegistryService;
+use App\Services\FormRegistry\SectionRegistry;
 use App\Services\MasterDataService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Storage;
 
 class MasterDataController extends Controller
 {
-    public function __construct(private readonly MasterDataService $service) {}
+    public function __construct(
+        private readonly MasterDataService $service,
+        private readonly FormRegistryService $formRegistry,
+        private readonly FormParserService $formParser,
+    ) {}
 
     // =========================================================================
     // CLINIC PROFILE
@@ -33,9 +44,67 @@ class MasterDataController extends Controller
             'pdf_engine'        => 'nullable|in:puppeteer',
             'watermark_enabled' => 'nullable|boolean',
             'watermark_type'    => 'nullable|in:ORIGINAL,COPY,DRAFT',
+            'operating_rooms'   => 'nullable|array|min:1|max:20',
+            'operating_rooms.*' => 'required|string|max:50|distinct',
         ]);
 
         return $this->ok($this->service->updateProfilKlinik($validated), 'Profil klinik diperbarui');
+    }
+
+    /**
+     * POST /master/profil-klinik/logo — upload logo klinik.
+     * File disimpan ke storage/app/public/clinic/logo.{ext}, path tersimpan
+     * di `clinic_profiles.logo_path` sebagai relative path.
+     */
+    public function uploadProfilKlinikLogo(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:png,jpg,jpeg,svg,webp|max:2048', // max 2MB
+        ]);
+
+        $file = $request->file('file');
+        $ext = strtolower($file->getClientOriginalExtension());
+        $filename = 'clinic/logo_' . now()->format('YmdHis') . '.' . $ext;
+
+        // Simpan ke disk public — accessible via /storage/clinic/...
+        \Illuminate\Support\Facades\Storage::disk('public')->putFileAs(
+            'clinic',
+            $file,
+            basename($filename),
+        );
+
+        $profile = \App\Models\ClinicProfile::query()->first();
+        if (!$profile) {
+            return $this->error('Profil klinik belum di-setup.', 422);
+        }
+
+        // Hapus logo lama kalau ada
+        if ($profile->logo_path && \Illuminate\Support\Facades\Storage::disk('public')->exists($profile->logo_path)) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($profile->logo_path);
+        }
+
+        $profile->update(['logo_path' => $filename]);
+
+        return $this->ok([
+            'logo_path' => $filename,
+            'logo_url'  => \Illuminate\Support\Facades\Storage::url($filename),
+        ], 'Logo klinik di-upload.');
+    }
+
+    /**
+     * DELETE /master/profil-klinik/logo — hapus logo klinik.
+     */
+    public function deleteProfilKlinikLogo(): JsonResponse
+    {
+        $profile = \App\Models\ClinicProfile::query()->first();
+        if (!$profile) {
+            return $this->error('Profil klinik belum di-setup.', 422);
+        }
+        if ($profile->logo_path && \Illuminate\Support\Facades\Storage::disk('public')->exists($profile->logo_path)) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($profile->logo_path);
+        }
+        $profile->update(['logo_path' => null]);
+        return $this->ok(null, 'Logo klinik dihapus.');
     }
 
     // =========================================================================
@@ -167,6 +236,13 @@ class MasterDataController extends Controller
             'email'     => 'nullable|email|max:255',
             'address'   => 'nullable|string|max:500',
             'is_active' => 'nullable|boolean',
+            // Kolom TPA — diisi untuk insurer tipe ASURANSI/PERUSAHAAN
+            'portal_url'             => 'nullable|url|max:500',
+            'pic_name'               => 'nullable|string|max:255',
+            'pic_phone'              => 'nullable|string|max:30',
+            'pic_email'              => 'nullable|email|max:255',
+            'claim_submission_notes' => 'nullable|string',
+            'sla_days'               => 'nullable|integer|min:1|max:365',
         ]);
 
         return $this->ok($this->service->storePenjamin($validated), 'Penjamin dibuat', 201);
@@ -183,6 +259,12 @@ class MasterDataController extends Controller
             'email'     => 'nullable|email|max:255',
             'address'   => 'nullable|string|max:500',
             'is_active' => 'nullable|boolean',
+            'portal_url'             => 'nullable|url|max:500',
+            'pic_name'               => 'nullable|string|max:255',
+            'pic_phone'              => 'nullable|string|max:30',
+            'pic_email'              => 'nullable|email|max:255',
+            'claim_submission_notes' => 'nullable|string',
+            'sla_days'               => 'nullable|integer|min:1|max:365',
         ]);
 
         return $this->ok($this->service->updatePenjamin($id, $validated), 'Penjamin diperbarui');
@@ -401,6 +483,7 @@ class MasterDataController extends Controller
             'code'       => 'required|string|max:30|unique:diagnostic_test_types,code',
             'name'       => 'required|string|max:150',
             'category'   => 'nullable|string|max:50',
+            'base_price' => 'nullable|numeric|min:0',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);
@@ -415,6 +498,7 @@ class MasterDataController extends Controller
             'code'       => "sometimes|string|max:30|unique:diagnostic_test_types,code,{$id}",
             'name'       => 'sometimes|string|max:150',
             'category'   => 'nullable|string|max:50',
+            'base_price' => 'nullable|numeric|min:0',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);
@@ -443,7 +527,7 @@ class MasterDataController extends Controller
     public function storeObat(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'code'         => 'required|string|max:50|unique:medications,code',
+            'code'         => 'nullable|string|max:50|unique:medications,code',
             'name'         => 'required|string|max:255',
             'generic_name' => 'nullable|string|max:255',
             'composition'  => 'nullable|string|max:500',
@@ -511,7 +595,7 @@ class MasterDataController extends Controller
         $validated = $request->validate([
             'code'         => 'nullable|string|max:50|unique:bhp_items,code',
             'name'         => 'required|string|max:255',
-            'category'     => 'nullable|string|max:100',
+            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET,MEDICAL_SUPPLIES',
             'unit'         => 'nullable|string|max:50',
             'manufacturer' => 'nullable|string|max:255',
             'stock'        => 'nullable|integer|min:0',
@@ -530,7 +614,7 @@ class MasterDataController extends Controller
     {
         $validated = $request->validate([
             'name'         => 'sometimes|string|max:255',
-            'category'     => 'nullable|string|max:100',
+            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET,MEDICAL_SUPPLIES',
             'unit'         => 'sometimes|string|max:50',
             'manufacturer' => 'nullable|string|max:255',
             'stock'        => 'sometimes|integer|min:0',
@@ -807,7 +891,7 @@ class MasterDataController extends Controller
     // RESOURCE CSV — generic untuk obat / bhp / iol / icd10 / icd9
     // =========================================================================
 
-    private const CSV_TYPES = ['tindakan', 'obat', 'bhp', 'iol', 'icd10', 'icd9'];
+    private const CSV_TYPES = ['tindakan', 'obat', 'bhp', 'iol', 'icd10', 'icd9', 'alat-medis'];
 
     private function assertCsvType(string $type): void
     {
@@ -1036,6 +1120,425 @@ class MasterDataController extends Controller
         ]);
 
         return $this->ok($this->service->updateNomorDokumen($id, $validated), 'Konfigurasi nomor dokumen diperbarui');
+    }
+
+    // =========================================================================
+    // FORM REGISTRY — Master Form Template (Fase 1)
+    // =========================================================================
+
+    /**
+     * GET /master/form-template
+     * Query: is_active (bool), kind, complexity_kind, search (by name/code).
+     */
+    public function indexFormTemplate(Request $request): JsonResponse
+    {
+        $query = DocumentTemplate::query();
+
+        if ($request->filled('is_active')) {
+            $query->where('is_active', filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN));
+        }
+        if ($request->filled('kind')) {
+            $query->where('kind', $request->input('kind'));
+        }
+        if ($request->filled('complexity_kind')) {
+            $query->where('complexity_kind', $request->input('complexity_kind'));
+        }
+        if ($request->filled('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('code', 'like', "%{$search}%");
+            });
+        }
+
+        // Hanya yang punya `code` (form registry templates) — exclude template lama
+        // yang belum di-migrate ke Form Registry.
+        $query->whereNotNull('code');
+
+        return $this->ok($query->orderBy('name')->get());
+    }
+
+    public function showFormTemplate(string $id): JsonResponse
+    {
+        $template = DocumentTemplate::query()->findOrFail($id);
+        return $this->ok($template);
+    }
+
+    public function storeFormTemplate(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'document_type_id'      => 'required|uuid|exists:document_types,id',
+            'name'                  => 'required|string|max:255',
+            'code'                  => 'required|string|max:50|regex:/^[A-Z0-9_]+$/|unique:document_templates,code',
+            'kind'                  => 'required|in:INPUT,OUTPUT,HYBRID',
+            'complexity_kind'       => 'required|in:SIMPLE_BINDING,SCORED_FORM,CUSTOM_COMPONENT',
+            'custom_component_name' => 'nullable|string|max:100',
+            'source_file_path'      => 'nullable|string|max:500',
+            'layout_html'           => 'nullable|string',
+            'field_schema'          => 'nullable|array',
+            'station_assignments'   => 'nullable|array',
+            'page_size'             => 'nullable|string|max:20',
+            'orientation'           => 'nullable|string|max:20',
+        ]);
+
+        $this->validateStationAssignments($validated['station_assignments'] ?? []);
+
+        $template = DocumentTemplate::create(array_merge($validated, [
+            'is_active' => false,   // selalu DRAFT — diaktifkan eksplisit via /activate
+            'version'   => 1,
+        ]));
+
+        FormRegistryAudit::record(
+            'FORM_TEMPLATE_CREATED',
+            model: 'DocumentTemplate',
+            modelId: $template->id,
+            description: "Template code={$template->code} name={$template->name}",
+            context: ['kind' => $template->kind, 'complexity_kind' => $template->complexity_kind],
+        );
+
+        return $this->ok($template, 'Form template dibuat', 201);
+    }
+
+    public function updateFormTemplate(Request $request, string $id): JsonResponse
+    {
+        /** @var DocumentTemplate $template */
+        $template = DocumentTemplate::query()->findOrFail($id);
+
+        $validated = $request->validate([
+            'document_type_id'      => 'sometimes|uuid|exists:document_types,id',
+            'name'                  => 'sometimes|string|max:255',
+            'code'                  => 'sometimes|string|max:50|regex:/^[A-Z0-9_]+$/|unique:document_templates,code,' . $id,
+            'kind'                  => 'sometimes|in:INPUT,OUTPUT,HYBRID',
+            'complexity_kind'       => 'sometimes|in:SIMPLE_BINDING,SCORED_FORM,CUSTOM_COMPONENT',
+            'custom_component_name' => 'nullable|string|max:100',
+            'source_file_path'      => 'nullable|string|max:500',
+            'layout_html'           => 'nullable|string',
+            'field_schema'          => 'nullable|array',
+            'station_assignments'   => 'nullable|array',
+            'page_size'             => 'sometimes|string|max:20',
+            'orientation'           => 'sometimes|string|max:20',
+        ]);
+
+        if (isset($validated['code']) && $validated['code'] !== $template->code && $template->isLocked()) {
+            return $this->error('Code template tidak bisa diubah setelah aktif (code_locked_at sudah di-set).', 422);
+        }
+
+        if (array_key_exists('station_assignments', $validated)) {
+            $this->validateStationAssignments($validated['station_assignments'] ?? []);
+        }
+
+        // Bump version kalau layout_html atau field_schema berubah.
+        if (array_key_exists('layout_html', $validated) || array_key_exists('field_schema', $validated)) {
+            $validated['version'] = ($template->version ?? 1) + 1;
+        }
+
+        $template->update($validated);
+
+        FormRegistryAudit::record(
+            'FORM_TEMPLATE_UPDATED',
+            model: 'DocumentTemplate',
+            modelId: $template->id,
+            description: "Template code={$template->code} v{$template->version}",
+            context: [
+                'fields_changed' => array_keys($validated),
+                'new_version'    => $template->version,
+            ],
+        );
+
+        return $this->ok($template->fresh(), 'Form template diperbarui');
+    }
+
+    public function activateFormTemplate(string $id): JsonResponse
+    {
+        /** @var DocumentTemplate $template */
+        $template = DocumentTemplate::query()->findOrFail($id);
+        $template->activate();
+
+        FormRegistryAudit::record(
+            'FORM_TEMPLATE_ACTIVATED',
+            model: 'DocumentTemplate',
+            modelId: $template->id,
+            description: "Template {$template->code} activated (code_locked_at={$template->code_locked_at})",
+        );
+
+        return $this->ok($template->fresh(), 'Form template diaktifkan');
+    }
+
+    public function deactivateFormTemplate(string $id): JsonResponse
+    {
+        /** @var DocumentTemplate $template */
+        $template = DocumentTemplate::query()->findOrFail($id);
+        $template->deactivate();
+
+        FormRegistryAudit::record(
+            'FORM_TEMPLATE_DEACTIVATED',
+            model: 'DocumentTemplate',
+            modelId: $template->id,
+            description: "Template {$template->code} deactivated",
+        );
+
+        return $this->ok($template->fresh(), 'Form template dinonaktifkan');
+    }
+
+    public function fieldRegistry(): JsonResponse
+    {
+        return $this->ok([
+            'columns'    => FieldRegistry::columns(),
+            'aggregates' => FieldRegistry::aggregates(),
+        ]);
+    }
+
+    /**
+     * GET /master/document-types — daftar kategori parent untuk dropdown Form Template.
+     * Filter `?all=1` untuk include inactive (UI master). Default: only active.
+     */
+    public function indexDocumentTypes(Request $request): JsonResponse
+    {
+        $q = \App\Models\DocumentType::query()->orderBy('sort_order');
+        if (!$request->boolean('all')) {
+            $q->where('is_active', true);
+        }
+        $list = $q->get([
+            'id', 'code', 'name', 'category', 'sort_order',
+            'fill_frequency', 'generate_type', 'parent_id',
+            'required_signatures', 'show_in_rme', 'is_active',
+        ]);
+        return $this->ok($list);
+    }
+
+    /**
+     * POST /master/document-type — bikin jenis dokumen baru.
+     */
+    public function storeDocumentType(Request $request): JsonResponse
+    {
+        $validated = $this->validateDocumentType($request);
+
+        try {
+            $dt = \App\Models\DocumentType::create($validated);
+        } catch (\Throwable $e) {
+            return $this->error('Gagal simpan: ' . $e->getMessage(), 422);
+        }
+        return $this->ok($dt, 'Jenis dokumen dibuat.', 201);
+    }
+
+    /**
+     * PUT /master/document-type/{id}
+     */
+    public function updateDocumentType(Request $request, string $id): JsonResponse
+    {
+        $dt = \App\Models\DocumentType::query()->findOrFail($id);
+        $validated = $this->validateDocumentType($request, $id);
+
+        // Anti-circular: parent_id tidak boleh diri sendiri atau descendant
+        if (!empty($validated['parent_id'])) {
+            if ($validated['parent_id'] === $id) {
+                return $this->error('Parent tidak boleh diri sendiri.', 422);
+            }
+            $descendants = $this->collectDescendantIds($id);
+            if (in_array($validated['parent_id'], $descendants, true)) {
+                return $this->error('Parent membuat siklus (descendant).', 422);
+            }
+        }
+
+        $dt->update($validated);
+        return $this->ok($dt->fresh(), 'Jenis dokumen diupdate.');
+    }
+
+    /**
+     * DELETE /master/document-type/{id} — soft delete dengan guard.
+     */
+    public function destroyDocumentType(string $id): JsonResponse
+    {
+        $dt = \App\Models\DocumentType::query()->findOrFail($id);
+
+        $templateCount = \App\Models\DocumentTemplate::query()->where('document_type_id', $id)->count();
+        $patientDocCount = \App\Models\PatientDocument::query()->where('document_type_id', $id)->count();
+        $childCount = \App\Models\DocumentType::query()->where('parent_id', $id)->count();
+
+        if ($templateCount > 0 || $patientDocCount > 0 || $childCount > 0) {
+            return $this->error(
+                "Tidak bisa dihapus — masih dipakai: {$templateCount} template form, {$patientDocCount} dokumen pasien, {$childCount} jenis turunan. " .
+                "Saran: nonaktifkan saja (is_active=false) supaya tidak muncul di dropdown wizard.",
+                422,
+            );
+        }
+
+        $dt->delete();
+        return $this->ok(null, 'Jenis dokumen dihapus.');
+    }
+
+    /**
+     * Validation rules — dipakai store & update. Field code unique kecuali current id.
+     */
+    private function validateDocumentType(Request $request, ?string $ignoreId = null): array
+    {
+        $codeRule = ['required', 'string', 'max:20'];
+        $codeRule[] = $ignoreId
+            ? \Illuminate\Validation\Rule::unique('document_types', 'code')->ignore($ignoreId)
+            : \Illuminate\Validation\Rule::unique('document_types', 'code');
+
+        return $request->validate([
+            'code'                => $codeRule,
+            'name'                => ['required', 'string', 'max:255'],
+            'fill_frequency'      => ['required', 'in:ONCE_LIFETIME,PER_VISIT,PER_EPISODE'],
+            'generate_type'       => ['required', 'in:AUTO,MANUAL,HYBRID'],
+            'category'            => ['nullable', 'in:ADMINISTRASI,KLINIS,PENUNJANG,BEDAH,FARMASI,BILLING'],
+            'parent_id'           => ['nullable', 'uuid', 'exists:document_types,id'],
+            'required_signatures' => ['nullable', 'array'],
+            'required_signatures.*.role'        => ['required_with:required_signatures.*', 'string'],
+            'required_signatures.*.sign_type'   => ['required_with:required_signatures.*', 'string'],
+            'required_signatures.*.is_required' => ['nullable', 'boolean'],
+            'show_in_rme'         => ['nullable', 'boolean'],
+            'sort_order'          => ['nullable', 'integer'],
+            'is_active'           => ['nullable', 'boolean'],
+        ]);
+    }
+
+    /**
+     * BFS collect descendant ids dari node $rootId (untuk anti-circular parent check).
+     */
+    private function collectDescendantIds(string $rootId): array
+    {
+        $descendants = [];
+        $queue = [$rootId];
+        while (!empty($queue)) {
+            $current = array_shift($queue);
+            $children = \App\Models\DocumentType::query()
+                ->where('parent_id', $current)
+                ->pluck('id')
+                ->all();
+            foreach ($children as $c) {
+                $descendants[] = $c;
+                $queue[] = $c;
+            }
+        }
+        return $descendants;
+    }
+
+    public function stationSections(): JsonResponse
+    {
+        return $this->ok([
+            'map'      => SectionRegistry::map(),
+            'stations' => SectionRegistry::stations(),
+        ]);
+    }
+
+    /**
+     * POST /master/form-template/upload
+     * Upload .docx → parse sync → return parse_id (cache 1 jam).
+     * Frontend bisa langsung pakai response.draft, atau poll /parse-result.
+     */
+    public function uploadFormTemplate(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:docx,pdf|max:5120',   // max 5MB; .docx native, .pdf via PdfParser (text extraction terbatas)
+        ]);
+
+        $upload = $request->file('file');
+        $original = $upload->getClientOriginalName();
+
+        // Simpan ke storage/app/private/form-template-uploads/ (laravel default disk = local = private).
+        $stored = $upload->store('form-template-uploads');
+        $absolute = Storage::disk('local')->path($stored);
+
+        try {
+            $parseId = $this->formParser->parse($absolute, $original);
+        } catch (\Throwable $e) {
+            return $this->error('Parser gagal: ' . $e->getMessage(), 422);
+        }
+
+        $result = $this->formParser->getResult($parseId);
+
+        return $this->ok(array_merge(
+            $result ?? ['parse_id' => $parseId],
+            ['source_file_path' => $stored],
+        ), 'File berhasil di-parse', 202);
+    }
+
+    /**
+     * GET /master/form-template/parse-result/{parseId}
+     * Poll hasil parsing dari cache. Return 404 kalau parse_id expired/invalid.
+     */
+    public function parseResultFormTemplate(string $parseId): JsonResponse
+    {
+        $result = $this->formParser->getResult($parseId);
+        if ($result === null) {
+            return $this->error('Parse result tidak ditemukan atau sudah expired (cache 1 jam).', 404);
+        }
+        return $this->ok($result);
+    }
+
+    /**
+     * Validasi struktur JSON station_assignments — setiap entry harus punya
+     * station+section yang terdaftar di SectionRegistry, dan mode yang valid.
+     */
+    private function validateStationAssignments(?array $assignments): void
+    {
+        foreach ($assignments ?? [] as $i => $assign) {
+            $station = $assign['station'] ?? null;
+            $section = $assign['section'] ?? null;
+            $mode    = $assign['mode']    ?? null;
+
+            if (!is_string($station) || !is_string($section) || !is_string($mode)) {
+                abort(422, "station_assignments[{$i}]: field station/section/mode wajib string.");
+            }
+            if (!SectionRegistry::isValid($station, $section)) {
+                abort(422, "station_assignments[{$i}]: kombinasi station='{$station}' & section='{$section}' tidak valid.");
+            }
+            if (!in_array($mode, ['INPUT', 'OUTPUT', 'HYBRID'], true)) {
+                abort(422, "station_assignments[{$i}]: mode '{$mode}' tidak valid.");
+            }
+        }
+    }
+
+    // =========================================================================
+    // RESPONSE HELPERS
+    // =========================================================================
+
+    // =========================================================================
+    // BILLING CATEGORIES (kategori grouping rincian tagihan Kasir)
+    // =========================================================================
+
+    public function indexBillingCategory(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->indexBillingCategory($request->only(['active'])));
+    }
+
+    public function storeBillingCategory(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name'       => 'required|string|max:100|unique:billing_categories,name',
+            'sort_order' => 'nullable|integer|min:0|max:9999',
+            'is_active'  => 'nullable|boolean',
+        ]);
+        return $this->ok($this->service->storeBillingCategory($validated), 'Kategori tagihan dibuat', 201);
+    }
+
+    public function updateBillingCategory(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'name'       => 'sometimes|string|max:100|unique:billing_categories,name,' . $id,
+            'sort_order' => 'sometimes|integer|min:0|max:9999',
+            'is_active'  => 'sometimes|boolean',
+        ]);
+        return $this->ok($this->service->updateBillingCategory($id, $validated), 'Kategori tagihan diperbarui');
+    }
+
+    public function deleteBillingCategory(string $id): JsonResponse
+    {
+        $this->service->deleteBillingCategory($id);
+        return $this->ok(null, 'Kategori tagihan dihapus');
+    }
+
+    public function reorderBillingCategory(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'rows'              => 'required|array|min:1',
+            'rows.*.id'         => 'required|uuid|exists:billing_categories,id',
+            'rows.*.sort_order' => 'required|integer|min:0|max:9999',
+        ]);
+        $this->service->reorderBillingCategory($validated['rows']);
+        return $this->ok(null, 'Urutan kategori disimpan');
     }
 
     // =========================================================================

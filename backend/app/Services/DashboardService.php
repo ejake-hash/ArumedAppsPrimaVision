@@ -381,7 +381,6 @@ class DashboardService
     public function getSatusehatStatus(): array
     {
         $lastSync = DB::table('satusehat_sync_logs')
-            ->whereNull('deleted_at')
             ->orderByDesc('sync_date')
             ->first();
 

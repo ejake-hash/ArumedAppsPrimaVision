@@ -12,7 +12,7 @@ class PurchaseOrderController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $filters = $request->only(['search', 'status', 'supplier_id', 'date_from', 'date_to', 'per_page']);
+        $filters = $request->only(['search', 'status', 'statuses', 'exclude_statuses', 'supplier_id', 'date_from', 'date_to', 'per_page']);
         return $this->ok($this->service->index($filters));
     }
 

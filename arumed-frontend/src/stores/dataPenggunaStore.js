@@ -149,6 +149,43 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     return data.data?.new_password ?? null
   }
 
+  async function resetUserPin(id) {
+    const { data } = await userApi.resetPin(id)
+    // PIN baru → tandai user has_pin true di list
+    const idx = users.value.findIndex((u) => u.id === id)
+    if (idx !== -1) users.value[idx] = { ...users.value[idx], has_pin: true }
+    return data.data?.new_pin ?? null
+  }
+
+  // ─── CSV: Template / Export / Import ──────────────────────────────────────
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async function downloadUserTemplate() {
+    const res = await userApi.csvTemplate()
+    triggerDownload(res.data, 'template-pengguna.csv')
+  }
+
+  async function exportUsersCsv() {
+    const res = await userApi.exportCsv()
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `data-pengguna-${today}.csv`)
+  }
+
+  async function importUsersCsv(file) {
+    const { data } = await userApi.importCsv(file)
+    await fetchUsers()
+    return data?.data ?? data    // { created, skipped, errors }
+  }
+
   // ─── Initial load (load semua untuk halaman manajemen) ──────────────────
   async function loadAll() {
     await Promise.allSettled([fetchPermissions(), fetchRoles(), fetchUsers()])
@@ -167,7 +204,8 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     // actions
     fetchPermissions, updateModuleLabel, resetModuleLabel,
     fetchRoles, createRole, updateRole, deleteRole, syncRolePermissions,
-    fetchUsers, createUser, updateUser, deleteUser, toggleUserAktif, resetUserPassword,
+    fetchUsers, createUser, updateUser, deleteUser, toggleUserAktif, resetUserPassword, resetUserPin,
+    downloadUserTemplate, exportUsersCsv, importUsersCsv,
     loadAll,
   }
 })

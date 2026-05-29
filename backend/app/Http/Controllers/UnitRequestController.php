@@ -2,6 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BhpItem;
+use App\Models\InventoryStock;
+use App\Models\IolItem;
+use App\Models\Medication;
 use App\Models\UnitRequest;
 use App\Models\UnitReturn;
 use App\Services\UnitRequestService;
@@ -65,6 +69,65 @@ class UnitRequestController extends Controller
     {
         $filters = $request->only(['search', 'station', 'status', 'date_from', 'date_to', 'per_page']);
         return $this->ok($this->service->index($filters));
+    }
+
+    /**
+     * Snapshot stok gudang inventori per tipe (MEDICATION / BHP / IOL).
+     * Output: list item master + total qty (sum batch) + batch detail (batch_no, expiry, qty)
+     * supaya UI bisa tampilkan expiry terdekat. Filter `search` optional (nama / kode).
+     */
+    public function stock(Request $request, string $type): JsonResponse
+    {
+        $type = strtoupper($type);
+        if (!in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
+            return response()->json(['success' => false, 'message' => 'Tipe tidak valid'], 422);
+        }
+
+        $search = trim((string) $request->query('search', ''));
+
+        $masterQ = match ($type) {
+            'MEDICATION' => Medication::query()->select(['id', 'code', 'name', 'unit_kecil', 'unit'])->where('is_active', true),
+            'BHP'        => BhpItem::query()->select(['id', 'code', 'name', 'unit'])->where('is_active', true),
+            'IOL'        => IolItem::query()->select(['id', 'brand', 'model', 'power'])->where('is_active', true),
+        };
+
+        if ($search !== '') {
+            $term = '%' . $search . '%';
+            if ($type === 'IOL') {
+                $masterQ->where(fn ($q) => $q->where('brand', 'ilike', $term)->orWhere('model', 'ilike', $term));
+            } else {
+                $masterQ->where(fn ($q) => $q->where('name', 'ilike', $term)->orWhere('code', 'ilike', $term));
+            }
+        }
+
+        $masters = $masterQ->orderBy($type === 'IOL' ? 'brand' : 'name')->limit(500)->get();
+
+        $batches = InventoryStock::where('item_type', $type)
+            ->whereIn('item_id', $masters->pluck('id'))
+            ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
+            ->get(['item_id', 'batch_no', 'expiry_date', 'qty_on_hand'])
+            ->groupBy('item_id');
+
+        $rows = $masters->map(function ($m) use ($type, $batches) {
+            $list = $batches->get($m->id, collect());
+            $totalQty = (float) $list->sum('qty_on_hand');
+            $nearest = $list->firstWhere(fn ($b) => $b->expiry_date !== null);
+            return [
+                'id'             => $m->id,
+                'code'           => $type === 'IOL' ? ($m->model ?? '-') : ($m->code ?? '-'),
+                'name'           => $type === 'IOL' ? trim(($m->brand ?? '') . ' ' . ($m->power ? '· ' . $m->power . 'D' : '')) : $m->name,
+                'unit'           => $type === 'MEDICATION' ? ($m->unit_kecil ?? $m->unit) : ($type === 'BHP' ? $m->unit : 'pcs'),
+                'total_qty'      => $totalQty,
+                'nearest_expiry' => optional($nearest?->expiry_date)->toDateString(),
+                'batches'        => $list->map(fn ($b) => [
+                    'batch_no'    => $b->batch_no,
+                    'expiry_date' => optional($b->expiry_date)->toDateString(),
+                    'qty'         => (float) $b->qty_on_hand,
+                ])->values(),
+            ];
+        })->values();
+
+        return $this->ok($rows);
     }
 
     public function show(string $id): JsonResponse

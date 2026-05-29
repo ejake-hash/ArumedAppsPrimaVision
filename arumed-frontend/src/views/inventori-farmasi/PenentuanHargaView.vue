@@ -207,12 +207,80 @@ function switchTab(key) {
   if (dirty && !confirm('Ada perubahan belum disimpan di tab ini. Lanjut ganti tab?')) return
   activeTab.value = key
   search.value = ''
+  csvResult.value = null
   refresh(1)
 }
 
 function goPage(p) {
   if (p < 1 || p > meta.value.last_page) return
   refresh(p)
+}
+
+// ─── CSV Import / Export ─────────────────────────────────────────────────
+const csvBusy = ref({ template: false, export: false, import: false })
+const csvResult = ref(null) // { inserted, updated, skipped, errors[] }
+const csvFileInput = ref(null)
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+const tabLabel = computed(() => TABS.find((t) => t.key === activeTab.value)?.label ?? activeTab.value)
+
+async function onCsvTemplate() {
+  csvResult.value = null
+  csvBusy.value.template = true
+  try {
+    const res = await inventoriHargaApi.templateCsv(activeTab.value)
+    triggerDownload(res.data, `template-harga-${activeTab.value.toLowerCase()}.csv`)
+  } catch (e) {
+    showToast('e', 'Gagal mengunduh template')
+  } finally {
+    csvBusy.value.template = false
+  }
+}
+
+async function onCsvExport() {
+  csvResult.value = null
+  csvBusy.value.export = true
+  try {
+    const res = await inventoriHargaApi.exportCsv(activeTab.value)
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `harga-${activeTab.value.toLowerCase()}-${today}.csv`)
+  } catch (e) {
+    showToast('e', 'Gagal mengekspor CSV')
+  } finally {
+    csvBusy.value.export = false
+  }
+}
+
+function pickCsvFile() {
+  csvResult.value = null
+  csvFileInput.value?.click()
+}
+
+async function onCsvFilePicked(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  csvBusy.value.import = true
+  try {
+    const { data } = await inventoriHargaApi.importCsv(activeTab.value, file)
+    csvResult.value = data?.data ?? data
+    showToast('s', data?.message ?? 'Import selesai')
+    await refresh(1)
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal mengimpor CSV')
+  } finally {
+    csvBusy.value.import = false
+  }
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────
@@ -262,6 +330,42 @@ watch(activeTab, () => { /* handled in switchTab */ })
         class="ph-tab" :class="{ active: activeTab === t.key }"
         @click="switchTab(t.key)"
       >{{ t.label }}</button>
+    </div>
+
+    <!-- CSV Import / Export (per tab) -->
+    <div class="ph-csv-bar">
+      <div class="ph-csv-actions">
+        <button class="ph-csv-btn ph-csv-template" :disabled="csvBusy.template" @click="onCsvTemplate">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 11v6M9 14h6"/></svg>
+          {{ csvBusy.template ? 'Mengunduh…' : 'Template CSV' }}
+        </button>
+        <button class="ph-csv-btn ph-csv-import" :disabled="csvBusy.import" @click="pickCsvFile">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+          {{ csvBusy.import ? 'Mengimpor…' : 'Import CSV' }}
+        </button>
+        <button class="ph-csv-btn ph-csv-export" :disabled="csvBusy.export" @click="onCsvExport">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          {{ csvBusy.export ? 'Mengekspor…' : 'Export CSV' }}
+        </button>
+        <span class="ph-csv-hint">
+          Mengelola harga <strong>{{ tabLabel }}</strong> via CSV. Kunci: kolom
+          <code>kode</code>{{ activeTab === 'IOL' ? ' (= serial number)' : '' }}.
+          Item harus sudah ada di master data.
+        </span>
+        <input ref="csvFileInput" type="file" accept=".csv,text/csv" @change="onCsvFilePicked" style="display:none" />
+      </div>
+
+      <div v-if="csvResult" class="ph-csv-result" :class="{ warn: csvResult.errors?.length }">
+        <div class="ph-csv-summary">
+          <strong>Import selesai:</strong>
+          <span class="ph-csv-pill ok">{{ csvResult.inserted ?? 0 }} baru</span>
+          <span class="ph-csv-pill info">{{ csvResult.updated ?? 0 }} diperbarui</span>
+          <span v-if="(csvResult.skipped ?? 0) > 0" class="ph-csv-pill warn">{{ csvResult.skipped }} dilewati</span>
+        </div>
+        <ul v-if="csvResult.errors?.length" class="ph-csv-errors">
+          <li v-for="(err, i) in csvResult.errors" :key="i">{{ err }}</li>
+        </ul>
+      </div>
     </div>
 
     <!-- Toolbar: search -->
@@ -396,6 +500,27 @@ watch(activeTab, () => { /* handled in switchTab */ })
 .ph-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .ph-tab:hover { color: var(--gd); }
 .ph-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
+
+.ph-csv-bar { display: flex; flex-direction: column; gap: 0.7rem; }
+.ph-csv-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ph-csv-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.ph-csv-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ph-csv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.ph-csv-template:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.ph-csv-import:hover:not(:disabled) { background: var(--ib); border-color: var(--ibd); color: var(--it); }
+.ph-csv-export:hover:not(:disabled) { background: var(--sb); border-color: var(--sbd); color: var(--st); }
+.ph-csv-hint { font-size: 11.5px; color: var(--tu); margin-left: 6px; }
+.ph-csv-hint code { background: var(--bs); border: 1px solid var(--gb); border-radius: 4px; padding: 0 4px; font-size: 11px; color: var(--td); }
+
+.ph-csv-result { padding: 0.7rem 0.9rem; background: var(--sb); border: 1px solid var(--sbd); border-radius: 10px; display: flex; flex-direction: column; gap: 0.5rem; }
+.ph-csv-result.warn { background: var(--wb); border-color: var(--wbd); }
+.ph-csv-summary { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 12.5px; color: var(--td); }
+.ph-csv-pill { padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid; }
+.ph-csv-pill.ok { background: var(--sb); color: var(--st); border-color: var(--sbd); }
+.ph-csv-pill.info { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+.ph-csv-pill.warn { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.ph-csv-errors { margin: 0; padding-left: 1.2rem; font-size: 11.5px; color: var(--wt); max-height: 180px; overflow-y: auto; }
+.ph-csv-errors li { margin: 2px 0; }
 
 .ph-toolbar { display: flex; align-items: center; gap: 0.8rem; }
 .ph-search { position: relative; flex: 1; max-width: 380px; }

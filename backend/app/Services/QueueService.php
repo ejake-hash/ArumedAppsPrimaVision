@@ -367,6 +367,11 @@ class QueueService
     /**
      * TRIASE atau REFRAKSIONIS selesai → DOKTER hanya jika keduanya sudah finalize.
      * Jika belum, tetap di station yg sama (return null = jangan enqueue baru).
+     *
+     * Khusus visit PREOP_BEDAH: gate paralel sama (TR+REF wajib selesai), tapi
+     * transisi ke BEDAH dilakukan eksplisit lewat PerawatService::kirimKeBedah()
+     * (tombol manual). Auto-advance dimatikan untuk mencegah pasien tidak sengaja
+     * didorong ke bedah hanya karena finalize asesmen.
      */
     private function nextAfterTriaseOrRefraksi(Visit $visit): ?string
     {
@@ -378,6 +383,13 @@ class QueueService
         if (! $triaseDone || ! $refraksiDone) {
             // Gate belum passed — antrian tidak boleh ditutup
             return null;
+        }
+
+        // PREOP_BEDAH: jangan auto-advance — tunggu tombol "Kirim ke Bedah".
+        // Sub-task lain (mis. refraksi finalize duluan) tetap NO_OP saat partner
+        // sudah selesai supaya antrean asal boleh ditutup.
+        if ($visit->visit_type === 'PREOP_BEDAH') {
+            return self::NO_OP;
         }
 
         // Partner (sub-task lain) sudah trigger transisi ke DOKTER → tutup saja, no-op

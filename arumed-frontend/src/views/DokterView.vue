@@ -6,6 +6,7 @@ import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/auth'
 import { masterApi, dokterApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 
 const store      = useDokterStore()
 const jadwalStore = useJadwalDokterStore()
@@ -13,6 +14,22 @@ const auth       = useAuthStore()
 
 // ─── Status Saya Hari Ini (Jadwal Dokter quick panel) ───────────────────────
 const myEmployeeId = computed(() => auth.user?.employee?.id ?? null)
+
+// ─── Identitas Dokter (topbar) ──────────────────────────────────────────────
+// Data nama + SIP berasal dari akun pengguna yang login (Data Pengguna → employee).
+// Hanya akun dokter (profesi mengandung "Dokter" / role dokter) yang ditampilkan.
+const isDoctorAccount = computed(() => {
+  const prof = (auth.user?.employee?.profession ?? '').toLowerCase()
+  const role = (auth.user?.role?.name ?? '').toLowerCase()
+  const rdisp = (auth.user?.role?.display_name ?? '').toLowerCase()
+  return prof.includes('dokter') || role.includes('dokter') || rdisp.includes('dokter')
+})
+const doctorName = computed(() => {
+  const n = auth.user?.employee?.name ?? auth.user?.name ?? ''
+  if (!n) return 'Dokter'
+  return /^dr\.?\s/i.test(n) ? n : `dr. ${n}`
+})
+const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
 const todayIso     = () => {
   const d = new Date().getDay()        // 0=Sun..6=Sat
   return d === 0 ? 7 : d               // 1=Mon..7=Sun
@@ -294,6 +311,7 @@ function resetFormState() {
   dw.value = null
   finalized.value = false
   resetExam()
+  tab2Exists.value = false
   resetSoap()
   tindakanList.value = []
   tindakanSearch.value = ''
@@ -301,13 +319,20 @@ function resetFormState() {
   rxList.value = []
   obatSearch.value = ''
   newRx.value = makeRx()
+  kasirNote.value = ''
+  tab3Sent.value = false
+  showSendKasirModal.value = false
+  sendingToKasir.value = false
   diagnosisUtama.value = null
   diagnosisSekunder.value = []
   icd9List.value = []
   planning.value = ''
   tanggalKontrol.value = ''
+  surgeryCategory.value = ''
   surgeryPkg.value = ''
   surgeryDate.value = ''
+  surgeryTime.value = ''
+  bedahSlotInfo.value = null
   rujukFaskes.value = ''
   rujukAlasan.value = ''
   dxSearch.value = ''
@@ -372,11 +397,16 @@ onMounted(async () => {
   loadPenunjangTypes()
   // Load daftar obat ber-harga (inventori farmasi → penentuan harga)
   loadObat()
+  // Load master paket bedah (untuk planning → Jadwalkan Bedah)
+  loadSurgeryPackages()
+  // Tutup dropdown pencarian tindakan saat klik di luar
+  document.addEventListener('mousedown', _handleTindakanClickOutside)
 })
 
 onUnmounted(() => {
   store.stopPolling()
   store.clearSelected()
+  document.removeEventListener('mousedown', _handleTindakanClickOutside)
 })
 
 // ── TAB 2: PEMERIKSAAN MATA ──────────────────────────────────────────────────
@@ -409,6 +439,71 @@ function makeExam() {
 const exam = ref(makeExam())
 function resetExam() { exam.value = makeExam() }
 
+// Apakah doctor_examination untuk kunjungan ini sudah ada di backend?
+// Menentukan POST (create) vs PUT (update) saat menyimpan Tab 2.
+const tab2Exists = ref(false)
+
+// Flatten state `exam` → kolom backend (sa_kornea_od, sp_papil_os, ...).
+// Segmen kosong dikirim `null` (BUKAN ''), karena rule `in:` menolak string kosong.
+function buildTab2Payload() {
+  const out = { anamnese: exam.value.anamnese || null, slitlamp_notes: exam.value.slitlamp_notes || null }
+  for (const f of saFields) {
+    out[`sa_${f.key}_od`] = exam.value.sa[f.key].od || null
+    out[`sa_${f.key}_os`] = exam.value.sa[f.key].os || null
+  }
+  for (const f of spFields) {
+    out[`sp_${f.key}_od`] = exam.value.sp[f.key].od || null
+    out[`sp_${f.key}_os`] = exam.value.sp[f.key].os || null
+  }
+  return out
+}
+
+// Prefill `exam` dari record backend saat kunjungan dipilih (read-back).
+async function loadTab2() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { tab2Exists.value = false; return }
+  try {
+    const { data } = await dokterApi.showTab2(visitId)
+    const e = data.data
+    if (!e) { tab2Exists.value = false; return }
+    tab2Exists.value = true
+    exam.value.anamnese = e.anamnese ?? ''
+    exam.value.slitlamp_notes = e.slitlamp_notes ?? ''
+    for (const f of saFields) {
+      exam.value.sa[f.key].od = e[`sa_${f.key}_od`] ?? ''
+      exam.value.sa[f.key].os = e[`sa_${f.key}_os`] ?? ''
+    }
+    for (const f of spFields) {
+      exam.value.sp[f.key].od = e[`sp_${f.key}_od`] ?? ''
+      exam.value.sp[f.key].os = e[`sp_${f.key}_os`] ?? ''
+    }
+  } catch { tab2Exists.value = false }
+}
+
+// Simpan Tab 2: PUT bila record sudah ada, POST bila belum. Bila POST gagal
+// karena record sempat dibuat (mis. autosave Tab 3 lebih dulu), fallback ke PUT.
+async function saveTab2() {
+  const visitId = selP.value?.visitId
+  if (!visitId) return
+  const payload = buildTab2Payload()
+  if (tab2Exists.value) {
+    await dokterApi.updateTab2(visitId, payload)
+    return
+  }
+  try {
+    await dokterApi.storeTab2(visitId, payload)
+    tab2Exists.value = true
+  } catch (e) {
+    if (e.response?.status === 422) {
+      await dokterApi.updateTab2(visitId, payload)
+      tab2Exists.value = true
+    } else { throw e }
+  }
+}
+
+// Muat Tab 2 tiap kali kunjungan yang dipilih berganti.
+watch(() => selP.value?.visitId, loadTab2, { immediate: true })
+
 // ── PENUNJANG ────────────────────────────────────────────────────────────────
 // Daftar jenis penunjang diambil dari master (modul Penunjang → tab "Jenis Penunjang").
 const penunjangTypes = ref([])
@@ -416,7 +511,7 @@ async function loadPenunjangTypes() {
   try {
     const { data } = await masterApi.diagnosticTestType.list({ active: 1, per_page: 200 })
     const rows = data.data?.data ?? data.data ?? []
-    penunjangTypes.value = rows.map((r) => ({ id: r.code, name: r.name, category: r.category ?? '' }))
+    penunjangTypes.value = rows.map((r) => ({ id: r.code, code: r.code, name: r.name, category: r.category ?? '' }))
   } catch {
     penunjangTypes.value = []
   }
@@ -426,13 +521,26 @@ const hasilPenunjang  = ref([])   // hasil IN_PROGRESS/COMPLETED dari DB
 const showPenunjangModal = ref(false)
 const selectedHasil = ref(null)
 const showHasilModal = ref(false)
-const pendingOrderKeys = ref([])  // guard agar tidak double-submit per jenis
 
-function _categoryOf(name) {
-  return penunjangTypes.value.find((t) => t.name === name)?.category ?? ''
+// Modal "Dokumen Rekam Medis Pasien" (Form Registry) — dibuka dari kartu launcher
+// di Tab SOAP supaya form-form tidak memanjang ke bawah / butuh scroll panjang.
+const showFormDocsModal = ref(false)
+
+// test_type dari backend = KODE master (mis. "OCT"). Resolve display name + kategori
+// dari master; bila kode tak ada di master (order "Lainnya" teks bebas) → pakai apa adanya.
+function _typeByCode(code) {
+  return penunjangTypes.value.find((t) => t.code === code) ?? null
 }
 function _mapOrder(o) {
-  return { id: o.id, name: o.test_type, category: _categoryOf(o.test_type), status: o.status }
+  const t = _typeByCode(o.test_type)
+  return {
+    id:         o.id,
+    code:       o.test_type,
+    name:       t?.name ?? o.test_type,
+    category:   t?.category ?? '',
+    status:     o.status,
+    _persisted: true,
+  }
 }
 
 // Muat order + hasil penunjang milik kunjungan yang dipilih.
@@ -445,37 +553,66 @@ async function loadPenunjangData() {
       .filter((o) => o.status === 'REQUESTED')
       .map(_mapOrder)
   } catch { /* abaikan, biarkan list apa adanya */ }
+  // Catatan: chip "Dipesan" cocok by `name` (bukan id), supaya entry persisted
+  // dari backend (UUID) dan staging (tmp-id) sama-sama match dengan master `t.id`.
   try {
     const { data } = await dokterApi.indexHasilPenunjang(visitId)
     hasilPenunjang.value = (data.data ?? []).map((o) => {
-      const r = o.results?.[0] ?? null
+      const r  = o.results?.[0] ?? null
+      const ed = r?.expertise_data ?? {}
       return {
-        name:   o.test_type,
-        date:   (r?.uploaded_at ?? o.created_at ?? '').slice(0, 10) || '—',
-        result: r?.notes ?? (o.status === 'IN_PROGRESS' ? 'Sedang diproses' : '(lihat detail hasil)'),
+        name:       o.test_type,
+        status:     o.status,
+        date:       (r?.uploaded_at ?? o.created_at ?? '').slice(0, 10) || '—',
+        kesimpulan: ed.kesimpulan ?? '',
+        ringkasan:  ed.ringkasan ?? '',
+        notes:      r?.notes ?? '',
+        // Biometri menyimpan ringkasan per-mata di expertise_data.od / .os
+        biometri:   (o.test_type === 'Biometri' && (ed.od || ed.os))
+          ? { od: ed.od ?? null, os: ed.os ?? null }
+          : null,
+        attachmentUrl:  r?.attachment_url ?? null,
+        attachmentPath: r?.attachment_path ?? '',
+        // Ringkasan teks untuk tampilan ringkas: prioritas kesimpulan → ringkasan → notes
+        result: ed.kesimpulan || ed.ringkasan || r?.notes
+          || (o.status === 'IN_PROGRESS' ? 'Sedang diproses' : '(lihat detail hasil)'),
       }
     })
   } catch { /* abaikan */ }
 }
 
-async function orderPenunjang(t) {
-  const visitId = selP.value?.visitId
-  if (!visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
-  if (penunjangOrders.value.find((x) => x.name === t.name)) { toast('w', `${t.name} sudah dipesan`); return }
-  if (pendingOrderKeys.value.includes(t.name)) return
-  pendingOrderKeys.value.push(t.name)
-  try {
-    const { data } = await dokterApi.storeOrderPenunjang({ visit_id: visitId, test_type: t.name })
-    penunjangOrders.value.push(_mapOrder(data.data))
-    toast('s', `${t.name} dipesan`)
-  } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal memesan penunjang')
-  } finally {
-    pendingOrderKeys.value = pendingOrderKeys.value.filter((k) => k !== t.name)
+// Toggle staging lokal — order baru benar-benar dikirim ke backend saat klik
+// tombol "Konfirmasi N Pemeriksaan" di footer modal (confirmPenunjang).
+function orderPenunjang(t) {
+  if (!selP.value?.visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
+  const existing = penunjangOrders.value.find((x) => x.name === t.name)
+  if (existing) {
+    // Klik chip yang sudah dipilih = batal pilih (kalau masih staging)
+    if (!existing._persisted) {
+      penunjangOrders.value = penunjangOrders.value.filter((x) => x.name !== t.name)
+    } else {
+      toast('w', `${t.name} sudah dipesan sebelumnya — hapus via tombol ×`)
+    }
+    return
   }
+  penunjangOrders.value.push({
+    id: `tmp-${t.id}`,
+    code: t.code,
+    name: t.name,
+    category: t.category,
+    status: 'REQUESTED',
+    _persisted: false,
+  })
 }
 
 async function removePenunjang(id) {
+  const o = penunjangOrders.value.find((x) => x.id === id)
+  if (!o) return
+  // Staging lokal — cukup hapus dari list, belum pernah masuk DB.
+  if (!o._persisted) {
+    penunjangOrders.value = penunjangOrders.value.filter((x) => x.id !== id)
+    return
+  }
   try {
     await dokterApi.cancelOrderPenunjang(id)
     penunjangOrders.value = penunjangOrders.value.filter((x) => x.id !== id)
@@ -485,46 +622,61 @@ async function removePenunjang(id) {
   }
 }
 
-// "Lainnya" — pemeriksaan di luar master (teks bebas).
+// "Lainnya" — pemeriksaan di luar master (teks bebas). Staging lokal, ikut dikirim saat Konfirmasi.
 const showCustomPenunjang = ref(false)
 const customPenunjang = ref({ name: '', category: '' })
-async function addCustomPenunjang() {
-  const visitId = selP.value?.visitId
-  if (!visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
+function addCustomPenunjang() {
+  if (!selP.value?.visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
   const name = customPenunjang.value.name.trim()
   if (!name) { toast('w', 'Nama pemeriksaan wajib diisi'); return }
-  try {
-    const { data } = await dokterApi.storeOrderPenunjang({ visit_id: visitId, test_type: name })
-    penunjangOrders.value.push(_mapOrder(data.data))
-    toast('s', `${name} dipesan`)
-    customPenunjang.value = { name: '', category: '' }
-    showCustomPenunjang.value = false
-  } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal memesan penunjang')
-  }
+  if (penunjangOrders.value.find((x) => x.name === name)) { toast('w', `${name} sudah dipilih`); return }
+  penunjangOrders.value.push({
+    id: `tmp-custom-${Date.now()}`,
+    code: null,   // di luar master → tidak ditarifkan otomatis; dikirim sbg teks bebas
+    name,
+    category: customPenunjang.value.category.trim(),
+    status: 'REQUESTED',
+    _persisted: false,
+  })
+  customPenunjang.value = { name: '', category: '' }
+  showCustomPenunjang.value = false
 }
 function viewHasil(h) { selectedHasil.value = h; showHasilModal.value = true }
+function openAttachment(url) { if (url) window.open(url, '_blank', 'noopener') }
 
-// Konfirmasi: kirim pasien ke pemeriksaan penunjang → baris DOKTER pause + turun ke bawah.
+// Konfirmasi: persist semua staging order ke backend → baris DOKTER pause + turun ke bawah.
+// Order baru benar-benar ter-record sebagai DiagnosticOrder REQUESTED di sini, bukan saat klik chip.
 async function confirmPenunjang() {
   if (!penunjangOrders.value.length) { showPenunjangModal.value = false; return }
   if (!store.selectedQueue) return
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Pilih pasien terlebih dahulu'); return }
+
+  const staging = penunjangOrders.value.filter((o) => !o._persisted)
   try {
+    for (const o of staging) {
+      // Master → kirim KODE (agar tertarif di kasir). Custom "Lainnya" → teks bebas.
+      const { data } = await dokterApi.storeOrderPenunjang({ visit_id: visitId, test_type: o.code || o.name })
+      // Ganti entry staging dengan hasil dari backend (id real + _persisted=true)
+      const idx = penunjangOrders.value.findIndex((x) => x.id === o.id)
+      if (idx !== -1) penunjangOrders.value[idx] = _mapOrder(data.data)
+    }
     await store.kirimKePenunjang(store.selectedQueue.id)
-    toast('s', 'Pasien dikirim ke pemeriksaan penunjang')
+    toast('s', `Pasien dikirim ke penunjang dengan ${penunjangOrders.value.length} pemeriksaan`)
     showPenunjangModal.value = false
     store.clearSelected()
     await store.fetchAntrian()
   } catch (e) {
-    toast('e', e.message ?? 'Gagal mengirim ke penunjang')
+    toast('e', e.response?.data?.message ?? e.message ?? 'Gagal mengirim ke penunjang')
   }
 }
 
 // Muat order + hasil penunjang setiap kali kunjungan yang dipilih berganti.
 watch(() => selP.value?.visitId, loadPenunjangData, { immediate: true })
 
-// Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
-watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep() }, { immediate: true })
+// Watch utk muat tarif/tindakan/resep dipindah ke bawah (setelah deklarasi
+// `tindakanList` & `rxList`) agar tidak kena temporal dead zone saat
+// `immediate: true` dieksekusi pada setup.
 
 function segClass(val) {
   if (val === 'Normal') return 'seg-ok'
@@ -539,6 +691,13 @@ const tarifTindakanList = ref([])  // {id, code, name, category, price} dari bac
 const tindakanSearch = ref('')
 const tindakanList = ref([])       // {id, code, name, category, price, qty}
 const showTarifList = ref(false)
+const tindakanSearchFocus = ref(false)
+const tindakanSearchRef = ref(null)
+function _handleTindakanClickOutside(e) {
+  if (!tindakanSearchFocus.value) return
+  const el = tindakanSearchRef.value
+  if (el && !el.contains(e.target)) tindakanSearchFocus.value = false
+}
 
 async function loadTarifTindakan(visitId) {
   if (!visitId) { tarifTindakanList.value = []; return }
@@ -550,9 +709,10 @@ async function loadTarifTindakan(visitId) {
 
 const filteredTarif = computed(() => {
   const s = tindakanSearch.value.trim().toLowerCase()
-  if (!s) return tarifTindakanList.value
-  return tarifTindakanList.value.filter((t) =>
-    t.name.toLowerCase().includes(s) || (t.code ?? '').toLowerCase().includes(s))
+  if (!s) return []
+  return tarifTindakanList.value
+    .filter((t) => t.name.toLowerCase().includes(s) || (t.code ?? '').toLowerCase().includes(s))
+    .slice(0, 50)
 })
 
 const tindakanSubtotal = computed(() =>
@@ -560,6 +720,23 @@ const tindakanSubtotal = computed(() =>
 )
 
 function fmtRp(v) { return 'Rp ' + Number(v).toLocaleString('id-ID') }
+
+// Penunjang yang sudah diperiksa (COMPLETED) + harga per penjamin — READ-ONLY.
+// Ditampilkan di Tab 3 sbg preview tagihan; kasir yang menagih (baris PENUNJANG).
+// JANGAN gabung ke tindakanList → akan dobel-tagih sebagai TINDAKAN.
+const penunjangBilling = ref([])
+async function loadPenunjangBilling() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { penunjangBilling.value = []; return }
+  try {
+    const { data } = await dokterApi.penunjangBilling(visitId)
+    penunjangBilling.value = data.data ?? []
+  } catch { penunjangBilling.value = [] }
+}
+const penunjangSubtotal = computed(() =>
+  penunjangBilling.value.reduce((sum, p) => sum + (Number(p.price) || 0), 0)
+)
+const estimasiTotal = computed(() => tindakanSubtotal.value + penunjangSubtotal.value)
 
 function addTindakan(t) {
   const existing = tindakanList.value.find((x) => x.id === t.id)
@@ -580,6 +757,10 @@ function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 const rxList = ref([])
 const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja}
 const obatSearch = ref('')
+const kasirNote = ref('')          // catatan dokter untuk kasir (dipersist ke prescriptions.notes)
+const tab3Sent = ref(false)        // sudah klik "Simpan & Kirim ke Kasir" → Tab 3 read-only
+const showSendKasirModal = ref(false)
+const sendingToKasir = ref(false)
 
 async function loadObat() {
   try {
@@ -604,7 +785,14 @@ function pickObat(d) {
   obatSearch.value = ''
 }
 function makeRx() {
-  return { medication_id: null, name: '', form: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'Tetes ODS' }
+  return { medication_id: null, name: '', form: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'ODS' }
+}
+function normalizePosisi(v) {
+  const s = String(v ?? '').trim().toUpperCase()
+  if (s.includes('ODS')) return 'ODS'
+  if (s === 'OD' || s.endsWith(' OD')) return 'OD'
+  if (s === 'OS' || s.endsWith(' OS')) return 'OS'
+  return ''
 }
 const newRx = ref(makeRx())
 
@@ -636,6 +824,7 @@ async function loadTindakanResep() {
     const { data } = await dokterApi.indexResep(visitId)
     const list = data.data ?? []
     const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
+    kasirNote.value = presc?.notes ?? ''
     rxList.value = (presc?.items ?? []).map((it) => ({
       medication_id: it.medication_id,
       name: it.medication?.name ?? '—',
@@ -645,10 +834,15 @@ async function loadTindakanResep() {
       jumlah: it.dose ?? '',
       signa: it.frequency ?? '',
       dur: it.duration_days ? `${it.duration_days} hari` : '',
-      posisi: it.route ?? '',
+      posisi: normalizePosisi(it.route),
     }))
   } catch { /* biarkan */ }
 }
+
+// Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
+// Ditaruh di sini (bukan di atas dekat watch penunjang) agar `tindakanList` &
+// `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
+watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep(); loadPenunjangBilling() }, { immediate: true })
 
 let _saveTindakanTimer = null
 function scheduleSaveTindakan() { clearTimeout(_saveTindakanTimer); _saveTindakanTimer = setTimeout(saveTindakan, 600) }
@@ -670,6 +864,7 @@ async function saveResep() {
   if (!visitId) return
   try {
     await dokterApi.storeResep(visitId, {
+      notes: kasirNote.value?.trim() || null,
       items: rxList.value.map((r) => ({
         medication_id: r.medication_id,
         quantity: Number(r.qty) || 1,
@@ -680,6 +875,30 @@ async function saveResep() {
       })),
     })
   } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan resep') }
+}
+
+// Autosave kasirNote ke prescriptions.notes (ikut payload saveResep).
+watch(kasirNote, () => { scheduleSaveResep() })
+
+// Tombol "Simpan & Kirim ke Kasir": flush autosave kedua endpoint lalu lock Tab 3.
+// Data fisik baru masuk ke station Kasir saat doFinalize() menjalankan
+// store.selesaiAntrian (advance queue) — di sini hanya komitmen UI/UX.
+async function konfirmKirimKasir() {
+  if (sendingToKasir.value) return
+  sendingToKasir.value = true
+  try {
+    clearTimeout(_saveTindakanTimer)
+    clearTimeout(_saveResepTimer)
+    await saveTindakan()
+    await saveResep()
+    tab3Sent.value = true
+    showSendKasirModal.value = false
+    toast('s', 'Tindakan & resep tersimpan. Lanjut ke SOAP & finalisasi untuk mengirim ke kasir.')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyimpan data')
+  } finally {
+    sendingToKasir.value = false
+  }
 }
 
 // ── TAB 4: SOAP ─────────────────────────────────────────────────────────────
@@ -703,6 +922,7 @@ const objectiveText = computed(() => {
   if (hasVal(nd.nadi)) vitals.push(`N: ${nd.nadi} bpm`)
   if (hasVal(nd.spo2)) vitals.push(`SpO₂: ${nd.spo2}%`)
   if (hasVal(nd.suhu)) vitals.push(`T: ${nd.suhu}°C`)
+  if (hasVal(nd.kgd))  vitals.push(`KGD: ${toInt(nd.kgd)} mg/dL`)
   if (vitals.length) lines.push(vitals.join(', '))
 
   // Visus — UCVA/BCVA, hanya baris yang punya nilai pada salah satu mata.
@@ -814,36 +1034,112 @@ function removeIcd9(code) { icd9List.value = icd9List.value.filter((t) => t.code
 
 const planning = ref('')
 const tanggalKontrol = ref('')
-const surgeryPkg = ref('')
+const surgeryCategory = ref('')   // kategori paket bedah terpilih
+const surgeryPkg = ref('')        // id paket bedah terpilih
 const surgeryDate = ref('')
+const surgeryTime = ref('')       // jam rencana bedah (HH:MM) — opsional
 const rujukFaskes = ref('')
 const rujukAlasan = ref('')
-const surgeryPackages = [
-  { id: 'sp1', name: 'Paket Fako + IOL Monofocal' },
-  { id: 'sp2', name: 'Paket Fako + IOL Multifocal' },
-  { id: 'sp3', name: 'Paket Pterigium Eksisi + MMC' },
-  { id: 'sp4', name: 'Trabekulektomi Glaukoma' },
-]
+
+// Slot jam bedah 07:00–17:00 per 30 menit (untuk dropdown jam).
+const SURGERY_TIME_SLOTS = (() => {
+  const out = []
+  for (let h = 7; h <= 17; h++) {
+    out.push(`${String(h).padStart(2, '0')}:00`)
+    if (h !== 17) out.push(`${String(h).padStart(2, '0')}:30`)
+  }
+  return out
+})()
+
+// Preview jadwal bedah pada tanggal terpilih: { total, slots: [{time, room, package_name}] }.
+const bedahSlotInfo = ref(null)
+const bedahSlotLoading = ref(false)
+// Set jam yang sudah terisi pada tanggal itu — untuk menandai slot bentrok di dropdown.
+const bookedSurgeryTimes = computed(() =>
+  new Set((bedahSlotInfo.value?.slots ?? []).map((s) => s.time).filter(Boolean))
+)
+async function loadBedahSlot(tanggal) {
+  if (!tanggal) { bedahSlotInfo.value = null; return }
+  bedahSlotLoading.value = true
+  try {
+    const { data } = await dokterApi.bedahSlot(tanggal)
+    bedahSlotInfo.value = data.data ?? null
+  } catch {
+    bedahSlotInfo.value = null
+  } finally {
+    bedahSlotLoading.value = false
+  }
+}
+// Tanggal berganti → muat preview & reset jam (hindari jam nyangkut dari tanggal lain).
+watch(surgeryDate, (d) => { surgeryTime.value = ''; loadBedahSlot(d) })
+
+// Master paket bedah (surgery_packages) — di-fetch dari tarif & paket bedah.
+const surgeryPackages = ref([])   // {id, code, name, category, price}
+async function loadSurgeryPackages() {
+  try {
+    const { data } = await masterApi.paketBedah.list({ active: 1, per_page: 200 })
+    const rows = data.data?.data ?? data.data ?? []
+    surgeryPackages.value = rows.map((p) => ({
+      id: p.id, code: p.code ?? '', name: p.name,
+      category: p.category || 'Tanpa Kategori',
+      price: Number(p.price ?? p.total_base_price) || 0,
+    }))
+  } catch { surgeryPackages.value = [] }
+}
+
+// Daftar kategori unik (untuk dropdown kategori), urut alfabet.
+const surgeryCategories = computed(() =>
+  [...new Set(surgeryPackages.value.map((p) => p.category))].sort((a, b) => a.localeCompare(b))
+)
+// Paket bedah yang difilter sesuai kategori terpilih.
+const filteredSurgeryPackages = computed(() =>
+  surgeryCategory.value
+    ? surgeryPackages.value.filter((p) => p.category === surgeryCategory.value)
+    : []
+)
+// Ganti kategori → reset pilihan paket agar tidak nyangkut paket dari kategori lain.
+watch(surgeryCategory, () => { surgeryPkg.value = '' })
 
 // ── TANDA TANGAN DIGITAL ────────────────────────────────────────────────────
 
-const DOCTOR_PIN = '1234'
+// Identitas penandatangan = akun dokter yang sedang login (bukan teks statis).
+const signerName = computed(() => {
+  const n = auth.user?.employee?.name ?? auth.user?.name ?? ''
+  if (!n) return 'Dokter'
+  return /^dr\.?\s/i.test(n) ? n : `dr. ${n}`
+})
+const signerRole = computed(() => {
+  const prof = auth.user?.employee?.profession ?? auth.user?.role?.display_name ?? auth.user?.role?.name ?? 'Dokter'
+  const sip  = auth.user?.employee?.sip
+  return sip ? `${prof} — SIP: ${sip}` : prof
+})
+
 const signed = ref(false)
 const signTimestamp = ref(null)
 const pinInput = ref('')
 const pinError = ref('')
 const showPinForm = ref(false)
-function doSign() {
+const pinVerifying = ref(false)
+async function doSign() {
   if (pinInput.value.length < 4) { pinError.value = 'PIN minimal 4 digit'; return }
-  if (pinInput.value !== DOCTOR_PIN) { pinError.value = 'PIN salah, coba lagi'; pinInput.value = ''; return }
-  pinError.value = ''; pinInput.value = ''
-  showPinForm.value = false
-  signed.value = true
-  signTimestamp.value = new Date().toLocaleString('id-ID')
-  toast('s', 'Dokumen ditandatangani secara digital')
+  pinVerifying.value = true
+  pinError.value = ''
+  try {
+    await dokterApi.verifyPin(pinInput.value)
+    pinInput.value = ''
+    showPinForm.value = false
+    signed.value = true
+    signTimestamp.value = new Date().toLocaleString('id-ID')
+    toast('s', 'Dokumen ditandatangani secara digital')
+  } catch (e) {
+    pinError.value = e?.response?.data?.message ?? 'PIN salah, coba lagi'
+    pinInput.value = ''
+  } finally {
+    pinVerifying.value = false
+  }
 }
 
-const isLocked = computed(() => signed.value)
+const isLocked = computed(() => signed.value || selP.value?.status === 'done')
 function undoSign() {
   signed.value = false
   signTimestamp.value = null
@@ -855,25 +1151,62 @@ function undoSign() {
 
 // ── FINALISASI ───────────────────────────────────────────────────────────────
 
+// Map planning UI (PULANG/BEDAH/RUJUK) → enum backend Tab 4.
+const PLANNING_ENUM = { PULANG: 'PULANG_BEROBAT_JALAN', BEDAH: 'BEDAH', RUJUK: 'RUJUK' }
+
 async function doFinalize() {
   if (!diagnosisUtama.value) { toast('e', 'Wajib isi diagnosa utama ICD-10'); return }
   if (!soap.value.A) { toast('e', 'Wajib isi Assessment pada SOAP'); return }
   if (!planning.value) { toast('e', 'Wajib pilih planning (Pulang / Bedah / Rujuk)'); return }
+  if (planning.value === 'BEDAH') {
+    if (!surgeryPkg.value) { toast('e', 'Pilih paket bedah terlebih dahulu'); return }
+    if (!surgeryDate.value) { toast('e', 'Isi tanggal rencana bedah'); return }
+  }
   if (!signed.value) { toast('e', 'Wajib tandatangani dokumen terlebih dahulu'); return }
   if (!store.selectedQueue) { toast('e', 'Tidak ada antrian aktif'); return }
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Kunjungan tidak ditemukan'); return }
 
   finalizing.value = true
   try {
-    // Catatan: penyimpanan tab2/tab4/tindakan/resep masih perlu di-wire endpoint
-    // masing-masing. Untuk saat ini hanya advance queue ke station berikutnya
-    // (PENUNJANG / BEDAH / KASIR — diputuskan backend per resolveNextStation).
+    // 1) Simpan Tab 2 (anamnese + segmen anterior/posterior + slitlamp) lebih dulu,
+    //    karena POST tab2 menolak bila record sudah ada (storeTab4 pakai firstOrCreate).
+    await saveTab2()
+
+    // 2) Simpan Tab 4 (SOAP + diagnosis + planning + paket/tanggal bedah).
+    //    Backend membuat/memperbarui SurgerySchedule saat planning BEDAH, sehingga
+    //    QueueService dapat merutekan ke BEDAH bila tanggal operasi = hari ini.
+    await dokterApi.storeTab4(visitId, {
+      soap_subjective:    soap.value.S || null,
+      soap_objective:     soap.value.O || null,
+      soap_assessment:    soap.value.A || null,
+      soap_plan:          soap.value.P || null,
+      diagnosis_utama:    diagnosisUtama.value.code,
+      diagnosis_sekunder: diagnosisSekunder.value.map((d) => d.code),
+      tindakan_codes:     icd9List.value.map((t) => t.code),
+      planning:           PLANNING_ENUM[planning.value] ?? planning.value,
+      surgery_package_id: planning.value === 'BEDAH' ? surgeryPkg.value : null,
+      surgery_date:       planning.value === 'BEDAH' ? surgeryDate.value : null,
+      surgery_time:       planning.value === 'BEDAH' ? (surgeryTime.value || null) : null,
+      follow_up_date:     planning.value === 'PULANG' && tanggalKontrol.value ? tanggalKontrol.value : null,
+    })
+
+    // 3) Kunci pemeriksaan (is_finalized = true).
+    await dokterApi.finalize(visitId)
+
+    // 4) Advance queue ke station berikutnya (PENUNJANG / BEDAH / KASIR — backend).
     await store.selesaiAntrian(store.selectedQueue.id)
+
     finalized.value = true
     qFilter.value = 'done'
-    toast('s', 'RME difinalisasi — pasien dikirim ke station berikutnya')
-    store.clearSelected()
+    toast('s', planning.value === 'BEDAH'
+      ? 'RME difinalisasi — jadwal bedah dibuat & pasien diteruskan'
+      : 'RME difinalisasi — pasien dikirim ke station berikutnya')
+    // Pasien sengaja TIDAK di-clear: agar dokter masih bisa melihat data tindakan &
+    // resep (read-only) setelah finalisasi. `isLocked` sudah menutup edit (signed=true
+    // + status='done' membuat seluruh panel pane-locked).
   } catch (err) {
-    toast('e', err.message ?? 'Gagal menyelesaikan RME')
+    toast('e', err.response?.data?.message ?? err.message ?? 'Gagal menyelesaikan RME')
   } finally {
     finalizing.value = false
   }
@@ -964,7 +1297,7 @@ async function doFinalize() {
         <span class="pill-live">LIVE</span>
       </div>
 
-      <div class="card-body queue-scroll">
+      <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean dokter">
 
         <!-- Stats bar -->
         <div class="stats-bar">
@@ -1015,11 +1348,12 @@ async function doFinalize() {
           <input v-model="qSearch" class="q-search" placeholder="Cari nama / no. antrean…" />
         </div>
 
-        <div v-if="!filtQ.length" class="empty-section">Tidak ada pasien dalam filter ini</div>
+        <div v-if="!filtQ.length" class="empty-section" aria-live="polite">Tidak ada pasien dalam filter ini</div>
 
-        <template v-else>
+        <div v-else role="list" aria-label="Daftar antrean dokter">
           <div
             v-for="p in filtQ" :key="p.id"
+            role="listitem"
             :class="['q-item', selP?.id === p.id ? 'active' : '', (p.status === 'done' || p.status === 'skip') ? 'done' : '']"
             tabindex="0"
             @click="pickPt(p)"
@@ -1030,7 +1364,6 @@ async function doFinalize() {
               <span :class="['pill', statusPillClass(p.status)]">
                 {{ statusLabel(p.status) }}
               </span>
-              <span class="qi-time">{{ p.time }}</span>
             </div>
             <div class="q-info">
               <div class="q-name">{{ p.name }}</div>
@@ -1057,18 +1390,30 @@ async function doFinalize() {
                 </span>
               </div>
               <div v-else-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
-                <button :class="['q-act-btn', p.status === 'penunjang_done' ? 'resume' : 'call']" @click.stop="callPt(p)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
-                  {{ p.status === 'penunjang_done' ? 'Lanjutkan' : 'Panggil' }}
+                <button
+                  :class="['q-act-btn',
+                    p.status === 'penunjang_done' ? 'resume'
+                      : p.rawStatus !== 'WAITING' ? 'call recall'
+                      : 'call']"
+                  :disabled="pendingCallIds.includes(p.id)"
+                  @click.stop="callPt(p)"
+                >
+                  <svg v-if="p.rawStatus === 'WAITING' || p.status === 'penunjang_done'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                  {{ p.status === 'penunjang_done' ? 'Lanjutkan'
+                     : p.rawStatus !== 'WAITING' ? 'Panggil Ulang'
+                     : 'Panggil' }}
                 </button>
                 <button class="q-act-btn skip" @click.stop="skipPt(p)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
                   Lewati
                 </button>
               </div>
             </div>
+
+            <div class="qi-time">{{ p.time }}</div>
           </div>
-        </template>
+        </div>
 
       </div>
       </div><!-- end qp-card -->
@@ -1076,6 +1421,15 @@ async function doFinalize() {
 
     <!-- RIGHT: RME AREA -->
     <section class="rme">
+
+      <!-- TOPBAR: Identitas dokter yang sedang login (hanya akun dokter) -->
+      <div v-if="isDoctorAccount" class="dv-topbar">
+        <div class="dv-doctor">
+          <div class="dv-doctor-name">{{ doctorName }}</div>
+          <div class="dv-doctor-sip">SIP: {{ doctorSip || '—' }}</div>
+        </div>
+      </div>
+
       <div class="rme-card">
 
       <div v-if="!selP" class="empty">
@@ -1132,6 +1486,15 @@ async function doFinalize() {
             <button :class="['db', 'db-n', dw === 'nurse' ? 'act' : '']" @click="dw = dw === 'nurse' ? null : 'nurse'">▼ Triase</button>
             <button :class="['db', 'db-r', dw === 'ro' ? 'act' : '']" @click="dw = dw === 'ro' ? null : 'ro'">▼ RO</button>
             <button :class="['db', 'db-h', dw === 'hist' ? 'act' : '']" @click="dw = dw === 'hist' ? null : 'hist'">▼ Riwayat</button>
+            <button
+              v-if="store.selectedVisitId"
+              class="db db-doc"
+              title="Resume, surat & consent — isi, cetak, atau tanda tangani"
+              @click="showFormDocsModal = true"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+              Dokumen RM
+            </button>
           </div>
         </div>
 
@@ -1491,7 +1854,11 @@ async function doFinalize() {
                   <div class="hasil-list">
                     <div v-for="h in hasilPenunjang" :key="h.name" class="hasil-item">
                       <div class="hasil-meta">
-                        <span class="hasil-name">{{ h.name }}</span>
+                        <span class="hasil-name">
+                          {{ h.name }}
+                          <svg v-if="h.attachmentUrl" class="hasil-attach-ico" viewBox="0 0 24 24" title="Ada lampiran"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                          <span v-if="h.status === 'IN_PROGRESS'" class="hasil-prg-badge">Diproses</span>
+                        </span>
                         <div class="hasil-meta-right">
                           <span class="hasil-date">{{ h.date }}</span>
                           <button class="btn-lihat" @click="viewHasil(h)">
@@ -1514,7 +1881,17 @@ async function doFinalize() {
           </div>
 
           <!-- ═══ TAB 3: TINDAKAN & RESEP ════════════════════════════════════ -->
-          <div v-if="tab === 'tindakan'" :class="['af', isLocked ? 'pane-locked' : '']">
+          <div v-if="tab === 'tindakan'" class="af">
+
+            <!-- Notice kalau sudah dikirim ke kasir -->
+            <div v-if="tab3Sent && !isLocked" class="lock-notice">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Tindakan &amp; resep sudah dikunci untuk dikirim ke kasir. Lanjutkan ke SOAP &amp; finalisasi.
+              <button class="lock-notice-undo" @click="tab3Sent = false">Buka Kembali</button>
+            </div>
+
+            <!-- Konten Tindakan + Resep + Catatan Kasir (lockable) -->
+            <div :class="(isLocked || tab3Sent) ? 'pane-locked' : ''">
 
             <!-- Tindakan dari Master Tarif -->
             <div class="card">
@@ -1531,24 +1908,27 @@ async function doFinalize() {
                 </div>
               </div>
               <div class="cb">
-                <!-- Toggle tambah tindakan -->
-                <div class="tarif-toggle-row">
-                  <button :class="['tarif-toggle-btn', showTarifList ? 'open' : '']" @click="showTarifList = !showTarifList">
-                    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    Tambah Tindakan
-                    <svg class="chevron-sm" :class="{ up: showTarifList }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                  </button>
-                  <span v-if="tindakanList.length" class="tarif-sel-count">{{ tindakanList.length }} dipilih</span>
-                </div>
-
-                <!-- Collapsible tarif list -->
-                <div v-if="showTarifList" class="tarif-list-panel">
-                  <input v-model="tindakanSearch" class="form-input" style="margin-bottom:0.5rem" placeholder="Cari tindakan..." />
-                  <div class="tarif-list">
+                <!-- Search-driven add tindakan: hanya muncul saat focus + ada query -->
+                <div class="tindakan-search-wrap" ref="tindakanSearchRef">
+                  <div class="tindakan-search-field">
+                    <svg class="tindakan-search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input
+                      v-model="tindakanSearch"
+                      class="form-input tindakan-search-input"
+                      placeholder="Ketik untuk cari tindakan (nama / kode)…"
+                      @focus="tindakanSearchFocus = true"
+                    />
+                    <button v-if="tindakanSearch" class="tindakan-search-clear" @click="tindakanSearch = ''" title="Hapus pencarian">
+                      <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <span v-if="tindakanList.length" class="tarif-sel-count">{{ tindakanList.length }} dipilih</span>
+                  </div>
+                  <!-- Dropdown hasil: hanya saat input fokus & ada query -->
+                  <div v-if="tindakanSearchFocus && tindakanSearch.trim()" class="tindakan-search-drop">
                     <div
                       v-for="t in filteredTarif" :key="t.id"
                       :class="['tarif-list-item', tindakanList.find(x=>x.id===t.id) ? 'in-list' : '']"
-                      @click="addTindakan(t)"
+                      @mousedown.prevent="addTindakan(t)"
                     >
                       <span class="tarif-kode">{{ t.code }}</span>
                       <span v-if="t.category" :class="['tarif-kat', t.category === 'Jasa Medis' ? 'jm' : 'td']">{{ t.category }}</span>
@@ -1559,6 +1939,9 @@ async function doFinalize() {
                     </div>
                     <div v-if="!filteredTarif.length" class="tarif-empty">
                       {{ tarifTindakanList.length ? 'Tidak ditemukan' : 'Belum ada master tarif tindakan' }}
+                    </div>
+                    <div v-else-if="filteredTarif.length >= 50" class="tindakan-search-hint">
+                      Menampilkan 50 teratas — sempitkan pencarian untuk hasil lebih spesifik
                     </div>
                   </div>
                 </div>
@@ -1601,6 +1984,44 @@ async function doFinalize() {
               </div>
             </div>
 
+            <!-- Penunjang sudah diperiksa (read-only, preview tagihan) -->
+            <div v-if="penunjangBilling.length" class="card">
+              <div class="ch">
+                <div class="cht">
+                  <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  Penunjang (sudah diperiksa)
+                </div>
+                <span class="card-counter">{{ penunjangBilling.length }} pemeriksaan</span>
+              </div>
+              <div class="cb">
+                <div class="pj-bill-note">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                  Hasil penunjang otomatis masuk tagihan kasir. Daftar ini hanya pratinjau — harga mengikuti penjamin pasien.
+                </div>
+                <div class="pj-bill-list">
+                  <div v-for="p in penunjangBilling" :key="p.id" class="pj-bill-row">
+                    <div class="pj-bill-info">
+                      <span class="pj-bill-code">{{ p.code }}</span>
+                      <span class="pj-bill-name">
+                        {{ p.name }}
+                        <span v-if="p.eye_side" class="pj-bill-eye">{{ p.eye_side }}</span>
+                      </span>
+                      <span v-if="p.category" class="pj-bill-cat">{{ p.category }}</span>
+                    </div>
+                    <div class="pj-bill-price">{{ fmtRp(p.price) }}</div>
+                  </div>
+                  <div class="pj-bill-total">
+                    <span>Total Penunjang</span>
+                    <span class="pj-bill-total-val">{{ fmtRp(penunjangSubtotal) }}</span>
+                  </div>
+                </div>
+                <div class="pj-bill-estimasi">
+                  <span>Estimasi Total (Tindakan + Penunjang)</span>
+                  <span class="pj-bill-estimasi-val">{{ fmtRp(estimasiTotal) }}</span>
+                </div>
+              </div>
+            </div>
+
             <!-- E-Resep -->
             <div class="card">
               <div class="ch">
@@ -1624,21 +2045,46 @@ async function doFinalize() {
                   <div v-else-if="obatSearch" class="tarif-empty">Obat tidak ditemukan di inventori</div>
                 </div>
 
-                <!-- Detail obat terpilih + aturan pakai -->
-                <div v-if="newRx.medication_id" class="rx-add-row">
-                  <div class="rx-f-name rx-picked">
-                    <span class="rx-picked-name">{{ newRx.name }}</span>
-                    <span class="rx-picked-meta">{{ newRx.form }} · {{ fmtRp(newRx.hja) }}</span>
+                <!-- Form aturan pakai: muncul otomatis saat obat dipilih -->
+                <div v-if="newRx.medication_id" class="rx-form-grid">
+                  <div class="rx-fg rx-fg-name">
+                    <label class="rx-fl">Nama Obat/Alkes</label>
+                    <div class="rx-picked">
+                      <span class="rx-picked-name">{{ newRx.name }}</span>
+                      <span class="rx-picked-meta">{{ newRx.form }} · {{ fmtRp(newRx.hja) }}</span>
+                    </div>
                   </div>
-                  <input v-model.number="newRx.qty" type="number" min="1" class="form-input rx-f-num" title="Jumlah unit diberikan" placeholder="Qty" />
-                  <input v-model="newRx.jumlah" class="form-input rx-f-qty" placeholder="Dosis" />
-                  <input v-model="newRx.signa"  class="form-input rx-f-sig" placeholder="Signa" />
-                  <input v-model="newRx.dur"    class="form-input rx-f-dur" placeholder="Durasi" />
-                  <input v-model="newRx.posisi" class="form-input rx-f-pos" placeholder="Posisi" />
-                  <button class="btn btn-success rx-f-btn" @click="addRx">
-                    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    Tambah
-                  </button>
+                  <div class="rx-fg rx-fg-qty">
+                    <label class="rx-fl">Quantity</label>
+                    <input v-model.number="newRx.qty" type="number" min="1" class="form-input" placeholder="Qty" />
+                  </div>
+                  <div class="rx-fg rx-fg-jum">
+                    <label class="rx-fl">Jumlah</label>
+                    <input v-model="newRx.jumlah" class="form-input" placeholder="cth: 1 tetes" />
+                  </div>
+                  <div class="rx-fg rx-fg-sig">
+                    <label class="rx-fl">Signa</label>
+                    <input v-model="newRx.signa" class="form-input" placeholder="cth: 3×/hari" />
+                  </div>
+                  <div class="rx-fg rx-fg-dur">
+                    <label class="rx-fl">Durasi</label>
+                    <input v-model="newRx.dur" class="form-input" placeholder="cth: 7 hari" />
+                  </div>
+                  <div class="rx-fg rx-fg-pos">
+                    <label class="rx-fl">Posisi Mata</label>
+                    <select v-model="newRx.posisi" class="form-input" title="Kosongkan jika bukan obat tetes">
+                      <option value="">— (bukan tetes)</option>
+                      <option value="OD">OD (Kanan)</option>
+                      <option value="OS">OS (Kiri)</option>
+                      <option value="ODS">ODS (Kedua)</option>
+                    </select>
+                  </div>
+                  <div class="rx-fg rx-fg-btn">
+                    <label class="rx-fl">&nbsp;</label>
+                    <button class="btn btn-success rx-add-btn" @click="addRx" title="Tambahkan ke daftar resep">
+                      <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <!-- Obat list -->
                 <div v-if="rxList.length" class="rx-list">
@@ -1648,7 +2094,7 @@ async function doFinalize() {
                     </div>
                     <div class="rx-body">
                       <div class="rx-name">{{ r.name }}</div>
-                      <div class="rx-meta">{{ r.qty }} unit · {{ r.jumlah }} · {{ r.signa }} · {{ r.dur }} · {{ r.posisi }}</div>
+                      <div class="rx-meta">{{ [r.qty + ' unit', r.jumlah, r.signa, r.dur, r.posisi].filter(Boolean).join(' · ') }}</div>
                     </div>
                     <button class="dx-remove" @click="removeRx(i)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1659,10 +2105,46 @@ async function doFinalize() {
               </div>
             </div>
 
-            <button class="btn btn-primary" @click="tab = 'soap'">
-              Lanjut ke SOAP &amp; Diagnosis
-              <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-            </button>
+            <!-- Catatan untuk Kasir -->
+            <div class="card">
+              <div class="ch">
+                <div class="cht">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+                  Catatan untuk Kasir
+                </div>
+                <span class="card-hint">opsional</span>
+              </div>
+              <div class="cb">
+                <textarea
+                  v-model="kasirNote"
+                  class="form-textarea"
+                  rows="3"
+                  maxlength="500"
+                  placeholder="Catatan tambahan untuk kasir (cara bayar khusus, diskon, instruksi penagihan, dsb)…"
+                ></textarea>
+                <div class="kasir-note-counter">{{ (kasirNote || '').length }}/500</div>
+              </div>
+            </div>
+
+            </div><!-- /pane-locked wrapper -->
+
+            <!-- Action row: Simpan & Kirim ke Kasir + Lanjut ke SOAP -->
+            <div class="tab3-actions">
+              <button
+                v-if="!isLocked && !tab3Sent"
+                class="btn btn-success btn-lg"
+                :disabled="!tindakanList.length && !rxList.length"
+                @click="showSendKasirModal = true"
+                title="Kunci tindakan & resep — siap dikirim ke kasir setelah finalisasi"
+              >
+                <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                Simpan &amp; Kirim ke Kasir
+              </button>
+              <button class="btn btn-primary" @click="tab = 'soap'">
+                Lanjut ke SOAP &amp; Diagnosis
+                <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            </div>
           </div>
 
           <!-- ═══ TAB 4: SOAP & DIAGNOSIS ════════════════════════════════════ -->
@@ -1896,20 +2378,75 @@ async function doFinalize() {
                   </div>
                 </div>
 
-                <!-- Bedah: Paket + Tanggal -->
+                <!-- Bedah: Kategori → Paket → Tanggal -->
                 <div v-if="planning === 'BEDAH'" class="surgery-fields">
                   <div class="g2">
+                    <!-- 1) Pilih kategori dulu -->
+                    <div class="fg">
+                      <label class="fl">Kategori Paket Bedah</label>
+                      <select v-model="surgeryCategory" class="form-select">
+                        <option value="">— Pilih kategori —</option>
+                        <option v-for="c in surgeryCategories" :key="c" :value="c">{{ c }}</option>
+                      </select>
+                      <div v-if="!surgeryPackages.length" class="surgery-hint warn">
+                        Belum ada master paket bedah aktif. Atur di Tarif &amp; Paket Bedah.
+                      </div>
+                    </div>
+                    <!-- 2) Paket bedah sesuai kategori -->
                     <div class="fg">
                       <label class="fl">Paket Bedah</label>
-                      <select v-model="surgeryPkg" class="form-select">
-                        <option value="">— Pilih paket bedah —</option>
-                        <option v-for="p in surgeryPackages" :key="p.id" :value="p.id">{{ p.name }}</option>
+                      <select v-model="surgeryPkg" class="form-select" :disabled="!surgeryCategory">
+                        <option value="">{{ surgeryCategory ? '— Pilih paket bedah —' : 'Pilih kategori dulu' }}</option>
+                        <option v-for="p in filteredSurgeryPackages" :key="p.id" :value="p.id">
+                          {{ p.code ? p.code + ' · ' : '' }}{{ p.name }}
+                        </option>
                       </select>
+                      <div v-if="surgeryCategory && !filteredSurgeryPackages.length" class="surgery-hint">
+                        Tidak ada paket pada kategori ini
+                      </div>
                     </div>
+                  </div>
+                  <!-- 3) Tanggal + jam rencana bedah -->
+                  <div class="g2" style="margin-top:0.6rem">
                     <div class="fg">
                       <label class="fl">Tanggal Bedah</label>
                       <input type="date" v-model="surgeryDate" class="form-input" />
                     </div>
+                    <div class="fg">
+                      <label class="fl">Jam Bedah <span class="fl-opt">(opsional)</span></label>
+                      <select v-model="surgeryTime" class="form-select" :disabled="!surgeryDate">
+                        <option value="">{{ surgeryDate ? '— Pilih jam —' : 'Pilih tanggal dulu' }}</option>
+                        <option
+                          v-for="t in SURGERY_TIME_SLOTS" :key="t" :value="t"
+                          :disabled="bookedSurgeryTimes.has(t)"
+                        >
+                          {{ t }}{{ bookedSurgeryTimes.has(t) ? ' · terisi' : '' }}
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <!-- Preview jumlah pasien bedah pada tanggal terpilih -->
+                  <div v-if="surgeryDate" class="bedah-preview">
+                    <div v-if="bedahSlotLoading" class="bedah-preview-loading">Memeriksa jadwal…</div>
+                    <template v-else-if="bedahSlotInfo">
+                      <div class="bedah-preview-head">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                        <span v-if="bedahSlotInfo.total">
+                          <b>{{ bedahSlotInfo.total }}</b> pasien bedah terjadwal pada tanggal ini
+                        </span>
+                        <span v-else>Belum ada pasien bedah terjadwal pada tanggal ini</span>
+                      </div>
+                      <div v-if="bedahSlotInfo.slots?.length" class="bedah-preview-slots">
+                        <span
+                          v-for="(s, i) in bedahSlotInfo.slots" :key="i"
+                          class="bedah-slot-chip"
+                          :title="s.package_name || ''"
+                        >
+                          {{ s.time || '--:--' }}<template v-if="s.room"> · {{ s.room }}</template>
+                        </span>
+                      </div>
+                    </template>
                   </div>
                 </div>
 
@@ -1959,8 +2496,8 @@ async function doFinalize() {
                         <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       </div>
                       <div>
-                        <div class="sig-name">dr. Andika P, Sp.M</div>
-                        <div class="sig-role">Dokter Spesialis Mata — SIP: 1234/IBI/2024</div>
+                        <div class="sig-name">{{ signerName }}</div>
+                        <div class="sig-role">{{ signerRole }}</div>
                       </div>
                     </div>
                     <!-- Step 1: tombol tanda tangan -->
@@ -1980,9 +2517,9 @@ async function doFinalize() {
                       maxlength="6"
                       @keydown.enter="doSign"
                     />
-                    <button class="btn btn-primary" @click="doSign">
+                    <button class="btn btn-primary" :disabled="pinVerifying" @click="doSign">
                       <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                      Tanda Tangan
+                      {{ pinVerifying ? 'Memverifikasi...' : 'Tanda Tangan' }}
                     </button>
                     <button class="btn btn-secondary" @click="showPinForm = false; pinInput = ''; pinError = ''">Batal</button>
                   </div>
@@ -1991,7 +2528,7 @@ async function doFinalize() {
                       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                       {{ pinError }}
                     </span>
-                    <span v-else class="sig-pin-hint">PIN login dokter Anda (demo: 1234)</span>
+                    <span v-else class="sig-pin-hint">Masukkan PIN tanda tangan Anda (diatur admin di Data Pengguna)</span>
                   </div>
                 </div>
 
@@ -2001,8 +2538,9 @@ async function doFinalize() {
                     <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                   </div>
                   <div>
-                    <div class="sig-name">dr. Andika P, Sp.M</div>
-                    <div class="sig-ts">Ditandatangani pada {{ signTimestamp }}</div>
+                    <div class="sig-name">{{ signerName }}</div>
+                    <div class="sig-role">{{ signerRole }}</div>
+                    <div class="sig-ts">Ditandatangani oleh akun login pada {{ signTimestamp }}</div>
                   </div>
                 </div>
 
@@ -2042,12 +2580,37 @@ async function doFinalize() {
               </div>
             </div>
 
+            <!-- ═══ FORM REGISTRY — Dokumen Rekam Medis Pasien (Fase 2) ═══
+                 Launcher dipindah ke patient bar (.dbtns) supaya tampil di semua
+                 tab; form lengkap dibuka di modal showFormDocsModal. -->
+
           </div>
         </div>
       </template>
 
       </div><!-- end rme-card -->
     </section>
+
+    <!-- ═══ MODAL: DOKUMEN REKAM MEDIS (FORM REGISTRY) ═══ -->
+    <Teleport to="body">
+      <div v-if="showFormDocsModal && store.selectedVisitId" class="modal-overlay" @click.self="showFormDocsModal = false">
+        <div class="modal-box modal-box-forms">
+          <div class="modal-box-head">
+            <div class="modal-box-title">
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+              Dokumen Rekam Medis Pasien
+            </div>
+            <button class="modal-box-close" @click="showFormDocsModal = false">×</button>
+          </div>
+          <div class="modal-box-body">
+            <FormDocsBrowser
+              :visit-id="store.selectedVisitId"
+              :patient-id="store.selectedPatientId"
+            />
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ═══ MODAL: ORDER PENUNJANG ═══ -->
     <Teleport to="body">
@@ -2064,14 +2627,14 @@ async function doFinalize() {
             <div class="penunjang-modal-grid">
               <div
                 v-for="t in penunjangTypes" :key="t.id"
-                :class="['penunjang-modal-chip', penunjangOrders.find(x => x.id === t.id) ? 'ordered' : '']"
+                :class="['penunjang-modal-chip', penunjangOrders.find(x => x.name === t.name) ? 'ordered' : '']"
                 @click="orderPenunjang(t)"
               >
                 <div class="penunjang-modal-chip-name">{{ t.name }}</div>
                 <div class="penunjang-modal-chip-cat">{{ t.category }}</div>
-                <div v-if="penunjangOrders.find(x => x.id === t.id)" class="penunjang-modal-chip-check">
+                <div v-if="penunjangOrders.find(x => x.name === t.name)" class="penunjang-modal-chip-check">
                   <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                  Dipesan
+                  Dipilih
                 </div>
               </div>
               <!-- Pemeriksaan di luar master -->
@@ -2124,6 +2687,40 @@ async function doFinalize() {
       </div>
     </Teleport>
 
+    <!-- ═══ MODAL: KONFIRMASI KIRIM KE KASIR ═══ -->
+    <Teleport to="body">
+      <div v-if="showSendKasirModal" class="modal-overlay" @click.self="showSendKasirModal = false">
+        <div class="modal-box modal-box-sm">
+          <div class="modal-box-head">
+            <div class="modal-box-title">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Kirim ke Kasir?
+            </div>
+            <button class="modal-box-close" @click="showSendKasirModal = false">×</button>
+          </div>
+          <div class="modal-box-body">
+            <p class="kasir-confirm-msg">
+              Tindakan dan resep akan dikirim ke <b>kasir</b> dan data tidak bisa diubah lagi.
+            </p>
+            <div class="kasir-confirm-summary">
+              <div><b>{{ tindakanList.length }}</b> tindakan medis</div>
+              <div><b>{{ rxList.length }}</b> obat dalam resep</div>
+              <div v-if="kasirNote && kasirNote.trim()" class="kasir-confirm-note">
+                Catatan: <i>"{{ kasirNote.trim() }}"</i>
+              </div>
+            </div>
+          </div>
+          <div class="modal-box-foot">
+            <button class="btn btn-secondary" :disabled="sendingToKasir" @click="showSendKasirModal = false">Batal</button>
+            <button class="btn btn-success" :disabled="sendingToKasir" @click="konfirmKirimKasir">
+              <span v-if="sendingToKasir" class="sp"></span>
+              {{ sendingToKasir ? 'Menyimpan…' : 'YA, Kirim' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- ═══ MODAL: LIHAT HASIL PENUNJANG ═══ -->
     <Teleport to="body">
       <div v-if="showHasilModal && selectedHasil" class="modal-overlay" @click.self="showHasilModal = false">
@@ -2139,9 +2736,72 @@ async function doFinalize() {
             <div class="hasil-modal-date">
               <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
               Tanggal: {{ selectedHasil.date }}
+              <span v-if="selectedHasil.status === 'IN_PROGRESS'" class="hasil-modal-badge prg">Masih diproses</span>
             </div>
-            <div class="hasil-modal-label">Hasil Pemeriksaan</div>
-            <div class="hasil-modal-result">{{ selectedHasil.result }}</div>
+
+            <!-- Kesimpulan -->
+            <template v-if="selectedHasil.kesimpulan">
+              <div class="hasil-modal-label">Kesimpulan</div>
+              <div class="hasil-modal-result">{{ selectedHasil.kesimpulan }}</div>
+            </template>
+
+            <!-- Ringkasan -->
+            <template v-if="selectedHasil.ringkasan">
+              <div class="hasil-modal-label">Ringkasan Pemeriksaan</div>
+              <div class="hasil-modal-result">{{ selectedHasil.ringkasan }}</div>
+            </template>
+
+            <!-- Catatan tambahan -->
+            <template v-if="selectedHasil.notes">
+              <div class="hasil-modal-label">Catatan Tambahan</div>
+              <div class="hasil-modal-result">{{ selectedHasil.notes }}</div>
+            </template>
+
+            <!-- Biometri OD/OS -->
+            <template v-if="selectedHasil.biometri">
+              <div class="hasil-modal-label">Hasil Biometri</div>
+              <table class="hasil-bio-table">
+                <thead>
+                  <tr><th>Parameter</th><th>OD</th><th>OS</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Axial Length (mm)</td><td>{{ selectedHasil.biometri.od?.axial_length || '—' }}</td><td>{{ selectedHasil.biometri.os?.axial_length || '—' }}</td></tr>
+                  <tr><td>K1 (D)</td><td>{{ selectedHasil.biometri.od?.k1 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k1 || '—' }}</td></tr>
+                  <tr><td>K2 (D)</td><td>{{ selectedHasil.biometri.od?.k2 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k2 || '—' }}</td></tr>
+                  <tr><td>ACD (mm)</td><td>{{ selectedHasil.biometri.od?.acd || '—' }}</td><td>{{ selectedHasil.biometri.os?.acd || '—' }}</td></tr>
+                  <tr><td>Rec. IOL (D)</td><td>{{ selectedHasil.biometri.od?.recommended_iol_power || '—' }}</td><td>{{ selectedHasil.biometri.os?.recommended_iol_power || '—' }}</td></tr>
+                  <tr><td>Tipe IOL</td><td>{{ selectedHasil.biometri.od?.iol_type || '—' }}</td><td>{{ selectedHasil.biometri.os?.iol_type || '—' }}</td></tr>
+                  <tr><td>Brand IOL</td><td>{{ selectedHasil.biometri.od?.brand || '—' }}</td><td>{{ selectedHasil.biometri.os?.brand || '—' }}</td></tr>
+                </tbody>
+              </table>
+            </template>
+
+            <!-- Lampiran (gambar / PDF) -->
+            <template v-if="selectedHasil.attachmentUrl">
+              <div class="hasil-modal-label">Lampiran Hasil</div>
+              <div class="hasil-modal-attach">
+                <img
+                  v-if="/\.(jpe?g|png|webp|gif)$/i.test(selectedHasil.attachmentPath)"
+                  :src="selectedHasil.attachmentUrl"
+                  class="hasil-modal-img"
+                  alt="Lampiran hasil penunjang"
+                  @click="openAttachment(selectedHasil.attachmentUrl)"
+                />
+                <a v-else :href="selectedHasil.attachmentUrl" target="_blank" rel="noopener" class="hasil-modal-file">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  Buka lampiran (PDF / file)
+                </a>
+                <a :href="selectedHasil.attachmentUrl" target="_blank" rel="noopener" class="hasil-modal-openlink">
+                  Buka di tab baru ↗
+                </a>
+              </div>
+            </template>
+
+            <!-- Fallback bila belum ada hasil terstruktur sama sekali -->
+            <template v-if="!selectedHasil.kesimpulan && !selectedHasil.ringkasan && !selectedHasil.notes && !selectedHasil.biometri && !selectedHasil.attachmentUrl">
+              <div class="hasil-modal-label">Hasil Pemeriksaan</div>
+              <div class="hasil-modal-result">{{ selectedHasil.result }}</div>
+            </template>
           </div>
           <div class="modal-box-foot">
             <button class="btn btn-secondary" @click="showHasilModal = false">Tutup</button>
@@ -2264,7 +2924,7 @@ async function doFinalize() {
 .q-item:focus-visible { outline: 2px solid var(--ga); outline-offset: 2px; }
 .qi-left { display: flex; flex-direction: column; gap: 4px; min-width: 52px; }
 .q-num { font-weight: 700; font-size: 13px; color: var(--ga); letter-spacing: 0.03em; }
-.qi-time { font-size: 9px; color: var(--tu); font-variant-numeric: tabular-nums; }
+.qi-time { font-size: 9px; color: var(--tu); font-variant-numeric: tabular-nums; align-self: flex-start; margin-left: auto; }
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 9.5px; color: var(--tu); margin-top: 2px; }
@@ -2285,19 +2945,38 @@ async function doFinalize() {
 .pill-allergy { background: var(--eb); color: var(--et); }
 
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
-.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .12s; background: none; }
+.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
 .q-act-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .q-act-btn.call { color: var(--ga); border-color: var(--ga); background: var(--gl); }
 .q-act-btn.call:hover { background: var(--ga); color: #fff; }
+.q-act-btn.call.recall { color: #b45309; border-color: #fbbf24; background: #fef3c7; }
+.q-act-btn.call.recall:hover { background: #f59e0b; color: #fff; border-color: #f59e0b; }
 .q-act-btn.skip { color: var(--tu); border-color: var(--gb); }
 .q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .q-act-btn.resume { color: #fff; border-color: var(--ga); background: var(--ga); }
 .q-act-btn.resume:hover { filter: brightness(1.07); }
+.q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
+.q-act-btn.call:active:not(:disabled) { background: var(--gd); color: #fff; border-color: var(--gd); }
+.q-act-btn.call.recall:active:not(:disabled) { background: #b45309; color: #fff; border-color: #b45309; }
+.q-act-btn.resume:active:not(:disabled) { background: var(--gd); border-color: var(--gd); }
+.q-act-btn.skip:active:not(:disabled) { background: var(--wt); color: #fff; border-color: var(--wt); }
+.q-act-btn:disabled { opacity: .55; cursor: wait; }
 .q-at-penunjang { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; color: #854d0e; }
 .q-at-penunjang svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* RME */
 .rme { flex: 1; display: flex; flex-direction: column; min-width: 0; margin: 0.75rem 0.75rem 0.75rem 0; }
+
+/* TOPBAR — identitas dokter (atas kanan) */
+.dv-topbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; flex-shrink: 0; }
+.dv-doctor {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 1px;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 10px;
+  padding: 0.4rem 0.8rem;
+}
+.dv-doctor-name { font-size: 13px; font-weight: 700; color: #000; line-height: 1.2; }
+.dv-doctor-sip { font-size: 11px; font-weight: 500; color: #000; }
+
 .rme-card {
   flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
   background: var(--bc); border: 1px solid var(--gb); border-radius: 12px;
@@ -2350,6 +3029,16 @@ async function doFinalize() {
 }
 .db:hover { color: var(--td); }
 .db.act { background: var(--gd); color: #fff; border-color: var(--gd); }
+/* Tombol launcher Dokumen RM — aksen biru + ikon supaya menonjol dari drawer toggle */
+.db-doc {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: #1763d4; border-color: #c6dcfb; background: #f3f8ff;
+}
+.db-doc svg {
+  width: 13px; height: 13px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.db-doc:hover { color: #fff; background: #1763d4; border-color: #1763d4; }
 
 /* DRAWER */
 .dwr { background: var(--bs); border-bottom: 1px solid var(--gb); flex-shrink: 0; padding: 0.75rem 1rem; }
@@ -2525,7 +3214,9 @@ async function doFinalize() {
 .hasil-item:last-child { border-bottom: none; }
 .hasil-item.pending { opacity: .7; }
 .hasil-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
-.hasil-name { font-size: 11.5px; font-weight: 600; color: var(--td); }
+.hasil-name { font-size: 11.5px; font-weight: 600; color: var(--td); display: inline-flex; align-items: center; gap: 5px; }
+.hasil-attach-ico { width: 11px; height: 11px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.hasil-prg-badge { font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #dbeafe; color: #1e40af; }
 .hasil-date { font-size: 9.5px; color: var(--tu); flex-shrink: 0; }
 .hasil-result { font-size: 11px; color: var(--tm); line-height: 1.45; }
 .hasil-pending-badge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--ib); color: var(--it); flex-shrink: 0; }
@@ -2541,7 +3232,20 @@ async function doFinalize() {
 .hasil-modal-date { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--tu); margin-bottom: 0.9rem; }
 .hasil-modal-date svg { width: 13px; height: 13px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .hasil-modal-label { font-size: 10px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.45rem; }
-.hasil-modal-result { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; font-size: 13px; color: var(--td); line-height: 1.65; }
+.hasil-modal-result { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; font-size: 13px; color: var(--td); line-height: 1.65; white-space: pre-wrap; margin-bottom: 0.85rem; }
+.hasil-modal-label:not(:first-of-type) { margin-top: 0.2rem; }
+.hasil-modal-badge { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 4px; margin-left: auto; }
+.hasil-modal-badge.prg { background: #dbeafe; color: #1e40af; }
+.hasil-bio-table { width: 100%; border-collapse: collapse; margin-bottom: 0.85rem; font-size: 12px; }
+.hasil-bio-table th, .hasil-bio-table td { border: 1px solid var(--gb); padding: 5px 9px; text-align: left; }
+.hasil-bio-table th { background: var(--bs); font-size: 10.5px; font-weight: 700; color: var(--tm); }
+.hasil-bio-table td:first-child { color: var(--tu); font-weight: 600; }
+.hasil-bio-table td { color: var(--td); font-variant-numeric: tabular-nums; }
+.hasil-modal-attach { display: flex; flex-direction: column; gap: 8px; margin-bottom: 0.4rem; }
+.hasil-modal-img { width: 100%; max-height: 360px; object-fit: contain; border: 1px solid var(--gb); border-radius: 9px; background: #000; cursor: zoom-in; }
+.hasil-modal-file { display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1.5px solid var(--ga); border-radius: 9px; background: var(--gl); color: var(--ga); font-size: 12.5px; font-weight: 600; text-decoration: none; }
+.hasil-modal-file svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.hasil-modal-openlink { font-size: 11px; color: var(--ga); text-decoration: underline; align-self: flex-start; }
 
 /* CONTENT */
 .rmc { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; background: var(--bg); }
@@ -2736,6 +3440,19 @@ async function doFinalize() {
 .plan-check { width: 18px; flex-shrink: 0; }
 .plan-check svg { width: 18px; height: 18px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .surgery-fields, .plan-fields { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; margin-top: 0; }
+.surgery-hint { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
+.surgery-hint.warn { color: var(--wt); }
+.form-select:disabled { background: var(--bi); cursor: not-allowed; opacity: .7; }
+.fl-opt { font-weight: 400; color: var(--tu); font-size: 9.5px; }
+
+/* Preview jadwal bedah per tanggal (Tab 4) */
+.bedah-preview { margin-top: 0.65rem; padding: 0.55rem 0.7rem; background: #eef4ff; border: 1px solid #c7dbff; border-radius: 8px; }
+.bedah-preview-loading { font-size: 11px; color: #1763d4; }
+.bedah-preview-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #1a1a1a; }
+.bedah-preview-head svg { width: 14px; height: 14px; flex-shrink: 0; color: #1763d4; }
+.bedah-preview-head b { color: #1763d4; }
+.bedah-preview-slots { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.bedah-slot-chip { font-size: 10.5px; font-weight: 600; color: #1763d4; background: #fff; border: 1px solid #c7dbff; border-radius: 6px; padding: 2px 7px; }
 
 /* DIGITAL SIGNATURE */
 .sig-action-wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -2788,23 +3505,75 @@ async function doFinalize() {
 .tarif-list-icon.add { stroke: var(--ga); }
 .tarif-list-icon.check { stroke: var(--st); stroke-width: 2.5; }
 
-/* ── E-Resep single row ──────────────────────────────────────────────────── */
-.rx-form-header { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; padding: 0 2px; }
-.rx-form-header span { font-size: 9.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.04em; }
-.rx-h-name { flex: 2.5; min-width: 0; }
-.rx-h-qty  { flex: 0.9; min-width: 0; }
-.rx-h-sig  { flex: 1.1; min-width: 0; }
-.rx-h-dur  { flex: 1;   min-width: 0; }
-.rx-h-pos  { flex: 1.1; min-width: 0; }
+/* ── Tindakan search-driven picker ───────────────────────────────────────── */
+.tindakan-search-wrap { position: relative; margin-bottom: 0.75rem; }
+.tindakan-search-field {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px 0 36px; height: 38px;
+  border: 1.5px solid var(--gb); border-radius: 9px;
+  background: var(--bs); transition: border-color .13s, background .13s;
+}
+.tindakan-search-field:focus-within { border-color: var(--ga); background: var(--bc); }
+.tindakan-search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round;
+}
+.tindakan-search-input {
+  flex: 1; min-width: 0; border: none !important; background: transparent !important;
+  padding: 0 !important; height: auto !important; font-size: 13px; color: var(--td);
+  outline: none; box-shadow: none !important;
+}
+.tindakan-search-input::placeholder { color: var(--th); }
+.tindakan-search-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; border: none;
+  background: var(--gb); color: var(--tu); cursor: pointer; padding: 0;
+  flex-shrink: 0; transition: background .12s;
+}
+.tindakan-search-clear:hover { background: var(--th); color: #fff; }
+.tindakan-search-clear svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.tindakan-search-drop {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.10);
+  max-height: 320px; overflow-y: auto; padding: 4px;
+}
+.tindakan-search-hint {
+  padding: 7px 10px; font-size: 10.5px; color: var(--tu);
+  border-top: 1px dashed var(--gb); text-align: center; font-style: italic;
+}
 
-.rx-add-row { display: flex; gap: 6px; align-items: center; margin-bottom: 0.75rem; }
-.rx-f-name { flex: 2.5; min-width: 0; }
-.rx-f-num  { flex: 0; flex-basis: 54px; min-width: 0; text-align: center; }
-.rx-f-qty  { flex: 0.9; min-width: 0; }
-.rx-f-sig  { flex: 1.1; min-width: 0; }
-.rx-f-dur  { flex: 1;   min-width: 0; }
-.rx-f-pos  { flex: 1.1; min-width: 0; }
-.rx-f-btn  { flex-shrink: 0; white-space: nowrap; height: 34px; padding: 0 12px; font-size: 12px; }
+/* ── E-Resep form grid (label di atas tiap kolom) ───────────────────────── */
+.rx-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) 70px minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.3fr) 44px;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 0.85rem;
+  padding: 0.65rem 0.7rem;
+  background: var(--bs);
+  border: 1px solid var(--gb);
+  border-radius: 9px;
+}
+.rx-fg { display: flex; flex-direction: column; min-width: 0; }
+.rx-fl {
+  font-size: 9.5px; font-weight: 700; color: var(--tu);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 4px; padding: 0 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rx-fg .form-input { width: 100%; height: 34px; font-size: 12px; }
+.rx-fg-qty .form-input { text-align: center; }
+.rx-add-btn {
+  width: 100%; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.rx-add-btn svg { width: 16px; height: 16px; }
+@media (max-width: 1100px) {
+  .rx-form-grid { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+  .rx-fg-name { grid-column: 1 / -1; }
+  .rx-fg-btn { grid-column: 1 / -1; }
+}
 
 /* Picker obat dari inventori */
 .rx-picker { position: relative; margin-bottom: 0.6rem; }
@@ -3009,4 +3778,70 @@ async function doFinalize() {
   font-size: 12px; font-weight: 600; color: var(--gd);
 }
 .tindakan-total-val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ── Penunjang sudah diperiksa (read-only preview di Tab 3) ─────────────── */
+.pj-bill-note {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 8px 10px; margin-bottom: 0.6rem;
+  background: var(--ib); color: var(--it); border: 1px solid var(--ibd); border-radius: 8px;
+  font-size: 11px; line-height: 1.45;
+}
+.pj-bill-note svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
+.pj-bill-list { border: 1px solid var(--gb); border-radius: 9px; overflow: hidden; }
+.pj-bill-row { display: flex; align-items: center; gap: 0.6rem; padding: 9px 12px; border-bottom: 1px solid var(--gb); }
+.pj-bill-row:last-of-type { border-bottom: none; }
+.pj-bill-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pj-bill-code { font-family: 'Geist Mono', monospace; font-size: 11px; color: #000; background: var(--bs); padding: 2px 7px; border-radius: 5px; border: 1px solid var(--gb); }
+.pj-bill-name { font-size: 12.5px; font-weight: 500; color: #000; }
+.pj-bill-eye { font-size: 9px; font-weight: 700; padding: 1px 6px; background: var(--gl); color: var(--gd); border-radius: 4px; margin-left: 4px; }
+.pj-bill-cat { font-size: 10px; color: var(--tu); }
+.pj-bill-price { font-size: 12.5px; font-weight: 600; color: #000; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.pj-bill-total {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.7rem 0.85rem;
+  background: var(--gl); border-top: 2px solid rgba(31,125,74,0.2);
+  font-size: 12px; font-weight: 600; color: var(--gd);
+}
+.pj-bill-total-val { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pj-bill-estimasi {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 0.6rem; padding: 0.7rem 0.85rem;
+  background: var(--bs); border: 1px dashed var(--gb); border-radius: 8px;
+  font-size: 12px; font-weight: 600; color: #000;
+}
+.pj-bill-estimasi-val { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--gd); }
+
+/* ── Catatan Kasir + Action row Tab 3 ───────────────────────────────────── */
+.kasir-note-counter {
+  margin-top: 5px; text-align: right;
+  font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums;
+}
+.tab3-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  margin-top: 0.25rem; flex-wrap: wrap;
+}
+.tab3-actions .btn-success.btn-lg {
+  box-shadow: 0 4px 14px rgba(31,125,74,.30);
+}
+.tab3-actions .btn-success.btn-lg:hover:not(:disabled) {
+  box-shadow: 0 6px 18px rgba(31,125,74,.40);
+}
+
+/* Konfirmasi kirim kasir modal */
+.kasir-confirm-msg {
+  margin: 0 0 0.85rem 0;
+  font-size: 13px; line-height: 1.55; color: var(--td);
+}
+.kasir-confirm-msg b { color: var(--ga); font-weight: 700; }
+.kasir-confirm-summary {
+  background: var(--bs); border: 1px solid var(--gb); border-radius: 9px;
+  padding: 0.75rem 0.9rem; display: flex; flex-direction: column; gap: 6px;
+  font-size: 12px; color: var(--tm);
+}
+.kasir-confirm-summary b { color: var(--td); font-weight: 700; font-size: 13px; }
+.kasir-confirm-note { color: var(--tu); font-size: 11.5px; padding-top: 4px; border-top: 1px dashed var(--gb); }
+.kasir-confirm-note i { color: var(--td); font-style: italic; }
+
+/* ── FORM REGISTRY: modal Dokumen RM (isi = FormDocsBrowser) ──────────────── */
+.modal-box-forms { max-width: 760px; }
 </style>

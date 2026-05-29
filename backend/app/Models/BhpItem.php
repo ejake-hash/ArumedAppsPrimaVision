@@ -14,6 +14,18 @@ class BhpItem extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
+    public const CATEGORY_MEDICAL_BHP      = 'MEDICAL_BHP';
+    public const CATEGORY_CSSD             = 'CSSD';
+    public const CATEGORY_INSTRUMENT_SET   = 'INSTRUMENT_SET';
+    public const CATEGORY_MEDICAL_SUPPLIES = 'MEDICAL_SUPPLIES';
+
+    public const CATEGORIES = [
+        self::CATEGORY_MEDICAL_BHP,
+        self::CATEGORY_CSSD,
+        self::CATEGORY_INSTRUMENT_SET,
+        self::CATEGORY_MEDICAL_SUPPLIES,
+    ];
+
     protected $fillable = [
         'name',
         'code',

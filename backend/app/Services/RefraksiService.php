@@ -480,6 +480,12 @@ class RefraksiService
             return false;
         }
 
+        // PREOP_BEDAH: gate paralel selesai tapi JANGAN enqueue DOKTER —
+        // tunggu tombol manual "Kirim ke Bedah" di PerawatView.
+        if ($visit->visit_type === 'PREOP_BEDAH') {
+            return true;
+        }
+
         DB::transaction(function () use ($visit) {
             $visit->update([
                 'ready_for_doctor'      => true,

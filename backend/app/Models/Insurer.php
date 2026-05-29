@@ -25,11 +25,18 @@ class Insurer extends Model
         'email',
         'is_active',
         'is_system',
+        'portal_url',
+        'pic_name',
+        'pic_phone',
+        'pic_email',
+        'claim_submission_notes',
+        'sla_days',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
         'is_system' => 'boolean',
+        'sla_days'  => 'integer',
     ];
 
     public function scopeActive($query)
@@ -77,5 +84,10 @@ class Insurer extends Model
     public function iolTariffs(): HasMany
     {
         return $this->hasMany(IolTariff::class);
+    }
+
+    public function documentRequirements(): HasMany
+    {
+        return $this->hasMany(InsurerDocumentRequirement::class)->orderBy('sort_order');
     }
 }

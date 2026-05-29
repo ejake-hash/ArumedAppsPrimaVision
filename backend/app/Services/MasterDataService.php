@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\BhpItem;
 use App\Models\BhpTariff;
+use App\Models\BillingCategory;
 use App\Models\ClinicProfile;
 use App\Models\DocumentNumberConfig;
 use App\Models\DocumentTemplate;
@@ -17,6 +18,7 @@ use App\Models\IolItem;
 use App\Models\IolTariff;
 use App\Models\Medication;
 use App\Models\MedicationTariff;
+use App\Models\MedicalEquipment;
 use App\Models\Procedure;
 use App\Models\ProcedureCategory;
 use App\Models\ProcedureTariff;
@@ -609,9 +611,25 @@ class MasterDataService
 
     public function storeObat(array $data): Medication
     {
+        if (empty($data['code'])) {
+            $data['code'] = $this->generateObatCode();
+        }
         $med = Medication::create($data);
         $this->log(auth('api')->id(), 'CREATE_OBAT', Medication::class, $med->id);
         return $med;
+    }
+
+    private function generateObatCode(): string
+    {
+        $last = Medication::withTrashed()
+            ->where('code', 'like', 'MED-%')
+            ->orderByDesc('code')
+            ->value('code');
+        $next = 1;
+        if ($last && preg_match('/^MED-(\d+)$/', $last, $m)) {
+            $next = ((int) $m[1]) + 1;
+        }
+        return sprintf('MED-%03d', $next);
     }
 
     public function updateObat(string $id, array $data): Medication
@@ -677,6 +695,19 @@ class MasterDataService
             $next = ((int) $m[1]) + 1;
         }
         return sprintf('BHP-%03d', $next);
+    }
+
+    private function generateAlatMedisCode(): string
+    {
+        $last = MedicalEquipment::withTrashed()
+            ->where('code', 'like', 'MEQ-%')
+            ->orderByDesc('code')
+            ->value('code');
+        $next = 1;
+        if ($last && preg_match('/^MEQ-(\d+)$/', $last, $m)) {
+            $next = ((int) $m[1]) + 1;
+        }
+        return sprintf('MEQ-%03d', $next);
     }
 
     public function updateBhp(string $id, array $data): BhpItem
@@ -1119,6 +1150,13 @@ class MasterDataService
                 'columns'   => ['code', 'category', 'description', 'indonesian_description', 'is_eye_related', 'is_favorite'],
                 'casts'     => ['is_eye_related' => 'bool', 'is_favorite' => 'bool'],
             ],
+            'alat-medis' => [
+                'table'     => 'medical_equipments',
+                'model'     => MedicalEquipment::class,
+                'uniqueKey' => 'code', // export pakai uniqueKey utk orderBy; import by-name (code auto-gen MEQ-NNN)
+                'columns'   => ['code', 'name', 'category', 'brand', 'model', 'serial_number', 'location', 'status', 'calibration_due_at', 'purchase_date', 'description', 'is_active'],
+                'casts'     => ['is_active' => 'bool'],
+            ],
             default => throw new \Exception("Tipe resource tidak dikenal: {$type}", 422),
         };
     }
@@ -1133,14 +1171,86 @@ class MasterDataService
             return $this->tindakanCsvHeaderOnly();
         }
 
-        $schema = $this->resourceSchema($type);
-        $output = fopen('php://temp', 'r+');
-        fputcsv($output, $schema['columns'], ',', '"', '\\');
+        $schema  = $this->resourceSchema($type);
+        $columns = $this->csvHeaderColumns($type, $schema);
+        $output  = fopen('php://temp', 'r+');
+
+        // Petunjuk pengisian sebagai baris komentar (#). Importer otomatis
+        // meng-skip baris diawali '#', jadi admin tidak wajib menghapusnya.
+        foreach ($this->csvTemplateNotes($type) as $note) {
+            fwrite($output, '# ' . $note . "\n");
+        }
+
+        fputcsv($output, $columns, ',', '"', '\\');
         rewind($output);
         $csv = stream_get_contents($output);
         fclose($output);
 
         return $csv;
+    }
+
+    /**
+     * Pecah konten CSV jadi baris data: buang \r, baris kosong, dan baris
+     * komentar (diawali '#' — petunjuk pengisian di template). Hasilnya
+     * di-reindex 0-based sehingga elemen pertama = header.
+     */
+    private function csvDataLines(string $csvContent): array
+    {
+        $raw = explode("\n", str_replace("\r", '', trim($csvContent)));
+        $lines = array_filter($raw, static function ($line) {
+            $t = trim($line);
+            return $t !== '' && ! str_starts_with($t, '#');
+        });
+        return array_values($lines);
+    }
+
+    /**
+     * Baris petunjuk pengisian (tanpa prefix '#') untuk template CSV.
+     * Ditaruh di atas header; importer akan mengabaikannya saat parsing.
+     */
+    private function csvTemplateNotes(string $type): array
+    {
+        $common = [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+            'Kolom "name" WAJIB diisi. Identifier upsert = name (tidak case-sensitive): nama baru = tambah, nama sama = perbarui.',
+            'Kolom "is_active": 1 = aktif, 0 = nonaktif.',
+        ];
+
+        return match ($type) {
+            'bhp' => array_merge($common, [
+                'Kolom "code" dibuat otomatis (BHP-001, BHP-002, ...) untuk item baru — tidak perlu diisi.',
+                'Kolom "category" WAJIB salah satu: ' . implode(' | ', \App\Models\BhpItem::CATEGORIES) . '.',
+                'Kolom "expiry_date": format YYYY-MM-DD (mis. 2027-01-31), boleh kosong.',
+                'Contoh baris: Kasa Steril 10x10,MEDICAL_BHP,pcs,Onemed,500,50,1500,2027-01-31,,Catatan,1',
+            ]),
+            'obat' => array_merge($common, [
+                'Kolom "code" dibuat otomatis (MED-001, ...) untuk item baru — tidak perlu diisi.',
+                'Kolom "expiry_date": format YYYY-MM-DD, boleh kosong. konversi/stock/min_stock = angka bulat, price = angka.',
+            ]),
+            'alat-medis' => array_merge($common, [
+                'Kolom "code" dibuat otomatis (MEQ-001, MEQ-002, ...) untuk item baru — tidak perlu diisi.',
+                'Kolom "category" salah satu: ' . implode(' | ', \App\Models\MedicalEquipment::CATEGORIES) . '.',
+                'Kolom "status" salah satu: ACTIVE | MAINTENANCE | RETIRED.',
+                'Kolom tanggal (calibration_due_at, purchase_date): format YYYY-MM-DD, boleh kosong.',
+                'Contoh baris: Microscope Zeiss,MICROSCOPE,Zeiss,OPMI Lumera,SN-123,OK-1,ACTIVE,2026-12-31,2024-01-15,Catatan,1',
+            ]),
+            'iol' => array_merge($common, [
+                'Identifier IOL = serial_number (bukan name). power/cylinder/price = angka, axis/stock = bulat.',
+            ]),
+            default => $common,
+        };
+    }
+
+    /**
+     * Kolom CSV yang dipakai untuk template & export.
+     * obat/bhp: kode di-exclude (auto-gen MED-/BHP-NNN di backend; identifier upsert = name).
+     */
+    private function csvHeaderColumns(string $type, array $schema): array
+    {
+        if (in_array($type, ['obat', 'bhp', 'alat-medis'], true)) {
+            return array_values(array_filter($schema['columns'], fn ($c) => $c !== 'code'));
+        }
+        return $schema['columns'];
     }
 
     /**
@@ -1153,19 +1263,21 @@ class MasterDataService
             return $this->exportTindakanCsv();
         }
 
-        $schema = $this->resourceSchema($type);
+        $schema  = $this->resourceSchema($type);
+        $columns = $this->csvHeaderColumns($type, $schema);
+        $orderBy = in_array($type, ['obat', 'bhp', 'alat-medis'], true) ? 'name' : $schema['uniqueKey'];
 
         $rows = DB::table($schema['table'])
             ->whereNull('deleted_at')
-            ->orderBy($schema['uniqueKey'])
-            ->get($schema['columns']);
+            ->orderBy($orderBy)
+            ->get($columns);
 
         $output = fopen('php://temp', 'r+');
-        fputcsv($output, $schema['columns'], ',', '"', '\\');
+        fputcsv($output, $columns, ',', '"', '\\');
 
         foreach ($rows as $row) {
             $values = [];
-            foreach ($schema['columns'] as $col) {
+            foreach ($columns as $col) {
                 $val = $row->$col ?? null;
                 if (is_bool($val)) {
                     $val = $val ? '1' : '0';
@@ -1239,11 +1351,15 @@ class MasterDataService
             return $this->importTindakanCsv($csvContent);
         }
 
+        if (in_array($type, ['obat', 'bhp', 'alat-medis'], true)) {
+            return $this->importItemByNameCsv($type, $csvContent);
+        }
+
         $schema = $this->resourceSchema($type);
         $model  = $schema['model'];
         $unique = $schema['uniqueKey'];
 
-        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        $lines = $this->csvDataLines($csvContent);
         if (empty($lines)) {
             throw new \Exception('File CSV kosong.', 422);
         }
@@ -1413,6 +1529,116 @@ class MasterDataService
         return compact('inserted', 'updated', 'skipped', 'errors');
     }
 
+    /**
+     * Import CSV untuk obat/bhp dengan kolom `code` opsional/hilang.
+     *
+     * - Identifier upsert: LOWER(name). Match → UPDATE (code tidak diubah).
+     *   Mismatch → CREATE + auto-gen code (MED-NNN / BHP-NNN).
+     * - Duplicate name dalam 1 file: last-row-wins (baris terakhir menimpa
+     *   data baris-baris sebelumnya untuk key yg sama).
+     * - `code` di header tetap diterima (kalau user paksa sertakan) — dipakai
+     *   sebagai code eksplisit saat CREATE, tapi tidak override lookup.
+     */
+    private function importItemByNameCsv(string $type, string $csvContent): array
+    {
+        $schema = $this->resourceSchema($type);
+        $model  = $schema['model'];
+
+        $lines = $this->csvDataLines($csvContent);
+        if (empty($lines)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map('trim', str_getcsv(array_shift($lines), ',', '"', '\\'));
+
+        if (! in_array('name', $headers, true)) {
+            throw new \Exception("Header CSV harus mengandung kolom 'name'.", 422);
+        }
+
+        $inserted = 0;
+        $updated  = 0;
+        $skipped  = 0;
+        $errors   = [];
+
+        // Pass 1: gather → last-row-wins by LOWER(name)
+        $bucket = []; // key: lower(name), value: ['lineNum'=>int, 'data'=>array]
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row = array_combine($headers, $values);
+
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($name === '') {
+                $errors[] = "Baris {$lineNum}: kolom 'name' kosong";
+                $skipped++;
+                continue;
+            }
+
+            $data = [];
+            foreach ($schema['columns'] as $col) {
+                if (! array_key_exists($col, $row)) continue;
+                $raw = $row[$col];
+                if ($raw === '' || $raw === null) {
+                    $data[$col] = null;
+                    continue;
+                }
+                $data[$col] = match ($schema['casts'][$col] ?? 'string') {
+                    'int'   => (int) $raw,
+                    'float' => (float) $raw,
+                    'bool'  => in_array(strtolower((string) $raw), ['1', 'true', 'yes', 'y'], true),
+                    default => $raw,
+                };
+            }
+            $data['name'] = $name;
+
+            $bucket[strtolower($name)] = ['lineNum' => $lineNum, 'data' => $data];
+        }
+
+        // Pass 2: persist (last write wins per name)
+        foreach ($bucket as $lname => $entry) {
+            $lineNum = $entry['lineNum'];
+            $data    = $entry['data'];
+            try {
+                $existing = $model::whereRaw('LOWER(name) = ?', [$lname])->first();
+                if ($existing) {
+                    unset($data['code']); // never override existing code
+                    $existing->update($data);
+                    $updated++;
+                } else {
+                    if (empty($data['code'])) {
+                        $data['code'] = match ($type) {
+                            'obat'       => $this->generateObatCode(),
+                            'bhp'        => $this->generateBhpCode(),
+                            'alat-medis' => $this->generateAlatMedisCode(),
+                        };
+                    }
+                    $model::create($data);
+                    $inserted++;
+                }
+            } catch (\Throwable $e) {
+                $errors[] = "Baris {$lineNum}: " . $e->getMessage();
+                $skipped++;
+            }
+        }
+
+        $this->log(
+            auth('api')->id(),
+            'IMPORT_RESOURCE_CSV',
+            null,
+            null,
+            "type:{$type} inserted:{$inserted} updated:{$updated} skipped:{$skipped}"
+        );
+
+        return compact('inserted', 'updated', 'skipped', 'errors');
+    }
+
     // =========================================================================
     // JENIS DOKUMEN
     // =========================================================================
@@ -1554,6 +1780,63 @@ class MasterDataService
         $this->log(auth('api')->id(), 'UPDATE_DOC_NUMBER_CONFIG', DocumentNumberConfig::class, $id);
 
         return $config->fresh();
+    }
+
+    // =========================================================================
+    // BILLING CATEGORIES (kategori grouping di rincian tagihan Kasir)
+    // =========================================================================
+
+    public function indexBillingCategory(array $filters = []): array
+    {
+        $query = BillingCategory::query();
+        if (array_key_exists('active', $filters) && $filters['active'] !== null && $filters['active'] !== '') {
+            $query->where('is_active', (bool) $filters['active']);
+        }
+        return $query->orderBy('sort_order')->orderBy('name')->get()->toArray();
+    }
+
+    public function storeBillingCategory(array $data): BillingCategory
+    {
+        $row = BillingCategory::create([
+            'name'       => trim($data['name']),
+            'sort_order' => $data['sort_order'] ?? 100,
+            'is_active'  => $data['is_active'] ?? true,
+        ]);
+        $this->log(auth('api')->id(), 'CREATE_BILLING_CATEGORY', BillingCategory::class, $row->id);
+        return $row;
+    }
+
+    public function updateBillingCategory(string $id, array $data): BillingCategory
+    {
+        $row = BillingCategory::findOrFail($id);
+        $row->update(array_filter([
+            'name'       => isset($data['name'])       ? trim($data['name']) : null,
+            'sort_order' => $data['sort_order']        ?? null,
+            'is_active'  => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : null,
+        ], fn ($v) => ! is_null($v)));
+        $this->log(auth('api')->id(), 'UPDATE_BILLING_CATEGORY', BillingCategory::class, $id);
+        return $row->fresh();
+    }
+
+    public function deleteBillingCategory(string $id): void
+    {
+        $row = BillingCategory::findOrFail($id);
+        $row->delete();
+        $this->log(auth('api')->id(), 'DELETE_BILLING_CATEGORY', BillingCategory::class, $id);
+    }
+
+    /**
+     * Bulk reorder. Payload: [{ id, sort_order }, ...]
+     */
+    public function reorderBillingCategory(array $rows): void
+    {
+        DB::transaction(function () use ($rows) {
+            foreach ($rows as $r) {
+                if (empty($r['id'])) continue;
+                BillingCategory::where('id', $r['id'])->update(['sort_order' => (int) ($r['sort_order'] ?? 100)]);
+            }
+        });
+        $this->log(auth('api')->id(), 'REORDER_BILLING_CATEGORY', BillingCategory::class, null, count($rows) . ' rows');
     }
 
     // =========================================================================

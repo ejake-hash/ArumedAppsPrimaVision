@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { farmasiApi } from '@/services/api'
+import { farmasiApi, unitRequestApi, unitReturnApi } from '@/services/api'
 import RequestObatModal from '@/components/farmasi/RequestObatModal.vue'
 import ReturObatModal from '@/components/farmasi/ReturObatModal.vue'
 
@@ -215,6 +215,148 @@ function onUnitChanged({ type, message, refreshStok } = {}) {
   if (refreshStok) fetchStok()
 }
 
+// ─── Notifikasi gudang (request/retur status) ───────────────────────────────
+// Buffer event 'unit-notified' dari WS — tampil sebagai bell di tab Manajemen Stok.
+const stokNotifs       = ref([])   // [{ id, kind, action, number, status, message, ts, read }]
+const stokNotifOpen    = ref(false)
+let _notifSeq = 0
+
+function pushStokNotif(payload, action = 'updated') {
+  const id = ++_notifSeq
+  stokNotifs.value.unshift({
+    id,
+    kind:    payload?.kind    ?? 'request',
+    action:  payload?.action  ?? action,
+    number:  payload?.number  ?? '',
+    status:  payload?.status  ?? '',
+    message: payload?.message ?? 'Pembaruan dari gudang',
+    ts:      Date.now(),
+    read:    false,
+  })
+  if (stokNotifs.value.length > 50) stokNotifs.value.length = 50
+}
+
+const stokNotifUnread = computed(() => stokNotifs.value.filter((n) => !n.read).length)
+
+function toggleStokNotif() {
+  stokNotifOpen.value = !stokNotifOpen.value
+  if (stokNotifOpen.value) {
+    stokNotifs.value.forEach((n) => (n.read = true))
+  }
+}
+
+function clearStokNotifs() {
+  stokNotifs.value = []
+  stokNotifOpen.value = false
+}
+
+function formatNotifTime(ts) {
+  const diff = Date.now() - ts
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1)   return 'baru saja'
+  if (mins < 60)  return `${mins}m lalu`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `${hrs}j lalu`
+  return new Date(ts).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })
+}
+
+function notifActionLabel(n) {
+  const k = n.kind === 'return' ? 'Retur' : 'Request'
+  const a = ({
+    approved: 'disetujui',
+    rejected: 'ditolak',
+    delivered: 'dikirim',
+    received: 'diterima',
+    closed:   'ditutup',
+  })[n.action] ?? n.action
+  return `${k} ${a}`
+}
+
+function notifBadgeCls(n) {
+  if (n.action === 'rejected') return 'nb-err'
+  if (n.action === 'delivered' || n.action === 'received') return 'nb-ok'
+  if (n.action === 'approved') return 'nb-info'
+  return 'nb-muted'
+}
+
+function closeNotifOnOutside(e) {
+  if (!stokNotifOpen.value) return
+  const el = e.target.closest('.stok-notif-wrap')
+  if (!el) stokNotifOpen.value = false
+}
+
+// Fallback polling — banyak setup tidak punya Reverb aktif, jadi kita pull berkala
+// dan diff status request/retur milik Farmasi. Snapshot Map(id → status).
+const _reqStatusSnap = new Map()
+const _retStatusSnap = new Map()
+let   _notifInit = false   // first sync = isi snapshot tanpa toast
+
+const REQ_ACTION_BY_STATUS = {
+  APPROVED:  { action: 'approved',  msg: (n) => `Permintaan ${n} disetujui` },
+  DELIVERED: { action: 'delivered', msg: (n) => `Permintaan ${n} sudah dikirim, stok ditambahkan` },
+  REJECTED:  { action: 'rejected',  msg: (n) => `Permintaan ${n} ditolak` },
+  CLOSED:    { action: 'closed',    msg: (n) => `Permintaan ${n} ditutup` },
+}
+const RET_ACTION_BY_STATUS = {
+  RECEIVED: { action: 'received', msg: (n) => `Retur ${n} diterima, stok dikurangi` },
+  REJECTED: { action: 'rejected', msg: (n) => `Retur ${n} ditolak` },
+}
+
+function _extractRows(res) {
+  // Fleksibel: bisa jadi { data: { data: [...] } } (paginator) atau { data: [...] }
+  const root = res?.data?.data
+  if (Array.isArray(root)) return root
+  if (Array.isArray(root?.data)) return root.data
+  return []
+}
+
+async function pollNotifs() {
+  try {
+    const [reqRes, retRes] = await Promise.all([
+      unitRequestApi.list({ station: 'FARMASI', per_page: 50 }),
+      unitReturnApi.list({ station: 'FARMASI', per_page: 50 }),
+    ])
+    const reqRows = _extractRows(reqRes)
+    const retRows = _extractRows(retRes)
+
+    if (import.meta.env.DEV) {
+      console.debug('[stok-notif] poll', { req: reqRows.length, ret: retRows.length, init: _notifInit, snapReq: _reqStatusSnap.size })
+    }
+
+    if (_notifInit) {
+      for (const r of reqRows) {
+        const prev = _reqStatusSnap.get(r.id)
+        if (prev && prev !== r.status) {
+          if (import.meta.env.DEV) console.debug('[stok-notif] req status change', r.request_number, prev, '->', r.status)
+          const cfg = REQ_ACTION_BY_STATUS[r.status]
+          if (cfg) {
+            pushStokNotif({ kind: 'request', action: cfg.action, number: r.request_number, status: r.status, message: cfg.msg(r.request_number) })
+            if (r.status === 'DELIVERED') fetchStok()
+          }
+        }
+      }
+      for (const r of retRows) {
+        const prev = _retStatusSnap.get(r.id)
+        if (prev && prev !== r.status) {
+          if (import.meta.env.DEV) console.debug('[stok-notif] ret status change', r.return_number, prev, '->', r.status)
+          const cfg = RET_ACTION_BY_STATUS[r.status]
+          if (cfg) {
+            pushStokNotif({ kind: 'return', action: cfg.action, number: r.return_number, status: r.status, message: cfg.msg(r.return_number) })
+          }
+        }
+      }
+    }
+
+    _reqStatusSnap.clear()
+    for (const r of reqRows) _reqStatusSnap.set(r.id, r.status)
+    _retStatusSnap.clear()
+    for (const r of retRows) _retStatusSnap.set(r.id, r.status)
+    _notifInit = true
+  } catch (e) {
+    if (import.meta.env.DEV) console.warn('[stok-notif] poll error', e?.response?.status, e?.response?.data ?? e?.message)
+  }
+}
+
 // ─── Edit / koreksi stok (opname manual) ─────────────────────────────────────
 const editStok = ref(null)   // { id, name, stock, min_stock, batch_number, expiry_date }
 const savingStok = ref(false)
@@ -330,6 +472,7 @@ const lapExpiring = computed(
 
 // ─── Lifecycle / polling + WS notifikasi gudang ──────────────────────────────
 let _poll = null
+let _notifPoll = null
 let _pusher = null
 let _channel = null
 
@@ -350,6 +493,7 @@ function connectInventoriWs() {
       _channel.bind('unit-notified', (p) => {
         const type = p?.action === 'rejected' ? 'w' : 's'
         toast(type, p?.message ?? 'Pembaruan dari gudang Inventori Farmasi')
+        pushStokNotif(p ?? {})
         fetchStok()
       })
     })
@@ -361,11 +505,16 @@ onMounted(() => {
   fetchStok()
   _poll = setInterval(fetchQueue, 30_000)
   connectInventoriWs()
+  pollNotifs()
+  _notifPoll = setInterval(pollNotifs, 10_000)
+  document.addEventListener('click', closeNotifOnOutside)
 })
 onUnmounted(() => {
   if (_poll) clearInterval(_poll)
+  if (_notifPoll) clearInterval(_notifPoll)
   _channel?.unbind_all()
   _pusher?.disconnect()
+  document.removeEventListener('click', closeNotifOnOutside)
 })
 
 // ─── Toast ──────────────────────────────────────────────────────────────────
@@ -585,15 +734,59 @@ function toast(type, msg) {
     <!-- STOK -->
     <div v-if="pgTab === 'stok'" class="tab-pane">
       <div class="stok-head">
-        <input v-model="stokSearch" class="fi" placeholder="Cari obat..." style="width: 220px" />
-        <button class="btn btn-primary btn-sm" @click="requestOpen = true">
-          <svg viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17M17 13v4a2 2 0 01-2 2H9"/></svg>
-          Minta Barang
-        </button>
-        <button class="btn btn-secondary btn-sm" @click="returOpen = true">
-          <svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg>
-          Retur Obat
-        </button>
+        <div class="stok-actions">
+          <div class="stok-search">
+            <svg viewBox="0 0 24 24" class="stok-search-ico"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input v-model="stokSearch" class="fi stok-search-input" placeholder="Cari obat..." />
+          </div>
+          <button class="btn btn-primary btn-sm" @click="requestOpen = true">
+            <svg viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17M17 13v4a2 2 0 01-2 2H9"/></svg>
+            Minta Barang
+          </button>
+          <button class="btn btn-secondary btn-sm" @click="returOpen = true">
+            <svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg>
+            Retur Obat
+          </button>
+
+          <div class="stok-notif-wrap">
+          <button
+            class="stok-bell"
+            :class="{ active: stokNotifUnread > 0 }"
+            :title="`${stokNotifUnread} notifikasi baru`"
+            @click.stop="toggleStokNotif"
+          >
+            <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span v-if="stokNotifUnread > 0" class="stok-bell-badge">{{ stokNotifUnread > 99 ? '99+' : stokNotifUnread }}</span>
+          </button>
+
+          <div v-if="stokNotifOpen" class="stok-notif-panel" @click.stop>
+            <div class="stok-notif-head">
+              <strong>Notifikasi Gudang</strong>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button class="stok-notif-clear" @click="pollNotifs">Refresh</button>
+                <button v-if="stokNotifs.length" class="stok-notif-clear" @click="clearStokNotifs">Bersihkan</button>
+              </div>
+            </div>
+            <div class="stok-notif-body">
+              <div v-if="!stokNotifs.length" class="stok-notif-empty">Belum ada notifikasi</div>
+              <div
+                v-for="n in stokNotifs"
+                :key="n.id"
+                class="stok-notif-row"
+              >
+                <span class="stok-notif-badge" :class="notifBadgeCls(n)">{{ notifActionLabel(n) }}</span>
+                <div class="stok-notif-main">
+                  <div class="stok-notif-title">
+                    <code v-if="n.number">{{ n.number }}</code>
+                    <span class="stok-notif-time">{{ formatNotifTime(n.ts) }}</span>
+                  </div>
+                  <div class="stok-notif-msg">{{ n.message }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
       </div>
       <div v-if="lowStockCount" class="low-alert">
         <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
@@ -1012,8 +1205,12 @@ function toast(type, msg) {
 .done-pill svg { width: 14px; height: 14px; }
 
 /* STOK */
-.stok-head { display: flex; gap: 0.5rem; align-items: center; justify-content: flex-end; }
-.stok-head .fi { width: 220px; }
+.stok-head { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
+.stok-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+.stok-search { position: relative; display: flex; align-items: center; }
+.stok-search-ico { position: absolute; left: 10px; width: 14px; height: 14px; fill: none; stroke: var(--tm); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.stok-search-input { padding-left: 30px !important; width: 220px; }
 .low-alert { display: flex; align-items: center; gap: 8px; padding: 9px 13px; background: var(--eb); border: 1px solid var(--ebd); border-radius: 9px; color: var(--et); font-size: 11.5px; }
 .low-alert svg { width: 16px; height: 16px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 
@@ -1101,4 +1298,32 @@ function toast(type, msg) {
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+
+/* Notifikasi gudang di tab Manajemen Stok */
+.stok-notif-wrap { position: relative; }
+.stok-bell { position: relative; width: 36px; height: 36px; border-radius: 9px; background: var(--bc); border: 1px solid var(--gb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--tm); transition: all 0.15s; }
+.stok-bell:hover { background: var(--bs); color: var(--gd); }
+.stok-bell.active { color: var(--ga); border-color: var(--ga); }
+.stok-bell svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stok-bell-badge { position: absolute; top: -4px; right: -4px; background: #dc2626; color: white; font-size: 10px; font-weight: 700; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bc); }
+
+.stok-notif-panel { position: absolute; top: calc(100% + 8px); right: 0; width: 360px; max-width: 90vw; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.12); z-index: 60; display: flex; flex-direction: column; max-height: 70vh; overflow: hidden; }
+.stok-notif-head { padding: 11px 14px; border-bottom: 1px solid var(--gb); display: flex; justify-content: space-between; align-items: center; background: var(--bs); }
+.stok-notif-head strong { font-size: 13px; color: var(--td); }
+.stok-notif-clear { background: none; border: none; color: var(--ga); font-size: 11.5px; cursor: pointer; padding: 0; }
+.stok-notif-clear:hover { text-decoration: underline; }
+.stok-notif-body { flex: 1; overflow-y: auto; }
+.stok-notif-empty { padding: 2rem; text-align: center; font-size: 13px; color: var(--tm); }
+.stok-notif-row { padding: 10px 14px; border-bottom: 1px solid var(--gb); display: flex; gap: 10px; align-items: flex-start; }
+.stok-notif-row:last-child { border-bottom: none; }
+.stok-notif-badge { flex-shrink: 0; padding: 3px 8px; border-radius: 10px; font-size: 10.5px; font-weight: 600; text-transform: capitalize; }
+.nb-ok    { background: #d1fae5; color: #065f46; }
+.nb-info  { background: #dbeafe; color: #1e40af; }
+.nb-err   { background: #fee2e2; color: #991b1b; }
+.nb-muted { background: #e5e7eb; color: #374151; }
+.stok-notif-main { flex: 1; min-width: 0; }
+.stok-notif-title { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.stok-notif-title code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--gd); }
+.stok-notif-time { font-size: 11px; color: var(--tu); }
+.stok-notif-msg { font-size: 12px; color: var(--td); margin-top: 3px; line-height: 1.4; }
 </style>

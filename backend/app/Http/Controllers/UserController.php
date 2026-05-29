@@ -55,6 +55,7 @@ class UserController extends Controller
             'role_id'     => 'required|uuid|exists:roles,id',
             'employee_id' => 'nullable|uuid|exists:employees,id',
             'password'    => 'nullable|string|min:6',
+            'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'nullable|boolean',
         ]);
 
@@ -74,6 +75,7 @@ class UserController extends Controller
             'email'       => 'sometimes|email|unique:users,email,'.$id,
             'role_id'     => 'sometimes|uuid|exists:roles,id',
             'employee_id' => 'nullable|uuid|exists:employees,id',
+            'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'sometimes|boolean',
         ]);
 
@@ -127,8 +129,22 @@ class UserController extends Controller
         ]);
     }
 
+    /** Aksi reset password/PIN hanya untuk superadmin. */
+    private function denyIfNotSuperadmin(Request $request): ?JsonResponse
+    {
+        if (! $request->user()?->isSuperadmin()) {
+            return response()->json([
+                'success' => false, 'data' => null,
+                'message' => 'Hanya superadmin yang dapat melakukan aksi ini.', 'errors' => null,
+            ], 403);
+        }
+        return null;
+    }
+
     public function resetPassword(Request $request, string $id): JsonResponse
     {
+        if ($deny = $this->denyIfNotSuperadmin($request)) return $deny;
+
         $validated = $request->validate([
             'new_password' => 'nullable|string|min:6',
         ]);
@@ -139,6 +155,69 @@ class UserController extends Controller
             'success' => true,
             'data'    => ['new_password' => $generated],
             'message' => 'Password berhasil direset',
+            'errors'  => null,
+        ]);
+    }
+
+    public function resetPin(Request $request, string $id): JsonResponse
+    {
+        if ($deny = $this->denyIfNotSuperadmin($request)) return $deny;
+
+        $generated = $this->service->resetPin($id);
+
+        return response()->json([
+            'success' => true,
+            'data'    => ['new_pin' => $generated],
+            'message' => 'PIN berhasil direset',
+            'errors'  => null,
+        ]);
+    }
+
+    public function csvTemplate(): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $csv = $this->service->csvTemplate();
+
+        return response()->streamDownload(
+            fn () => print($csv),
+            'template-pengguna.csv',
+            ['Content-Type' => 'text/csv'],
+        );
+    }
+
+    public function exportCsv(): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $csv = $this->service->exportCsv();
+
+        return response()->streamDownload(
+            fn () => print($csv),
+            'data-pengguna-' . now()->format('Ymd-His') . '.csv',
+            ['Content-Type' => 'text/csv'],
+        );
+    }
+
+    public function importCsv(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:csv,txt|max:2048',
+        ]);
+
+        try {
+            $result = $this->service->importCsv($request->file('file')->get());
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false, 'data' => null,
+                'message' => $e->getMessage(), 'errors' => null,
+            ], $this->statusOf($e, 422));
+        }
+
+        $created = count($result['created']);
+        $skipped = count($result['skipped']);
+        $errors  = count($result['errors']);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $result,
+            'message' => "Import selesai: {$created} ditambah, {$skipped} dilewati, {$errors} gagal.",
             'errors'  => null,
         ]);
     }

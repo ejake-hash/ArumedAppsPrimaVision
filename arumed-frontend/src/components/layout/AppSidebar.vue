@@ -54,14 +54,6 @@ async function handleLogout() {
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         <span>Rekam Medis</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('rme_dokter.write')" to="/rekam-medis/template-builder" class="sb-item" title="Auto EMR Generator">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-          <path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5.5z"/>
-          <path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1z"/>
-        </svg>
-        <span>Auto EMR Generator</span>
-      </RouterLink>
       <RouterLink v-if="auth.can('perawat.read')" to="/perawat" class="sb-item" title="Triase / Perawat">
         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
         <span>Triase / Perawat</span>
@@ -73,6 +65,10 @@ async function handleLogout() {
       <RouterLink v-if="auth.can('rme_dokter.read')" to="/dokter" class="sb-item" title="Pemeriksaan Dokter">
         <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         <span>Pemeriksaan Dokter</span>
+      </RouterLink>
+      <RouterLink v-if="auth.can('rme_dokter.read')" to="/ttd-dokumen" class="sb-item" title="Tanda Tangan Dokumen">
+        <svg viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><path d="M3 21l8-8"/></svg>
+        <span>Tanda Tangan Dokumen</span>
       </RouterLink>
       <RouterLink to="/penunjang" class="sb-item" title="Penunjang">
         <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
@@ -103,6 +99,10 @@ async function handleLogout() {
       <RouterLink v-if="auth.can('bpjs.read')" to="/bpjs" class="sb-item" title="Klaim BPJS">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span>Klaim BPJS</span>
+      </RouterLink>
+      <RouterLink v-if="auth.can('kasir.read')" to="/asuransi" class="sb-item" title="Asuransi & Klaim TPA">
+        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
+        <span>Asuransi & TPA</span>
       </RouterLink>
 
       <div class="sb-section">Sistem</div>

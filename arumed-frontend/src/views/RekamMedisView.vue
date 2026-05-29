@@ -4,11 +4,16 @@ import api from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
+const BLN = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des']
 function fmtTgl(d) {
   if (!d) return '–'
   const [y, m, dd] = d.slice(0, 10).split('-')
-  const bln = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des']
-  return `${dd} ${bln[+m - 1]} ${y}`
+  return `${dd} ${BLN[+m - 1]} ${y}`
+}
+function fmtTglPendek(d) {
+  if (!d) return '–'
+  const [y, m, dd] = d.slice(0, 10).split('-')
+  return `${dd}/${m}/${y.slice(2)}`
 }
 function hitungUsia(dob) {
   if (!dob) return '–'
@@ -23,6 +28,7 @@ function classColor(c) {
 function guarantorCls(g) {
   return ({ BPJS:'bpjs', UMUM:'umum', ASURANSI:'asn', PERUSAHAAN:'asn', SOSIAL:'asn' })[g] ?? 'umum'
 }
+function val(v) { return (v === null || v === undefined || v === '') ? '–' : v }
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -66,144 +72,179 @@ function setSearchMode(m) { searchMode.value = m; searchQuery.value = ''; search
 function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 200) }
 
 // ─── PATIENT STATE ────────────────────────────────────────────────────────────
-const patient        = ref(null)
-const visits         = ref([])
-const loadingVisits  = ref(false)
-const visitError     = ref(null)
-const visitFilter    = ref('Semua')
-const expandedVisit  = ref(null)
-const addendumTarget = ref(null)
-const addendumText   = ref('')
-const savingAddendum = ref(false)
+const patient = ref(null)
 
-const docs        = ref([])
-const loadingDocs = ref(false)
-const docsFetched = ref(false)
-const selDoc      = ref(null)
+// ─── MENU (master-detail) ──────────────────────────────────────────────────────
+const MENUS = [
+  { key: 'ringkasan', label: 'Ringkasan' },
+  { key: 'kunjungan', label: 'Kunjungan' },
+  { key: 'refraksi',  label: 'Refraksi' },
+  { key: 'penunjang', label: 'Penunjang' },
+  { key: 'obat',      label: 'Obat' },
+  { key: 'bedah',     label: 'Bedah' },
+  { key: 'diagnosis', label: 'Diagnosis' },
+  { key: 'dokumen',   label: 'Dokumen' },
+]
+const activeMenu = ref('ringkasan')
 
-const activeRmeTab = ref('soap')
+// Cache + loading per menu agar lazy-load & tidak fetch ulang.
+const cache    = ref({})   // { [menu]: data }
+const loading  = ref({})   // { [menu]: bool }
+const errors   = ref({})   // { [menu]: msg }
+const expanded = ref(null) // visit_id / order_id baris yang sedang dibuka
+
+const ENDPOINT = {
+  ringkasan: (id) => `/rekam-medis/pasien/${id}/ringkasan`,
+  kunjungan: (id) => `/rekam-medis/pasien/${id}/kunjungan`,
+  refraksi:  (id) => `/rekam-medis/pasien/${id}/refraksi`,
+  penunjang: (id) => `/rekam-medis/pasien/${id}/penunjang`,
+  obat:      (id) => `/rekam-medis/pasien/${id}/obat`,
+  bedah:     (id) => `/rekam-medis/pasien/${id}/bedah`,
+  diagnosis: (id) => `/rekam-medis/pasien/${id}/diagnosis`,
+  dokumen:   (id) => `/rekam-medis/pasien/${id}/dokumen`,
+}
+
+async function loadMenu(menu, force = false) {
+  if (!patient.value) return
+  if (!force && cache.value[menu] !== undefined) return
+  loading.value[menu] = true
+  errors.value[menu]  = null
+  try {
+    const { data } = await api.get(ENDPOINT[menu](patient.value.id))
+    // dokumen pakai paginator → data.data.data; sisanya array di data.data
+    let payload = data.data
+    if (menu === 'dokumen' && payload && Array.isArray(payload.data)) payload = payload.data
+    cache.value[menu] = payload ?? (menu === 'ringkasan' ? {} : [])
+  } catch (err) {
+    errors.value[menu] = err.response?.data?.message ?? 'Gagal memuat data'
+    cache.value[menu]  = menu === 'ringkasan' ? {} : []
+  } finally {
+    loading.value[menu] = false
+  }
+}
+
+function selectMenu(menu) {
+  activeMenu.value = menu
+  expanded.value = null
+  loadMenu(menu)
+}
+
+function toggleRow(id) { expanded.value = expanded.value === id ? null : id }
 
 async function pickPatient(p) {
   patient.value        = p
-  visits.value         = []
-  visitError.value     = null
-  expandedVisit.value  = null
-  visitFilter.value    = 'Semua'
-  activeRmeTab.value   = 'soap'
-  docs.value           = []
-  docsFetched.value    = false
-  addendumTarget.value = null
+  cache.value          = {}
+  loading.value        = {}
+  errors.value         = {}
+  expanded.value       = null
+  activeMenu.value     = 'ringkasan'
   showSearchDrop.value = false
   searchQuery.value    = ''
-  loadingVisits.value  = true
-
-  try {
-    const { data } = await api.get(`/rekam-medis/pasien/${p.id}/kunjungan`)
-    visits.value = data.data ?? []
-    if (visits.value.length) expandedVisit.value = visits.value[0].id
-  } catch (err) {
-    visitError.value = err.response?.data?.message ?? 'Gagal memuat riwayat kunjungan'
-  } finally {
-    loadingVisits.value = false
-  }
+  await loadMenu('ringkasan')
 }
 
 function clearPatient() {
-  patient.value = null; visits.value = []; docs.value = []; searchQuery.value = ''; expandedVisit.value = null
+  patient.value = null
+  cache.value = {}
+  searchQuery.value = ''
 }
 
-async function retryVisits() {
-  if (!patient.value) return
-  visitError.value = null
-  loadingVisits.value = true
+// Convenience getters
+const cur        = computed(() => cache.value[activeMenu.value])
+const curLoading = computed(() => !!loading.value[activeMenu.value])
+const curError   = computed(() => errors.value[activeMenu.value])
+const ringkasan  = computed(() => cache.value.ringkasan ?? {})
+
+// Header stats (dari ringkasan, fallback aman)
+const headStats = computed(() => ringkasan.value.counts ?? { total_visits: 0, total_surgery: 0, with_diagnosis: 0 })
+
+// ─── VISUS/TIO TREND ARROW ──────────────────────────────────────────────────
+function trendVisus(curStr, prevStr) {
+  // visus "6/9" → makin kecil penyebut = makin baik. Bandingkan denominator.
+  const d = (s) => { const m = String(s ?? '').match(/\/(\d+)/); return m ? +m[1] : null }
+  const a = d(curStr), b = d(prevStr)
+  if (a == null || b == null) return ''
+  if (a < b) return 'up'      // membaik
+  if (a > b) return 'down'    // memburuk
+  return 'flat'
+}
+function trendTio(c, p) {
+  if (c == null || p == null) return ''
+  const a = +c, b = +p
+  if (Math.abs(a - b) < 0.5) return 'flat'
+  return a > b ? 'down' : 'up' // TIO naik = perhatian (down=merah)
+}
+
+// ─── DOCUMENTS ───────────────────────────────────────────────────────────────
+const selDoc = ref(null)
+function docStatusLabel(s) {
+  return ({ FINAL:'Final', WAITING_SIGNATURE:'Menunggu TTD', PENDING_SIGNATURE:'Menunggu TTD', RENDERED:'Tersaji', DRAFT:'Draft', REJECTED:'Ditolak', VOID:'Void' })[s] ?? s
+}
+function docStatusCls(s) {
+  return ({ FINAL:'final', WAITING_SIGNATURE:'waiting', PENDING_SIGNATURE:'waiting', RENDERED:'waiting', DRAFT:'draft', REJECTED:'rejected', VOID:'void' })[s] ?? 'draft'
+}
+const docsFinalCount = computed(() => (cache.value.dokumen ?? []).filter(d => d.status === 'FINAL').length)
+
+function printDoc(doc) {
+  const base = import.meta.env.VITE_API_URL ?? '/api/v1'
+  window.open(`${base}/rekam-medis/dokumen/${doc.id}/cetak`, '_blank')
+  toast('i', `Mencetak ${doc.document_type?.code ?? 'dokumen'}`)
+}
+
+// ─── ADDENDUM (per-dokumen, Form Registry) ───────────────────────────────────
+const addendumModal = ref(null)  // doc object
+const addAlasan     = ref('')
+const addIsi        = ref('')
+const savingAdd     = ref(false)
+
+function openAddendum(doc) {
+  addendumModal.value = doc
+  addAlasan.value = ''
+  addIsi.value = ''
+}
+async function saveAddendum() {
+  if (!addAlasan.value.trim() || !addIsi.value.trim()) {
+    toast('w', 'Alasan dan isi koreksi wajib diisi'); return
+  }
+  savingAdd.value = true
   try {
-    const { data } = await api.get(`/rekam-medis/pasien/${patient.value.id}/kunjungan`)
-    visits.value = data.data ?? []
-    if (visits.value.length) expandedVisit.value = visits.value[0].id
-  } catch (err) {
-    visitError.value = err.response?.data?.message ?? 'Gagal memuat riwayat kunjungan'
+    await api.post(`/rekam-medis/document/${addendumModal.value.id}/addendum`, {
+      alasan: addAlasan.value.trim(),
+      isi_koreksi: addIsi.value.trim(),
+    })
+    toast('s', 'Addendum dicatat (menunggu TTD lanjutan)')
+    addendumModal.value = null
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menyimpan addendum')
   } finally {
-    loadingVisits.value = false
+    savingAdd.value = false
   }
 }
 
-// ─── VISITS HELPERS ───────────────────────────────────────────────────────────
-const filteredVisits = computed(() => {
-  if (visitFilter.value === 'Semua')     return visits.value
-  if (visitFilter.value === 'Bedah')     return visits.value.filter(v => ['Pre-Op','Post-Op'].includes(v.classification))
-  if (visitFilter.value === 'Penunjang') return visits.value.filter(v => v.diagnostic_results?.length)
-  return visits.value.filter(v => v.classification === visitFilter.value)
-})
-
-function vFilterCnt(f) {
-  if (f === 'Bedah')     return visits.value.filter(v => ['Pre-Op','Post-Op'].includes(v.classification)).length
-  if (f === 'Penunjang') return visits.value.filter(v => v.diagnostic_results?.length).length
-  return visits.value.filter(v => v.classification === f).length
-}
-
-function tdStr(na)   { return na?.td_sistol ? `${na.td_sistol}/${na.td_diastol}` : '–' }
-function tdHigh(na)  { return (na?.td_sistol ?? 0) >= 140 }
-function spo2Low(na) { return (na?.spo2 ?? 100) < 95 }
-function kgdCls(na)  { return na?.kgd > 200 ? 'hi' : na?.kgd > 140 ? 'warn' : '' }
-
-function toggleExpand(id) { expandedVisit.value = expandedVisit.value === id ? null : id; addendumTarget.value = null }
-
-function allRxItems(v) { return (v.prescriptions ?? []).flatMap(p => p.items ?? []) }
-
-function diagnosisArray(de) {
-  if (!de) return []
-  const arr = []
-  if (de.diagnosis_utama) arr.push({ kode: de.diagnosis_utama, nama: de.diagnosis_utama_nama ?? '', tipe: 'primer' })
-  ;(de.diagnosis_sekunder ?? []).forEach(d => arr.push({ ...d, tipe: 'sekunder' }))
-  return arr
-}
-
-const visitStats = computed(() => ({
-  total:    visits.value.length,
-  hasDx:    visits.value.filter(v => v.doctor_examination?.diagnosis_utama).length,
-  lastDate: visits.value[0]?.visit_date ?? null,
-}))
-
-// ─── DOCUMENTS ───────────────────────────────────────────────────────────────
-watch(activeRmeTab, async (tab) => {
-  if (tab !== 'dokumen' || !patient.value || docsFetched.value) return
-  loadingDocs.value = true
+// ─── AUDIT TRAIL DRAWER ──────────────────────────────────────────────────────
+const auditDoc     = ref(null)
+const auditLogs    = ref([])
+const auditLoading = ref(false)
+async function openAudit(doc) {
+  auditDoc.value = doc
+  auditLogs.value = []
+  auditLoading.value = true
   try {
-    const { data } = await api.get(`/rekam-medis/pasien/${patient.value.id}/dokumen`)
-    docs.value = data.data ?? []; docsFetched.value = true
-  } catch { docs.value = [] }
-  finally  { loadingDocs.value = false }
-})
-
-const docsFinalCount = computed(() => docs.value.filter(d => d.status === 'FINAL').length)
-function docStatusLabel(s) {
-  return ({ FINAL:'Final', WAITING_SIGNATURE:'Menunggu TTD', DRAFT:'Draft', REJECTED:'Ditolak', VOID:'Void' })[s] ?? s
-}
-function docStatusCls(s) {
-  return ({ FINAL:'final', WAITING_SIGNATURE:'waiting', DRAFT:'draft', REJECTED:'rejected', VOID:'void' })[s] ?? 'draft'
-}
-
-// ─── ADDENDUM ────────────────────────────────────────────────────────────────
-async function saveAddendum(visit) {
-  if (!addendumText.value.trim()) { toast('w', 'Teks addendum tidak boleh kosong'); return }
-  savingAddendum.value = true
-  try {
-    const { data } = await api.post(`/rekam-medis/kunjungan/${visit.id}/addendum`, { isi: addendumText.value.trim() })
-    if (!visit.addenda) visit.addenda = []
-    visit.addenda.push(data.data)
-    addendumTarget.value = null; addendumText.value = ''
-    toast('s', 'Addendum berhasil dicatat')
-  } catch { toast('w', 'Gagal menyimpan addendum') }
-  finally  { savingAddendum.value = false }
+    const { data } = await api.get(`/rekam-medis/document/${doc.id}/audit-log`)
+    auditLogs.value = data.data ?? []
+  } catch {
+    auditLogs.value = []
+  } finally {
+    auditLoading.value = false
+  }
 }
 
 // ─── MISC ────────────────────────────────────────────────────────────────────
 function copyRm() { navigator.clipboard?.writeText(patient.value.no_rm); toast('s', `No. RM ${patient.value.no_rm} disalin`) }
-function printResume() { window.print(); toast('i', 'Resume medis dikirim ke printer') }
-function printDoc(doc) {
-  const base = import.meta.env.VITE_API_URL ?? '/api/v1'
-  window.open(`${base}/rekam-medis/dokumen/${doc.id}/cetak`, '_blank')
-  toast('i', `Mencetak ${doc.document_type?.code}`)
+async function printResume() {
+  // Pastikan data kunjungan tersedia untuk lampiran resume.
+  if (cache.value.kunjungan === undefined) await loadMenu('kunjungan')
+  window.print()
 }
 </script>
 
@@ -230,14 +271,13 @@ function printDoc(doc) {
 
         <!-- Dropdown -->
         <div v-if="showSearchDrop && !patient" class="rsb-dropdown">
-          <!-- Skeleton while searching -->
           <template v-if="searching">
             <div v-for="i in 3" :key="i" class="rsb-item rsb-sk">
-              <div class="rsi-bar" style="background:var(--gb)"></div>
+              <div class="rsi-bar" style="background:#e2e5ea"></div>
               <div style="flex:1">
-                <div class="sk-line w50 mb4"></div>
-                <div class="sk-line w70 mb4"></div>
-                <div class="sk-line w40"></div>
+                <div class="sk-line w50 mb4" style="height:9px"></div>
+                <div class="sk-line w70 mb4" style="height:9px"></div>
+                <div class="sk-line w40" style="height:9px"></div>
               </div>
             </div>
           </template>
@@ -261,391 +301,461 @@ function printDoc(doc) {
       </div>
     </div>
 
-    <!-- ─── MAIN CONTENT ─── -->
-    <div class="rme-content">
-
-      <!-- EMPTY STATE -->
-      <div v-if="!patient" class="empty">
-        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-        <p>Cari dan pilih pasien dari kolom pencarian di atas<br/>untuk melihat Rekam Medis Elektronik</p>
-      </div>
-
-      <template v-if="patient">
-
-        <!-- PATIENT PROFILE BAR -->
-        <div class="ptb">
-          <PatientAvatar :name="patient.nama" :src="patient.photo_url" :size="40" radius="50%" />
-          <div class="pti">
-            <div class="ptn">{{ patient.nama }}</div>
-            <div class="ptm">{{ hitungUsia(patient.date_of_birth) }} th · {{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }} · {{ patient.address }}</div>
-            <div class="ptags">
-              <span :class="['ptg', `ptg-${guarantorCls(patient.last_guarantor_type)}`]">
-                {{ patient.last_guarantor_type ?? 'UMUM' }}
-              </span>
-              <span v-if="patient.allergy" class="ptg ptg-r">⚠ Alergi: {{ patient.allergy }}</span>
-              <button class="copy-rm-btn" @click="copyRm" title="Salin nomor RM">
-                <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                {{ patient.no_rm }}
-              </button>
-            </div>
-          </div>
-          <div class="pt-stats">
-            <div class="pt-stat">
-              <div class="pt-stat-v">{{ visitStats.total }}</div>
-              <div class="pt-stat-l">Kunjungan</div>
-            </div>
-            <div class="pt-stat">
-              <div class="pt-stat-v">{{ visitStats.hasDx }}</div>
-              <div class="pt-stat-l">Diagnosis</div>
-            </div>
-            <div class="pt-stat">
-              <div class="pt-stat-v">{{ visitStats.lastDate ? fmtTgl(visitStats.lastDate) : '–' }}</div>
-              <div class="pt-stat-l">Kunjungan Terakhir</div>
-            </div>
-          </div>
-          <button class="print-btn" @click="printResume">
-            <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-            Cetak Resume
-          </button>
-        </div>
-
-        <!-- RME TABS -->
-        <div class="rme-tabs">
-          <button :class="['rmt', activeRmeTab==='soap'?'a':'']" @click="activeRmeTab='soap'">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            SOAP
-          </button>
-          <button :class="['rmt', activeRmeTab==='dokumen'?'a':'']" @click="activeRmeTab='dokumen'">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Dokumen
-            <span v-if="docsFetched" class="rmt-ct">{{ docsFinalCount }}/{{ docs.length }}</span>
-          </button>
-        </div>
-
-        <!-- ── TAB: SOAP ── -->
-        <template v-if="activeRmeTab === 'soap'">
-          <!-- Visit filter tabs -->
-          <div class="visit-tabs">
-            <button v-for="f in ['Semua','Kontrol','Bedah','Penunjang','Baru']" :key="f"
-              :class="['vt', visitFilter===f?'a':'']" @click="visitFilter=f">
-              {{ f }}
-              <span v-if="f !== 'Semua'" class="vt-cnt">{{ vFilterCnt(f) }}</span>
-            </button>
-          </div>
-
-          <!-- Timeline -->
-          <div class="timeline-area">
-
-            <!-- Loading skeleton -->
-            <div v-if="loadingVisits" class="timeline">
-              <div v-for="i in 3" :key="i" class="tl-item">
-                <div class="tl-dot" style="background:var(--gb)"></div>
-                <div class="sk-card">
-                  <div class="sk-line w30 mb6"></div>
-                  <div class="sk-line w60 mb4"></div>
-                  <div class="sk-line w45"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Error state -->
-            <div v-else-if="visitError" class="error-state">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-              <span>{{ visitError }}</span>
-              <button class="retry-btn" @click="retryVisits">Coba Lagi</button>
-            </div>
-
-            <!-- Empty filter -->
-            <div v-else-if="!filteredVisits.length" class="empty-filter">Tidak ada kunjungan dengan filter ini</div>
-
-            <!-- Visit cards -->
-            <div v-else class="timeline">
-              <div v-for="v in filteredVisits" :key="v.id" class="tl-item">
-                <div class="tl-dot" :style="{ background: classColor(v.classification) }"></div>
-
-                <div :class="['visit-card', expandedVisit === v.id ? 'open' : '']">
-                  <!-- Header -->
-                  <div class="vc-header" @click="toggleExpand(v.id)">
-                    <div class="vc-left">
-                      <span class="jenis-badge" :style="{ background: classColor(v.classification)+'20', color: classColor(v.classification), border: '1px solid '+classColor(v.classification)+'55' }">
-                        {{ v.classification }}
-                      </span>
-                      <div class="vc-date">{{ fmtTgl(v.visit_date) }}<span v-if="v.visit_time"> · {{ v.visit_time }}</span></div>
-                      <div class="vc-doctor">{{ v.doctor_name ?? '–' }}<span v-if="v.poli_name"> · {{ v.poli_name }}</span></div>
-                    </div>
-                    <div class="vc-right">
-                      <div v-if="v.doctor_examination?.diagnosis_utama" class="vc-main-dx">
-                        {{ v.doctor_examination.diagnosis_utama }} — {{ v.doctor_examination.diagnosis_utama_nama }}
-                      </div>
-                      <div class="vc-badges">
-                        <span v-if="v.is_finalized" class="badge-finalized">Terfinalisasi</span>
-                        <span v-if="v.diagnostic_results?.length" class="badge-penunjang">{{ v.diagnostic_results.length }} Penunjang</span>
-                        <span v-if="v.addenda?.length" class="badge-addendum">{{ v.addenda.length }} Addendum</span>
-                        <span v-if="v.no_sep" class="badge-sep">SEP</span>
-                      </div>
-                      <div class="vc-toggle">{{ expandedVisit === v.id ? '▲' : '▼' }}</div>
-                    </div>
-                  </div>
-
-                  <!-- Body (expanded) -->
-                  <div v-if="expandedVisit === v.id" class="vc-body">
-                    <div class="vc-row-grid">
-                      <!-- Keluhan -->
-                      <div class="vc-section">
-                        <div class="vcs-title">Keluhan Utama</div>
-                        <div class="keluhan-text">{{ v.nurse_assessment?.keluhan_utama || '–' }}</div>
-                      </div>
-                      <!-- Vitals -->
-                      <div class="vc-section">
-                        <div class="vcs-title">Tanda-Tanda Vital</div>
-                        <div class="vitals-grid">
-                          <div class="vg-item">
-                            <span class="vg-l">TD</span>
-                            <span :class="['vg-v', tdHigh(v.nurse_assessment)?'hi':'']">{{ tdStr(v.nurse_assessment) }} mmHg</span>
-                          </div>
-                          <div class="vg-item">
-                            <span class="vg-l">Nadi</span>
-                            <span class="vg-v">{{ v.nurse_assessment?.nadi ?? '–' }} bpm</span>
-                          </div>
-                          <div class="vg-item">
-                            <span class="vg-l">SpO₂</span>
-                            <span :class="['vg-v', spo2Low(v.nurse_assessment)?'hi':'']">{{ v.nurse_assessment?.spo2 ?? '–' }}%</span>
-                          </div>
-                          <div class="vg-item">
-                            <span class="vg-l">Suhu</span>
-                            <span class="vg-v">{{ v.nurse_assessment?.suhu ?? '–' }}°C</span>
-                          </div>
-                          <div class="vg-item">
-                            <span class="vg-l">Respirasi</span>
-                            <span class="vg-v">{{ v.nurse_assessment?.respirasi ?? '–' }} /min</span>
-                          </div>
-                          <div class="vg-item">
-                            <span class="vg-l">KGD</span>
-                            <span :class="['vg-v', kgdCls(v.nurse_assessment)]">{{ v.nurse_assessment?.kgd ?? '–' }} mg/dL</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- SOAP -->
-                    <div v-if="v.doctor_examination" class="vc-section">
-                      <div class="vcs-title">Catatan SOAP</div>
-                      <div class="soap-grid">
-                        <div class="soap-row"><span class="soap-lbl">S</span><span class="soap-val">{{ v.doctor_examination.soap_subjective || '–' }}</span></div>
-                        <div class="soap-row"><span class="soap-lbl">O</span><span class="soap-val">{{ v.doctor_examination.soap_objective || '–' }}</span></div>
-                        <div class="soap-row"><span class="soap-lbl">A</span><span class="soap-val">{{ v.doctor_examination.soap_assessment || '–' }}</span></div>
-                        <div class="soap-row"><span class="soap-lbl">P</span><span class="soap-val">{{ v.doctor_examination.soap_plan || '–' }}</span></div>
-                      </div>
-                    </div>
-
-                    <div class="vc-row-grid">
-                      <!-- Diagnosa -->
-                      <div class="vc-section">
-                        <div class="vcs-title">Diagnosis ICD-10</div>
-                        <template v-if="diagnosisArray(v.doctor_examination).length">
-                          <div v-for="dx in diagnosisArray(v.doctor_examination)" :key="dx.kode" class="dx-row">
-                            <span :class="['dx-type', dx.tipe==='primer'?'pr':'sk']">{{ dx.tipe==='primer'?'Primer':'Sekunder' }}</span>
-                            <span class="dx-kode">{{ dx.kode }}</span>
-                            <span class="dx-nama">{{ dx.nama }}</span>
-                          </div>
-                        </template>
-                        <div v-else class="empty-mini">Belum ada diagnosis</div>
-                      </div>
-
-                      <!-- Resep -->
-                      <div class="vc-section">
-                        <div class="vcs-title">Resep</div>
-                        <div v-if="allRxItems(v).length" class="resep-list">
-                          <div v-for="(item, i) in allRxItems(v)" :key="i" class="resep-row">
-                            <div class="resep-name">{{ item.medication?.nama ?? item.medication_name ?? '–' }}</div>
-                            <div class="resep-detail">{{ item.dosage }} · {{ item.frequency }} · {{ item.duration }}</div>
-                          </div>
-                        </div>
-                        <div v-else class="empty-mini">Tidak ada resep</div>
-                      </div>
-                    </div>
-
-                    <!-- Penunjang -->
-                    <div v-if="v.diagnostic_results?.length" class="vc-section">
-                      <div class="vcs-title">Hasil Pemeriksaan Penunjang</div>
-                      <div v-for="r in v.diagnostic_results" :key="r.id" class="pj-result-row">
-                        <span class="pj-type-badge">{{ r.order?.test_type ?? r.test_type }}</span>
-                        <span class="pj-hasil">{{ r.expertise_data?.hasil ?? r.expertise_data ?? '–' }}</span>
-                      </div>
-                    </div>
-
-                    <!-- Addenda -->
-                    <div v-if="v.addenda?.length" class="vc-section">
-                      <div class="vcs-title">Addendum</div>
-                      <div v-for="(a, i) in v.addenda" :key="i" class="addendum-row">
-                        <span class="add-tgl">{{ fmtTgl(a.created_at ?? a.tgl) }}</span>
-                        <span class="add-oleh">{{ a.created_by ?? a.oleh }}</span>
-                        <span class="add-isi">{{ a.isi }}</span>
-                      </div>
-                    </div>
-
-                    <!-- Addendum input -->
-                    <div v-if="addendumTarget === v.id" class="addendum-input-row">
-                      <textarea v-model="addendumText" class="add-textarea" rows="2" placeholder="Tulis addendum — catatan koreksi atau tambahan pada rekam medis ini..."></textarea>
-                      <div style="display:flex;gap:.4rem;margin-top:.4rem">
-                        <button class="btn-add-save" :disabled="savingAddendum" @click="saveAddendum(v)">
-                          {{ savingAddendum ? 'Menyimpan…' : 'Simpan Addendum' }}
-                        </button>
-                        <button class="btn-add-cancel" @click="addendumTarget=null">Batal</button>
-                      </div>
-                    </div>
-
-                    <!-- Card actions -->
-                    <div class="vc-actions">
-                      <div class="vc-meta">
-                        <span v-if="v.no_sep" class="sep-info">SEP: {{ v.no_sep }}</span>
-                        <span v-if="v.is_finalized" class="finalized-info">
-                          <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                          RME Terfinalisasi
-                        </span>
-                      </div>
-                      <button v-if="addendumTarget !== v.id" class="btn-addendum" @click="addendumTarget=v.id">
-                        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                        Addendum
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- ── TAB: DOKUMEN ── -->
-        <div v-if="activeRmeTab === 'dokumen'" class="dok-panel">
-          <div class="dok-header">
-            <div class="dok-title">Dokumen Rekam Medis</div>
-            <div class="dok-subtitle">
-              <template v-if="loadingDocs">Memuat dokumen…</template>
-              <template v-else>{{ docsFinalCount }} dari {{ docs.length }} dokumen final</template>
-            </div>
-          </div>
-
-          <!-- Skeleton -->
-          <div v-if="loadingDocs" class="dok-list">
-            <div v-for="i in 5" :key="i" class="dok-row">
-              <div class="sk-icon-wrap"></div>
-              <div style="flex:1">
-                <div class="sk-line w25 mb4"></div>
-                <div class="sk-line w55 mb4"></div>
-                <div class="sk-line w40"></div>
-              </div>
-            </div>
-          </div>
-
-          <div v-else-if="!docs.length" class="empty-filter">Belum ada dokumen untuk pasien ini</div>
-
-          <div v-else class="dok-list">
-            <div v-for="doc in docs" :key="doc.id" class="dok-row">
-              <div :class="['dok-icon-wrap', docStatusCls(doc.status)]">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
-                </svg>
-              </div>
-              <div class="dok-info">
-                <div class="dok-kode">{{ doc.document_type?.code }}</div>
-                <div class="dok-nama">{{ doc.document_type?.name }}</div>
-                <div class="dok-meta">
-                  {{ doc.created_by_station }}
-                  <span v-if="doc.document_number"> · {{ doc.document_number }}</span>
-                  <span v-if="doc.visit?.visit_date"> · {{ fmtTgl(doc.visit.visit_date) }}</span>
-                  <span v-if="doc.printed_count"> · Dicetak {{ doc.printed_count }}×</span>
-                </div>
-              </div>
-              <span :class="['dok-status', docStatusCls(doc.status)]">
-                <svg v-if="doc.status==='FINAL'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                {{ docStatusLabel(doc.status) }}
-              </span>
-              <div class="dok-actions">
-                <button class="dok-btn view" @click="selDoc=doc">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                  Lihat
-                </button>
-                <button v-if="doc.status==='FINAL'" class="dok-btn print" @click="printDoc(doc)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                  Print
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- PRINT RESUME (hidden, shown on print) -->
-        <div class="resume-print">
-          <div class="rp-header">
-            <strong>KLINIK MATA ARUNIKA CILEGON</strong><br/>
-            Jl. Klinik No.1, Cilegon · PMK No. 24/2022
-          </div>
-          <h2>RESUME MEDIS RAWAT JALAN</h2>
-          <table class="rp-table">
-            <tr><td>Nama</td><td>{{ patient.nama }}</td><td>No. RM</td><td>{{ patient.no_rm }}</td></tr>
-            <tr><td>Tgl. Lahir</td><td>{{ fmtTgl(patient.date_of_birth) }}</td><td>NIK</td><td>{{ patient.nik }}</td></tr>
-            <tr><td>Jenis Kelamin</td><td>{{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</td><td>Penjamin</td><td>{{ patient.last_guarantor_type }}</td></tr>
-            <tr><td>Alamat</td><td colspan="3">{{ patient.address }}</td></tr>
-          </table>
-          <h3>Riwayat Kunjungan</h3>
-          <div v-for="v in visits" :key="v.id" class="rp-visit">
-            <strong>{{ fmtTgl(v.visit_date) }} — {{ v.classification }} — {{ v.doctor_name }}</strong>
-            <div v-if="v.nurse_assessment?.keluhan_utama">Keluhan: {{ v.nurse_assessment.keluhan_utama }}</div>
-            <div v-if="v.doctor_examination?.diagnosis_utama">
-              Diagnosis: {{ v.doctor_examination.diagnosis_utama }} {{ v.doctor_examination.diagnosis_utama_nama }}
-            </div>
-          </div>
-          <div class="rp-footer">Dicetak: {{ new Date().toLocaleDateString('id-ID') }} · Arumed Apps v1.0</div>
-        </div>
-      </template>
+    <!-- EMPTY STATE -->
+    <div v-if="!patient" class="empty">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      <p>Cari dan pilih pasien dari kolom pencarian di atas<br/>untuk melihat Rekam Medis Elektronik</p>
     </div>
 
-    <!-- ─── DOCUMENT MODAL ─── -->
-    <div v-if="selDoc" class="doc-ov" @click.self="selDoc=null">
-      <div class="doc-mbx">
-        <div class="doc-mh">
-          <div>
-            <div class="doc-mht">{{ selDoc.document_type?.code }} — {{ selDoc.document_type?.name }}</div>
-            <div class="doc-msub">{{ selDoc.created_by_station }} · Status: {{ docStatusLabel(selDoc.status) }}</div>
-          </div>
-          <div style="display:flex;gap:.4rem">
-            <button v-if="selDoc.status==='FINAL'" class="doc-mbtn print" @click="printDoc(selDoc)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-              Print
-            </button>
-            <button class="doc-mcl" @click="selDoc=null">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <template v-if="patient">
+      <!-- PATIENT PROFILE BAR -->
+      <div class="ptb">
+        <PatientAvatar :name="patient.nama" :src="patient.photo_url" :size="44" radius="50%" />
+        <div class="pti">
+          <div class="ptn">{{ patient.nama }}</div>
+          <div class="ptm">{{ hitungUsia(patient.date_of_birth) }} th · {{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }} · {{ patient.address }}</div>
+          <div class="ptags">
+            <span :class="['ptg', `ptg-${guarantorCls(patient.last_guarantor_type)}`]">{{ patient.last_guarantor_type ?? 'UMUM' }}</span>
+            <span v-if="patient.allergy" class="ptg ptg-r">⚠ Alergi: {{ patient.allergy }}</span>
+            <button class="copy-rm-btn" @click="copyRm" title="Salin nomor RM">
+              <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              {{ patient.no_rm }}
             </button>
           </div>
         </div>
-        <div class="doc-mb">
-          <div v-if="patient" class="doc-patient-bar">
-            Pasien: <strong>{{ patient.nama }}</strong> · {{ patient.no_rm }}
-            <span v-if="selDoc.visit?.visit_date"> · {{ fmtTgl(selDoc.visit.visit_date) }}</span>
+        <div class="pt-stats">
+          <div class="pt-stat"><div class="pt-stat-v">{{ headStats.total_visits }}</div><div class="pt-stat-l">Kunjungan</div></div>
+          <div class="pt-stat"><div class="pt-stat-v">{{ headStats.total_surgery }}</div><div class="pt-stat-l">Operasi</div></div>
+          <div class="pt-stat"><div class="pt-stat-v">{{ headStats.with_diagnosis }}</div><div class="pt-stat-l">Diagnosis</div></div>
+        </div>
+        <button class="print-btn" @click="printResume">
+          <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          Cetak Resume
+        </button>
+      </div>
+
+      <!-- ─── MASTER-DETAIL ─── -->
+      <div class="rme-md">
+        <!-- LEFT MENU -->
+        <nav class="rme-nav">
+          <button v-for="m in MENUS" :key="m.key"
+            :class="['rnav-item', activeMenu===m.key?'a':'']" @click="selectMenu(m.key)">
+            <span>{{ m.label }}</span>
+            <span v-if="m.key==='dokumen' && cache.dokumen" class="rnav-ct">{{ docsFinalCount }}/{{ cache.dokumen.length }}</span>
+          </button>
+        </nav>
+
+        <!-- RIGHT CONTENT -->
+        <section class="rme-data">
+          <!-- Loading -->
+          <div v-if="curLoading" class="data-load">
+            <div v-for="i in 4" :key="i" class="sk-line w90 mb6" style="height:34px"></div>
           </div>
+
+          <!-- Error -->
+          <div v-else-if="curError" class="error-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>{{ curError }}</span>
+            <button class="retry-btn" @click="loadMenu(activeMenu, true)">Coba Lagi</button>
+          </div>
+
+          <template v-else>
+            <!-- ════ RINGKASAN ════ -->
+            <div v-if="activeMenu==='ringkasan'" class="ringkasan">
+              <div class="rk-grid">
+                <!-- Alergi & catatan -->
+                <div class="rk-card alert" v-if="ringkasan.patient?.allergy || ringkasan.allergy_latest_assessment">
+                  <div class="rk-card-t">⚠ Alergi &amp; Catatan Penting</div>
+                  <div class="rk-alert-body">
+                    <div v-if="ringkasan.patient?.allergy"><strong>Riwayat:</strong> {{ ringkasan.patient.allergy }}</div>
+                    <div v-if="ringkasan.allergy_latest_assessment"><strong>Asesmen terakhir:</strong> {{ ringkasan.allergy_latest_assessment }}</div>
+                    <div v-if="ringkasan.patient?.blood_type"><strong>Gol. Darah:</strong> {{ ringkasan.patient.blood_type }}</div>
+                  </div>
+                </div>
+
+                <!-- Visus & TIO -->
+                <div class="rk-card" v-if="ringkasan.visus_tio">
+                  <div class="rk-card-t">Visus &amp; TIO Terakhir <span class="rk-date">{{ fmtTgl(ringkasan.visus_tio.date) }}</span></div>
+                  <table class="mini-eye">
+                    <thead><tr><th></th><th>OD</th><th>OS</th></tr></thead>
+                    <tbody>
+                      <tr>
+                        <td>Visus</td>
+                        <td>{{ val(ringkasan.visus_tio.visus_od) }} <i v-if="ringkasan.visus_tio.prev" :class="['tr', trendVisus(ringkasan.visus_tio.visus_od, ringkasan.visus_tio.prev.visus_od)]"></i></td>
+                        <td>{{ val(ringkasan.visus_tio.visus_os) }} <i v-if="ringkasan.visus_tio.prev" :class="['tr', trendVisus(ringkasan.visus_tio.visus_os, ringkasan.visus_tio.prev.visus_os)]"></i></td>
+                      </tr>
+                      <tr>
+                        <td>TIO</td>
+                        <td>{{ val(ringkasan.visus_tio.tio_od) }} <span v-if="ringkasan.visus_tio.tio_od" class="unit">mmHg</span> <i v-if="ringkasan.visus_tio.prev" :class="['tr', trendTio(ringkasan.visus_tio.tio_od, ringkasan.visus_tio.prev.tio_od)]"></i></td>
+                        <td>{{ val(ringkasan.visus_tio.tio_os) }} <span v-if="ringkasan.visus_tio.tio_os" class="unit">mmHg</span> <i v-if="ringkasan.visus_tio.prev" :class="['tr', trendTio(ringkasan.visus_tio.tio_os, ringkasan.visus_tio.prev.tio_os)]"></i></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <!-- Kunjungan terakhir -->
+                <div class="rk-card" v-if="ringkasan.last_visit">
+                  <div class="rk-card-t">Kunjungan Terakhir</div>
+                  <div class="rk-last">
+                    <div class="rk-last-row"><span>Tanggal</span><b>{{ fmtTgl(ringkasan.last_visit.date) }}</b></div>
+                    <div class="rk-last-row"><span>Klasifikasi</span><b :style="{color:classColor(ringkasan.last_visit.classification)}">{{ val(ringkasan.last_visit.classification) }}</b></div>
+                    <div class="rk-last-row"><span>Dokter</span><b>{{ val(ringkasan.last_visit.doctor) }}</b></div>
+                    <div class="rk-last-row" v-if="ringkasan.last_visit.poli"><span>Poli</span><b>{{ ringkasan.last_visit.poli }}</b></div>
+                    <div class="rk-last-row" v-if="ringkasan.last_visit.planning"><span>Rencana</span><b>{{ ringkasan.last_visit.planning }}</b></div>
+                    <div class="rk-last-row" v-if="ringkasan.last_visit.follow_up_date"><span>Kontrol</span><b>{{ fmtTgl(ringkasan.last_visit.follow_up_date) }}</b></div>
+                  </div>
+                </div>
+
+                <!-- Problem list -->
+                <div class="rk-card span2">
+                  <div class="rk-card-t">Daftar Masalah (Problem List)</div>
+                  <div v-if="(ringkasan.problem_list ?? []).length" class="pl-list">
+                    <div v-for="p in ringkasan.problem_list" :key="p.kode" class="pl-item">
+                      <span class="pl-kode">{{ p.kode }}</span>
+                      <span class="pl-nama">{{ val(p.nama) }}</span>
+                      <span class="pl-meta">{{ p.count }}× · sejak {{ fmtTglPendek(p.first_date) }}</span>
+                    </div>
+                  </div>
+                  <div v-else class="empty-mini">Belum ada diagnosis tercatat</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ KUNJUNGAN ════ -->
+            <div v-else-if="activeMenu==='kunjungan'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada kunjungan</div>
+              <table v-else class="rme-table">
+                <thead><tr>
+                  <th>Tanggal</th><th>Klasifikasi</th><th>Dokter / Poli</th><th>Diagnosis Utama</th><th>Penjamin</th><th></th><th></th>
+                </tr></thead>
+                <tbody>
+                  <template v-for="v in cur" :key="v.visit_id">
+                    <tr class="row-click" @click="toggleRow(v.visit_id)">
+                      <td class="nowrap">{{ fmtTgl(v.visit_date) }}</td>
+                      <td><span class="cls-badge" :style="{background:classColor(v.classification)+'1f',color:classColor(v.classification)}">{{ val(v.classification) }}</span></td>
+                      <td><div class="cell-2">{{ val(v.doctor_name) }}<small v-if="v.poli_name">{{ v.poli_name }}</small></div></td>
+                      <td><span v-if="v.diagnosis_utama" class="dx-inline"><b>{{ v.diagnosis_utama }}</b> {{ v.diagnosis_utama_nama }}</span><span v-else>–</span></td>
+                      <td><span :class="['g-pill', guarantorCls(v.guarantor_type)]">{{ val(v.guarantor_type) }}</span></td>
+                      <td class="badges">
+                        <span v-if="v.is_finalized" class="b-mini final" title="Terfinalisasi">✓</span>
+                        <span v-if="v.penunjang_count" class="b-mini pj">{{ v.penunjang_count }} PJ</span>
+                        <span v-if="v.no_sep" class="b-mini sep">SEP</span>
+                      </td>
+                      <td class="chev">{{ expanded===v.visit_id ? '▲' : '▼' }}</td>
+                    </tr>
+                    <tr v-if="expanded===v.visit_id" class="row-detail">
+                      <td colspan="7">
+                        <div class="det-grid">
+                          <div class="det-box"><div class="det-t">Keluhan Utama</div><div>{{ val(v.detail.keluhan) }}</div></div>
+                          <div class="det-box">
+                            <div class="det-t">Tanda Vital</div>
+                            <div class="vt-row" v-if="v.detail.ttv">
+                              <span>TD {{ val(v.detail.ttv.td) }}</span><span>Nadi {{ val(v.detail.ttv.nadi) }}</span>
+                              <span>SpO₂ {{ val(v.detail.ttv.spo2) }}%</span><span>Suhu {{ val(v.detail.ttv.suhu) }}°</span>
+                              <span>RR {{ val(v.detail.ttv.respirasi) }}</span><span>KGD {{ val(v.detail.ttv.kgd) }}</span>
+                            </div>
+                            <div v-else>–</div>
+                          </div>
+                          <div class="det-box span2" v-if="v.detail.soap">
+                            <div class="det-t">SOAP</div>
+                            <div class="soap-mini"><b>S</b> {{ val(v.detail.soap.s) }}</div>
+                            <div class="soap-mini"><b>O</b> {{ val(v.detail.soap.o) }}</div>
+                            <div class="soap-mini"><b>A</b> {{ val(v.detail.soap.a) }}</div>
+                            <div class="soap-mini"><b>P</b> {{ val(v.detail.soap.p) }}</div>
+                          </div>
+                          <div class="det-box" v-if="v.detail.planning || v.detail.follow_up_date">
+                            <div class="det-t">Rencana</div>
+                            <div>{{ val(v.detail.planning) }}</div>
+                            <div v-if="v.detail.follow_up_date"><small>Kontrol: {{ fmtTgl(v.detail.follow_up_date) }}</small></div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ REFRAKSI ════ -->
+            <div v-else-if="activeMenu==='refraksi'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada data refraksi</div>
+              <table v-else class="rme-table">
+                <thead><tr>
+                  <th>Tanggal</th><th>Visus OD</th><th>Visus OS</th><th>Rx OD</th><th>Rx OS</th><th>TIO OD/OS</th><th>PD</th><th></th>
+                </tr></thead>
+                <tbody>
+                  <template v-for="r in cur" :key="r.visit_id">
+                    <tr class="row-click" @click="toggleRow(r.visit_id)">
+                      <td class="nowrap">{{ fmtTgl(r.visit_date) }}</td>
+                      <td>{{ val(r.visus_od) }}</td><td>{{ val(r.visus_os) }}</td>
+                      <td class="mono">{{ val(r.rx_od) }}</td><td class="mono">{{ val(r.rx_os) }}</td>
+                      <td>{{ val(r.tio_od) }}/{{ val(r.tio_os) }}</td>
+                      <td>{{ val(r.pd) }}</td>
+                      <td class="chev">{{ expanded===r.visit_id ? '▲' : '▼' }}</td>
+                    </tr>
+                    <tr v-if="expanded===r.visit_id" class="row-detail">
+                      <td colspan="8">
+                        <div class="det-grid">
+                          <div class="det-box"><div class="det-t">Visus Awal / Pinhole</div><div>OD {{ val(r.detail.visus_awal_od) }} / PH {{ val(r.detail.pinhole_od) }}</div><div>OS {{ val(r.detail.visus_awal_os) }} / PH {{ val(r.detail.pinhole_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Autoref</div><div class="mono">OD {{ val(r.detail.autoref_od) }}</div><div class="mono">OS {{ val(r.detail.autoref_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Refraksi Subjektif</div><div class="mono">OD {{ val(r.detail.subjektif_od) }}</div><div class="mono">OS {{ val(r.detail.subjektif_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Keratometri</div><div class="mono">OD {{ val(r.detail.keratometri_od) }}</div><div class="mono">OS {{ val(r.detail.keratometri_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Kacamata Lama</div><div class="mono">OD {{ val(r.detail.old_glasses_od) }}</div><div class="mono">OS {{ val(r.detail.old_glasses_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Resep Kacamata</div><div>{{ val(r.detail.glasses_type) }} · {{ val(r.detail.lens_material) }} · {{ val(r.detail.coating) }}</div><div v-if="r.detail.iop_method"><small>TIO: {{ r.detail.iop_method }}</small></div></div>
+                          <div class="det-box span2" v-if="r.detail.clinical_notes"><div class="det-t">Catatan Klinis</div><div>{{ r.detail.clinical_notes }}</div></div>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ PENUNJANG ════ -->
+            <div v-else-if="activeMenu==='penunjang'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada hasil penunjang</div>
+              <table v-else class="rme-table">
+                <thead><tr>
+                  <th>Tanggal</th><th>Jenis</th><th>Mata</th><th>Ringkasan Hasil</th><th>Status</th><th>Pemeriksa</th><th></th><th></th>
+                </tr></thead>
+                <tbody>
+                  <template v-for="p in cur" :key="p.order_id">
+                    <tr class="row-click" @click="toggleRow(p.order_id)">
+                      <td class="nowrap">{{ fmtTgl(p.visit_date) }}</td>
+                      <td><b>{{ val(p.test_name) }}</b></td>
+                      <td>{{ p.eye_side ? p.eye_side.toUpperCase() : '–' }}</td>
+                      <td class="trunc">{{ val(p.summary) }}</td>
+                      <td><span :class="['st-pill', (p.status||'').toLowerCase()]">{{ val(p.status) }}</span></td>
+                      <td>{{ val(p.examiner) }}</td>
+                      <td><a v-if="p.attachment_url" :href="p.attachment_url" target="_blank" class="att-link" @click.stop>📎</a></td>
+                      <td class="chev">{{ expanded===p.order_id ? '▲' : '▼' }}</td>
+                    </tr>
+                    <tr v-if="expanded===p.order_id" class="row-detail">
+                      <td colspan="8">
+                        <div class="det-box">
+                          <div class="det-t">Detail Hasil</div>
+                          <div v-if="p.detail.expertise_data" class="kv-grid">
+                            <div v-for="(v2,k) in p.detail.expertise_data" :key="k" class="kv">
+                              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ v2 }}</span>
+                            </div>
+                          </div>
+                          <div v-else>–</div>
+                          <div v-if="p.detail.notes" class="det-note">Catatan: {{ p.detail.notes }}</div>
+                          <div v-if="p.detail.reviewer" class="det-note">Diverifikasi: {{ p.detail.reviewer }} · {{ fmtTglPendek(p.detail.reviewed_at) }}</div>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ OBAT ════ -->
+            <div v-else-if="activeMenu==='obat'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada riwayat obat</div>
+              <table v-else class="rme-table">
+                <thead><tr><th>Tanggal</th><th>Penulis Resep</th><th>Jumlah Item</th><th>Ringkasan</th><th></th></tr></thead>
+                <tbody>
+                  <template v-for="o in cur" :key="o.visit_id">
+                    <tr class="row-click" @click="toggleRow(o.visit_id)">
+                      <td class="nowrap">{{ fmtTgl(o.visit_date) }}</td>
+                      <td>{{ val(o.prescriber) }}</td>
+                      <td>{{ o.item_count }} obat</td>
+                      <td class="trunc">{{ o.items.map(i => i.nama).join(', ') }}</td>
+                      <td class="chev">{{ expanded===o.visit_id ? '▲' : '▼' }}</td>
+                    </tr>
+                    <tr v-if="expanded===o.visit_id" class="row-detail">
+                      <td colspan="5">
+                        <table class="sub-table">
+                          <thead><tr><th>Obat</th><th>Qty</th><th>Dosis</th><th>Aturan Pakai</th><th>Catatan</th></tr></thead>
+                          <tbody>
+                            <tr v-for="(it,i) in o.items" :key="i">
+                              <td><b>{{ it.nama }}</b></td>
+                              <td>{{ val(it.quantity) }} {{ it.unit ?? '' }}</td>
+                              <td>{{ val(it.dosage) }}</td>
+                              <td>{{ val(it.instructions) }}</td>
+                              <td>{{ val(it.notes) }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ BEDAH ════ -->
+            <div v-else-if="activeMenu==='bedah'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada riwayat operasi</div>
+              <table v-else class="rme-table">
+                <thead><tr><th>Tanggal</th><th>Prosedur</th><th>Jam</th><th>IOL</th><th>Komplikasi</th><th></th></tr></thead>
+                <tbody>
+                  <template v-for="b in cur" :key="b.visit_id">
+                    <tr class="row-click" @click="toggleRow(b.visit_id)">
+                      <td class="nowrap">{{ fmtTgl(b.visit_date) }}</td>
+                      <td>{{ b.procedures.length ? b.procedures.join(', ') : '–' }}</td>
+                      <td class="nowrap">{{ val(b.time_in) }}–{{ val(b.time_out) }}</td>
+                      <td class="trunc">{{ b.iol_used.length ? b.iol_used.join(', ') : '–' }}</td>
+                      <td><span v-if="b.has_complication" class="st-pill rejected">Ada</span><span v-else class="st-pill final">Tidak</span></td>
+                      <td class="chev">{{ expanded===b.visit_id ? '▲' : '▼' }}</td>
+                    </tr>
+                    <tr v-if="expanded===b.visit_id" class="row-detail">
+                      <td colspan="6">
+                        <div class="det-grid">
+                          <div class="det-box span2" v-if="b.detail.operation_notes"><div class="det-t">Laporan Operasi</div><div>{{ b.detail.operation_notes }}</div></div>
+                          <div class="det-box" v-if="b.detail.complication_detail"><div class="det-t">Detail Komplikasi</div><div>{{ b.detail.complication_detail }}</div></div>
+                          <div class="det-box" v-if="b.detail.post_op_instructions"><div class="det-t">Instruksi Pasca-Op</div><div>{{ b.detail.post_op_instructions }}</div></div>
+                          <div class="det-box" v-if="b.detail.followup_date"><div class="det-t">Kontrol</div><div>{{ fmtTgl(b.detail.followup_date) }}</div></div>
+                          <div class="det-box" v-if="!b.detail.operation_notes && !b.detail.complication_detail && !b.detail.post_op_instructions && !b.detail.followup_date"><div>Tidak ada catatan tambahan</div></div>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ DIAGNOSIS ════ -->
+            <div v-else-if="activeMenu==='diagnosis'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada diagnosis</div>
+              <table v-else class="rme-table">
+                <thead><tr><th>Tanggal</th><th>ICD-10 Utama</th><th>Sekunder</th><th>Tindakan (ICD-9)</th><th>Rencana</th></tr></thead>
+                <tbody>
+                  <tr v-for="d in cur" :key="d.visit_id">
+                    <td class="nowrap">{{ fmtTgl(d.visit_date) }}</td>
+                    <td><span class="dx-inline"><b>{{ d.utama.kode }}</b> {{ d.utama.nama }}</span></td>
+                    <td>
+                      <div v-for="s in d.sekunder" :key="s.kode" class="dx-sub"><b>{{ s.kode }}</b> {{ s.nama }}</div>
+                      <span v-if="!d.sekunder.length">–</span>
+                    </td>
+                    <td>
+                      <div v-for="t in d.tindakan" :key="t.kode" class="dx-sub"><b>{{ t.kode }}</b> {{ t.nama }}</div>
+                      <span v-if="!d.tindakan.length">–</span>
+                    </td>
+                    <td>{{ val(d.planning) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- ════ DOKUMEN ════ -->
+            <div v-else-if="activeMenu==='dokumen'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada dokumen untuk pasien ini</div>
+              <table v-else class="rme-table">
+                <thead><tr><th>Tanggal</th><th>Dokumen</th><th>No.</th><th>Stasiun</th><th>Status</th><th class="ta-r">Aksi</th></tr></thead>
+                <tbody>
+                  <tr v-for="doc in cur" :key="doc.id">
+                    <td class="nowrap">{{ fmtTgl(doc.visit?.visit_date ?? doc.created_at) }}</td>
+                    <td><div class="cell-2"><b>{{ doc.document_type?.name }}</b><small>{{ doc.document_type?.code }}</small></div></td>
+                    <td class="mono">{{ val(doc.document_number) }}</td>
+                    <td>{{ val(doc.created_by_station) }}</td>
+                    <td><span :class="['st-pill', docStatusCls(doc.status)]">{{ docStatusLabel(doc.status) }}</span></td>
+                    <td class="ta-r doc-acts">
+                      <button class="dbtn" @click="selDoc=doc">Lihat</button>
+                      <button v-if="doc.status==='FINAL'" class="dbtn" @click="printDoc(doc)">Print</button>
+                      <button v-if="doc.status==='FINAL'" class="dbtn" @click="openAddendum(doc)">Addendum</button>
+                      <button class="dbtn ghost" @click="openAudit(doc)">Audit</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </section>
+      </div>
+
+      <!-- PRINT RESUME (hidden, shown on print) -->
+      <div class="resume-print">
+        <div class="rp-header"><strong>KLINIK MATA</strong><br/>Resume Medis Rawat Jalan · PMK No. 24/2022</div>
+        <h2>RESUME REKAM MEDIS</h2>
+        <table class="rp-table">
+          <tr><td>Nama</td><td>{{ patient.nama }}</td><td>No. RM</td><td>{{ patient.no_rm }}</td></tr>
+          <tr><td>Tgl. Lahir</td><td>{{ fmtTgl(patient.date_of_birth) }}</td><td>NIK</td><td>{{ patient.nik }}</td></tr>
+          <tr><td>Gender</td><td>{{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</td><td>Penjamin</td><td>{{ patient.last_guarantor_type }}</td></tr>
+          <tr><td>Alamat</td><td colspan="3">{{ patient.address }}</td></tr>
+          <tr v-if="patient.allergy"><td>Alergi</td><td colspan="3">{{ patient.allergy }}</td></tr>
+        </table>
+        <h3>Riwayat Kunjungan</h3>
+        <table class="rp-grid">
+          <thead><tr><th>Tanggal</th><th>Klasifikasi</th><th>Dokter</th><th>Diagnosis</th></tr></thead>
+          <tbody>
+            <tr v-for="v in (cache.kunjungan ?? [])" :key="v.visit_id">
+              <td>{{ fmtTgl(v.visit_date) }}</td><td>{{ v.classification }}</td><td>{{ v.doctor_name }}</td>
+              <td>{{ v.diagnosis_utama }} {{ v.diagnosis_utama_nama }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="rp-footer">Dicetak: {{ new Date().toLocaleDateString('id-ID') }} · Arumed Apps</div>
+      </div>
+    </template>
+
+    <!-- ─── DOCUMENT MODAL ─── -->
+    <div v-if="selDoc" class="ov" @click.self="selDoc=null">
+      <div class="mbx">
+        <div class="mh">
+          <div>
+            <div class="mht">{{ selDoc.document_type?.code }} — {{ selDoc.document_type?.name }}</div>
+            <div class="msub">{{ selDoc.created_by_station }} · Status: {{ docStatusLabel(selDoc.status) }}</div>
+          </div>
+          <div style="display:flex;gap:.4rem">
+            <button v-if="selDoc.status==='FINAL'" class="mbtn" @click="printDoc(selDoc)">Print</button>
+            <button class="mcl" @click="selDoc=null">✕</button>
+          </div>
+        </div>
+        <div class="mb">
+          <div class="doc-patient-bar">Pasien: <strong>{{ patient.nama }}</strong> · {{ patient.no_rm }}
+            <span v-if="selDoc.visit?.visit_date"> · {{ fmtTgl(selDoc.visit.visit_date) }}</span></div>
           <div :class="['doc-status-block', docStatusCls(selDoc.status)]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <template v-if="selDoc.status==='FINAL'"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></template>
-              <template v-else><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></template>
-            </svg>
-            <div>
-              <div class="dsb-title">{{ docStatusLabel(selDoc.status) }}</div>
-              <div class="dsb-desc">
-                <template v-if="selDoc.status === 'FINAL'">
-                  Dokumen telah final{{ selDoc.document_number ? ` · No: ${selDoc.document_number}` : '' }}.
-                  <span v-if="selDoc.printed_count"> Dicetak {{ selDoc.printed_count }} kali.</span>
-                </template>
-                <template v-else-if="selDoc.status === 'WAITING_SIGNATURE'">
-                  Menunggu tanda tangan. Akses dari stasiun <strong>{{ selDoc.created_by_station }}</strong>.
-                </template>
-                <template v-else-if="selDoc.status === 'REJECTED'">
-                  Dokumen ditolak. Perbaiki melalui stasiun <strong>{{ selDoc.created_by_station }}</strong>.
-                </template>
-                <template v-else>
-                  Draft. Isi dan submit melalui stasiun <strong>{{ selDoc.created_by_station }}</strong>.
-                </template>
+            <div class="dsb-title">{{ docStatusLabel(selDoc.status) }}</div>
+            <div class="dsb-desc">
+              <template v-if="selDoc.status==='FINAL'">Dokumen final<span v-if="selDoc.document_number"> · No: {{ selDoc.document_number }}</span>.<span v-if="selDoc.printed_count"> Dicetak {{ selDoc.printed_count }}×.</span></template>
+              <template v-else-if="docStatusCls(selDoc.status)==='waiting'">Menunggu tanda tangan. Akses dari stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
+              <template v-else-if="selDoc.status==='REJECTED'">Dokumen ditolak. Perbaiki via stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
+              <template v-else>Draft. Isi &amp; submit via stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── ADDENDUM MODAL ─── -->
+    <div v-if="addendumModal" class="ov" @click.self="addendumModal=null">
+      <div class="mbx">
+        <div class="mh">
+          <div><div class="mht">Addendum Dokumen</div><div class="msub">{{ addendumModal.document_type?.name }} · {{ addendumModal.document_number }}</div></div>
+          <button class="mcl" @click="addendumModal=null">✕</button>
+        </div>
+        <div class="mb">
+          <p class="add-hint">Addendum adalah koreksi/tambahan resmi pada dokumen yang sudah final — data lama tidak dihapus. Perlu ditandatangani ulang.</p>
+          <label class="fld-l">Alasan koreksi</label>
+          <input v-model="addAlasan" class="fld-i" placeholder="mis. salah ketik dosis" />
+          <label class="fld-l">Isi koreksi</label>
+          <textarea v-model="addIsi" class="fld-t" rows="4" placeholder="Tuliskan koreksi atau tambahan…"></textarea>
+          <div class="mh-acts">
+            <button class="mbtn ghost" @click="addendumModal=null">Batal</button>
+            <button class="mbtn primary" :disabled="savingAdd" @click="saveAddendum">{{ savingAdd ? 'Menyimpan…' : 'Simpan Addendum' }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── AUDIT DRAWER ─── -->
+    <div v-if="auditDoc" class="ov" @click.self="auditDoc=null">
+      <div class="drawer">
+        <div class="mh">
+          <div><div class="mht">Jejak Audit</div><div class="msub">{{ auditDoc.document_type?.name }}</div></div>
+          <button class="mcl" @click="auditDoc=null">✕</button>
+        </div>
+        <div class="mb">
+          <div v-if="auditLoading" class="empty-mini">Memuat…</div>
+          <div v-else-if="!auditLogs.length" class="empty-mini">Belum ada jejak audit</div>
+          <div v-else class="audit-tl">
+            <div v-for="(l,i) in auditLogs" :key="i" class="audit-item">
+              <div class="audit-dot"></div>
+              <div class="audit-body">
+                <div class="audit-act">{{ l.event ?? l.action ?? l.description ?? 'Aktivitas' }}</div>
+                <div class="audit-meta">{{ l.user?.name ?? l.created_by ?? '–' }} · {{ l.created_at ? fmtTglPendek(l.created_at) : '' }}</div>
               </div>
             </div>
           </div>
@@ -661,268 +771,223 @@ function printDoc(doc) {
 </template>
 
 <style scoped>
-/* ─── PAGE LAYOUT ─── */
-.rme-page { display: flex; flex-direction: column; gap: .75rem; }
+/* ─── PAGE ─── */
+.rme-page { display: flex; flex-direction: column; gap: .75rem; color: #000; }
 
 /* ─── SEARCH BAR ─── */
-.rme-searchbar { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: .65rem .9rem; }
+.rme-searchbar { background: #fff; border: 1px solid #e2e5ea; border-radius: 12px; padding: .65rem .9rem; }
 .rsb-inner { position: relative; }
-.rsb-mode { display: flex; background: var(--bs); border-radius: 8px; padding: 2px; gap: 2px; margin-bottom: .5rem; max-width: 240px; }
-.rsb-mode-btn { flex: 1; height: 26px; border: none; border-radius: 6px; background: transparent; color: var(--tu); font-size: 11px; font-weight: 500; cursor: pointer; font-family: 'DM Sans',sans-serif; transition: all .15s; }
-.rsb-mode-btn:hover { color: var(--td); }
-.rsb-mode-btn.a { background: var(--bc); color: var(--gd); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.rsb-mode { display: flex; background: #f1f3f6; border-radius: 8px; padding: 2px; gap: 2px; margin-bottom: .5rem; max-width: 240px; }
+.rsb-mode-btn { flex: 1; height: 26px; border: none; border-radius: 6px; background: transparent; color: #6b7280; font-size: 11px; font-weight: 600; cursor: pointer; }
+.rsb-mode-btn.a { background: #fff; color: #1763d4; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .rsb-input-wrap { display: flex; align-items: center; gap: .5rem; }
-.rsb-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--tu); }
-.rsb-input { flex: 1; height: 34px; font-size: 12.5px; border: 1.5px solid var(--gb); border-radius: 8px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans',sans-serif; outline: none; color: var(--td); }
-.rsb-input:focus { border-color: var(--ga); background: #fff; }
-.rsb-spinner { width: 14px; height: 14px; border: 2px solid var(--gb); border-top-color: var(--ga); border-radius: 50%; animation: spin .6s linear infinite; flex-shrink: 0; }
+.rsb-icon { width: 14px; height: 14px; flex-shrink: 0; color: #9ca3af; }
+.rsb-input { flex: 1; height: 36px; font-size: 13px; border: 1.5px solid #e2e5ea; border-radius: 8px; padding: 0 10px; background: #f8f9fb; outline: none; color: #000; }
+.rsb-input:focus { border-color: #1763d4; background: #fff; }
+.rsb-spinner { width: 14px; height: 14px; border: 2px solid #e2e5ea; border-top-color: #1763d4; border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.rsb-clear { display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; height: 34px; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tu); font-size: 11px; font-weight: 600; font-family: 'DM Sans',sans-serif; cursor: pointer; transition: all .15s; }
-.rsb-clear:hover { border-color: var(--et); color: var(--et); }
+.rsb-clear { display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; height: 36px; border: 1.5px solid #e2e5ea; border-radius: 8px; background: #f8f9fb; color: #4b5563; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.rsb-clear:hover { border-color: #dc2626; color: #dc2626; }
 .rsb-clear svg { width: 12px; height: 12px; }
-.rsb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bc); border: 1px solid var(--ga); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 100; max-height: 300px; overflow-y: auto; }
-.rsb-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; transition: background .12s; }
-.rsb-item:hover { background: var(--gl); }
+.rsb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border: 1px solid #1763d4; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 100; max-height: 320px; overflow-y: auto; }
+.rsb-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+.rsb-item:hover { background: #eef4ff; }
 .rsb-sk { pointer-events: none; }
 .rsi-bar { width: 3px; height: 40px; border-radius: 2px; flex-shrink: 0; }
-.rsi-bar.bpjs { background: #3b82f6; }
-.rsi-bar.umum { background: var(--lm); }
-.rsi-bar.asn  { background: var(--pt); }
+.rsi-bar.bpjs { background: #3b82f6; } .rsi-bar.umum { background: #8abf44; } .rsi-bar.asn { background: #a855f7; }
 .rsi-body { flex: 1; min-width: 0; }
-.rsi-top { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
-.rsi-rm { font-size: 10.5px; font-weight: 700; color: var(--it); font-family: monospace; }
-.rsi-cnt { font-size: 9px; color: var(--tu); background: var(--bs); padding: 1px 6px; border-radius: 10px; border: 1px solid var(--gb); }
-.rsi-name { font-size: 13px; font-weight: 600; color: var(--td); }
-.rsi-meta { font-size: 10px; color: var(--tu); }
-.rsb-empty { padding: 1rem; text-align: center; font-size: 11.5px; color: var(--th); }
+.rsi-top { display: flex; align-items: center; gap: 6px; }
+.rsi-rm { font-size: 10.5px; font-weight: 700; color: #1763d4; font-family: monospace; }
+.rsi-cnt { font-size: 9px; color: #6b7280; background: #f1f3f6; padding: 1px 6px; border-radius: 10px; }
+.rsi-name { font-size: 13px; font-weight: 600; color: #000; }
+.rsi-meta { font-size: 10px; color: #6b7280; }
+.rsb-empty { padding: 1rem; text-align: center; font-size: 11.5px; color: #9ca3af; }
 
-/* ─── SKELETON ─── */
-.sk-line { height: 8px; border-radius: 4px; background: var(--gb); animation: shimmer 1.4s ease infinite; }
-.sk-line.w25 { width: 25%; }
-.sk-line.w30 { width: 30%; }
-.sk-line.w40 { width: 40%; }
-.sk-line.w45 { width: 45%; }
-.sk-line.w50 { width: 50%; }
-.sk-line.w55 { width: 55%; }
-.sk-line.w60 { width: 60%; }
-.sk-line.w70 { width: 70%; }
-.mb4 { margin-bottom: 4px; }
-.mb6 { margin-bottom: 6px; }
-@keyframes shimmer { 0%,100%{opacity:.5} 50%{opacity:1} }
-.sk-card { background: var(--bc); border: 1.5px solid var(--gb); border-radius: 11px; padding: .85rem 1rem; }
-.sk-icon-wrap { width: 36px; height: 36px; border-radius: 9px; background: var(--gb); animation: shimmer 1.4s ease infinite; flex-shrink: 0; }
-
-/* ─── ERROR STATE ─── */
-.error-state { display: flex; align-items: center; gap: .65rem; padding: 1rem 1.25rem; background: var(--eb); border: 1px solid var(--ebd); border-radius: 10px; font-size: 12.5px; color: var(--et); }
-.error-state svg { width: 16px; height: 16px; flex-shrink: 0; }
-.error-state span { flex: 1; }
-.retry-btn { padding: 4px 12px; border: 1.5px solid var(--et); border-radius: 7px; background: transparent; color: var(--et); font-size: 11px; font-weight: 600; font-family: 'DM Sans',sans-serif; cursor: pointer; }
-.retry-btn:hover { background: var(--et); color: #fff; }
-
-/* ─── CONTENT AREA ─── */
-.rme-content { display: flex; flex-direction: column; }
-.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; color: var(--th); text-align: center; padding: 4rem 2rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; }
-.empty svg { width: 64px; height: 64px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; }
-.empty p { font-size: 13.5px; line-height: 1.7; color: var(--th); }
+/* ─── EMPTY ─── */
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; padding: 4rem 2rem; background: #fff; border: 1px solid #e2e5ea; border-radius: 12px; }
+.empty svg { width: 64px; height: 64px; fill: none; stroke: #cbd2dc; stroke-width: 1.5; stroke-linecap: round; }
+.empty p { font-size: 13.5px; line-height: 1.7; color: #6b7280; }
 
 /* ─── PATIENT BAR ─── */
-.ptb { display: flex; align-items: center; gap: .85rem; padding: .75rem 1rem; background: var(--bc); border-radius: 12px; border: 1px solid var(--gb); margin-bottom: .75rem; }
-.ptav { width: 40px; height: 40px; border-radius: 50%; background: var(--gl); color: var(--ga); font-weight: 700; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ptb { display: flex; align-items: center; gap: .85rem; padding: .8rem 1rem; background: #fff; border-radius: 12px; border: 1px solid #e2e5ea; }
 .pti { flex: 1; min-width: 0; }
-.ptn { font-family: 'DM Serif Display', serif; font-size: 17px; color: var(--gd); line-height: 1.1; }
-.ptm { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
-.ptags { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; align-items: center; }
-.ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
-.ptg-bpjs { background: #dbeafe; color: #1e40af; }
-.ptg-umum { background: var(--gl); color: var(--ga); }
-.ptg-asn  { background: var(--pb); color: var(--pt); }
-.ptg-r    { background: var(--eb); color: var(--et); }
-.copy-rm-btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1.5px solid var(--gb); border-radius: 6px; background: var(--bs); color: var(--it); font-size: 10px; font-weight: 700; font-family: monospace; cursor: pointer; transition: all .15s; }
-.copy-rm-btn:hover { border-color: var(--it); background: var(--ib); }
-.copy-rm-btn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-.pt-stats { display: flex; gap: 1rem; border-left: 1px solid var(--gb); padding-left: 1rem; flex-shrink: 0; }
+.ptn { font-size: 18px; font-weight: 700; line-height: 1.1; color: #000; }
+.ptm { font-size: 11px; color: #6b7280; margin-top: 3px; }
+.ptags { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+.ptg { font-size: 9.5px; font-weight: 700; padding: 3px 8px; border-radius: 4px; }
+.ptg-bpjs { background: #dbeafe; color: #1e40af; } .ptg-umum { background: #ecfccb; color: #4d7c0f; } .ptg-asn { background: #f3e8ff; color: #7e22ce; }
+.ptg-r { background: #fee2e2; color: #b91c1c; }
+.copy-rm-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1.5px solid #e2e5ea; border-radius: 6px; background: #f8f9fb; color: #1763d4; font-size: 10px; font-weight: 700; font-family: monospace; cursor: pointer; }
+.copy-rm-btn:hover { border-color: #1763d4; background: #eef4ff; }
+.copy-rm-btn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
+.pt-stats { display: flex; gap: 1.2rem; border-left: 1px solid #e2e5ea; padding-left: 1.2rem; }
 .pt-stat { text-align: center; }
-.pt-stat-v { font-size: 15px; font-weight: 700; color: var(--td); line-height: 1; }
-.pt-stat-l { font-size: 9px; color: var(--tu); margin-top: 2px; }
-.print-btn { display: inline-flex; align-items: center; gap: 5px; padding: 0 14px; height: 34px; border: 1.5px solid var(--ga); border-radius: 9px; background: transparent; color: var(--ga); font-size: 11.5px; font-weight: 600; font-family: 'DM Sans',sans-serif; cursor: pointer; transition: all .15s; flex-shrink: 0; }
-.print-btn:hover { background: var(--gl); }
-.print-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.pt-stat-v { font-size: 17px; font-weight: 700; line-height: 1; color: #000; }
+.pt-stat-l { font-size: 9px; color: #6b7280; margin-top: 3px; }
+.print-btn { display: inline-flex; align-items: center; gap: 5px; padding: 0 14px; height: 36px; border: 1.5px solid #1763d4; border-radius: 9px; background: #1763d4; color: #fff !important; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.print-btn:hover { background: #1257bd; }
+.print-btn svg { width: 13px; height: 13px; fill: none; stroke: #fff; stroke-width: 2; }
 
-/* ─── MAIN RME TABS ─── */
-.rme-tabs { display: flex; gap: 4px; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px 12px 0 0; border-bottom: none; padding: .5rem .75rem 0; }
-.rmt { display: inline-flex; align-items: center; gap: 6px; padding: .55rem 1.1rem; font-size: 12.5px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans',sans-serif; transition: all .15s; }
-.rmt svg { width: 13px; height: 13px; }
-.rmt:hover { color: var(--td); }
-.rmt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
-.rmt-ct { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: var(--sb); color: var(--st); margin-left: 2px; }
+/* ─── MASTER-DETAIL ─── */
+.rme-md { display: flex; gap: .75rem; align-items: flex-start; }
+.rme-nav { width: 168px; flex-shrink: 0; background: #fff; border: 1px solid #e2e5ea; border-radius: 12px; padding: 6px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: .5rem; }
+.rnav-item { display: flex; align-items: center; gap: 9px; padding: 10px 13px; border: none; border-radius: 8px; background: transparent; color: #374151; font-size: 12.5px; font-weight: 600; cursor: pointer; text-align: left; transition: background .12s; }
+.rnav-item:hover { background: #f1f3f6; }
+.rnav-item.a { background: #1763d4; color: #fff !important; }
+.rnav-ct { margin-left: auto; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: rgba(0,0,0,.08); }
+.rnav-item.a .rnav-ct { background: rgba(255,255,255,.25); color: #fff; }
 
-/* ─── VISIT FILTER TABS ─── */
-.visit-tabs { display: flex; background: var(--bc); border: 1px solid var(--gb); border-top: none; border-bottom: 1px solid var(--gb); padding: 0 1rem; gap: 2px; flex-shrink: 0; }
-.vt { padding: .55rem .9rem; font-size: 11.5px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans', sans-serif; display: flex; align-items: center; gap: 5px; transition: all .15s; }
-.vt:hover { color: var(--td); }
-.vt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
-.vt-cnt { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 20px; background: var(--gb); color: var(--tu); }
-.vt.a .vt-cnt { background: rgba(31,125,74,.12); color: var(--ga); }
+.rme-data { flex: 1; min-width: 0; background: #fff; border: 1px solid #e2e5ea; border-radius: 12px; padding: 1rem; min-height: 340px; }
+.data-load { padding: .5rem; }
 
-/* ─── TIMELINE ─── */
-.timeline-area { flex: 1; overflow-y: auto; padding: 1.25rem 1.25rem 1rem; background: var(--bc); border: 1px solid var(--gb); border-top: none; border-radius: 0 0 12px 12px; }
-.timeline-area::-webkit-scrollbar { width: 4px; }
-.timeline-area::-webkit-scrollbar-thumb { background: var(--gb); border-radius: 2px; }
-.empty-filter { text-align: center; padding: 2rem; font-size: 12px; color: var(--th); }
-.timeline { position: relative; padding-left: 2rem; }
-.timeline::before { content: ''; position: absolute; left: 8px; top: 12px; bottom: 12px; width: 2px; background: var(--gb); border-radius: 1px; }
-.tl-item { position: relative; margin-bottom: .75rem; }
-.tl-dot { position: absolute; left: -1.95rem; top: 14px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bc); box-shadow: 0 0 0 1px var(--gb); z-index: 1; }
+/* ─── TABLE ─── */
+.tbl-wrap { overflow-x: auto; }
+.rme-table { width: 100%; border-collapse: collapse; font-size: 12px; color: #000; }
+.rme-table thead th { text-align: left; font-size: 10.5px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; padding: 8px 10px; border-bottom: 2px solid #eceef2; white-space: nowrap; }
+.rme-table tbody td { padding: 9px 10px; border-bottom: 1px solid #f1f3f6; vertical-align: top; }
+.row-click { cursor: pointer; }
+.row-click:hover td { background: #f8fafe; }
+.row-detail td { background: #f8fafc; padding: .75rem 1rem !important; }
+.nowrap { white-space: nowrap; }
+.mono { font-family: monospace; font-size: 11.5px; }
+.ta-r { text-align: right; }
+.chev { color: #9ca3af; font-size: 9px; text-align: center; width: 28px; }
+.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-2 { display: flex; flex-direction: column; line-height: 1.3; }
+.cell-2 small { color: #6b7280; font-size: 10px; }
+.cls-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 5px; white-space: nowrap; }
+.g-pill { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
+.g-pill.bpjs { background: #dbeafe; color: #1e40af; } .g-pill.umum { background: #ecfccb; color: #4d7c0f; } .g-pill.asn { background: #f3e8ff; color: #7e22ce; }
+.dx-inline b { color: #1763d4; }
+.dx-sub { font-size: 11px; line-height: 1.5; } .dx-sub b { color: #1763d4; }
+.badges { white-space: nowrap; }
+.b-mini { display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-right: 3px; }
+.b-mini.final { background: #dcfce7; color: #15803d; } .b-mini.pj { background: #fef3c7; color: #92400e; } .b-mini.sep { background: #e0e7ff; color: #3730a3; }
+.st-pill { font-size: 9.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px; white-space: nowrap; }
+.st-pill.final, .st-pill.completed, .st-pill.approved, .st-pill.reviewed { background: #dcfce7; color: #15803d; }
+.st-pill.waiting, .st-pill.pending { background: #fef3c7; color: #92400e; }
+.st-pill.draft { background: #f1f3f6; color: #4b5563; }
+.st-pill.rejected, .st-pill.void { background: #fee2e2; color: #b91c1c; }
+.att-link { font-size: 15px; text-decoration: none; }
 
-/* ─── VISIT CARD ─── */
-.visit-card { background: var(--bc); border: 1.5px solid var(--gb); border-radius: 11px; overflow: hidden; transition: border-color .15s; }
-.visit-card.open { border-color: var(--ga); }
-.vc-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; padding: .7rem .9rem; cursor: pointer; }
-.vc-header:hover { background: var(--bs); }
-.vc-left { display: flex; flex-direction: column; gap: .25rem; }
-.jenis-badge { display: inline-flex; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 20px; width: fit-content; letter-spacing: .04em; text-transform: uppercase; }
-.vc-date { font-size: 12px; font-weight: 600; color: var(--td); }
-.vc-doctor { font-size: 10.5px; color: var(--tu); }
-.vc-right { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; flex-shrink: 0; }
-.vc-main-dx { font-size: 11px; font-weight: 500; color: var(--tm); max-width: 220px; text-align: right; }
-.vc-badges { display: flex; gap: 3px; flex-wrap: wrap; justify-content: flex-end; }
-.badge-finalized { font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--sb); color: var(--st); }
-.badge-penunjang { font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--ib); color: var(--it); }
-.badge-addendum  { font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--wb); color: var(--wt); }
-.badge-sep       { font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--pb); color: var(--pt); }
-.vc-toggle { font-size: 9px; color: var(--tu); margin-top: 4px; }
+/* ─── DETAIL EXPAND ─── */
+.det-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.det-box { background: #fff; border: 1px solid #eceef2; border-radius: 8px; padding: .55rem .7rem; font-size: 11.5px; line-height: 1.5; color: #000; }
+.det-box.span2 { grid-column: 1 / -1; }
+.det-t { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
+.det-note { margin-top: 5px; color: #6b7280; font-size: 10.5px; }
+.vt-row { display: flex; flex-wrap: wrap; gap: .4rem .8rem; }
+.vt-row span { background: #f1f3f6; padding: 1px 7px; border-radius: 5px; font-size: 10.5px; }
+.soap-mini { margin-bottom: 2px; } .soap-mini b { color: #1763d4; margin-right: 5px; }
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 1rem; }
+.kv { display: flex; gap: 6px; font-size: 11px; }
+.kv-k { color: #6b7280; text-transform: capitalize; min-width: 90px; }
+.kv-v { font-weight: 600; }
+.sub-table { width: 100%; border-collapse: collapse; font-size: 11.5px; background: #fff; border-radius: 8px; overflow: hidden; color: #000; }
+.sub-table th { text-align: left; font-size: 10px; font-weight: 700; color: #6b7280; padding: 6px 9px; background: #f1f3f6; }
+.sub-table td { padding: 6px 9px; border-bottom: 1px solid #f1f3f6; }
 
-/* ─── CARD BODY ─── */
-.vc-body { padding: .8rem .9rem; border-top: 1px solid var(--gb); background: var(--bs); display: flex; flex-direction: column; gap: .65rem; }
-.vc-row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
-.vc-section { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; padding: .6rem .75rem; }
-.vcs-title { font-size: 9.5px; font-weight: 700; color: var(--tm); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .4rem; }
-.keluhan-text { font-size: 12px; color: var(--td); line-height: 1.5; }
-.vitals-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .3rem; }
-.vg-item { display: flex; flex-direction: column; gap: 1px; }
-.vg-l { font-size: 8.5px; color: var(--tu); text-transform: uppercase; letter-spacing: .04em; }
-.vg-v { font-size: 12px; font-weight: 600; color: var(--td); }
-.vg-v.hi   { color: var(--et); }
-.vg-v.warn { color: var(--wt); }
-.soap-grid { display: flex; flex-direction: column; gap: .4rem; }
-.soap-row { display: flex; gap: .6rem; font-size: 12px; }
-.soap-lbl { width: 16px; height: 16px; border-radius: 4px; background: var(--gd); color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
-.soap-val { color: var(--td); line-height: 1.5; flex: 1; }
-.dx-row { display: flex; align-items: center; gap: .4rem; padding: 3px 0; }
-.dx-type { font-size: 8px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
-.dx-type.pr { background: var(--gd); color: #fff; }
-.dx-type.sk { background: var(--gb); color: var(--tm); }
-.dx-kode { font-size: 10.5px; font-weight: 700; color: var(--ga); font-family: monospace; }
-.dx-nama { font-size: 11.5px; color: var(--td); }
-.resep-list { display: flex; flex-direction: column; gap: 4px; }
-.resep-row { padding: 4px 0; border-bottom: 1px dashed var(--gb); }
-.resep-row:last-child { border-bottom: none; }
-.resep-name { font-size: 12px; font-weight: 500; color: var(--td); }
-.resep-detail { font-size: 10px; color: var(--tu); }
-.empty-mini { font-size: 11px; color: var(--th); font-style: italic; }
-.pj-result-row { display: flex; align-items: flex-start; gap: .5rem; padding: 4px 0; }
-.pj-type-badge { font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; background: var(--ib); color: var(--it); flex-shrink: 0; }
-.pj-hasil { font-size: 11.5px; color: var(--td); line-height: 1.5; }
-.addendum-row { display: flex; gap: .5rem; padding: 4px 0; border-bottom: 1px dashed var(--gb); font-size: 11px; }
-.addendum-row:last-child { border-bottom: none; }
-.add-tgl  { color: var(--tu); flex-shrink: 0; }
-.add-oleh { color: var(--it); font-weight: 500; flex-shrink: 0; }
-.add-isi  { color: var(--td); flex: 1; }
-.addendum-input-row { background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: .65rem; }
-.add-textarea { width: 100%; background: var(--bc); border: 1.5px solid var(--wbd); border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 12px; color: var(--td); outline: none; resize: vertical; min-height: 52px; padding: 7px 10px; box-sizing: border-box; line-height: 1.5; }
-.add-textarea:focus { border-color: var(--wt); }
-.btn-add-save { padding: 5px 14px; background: var(--wt); color: #fff; border: none; border-radius: 7px; font-size: 11.5px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; }
-.btn-add-save:disabled { opacity: .6; cursor: not-allowed; }
-.btn-add-cancel { padding: 5px 12px; background: transparent; color: var(--tu); border: 1.5px solid var(--gb); border-radius: 7px; font-size: 11.5px; font-family: 'DM Sans', sans-serif; cursor: pointer; }
-.vc-actions { display: flex; align-items: center; justify-content: space-between; padding-top: .5rem; border-top: 1px solid var(--gb); }
-.vc-meta { display: flex; align-items: center; gap: .75rem; }
-.sep-info { font-size: 10px; color: var(--pt); font-family: monospace; }
-.finalized-info { display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--st); font-weight: 500; }
-.finalized-info svg { width: 12px; height: 12px; fill: none; stroke: var(--st); stroke-width: 2.5; stroke-linecap: round; }
-.btn-addendum { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; border: 1.5px solid var(--wbd); background: var(--wb); color: var(--wt); border-radius: 7px; font-size: 11px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all .15s; }
-.btn-addendum:hover { background: var(--wt); color: #fff; }
-.btn-addendum svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* ─── RINGKASAN ─── */
+.rk-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .75rem; }
+.rk-card { background: #f8fafc; border: 1px solid #eceef2; border-radius: 10px; padding: .85rem 1rem; color: #000; }
+.rk-card.span2 { grid-column: 1 / -1; }
+.rk-card.alert { background: #fff7ed; border-color: #fed7aa; }
+.rk-card-t { font-size: 11px; font-weight: 700; color: #374151; margin-bottom: .6rem; display: flex; justify-content: space-between; align-items: center; }
+.rk-date { font-size: 10px; font-weight: 600; color: #6b7280; }
+.rk-alert-body { font-size: 12px; line-height: 1.7; }
+.mini-eye { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mini-eye th { font-size: 10px; color: #6b7280; padding: 3px 6px; text-align: center; }
+.mini-eye td { padding: 5px 6px; text-align: center; font-weight: 600; }
+.mini-eye td:first-child { text-align: left; color: #6b7280; font-weight: 500; }
+.unit { font-size: 9px; color: #9ca3af; font-weight: 400; }
+.tr { display: inline-block; width: 0; height: 0; margin-left: 2px; }
+.tr.up { border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 6px solid #15803d; }
+.tr.down { border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid #dc2626; }
+.tr.flat { width: 7px; height: 0; border-top: 2px solid #9ca3af; }
+.rk-last-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed #eceef2; }
+.rk-last-row span { color: #6b7280; }
+.pl-list { display: flex; flex-direction: column; gap: 4px; }
+.pl-item { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 5px 8px; background: #fff; border-radius: 6px; border: 1px solid #eceef2; }
+.pl-kode { font-family: monospace; font-weight: 700; color: #1763d4; min-width: 60px; }
+.pl-nama { flex: 1; }
+.pl-meta { font-size: 10px; color: #9ca3af; }
 
-/* ─── DOKUMEN TAB ─── */
-.dok-panel { background: var(--bc); border: 1px solid var(--gb); border-top: none; border-radius: 0 0 12px 12px; }
-.dok-header { padding: .85rem 1.1rem; border-bottom: 1px solid var(--gb); }
-.dok-title { font-size: 13px; font-weight: 600; color: var(--td); }
-.dok-subtitle { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
-.dok-list { display: flex; flex-direction: column; }
-.dok-row { display: flex; align-items: center; gap: .85rem; padding: .75rem 1.1rem; border-bottom: 1px solid var(--gb); transition: background .12s; }
-.dok-row:last-child { border-bottom: none; }
-.dok-row:hover { background: var(--bs); }
-.dok-icon-wrap { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.dok-icon-wrap.final   { background: var(--sb); }
-.dok-icon-wrap.final svg { stroke: var(--st); }
-.dok-icon-wrap.waiting { background: var(--wb); }
-.dok-icon-wrap.waiting svg { stroke: var(--wt); }
-.dok-icon-wrap.rejected { background: var(--eb); }
-.dok-icon-wrap.rejected svg { stroke: var(--et); }
-.dok-icon-wrap.draft, .dok-icon-wrap.void { background: var(--bs); }
-.dok-icon-wrap.draft svg, .dok-icon-wrap.void svg { stroke: var(--tu); }
-.dok-icon-wrap svg { width: 18px; height: 18px; }
-.dok-info { flex: 1; min-width: 0; }
-.dok-kode { font-size: 10px; font-weight: 700; color: var(--it); font-family: monospace; letter-spacing: .02em; }
-.dok-nama { font-size: 13px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dok-meta { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
-.dok-status { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px; flex-shrink: 0; }
-.dok-status svg { width: 11px; height: 11px; }
-.dok-status.final    { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
-.dok-status.waiting  { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
-.dok-status.rejected { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
-.dok-status.draft, .dok-status.void { background: var(--bs); color: var(--tu); border: 1px solid var(--gb); }
-.dok-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.dok-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 7px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; transition: all .12s; }
-.dok-btn svg { width: 12px; height: 12px; }
-.dok-btn.view:hover  { border-color: var(--it); color: var(--it); background: var(--ib); }
-.dok-btn.print:hover { border-color: var(--wt); color: var(--wt); background: var(--wb); }
+/* ─── STATES ─── */
+.empty-mini { text-align: center; padding: 2.5rem 1rem; font-size: 12.5px; color: #9ca3af; }
+.error-state { display: flex; align-items: center; gap: .65rem; padding: 1rem 1.25rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px; font-size: 12.5px; color: #b91c1c; }
+.error-state svg { width: 16px; height: 16px; flex-shrink: 0; } .error-state span { flex: 1; }
+.retry-btn { padding: 5px 13px; border: 1.5px solid #b91c1c; border-radius: 7px; background: #fff; color: #b91c1c; font-size: 11px; font-weight: 700; cursor: pointer; }
+.retry-btn:hover { background: #b91c1c; color: #fff; }
+.sk-line { background: #eceef2; border-radius: 6px; animation: shimmer 1.4s ease infinite; }
+.sk-line.w40 { width: 40%; } .sk-line.w50 { width: 50%; } .sk-line.w70 { width: 70%; } .sk-line.w90 { width: 90%; }
+.mb4 { margin-bottom: 4px; } .mb6 { margin-bottom: 6px; }
+@keyframes shimmer { 0%,100%{opacity:.5} 50%{opacity:1} }
 
-/* ─── DOCUMENT MODAL ─── */
-.doc-ov { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 200; }
-.doc-mbx { background: var(--bc); border-radius: 16px; width: 520px; max-width: 95vw; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
-.doc-mh { padding: .85rem 1.1rem; border-bottom: 1px solid var(--gb); display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; flex-shrink: 0; }
-.doc-mht { font-size: 14px; font-weight: 700; color: var(--td); }
-.doc-msub { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
-.doc-mbtn { display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; height: 30px; border-radius: 8px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: 'DM Sans',sans-serif; border: 1.5px solid; transition: all .15s; }
-.doc-mbtn svg { width: 12px; height: 12px; }
-.doc-mbtn.print { border-color: var(--gb); color: var(--tu); background: var(--bs); }
-.doc-mbtn.print:hover { border-color: var(--wt); color: var(--wt); }
-.doc-mcl { width: 30px; height: 30px; border-radius: 7px; border: 1.5px solid var(--gb); background: var(--bs); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--tu); }
-.doc-mcl:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
-.doc-mcl svg { width: 13px; height: 13px; }
-.doc-mb { flex: 1; overflow-y: auto; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .65rem; }
-.doc-patient-bar { font-size: 11.5px; color: var(--tu); background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; padding: 7px 12px; }
-.doc-status-block { display: flex; align-items: flex-start; gap: .65rem; padding: .85rem 1rem; border-radius: 10px; border: 1px solid; }
-.doc-status-block svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
-.doc-status-block.final    { background: var(--sb); border-color: var(--sbd); color: var(--st); }
-.doc-status-block.final svg { stroke: var(--st); }
-.doc-status-block.waiting  { background: var(--wb); border-color: var(--wbd); color: var(--wt); }
-.doc-status-block.waiting svg { stroke: var(--wt); }
-.doc-status-block.rejected { background: var(--eb); border-color: var(--ebd); color: var(--et); }
-.doc-status-block.rejected svg { stroke: var(--et); }
-.doc-status-block.draft, .doc-status-block.void { background: var(--bs); border-color: var(--gb); color: var(--tu); }
-.doc-status-block.draft svg, .doc-status-block.void svg { stroke: var(--tu); }
-.dsb-title { font-size: 12.5px; font-weight: 700; }
-.dsb-desc { font-size: 11.5px; margin-top: 2px; line-height: 1.5; }
+/* ─── DOC ACTIONS ─── */
+.doc-acts { white-space: nowrap; }
+.dbtn { padding: 4px 11px; border: 1.5px solid #1763d4; border-radius: 6px; background: #1763d4; color: #fff !important; font-size: 10.5px; font-weight: 700; cursor: pointer; margin-left: 4px; }
+.dbtn:hover { background: #1257bd; }
+.dbtn.ghost { background: #fff; color: #1763d4 !important; }
+.dbtn.ghost:hover { background: #eef4ff; }
+
+/* ─── MODAL / OVERLAY ─── */
+.ov { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
+.mbx { background: #fff; border-radius: 14px; width: 100%; max-width: 480px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; }
+.drawer { background: #fff; border-radius: 14px; width: 100%; max-width: 420px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; margin-left: auto; }
+.mh { display: flex; justify-content: space-between; align-items: flex-start; padding: 1rem 1.2rem; border-bottom: 1px solid #eceef2; }
+.mht { font-size: 14px; font-weight: 700; color: #000; }
+.msub { font-size: 11px; color: #6b7280; margin-top: 2px; }
+.mcl { width: 30px; height: 30px; border: none; background: #f1f3f6; border-radius: 8px; cursor: pointer; font-size: 14px; color: #4b5563; }
+.mcl:hover { background: #e5e7eb; }
+.mb { padding: 1.2rem; overflow-y: auto; color: #000; }
+.mbtn { padding: 8px 16px; border: 1.5px solid #1763d4; border-radius: 8px; background: #1763d4; color: #fff !important; font-size: 12px; font-weight: 700; cursor: pointer; }
+.mbtn:hover { background: #1257bd; }
+.mbtn.ghost { background: #fff; color: #1763d4 !important; }
+.mbtn.primary:disabled { opacity: .6; cursor: default; }
+.mh-acts { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+.doc-patient-bar { font-size: 12px; padding: .6rem .8rem; background: #f8fafc; border-radius: 8px; margin-bottom: .8rem; }
+.doc-status-block { padding: .8rem 1rem; border-radius: 10px; }
+.doc-status-block.final { background: #dcfce7; } .doc-status-block.waiting { background: #fef3c7; }
+.doc-status-block.draft { background: #f1f3f6; } .doc-status-block.rejected, .doc-status-block.void { background: #fee2e2; }
+.dsb-title { font-size: 13px; font-weight: 700; }
+.dsb-desc { font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+.add-hint { font-size: 11.5px; color: #92400e; line-height: 1.6; margin-bottom: 1rem; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: .6rem .8rem; }
+.fld-l { display: block; font-size: 11px; font-weight: 700; color: #374151; margin-bottom: 4px; margin-top: .7rem; }
+.fld-i, .fld-t { width: 100%; border: 1.5px solid #e2e5ea; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: #000; outline: none; font-family: inherit; box-sizing: border-box; }
+.fld-i:focus, .fld-t:focus { border-color: #1763d4; }
+
+/* ─── AUDIT ─── */
+.audit-tl { display: flex; flex-direction: column; gap: 0; }
+.audit-item { display: flex; gap: 10px; }
+.audit-dot { width: 9px; height: 9px; border-radius: 50%; background: #1763d4; margin-top: 4px; flex-shrink: 0; position: relative; }
+.audit-item:not(:last-child) .audit-dot::after { content: ''; position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: 2px; height: calc(100% + 12px); background: #e2e5ea; }
+.audit-body { padding-bottom: 1rem; }
+.audit-act { font-size: 12px; font-weight: 600; color: #000; }
+.audit-meta { font-size: 10.5px; color: #6b7280; margin-top: 1px; }
+
+/* ─── TOAST ─── */
+.toast-wrap { position: fixed; bottom: 1.2rem; right: 1.2rem; display: flex; flex-direction: column; gap: .5rem; z-index: 2000; }
+.toast { padding: 10px 16px; border-radius: 9px; font-size: 12.5px; font-weight: 600; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,.15); animation: slideup .25s ease; }
+.toast-s { background: #15803d; } .toast-w { background: #dc2626; } .toast-i { background: #1763d4; }
+@keyframes slideup { from { transform: translateY(10px); opacity: 0; } }
 
 /* ─── PRINT RESUME ─── */
 .resume-print { display: none; }
 @media print {
-  .rme-searchbar, .ptb .print-btn, .visit-tabs, .timeline-area, .empty, .dok-panel { display: none !important; }
-  .resume-print { display: block !important; font-family: 'DM Sans', sans-serif; font-size: 12px; line-height: 1.5; }
-  .rp-header { text-align: center; border-bottom: 2px solid #000; padding-bottom: .5rem; margin-bottom: .75rem; }
-  .rp-table { width: 100%; border-collapse: collapse; margin-bottom: .75rem; }
-  .rp-table td { border: 1px solid #ccc; padding: 4px 8px; }
-  .rp-visit { margin-bottom: .75rem; padding-bottom: .5rem; border-bottom: 1px dashed #ccc; }
-  .rp-footer { margin-top: 1rem; font-size: 10px; color: #666; text-align: right; }
+  /* reset base.css agar tidak blank (lihat memori print A4) */
+  :global(html), :global(body) { min-width: 0 !important; width: auto !important; height: auto !important; min-height: 0 !important; background: #fff !important; }
+  :global(#app) { display: none !important; }
+  .resume-print { display: block !important; position: absolute; top: 0; left: 0; width: 100%; padding: 1.5cm; color: #000; font-size: 12px; }
+  @page { size: A4; margin: 0; }
+  .rp-header { text-align: center; font-size: 11px; line-height: 1.5; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px; }
+  .resume-print h2 { text-align: center; font-size: 15px; margin: 12px 0; }
+  .resume-print h3 { font-size: 13px; margin: 14px 0 6px; }
+  .rp-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  .rp-table td { border: 1px solid #000; padding: 4px 8px; font-size: 11px; }
+  .rp-table td:nth-child(odd) { background: #f0f0f0; font-weight: 700; width: 14%; }
+  .rp-grid { width: 100%; border-collapse: collapse; }
+  .rp-grid th, .rp-grid td { border: 1px solid #000; padding: 4px 8px; font-size: 11px; text-align: left; }
+  .rp-grid th { background: #f0f0f0; }
+  .rp-footer { margin-top: 20px; font-size: 10px; text-align: right; color: #555; }
 }
-
-/* ─── TOAST ─── */
-.toast-wrap { position: fixed; top: .65rem; right: .65rem; z-index: 999; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
-.toast { padding: 7px 12px; border-radius: 9px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 3px 12px rgba(0,0,0,.08); min-width: 200px; pointer-events: all; animation: slideIn .28s ease; }
-.toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
-.toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
-.toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
-@keyframes slideIn { from { opacity:0; transform:translateX(12px); } to { opacity:1; transform:translateX(0); } }
 </style>

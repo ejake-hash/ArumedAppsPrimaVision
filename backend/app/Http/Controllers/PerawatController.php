@@ -69,6 +69,21 @@ class PerawatController extends Controller
         return $this->ok($queue, 'Pasien dilewati — dipindah ke akhir antrean');
     }
 
+    /**
+     * POST /perawat/antrian/{queueId}/kirim-ke-bedah
+     * PREOP_BEDAH: setelah TR+REF finalize, kirim pasien ke antrian BEDAH (skip DOKTER).
+     */
+    public function kirimKeBedah(string $id): JsonResponse
+    {
+        try {
+            $result = $this->service->kirimKeBedah($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Pasien dikirim ke antrian Bedah');
+    }
+
     // =========================================================================
     // ASESMEN
     // =========================================================================

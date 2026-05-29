@@ -20,23 +20,30 @@ class BillingInvoice extends Model
         'invoice_number',
         'subtotal',
         'discount',
+        'discount_percent',
         'tax',
         'total',
         'status',
         'payment_method',
         'paid_amount',
         'paid_at',
+        'covered_amount',
+        'covered_by',
+        'covered_at',
         'cashier_id',
         'notes',
     ];
 
     protected $casts = [
-        'subtotal'    => 'decimal:2',
-        'discount'    => 'decimal:2',
-        'tax'         => 'decimal:2',
-        'total'       => 'decimal:2',
-        'paid_amount' => 'decimal:2',
-        'paid_at'     => 'datetime',
+        'subtotal'         => 'decimal:2',
+        'discount'         => 'decimal:2',
+        'discount_percent' => 'decimal:2',
+        'tax'              => 'decimal:2',
+        'total'            => 'decimal:2',
+        'paid_amount'      => 'decimal:2',
+        'covered_amount'   => 'decimal:2',
+        'paid_at'          => 'datetime',
+        'covered_at'       => 'datetime',
     ];
 
     public function visit(): BelongsTo

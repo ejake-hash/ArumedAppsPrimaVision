@@ -42,6 +42,17 @@ class KasirController extends Controller
         return $this->ok($queue, 'Antrian selesai');
     }
 
+    public function lewatiAntrian(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->lewatiAntrian($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien dipindah ke akhir antrean');
+    }
+
     // =========================================================================
     // INVOICE
     // =========================================================================
@@ -61,6 +72,16 @@ class KasirController extends Controller
     public function showInvoice(string $visitId): JsonResponse
     {
         return $this->ok($this->service->getInvoiceByVisit($visitId));
+    }
+
+    /**
+     * GET /kasir/insurance-warning/{visitId}
+     * Flag warning untuk UI kasir kalau visit pakai ASURANSI/PERUSAHAAN dan
+     * status verifikasi-nya PENDING/ISSUE. Bukan blocker keras.
+     */
+    public function insuranceWarning(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getInsuranceWarning($visitId));
     }
 
     /**
@@ -85,9 +106,10 @@ class KasirController extends Controller
     public function updateInvoice(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'discount' => 'nullable|numeric|min:0',
-            'tax'      => 'nullable|numeric|min:0',
-            'notes'    => 'nullable|string|max:500',
+            'discount'         => 'nullable|numeric|min:0',
+            'discount_percent' => 'nullable|numeric|min:0|max:100',
+            'tax'              => 'nullable|numeric|min:0',
+            'notes'            => 'nullable|string|max:500',
         ]);
 
         try {
@@ -136,6 +158,26 @@ class KasirController extends Controller
         return $this->ok($invoice, $message);
     }
 
+    /**
+     * POST /kasir/invoice/{id}/confirm-coverage
+     * Konfirmasi tagihan ditanggung penuh asuransi — pasien tidak membayar.
+     * Body: { notes? }
+     */
+    public function confirmCoverage(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'notes' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $invoice = $this->service->confirmInsuranceCoverage($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($invoice, 'Tagihan dikonfirmasi ditanggung asuransi. Kunjungan selesai.');
+    }
+
     /** POST /kasir/invoice/{id}/cancel */
     public function cancelInvoice(string $id): JsonResponse
     {
@@ -159,12 +201,15 @@ class KasirController extends Controller
     public function storeItemInvoice(Request $request, string $invoiceId): JsonResponse
     {
         $validated = $request->validate([
-            'item_type'    => 'required|in:REGISTRASI,TINDAKAN,OBAT,IOL,BHP,LAINNYA',
-            'reference_id' => 'nullable|uuid',
-            'description'  => 'required|string|max:255',
-            'quantity'     => 'nullable|integer|min:1',
-            'unit_price'   => 'required|numeric|min:0',
-            'notes'        => 'nullable|string|max:255',
+            'item_type'        => 'required|in:REGISTRASI,TINDAKAN,OBAT,PENUNJANG,BHP,IOL,MEDICAL_EQUIPMENT,LAINNYA',
+            'category'         => 'nullable|string|max:100',
+            'reference_id'     => 'nullable|uuid',
+            'description'      => 'required|string|max:255',
+            'quantity'         => 'nullable|integer|min:1',
+            'unit_price'       => 'required|numeric|min:0',
+            'discount_amount'  => 'nullable|numeric|min:0',
+            'discount_percent' => 'nullable|numeric|min:0|max:100',
+            'notes'            => 'nullable|string|max:255',
         ]);
 
         try {
@@ -180,10 +225,13 @@ class KasirController extends Controller
     public function updateItemInvoice(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'description' => 'sometimes|string|max:255',
-            'quantity'    => 'sometimes|integer|min:1',
-            'unit_price'  => 'sometimes|numeric|min:0',
-            'notes'       => 'nullable|string|max:255',
+            'description'      => 'sometimes|string|max:255',
+            'category'         => 'sometimes|nullable|string|max:100',
+            'quantity'         => 'sometimes|integer|min:1',
+            'unit_price'       => 'sometimes|numeric|min:0',
+            'discount_amount'  => 'sometimes|nullable|numeric|min:0',
+            'discount_percent' => 'sometimes|nullable|numeric|min:0|max:100',
+            'notes'            => 'nullable|string|max:255',
         ]);
 
         try {

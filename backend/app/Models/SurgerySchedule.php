@@ -51,8 +51,22 @@ class SurgerySchedule extends Model
         return $this->hasOne(SurgeryRecord::class);
     }
 
+    /**
+     * Kunjungan yang terhubung ke jadwal ini (lewat visits.surgery_schedule_id).
+     * Sumber data pasien/diagnosa untuk Bedah · Pasien Terjadwal.
+     */
+    public function visit(): HasOne
+    {
+        return $this->hasOne(Visit::class);
+    }
+
     public function surgeryRequests(): HasMany
     {
         return $this->hasMany(SurgeryRequest::class);
+    }
+
+    public function auditLogs(): HasMany
+    {
+        return $this->hasMany(SurgeryScheduleAuditLog::class)->orderByDesc('changed_at');
     }
 }

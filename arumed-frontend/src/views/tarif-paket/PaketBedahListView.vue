@@ -22,6 +22,10 @@ const toast = ref(null)
 const searchValue = ref('')
 const filterActive = ref('')
 
+const csvBusy = ref({ template: false, export: false, import: false })
+const importResult = ref(null) // { created, updated, items_inserted, items_lookup_fail, errors }
+const importFileInput = ref(null)
+
 function showToast(t, msg) {
   toast.value = { type: t, msg }
   setTimeout(() => { if (toast.value?.msg === msg) toast.value = null }, 3500)
@@ -136,6 +140,54 @@ const fields = [
 
 function goDetail(row) { router.push(`/tarif-paket/paket-bedah/${row.id}`) }
 
+// ─── CSV Template / Export / Import ──────────────────────────────────────
+async function onDownloadTemplate() {
+  csvBusy.value.template = true
+  try {
+    await store.downloadPaketTemplate()
+    showToast('s', 'Template CSV diunduh')
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal mengunduh template')
+  } finally {
+    csvBusy.value.template = false
+  }
+}
+
+async function onExportCsv() {
+  csvBusy.value.export = true
+  try {
+    await store.exportPaketCsv()
+    showToast('s', 'CSV paket bedah diunduh')
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal export CSV')
+  } finally {
+    csvBusy.value.export = false
+  }
+}
+
+function pickImportFile() {
+  importFileInput.value?.click()
+}
+
+async function onImportFileChange(evt) {
+  const file = evt.target.files?.[0]
+  evt.target.value = '' // reset supaya event re-fire kalau file sama dipilih
+  if (!file) return
+  csvBusy.value.import = true
+  importResult.value = null
+  try {
+    const result = await store.importPaketCsv(file)
+    importResult.value = result
+    const msg = `Import: ${result.created} baru, ${result.updated} update, ${result.items_inserted} item`
+      + (result.items_lookup_fail > 0 ? `, ${result.items_lookup_fail} item gagal lookup` : '')
+    showToast(result.items_lookup_fail > 0 || result.errors?.length ? 'w' : 's', msg)
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal import CSV')
+  } finally {
+    csvBusy.value.import = false
+  }
+}
+
 onMounted(refresh)
 </script>
 
@@ -146,10 +198,25 @@ onMounted(refresh)
         <h2>Daftar Paket Bedah</h2>
         <p>Setiap paket berisi komposisi (tindakan + obat + BHP + IOL) + harga jual per penjamin (sistem auto-diskon).</p>
       </div>
-      <button class="pl-btn-primary" @click="openCreate">
-        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Tambah Paket
-      </button>
+      <div class="pl-head-actions">
+        <button class="pl-btn-ghost" :disabled="csvBusy.template" @click="onDownloadTemplate" title="Unduh template CSV kosong (header + contoh)">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Template
+        </button>
+        <button class="pl-btn-ghost" :disabled="csvBusy.export" @click="onExportCsv" title="Export semua paket + komposisi ke CSV">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {{ csvBusy.export ? 'Export…' : 'Export CSV' }}
+        </button>
+        <button class="pl-btn-ghost" :disabled="csvBusy.import" @click="pickImportFile" title="Import paket dari CSV (replace komposisi pada paket existing)">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          {{ csvBusy.import ? 'Import…' : 'Import CSV' }}
+        </button>
+        <input ref="importFileInput" type="file" accept=".csv,text/csv" hidden @change="onImportFileChange" />
+        <button class="pl-btn-primary" @click="openCreate">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Tambah Paket
+        </button>
+      </div>
     </div>
 
     <div class="pl-filters">
@@ -242,6 +309,38 @@ onMounted(refresh)
     </Teleport>
 
     <Teleport to="body">
+      <div v-if="importResult" class="pl-confirm-overlay" @click.self="importResult = null">
+        <div class="pl-import-result">
+          <div class="pl-import-head">
+            <h3>Hasil Import CSV</h3>
+            <button class="pl-icon-btn" @click="importResult = null" title="Tutup">
+              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="pl-import-stats">
+            <div class="pl-stat-card"><span class="pl-stat-num">{{ importResult.created }}</span><span class="pl-stat-lbl">Paket baru</span></div>
+            <div class="pl-stat-card"><span class="pl-stat-num">{{ importResult.updated }}</span><span class="pl-stat-lbl">Paket update</span></div>
+            <div class="pl-stat-card"><span class="pl-stat-num">{{ importResult.items_inserted }}</span><span class="pl-stat-lbl">Item dimasukkan</span></div>
+            <div class="pl-stat-card" :class="{ warn: importResult.items_lookup_fail > 0 }">
+              <span class="pl-stat-num">{{ importResult.items_lookup_fail }}</span>
+              <span class="pl-stat-lbl">Item gagal lookup</span>
+            </div>
+          </div>
+          <div v-if="importResult.errors?.length" class="pl-import-errors">
+            <div class="pl-import-errors-head">⚠ {{ importResult.errors.length }} baris bermasalah</div>
+            <ul>
+              <li v-for="(err, i) in importResult.errors.slice(0, 50)" :key="i">{{ err }}</li>
+              <li v-if="importResult.errors.length > 50" class="pl-more">… dan {{ importResult.errors.length - 50 }} error lainnya</li>
+            </ul>
+          </div>
+          <div class="pl-confirm-actions">
+            <button class="pl-btn-primary" @click="importResult = null">Tutup</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
       <div v-if="toast" class="pl-toast-wrap">
         <div class="pl-toast" :class="`pl-toast-${toast.type}`">{{ toast.msg }}</div>
       </div>
@@ -255,9 +354,17 @@ onMounted(refresh)
 .pl-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
 .pl-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
+.pl-head-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
 .pl-btn-primary { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 9px; border: 1px solid var(--ga); background: var(--ga); color: white; font-size: 13px; font-weight: 500; cursor: pointer; }
-.pl-btn-primary:hover { background: var(--gm); border-color: var(--gm); }
+.pl-btn-primary:hover:not(:disabled) { background: var(--gm); border-color: var(--gm); }
+.pl-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .pl-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+
+.pl-btn-ghost { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.pl-btn-ghost:hover:not(:disabled) { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pl-btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.pl-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .pl-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.55rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
 .pl-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }
@@ -299,5 +406,21 @@ onMounted(refresh)
 .pl-toast { padding: 9px 14px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 14px rgba(0,0,0,0.1); min-width: 240px; animation: pl-toast-in 0.2s ease; }
 .pl-toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .pl-toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.pl-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+
+.pl-import-result { background: var(--bc); border-radius: 16px; width: 640px; max-width: 95vw; max-height: 85vh; border: 1px solid var(--gb); padding: 1.4rem 1.4rem 1.2rem; display: flex; flex-direction: column; gap: 0.9rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); overflow: hidden; }
+.pl-import-head { display: flex; align-items: center; justify-content: space-between; }
+.pl-import-head h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.pl-import-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+.pl-stat-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0.7rem 0.6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; text-align: center; }
+.pl-stat-card.warn { background: var(--wb); border-color: var(--wbd); }
+.pl-stat-num { font-size: 22px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+.pl-stat-card.warn .pl-stat-num { color: var(--wt); }
+.pl-stat-lbl { font-size: 10.5px; font-weight: 600; color: var(--tu); text-transform: uppercase; letter-spacing: 0.04em; }
+.pl-import-errors { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 0.7rem 0.9rem; overflow-y: auto; max-height: 35vh; }
+.pl-import-errors-head { font-size: 12px; font-weight: 600; color: var(--et); margin-bottom: 6px; }
+.pl-import-errors ul { margin: 0; padding-left: 1.2rem; }
+.pl-import-errors li { font-size: 12px; color: var(--tm); line-height: 1.5; }
+.pl-import-errors .pl-more { color: var(--tu); font-style: italic; list-style: none; margin-left: -1rem; }
 @keyframes pl-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 </style>

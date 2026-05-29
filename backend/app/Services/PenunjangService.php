@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\DiagnosticOrder;
+use App\Models\DiagnosticTestType;
 use App\Models\DiagnosticResult;
 use App\Models\IolRecommendation;
 use App\Models\Notification;
@@ -41,13 +42,34 @@ class PenunjangService
         return $this->queueService->panggil($queue->id);
     }
 
+    /** Geser antrean Penunjang ke akhir (delegasi ke QueueService::lewati). */
+    public function lewatiAntrian(string $queueId): Queue
+    {
+        Queue::byStation(Queue::STATION_PENUNJANG)->findOrFail($queueId);
+        return $this->queueService->lewati($queueId);
+    }
+
     /**
      * Selesai antrian Penunjang → kembali ke DOKTER untuk pembacaan hasil
      * (Section 11.3 catatan opsional Penunjang).
+     *
+     * Tutup semua order REQUESTED/IN_PROGRESS milik visit (operator menyatakan
+     * pemeriksaan sudah cukup), lalu naikkan baris DOKTER ke atas dengan status
+     * SELESAI_PENUNJANG. advanceFromStation menjadi no-op untuk baris DOKTER
+     * (lihat nextAfterPenunjang) karena requeueToDokter sudah menghidupkannya.
      */
     public function selesaiAntrian(string $queueId): array
     {
-        $queue = Queue::byStation(Queue::STATION_PENUNJANG)->findOrFail($queueId);
+        $queue = Queue::byStation(Queue::STATION_PENUNJANG)->with('visit')->findOrFail($queueId);
+
+        DB::transaction(function () use ($queue) {
+            DiagnosticOrder::where('visit_id', $queue->visit_id)
+                ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
+                ->update(['status' => 'COMPLETED']);
+
+            $this->requeueToDokter($queue->visit_id);
+        });
+
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_PENUNJANG);
     }
 
@@ -257,8 +279,8 @@ class PenunjangService
             }
         });
 
-        // Auto-generate IOL recommendation for Biometri
-        if ($order->test_type === 'Biometri') {
+        // Auto-generate IOL recommendation for Biometri (test_type = kode master BIOM)
+        if ($order->test_type === DiagnosticTestType::BIOMETRI_CODE) {
             $this->generateIolRecommendation($result->id);
         }
 
@@ -293,7 +315,7 @@ class PenunjangService
     {
         $result = DiagnosticResult::with('order')->findOrFail($biometriResultId);
 
-        if ($result->order->test_type !== 'Biometri') {
+        if ($result->order->test_type !== DiagnosticTestType::BIOMETRI_CODE) {
             throw new \Exception('IOL recommendation hanya bisa di-generate dari hasil Biometri.', 422);
         }
 

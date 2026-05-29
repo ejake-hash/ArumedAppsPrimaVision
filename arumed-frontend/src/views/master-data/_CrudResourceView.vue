@@ -178,7 +178,7 @@ onMounted(refresh)
         <h2>{{ config.title }}</h2>
         <p>{{ config.description }}</p>
       </div>
-      <button class="crv-btn-primary" @click="openCreate">
+      <button v-if="!config.readOnly" class="crv-btn-primary" @click="openCreate">
         <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Tambah {{ config.title }}
       </button>
@@ -186,6 +186,7 @@ onMounted(refresh)
 
     <!-- CSV bar -->
     <CsvActionBar
+      v-if="!config.readOnly"
       :resource-key="config.resourceKey"
       :show-template="config.csvShowTemplate ?? true"
       @imported="onImported"
@@ -207,6 +208,7 @@ onMounted(refresh)
       :search-value="searchValue"
       :search-placeholder="config.searchPlaceholder ?? 'Cari…'"
       :show-search="!!config.extraSearchParam"
+      :hide-actions="!!config.readOnly"
       :empty-text="`Belum ada data ${config.title}. Klik tombol di atas atau import CSV.`"
       @update:search="onSearchUpdate"
       @page-change="onPageChange"

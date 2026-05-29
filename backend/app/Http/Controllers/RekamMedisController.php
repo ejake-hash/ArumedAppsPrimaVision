@@ -2,13 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\FormRegistry\FormRegistryService;
+use App\Services\FormRegistry\SignatureService;
 use App\Services\RekamMedisService;
+use App\Services\RmeAggregatorService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class RekamMedisController extends Controller
 {
-    public function __construct(private readonly RekamMedisService $service) {}
+    public function __construct(
+        private readonly RekamMedisService $service,
+        private readonly FormRegistryService $formRegistry,
+        private readonly SignatureService $signatures,
+        private readonly RmeAggregatorService $rme,
+    ) {}
 
     // =========================================================================
     // PASIEN
@@ -39,11 +47,56 @@ class RekamMedisController extends Controller
 
     /**
      * GET /rekam-medis/pasien/{patientId}/kunjungan
-     * Paginated visit list.
+     * Riwayat kunjungan diperkaya untuk tabel RME (1 baris = 1 kunjungan).
      */
     public function indexKunjungan(string $patientId): JsonResponse
     {
-        return $this->ok($this->service->indexKunjungan($patientId));
+        return $this->ok($this->rme->kunjungan($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/ringkasan */
+    public function ringkasanPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->ringkasan($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/refraksi */
+    public function refraksiPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->refraksi($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/penunjang */
+    public function penunjangPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->penunjang($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/obat */
+    public function obatPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->obat($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/bedah */
+    public function bedahPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->bedah($patientId));
+    }
+
+    /** GET /rekam-medis/pasien/{patientId}/diagnosis */
+    public function diagnosisPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->diagnosis($patientId));
+    }
+
+    /**
+     * GET /rekam-medis/pasien/{patientId}/dokumen
+     * Daftar dokumen RM pasien (tab Dokumen).
+     */
+    public function dokumenPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->service->indexDokumen(['patient_id' => $patientId, 'per_page' => 100]));
     }
 
     // =========================================================================
@@ -277,6 +330,242 @@ class RekamMedisController extends Controller
         }
 
         return $this->ok($notif, 'Notifikasi ditandai dibaca');
+    }
+
+    // =========================================================================
+    // FORM REGISTRY — Runtime (Fase 1)
+    // =========================================================================
+
+    /**
+     * GET /rekam-medis/forms?station=X&section=Y&visit_id=Z
+     * Daftar template aktif untuk (station, section, visit).
+     */
+    public function indexForms(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'station'  => 'required|string|max:50',
+            'section'  => 'required|string|max:50',
+            'visit_id' => 'required|uuid|exists:visits,id',
+        ]);
+
+        try {
+            $forms = $this->formRegistry->listByStationSection(
+                $validated['station'],
+                $validated['section'],
+                $validated['visit_id'],
+            );
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($forms);
+    }
+
+    /**
+     * GET /rekam-medis/form/{code}/render?visit_id=Z
+     * Render OUTPUT mode → HTML string (dry-run; tidak persist).
+     */
+    public function renderForm(Request $request, string $code): JsonResponse
+    {
+        $validated = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+        ]);
+
+        try {
+            $html = $this->formRegistry->render($code, $validated['visit_id']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 404);
+        }
+
+        return $this->ok([
+            'code'     => $code,
+            'visit_id' => $validated['visit_id'],
+            'html'     => $html,
+        ]);
+    }
+
+    /**
+     * POST /rekam-medis/form/{code}/submit
+     * INPUT mode — submit data → router-by-binding ke tabel klinis +
+     * create patient_document DRAFT untuk audit. Status FINALIZED terpisah.
+     */
+    public function submitForm(Request $request, string $code): JsonResponse
+    {
+        $validated = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+            'data'     => 'required|array',
+        ]);
+
+        try {
+            $result = $this->formRegistry->submit($code, $validated['visit_id'], $validated['data']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($result, 'Form INPUT tersimpan (status DRAFT). Finalisasi terpisah untuk lock dokumen.');
+    }
+
+    /**
+     * POST /rekam-medis/document/{id}/finalize
+     * Snapshot rendered_html ke patient_documents + lock immutable.
+     */
+    public function finalizeDocument(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'signature_ids'   => 'nullable|array',
+            'signature_ids.*' => 'uuid',
+        ]);
+
+        try {
+            $doc = $this->formRegistry->finalize($id, $validated['signature_ids'] ?? []);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($doc, 'Dokumen difinalisasi');
+    }
+
+    /**
+     * GET /rekam-medis/document/{id}/render
+     * Ambil snapshot rendered_html (BUKAN re-render dari template).
+     */
+    public function showDocumentSnapshot(string $id): JsonResponse
+    {
+        try {
+            $snap = $this->formRegistry->getSnapshot($id);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 404);
+        }
+
+        return $this->ok($snap);
+    }
+
+    /**
+     * POST /rekam-medis/document/{id}/mark-rendered
+     * Soft transition DRAFT → RENDERED (idempoten).
+     */
+    public function markDocumentRendered(string $id): JsonResponse
+    {
+        try {
+            $doc = $this->formRegistry->markRendered($id);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 404);
+        }
+        return $this->ok($doc, 'Status: ' . $doc->status);
+    }
+
+    /**
+     * POST /rekam-medis/document/{id}/sign
+     * Capture signature (append-only). Auto-advance status → PENDING_SIGNATURE.
+     */
+    public function signDocument(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'signer_type'              => 'required|in:patient,guardian,witness,doctor,nurse,staff',
+            'signer_user_id'           => 'nullable|uuid|exists:users,id',
+            'signer_patient_id'        => 'nullable|uuid|exists:patients,id',
+            'signer_external_identity' => 'nullable|array',
+            'signer_external_identity.nama'      => 'nullable|string|max:255',
+            'signer_external_identity.nik'       => 'nullable|string|max:20',
+            'signer_external_identity.hubungan'  => 'nullable|string|max:100',
+            'signature_svg'            => 'nullable|string',
+            'signature_png_base64'     => 'nullable|string',
+            'biometric_metadata'       => 'nullable|array',
+            'audit_log'                => 'nullable|array',
+        ]);
+
+        $validated['patient_document_id']             = $id;
+        $validated['captured_device_info']            = [
+            'ip'         => $request->ip(),
+            'user_agent' => $request->userAgent(),
+        ];
+        $validated['captured_by_facilitator_user_id'] = auth('api')->id();
+
+        try {
+            $sig = $this->signatures->capture($validated);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($sig, 'Signature ter-capture', 201);
+    }
+
+    /**
+     * GET /rekam-medis/document/{id}/signatures
+     * Daftar semua signature untuk dokumen ini.
+     */
+    public function listDocumentSignatures(string $id): JsonResponse
+    {
+        return $this->ok($this->signatures->listByDocument($id));
+    }
+
+    /**
+     * GET /rekam-medis/signature/{signatureId}/verify
+     * Re-hash dan bandingkan dengan stored integrity_hash.
+     */
+    public function verifySignature(string $signatureId): JsonResponse
+    {
+        try {
+            $result = $this->signatures->verify($signatureId);
+        } catch (\Throwable $e) {
+            return $this->error('Signature tidak ditemukan.', 404);
+        }
+        return $this->ok($result);
+    }
+
+    /**
+     * GET /rekam-medis/signature/{signatureId}/audit
+     * Admin: lihat audit metadata lengkap (timestamps, device, biometric, audit_log timeline).
+     */
+    public function auditSignature(string $signatureId): JsonResponse
+    {
+        $sig = \App\Models\DocumentSignature::query()
+            ->where('signature_id', $signatureId)
+            ->firstOrFail();
+        return $this->ok($sig);
+    }
+
+    /**
+     * GET /rekam-medis/document/{id}/audit-log
+     * Audit history per dokumen (Fase 6). Include event template_id terkait
+     * + signature + addendum yang context-nya menyebut dokumen ini.
+     */
+    public function documentAuditLog(string $id): JsonResponse
+    {
+        $logs = \App\Services\FormRegistry\FormRegistryAudit::queryForDocument($id)
+            ->with('user:id,name,email')
+            ->limit(200)
+            ->get();
+        return $this->ok($logs);
+    }
+
+    /**
+     * GET /rekam-medis/ttd-queue
+     * Antrian TTD untuk dokter yang login (grouped by patient).
+     */
+    public function ttdQueue(): JsonResponse
+    {
+        $userId = auth('api')->id();
+        return $this->ok($this->signatures->ttdQueueForDoctor($userId));
+    }
+
+    /**
+     * POST /rekam-medis/document/{id}/addendum
+     * Koreksi post-FINALIZED. Addendum perlu di-TTD terpisah (Fase 5+).
+     */
+    public function createAddendum(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'alasan'       => 'required|string|max:500',
+            'isi_koreksi'  => 'required|string',
+        ]);
+
+        try {
+            $add = $this->formRegistry->createAddendum($id, $validated);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+        return $this->ok($add, 'Addendum dibuat (perlu TTD lanjutan).', 201);
     }
 
     // =========================================================================

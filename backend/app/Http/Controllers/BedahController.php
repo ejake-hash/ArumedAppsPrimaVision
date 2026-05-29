@@ -53,7 +53,7 @@ class BedahController extends Controller
     public function indexJadwal(Request $request): JsonResponse
     {
         return $this->ok($this->service->getScheduledSurgeries(
-            $request->only(['tanggal', 'status'])
+            $request->only(['tanggal', 'status', 'upcoming', 'date_from', 'date_to'])
         ));
     }
 
@@ -343,6 +343,49 @@ class BedahController extends Controller
     }
 
     /**
+     * GET /bedah/jadwal/{id}/auto-request/preview
+     * Preview isi request BHP/IOL dari komposisi paket bedah jadwal tsb.
+     */
+    public function previewAutoRequest(string $scheduleId): JsonResponse
+    {
+        try {
+            $preview = $this->service->buildRequestPreviewFromSchedule($scheduleId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($preview);
+    }
+
+    /**
+     * POST /bedah/jadwal/{id}/auto-request
+     * 1-klik: buat request dari paket + kirim ke Bedah (REQUESTED → SENT).
+     * Validasi longgar (IOL eye/power boleh kosong, beda dgn storeRequest).
+     */
+    public function sendAutoRequest(Request $request, string $scheduleId): JsonResponse
+    {
+        $validated = $request->validate([
+            'bhp_items'                      => 'nullable|array',
+            'bhp_items.*.bhp_item_id'        => 'required|uuid|exists:bhp_items,id',
+            'bhp_items.*.quantity'           => 'required|integer|min:1',
+
+            'iol_items'                      => 'nullable|array',
+            'iol_items.*.eye_side'           => 'nullable|in:OD,OS',
+            'iol_items.*.requested_iol_type' => 'nullable|in:MONOFOCAL,MULTIFOCAL,TORIC,TRIFOCAL,EDOF,PHAKIC',
+            'iol_items.*.requested_power'    => 'nullable|numeric|between:0,40',
+            'iol_items.*.iol_item_id'        => 'nullable|uuid|exists:iol_items,id',
+        ]);
+
+        try {
+            $surgeryRequest = $this->service->sendRequestFromSchedule($scheduleId, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($surgeryRequest, 'Request BHP/IOL terkirim ke Bedah', 201);
+    }
+
+    /**
      * PUT /bedah/request/{id}/terima
      * Konfirmasi terima BHP+IOL dari Farmasi.
      */
@@ -355,6 +398,29 @@ class BedahController extends Controller
         }
 
         return $this->ok($surgeryRequest, 'BHP+IOL dikonfirmasi diterima. Siap operasi.');
+    }
+
+    /**
+     * POST /bedah/request/{id}/adjust-bhp
+     * Body: { items: [{ bhp_item_id, used_qty }] }
+     *
+     * Bedah catat qty actual BHP yang terpakai. Boleh ± dari quantity yg diminta.
+     */
+    public function adjustBhpUsage(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'items'              => 'required|array|min:1',
+            'items.*.bhp_item_id'=> 'required|uuid',
+            'items.*.used_qty'   => 'required|integer|min:0',
+        ]);
+
+        try {
+            $surgeryRequest = $this->service->adjustBhpUsage($id, $data['items']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($surgeryRequest, 'BHP usage diperbarui.');
     }
 
     // =========================================================================

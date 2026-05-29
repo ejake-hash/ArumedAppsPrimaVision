@@ -63,13 +63,20 @@ const editRole = ref({
 const editUser = ref({
   id: null, name: '', username: '', email: '',
   role_id: '', employee_id: null,
-  password: '', is_active: true,
+  password: '', pin: '', has_pin: false, is_active: true,
 })
 
 // ─── Filters ─────────────────────────────────────────────────────────────────
 const srUser     = ref('')
 const filterRole = ref('')
 const filterAktif = ref('')
+
+// PIN tanda tangan relevan untuk akun dokter, dan superadmin (agar bisa menguji
+// alur tanda tangan tanpa harus punya akun dokter terpisah).
+const canHavePin = computed(() => {
+  const r = store.roleById[editUser.value.role_id]
+  return r?.name === 'dokter' || r?.name === 'superadmin'
+})
 
 const filtUsers = computed(() => {
   let list = store.users
@@ -245,7 +252,7 @@ function openNewUser() {
   editUser.value = {
     id: null, name: '', username: '', email: '',
     role_id: defaultRoleId, employee_id: null,
-    password: '', is_active: true,
+    password: '', pin: '', has_pin: false, is_active: true,
   }
   modal.value = 'user'
 }
@@ -253,7 +260,7 @@ function openEditUser(u) {
   editUser.value = {
     id: u.id, name: u.name, username: u.username, email: u.email,
     role_id: u.role?.id ?? '', employee_id: u.employee?.id ?? null,
-    password: '', is_active: u.is_active,
+    password: '', pin: '', has_pin: !!u.has_pin, is_active: u.is_active,
   }
   modal.value = 'user'
 }
@@ -268,6 +275,13 @@ async function saveUser() {
     return
   }
 
+  // PIN hanya berlaku untuk dokter/superadmin — abaikan input PIN jika role lain.
+  const pin = canHavePin.value ? d.pin : ''
+  if (pin && !/^\d{4,6}$/.test(pin)) {
+    toast('w', 'PIN harus 4–6 digit angka')
+    return
+  }
+
   const payload = {
     name:        d.name,
     username:    d.username,
@@ -277,6 +291,7 @@ async function saveUser() {
     is_active:   !!d.is_active,
   }
   if (d.password) payload.password = d.password
+  if (pin)        payload.pin = pin
 
   try {
     if (d.id) {
@@ -310,6 +325,18 @@ async function resetUserPwd() {
     toast('e', errMsg(e, 'Gagal reset password'))
   }
 }
+async function resetUserPin() {
+  if (! editUser.value.id) return
+  if (! confirm(`Reset PIN tanda tangan ${editUser.value.name}? PIN baru (6 digit) akan ditampilkan sekali setelah reset.`)) return
+  try {
+    const newPin = await store.resetUserPin(editUser.value.id)
+    editUser.value.has_pin = true
+    toast('s', `PIN baru: ${newPin}`)
+    alert(`PIN tanda tangan baru untuk ${editUser.value.name}:\n\n${newPin}\n\nBerikan ke dokter ybs & simpan sebelum menutup dialog ini. PIN tidak bisa dilihat lagi.`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal reset PIN'))
+  }
+}
 async function deleteUser(u) {
   if (! confirm(`Yakin hapus pengguna "${u.name}"? Aksi ini tidak bisa dibatalkan.`)) return
   try {
@@ -318,6 +345,57 @@ async function deleteUser(u) {
   } catch (e) {
     toast('e', errMsg(e, 'Gagal menghapus pengguna'))
   }
+}
+
+// ─── CSV: Template / Export / Import ──────────────────────────────────────────
+const fileInput   = ref(null)
+const csvBusy     = ref(false)
+const importResult = ref(null)   // { created, skipped, errors } → tampil di modal
+
+async function downloadTemplate() {
+  try {
+    await store.downloadUserTemplate()
+    toast('s', 'Template CSV diunduh')
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengunduh template'))
+  }
+}
+async function exportUsers() {
+  try {
+    await store.exportUsersCsv()
+    toast('s', 'Data pengguna diekspor')
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengekspor data'))
+  }
+}
+function pickImportFile() {
+  fileInput.value?.click()
+}
+async function onImportFile(ev) {
+  const file = ev.target.files?.[0]
+  ev.target.value = ''   // reset supaya file sama bisa dipilih ulang
+  if (! file) return
+  csvBusy.value = true
+  try {
+    const res = await store.importUsersCsv(file)
+    importResult.value = res
+    modal.value = 'importResult'
+    const c = res?.created?.length ?? 0
+    toast(c ? 's' : 'i', `Import selesai — ${c} pengguna baru ditambahkan`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengimpor CSV'))
+  } finally {
+    csvBusy.value = false
+  }
+}
+
+function copyImportResult() {
+  const rows = importResult.value?.created ?? []
+  if (! rows.length) return
+  const text = rows.map((r) => `${r.name}\t${r.username}\t${r.email}\t${r.password}`).join('\n')
+  navigator.clipboard?.writeText(text)
+    .then(() => toast('s', 'Daftar akun + password disalin'))
+    .catch(() => toast('e', 'Gagal menyalin'))
 }
 
 // ─── Initial load ────────────────────────────────────────────────────────────
@@ -405,9 +483,26 @@ function lastLoginText(u) {
               <select v-model="editUser.is_active" class="fs"><option :value="true">Aktif</option><option :value="false">Non-aktif</option></select>
             </div>
           </div>
+          <div v-if="canHavePin" class="g2" style="margin-bottom:.4rem">
+            <div class="fg">
+              <label class="fl">PIN Tanda Tangan (dokter)
+                <span v-if="editUser.has_pin" style="color:var(--st);text-transform:none;letter-spacing:0">· sudah diatur</span>
+              </label>
+              <input v-model="editUser.pin" class="fi" type="password" inputmode="numeric" maxlength="6"
+                     :placeholder="editUser.has_pin ? 'Kosongkan jika tidak diubah · isi untuk ganti' : '4–6 digit angka (opsional)'"/>
+            </div>
+            <div class="fg" style="justify-content:flex-end">
+              <span style="font-size:9.5px;color:var(--tu);line-height:1.4">PIN dipakai untuk menandatangani dokumen RM. Tersedia untuk akun dokter &amp; superadmin (untuk pengujian).</span>
+            </div>
+          </div>
           <div style="display:flex;gap:.4rem;margin-top:.5rem">
             <button class="btn btn-ga btn-lg btn-full" @click="saveUser"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/></svg>Simpan Pengguna</button>
-            <button v-if="editUser.id" class="btn btn-i" @click="resetUserPwd"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Reset Password</button>
+            <button v-if="editUser.id && auth.isSuperadmin" class="btn btn-i" @click="resetUserPwd"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Reset Password</button>
+            <button v-if="editUser.id && auth.isSuperadmin && canHavePin" class="btn btn-i" @click="resetUserPin"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Reset PIN</button>
+          </div>
+          <div v-if="editUser.id && auth.isSuperadmin" class="default-note">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <span><b>Nilai default sistem:</b> Reset Password membuat password acak (ditampilkan sekali). Reset PIN membuat PIN 6 digit acak (ditampilkan sekali). PIN lama & password tidak bisa dilihat — hanya bisa direset.</span>
           </div>
         </div>
       </div>
@@ -457,6 +552,74 @@ function lastLoginText(u) {
       </div>
     </div>
 
+    <!-- ─── MODAL: HASIL IMPORT CSV ─── -->
+    <div v-if="modal === 'importResult'" class="ov" @click.self="modal = null">
+      <div class="mbx lg">
+        <div class="mh">
+          <span class="mht">Hasil Import Pengguna</span>
+          <button class="mcl" @click="modal = null"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+        <div class="mb" v-if="importResult">
+          <div class="imp-stats">
+            <div class="imp-stat ok"><div class="imp-num">{{ importResult.created?.length ?? 0 }}</div><div class="imp-lbl">Ditambah</div></div>
+            <div class="imp-stat warn"><div class="imp-num">{{ importResult.skipped?.length ?? 0 }}</div><div class="imp-lbl">Dilewati</div></div>
+            <div class="imp-stat err"><div class="imp-num">{{ importResult.errors?.length ?? 0 }}</div><div class="imp-lbl">Gagal</div></div>
+          </div>
+
+          <!-- Akun baru + password -->
+          <template v-if="importResult.created?.length">
+            <div class="sec" style="margin-top:.7rem">
+              <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+              Akun Baru — Simpan/salin password sebelum menutup
+              <button class="btn btn-sm btn-o" style="margin-left:auto" @click="copyImportResult">Salin Semua</button>
+            </div>
+            <div class="imp-warn">Password hanya ditampilkan sekali di sini. Setelah dialog ditutup, password tidak bisa dilihat lagi (harus reset).</div>
+            <div style="overflow-x:auto">
+              <table class="tbl">
+                <thead><tr><th>Nama</th><th>Username</th><th>Email</th><th>Password</th></tr></thead>
+                <tbody>
+                  <tr v-for="(r, i) in importResult.created" :key="i">
+                    <td style="font-weight:500;font-size:12px">{{ r.name }}</td>
+                    <td class="mono-cell">{{ r.username }}</td>
+                    <td style="font-size:10.5px;color:var(--tu)">{{ r.email }}</td>
+                    <td class="mono-cell" style="font-weight:600;color:var(--it)">{{ r.password }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
+          <!-- Dilewati -->
+          <template v-if="importResult.skipped?.length">
+            <div class="sec" style="margin-top:.7rem"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Dilewati (sudah terdaftar)</div>
+            <div class="imp-list">
+              <div v-for="(s, i) in importResult.skipped" :key="i" class="imp-row warn">
+                <span class="imp-rowno">Baris {{ s.row }}</span>
+                <span class="mono-cell">{{ s.username }}</span>
+                <span style="color:var(--tu);font-size:10.5px">{{ s.reason }}</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Gagal -->
+          <template v-if="importResult.errors?.length">
+            <div class="sec" style="margin-top:.7rem"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Gagal Diproses</div>
+            <div class="imp-list">
+              <div v-for="(er, i) in importResult.errors" :key="i" class="imp-row err">
+                <span class="imp-rowno">Baris {{ er.row }}</span>
+                <span class="mono-cell">{{ er.username || '—' }}</span>
+                <span style="color:var(--et);font-size:10.5px">{{ er.reason }}</span>
+              </div>
+            </div>
+          </template>
+
+          <div style="margin-top:.85rem">
+            <button class="btn btn-ga btn-lg btn-full" @click="modal = null">Selesai</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ─── NAV TABS ─── -->
     <div class="nvt">
       <button :class="['nt', pgTab === 'roles' ? 'a' : '']" @click="pgTab = 'roles'">
@@ -476,8 +639,7 @@ function lastLoginText(u) {
         Audit Log
       </button>
       <div class="nt-actions">
-        <button class="btn btn-o btn-sm" @click="openNewRole"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Buat Role</button>
-        <button class="btn btn-lm btn-sm" @click="openNewUser"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><line x1="20" y1="8" x2="20" y2="14"/></svg>Tambah Pengguna</button>
+        <button v-if="pgTab === 'roles'" class="btn btn-o btn-sm" @click="openNewRole"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Buat Role</button>
       </div>
     </div>
 
@@ -615,8 +777,12 @@ function lastLoginText(u) {
           <option value="false">Non-aktif</option>
         </select>
         <div style="margin-left:auto;display:flex;gap:.35rem">
+          <button class="btn btn-o btn-sm" @click="downloadTemplate" title="Unduh template CSV kosong"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Template</button>
+          <button class="btn btn-o btn-sm" @click="exportUsers" title="Ekspor semua pengguna ke CSV"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Export</button>
+          <button class="btn btn-i btn-sm" :disabled="csvBusy" @click="pickImportFile" title="Impor pengguna dari CSV"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ csvBusy ? 'Mengimpor...' : 'Import' }}</button>
           <button class="btn btn-lm btn-sm" @click="openNewUser"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Tambah Pengguna</button>
         </div>
+        <input ref="fileInput" type="file" accept=".csv,text/csv" style="display:none" @change="onImportFile"/>
       </div>
       <div class="card">
         <div v-if="store.usersLoading" class="loading-state">Memuat data pengguna...</div>
@@ -846,6 +1012,28 @@ function lastLoginText(u) {
 .btn-e   { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .btn-w   { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ─── IMPORT RESULT MODAL ─── */
+.imp-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+.imp-stat { text-align: center; padding: .55rem; border-radius: 9px; border: 1px solid; }
+.imp-stat.ok   { background: var(--sb); border-color: var(--sbd); }
+.imp-stat.warn { background: var(--wb); border-color: var(--wbd); }
+.imp-stat.err  { background: var(--eb); border-color: var(--ebd); }
+.imp-num { font-size: 22px; font-weight: 700; font-family: 'DM Serif Display', serif; line-height: 1; }
+.imp-stat.ok   .imp-num { color: var(--st); }
+.imp-stat.warn .imp-num { color: var(--wt); }
+.imp-stat.err  .imp-num { color: var(--et); }
+.imp-lbl { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--tm); margin-top: 2px; }
+.imp-warn { background: var(--wb); border: 1px solid var(--wbd); color: var(--wt); font-size: 10.5px; padding: .45rem .7rem; border-radius: 7px; margin-bottom: .5rem; }
+.imp-list { display: flex; flex-direction: column; gap: 3px; }
+.imp-row { display: flex; align-items: center; gap: .6rem; padding: .35rem .6rem; border-radius: 7px; border: 1px solid var(--gb); background: var(--bs); }
+.imp-row.warn { border-color: var(--wbd); }
+.imp-row.err  { border-color: var(--ebd); }
+.imp-rowno { font-size: 9px; font-weight: 600; color: var(--tu); white-space: nowrap; min-width: 56px; }
+
+/* Catatan default sistem (superadmin) */
+.default-note { display: flex; align-items: flex-start; gap: .45rem; margin-top: .6rem; padding: .5rem .7rem; background: var(--ib); border: 1px solid var(--ibd); border-radius: 7px; font-size: 10.5px; color: var(--it); line-height: 1.5; }
+.default-note svg { width: 13px; height: 13px; fill: none; stroke: var(--it); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
 
 /* ─── TOAST ─── */
 .twrap { position: fixed; top: .65rem; right: .65rem; z-index: 999; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }

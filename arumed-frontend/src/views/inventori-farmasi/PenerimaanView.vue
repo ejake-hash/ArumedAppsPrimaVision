@@ -422,6 +422,7 @@ const canDelete = computed(() => auth.can('penerimaan.delete'))
       <table class="grn-table">
         <thead>
           <tr>
+            <th class="c" style="width:48px">No</th>
             <th>No. GRN</th>
             <th>Tanggal</th>
             <th>Supplier</th>
@@ -432,10 +433,11 @@ const canDelete = computed(() => auth.can('penerimaan.delete'))
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="7" class="grn-state">Memuat…</td></tr>
-          <tr v-else-if="error"><td colspan="7" class="grn-state grn-state-error">{{ error }}</td></tr>
-          <tr v-else-if="items.length === 0"><td colspan="7" class="grn-state">Belum ada penerimaan.</td></tr>
-          <tr v-for="grn in items" :key="grn.id" v-else>
+          <tr v-if="loading"><td colspan="8" class="grn-state">Memuat…</td></tr>
+          <tr v-else-if="error"><td colspan="8" class="grn-state grn-state-error">{{ error }}</td></tr>
+          <tr v-else-if="items.length === 0"><td colspan="8" class="grn-state">Belum ada penerimaan.</td></tr>
+          <tr v-for="(grn, idx) in items" :key="grn.id" v-else>
+            <td class="c grn-rownum">{{ (meta.current_page - 1) * meta.per_page + idx + 1 }}</td>
             <td><strong>{{ grn.grn_number }}</strong></td>
             <td>{{ formatDate(grn.receipt_date) }}</td>
             <td>{{ grn.supplier?.name ?? '—' }}</td>
@@ -770,6 +772,7 @@ const canDelete = computed(() => auth.can('penerimaan.delete'))
 .grn-table td.r, .grn-table th.r { text-align: right; }
 .grn-table td.c, .grn-table th.c { text-align: center; }
 .grn-table tbody tr:hover { background: var(--bs); }
+.grn-rownum { color: var(--tu); font-variant-numeric: tabular-nums; }
 
 .grn-po-link { color: var(--ga); font-weight: 500; }
 .grn-direct-tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }

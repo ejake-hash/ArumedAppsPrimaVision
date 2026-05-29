@@ -28,6 +28,8 @@ class Visit extends Model
         'photo_path',
         'visit_date',
         'classification',
+        'visit_type',
+        'surgery_schedule_id',
         'current_station',
         'guarantor_type',
         'triase_completed_at',
@@ -43,16 +45,19 @@ class Visit extends Model
         'planning_follow_up',
         'follow_up_date',
         'follow_up_reason',
+        'insurance_verification_status',
+        'insurance_verified_at',
     ];
 
     protected $casts = [
-        'visit_date'           => 'date',
-        'triase_completed_at'  => 'datetime',
+        'visit_date'            => 'date',
+        'triase_completed_at'   => 'datetime',
         'refraksi_completed_at' => 'datetime',
-        'satusehat_synced_at'  => 'datetime',
-        'ready_for_doctor'     => 'boolean',
-        'planning_follow_up'   => 'boolean',
-        'follow_up_date'       => 'date',
+        'satusehat_synced_at'   => 'datetime',
+        'ready_for_doctor'      => 'boolean',
+        'planning_follow_up'    => 'boolean',
+        'follow_up_date'        => 'date',
+        'insurance_verified_at' => 'datetime',
     ];
 
     /** Foto kunjungan ini ikut diserialisasi (riwayat kunjungan per-tanggal). */
@@ -104,6 +109,11 @@ class Visit extends Model
     public function doctorSchedule(): BelongsTo
     {
         return $this->belongsTo(DoctorSchedule::class);
+    }
+
+    public function surgerySchedule(): BelongsTo
+    {
+        return $this->belongsTo(SurgerySchedule::class);
     }
 
     public function queues(): HasMany
@@ -169,5 +179,37 @@ class Visit extends Model
     public function patientDocuments(): HasMany
     {
         return $this->hasMany(PatientDocument::class);
+    }
+
+    public function surgeryRequests(): HasMany
+    {
+        return $this->hasMany(SurgeryRequest::class);
+    }
+
+    public function equipmentUsages(): HasMany
+    {
+        return $this->hasMany(MedicalEquipmentUsage::class);
+    }
+
+    public function iolRecommendations(): HasMany
+    {
+        return $this->hasMany(IolRecommendation::class);
+    }
+
+    public function insuranceVerifications(): HasMany
+    {
+        return $this->hasMany(InsuranceVerification::class)->orderByDesc('created_at');
+    }
+
+    public function latestInsuranceVerification(): HasOne
+    {
+        // PG tidak punya MAX(uuid) → tidak bisa pakai latestOfMany().
+        // Pakai hasOne + orderByDesc(created_at) sebagai workaround.
+        return $this->hasOne(InsuranceVerification::class)->orderByDesc('created_at');
+    }
+
+    public function insuranceClaims(): HasMany
+    {
+        return $this->hasMany(InsuranceClaim::class);
     }
 }

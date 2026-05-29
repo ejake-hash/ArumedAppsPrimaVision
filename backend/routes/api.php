@@ -19,6 +19,8 @@ use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\UnitRequestController;
+use App\Http\Controllers\InventoryStockController;
+use App\Http\Controllers\MedicalEquipmentController;
 use App\Http\Controllers\UnitReturnController;
 use App\Http\Controllers\TarifPaketController;
 use App\Http\Controllers\IntegrasiController;
@@ -29,7 +31,9 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
 use App\Http\Controllers\TvDisplaySettingController;
 use App\Http\Controllers\TvAudioSettingController;
+use App\Http\Controllers\TvMediaSettingController;
 use App\Http\Controllers\TvBrandingSettingController;
+use App\Http\Controllers\AsuransiController;
 
 /*
 |--------------------------------------------------------------------------
@@ -80,6 +84,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/audio-settings',    [TvAudioSettingController::class, 'show']);
         // Branding (logo + nama klinik) — public read
         Route::get('/branding-settings', [TvBrandingSettingController::class, 'show']);
+        // Media (mode, YouTube URL, video lokal, slideshow) — public read
+        Route::get('/media-settings',    [TvMediaSettingController::class, 'show']);
     });
 
     // =========================================================================
@@ -100,6 +106,10 @@ Route::prefix('v1')->group(function () {
         // Antrean TV — branding settings (singleton: logo + nama klinik)
         Route::put('/antrean-tv/branding-settings',        [TvBrandingSettingController::class, 'update']);
         Route::post('/antrean-tv/branding-settings/reset', [TvBrandingSettingController::class, 'reset']);
+        // Antrean TV — media (mode/youtube/video upload/slideshow) — sync ke semua TV
+        Route::put('/antrean-tv/media-settings',           [TvMediaSettingController::class, 'update']);
+        Route::post('/antrean-tv/media-settings/video',    [TvMediaSettingController::class, 'uploadVideo']);
+        Route::delete('/antrean-tv/media-settings/video',  [TvMediaSettingController::class, 'deleteVideo']);
 
         // -----------------------------------------------------------------
         // AUTH
@@ -139,9 +149,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/pasien',                [AdmisiController::class, 'storePasien']);
             Route::get('/pasien/{id}',            [AdmisiController::class, 'showPasien']);
             Route::get('/pasien/{id}/kunjungan',  [AdmisiController::class, 'indexKunjunganPasien']);
+            Route::get('/pasien/{id}/jadwal-bedah-aktif', [AdmisiController::class, 'jadwalBedahAktif']);
             Route::put('/pasien/{id}',            [AdmisiController::class, 'updatePasien']);
 
             Route::post('/daftar',                [AdmisiController::class, 'daftarKunjungan']);
+            Route::post('/consent/preview',       [AdmisiController::class, 'previewConsent']);
 
             Route::get('/antrian',                [AdmisiController::class, 'indexAntrian']);
             Route::post('/antrian',               [AdmisiController::class, 'createAntrian']);
@@ -178,6 +190,7 @@ Route::prefix('v1')->group(function () {
             Route::put('/cppt/{id}',                        [PerawatController::class, 'updateCppt']);
 
             Route::put('/antrian/{id}/lewati',                     [PerawatController::class, 'lewatiAntrian']);
+            Route::post('/antrian/{id}/kirim-ke-bedah',            [PerawatController::class, 'kirimKeBedah']);
             Route::get('/kunjungan/{visitId}',                     [PerawatController::class, 'showKunjungan']);
             Route::get('/kunjungan/{visitId}/status-parallel',     [PerawatController::class, 'statusParallel']);
             Route::get('/pasien/{patientId}/vital-history',        [PerawatController::class, 'vitalHistory']);
@@ -217,6 +230,7 @@ Route::prefix('v1')->group(function () {
         // DOKTER
         // -----------------------------------------------------------------
         Route::prefix('dokter')->group(function () {
+            Route::post('/verify-pin',                          [DokterController::class, 'verifyPin']);
             Route::get('/antrian',                              [DokterController::class, 'indexAntrian']);
             Route::put('/antrian/{id}/panggil',                 [DokterController::class, 'panggilAntrian']);
             Route::put('/antrian/{id}/selesai',                 [DokterController::class, 'selesaiAntrian']);
@@ -225,6 +239,9 @@ Route::prefix('v1')->group(function () {
             // Referensi Tab 3: tarif tindakan per metode bayar + daftar obat ber-harga
             Route::get('/tarif-tindakan',                       [DokterController::class, 'tarifTindakan']);
             Route::get('/obat',                                 [DokterController::class, 'daftarObat']);
+
+            // Referensi Tab 4 (Jadwalkan Bedah): preview jumlah & jam terisi per tanggal
+            Route::get('/bedah/slot',                           [DokterController::class, 'bedahSlot']);
 
             Route::get('/kunjungan/{visitId}',                  [DokterController::class, 'showKunjungan']);
 
@@ -254,6 +271,7 @@ Route::prefix('v1')->group(function () {
             Route::delete('/order-penunjang/{id}',              [DokterController::class, 'cancelOrderPenunjang']);
 
             Route::get('/kunjungan/{visitId}/hasil-penunjang',  [DokterController::class, 'indexHasilPenunjang']);
+            Route::get('/kunjungan/{visitId}/penunjang-billing', [DokterController::class, 'penunjangBilling']);
             Route::get('/kunjungan/{visitId}/iol-rekomendasi',  [DokterController::class, 'showIolRekomendasi']);
 
             Route::get('/kunjungan/{visitId}/resume-medis',     [DokterController::class, 'showResumeMedis']);
@@ -263,8 +281,9 @@ Route::prefix('v1')->group(function () {
 
             Route::post('/rujukan-keluar',                      [DokterController::class, 'storeRujukanKeluar']);
 
-            Route::get('/jadwal-bedah',                         [DokterController::class, 'indexJadwalBedah']);
-            Route::post('/jadwal-bedah',                        [DokterController::class, 'storeJadwalBedah']);
+            // (dihapus) /jadwal-bedah GET+POST — method indexJadwalBedah/storeJadwalBedah
+            // tidak pernah ada (selalu 500), tanpa konsumen frontend. Penjadwalan bedah
+            // ditangani DokterService::resolveSurgerySchedule (auto saat finalize) + bedahSlot.
 
             Route::get('/notifikasi',                           [DokterController::class, 'indexNotifikasi']);
             Route::put('/notifikasi/{id}/baca',                 [DokterController::class, 'bacaNotifikasi']);
@@ -277,13 +296,18 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('jadwal-dokter')->group(function () {
             // GET  /jadwal-dokter/aktif-hari-ini  ← untuk admisi dropdown (authenticated)
-            Route::get('/aktif-hari-ini',   [JadwalDokterController::class, 'aktifHariIni']);
-            Route::get('/',                 [JadwalDokterController::class, 'index']);
-            Route::post('/',                [JadwalDokterController::class, 'store']);
-            Route::get('/{id}',             [JadwalDokterController::class, 'show']);
-            Route::put('/{id}',             [JadwalDokterController::class, 'update']);
-            Route::delete('/{id}',          [JadwalDokterController::class, 'destroy']);
-            Route::patch('/{id}/toggle',    [JadwalDokterController::class, 'toggle']);
+            Route::get('/aktif-hari-ini',      [JadwalDokterController::class, 'aktifHariIni']);
+            // Static routes — WAJIB di atas /{id} agar tidak ditangkap sebagai param.
+            Route::get('/minggu-tersedia',     [JadwalDokterController::class, 'availableWeeks']);
+            Route::get('/template-csv',        [JadwalDokterController::class, 'template']);
+            Route::post('/import-csv',         [JadwalDokterController::class, 'import']);
+            Route::post('/salin-minggu-depan', [JadwalDokterController::class, 'copyToNextWeek']);
+            Route::get('/',                    [JadwalDokterController::class, 'index']);
+            Route::post('/',                   [JadwalDokterController::class, 'store']);
+            Route::get('/{id}',                [JadwalDokterController::class, 'show']);
+            Route::put('/{id}',                [JadwalDokterController::class, 'update']);
+            Route::delete('/{id}',             [JadwalDokterController::class, 'destroy']);
+            Route::patch('/{id}/toggle',       [JadwalDokterController::class, 'toggle']);
         });
 
         // -----------------------------------------------------------------
@@ -292,6 +316,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('penunjang')->group(function () {
             Route::get('/antrian',                        [PenunjangController::class, 'indexAntrian']);
             Route::put('/antrian/{id}/panggil',           [PenunjangController::class, 'panggilAntrian']);
+            Route::put('/antrian/{id}/lewati',            [PenunjangController::class, 'lewatiAntrian']);
             Route::put('/antrian/{id}/selesai',           [PenunjangController::class, 'selesaiAntrian']);
 
             Route::get('/order',                          [PenunjangController::class, 'indexOrder']);
@@ -300,6 +325,7 @@ Route::prefix('v1')->group(function () {
             Route::put('/order/{id}/proses',              [PenunjangController::class, 'prosesOrder']);
             Route::put('/order/{id}/cancel',              [PenunjangController::class, 'cancelOrder']);
 
+            Route::post('/hasil/upload-attachment',       [PenunjangController::class, 'uploadHasilAttachment']);
             Route::get('/hasil/{orderId}',                [PenunjangController::class, 'showHasil']);
             Route::post('/hasil',                         [PenunjangController::class, 'storeHasil']);
             Route::put('/hasil/{id}',                     [PenunjangController::class, 'updateHasil']);
@@ -326,12 +352,17 @@ Route::prefix('v1')->group(function () {
             Route::put('/jadwal/{id}/mulai',                [BedahController::class, 'mulaiOperasi']);
             Route::put('/jadwal/{id}/selesai',              [BedahController::class, 'selesaiOperasi']);
 
+            // 1-klik request BHP/IOL dari komposisi paket bedah (preview + kirim).
+            Route::get('/jadwal/{id}/auto-request/preview', [BedahController::class, 'previewAutoRequest']);
+            Route::post('/jadwal/{id}/auto-request',        [BedahController::class, 'sendAutoRequest']);
+
             Route::get('/request',                          [BedahController::class, 'indexRequest']);
             Route::get('/request/{id}',                     [BedahController::class, 'showRequest']);
             Route::post('/request',                         [BedahController::class, 'storeRequest']);
             Route::put('/request/{id}',                     [BedahController::class, 'updateRequest']);
             Route::put('/request/{id}/kirim',               [BedahController::class, 'kirimRequest']);
             Route::put('/request/{id}/terima',              [BedahController::class, 'terimaRequest']);
+            Route::post('/request/{id}/adjust-bhp',         [BedahController::class, 'adjustBhpUsage']);
 
             Route::get('/record/{scheduleId}',              [BedahController::class, 'showRecord']);
             Route::post('/record',                          [BedahController::class, 'storeRecord']);
@@ -385,14 +416,17 @@ Route::prefix('v1')->group(function () {
         Route::prefix('kasir')->group(function () {
             Route::get('/antrian',                         [KasirController::class, 'indexAntrian']);
             Route::put('/antrian/{id}/panggil',            [KasirController::class, 'panggilAntrian']);
+            Route::put('/antrian/{id}/lewati',             [KasirController::class, 'lewatiAntrian']);
             Route::put('/antrian/{id}/selesai',            [KasirController::class, 'selesaiAntrian']);
 
             Route::get('/invoice',                         [KasirController::class, 'indexInvoice']);
             Route::get('/invoice/{visitId}',               [KasirController::class, 'showInvoice']);
+            Route::get('/insurance-warning/{visitId}',     [KasirController::class, 'insuranceWarning']);
             Route::post('/invoice/{visitId}/generate',     [KasirController::class, 'generateInvoice']);
             Route::put('/invoice/{id}',                    [KasirController::class, 'updateInvoice']);
             Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice']);
             Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
+            Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
             Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);
             Route::get('/invoice/{id}/cetak',              [KasirController::class, 'cetakInvoice']);
 
@@ -414,10 +448,16 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('klaim')->group(function () {
             Route::get('/',                               [KlaimController::class, 'index']);
+
+            // Route statis (segmen pertama bukan parameter) WAJIB sebelum `/{id}`,
+            // kalau tidak `/{id}` menangkap 'vclaim-log' dsb. → diparse sebagai UUID → 500.
+            Route::get('/vclaim-log',                     [KlaimController::class, 'vclaimpLog']);
+            Route::get('/icare/monitoring',               [KlaimController::class, 'icareMonitoring']);
+            Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
+
             Route::get('/{id}',                           [KlaimController::class, 'show']);
 
             Route::post('/{id}/grouping',                 [KlaimController::class, 'runGrouping']);
-            Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
 
             Route::put('/{id}/review',                    [KlaimController::class, 'setReview']);
             Route::put('/{id}/verifikasi',                [KlaimController::class, 'setVerifikasi']);
@@ -427,10 +467,7 @@ Route::prefix('v1')->group(function () {
 
             Route::post('/{id}/lupis',                    [KlaimController::class, 'generateLupis']);
 
-            Route::get('/icare/monitoring',               [KlaimController::class, 'icareMonitoring']);
-
             Route::get('/{id}/audit-log',                 [KlaimController::class, 'auditLog']);
-            Route::get('/vclaim-log',                     [KlaimController::class, 'vclaimpLog']);
         });
 
         // -----------------------------------------------------------------
@@ -440,6 +477,13 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien',                          [RekamMedisController::class, 'cariPasien']);
             Route::get('/pasien/{patientId}',              [RekamMedisController::class, 'riwayatPasien']);
             Route::get('/pasien/{patientId}/kunjungan',    [RekamMedisController::class, 'indexKunjungan']);
+            Route::get('/pasien/{patientId}/ringkasan',    [RekamMedisController::class, 'ringkasanPasien']);
+            Route::get('/pasien/{patientId}/refraksi',     [RekamMedisController::class, 'refraksiPasien']);
+            Route::get('/pasien/{patientId}/penunjang',    [RekamMedisController::class, 'penunjangPasien']);
+            Route::get('/pasien/{patientId}/obat',         [RekamMedisController::class, 'obatPasien']);
+            Route::get('/pasien/{patientId}/bedah',        [RekamMedisController::class, 'bedahPasien']);
+            Route::get('/pasien/{patientId}/diagnosis',    [RekamMedisController::class, 'diagnosisPasien']);
+            Route::get('/pasien/{patientId}/dokumen',      [RekamMedisController::class, 'dokumenPasien']);
 
             Route::get('/dokumen',                         [RekamMedisController::class, 'indexDokumen']);
             Route::get('/dokumen/{id}',                    [RekamMedisController::class, 'showDokumen']);
@@ -459,6 +503,27 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/notifikasi',                      [RekamMedisController::class, 'indexNotifikasi']);
             Route::put('/notifikasi/{id}/baca',            [RekamMedisController::class, 'bacaNotifikasi']);
+
+            // -----------------------------------------------------------------
+            // FORM REGISTRY — Runtime (Fase 1 + 3 + 4)
+            // -----------------------------------------------------------------
+            Route::get('/forms',                           [RekamMedisController::class, 'indexForms']);
+            Route::get('/form/{code}/render',              [RekamMedisController::class, 'renderForm']);
+            Route::post('/form/{code}/submit',             [RekamMedisController::class, 'submitForm']);
+            Route::post('/document/{id}/mark-rendered',    [RekamMedisController::class, 'markDocumentRendered']);
+            Route::post('/document/{id}/finalize',         [RekamMedisController::class, 'finalizeDocument']);
+            Route::get('/document/{id}/render',            [RekamMedisController::class, 'showDocumentSnapshot']);
+
+            // Fase 4 — Signature flow
+            Route::post('/document/{id}/sign',             [RekamMedisController::class, 'signDocument']);
+            Route::get('/document/{id}/signatures',        [RekamMedisController::class, 'listDocumentSignatures']);
+            Route::post('/document/{id}/addendum',         [RekamMedisController::class, 'createAddendum']);
+            Route::get('/signature/{signatureId}/verify',  [RekamMedisController::class, 'verifySignature']);
+            Route::get('/signature/{signatureId}/audit',   [RekamMedisController::class, 'auditSignature']);
+            Route::get('/ttd-queue',                       [RekamMedisController::class, 'ttdQueue']);
+
+            // Fase 6 — Audit log per dokumen
+            Route::get('/document/{id}/audit-log',         [RekamMedisController::class, 'documentAuditLog']);
         });
 
         // -----------------------------------------------------------------
@@ -491,6 +556,8 @@ Route::prefix('v1')->group(function () {
         Route::prefix('master')->group(function () {
             Route::get('/profil-klinik',                    [MasterDataController::class, 'showProfilKlinik']);
             Route::put('/profil-klinik',                    [MasterDataController::class, 'updateProfilKlinik']);
+            Route::post('/profil-klinik/logo',              [MasterDataController::class, 'uploadProfilKlinikLogo']);
+            Route::delete('/profil-klinik/logo',            [MasterDataController::class, 'deleteProfilKlinikLogo']);
 
             Route::get('/nomor-dokumen',                    [MasterDataController::class, 'indexNomorDokumen']);
             Route::put('/nomor-dokumen/{id}',               [MasterDataController::class, 'updateNomorDokumen']);
@@ -511,6 +578,13 @@ Route::prefix('v1')->group(function () {
             Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin']);
             Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin']);
             Route::delete('/penjamin/{id}',                 [MasterDataController::class, 'deletePenjamin']);
+
+            // Billing Categories — kategori grouping rincian tagihan Kasir
+            Route::get('/kategori-tagihan',                 [MasterDataController::class, 'indexBillingCategory']);
+            Route::post('/kategori-tagihan',                [MasterDataController::class, 'storeBillingCategory']);
+            Route::put('/kategori-tagihan/reorder',         [MasterDataController::class, 'reorderBillingCategory']);
+            Route::put('/kategori-tagihan/{id}',            [MasterDataController::class, 'updateBillingCategory']);
+            Route::delete('/kategori-tagihan/{id}',         [MasterDataController::class, 'deleteBillingCategory']);
 
             Route::get('/tindakan/template-csv',            [MasterDataController::class, 'templateCsv'])->defaults('type', 'tindakan');
             Route::get('/tindakan/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'tindakan');
@@ -572,6 +646,12 @@ Route::prefix('v1')->group(function () {
             Route::put('/iol/{id}',                         [MasterDataController::class, 'updateIol'])->middleware('permission:master_iol.write');
             Route::delete('/iol/{id}',                      [MasterDataController::class, 'deleteIol'])->middleware('permission:master_iol.delete');
 
+            // Alat Medis CSV (view fisik di /inventori-farmasi/alat-medis, CRUD pakai MedicalEquipmentController;
+            // CSV pakai generic MasterDataController karena frontend csv client hit /master/{type}/*-csv)
+            Route::get('/alat-medis/template-csv',          [MasterDataController::class, 'templateCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.read');
+            Route::get('/alat-medis/export-csv',            [MasterDataController::class, 'exportCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.read');
+            Route::post('/alat-medis/import-csv',           [MasterDataController::class, 'importCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.write');
+
             Route::get('/paket-bedah',                      [MasterDataController::class, 'indexPaketBedah']);
             Route::post('/paket-bedah',                     [MasterDataController::class, 'storePaketBedah']);
             Route::put('/paket-bedah/{id}',                 [MasterDataController::class, 'updatePaketBedah']);
@@ -618,6 +698,28 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/stasiun-dokumen',                  [MasterDataController::class, 'indexStasiunDokumen']);
             Route::put('/stasiun-dokumen/{id}',             [MasterDataController::class, 'updateStasiunDokumen']);
+
+            // -----------------------------------------------------------------
+            // FORM REGISTRY — Master Form Template (Fase 1 + Fase 2)
+            // RBAC: form_template.{read|write|delete}; superadmin auto-bypass.
+            // -----------------------------------------------------------------
+            Route::get('/field-registry',                              [MasterDataController::class, 'fieldRegistry'])->middleware('permission:form_template.read');
+            Route::get('/station-sections',                            [MasterDataController::class, 'stationSections'])->middleware('permission:form_template.read');
+            Route::get('/document-types',                              [MasterDataController::class, 'indexDocumentTypes'])->middleware('permission:form_template.read');
+            Route::post('/document-type',                              [MasterDataController::class, 'storeDocumentType'])->middleware('permission:form_template.write');
+            Route::put('/document-type/{id}',                          [MasterDataController::class, 'updateDocumentType'])->middleware('permission:form_template.write');
+            Route::delete('/document-type/{id}',                       [MasterDataController::class, 'destroyDocumentType'])->middleware('permission:form_template.write');
+
+            // Parser (Fase 2) — WAJIB didaftar SEBELUM /form-template/{id}
+            Route::post('/form-template/upload',                       [MasterDataController::class, 'uploadFormTemplate'])->middleware('permission:form_template.write');
+            Route::get('/form-template/parse-result/{parseId}',        [MasterDataController::class, 'parseResultFormTemplate'])->middleware('permission:form_template.write');
+
+            Route::get('/form-template',                               [MasterDataController::class, 'indexFormTemplate'])->middleware('permission:form_template.read');
+            Route::post('/form-template',                              [MasterDataController::class, 'storeFormTemplate'])->middleware('permission:form_template.write');
+            Route::get('/form-template/{id}',                          [MasterDataController::class, 'showFormTemplate'])->middleware('permission:form_template.read');
+            Route::put('/form-template/{id}',                          [MasterDataController::class, 'updateFormTemplate'])->middleware('permission:form_template.write');
+            Route::post('/form-template/{id}/activate',                [MasterDataController::class, 'activateFormTemplate'])->middleware('permission:form_template.write');
+            Route::post('/form-template/{id}/deactivate',              [MasterDataController::class, 'deactivateFormTemplate'])->middleware('permission:form_template.write');
         });
 
         // -----------------------------------------------------------------
@@ -659,6 +761,39 @@ Route::prefix('v1')->group(function () {
         Route::get('inventori-farmasi/inbox', [UnitRequestController::class, 'inbox'])
             ->middleware('permission:request_unit.read');
 
+        Route::get('inventori-farmasi/stock/{type}', [UnitRequestController::class, 'stock'])
+            ->middleware('permission:request_unit.read');
+
+        // Opname & CSV stok (obat & bhp)
+        Route::post('inventori-farmasi/stock/opname', [InventoryStockController::class, 'opname'])
+            ->middleware('permission:inventori_farmasi.write');
+        Route::get('inventori-farmasi/stock/{type}/template-csv', [InventoryStockController::class, 'templateCsv'])
+            ->middleware('permission:inventori_farmasi.read');
+        Route::get('inventori-farmasi/stock/{type}/export-csv', [InventoryStockController::class, 'exportCsv'])
+            ->middleware('permission:inventori_farmasi.read');
+        Route::post('inventori-farmasi/stock/{type}/import-csv', [InventoryStockController::class, 'importCsv'])
+            ->middleware('permission:inventori_farmasi.write');
+
+        // -----------------------------------------------------------------
+        // INVENTORI FARMASI — Alat Medis (master + tarif + usage)
+        // -----------------------------------------------------------------
+        Route::prefix('inventori-farmasi/alat-medis')->group(function () {
+            Route::get('/',                       [MedicalEquipmentController::class, 'index'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/',                      [MedicalEquipmentController::class, 'store'])->middleware('permission:inventori_farmasi.write');
+            Route::get('/{id}',                   [MedicalEquipmentController::class, 'show'])->middleware('permission:inventori_farmasi.read');
+            Route::put('/{id}',                   [MedicalEquipmentController::class, 'update'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/{id}',                [MedicalEquipmentController::class, 'destroy'])->middleware('permission:inventori_farmasi.delete');
+
+            // Tarif per insurer
+            Route::get('/{id}/tarif',             [MedicalEquipmentController::class, 'listTariffs'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/{id}/tarif',            [MedicalEquipmentController::class, 'upsertTariff'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/tarif/{tariffId}',    [MedicalEquipmentController::class, 'deleteTariff'])->middleware('permission:inventori_farmasi.write');
+        });
+        // Usage (dipakai dari BedahView / DokterView)
+        Route::get('/alat-medis/visit/{visitId}/usages',     [MedicalEquipmentController::class, 'usagesByVisit']);
+        Route::post('/alat-medis/usage',                     [MedicalEquipmentController::class, 'recordUsage']);
+        Route::delete('/alat-medis/usage/{id}',              [MedicalEquipmentController::class, 'deleteUsage']);
+
         // -----------------------------------------------------------------
         // INVENTORI FARMASI — Request dari Unit (klinik → gudang inventori)
         // -----------------------------------------------------------------
@@ -696,6 +831,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/settings',           [InventoryPriceController::class, 'getSettings'])->middleware('permission:inventori_farmasi.read');
             Route::put('/settings',           [InventoryPriceController::class, 'updateSettings'])->middleware('permission:inventori_farmasi.write');
 
+            // CSV — daftar SEBELUM route generic /{type} & /{type}/{itemId}
+            Route::get('/{type}/template-csv', [InventoryPriceController::class, 'templateCsv'])->middleware('permission:inventori_farmasi.read');
+            Route::get('/{type}/export-csv',   [InventoryPriceController::class, 'exportCsv'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/{type}/import-csv',  [InventoryPriceController::class, 'importCsv'])->middleware('permission:inventori_farmasi.write');
+
             Route::get('/{type}',             [InventoryPriceController::class, 'index'])->middleware('permission:inventori_farmasi.read');
             Route::put('/{type}/{itemId}',    [InventoryPriceController::class, 'upsert'])->middleware('permission:inventori_farmasi.write');
             Route::delete('/{type}/{itemId}', [InventoryPriceController::class, 'destroy'])->middleware('permission:inventori_farmasi.write');
@@ -722,6 +862,11 @@ Route::prefix('v1')->group(function () {
 
             // --- HELPER: harga master live per item (untuk auto-fill saat tambah tarif) ---
             Route::get('/master-price/{type}/{itemId}',     [TarifPaketController::class, 'masterPrice'])->middleware('permission:tarif_paket.read');
+
+            // --- PAKET BEDAH — CSV (WAJIB didaftar SEBELUM /paket-bedah/{id}) ---
+            Route::get('/paket-bedah/template-csv',         [TarifPaketController::class, 'templatePaketCsv'])->middleware('permission:tarif_paket.read');
+            Route::get('/paket-bedah/export-csv',           [TarifPaketController::class, 'exportPaketCsv'])->middleware('permission:tarif_paket.read');
+            Route::post('/paket-bedah/import-csv',          [TarifPaketController::class, 'importPaketCsv'])->middleware('permission:tarif_paket.write');
 
             // --- PAKET BEDAH (CRUD utama) ---
             Route::get('/paket-bedah',                      [TarifPaketController::class, 'indexPaket'])->middleware('permission:tarif_paket.read');
@@ -774,6 +919,42 @@ Route::prefix('v1')->group(function () {
         });
 
         // -----------------------------------------------------------------
+        // ASURANSI / TPA Non-BPJS — verifikasi eligibility + klaim workflow
+        // Tidak menyentuh BPJS (KlaimController). Permission: kasir.* (billing).
+        // Spec: Docs/ARUMED_INSURANCE_TPA_MODULE.md
+        // -----------------------------------------------------------------
+        Route::prefix('asuransi')->group(function () {
+            // Verifikasi eligibility (input manual hasil cek portal TPA)
+            Route::get('/verifikasi/pending',     [AsuransiController::class, 'pendingVerifications'])->middleware('permission:kasir.read');
+            Route::get('/verifikasi/in-service',  [AsuransiController::class, 'inServiceVerifications'])->middleware('permission:kasir.read');
+            Route::get('/verifikasi/{visitId}',   [AsuransiController::class, 'showVerifikasi'])->middleware('permission:kasir.read');
+            Route::post('/verifikasi',            [AsuransiController::class, 'storeVerifikasi'])->middleware('permission:kasir.write');
+            Route::put('/verifikasi/{id}',        [AsuransiController::class, 'updateVerifikasi'])->middleware('permission:kasir.write');
+            Route::get('/billing/{visitId}',      [AsuransiController::class, 'showBilling'])->middleware('permission:kasir.read');
+
+            // Klaim
+            Route::get('/klaim',                  [AsuransiController::class, 'indexKlaim'])->middleware('permission:kasir.read');
+            Route::get('/klaim/{id}',             [AsuransiController::class, 'showKlaim'])->middleware('permission:kasir.read');
+            Route::post('/klaim',                 [AsuransiController::class, 'storeKlaim'])->middleware('permission:kasir.write');
+            Route::put('/klaim/{id}',             [AsuransiController::class, 'updateKlaim'])->middleware('permission:kasir.write');
+            Route::post('/klaim/{id}/submit',     [AsuransiController::class, 'submitKlaim'])->middleware('permission:kasir.write');
+            Route::put('/klaim/{id}/status',      [AsuransiController::class, 'updateStatusKlaim'])->middleware('permission:kasir.write');
+            Route::post('/klaim/{id}/resubmit',   [AsuransiController::class, 'resubmitKlaim'])->middleware('permission:kasir.write');
+            Route::get('/klaim/{id}/logs',        [AsuransiController::class, 'logsKlaim'])->middleware('permission:kasir.read');
+
+            // Laporan
+            Route::get('/aging',                  [AsuransiController::class, 'agingReport'])->middleware('permission:kasir.read');
+            Route::get('/outstanding',            [AsuransiController::class, 'outstandingReport'])->middleware('permission:kasir.read');
+            Route::get('/summary',                [AsuransiController::class, 'dashboardSummary'])->middleware('permission:kasir.read');
+
+            // Master — Document Requirements per TPA
+            Route::get('/insurer/{insurerId}/dokumen-requirement',  [AsuransiController::class, 'indexDocRequirement'])->middleware('permission:kasir.read');
+            Route::post('/insurer/{insurerId}/dokumen-requirement', [AsuransiController::class, 'storeDocRequirement'])->middleware('permission:kasir.write');
+            Route::put('/dokumen-requirement/{id}',                 [AsuransiController::class, 'updateDocRequirement'])->middleware('permission:kasir.write');
+            Route::delete('/dokumen-requirement/{id}',              [AsuransiController::class, 'deleteDocRequirement'])->middleware('permission:kasir.delete');
+        });
+
+        // -----------------------------------------------------------------
         // RBAC (User / Role / Permission management) — Superadmin only
         // -----------------------------------------------------------------
         Route::middleware('role:superadmin')->prefix('rbac')->group(function () {
@@ -793,6 +974,11 @@ Route::prefix('v1')->group(function () {
             Route::put('/roles/{id}/permissions',[RoleController::class, 'syncPermissions']);
 
             // Users
+            // CSV (definisikan sebelum /users/{id} agar tidak ketangkap wildcard)
+            Route::get('/users/csv-template',          [UserController::class, 'csvTemplate']);
+            Route::get('/users/export',                [UserController::class, 'exportCsv']);
+            Route::post('/users/import',               [UserController::class, 'importCsv']);
+
             Route::get('/users',                       [UserController::class, 'index']);
             Route::post('/users',                      [UserController::class, 'store']);
             Route::get('/users/{id}',                  [UserController::class, 'show']);
@@ -800,6 +986,7 @@ Route::prefix('v1')->group(function () {
             Route::delete('/users/{id}',               [UserController::class, 'destroy']);
             Route::patch('/users/{id}/toggle-aktif',   [UserController::class, 'toggleAktif']);
             Route::put('/users/{id}/reset-password',   [UserController::class, 'resetPassword']);
+            Route::put('/users/{id}/reset-pin',        [UserController::class, 'resetPin']);
         });
 
     }); // <--- INI ADALAH PENUTUP WAJIB LOGIN (AUTH:API)

@@ -20,7 +20,7 @@ class UnitReturnService
 
     public function index(array $filters = []): LengthAwarePaginator
     {
-        $q = UnitReturn::query()->with(['unitRequest:id,request_number']);
+        $q = UnitReturn::query()->with(['unitRequest:id,request_number', 'items']);
 
         if (!empty($filters['search'])) {
             $term = '%' . $filters['search'] . '%';
@@ -46,7 +46,9 @@ class UnitReturnService
         }
 
         $perPage = (int) ($filters['per_page'] ?? 25);
-        return $q->orderByDesc('return_date')->orderByDesc('return_number')->paginate($perPage);
+        $paginator = $q->orderByDesc('return_date')->orderByDesc('return_number')->paginate($perPage);
+        $paginator->getCollection()->transform(fn ($r) => $this->toArray($r));
+        return $paginator;
     }
 
     public function show(string $id): array
@@ -64,24 +66,32 @@ class UnitReturnService
             UnitRequest::findOrFail($data['unit_request_id']);
         }
 
-        return DB::transaction(function () use ($data, $items) {
-            $ret = UnitReturn::create([
-                'return_number'     => $this->generateNumber($data['return_date'] ?? null),
-                'unit_request_id'   => $data['unit_request_id'] ?? null,
-                'returning_station' => $data['returning_station'],
-                'return_date'       => $data['return_date'] ?? now()->toDateString(),
-                'status'            => UnitReturn::STATUS_DRAFT,
-                'reason'            => $data['reason'] ?? null,
-                'notes'             => $data['notes'] ?? null,
-                'returned_by'       => auth('api')->id(),
-            ]);
+        $attempts = 0;
+        while (true) {
+            try {
+                return DB::transaction(function () use ($data, $items, $attempts) {
+                    $ret = UnitReturn::create([
+                        'return_number'     => $this->generateNumber($data['return_date'] ?? null, $attempts),
+                        'unit_request_id'   => $data['unit_request_id'] ?? null,
+                        'returning_station' => $data['returning_station'],
+                        'return_date'       => $data['return_date'] ?? now()->toDateString(),
+                        'status'            => UnitReturn::STATUS_DRAFT,
+                        'reason'            => $data['reason'] ?? null,
+                        'notes'             => $data['notes'] ?? null,
+                        'returned_by'       => auth('api')->id(),
+                    ]);
 
-            foreach ($items as $row) {
-                $this->createItem($ret, $row);
+                    foreach ($items as $row) {
+                        $this->createItem($ret, $row);
+                    }
+
+                    return $ret->fresh('items');
+                });
+            } catch (\Illuminate\Database\QueryException $e) {
+                if ($e->getCode() === '23505' && ++$attempts < 8) continue;
+                throw $e;
             }
-
-            return $ret->fresh('items');
-        });
+        }
     }
 
     public function update(string $id, array $data): UnitReturn
@@ -291,19 +301,15 @@ class UnitReturnService
         };
     }
 
-    private function generateNumber(?string $date): string
+    private function generateNumber(?string $date, int $bump = 0): string
     {
         $d = $date ? Carbon::parse($date) : now();
         $prefix = 'RET-' . $d->format('Ym') . '-';
-        $last = UnitReturn::withTrashed()
+        $next = (int) DB::table('unit_returns')
             ->where('return_number', 'like', $prefix . '%')
-            ->orderByDesc('return_number')
-            ->value('return_number');
-        $next = 1;
-        if ($last && preg_match('/-(\d+)$/', $last, $m)) {
-            $next = (int) $m[1] + 1;
-        }
-        return $prefix . sprintf('%04d', $next);
+            ->selectRaw("COALESCE(MAX(CAST(SUBSTRING(return_number FROM '\d+$') AS INTEGER)), 0) + 1 AS n")
+            ->value('n');
+        return $prefix . sprintf('%04d', $next + $bump);
     }
 
     private function toArray(UnitReturn $ret): array

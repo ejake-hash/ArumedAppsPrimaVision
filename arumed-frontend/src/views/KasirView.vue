@@ -1,13 +1,32 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { kasirApi } from '@/services/api'
+import { kasirApi, masterApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+
+// ─── Master kategori tagihan (grouping order) ────────────────────────────────
+// Daftar kategori aktif di master billing_categories — dipakai untuk grouping
+// & urutan section di Rincian Tagihan. Kategori yang dipakai item tapi TIDAK
+// terdaftar di master → otomatis masuk bucket "Lainnya" di akhir.
+const billingCategories = ref([])
+async function fetchBillingCategories() {
+  try {
+    const { data } = await masterApi.kategoriTagihan.list({ active: 1 })
+    const rows = Array.isArray(data.data) ? data.data : (data.data?.data ?? [])
+    billingCategories.value = rows
+  } catch (err) {
+    // Non-fatal; fallback ke urutan default (string asc).
+    billingCategories.value = []
+  }
+}
 
 // ─── Antrean Kasir ──────────────────────────────────────────────────────────
 const queue        = ref([])
 const queueLoading = ref(false)
-const qTab         = ref('all')
-const qSearch      = ref('')
+const qPrimaryFilter   = ref('waiting') // 'waiting' (belum bayar) | 'done' (lunas)
+const qSecondaryFilter = ref('semua')   // 'semua' | 'bpjs' | 'umum'
+const qSearch          = ref('')
+const pendingCallIds   = ref([])
+const pendingSkipIds   = ref([])
 
 function ptypeOf(q) {
   const g = (q.visit?.guarantor_type ?? '').toUpperCase()
@@ -25,14 +44,17 @@ function formatTime(ts) {
     : d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+const belumBayarCount = computed(() => queue.value.filter((q) => !isLunas(q)).length)
+const selesaiCount    = computed(() => queue.value.filter((q) =>  isLunas(q)).length)
+
 const filtQ = computed(() => {
   let l = queue.value
-  if (qTab.value === 'selesai') l = l.filter((q) => isLunas(q))
-  else {
-    l = l.filter((q) => !isLunas(q))
-    if (qTab.value === 'bpjs')      l = l.filter((q) => ptypeOf(q) === 'bpjs')
-    else if (qTab.value === 'umum') l = l.filter((q) => ptypeOf(q) !== 'bpjs')
-  }
+  if (qPrimaryFilter.value === 'done')  l = l.filter((q) =>  isLunas(q))
+  else                                  l = l.filter((q) => !isLunas(q))
+
+  if (qSecondaryFilter.value === 'bpjs')      l = l.filter((q) => ptypeOf(q) === 'bpjs')
+  else if (qSecondaryFilter.value === 'umum') l = l.filter((q) => ptypeOf(q) !== 'bpjs')
+
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
     l = l.filter((q) =>
@@ -43,8 +65,6 @@ const filtQ = computed(() => {
   }
   return l
 })
-
-const selesaiCount = computed(() => queue.value.filter((q) => isLunas(q)).length)
 
 async function fetchQueue() {
   queueLoading.value = true
@@ -64,6 +84,45 @@ const selQ        = ref(null)    // queue item dipilih
 const selInv      = ref(null)    // full BillingInvoice + items
 const selInvLoading = ref(false)
 
+// Warning verifikasi asuransi (Sprint 4 modul Asuransi/TPA)
+const insuranceWarning = ref({ show: false })
+
+// Estimasi copay pasien berdasarkan verifikasi + total tagihan saat ini.
+// REFERENSI — sistem tidak auto-set nominal bayar. Aturan: max(% × tagihan, copay tetap).
+const kasirCopayEstimate = computed(() => {
+  const v = insuranceWarning.value?.verification
+  const total = Number(selInv.value?.total) || 0
+  if (!v || total === 0) return { label: '—', amount: 0 }
+
+  const pct = Number(v.copayment_percent) || 0
+  const fix = Number(v.copayment_amount) || 0
+  const fromPct = total * (pct / 100)
+  const patientShare = Math.max(fromPct, fix)
+
+  if (pct === 0 && fix === 0) {
+    return { label: 'Rp 0 (full cover)', amount: 0 }
+  }
+  return {
+    label: 'Rp ' + Math.round(patientShare).toLocaleString('id-ID'),
+    amount: patientShare,
+  }
+})
+
+// Warning kalau sisa plafon tidak cukup nutup klaim
+const eligPlafonWarn = computed(() => {
+  const v = insuranceWarning.value?.verification
+  const total = Number(selInv.value?.total) || 0
+  if (!v || !v.plafon_amount || total === 0) return null
+
+  const plafon = Number(v.plafon_amount)
+  const tpaShare = Math.max(0, total - kasirCopayEstimate.value.amount)
+  if (plafon < tpaShare) {
+    const diff = tpaShare - plafon
+    return `Sisa plafon Rp ${plafon.toLocaleString('id-ID')} lebih kecil dari estimasi klaim Rp ${Math.round(tpaShare).toLocaleString('id-ID')}. Selisih Rp ${Math.round(diff).toLocaleString('id-ID')} jadi tanggungan pasien.`
+  }
+  return null
+})
+
 async function pickP(q) {
   selQ.value         = q
   selInv.value       = null
@@ -71,14 +130,18 @@ async function pickP(q) {
   uangDibayar.value  = 0
   showMixed.value    = false
   editTagihan.value  = false
+  insuranceWarning.value = { show: false }
   if (!q.visit?.id) return
+
+  // Fetch warning asuransi (non-blocking, error → silent)
+  kasirApi.insuranceWarning(q.visit.id)
+    .then(({ data }) => { insuranceWarning.value = data.data ?? { show: false } })
+    .catch(() => {})
 
   selInvLoading.value = true
   try {
-    // Coba ambil invoice yang sudah ada
     let { data } = await kasirApi.showInvoice(q.visit.id)
     if (!data.data) {
-      // Belum ada → generate dari sumber-sumber visit
       try {
         ({ data } = await kasirApi.generateInvoice(q.visit.id))
       } catch (err) {
@@ -87,6 +150,7 @@ async function pickP(q) {
       }
     }
     selInv.value = data.data
+    syncGlobalDiscountFields()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat tagihan')
   } finally {
@@ -96,28 +160,57 @@ async function pickP(q) {
 
 async function callPt(q, e) {
   e.stopPropagation()
+  if (pendingCallIds.value.includes(q.id)) return
+  pendingCallIds.value.push(q.id)
   try {
     const { data } = await kasirApi.panggilAntrian(q.id)
     Object.assign(q, data.data)
     toast('i', `Memanggil ${q.visit?.patient?.name ?? ''} (${q.queue_number ?? ''})`)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memanggil pasien')
+  } finally {
+    pendingCallIds.value = pendingCallIds.value.filter((id) => id !== q.id)
+  }
+}
+
+async function skipPt(q, e) {
+  e.stopPropagation()
+  if (pendingSkipIds.value.includes(q.id)) return
+  pendingSkipIds.value.push(q.id)
+  try {
+    await kasirApi.lewatiAntrian(q.id)
+    toast('w', `${q.visit?.patient?.name ?? ''} (${q.queue_number ?? ''}) dipindah ke akhir antrean`)
+    if (selQ.value?.id === q.id) { selQ.value = null; selInv.value = null }
+    await fetchQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal melewati pasien')
+  } finally {
+    pendingSkipIds.value = pendingSkipIds.value.filter((id) => id !== q.id)
   }
 }
 
 // ─── Hitungan tagihan ───────────────────────────────────────────────────────
-const subtotal = () => Number(selInv.value?.subtotal ?? 0)
+const subtotal       = () => Number(selInv.value?.subtotal ?? 0)
+const itemDiscount   = computed(() => (selInv.value?.items ?? []).reduce(
+  (a, it) => a + Number(it.discount_amount ?? 0), 0,
+))
+const subtotalNet    = computed(() => Math.max(0, subtotal() - itemDiscount.value))
 const discountAmount = computed(() => Number(selInv.value?.discount ?? 0))
 const taxAmount      = computed(() => Number(selInv.value?.tax ?? 0))
 const totalTagihan   = computed(() => Number(selInv.value?.total ?? 0))
 const paidAmount     = computed(() => Number(selInv.value?.paid_amount ?? 0))
-const sisaTagihan    = computed(() => Math.max(0, totalTagihan.value - paidAmount.value))
+// Porsi ditanggung asuransi/TPA (diinput admin di menu Asuransi). 0 untuk pasien umum.
+const coveredAmount  = computed(() => Number(selInv.value?.covered_amount ?? 0))
+// Sisa yang harus DIBAYAR PASIEN = total − ditanggung asuransi − sudah dibayar.
+const sisaTagihan    = computed(() => Math.max(0, totalTagihan.value - coveredAmount.value - paidAmount.value))
+// Ditanggung penuh: cover menutup seluruh sisa (pasien tidak perlu bayar apa-apa).
+const isFullCover    = computed(() =>
+  coveredAmount.value > 0 && (coveredAmount.value + paidAmount.value) >= totalTagihan.value,
+)
 
 function bayar() { return sisaTagihan.value }
 
 // ─── Metode pembayaran ──────────────────────────────────────────────────────
-// `code` cocok dengan enum backend: CASH | CREDIT_CARD | TRANSFER | BPJS.
-// QRIS dipetakan ke TRANSFER karena belum ada enum khusus.
 const payMethods = [
   { id: 1, code: 'CASH',        name: 'Tunai',        icon: '<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/>', bg: 'var(--gl)', color: 'var(--ga)' },
   { id: 2, code: 'CREDIT_CARD', name: 'Debit/Kredit', icon: '<rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>', bg: 'var(--ib)', color: 'var(--it)' },
@@ -128,7 +221,6 @@ const selPM = ref(null)
 const uangDibayar = ref(0)
 const paying = ref(false)
 
-// Mixed / campuran payment
 const showMixed = ref(false)
 const mixedAmounts = ref({ 1: 0, 2: 0, 3: 0, 4: 0 })
 const mixedTotal = computed(() => Object.values(mixedAmounts.value).reduce((a, b) => a + (Number(b) || 0), 0))
@@ -144,10 +236,10 @@ function toggleMixed() {
   }
 }
 
-// ─── Edit tagihan (CRUD billing items) ─────────────────────────────────────
+// ─── Edit tagihan ───────────────────────────────────────────────────────────
 const editTagihan = ref(false)
-const newItem = ref({ description: '', item_type: 'TINDAKAN', quantity: 1, unit_price: 0 })
-const itemTypes = ['REGISTRASI', 'TINDAKAN', 'OBAT', 'IOL', 'BHP', 'LAINNYA']
+const newItem = ref({ description: '', item_type: 'TINDAKAN', category: '', quantity: 1, unit_price: 0, discount_percent: 0, discount_amount: 0 })
+const itemTypes = ['REGISTRASI', 'TINDAKAN', 'OBAT', 'PENUNJANG', 'BHP', 'IOL', 'MEDICAL_EQUIPMENT', 'LAINNYA']
 
 async function removeItem(item) {
   if (!item?.id) return
@@ -166,18 +258,39 @@ async function addItem() {
   if (!newItem.value.description.trim()) { toast('w', 'Keterangan item wajib diisi'); return }
   try {
     const payload = {
-      item_type:   newItem.value.item_type,
-      description: newItem.value.description,
-      quantity:    Number(newItem.value.quantity) || 1,
-      unit_price:  Number(newItem.value.unit_price) || 0,
+      item_type:        newItem.value.item_type,
+      category:         newItem.value.category || null,
+      description:      newItem.value.description,
+      quantity:         Number(newItem.value.quantity) || 1,
+      unit_price:       Number(newItem.value.unit_price) || 0,
+      discount_amount:  Number(newItem.value.discount_amount) || 0,
+      discount_percent: Number(newItem.value.discount_percent) || 0,
     }
     await kasirApi.storeItem(selInv.value.id, payload)
     await refreshInvoice()
-    newItem.value = { description: '', item_type: 'TINDAKAN', quantity: 1, unit_price: 0 }
+    newItem.value = { description: '', item_type: 'TINDAKAN', category: '', quantity: 1, unit_price: 0, discount_percent: 0, discount_amount: 0 }
     toast('s', 'Item ditambahkan')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menambahkan item')
   }
+}
+
+const itemDiscDebounce = ref({})
+function onItemDiscChange(item, field) {
+  if (itemDiscDebounce.value[item.id]) clearTimeout(itemDiscDebounce.value[item.id])
+  itemDiscDebounce.value[item.id] = setTimeout(async () => {
+    try {
+      const payload = field === 'discount_amount'
+        ? { discount_amount:  Number(item.discount_amount)  || 0 }
+        : { discount_percent: Number(item.discount_percent) || 0 }
+      const { data } = await kasirApi.updateItem(item.id, payload)
+      const fresh = data.data
+      Object.assign(item, fresh)
+      await refreshInvoice()
+    } catch (err) {
+      toast('w', err.response?.data?.message ?? 'Gagal update diskon item')
+    }
+  }, 400)
 }
 
 async function refreshInvoice() {
@@ -185,7 +298,35 @@ async function refreshInvoice() {
   try {
     const { data } = await kasirApi.showInvoice(selQ.value.visit.id)
     if (data.data) selInv.value = data.data
+    syncGlobalDiscountFields()
   } catch { /* ignore */ }
+}
+
+// ─── Global diskon (Rp / %) ─────────────────────────────────────────────────
+const globalDiscRp = ref(0)
+const globalDiscPc = ref(0)
+const globalDiscDebounce = ref(null)
+
+function syncGlobalDiscountFields() {
+  globalDiscRp.value = Number(selInv.value?.discount ?? 0)
+  globalDiscPc.value = Number(selInv.value?.discount_percent ?? 0)
+}
+
+function onGlobalDiscChange(field) {
+  if (globalDiscDebounce.value) clearTimeout(globalDiscDebounce.value)
+  globalDiscDebounce.value = setTimeout(async () => {
+    if (!selInv.value?.id) return
+    try {
+      const payload = field === 'rp'
+        ? { discount: Number(globalDiscRp.value) || 0, discount_percent: 0 }
+        : { discount_percent: Math.max(0, Math.min(100, Number(globalDiscPc.value) || 0)) }
+      const { data } = await kasirApi.updateInvoice(selInv.value.id, payload)
+      selInv.value = data.data
+      await refreshInvoice()
+    } catch (err) {
+      toast('w', err.response?.data?.message ?? 'Gagal update diskon')
+    }
+  }, 400)
 }
 
 // ─── Proses pembayaran ──────────────────────────────────────────────────────
@@ -198,14 +339,12 @@ async function prosesBayar() {
 
   paying.value = true
   try {
-    // Pastikan invoice FINALIZED sebelum diproses
     if (selInv.value.status === 'DRAFT') {
       const { data } = await kasirApi.finalizeInvoice(selInv.value.id)
       selInv.value = data.data
     }
 
     if (selPM.value === 99) {
-      // Mixed → kirim satu bayar per metode yang nominalnya > 0
       for (const pm of payMethods) {
         const amount = Number(mixedAmounts.value[pm.id] || 0)
         if (amount <= 0) continue
@@ -227,7 +366,6 @@ async function prosesBayar() {
     }
 
     if (selInv.value.status === 'PAID') {
-      // Sinkronkan status antrean lokal (backend sudah set COMPLETED)
       const localQ = queue.value.find((q) => q.id === selQ.value?.id)
       if (localQ) localQ.status = 'COMPLETED'
       toast('s', `Pembayaran lunas — invoice ${selInv.value.invoice_number}`)
@@ -241,10 +379,28 @@ async function prosesBayar() {
   }
 }
 
+// Konfirmasi tagihan ditanggung penuh asuransi — pasien tidak membayar.
+async function prosesKonfirmasiCover() {
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  paying.value = true
+  try {
+    if (selInv.value.status === 'DRAFT') {
+      const { data } = await kasirApi.finalizeInvoice(selInv.value.id)
+      selInv.value = data.data
+    }
+    const { data } = await kasirApi.confirmCoverage(selInv.value.id, {})
+    selInv.value = data.data
+    const localQ = queue.value.find((q) => q.id === selQ.value?.id)
+    if (localQ) localQ.status = 'COMPLETED'
+    toast('s', `Ditanggung asuransi — invoice ${selInv.value.invoice_number} selesai`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal konfirmasi tanggungan asuransi')
+  } finally {
+    paying.value = false
+  }
+}
+
 // ─── Cetak Rincian Biaya (A4) ────────────────────────────────────────────────
-// Ambil data terstruktur dari backend (kop surat klinik + invoice + item),
-// render ke template tersembunyi `.rincian-print`, lalu panggil dialog cetak
-// browser. User dapat memilih "Save as PDF" untuk menghasilkan PDF A4.
 const printData = ref(null)
 const printing  = ref(false)
 
@@ -255,7 +411,7 @@ async function cetakRincian() {
     const { data } = await kasirApi.cetakInvoice(selInv.value.id)
     printData.value = data.data
     await nextTick()
-    window.print()
+    setTimeout(() => window.print(), 80)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menyiapkan dokumen cetak')
   } finally {
@@ -293,7 +449,7 @@ async function fetchHistory() {
 }
 
 function metodeLabel(code) {
-  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS' })[code] ?? (code ?? '—')
+  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi' })[code] ?? (code ?? '—')
 }
 function ptypeOfHistory(h) {
   const g = (h.visit?.guarantor_type ?? '').toUpperCase()
@@ -320,6 +476,7 @@ let _poll = null
 onMounted(() => {
   fetchQueue()
   fetchHistory()
+  fetchBillingCategories()
   _poll = setInterval(fetchQueue, 30_000)
 })
 onUnmounted(() => { if (_poll) clearInterval(_poll) })
@@ -332,64 +489,194 @@ function toast(type, msg) {
   toasts.value.push({ id, type, msg })
   setTimeout(() => (toasts.value = toasts.value.filter((t) => t.id !== id)), 3000)
 }
+
+function catLabel(item) {
+  return item.category || item.item_type || '—'
+}
+function catCls(item) {
+  return `kat-${(item.item_type || 'lainnya').toLowerCase()}`
+}
+
+// ─── Grouping rincian tagihan per kategori ───────────────────────────────────
+// Mengelompokkan selInv.items berdasarkan category, mengikuti sort_order dari
+// master billingCategories. Item yang category-nya tidak terdaftar di master
+// dilempar ke bucket "Lainnya" di akhir.
+const FALLBACK_CATEGORY = 'Lainnya'
+
+function groupItemsByCategory(items, categories) {
+  if (!Array.isArray(items) || !items.length) return []
+
+  // Map nama → sort_order; key lowercase supaya tidak case-sensitive.
+  const orderMap = new Map()
+  for (const cat of (categories ?? [])) {
+    if (cat?.name) orderMap.set(String(cat.name).toLowerCase(), cat.sort_order ?? 100)
+  }
+
+  // Bucket per nama kategori (preserve original casing dari item).
+  const buckets = new Map()
+  for (const it of items) {
+    const rawCat   = (it.category && String(it.category).trim()) || FALLBACK_CATEGORY
+    const inMaster = orderMap.has(rawCat.toLowerCase())
+    const bucketKey = inMaster ? rawCat : FALLBACK_CATEGORY
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, [])
+    buckets.get(bucketKey).push(it)
+  }
+
+  // Convert ke array + sort: known categories by sort_order asc; Lainnya selalu terakhir.
+  const groups = Array.from(buckets.entries()).map(([name, rows]) => ({
+    name,
+    sort_order: orderMap.get(name.toLowerCase()) ?? 99999,
+    items: rows,
+    subtotal: rows.reduce((a, r) => a + Number(r.net_price ?? r.total_price ?? 0), 0),
+  }))
+  groups.sort((a, b) => {
+    if (a.name === FALLBACK_CATEGORY) return 1
+    if (b.name === FALLBACK_CATEGORY) return -1
+    return a.sort_order - b.sort_order
+  })
+  return groups
+}
+
+const groupedItems = computed(() => groupItemsByCategory(selInv.value?.items ?? [], billingCategories.value))
+const groupedPrintItems = computed(() =>
+  groupItemsByCategory(printData.value?.items ?? [], printData.value?.categories ?? billingCategories.value),
+)
+// Daftar nama kategori untuk datalist autocomplete di form add-item.
+const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 </script>
 
 <template>
   <div class="kasir">
     <div class="grid">
-      <!-- LEFT QUEUE -->
-      <aside class="qp">
-        <div class="qph">
-          <div class="qpht"><span>Antrean Kasir</span><span class="live-pill">LIVE</span></div>
-          <div class="qst">
-            <div class="qsc"><div class="qsc-v">{{ queue.length }}</div><div class="qsc-l">Total</div></div>
-            <div class="qsc w"><div class="qsc-v">{{ queue.filter((q) => !isLunas(q)).length }}</div><div class="qsc-l">Belum Bayar</div></div>
-            <div class="qsc d"><div class="qsc-v">{{ selesaiCount }}</div><div class="qsc-l">Lunas</div></div>
+      <!-- ══════════════════ LEFT: QUEUE (mengikuti PerawatView) ══════════════════ -->
+      <aside class="col-queue">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-head-title">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+                Antrean Kasir
+              </div>
+              <div class="card-head-sub">{{ queue.length }} pasien hari ini</div>
+            </div>
+            <span class="pill-live">LIVE</span>
           </div>
-        </div>
-        <div class="qtabs">
-          <button :class="['qtab', qTab === 'all' ? 'a' : '']" @click="qTab = 'all'">Semua</button>
-          <button :class="['qtab', qTab === 'bpjs' ? 'a' : '']" @click="qTab = 'bpjs'">BPJS</button>
-          <button :class="['qtab', qTab === 'umum' ? 'a' : '']" @click="qTab = 'umum'">Umum/Asn</button>
-          <button :class="['qtab', qTab === 'selesai' ? 'a' : '']" @click="qTab = 'selesai'">
-            Selesai
-            <span v-if="selesaiCount" class="qtab-ct">{{ selesaiCount }}</span>
-          </button>
-        </div>
-        <div class="qsw"><input v-model="qSearch" class="fi" placeholder="Cari pasien / no..." /></div>
-        <div class="ql">
-          <div v-if="queueLoading && !queue.length" class="empty-q">Memuat antrean…</div>
-          <div v-for="q in filtQ" :key="q.id"
-            :class="['qi', selQ && selQ.id === q.id ? 'ac' : '', isLunas(q) ? 'dn' : '']"
-            @click="pickP(q)">
-            <div :class="['qis', ptypeOf(q)]"></div>
-            <div class="qib">
-              <div class="qitop">
-                <span class="qinum">{{ q.queue_number }}</span>
-                <span class="qitime">{{ formatTime(q.called_at ?? q.created_at) }}</span>
+
+          <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean kasir">
+            <!-- Stats bar -->
+            <div class="stats-bar">
+              <div class="stat-item">
+                <span class="stat-label">Belum Bayar</span>
+                <b class="stat-num stat-waiting">{{ belumBayarCount }}</b>
               </div>
-              <div class="qiname">{{ q.visit?.patient?.name ?? '—' }}</div>
-              <div class="qimeta">{{ q.visit?.patient?.no_rm ?? '—' }}</div>
-              <div class="qitags">
-                <span :class="['qit', ptypeOf(q) === 'bpjs' ? 'qit-b' : ptypeOf(q) === 'asn' ? 'qit-a' : 'qit-u']">
-                  {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asn' : 'Umum' }}
-                </span>
-                <span v-if="isLunas(q)" class="qit qit-d">Lunas</span>
-                <span v-else class="qit qit-w">Belum Bayar</span>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Lunas</span>
+                <b class="stat-num stat-done">{{ selesaiCount }}</b>
               </div>
-              <div v-if="!isLunas(q)" class="q-actions" @click.stop>
-                <button class="q-act call" @click="callPt(q, $event)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
-                  Panggil
-                </button>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Total</span>
+                <b class="stat-num">{{ queue.length }}</b>
+              </div>
+            </div>
+
+            <!-- Primary filter -->
+            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+              <button :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']" @click="qPrimaryFilter = 'waiting'">
+                Belum Bayar
+                <span v-if="belumBayarCount" class="pf-ct">{{ belumBayarCount }}</span>
+              </button>
+              <button :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']" @click="qPrimaryFilter = 'done'">
+                Lunas
+                <span v-if="selesaiCount" class="pf-ct">{{ selesaiCount }}</span>
+              </button>
+            </div>
+
+            <!-- Secondary filter -->
+            <div class="ptype-tabs" role="group" aria-label="Filter jenis penjamin">
+              <button :class="['ptype-tab', qSecondaryFilter === 'semua' ? 'a' : '']" @click="qSecondaryFilter = 'semua'">Semua</button>
+              <button :class="['ptype-tab ptype-bpjs', qSecondaryFilter === 'bpjs' ? 'a' : '']" @click="qSecondaryFilter = 'bpjs'">BPJS</button>
+              <button :class="['ptype-tab ptype-umum', qSecondaryFilter === 'umum' ? 'a' : '']" @click="qSecondaryFilter = 'umum'">Umum/Asuransi</button>
+            </div>
+
+            <!-- Search -->
+            <div class="q-search-wrap">
+              <input v-model="qSearch" class="q-search" placeholder="Cari nama / no. antrean / RM…" />
+            </div>
+
+            <!-- Loading -->
+            <template v-if="queueLoading && !queue.length">
+              <div v-for="n in 3" :key="n" class="q-skeleton"></div>
+            </template>
+
+            <!-- Empty -->
+            <div v-else-if="!filtQ.length" class="empty-section">Tidak ada pasien dalam filter ini</div>
+
+            <!-- Queue list -->
+            <div v-else role="list" aria-label="Daftar antrean kasir">
+              <div
+                v-for="q in filtQ" :key="q.id"
+                role="listitem"
+                :class="['q-item', selQ?.id === q.id ? 'active' : '', isLunas(q) ? 'done' : '']"
+                tabindex="0"
+                @click="pickP(q)"
+                @keydown.enter="pickP(q)"
+              >
+                <div class="qi-left">
+                  <div class="q-num">{{ q.queue_number }}</div>
+                  <span :class="['pill', isLunas(q) ? 'pill-completed' : `pill-${(q.status || 'waiting').toLowerCase()}`]">
+                    <svg v-if="!isLunas(q) && q.status === 'WAITING'" viewBox="0 0 24 24" class="pill-icon"><path d="M5 2h14M5 22h14M6 2v5l4 5-4 5v5M18 2v5l-4 5 4 5v5"/></svg>
+                    <svg v-else-if="!isLunas(q) && q.status === 'CALLED'" viewBox="0 0 24 24" class="pill-icon"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
+                    {{ isLunas(q) ? 'Lunas' : (q.status === 'WAITING' ? 'Menunggu' : q.status === 'CALLED' ? 'Dipanggil' : 'Proses') }}
+                  </span>
+                </div>
+
+                <div class="q-info">
+                  <div class="q-name">{{ q.visit?.patient?.name ?? '—' }}</div>
+                  <div class="q-meta">
+                    RM: {{ q.visit?.patient?.no_rm ?? '—' }}
+                  </div>
+                  <div class="q-tags">
+                    <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
+                      {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
+                    </span>
+                    <span v-if="isLunas(q)" class="pill pill-done">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
+                      Lunas
+                    </span>
+                    <span v-else class="pill pill-belum">Belum Bayar</span>
+                  </div>
+                  <div v-if="!isLunas(q)" class="q-actions" @click.stop>
+                    <button
+                      :class="['q-act-btn', 'call', q.status !== 'WAITING' ? 'recall' : '']"
+                      :disabled="pendingCallIds.includes(q.id)"
+                      @click="callPt(q, $event)"
+                    >
+                      <svg v-if="q.status === 'WAITING'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                      {{ q.status === 'WAITING' ? 'Panggil' : 'Panggil Ulang' }}
+                    </button>
+                    <button
+                      class="q-act-btn skip"
+                      :disabled="pendingSkipIds.includes(q.id)"
+                      @click="skipPt(q, $event)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+                      Lewati
+                    </button>
+                  </div>
+                </div>
+
+                <div class="qi-time">{{ formatTime(q.called_at ?? q.created_at) }}</div>
               </div>
             </div>
           </div>
-          <div v-if="!queueLoading && !filtQ.length" class="empty-q">Tidak ada antrean</div>
         </div>
       </aside>
 
-      <!-- RIGHT -->
+      <!-- ══════════════════ RIGHT ══════════════════ -->
       <section class="rp">
         <div class="nvt">
           <button :class="['nt', pg === 'tagihan' ? 'a' : '']" @click="pg = 'tagihan'">
@@ -435,6 +722,76 @@ function toast(type, msg) {
             <div class="layout">
               <!-- LEFT: detail tagihan -->
               <div class="col-left">
+                <!-- Warning verifikasi asuransi/TPA — non-blocker (Sprint 4 modul Asuransi) -->
+                <div v-if="insuranceWarning.show" :class="['insurance-alert', insuranceWarning.status === 'ISSUE' ? 'ia-issue' : 'ia-pending']">
+                  <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <div>
+                    <strong>
+                      {{ insuranceWarning.status === 'ISSUE' ? '⚠ Verifikasi Bermasalah' : '⏳ Verifikasi Pending' }}
+                    </strong>
+                    <div class="ia-msg">{{ insuranceWarning.message }}</div>
+                  </div>
+                </div>
+
+                <!-- Panel info eligibility (readonly) — tampil untuk visit ASURANSI/PERUSAHAAN -->
+                <div v-if="insuranceWarning.verification" class="elig-panel">
+                  <div class="elig-head">
+                    <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
+                    Info Eligibility Asuransi
+                    <span :class="['elig-status', `es-${(insuranceWarning.status || 'NONE').toLowerCase()}`]">
+                      {{ insuranceWarning.status }}
+                    </span>
+                  </div>
+                  <div class="elig-grid">
+                    <div class="elig-cell">
+                      <div class="elig-lbl">Sisa Plafon</div>
+                      <div class="elig-val" :class="eligPlafonWarn ? 'val-warn' : ''">
+                        {{ insuranceWarning.verification.plafon_amount
+                          ? 'Rp ' + Math.round(Number(insuranceWarning.verification.plafon_amount)).toLocaleString('id-ID')
+                          : 'Unlimited / —' }}
+                      </div>
+                    </div>
+                    <div class="elig-cell">
+                      <div class="elig-lbl">Co-payment %</div>
+                      <div class="elig-val">{{ Math.round(Number(insuranceWarning.verification.copayment_percent) || 0) }}%</div>
+                    </div>
+                    <div class="elig-cell">
+                      <div class="elig-lbl">Co-payment Tetap</div>
+                      <div class="elig-val">
+                        {{ Number(insuranceWarning.verification.copayment_amount)
+                          ? 'Rp ' + Math.round(Number(insuranceWarning.verification.copayment_amount)).toLocaleString('id-ID')
+                          : '—' }}
+                      </div>
+                    </div>
+                    <div class="elig-cell">
+                      <div class="elig-lbl">Estimasi Pasien Bayar</div>
+                      <div class="elig-val val-emphasis" :title="'Estimasi referensi — bukan keputusan final. Hitung manual sesuai polis.'">
+                        {{ kasirCopayEstimate.label }}
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="insuranceWarning.verification.policy_number || insuranceWarning.verification.member_name" class="elig-meta">
+                    <span v-if="insuranceWarning.verification.policy_number">
+                      Polis: <strong>{{ insuranceWarning.verification.policy_number }}</strong>
+                    </span>
+                    <span v-if="insuranceWarning.verification.member_name">
+                       · Peserta: <strong>{{ insuranceWarning.verification.member_name }}</strong>
+                    </span>
+                  </div>
+                  <div v-if="insuranceWarning.verification.coverage_notes" class="elig-notes">
+                    📝 {{ insuranceWarning.verification.coverage_notes }}
+                  </div>
+                  <div v-if="(insuranceWarning.verification.exclusion_flags || []).length" class="elig-excl">
+                    🚫 Tidak cover: {{ (insuranceWarning.verification.exclusion_flags || []).join(', ') }}
+                  </div>
+                  <div v-if="eligPlafonWarn" class="elig-plafon-warn">
+                    ⚠ {{ eligPlafonWarn }}
+                  </div>
+                  <div class="elig-hint">
+                    💡 Estimasi di atas adalah referensi — sistem <strong>tidak otomatis</strong> potong tagihan. Kasir tetap hitung manual nominal yang ditagih ke pasien sesuai aturan polis.
+                  </div>
+                </div>
+
                 <div v-if="selInv.notes" class="note-warning">
                   <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
                   <span><b>Catatan:</b> {{ selInv.notes }}</span>
@@ -465,68 +822,143 @@ function toast(type, msg) {
                         <th>Keterangan</th>
                         <th>Kategori</th>
                         <th class="num">Qty</th>
-                        <th class="num">Harga Satuan</th>
-                        <th class="num">Total</th>
+                        <th class="num">Harga</th>
+                        <th v-if="editTagihan" class="num">Disc %</th>
+                        <th v-if="editTagihan" class="num">Disc Rp</th>
+                        <th class="num">Net</th>
                         <th v-if="editTagihan"></th>
                       </tr>
                     </thead>
-                    <tbody>
-                      <tr v-for="item in (selInv.items ?? [])" :key="item.id">
+                    <!-- Grouped tbody per kategori — urutan section ikut master billingCategories.
+                         Item dengan kategori tidak terdaftar di master → otomatis masuk grup "Lainnya". -->
+                    <tbody v-for="grp in groupedItems" :key="grp.name" class="kat-group">
+                      <tr class="kat-group-head">
+                        <td :colspan="editTagihan ? 7 : 4">
+                          <span class="kat-group-name">{{ grp.name }}</span>
+                          <span class="kat-group-count">{{ grp.items.length }} item</span>
+                        </td>
+                        <td class="num strong">Rp {{ grp.subtotal.toLocaleString('id-ID') }}</td>
+                        <td v-if="editTagihan"></td>
+                      </tr>
+                      <tr v-for="item in grp.items" :key="item.id">
                         <td class="strong">{{ item.description }}</td>
-                        <td><span :class="['kat-pill', `kat-${(item.item_type || '').toLowerCase()}`]">{{ item.item_type }}</span></td>
+                        <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
                         <td class="num">{{ item.quantity }}</td>
                         <td class="num">Rp {{ Number(item.unit_price).toLocaleString('id-ID') }}</td>
-                        <td class="num strong">Rp {{ Number(item.total_price).toLocaleString('id-ID') }}</td>
+                        <td v-if="editTagihan" class="num">
+                          <input
+                            v-model.number="item.discount_percent"
+                            type="number" min="0" max="100" step="0.01"
+                            class="fi tbl-fi tbl-num"
+                            @input="onItemDiscChange(item, 'discount_percent')"
+                          />
+                        </td>
+                        <td v-if="editTagihan" class="num">
+                          <input
+                            v-model.number="item.discount_amount"
+                            type="number" min="0"
+                            class="fi tbl-fi tbl-num"
+                            @input="onItemDiscChange(item, 'discount_amount')"
+                          />
+                        </td>
+                        <td class="num strong">
+                          <span v-if="Number(item.discount_amount) > 0" class="muted-strike">
+                            Rp {{ Number(item.total_price).toLocaleString('id-ID') }}
+                          </span>
+                          Rp {{ Number(item.net_price ?? item.total_price).toLocaleString('id-ID') }}
+                        </td>
                         <td v-if="editTagihan">
                           <button class="del-btn" @click="removeItem(item)" :disabled="(selInv.items?.length ?? 0) <= 1">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                           </button>
                         </td>
                       </tr>
+                    </tbody>
+                    <tbody>
                       <tr v-if="editTagihan" class="add-item-row">
                         <td><input v-model="newItem.description" class="fi tbl-fi" placeholder="Keterangan item..." /></td>
-                        <td><select v-model="newItem.item_type" class="fi tbl-fi tbl-select"><option v-for="t in itemTypes" :key="t">{{ t }}</option></select></td>
+                        <td>
+                          <select v-model="newItem.item_type" class="fi tbl-fi tbl-select" style="margin-bottom:3px">
+                            <option v-for="t in itemTypes" :key="t">{{ t }}</option>
+                          </select>
+                          <input v-model="newItem.category" class="fi tbl-fi" placeholder="Kategori (autocomplete)" list="kasir-cat-list" />
+                          <datalist id="kasir-cat-list">
+                            <option v-for="name in categoryNames" :key="name" :value="name" />
+                          </datalist>
+                        </td>
                         <td class="num"><input v-model.number="newItem.quantity" type="number" min="1" class="fi tbl-fi tbl-num" /></td>
                         <td class="num"><input v-model.number="newItem.unit_price" type="number" min="0" class="fi tbl-fi tbl-num" /></td>
-                        <td class="num">Rp {{ ((newItem.quantity||0) * (newItem.unit_price||0)).toLocaleString('id-ID') }}</td>
+                        <td class="num"><input v-model.number="newItem.discount_percent" type="number" min="0" max="100" class="fi tbl-fi tbl-num" /></td>
+                        <td class="num"><input v-model.number="newItem.discount_amount" type="number" min="0" class="fi tbl-fi tbl-num" /></td>
+                        <td class="num">Rp {{ Math.max(0, ((newItem.quantity||0) * (newItem.unit_price||0)) - (Number(newItem.discount_amount)||0)).toLocaleString('id-ID') }}</td>
                         <td>
                           <button class="add-item-btn" @click="addItem">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                           </button>
                         </td>
                       </tr>
-                      <tr v-if="!(selInv.items ?? []).length"><td colspan="6" class="empty-row">Belum ada item</td></tr>
+                      <tr v-if="!(selInv.items ?? []).length"><td :colspan="editTagihan ? 8 : 5" class="empty-row">Belum ada item</td></tr>
                     </tbody>
                   </table>
                   <div class="tbl-foot">
                     <div class="totals">
                       <div class="row"><span>Subtotal</span><span class="num">Rp {{ subtotal().toLocaleString('id-ID') }}</span></div>
-                      <div v-if="discountAmount" class="row red"><span>Diskon</span><span class="num">−Rp {{ discountAmount.toLocaleString('id-ID') }}</span></div>
+                      <div v-if="itemDiscount" class="row red"><span>Diskon Item</span><span class="num">−Rp {{ itemDiscount.toLocaleString('id-ID') }}</span></div>
+                      <div v-if="itemDiscount" class="row"><span>Subtotal setelah diskon item</span><span class="num">Rp {{ subtotalNet.toLocaleString('id-ID') }}</span></div>
+
+                      <!-- Diskon global Rp + % -->
+                      <div class="row global-disc" v-if="editTagihan && !['PAID','CANCELLED'].includes(selInv.status)">
+                        <span>Diskon Global</span>
+                        <span class="disc-inputs">
+                          <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="0.01" class="fi disc-pc" @input="onGlobalDiscChange('pc')" /><span class="disc-suffix">%</span>
+                          <span class="disc-sep">atau</span>
+                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" class="fi disc-rp" @input="onGlobalDiscChange('rp')" /></span>
+                        </span>
+                      </div>
+                      <div v-else-if="discountAmount" class="row red"><span>Diskon Global<span v-if="Number(selInv.discount_percent) > 0"> ({{ Number(selInv.discount_percent) }}%)</span></span><span class="num">−Rp {{ discountAmount.toLocaleString('id-ID') }}</span></div>
+
                       <div v-if="taxAmount" class="row"><span>Pajak</span><span class="num">Rp {{ taxAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row"><span>Total Tagihan</span><span class="num">Rp {{ totalTagihan.toLocaleString('id-ID') }}</span></div>
+                      <div v-if="coveredAmount" class="row green"><span>Ditanggung Asuransi</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
                       <div v-if="paidAmount" class="row blue"><span>Sudah Dibayar</span><span class="num">−Rp {{ paidAmount.toLocaleString('id-ID') }}</span></div>
-                      <div class="row grand"><span>Sisa Bayar</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
+                      <div class="row grand"><span>{{ coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar' }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <!-- RIGHT: aksi (tanpa TTD card) -->
+              <!-- RIGHT: aksi -->
               <div class="col-right">
                 <div class="card">
                   <div class="card-head">
                     <div class="card-head-title">
                       <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-                      Metode Pembayaran
+                      {{ isFullCover && selInv.status !== 'PAID' ? 'Tanggungan Asuransi' : 'Metode Pembayaran' }}
                     </div>
-                    <button :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
+                    <button v-if="!(isFullCover && selInv.status !== 'PAID')" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
                       Campuran
                     </button>
                   </div>
                   <div class="card-body">
-                    <!-- Standard single payment -->
-                    <template v-if="!showMixed">
+                    <!-- FULL COVER: pasien tidak membayar, kasir cukup konfirmasi -->
+                    <template v-if="isFullCover && selInv.status !== 'PAID'">
+                      <div class="cover-confirm-box">
+                        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
+                        <div class="cover-confirm-title">Ditanggung Penuh Asuransi</div>
+                        <div class="cover-confirm-amount">Rp {{ coveredAmount.toLocaleString('id-ID') }}</div>
+                        <div class="cover-confirm-sub">Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.</div>
+                      </div>
+                      <button class="btn btn-success btn-full btn-lg"
+                        :disabled="paying"
+                        @click="prosesKonfirmasiCover">
+                        <div v-if="paying" class="sp"></div>
+                        <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                        {{ paying ? 'Memproses...' : 'Konfirmasi Lunas (Ditanggung Asuransi)' }}
+                      </button>
+                    </template>
+
+                    <template v-else-if="!showMixed">
                       <div class="pm-grid">
                         <div v-for="pm in payMethods" :key="pm.id" :class="['pm', selPM === pm.id ? 'sel' : '']"
                           @click="selPM = pm.id; uangDibayar = bayar(); showMixed = false">
@@ -545,7 +977,6 @@ function toast(type, msg) {
                       </div>
                     </template>
 
-                    <!-- Mixed / campuran payment -->
                     <template v-else>
                       <div class="mixed-header">
                         <span class="mixed-lbl">Total Tagihan</span>
@@ -567,7 +998,7 @@ function toast(type, msg) {
                       </div>
                     </template>
 
-                    <button class="btn btn-success btn-full btn-lg"
+                    <button v-if="!(isFullCover && selInv.status !== 'PAID')" class="btn btn-success btn-full btn-lg"
                       :disabled="!selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
                       @click="prosesBayar">
                       <div v-if="paying" class="sp"></div>
@@ -662,174 +1093,214 @@ function toast(type, msg) {
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
     </div>
 
-    <!-- ═══ DOKUMEN CETAK A4 — RINCIAN BIAYA (tampil hanya saat print) ═══ -->
-    <div v-if="printData" class="rincian-print">
-      <div v-if="printData.clinic?.watermark_type" class="rp-watermark">{{ printData.clinic.watermark_type }}</div>
+    <!-- ═══ DOKUMEN CETAK A4 — RINCIAN BIAYA (Teleport ke body supaya @media print global bekerja) ═══ -->
+    <Teleport to="body">
+      <div v-if="printData" class="rincian-print">
+        <div v-if="printData.clinic?.watermark_type" class="rp-watermark">{{ printData.clinic.watermark_type }}</div>
 
-      <!-- Kop surat -->
-      <header class="rp-kop">
-        <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
-        <div class="rp-kop-text">
-          <div class="rp-clinic">{{ printData.clinic?.name ?? 'Klinik' }}</div>
-          <div v-if="printData.clinic?.address" class="rp-line">{{ printData.clinic.address }}</div>
-          <div class="rp-line">
-            <span v-if="printData.clinic?.phone">Telp: {{ printData.clinic.phone }}</span>
-            <span v-if="printData.clinic?.email"> · Email: {{ printData.clinic.email }}</span>
+        <header class="rp-kop">
+          <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
+          <div class="rp-kop-text">
+            <div class="rp-clinic">{{ printData.clinic?.name ?? 'Klinik' }}</div>
+            <div v-if="printData.clinic?.address" class="rp-line">{{ printData.clinic.address }}</div>
+            <div class="rp-line">
+              <span v-if="printData.clinic?.phone">Telp: {{ printData.clinic.phone }}</span>
+              <span v-if="printData.clinic?.email"> · Email: {{ printData.clinic.email }}</span>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <h1 class="rp-title">RINCIAN BIAYA PELAYANAN</h1>
-      <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
+        <h1 class="rp-title">RINCIAN BIAYA PELAYANAN</h1>
+        <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
 
-      <!-- Identitas -->
-      <table class="rp-meta">
-        <tbody>
-          <tr>
-            <td class="k">No. Rekam Medis</td><td class="s">:</td><td class="v">{{ printData.patient?.no_rm ?? '—' }}</td>
-            <td class="k">Tanggal</td><td class="s">:</td><td class="v">{{ printData.invoice?.date ?? '—' }}</td>
-          </tr>
-          <tr>
-            <td class="k">Nama Pasien</td><td class="s">:</td><td class="v">{{ printData.patient?.name ?? '—' }}</td>
-            <td class="k">Metode Bayar</td><td class="s">:</td><td class="v">{{ printData.invoice?.payment_method ? metodeLabel(printData.invoice.payment_method) : '—' }}</td>
-          </tr>
-          <tr>
-            <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
-            <td class="k">Penjamin</td><td class="s">:</td>
-            <td class="v">{{ penjaminLabel(printData.patient?.guarantor_type) }}<span v-if="printData.patient?.insurer"> — {{ printData.patient.insurer }}</span></td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- Rincian item -->
-      <table class="rp-items">
-        <thead>
-          <tr>
-            <th class="c-no">No</th>
-            <th>Keterangan</th>
-            <th class="c-kat">Kategori</th>
-            <th class="c-num">Qty</th>
-            <th class="c-num">Harga Satuan</th>
-            <th class="c-num">Jumlah</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(item, i) in (printData.items ?? [])" :key="item.id ?? i">
-            <td class="c-no">{{ i + 1 }}</td>
-            <td>{{ item.description }}</td>
-            <td class="c-kat">{{ item.item_type }}</td>
-            <td class="c-num">{{ item.quantity }}</td>
-            <td class="c-num">{{ rupiah(item.unit_price) }}</td>
-            <td class="c-num">{{ rupiah(item.total_price) }}</td>
-          </tr>
-          <tr v-if="!(printData.items ?? []).length"><td colspan="6" class="rp-empty">Tidak ada item</td></tr>
-        </tbody>
-      </table>
-
-      <!-- Ringkasan -->
-      <div class="rp-summary">
-        <table>
+        <table class="rp-meta">
           <tbody>
-            <tr><td>Subtotal</td><td class="c-num">{{ rupiah(printData.summary?.subtotal) }}</td></tr>
-            <tr v-if="Number(printData.summary?.discount)"><td>Diskon</td><td class="c-num">− {{ rupiah(printData.summary?.discount) }}</td></tr>
-            <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
-            <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
-            <tr><td>Dibayar</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
-            <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
-            <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
+            <tr>
+              <td class="k">No. Rekam Medis</td><td class="s">:</td><td class="v">{{ printData.patient?.no_rm ?? '—' }}</td>
+              <td class="k">Tanggal</td><td class="s">:</td><td class="v">{{ printData.invoice?.date ?? '—' }}</td>
+            </tr>
+            <tr>
+              <td class="k">Nama Pasien</td><td class="s">:</td><td class="v">{{ printData.patient?.name ?? '—' }}</td>
+              <td class="k">Metode Bayar</td><td class="s">:</td><td class="v">{{ printData.invoice?.payment_method ? metodeLabel(printData.invoice.payment_method) : '—' }}</td>
+            </tr>
+            <tr>
+              <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
+              <td class="k">Penjamin</td><td class="s">:</td>
+              <td class="v">{{ penjaminLabel(printData.patient?.guarantor_type) }}<span v-if="printData.patient?.insurer"> — {{ printData.patient.insurer }}</span></td>
+            </tr>
           </tbody>
         </table>
-      </div>
 
-      <div :class="['rp-status', printData.invoice?.is_paid ? 'lunas' : 'belum']">
-        {{ printData.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS / PRO FORMA' }}
-      </div>
+        <table class="rp-items">
+          <thead>
+            <tr>
+              <th class="c-no">No</th>
+              <th>Keterangan</th>
+              <th class="c-kat">Kategori</th>
+              <th class="c-num">Qty</th>
+              <th class="c-num">Harga</th>
+              <th class="c-num">Disc</th>
+              <th class="c-num">Jumlah</th>
+            </tr>
+          </thead>
+          <tbody v-for="grp in groupedPrintItems" :key="grp.name">
+            <tr class="rp-group-head">
+              <td colspan="6"><strong>{{ grp.name }}</strong></td>
+              <td class="c-num"><strong>{{ rupiah(grp.subtotal) }}</strong></td>
+            </tr>
+            <tr v-for="(item, i) in grp.items" :key="item.id ?? `${grp.name}-${i}`">
+              <td class="c-no">{{ i + 1 }}</td>
+              <td>{{ item.description }}</td>
+              <td class="c-kat">{{ item.category || item.item_type }}</td>
+              <td class="c-num">{{ item.quantity }}</td>
+              <td class="c-num">{{ rupiah(item.unit_price) }}</td>
+              <td class="c-num">
+                <template v-if="Number(item.discount_amount) > 0">
+                  −{{ rupiah(item.discount_amount) }}<span v-if="Number(item.discount_percent) > 0"> ({{ Number(item.discount_percent) }}%)</span>
+                </template>
+                <template v-else>—</template>
+              </td>
+              <td class="c-num">{{ rupiah(item.net_price ?? item.total_price) }}</td>
+            </tr>
+          </tbody>
+          <tbody v-if="!(printData.items ?? []).length">
+            <tr><td colspan="7" class="rp-empty">Tidak ada item</td></tr>
+          </tbody>
+        </table>
 
-      <!-- Tanda tangan -->
-      <div class="rp-sign">
-        <div class="rp-sign-col">
-          <div class="rp-sign-lbl">Penanggung Jawab / Pasien</div>
-          <div class="rp-sign-space"></div>
-          <div class="rp-sign-name">( ......................................... )</div>
+        <div class="rp-summary">
+          <table>
+            <tbody>
+              <tr><td>Subtotal</td><td class="c-num">{{ rupiah(printData.summary?.subtotal) }}</td></tr>
+              <tr v-if="Number(printData.summary?.item_discount)"><td>Diskon Item</td><td class="c-num">− {{ rupiah(printData.summary?.item_discount) }}</td></tr>
+              <tr v-if="Number(printData.summary?.discount)">
+                <td>Diskon Global<span v-if="Number(printData.summary?.discount_percent) > 0"> ({{ Number(printData.summary?.discount_percent) }}%)</span></td>
+                <td class="c-num">− {{ rupiah(printData.summary?.discount) }}</td>
+              </tr>
+              <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
+              <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
+              <tr v-if="Number(printData.summary?.covered_amount)"><td>Ditanggung Asuransi</td><td class="c-num">− {{ rupiah(printData.summary?.covered_amount) }}</td></tr>
+              <tr><td>Dibayar Pasien</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
+              <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
+              <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="rp-sign-col">
-          <div class="rp-sign-lbl">Kasir</div>
-          <img v-if="printData.clinic?.stamp_url" :src="printData.clinic.stamp_url" alt="Stempel" class="rp-stamp" />
-          <div v-else class="rp-sign-space"></div>
-          <div class="rp-sign-name">( {{ printData.cashier ?? '.........................................' }} )</div>
-        </div>
-      </div>
 
-      <footer class="rp-footer">
-        <span v-if="printData.clinic?.director_name">
-          Penanggung Jawab Klinik: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
-        </span>
-        Dicetak: {{ new Date().toLocaleString('id-ID') }} · Arumed Apps
-      </footer>
-    </div>
+        <div :class="['rp-status', printData.invoice?.is_paid ? 'lunas' : 'belum']">
+          {{ printData.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS / PRO FORMA' }}
+        </div>
+
+        <div class="rp-sign">
+          <div class="rp-sign-col">
+            <div class="rp-sign-lbl">Penanggung Jawab / Pasien</div>
+            <div class="rp-sign-space"></div>
+            <div class="rp-sign-name">( ......................................... )</div>
+          </div>
+          <div class="rp-sign-col">
+            <div class="rp-sign-lbl">Kasir</div>
+            <img v-if="printData.clinic?.stamp_url" :src="printData.clinic.stamp_url" alt="Stempel" class="rp-stamp" />
+            <div v-else class="rp-sign-space"></div>
+            <div class="rp-sign-name">( {{ printData.cashier ?? '.........................................' }} )</div>
+          </div>
+        </div>
+
+        <footer class="rp-footer">
+          <span v-if="printData.clinic?.director_name">
+            Penanggung Jawab Klinik: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
+          </span>
+          Dicetak: {{ new Date().toLocaleString('id-ID') }} · Arumed Apps
+        </footer>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .kasir { padding: 0; }
-.grid { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; align-items: start; }
+.grid { display: grid; grid-template-columns: 290px 1fr; gap: 1rem; align-items: start; }
 
-/* Queue */
-.qp { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
-.qph { padding: 0.7rem 0.85rem; border-bottom: 1px solid var(--gb); }
-.qpht { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 600; color: var(--td); margin-bottom: 0.55rem; }
-.live-pill { font-size: 9px; font-weight: 700; padding: 2px 7px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; }
-.qst { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
-.qsc { background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; padding: 5px; text-align: center; }
-.qsc-v { font-size: 15px; font-weight: 700; color: var(--td); line-height: 1; }
-.qsc-l { font-size: 8.5px; color: var(--tu); margin-top: 2px; }
-.qsc.w .qsc-v { color: var(--wt); }
-.qsc.d .qsc-v { color: var(--st); }
+/* ─── LEFT QUEUE (meniru PerawatView) ───────────────────────────────────── */
+.col-queue .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
+.card-head { padding: 0.7rem 1rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.card-head-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--td); }
+.card-head-title svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
+.card-head-sub { font-size: 11px; color: var(--tu); margin-top: 3px; }
+.pill-live { font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; letter-spacing: 0.05em; }
+.queue-scroll { padding: 0.6rem; max-height: calc(100vh - 200px); overflow-y: auto; }
 
-.qtabs { display: flex; border-bottom: 1px solid var(--gb); }
-.qtab { flex: 1; padding: 7px 4px; font-size: 10px; font-weight: 500; color: var(--tu); cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans', sans-serif; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
-.qtab.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
-.qtab-ct { font-size: 8.5px; font-weight: 700; padding: 0 4px; border-radius: 8px; background: var(--sb); color: var(--st); }
+.stats-bar { display: flex; align-items: center; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 8px 12px; margin-bottom: 0.65rem; gap: 0; }
+.stat-item { flex: 1; text-align: center; }
+.stat-divider { width: 1px; height: 28px; background: var(--gb); flex-shrink: 0; }
+.stat-label { display: block; font-size: 9.5px; color: var(--tu); letter-spacing: 0.03em; margin-bottom: 2px; }
+.stat-num { display: block; font-size: 17px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+.stat-waiting { color: #d97706; }
+.stat-done    { color: var(--st); }
 
-.qsw { padding: 0.45rem 0.55rem; border-bottom: 1px solid var(--gb); }
-.fi { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); }
-.fi:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31, 125, 74, 0.09); }
+.primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn:hover { border-color: var(--ga); color: var(--ga); }
+.pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
+.pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
 
-.ql { flex: 1; overflow-y: auto; padding: 0.35rem 0.45rem; max-height: calc(100vh - 280px); }
-.qi { display: flex; gap: 0; padding: 0; background: var(--bc); border: 1.5px solid var(--gb); border-radius: 8px; margin-bottom: 4px; overflow: hidden; cursor: pointer; transition: all 0.14s; }
-.qi:hover { border-color: var(--lm); }
-.qi.ac { border-color: var(--ga); background: var(--gl); }
-.qi.dn { opacity: 0.45; }
-.qis { width: 3px; flex-shrink: 0; }
-.qis.bpjs { background: #3b82f6; }
-.qis.umum { background: var(--lm); }
-.qis.asn { background: var(--pt); }
-.qib { flex: 1; padding: 6px 8px; min-width: 0; }
-.qitop { display: flex; justify-content: space-between; margin-bottom: 2px; }
-.qinum { font-weight: 700; font-size: 12.5px; color: var(--ga); }
-.qitime { font-size: 9px; color: var(--tu); }
-.qiname { font-size: 11.5px; font-weight: 500; color: var(--td); }
-.qimeta { font-size: 9.5px; color: var(--tu); margin-top: 1px; }
-.qitags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
-.qit { font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
-.qit-b { background: #dbeafe; color: #1e40af; }
-.qit-u { background: var(--gl); color: var(--ga); }
-.qit-a { background: var(--pb); color: var(--pt); }
-.qit-sign { background: var(--sb); color: var(--st); }
-.qit-d { background: var(--sb); color: var(--st); }
-.qit-w { background: var(--wb); color: var(--wt); }
-.empty-q { text-align: center; padding: 1.5rem; font-size: 11px; color: var(--th); }
+.ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
+.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
+.ptype-tab:hover { border-color: var(--ga); color: var(--ga); }
+.ptype-tab.a { color: #fff; font-weight: 700; }
+.ptype-tab.ptype-bpjs.a { background: #1e40af; border-color: #1e40af; }
+.ptype-tab.ptype-umum.a { background: var(--ga); border-color: var(--ga); }
+.ptype-tab.a:not(.ptype-bpjs):not(.ptype-umum) { background: var(--gd); border-color: var(--gd); }
 
-/* Panggil / Lewati */
-.q-actions { display: flex; gap: 3px; margin-top: 5px; padding-top: 4px; border-top: 1px dashed var(--gb); }
-.q-act { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; font-size: 9.5px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans',sans-serif; transition: all .12s; background: none; }
-.q-act svg { width: 9px; height: 9px; }
-.q-act.call { color: var(--ga); border-color: var(--ga); background: var(--gl); }
-.q-act.call:hover { background: var(--ga); color: #fff; }
-.q-act.skip { color: var(--tu); border-color: var(--gb); }
-.q-act.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.q-search-wrap { margin-bottom: 0.5rem; }
+.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.q-search:focus { border-color: var(--ga); background: #fff; }
 
-/* Right */
+.q-skeleton { height: 78px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; animation: shimmer 1.2s ease-in-out infinite; }
+@keyframes shimmer { 0%, 100% { opacity: .6 } 50% { opacity: .35 } }
+.empty-section { text-align: center; padding: 0.75rem 1rem; font-size: 11px; color: var(--th); background: var(--bi); border-radius: 7px; margin-bottom: 6px; border: 1px dashed var(--gb); }
+
+.q-item { display: flex; gap: 8px; padding: 8px 10px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; width: 100%; text-align: left; font-family: 'DM Sans', sans-serif; flex-wrap: wrap; }
+.q-item:hover { border-color: var(--lm); background: var(--gl); }
+.q-item.active { border-color: var(--ga); background: var(--gl); }
+.q-item.done { opacity: .55; }
+.q-item:focus-visible { outline: 2px solid var(--ga); outline-offset: 2px; }
+.qi-left { display: flex; flex-direction: column; gap: 4px; min-width: 56px; }
+.q-num { font-weight: 700; font-size: 13.5px; color: var(--ga); letter-spacing: 0.03em; }
+.q-info { flex: 1; min-width: 0; }
+.q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
+.qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }
+
+.q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
+.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans',sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
+.q-act-btn svg { width: 10px; height: 10px; }
+.q-act-btn.call { color: var(--ga); border-color: var(--ga); background: var(--gl); }
+.q-act-btn.call:hover { background: var(--ga); color: #fff; }
+.q-act-btn.call.recall { color: #b45309; border-color: #fbbf24; background: #fef3c7; }
+.q-act-btn.call.recall:hover { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+.q-act-btn.skip { color: var(--tu); border-color: var(--gb); }
+.q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+/* Tier-3 button-press */
+.q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
+.q-act-btn.call:active:not(:disabled) { background: var(--gd); color: #fff; border-color: var(--gd); }
+.q-act-btn.call.recall:active:not(:disabled) { background: #b45309; color: #fff; border-color: #b45309; }
+.q-act-btn.skip:active:not(:disabled) { background: var(--wt); color: #fff; border-color: var(--wt); }
+.q-act-btn:disabled { opacity: .55; cursor: wait; }
+
+.pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
+.pill-icon { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; flex-shrink: 0; }
+.pill-waiting   { background: #fef3c7; color: #92400e; }
+.pill-called    { background: #dbeafe; color: #1e40af; }
+.pill-in_progress { background: #dbeafe; color: #1e40af; }
+.pill-completed { background: var(--sb); color: var(--st); }
+.pill-bpjs  { background: #dbeafe; color: #1e40af; }
+.pill-umum  { background: var(--gl); color: var(--ga); }
+.pill-asn   { background: var(--pb); color: var(--pt); }
+.pill-done  { background: var(--sb); color: var(--st); }
+.pill-belum { background: var(--wb); color: var(--wt); }
+
+/* ─── RIGHT ──────────────────────────────────────────────────────────────── */
 .rp { display: flex; flex-direction: column; gap: 0.75rem; }
 .nvt { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); padding: 0 0.5rem; }
 .nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans', sans-serif; display: inline-flex; align-items: center; gap: 6px; }
@@ -842,7 +1313,6 @@ function toast(type, msg) {
 .empty-state p { font-size: 13px; }
 
 .pt-banner { background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px; display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.85rem; }
-.pt-av { width: 46px; height: 46px; border-radius: 50%; background: rgba(138, 191, 68, 0.2); border: 2px solid rgba(138, 191, 68, 0.3); color: var(--lm); font-size: 18px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: 'DM Serif Display', serif; }
 .pt-info { flex: 1; min-width: 0; }
 .pt-name { font-family: 'DM Serif Display', serif; font-size: 18px; line-height: 1.1; }
 .pt-meta { font-size: 11px; color: rgba(255, 255, 255, 0.6); margin-top: 3px; }
@@ -862,10 +1332,41 @@ function toast(type, msg) {
 .note-warning { display: flex; gap: 8px; align-items: flex-start; padding: 9px 13px; background: var(--wb); border: 1px solid var(--wbd); border-radius: 9px; color: var(--wt); font-size: 11.5px; margin-bottom: 0.7rem; }
 .note-warning svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
 
+/* Asuransi warning panel — non-blocker, supervisor harus konfirmasi (Sprint 4) */
+.insurance-alert { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: 9px; font-size: 12px; margin-bottom: 0.7rem; border: 1px solid; }
+.insurance-alert.ia-pending { background: var(--wb); border-color: var(--wbd); color: var(--wt); }
+.insurance-alert.ia-issue { background: var(--eb); border-color: var(--ebd); color: var(--et); }
+.insurance-alert svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; margin-top: 1px; }
+.insurance-alert .ia-msg { font-size: 11px; margin-top: 3px; line-height: 1.4; opacity: 0.95; }
+
+/* Panel info eligibility asuransi — readonly referensi, BUKAN auto-calculator */
+.elig-panel { background: var(--bc); border: 1.5px solid var(--ga); border-radius: 10px; padding: 0.75rem 0.85rem; margin-bottom: 0.7rem; }
+.elig-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--gd); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 7px; border-bottom: 1px solid var(--gb); margin-bottom: 9px; }
+.elig-head svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.elig-status { margin-left: auto; font-size: 9px; padding: 2px 8px; border-radius: 10px; letter-spacing: 0; text-transform: none; font-weight: 700; }
+.elig-status.es-verified { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
+.elig-status.es-pending { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
+.elig-status.es-issue, .elig-status.es-rejected, .elig-status.es-needs_clarification { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
+.elig-status.es-none { background: var(--bs); color: var(--tu); border: 1px solid var(--gb); }
+
+.elig-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+.elig-cell { background: var(--bs); border-radius: 7px; padding: 7px 9px; }
+.elig-lbl { font-size: 9.5px; color: var(--tu); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px; }
+.elig-val { font-size: 13px; font-weight: 700; color: var(--td); font-family: 'Geist Mono', monospace; }
+.elig-val.val-warn { color: var(--et); }
+.elig-val.val-emphasis { color: var(--gd); }
+
+.elig-meta { margin-top: 9px; font-size: 11px; color: var(--tm); padding-top: 7px; border-top: 1px dashed var(--gb); }
+.elig-notes { margin-top: 6px; font-size: 11px; color: var(--tm); padding: 5px 8px; background: var(--bs); border-radius: 5px; }
+.elig-excl { margin-top: 5px; font-size: 11px; color: var(--et); padding: 5px 8px; background: var(--eb); border: 1px solid var(--ebd); border-radius: 5px; }
+.elig-plafon-warn { margin-top: 6px; font-size: 11px; padding: 6px 9px; background: var(--wb); border: 1px solid var(--wbd); color: var(--wt); border-radius: 5px; font-weight: 500; }
+.elig-hint { margin-top: 7px; font-size: 10.5px; color: var(--tu); font-style: italic; line-height: 1.45; }
+
+@media (max-width: 700px) {
+  .elig-grid { grid-template-columns: 1fr 1fr; }
+}
+
 .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
-.card-head { padding: 0.7rem 1.1rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.card-head-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--td); }
-.card-head-title svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .card-body { padding: 1rem; }
 
 .tbl { width: 100%; border-collapse: collapse; }
@@ -876,18 +1377,28 @@ function toast(type, msg) {
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl .strong { font-weight: 600; }
 .tbl .muted { color: var(--tu); font-size: 10.5px; }
+.muted-strike { color: var(--tu); text-decoration: line-through; display: block; font-size: 10px; font-weight: 400; }
 .empty-row { text-align: center !important; color: var(--th); padding: 1.5rem !important; }
 
-.kat-pill { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 20px; }
-.kat-konsultasi { background: var(--ib); color: var(--it); }
-.kat-tindakan { background: var(--wb); color: var(--wt); }
-.kat-farmasi { background: var(--gl); color: var(--ga); }
-.kat-penunjang { background: var(--pb); color: var(--pt); }
+.kat-pill { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+.kat-registrasi { background: var(--ib); color: var(--it); }
+.kat-tindakan   { background: var(--wb); color: var(--wt); }
+.kat-obat       { background: var(--gl); color: var(--ga); }
+.kat-iol        { background: var(--pb); color: var(--pt); }
+.kat-bhp        { background: var(--sb); color: var(--st); }
+.kat-penunjang  { background: var(--pb); color: var(--pt); }
+.kat-medical_equipment { background: #dbeafe; color: #1e40af; }
+.kat-lainnya    { background: var(--bi); color: var(--tm); }
+
+/* ─── Group header per kategori ──────────────────────────────────────────── */
+.kat-group-head td { background: linear-gradient(0deg, var(--gl), var(--bi)); padding: 7px 13px; border-top: 2px solid var(--ga) !important; border-bottom: 1px solid var(--gb); }
+.kat-group-name { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gd); }
+.kat-group-count { font-size: 10px; color: var(--tu); margin-left: 8px; font-weight: 500; }
+.kat-group:first-of-type .kat-group-head td { border-top: none !important; }
 .kat-bpjs { background: #dbeafe; color: #1e40af; }
 .kat-umum { background: var(--gl); color: var(--ga); }
-.kat-asn { background: var(--pb); color: var(--pt); }
+.kat-asn  { background: var(--pb); color: var(--pt); }
 
-/* Editable table cells */
 .tbl-fi { height: 26px; font-size: 11px; padding: 0 6px; border-radius: 5px; }
 .tbl-num { width: 80px; text-align: right; }
 .tbl-select { font-size: 11px; }
@@ -895,27 +1406,33 @@ function toast(type, msg) {
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }
 .del-btn:disabled { opacity: .35; cursor: not-allowed; }
 .del-btn svg { width: 12px; height: 12px; }
-.add-item-row td { background: var(--gl); border-top: 1px dashed var(--ga) !important; }
+.add-item-row td { background: var(--gl); border-top: 1px dashed var(--ga) !important; vertical-align: top; }
 .add-item-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ga); background: var(--ga); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .add-item-btn svg { width: 12px; height: 12px; }
 
 .tbl-foot { padding: 0.75rem 1.1rem; border-top: 2px solid var(--gb); background: var(--bi); }
-.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; margin-bottom: 0.6rem; }
 .fg { display: flex; flex-direction: column; gap: 4px; }
 .fl { font-size: 10px; font-weight: 600; color: var(--tm); letter-spacing: 0.05em; text-transform: uppercase; }
 .totals { padding-top: 0.4rem; border-top: 1px solid var(--gb); }
-.totals .row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: var(--tm); }
+.totals .row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 3px 0; color: var(--tm); }
 .totals .row.blue { color: var(--it); }
 .totals .row.red { color: var(--et); }
+.totals .row.green { color: var(--st); }
 .totals .row.grand { font-size: 15px; font-weight: 700; color: var(--gd); padding: 6px 0 0; border-top: 1px dashed var(--gb); margin-top: 4px; }
+.totals .global-disc .disc-inputs { display: inline-flex; align-items: center; gap: 6px; }
+.totals .global-disc .fi { height: 28px; font-size: 11px; padding: 0 6px; }
+.totals .global-disc .disc-pc { width: 60px; text-align: right; }
+.totals .global-disc .disc-rp { width: 110px; text-align: right; }
+.totals .global-disc .disc-suffix { color: var(--tm); font-weight: 600; font-size: 11px; }
+.totals .global-disc .disc-sep { color: var(--tu); font-size: 10px; }
+.totals .global-disc .disc-rp-wrap { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--tm); }
 
-.ttd-pill { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
-.ttd-pill.ok { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
-.ttd-pill.pend { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
-.ok-note { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 8px; padding: 7px 11px; font-size: 11px; margin-bottom: 0.5rem; }
-.warn-note { color: var(--wt); font-size: 10.5px; margin-bottom: 0.5rem; }
+.cover-confirm-box { text-align: center; padding: 1.1rem 1rem; background: var(--sb); border: 1px solid var(--sbd); border-radius: 12px; margin-bottom: .7rem; }
+.cover-confirm-box svg { width: 38px; height: 38px; fill: none; stroke: var(--st); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cover-confirm-title { font-size: 12px; font-weight: 700; color: var(--st); text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
+.cover-confirm-amount { font-size: 24px; font-weight: 800; color: var(--st); font-family: 'Geist Mono', monospace; margin: 3px 0; }
+.cover-confirm-sub { font-size: 11.5px; color: var(--tm); line-height: 1.4; }
 
-/* Mixed payment */
 .mixed-header { display: flex; justify-content: space-between; align-items: center; padding: .5rem .6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; margin-bottom: .55rem; }
 .mixed-lbl { font-size: 11px; color: var(--tu); font-weight: 600; }
 .mixed-total { font-size: 14px; font-weight: 700; color: var(--gd); }
@@ -940,6 +1457,9 @@ function toast(type, msg) {
 .cash-row { margin-bottom: 0.6rem; }
 .kembalian { font-size: 11px; color: var(--st); margin-top: 3px; font-weight: 600; }
 
+.fi { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.fi:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31, 125, 74, 0.09); }
+
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
 .btn-sm { height: 28px; padding: 0 10px; font-size: 11px; }
 .btn-lg { height: 42px; padding: 0 18px; font-size: 13px; font-weight: 600; }
@@ -949,12 +1469,11 @@ function toast(type, msg) {
 .btn-success { background: var(--ga); color: #fff; border-color: var(--ga); }
 .btn-success:hover:not(:disabled) { background: var(--gm); }
 .btn-success:disabled { background: var(--th); cursor: not-allowed; }
-.btn-info { background: var(--it); color: #fff; border-color: var(--it); }
-.btn-info:hover { background: #1e40af; }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
 .btn-secondary:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .sp { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #fff; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; margin-bottom: 0.75rem; }
 .stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; }
@@ -971,15 +1490,29 @@ function toast(type, msg) {
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+</style>
 
-/* ─── DOKUMEN CETAK A4 — Rincian Biaya ─────────────────────────────────────── */
+<!-- ═══ DOKUMEN CETAK A4 — gaya GLOBAL (tidak scoped) supaya rule @media print bekerja ═══ -->
+<style>
 .rincian-print { display: none; }
 
 @media print {
-  /* Sembunyikan UI kasir; hanya dokumen yang tercetak */
-  .kasir > .grid, .toast-wrap { display: none !important; }
-
   @page { size: A4 portrait; margin: 14mm 15mm; }
+
+  /* Reset base.css (body { min-width:1280px } & html,body { height:100% }) yang
+     bikin kanvas raksasa → halaman A4 jadi blank. Tanpa ini print kosong. */
+  html, body {
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  /* .rincian-print di-teleport ke <body> (sibling #app). Sembunyikan seluruh
+     app, sisakan node cetak. Pakai #app display:none (bukan body > *:not())
+     karena lebih andal dengan reset di atas. */
+  #app { display: none !important; }
 
   .rincian-print {
     display: block !important;
@@ -990,53 +1523,54 @@ function toast(type, msg) {
     line-height: 1.5;
   }
 
-  .rp-watermark {
+  .rincian-print .rp-watermark {
     position: fixed; top: 45%; left: 50%;
     transform: translate(-50%, -50%) rotate(-30deg);
     font-size: 92px; font-weight: 800; letter-spacing: .12em;
     color: rgba(0, 0, 0, 0.06); z-index: 0; pointer-events: none;
   }
 
-  .rp-kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 9px; }
-  .rp-logo { height: 62px; width: auto; object-fit: contain; }
-  .rp-clinic { font-size: 19px; font-weight: 800; letter-spacing: .02em; }
-  .rp-line { font-size: 10.5px; }
+  .rincian-print .rp-kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 9px; }
+  .rincian-print .rp-logo { height: 62px; width: auto; object-fit: contain; }
+  .rincian-print .rp-clinic { font-size: 19px; font-weight: 800; letter-spacing: .02em; }
+  .rincian-print .rp-line { font-size: 10.5px; }
 
-  .rp-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: .06em; text-decoration: underline; margin: 12px 0 1px; }
-  .rp-subtitle { text-align: center; font-size: 11px; margin-bottom: 12px; }
+  .rincian-print .rp-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: .06em; text-decoration: underline; margin: 12px 0 1px; }
+  .rincian-print .rp-subtitle { text-align: center; font-size: 11px; margin-bottom: 12px; }
 
-  .rp-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
-  .rp-meta td { padding: 1.5px 0; vertical-align: top; font-size: 11px; }
-  .rp-meta .k { width: 15%; color: #333; }
-  .rp-meta .s { width: 10px; }
-  .rp-meta .v { width: 35%; font-weight: 600; }
+  .rincian-print .rp-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .rincian-print .rp-meta td { padding: 1.5px 0; vertical-align: top; font-size: 11px; }
+  .rincian-print .rp-meta .k { width: 15%; color: #333; }
+  .rincian-print .rp-meta .s { width: 10px; }
+  .rincian-print .rp-meta .v { width: 35%; font-weight: 600; }
 
-  .rp-items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  .rp-items th, .rp-items td { border: 1px solid #000; padding: 5px 7px; font-size: 10.5px; }
-  .rp-items th { background: #eee !important; text-align: left; font-weight: 700; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .rp-items .c-no { width: 26px; text-align: center; }
-  .rp-items .c-kat { width: 78px; }
-  .rp-items .c-num { text-align: right; white-space: nowrap; }
-  .rp-empty { text-align: center; font-style: italic; }
+  .rincian-print .rp-items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  .rincian-print .rp-items th, .rincian-print .rp-items td { border: 1px solid #000; padding: 5px 7px; font-size: 10.5px; }
+  .rincian-print .rp-items th { background: #eee !important; text-align: left; font-weight: 700; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rincian-print .rp-items .c-no { width: 26px; text-align: center; }
+  .rincian-print .rp-items .c-kat { width: 78px; }
+  .rincian-print .rp-items .c-num { text-align: right; white-space: nowrap; }
+  .rincian-print .rp-empty { text-align: center; font-style: italic; }
+  .rincian-print .rp-group-head td { background: #f3f4f6 !important; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
-  .rp-summary { display: flex; justify-content: flex-end; margin-bottom: 16px; }
-  .rp-summary table { border-collapse: collapse; min-width: 280px; }
-  .rp-summary td { padding: 2.5px 7px; font-size: 11px; }
-  .rp-summary td.c-num { text-align: right; white-space: nowrap; }
-  .rp-summary .rp-grand td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 800; font-size: 12.5px; }
-  .rp-summary .rp-sisa td { font-weight: 700; }
+  .rincian-print .rp-summary { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+  .rincian-print .rp-summary table { border-collapse: collapse; min-width: 280px; }
+  .rincian-print .rp-summary td { padding: 2.5px 7px; font-size: 11px; }
+  .rincian-print .rp-summary td.c-num { text-align: right; white-space: nowrap; }
+  .rincian-print .rp-summary .rp-grand td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 800; font-size: 12.5px; }
+  .rincian-print .rp-summary .rp-sisa td { font-weight: 700; }
 
-  .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
-  .rp-status.lunas { color: #15803d; border-color: #15803d; }
-  .rp-status.belum { color: #b45309; border-color: #b45309; }
+  .rincian-print .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
+  .rincian-print .rp-status.lunas { color: #15803d; border-color: #15803d; }
+  .rincian-print .rp-status.belum { color: #b45309; border-color: #b45309; }
 
-  .rp-sign { display: flex; justify-content: space-between; gap: 40px; page-break-inside: avoid; }
-  .rp-sign-col { width: 45%; text-align: center; }
-  .rp-sign-lbl { font-size: 11px; margin-bottom: 4px; }
-  .rp-sign-space { height: 62px; }
-  .rp-stamp { height: 62px; object-fit: contain; }
-  .rp-sign-name { font-size: 11px; }
+  .rincian-print .rp-sign { display: flex; justify-content: space-between; gap: 40px; page-break-inside: avoid; }
+  .rincian-print .rp-sign-col { width: 45%; text-align: center; }
+  .rincian-print .rp-sign-lbl { font-size: 11px; margin-bottom: 4px; }
+  .rincian-print .rp-sign-space { height: 62px; }
+  .rincian-print .rp-stamp { height: 62px; object-fit: contain; }
+  .rincian-print .rp-sign-name { font-size: 11px; }
 
-  .rp-footer { margin-top: 28px; padding-top: 7px; border-top: 1px solid #999; text-align: center; font-size: 9px; color: #444; }
+  .rincian-print .rp-footer { margin-top: 28px; padding-top: 7px; border-top: 1px solid #999; text-align: center; font-size: 9px; color: #444; }
 }
 </style>

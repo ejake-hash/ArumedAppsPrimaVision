@@ -35,6 +35,7 @@ const RET_STATUS_BADGE = {
 
 const TABS = [
   { key: 'PERMINTAAN', label: 'Permintaan dari Unit' },
+  { key: 'PENDING',    label: 'Pending Pengiriman' },
   { key: 'RETUR',      label: 'Retur dari Unit' },
   { key: 'HISTORY',    label: 'History' },
 ]
@@ -49,6 +50,7 @@ function switchTab(k) {
   if (activeTab.value === k) return
   activeTab.value = k
   if (k === 'PERMINTAAN' && !reqList.value.length) refreshReq()
+  if (k === 'PENDING'    && !pendingList.value.length) refreshPending()
   if (k === 'RETUR'      && !retList.value.length) refreshRet()
   if (k === 'HISTORY') {
     if (historySub.value === 'REQUEST' && !histReqList.value.length) refreshHistReq()
@@ -127,7 +129,8 @@ async function doReqAction(row, action) {
   try {
     await op.fn()
     showToast('s', op.msg)
-    refreshReq(reqMeta.value.current_page)
+    if (activeTab.value === 'PENDING') refreshPending(pendingMeta.value.current_page)
+    else refreshReq(reqMeta.value.current_page)
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal')
   }
@@ -148,8 +151,6 @@ async function openDeliver(row) {
         items: r.items.map(it => ({
           ...it,
           _qty_deliver: it.qty_requested,
-          _batch: it.batch_no ?? '',
-          _expiry: it.expiry_date ?? '',
         })),
       },
     }
@@ -162,8 +163,6 @@ async function submitDeliver() {
     items: r.items.map(it => ({
       id: it.id,
       qty_delivered: Number(it._qty_deliver),
-      batch_no: it._batch || null,
-      expiry_date: it._expiry || null,
     })),
   }
   deliverModal.value.submitting = true
@@ -171,11 +170,39 @@ async function submitDeliver() {
     await unitRequestApi.deliver(r.id, payload)
     showToast('s', 'Pengiriman tercatat, stok dikurangi')
     deliverModal.value.open = false
-    refreshReq(reqMeta.value.current_page)
+    if (activeTab.value === 'PENDING') refreshPending(pendingMeta.value.current_page)
+    else refreshReq(reqMeta.value.current_page)
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal kirim')
   } finally {
     deliverModal.value.submitting = false
+  }
+}
+
+// =========================================================================
+// PENDING — request yang sudah APPROVED tapi belum DELIVERED
+// =========================================================================
+const pendingList = ref([])
+const pendingMeta = ref({ current_page: 1, last_page: 1, total: 0 })
+const pendingLoading = ref(false)
+const pendingFilters = ref({ search: '', station: '' })
+
+async function refreshPending(page = 1) {
+  pendingLoading.value = true
+  try {
+    const params = { page, per_page: 25, status: 'APPROVED' }
+    if (pendingFilters.value.search)  params.search  = pendingFilters.value.search
+    if (pendingFilters.value.station) params.station = pendingFilters.value.station
+    const res = await unitRequestApi.list(params)
+    const p = res.data?.data
+    if (p && Array.isArray(p.data)) {
+      pendingList.value = p.data
+      pendingMeta.value = { current_page: p.current_page ?? 1, last_page: p.last_page ?? 1, total: p.total ?? p.data.length }
+    } else pendingList.value = []
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal memuat pending')
+  } finally {
+    pendingLoading.value = false
   }
 }
 
@@ -241,7 +268,7 @@ async function doRetAction(row, action) {
 // =========================================================================
 // HISTORY — aksi yang sudah diproses (status != SUBMITTED)
 // =========================================================================
-const HIST_REQ_STATUSES = ['APPROVED','DELIVERED','CLOSED','REJECTED']
+const HIST_REQ_STATUSES = ['DELIVERED','CLOSED','REJECTED']
 const HIST_RET_STATUSES = ['RECEIVED','REJECTED']
 
 const histReqList = ref([])
@@ -414,6 +441,60 @@ onBeforeUnmount(() => {
         <button class="ru-btn" :disabled="reqMeta.current_page <= 1" @click="refreshReq(reqMeta.current_page - 1)">‹</button>
         <span>Hal {{ reqMeta.current_page }} / {{ reqMeta.last_page }} · {{ reqMeta.total }} permintaan</span>
         <button class="ru-btn" :disabled="reqMeta.current_page >= reqMeta.last_page" @click="refreshReq(reqMeta.current_page + 1)">›</button>
+      </div>
+    </section>
+
+    <!-- =================================================================
+         TAB PENDING (APPROVED, belum dikirim)
+         ================================================================= -->
+    <section v-show="activeTab === 'PENDING'" class="ru-panel">
+      <div class="ru-toolbar">
+        <input v-model="pendingFilters.search" placeholder="Cari nomor request / catatan…" class="ru-inp" @input="refreshPending(1)" />
+        <select v-model="pendingFilters.station" class="ru-inp" @change="refreshPending(1)">
+          <option value="">Semua Stasiun</option>
+          <option v-for="s in STATIONS" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </div>
+
+      <div class="ru-table-wrap">
+        <table class="ru-table">
+          <thead>
+            <tr>
+              <th class="c" style="width: 48px;">No</th>
+              <th>No. Request</th>
+              <th>Tanggal</th>
+              <th>Stasiun Pemohon</th>
+              <th class="c">Item</th>
+              <th>Status</th>
+              <th class="r">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="pendingLoading"><td colspan="7" class="ru-loading">Memuat…</td></tr>
+            <tr v-else-if="!pendingList.length"><td colspan="7" class="ru-empty">Tidak ada permintaan pending</td></tr>
+            <tr v-else v-for="(row, idx) in pendingList" :key="row.id">
+              <td class="c">{{ (pendingMeta.current_page - 1) * 25 + idx + 1 }}</td>
+              <td><code>{{ row.request_number }}</code></td>
+              <td>{{ formatDate(row.request_date) }}</td>
+              <td>{{ row.requesting_station }}</td>
+              <td class="c">{{ row.items_count ?? row.items?.length ?? '—' }}</td>
+              <td><span class="ru-badge" :class="REQ_STATUS_BADGE[row.status]?.cls">{{ REQ_STATUS_BADGE[row.status]?.label ?? row.status }}</span></td>
+              <td class="r">
+                <button class="ru-link" @click="openReqDetail(row)">Lihat</button>
+                <template v-if="canVerify">
+                  <button class="ru-link" @click="openDeliver(row)">Kirim</button>
+                  <button class="ru-link ru-link-danger" @click="doReqAction(row, 'reject')">Tolak</button>
+                </template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ru-pager" v-if="pendingMeta.last_page > 1">
+        <button class="ru-btn" :disabled="pendingMeta.current_page <= 1" @click="refreshPending(pendingMeta.current_page - 1)">‹</button>
+        <span>Hal {{ pendingMeta.current_page }} / {{ pendingMeta.last_page }} · {{ pendingMeta.total }} permintaan</span>
+        <button class="ru-btn" :disabled="pendingMeta.current_page >= pendingMeta.last_page" @click="refreshPending(pendingMeta.current_page + 1)">›</button>
       </div>
     </section>
 
@@ -595,7 +676,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
-
     <!-- =================================================================
          MODAL DETAIL PERMINTAAN (read-only)
          ================================================================= -->
@@ -622,8 +702,6 @@ onBeforeUnmount(() => {
                   <th>Item</th>
                   <th class="r">Qty Minta</th>
                   <th class="r">Qty Kirim</th>
-                  <th>Batch</th>
-                  <th>Expiry</th>
                 </tr>
               </thead>
               <tbody>
@@ -632,8 +710,6 @@ onBeforeUnmount(() => {
                   <td>{{ it.item_name }}<span v-if="it.item_unit" class="ru-unit"> · {{ it.item_unit }}</span></td>
                   <td class="r">{{ it.qty_requested }}</td>
                   <td class="r">{{ it.qty_delivered ?? 0 }}</td>
-                  <td>{{ it.batch_no ?? '—' }}</td>
-                  <td>{{ formatDate(it.expiry_date) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -641,6 +717,17 @@ onBeforeUnmount(() => {
         </div>
         <footer class="ru-modal-foot">
           <button class="ru-btn" @click="detailReq.open = false">Tutup</button>
+          <template v-if="canVerify && detailReq.data?.status === 'SUBMITTED'">
+            <button class="ru-btn ru-btn-danger" @click="doReqAction(detailReq.data, 'reject'); detailReq.open = false">Tolak</button>
+            <button class="ru-btn ru-btn-primary" @click="doReqAction(detailReq.data, 'approve'); detailReq.open = false">Setujui</button>
+          </template>
+          <template v-else-if="canVerify && detailReq.data?.status === 'APPROVED'">
+            <button class="ru-btn ru-btn-danger" @click="doReqAction(detailReq.data, 'reject'); detailReq.open = false">Tolak</button>
+            <button class="ru-btn ru-btn-primary" @click="detailReq.open = false; openDeliver(detailReq.data)">Kirim</button>
+          </template>
+          <template v-else-if="canVerify && detailReq.data?.status === 'DELIVERED'">
+            <button class="ru-btn ru-btn-primary" @click="doReqAction(detailReq.data, 'close'); detailReq.open = false">Tutup Permintaan</button>
+          </template>
         </footer>
       </div>
     </div>
@@ -655,15 +742,13 @@ onBeforeUnmount(() => {
           <button class="ru-x" @click="deliverModal.open = false">×</button>
         </header>
         <div class="ru-modal-body">
-          <p class="ru-help">Stok di inventori akan berkurang sesuai qty yang dikirim. Kosongkan batch untuk pakai FEFO (batch paling cepat expired).</p>
+          <p class="ru-help">Stok di inventori akan berkurang sesuai qty yang dikirim. Batch & expiry diambil otomatis dari inventori (FEFO — batch paling cepat expired).</p>
           <table class="ru-items">
             <thead>
               <tr>
                 <th>Item</th>
                 <th class="r" style="width: 90px;">Diminta</th>
                 <th style="width: 100px;">Dikirim</th>
-                <th style="width: 130px;">Batch (opsional)</th>
-                <th style="width: 140px;">Expiry</th>
               </tr>
             </thead>
             <tbody>
@@ -671,8 +756,6 @@ onBeforeUnmount(() => {
                 <td>{{ it.item_name }}<span v-if="it.item_unit" class="ru-unit"> · {{ it.item_unit }}</span></td>
                 <td class="r">{{ it.qty_requested }}</td>
                 <td><input type="number" v-model="it._qty_deliver" min="0" :max="it.qty_requested" step="0.01" class="ru-inp ru-inp-sm" /></td>
-                <td><input v-model="it._batch" class="ru-inp ru-inp-sm" placeholder="FEFO" /></td>
-                <td><input type="date" v-model="it._expiry" class="ru-inp ru-inp-sm" /></td>
               </tr>
             </tbody>
           </table>

@@ -7,8 +7,9 @@
  * lalu klik "Tambahkan ke alamat" untuk append ke textarea address. Saat
  * skema clinic_profiles ditambah kolom wilayah, tinggal swap save handler.
  */
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
+import { masterApi } from '@/services/api'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
 
 const store = useMasterDataStore()
@@ -24,7 +25,29 @@ const form = reactive({
   pdf_engine:        'puppeteer',
   watermark_enabled: false,
   watermark_type:    'ORIGINAL',
+  operating_rooms:   [],
 })
+
+const newRoom = ref('')
+
+function addRoom() {
+  const name = newRoom.value.trim()
+  if (!name) return
+  if (form.operating_rooms.length >= 20) {
+    showToast('w', 'Maksimum 20 ruang OK')
+    return
+  }
+  if (form.operating_rooms.some(r => r.toLowerCase() === name.toLowerCase())) {
+    showToast('w', `"${name}" sudah ada`)
+    return
+  }
+  form.operating_rooms.push(name)
+  newRoom.value = ''
+}
+
+function removeRoom(i) {
+  form.operating_rooms.splice(i, 1)
+}
 
 const wilayah = reactive({ province: '', regency: '', district: '' })
 
@@ -40,7 +63,9 @@ function showToast(type, msg) {
 function hydrateForm(p) {
   if (!p) return
   for (const k of Object.keys(form)) {
-    if (p[k] !== undefined && p[k] !== null) form[k] = p[k]
+    if (p[k] !== undefined && p[k] !== null) {
+      form[k] = Array.isArray(p[k]) ? [...p[k]] : p[k]
+    }
   }
 }
 
@@ -87,6 +112,54 @@ function fieldErr(key) {
   return Array.isArray(msgs) ? msgs[0] : msgs
 }
 
+// ── Logo upload ────────────────────────────────────────────────────────
+const logoUploading = ref(false)
+const logoFileInput = ref(null)
+
+const logoUrl = computed(() => {
+  const p = store.profilKlinik?.logo_path
+  if (!p) return null
+  if (p.startsWith('http')) return p
+  // Backend simpan relative path (mis. clinic/logo_xxx.png) di disk public.
+  // Hit ke /storage/<path> di backend host (BUKAN Vite dev server).
+  // Derive backend origin dari VITE_API_URL (strip /api/v1).
+  const apiBase = import.meta.env.VITE_API_URL ?? '/api/v1'
+  const backendOrigin = apiBase.replace(/\/api\/v\d+\/?$/, '')
+  return `${backendOrigin}/storage/${p}`
+})
+
+async function onLogoSelected(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  if (file.size > 2 * 1024 * 1024) {
+    showToast('e', 'Logo terlalu besar (max 2MB).')
+    e.target.value = ''
+    return
+  }
+  logoUploading.value = true
+  try {
+    await masterApi.profilKlinik.uploadLogo(file)
+    await load()
+    showToast('s', 'Logo berhasil di-upload.')
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal upload logo.')
+  } finally {
+    logoUploading.value = false
+    e.target.value = ''
+  }
+}
+
+async function deleteLogo() {
+  if (!confirm('Hapus logo klinik? Dokumen yang sudah finalize tidak terpengaruh (snapshot immutable).')) return
+  try {
+    await masterApi.profilKlinik.deleteLogo()
+    await load()
+    showToast('s', 'Logo dihapus.')
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal hapus logo.')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -104,6 +177,53 @@ onMounted(load)
     <div v-else-if="store.profilError" class="pk-error-banner">{{ store.profilError }}</div>
 
     <form v-else class="pk-form" @submit.prevent="save">
+      <!-- ─── Logo & Kop Surat ─── -->
+      <section class="pk-section">
+        <header>
+          <h3>Logo Klinik (Kop Surat)</h3>
+          <p class="pk-section-sub">
+            Logo ini bisa di-bind ke template form RM via placeholder
+            <code>&#123;&#123;clinic_logo&#125;&#125;</code> (binding: <code>clinic.logo_path</code>).
+          </p>
+        </header>
+        <div class="pk-logo-row">
+          <div class="pk-logo-preview">
+            <img v-if="logoUrl" :src="logoUrl" alt="Logo Klinik" />
+            <div v-else class="pk-logo-empty">Belum ada logo</div>
+          </div>
+          <div class="pk-logo-actions">
+            <input
+              ref="logoFileInput"
+              type="file"
+              accept="image/png,image/jpeg,image/svg+xml,image/webp"
+              style="display: none"
+              @change="onLogoSelected"
+            />
+            <button
+              type="button"
+              class="pk-btn-primary"
+              :disabled="logoUploading"
+              @click="logoFileInput?.click()"
+            >
+              {{ logoUploading ? 'Mengunggah…' : (logoUrl ? 'Ganti Logo' : '+ Upload Logo') }}
+            </button>
+            <button
+              v-if="logoUrl"
+              type="button"
+              class="pk-btn-danger"
+              :disabled="logoUploading"
+              @click="deleteLogo"
+            >
+              Hapus
+            </button>
+            <p class="pk-logo-hint">
+              Format: PNG / JPG / SVG / WebP. Max 2 MB.<br/>
+              Resolusi rekomendasi: 400×200px (rasio 2:1) untuk kop surat A4.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <!-- ─── Identitas Klinik ─── -->
       <section class="pk-section">
         <header><h3>Identitas Klinik</h3></header>
@@ -197,6 +317,34 @@ onMounted(load)
         </div>
       </section>
 
+      <!-- ─── Ruang Operasi ─── -->
+      <section class="pk-section">
+        <header>
+          <h3>Ruang Operasi (OK)</h3>
+          <p class="pk-sub">Daftar ruang OK yang tersedia di klinik. Dipakai di modul Bedah saat menentukan ruang operasi pasien.</p>
+        </header>
+        <div class="pk-room-list">
+          <div v-for="(room, i) in form.operating_rooms" :key="i" class="pk-room-chip">
+            <span>{{ room }}</span>
+            <button type="button" class="pk-room-del" @click="removeRoom(i)" aria-label="Hapus ruang">×</button>
+          </div>
+          <div v-if="!form.operating_rooms.length" class="pk-room-empty">
+            Belum ada ruang OK. Tambahkan minimal 1 ruang.
+          </div>
+        </div>
+        <div class="pk-room-add">
+          <input
+            type="text"
+            v-model="newRoom"
+            placeholder="Nama ruang (mis. OK 1, OK Phaco, OK Laser)"
+            maxlength="50"
+            @keydown.enter.prevent="addRoom"
+          />
+          <button type="button" class="pk-btn-secondary" @click="addRoom" :disabled="!newRoom.trim()">+ Tambah</button>
+        </div>
+        <p v-if="fieldErr('operating_rooms')" class="pk-err">{{ fieldErr('operating_rooms') }}</p>
+      </section>
+
       <!-- Footer actions -->
       <div class="pk-actions">
         <button type="button" class="pk-btn-secondary" @click="load" :disabled="saving">Reset</button>
@@ -273,6 +421,16 @@ onMounted(load)
 .pk-err { font-size: 11px; color: var(--et); margin: 0; }
 .pk-hint { font-size: 11px; color: var(--tu); margin: 0; }
 
+/* Ruang OK */
+.pk-room-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; }
+.pk-room-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; background: var(--gl); border: 1px solid var(--ga); color: var(--gm); border-radius: 20px; font-size: 12.5px; font-weight: 600; }
+.pk-room-del { background: none; border: none; color: var(--gm); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 6px; border-radius: 50%; transition: background .12s, color .12s; }
+.pk-room-del:hover { background: var(--et); color: #fff; }
+.pk-room-empty { font-size: 12px; color: var(--th); font-style: italic; padding: 6px 4px; }
+.pk-room-add { display: flex; gap: 8px; align-items: center; }
+.pk-room-add input { flex: 1; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 8px; font-size: 13px; background: var(--bs); color: var(--td); outline: none; box-sizing: border-box; font-family: inherit; }
+.pk-room-add input:focus { border-color: var(--ga); }
+
 .pk-actions { display: flex; justify-content: flex-end; gap: 0.7rem; padding-top: 0.3rem; }
 .pk-btn-primary,
 .pk-btn-secondary { padding: 9px 18px; border-radius: 9px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid; display: inline-flex; align-items: center; gap: 7px; transition: background 0.15s; }
@@ -295,4 +453,30 @@ onMounted(load)
 .pk-toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .pk-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 @keyframes pk-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── Logo & Kop Surat ── */
+.pk-section-sub { margin: 4px 0 0; font-size: 12px; color: #555; }
+.pk-section-sub code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #000; }
+.pk-logo-row { display: flex; gap: 1.25rem; align-items: flex-start; }
+.pk-logo-preview {
+  width: 200px; height: 100px; border: 1px dashed #999; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: #fafafa; overflow: hidden;
+}
+.pk-logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.pk-logo-empty { color: #999; font-size: 12px; font-style: italic; }
+.pk-logo-actions { display: flex; flex-direction: column; gap: 0.5rem; }
+.pk-logo-hint { margin: 4px 0 0; font-size: 11.5px; color: #666; line-height: 1.5; }
+.pk-btn-primary {
+  padding: 0.5rem 1rem; border: 1px solid #1763d4; border-radius: 6px;
+  background: #1763d4; color: #fff !important; font-weight: 700; cursor: pointer; font-size: 13px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.pk-btn-primary:hover:not(:disabled) { background: #134fa8; }
+.pk-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+.pk-btn-danger {
+  padding: 0.5rem 1rem; border: 1px solid #c83b3b; border-radius: 6px;
+  background: #fff; color: #c83b3b !important; font-weight: 600; cursor: pointer; font-size: 13px;
+}
+.pk-btn-danger:hover:not(:disabled) { background: #ffe5e5; }
 </style>

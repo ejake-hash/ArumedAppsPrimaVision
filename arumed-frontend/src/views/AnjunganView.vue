@@ -246,7 +246,7 @@ onUnmounted(() => {
       <!-- TICKET SCREEN -->
       <div v-else-if="screen === 'ticket'" class="screen ticket-screen">
         <div class="ticket-wrap">
-          <div class="ticket" id="thermal-ticket">
+          <div class="ticket">
             <div class="tkt-header">
               <span class="tkt-clinic">Klinik Mata Arunika</span>
             </div>
@@ -305,6 +305,24 @@ onUnmounted(() => {
     </div>
 
   </div>
+
+  <!-- ─── PRINT-ONLY TICKET (Thermal 80mm) ─── -->
+  <!-- Teleport ke <body> agar lepas TOTAL dari subtree .anjungan (#app).
+       Saat print kita sembunyikan #app, node ini tetap tampil. Tidak pakai
+       trik visibility/absolute (rapuh karena body min-width:1280px). -->
+  <Teleport to="body">
+    <div v-if="ticket" id="print-ticket" aria-hidden="true">
+      <div class="pt-clinic">Klinik Mata Arunika</div>
+      <div class="pt-sub">Cilegon · Anjungan Mandiri</div>
+      <div class="pt-rule"></div>
+      <div class="pt-label">NOMOR ANTREAN</div>
+      <div class="pt-num">{{ ticket.qNum }}</div>
+      <div class="pt-rule"></div>
+      <div class="pt-dest">Menuju <strong>{{ ticket.poli }}</strong></div>
+      <div class="pt-note">untuk menyelesaikan pendaftaran</div>
+      <div class="pt-time">{{ dateStr }} · {{ clock }}</div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -688,72 +706,54 @@ onUnmounted(() => {
 </style>
 
 <!-- ─── PRINT STYLE (Thermal 80mm) ─── -->
-<!-- Tidak scoped — agar @page apply ke seluruh dokumen saat window.print() -->
+<!-- Tidak scoped — agar @page + reset body apply ke seluruh dokumen. -->
 <style>
+/* Node print disembunyikan total di layar; hanya muncul saat @media print. */
+#print-ticket { display: none; }
+
 @media print {
   @page {
-    size: 80mm auto;
+    size: 72mm auto;   /* area cetak efektif kertas 80mm (margin mekanis ~4mm/sisi) */
     margin: 0;
   }
 
-  /* Sembunyikan seluruh halaman, hanya tampilkan tiket */
-  body * { visibility: hidden !important; }
-  #thermal-ticket, #thermal-ticket * { visibility: visible !important; }
-
-  #thermal-ticket {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 80mm !important;
+  /* Lepas semua constraint global yang merusak cetak thermal:
+     base.css → body { min-width: 1280px } & html,body { height:100% }. */
+  html, body {
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
     background: #fff !important;
-    color: #000 !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    padding: 4mm 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
-  /* Header thermal (B/W) — center align, hilangkan badge tipe */
-  #thermal-ticket .tkt-header {
-    background: #fff !important;
-    color: #000 !important;
-    padding: 2mm 4mm !important;
-    border-bottom: 1px dashed #000;
+  /* #print-ticket di-teleport ke <body> (sibling #app). Sembunyikan seluruh
+     app, sisakan node print. */
+  #app { display: none !important; }
+
+  #print-ticket {
     display: block !important;
-    text-align: center !important;
-  }
-  #thermal-ticket .tkt-clinic {
-    color: #000 !important;
-    font-size: 13pt !important;
-    font-weight: 700;
-    display: block !important;
-    text-align: center !important;
-  }
-  #thermal-ticket .tkt-type { display: none !important; }
-
-  #thermal-ticket .tkt-perf { display: none !important; }
-  #thermal-ticket .tkt-sep-line {
-    background: none !important;
-    border-top: 1px dashed #000;
-    height: 0 !important;
-    margin: 2mm 4mm !important;
+    width: 72mm;
+    box-sizing: border-box;
+    padding: 3mm 4mm 5mm;
+    background: #fff;
+    color: #000;
+    font-family: 'DM Sans', Arial, sans-serif;
+    text-align: center;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
-  #thermal-ticket .tkt-num {
-    color: #000 !important;
-    font-size: 56pt !important;
-    padding: 2mm 0 !important;
-    font-weight: 700;
-  }
-
-  #thermal-ticket .umum-body {
-    padding: 2mm 4mm !important;
-    color: #000 !important;
-  }
-  #thermal-ticket .umum-body p,
-  #thermal-ticket .umum-body strong {
-    color: #000 !important;
-    font-size: 10pt !important;
-  }
-  #thermal-ticket .umum-body svg { stroke: #000 !important; }
+  #print-ticket .pt-clinic { font-size: 13pt; font-weight: 700; line-height: 1.2; }
+  #print-ticket .pt-sub    { font-size: 8pt; margin-top: 1mm; letter-spacing: 0.04em; }
+  #print-ticket .pt-rule   { border-top: 1px dashed #000; margin: 2.5mm 0; }
+  #print-ticket .pt-label  { font-size: 8pt; letter-spacing: 0.18em; font-weight: 600; }
+  #print-ticket .pt-num    { font-size: 52pt; font-weight: 800; line-height: 1; margin: 1mm 0; }
+  #print-ticket .pt-dest   { font-size: 11pt; }
+  #print-ticket .pt-dest strong { font-weight: 700; }
+  #print-ticket .pt-note   { font-size: 9pt; margin-top: 0.5mm; }
+  #print-ticket .pt-time   { font-size: 8pt; margin-top: 3mm; }
 }
 </style>

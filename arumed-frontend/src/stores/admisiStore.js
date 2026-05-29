@@ -68,6 +68,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
       stats.value = {
         total:    sc.total_kunjungan ?? 0,
         bpjs:     sc.bpjs_count      ?? 0,
+        umum:     sc.umum_count      ?? 0,
         asuransi: sc.asuransi_count  ?? 0,
         bedah:    sc.bedah_count     ?? 0,
         sep:      sc.sep_count       ?? 0,
@@ -234,6 +235,16 @@ export const useAdmisiStore = defineStore('admisi', () => {
       }
     } catch (err) {
       throw new Error(err.response?.data?.message ?? 'Gagal memuat riwayat kunjungan')
+    }
+  }
+
+  // Jadwal bedah aktif pasien (hari ini & masa depan) — utk banner preop di Admisi
+  async function fetchJadwalBedahAktif(patientId) {
+    try {
+      const { data } = await admisiApi.jadwalBedahAktif(patientId)
+      return data.data ?? []
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal memuat jadwal bedah pasien')
     }
   }
 
@@ -431,6 +442,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
 
     // patient
     cariPasien, fetchPasienDetail, fetchKunjunganPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,
+    fetchJadwalBedahAktif,
 
     // rekam medis
     fetchRekamMedis,

@@ -104,15 +104,24 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
   }
 
   // ─── CSV tarif ──────────────────────────────────────────────────────────
-  function triggerDownload(blob, filename) {
+  function triggerDownload(data, filename) {
+    // Pastikan jadi Blob — axios responseType:'blob' biasanya sudah Blob,
+    // tapi defensive coding kalau ada interceptor / response mode lain.
+    const blob = data instanceof Blob
+      ? data
+      : new Blob([typeof data === 'string' ? data : JSON.stringify(data)], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = filename
+    a.style.display = 'none'
     document.body.appendChild(a)
     a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Delay revoke + remove supaya Firefox/Safari sempat trigger save dialog
+    setTimeout(() => {
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    }, 100)
   }
 
   // CSV global per-type sudah dipindah ke per-insurer di MetodeBayarTarifTab.vue.
@@ -171,6 +180,24 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
     if (paketDetail.value?.id === id) paketDetail.value = null
   }
 
+  // ─── Paket CSV (template / export / import) ─────────────────────────────
+  async function downloadPaketTemplate() {
+    const { data } = await tarifPaketApi.paket.csvTemplate()
+    triggerDownload(data, 'template-paket-bedah.csv')
+  }
+
+  async function exportPaketCsv() {
+    const { data } = await tarifPaketApi.paket.csvExport()
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(data, `paket-bedah-${stamp}.csv`)
+  }
+
+  async function importPaketCsv(file) {
+    const res = await tarifPaketApi.paket.csvImport(file)
+    await fetchPaketList()
+    return res.data?.data ?? res.data
+  }
+
   // ─── Items paket ────────────────────────────────────────────────────────
   async function addItem(paketId, data) {
     const res = await tarifPaketApi.items.add(paketId, data)
@@ -216,6 +243,7 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
     // paket ops
     fetchPaketList, fetchPaketDetail,
     createPaket, updatePaket, removePaket,
+    downloadPaketTemplate, exportPaketCsv, importPaketCsv,
 
     // items/tariffs ops
     addItem, updateItem, removeItem,

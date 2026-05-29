@@ -20,6 +20,7 @@ class SurgeryRequestBhp extends Model
         'surgery_request_id',
         'bhp_item_id',
         'quantity',
+        'used_qty',
         'notes',
     ];
 

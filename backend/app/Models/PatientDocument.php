@@ -29,6 +29,12 @@ class PatientDocument extends Model
         'void_reason',
         'printed_count',
         'finalized_at',
+        // Form Registry — snapshot fields (Fase 1)
+        'template_code',
+        'template_version',
+        'rendered_html',
+        'rendered_html_gz',
+        'final_integrity_hash',
     ];
 
     protected $casts = [
@@ -60,5 +66,15 @@ class PatientDocument extends Model
     public function notifications(): HasMany
     {
         return $this->hasMany(Notification::class);
+    }
+
+    public function documentSignatures(): HasMany
+    {
+        return $this->hasMany(DocumentSignature::class)->orderBy('captured_at');
+    }
+
+    public function addenda(): HasMany
+    {
+        return $this->hasMany(DocumentAddendum::class);
     }
 }

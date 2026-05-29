@@ -160,6 +160,15 @@ class AdmisiController extends Controller
         return $this->ok($this->service->getKunjunganPasien($id, $validated));
     }
 
+    /**
+     * GET /admisi/pasien/{id}/jadwal-bedah-aktif
+     * Auto-suggest: jadwal bedah pasien (hari ini & masa depan) untuk banner Admisi.
+     */
+    public function jadwalBedahAktif(string $id): JsonResponse
+    {
+        return $this->ok($this->service->getJadwalBedahAktif($id));
+    }
+
     public function updatePasien(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
@@ -215,6 +224,33 @@ class AdmisiController extends Controller
             'bpjs_booking_code'  => 'nullable|string|max:50',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+
+            // Preop bedah (opsional — service validasi keterkaitan schedule↔patient)
+            'visit_type'          => 'nullable|in:REGULAR,PREOP_BEDAH',
+            'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
+
+            // Data kartu asuransi/TPA — diisi petugas admisi dari kartu fisik pasien
+            'policy_number'       => 'nullable|string|max:255',
+            'member_name'         => 'nullable|string|max:255',
+            'member_card_number'  => 'nullable|string|max:255',
+
+            // COB (Coordination of Benefits) — penjamin kedua, selalu tipe ASURANSI
+            'cob'                      => 'nullable|array',
+            'cob.penjamin1_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
+            'cob.penjamin1_insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI',
+            'cob.penjamin2_insurer_id' => 'required_with:cob|uuid|exists:insurers,id|different:cob.penjamin1_insurer_id',
+            'cob.notes'                => 'nullable|string|max:500',
+
+            // General Consent (opsional) — diteken pasien/wali di Admisi.
+            'consent'                              => 'nullable|array',
+            'consent.template_code'                => 'nullable|string|max:100',
+            'consent.static_payload'               => 'nullable|array',
+            'consent.signatures'                   => 'nullable|array',
+            'consent.signatures.*.signer_type'          => 'required_with:consent.signatures|string|max:30',
+            'consent.signatures.*.signature_svg'        => 'nullable|string',
+            'consent.signatures.*.signature_png_base64' => 'nullable|string',
+            'consent.signatures.*.external_identity'    => 'nullable|array',
         ]);
 
         // insurer_id wajib jika penjamin selain UMUM & BPJS
@@ -232,6 +268,40 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($visit, 'Kunjungan berhasil didaftarkan', 201);
+    }
+
+    /**
+     * POST /admisi/consent/preview
+     * Render dokumen consent (mis. General Consent) dari DATA FORM — untuk
+     * pasien baru yang belum punya patient_id/visit_id. Dipakai AdmisiView
+     * agar pasien/wali bisa tinjau & tanda tangani GC sebelum konfirmasi.
+     */
+    public function previewConsent(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'template_code'  => 'nullable|string|max:100',
+            'name'           => 'nullable|string|max:255',
+            'nik'            => 'nullable|string|max:50',
+            'no_rm'          => 'nullable|string|max:50',
+            'gender'         => 'nullable|in:L,P',
+            'date_of_birth'  => 'nullable|string|max:30',
+            'address'        => 'nullable|string|max:500',
+            'phone'          => 'nullable|string|max:30',
+            // TTD preview (SVG) per signer_type — opsional, untuk re-render dgn TTD.
+            'signatures'              => 'nullable|array',
+            'signatures.*.signer_type'   => 'required_with:signatures|string|max:30',
+            'signatures.*.signature_svg' => 'nullable|string',
+            // Jawaban static (checkbox persetujuan, data saksi) — opsional.
+            'static_payload' => 'nullable|array',
+        ]);
+
+        try {
+            $result = $this->service->previewConsent($validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result);
     }
 
     // =========================================================================
@@ -303,6 +373,19 @@ class AdmisiController extends Controller
             'bpjs_booking_code'  => 'nullable|string|max:50',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+
+            // Data kartu asuransi/TPA — diisi petugas admisi dari kartu fisik pasien
+            'policy_number'       => 'nullable|string|max:255',
+            'member_name'         => 'nullable|string|max:255',
+            'member_card_number'  => 'nullable|string|max:255',
+
+            // COB (Coordination of Benefits) — penjamin kedua, selalu tipe ASURANSI
+            'cob'                      => 'nullable|array',
+            'cob.penjamin1_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
+            'cob.penjamin1_insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI',
+            'cob.penjamin2_insurer_id' => 'required_with:cob|uuid|exists:insurers,id|different:cob.penjamin1_insurer_id',
+            'cob.notes'                => 'nullable|string|max:500',
         ]);
 
         if (

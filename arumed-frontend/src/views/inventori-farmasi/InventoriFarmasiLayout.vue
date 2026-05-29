@@ -11,20 +11,24 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 import { inventoriInboxApi } from '@/services/api'
+import InventoriStockSidebar from '@/components/inventori-farmasi/InventoriStockSidebar.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+const showStockSidebar = computed(() => route.path.startsWith('/inventori-farmasi'))
+
 const allTabs = [
+  { to: '/inventori-farmasi/request-unit', label: 'Request dari Unit', icon: 'request', section: 'Operasional', perm: 'request_unit.read' },
   { to: '/inventori-farmasi/obat',       label: 'Obat',              icon: 'pill',     section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/bhp',        label: 'BHP',               icon: 'box',      section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/iol',        label: 'IOL',               icon: 'lens',     section: 'Master Item',  perm: 'inventori_farmasi.read' },
+  { to: '/inventori-farmasi/alat-medis', label: 'Alat Medis',        icon: 'machine',  section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/harga',      label: 'Penentuan Harga',   icon: 'price',    section: 'Harga',        perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/supplier',   label: 'Supplier',          icon: 'truck',    section: 'Pengadaan',    perm: 'supplier.read' },
   { to: '/inventori-farmasi/pembelian',  label: 'Pembelian (PO)',    icon: 'cart',     section: 'Pengadaan',    perm: 'pembelian.read' },
   { to: '/inventori-farmasi/penerimaan', label: 'Penerimaan',        icon: 'inbox',    section: 'Pengadaan',    perm: 'penerimaan.read' },
-  { to: '/inventori-farmasi/request-unit', label: 'Request dari Unit', icon: 'request', section: 'Operasional', perm: 'request_unit.read' },
 ]
 
 const tabs = computed(() => allTabs.filter((t) => auth.can(t.perm)))
@@ -168,7 +172,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="if-grid">
+    <div class="if-grid" :class="{ 'has-stock': showStockSidebar }">
       <aside class="if-nav">
         <template v-for="(group, gIdx) in groupedTabs" :key="gIdx">
           <div class="if-nav-section">{{ group.section }}</div>
@@ -181,6 +185,7 @@ onBeforeUnmount(() => {
             <svg v-if="item.icon === 'pill'" viewBox="0 0 24 24"><path d="M10.5 20.5a6 6 0 1 1 8.485-8.486l-8.485 8.486zM13.515 3.515a6 6 0 0 1 0 8.485l-8.485-8.485"/></svg>
             <svg v-else-if="item.icon === 'box'" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
             <svg v-else-if="item.icon === 'lens'" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
+            <svg v-else-if="item.icon === 'machine'" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="9" cy="10" r="2"/><line x1="13" y1="9" x2="19" y2="9"/><line x1="13" y1="13" x2="17" y2="13"/><line x1="7" y1="20" x2="17" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
             <svg v-else-if="item.icon === 'price'" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             <svg v-else-if="item.icon === 'truck'" viewBox="0 0 24 24"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
             <svg v-else-if="item.icon === 'cart'" viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
@@ -194,12 +199,17 @@ onBeforeUnmount(() => {
       <main class="if-content">
         <RouterView />
       </main>
+
+      <aside v-if="showStockSidebar" class="if-stock">
+        <InventoriStockSidebar />
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
 .if-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 1400px; }
+.if-wrap:has(.if-grid.has-stock) { max-width: 1760px; }
 
 .if-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .if-header h1 { font-family: 'DM Serif Display', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
@@ -237,7 +247,11 @@ onBeforeUnmount(() => {
 .if-inbox-all:hover { text-decoration: underline; }
 
 .if-grid { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
-@media (max-width: 900px) { .if-grid { grid-template-columns: 1fr; } }
+.if-grid.has-stock { grid-template-columns: 220px minmax(0, 1fr) 340px; }
+@media (max-width: 1200px) { .if-grid.has-stock { grid-template-columns: 220px minmax(0, 1fr); } .if-grid.has-stock .if-stock { display: none; } }
+@media (max-width: 900px) { .if-grid, .if-grid.has-stock { grid-template-columns: 1fr; } }
+
+.if-stock { min-width: 0; }
 
 .if-nav { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 0.6rem 0.5rem; position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: 1px; }
 .if-nav-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--tu); padding: 0.6rem 0.7rem 0.3rem; }

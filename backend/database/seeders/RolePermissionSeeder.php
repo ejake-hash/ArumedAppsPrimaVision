@@ -18,15 +18,18 @@ class RolePermissionSeeder extends Seeder
         $matrix = [
             // Superadmin di-skip — bypass via Role::isSuperadmin().
             'dokter' => [
-                'admisi'       => ['R'],
-                'antrian_tv'   => ['R'],
-                'perawat'      => ['R'],
-                'refraksionis' => ['R'],
-                'rme_dokter'   => ['R','W'],
-                'bedah'        => ['R','W'],
-                'farmasi'      => ['R'],
-                'bpjs'         => ['R'],
-                'laporan'      => ['R'],
+                'admisi'        => ['R'],
+                'antrian_tv'    => ['R'],
+                'perawat'       => ['R'],
+                'refraksionis'  => ['R'],
+                'rme_dokter'    => ['R','W'],
+                'bedah'         => ['R','W'],
+                'farmasi'       => ['R'],
+                // Unit Bedah minta/retur BHP-IOL ke gudang (BedahTerjadwalView, station=BEDAH).
+                'request_unit'  => ['R','W'],
+                'bpjs'          => ['R'],
+                'laporan'       => ['R'],
+                'form_template' => ['R','W'],
             ],
             'perawat' => [
                 'admisi'       => ['R'],
@@ -113,6 +116,7 @@ class RolePermissionSeeder extends Seeder
                 'tarif_paket'       => ['R'],
                 'laporan'           => ['R','W'],
                 'audit'             => ['R'],
+                'form_template'     => ['R'],
             ],
             // Inventori — rantai gudang/inventori farmasi penuh + master terkait.
             'inventori' => [

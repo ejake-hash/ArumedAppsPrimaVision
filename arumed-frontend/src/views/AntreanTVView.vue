@@ -391,6 +391,7 @@ function connectWs() {
 
     tvChannel = pusher.subscribe('antrean-tv')
     tvChannel.bind('queue-updated', handleQueueEvent)
+    tvChannel.bind('media-updated', (payload) => applyMediaPayload(payload?.media))
 
     pusher.connection.bind('error', () => startPolling())
   }).catch(() => startPolling())
@@ -483,7 +484,7 @@ function disconnectWs() {
 
 onMounted(async () => {
   timer = setInterval(updateClock, 1000)
-  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings()])
+  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings(), fetchMediaSettings()])
   connectWs()
   // Refresh dokter aktif tiap 2 menit (toggle aktif/non-aktif dari menu dokter)
   doctorPollInterval = setInterval(fetchActiveDoctors, 120_000)
@@ -570,13 +571,70 @@ function submitPin() {
 const showControl = ref(false)
 const activeTab = ref('media')
 
-// --- MEDIA ---
+// --- MEDIA (backend singleton — sync ke semua TV via TvMediaUpdated event) ---
+// Semua perubahan: PUT/POST/DELETE ke /antrean-tv/media-settings → backend
+// broadcast → applyMediaPayload() apply ke state lokal (termasuk TV yg
+// melakukan perubahan, via toOthers exclude — kita handle juga dari respons
+// supaya UI feedback instan).
 const mediaMode = ref('placeholder')
 const youtubeDraft = ref('')
 const youtubeEmbedUrl = ref('')
 const youtubeError = ref('')
+const mediaSaveMsg = ref('')
+const mediaSaveMsgType = ref('')
+const mediaUploading = ref(false)
+const mediaUploadPct = ref(0)
+const mediaUploadInfo = ref('') // mis. "120 MB / 500 MB"
+let mediaUploadAbort = null
+const localVideoUrl = ref('')
+const localVideoName = ref('')
+const externalVideoUrl = ref('')   // URL eksternal aktif (dari backend)
+const externalVideoDraft = ref('') // input draft di panel
+const hasUploadedFile = ref(false)
+const videoLoop = ref(true)
+const videoAutoplay = ref(true)
 
-function applyYoutube() {
+function showMediaMsg(msg, type) {
+  mediaSaveMsg.value = msg
+  mediaSaveMsgType.value = type
+  setTimeout(() => { mediaSaveMsg.value = '' }, 4000)
+}
+
+// Apply payload dari backend (fetch awal atau broadcast TvMediaUpdated)
+function applyMediaPayload(s) {
+  if (!s) return
+  if (s.media_mode) mediaMode.value = s.media_mode
+  youtubeEmbedUrl.value = s.youtube_embed_url ?? ''
+  if (typeof s.video_autoplay === 'boolean') videoAutoplay.value = s.video_autoplay
+  if (typeof s.video_loop === 'boolean')     videoLoop.value     = s.video_loop
+  localVideoUrl.value  = s.local_video_url ?? ''
+  localVideoName.value = s.local_video_name ?? ''
+  externalVideoUrl.value = s.external_video_url ?? ''
+  hasUploadedFile.value  = !!s.has_uploaded_file
+  if (Array.isArray(s.slides)) slides.value = s.slides
+  if (typeof s.slide_interval === 'number') slideDuration.value = s.slide_interval
+
+  // Restart slideshow timer kalau mode aktif slideshow
+  stopSlideshow()
+  if (mediaMode.value === 'slideshow' && slides.value.length > 1) startSlideshow()
+}
+
+async function fetchMediaSettings() {
+  try {
+    const { data } = await antreanTvApi.mediaSettings()
+    applyMediaPayload(data.data)
+  } catch {
+    // Biarkan default in-code
+  }
+}
+
+function buildYoutubeUrl(id, opts) {
+  const loop = opts.loop ? `&loop=1&playlist=${id}` : ''
+  const auto = opts.autoplay ? '&autoplay=1' : ''
+  return `https://www.youtube.com/embed/${id}?mute=1${auto}${loop}`
+}
+
+async function applyYoutube() {
   youtubeError.value = ''
   const url = youtubeDraft.value.trim()
   let id = ''
@@ -589,27 +647,144 @@ function applyYoutube() {
     if (m) { id = m[1]; break }
   }
   if (!id) { youtubeError.value = 'URL YouTube tidak valid'; return }
-  const loop = videoLoop.value ? `&loop=1&playlist=${id}` : ''
-  const auto = videoAutoplay.value ? '&autoplay=1' : ''
-  youtubeEmbedUrl.value = `https://www.youtube.com/embed/${id}?mute=1${auto}${loop}`
-  stopSlideshow()
-  mediaMode.value = 'youtube'
+  const embed = buildYoutubeUrl(id, { autoplay: videoAutoplay.value, loop: videoLoop.value })
+  try {
+    const { data } = await antreanTvApi.updateMedia({
+      media_mode:        'youtube',
+      youtube_embed_url: embed,
+      video_autoplay:    videoAutoplay.value,
+      video_loop:        videoLoop.value,
+    })
+    applyMediaPayload(data.data)
+    showMediaMsg('YouTube disiarkan ke TV.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
+  }
 }
 
-// --- VIDEO LOKAL ---
-const localVideoUrl = ref('')
-const videoLoop = ref(true)
-const videoAutoplay = ref(true)
-let localVideoObjectUrl = null
+// Re-sync video options (autoplay/loop) — kalau lagi mode youtube,
+// rebuild embed URL dengan opsi baru.
+async function syncVideoOptions() {
+  const payload = {
+    video_autoplay: videoAutoplay.value,
+    video_loop:     videoLoop.value,
+  }
+  if (mediaMode.value === 'youtube' && youtubeEmbedUrl.value) {
+    const m = youtubeEmbedUrl.value.match(/\/embed\/([A-Za-z0-9_-]{11})/)
+    if (m) payload.youtube_embed_url = buildYoutubeUrl(m[1], { autoplay: videoAutoplay.value, loop: videoLoop.value })
+  }
+  try {
+    const { data } = await antreanTvApi.updateMedia(payload)
+    applyMediaPayload(data.data)
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
+  }
+}
 
-function handleVideoFile(e) {
+function fmtBytes(n) {
+  if (!n && n !== 0) return ''
+  const mb = n / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(n / 1024).toFixed(0)} KB`
+}
+
+async function handleVideoFile(e) {
   const file = e.target.files[0]
   if (!file) return
-  if (localVideoObjectUrl) URL.revokeObjectURL(localVideoObjectUrl)
-  localVideoObjectUrl = URL.createObjectURL(file)
-  localVideoUrl.value = localVideoObjectUrl
-  stopSlideshow()
-  mediaMode.value = 'localvideo'
+  // Pre-check ukuran (500 MB) supaya gagal cepat sebelum upload.
+  const MAX_BYTES = 500 * 1024 * 1024
+  if (file.size > MAX_BYTES) {
+    showMediaMsg(`File terlalu besar (${fmtBytes(file.size)}). Maks 500 MB.`, 'err')
+    e.target.value = ''
+    return
+  }
+  const fd = new FormData()
+  fd.append('video', file)
+  mediaUploading.value = true
+  mediaUploadPct.value = 0
+  mediaUploadInfo.value = `0 / ${fmtBytes(file.size)}`
+  mediaUploadAbort = new AbortController()
+  try {
+    const { data } = await antreanTvApi.uploadMediaVideo(fd, (ev) => {
+      if (!ev.total) return
+      mediaUploadPct.value = Math.round((ev.loaded / ev.total) * 100)
+      mediaUploadInfo.value = `${fmtBytes(ev.loaded)} / ${fmtBytes(ev.total)}`
+    }, mediaUploadAbort.signal)
+    applyMediaPayload(data.data)
+    showMediaMsg('Video diupload dan disiarkan ke TV.', 'ok')
+  } catch (err) {
+    // Axios membatalkan dengan CanceledError saat AbortController.abort()
+    if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
+      showMediaMsg('Upload dibatalkan.', 'err')
+    } else {
+      showMediaMsg(err.response?.data?.message ?? 'Gagal upload (perlu login / file > 500MB / koneksi terputus)', 'err')
+    }
+  } finally {
+    mediaUploading.value = false
+    mediaUploadPct.value = 0
+    mediaUploadInfo.value = ''
+    mediaUploadAbort = null
+    e.target.value = '' // reset input agar bisa pilih file yang sama lagi
+  }
+}
+
+function cancelUpload() {
+  if (mediaUploadAbort) mediaUploadAbort.abort()
+}
+
+async function deleteLocalVideo() {
+  if (!confirm('Hapus video lokal? TV akan kembali ke placeholder.')) return
+  try {
+    const { data } = await antreanTvApi.deleteMediaVideo()
+    applyMediaPayload(data.data)
+    showMediaMsg('Video lokal dihapus.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menghapus (perlu login)', 'err')
+  }
+}
+
+async function applyExternalVideoUrl() {
+  const url = externalVideoDraft.value.trim()
+  if (!url) { showMediaMsg('Paste URL video MP4 dulu', 'err'); return }
+  if (!/^https?:\/\//i.test(url)) { showMediaMsg('URL harus dimulai http:// atau https://', 'err'); return }
+  try {
+    const { data } = await antreanTvApi.updateMedia({
+      external_video_url: url,
+      media_mode:         'localvideo',
+    })
+    applyMediaPayload(data.data)
+    externalVideoDraft.value = ''
+    showMediaMsg('URL video disiarkan ke TV.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan URL (perlu login / URL invalid)', 'err')
+  }
+}
+
+async function clearExternalVideoUrl() {
+  try {
+    const { data } = await antreanTvApi.updateMedia({
+      external_video_url: null,
+      // Kalau tidak ada file upload sebagai fallback, balik ke placeholder.
+      media_mode: hasUploadedFile.value ? 'localvideo' : 'placeholder',
+    })
+    applyMediaPayload(data.data)
+    showMediaMsg('URL video dihapus.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menghapus URL', 'err')
+  }
+}
+
+async function setMediaMode(mode) {
+  // Untuk localvideo, hanya bisa kalau sudah ada file upload.
+  if (mode === 'localvideo' && !localVideoUrl.value) {
+    showMediaMsg('Upload video lokal dulu via tombol "Pilih file video".', 'err')
+    return
+  }
+  try {
+    const { data } = await antreanTvApi.updateMedia({ media_mode: mode })
+    applyMediaPayload(data.data)
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
+  }
 }
 
 // --- FLASH OVERLAY + FIFO CALL QUEUE ---------------------------------------
@@ -939,25 +1114,33 @@ const slideIndex = ref(0)
 const slideDuration = ref(5)
 let slideTimer = null
 
-function addSlides() {
-  const urls = slidesDraft.value.split('\n').map(u => u.trim()).filter(u => u)
-  urls.forEach(url => slides.value.push({ url }))
-  slidesDraft.value = ''
-  if (mediaMode.value === 'slideshow') {
-    stopSlideshow()
-    startSlideshow()
+async function persistSlides(nextSlides, opts = {}) {
+  const payload = { slides: nextSlides }
+  if (opts.mode) payload.media_mode = opts.mode
+  if (opts.interval !== undefined) payload.slide_interval = opts.interval
+  try {
+    const { data } = await antreanTvApi.updateMedia(payload)
+    applyMediaPayload(data.data)
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
   }
 }
 
-function removeSlide(idx) {
-  slides.value.splice(idx, 1)
-  if (slideIndex.value >= slides.value.length) slideIndex.value = Math.max(0, slides.value.length - 1)
-  if (mediaMode.value === 'slideshow' && slides.value.length > 0) {
-    stopSlideshow(); startSlideshow()
-  } else if (slides.value.length === 0) {
-    stopSlideshow()
-    if (mediaMode.value === 'slideshow') mediaMode.value = 'placeholder'
-  }
+async function addSlides() {
+  const urls = slidesDraft.value.split('\n').map(u => u.trim()).filter(u => u)
+  if (!urls.length) return
+  const next = [...slides.value, ...urls.map(url => ({ url }))]
+  slidesDraft.value = ''
+  await persistSlides(next)
+}
+
+async function removeSlide(idx) {
+  const next = slides.value.filter((_, i) => i !== idx)
+  if (slideIndex.value >= next.length) slideIndex.value = Math.max(0, next.length - 1)
+  const opts = (next.length === 0 && mediaMode.value === 'slideshow')
+    ? { mode: 'placeholder' }
+    : {}
+  await persistSlides(next, opts)
 }
 
 function startSlideshow() {
@@ -972,18 +1155,26 @@ function stopSlideshow() {
   if (slideTimer) { clearInterval(slideTimer); slideTimer = null }
 }
 
-watch(slideDuration, () => {
-  if (mediaMode.value === 'slideshow' && slides.value.length > 1) {
-    stopSlideshow(); startSlideshow()
-  }
+// slideDuration kontrol di tab slideshow — disimpan ke backend saat user
+// adjust. Lokal effect (restart timer) di-handle di applyMediaPayload yang
+// ter-trigger oleh respons updateMedia/broadcast.
+let slideIntervalDebounce = null
+watch(slideDuration, (v) => {
+  clearTimeout(slideIntervalDebounce)
+  slideIntervalDebounce = setTimeout(() => {
+    persistSlides(slides.value, { interval: v })
+  }, 400)
 })
 
-function applySlideshowMode() {
+async function applySlideshowMode() {
   if (slides.value.length === 0) return
-  stopSlideshow()
   slideIndex.value = 0
-  mediaMode.value = 'slideshow'
-  startSlideshow()
+  try {
+    const { data } = await antreanTvApi.updateMedia({ media_mode: 'slideshow' })
+    applyMediaPayload(data.data)
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
+  }
 }
 
 // --- TICKER EDITOR ---
@@ -1163,6 +1354,35 @@ async function saveAudioDefaults() {
 
 <template>
   <div class="tv">
+    <!-- AUDIO UNLOCK OVERLAY — block UI sampai user gesture pertama.
+         Browser autoplay policy memblokir AudioContext + speechSynthesis sampai
+         ada klik/touch. TV publik jarang disentuh, jadi overlay ini memastikan
+         operator/teknisi pasti klik sekali saat pasang/restart. -->
+    <div v-if="!audioUnlocked" class="audio-unlock-overlay" @click="unlockAudio">
+      <div class="audio-unlock-card">
+        <div class="audio-unlock-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <line x1="23" y1="9" x2="17" y2="15"/>
+            <line x1="17" y1="9" x2="23" y2="15"/>
+          </svg>
+        </div>
+        <h2 class="audio-unlock-title">Sentuh Layar untuk Aktifkan Suara</h2>
+        <p class="audio-unlock-sub">
+          Browser memblokir suara sampai ada interaksi. Klik di mana saja untuk
+          mengaktifkan bunyi panggilan dan TTS untuk sesi ini.
+        </p>
+        <div class="audio-unlock-cta">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11.24V7.5a2.5 2.5 0 0 1 5 0v3.74"/>
+            <path d="M14 11.24V5.5a2.5 2.5 0 0 1 5 0v8.74"/>
+            <path d="M19 14V9.5a2.5 2.5 0 0 1 5 0V17a8 8 0 0 1-8 8h-2a8 8 0 0 1-8-8v-2.5a2.5 2.5 0 0 1 5 0V14"/>
+          </svg>
+          <span>Klik untuk mengaktifkan</span>
+        </div>
+      </div>
+    </div>
+
     <!-- TOP BAR -->
     <div class="tv-topbar">
       <div class="tv-logo">
@@ -1432,32 +1652,96 @@ async function saveAudioDefaults() {
         <div class="ctrl-body">
           <!-- TAB: MEDIA -->
           <div v-if="activeTab === 'media'" class="ctrl-section">
-            <p class="ctrl-lbl">Mode Tampilan Panel Kiri</p>
+            <p class="ctrl-lbl">Mode Tampilan Panel Kiri (sinkron ke semua TV)</p>
             <div class="mode-grid">
-              <button :class="['mode-card', { active: mediaMode === 'youtube' }]" @click="activeTab = 'media'">
+              <button :class="['mode-card', { active: mediaMode === 'placeholder' }]" @click="setMediaMode('placeholder')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span>Placeholder</span>
+                <small>Logo + nama klinik</small>
+              </button>
+              <button :class="['mode-card', { active: mediaMode === 'youtube' }]" @click="mediaMode === 'youtube' ? null : setMediaMode('youtube')" :disabled="!youtubeEmbedUrl">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 001.46 6.42 29 29 0 001 12a29 29 0 00.46 5.58 2.78 2.78 0 001.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.96A29 29 0 0023 12a29 29 0 00-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
                 <span>YouTube</span>
-                <small>Embed video YouTube</small>
+                <small>{{ youtubeEmbedUrl ? 'Video tersimpan' : 'Belum ada URL' }}</small>
               </button>
-              <button :class="['mode-card', { active: mediaMode === 'localvideo' }]" @click="$refs.videoFileInput.click()">
+              <button :class="['mode-card', { active: mediaMode === 'localvideo' }]" @click="$refs.videoFileInput.click()" :disabled="mediaUploading">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 <span>Video Lokal</span>
-                <small>{{ localVideoUrl ? 'File terpilih' : 'Pilih file video' }}</small>
+                <small>{{ mediaUploading ? 'Mengupload…' : (localVideoName || 'Pilih file video') }}</small>
               </button>
             </div>
             <input ref="videoFileInput" type="file" accept="video/*" style="display:none" @change="handleVideoFile" />
+
+            <!-- Upload progress -->
+            <div v-if="mediaUploading" class="ctrl-sub-section">
+              <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:4px;color:#fff;gap:8px">
+                <span style="color:#fff">Mengupload video…</span>
+                <span style="font-variant-numeric:tabular-nums;color:#fff">{{ mediaUploadPct }}% · {{ mediaUploadInfo }}</span>
+              </div>
+              <div style="height:8px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden">
+                <div :style="{ width: mediaUploadPct + '%', height: '100%', background: '#8abf44', transition: 'width .15s' }"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
+                <p style="font-size:11px;color:rgba(255,255,255,.7);margin:0">Jangan tutup tab — TV akan otomatis update saat upload selesai.</p>
+                <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);padding:4px 12px;font-size:12px" @click="cancelUpload">
+                  Batalkan
+                </button>
+              </div>
+            </div>
+
+            <p v-if="mediaSaveMsg" :class="['ctrl-' + (mediaSaveMsgType === 'ok' ? 'ok' : 'err')]" style="margin-top:8px">
+              {{ mediaSaveMsg }}
+            </p>
+
+            <!-- Info video lokal + tombol hapus (cuma kalau file upload, bukan URL) -->
+            <div v-if="hasUploadedFile" class="ctrl-sub-section" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;color:#fff">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ localVideoName || 'video lokal' }}</span>
+              </div>
+              <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)" @click="deleteLocalVideo">
+                Hapus File
+              </button>
+            </div>
+
+            <!-- Video URL eksternal (Drive/Dropbox/CDN/hosting) — alternatif upload -->
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Video URL (alternatif tanpa upload)</p>
+              <div class="ctrl-row">
+                <input
+                  v-model="externalVideoDraft"
+                  class="ctrl-input"
+                  type="text"
+                  placeholder="https://example.com/video.mp4"
+                  @keydown.enter="applyExternalVideoUrl"
+                />
+                <button class="ctrl-action-btn" @click="applyExternalVideoUrl">Terapkan</button>
+              </div>
+              <p style="font-size:11px;color:rgba(255,255,255,.55);margin:4px 0 0">
+                Paste link MP4 langsung. Untuk Dropbox: ganti <code>?dl=0</code> jadi <code>?raw=1</code>. Untuk Drive: gunakan <code>uc?export=download&amp;id=FILE_ID</code>.
+              </p>
+              <div v-if="externalVideoUrl" style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:8px;padding:8px 10px;background:rgba(138,191,68,.08);border:1px solid rgba(138,191,68,.2);border-radius:8px">
+                <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;color:#fff">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8abf44" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+                  <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">URL aktif: {{ externalVideoUrl }}</span>
+                </div>
+                <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);padding:4px 10px;font-size:12px" @click="clearExternalVideoUrl">
+                  Hapus URL
+                </button>
+              </div>
+            </div>
 
             <!-- Loop / Autoplay toggles -->
             <div class="ctrl-sub-section">
               <p class="ctrl-lbl">Pengaturan Pemutaran</p>
               <div class="ctrl-toggles">
                 <label class="ctrl-toggle">
-                  <input type="checkbox" v-model="videoAutoplay" @change="mediaMode === 'youtube' && applyYoutube()" />
+                  <input type="checkbox" v-model="videoAutoplay" @change="syncVideoOptions" />
                   <span class="toggle-track"></span>
                   <span class="toggle-label">Autoplay (mulai otomatis)</span>
                 </label>
                 <label class="ctrl-toggle">
-                  <input type="checkbox" v-model="videoLoop" @change="mediaMode === 'youtube' && applyYoutube()" />
+                  <input type="checkbox" v-model="videoLoop" @change="syncVideoOptions" />
                   <span class="toggle-track"></span>
                   <span class="toggle-label">Loop (ulangi dari awal)</span>
                 </label>
@@ -1480,7 +1764,7 @@ async function saveAudioDefaults() {
               <p v-if="youtubeError" class="ctrl-err">{{ youtubeError }}</p>
               <p v-if="mediaMode === 'youtube' && youtubeEmbedUrl" class="ctrl-ok">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                Video aktif
+                Video aktif di semua TV
               </p>
             </div>
           </div>
@@ -1932,6 +2216,83 @@ async function saveAudioDefaults() {
 }
 .tv-audio-warn:hover { background: rgba(252, 211, 77, 0.25); }
 .tv-audio-warn svg { width: 13px; height: 13px; }
+
+/* Audio unlock overlay — full-screen, blokir UI sampai user klik */
+.audio-unlock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 14, 10, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: pointer;
+  animation: audio-unlock-fade-in 0.3s ease-out;
+}
+@keyframes audio-unlock-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.audio-unlock-card {
+  max-width: 560px;
+  text-align: center;
+  padding: 3rem 2.5rem;
+  background: linear-gradient(180deg, rgba(138, 191, 68, 0.08), rgba(138, 191, 68, 0.02));
+  border: 1px solid rgba(138, 191, 68, 0.25);
+  border-radius: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(138, 191, 68, 0.1);
+}
+.audio-unlock-icon {
+  width: 96px;
+  height: 96px;
+  margin: 0 auto 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(252, 211, 77, 0.12);
+  border: 2px solid rgba(252, 211, 77, 0.4);
+  border-radius: 50%;
+  color: #fcd34d;
+  animation: audio-unlock-pulse 2s ease-in-out infinite;
+}
+.audio-unlock-icon svg { width: 48px; height: 48px; }
+@keyframes audio-unlock-pulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0   rgba(252, 211, 77, 0.4); }
+  50%      { transform: scale(1.05); box-shadow: 0 0 0 18px rgba(252, 211, 77, 0); }
+}
+.audio-unlock-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 0.75rem;
+  letter-spacing: -0.01em;
+}
+.audio-unlock-sub {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.6;
+  margin: 0 0 2rem;
+}
+.audio-unlock-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 28px;
+  background: #8abf44;
+  color: #061d15;
+  border-radius: 30px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  animation: audio-unlock-bounce 1.6s ease-in-out infinite;
+}
+.audio-unlock-cta svg { width: 20px; height: 20px; }
+@keyframes audio-unlock-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
 .tv-status {
   display: flex;
   align-items: center;
@@ -1984,10 +2345,24 @@ async function saveAudioDefaults() {
   overflow: hidden;
   position: relative;
 }
+/* Stage 16:9 — kunci rasio konten (YouTube/video/slideshow) ke 1920:1080.
+   Lebar mengisi panel, tinggi dihitung dari aspect-ratio; kalau tinggi panel
+   lebih kecil dari yang dibutuhkan, fallback ke tinggi penuh dengan lebar
+   16:9 (letterbox kiri/kanan, bukan distorsi).
+   Placeholder dikecualikan — mengisi panel penuh agar logo & teks center. */
+.video-panel > *:not(.video-placeholder) {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
 .video-placeholder {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 1.5rem;
   text-align: center;
 }
@@ -2693,6 +3068,7 @@ async function saveAudioDefaults() {
   gap: 10px;
   font-family: 'DM Serif Display', serif;
   font-size: 20px;
+  color: #fff;
 }
 .ctrl-header-left svg { width: 22px; height: 22px; }
 .ctrl-close {

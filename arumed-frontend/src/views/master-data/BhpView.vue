@@ -2,6 +2,17 @@
 import { ref } from 'vue'
 import CrudResourceView from './_CrudResourceView.vue'
 
+const BHP_CATEGORIES = [
+  { value: 'MEDICAL_BHP',      label: 'BHP Medis' },
+  { value: 'CSSD',             label: 'CSSD (Sterilisasi)' },
+  { value: 'INSTRUMENT_SET',   label: 'Set Instrumen Bedah' },
+  { value: 'MEDICAL_SUPPLIES', label: 'Medical Supplies' },
+]
+
+// Kategori reusable (disteril/dipakai ulang) — tidak butuh stok minimum & kadaluwarsa.
+const REUSABLE_CATEGORIES = ['CSSD', 'INSTRUMENT_SET']
+const isConsumable = (form) => !REUSABLE_CATEGORIES.includes(form.category)
+
 const config = {
   resourceKey: 'bhp',
   title: 'BHP',
@@ -10,25 +21,25 @@ const config = {
   extraSearchParam: 'search',
   csvShowTemplate: true,
   defaults: {
-    name: '', category: '', unit: '', manufacturer: '',
+    name: '', category: 'MEDICAL_BHP', unit: '', manufacturer: '',
     min_stock: 0,
     expiry_date: '', batch_number: '', description: '',
     is_active: true,
   },
   columns: [
     { key: 'name',         label: 'Nama BHP' },
-    { key: 'category',     label: 'Kategori', width: '130px' },
+    { key: 'category',     label: 'Kategori', width: '160px' },
     { key: 'unit',         label: 'Satuan',   width: '80px' },
     { key: 'manufacturer', label: 'Pabrik',   width: '150px' },
     { key: 'is_active',    label: 'Status',   width: '90px', align: 'center' },
   ],
   fields: [
     { key: 'name',         label: 'Nama BHP',            type: 'text',     required: true, cols: 1 },
-    { key: 'category',     label: 'Kategori',            type: 'text',     cols: 1, placeholder: 'mis. Operasi / Poli / Steril' },
+    { key: 'category',     label: 'Kategori',            type: 'select',   required: true, cols: 1, options: BHP_CATEGORIES },
     { key: 'unit',         label: 'Satuan',              type: 'text',     cols: 1, placeholder: 'pcs / pack / roll' },
     { key: 'manufacturer', label: 'Pabrik',              type: 'text',     cols: 1 },
-    { key: 'min_stock',    label: 'Stok Minimum',        type: 'number',   min: 0, cols: 1, hint: 'Threshold alert stok rendah' },
-    { key: 'expiry_date',  label: 'Tanggal Kadaluwarsa', type: 'date',     cols: 1 },
+    { key: 'min_stock',    label: 'Stok Minimum',        type: 'number',   min: 0, cols: 1, hint: 'Threshold alert stok rendah', showIf: isConsumable },
+    { key: 'expiry_date',  label: 'Tanggal Kadaluwarsa', type: 'date',     cols: 1, showIf: isConsumable },
     { key: 'batch_number', label: 'No. Batch',           type: 'text',     cols: 1 },
     { key: 'description',  label: 'Deskripsi/Catatan',   type: 'textarea', cols: 2, rows: 2 },
     { key: 'is_active',    label: 'Aktif',               type: 'checkbox', cols: 1 },
@@ -50,21 +61,20 @@ function toggleLowStock(updateFn) {
   filters.value.low_stock = !filters.value.low_stock
   updateFn('low_stock', filters.value.low_stock ? 1 : null)
 }
+
+function labelCategory(v) {
+  return BHP_CATEGORIES.find((c) => c.value === v)?.label ?? v
+}
 </script>
 
 <template>
   <CrudResourceView :config="config">
     <template #filters="{ updateFilter }">
       <span class="crv-filter-label">Kategori:</span>
-      <input
-        type="text"
-        class="crv-filter-select"
-        :value="filters.category"
-        placeholder="filter kategori…"
-        style="min-width:140px"
-        @keydown.enter="(e) => applyFilter(updateFilter, 'category', e.target.value.trim())"
-        @blur="(e) => applyFilter(updateFilter, 'category', e.target.value.trim())"
-      />
+      <select class="crv-filter-select" v-model="filters.category" @change="applyFilter(updateFilter, 'category', filters.category || null)">
+        <option value="">Semua</option>
+        <option v-for="c in BHP_CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
+      </select>
 
       <span class="crv-filter-label" style="margin-left:.6rem">Status:</span>
       <button class="crv-chip" :class="{ active: filters.active === '' }" @click="applyFilter(updateFilter, 'active', '')">Semua</button>
@@ -77,7 +87,7 @@ function toggleLowStock(updateFn) {
     </template>
 
     <template #cell-category="{ value }">
-      <span v-if="value" class="cell-tag">{{ value }}</span>
+      <span v-if="value" class="cell-tag" :data-cat="value">{{ labelCategory(value) }}</span>
       <span v-else>—</span>
     </template>
   </CrudResourceView>
@@ -85,4 +95,8 @@ function toggleLowStock(updateFn) {
 
 <style scoped>
 .cell-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
+.cell-tag[data-cat="CSSD"]             { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.cell-tag[data-cat="INSTRUMENT_SET"]   { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+.cell-tag[data-cat="MEDICAL_SUPPLIES"] { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.cell-tag[data-cat="MEDICAL_BHP"]      { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
 </style>

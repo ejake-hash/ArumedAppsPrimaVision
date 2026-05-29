@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
-import { masterApi } from '@/services/api'
+import { jadwalDokterApi } from '@/services/api'
 
 const store = useJadwalDokterStore()
 
@@ -14,16 +14,6 @@ const HARI = [
   { val: 6, label: 'Sabtu' },
   { val: 7, label: 'Minggu' },
 ]
-
-// ─── Daftar dokter (employees role=Dokter) dari master/pegawai ───────────────
-const employees = ref([])
-async function fetchEmployees() {
-  try {
-    const res = await masterApi.penjamin?.() // fallback — gunakan endpoint master/pegawai
-    // Coba endpoint khusus dokter
-  } catch {}
-  // Untuk sekarang, daftar dokter diambil dari store.daftarDokter (sudah include employee_id + nama)
-}
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 const toastMsg  = ref('')
@@ -42,6 +32,85 @@ function toast(type, msg) {
 // 'list'  = semua jadwal dalam tabel datar
 const viewMode = ref('grid')
 
+const SERVICE_TABS = [
+  { val: 'BPJS',      label: 'BPJS' },
+  { val: 'EKSEKUTIF', label: 'Eksekutif' },
+]
+
+// ─── Tab jenis layanan ─────────────────────────────────────────────────────────
+async function selectService(type) {
+  if (store.serviceType === type) return
+  await store.setServiceType(type)
+}
+
+// ─── Selector minggu ───────────────────────────────────────────────────────────
+function fmtTanggal(d) {
+  if (!d) return '—'
+  const [y, m, day] = d.split('-')
+  const bulan = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']
+  return `${parseInt(day)} ${bulan[parseInt(m) - 1]}`
+}
+function weekLabel(w) {
+  return `${fmtTanggal(w.week_start)} – ${fmtTanggal(w.week_end)}${w.is_current ? ' (minggu ini)' : ''}`
+}
+async function onWeekChange(e) {
+  await store.setWeek(e.target.value)
+}
+
+// ─── Salin ke minggu depan ──────────────────────────────────────────────────────
+const copying = ref(false)
+async function doCopyNextWeek() {
+  copying.value = true
+  try {
+    const res = await store.copyToNextWeek()
+    toast('s', res?.message ?? 'Jadwal disalin ke minggu depan')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyalin jadwal')
+  } finally {
+    copying.value = false
+  }
+}
+
+// ─── Download template CSV ───────────────────────────────────────────────────────
+async function downloadTemplate() {
+  try {
+    const res = await jadwalDokterApi.csvTemplate()
+    const url = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'template-jadwal-dokter.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    toast('e', 'Gagal mengunduh template')
+  }
+}
+
+// ─── Import CSV ──────────────────────────────────────────────────────────────────
+const fileInput   = ref(null)
+const importing   = ref(false)
+const importResult = ref(null) // { imported, skipped, errors, target_week }
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+async function onFileChosen(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  importing.value = true
+  importResult.value = null
+  try {
+    const res = await store.importCsv(file)
+    importResult.value = res?.data ?? null
+    toast(res?.errors?.length ? 'e' : 's', res?.message ?? 'Import selesai')
+  } catch (err) {
+    toast('e', err.response?.data?.message ?? 'Gagal mengimpor jadwal')
+  } finally {
+    importing.value = false
+    e.target.value = '' // reset agar file sama bisa dipilih lagi
+  }
+}
+
 // ─── Modal ───────────────────────────────────────────────────────────────────
 const showModal   = ref(false)
 const modalMode   = ref('add')   // 'add' | 'edit'
@@ -55,6 +124,8 @@ const emptyForm = () => ({
   end_time:     '12:00',
   room:         '',
   poliklinik:   '',
+  poli_code:    '',
+  service_type: store.serviceType, // ikut tab aktif
   is_active:    true,
 })
 const form = ref(emptyForm())
@@ -74,6 +145,8 @@ function openEdit(jadwal, employeeId) {
     end_time:     jadwal.end_time,
     room:         jadwal.room ?? '',
     poliklinik:   jadwal.poliklinik ?? '',
+    poli_code:    jadwal.poli_code ?? '',
+    service_type: jadwal.service_type ?? 'BPJS',
     is_active:    jadwal.is_active,
   }
   modalMode.value = 'edit'
@@ -87,13 +160,16 @@ async function saveForm() {
   saving.value = true
   try {
     const payload = {
-      employee_id: form.value.employee_id,
-      day_of_week: Number(form.value.day_of_week),
-      start_time:  form.value.start_time,
-      end_time:    form.value.end_time,
-      room:        form.value.room || null,
-      poliklinik:  form.value.poliklinik || null,
-      is_active:   form.value.is_active,
+      employee_id:  form.value.employee_id,
+      day_of_week:  Number(form.value.day_of_week),
+      start_time:   form.value.start_time,
+      end_time:     form.value.end_time,
+      room:         form.value.room || null,
+      poliklinik:   form.value.poliklinik || null,
+      poli_code:    form.value.poli_code || null,
+      service_type: form.value.service_type,
+      week_start:   store.weekStart, // simpan ke minggu yang sedang ditampilkan
+      is_active:    form.value.is_active,
     }
 
     if (modalMode.value === 'edit') {
@@ -175,7 +251,22 @@ const dokterOptions = computed(() =>
   store.daftarDokter.map((e) => ({ id: e.employee_id, label: e.nama_dokter }))
 )
 
-onMounted(() => store.fetchAll())
+// Preview prefix antrian live di modal = {poli_code|D}{room}
+const prefixPreview = computed(() => {
+  const code = (form.value.poli_code || 'D').toUpperCase()
+  return form.value.room ? `${code}${form.value.room}` : code
+})
+
+// Label minggu yang sedang aktif (untuk konteks modal)
+const activeWeekLabel = computed(() => {
+  const w = store.availableWeeks.find((x) => x.week_start === store.weekStart)
+  return w ? weekLabel(w) : (store.weekStart ?? 'minggu ini')
+})
+
+onMounted(async () => {
+  await store.fetchAvailableWeeks() // set weekStart default = minggu ini
+  await store.fetchAll()
+})
 </script>
 
 <template>
@@ -223,6 +314,55 @@ onMounted(() => store.fetchAll())
       </div>
     </div>
 
+    <!-- ── TOOLBAR: tab layanan + minggu + aksi CSV ─────────────────────── -->
+    <div class="jd-toolbar">
+      <!-- Tab jenis layanan -->
+      <div class="svc-tabs">
+        <button
+          v-for="t in SERVICE_TABS"
+          :key="t.val"
+          :class="['svc-tab', { active: store.serviceType === t.val }, t.val.toLowerCase()]"
+          @click="selectService(t.val)"
+        >{{ t.label }}</button>
+      </div>
+
+      <!-- Selector minggu -->
+      <div class="week-picker">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        <select :value="store.weekStart" @change="onWeekChange" class="week-select">
+          <option v-for="w in store.availableWeeks" :key="w.week_start" :value="w.week_start">
+            {{ weekLabel(w) }}
+          </option>
+        </select>
+      </div>
+
+      <div class="toolbar-spacer"></div>
+
+      <!-- Aksi CSV & salin -->
+      <button class="btn-soft" :disabled="copying" @click="doCopyNextWeek" title="Salin jadwal minggu ini ke minggu depan">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+        </svg>
+        {{ copying ? 'Menyalin...' : 'Salin ke Minggu Depan' }}
+      </button>
+      <button class="btn-soft" @click="downloadTemplate" title="Unduh template CSV">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Template
+      </button>
+      <button class="btn-soft accent" :disabled="importing" @click="triggerImport" title="Impor jadwal dari CSV">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        {{ importing ? 'Mengimpor...' : 'Import CSV' }}
+      </button>
+      <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onFileChosen" />
+    </div>
+
     <!-- ── LOADING / ERROR ───────────────────────────────────────────── -->
     <div v-if="store.loading" class="jd-loading">
       <svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -244,8 +384,8 @@ onMounted(() => store.fetchAll())
         <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
         <line x1="3" y1="10" x2="21" y2="10"/>
       </svg>
-      <p>Belum ada jadwal dokter</p>
-      <button class="btn-primary sm" @click="openAdd()">Tambah Jadwal Pertama</button>
+      <p>Belum ada dokter terdaftar</p>
+      <span class="jd-empty-hint">Tambahkan dokter di Master Data → Pegawai terlebih dahulu.</span>
     </div>
 
     <!-- ── MODE GRID ─────────────────────────────────────────────────── -->
@@ -319,6 +459,7 @@ onMounted(() => store.fetchAll())
           <thead>
             <tr>
               <th>Dokter</th>
+              <th>Jenis</th>
               <th>Hari</th>
               <th>Jam Praktik</th>
               <th>Poliklinik</th>
@@ -330,10 +471,11 @@ onMounted(() => store.fetchAll())
           </thead>
           <tbody>
             <tr v-if="allJadwal.length === 0">
-              <td colspan="8" class="list-empty">Belum ada jadwal</td>
+              <td colspan="9" class="list-empty">Belum ada jadwal {{ store.serviceType === 'BPJS' ? 'BPJS' : 'Eksekutif' }} di minggu ini</td>
             </tr>
             <tr v-for="j in allJadwal" :key="j.id">
               <td class="td-dokter">{{ j.nama_dokter }}</td>
+              <td><span :class="['svc-chip', (j.service_type || 'BPJS').toLowerCase()]">{{ j.service_type === 'EKSEKUTIF' ? 'Eksekutif' : 'BPJS' }}</span></td>
               <td><span class="hari-chip">{{ hariLabel(j.day_of_week) }}</span></td>
               <td class="td-jam">{{ j.start_time }} – {{ j.end_time }}</td>
               <td>{{ j.poliklinik ?? '—' }}</td>
@@ -384,6 +526,29 @@ onMounted(() => store.fetchAll())
           </div>
 
           <div class="modal-body">
+            <!-- Konteks minggu -->
+            <div class="modal-week-note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              Jadwal untuk minggu <strong>{{ activeWeekLabel }}</strong>
+            </div>
+
+            <!-- Jenis Layanan -->
+            <div class="field">
+              <label>Jenis Layanan <span class="req">*</span></label>
+              <div class="svc-seg">
+                <button
+                  v-for="t in SERVICE_TABS"
+                  :key="t.val"
+                  type="button"
+                  :class="['svc-seg-btn', { active: form.service_type === t.val }, t.val.toLowerCase()]"
+                  @click="form.service_type = t.val"
+                >{{ t.label }}</button>
+              </div>
+            </div>
+
             <!-- Dokter -->
             <div class="field">
               <label>Dokter <span class="req">*</span></label>
@@ -422,20 +587,26 @@ onMounted(() => store.fetchAll())
               </div>
             </div>
 
-            <!-- Poliklinik & Ruangan -->
-            <div class="field-row">
+            <!-- Poliklinik (kode + nama) & Ruangan -->
+            <div class="field-row-3">
               <div class="field">
-                <label>Poliklinik</label>
-                <input v-model="form.poliklinik" type="text" class="inp" placeholder="cth: Mata" maxlength="100" />
+                <label>Kode Poli</label>
+                <input v-model="form.poli_code" type="text" class="inp" placeholder="cth: GLA" maxlength="10"
+                       @input="form.poli_code = form.poli_code.toUpperCase()" />
+              </div>
+              <div class="field">
+                <label>Nama Poliklinik</label>
+                <input v-model="form.poliklinik" type="text" class="inp" placeholder="cth: Poliklinik Glaukoma" maxlength="100" />
               </div>
               <div class="field">
                 <label>Ruangan</label>
                 <input v-model="form.room" type="text" class="inp" placeholder="cth: 1" maxlength="50" />
-                <p v-if="form.room" class="field-note">
-                  Prefix antrian: <strong>D{{ form.room }}</strong> → D{{ form.room }}-001, D{{ form.room }}-002, ...
-                </p>
               </div>
             </div>
+            <p class="field-note prefix-note">
+              Prefix antrian: <strong>{{ prefixPreview }}</strong> → {{ prefixPreview }}-001, {{ prefixPreview }}-002, …
+              <span class="prefix-hint">Nama poliklinik tetap tampil ke pasien; kode hanya untuk nomor antrian.</span>
+            </p>
 
             <!-- Status -->
             <div class="field">
@@ -483,6 +654,49 @@ onMounted(() => store.fetchAll())
             <button class="btn-danger" :disabled="deleting" @click="doDelete">
               {{ deleting ? 'Menghapus...' : 'Ya, Hapus' }}
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ── MODAL HASIL IMPORT ────────────────────────────────────────── -->
+    <Teleport to="body">
+      <div v-if="importResult" class="modal-overlay" @click.self="importResult = null">
+        <div class="modal-box">
+          <div class="modal-head">
+            <span>Hasil Import Jadwal</span>
+            <button class="modal-close" @click="importResult = null">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="import-summary">
+              <div class="imp-stat ok">
+                <span class="imp-num">{{ importResult.imported }}</span>
+                <span class="imp-lbl">Berhasil masuk</span>
+              </div>
+              <div class="imp-stat skip">
+                <span class="imp-num">{{ importResult.skipped }}</span>
+                <span class="imp-lbl">Dilewati</span>
+              </div>
+              <div class="imp-stat err" v-if="importResult.errors?.length">
+                <span class="imp-num">{{ importResult.errors.length }}</span>
+                <span class="imp-lbl">Bermasalah</span>
+              </div>
+            </div>
+            <p class="import-target">Minggu tujuan: <strong>{{ importResult.target_week }}</strong></p>
+
+            <div v-if="importResult.errors?.length" class="import-errors">
+              <p class="import-errors-title">Baris yang dilewati karena bermasalah:</p>
+              <ul>
+                <li v-for="(err, i) in importResult.errors" :key="i">{{ err }}</li>
+              </ul>
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn-primary" @click="importResult = null">Tutup</button>
           </div>
         </div>
       </div>
@@ -807,4 +1021,106 @@ select.inp { cursor: pointer; }
 /* ─── SPIN ──────────────────────────────────────────────────────────────────*/
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── TOOLBAR (tab layanan + minggu + CSV) ──────────────────────────────────*/
+.jd-toolbar {
+  display: flex; align-items: center; gap: .75rem;
+  margin-bottom: 1.25rem; flex-wrap: wrap;
+}
+.toolbar-spacer { flex: 1 1 auto; }
+
+/* Tab jenis layanan */
+.svc-tabs { display: flex; gap: 4px; background: #f1f3f0; padding: 4px; border-radius: 11px; }
+.svc-tab {
+  padding: 7px 18px; border: none; background: transparent; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #6b7a6b; border-radius: 8px;
+  font-family: 'DM Sans', sans-serif; transition: all .15s;
+}
+.svc-tab:hover { color: #1a2e1a; }
+.svc-tab.active.bpjs { background: #8abf44; color: #fff; box-shadow: 0 2px 6px rgba(138,191,68,.35); }
+.svc-tab.active.eksekutif { background: #1763d4; color: #fff; box-shadow: 0 2px 6px rgba(23,99,212,.3); }
+
+/* Selector minggu */
+.week-picker {
+  display: flex; align-items: center; gap: 8px;
+  border: 1.5px solid #e0e4df; border-radius: 10px; padding: 0 12px; height: 38px; background: #fff;
+}
+.week-picker svg { width: 15px; height: 15px; stroke: #8abf44; flex-shrink: 0; }
+.week-select {
+  border: none; outline: none; background: transparent; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #1a2e1a; font-family: 'DM Sans', sans-serif;
+  padding-right: 4px;
+}
+
+/* Tombol soft (CSV & salin) */
+.btn-soft {
+  display: flex; align-items: center; gap: 6px;
+  background: #fff; color: #2d4a2d; border: 1.5px solid #dde4da; border-radius: 9px;
+  padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  font-family: 'DM Sans', sans-serif; transition: all .15s;
+}
+.btn-soft svg { width: 14px; height: 14px; }
+.btn-soft:hover { border-color: #8abf44; background: #f6fdf0; color: #1a2e1a; }
+.btn-soft:disabled { opacity: .5; cursor: not-allowed; }
+.btn-soft.accent { background: #1763d4; color: #fff; border-color: #1763d4; }
+.btn-soft.accent:hover { background: #1255bb; border-color: #1255bb; color: #fff; }
+.hidden-file { display: none; }
+
+/* Chip jenis di tabel list */
+.svc-chip {
+  display: inline-block; padding: 2px 9px; border-radius: 6px;
+  font-size: 11px; font-weight: 700;
+}
+.svc-chip.bpjs { background: rgba(138,191,68,.18); color: #2d6a10; }
+.svc-chip.eksekutif { background: rgba(23,99,212,.14); color: #1255bb; }
+
+.jd-empty-hint { font-size: 12.5px; color: #9aa; }
+
+/* ─── MODAL: segmented layanan + konteks minggu + 3-kolom ───────────────────*/
+.modal-week-note {
+  display: flex; align-items: center; gap: 8px;
+  background: #f6f9f4; border: 1px solid #e3ebdd; border-radius: 9px;
+  padding: 8px 12px; font-size: 12.5px; color: #3a5a3a;
+}
+.modal-week-note svg { width: 15px; height: 15px; stroke: #8abf44; flex-shrink: 0; }
+.modal-week-note strong { color: #1a2e1a; }
+
+.svc-seg { display: flex; gap: 6px; }
+.svc-seg-btn {
+  flex: 1; padding: 9px 0; border: 1.5px solid #e0e4df; background: #fff; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #6b7a6b; border-radius: 9px;
+  font-family: 'DM Sans', sans-serif; transition: all .15s;
+}
+.svc-seg-btn:hover { border-color: #cdd6c7; }
+.svc-seg-btn.active.bpjs { background: #8abf44; border-color: #8abf44; color: #fff; }
+.svc-seg-btn.active.eksekutif { background: #1763d4; border-color: #1763d4; color: #fff; }
+
+.field-row-3 { display: grid; grid-template-columns: .7fr 1.6fr .7fr; gap: .75rem; }
+.prefix-note { margin-top: -2px; }
+.prefix-note strong { color: #1763d4; font-weight: 700; }
+.prefix-hint { display: block; color: #9aa; margin-top: 2px; }
+
+/* ─── MODAL HASIL IMPORT ────────────────────────────────────────────────────*/
+.import-summary { display: flex; gap: .75rem; }
+.imp-stat {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 14px 8px; border-radius: 12px; border: 1px solid #eee;
+}
+.imp-stat .imp-num { font-size: 24px; font-weight: 800; line-height: 1; }
+.imp-stat .imp-lbl { font-size: 11px; font-weight: 600; color: #777; }
+.imp-stat.ok { background: #f6fdf0; border-color: #d4edb8; }
+.imp-stat.ok .imp-num { color: #2d7a1a; }
+.imp-stat.skip { background: #f7f8f6; border-color: #e6e8e4; }
+.imp-stat.skip .imp-num { color: #8a9a8a; }
+.imp-stat.err { background: #fef4f4; border-color: #fcd5d5; }
+.imp-stat.err .imp-num { color: #ef4444; }
+.import-target { font-size: 12.5px; color: #5a6a5a; margin: .25rem 0 0; }
+.import-target strong { color: #1a2e1a; }
+.import-errors {
+  margin-top: .5rem; background: #fffafa; border: 1px solid #fce0e0; border-radius: 10px;
+  padding: 10px 12px; max-height: 200px; overflow-y: auto;
+}
+.import-errors-title { font-size: 12px; font-weight: 700; color: #c0392b; margin: 0 0 6px; }
+.import-errors ul { margin: 0; padding-left: 18px; }
+.import-errors li { font-size: 12px; color: #7a5a5a; margin-bottom: 3px; }
 </style>

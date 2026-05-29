@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Events\TriaseQueueUpdated;
 use App\Models\NurseAssessment;
 use App\Models\NurseCpptEntry;
 use App\Models\PatientDocument;
@@ -61,49 +60,23 @@ class PerawatService
 
    public function panggilAntrian(string $queueId): array
     {
-        $queue = Queue::where('station', 'TRIASE')->findOrFail($queueId);
+        Queue::where('station', 'TRIASE')->findOrFail($queueId);
 
-        // Boleh panggil ulang dari status aktif (WAITING/CALLED/IN_PROGRESS).
-        // Tolak hanya kalau queue sudah COMPLETED atau CANCELLED.
-        if (! in_array($queue->status, ['WAITING', 'CALLED', 'IN_PROGRESS'])) {
-            throw new \Exception('Antrian sudah selesai atau dibatalkan.', 422);
-        }
+        // Delegate ke QueueService biar broadcast AntreanTvUpdated ikut ter-fire
+        // (TV station TR). QueueService::panggil sudah handle re-call dari
+        // WAITING/CALLED/IN_PROGRESS.
+        $queue = $this->queueService->panggil($queueId);
 
-        // WAITING/CALLED → CALLED (update called_at). IN_PROGRESS tetap IN_PROGRESS
-        // (re-call saat pasien sedang diperiksa — hanya refresh waktu panggil).
-        $newStatus = $queue->status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'CALLED';
-        $queue->update(['status' => $newStatus, 'called_at' => now()]);
-        $queue->load('visit.patient');
-
-        $item = $this->formatQueueItem($queue);
-
-        // Perbaikan: Gunakan casting (array) untuk mengonversi stdClass/objek menjadi array murni
-        $itemArray = (array) $item;
-
-        broadcast(new TriaseQueueUpdated($itemArray, 'updated'))->toOthers();
-
-        return $itemArray;
+        return (array) $this->formatQueueItem($queue);
     }
 
     public function mulaiAntrian(string $queueId): array
     {
-        $queue = Queue::where('station', 'TRIASE')->findOrFail($queueId);
+        Queue::where('station', 'TRIASE')->findOrFail($queueId);
 
-        if ($queue->status !== 'CALLED') {
-            throw new \Exception('Panggil pasien terlebih dahulu.', 422);
-        }
+        $queue = $this->queueService->mulai($queueId);
 
-        $queue->update(['status' => 'IN_PROGRESS', 'started_at' => now()]);
-        $queue->load('visit.patient');
-
-        $item = $this->formatQueueItem($queue);
-        
-        // Perbaikan: Gunakan casting (array)
-        $itemArray = (array) $item;
-        
-        broadcast(new TriaseQueueUpdated($itemArray, 'updated'))->toOthers();
-
-        return $itemArray;
+        return (array) $this->formatQueueItem($queue);
     }
 
     /**
@@ -137,30 +110,11 @@ class PerawatService
 
     public function lewatiAntrian(string $queueId): array
     {
-        $queue = Queue::where('station', 'TRIASE')
-            ->whereIn('status', ['WAITING', 'CALLED'])
-            ->findOrFail($queueId);
+        Queue::where('station', 'TRIASE')->findOrFail($queueId);
 
-        $maxSeq = Queue::where('station', 'TRIASE')
-            ->whereDate('created_at', today())
-            ->max('queue_sequence') ?? 0;
+        $queue = $this->queueService->lewati($queueId);
 
-        $queue->update([
-            'queue_sequence' => $maxSeq + 1,
-            'status'         => 'WAITING',
-            'called_at'      => null,
-        ]);
-
-        $queue->load('visit.patient');
-        
-        $item = $this->formatQueueItem($queue);
-        
-        // Perbaikan: Gunakan casting (array)
-        $itemArray = (array) $item;
-        
-        broadcast(new TriaseQueueUpdated($itemArray, 'updated'))->toOthers();
-
-        return $itemArray;
+        return (array) $this->formatQueueItem($queue);
     }
 
     // =========================================================================
@@ -199,7 +153,7 @@ class PerawatService
             'tinggi_badan'     => $data['tinggi_badan'] ?? null,
             'bmi'              => $this->calculateBmi($data['berat_badan'] ?? null, $data['tinggi_badan'] ?? null),
             'has_allergy'      => $data['has_allergy'] ?? false,
-            'allergy_detail'   => $data['has_allergy'] ? ($data['allergy_detail'] ?? null) : null,
+            'allergy_detail'   => ($data['has_allergy'] ?? false) ? ($data['allergy_detail'] ?? null) : null,
             'chief_complaint'  => $data['chief_complaint'],
             'rps'              => $data['rps'] ?? null,
             'assessment_notes' => $data['assessment_notes'] ?? null,
@@ -290,6 +244,95 @@ class PerawatService
     }
 
     // =========================================================================
+    // PREOP BEDAH — Kirim ke Bedah (manual transition)
+    // =========================================================================
+
+    /**
+     * Transisi manual TRIASE → BEDAH untuk visit PREOP_BEDAH.
+     *
+     * Dipanggil dari tombol "Kirim ke Bedah" di PerawatView. Boleh ditekan oleh
+     * role 'perawat' atau 'dokter' (dokter umum boleh isi triase preop juga).
+     *
+     * Gate sama spt transisi ke DOKTER regular: NurseAssessment.is_finalized=true
+     * DAN RefractionRecord.is_finalized=true. Anti-duplikat: refuse jika sudah ada
+     * baris BEDAH aktif untuk visit ini hari ini.
+     */
+    public function kirimKeBedah(string $queueId): array
+    {
+        return DB::transaction(function () use ($queueId) {
+            $user = auth('api')->user();
+
+            // Role check: hanya perawat & dokter (superadmin bypass)
+            $roleName = $user?->role?->name;
+            if (! in_array($roleName, ['perawat', 'dokter', 'superadmin'], true)) {
+                throw new \Exception('Hanya perawat atau dokter umum yang boleh mengirim pasien ke bedah.', 403);
+            }
+
+            $queue = Queue::with('visit')->lockForUpdate()->findOrFail($queueId);
+
+            if ($queue->station !== Queue::STATION_TRIASE) {
+                throw new \Exception("Tombol ini hanya untuk antrian TRIASE (saat ini: {$queue->station}).", 422);
+            }
+
+            $visit = $queue->visit;
+            if ($visit->visit_type !== 'PREOP_BEDAH') {
+                throw new \Exception('Pasien ini bukan PREOP_BEDAH — gunakan tombol Selesai Asesmen biasa.', 422);
+            }
+
+            // Gate paralel
+            $triaseDone   = NurseAssessment::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            $refraksiDone = RefractionRecord::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            if (! $triaseDone) {
+                throw new \Exception('Asesmen triase belum di-finalize.', 422);
+            }
+            if (! $refraksiDone) {
+                throw new \Exception('Pemeriksaan refraksi belum di-finalize.', 422);
+            }
+
+            // Anti-duplikat
+            $alreadyBedah = Queue::byStation(Queue::STATION_BEDAH)
+                ->where('visit_id', $visit->id)
+                ->whereDate('created_at', today())
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->exists();
+            if ($alreadyBedah) {
+                throw new \Exception('Pasien sudah ada di antrian Bedah hari ini.', 422);
+            }
+
+            // Tutup queue TRIASE & REFRAKSIONIS yg masih aktif untuk visit ini
+            Queue::where('visit_id', $visit->id)
+                ->whereIn('station', [Queue::STATION_TRIASE, Queue::STATION_REFRAKSIONIS])
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
+
+            // Enqueue BEDAH
+            $bedahQueue = $this->queueService->enqueue($visit->id, Queue::STATION_BEDAH);
+
+            // Update visit state
+            $visit->update([
+                'ready_for_doctor'      => true,  // semantik: gate pre-op selesai
+                'triase_completed_at'   => $visit->triase_completed_at ?? now(),
+                'refraksi_completed_at' => $visit->refraksi_completed_at ?? now(),
+                'current_station'       => Queue::STATION_BEDAH,
+            ]);
+
+            $this->log(
+                $user?->id,
+                'KIRIM_KE_BEDAH',
+                Visit::class,
+                $visit->id,
+                "Preop selesai (oleh {$roleName}) → enqueue BEDAH {$bedahQueue->queue_number}"
+            );
+
+            return [
+                'queue'        => $queue->fresh(['visit.patient']),
+                'bedah_queue'  => $bedahQueue->fresh(['visit.patient']),
+                'visit'        => $visit->fresh(['patient', 'queues']),
+            ];
+        });
+    }
+
+    // =========================================================================
     // REKAM MEDIS PASIEN
     // =========================================================================
 
@@ -349,6 +392,12 @@ class PerawatService
 
         if (! $triaseDone || ! $refraksiDone) {
             return false;
+        }
+
+        // PREOP_BEDAH: gate paralel selesai tapi JANGAN enqueue DOKTER —
+        // tunggu tombol manual "Kirim ke Bedah" (lihat kirimKeBedah()).
+        if ($visit->visit_type === 'PREOP_BEDAH') {
+            return true;
         }
 
         DB::transaction(function () use ($visit) {
@@ -551,6 +600,7 @@ class PerawatService
             'visit'          => $visit ? [
                 'id'             => $visit->id,
                 'classification' => $visit->classification,
+                'visit_type'     => $visit->visit_type,
                 'guarantor_type' => $visit->guarantor_type,
                 'no_sep'         => $visit->no_sep,
                 'insurer_name'   => $visit->insurer?->name,
@@ -568,6 +618,7 @@ class PerawatService
                 'province'     => $patient->province,
                 'bpjs_number'  => $patient->bpjs_number,
                 'allergy_notes' => $patient->allergy_notes,
+                'photo_url'    => $patient->photo_url,
             ] : null,
         ];
     }

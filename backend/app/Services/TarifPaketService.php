@@ -300,6 +300,282 @@ class TarifPaketService
     }
 
     // =========================================================================
+    // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
+    // =========================================================================
+
+    private const CSV_HEADERS = ['nama_paket', 'kategori', 'deskripsi', 'aktif', 'item_tipe', 'item_nama', 'qty', 'catatan'];
+
+    public function templatePaketCsv(): string
+    {
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    public function exportPaketCsv(): string
+    {
+        $packages = SurgeryPackage::with('items')->orderBy('name')->get();
+
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
+
+        foreach ($packages as $pkg) {
+            $items = $pkg->items;
+            if ($items->isEmpty()) {
+                // Paket tanpa items tetap diekspor (1 baris, kolom item kosong)
+                fputcsv($output, [
+                    $pkg->name,
+                    $pkg->category ?? '',
+                    $pkg->description ?? '',
+                    $pkg->is_active ? '1' : '0',
+                    '', '', '', '',
+                ], ',', '"', '\\');
+                continue;
+            }
+            foreach ($items as $item) {
+                $resolved = $item->resolveItem();
+                $itemName = $this->formatItemNameForCsv($item->item_type, $resolved);
+                fputcsv($output, [
+                    $pkg->name,
+                    $pkg->category ?? '',
+                    $pkg->description ?? '',
+                    $pkg->is_active ? '1' : '0',
+                    $item->item_type,
+                    $itemName,
+                    (string) $item->quantity,
+                    $item->notes ?? '',
+                ], ',', '"', '\\');
+            }
+        }
+
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /**
+     * Import paket bedah dari CSV (long format).
+     * Konflik nama paket → replace komposisi items (header dipertahankan, tarif jual tidak disentuh).
+     * Item lookup case-insensitive by name (IOL: "brand model powerD").
+     * default_price auto dari master saat ini.
+     */
+    public function importPaketCsv(string $csvContent): array
+    {
+        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        if (empty($lines)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['nama_paket', 'item_tipe', 'item_nama', 'qty'] as $required) {
+            if (! in_array($required, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
+            }
+        }
+
+        // Group baris by nama_paket
+        $grouped = [];
+        $errors  = [];
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                continue;
+            }
+            $row = array_combine($headers, $values);
+            $namaPaket = trim((string) ($row['nama_paket'] ?? ''));
+            if ($namaPaket === '') {
+                $errors[] = "Baris {$lineNum}: 'nama_paket' kosong";
+                continue;
+            }
+
+            $key = mb_strtolower($namaPaket);
+            if (! isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'name'        => $namaPaket,
+                    'category'    => trim((string) ($row['kategori'] ?? '')) ?: null,
+                    'description' => trim((string) ($row['deskripsi'] ?? '')) ?: null,
+                    'is_active'   => $this->parseBool($row['aktif'] ?? '1'),
+                    'items'       => [],
+                    '_lines'      => [],
+                ];
+            }
+            $grouped[$key]['_lines'][] = $lineNum;
+
+            $itemTipe = strtoupper(trim((string) ($row['item_tipe'] ?? '')));
+            $itemNama = trim((string) ($row['item_nama'] ?? ''));
+            $qty      = (int) ($row['qty'] ?? 0);
+
+            // Baris tanpa item (paket kosong) — skip item, header tetap diproses
+            if ($itemTipe === '' && $itemNama === '') {
+                continue;
+            }
+
+            if (! in_array($itemTipe, SurgeryPackageItem::TYPES, true)) {
+                $errors[] = "Baris {$lineNum}: item_tipe '{$itemTipe}' tidak valid (harus " . implode('/', SurgeryPackageItem::TYPES) . ')';
+                continue;
+            }
+            if ($itemNama === '') {
+                $errors[] = "Baris {$lineNum}: 'item_nama' kosong";
+                continue;
+            }
+            if ($qty < 1) $qty = 1;
+
+            $grouped[$key]['items'][] = [
+                'item_type' => $itemTipe,
+                'item_name' => $itemNama,
+                'quantity'  => $qty,
+                'notes'     => trim((string) ($row['catatan'] ?? '')) ?: null,
+                '_line'     => $lineNum,
+            ];
+        }
+
+        $created         = 0;
+        $updated         = 0;
+        $itemsInserted   = 0;
+        $itemsLookupFail = 0;
+
+        foreach ($grouped as $group) {
+            $existing = SurgeryPackage::whereRaw('LOWER(name) = ?', [mb_strtolower($group['name'])])->first();
+
+            DB::transaction(function () use ($group, $existing, &$created, &$updated, &$itemsInserted, &$itemsLookupFail, &$errors) {
+                if ($existing) {
+                    $existing->update([
+                        'category'    => $group['category'] ?? $existing->category,
+                        'description' => $group['description'] ?? $existing->description,
+                        'is_active'   => $group['is_active'],
+                    ]);
+                    // Replace items
+                    $existing->items()->delete();
+                    $pkg = $existing;
+                    $updated++;
+                } else {
+                    $pkg = SurgeryPackage::create([
+                        'name'             => $group['name'],
+                        'category'         => $group['category'],
+                        'description'      => $group['description'],
+                        'is_active'        => $group['is_active'],
+                        'total_base_price' => 0,
+                    ]);
+                    $created++;
+                }
+
+                foreach ($group['items'] as $itemRow) {
+                    $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name']);
+                    if (! $itemId) {
+                        $itemsLookupFail++;
+                        $errors[] = "Baris {$itemRow['_line']}: item {$itemRow['item_type']} '{$itemRow['item_name']}' tidak ditemukan di master";
+                        continue;
+                    }
+
+                    $defaultPrice = $this->resolveMasterPrice($itemRow['item_type'], $itemId);
+
+                    SurgeryPackageItem::updateOrCreate(
+                        [
+                            'surgery_package_id' => $pkg->id,
+                            'item_type'          => $itemRow['item_type'],
+                            'item_id'            => $itemId,
+                        ],
+                        [
+                            'quantity'      => $itemRow['quantity'],
+                            'default_price' => $defaultPrice,
+                            'notes'         => $itemRow['notes'],
+                        ]
+                    );
+                    $itemsInserted++;
+                }
+
+                $pkg->recalcTotalBasePrice();
+            });
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_PAKET_BEDAH_CSV', null, null,
+            "new:{$created} upd:{$updated} items:{$itemsInserted} lookup_fail:{$itemsLookupFail}");
+
+        return [
+            'created'           => $created,
+            'updated'           => $updated,
+            'items_inserted'    => $itemsInserted,
+            'items_lookup_fail' => $itemsLookupFail,
+            'errors'            => $errors,
+        ];
+    }
+
+    private function parseBool(mixed $v): bool
+    {
+        $s = strtolower(trim((string) $v));
+        return in_array($s, ['1', 'true', 'yes', 'y', 'ya', 'aktif'], true);
+    }
+
+    /** Format item_nama untuk CSV (IOL pakai brand+model+power, lainnya pakai name). */
+    private function formatItemNameForCsv(string $type, ?\Illuminate\Database\Eloquent\Model $resolved): string
+    {
+        if (! $resolved) return '';
+        if ($type === SurgeryPackageItem::TYPE_IOL) {
+            $brand = trim((string) ($resolved->brand ?? ''));
+            $model = trim((string) ($resolved->model ?? ''));
+            $power = $resolved->power !== null ? rtrim(rtrim(number_format((float) $resolved->power, 2, '.', ''), '0'), '.') . 'D' : '';
+            return trim("{$brand} {$model} {$power}");
+        }
+        return (string) ($resolved->name ?? '');
+    }
+
+    /** Lookup item ID by nama (case-insensitive). Return null kalau tidak ketemu atau ambigu. */
+    private function lookupItemIdByName(string $type, string $name): ?string
+    {
+        $needle = mb_strtolower(trim($name));
+
+        return match ($type) {
+            SurgeryPackageItem::TYPE_PROCEDURE => $this->lookupSingle(
+                Procedure::whereRaw('LOWER(name) = ?', [$needle])
+            ),
+            SurgeryPackageItem::TYPE_MEDICATION => $this->lookupSingle(
+                Medication::whereRaw('LOWER(name) = ?', [$needle])
+            ),
+            SurgeryPackageItem::TYPE_BHP => $this->lookupSingle(
+                BhpItem::whereRaw('LOWER(name) = ?', [$needle])
+            ),
+            SurgeryPackageItem::TYPE_IOL => $this->lookupIolByDisplayName($needle),
+            default => null,
+        };
+    }
+
+    private function lookupSingle(\Illuminate\Database\Eloquent\Builder $query): ?string
+    {
+        $rows = $query->limit(2)->pluck('id');
+        return $rows->count() === 1 ? (string) $rows->first() : null;
+    }
+
+    /**
+     * IOL display name: "{brand} {model} {power}D".
+     * Strategi: split akhiran power, sisa = brand+model.
+     */
+    private function lookupIolByDisplayName(string $needle): ?string
+    {
+        // Tangkap power di akhir (mis. "21D" / "21.5D")
+        if (! preg_match('/^(.*?)\s+([\d.]+)d\s*$/i', $needle, $m)) {
+            return null;
+        }
+        $prefix = trim($m[1]);
+        $power  = (float) $m[2];
+
+        // prefix bisa "brand model" — coba match brand+model digabung
+        $rows = IolItem::whereRaw('LOWER(CONCAT(brand, \' \', model)) = ?', [$prefix])
+            ->whereRaw('ABS(power - ?) < 0.001', [$power])
+            ->limit(2)
+            ->pluck('id');
+
+        return $rows->count() === 1 ? (string) $rows->first() : null;
+    }
+
+    // =========================================================================
     // INTERNAL
     // =========================================================================
 

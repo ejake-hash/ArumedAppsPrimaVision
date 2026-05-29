@@ -5,11 +5,31 @@
  * UX: list PO + modal create/edit dengan dynamic line items.
  * Item picker: dropdown type (Obat/BHP/IOL) + search live ke master.
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { pembelianApi, masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 
 const auth = useAuthStore()
+
+// ─── Profil klinik (untuk kop surat PO) ──────────────────────────────────
+const clinic = ref(null)
+const clinicLogoUrl = computed(() => {
+  const p = clinic.value?.logo_path
+  if (!p) return null
+  if (p.startsWith('http')) return p
+  const apiBase = import.meta.env.VITE_API_URL ?? '/api/v1'
+  const backendOrigin = apiBase.replace(/\/api\/v\d+\/?$/, '')
+  return `${backendOrigin}/storage/${p}`
+})
+
+async function fetchClinic() {
+  try {
+    const res = await masterApi.profilKlinik.show()
+    clinic.value = res.data?.data ?? res.data ?? null
+  } catch (e) {
+    // Non-fatal: PO tetap bisa diprint tanpa kop lengkap.
+  }
+}
 
 // ─── State list ─────────────────────────────────────────────────────────
 const items = ref([])
@@ -19,6 +39,21 @@ const error = ref(null)
 
 const filters = ref({ search: '', status: '', supplier_id: '' })
 const suppliers = ref([])
+
+// ─── Tab Aktif vs History ─────────────────────────────────────────────────
+// Aktif = PO yang masih berjalan (DRAFT/SENT/PARTIAL/CANCELED).
+// History = PO yang sudah diterima penuh (RECEIVED). Pembedaan murni by status —
+// stok sudah auto-update di backend saat GRN (GoodsReceiptService), PO tinggal
+// "pindah" ke tab History karena statusnya jadi RECEIVED.
+const activeTab = ref('active') // 'active' | 'history'
+const ACTIVE_STATUSES = ['DRAFT', 'SENT', 'PARTIAL', 'CANCELED']
+
+function switchTab(tab) {
+  if (activeTab.value === tab) return
+  activeTab.value = tab
+  filters.value.status = '' // reset dropdown status saat ganti tab
+  refresh(1)
+}
 
 const STATUS_BADGES = {
   DRAFT:    { label: 'Draft',     cls: 'badge-draft' },
@@ -30,6 +65,7 @@ const STATUS_BADGES = {
 
 const formatRp = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
 const formatDate = (v) => v ? new Date(v).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+const formatDateTime = (v) => v ? new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
 
 // ─── Toast ──────────────────────────────────────────────────────────────
 const toast = ref(null)
@@ -47,8 +83,18 @@ async function refresh(page = 1) {
   try {
     const params = { page, per_page: 25 }
     if (filters.value.search) params.search = filters.value.search
-    if (filters.value.status) params.status = filters.value.status
     if (filters.value.supplier_id) params.supplier_id = filters.value.supplier_id
+
+    if (activeTab.value === 'history') {
+      // History = hanya PO yang sudah diterima penuh.
+      params.status = 'RECEIVED'
+    } else if (filters.value.status) {
+      // Tab Aktif + dropdown status spesifik (selain RECEIVED).
+      params.status = filters.value.status
+    } else {
+      // Tab Aktif + "Semua" → semua kecuali RECEIVED.
+      params.statuses = ACTIVE_STATUSES
+    }
     const res = await pembelianApi.list(params)
     const payload = res.data?.data
     if (payload && Array.isArray(payload.data)) {
@@ -350,10 +396,60 @@ async function doAction() {
   }
 }
 
+// ─── Print PO (surat A4) ─────────────────────────────────────────────────
+const printPo = ref(null)
+
+const printSupplier = computed(() => {
+  if (!printPo.value) return null
+  if (printPo.value.supplier) return printPo.value.supplier
+  return suppliers.value.find((s) => s.id === printPo.value.supplier_id) ?? null
+})
+
+const printGrandTotal = computed(() =>
+  (printPo.value?.items ?? []).reduce((sum, it) => sum + Number(it.subtotal || 0), 0)
+)
+
+const TYPE_LABEL = { MEDICATION: 'Obat', BHP: 'BHP', IOL: 'IOL' }
+
+// Buka data PO lengkap lalu cetak. Bisa dipanggil dari baris tabel maupun modal.
+async function printPurchaseOrder(row) {
+  let po = row
+  // Kalau data baris belum punya items (list tidak memuat relasi), ambil detail.
+  if (!po?.items || !Array.isArray(po.items) || po.items.length === 0) {
+    try {
+      const res = await pembelianApi.show(row.id)
+      po = res.data?.data ?? row
+    } catch (e) {
+      showToast('e', 'Gagal memuat detail PO untuk dicetak')
+      return
+    }
+  }
+  printPo.value = po
+  await nextTick()
+  // Pastikan logo benar-benar ter-load sebelum print, kalau tidak gambar
+  // cross-origin sering tidak ikut tercetak (img belum siap saat print()).
+  await waitForLogo()
+  window.print()
+}
+
+function waitForLogo() {
+  return new Promise((resolve) => {
+    const url = clinicLogoUrl.value
+    if (!url) return resolve()
+    const img = new Image()
+    img.onload = resolve
+    img.onerror = resolve
+    img.src = url
+    // Safety timeout: jangan menggantung print kalau gambar lambat.
+    setTimeout(resolve, 2500)
+  })
+}
+
 // ─── Init ───────────────────────────────────────────────────────────────
 onMounted(() => {
   refresh()
   fetchSuppliers()
+  fetchClinic()
 })
 
 watch(() => itemPicker.value.type, searchItems)
@@ -369,9 +465,19 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
         <h2>Purchase Order</h2>
         <p>Pembelian obat, BHP, & IOL ke supplier. Penomoran auto PO-YYYYMM-NNNN.</p>
       </div>
-      <button v-if="canWrite" class="po-btn-primary" @click="openCreate">
+      <button v-if="canWrite && activeTab === 'active'" class="po-btn-primary" @click="openCreate">
         <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Buat PO Baru
+      </button>
+    </div>
+
+    <!-- Tab: PO Aktif vs History Pembelian -->
+    <div class="po-tabs">
+      <button class="po-tab" :class="{ active: activeTab === 'active' }" @click="switchTab('active')">
+        PO Aktif
+      </button>
+      <button class="po-tab" :class="{ active: activeTab === 'history' }" @click="switchTab('history')">
+        History Pembelian
       </button>
     </div>
 
@@ -384,15 +490,16 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
         class="po-search"
       />
 
-      <span class="po-filter-label">Status:</span>
-      <select v-model="filters.status" @change="onFilterChange" class="po-filter-select">
-        <option value="">Semua</option>
-        <option value="DRAFT">Draft</option>
-        <option value="SENT">Dikirim</option>
-        <option value="PARTIAL">Sebagian Diterima</option>
-        <option value="RECEIVED">Diterima</option>
-        <option value="CANCELED">Dibatalkan</option>
-      </select>
+      <template v-if="activeTab === 'active'">
+        <span class="po-filter-label">Status:</span>
+        <select v-model="filters.status" @change="onFilterChange" class="po-filter-select">
+          <option value="">Semua</option>
+          <option value="DRAFT">Draft</option>
+          <option value="SENT">Dikirim</option>
+          <option value="PARTIAL">Sebagian Diterima</option>
+          <option value="CANCELED">Dibatalkan</option>
+        </select>
+      </template>
 
       <span class="po-filter-label">Supplier:</span>
       <select v-model="filters.supplier_id" @change="onFilterChange" class="po-filter-select">
@@ -405,6 +512,7 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
       <table class="po-table">
         <thead>
           <tr>
+            <th class="c" style="width:48px">No</th>
             <th>No. PO</th>
             <th>Tanggal</th>
             <th>Supplier</th>
@@ -416,15 +524,19 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="7" class="po-state">Memuat…</td>
+            <td colspan="8" class="po-state">Memuat…</td>
           </tr>
           <tr v-else-if="error">
-            <td colspan="7" class="po-state po-state-error">{{ error }}</td>
+            <td colspan="8" class="po-state po-state-error">{{ error }}</td>
           </tr>
           <tr v-else-if="items.length === 0">
-            <td colspan="7" class="po-state">Belum ada PO. Klik tombol "Buat PO Baru" untuk mulai.</td>
+            <td colspan="8" class="po-state">
+              <template v-if="activeTab === 'history'">Belum ada PO yang diterima. PO akan muncul di sini setelah barang diterima penuh di menu Penerimaan.</template>
+              <template v-else>Belum ada PO. Klik tombol "Buat PO Baru" untuk mulai.</template>
+            </td>
           </tr>
-          <tr v-for="po in items" :key="po.id" v-else>
+          <tr v-for="(po, idx) in items" :key="po.id" v-else>
+            <td class="c po-rownum">{{ (meta.current_page - 1) * meta.per_page + idx + 1 }}</td>
             <td><strong>{{ po.po_number }}</strong></td>
             <td>{{ formatDate(po.po_date) }}</td>
             <td>{{ po.supplier?.name ?? '—' }}</td>
@@ -438,6 +550,9 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
             <td class="c po-actions-cell">
               <button class="po-icon-btn" title="Lihat detail" @click="openView(po)">
                 <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+              <button class="po-icon-btn" title="Cetak / Download PO" @click="printPurchaseOrder(po)">
+                <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
               </button>
               <button v-if="canWrite && ['DRAFT','SENT'].includes(po.status)" class="po-icon-btn" title="Edit" @click="openEdit(po)">
                 <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
@@ -590,6 +705,14 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
             <button class="po-btn-secondary" @click="closeModal" :disabled="modal.submitting">
               {{ modal.mode === 'view' ? 'Tutup' : 'Batal' }}
             </button>
+            <button
+              v-if="modal.mode !== 'create' && modal.form.id"
+              class="po-btn-secondary"
+              @click="printPurchaseOrder(modal.form)"
+            >
+              <svg viewBox="0 0 24 24" class="po-btn-ico"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              Cetak PO
+            </button>
             <button v-if="modal.mode !== 'view'" class="po-btn-primary" @click="submit" :disabled="modal.submitting">
               {{ modal.submitting ? 'Menyimpan…' : (modal.mode === 'create' ? 'Buat PO' : 'Simpan Perubahan') }}
             </button>
@@ -663,6 +786,104 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
       </div>
     </Teleport>
 
+    <!-- ===== Print PO — Surat A4 (hanya tampil saat window.print) ===== -->
+    <Teleport to="body">
+      <div v-if="printPo" id="po-print-root">
+        <div class="po-print-sheet">
+          <!-- Kop surat -->
+          <header class="pp-kop">
+            <img v-if="clinicLogoUrl" :src="clinicLogoUrl" alt="Logo" class="pp-logo" />
+            <div class="pp-kop-text">
+              <div class="pp-clinic">{{ clinic?.clinic_name ?? 'Klinik' }}</div>
+              <div v-if="clinic?.address" class="pp-line">{{ clinic.address }}</div>
+              <div class="pp-line">
+                <span v-if="clinic?.phone">Telp: {{ clinic.phone }}</span>
+                <span v-if="clinic?.email"> · Email: {{ clinic.email }}</span>
+              </div>
+            </div>
+          </header>
+
+          <h1 class="pp-title">PURCHASE ORDER</h1>
+
+          <!-- Meta: nomor PO + supplier -->
+          <div class="pp-meta">
+            <table class="pp-meta-tbl">
+              <tbody>
+                <tr><td class="pp-meta-k">No. PO</td><td class="pp-meta-c">:</td><td class="pp-meta-v"><strong>{{ printPo.po_number }}</strong></td></tr>
+                <tr><td class="pp-meta-k">Tanggal PO</td><td class="pp-meta-c">:</td><td class="pp-meta-v">{{ formatDate(printPo.po_date) }}</td></tr>
+                <tr><td class="pp-meta-k">Estimasi Tiba</td><td class="pp-meta-c">:</td><td class="pp-meta-v">{{ formatDate(printPo.expected_date) }}</td></tr>
+                <tr><td class="pp-meta-k">Status</td><td class="pp-meta-c">:</td><td class="pp-meta-v">{{ STATUS_BADGES[printPo.status]?.label ?? printPo.status }}</td></tr>
+              </tbody>
+            </table>
+            <div class="pp-supplier">
+              <div class="pp-supplier-head">Kepada Yth. Supplier:</div>
+              <div class="pp-supplier-name">{{ printSupplier?.name ?? '—' }}</div>
+              <div v-if="printSupplier?.address" class="pp-line">{{ printSupplier.address }}</div>
+              <div v-if="printSupplier?.contact_person" class="pp-line">u.p. {{ printSupplier.contact_person }}</div>
+              <div v-if="printSupplier?.phone" class="pp-line">Telp: {{ printSupplier.phone }}</div>
+            </div>
+          </div>
+
+          <!-- Tabel item -->
+          <table class="pp-items">
+            <thead>
+              <tr>
+                <th style="width:32px">No</th>
+                <th style="width:50px">Tipe</th>
+                <th>Nama Item</th>
+                <th style="width:70px" class="r">Qty</th>
+                <th style="width:55px">Satuan</th>
+                <th style="width:110px" class="r">Harga Satuan</th>
+                <th style="width:120px" class="r">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(it, i) in printPo.items" :key="i">
+                <td class="c">{{ i + 1 }}</td>
+                <td>{{ TYPE_LABEL[it.item_type] ?? it.item_type }}</td>
+                <td>{{ it.item_name }}</td>
+                <td class="r">{{ it.qty_ordered }}</td>
+                <td>{{ it.item_unit || '—' }}</td>
+                <td class="r">{{ formatRp(it.unit_price) }}</td>
+                <td class="r">{{ formatRp(it.subtotal) }}</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="6" class="r"><strong>TOTAL</strong></td>
+                <td class="r"><strong>{{ formatRp(printGrandTotal) }}</strong></td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <div v-if="printPo.notes" class="pp-notes">
+            <strong>Catatan:</strong> {{ printPo.notes }}
+          </div>
+
+          <!-- Tanda tangan — Pemohon (e-sign ringan) & Direktur (TTD basah kosong) -->
+          <div class="pp-sign">
+            <div class="pp-sign-box">
+              <div>Pemohon,</div>
+              <div class="pp-sign-esign">
+                <div class="pp-esign-check">✓ Ditandatangani secara elektronik</div>
+                <div class="pp-esign-meta">{{ formatDateTime(printPo.created_at) }} · {{ printPo.po_number }}</div>
+              </div>
+              <div class="pp-sign-name">{{ auth.employeeName || '(.......................)' }}</div>
+              <div class="pp-sign-sub">Petugas Farmasi</div>
+            </div>
+            <div class="pp-sign-box">
+              <div>Menyetujui,</div>
+              <div class="pp-sign-space"></div>
+              <div class="pp-sign-name">{{ clinic?.director_name || '(.......................)' }}</div>
+              <div class="pp-sign-sub">
+                Direktur<span v-if="clinic?.director_sip"> · SIP: {{ clinic.director_sip }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Toast -->
     <Teleport to="body">
       <div v-if="toast" class="po-toast-wrap">
@@ -678,6 +899,11 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
 .po-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .po-section-head h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin: 0; }
 .po-section-head p { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
+
+.po-tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--gb); }
+.po-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; margin-bottom: -2px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; color: var(--tm); cursor: pointer; }
+.po-tab:hover { color: #1763d4; }
+.po-tab.active { color: #1763d4; border-bottom-color: #1763d4; }
 
 .po-btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--ga); color: white; border: 0; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; }
 .po-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; }
@@ -704,6 +930,9 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
 .po-table td.r, .po-table th.r { text-align: right; }
 .po-table td.c, .po-table th.c { text-align: center; }
 .po-table tbody tr:hover { background: var(--bs); }
+.po-rownum { color: var(--tu); font-variant-numeric: tabular-nums; }
+
+.po-btn-ico { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; vertical-align: -2px; margin-right: 5px; }
 
 .po-state { text-align: center; padding: 24px; color: var(--tu); font-size: 12.5px; }
 .po-state-error { color: var(--et); }
@@ -794,4 +1023,72 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
 .po-toast-s { background: var(--st); }
 .po-toast-e { background: var(--et); }
 .po-toast-w { background: var(--wt); }
+</style>
+
+<!--
+  Print styles — TIDAK scoped supaya bisa menyembunyikan seluruh aplikasi
+  saat window.print() dan hanya menampilkan #po-print-root.
+-->
+<style>
+/* Di layar: sembunyikan area print sepenuhnya. */
+#po-print-root { display: none; }
+
+@media print {
+  /* Sembunyikan seluruh aplikasi; hanya area print yang tampil. */
+  body > *:not(#po-print-root) { display: none !important; }
+
+  #po-print-root {
+    display: block !important;
+    position: absolute;
+    inset: 0;
+    background: #fff;
+  }
+
+  @page { size: A4 portrait; margin: 16mm 14mm; }
+  html, body { background: #fff !important; }
+}
+
+/* Lembar surat A4 — dipakai di layar (kalau dibutuhkan) & print. */
+.po-print-sheet {
+  width: 182mm;
+  margin: 0 auto;
+  color: #000;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.5;
+}
+
+.pp-kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 10px; }
+.pp-logo { max-height: 70px; max-width: 110px; object-fit: contain; }
+.pp-clinic { font-size: 17pt; font-weight: 800; letter-spacing: .01em; }
+.pp-line { font-size: 9.5pt; color: #222; }
+
+.pp-title { text-align: center; font-size: 14pt; font-weight: 800; letter-spacing: .12em; margin: 16px 0 14px; text-decoration: underline; }
+
+.pp-meta { display: flex; justify-content: space-between; gap: 24px; margin-bottom: 16px; }
+.pp-meta-tbl td { padding: 1px 0; font-size: 10pt; vertical-align: top; }
+.pp-meta-k { white-space: nowrap; color: #333; }
+.pp-meta-c { padding: 0 8px !important; }
+.pp-supplier { max-width: 48%; }
+.pp-supplier-head { font-size: 9.5pt; color: #333; margin-bottom: 2px; }
+.pp-supplier-name { font-weight: 700; font-size: 11pt; }
+
+.pp-items { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-bottom: 14px; }
+.pp-items th, .pp-items td { border: 1px solid #000; padding: 5px 7px; text-align: left; }
+.pp-items th { background: #f0f0f0; font-weight: 700; }
+.pp-items td.r, .pp-items th.r { text-align: right; }
+.pp-items td.c, .pp-items th.c { text-align: center; }
+.pp-items tfoot td { background: #f7f7f7; font-size: 10.5pt; }
+.pp-code { font-weight: 700; margin-right: 4px; }
+
+.pp-notes { font-size: 9.5pt; margin-bottom: 18px; border: 1px solid #999; padding: 6px 9px; background: #fafafa; }
+
+.pp-sign { display: flex; justify-content: space-between; gap: 40px; margin-top: 24px; }
+.pp-sign-box { text-align: center; font-size: 10pt; flex: 1; max-width: 240px; }
+.pp-sign-space { height: 64px; }
+.pp-sign-esign { height: 64px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+.pp-esign-check { font-size: 9pt; font-weight: 600; color: #15803d; border: 1px dashed #86c79a; border-radius: 6px; padding: 2px 8px; }
+.pp-esign-meta { font-size: 7.5pt; color: #555; font-variant-numeric: tabular-nums; }
+.pp-sign-name { font-weight: 700; text-decoration: underline; }
+.pp-sign-sub { font-size: 9pt; color: #333; }
 </style>

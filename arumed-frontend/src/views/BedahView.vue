@@ -1,173 +1,141 @@
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useMasterDataStore } from '@/stores/masterDataStore'
+import { bedahApi, alatMedisApi, masterApi } from '@/services/api'
 
-// ── Mock Data ──────────────────────────────────────────────────────────────────
-const patients = ref([
-  {
-    id: 1, qNum: 'OK-001', name: 'Hendra Wijaya', rm: 'RM-2025-0005', nik: '3672010807680001',
-    age: 57, gender: 'L', ptype: 'bpjs', bpjsNo: '000987654', sepNo: '09019R000123',
-    classification: 'Pre-Op',
-    ruang: 'OK 1', prosedur: 'Phacoemulsifikasi OD', icdProsedur: '13.41',
-    dpjp: 'dr. Andi Wijaya, Sp.M', diagnosa: 'H25.9 — Katarak senilis OD',
-    status: 'BERLANGSUNG', scheduledTime: '07:30', isPhaco: true,
-    timIn: new Date(Date.now() - 28 * 60000),
-    checklist: { identitas: true, consent: true, lokasi: true, pupil: true, alergi: true },
-    tim: { operator: 'dr. Andi Wijaya, Sp.M', asisten1: 'dr. Rina Kusuma, Sp.M', asisten2: '', scrubNurse: 'Dewi Sari, S.Kep', circNurse: 'Rina Wati, Amd.Kep', anestesi: 'dr. Haris, Sp.An' },
-    iolRencana: { merk: 'Alcon AcrySof', power: '+21.0', series: 'SN60WF', tipe: 'Monofocal' },
-    paketBedah: { kode: 'PKB-001', nama: 'Fakoemulsifikasi (Phaco) + IOL Standar' },
-    bhp: [
-      { item: 'BSS 500ml', jumlah: 1, satuan: 'Botol' },
-      { item: 'Viscoelastic (OVD)', jumlah: 1, satuan: 'Syringe' },
-      { item: 'Keratome 2.75mm', jumlah: 1, satuan: 'Pcs' },
-      { item: 'Spons Microsponge', jumlah: 4, satuan: 'Pcs' },
-      { item: 'Cannula I/A', jumlah: 1, satuan: 'Pcs' },
-    ],
-    iolDipasang: { merk: 'Alcon AcrySof', power: '+21.0', series: 'SN60WF-L0001', tipe: 'Monofocal' },
-    catatanIntra: 'Insisi kornea 2.75mm. Capsulorhexis baik. Hidrodiseksi lancar. Fakoemulsifikasi nukleus grade III. IOL in-the-bag, centred.',
-    anestesi: 'Topikal',
-    teknikOp: 'Phacoemulsifikasi teknik stop-and-chop dengan insisi kornea 2.75mm. Implantasi IOL lipat in-the-bag.',
-    temuanIntra: 'Katarak nukleus grade III, kapsul posterior intak, zonula baik.',
-    komplikasi: false, komplikasiTipe: '', komplikasiNote: '',
-    diagnosaPasca: 'H25.9 — Katarak senilis OD',
-    laporanFinalized: false,
-    obatPasca: [
-      { nama: 'Ciprofloxacin 0.3% ED', dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' },
-      { nama: 'Dexamethasone 0.1% ED', dosis: '1 tetes', freq: '4×/hari', dur: '14 hari', rute: 'Tetes OD' },
-    ],
-    instruksi: [true, true, true, true, true, true],
-    resepSent: false, bhpSent: false,
-    bhpLog: [],
-    visusOD: '1/60', visusOS: '6/6', iopOD: '19', iopOS: '14',
-  },
-  {
-    id: 2, qNum: 'OK-002', name: 'Siti Rahayu', rm: 'RM-2025-0012', nik: '3271010101900001',
-    age: 43, gender: 'P', ptype: 'bpjs', bpjsNo: '000124567', sepNo: '09019R000128',
-    classification: 'Pre-Op',
-    ruang: 'OK 2', prosedur: 'Eksisi Pterygium + Konjungtiva Graft OD', icdProsedur: '11.39',
-    dpjp: 'dr. Rina Kusuma, Sp.M', diagnosa: 'H11.0 — Pterigium OD Grade 3',
-    status: 'MENUNGGU', scheduledTime: '09:00', isPhaco: false,
-    timIn: null,
-    checklist: { identitas: false, consent: false, lokasi: false, pupil: false, alergi: false },
-    tim: { operator: 'dr. Rina Kusuma, Sp.M', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
-    iolRencana: { merk: '', power: '', series: '', tipe: '' },
-    paketBedah: { kode: 'PKB-003', nama: 'Pterigium Eksisi + Konjungtiva Graft' },
-    bhp: [
-      { item: 'Spons Microsponge', jumlah: 4, satuan: 'Pcs' },
-      { item: 'Silk Suture 8-0', jumlah: 2, satuan: 'Pcs' },
-      { item: 'Kapas Steril', jumlah: 4, satuan: 'Lembar' },
-    ],
-    iolDipasang: { merk: '', power: '', series: '', tipe: '' },
-    catatanIntra: '', anestesi: 'Lokal',
-    teknikOp: '', temuanIntra: '', komplikasi: false, komplikasiTipe: '', komplikasiNote: '',
-    diagnosaPasca: 'H11.0 — Pterigium OD Grade 3',
-    laporanFinalized: false, obatPasca: [], instruksi: [false, false, false, false, false, false],
-    resepSent: false, bhpSent: false, bhpLog: [],
-    visusOD: '6/9', visusOS: '6/6', iopOD: '14', iopOS: '13',
-  },
-  {
-    id: 3, qNum: 'OK-003', name: 'Budi Santoso', rm: 'RM-2025-0008', nik: '3271020202850002',
-    age: 40, gender: 'L', ptype: 'umum', bpjsNo: '', sepNo: '',
-    classification: 'Pre-Op',
-    ruang: 'OK 1', prosedur: 'Trabekulektomi OS', icdProsedur: '12.64',
-    dpjp: 'dr. Andi Wijaya, Sp.M', diagnosa: 'H40.1 — Glaukoma sudut terbuka OS',
-    status: 'MENUNGGU', scheduledTime: '10:30', isPhaco: false,
-    timIn: null,
-    checklist: { identitas: false, consent: false, lokasi: false, pupil: false, alergi: false },
-    tim: { operator: 'dr. Andi Wijaya, Sp.M', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
-    iolRencana: { merk: '', power: '', series: '', tipe: '' },
-    paketBedah: { kode: 'PKB-004', nama: 'Trabekulektomi (Bedah Glaukoma)' },
-    bhp: [
-      { item: 'Vicryl 7-0', jumlah: 2, satuan: 'Pcs' },
-      { item: 'Spons Microsponge', jumlah: 4, satuan: 'Pcs' },
-      { item: 'BSS 500ml', jumlah: 1, satuan: 'Botol' },
-      { item: 'Kapas Steril', jumlah: 4, satuan: 'Lembar' },
-    ],
-    iolDipasang: { merk: '', power: '', series: '', tipe: '' },
-    catatanIntra: '', anestesi: 'Sub-Tenon',
-    teknikOp: '', temuanIntra: '', komplikasi: false, komplikasiTipe: '', komplikasiNote: '',
-    diagnosaPasca: 'H40.1 — Glaukoma sudut terbuka OS',
-    laporanFinalized: false, obatPasca: [], instruksi: [false, false, false, false, false, false],
-    resepSent: false, bhpSent: false, bhpLog: [],
-    visusOD: '6/6', visusOS: '1/60', iopOD: '16', iopOS: '32',
-  },
-  {
-    id: 4, qNum: 'OK-004', name: 'Dewi Lestari', rm: 'RM-2025-0004', nik: '3271030303900003',
-    age: 35, gender: 'P', ptype: 'asn', bpjsNo: '', sepNo: 'ASN-2025-042',
-    classification: 'Pre-Op',
-    ruang: 'OK 2', prosedur: 'Vitrektomi Posterior OD', icdProsedur: '14.74',
-    dpjp: 'dr. Andi Wijaya, Sp.M', diagnosa: 'H33.0 — Ablasio Retina OD',
-    status: 'MENUNGGU', scheduledTime: '13:00', isPhaco: false,
-    timIn: null,
-    checklist: { identitas: true, consent: true, lokasi: false, pupil: false, alergi: false },
-    tim: { operator: 'dr. Andi Wijaya, Sp.M', asisten1: 'dr. Rina Kusuma, Sp.M', asisten2: '', scrubNurse: 'Dewi Sari, S.Kep', circNurse: '', anestesi: 'dr. Haris, Sp.An' },
-    iolRencana: { merk: '', power: '', series: '', tipe: '' },
-    paketBedah: { kode: 'PKB-005', nama: 'Vitrektomi Posterior (Pars Plana)' },
-    bhp: [
-      { item: 'BSS 500ml', jumlah: 2, satuan: 'Botol' },
-      { item: 'Vicryl 7-0', jumlah: 2, satuan: 'Pcs' },
-      { item: 'Spons Microsponge', jumlah: 4, satuan: 'Pcs' },
-    ],
-    iolDipasang: { merk: '', power: '', series: '', tipe: '' },
-    catatanIntra: '', anestesi: 'Umum',
-    teknikOp: '', temuanIntra: '', komplikasi: false, komplikasiTipe: '', komplikasiNote: '',
-    diagnosaPasca: 'H33.0 — Ablasio Retina OD',
-    laporanFinalized: false, obatPasca: [], instruksi: [false, false, false, false, false, false],
-    resepSent: false, bhpSent: false, bhpLog: [],
-    visusOD: '1/300', visusOS: '6/6', iopOD: '12', iopOS: '15',
-  },
-  {
-    id: 5, qNum: 'OK-005', name: 'Ahmad Fauzi', rm: 'RM-2025-0003', nik: '3271040404780004',
-    age: 50, gender: 'L', ptype: 'bpjs', bpjsNo: '000111222', sepNo: '09019R000120',
-    classification: 'Post-Op',
-    ruang: 'OK 1', prosedur: 'Phacoemulsifikasi OS', icdProsedur: '13.41',
-    dpjp: 'dr. Rina Kusuma, Sp.M', diagnosa: 'H25.9 — Katarak senilis OS',
-    status: 'SELESAI', scheduledTime: '07:00', isPhaco: true,
-    timIn: new Date(Date.now() - 3 * 3600000),
-    checklist: { identitas: true, consent: true, lokasi: true, pupil: true, alergi: true },
-    tim: { operator: 'dr. Rina Kusuma, Sp.M', asisten1: 'dr. Andi Wijaya, Sp.M', asisten2: '', scrubNurse: 'Dewi Sari, S.Kep', circNurse: 'Rina Wati, Amd.Kep', anestesi: '' },
-    iolRencana: { merk: 'Bausch+Lomb enVista', power: '+20.0', series: 'MX60', tipe: 'Monofocal' },
-    paketBedah: { kode: 'PKB-001', nama: 'Fakoemulsifikasi (Phaco) + IOL Standar' },
-    bhp: [
-      { item: 'BSS 500ml', jumlah: 1, satuan: 'Botol' },
-      { item: 'Viscoelastic (OVD)', jumlah: 1, satuan: 'Syringe' },
-      { item: 'Keratome 2.75mm', jumlah: 1, satuan: 'Pcs' },
-      { item: 'Spons Microsponge', jumlah: 4, satuan: 'Pcs' },
-      { item: 'Cannula I/A', jumlah: 1, satuan: 'Pcs' },
-    ],
-    iolDipasang: { merk: 'Bausch+Lomb enVista', power: '+20.0', series: 'MX60-L0088', tipe: 'Monofocal' },
-    catatanIntra: 'Operasi berjalan lancar tanpa komplikasi. IOL in-the-bag.',
-    anestesi: 'Topikal',
-    teknikOp: 'Phacoemulsifikasi dengan IOL lipat Bausch+Lomb enVista.',
-    temuanIntra: 'Katarak nukleus grade II, zonula stabil.',
-    komplikasi: false, komplikasiTipe: '', komplikasiNote: '',
-    diagnosaPasca: 'H25.9 — Katarak senilis OS, status post Phaco+IOL',
-    laporanFinalized: true,
-    obatPasca: [
-      { nama: 'Ciprofloxacin 0.3% ED', dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OS' },
-      { nama: 'Prednisolone 1% ED', dosis: '1 tetes', freq: '6×/hari', dur: '14 hari', rute: 'Tetes OS' },
-    ],
-    instruksi: [true, true, true, true, true, true],
-    resepSent: true, bhpSent: true,
-    bhpLog: [{ at: '07:58', items: 'BSS 500ml ×1, Viscoelastic ×1', by: 'Dewi Sari, S.Kep' }],
-    visusOD: '6/6', visusOS: '2/60', iopOD: '13', iopOS: '17',
-  },
-])
+const masterStore = useMasterDataStore()
 
-// ── Employee & Package Data ────────────────────────────────────────────────────
-const employees = [
-  { id: 1,  name: 'dr. Andi Wijaya, Sp.M',    role: 'Dokter Spesialis Mata'    },
-  { id: 2,  name: 'dr. Rina Kusuma, Sp.M',     role: 'Dokter Spesialis Mata'    },
-  { id: 3,  name: 'dr. Haris, Sp.An',          role: 'Dokter Spesialis Anestesi'},
-  { id: 4,  name: 'dr. Yusuf Pratama, Sp.M',   role: 'Dokter Spesialis Mata'    },
-  { id: 5,  name: 'Dewi Sari, S.Kep',          role: 'Perawat Bedah'            },
-  { id: 6,  name: 'Rina Wati, Amd.Kep',        role: 'Perawat Bedah'            },
-  { id: 7,  name: 'Slamet Riyadi, S.Kep',      role: 'Perawat Bedah'            },
-  { id: 8,  name: 'Nurul Hidayah, Amd.Kep',    role: 'Perawat Bedah'            },
-  { id: 9,  name: 'Bambang Sutrisno, Amd.Kep', role: 'Perawat Bedah'            },
-  { id: 10, name: 'dr. Mega Puspita, Sp.An',   role: 'Dokter Spesialis Anestesi'},
-]
+// ── Data ───────────────────────────────────────────────────────────────────────
+// Real queue dari backend (/bedah/antrian). UI tabs Pra-Bedah/Intraop/Laporan
+// pakai field default kalau real data tidak punya (untuk action operasi detail —
+// belum diwire ke backend, scope plan terpisah).
+const patients = ref([])
+const employees = ref([])
+const loadingQueue = ref(false)
+
+// Jadwal operasi (bedah terjadwal) — read-only dari /bedah/jadwal
+const schedules = ref([])
+const loadingSchedules = ref(false)
+const jadwalDate = ref(new Date().toISOString().slice(0, 10))  // YYYY-MM-DD
+
+// Daftar Ruang OK dari Profil Klinik (settings global).
+const operatingRooms = computed(() => masterStore.profilKlinik?.operating_rooms ?? [])
+
+/**
+ * Transform queue row dari backend ke shape yg dipakai UI existing (mock-like).
+ * Field yg tidak ada di real data diisi default supaya UI tidak crash.
+ */
+function transformQueueItem(q) {
+  const sched = q.surgery_schedule
+  const pkg   = sched?.package
+  return {
+    // ── Real data ──
+    id:             q.id,
+    qNum:           q.queue_number,
+    queueStatus:    q.status,            // WAITING/CALLED/IN_PROGRESS/COMPLETED
+    visitId:        q.visit?.id,
+    visitType:      q.visit?.visit_type,
+    scheduleId:     sched?.id ?? null,
+    classification: q.visit?.classification ?? 'Pre-Op',
+    rm:             q.patient?.no_rm ?? '—',
+    name:           q.patient?.name ?? '—',
+    age:            q.patient?.age ?? '—',
+    gender:         q.patient?.gender === 'L' ? 'Laki-laki' : (q.patient?.gender === 'P' ? 'Perempuan' : '—'),
+    ptype:          q.visit?.guarantor_type === 'BPJS' ? 'bpjs' : 'umum',
+    ruang:          sched?.operation_room ?? '—',
+    scheduledTime:  sched?.scheduled_time ?? null,   // null = jam belum ditentukan dokter (opsional)
+    scheduledDate:  sched?.scheduled_date,
+    paketBedah:     pkg ? { kode: (pkg.id || '').slice(0, 6), nama: pkg.name } : null,
+    prosedur:       pkg?.name ?? 'Tindakan bedah',
+
+    // ── UI-mock defaults (action operasi belum diwire) ──
+    status:         q.status === 'COMPLETED' ? 'SELESAI'
+                  : q.status === 'IN_PROGRESS' ? 'BERLANGSUNG'
+                  : 'MENUNGGU',
+    icdProsedur:    '',
+    dpjp:           '',
+    diagnosa:       '',
+    diagnosaPasca:  '',
+    isPhaco:        false,
+    timIn:          null,
+    timOut:         null,
+    checklist:      { identitas: false, consent: false, lokasi: false, pupil: false, alergi: false },
+    tim:            { operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
+    bhp:            [],
+    iolRencana:     { merk: '', power: '', series: '', tipe: 'Monofocal' },
+    iolDipasang:    { merk: '', power: '', series: '', tipe: 'Monofocal' },
+    anestesi:       'Topikal',
+    catatanIntra:   '',
+    teknikOp:       '',
+    temuanIntra:    '',
+    komplikasi:     false,
+    komplikasiTipe: '',
+    komplikasiNote: '',
+    instruksi:      Array(6).fill(false),
+    obatPasca:      [],
+    resepSent:      false,
+    laporanFinalized: q.status === 'COMPLETED',
+  }
+}
+
+async function loadQueue() {
+  loadingQueue.value = true
+  try {
+    const { data } = await bedahApi.antrian()
+    const rows = data.data ?? []
+    patients.value = rows.map(transformQueueItem)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat antrian bedah')
+  } finally {
+    loadingQueue.value = false
+  }
+}
+
+// Pegawai untuk combobox Tim Bedah (operator/asisten/anestesi/dll)
+async function loadEmployees() {
+  try {
+    const res = await masterApi.pegawai.list({ per_page: 200 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    employees.value = (Array.isArray(list) ? list : []).map((e) => ({
+      id:   e.id,
+      name: e.name,
+      role: e.profession ?? e.user?.role?.name ?? '—',
+    }))
+  } catch (e) {
+    employees.value = []
+  }
+}
+
+// Jadwal operasi untuk tanggal terpilih (read-only)
+async function loadSchedules() {
+  loadingSchedules.value = true
+  try {
+    const res = await bedahApi.jadwal({ tanggal: jadwalDate.value })
+    const list = res.data?.data ?? []
+    schedules.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    schedules.value = []
+    toast('w', e.response?.data?.message ?? 'Gagal memuat jadwal operasi')
+  } finally {
+    loadingSchedules.value = false
+  }
+}
+
+onMounted(async () => {
+  if (!masterStore.profilKlinik) {
+    try { await masterStore.fetchProfilKlinik() } catch {}
+  }
+  await Promise.all([loadQueue(), loadEmployees()])
+  startQueuePolling()
+})
 
 // ── UI State ───────────────────────────────────────────────────────────────────
+const leftMode = ref('antrean')            // 'antrean' | 'jadwal' — panel kiri
+
+// Reload jadwal saat ganti tanggal (hanya bila panel jadwal aktif)
+watch(jadwalDate, () => { if (leftMode.value === 'jadwal') loadSchedules() })
+// Load jadwal pertama kali saat user beralih ke panel jadwal
+watch(leftMode, (m) => { if (m === 'jadwal' && !schedules.value.length) loadSchedules() })
 const qPrimaryFilter   = ref('waiting')   // 'waiting' | 'done'
 const qSecondaryFilter = ref('semua')      // 'semua' | 'bpjs' | 'umum'
 const qSearch = ref('')
@@ -194,7 +162,20 @@ function stopTimerInterval() {
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
 }
 
-onUnmounted(stopTimerInterval)
+// Polling queue 15s — sync antrian baru (mis. pasien baru dikirim ke bedah dari Perawat)
+let _queuePollTimer = null
+function startQueuePolling() {
+  if (_queuePollTimer) return
+  _queuePollTimer = setInterval(() => { loadQueue() }, 15000)
+}
+function stopQueuePolling() {
+  if (_queuePollTimer) { clearInterval(_queuePollTimer); _queuePollTimer = null }
+}
+
+onUnmounted(() => {
+  stopTimerInterval()
+  stopQueuePolling()
+})
 
 watch(selP, (p) => {
   if (p && !p.tim.operator && p.dpjp) p.tim.operator = p.dpjp
@@ -203,7 +184,127 @@ watch(selP, (p) => {
   } else {
     stopTimerInterval()
   }
+  // Auto-load surgery requests untuk visit ini (jika ada)
+  if (p?.visitId) {
+    loadSurgeryRequests(p.visitId)
+    loadEquipmentUsages(p.visitId)
+  } else {
+    surgeryReqs.value = []
+    equipmentUsages.value = []
+  }
 })
+
+// Load master equipment sekali di mount (untuk dropdown pilihan)
+onMounted(() => {
+  loadEquipmentMaster()
+})
+
+// ── Surgery Requests (BHP/IOL dari Farmasi) — used_qty per item ───────────────
+const surgeryReqs = ref([])
+const surgeryReqsLoading = ref(false)
+const usedQtyEdits = ref({})  // { bhpRowId: number } — draft edits sebelum save
+const adjustingReq = ref(null) // id request yang sedang di-save
+
+async function loadSurgeryRequests(visitId) {
+  surgeryReqsLoading.value = true
+  try {
+    const res = await bedahApi.listRequests({ visit_id: visitId, per_page: 50 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    surgeryReqs.value = Array.isArray(list) ? list : []
+    // Seed draft = used_qty (atau quantity kalau used_qty masih null)
+    usedQtyEdits.value = {}
+    for (const req of surgeryReqs.value) {
+      for (const row of (req.bhp_items ?? [])) {
+        usedQtyEdits.value[row.id] = row.used_qty ?? row.quantity ?? 0
+      }
+    }
+  } catch (e) {
+    surgeryReqs.value = []
+  } finally {
+    surgeryReqsLoading.value = false
+  }
+}
+
+async function saveBhpUsage(req) {
+  if (!req?.id) return
+  const items = (req.bhp_items ?? []).map((row) => ({
+    bhp_item_id: row.bhp_item_id,
+    used_qty: Math.max(0, Number(usedQtyEdits.value[row.id] ?? 0)),
+  }))
+  adjustingReq.value = req.id
+  try {
+    await bedahApi.adjustBhpUsage(req.id, items)
+    toast('s', 'Pemakaian BHP tersimpan')
+    if (selP.value?.visitId) await loadSurgeryRequests(selP.value.visitId)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyimpan pemakaian BHP')
+  } finally {
+    adjustingReq.value = null
+  }
+}
+
+const receivedSurgeryReqs = computed(() =>
+  surgeryReqs.value.filter((r) => r.status === 'RECEIVED' && (r.bhp_items?.length ?? 0) > 0)
+)
+
+// ── Medical Equipment Usage (Fase 3) ──────────────────────────────────────
+const equipmentList = ref([])  // master alat aktif (sumber pilihan)
+const equipmentUsages = ref([])  // log usage utk visit ini
+const equipmentLoading = ref(false)
+const newEquipmentId = ref('')
+
+async function loadEquipmentMaster() {
+  try {
+    const res = await alatMedisApi.list({ active: 1, per_page: 100 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    equipmentList.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    equipmentList.value = []
+  }
+}
+
+async function loadEquipmentUsages(visitId) {
+  if (!visitId) { equipmentUsages.value = []; return }
+  equipmentLoading.value = true
+  try {
+    const res = await alatMedisApi.usagesByVisit(visitId)
+    equipmentUsages.value = Array.isArray(res.data?.data) ? res.data.data : []
+  } catch (e) {
+    equipmentUsages.value = []
+  } finally {
+    equipmentLoading.value = false
+  }
+}
+
+async function addEquipmentUsage() {
+  if (!newEquipmentId.value || !selP.value?.visitId) {
+    toast('w', 'Pilih alat dulu')
+    return
+  }
+  try {
+    await alatMedisApi.recordUsage({
+      medical_equipment_id: newEquipmentId.value,
+      visit_id: selP.value.visitId,
+      surgery_schedule_id: selP.value.scheduleId ?? null,
+    })
+    toast('s', 'Pemakaian alat dicatat')
+    newEquipmentId.value = ''
+    await loadEquipmentUsages(selP.value.visitId)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal mencatat')
+  }
+}
+
+async function removeEquipmentUsage(usage) {
+  if (!confirm(`Hapus catatan pemakaian ${usage.equipment?.name}?`)) return
+  try {
+    await alatMedisApi.deleteUsage(usage.id)
+    toast('s', 'Catatan dihapus')
+    if (selP.value?.visitId) await loadEquipmentUsages(selP.value.visitId)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menghapus')
+  }
+}
 
 const timerDisplay = computed(() => {
   if (!selP.value?.timIn) return '--:--:--'
@@ -253,6 +354,27 @@ const belumDipanggilCount = computed(() => patients.value.filter(p => p.status !
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 
+// ── Jadwal helpers ───────────────────────────────────────────────────────────
+const SCHED_STATUS = {
+  SCHEDULED:   { label: 'Terjadwal',   cls: 'sched-scheduled' },
+  IN_PROGRESS: { label: 'Berlangsung', cls: 'sched-progress' },
+  DONE:        { label: 'Selesai',     cls: 'sched-done' },
+  CANCELLED:   { label: 'Dibatalkan',  cls: 'sched-cancelled' },
+}
+function schedStatusMeta(s) { return SCHED_STATUS[s] ?? { label: s ?? '—', cls: 'sched-scheduled' } }
+function fmtJamJadwal(t) {
+  if (!t) return '—'
+  // scheduled_time bisa "HH:mm:ss" atau "HH:mm"
+  return String(t).slice(0, 5)
+}
+const jadwalDateLabel = computed(() => {
+  try {
+    return new Date(jadwalDate.value + 'T00:00:00').toLocaleDateString('id-ID', {
+      weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+    })
+  } catch { return jadwalDate.value }
+})
+
 const checklistAllDone = computed(() => {
   if (!selP.value) return false
   return Object.values(selP.value.checklist).every(Boolean)
@@ -274,13 +396,20 @@ function pickPt(p) {
   toast('i', `Membuka data bedah — ${p.name}`)
 }
 
-function callPt(p, e) {
+async function callPt(p, e) {
   e.stopPropagation()
   if (pendingCallIds.value.includes(p.id)) return
   const isRecall = p.status !== 'MENUNGGU'
   pendingCallIds.value.push(p.id)
-  toast('i', `${isRecall ? 'Memanggil ulang' : 'Memanggil'} ${p.qNum} — ${p.name} ke ${p.ruang}`)
-  setTimeout(() => { pendingCallIds.value = pendingCallIds.value.filter(id => id !== p.id) }, 600)
+  try {
+    await bedahApi.panggilAntrian(p.id)
+    toast('s', `${isRecall ? 'Memanggil ulang' : 'Memanggil'} ${p.qNum} — ${p.name} ke ${p.ruang}`)
+    await loadQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memanggil pasien')
+  } finally {
+    pendingCallIds.value = pendingCallIds.value.filter(id => id !== p.id)
+  }
 }
 
 function skipPt(p, e) {
@@ -349,14 +478,20 @@ function kirimResep() {
   toast('s', 'Resep pasca bedah terkirim ke Farmasi')
 }
 
-function doFinalisasi() {
+async function doFinalisasi() {
   if (!selP.value) return
-  selP.value.laporanFinalized = true
-  selP.value.status = 'SELESAI'
-  selP.value.timOut = selP.value.timOut || new Date()
-  stopTimerInterval()
-  showFinalModal.value = false
-  toast('s', 'Laporan operasi difinalisasi — status SELESAI')
+  try {
+    await bedahApi.selesaiAntrian(selP.value.id)
+    selP.value.laporanFinalized = true
+    selP.value.status = 'SELESAI'
+    selP.value.timOut = selP.value.timOut || new Date()
+    stopTimerInterval()
+    showFinalModal.value = false
+    toast('s', 'Bedah selesai — pasien diteruskan ke Kasir')
+    await loadQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan bedah')
+  }
 }
 
 const instruksiList = [
@@ -371,7 +506,7 @@ const instruksiList = [
 // ── Tim Bedah Combobox ─────────────────────────────────────────────────────────
 function filteredEmployees(key) {
   const q = timSearch.value[key].toLowerCase()
-  return q ? employees.filter(e => e.name.toLowerCase().includes(q)) : employees
+  return q ? employees.value.filter(e => e.name.toLowerCase().includes(q)) : employees.value
 }
 function pickEmployee(key, emp) {
   selP.value.tim[key] = emp.name
@@ -391,113 +526,189 @@ function mulaiBack() { mulaiStep.value = 1 }
 </script>
 
 <template>
-  <div class="bd-wrap">
-    <!-- ── LEFT PANEL ────────────────────────────────────────────── -->
-    <aside class="bd-qpanel">
-      <div class="bd-qhd">
-        <div class="bd-qhd-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/>
-          </svg>
-          <span>Antrean Bedah</span>
-          <span class="pill-live"><span class="live-dot"></span>LIVE</span>
-        </div>
-        <div class="bd-stats">
-          <div class="bd-stat bd-stat-w">
-            <span class="bd-stat-n">{{ cMenunggu }}</span>
-            <span class="bd-stat-l">Menunggu</span>
-          </div>
-          <div class="bd-stat bd-stat-b">
-            <span class="bd-stat-n">{{ cBerlangsung }}</span>
-            <span class="bd-stat-l">Berlangsung</span>
-          </div>
-          <div class="bd-stat bd-stat-s">
-            <span class="bd-stat-n">{{ cSelesai }}</span>
-            <span class="bd-stat-l">Selesai</span>
-          </div>
-        </div>
-      </div>
+  <div class="bedah">
+    <div class="main-grid">
 
-      <div class="bd-qbody">
-        <!-- Primary filter -->
-        <div class="primary-filter" role="group" aria-label="Filter utama antrean">
-          <button :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']" @click="qPrimaryFilter = 'waiting'">
-            Belum Dipanggil <span v-if="belumDipanggilCount" class="pf-ct">{{ belumDipanggilCount }}</span>
-          </button>
-          <button :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']" @click="qPrimaryFilter = 'done'">
-            Selesai <span v-if="cSelesai" class="pf-ct">{{ cSelesai }}</span>
-          </button>
-        </div>
-
-        <!-- Secondary filter -->
-        <div class="ptype-tabs" role="group" aria-label="Filter jenis penjamin">
-          <button :class="['ptype-tab', qSecondaryFilter === 'semua' ? 'a' : '']" @click="qSecondaryFilter = 'semua'">Semua</button>
-          <button :class="['ptype-tab ptype-bpjs', qSecondaryFilter === 'bpjs'  ? 'a' : '']" @click="qSecondaryFilter = 'bpjs'">BPJS</button>
-          <button :class="['ptype-tab ptype-umum', qSecondaryFilter === 'umum'  ? 'a' : '']" @click="qSecondaryFilter = 'umum'">Umum/Asuransi</button>
-        </div>
-
-        <div class="q-search-wrap">
-          <input v-model="qSearch" class="q-search" placeholder="Cari nama / nomor OK / RM…" />
-        </div>
-
-        <div v-if="!filtQ.length" class="empty-section">Tidak ada pasien dalam filter ini</div>
-
-        <div v-else role="list" aria-label="Daftar antrean bedah">
-          <div
-            v-for="p in filtQ" :key="p.id"
-            role="listitem"
-            :class="['q-item',
-              selP?.id === p.id ? 'active' : '',
-              p.status === 'SELESAI' ? 'done' : '',
-              p.status === 'BERLANGSUNG' ? 'live' : '',
-            ]"
-            tabindex="0"
-            @click="pickPt(p)"
-            @keydown.enter="pickPt(p)"
-          >
-            <div class="qi-left">
-              <div class="q-num">{{ p.qNum }}</div>
-              <span :class="['pill', `pill-${p.status.toLowerCase().replace('berlangsung','proses')}`]">
-                <span v-if="p.status === 'BERLANGSUNG'" class="live-dot sm"></span>
-                {{ p.status === 'MENUNGGU' ? 'Menunggu' : p.status === 'BERLANGSUNG' ? 'Proses' : 'Selesai' }}
-              </span>
-            </div>
-
-            <div class="q-info">
-              <div class="q-name">{{ p.name }}</div>
-              <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.rm }}</div>
-              <div class="q-prosedur">{{ p.prosedur }}</div>
-              <div class="q-tags">
-                <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : 'pill-umum']">
-                  {{ p.ptype.toUpperCase() }}
-                </span>
-                <span v-if="p.classification" :class="['pill', clsCls(p.classification)]">{{ p.classification }}</span>
-                <span class="pill pill-ruang">{{ p.ruang }}</span>
-                <span class="pill pill-time">{{ p.scheduledTime }}</span>
+      <!-- ══════════════════ LEFT: QUEUE ══════════════════ -->
+      <aside class="col-queue">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-head-title">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
+                {{ leftMode === 'antrean' ? 'Antrean Bedah' : 'Jadwal Operasi' }}
               </div>
-              <div v-if="p.status !== 'SELESAI'" class="q-actions" @click.stop>
-                <button
-                  :class="['q-act-btn', 'call', p.status !== 'MENUNGGU' ? 'recall' : '']"
-                  :disabled="pendingCallIds.includes(p.id)"
-                  @click="callPt(p, $event)"
-                >
-                  <svg v-if="p.status === 'MENUNGGU'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-                  {{ p.status === 'MENUNGGU' ? 'Panggil' : 'Panggil Ulang' }}
-                </button>
-                <button class="q-act-btn skip" @click="skipPt(p, $event)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
-                  Lewati
-                </button>
+              <div class="card-head-sub">
+                {{ leftMode === 'antrean' ? `${patients.length} pasien hari ini` : `${schedules.length} operasi terjadwal` }}
+              </div>
+            </div>
+            <span v-if="leftMode === 'antrean'" class="pill-live">LIVE</span>
+          </div>
+
+          <!-- Mode toggle: Antrean vs Jadwal -->
+          <div class="bd-mode-toggle" role="group" aria-label="Mode panel bedah">
+            <button :class="['bd-mode-btn', leftMode === 'antrean' ? 'a' : '']" @click="leftMode = 'antrean'">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+              Antrean
+            </button>
+            <button :class="['bd-mode-btn', leftMode === 'jadwal' ? 'a' : '']" @click="leftMode = 'jadwal'">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              Jadwal
+            </button>
+          </div>
+
+          <!-- ══════════ JADWAL OPERASI (read-only) ══════════ -->
+          <div v-if="leftMode === 'jadwal'" class="card-body queue-scroll" role="region" aria-label="Jadwal operasi">
+            <div class="bd-jadwal-datebar">
+              <label class="bd-label" for="bd-jadwal-date">Tanggal</label>
+              <input id="bd-jadwal-date" type="date" class="bd-input bd-input-sm" v-model="jadwalDate" />
+            </div>
+            <div class="bd-jadwal-datelabel">{{ jadwalDateLabel }}</div>
+
+            <div v-if="loadingSchedules" class="empty-section" aria-live="polite">Memuat jadwal…</div>
+            <div v-else-if="!schedules.length" class="empty-section" aria-live="polite">
+              Tidak ada operasi terjadwal pada tanggal ini
+            </div>
+            <div v-else role="list" aria-label="Daftar operasi terjadwal">
+              <div v-for="s in schedules" :key="s.id" class="bd-sched-item" role="listitem">
+                <div :class="['bd-sched-time', !s.scheduled_time ? 'na' : '']">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  {{ s.scheduled_time ? fmtJamJadwal(s.scheduled_time) : 'Belum dijam' }}
+                </div>
+                <div class="bd-sched-body">
+                  <div class="bd-sched-pkg">{{ s.surgery_package?.name ?? 'Paket bedah' }}</div>
+                  <div class="bd-sched-meta">
+                    <span v-if="s.lead_surgeon?.name">Operator: {{ s.lead_surgeon.name }}</span>
+                    <span v-if="s.anesthesiologist?.name"> · Anestesi: {{ s.anesthesiologist.name }}</span>
+                  </div>
+                  <div class="bd-sched-tags">
+                    <span :class="['pill', schedStatusMeta(s.status).cls]">{{ schedStatusMeta(s.status).label }}</span>
+                    <span v-if="s.operation_room" class="pill pill-ruang">{{ s.operation_room }}</span>
+                  </div>
+                  <div v-if="s.notes" class="bd-sched-notes">{{ s.notes }}</div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-    </aside>
 
-    <!-- ── RIGHT PANEL ───────────────────────────────────────────── -->
-    <main class="bd-main">
+          <div v-else class="card-body queue-scroll" role="region" aria-label="Daftar antrean bedah">
+
+            <!-- Stats bar -->
+            <div class="stats-bar">
+              <div class="stat-item">
+                <span class="stat-label">Menunggu</span>
+                <b class="stat-num stat-waiting">{{ cMenunggu }}</b>
+              </div>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Berlangsung</span>
+                <b class="stat-num stat-live">{{ cBerlangsung }}</b>
+              </div>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Selesai</span>
+                <b class="stat-num stat-done">{{ cSelesai }}</b>
+              </div>
+            </div>
+
+            <!-- Primary filter -->
+            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+              <button
+                :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']"
+                @click="qPrimaryFilter = 'waiting'"
+              >
+                Belum Dipanggil
+                <span v-if="belumDipanggilCount" class="pf-ct">{{ belumDipanggilCount }}</span>
+              </button>
+              <button
+                :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']"
+                @click="qPrimaryFilter = 'done'"
+              >
+                Selesai
+                <span v-if="cSelesai" class="pf-ct">{{ cSelesai }}</span>
+              </button>
+            </div>
+
+            <!-- Secondary filter -->
+            <div class="ptype-tabs" role="group" aria-label="Filter jenis penjamin">
+              <button :class="['ptype-tab', qSecondaryFilter === 'semua' ? 'a' : '']" @click="qSecondaryFilter = 'semua'">Semua</button>
+              <button :class="['ptype-tab ptype-bpjs', qSecondaryFilter === 'bpjs'  ? 'a' : '']" @click="qSecondaryFilter = 'bpjs'">BPJS</button>
+              <button :class="['ptype-tab ptype-umum', qSecondaryFilter === 'umum'  ? 'a' : '']" @click="qSecondaryFilter = 'umum'">Umum/Asuransi</button>
+            </div>
+
+            <!-- Search -->
+            <div class="q-search-wrap">
+              <input v-model="qSearch" class="q-search" placeholder="Cari nama / nomor OK / RM…" />
+            </div>
+
+            <!-- Empty -->
+            <div v-if="!filtQ.length" class="empty-section" aria-live="polite">
+              Tidak ada pasien dalam filter ini
+            </div>
+
+            <!-- Queue list -->
+            <div v-else role="list" aria-label="Daftar antrean bedah">
+              <div
+                v-for="p in filtQ" :key="p.id"
+                role="listitem"
+                :class="['q-item',
+                  selP?.id === p.id ? 'active' : '',
+                  p.status === 'SELESAI' ? 'done' : '',
+                  p.status === 'BERLANGSUNG' ? 'live' : '',
+                ]"
+                tabindex="0"
+                @click="pickPt(p)"
+                @keydown.enter="pickPt(p)"
+              >
+                <div class="qi-left">
+                  <div class="q-num">{{ p.qNum }}</div>
+                  <span :class="['pill', `pill-${p.status.toLowerCase().replace('berlangsung','proses')}`]">
+                    <svg v-if="p.status === 'MENUNGGU'" viewBox="0 0 24 24" class="pill-icon"><path d="M5 2h14M5 22h14M6 2v5l4 5-4 5v5M18 2v5l-4 5 4 5v5"/></svg>
+                    <svg v-else-if="p.status === 'BERLANGSUNG'" viewBox="0 0 24 24" class="pill-icon"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+                    <svg v-else viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
+                    {{ p.status === 'MENUNGGU' ? 'Menunggu' : p.status === 'BERLANGSUNG' ? 'Proses' : 'Selesai' }}
+                  </span>
+                </div>
+
+                <div class="q-info">
+                  <div class="q-name">{{ p.name }}</div>
+                  <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.rm }}</div>
+                  <div class="q-prosedur">{{ p.prosedur }}</div>
+                  <div class="q-tags">
+                    <span v-if="p.visitType === 'PREOP_BEDAH'" class="pill pill-preop" title="Preop bedah — bypass dokter">PREOP</span>
+                    <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : 'pill-umum']">
+                      {{ p.ptype.toUpperCase() }}
+                    </span>
+                    <span v-if="p.classification" :class="['pill', clsCls(p.classification)]">{{ p.classification }}</span>
+                    <span class="pill pill-ruang">{{ p.ruang }}</span>
+                    <span v-if="p.scheduledTime" class="pill pill-time">{{ fmtJamJadwal(p.scheduledTime) }}</span>
+                    <span v-else class="pill pill-time pill-time-na">Jam belum diatur</span>
+                  </div>
+                  <div v-if="p.status !== 'SELESAI'" class="q-actions" @click.stop>
+                    <button
+                      :class="['q-act-btn', 'call', p.status !== 'MENUNGGU' ? 'recall' : '']"
+                      :disabled="pendingCallIds.includes(p.id)"
+                      @click="callPt(p, $event)"
+                    >
+                      <svg v-if="p.status === 'MENUNGGU'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                      {{ p.status === 'MENUNGGU' ? 'Panggil' : 'Panggil Ulang' }}
+                    </button>
+                    <button class="q-act-btn skip" @click="skipPt(p, $event)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+                      Lewati
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </aside>
+
+      <!-- ══════════════════ RIGHT: WORK AREA ══════════════════ -->
+      <section class="col-work">
       <!-- Empty state -->
       <div v-if="!selP" class="bd-empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/><circle cx="12" cy="14" r="3"/></svg>
@@ -521,6 +732,7 @@ function mulaiBack() { mulaiStep.value = 1 }
             <div class="bd-banner-dpjp">DPJP: {{ selP.dpjp }}</div>
           </div>
           <div class="bd-banner-right">
+            <span v-if="selP.visitType === 'PREOP_BEDAH'" class="pill pill-preop" style="align-self:flex-end">PREOP BEDAH</span>
             <span :class="['bd-sbadge-lg', `bd-sbadge-${selP.status.toLowerCase().replace('berlangsung','live')}`]">
               <span v-if="selP.status === 'BERLANGSUNG'" class="bd-pulse"></span>
               {{ selP.status }}
@@ -556,16 +768,18 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div class="bd-card-bd">
                   <div class="bd-field-row">
                     <label class="bd-label">Ruang OK</label>
-                    <div class="bd-radios">
-                      <label v-for="r in ['OK 1', 'OK 2', 'OK 3']" :key="r" class="bd-radio-lbl">
+                    <div v-if="operatingRooms.length" class="bd-radios">
+                      <label v-for="r in operatingRooms" :key="r" class="bd-radio-lbl">
                         <input type="radio" :value="r" v-model="selP.ruang" :disabled="selP.laporanFinalized" />
                         {{ r }}
                       </label>
                     </div>
+                    <span v-else class="bd-val bd-val-na">Belum ada ruang OK — atur di Profil Klinik</span>
                   </div>
                   <div class="bd-field-row">
                     <label class="bd-label">Jadwal Operasi</label>
-                    <span class="bd-val">{{ selP.scheduledTime }} WIB</span>
+                    <span v-if="selP.scheduledTime" class="bd-val">{{ fmtJamJadwal(selP.scheduledTime) }} WIB</span>
+                    <span v-else class="bd-val bd-val-na">Jam belum ditentukan dokter</span>
                   </div>
                   <div class="bd-field-row">
                     <label class="bd-label">Diagnosa</label>
@@ -801,6 +1015,107 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
+            <!-- BHP dari Farmasi (qty terpakai → masuk billing) -->
+            <div v-if="receivedSurgeryReqs.length" class="bd-card bd-card-full">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                Pemakaian BHP (dari Farmasi)
+                <span class="bd-paket-source-pill">Akan ditagihkan otomatis di Kasir</span>
+              </div>
+              <div class="bd-card-bd">
+                <div v-for="req in receivedSurgeryReqs" :key="req.id" class="bd-bhp-req">
+                  <div class="bd-bhp-req-hd">
+                    <strong>Request {{ req.id?.slice(0, 8) }}</strong>
+                    <span class="bd-bhp-req-meta">Diterima {{ req.received_at ? new Date(req.received_at).toLocaleString('id-ID') : '—' }}</span>
+                  </div>
+                  <table class="bd-tbl">
+                    <thead>
+                      <tr>
+                        <th>Item</th>
+                        <th>Kategori</th>
+                        <th class="num">Diminta</th>
+                        <th class="num">Terpakai</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in (req.bhp_items ?? [])" :key="row.id">
+                        <td>{{ row.bhp_item?.name ?? '—' }}</td>
+                        <td>
+                          <span v-if="row.bhp_item?.category" class="bd-cat-pill" :data-cat="row.bhp_item.category">
+                            {{ row.bhp_item.category }}
+                          </span>
+                          <span v-else>—</span>
+                        </td>
+                        <td class="num">{{ row.quantity }}</td>
+                        <td class="num">
+                          <input
+                            type="number"
+                            min="0"
+                            :max="row.quantity * 2"
+                            class="bd-input bd-input-sm"
+                            style="width:70px;text-align:right"
+                            v-model.number="usedQtyEdits[row.id]"
+                            :disabled="selP.laporanFinalized || adjustingReq === req.id"
+                          />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class="bd-bhp-req-foot">
+                    <button
+                      class="bd-btn-add"
+                      :disabled="selP.laporanFinalized || adjustingReq === req.id"
+                      @click="saveBhpUsage(req)"
+                    >
+                      {{ adjustingReq === req.id ? 'Menyimpan…' : 'Simpan pemakaian' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pemakaian Alat Medis (microscope, Phaco, dll) -->
+            <div class="bd-card bd-card-full">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="9" cy="10" r="2"/><line x1="13" y1="9" x2="19" y2="9"/><line x1="13" y1="13" x2="17" y2="13"/></svg>
+                Pemakaian Alat Medis
+                <span class="bd-paket-source-pill">Tarif flat per pemakaian</span>
+              </div>
+              <div class="bd-card-bd">
+                <table class="bd-tbl" v-if="equipmentUsages.length">
+                  <thead><tr><th>Alat</th><th>Kategori</th><th>Lokasi</th><th>Waktu</th><th></th></tr></thead>
+                  <tbody>
+                    <tr v-for="u in equipmentUsages" :key="u.id">
+                      <td><strong>{{ u.equipment?.name ?? '—' }}</strong> <span v-if="u.equipment?.brand" class="bd-tbl-muted">({{ u.equipment.brand }})</span></td>
+                      <td><span v-if="u.equipment?.category" class="bd-cat-pill" :data-cat="u.equipment.category">{{ u.equipment.category }}</span></td>
+                      <td>{{ u.equipment?.location ?? '—' }}</td>
+                      <td>{{ u.used_at ? new Date(u.used_at).toLocaleString('id-ID') : '—' }}</td>
+                      <td>
+                        <button class="bd-del" @click="removeEquipmentUsage(u)" :disabled="selP.laporanFinalized">✕</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-else-if="equipmentLoading" class="bd-tbl-empty">Memuat…</div>
+                <div v-else class="bd-tbl-empty">Belum ada alat dicatat</div>
+
+                <div v-if="!selP.laporanFinalized" class="bd-bhp-add" style="margin-top:10px">
+                  <select class="bd-select bd-select-sm" v-model="newEquipmentId" style="min-width:280px">
+                    <option value="">-- Pilih Alat Medis --</option>
+                    <option
+                      v-for="eq in equipmentList"
+                      :key="eq.id"
+                      :value="eq.id"
+                      :disabled="equipmentUsages.some((u) => u.medical_equipment_id === eq.id)"
+                    >
+                      {{ eq.code }} · {{ eq.name }}{{ eq.location ? ` (${eq.location})` : '' }}
+                    </option>
+                  </select>
+                  <button class="bd-btn-add" @click="addEquipmentUsage">+ Catat Pemakaian</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Catatan Intraoperatif -->
             <div class="bd-card bd-card-full">
               <div class="bd-card-hd">
@@ -998,7 +1313,8 @@ function mulaiBack() { mulaiStep.value = 1 }
 
         </div>
       </template>
-    </main>
+      </section>
+    </div>
 
     <!-- ── MODAL: Mulai Operasi ──────────────────────────────────── -->
     <div v-if="showMulaiModal" class="bd-overlay" @click.self="showMulaiModal = false">
@@ -1073,36 +1389,34 @@ function mulaiBack() { mulaiStep.value = 1 }
 </template>
 
 <style scoped>
-/* ── Layout ─────────────────────────────────────────────────────── */
-.bd-wrap { display: flex; height: 100%; background: var(--bg); overflow: hidden; }
+/* ── Layout (PerawatView style) ─────────────────────────────────── */
+.bedah { padding: 0; }
+.main-grid { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; }
 
-/* ── Left Panel ─────────────────────────────────────────────────── */
-.bd-qpanel {
-  width: 280px; flex-shrink: 0; background: var(--bc);
-  border-right: 1px solid var(--gb); display: flex; flex-direction: column;
-  overflow: hidden;
-}
-.bd-qhd { padding: 16px 16px 0; flex-shrink: 0; }
-.bd-qhd-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: var(--gd); margin-bottom: 12px; }
-.bd-qhd-title svg { width: 18px; height: 18px; color: var(--ga); }
+.col-queue { min-width: 0; }
+.col-work { min-width: 0; display: flex; flex-direction: column; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
 
-.bd-stats { display: flex; gap: 6px; margin-bottom: 12px; }
-.bd-stat { flex: 1; border-radius: 8px; padding: 8px 4px; text-align: center; }
-.bd-stat-w { background: var(--wb); }
-.bd-stat-b { background: var(--ib); }
-.bd-stat-s { background: var(--sb); }
-.bd-stat-n { display: block; font-size: 20px; font-weight: 800; line-height: 1; }
-.bd-stat-w .bd-stat-n { color: var(--wt); }
-.bd-stat-b .bd-stat-n { color: var(--it); }
-.bd-stat-s .bd-stat-n { color: var(--st); }
-.bd-stat-l { font-size: 10px; color: var(--tu); margin-top: 2px; display: block; }
+/* Card wrapper */
+.card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
+.card-head { padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.card-head-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--td); }
+.card-head-title svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
+.card-head-sub { font-size: 11px; color: var(--tu); margin-top: 3px; }
 
-/* ── Queue body ─────────────────────────────────────────────────── */
-.bd-qbody { flex: 1; overflow-y: auto; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 0; }
+.queue-scroll { padding: 0.6rem; max-height: calc(100vh - 200px); overflow-y: auto; }
 
-.pill-live { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; letter-spacing: 0.05em; margin-left: auto; }
-.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--st); animation: bd-blink 1.5s infinite; flex-shrink: 0; }
-.live-dot.sm { width: 5px; height: 5px; background: currentColor; }
+/* Live pill on card-head */
+.pill-live { font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; letter-spacing: 0.05em; }
+
+/* Stats bar */
+.stats-bar { display: flex; align-items: center; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 8px 12px; margin-bottom: 0.65rem; gap: 0; }
+.stat-item { flex: 1; text-align: center; }
+.stat-divider { width: 1px; height: 28px; background: var(--gb); flex-shrink: 0; }
+.stat-label { display: block; font-size: 9.5px; color: var(--tu); letter-spacing: 0.03em; margin-bottom: 2px; }
+.stat-num { display: block; font-size: 17px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+.stat-waiting { color: #d97706; }
+.stat-live { color: #1e40af; }
+.stat-done { color: var(--st); }
 
 /* Primary filter */
 .primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
@@ -1133,13 +1447,16 @@ function mulaiBack() { mulaiStep.value = 1 }
 .q-item.done { opacity: .55; }
 .q-item.live { border-left: 3px solid var(--it); }
 .q-item:focus-visible { outline: 2px solid var(--ga); outline-offset: 2px; }
-.qi-left { display: flex; flex-direction: column; gap: 4px; min-width: 64px; }
-.q-num { font-weight: 700; font-size: 13.5px; color: var(--ga); letter-spacing: 0.03em; font-family: 'DM Mono', monospace; }
+.qi-left { display: flex; flex-direction: column; gap: 4px; min-width: 56px; }
+.q-num { font-weight: 700; font-size: 13.5px; color: var(--ga); letter-spacing: 0.03em; }
 .q-info { flex: 1; min-width: 0; }
-.q-name { font-size: 12.5px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
 .q-prosedur { font-size: 11px; color: var(--gm); margin-top: 3px; font-weight: 500; }
-.q-tags { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; }
+.q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
+
+/* Pill icon (PerawatView style) */
+.pill-icon { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; flex-shrink: 0; }
 
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
 .q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans',sans-serif; transition: background .12s, color .12s, border-color .12s; background: none; user-select: none; }
@@ -1159,8 +1476,51 @@ function mulaiBack() { mulaiStep.value = 1 }
 .pill-selesai   { background: var(--sb); color: var(--st); }
 .pill-bpjs      { background: #dbeafe; color: #1e40af; }
 .pill-umum      { background: var(--gl); color: var(--ga); }
+.pill-preop     { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; font-weight: 700; }
 .pill-ruang     { background: var(--bc); color: var(--gm); border: 1px solid var(--gb); }
 .pill-time      { background: var(--bi); color: var(--tu); font-variant-numeric: tabular-nums; }
+.pill-time-na   { background: #fff4e5; color: #9a6700; font-style: italic; }
+
+/* Jadwal status pills */
+.sched-scheduled { background: #dbeafe; color: #1e40af; }
+.sched-progress  { background: #fef3c7; color: #92400e; }
+.sched-done      { background: var(--sb); color: var(--st); }
+.sched-cancelled { background: #fee2e2; color: #991b1b; }
+
+/* ── Mode toggle (Antrean / Jadwal) ─────────────────────────────── */
+.bd-mode-toggle { display: flex; gap: 4px; padding: 8px 1.1rem 0; }
+.bd-mode-btn {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 7px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  background: var(--bi); color: var(--tu); border: 1px solid var(--gb); border-radius: 8px;
+  transition: all .15s;
+}
+.bd-mode-btn svg { width: 13px; height: 13px; }
+.bd-mode-btn:hover { background: var(--bc); }
+.bd-mode-btn.a { background: #1763d4; color: #fff; border-color: #1763d4; }
+
+/* ── Jadwal Operasi panel ───────────────────────────────────────── */
+.bd-jadwal-datebar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.bd-jadwal-datebar .bd-label { margin: 0; white-space: nowrap; }
+.bd-jadwal-datebar .bd-input { width: auto; flex: 1; }
+.bd-jadwal-datelabel { font-size: 11px; color: var(--tu); margin-bottom: 10px; text-transform: capitalize; }
+.bd-sched-item {
+  display: flex; gap: 10px; padding: 10px; margin-bottom: 8px;
+  background: var(--bs); border: 1px solid var(--gb); border-radius: 9px;
+}
+.bd-sched-time {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-width: 52px; font-size: 13px; font-weight: 700; color: #000;
+  font-variant-numeric: tabular-nums;
+}
+.bd-sched-time svg { width: 15px; height: 15px; stroke: var(--ga); }
+.bd-sched-time.na { font-size: 10.5px; font-weight: 600; color: #9a6700; font-style: italic; }
+.bd-sched-time.na svg { stroke: #9a6700; }
+.bd-sched-body { flex: 1; min-width: 0; }
+.bd-sched-pkg { font-size: 12.5px; font-weight: 600; color: #000; margin-bottom: 2px; }
+.bd-sched-meta { font-size: 10.5px; color: var(--tu); margin-bottom: 5px; }
+.bd-sched-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.bd-sched-notes { font-size: 10.5px; color: var(--th); margin-top: 5px; font-style: italic; }
 
 /* Classification */
 .cls-baru    { background: #dbeafe; color: #1e40af; }
@@ -1175,9 +1535,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-ptype-asn { background: var(--pb); color: var(--pt); }
 
 /* ── Right Panel ────────────────────────────────────────────────── */
-.bd-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-.bd-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--th); }
+.bd-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 60px 20px; color: var(--th); }
 .bd-empty svg { width: 72px; height: 72px; }
 .bd-empty h3 { font-size: 16px; color: var(--tm); margin: 0; }
 .bd-empty p { font-size: 13px; margin: 0; }
@@ -1208,7 +1566,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-tab:hover { color: var(--gm); }
 .bd-tab-a { color: var(--gm); border-bottom-color: var(--ga); }
 
-.bd-tabcont { flex: 1; overflow-y: auto; padding: 20px; }
+.bd-tabcont { max-height: calc(100vh - 260px); overflow-y: auto; padding: 20px; }
 
 /* Cards */
 .bd-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
@@ -1232,6 +1590,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-textarea:focus { border-color: var(--ga); }
 .bd-textarea:disabled { opacity: .6; background: var(--bg); }
 .bd-val { font-size: 13px; color: var(--td); }
+.bd-val-na { color: var(--th); font-style: italic; }
 .bd-dx { font-weight: 600; color: var(--gm); }
 .bd-field-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .bd-field-row .bd-label { margin: 0; width: 140px; flex-shrink: 0; }
@@ -1265,6 +1624,24 @@ function mulaiBack() { mulaiStep.value = 1 }
 
 /* Paket source pill (di header BHP Terpakai) */
 .bd-paket-source-pill { margin-left: auto; font-size: 10.5px; font-weight: 600; padding: 3px 9px; background: var(--gl); border: 1px solid var(--ga); color: var(--gm); border-radius: 20px; }
+
+/* BHP dari Farmasi section */
+.bd-bhp-req { background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.bd-bhp-req:last-child { margin-bottom: 0; }
+.bd-bhp-req-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 12.5px; color: var(--td); }
+.bd-bhp-req-meta { font-size: 11px; color: var(--tu); font-weight: 400; }
+.bd-bhp-req-foot { display: flex; justify-content: flex-end; margin-top: 8px; }
+.bd-tbl .num { text-align: right; }
+.bd-cat-pill { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 600; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
+.bd-cat-pill[data-cat="CSSD"]             { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.bd-cat-pill[data-cat="INSTRUMENT_SET"]   { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+.bd-cat-pill[data-cat="MEDICAL_SUPPLIES"] { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.bd-cat-pill[data-cat="MEDICAL_BHP"]      { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+.bd-cat-pill[data-cat="MICROSCOPE"]       { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.bd-cat-pill[data-cat="PHACO_MACHINE"]    { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.bd-cat-pill[data-cat="BIOMETRY"]         { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+.bd-cat-pill[data-cat="AUTOREFRACTOR"]    { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+.bd-tbl-muted { color: var(--tu); font-size: 11px; font-weight: 400; }
 
 /* IOL */
 .bd-iol-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

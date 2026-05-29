@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Storage;
 
 class DiagnosticResult extends Model
 {
@@ -13,6 +14,9 @@ class DiagnosticResult extends Model
 
     protected $keyType   = 'string';
     public $incrementing = false;
+
+    /** URL absolut lampiran agar dokter bisa lihat gambar/PDF hasil penunjang. */
+    protected $appends = ['attachment_url'];
 
     protected $fillable = [
         'diagnostic_order_id',
@@ -31,6 +35,13 @@ class DiagnosticResult extends Model
         'uploaded_at'    => 'datetime',
         'reviewed_at'    => 'datetime',
     ];
+
+    public function getAttachmentUrlAttribute(): ?string
+    {
+        return $this->attachment_path
+            ? Storage::disk('public')->url($this->attachment_path)
+            : null;
+    }
 
     public function order(): BelongsTo
     {

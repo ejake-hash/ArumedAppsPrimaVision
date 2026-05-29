@@ -207,6 +207,40 @@ class TarifPaketController extends Controller
     }
 
     // =========================================================================
+    // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
+    // =========================================================================
+
+    public function templatePaketCsv(): Response
+    {
+        $csv = $this->service->templatePaketCsv();
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="template-paket-bedah.csv"',
+        ]);
+    }
+
+    public function exportPaketCsv(): Response
+    {
+        $csv = $this->service->exportPaketCsv();
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="paket-bedah-' . now()->format('Ymd') . '.csv"',
+        ]);
+    }
+
+    public function importPaketCsv(Request $request): JsonResponse
+    {
+        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $csv = file_get_contents($request->file('file')->getRealPath());
+        $result = $this->service->importPaketCsv($csv);
+        $msg = "Import selesai: {$result['created']} paket baru, {$result['updated']} paket diperbarui, "
+             . "{$result['items_inserted']} item dimasukkan"
+             . ($result['items_lookup_fail'] > 0 ? ", {$result['items_lookup_fail']} item gagal lookup" : '')
+             . '.';
+        return $this->ok($result, $msg);
+    }
+
+    // =========================================================================
     // PAKET BEDAH — TARIFFS (harga jual per penjamin)
     // =========================================================================
 

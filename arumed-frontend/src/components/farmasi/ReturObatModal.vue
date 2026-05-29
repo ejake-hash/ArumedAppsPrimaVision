@@ -105,6 +105,17 @@ function fmtDate(d) {
   return d ? new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 }
 
+function itemsSummary(row) {
+  const items = Array.isArray(row?.items) ? row.items : []
+  if (!items.length) return '—'
+  return items.map((it) => {
+    const qty  = Number(it.qty_returned ?? it.qty ?? 0)
+    const name = it.item_name ?? '-'
+    const unit = it.item_unit ? ` ${it.item_unit}` : ''
+    return `${name} × ${qty}${unit}`
+  }).join(', ')
+}
+
 watch(() => props.open, (o) => {
   if (o) { tab.value = 'create'; reason.value = ''; rows.value = [emptyRow()]; fetchList() }
 })
@@ -132,17 +143,19 @@ watch(() => props.open, (o) => {
             <tr>
               <th style="width:44px">No.</th>
               <th>No. Retur</th>
+              <th>Barang</th>
               <th>Tanggal</th>
               <th class="c">Status</th>
               <th class="c">Aksi</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="listLoading"><td colspan="5" class="ro-state">Memuat…</td></tr>
-            <tr v-else-if="!list.length"><td colspan="5" class="ro-state">Belum ada retur. Buka tab "Buat Retur".</td></tr>
+            <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
+            <tr v-else-if="!list.length"><td colspan="6" class="ro-state">Belum ada retur. Buka tab "Buat Retur".</td></tr>
             <tr v-for="(r, i) in list" :key="r.id">
               <td>{{ i + 1 }}</td>
               <td><strong>{{ r.return_number }}</strong></td>
+              <td class="ro-items">{{ itemsSummary(r) }}</td>
               <td>{{ fmtDate(r.return_date) }}</td>
               <td class="c">
                 <span class="ro-badge" :class="STATUS[r.status]?.cls">{{ STATUS[r.status]?.label ?? r.status }}</span>
@@ -239,6 +252,7 @@ watch(() => props.open, (o) => {
 .ro-qty { text-align: center; }
 .ro-addrow { margin-top: 10px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--ga); background: var(--gl); border: 1.5px dashed var(--ga); border-radius: 7px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
 
+.ro-items { color: var(--tm); font-size: 12px; line-height: 1.4; max-width: 280px; }
 .ro-acts { display: flex; gap: 5px; justify-content: center; }
 .ro-btn { padding: 5px 11px; font-size: 11.5px; font-weight: 600; border-radius: 6px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; }
 .ro-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }

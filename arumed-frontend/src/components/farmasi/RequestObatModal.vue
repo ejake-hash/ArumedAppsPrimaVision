@@ -5,7 +5,7 @@
  *  - Permintaan Saya : pantau status; DELIVERED → "Terima" (close) → stok unit bertambah.
  * Aksi gudang (approve/kirim/tolak) datang via toast realtime di FarmasiView.
  */
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { unitRequestApi } from '@/services/api'
 
 const props = defineProps({
@@ -14,14 +14,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['close', 'changed'])
 
-const tab = ref('create')   // 'create' | 'list'
+const tab = ref('create')   // 'create' | 'status' | 'list'
 
 const STATUS = {
   DRAFT:     { label: 'Draft',     cls: 's-draft' },
   SUBMITTED: { label: 'Menunggu',  cls: 's-wait' },
   APPROVED:  { label: 'Disetujui', cls: 's-info' },
   DELIVERED: { label: 'Dikirim',   cls: 's-ship' },
-  CLOSED:    { label: 'Selesai',   cls: 's-ok' },
+  CLOSED:    { label: 'Diterima',  cls: 's-ok' },
   REJECTED:  { label: 'Ditolak',   cls: 's-err' },
 }
 
@@ -63,6 +63,8 @@ function hapusReq(row) {
   act(row, () => unitRequestApi.remove(row.id), 'Permintaan dihapus')
 }
 
+const statusList = computed(() => list.value.filter((r) => r.status === 'APPROVED' || r.status === 'DELIVERED'))
+
 // ─── Buat Permintaan ──────────────────────────────────────────────────────
 const rows   = ref([emptyRow()])
 const saving = ref(false)
@@ -98,6 +100,17 @@ function fmtDate(d) {
   return d ? new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 }
 
+function itemsSummary(row) {
+  const items = Array.isArray(row?.items) ? row.items : []
+  if (!items.length) return '—'
+  return items.map((it) => {
+    const qty  = Number(it.qty_requested ?? it.qty ?? 0)
+    const name = it.item_name ?? '-'
+    const unit = it.item_unit ? ` ${it.item_unit}` : ''
+    return `${name} × ${qty}${unit}`
+  }).join(', ')
+}
+
 watch(() => props.open, (o) => {
   if (o) { tab.value = 'create'; rows.value = [emptyRow()]; fetchList() }
 })
@@ -115,37 +128,77 @@ watch(() => props.open, (o) => {
 
       <div class="ro-tabs">
         <button :class="['ro-tab', tab === 'create' ? 'a' : '']" @click="tab = 'create'">Buat Permintaan</button>
+        <button :class="['ro-tab', tab === 'status' ? 'a' : '']" @click="tab = 'status'">
+          Status
+          <span v-if="statusList.length" class="ro-tabcount">{{ statusList.length }}</span>
+        </button>
         <button :class="['ro-tab', tab === 'list' ? 'a' : '']" @click="tab = 'list'">Histori</button>
       </div>
 
-      <!-- PERMINTAAN SAYA -->
-      <div v-if="tab === 'list'" class="ro-body">
+      <!-- STATUS (Disetujui / Dikirim — siap diterima) -->
+      <div v-if="tab === 'status'" class="ro-body">
         <table class="ro-table">
           <thead>
             <tr>
               <th style="width:44px">No.</th>
               <th>No. Permintaan</th>
+              <th>Barang</th>
               <th>Tanggal</th>
               <th class="c">Status</th>
               <th class="c">Aksi</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="listLoading"><td colspan="5" class="ro-state">Memuat…</td></tr>
-            <tr v-else-if="!list.length"><td colspan="5" class="ro-state">Belum ada permintaan. Buka tab "Buat Permintaan".</td></tr>
+            <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
+            <tr v-else-if="!statusList.length"><td colspan="6" class="ro-state">Belum ada permintaan yang disetujui.</td></tr>
+            <tr v-for="(r, i) in statusList" :key="r.id">
+              <td>{{ i + 1 }}</td>
+              <td><strong>{{ r.request_number }}</strong></td>
+              <td class="ro-items">{{ itemsSummary(r) }}</td>
+              <td>{{ fmtDate(r.request_date) }}</td>
+              <td class="c">
+                <span class="ro-badge" :class="STATUS[r.status]?.cls">{{ STATUS[r.status]?.label ?? r.status }}</span>
+              </td>
+              <td class="c">
+                <button v-if="r.status === 'DELIVERED'" class="ro-btn ok" :disabled="busyId === r.id" @click="terimaReq(r)">
+                  {{ busyId === r.id ? 'Memproses…' : 'Terima' }}
+                </button>
+                <span v-else class="ro-muted">menunggu kirim</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- HISTORI (semua status, read-only) -->
+      <div v-else-if="tab === 'list'" class="ro-body">
+        <table class="ro-table">
+          <thead>
+            <tr>
+              <th style="width:44px">No.</th>
+              <th>No. Permintaan</th>
+              <th>Barang</th>
+              <th>Tanggal</th>
+              <th class="c">Status</th>
+              <th class="c">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
+            <tr v-else-if="!list.length"><td colspan="6" class="ro-state">Belum ada permintaan. Buka tab "Buat Permintaan".</td></tr>
             <tr v-for="(r, i) in list" :key="r.id">
               <td>{{ i + 1 }}</td>
               <td><strong>{{ r.request_number }}</strong></td>
+              <td class="ro-items">{{ itemsSummary(r) }}</td>
               <td>{{ fmtDate(r.request_date) }}</td>
               <td class="c">
                 <span class="ro-badge" :class="STATUS[r.status]?.cls">{{ STATUS[r.status]?.label ?? r.status }}</span>
               </td>
               <td class="c">
                 <div class="ro-acts">
-                  <button v-if="r.status === 'DELIVERED'" class="ro-btn ok" :disabled="busyId === r.id" @click="terimaReq(r)">Terima</button>
                   <button v-if="r.status === 'DRAFT'" class="ro-btn" :disabled="busyId === r.id" @click="submitReq(r)">Submit</button>
                   <button v-if="r.status === 'DRAFT'" class="ro-btn danger" :disabled="busyId === r.id" @click="hapusReq(r)">Hapus</button>
-                  <span v-if="['SUBMITTED','APPROVED','CLOSED','REJECTED'].includes(r.status)" class="ro-muted">—</span>
+                  <span v-if="['SUBMITTED','APPROVED','DELIVERED','CLOSED','REJECTED'].includes(r.status)" class="ro-muted">—</span>
                 </div>
               </td>
             </tr>
@@ -208,6 +261,7 @@ watch(() => props.open, (o) => {
 .ro-tab { padding: 7px 14px; font-size: 12.5px; font-weight: 500; color: var(--tu); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
 .ro-tab:hover { color: var(--td); }
 .ro-tab.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
+.ro-tabcount { display: inline-block; min-width: 18px; padding: 1px 6px; margin-left: 6px; font-size: 10.5px; font-weight: 700; line-height: 1.4; color: #fff; background: var(--ga); border-radius: 10px; text-align: center; }
 
 .ro-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
 .ro-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -222,6 +276,7 @@ watch(() => props.open, (o) => {
 .ro-qty { text-align: center; }
 .ro-addrow { margin-top: 10px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--ga); background: var(--gl); border: 1.5px dashed var(--ga); border-radius: 7px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
 
+.ro-items { color: var(--tm); font-size: 12px; line-height: 1.4; max-width: 280px; }
 .ro-acts { display: flex; gap: 5px; justify-content: center; }
 .ro-btn { padding: 5px 11px; font-size: 11.5px; font-weight: 600; border-radius: 6px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; }
 .ro-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }

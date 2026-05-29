@@ -6,6 +6,9 @@ import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
+import FormSection from '@/components/forms/FormSection.vue'
+import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
+import { admisiApi } from '@/services/api'
 
 const admisiStore   = useAdmisiStore()
 const jadwalStore   = useJadwalDokterStore()
@@ -44,6 +47,38 @@ function escHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
 }
 
+/* Konversi ISO (YYYY-MM-DD) → tampilan DD/MM/YYYY untuk input teks tgl lahir. */
+function isoToDmy(iso) {
+  if (!iso) return ''
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+}
+
+/* Parse DD/MM/YYYY → ISO YYYY-MM-DD. Return '' kalau belum lengkap / tidak valid
+   (cek hari & bulan masuk akal + roundtrip tanggal asli, mis. tolak 31/02). */
+function dmyToIso(dmy) {
+  const m = String(dmy ?? '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (!m) return ''
+  const [_, dd, mm, yyyy] = m
+  const d = Number(dd), mo = Number(mm), y = Number(yyyy)
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return ''
+  const dt = new Date(y, mo - 1, d)
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return ''
+  return `${yyyy}-${mm}-${dd}`
+}
+
+/* Auto-mask input tgl lahir: sisipkan "/" otomatis setelah DD dan MM. */
+function maskDmy(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '').slice(0, 8)
+  const parts = []
+  if (digits.length >= 2) { parts.push(digits.slice(0, 2)); }
+  else return digits
+  if (digits.length >= 4) { parts.push(digits.slice(2, 4)); }
+  else { parts.push(digits.slice(2)); return parts.join('/') }
+  parts.push(digits.slice(4))
+  return parts.join('/')
+}
+
 /* Map a raw queue item from API to the shape expected by the template */
 function mapQueueItem(q) {
   const p = q.visit?.patient ?? {}
@@ -73,6 +108,7 @@ function mapQueueItem(q) {
     noSep:      q.visit?.no_sep        ?? null,
     controlLetter: q.visit?.bpjs_control_letter_id ?? null,
     insurer:    q.visit?.insurer?.name ?? null,
+    insuranceVerificationStatus: q.visit?.insurance_verification_status ?? null,
     callQueueId: q.id,
     callStatus:  q.status,
     gcSigned:   !!q.visit?.general_consent_signed_at,
@@ -84,9 +120,14 @@ function mapQueueItem(q) {
    VISIT COUNTS (used by dashboard stats row)
    ============================================================ */
 const vpAll      = computed(() => admisiStore.visits)
-const vpBpjs     = computed(() => vpAll.value.filter(v => v.guarantor_type === 'BPJS').length)
-const vpAsuransi = computed(() => vpAll.value.filter(v => !['BPJS','UMUM'].includes(v.guarantor_type)).length)
-const vpBedah    = computed(() => vpAll.value.filter(v => v.current_station === 'BEDAH').length)
+// Stat per penjamin = pasien yang SUDAH BAYAR di kasir (invoice PAID) hari ini.
+// Sumber: AdmisiService::getDashboard().stat_cards.{bpjs,umum,asuransi}_count
+const vpBpjs     = computed(() => admisiStore.stats?.bpjs     ?? 0)
+const vpUmum     = computed(() => admisiStore.stats?.umum     ?? 0)
+const vpAsuransi = computed(() => admisiStore.stats?.asuransi ?? 0)
+// Bedah selesai hari ini — ambil dari backend (Queue BEDAH yg sudah COMPLETED).
+// Sumber: AdmisiService::getDashboard().stat_cards.bedah_count
+const vpBedah    = computed(() => admisiStore.stats?.bedah ?? 0)
 const vpTotal    = computed(() => admisiStore.visitsMeta.total || vpAll.value.length)
 
 /* ============================================================
@@ -210,6 +251,7 @@ function mapVisitRow(v) {
     noSep:      v.no_sep ?? null,
     controlLetter: v.bpjs_control_letter_id ?? null,
     insurer:    v.insurer?.name ?? null,
+    insuranceVerificationStatus: v.insurance_verification_status ?? null,
     callQueueId: admisiQ?.id ?? null,
     callStatus:  admisiQ?.status ?? null,
     gcSigned:   !!v.general_consent_signed,
@@ -413,22 +455,77 @@ const filteredInsurers = computed(() => {
     .filter(i => !q || i.name.toLowerCase().includes(q))
 })
 
+// Detail insurer yang sedang dipilih — dipakai info-box PIC TPA di section ASURANSI.
+const selectedInsurerInfo = computed(() =>
+  (admisiStore.insurers ?? []).find(i => i.id === form.insurer_id) ?? null,
+)
+
 function selectInsurer(ins) {
   form.insurer_id    = ins.id
   form.insuranceName = ins.name
   insuranceSearch.value       = ins.name
   insuranceDropdownOpen.value = false
+  // Cegah penjamin utama == penjamin kedua (COB): bersihkan COB bila bentrok
+  if (form.cobInsurerId === ins.id) {
+    form.cobInsurerId     = ''
+    form.cobInsuranceName = ''
+    cobSearch.value       = ''
+  }
 }
 function onInsuranceBlur() { setTimeout(() => { insuranceDropdownOpen.value = false }, 150) }
 
 // Reset pilihan insurer saat user ganti tipe penjamin
 function setGuarantor(g) {
   if (form.guarantor === g) return
-  form.guarantor     = g
-  form.insurer_id    = ''
-  form.insuranceName = ''
-  form.insuranceNo   = ''
-  insuranceSearch.value = ''
+  form.guarantor         = g
+  form.insurer_id        = ''
+  form.insuranceName     = ''
+  form.insuranceNo       = ''
+  form.memberName        = ''
+  form.memberCardNumber  = ''
+  insuranceSearch.value  = ''
+  // COB hanya untuk ASURANSI / PERUSAHAAN → reset bila pindah ke tipe lain
+  if (!['ASURANSI','PERUSAHAAN'].includes(g)) resetCob()
+}
+
+/* ─── COB (penjamin kedua) — selalu insurer tipe ASURANSI ─── */
+const cobSearch         = ref('')
+const cobDropdownOpen   = ref(false)
+
+// Daftar insurer ASURANSI untuk penjamin kedua, kecuali yang sudah dipilih
+// sebagai penjamin utama (tidak boleh sama).
+const cobInsurers = computed(() => {
+  const q = cobSearch.value.trim().toLowerCase()
+  return (admisiStore.insurers ?? [])
+    .filter(i => i.type === 'ASURANSI')
+    .filter(i => i.id !== form.insurer_id)
+    .filter(i => !q || i.name.toLowerCase().includes(q))
+})
+
+function selectCobInsurer(ins) {
+  form.cobInsurerId     = ins.id
+  form.cobInsuranceName = ins.name
+  cobSearch.value       = ins.name
+  cobDropdownOpen.value = false
+}
+function onCobBlur() { setTimeout(() => { cobDropdownOpen.value = false }, 150) }
+
+function resetCob() {
+  form.cobEnabled       = false
+  form.cobInsurerId     = ''
+  form.cobInsuranceName = ''
+  form.cobInsuranceNo   = ''
+  cobSearch.value       = ''
+}
+
+function onCobToggle(e) {
+  form.cobEnabled = e.target.checked
+  if (!form.cobEnabled) {
+    form.cobInsurerId     = ''
+    form.cobInsuranceName = ''
+    form.cobInsuranceNo   = ''
+    cobSearch.value       = ''
+  }
 }
 
 /* ============================================================
@@ -508,6 +605,7 @@ function selectPatient(pt) {
   insuranceSearch.value = ''
   showSearchDrop.value  = false
   toast('s', `Data pasien ${pt.name} ditemukan`)
+  loadJadwalBedah(pt.id)
 }
 
 function onSearchBlur() { setTimeout(() => { showSearchDrop.value = false }, 200) }
@@ -620,6 +718,58 @@ function closeProfile() { profileOpen.value = false }
    ============================================================ */
 const wizardOpen  = ref(false)
 const wizardStep  = ref(1)
+
+/* ─── Preop Bedah state (auto-suggest banner) ─── */
+const preopSchedules        = ref([])     // jadwal bedah aktif pasien (hari ini + masa depan)
+const preopChoice           = ref(null)   // null | 'PREOP' | 'REGULAR'
+const selectedPreopSchedule = ref(null)   // schedule yg dipilih saat pilih PREOP
+
+const todayPreopSchedule = computed(() => preopSchedules.value.find(s => s.is_today) ?? null)
+const upcomingPreopSchedule = computed(() => preopSchedules.value.find(s => !s.is_today) ?? null)
+const preopBannerType = computed(() => {
+  if (todayPreopSchedule.value) return 'today'      // hijau
+  if (upcomingPreopSchedule.value) return 'upcoming' // kuning
+  return null
+})
+
+function formatPreopDate(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  return dt.toLocaleDateString('id-ID', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+}
+
+function resetPreopState() {
+  preopSchedules.value = []
+  preopChoice.value = null
+  selectedPreopSchedule.value = null
+}
+
+async function loadJadwalBedah(patientId) {
+  resetPreopState()
+  if (!patientId) return
+  try {
+    preopSchedules.value = await admisiStore.fetchJadwalBedahAktif(patientId)
+  } catch (e) {
+    // Silent fail — banner hanya hilang, tidak block form
+    preopSchedules.value = []
+  }
+}
+
+function choosePreop(schedule) {
+  selectedPreopSchedule.value = schedule
+  preopChoice.value = 'PREOP'
+  // Auto-set classification ke Pre-Op supaya konsisten
+  form.classification = 'Pre-Op'
+  toast('s', schedule.is_today
+    ? 'Dipilih: Preop Bedah hari ini'
+    : 'Dipilih: Preop hari ini — jadwal akan dipindah ke hari ini')
+}
+
+function chooseRegular() {
+  preopChoice.value = 'REGULAR'
+  selectedPreopSchedule.value = null
+}
+
 const wizardSteps = [
   { n:1, label:'Data Pasien', sub:'Identitas & alamat' },
   { n:2, label:'Penjamin',    sub:'BPJS / Umum / Asuransi' },
@@ -655,6 +805,15 @@ const blankForm = () => ({
   insurer_id:    '',
   insuranceName: '',
   insuranceNo:   '',
+  // TPA / Asuransi non-BPJS — data kartu fisik (Sprint 4 modul Asuransi)
+  memberName:        '',
+  memberCardNumber:  '',
+  // COB (Coordination of Benefits) — penjamin kedua, selalu tipe ASURANSI.
+  // penjamin1 = penjamin utama (form.guarantor), penjamin2 = asuransi di bawah.
+  cobEnabled:        false,
+  cobInsurerId:      '',
+  cobInsuranceName:  '',
+  cobInsuranceNo:    '',
   doctor_schedule_id: '',
 })
 const form = reactive(blankForm())
@@ -679,6 +838,107 @@ function onIdentityTypeChange() {
 const photoModalOpen = ref(false)
 function onPhotoCaptured(dataUrl) { form.photo = dataUrl }
 
+/* ============================================================
+   GENERAL CONSENT (Form Registry) — pasien baru, opsional
+   Diteken pasien/wali di step 3 sebelum cetak antrean. Data
+   auto-fill dari form (pasien baru belum punya visit_id/patient_id).
+   ============================================================ */
+const CONSENT_CODE = 'GENERAL_CONSENT'
+const consentModalOpen   = ref(false)      // modal tinjau + alur TTD
+const consentHtml        = ref('')          // HTML preview hasil render backend
+const consentLoading     = ref(false)
+const consentError       = ref('')
+const consentSignFields  = ref([])          // [{key,label,signer_type,required}]
+const consentSignatures  = ref([])          // [{signer_type, signature_svg, signature_png_base64, external_identity?, audit_log?, biometric_metadata?}]
+const sigCaptureOpen     = ref(false)
+const sigCaptureType     = ref('patient')   // signer_type yang sedang di-capture
+const sigCaptureLabel    = ref('')
+
+// Pasien (signer_type=patient) sudah TTD?
+const consentPatientSigned = computed(() =>
+  consentSignatures.value.some(s => s.signer_type === 'patient')
+)
+// Semua signer required sudah TTD?
+const consentAllSigned = computed(() => {
+  const required = consentSignFields.value.filter(f => f.required).map(f => f.signer_type)
+  if (!required.length) return consentPatientSigned.value
+  return required.every(st => consentSignatures.value.some(s => s.signer_type === st))
+})
+
+function resetConsentState() {
+  consentModalOpen.value  = false
+  consentHtml.value       = ''
+  consentError.value      = ''
+  consentSignFields.value = []
+  consentSignatures.value = []
+  sigCaptureOpen.value    = false
+}
+
+// Build payload identitas dari form untuk render preview.
+function consentFormPayload() {
+  const addressParts = [form.addressDetail, form.district, form.regency].filter(Boolean)
+  return {
+    template_code: CONSENT_CODE,
+    name:          form.name,
+    nik:           form.nik || null,
+    no_rm:         form.noRm || null,
+    gender:        form.sex,
+    date_of_birth: form.birthDate || null,
+    address:       addressParts.join(', ') || null,
+    phone:         form.phone || null,
+  }
+}
+
+// Re-render preview dengan TTD yang sudah ter-capture (supaya tampak di HTML).
+async function refreshConsentPreview() {
+  consentLoading.value = true
+  consentError.value = ''
+  try {
+    const payload = consentFormPayload()
+    payload.signatures = consentSignatures.value
+      .filter(s => s.signature_svg)
+      .map(s => ({ signer_type: s.signer_type, signature_svg: s.signature_svg }))
+    const { data } = await admisiApi.previewConsent(payload)
+    consentHtml.value       = data.data?.html ?? ''
+    consentSignFields.value = data.data?.signature_fields ?? []
+  } catch (e) {
+    consentError.value = e.response?.data?.message ?? 'Gagal memuat dokumen consent.'
+  } finally {
+    consentLoading.value = false
+  }
+}
+
+async function openConsentModal() {
+  consentModalOpen.value = true
+  await refreshConsentPreview()
+}
+
+// Buka SignatureCaptureModal untuk signer tertentu.
+function startSignature(field) {
+  sigCaptureType.value  = field.signer_type
+  sigCaptureLabel.value = field.label || ''
+  sigCaptureOpen.value  = true
+}
+
+// Hasil capture dari SignatureCaptureModal → simpan + re-render preview.
+async function onConsentCapture(payload) {
+  // Replace signature signer_type yang sama (re-sign).
+  consentSignatures.value = consentSignatures.value.filter(s => s.signer_type !== sigCaptureType.value)
+  consentSignatures.value.push({
+    signer_type:          sigCaptureType.value,
+    signature_svg:        payload.signature_svg,
+    signature_png_base64: payload.signature_png_base64,
+    external_identity:    payload.external_identity || null,
+    biometric_metadata:   payload.biometric_metadata || null,
+    audit_log:            payload.audit_log || [],
+  })
+  await refreshConsentPreview()
+}
+
+function isSignerSigned(signerType) {
+  return consentSignatures.value.some(s => s.signer_type === signerType)
+}
+
 const canProceedStep1 = computed(() => {
   const idOk = noIdentity.value || !!form.nik
   const base = form.patientMode === 'existing'
@@ -689,12 +949,14 @@ const canProceedStep1 = computed(() => {
 
 const canProceedStep2 = computed(() => {
   const pd = !!form.doctor_schedule_id
+  // COB aktif → penjamin kedua (asuransi) wajib dipilih
+  const cobOk = !form.cobEnabled || !!form.cobInsurerId
   if (form.guarantor === 'UMUM') return pd
-  if (['ASURANSI','PERUSAHAAN','SOSIAL'].includes(form.guarantor)) return !!form.insurer_id && pd
+  if (['ASURANSI','PERUSAHAAN','SOSIAL'].includes(form.guarantor)) return !!form.insurer_id && pd && cobOk
   if (form.guarantor === 'BPJS') {
-    if (form.sepType === 'rujukan') return !!form.bpjsNo && !!form.referralNo && pd
-    if (form.sepType === 'kontrol') return !!form.bpjsNo && !!form.controlNo && pd
-    return !!form.bpjsNo && !!form.bookingCode && pd
+    if (form.sepType === 'rujukan') return !!form.bpjsNo && !!form.referralNo && pd && cobOk
+    if (form.sepType === 'kontrol') return !!form.bpjsNo && !!form.controlNo && pd && cobOk
+    return !!form.bpjsNo && !!form.bookingCode && pd && cobOk
   }
   return pd
 })
@@ -707,11 +969,15 @@ function openWizard() {
   searchResults.value   = []
   wizardStep.value = 1
   wizardOpen.value = true
+  resetPreopState()
+  resetConsentState()
 }
 function closeWizard() {
   wizardOpen.value = false
   walkInVisitId.value = null
   walkInQueueNo.value = ''
+  resetPreopState()
+  resetConsentState()
 }
 
 function nextStep() {
@@ -726,6 +992,8 @@ function setPatientMode(mode) {
   form.patientMode      = mode
   insuranceSearch.value = ''
   searchResults.value   = []
+  resetPreopState()
+  resetConsentState()
 }
 
 function guarantorLabel(g) {
@@ -752,6 +1020,12 @@ async function submitRegistration() {
       doctor_schedule_id: form.doctor_schedule_id,
     }
 
+    // Preop bedah: kalau user pilih PREOP, inject visit_type & schedule
+    if (preopChoice.value === 'PREOP' && selectedPreopSchedule.value) {
+      payload.visit_type          = 'PREOP_BEDAH'
+      payload.surgery_schedule_id = selectedPreopSchedule.value.id
+    }
+
     if (form.guarantor === 'BPJS') {
       payload.bpjs_booking_code = form.sepType === 'jkn'     ? form.bookingCode : null
       payload.bpjs_referral_no  = form.sepType === 'rujukan' ? form.referralNo  : null
@@ -759,6 +1033,24 @@ async function submitRegistration() {
     }
     if (['ASURANSI','PERUSAHAAN','SOSIAL'].includes(form.guarantor)) {
       payload.insurer_id = form.insurer_id
+    }
+    // TPA non-BPJS — data kartu untuk verifikasi eligibility paralel oleh billing
+    if (['ASURANSI','PERUSAHAAN'].includes(form.guarantor)) {
+      payload.policy_number      = form.insuranceNo      || null
+      payload.member_name        = form.memberName       || null
+      payload.member_card_number = form.memberCardNumber || null
+    }
+
+    // COB — penjamin kedua (selalu Asuransi). Backend simpan ke visit_cob.
+    // Hanya untuk ASURANSI / PERUSAHAAN. penjamin1 = penjamin utama form.
+    if (['ASURANSI','PERUSAHAAN'].includes(form.guarantor) && form.cobEnabled && form.cobInsurerId) {
+      payload.cob = {
+        penjamin1_type:       form.guarantor,
+        penjamin1_insurer_id: form.insurer_id || null,
+        penjamin2_type:       'ASURANSI',
+        penjamin2_insurer_id: form.cobInsurerId,
+        notes:                form.cobInsuranceNo ? `Polis penjamin 2: ${form.cobInsuranceNo}` : null,
+      }
     }
 
     // Foto kunjungan ini — selalu dikirim di payload (baru maupun lama).
@@ -779,6 +1071,23 @@ async function submitRegistration() {
         province:      form.province || null,
         bpjs_number:   form.bpjsNo   || null,
       })
+    }
+
+    // General Consent (opsional) — hanya pasien baru & sudah ditandatangani
+    // pasien/wali. TTD + jawaban ikut dikirim; backend simpan PatientDocument
+    // FINALIZED setelah visit lahir.
+    if (form.patientMode === 'new' && consentPatientSigned.value) {
+      payload.consent = {
+        template_code: CONSENT_CODE,
+        signatures: consentSignatures.value.map(s => ({
+          signer_type:          s.signer_type,
+          signature_svg:        s.signature_svg,
+          signature_png_base64: s.signature_png_base64,
+          external_identity:    s.external_identity || null,
+          biometric_metadata:   s.biometric_metadata || null,
+          audit_log:            s.audit_log || [],
+        })),
+      }
     }
 
     // Branch: walk-in merge vs registrasi baru.
@@ -870,6 +1179,25 @@ function printAdmisiTicket({ queueNo, patientName }) {
 }
 
 function onBirthChange() { form.age = calcAge(form.birthDate) }
+
+/* ─── Input tgl lahir DD/MM/YYYY ───
+   form.birthDate tetap ISO (YYYY-MM-DD) sbg source of truth (backend + calcAge).
+   birthDateText = string tampilan DD/MM/YYYY; di-mask saat ketik & dikonversi ke
+   ISO begitu lengkap & valid. */
+const birthDateText = ref('')
+
+function onBirthTextInput(e) {
+  birthDateText.value = maskDmy(e.target.value)
+  const iso = dmyToIso(birthDateText.value)
+  form.birthDate = iso          // '' bila belum lengkap/invalid → blokir lanjut step
+  form.age = iso ? calcAge(iso) : ''
+}
+
+// Sinkronkan teks saat birthDate di-set dari luar (prefill pasien lama / reset form).
+watch(() => form.birthDate, (iso) => {
+  const asText = isoToDmy(iso)
+  if (asText !== birthDateText.value) birthDateText.value = asText
+}, { immediate: true })
 
 /* ============================================================
    DETAIL KUNJUNGAN MODAL
@@ -1083,6 +1411,15 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="stat-card">
+        <div class="stat-icon" style="background: #d1fae5">
+          <svg style="stroke: #047857" viewBox="0 0 24 24"><path d="M20 7h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+        </div>
+        <div>
+          <div class="stat-val" style="color: #047857">{{ vpUmum }}</div>
+          <div class="stat-lbl">Umum</div>
+        </div>
+      </div>
+      <div class="stat-card">
         <div class="stat-icon" style="background: #fdf4ff">
           <svg style="stroke: #7e22ce" viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
         </div>
@@ -1165,6 +1502,15 @@ onUnmounted(() => {
               </div>
               <span :class="['ptype-tag', p.walkIn ? 'pt-walkin' : ptypeClass(p.guarantor)]">
                 {{ p.walkIn ? 'WALK-IN' : p.guarantor }}
+              </span>
+              <span
+                v-if="['ASURANSI','PERUSAHAAN'].includes(p.guarantor) && p.insuranceVerificationStatus && p.insuranceVerificationStatus !== 'NONE'"
+                :class="['verif-badge', `vb-${p.insuranceVerificationStatus.toLowerCase()}`]"
+                :title="`Status verifikasi asuransi: ${p.insuranceVerificationStatus}`">
+                <span v-if="p.insuranceVerificationStatus === 'VERIFIED'">✓</span>
+                <span v-else-if="p.insuranceVerificationStatus === 'ISSUE'">✗</span>
+                <span v-else>⚠</span>
+                {{ p.insuranceVerificationStatus === 'VERIFIED' ? 'Verified' : p.insuranceVerificationStatus === 'ISSUE' ? 'Issue' : 'Pending' }}
               </span>
               <div class="call-station">
                 <div class="call-station-lbl">Tujuan</div>
@@ -1558,6 +1904,61 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                   Data ditemukan — periksa kembali sebelum lanjut
                 </div>
+
+                <!-- Banner Preop Bedah (auto-suggest) -->
+                <div
+                  v-if="form.found && preopBannerType"
+                  :class="['preop-banner', 'full', preopBannerType === 'today' ? 'preop-today' : 'preop-upcoming']"
+                >
+                  <div class="preop-banner-head">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M19 14H5m14-4H5m14 8H5"/>
+                      <circle cx="12" cy="6" r="2"/>
+                    </svg>
+                    <strong v-if="preopBannerType === 'today'">Pasien punya jadwal bedah hari ini</strong>
+                    <strong v-else>Pasien punya jadwal bedah {{ formatPreopDate(upcomingPreopSchedule?.scheduled_date) }}</strong>
+                  </div>
+
+                  <div class="preop-banner-body">
+                    <div v-if="preopBannerType === 'today' && todayPreopSchedule">
+                      <span class="preop-detail">
+                        <strong>Jam:</strong> {{ todayPreopSchedule.scheduled_time ?? '—' }}
+                        · <strong>Ruang:</strong> {{ todayPreopSchedule.operation_room ?? '—' }}
+                        <template v-if="todayPreopSchedule.surgery_package">
+                          · <strong>Paket:</strong> {{ todayPreopSchedule.surgery_package.name }}
+                        </template>
+                      </span>
+                      <div class="preop-question">Daftarkan sebagai <strong>Preop Bedah</strong>?</div>
+                    </div>
+                    <div v-else-if="upcomingPreopSchedule">
+                      <span class="preop-detail">
+                        <strong>Jam:</strong> {{ upcomingPreopSchedule.scheduled_time ?? '—' }}
+                        · <strong>Ruang:</strong> {{ upcomingPreopSchedule.operation_room ?? '—' }}
+                        <template v-if="upcomingPreopSchedule.surgery_package">
+                          · <strong>Paket:</strong> {{ upcomingPreopSchedule.surgery_package.name }}
+                        </template>
+                      </span>
+                      <div class="preop-question">Daftarkan preop hari ini? <em>Jadwal akan dipindah ke hari ini.</em></div>
+                    </div>
+                  </div>
+
+                  <div class="preop-banner-actions">
+                    <button
+                      type="button"
+                      :class="['btn', 'btn-sm', preopChoice === 'PREOP' ? 'btn-primary' : 'btn-secondary']"
+                      @click="choosePreop(preopBannerType === 'today' ? todayPreopSchedule : upcomingPreopSchedule)"
+                    >
+                      {{ preopBannerType === 'today' ? 'Ya, Preop Bedah' : 'Ya, Preop Hari Ini (geser jadwal)' }}
+                    </button>
+                    <button
+                      type="button"
+                      :class="['btn', 'btn-sm', preopChoice === 'REGULAR' ? 'btn-primary' : 'btn-secondary']"
+                      @click="chooseRegular"
+                    >
+                      Tidak, Kunjungan Reguler
+                    </button>
+                  </div>
+                </div>
               </template>
 
               <div class="section-label full">Identitas</div>
@@ -1597,7 +1998,17 @@ onUnmounted(() => {
               </div>
               <div class="field">
                 <label class="field-lbl">Tanggal Lahir</label>
-                <input v-model="form.birthDate" type="date" class="form-input" :readonly="form.patientMode === 'existing'" @change="onBirthChange" />
+                <input
+                  :value="birthDateText"
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="10"
+                  class="form-input"
+                  placeholder="DD/MM/YYYY"
+                  :readonly="form.patientMode === 'existing'"
+                  @input="onBirthTextInput"
+                />
+                <div v-if="form.patientMode !== 'existing' && birthDateText.length === 10 && !form.birthDate" class="hint" style="color:#dc2626">Tanggal tidak valid</div>
               </div>
               <div class="field">
                 <label class="field-lbl">Usia</label>
@@ -1752,13 +2163,32 @@ onUnmounted(() => {
                   </div>
                   <div class="hint">Pilih dari daftar atau ketik untuk mencari</div>
                 </div>
-                <div class="field full">
+                <div class="field">
                   <label class="field-lbl">No. Polis / Kartu Peserta</label>
                   <input v-model="form.insuranceNo" class="form-input" placeholder="Nomor polis / peserta asuransi" />
                 </div>
+                <div class="field">
+                  <label class="field-lbl">Nama Peserta (di kartu)</label>
+                  <input v-model="form.memberName" class="form-input" placeholder="Sesuai kartu fisik" />
+                </div>
+                <div class="field full">
+                  <label class="field-lbl">Nomor Kartu Fisik (opsional)</label>
+                  <input v-model="form.memberCardNumber" class="form-input" placeholder="Jika berbeda dari no. polis" />
+                </div>
+                <div v-if="selectedInsurerInfo" class="info-box full">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
+                  <span>
+                    <strong>PIC:</strong>
+                    {{ selectedInsurerInfo.pic_name || '—' }}
+                    <span v-if="selectedInsurerInfo.pic_phone"> · {{ selectedInsurerInfo.pic_phone }}</span>
+                    <span v-if="selectedInsurerInfo.claim_submission_notes">
+                      <br><em>{{ selectedInsurerInfo.claim_submission_notes }}</em>
+                    </span>
+                  </span>
+                </div>
                 <div class="info-box full">
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
-                  <span>Verifikasi eligibilitas asuransi dilakukan manual / via portal asuransi terkait.</span>
+                  <span>Verifikasi eligibilitas dilakukan billing secara paralel (cek portal TPA). Status akan tampil sebagai badge di antrean.</span>
                 </div>
               </template>
 
@@ -1812,17 +2242,57 @@ onUnmounted(() => {
                 </div>
               </template>
 
-              <!-- COB — placeholder (tunggu bridging) -->
-              <template v-if="form.guarantor !== 'BPJS' && form.guarantor !== 'UMUM'">
+              <!-- COB — penjamin kedua (selalu Asuransi). Hanya untuk ASURANSI / PERUSAHAAN. -->
+              <template v-if="['ASURANSI','PERUSAHAAN'].includes(form.guarantor)">
                 <div class="divider full"></div>
                 <div class="field full">
-                  <label class="cob-toggle-row" style="opacity: 0.55; cursor: not-allowed">
-                    <input type="checkbox" disabled class="cob-check" />
+                  <label class="cob-toggle-row">
+                    <input type="checkbox" class="cob-check" :checked="form.cobEnabled" @change="onCobToggle" />
                     <span class="field-lbl" style="margin:0">Tambahkan Penjamin Kedua (COB)</span>
-                    <span class="badge-soon" style="margin-left:auto">Segera Hadir</span>
                   </label>
-                  <div class="hint">Koordinasi Manfaat — menunggu wiring backend</div>
+                  <div class="hint">Coordination of Benefits — penjamin utama bayar dulu, sisanya ditanggung asuransi kedua.</div>
                 </div>
+
+                <template v-if="form.cobEnabled">
+                  <div class="field full">
+                    <label class="field-lbl">Asuransi Penjamin Kedua <span style="color:#ef4444">*</span></label>
+                    <div class="combo-wrap">
+                      <div class="input-wrap-block">
+                        <input
+                          v-model="cobSearch"
+                          class="form-input"
+                          placeholder="Ketik untuk cari asuransi..."
+                          @focus="cobDropdownOpen = true"
+                          @input="cobDropdownOpen = true"
+                          @blur="onCobBlur"
+                        />
+                        <svg class="combo-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                      </div>
+                      <transition name="modal-fade">
+                        <div v-if="cobDropdownOpen" class="combo-dropdown">
+                          <div
+                            v-for="ins in cobInsurers"
+                            :key="ins.id"
+                            class="combo-item"
+                            :class="{ active: form.cobInsurerId === ins.id }"
+                            @mousedown="selectCobInsurer(ins)"
+                          >
+                            <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
+                            {{ ins.name }}
+                          </div>
+                          <div v-if="cobInsurers.length === 0" class="combo-empty">
+                            Tidak ada asuransi lain — tambah via Tarif &amp; Paket → Metode Bayar
+                          </div>
+                        </div>
+                      </transition>
+                    </div>
+                    <div class="hint">Penjamin kedua harus bertipe Asuransi dan berbeda dari penjamin utama.</div>
+                  </div>
+                  <div class="field full">
+                    <label class="field-lbl">No. Polis / Kartu Penjamin Kedua (opsional)</label>
+                    <input v-model="form.cobInsuranceNo" class="form-input" placeholder="Nomor polis asuransi kedua" />
+                  </div>
+                </template>
               </template>
 
               <div class="divider full"></div>
@@ -1867,7 +2337,7 @@ onUnmounted(() => {
                   <div class="cf"><span class="cf-k">Jenis Identitas</span><span class="cf-v">{{ activeIdentity.label }}</span></div>
                   <div class="cf"><span class="cf-k">{{ activeIdentity.numberLabel }}</span><span class="cf-v">{{ form.nik || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ form.sex === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
-                  <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ form.birthDate || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ form.birthDate ? fmtDate(form.birthDate) : '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Usia</span><span class="cf-v">{{ form.age ? form.age + ' th' : '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Telp. Pasien</span><span class="cf-v">{{ form.phone || '—' }}</span></div>
                   <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ [form.addressDetail, form.district, form.regency, form.province].filter(Boolean).join(', ') || '—' }}</span></div>
@@ -1891,11 +2361,40 @@ onUnmounted(() => {
                   <div v-if="form.guarantor === 'ASURANSI'" class="cf"><span class="cf-k">Asuransi</span><span class="cf-v">{{ form.insuranceName || '—' }}</span></div>
                   <div v-if="form.guarantor === 'ASURANSI'" class="cf"><span class="cf-k">No. Polis</span><span class="cf-v">{{ form.insuranceNo || '—' }}</span></div>
                   <div v-if="['PERUSAHAAN','SOSIAL'].includes(form.guarantor)" class="cf"><span class="cf-k">{{ form.guarantor === 'PERUSAHAAN' ? 'Rekanan' : 'Lembaga Sosial' }}</span><span class="cf-v">{{ form.insuranceName || '—' }}</span></div>
+                  <div v-if="form.cobEnabled && form.cobInsurerId" class="cf"><span class="cf-k">Penjamin Kedua (COB)</span><span class="cf-v"><span class="ptype-tag pt-asuransi">{{ form.cobInsuranceName }}</span><span v-if="form.cobInsuranceNo"> · {{ form.cobInsuranceNo }}</span></span></div>
                   <div class="cf"><span class="cf-k">Klasifikasi</span><span class="cf-v"><span :class="['classif-badge classif-on-sm', 'cls-' + form.classification.replace('-','').toLowerCase()]">{{ form.classification }}</span></span></div>
+                  <div v-if="preopChoice === 'PREOP' && selectedPreopSchedule" class="cf">
+                    <span class="cf-k">Tipe Kunjungan</span>
+                    <span class="cf-v">
+                      <span class="preop-badge-confirm">PREOP BEDAH</span>
+                      &nbsp;{{ selectedPreopSchedule.surgery_package?.name ?? '' }}
+                      <span v-if="!selectedPreopSchedule.is_today" class="preop-shift-note">
+                        · jadwal dipindah ke hari ini
+                      </span>
+                    </span>
+                  </div>
                   <div class="cf"><span class="cf-k">Dokter</span><span class="cf-v">{{ selectedSchedule?.name || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Poliklinik</span><span class="cf-v">{{ selectedSchedule?.poliklinik || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Ruangan</span><span class="cf-v">{{ selectedSchedule?.room ? `Ruang ${selectedSchedule.room} (Antrian ${selectedSchedule.queuePrefix}-XXX)` : '—' }}</span></div>
                 </div>
+              </div>
+
+              <!-- General Consent (pasien baru, opsional) -->
+              <div v-if="form.patientMode === 'new'" class="gc-card">
+                <div class="gc-card-icon">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+                </div>
+                <div class="gc-card-main">
+                  <div class="gc-card-title">Persetujuan Umum (General Consent)</div>
+                  <div class="gc-card-sub">Pasien / wali menandatangani sebelum cetak antrean. <em>Opsional — boleh dilewati.</em></div>
+                  <div class="gc-badge" :class="consentPatientSigned ? 'gc-badge-ok' : 'gc-badge-warn'">
+                    <template v-if="consentPatientSigned">✓ Sudah ditandatangani{{ consentAllSigned ? '' : ' (saksi belum)' }}</template>
+                    <template v-else>⚠ Belum ditandatangani</template>
+                  </div>
+                </div>
+                <button type="button" class="gc-card-btn" @click="openConsentModal">
+                  {{ consentPatientSigned ? 'Tinjau Ulang' : 'Tinjau & Tanda Tangani' }}
+                </button>
               </div>
 
               <div class="info-box accent">
@@ -1927,6 +2426,53 @@ onUnmounted(() => {
         </div>
       </div>
     </transition>
+
+    <!-- ===================== GENERAL CONSENT MODAL (tinjau + TTD) ===================== -->
+    <Teleport to="body">
+      <div v-if="consentModalOpen" class="gc-overlay" @click.self="consentModalOpen = false">
+        <div class="gc-modal">
+          <header class="gc-modal-head">
+            <div>
+              <h3>Persetujuan Umum (General Consent)</h3>
+              <p class="gc-modal-sub">Tinjau isi dokumen, lalu minta pasien / wali menandatangani.</p>
+            </div>
+            <button class="gc-modal-x" aria-label="Tutup" @click="consentModalOpen = false">×</button>
+          </header>
+
+          <div class="gc-modal-body">
+            <div v-if="consentLoading" class="gc-modal-loading">Memuat dokumen…</div>
+            <div v-else-if="consentError" class="gc-modal-error">{{ consentError }}</div>
+            <div v-else class="gc-doc" v-html="consentHtml"></div>
+          </div>
+
+          <footer class="gc-modal-foot">
+            <div class="gc-sign-actions">
+              <button
+                v-for="f in consentSignFields" :key="f.signer_type"
+                type="button"
+                class="gc-sign-btn"
+                :class="{ 'gc-sign-btn-done': isSignerSigned(f.signer_type) }"
+                @click="startSignature(f)"
+              >
+                <span class="gc-sign-check" v-if="isSignerSigned(f.signer_type)">✓</span>
+                {{ isSignerSigned(f.signer_type) ? 'Ulangi ' : '' }}{{ f.label || f.signer_type }}
+              </button>
+            </div>
+            <button class="gc-done-btn" @click="consentModalOpen = false">Selesai</button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Capture TTD (reuse komponen Form Registry) -->
+    <SignatureCaptureModal
+      v-model="sigCaptureOpen"
+      :signer-type="sigCaptureType"
+      :signer-label="sigCaptureLabel"
+      document-name="Persetujuan Umum (General Consent)"
+      :ask-external-identity="sigCaptureType === 'witness' || sigCaptureType === 'guardian'"
+      @capture="onConsentCapture"
+    />
 
     <!-- ===================== EDIT PASIEN MODAL ===================== -->
     <transition name="modal-fade">
@@ -2072,6 +2618,18 @@ onUnmounted(() => {
                   Update SKDP
                 </button>
               </div>
+            </div>
+
+            <!-- ═══ FORM REGISTRY — Identitas (Fase 3 INPUT) ═══ -->
+            <div v-if="visitDetailRow.visitId" class="vd-section">
+              <div class="vd-section-title">Form Rekam Medis</div>
+              <FormSection
+                station="admisi"
+                section="identitas"
+                :visit-id="visitDetailRow.visitId"
+                :patient-id="visitDetailRow.patientId"
+                :hide-if-empty="true"
+              />
             </div>
           </div>
 
@@ -2302,7 +2860,7 @@ onUnmounted(() => {
 .clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tm); }
 
 /* STATS */
-.stats-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.75rem; }
+.stats-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.75rem; }
 .stat-card { background: var(--bc); border-radius: 12px; padding: 0.9rem 1rem; border: 1px solid var(--gb); display: flex; align-items: center; gap: 10px; }
 .stat-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .stat-icon svg { width: 18px; height: 18px; fill: none; stroke-width: 2; stroke-linecap: round; }
@@ -2499,6 +3057,12 @@ onUnmounted(() => {
 .pt-asuransi { background: #fef3c7; color: #92400e; }
 .pt-walkin { background: #fff4d6; color: #92651b; border: 1px dashed #d4a73a; }
 
+/* Verifikasi asuransi badge (Sprint 4 modul Asuransi/TPA) */
+.verif-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 12px; margin-left: 4px; }
+.verif-badge.vb-pending  { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.verif-badge.vb-verified { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+.verif-badge.vb-issue    { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+
 /* Banner di wizard saat mendaftarkan pasien walk-in dari kiosk */
 .walkin-banner {
   display: flex; align-items: center; gap: 10px;
@@ -2661,6 +3225,20 @@ onUnmounted(() => {
 /* BANNERS / INFO */
 .found-banner { display: flex; align-items: center; gap: 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 9px; padding: 10px 13px; font-size: 12px; font-weight: 500; }
 .found-banner svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+
+/* Banner Preop Bedah — hijau (hari ini) / kuning (hari lain) */
+.preop-banner { display: flex; flex-direction: column; gap: 8px; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; border: 1.5px solid; }
+.preop-banner.preop-today { background: #ecfdf5; color: #065f46; border-color: #10b981; }
+.preop-banner.preop-upcoming { background: #fffbeb; color: #92400e; border-color: #f59e0b; }
+.preop-banner-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.preop-banner-head svg { flex-shrink: 0; }
+.preop-banner-body { line-height: 1.6; }
+.preop-detail { font-size: 12px; }
+.preop-question { margin-top: 4px; font-weight: 600; }
+.preop-question em { font-weight: 500; font-style: italic; opacity: 0.85; }
+.preop-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.preop-badge-confirm { display: inline-block; padding: 2px 8px; border-radius: 6px; background: #fef3c7; color: #92400e; font-weight: 700; font-size: 10.5px; letter-spacing: 0.5px; border: 1px solid #fbbf24; }
+.preop-shift-note { font-style: italic; opacity: 0.75; font-size: 11px; }
 .info-box { display: flex; align-items: flex-start; gap: 9px; background: var(--ib); color: var(--it); border: 1px solid var(--ibd); border-radius: 9px; padding: 11px 13px; font-size: 12px; line-height: 1.5; }
 .info-box.accent { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .info-box svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
@@ -2808,4 +3386,77 @@ onUnmounted(() => {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes shimmer { 0%,100%{background-position:200% 0} 50%{background-position:0 0} }
+
+/* ============================================================
+   GENERAL CONSENT — card di step 3 + modal tinjau/TTD
+   ============================================================ */
+.gc-card {
+  display: flex; align-items: center; gap: 14px;
+  background: #f4f8ff; border: 1px solid #c7dbff; border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 12px;
+}
+.gc-card-icon {
+  flex: 0 0 auto; width: 40px; height: 40px; border-radius: 9px;
+  background: #1763d4; display: flex; align-items: center; justify-content: center;
+}
+.gc-card-icon svg { width: 22px; height: 22px; stroke: #fff; fill: none; stroke-width: 2; }
+.gc-card-main { flex: 1 1 auto; min-width: 0; }
+.gc-card-title { font-weight: 700; font-size: 14px; color: #000; }
+.gc-card-sub   { font-size: 12px; color: #333; margin: 2px 0 6px; }
+.gc-card-sub em { color: #555; font-style: italic; }
+.gc-badge {
+  display: inline-block; font-size: 11.5px; font-weight: 700;
+  padding: 3px 9px; border-radius: 999px;
+}
+.gc-badge-ok   { background: #e3f6e8; color: #11703a; border: 1px solid #9ad9b1; }
+.gc-badge-warn { background: #fff4e0; color: #95620a; border: 1px solid #f0cf9a; }
+.gc-card-btn {
+  flex: 0 0 auto; background: #1763d4; color: #fff !important; border: 0;
+  padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 13px;
+  cursor: pointer; transition: filter .12s, transform .08s;
+}
+.gc-card-btn:hover  { filter: brightness(1.08); }
+.gc-card-btn:active { transform: translateY(1px); }
+
+.gc-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; z-index: 1050;
+}
+.gc-modal {
+  width: min(760px, 96vw); max-height: 92vh; background: #fff;
+  border-radius: 12px; display: flex; flex-direction: column; overflow: hidden;
+}
+.gc-modal-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 16px 20px; border-bottom: 1px solid #e4e8ee;
+}
+.gc-modal-head h3 { margin: 0; font-size: 17px; color: #000; }
+.gc-modal-sub { margin: 4px 0 0; font-size: 12.5px; color: #555; }
+.gc-modal-x { background: 0; border: 0; font-size: 24px; line-height: 1; cursor: pointer; color: #777; }
+.gc-modal-body { flex: 1 1 auto; overflow-y: auto; padding: 18px 20px; background: #f6f7f9; }
+.gc-modal-loading, .gc-modal-error { text-align: center; color: #555; padding: 40px 0; font-size: 13.5px; }
+.gc-modal-error { color: #b3261e; }
+.gc-doc {
+  background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;
+  padding: 8px 14px; color: #000; font-size: 13px;
+}
+.gc-doc :deep(table) { width: 100%; }
+.gc-modal-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px; border-top: 1px solid #e4e8ee;
+}
+.gc-sign-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; }
+.gc-sign-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: #fff; border: 1.5px solid #1763d4; color: #1763d4;
+  padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 12.5px; cursor: pointer;
+}
+.gc-sign-btn:hover { background: #eef4ff; }
+.gc-sign-btn-done { background: #e3f6e8; border-color: #2c9c5a; color: #11703a; }
+.gc-sign-check { font-weight: 800; }
+.gc-done-btn {
+  background: #1763d4; color: #fff !important; border: 0; padding: 9px 20px;
+  border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.gc-done-btn:hover { filter: brightness(1.08); }
 </style>

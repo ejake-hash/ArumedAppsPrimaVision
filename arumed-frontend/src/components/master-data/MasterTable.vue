@@ -39,6 +39,7 @@ const props = defineProps({
   showPagination:    { type: Boolean, default: true },
   emptyText:         { type: String, default: 'Belum ada data.' },
   rowKey:            { type: String, default: 'id' },
+  hideActions:       { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:search', 'page-change', 'refresh'])
@@ -124,17 +125,17 @@ function rowNumber(idx) {
             >
               {{ col.label }}
             </th>
-            <th v-if="$slots.actions" class="mt-actions-col">Aksi</th>
+            <th v-if="!hideActions && $slots.actions" class="mt-actions-col">Aksi</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading && rows.length === 0">
-            <td :colspan="columns.length + ($slots.actions ? 1 : 0)" class="mt-state">
+            <td :colspan="columns.length + (!hideActions && $slots.actions ? 1 : 0)" class="mt-state">
               <span class="mt-spinner"></span> Memuat…
             </td>
           </tr>
           <tr v-else-if="!loading && rows.length === 0">
-            <td :colspan="columns.length + ($slots.actions ? 1 : 0)" class="mt-state">
+            <td :colspan="columns.length + (!hideActions && $slots.actions ? 1 : 0)" class="mt-state">
               {{ emptyText }}
             </td>
           </tr>
@@ -148,7 +149,7 @@ function rowNumber(idx) {
                 {{ renderCell(col, row) }}
               </slot>
             </td>
-            <td v-if="$slots.actions" class="mt-actions">
+            <td v-if="!hideActions && $slots.actions" class="mt-actions">
               <slot name="actions" :row="row" />
             </td>
           </tr>

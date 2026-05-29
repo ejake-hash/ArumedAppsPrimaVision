@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DiagnosticTestType;
 use App\Services\PenunjangService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class PenunjangController extends Controller
 {
@@ -42,6 +44,18 @@ class PenunjangController extends Controller
         return $this->ok($queue, 'Antrian selesai');
     }
 
+    /** PUT /penunjang/antrian/{id}/lewati */
+    public function lewatiAntrian(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->lewatiAntrian($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien dipindah ke akhir antrean');
+    }
+
     // =========================================================================
     // ORDER PENUNJANG
     // =========================================================================
@@ -69,7 +83,8 @@ class PenunjangController extends Controller
     {
         $validated = $request->validate([
             'visit_id'  => 'required|uuid|exists:visits,id',
-            'test_type' => 'required|in:OCT,USG,Biometri,Topografi',
+            // test_type = kode master penunjang (mis. OCT, USG, BIOM). Konsisten dgn alur dokter.
+            'test_type' => 'required|string|exists:diagnostic_test_types,code',
             'eye_side'  => 'nullable|in:OD,OS,OU',
             'notes'     => 'nullable|string|max:500',
         ]);
@@ -173,6 +188,23 @@ class PenunjangController extends Controller
     }
 
     /**
+     * POST /penunjang/hasil/upload-attachment
+     * Upload file lampiran (gambar/PDF print-out alat). Return path relatif disk public
+     * untuk disimpan di kolom attachment_path saat storeHasil/updateHasil.
+     */
+    public function uploadHasilAttachment(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimetypes:image/jpeg,image/png,image/webp,application/pdf|max:10240',
+        ]);
+
+        $path = $request->file('file')->store('penunjang-hasil', 'public');
+        $url  = Storage::disk('public')->url($path);
+
+        return $this->ok(['path' => $path, 'url' => $url], 'File diunggah');
+    }
+
+    /**
      * POST /penunjang/hasil/{id}/selesai
      * Kunci hasil → notify dokter → re-queue ke DOKTER jika semua order selesai.
      * Jika Biometri → auto-generate IOL recommendation.
@@ -261,7 +293,7 @@ class PenunjangController extends Controller
                 'expertise_data.axial_length_os' => 'nullable|numeric|between:10,35',
                 'expertise_data.findings' => 'nullable|string',
             ],
-            'Biometri' => [
+            DiagnosticTestType::BIOMETRI_CODE => [
                 'expertise_data.od' => 'nullable|array',
                 'expertise_data.od.axial_length' => 'nullable|numeric|between:10,35',
                 'expertise_data.od.k1'            => 'nullable|numeric|between:30,60',

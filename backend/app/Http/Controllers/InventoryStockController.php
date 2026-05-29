@@ -1,0 +1,93 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Services\InventoryStockService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+class InventoryStockController extends Controller
+{
+    public function __construct(private InventoryStockService $service)
+    {
+    }
+
+    /** POST /inventori-farmasi/stock/opname */
+    public function opname(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'item_type'             => 'required|in:MEDICATION,BHP',
+            'item_id'               => 'required|uuid',
+            'reason'                => 'nullable|string|max:255',
+            'batches'               => 'nullable|array',
+            'batches.*.stock_id'    => 'nullable|uuid',
+            'batches.*.batch_no'    => 'nullable|string|max:50',
+            'batches.*.expiry_date' => 'nullable|date',
+            'batches.*.qty_physical'=> 'required_with:batches|numeric|min:0',
+            'new_qty'               => 'nullable|numeric|min:0',
+        ]);
+
+        if (empty($data['batches']) && !array_key_exists('new_qty', $data)) {
+            return $this->error('Harus isi `batches` (per-batch) atau `new_qty` (total)', 422);
+        }
+
+        return $this->ok($this->service->opname($data), 'Opname berhasil');
+    }
+
+    /** GET /inventori-farmasi/stock/{type}/template-csv  (type: obat|bhp) */
+    public function templateCsv(string $type): Response
+    {
+        try {
+            $csv = $this->service->csvTemplate($type);
+        } catch (\Exception $e) {
+            return response($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"template-stok-{$type}.csv\"",
+        ]);
+    }
+
+    /** GET /inventori-farmasi/stock/{type}/export-csv */
+    public function exportCsv(string $type): Response
+    {
+        try {
+            $csv = $this->service->exportCsv($type);
+        } catch (\Exception $e) {
+            return response($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"stok-{$type}-" . now()->format('Ymd') . ".csv\"",
+        ]);
+    }
+
+    /** POST /inventori-farmasi/stock/{type}/import-csv */
+    public function importCsv(Request $request, string $type): JsonResponse
+    {
+        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+
+        try {
+            $content = file_get_contents($request->file('file')->getRealPath());
+            $result  = $this->service->importCsv($type, $content);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(
+            $result,
+            "Import selesai: {$result['applied']} item disesuaikan, {$result['skipped']} dilewati."
+        );
+    }
+
+    private function ok(mixed $data, string $message = 'Berhasil', int $status = 200): JsonResponse
+    {
+        return response()->json(['success' => true, 'message' => $message, 'data' => $data], $status);
+    }
+
+    private function error(string $message, int $status = 422): JsonResponse
+    {
+        return response()->json(['success' => false, 'message' => $message], $status);
+    }
+}

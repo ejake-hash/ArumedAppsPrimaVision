@@ -199,6 +199,40 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // ─── PREOP_BEDAH — Kirim ke Bedah (manual) ──────────────────────────────────
+  const parallelStatus = ref(null) // {triase_done, refraksi_done, ...}
+
+  async function loadParallelStatus(visitId) {
+    if (!visitId) { parallelStatus.value = null; return }
+    try {
+      const { data } = await perawatApi.statusParallel(visitId)
+      parallelStatus.value = data.data ?? null
+    } catch {
+      parallelStatus.value = null
+    }
+  }
+
+  const sendingBedah = ref(false)
+  async function kirimKeBedah() {
+    const queueId = selectedQueue.value?.id
+    if (!queueId) throw new Error('Pilih pasien terlebih dahulu')
+    sendingBedah.value = true
+    try {
+      const { data } = await perawatApi.kirimKeBedah(queueId)
+      // Tandai queue triase COMPLETED di list lokal
+      const idx = antrian.value.findIndex((q) => q.id === queueId)
+      if (idx !== -1) {
+        antrian.value[idx] = { ...antrian.value[idx], status: 'COMPLETED' }
+      }
+      _syncStats()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal mengirim pasien ke bedah')
+    } finally {
+      sendingBedah.value = false
+    }
+  }
+
   // ─── Vital History ────────────────────────────────────────────────────────────
 
   async function loadVitalHistory(patientId) {
@@ -373,7 +407,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     antrian, stats, queueLoading, queueError,
     selectedQueue, asesmen, asesmenLoading,
     doctorTicket,
-    saving, finalizing,
+    saving, finalizing, sendingBedah,
     vitalHistory, vitalHistoryLoading,
     rekamMedis, rekamMedisLoading, rekamMedisError,
     selectedDokumen, dokumenLoading,
@@ -391,6 +425,9 @@ export const usePerawatStore = defineStore('perawat', () => {
 
     // assessment
     saveAsesmen, finalizeAsesmen,
+
+    // preop bedah
+    kirimKeBedah, parallelStatus, loadParallelStatus,
 
     // cppt
     loadCpptTimeline, addCpptEntry, updateCpptEntry,

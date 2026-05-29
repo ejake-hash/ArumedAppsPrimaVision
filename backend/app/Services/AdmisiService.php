@@ -6,13 +6,19 @@ use App\Events\AdmisiQueueUpdated;
 use App\Events\AntreanTvUpdated;
 use App\Models\ClinicProfile;
 use App\Models\DoctorSchedule;
+use App\Models\DocumentTemplate;
 use App\Models\Employee;
 use App\Models\IntegrationConfig;
 use App\Models\Patient;
 use App\Models\PatientDocument;
 use App\Models\Queue;
+use App\Models\SurgerySchedule;
+use App\Models\SurgeryScheduleAuditLog;
 use App\Models\SystemLog;
 use App\Models\Visit;
+use App\Models\VisitCob;
+use App\Services\FormRegistry\DocumentRenderer;
+use App\Services\FormRegistry\SignatureService;
 use App\Services\QueueService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
@@ -26,7 +32,12 @@ class AdmisiService
     public function __construct(
         private readonly Request $request,
         private readonly QueueService $queueService,
+        private readonly DocumentRenderer $documentRenderer,
+        private readonly SignatureService $signatureService,
     ) {}
+
+    /** Code template General Consent default. */
+    private const CONSENT_DEFAULT_CODE = 'GENERAL_CONSENT';
 
     // =========================================================================
     // DASHBOARD
@@ -73,15 +84,27 @@ class AdmisiService
             ->whereNotNull('no_sep')
             ->count();
 
-        // Bedah (Pre-Op classification)
-        $bedahCount = Visit::whereDate('visit_date', $today)
-            ->where('classification', 'Pre-Op')
+        // Bedah selesai hari ini = antrian BEDAH yg sudah COMPLETED.
+        // Cover semua skenario (preop hari ini, preop walk-in auto-shift, atau
+        // bedah by-dokter): patokan = pasien sudah lewat stasiun bedah hari ini.
+        $bedahCount = Queue::where('station', Queue::STATION_BEDAH)
+            ->whereDate('created_at', $today)
+            ->where('status', Queue::STATUS_COMPLETED)
             ->count();
 
-        // Asuransi/Lain-lain = ASURANSI + PERUSAHAAN + SOSIAL
-        $asuransiCount = Visit::whereDate('visit_date', $today)
-            ->whereIn('guarantor_type', ['ASURANSI', 'PERUSAHAAN', 'SOSIAL'])
-            ->count();
+        // Stat per penjamin dihitung dari pasien yang SUDAH BAYAR di kasir
+        // (invoice status PAID) — bukan total kunjungan.
+        $paidPerPenjamin = Visit::whereDate('visit_date', $today)
+            ->whereHas('billingInvoice', fn ($q) => $q->where('status', 'PAID'))
+            ->selectRaw('guarantor_type, COUNT(*) as total')
+            ->groupBy('guarantor_type')
+            ->pluck('total', 'guarantor_type');
+
+        $bpjsCount     = (int) ($paidPerPenjamin['BPJS'] ?? 0);
+        $umumCount     = (int) ($paidPerPenjamin['UMUM'] ?? 0);
+        $asuransiCount = (int) (($paidPerPenjamin['ASURANSI'] ?? 0)
+                              + ($paidPerPenjamin['PERUSAHAAN'] ?? 0)
+                              + ($paidPerPenjamin['SOSIAL'] ?? 0));
 
         // BPJS system status
         $bpjsSystems = IntegrationConfig::whereIn('system_name', ['VCLAIM', 'ANTREAN', 'ICARE'])
@@ -90,7 +113,8 @@ class AdmisiService
         return [
             'stat_cards' => [
                 'total_kunjungan'  => $totalKunjungan,
-                'bpjs_count'       => (int) ($perPenjamin['BPJS'] ?? 0),
+                'bpjs_count'       => $bpjsCount,
+                'umum_count'       => $umumCount,
                 'asuransi_count'   => $asuransiCount,
                 'bedah_count'      => $bedahCount,
                 'sep_count'        => $sepCount,
@@ -357,6 +381,40 @@ class AdmisiService
         );
     }
 
+    /**
+     * Jadwal bedah aktif pasien (hari ini & masa depan, status SCHEDULED/IN_PROGRESS).
+     * Dipakai Admisi utk auto-suggest banner "Preop Bedah" saat pasien dipilih.
+     *
+     * Link via surgery_requests.visit.patient_id (schedule tidak punya patient_id langsung).
+     */
+    public function getJadwalBedahAktif(string $patientId): array
+    {
+        $today = today();
+
+        $schedules = SurgerySchedule::query()
+            ->with('surgeryPackage:id,name')
+            ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS'])
+            ->whereDate('scheduled_date', '>=', $today)
+            ->whereHas('surgeryRequests.visit', fn ($q) => $q->where('patient_id', $patientId))
+            ->orderByRaw("CASE WHEN scheduled_date = ? THEN 0 ELSE 1 END", [$today->toDateString()])
+            ->orderBy('scheduled_date')
+            ->orderBy('scheduled_time')
+            ->get();
+
+        return $schedules->map(fn ($s) => [
+            'id'              => $s->id,
+            'scheduled_date'  => $s->scheduled_date->toDateString(),
+            'scheduled_time'  => $s->scheduled_time,
+            'operation_room'  => $s->operation_room,
+            'status'          => $s->status,
+            'surgery_package' => $s->surgeryPackage ? [
+                'id'   => $s->surgeryPackage->id,
+                'name' => $s->surgeryPackage->name,
+            ] : null,
+            'is_today'        => $s->scheduled_date->isToday(),
+        ])->all();
+    }
+
     public function updatePasien(string $id, array $data): Patient
     {
         $patient = Patient::findOrFail($id);
@@ -392,6 +450,74 @@ class AdmisiService
      *
      * Walk-in dari kiosk tetap melewati antrian ADMISI (lihat daftarkanWalkIn).
      */
+    /**
+     * Render dokumen consent dari data form (pasien baru, belum ada Visit).
+     * Return: ['html' => string, 'signature_fields' => [...], 'template_code' => string].
+     */
+    public function previewConsent(array $data): array
+    {
+        $code = $data['template_code'] ?: self::CONSENT_DEFAULT_CODE;
+
+        $template = DocumentTemplate::query()
+            ->where('code', $code)
+            ->where('is_active', true)
+            ->whereNull('deprecated_at')
+            ->first();
+
+        if (! $template) {
+            throw new \Exception("Template consent '{$code}' tidak ditemukan / tidak aktif.", 404);
+        }
+
+        // Map kolom form → nilai untuk binding db patient.*/visit.*
+        $formValues = [
+            'name'          => $data['name']          ?? null,
+            'nik'           => $data['nik']           ?? null,
+            'no_rm'         => $data['no_rm']          ?? null,
+            'gender'        => $data['gender']         ?? null,
+            'date_of_birth' => $data['date_of_birth'] ?? null,
+            'address'       => $data['address']       ?? null,
+            'phone'         => $data['phone']         ?? null,
+            // visit.* bindings
+            'visit_date'    => now()->format('d/m/Y'),
+        ];
+
+        // TTD preview per signer_type (SVG).
+        $sigByType = [];
+        foreach (($data['signatures'] ?? []) as $sig) {
+            $st  = $sig['signer_type'] ?? null;
+            $svg = $sig['signature_svg'] ?? null;
+            if ($st && is_string($svg) && $svg !== '') {
+                $sigByType[$st] = $svg;
+            }
+        }
+
+        $html = $this->documentRenderer->renderForPreview(
+            $template,
+            $formValues,
+            $data['static_payload'] ?? [],
+            $sigByType,
+        );
+
+        // Daftar field signature_canvas (untuk frontend tahu TTD apa yang diminta).
+        $signatureFields = [];
+        foreach (($template->field_schema['fields'] ?? []) as $f) {
+            if (($f['type'] ?? null) === 'signature_canvas') {
+                $signatureFields[] = [
+                    'key'         => $f['key'] ?? null,
+                    'label'       => $f['label'] ?? null,
+                    'signer_type' => $f['signer_type'] ?? null,
+                    'required'    => (bool) ($f['required'] ?? false),
+                ];
+            }
+        }
+
+        return [
+            'html'             => $html,
+            'signature_fields' => $signatureFields,
+            'template_code'    => $template->code,
+        ];
+    }
+
     public function registerVisit(array $data): Visit
     {
         return DB::transaction(function () use ($data) {
@@ -412,6 +538,62 @@ class AdmisiService
 
             $user = auth('api')->user();
 
+            // ─── Preop Bedah: validasi & auto-shift jadwal ───────────────
+            $visitType         = $data['visit_type'] ?? 'REGULAR';
+            $surgeryScheduleId = null;
+
+            if ($visitType === 'PREOP_BEDAH') {
+                if (empty($data['surgery_schedule_id'])) {
+                    throw new \Exception('surgery_schedule_id wajib untuk visit_type PREOP_BEDAH.', 422);
+                }
+
+                $schedule = SurgerySchedule::lockForUpdate()->find($data['surgery_schedule_id']);
+                if (! $schedule) {
+                    throw new \Exception('Jadwal bedah tidak ditemukan.', 404);
+                }
+
+                // Schedule harus milik patient yg sama (lewat surgery_requests.visit.patient_id)
+                $belongsToPatient = $schedule->surgeryRequests()
+                    ->whereHas('visit', fn ($q) => $q->where('patient_id', $patient->id))
+                    ->exists();
+                if (! $belongsToPatient) {
+                    throw new \Exception('Jadwal bedah ini bukan milik pasien yang dipilih.', 422);
+                }
+
+                if (! in_array($schedule->status, ['SCHEDULED', 'IN_PROGRESS'])) {
+                    throw new \Exception("Jadwal bedah status {$schedule->status} tidak boleh diproses preop.", 422);
+                }
+
+                if ($schedule->scheduled_date->isBefore(today())) {
+                    throw new \Exception('Jadwal bedah sudah lewat tanggal (di masa lalu).', 422);
+                }
+
+                // Auto-shift: kalau jadwal bukan hari ini, geser ke hari ini + audit log
+                if (! $schedule->scheduled_date->isToday()) {
+                    $oldDate = $schedule->scheduled_date->copy();
+                    $schedule->update(['scheduled_date' => today()]);
+
+                    SurgeryScheduleAuditLog::create([
+                        'surgery_schedule_id' => $schedule->id,
+                        'old_date'   => $oldDate,
+                        'new_date'   => today(),
+                        'reason'     => 'PREOP_WALKIN: pasien datang preop di luar jadwal asli',
+                        'changed_by_id' => $user?->employee_id,
+                        'changed_at' => now(),
+                    ]);
+                }
+
+                $surgeryScheduleId = $schedule->id;
+            }
+
+            // Asuransi/Perusahaan non-BPJS → flag PENDING untuk diverifikasi billing
+            // ke portal TPA secara paralel. UMUM/BPJS/SOSIAL → NONE (skip alur TPA).
+            $needsTpaVerification = in_array(
+                $data['guarantor_type'] ?? null,
+                ['ASURANSI', 'PERUSAHAAN'],
+                true
+            );
+
             $visit = Visit::create([
                 'patient_id'         => $patient->id,
                 'insurer_id'         => $data['insurer_id'] ?? null,
@@ -421,11 +603,46 @@ class AdmisiService
                 'photo_path'         => $photoPath,
                 'visit_date'         => today(),
                 'classification'     => $data['classification'],
+                'visit_type'         => $visitType,
+                'surgery_schedule_id' => $surgeryScheduleId,
                 'current_station'    => 'TRIASE',       // skip ADMISI, langsung ke TR
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
                 'satusehat_sync_status' => 'PENDING',
+                'insurance_verification_status' => $needsTpaVerification ? 'PENDING' : 'NONE',
             ]);
+
+            // Buat insurance_verifications awal (status PENDING) supaya billing langsung
+            // bisa lihat row-nya di tab "Verifikasi Pending". Data kartu fisik (policy_number,
+            // member_name, member_card_number) sudah diinput petugas admisi dari kartu.
+            if ($needsTpaVerification && ! empty($data['insurer_id'])) {
+                \App\Models\InsuranceVerification::create([
+                    'visit_id'           => $visit->id,
+                    'insurer_id'         => $data['insurer_id'],
+                    'verified_by'        => null,
+                    'status'             => 'PENDING',
+                    'policy_number'      => $data['policy_number']      ?? null,
+                    'member_name'        => $data['member_name']        ?? null,
+                    'member_card_number' => $data['member_card_number'] ?? null,
+                ]);
+            }
+
+            // COB — penjamin kedua (opsional). Simpan ke visit_cob.
+            $this->saveCob($visit->id, $data['cob'] ?? null);
+
+            // General Consent (opsional) — diteken pasien/wali di Admisi sebelum
+            // konfirmasi. Non-fatal: gagal simpan consent TIDAK menggagalkan
+            // registrasi visit (GC bersifat opsional & fleksibel).
+            if (! empty($data['consent'])) {
+                try {
+                    $this->saveConsentDocument($visit, $patient, $data['consent']);
+                } catch (\Throwable $e) {
+                    \Log::warning('Gagal simpan General Consent saat registrasi visit', [
+                        'visit_id' => $visit->id,
+                        'error'    => $e->getMessage(),
+                    ]);
+                }
+            }
 
             // Langsung enqueue TRIASE + REFRAKSIONIS paralel dengan nomor antrean TR-NNN
             // yang shared (mengikuti pattern QueueService::advanceFromStation).
@@ -443,6 +660,106 @@ class AdmisiService
 
             return $visit->load(['patient', 'queues']);
         });
+    }
+
+    /**
+     * Simpan General Consent yang sudah diteken pasien/wali di Admisi sebagai
+     * PatientDocument FINALIZED + signature. Dipanggil DALAM transaksi
+     * registerVisit (visit & patient sudah ada).
+     *
+     * Alur (mengikuti pola FormRegistryService::finalize + SignatureService):
+     *   1. Cari template aktif by code.
+     *   2. Buat PatientDocument status DRAFT.
+     *   3. Capture tiap signature (SignatureService menolak kalau sudah FINALIZED).
+     *   4. Render HTML + embed SVG signature dari record yang baru disimpan.
+     *   5. Gzip → simpan, set status FINALIZED + hash.
+     *
+     * @param array{template_code?:string, signatures?:array, static_payload?:array} $consent
+     */
+    private function saveConsentDocument(Visit $visit, Patient $patient, array $consent): void
+    {
+        $code = $consent['template_code'] ?? self::CONSENT_DEFAULT_CODE;
+
+        $template = DocumentTemplate::query()
+            ->where('code', $code)
+            ->where('is_active', true)
+            ->whereNull('deprecated_at')
+            ->first();
+        if (! $template) {
+            throw new \RuntimeException("Template consent '{$code}' tidak ditemukan.");
+        }
+
+        $user = auth('api')->user();
+
+        // 1. PatientDocument DRAFT.
+        $doc = PatientDocument::create([
+            'patient_id'         => $patient->id,
+            'visit_id'           => $visit->id,
+            'document_type_id'   => $template->document_type_id,
+            'status'             => 'DRAFT',
+            'created_by_station' => 'ADMISI',
+            'template_code'      => $template->code,
+            'template_version'   => $template->version,
+            'signatures'         => ['static_payload' => $consent['static_payload'] ?? []],
+        ]);
+
+        // 2. Capture signatures.
+        foreach (($consent['signatures'] ?? []) as $sig) {
+            $signerType = $sig['signer_type'] ?? null;
+            if (! $signerType) continue;
+
+            $capture = [
+                'patient_document_id'  => $doc->id,
+                'signer_type'          => $signerType,
+                'signature_svg'        => $sig['signature_svg'] ?? null,
+                'signature_png_base64' => $sig['signature_png_base64'] ?? null,
+                'biometric_metadata'   => $sig['biometric_metadata'] ?? null,
+                'audit_log'            => $sig['audit_log'] ?? [],
+                'captured_by_facilitator_user_id' => $user?->id,
+            ];
+
+            // Identity routing — pasien = signer_patient_id; witness/guardian = external.
+            if ($signerType === 'patient') {
+                $capture['signer_patient_id'] = $patient->id;
+            } elseif (in_array($signerType, ['witness', 'guardian'], true)) {
+                $ext = $sig['external_identity'] ?? null;
+                // Fallback nama supaya lolos validasi SignatureService (butuh 'nama').
+                if (! is_array($ext) || empty($ext['nama'])) {
+                    $ext = ['nama' => $ext['nama'] ?? 'Saksi'];
+                }
+                $capture['signer_external_identity'] = $ext;
+            }
+
+            $this->signatureService->capture($capture);
+        }
+
+        // 3. Render + embed signature dari record yang baru disimpan.
+        $payload = $doc->signatures['static_payload'] ?? [];
+        $html = $this->documentRenderer->render($template, $visit->id, $payload);
+
+        $schema   = $template->field_schema ?? [];
+        $fieldMap = $this->documentRenderer->extractSignatureFieldMap($schema);
+        $sigByType = \App\Models\DocumentSignature::query()
+            ->where('patient_document_id', $doc->id)
+            ->get()
+            ->keyBy('signer_type');
+        $html = $this->documentRenderer->embedSignatures($html, $fieldMap, $sigByType->all());
+
+        // 4. Finalize. Simpan HTML plain di `rendered_html` (longText) — BUKAN
+        //    gzip ke `rendered_html_gz`. Kolom _gz bertipe bytea di Postgres dan
+        //    binding string hasil gzcompress() ditolak ('invalid byte sequence
+        //    for encoding UTF8'). getSnapshot() sudah punya fallback ke plain
+        //    rendered_html, jadi tetap kompatibel. Dokumen GC kecil (~2KB) →
+        //    gzip tidak memberi keuntungan berarti.
+        $sigIds = $sigByType->pluck('signature_id')->sort()->values()->all();
+        $hash   = hash('sha256', $html . '|' . implode(',', $sigIds) . '|' . $doc->id);
+
+        $doc->rendered_html        = $html;
+        $doc->rendered_html_gz     = null;
+        $doc->status               = 'FINALIZED';
+        $doc->finalized_at         = now();
+        $doc->final_integrity_hash = $hash;
+        $doc->save();
     }
 
     // =========================================================================
@@ -546,17 +863,41 @@ class AdmisiService
                 $real = $placeholder->fresh();
             }
 
+            // Asuransi/Perusahaan non-BPJS → flag PENDING (lihat catatan di registerVisit)
+            $needsTpaVerificationWalkin = in_array(
+                $data['guarantor_type'] ?? null,
+                ['ASURANSI', 'PERUSAHAAN'],
+                true
+            );
+
             // ─── Update Visit ────────────────────────────────────────────
             $visit->update([
-                'patient_id'        => $real->id,
-                'insurer_id'        => $data['insurer_id'] ?? null,
-                'registered_by_id'  => $user?->employee_id,
-                'no_registrasi'     => $visit->no_registrasi ?? $this->generateNoRegistrasi(),
-                'photo_path'        => $photoPath ?? $visit->photo_path,
-                'classification'    => $data['classification'],
-                'guarantor_type'    => $data['guarantor_type'],
-                'bpjs_booking_code' => $data['bpjs_booking_code'] ?? null,
+                'patient_id'         => $real->id,
+                'insurer_id'         => $data['insurer_id'] ?? null,
+                'registered_by_id'   => $user?->employee_id,
+                'doctor_schedule_id' => $data['doctor_schedule_id'],
+                'no_registrasi'      => $visit->no_registrasi ?? $this->generateNoRegistrasi(),
+                'photo_path'         => $photoPath ?? $visit->photo_path,
+                'classification'     => $data['classification'],
+                'guarantor_type'     => $data['guarantor_type'],
+                'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
+                'insurance_verification_status' => $needsTpaVerificationWalkin ? 'PENDING' : 'NONE',
             ]);
+
+            if ($needsTpaVerificationWalkin && ! empty($data['insurer_id'])) {
+                \App\Models\InsuranceVerification::create([
+                    'visit_id'           => $visit->id,
+                    'insurer_id'         => $data['insurer_id'],
+                    'verified_by'        => null,
+                    'status'             => 'PENDING',
+                    'policy_number'      => $data['policy_number']      ?? null,
+                    'member_name'        => $data['member_name']        ?? null,
+                    'member_card_number' => $data['member_card_number'] ?? null,
+                ]);
+            }
+
+            // COB — penjamin kedua (opsional). Simpan ke visit_cob.
+            $this->saveCob($visit->id, $data['cob'] ?? null);
 
             // ─── Auto-advance ke TRIASE + REFRAKSIONIS ───────────────────
             // Selesaikan admisi otomatis — pasien sudah teridentifikasi & terdaftar
@@ -952,6 +1293,30 @@ class AdmisiService
         if (! $config || ! $config->is_enabled) {
             throw new \Exception("Integrasi {$systemName} belum diaktifkan. Konfigurasi credentials terlebih dahulu.", 503);
         }
+    }
+
+    /**
+     * Simpan penjamin kedua (COB) untuk visit. No-op kalau $cob null/kosong.
+     * penjamin2 selalu tipe ASURANSI (divalidasi di controller). Idempoten via
+     * updateOrCreate (visit_id unique).
+     */
+    private function saveCob(string $visitId, ?array $cob): void
+    {
+        if (empty($cob) || empty($cob['penjamin2_insurer_id'])) {
+            return;
+        }
+
+        VisitCob::updateOrCreate(
+            ['visit_id' => $visitId],
+            [
+                'penjamin1_type'       => $cob['penjamin1_type'],
+                'penjamin1_insurer_id' => $cob['penjamin1_insurer_id'] ?? null,
+                'penjamin2_type'       => $cob['penjamin2_type'] ?? 'ASURANSI',
+                'penjamin2_insurer_id' => $cob['penjamin2_insurer_id'],
+                'is_active'            => true,
+                'notes'                => $cob['notes'] ?? null,
+            ]
+        );
     }
 
     private function log(

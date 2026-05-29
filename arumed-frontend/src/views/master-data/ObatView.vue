@@ -28,7 +28,7 @@ const config = {
   extraSearchParam: 'search',
   csvShowTemplate: true,
   defaults: {
-    code: '', name: '', generic_name: '', composition: '', manufacturer: '',
+    name: '', generic_name: '', composition: '', manufacturer: '',
     formularium: 'FORNAS', form_sediaan: '', golongan: '',
     unit_besar: '', unit_kecil: '', konversi: null,
     min_stock: 0,
@@ -45,7 +45,6 @@ const config = {
     { key: 'is_active',    label: 'Status',       width: '90px',  align: 'center' },
   ],
   fields: [
-    { key: 'code',         label: 'Kode',                type: 'text',     required: true, cols: 1, placeholder: 'OB-001' },
     { key: 'name',         label: 'Nama Obat',           type: 'text',     required: true, cols: 1 },
     { key: 'generic_name', label: 'Nama Generik',        type: 'text',     cols: 1 },
     { key: 'manufacturer', label: 'Pabrik',              type: 'text',     cols: 1 },
@@ -70,7 +69,7 @@ const config = {
   deleteLabel: (r) => `${r?.code} · ${r?.name}`,
 }
 
-config.editFields = config.fields.map((f) => f.key === 'code' ? { ...f, disabled: true } : f)
+config.editFields = config.fields
 
 const filters = ref({ golongan: '', form_sediaan: '', active: '', low_stock: false })
 

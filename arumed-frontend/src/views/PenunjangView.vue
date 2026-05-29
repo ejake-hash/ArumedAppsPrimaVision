@@ -1,57 +1,54 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { usePenunjangStore } from '@/stores/penunjangStore'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import JenisPenunjangView from '@/views/master-data/JenisPenunjangView.vue'
 
 const store = usePenunjangStore()
 
+// Kode master untuk pemeriksaan Biometri (form OD/OS khusus). diagnostic_orders.test_type
+// kini menyimpan KODE master, jadi penanda biometri = kode ini (bukan nama 'Biometri').
+const BIOMETRI_CODE = 'BIOM'
+
 // ─── Tab utama modul: operasional antrean vs master jenis penunjang ───────────
 const mainTab = ref('antrean')   // 'antrean' | 'jenis'
 
 // ─── Local UI state ─────────────────────────────────────────────────────────
-const qTab    = ref('SEMUA')     // 'SEMUA' | 'BPJS' | 'UMUM' | 'SELESAI'
-const qSearch = ref('')
+const qPrimary   = ref('waiting')   // 'waiting' | 'done'
+const qSecondary = ref('semua')     // 'semua' | 'bpjs' | 'umum'
+const qSearch    = ref('')
 
 const toasts          = ref([])
 const pendingCallIds  = ref([])
+const pendingSkipIds  = ref([])
 let   _tid            = 0
 
 // ─── Filtered queue ─────────────────────────────────────────────────────────
 const filteredQueue = computed(() => {
   let list = store.antrian
 
-  if (qTab.value === 'SELESAI') {
-    list = list.filter((q) => q.status === 'COMPLETED')
+  if (qPrimary.value === 'waiting') {
+    list = list.filter((q) => ['WAITING', 'CALLED', 'IN_PROGRESS'].includes(q.status))
   } else {
-    list = list.filter((q) => q.status !== 'COMPLETED')
-    if (qTab.value === 'BPJS') {
-      list = list.filter((q) => q.visit?.guarantor_type === 'BPJS')
-    } else if (qTab.value === 'UMUM') {
-      list = list.filter((q) => q.visit?.guarantor_type && q.visit.guarantor_type !== 'BPJS')
-    }
+    list = list.filter((q) => q.status === 'COMPLETED')
+  }
+
+  if (qSecondary.value === 'bpjs') {
+    list = list.filter((q) => q.visit?.guarantor_type === 'BPJS')
+  } else if (qSecondary.value === 'umum') {
+    list = list.filter((q) => q.visit?.guarantor_type && q.visit.guarantor_type !== 'BPJS')
   }
 
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
     list = list.filter(
       (q) =>
-        q.patient?.name?.toLowerCase().includes(s) ||
+        q.visit?.patient?.name?.toLowerCase().includes(s) ||
         q.queue_number?.toLowerCase().includes(s) ||
-        q.patient?.no_rm?.toLowerCase().includes(s),
+        q.visit?.patient?.no_rm?.toLowerCase().includes(s),
     )
   }
   return list
-})
-
-const tabCounts = computed(() => {
-  const all = store.antrian
-  return {
-    SEMUA:   all.filter((q) => q.status !== 'COMPLETED').length,
-    BPJS:    all.filter((q) => q.status !== 'COMPLETED' && q.visit?.guarantor_type === 'BPJS').length,
-    UMUM:    all.filter((q) => q.status !== 'COMPLETED' && q.visit?.guarantor_type && q.visit.guarantor_type !== 'BPJS').length,
-    SELESAI: all.filter((q) => q.status === 'COMPLETED').length,
-  }
 })
 
 // ─── Classification helpers ─────────────────────────────────────────────────
@@ -62,7 +59,7 @@ function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 async function pickPatient(q) {
   if (store.selectedQueue?.id === q.id) return
   store.pickPatient(q)
-  toast('i', `Order — ${q.patient?.name ?? '—'} dibuka`)
+  toast('i', `Order — ${q.visit?.patient?.name ?? '—'} dibuka`)
 }
 
 async function callPt(q, e) {
@@ -72,7 +69,7 @@ async function callPt(q, e) {
   pendingCallIds.value.push(q.id)
   try {
     await store.panggilAntrian(q.id)
-    toast('i', `${isRecall ? 'Memanggil ulang' : 'Memanggil'} ${q.patient?.name} (${q.queue_number}) ke ruang penunjang`)
+    toast('i', `${isRecall ? 'Memanggil ulang' : 'Memanggil'} ${q.visit?.patient?.name} (${q.queue_number}) ke ruang penunjang`)
   } catch (err) {
     toast('w', err.message)
   } finally {
@@ -80,26 +77,27 @@ async function callPt(q, e) {
   }
 }
 
-function skipPt(q, e) {
+async function skipPt(q, e) {
   e.stopPropagation()
-  const arr = store.antrian
-  const idx = arr.findIndex((x) => x.id === q.id)
-  if (idx === -1) return
-  if (idx >= arr.length - 1) {
-    toast('w', `${q.patient?.name} sudah di posisi paling bawah`)
-    return
+  if (pendingSkipIds.value.includes(q.id)) return
+  pendingSkipIds.value.push(q.id)
+  try {
+    await store.lewatiAntrian(q.id)
+    if (store.selectedQueue?.id === q.id) store.clearSelected()
+    toast('w', `${q.visit?.patient?.name} (${q.queue_number}) dipindah ke akhir antrean`)
+    await store.fetchAntrian()
+  } catch (err) {
+    toast('w', err.message)
+  } finally {
+    pendingSkipIds.value = pendingSkipIds.value.filter((id) => id !== q.id)
   }
-  const next = arr[idx + 1]
-  arr.splice(idx, 2, next, q)
-  if (store.selectedQueue?.id === q.id) store.clearSelected()
-  toast('w', `${q.patient?.name} (${q.queue_number}) diturunkan 1 posisi`)
 }
 
 async function finishExam() {
   const q = store.selectedQueue
   if (!q) return
   try {
-    const name = q.patient?.name ?? 'Pasien'
+    const name = q.visit?.patient?.name ?? 'Pasien'
     await store.selesaiAntrian(q.id)
     toast('s', `${name} selesai pemeriksaan — dikembalikan ke antrean dokter`)
     store.clearSelected()
@@ -116,6 +114,13 @@ function toast(type, msg) {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+function calcAge(dob) {
+  if (!dob) return null
+  const d = new Date(dob), n = new Date()
+  return n.getFullYear() - d.getFullYear()
+    - (n < new Date(n.getFullYear(), d.getMonth(), d.getDate()) ? 1 : 0)
+}
+
 function fmtTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
@@ -123,13 +128,142 @@ function fmtTime(d) {
 
 const statusLabel = { WAITING: 'Menunggu', CALLED: 'Dipanggil', IN_PROGRESS: 'Proses', COMPLETED: 'Selesai' }
 
-// ─── Diagnostic orders for selected visit ──────────────────────────────────
-const selectedOrders = computed(() => {
-  return store.selectedQueue?.visit?.diagnostic_orders ?? []
+// ─── Diagnostic orders (delegated to store) ─────────────────────────────────
+const selectedOrders = computed(() => store.selectedOrders)
+
+const orderStatusLabel = { REQUESTED: 'Menunggu', IN_PROGRESS: 'Berlangsung', COMPLETED: 'Selesai', CANCELLED: 'Dibatalkan' }
+const orderStatusCls   = { REQUESTED: 'req', IN_PROGRESS: 'prg', COMPLETED: 'don', CANCELLED: 'cnc' }
+
+// ─── Per-order form state ──────────────────────────────────────────────────
+// activeOrderId = order yg panel hasilnya terbuka (cuma 1 sekaligus)
+const activeOrderId = ref(null)
+// forms[orderId] = { kesimpulan, ringkasan, notes, attachment_path, attachment_url, biometri:{od,os} }
+const forms       = reactive({})
+const uploadingId = ref(null)
+
+function blankForm() {
+  return {
+    kesimpulan:      '',
+    ringkasan:       '',
+    notes:           '',
+    attachment_path: '',
+    attachment_url:  '',
+    biometri: {
+      od: { axial_length: '', k1: '', k2: '', acd: '', recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
+      os: { axial_length: '', k1: '', k2: '', acd: '', recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
+    },
+  }
+}
+
+function ensureForm(order) {
+  if (forms[order.id]) return
+  const f = blankForm()
+  const existing = store.resultsByOrderId[order.id]
+  if (existing) {
+    const d = existing.expertise_data ?? {}
+    f.kesimpulan      = d.kesimpulan ?? ''
+    f.ringkasan       = d.ringkasan ?? ''
+    f.notes           = existing.notes ?? ''
+    f.attachment_path = existing.attachment_path ?? ''
+    if (order.test_type === BIOMETRI_CODE) {
+      f.biometri.od = { ...f.biometri.od, ...(d.od ?? {}) }
+      f.biometri.os = { ...f.biometri.os, ...(d.os ?? {}) }
+    }
+  }
+  forms[order.id] = f
+}
+
+// Re-hydrate forms saat pasien lain dipilih (store.resultsByOrderId berubah).
+watch(() => store.selectedQueue?.id, () => {
+  for (const k of Object.keys(forms)) delete forms[k]
+  activeOrderId.value = null
 })
 
-const orderStatusLabel = { REQUESTED: 'Menunggu', IN_PROGRESS: 'Berlangsung', DONE: 'Selesai', CANCELLED: 'Dibatalkan' }
-const orderStatusCls   = { REQUESTED: 'req', IN_PROGRESS: 'prg', DONE: 'don', CANCELLED: 'cnc' }
+function openForm(order) {
+  if (order.status === 'CANCELLED') return
+  ensureForm(order)
+  activeOrderId.value = order.id
+}
+
+function closeForm() {
+  activeOrderId.value = null
+}
+
+async function startOrder(order) {
+  try {
+    await store.prosesOrder(order.id)
+    toast('s', `Order ${order.test_type} dimulai`)
+    openForm(order)
+  } catch (err) {
+    toast('w', err.message)
+  }
+}
+
+async function cancelOrderAction(order) {
+  if (!confirm(`Batalkan order ${order.test_type}?`)) return
+  try {
+    await store.cancelOrder(order.id)
+    toast('w', `Order ${order.test_type} dibatalkan`)
+    if (activeOrderId.value === order.id) activeOrderId.value = null
+  } catch (err) {
+    toast('w', err.message)
+  }
+}
+
+async function uploadFile(order, ev) {
+  const file = ev.target.files?.[0]
+  if (!file) return
+  uploadingId.value = order.id
+  try {
+    const { path, url } = await store.uploadAttachment(file)
+    forms[order.id].attachment_path = path
+    forms[order.id].attachment_url  = url
+    toast('s', 'File terunggah')
+  } catch (err) {
+    toast('w', err.message)
+  } finally {
+    uploadingId.value = null
+    ev.target.value = ''
+  }
+}
+
+function buildExpertiseData(order) {
+  const f = forms[order.id]
+  const base = { kesimpulan: f.kesimpulan, ringkasan: f.ringkasan }
+  if (order.test_type === BIOMETRI_CODE) {
+    return { ...base, od: { ...f.biometri.od }, os: { ...f.biometri.os } }
+  }
+  return base
+}
+
+async function saveDraft(order) {
+  try {
+    await store.saveHasil(order.id, {
+      expertise_data:  buildExpertiseData(order),
+      attachment_path: forms[order.id].attachment_path || null,
+      notes:           forms[order.id].notes || null,
+    })
+    toast('s', `Draf hasil ${order.test_type} tersimpan`)
+  } catch (err) {
+    toast('w', err.message)
+  }
+}
+
+async function finalizeOrder(order) {
+  try {
+    // Simpan dulu kalau ada perubahan
+    await store.saveHasil(order.id, {
+      expertise_data:  buildExpertiseData(order),
+      attachment_path: forms[order.id].attachment_path || null,
+      notes:           forms[order.id].notes || null,
+    })
+    await store.finalizeHasil(order.id)
+    toast('s', `Hasil ${order.test_type} selesai & dikirim ke dokter`)
+    activeOrderId.value = null
+  } catch (err) {
+    toast('w', err.message)
+  }
+}
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 onMounted(async () => {
@@ -194,20 +328,29 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Filter tabs: Semua / BPJS / UMUM-ASURANSI / Selesai -->
-            <div class="ptype-tabs" role="group" aria-label="Filter antrean">
-              <button :class="['ptype-tab', qTab === 'SEMUA' ? 'a a-default' : '']" @click="qTab = 'SEMUA'">
-                Semua <span class="tab-ct">{{ tabCounts.SEMUA }}</span>
+            <!-- Primary filter: Belum Dipanggil / Selesai -->
+            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+              <button
+                :class="['pf-btn', qPrimary === 'waiting' ? 'a' : '']"
+                @click="qPrimary = 'waiting'"
+              >
+                Belum Dipanggil
+                <span v-if="store.belumDipanggilCount" class="pf-ct">{{ store.belumDipanggilCount }}</span>
               </button>
-              <button :class="['ptype-tab ptype-bpjs', qTab === 'BPJS' ? 'a' : '']" @click="qTab = 'BPJS'">
-                BPJS <span class="tab-ct">{{ tabCounts.BPJS }}</span>
+              <button
+                :class="['pf-btn', qPrimary === 'done' ? 'a' : '']"
+                @click="qPrimary = 'done'"
+              >
+                Selesai
+                <span v-if="store.selesaiCount" class="pf-ct">{{ store.selesaiCount }}</span>
               </button>
-              <button :class="['ptype-tab ptype-umum', qTab === 'UMUM' ? 'a' : '']" @click="qTab = 'UMUM'">
-                Umum/Asuransi <span class="tab-ct">{{ tabCounts.UMUM }}</span>
-              </button>
-              <button :class="['ptype-tab ptype-done', qTab === 'SELESAI' ? 'a' : '']" @click="qTab = 'SELESAI'">
-                Selesai <span class="tab-ct">{{ tabCounts.SELESAI }}</span>
-              </button>
+            </div>
+
+            <!-- Secondary filter: penjamin -->
+            <div class="ptype-tabs" role="group" aria-label="Filter jenis penjamin">
+              <button :class="['ptype-tab', qSecondary === 'semua' ? 'a' : '']" @click="qSecondary = 'semua'">Semua</button>
+              <button :class="['ptype-tab ptype-bpjs', qSecondary === 'bpjs'  ? 'a' : '']" @click="qSecondary = 'bpjs'">BPJS</button>
+              <button :class="['ptype-tab ptype-umum', qSecondary === 'umum'  ? 'a' : '']" @click="qSecondary = 'umum'">Umum/Asuransi</button>
             </div>
 
             <!-- Search -->
@@ -257,12 +400,13 @@ onUnmounted(() => {
                 </div>
 
                 <div class="q-info">
-                  <div class="q-name">{{ q.patient?.name ?? '—' }}</div>
+                  <div class="q-name">{{ q.visit?.patient?.name ?? '—' }}</div>
                   <div class="q-meta">
-                    {{ q.patient?.age ?? '—' }} th
-                    · {{ q.patient?.gender === 'L' ? 'L' : 'P' }}
+                    {{ calcAge(q.visit?.patient?.date_of_birth) ?? '—' }} th
+                    · {{ q.visit?.patient?.gender === 'L' ? 'L' : 'P' }}
                     · {{ q.visit?.classification ?? '—' }}
                   </div>
+                  <div v-if="q.visit?.patient?.address" class="q-addr">{{ q.visit.patient.address }}</div>
                   <div class="q-tags">
                     <span :class="['pill', q.visit?.guarantor_type === 'BPJS' ? 'pill-bpjs' : 'pill-umum']">
                       {{ q.visit?.guarantor_type === 'BPJS' ? 'BPJS' : q.visit?.guarantor_type ?? 'Umum' }}
@@ -284,7 +428,11 @@ onUnmounted(() => {
                       <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
                       {{ q.status === 'WAITING' ? 'Panggil' : 'Panggil Ulang' }}
                     </button>
-                    <button class="q-act-btn skip" @click="skipPt(q, $event)">
+                    <button
+                      class="q-act-btn skip"
+                      :disabled="pendingSkipIds.includes(q.id)"
+                      @click="skipPt(q, $event)"
+                    >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
                       Lewati
                     </button>
@@ -311,16 +459,19 @@ onUnmounted(() => {
           <!-- Patient header -->
           <div class="pt-header">
             <PatientAvatar
-              :name="store.selectedQueue.patient?.name"
-              :src="store.selectedQueue.patient?.photo_url"
+              :name="store.selectedQueue.visit?.patient?.name"
+              :src="store.selectedQueue.visit?.patient?.photo_url"
               :size="44" radius="50%" style="margin-top:2px"
             />
             <div class="pt-info">
-              <div class="pt-name">{{ store.selectedQueue.patient?.name ?? '—' }}</div>
+              <div class="pt-name">{{ store.selectedQueue.visit?.patient?.name ?? '—' }}</div>
               <div class="pt-meta">
-                RM: {{ store.selectedQueue.patient?.no_rm ?? '—' }}
-                · {{ store.selectedQueue.patient?.age ?? '—' }} th
-                · {{ store.selectedQueue.patient?.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
+                RM: {{ store.selectedQueue.visit?.patient?.no_rm ?? '—' }}
+                · {{ calcAge(store.selectedQueue.visit?.patient?.date_of_birth) ?? '—' }} th
+                · {{ store.selectedQueue.visit?.patient?.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
+              </div>
+              <div v-if="store.selectedQueue.visit?.patient?.address" class="pt-addr">
+                {{ store.selectedQueue.visit.patient.address }}
               </div>
               <div class="pt-badges">
                 <span v-if="store.selectedQueue.visit?.classification"
@@ -328,7 +479,7 @@ onUnmounted(() => {
                   {{ store.selectedQueue.visit.classification }}
                 </span>
                 <span v-if="store.selectedQueue.visit?.guarantor_type === 'BPJS'" class="ptg ptg-b">
-                  BPJS · {{ store.selectedQueue.patient?.bpjs_number ?? store.selectedQueue.visit?.no_sep ?? '—' }}
+                  BPJS · {{ store.selectedQueue.visit?.patient?.bpjs_number ?? store.selectedQueue.visit?.no_sep ?? '—' }}
                 </span>
                 <span v-else-if="store.selectedQueue.visit?.insurer_name" class="ptg ptg-a">
                   {{ store.selectedQueue.visit.insurer_name }}
@@ -347,27 +498,141 @@ onUnmounted(() => {
 
           <!-- Order list -->
           <div class="card">
-            <div class="card-head"><div class="card-head-title">Daftar Order dari Dokter</div></div>
+            <div class="card-head">
+              <div class="card-head-title">Daftar Order dari Dokter</div>
+              <div v-if="selectedOrders.length" class="card-head-sub">
+                {{ store.pendingOrdersCount }} dari {{ selectedOrders.length }} belum selesai
+              </div>
+            </div>
             <div class="card-body">
               <div v-if="!selectedOrders.length" class="empty-section" style="margin: 0">
                 Belum ada order penunjang untuk pasien ini
               </div>
               <div v-else class="order-list">
-                <div v-for="o in selectedOrders" :key="o.id" class="order-item">
-                  <div class="order-icon">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                  </div>
-                  <div class="order-info">
-                    <div class="order-name">{{ o.test_name ?? o.test_type ?? 'Pemeriksaan' }}</div>
-                    <div class="order-meta">
-                      <span v-if="o.ordered_by_name">dr. {{ o.ordered_by_name }}</span>
-                      <span v-if="o.created_at"> · {{ fmtTime(o.created_at) }}</span>
+                <div v-for="o in selectedOrders" :key="o.id" class="order-block">
+                  <div class="order-item" :class="{ active: activeOrderId === o.id }">
+                    <div class="order-icon">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                     </div>
-                    <div v-if="o.notes" class="order-notes">{{ o.notes }}</div>
+                    <div class="order-info">
+                      <div class="order-name">
+                        {{ o.test_name ?? o.test_type ?? 'Pemeriksaan' }}
+                        <span v-if="o.eye_side" class="eye-pill">{{ o.eye_side }}</span>
+                      </div>
+                      <div class="order-meta">
+                        <span v-if="o.ordered_by_name">dr. {{ o.ordered_by_name }}</span>
+                        <span v-if="o.created_at"> · {{ fmtTime(o.created_at) }}</span>
+                      </div>
+                      <div v-if="o.notes" class="order-notes">{{ o.notes }}</div>
+                    </div>
+                    <div class="order-right">
+                      <span :class="['order-status', orderStatusCls[o.status] ?? 'req']">
+                        {{ orderStatusLabel[o.status] ?? o.status }}
+                      </span>
+                      <div class="order-actions">
+                        <button
+                          v-if="o.status === 'REQUESTED'"
+                          class="oa-btn oa-start"
+                          @click="startOrder(o)"
+                        >Mulai</button>
+                        <button
+                          v-if="o.status === 'IN_PROGRESS'"
+                          class="oa-btn oa-input"
+                          @click="openForm(o)"
+                        >{{ activeOrderId === o.id ? 'Tutup' : 'Input Hasil' }}</button>
+                        <button
+                          v-if="o.status === 'COMPLETED'"
+                          class="oa-btn oa-view"
+                          @click="openForm(o)"
+                        >Lihat</button>
+                        <button
+                          v-if="['REQUESTED', 'IN_PROGRESS'].includes(o.status)"
+                          class="oa-btn oa-cancel"
+                          @click="cancelOrderAction(o)"
+                        >Batal</button>
+                      </div>
+                    </div>
                   </div>
-                  <span :class="['order-status', orderStatusCls[o.status] ?? 'req']">
-                    {{ orderStatusLabel[o.status] ?? o.status }}
-                  </span>
+
+                  <!-- Panel input hasil (per-order) -->
+                  <div v-if="activeOrderId === o.id && forms[o.id]" class="hasil-panel">
+                    <!-- Form khusus Biometri -->
+                    <div v-if="o.test_type === BIOMETRI_CODE" class="biometri-grid">
+                      <div v-for="eye in ['od', 'os']" :key="eye" class="biometri-col">
+                        <div class="biometri-head">{{ eye === 'od' ? 'OD (Mata Kanan)' : 'OS (Mata Kiri)' }}</div>
+                        <div class="bfield-row">
+                          <label class="bfield"><span>AL (mm)</span>
+                            <input v-model="forms[o.id].biometri[eye].axial_length" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
+                          <label class="bfield"><span>K1 (D)</span>
+                            <input v-model="forms[o.id].biometri[eye].k1" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
+                          <label class="bfield"><span>K2 (D)</span>
+                            <input v-model="forms[o.id].biometri[eye].k2" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
+                        </div>
+                        <div class="bfield-row">
+                          <label class="bfield"><span>ACD (mm)</span>
+                            <input v-model="forms[o.id].biometri[eye].acd" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
+                          <label class="bfield"><span>Rec. IOL (D)</span>
+                            <input v-model="forms[o.id].biometri[eye].recommended_iol_power" type="number" step="0.25" :disabled="o.status === 'COMPLETED'" /></label>
+                          <label class="bfield"><span>Tipe IOL</span>
+                            <select v-model="forms[o.id].biometri[eye].iol_type" :disabled="o.status === 'COMPLETED'">
+                              <option>MONOFOCAL</option><option>MULTIFOCAL</option><option>TORIC</option>
+                              <option>TRIFOCAL</option><option>EDOF</option><option>PHAKIC</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label class="bfield"><span>Brand IOL</span>
+                          <input v-model="forms[o.id].biometri[eye].brand" type="text" :disabled="o.status === 'COMPLETED'" /></label>
+                      </div>
+                    </div>
+
+                    <!-- Form generic (semua test_type lain) -->
+                    <div class="hp-row">
+                      <label class="hp-field">
+                        <span>Ringkasan Pemeriksaan</span>
+                        <textarea v-model="forms[o.id].ringkasan" rows="2" placeholder="Mis. tekanan intraokular, ketebalan kornea, dst." :disabled="o.status === 'COMPLETED'"></textarea>
+                      </label>
+                    </div>
+                    <div class="hp-row">
+                      <label class="hp-field">
+                        <span>Kesimpulan</span>
+                        <textarea v-model="forms[o.id].kesimpulan" rows="2" placeholder="Mis. dalam batas normal / hipertensi okuli OD" :disabled="o.status === 'COMPLETED'"></textarea>
+                      </label>
+                    </div>
+                    <div class="hp-row">
+                      <label class="hp-field">
+                        <span>Catatan Tambahan</span>
+                        <textarea v-model="forms[o.id].notes" rows="1" :disabled="o.status === 'COMPLETED'"></textarea>
+                      </label>
+                    </div>
+
+                    <!-- Upload lampiran -->
+                    <div class="hp-row hp-attach">
+                      <div class="hp-attach-info">
+                        <span class="hp-attach-label">Lampiran (gambar/PDF, maks 10 MB)</span>
+                        <div v-if="forms[o.id].attachment_path || forms[o.id].attachment_url" class="hp-attach-name">
+                          <a v-if="forms[o.id].attachment_url" :href="forms[o.id].attachment_url" target="_blank" rel="noopener">{{ forms[o.id].attachment_path || 'Lihat file' }}</a>
+                          <span v-else>{{ forms[o.id].attachment_path }}</span>
+                        </div>
+                      </div>
+                      <label v-if="o.status !== 'COMPLETED'" class="hp-attach-btn" :class="{ pending: uploadingId === o.id }">
+                        <input type="file" hidden accept="image/*,application/pdf" @change="(e) => uploadFile(o, e)" />
+                        {{ uploadingId === o.id ? 'Mengunggah…' : (forms[o.id].attachment_path ? 'Ganti File' : 'Unggah File') }}
+                      </label>
+                    </div>
+
+                    <!-- Actions panel -->
+                    <div class="hp-actions" v-if="o.status !== 'COMPLETED'">
+                      <button class="btn btn-ghost" @click="closeForm">Tutup</button>
+                      <button class="btn btn-outline" :disabled="store.hasilSaving.has(o.id)" @click="saveDraft(o)">
+                        <div v-if="store.hasilSaving.has(o.id)" class="sp sp-dark"></div>
+                        Simpan Draf
+                      </button>
+                      <button class="btn btn-success" :disabled="store.hasilSaving.has(o.id)" @click="finalizeOrder(o)">
+                        <div v-if="store.hasilSaving.has(o.id)" class="sp"></div>
+                        Selesaikan Hasil
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -385,14 +650,22 @@ onUnmounted(() => {
                   <template v-if="store.selectedQueue.status === 'COMPLETED'">
                     Pemeriksaan sudah selesai — pasien sudah kembali ke antrean dokter.
                   </template>
+                  <template v-else-if="!selectedOrders.length">
+                    Belum ada order untuk pasien ini. Kembalikan tanpa input hasil.
+                  </template>
+                  <template v-else-if="store.pendingOrdersCount > 0">
+                    Masih ada <b>{{ store.pendingOrdersCount }}</b> order belum di-finalize. Selesaikan dulu di atas.
+                  </template>
                   <template v-else>
-                    Klik untuk menutup antrean penunjang dan mengembalikan pasien ke antrean dokter untuk pembacaan hasil.
+                    Semua order sudah selesai. Klik untuk kembalikan pasien ke antrean dokter.
                   </template>
                 </div>
               </div>
               <button
                 class="btn btn-success btn-lg send-btn"
-                :disabled="store.finalizing || store.selectedQueue.status === 'COMPLETED'"
+                :disabled="store.finalizing
+                  || store.selectedQueue.status === 'COMPLETED'
+                  || (selectedOrders.length > 0 && store.pendingOrdersCount > 0)"
                 @click="finishExam"
               >
                 <div v-if="store.finalizing" class="sp"></div>
@@ -451,17 +724,20 @@ onUnmounted(() => {
 .stat-waiting { color: #d97706; }
 .stat-done { color: var(--st); }
 
-/* ── Filter tabs (single row) ────────────────────────────────────────────── */
-.ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; flex-wrap: wrap; }
-.ptype-tab { flex: 1 1 0; min-width: 0; padding: 6px 4px; font-size: 10.5px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+/* ── Primary filter (Belum Dipanggil / Selesai) ──────────────────────────── */
+.primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn:hover { border-color: var(--ga); color: var(--ga); }
+.pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
+.pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
+
+/* ── Secondary filter (penjamin) ─────────────────────────────────────────── */
+.ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
+.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
 .ptype-tab:hover { border-color: var(--ga); color: var(--ga); }
 .ptype-tab.a { color: #fff; font-weight: 700; }
-.ptype-tab.a-default { background: var(--gd); border-color: var(--gd); }
 .ptype-bpjs.a { background: #1d4ed8; border-color: #1d4ed8; }
 .ptype-umum.a { background: var(--ga); border-color: var(--ga); }
-.ptype-done.a { background: var(--st); border-color: var(--st); }
-.tab-ct { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 10px; background: rgba(0,0,0,.08); color: inherit; }
-.ptype-tab.a .tab-ct { background: rgba(255,255,255,.25); }
 
 /* ── Queue scroll ────────────────────────────────────────────────────────── */
 .pill-live { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; letter-spacing: 0.05em; }
@@ -493,7 +769,8 @@ onUnmounted(() => {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
-.q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
+.q-addr { font-size: 10px; color: var(--tu); margin-top: 2px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }
 
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
@@ -509,7 +786,7 @@ onUnmounted(() => {
 .q-act-btn:disabled { opacity: .55; cursor: wait; }
 
 /* ── Pills ───────────────────────────────────────────────────────────────── */
-.pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
+.pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill-icon { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; flex-shrink: 0; }
 .pill-waiting     { background: #fef3c7; color: #92400e; }
 .pill-called      { background: #dbeafe; color: #1e40af; }
@@ -537,6 +814,7 @@ onUnmounted(() => {
 .pt-info { flex: 1; min-width: 0; }
 .pt-name { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--gd); font-weight: 400; line-height: 1.1; }
 .pt-meta { font-size: 11px; color: var(--tu); margin-top: 3px; }
+.pt-addr { font-size: 11px; color: var(--tu); margin-top: 3px; line-height: 1.4; }
 .pt-badges { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
 .ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
 .ptg-b { background: #dbeafe; color: #1e40af; }
@@ -545,18 +823,73 @@ onUnmounted(() => {
 .pt-right { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; margin-left: auto; }
 
 /* ── Order list ──────────────────────────────────────────────────────────── */
-.order-list { display: flex; flex-direction: column; gap: 6px; }
-.order-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; }
+.order-list { display: flex; flex-direction: column; gap: 8px; }
+.order-block { display: flex; flex-direction: column; gap: 0; }
+.order-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; transition: border-color .12s; }
+.order-item.active { border-color: var(--ga); background: var(--gl); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .order-icon svg { width: 22px; height: 22px; fill: none; stroke: var(--ga); stroke-width: 1.5; stroke-linecap: round; }
 .order-info { flex: 1; min-width: 0; }
-.order-name { font-size: 12.5px; font-weight: 600; color: var(--td); }
+.order-name { font-size: 12.5px; font-weight: 600; color: var(--td); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.eye-pill { font-size: 9px; font-weight: 700; padding: 1px 6px; background: var(--gl); color: var(--ga); border-radius: 4px; }
 .order-meta { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
 .order-notes { font-size: 11px; color: var(--tm); margin-top: 5px; padding: 5px 8px; background: var(--bc); border-radius: 6px; line-height: 1.4; }
-.order-status { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; flex-shrink: 0; letter-spacing: 0.03em; }
+.order-right { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; flex-shrink: 0; }
+.order-status { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.03em; }
 .order-status.req { background: #fef3c7; color: #92400e; }
 .order-status.prg { background: #dbeafe; color: #1e40af; }
 .order-status.don { background: var(--sb); color: var(--st); }
 .order-status.cnc { background: var(--bi); color: var(--th); }
+
+.order-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.oa-btn { font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; background: none; transition: background .12s, color .12s, transform .07s, box-shadow .07s; }
+.oa-btn:active:not(:disabled) { transform: scale(.94); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
+.oa-start  { color: var(--ga); border-color: var(--ga); background: var(--gl); }
+.oa-start:hover  { background: var(--ga); color: #fff; }
+.oa-input  { color: #1d4ed8; border-color: #1d4ed8; background: #dbeafe; }
+.oa-input:hover  { background: #1d4ed8; color: #fff; }
+.oa-view   { color: var(--st); border-color: var(--sbd); background: var(--sb); }
+.oa-view:hover   { background: var(--st); color: #fff; }
+.oa-cancel { color: var(--tu); border-color: var(--gb); }
+.oa-cancel:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+
+/* ── Hasil panel (per-order) ─────────────────────────────────────────────── */
+.hasil-panel { background: var(--bc); border: 1.5px solid var(--ga); border-top: none; border-radius: 0 0 9px 9px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; margin-top: -1px; }
+.hp-row { display: flex; gap: 10px; }
+.hp-field { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hp-field > span { font-size: 10.5px; font-weight: 600; color: var(--tm); letter-spacing: 0.02em; }
+.hp-field textarea, .hp-field input, .hp-field select { width: 100%; font-family: 'DM Sans', sans-serif; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 7px 10px; background: var(--bs); color: var(--td); outline: none; box-sizing: border-box; resize: vertical; }
+.hp-field textarea:focus, .hp-field input:focus, .hp-field select:focus { border-color: var(--ga); background: #fff; }
+.hp-field textarea:disabled, .hp-field input:disabled, .hp-field select:disabled { background: var(--bi); cursor: not-allowed; opacity: .85; }
+
+/* Biometri grid */
+.biometri-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; background: var(--bs); border: 1px dashed var(--gb); border-radius: 8px; }
+.biometri-col { display: flex; flex-direction: column; gap: 6px; }
+.biometri-head { font-size: 11px; font-weight: 700; color: var(--gd); padding-bottom: 4px; border-bottom: 1px solid var(--gb); }
+.bfield-row { display: flex; gap: 6px; }
+.bfield { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.bfield > span { font-size: 9.5px; font-weight: 600; color: var(--tu); letter-spacing: 0.02em; }
+.bfield input, .bfield select { width: 100%; font-family: 'DM Sans', sans-serif; font-size: 11px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 5px 7px; background: #fff; color: var(--td); outline: none; box-sizing: border-box; }
+.bfield input:focus, .bfield select:focus { border-color: var(--ga); }
+.bfield input:disabled, .bfield select:disabled { background: var(--bi); cursor: not-allowed; }
+
+/* Upload row */
+.hp-attach { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--bs); border: 1px dashed var(--gb); border-radius: 7px; }
+.hp-attach-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hp-attach-label { font-size: 10.5px; font-weight: 600; color: var(--tm); }
+.hp-attach-name { font-size: 11px; color: var(--ga); word-break: break-all; }
+.hp-attach-name a { color: inherit; text-decoration: underline; }
+.hp-attach-btn { display: inline-flex; align-items: center; padding: 6px 12px; font-size: 11px; font-weight: 600; border: 1.5px solid var(--ga); color: var(--ga); background: var(--gl); border-radius: 7px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .12s; }
+.hp-attach-btn:hover { background: var(--ga); color: #fff; }
+.hp-attach-btn.pending { opacity: .65; cursor: wait; }
+
+/* Panel actions */
+.hp-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 4px; border-top: 1px dashed var(--gb); }
+.btn-ghost   { background: none; color: var(--tu); border-color: var(--gb); }
+.btn-ghost:hover { background: var(--bs); color: var(--td); }
+.btn-outline { background: var(--bs); color: var(--ga); border-color: var(--ga); }
+.btn-outline:hover:not(:disabled) { background: var(--gl); }
+.btn:disabled { opacity: .55; cursor: wait; }
+.sp-dark { border: 2px solid rgba(0,0,0,.15); border-top-color: var(--ga); }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn { display: inline-flex; align-items: center; gap: 5px; padding: 0 13px; height: 32px; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s; }

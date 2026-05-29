@@ -72,7 +72,29 @@ watch(() => store.asesmen, (a) => {
 watch(() => store.selectedQueue, (q) => {
   cpptMode.value = 'idle'
   if (!q) { Object.assign(form.value, emptyForm()); historyExpanded.value = false }
+  // Load parallel status (untuk gate tombol "Kirim ke Bedah" pada visit PREOP_BEDAH)
+  store.loadParallelStatus(q?.visit?.id)
 })
+
+// ─── Preop bedah gates ───────────────────────────────────────────────────────
+const isPreopBedah = computed(() =>
+  store.selectedQueue?.visit?.visit_type === 'PREOP_BEDAH'
+)
+const parallelRefraksiDone = computed(() => !!store.parallelStatus?.refraksi_done)
+const canKirimKeBedah = computed(() =>
+  isPreopBedah.value && store.isFinalized && parallelRefraksiDone.value
+)
+
+async function onKirimKeBedah() {
+  try {
+    await store.kirimKeBedah()
+    toast('s', 'Pasien dikirim ke antrian Bedah')
+    // Refresh antrian biar UI sinkron (queue triase jadi COMPLETED, dst.)
+    await store.fetchAntrian()
+  } catch (e) {
+    toast('w', e.message)
+  }
+}
 
 // ─── Computed vitals ─────────────────────────────────────────────────────────
 const bmi = computed(() => {
@@ -440,12 +462,27 @@ function fmtNum(v) {
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
+let _parallelPollTimer = null
+function startParallelPolling() {
+  stopParallelPolling()
+  _parallelPollTimer = setInterval(() => {
+    if (isPreopBedah.value && store.isFinalized && !parallelRefraksiDone.value) {
+      store.loadParallelStatus(store.selectedQueue?.visit?.id)
+    }
+  }, 10000)
+}
+function stopParallelPolling() {
+  if (_parallelPollTimer) { clearInterval(_parallelPollTimer); _parallelPollTimer = null }
+}
+
 onMounted(async () => {
   await store.fetchAntrian()
   store.connectWs()
+  startParallelPolling()
 })
 
 onUnmounted(() => {
+  stopParallelPolling()
   store.disconnectWs()
   store.clearSelected()
 })
@@ -637,6 +674,11 @@ onUnmounted(() => {
                 <span v-if="store.selectedQueue.patient.province"> · {{ store.selectedQueue.patient.province }}</span>
               </div>
               <div class="pt-badges">
+                <!-- PREOP BEDAH badge (kuning) -->
+                <span v-if="isPreopBedah" class="ptg ptg-preop" title="Pasien preop bedah — bypass dokter">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  PREOP BEDAH
+                </span>
                 <!-- Classification badge -->
                 <span v-if="store.selectedQueue.visit?.classification"
                   :class="['ptg', clsCls(store.selectedQueue.visit.classification)]">
@@ -908,8 +950,8 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- ── Kartu aksi: Kirim ke Dokter (di luar tab, selalu tampil) ── -->
-          <div v-if="!store.asesmenLoading" class="card send-card">
+          <!-- ── Kartu aksi: Kirim ke Dokter (visit REGULAR) ── -->
+          <div v-if="!store.asesmenLoading && !isPreopBedah" class="card send-card">
             <div class="card-body send-card-body">
               <div class="send-card-info">
                 <div class="send-card-title">
@@ -945,6 +987,39 @@ onUnmounted(() => {
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                   Cetak Tiket Dokter
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Kartu aksi: Kirim ke Bedah (visit PREOP_BEDAH) ── -->
+          <div v-if="!store.asesmenLoading && isPreopBedah" class="card send-card preop-send-card">
+            <div class="card-body send-card-body">
+              <div class="send-card-info">
+                <div class="send-card-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 14H5m14-4H5m14 8H5"/><circle cx="12" cy="6" r="2"/></svg>
+                  Kirim ke Bedah
+                  <span class="preop-pill">PREOP</span>
+                </div>
+                <div class="send-card-sub">
+                  <template v-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu.</template>
+                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + KGD + keluhan terisi).</template>
+                  <template v-else-if="!parallelRefraksiDone">Asesmen triase dikunci ✓. Menunggu <strong>Refraksionis</strong> menyelesaikan pemeriksaan visus/IOP.</template>
+                  <template v-else>Triase &amp; Refraksi selesai ✓. Klik <strong>Kirim ke Bedah</strong> untuk masukkan pasien ke antrean operasi.</template>
+                </div>
+              </div>
+              <div class="send-actions">
+                <button
+                  class="btn btn-success btn-lg send-btn"
+                  :disabled="!canKirimKeBedah || store.sendingBedah"
+                  :title="canKirimKeBedah ? 'Kirim pasien ke antrean Bedah' : 'Tunggu Triase + Refraksi selesai'"
+                  @click="onKirimKeBedah"
+                >
+                  <div v-if="store.sendingBedah" class="sp" role="status" aria-label="Mengirim…"></div>
+                  <template v-else>
+                    Kirim ke Bedah
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  </template>
                 </button>
               </div>
             </div>
@@ -1351,6 +1426,8 @@ onUnmounted(() => {
 .ptg-b { background: #dbeafe; color: #1e40af; }
 .ptg-a { background: var(--wb); color: var(--wt); }
 .ptg-u { background: var(--gl); color: var(--ga); }
+.ptg-preop { display: inline-flex; align-items: center; gap: 4px; background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+.ptg-preop svg { stroke: currentColor; flex-shrink: 0; }
 
 .pt-right { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; margin-left: auto; }
 .pt-vitals { display: flex; gap: 0.85rem; width: 100%; padding-top: 0.6rem; border-top: 1px dashed var(--gb); }
@@ -1456,6 +1533,10 @@ onUnmounted(() => {
 .send-btn { flex-shrink: 0; }
 .send-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 .send-actions .btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.preop-send-card { border-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #fff 60%); }
+.preop-send-card .send-card-title { color: #92400e; }
+.preop-send-card .send-card-title svg { stroke: #b45309; }
+.preop-pill { display: inline-block; background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.5px; margin-left: 4px; }
 
 /* ── Allergy ─────────────────────────────────────────────────────────────── */
 .allergy-known { display: flex; gap: 6px; align-items: flex-start; background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--wt); font-weight: 500; margin-bottom: 0.75rem; }

@@ -32,6 +32,17 @@ class PurchaseOrderService
             $q->where('status', strtoupper($filters['status']));
         }
 
+        // Filter multi-status (dipakai tab Aktif vs History di frontend).
+        // `statuses` = whitelist (whereIn), `exclude_statuses` = blacklist.
+        if (!empty($filters['statuses'])) {
+            $list = array_map('strtoupper', (array) $filters['statuses']);
+            $q->whereIn('status', $list);
+        }
+        if (!empty($filters['exclude_statuses'])) {
+            $list = array_map('strtoupper', (array) $filters['exclude_statuses']);
+            $q->whereNotIn('status', $list);
+        }
+
         if (!empty($filters['supplier_id'])) {
             $q->where('supplier_id', $filters['supplier_id']);
         }

@@ -15,7 +15,8 @@
  * FieldConfig:
  *   { key, label, type?: 'text'|'number'|'textarea'|'select'|'checkbox'|'date',
  *     required?, placeholder?, options?: [{value,label}], min?, max?, step?,
- *     hint?, cols?: 1|2 (grid span, default 2 = full width), disabled? }
+ *     hint?, cols?: 1|2 (grid span, default 2 = full width), disabled?,
+ *     showIf?: (form) => boolean  — sembunyikan field secara dinamis }
  *
  * Emits:
  *   update:modelValue (obj)
@@ -70,9 +71,14 @@ function onKeydown(e) {
   if (e.key === 'Escape') close()
 }
 
+// Fields yang lolos showIf (kalau ada). Bergantung ke form.value supaya reaktif.
+const visibleFields = computed(() =>
+  props.fields.filter((f) => (typeof f.showIf === 'function' ? f.showIf(form.value) : true))
+)
+
 const colsMap = computed(() => {
   // Build grid template based on widest field cols requested
-  return props.fields.some((f) => (f.cols ?? 2) === 1) ? '1fr 1fr' : '1fr'
+  return visibleFields.value.some((f) => (f.cols ?? 2) === 1) ? '1fr 1fr' : '1fr'
 })
 </script>
 
@@ -89,7 +95,7 @@ const colsMap = computed(() => {
 
         <form class="mfm-body" :style="{ gridTemplateColumns: colsMap }" @submit.prevent="submit">
           <div
-            v-for="f in fields"
+            v-for="f in visibleFields"
             :key="f.key"
             class="mfm-field"
             :style="{ gridColumn: (f.cols ?? 2) === 2 ? '1 / -1' : 'auto' }"

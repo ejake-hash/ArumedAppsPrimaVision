@@ -19,7 +19,7 @@ class UnitRequestService
 
     public function index(array $filters = []): LengthAwarePaginator
     {
-        $q = UnitRequest::query();
+        $q = UnitRequest::query()->with('items');
 
         if (!empty($filters['search'])) {
             $term = '%' . $filters['search'] . '%';
@@ -44,7 +44,9 @@ class UnitRequestService
         }
 
         $perPage = (int) ($filters['per_page'] ?? 25);
-        return $q->orderByDesc('request_date')->orderByDesc('request_number')->paginate($perPage);
+        $paginator = $q->orderByDesc('request_date')->orderByDesc('request_number')->paginate($perPage);
+        $paginator->getCollection()->transform(fn ($r) => $this->toArray($r));
+        return $paginator;
     }
 
     public function show(string $id): array
@@ -58,22 +60,30 @@ class UnitRequestService
         $items = $data['items'] ?? [];
         $this->validateItems($items);
 
-        return DB::transaction(function () use ($data, $items) {
-            $req = UnitRequest::create([
-                'request_number'     => $this->generateNumber($data['request_date'] ?? null),
-                'requesting_station' => $data['requesting_station'],
-                'request_date'       => $data['request_date'] ?? now()->toDateString(),
-                'status'             => $data['status'] ?? UnitRequest::STATUS_DRAFT,
-                'notes'              => $data['notes'] ?? null,
-                'requested_by'       => auth('api')->id(),
-            ]);
+        $attempts = 0;
+        while (true) {
+            try {
+                return DB::transaction(function () use ($data, $items, $attempts) {
+                    $req = UnitRequest::create([
+                        'request_number'     => $this->generateNumber($data['request_date'] ?? null, $attempts),
+                        'requesting_station' => $data['requesting_station'],
+                        'request_date'       => $data['request_date'] ?? now()->toDateString(),
+                        'status'             => $data['status'] ?? UnitRequest::STATUS_DRAFT,
+                        'notes'              => $data['notes'] ?? null,
+                        'requested_by'       => auth('api')->id(),
+                    ]);
 
-            foreach ($items as $row) {
-                $this->createItem($req, $row);
+                    foreach ($items as $row) {
+                        $this->createItem($req, $row);
+                    }
+
+                    return $req->fresh('items');
+                });
+            } catch (\Illuminate\Database\QueryException $e) {
+                if ($e->getCode() === '23505' && ++$attempts < 8) continue;
+                throw $e;
             }
-
-            return $req->fresh('items');
-        });
+        }
     }
 
     public function update(string $id, array $data): UnitRequest
@@ -180,12 +190,12 @@ class UnitRequestService
                     abort(422, "Qty deliver melebihi qty_requested untuk item " . $this->itemLabel($item));
                 }
 
-                $this->consumeStock($item->item_type, $item->item_id, $qty, $row['batch_no'] ?? null);
+                $consumed = $this->consumeStock($item->item_type, $item->item_id, $qty, $row['batch_no'] ?? null);
 
                 $item->update([
                     'qty_delivered' => $qty,
-                    'batch_no'      => $row['batch_no'] ?? $item->batch_no,
-                    'expiry_date'   => $row['expiry_date'] ?? $item->expiry_date,
+                    'batch_no'      => $row['batch_no'] ?? $consumed['batch_no'] ?? $item->batch_no,
+                    'expiry_date'   => $row['expiry_date'] ?? $consumed['expiry_date'] ?? $item->expiry_date,
                 ]);
             }
 
@@ -280,7 +290,7 @@ class UnitRequestService
     /**
      * Konsumsi stok: kurangi qty dari batch yang ditentukan, atau FEFO kalau null.
      */
-    private function consumeStock(string $type, string $itemId, float $qty, ?string $batchNo): void
+    private function consumeStock(string $type, string $itemId, float $qty, ?string $batchNo): array
     {
         if ($batchNo) {
             $stock = InventoryStock::where([
@@ -292,7 +302,7 @@ class UnitRequestService
                 abort(422, "Stok batch {$batchNo} tidak cukup untuk item {$type}.");
             }
             $stock->decrement('qty_on_hand', $qty);
-            return;
+            return ['batch_no' => $stock->batch_no, 'expiry_date' => $stock->expiry_date];
         }
 
         // FEFO — ambil dari batch yg paling cepat expired
@@ -304,16 +314,22 @@ class UnitRequestService
             ->lockForUpdate()
             ->get();
 
+        $firstUsed = null;
         foreach ($stocks as $st) {
             if ($remaining <= 0) break;
             $take = min($remaining, (float) $st->qty_on_hand);
             $st->decrement('qty_on_hand', $take);
             $remaining -= $take;
+            if (!$firstUsed) {
+                $firstUsed = ['batch_no' => $st->batch_no, 'expiry_date' => $st->expiry_date];
+            }
         }
 
         if ($remaining > 0.001) {
             abort(422, "Stok tidak cukup untuk item {$type}. Kurang {$remaining} unit.");
         }
+
+        return $firstUsed ?? ['batch_no' => null, 'expiry_date' => null];
     }
 
     /**
@@ -353,19 +369,15 @@ class UnitRequestService
         };
     }
 
-    private function generateNumber(?string $date): string
+    private function generateNumber(?string $date, int $bump = 0): string
     {
         $d = $date ? Carbon::parse($date) : now();
         $prefix = 'REQ-' . $d->format('Ym') . '-';
-        $last = UnitRequest::withTrashed()
+        $next = (int) DB::table('unit_requests')
             ->where('request_number', 'like', $prefix . '%')
-            ->orderByDesc('request_number')
-            ->value('request_number');
-        $next = 1;
-        if ($last && preg_match('/-(\d+)$/', $last, $m)) {
-            $next = (int) $m[1] + 1;
-        }
-        return $prefix . sprintf('%04d', $next);
+            ->selectRaw("COALESCE(MAX(CAST(SUBSTRING(request_number FROM '\d+$') AS INTEGER)), 0) + 1 AS n")
+            ->value('n');
+        return $prefix . sprintf('%04d', $next + $bump);
     }
 
     private function toArray(UnitRequest $req): array

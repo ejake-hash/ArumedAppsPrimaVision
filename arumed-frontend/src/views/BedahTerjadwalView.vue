@@ -1,134 +1,328 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { bedahApi, masterApi, unitRequestApi, unitReturnApi } from '@/services/api'
+import RequestBhpIolModal from '@/components/bedah/RequestBhpIolModal.vue'
+import ReturBhpIolModal from '@/components/bedah/ReturBhpIolModal.vue'
 
-// ── Mock: pasien terjadwal (tanggal > today) ───────────────────────────────
-const jadwal = ref([
-  {
-    id: 101, qNum: 'SCH-001', name: 'Tuti Handayani', rm: 'RM-2025-0031',
-    age: 64, gender: 'P', ptype: 'bpjs',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosa: 'H25.9 — Katarak senilis OD',
-    prosedur: 'Phacoemulsifikasi OD',
-    scheduledDate: '2026-05-28', scheduledTime: '08:00', ruang: 'OK 1',
-    paketOperasi: {
-      kode: 'PKB-001', nama: 'Fakoemulsifikasi (Phaco) + IOL Standar',
-      bhpItems: [
-        { item: 'BSS 500ml',            jumlah: 1, satuan: 'Botol' },
-        { item: 'Viscoelastic (OVD)',   jumlah: 1, satuan: 'Syringe' },
-        { item: 'Keratome 2.75mm',      jumlah: 1, satuan: 'Pcs' },
-        { item: 'Spons Microsponge',    jumlah: 4, satuan: 'Pcs' },
-        { item: 'Cannula I/A',          jumlah: 1, satuan: 'Pcs' },
-      ],
-      iolItems: [
-        { item: 'IOL Monofocal Foldable (Alcon SN60WF)', jumlah: 1, satuan: 'Pcs', power: '+21.0 D' },
-      ],
-    },
-  },
-  {
-    id: 102, qNum: 'SCH-002', name: 'Irwan Setiawan', rm: 'RM-2025-0044',
-    age: 52, gender: 'L', ptype: 'umum',
-    dpjp: 'dr. Rina Kusuma, Sp.M',
-    diagnosa: 'H40.1 — Glaukoma sudut terbuka OS',
-    prosedur: 'Trabekulektomi OS',
-    scheduledDate: '2026-05-29', scheduledTime: '09:30', ruang: 'OK 2',
-    paketOperasi: {
-      kode: 'PKB-004', nama: 'Trabekulektomi (Bedah Glaukoma)',
-      bhpItems: [
-        { item: 'Vicryl 7-0',         jumlah: 2, satuan: 'Pcs' },
-        { item: 'Spons Microsponge',  jumlah: 4, satuan: 'Pcs' },
-        { item: 'BSS 500ml',          jumlah: 1, satuan: 'Botol' },
-        { item: 'Kapas Steril',       jumlah: 4, satuan: 'Lembar' },
-      ],
-      iolItems: [],
-    },
-  },
-  {
-    id: 103, qNum: 'SCH-003', name: 'Mariam Halim', rm: 'RM-2025-0058',
-    age: 70, gender: 'P', ptype: 'bpjs',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosa: 'H25.9 — Katarak senilis OS',
-    prosedur: 'Phacoemulsifikasi OS',
-    scheduledDate: '2026-05-30', scheduledTime: '07:30', ruang: 'OK 1',
-    paketOperasi: {
-      kode: 'PKB-001', nama: 'Fakoemulsifikasi (Phaco) + IOL Standar',
-      bhpItems: [
-        { item: 'BSS 500ml',            jumlah: 1, satuan: 'Botol' },
-        { item: 'Viscoelastic (OVD)',   jumlah: 1, satuan: 'Syringe' },
-        { item: 'Keratome 2.75mm',      jumlah: 1, satuan: 'Pcs' },
-        { item: 'Spons Microsponge',    jumlah: 4, satuan: 'Pcs' },
-      ],
-      iolItems: [
-        { item: 'IOL Monofocal Foldable (B+L MX60)', jumlah: 1, satuan: 'Pcs', power: '+20.5 D' },
-      ],
-    },
-  },
-])
+// ── Data nyata ───────────────────────────────────────────────────────────────
+const jadwal     = ref([])   // pasien terjadwal mendatang (scheduled_date > today)
+const requests   = ref([])   // permintaan BHP/IOL ke gudang/farmasi
+const bhpOptions = ref([])   // master BHP untuk dropdown request
+const iolOptions = ref([])   // master IOL untuk dropdown request
+const loadingJadwal   = ref(false)
+const loadingRequests = ref(false)
 
-// ── Mock: permintaan BHP/IOL ke gudang/farmasi ─────────────────────────────
-const requests = ref([
-  {
-    id: 1, tanggal: '2026-05-26', source: 'manual',
-    requestedBy: 'Petugas Bedah', notes: 'Stok cadangan minggu ini',
-    bhpItems: [
-      { item: 'BSS 500ml', jumlah: 5, satuan: 'Botol' },
-      { item: 'Spons Microsponge', jumlah: 20, satuan: 'Pcs' },
-    ],
-    iolItems: [],
-    status: 'APPROVED',
-  },
-  {
-    id: 2, tanggal: '2026-05-28', source: 'jadwal',
-    pasienId: 101, pasienName: 'Tuti Handayani', paketKode: 'PKB-001',
-    requestedBy: 'Petugas Bedah', notes: 'Untuk operasi Tuti Handayani — Phaco OD',
-    bhpItems: [
-      { item: 'BSS 500ml',            jumlah: 1, satuan: 'Botol' },
-      { item: 'Viscoelastic (OVD)',   jumlah: 1, satuan: 'Syringe' },
-      { item: 'Keratome 2.75mm',      jumlah: 1, satuan: 'Pcs' },
-      { item: 'Spons Microsponge',    jumlah: 4, satuan: 'Pcs' },
-      { item: 'Cannula I/A',          jumlah: 1, satuan: 'Pcs' },
-    ],
-    iolItems: [
-      { item: 'IOL Monofocal Foldable (Alcon SN60WF)', jumlah: 1, satuan: 'Pcs', power: '+21.0 D' },
-    ],
-    status: 'PENDING',
-  },
-])
+// ── Weekpicker (filter jadwal per-minggu) ────────────────────────────────────
+// weekStart = null → mode "semua mendatang"; else Senin minggu terpilih (YYYY-MM-DD).
+const weekStart = ref(null)
+
+function mondayOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  const dow = (d.getDay() + 6) % 7   // 0 = Senin
+  d.setDate(d.getDate() - dow)
+  return d.toISOString().slice(0, 10)
+}
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+const weekEnd = computed(() => weekStart.value ? addDays(weekStart.value, 6) : null)
+const weekLabel = computed(() => {
+  if (!weekStart.value) return 'Semua mendatang'
+  const opt = { day: '2-digit', month: 'short' }
+  const a = new Date(weekStart.value + 'T00:00:00').toLocaleDateString('id-ID', opt)
+  const b = new Date(weekEnd.value + 'T00:00:00').toLocaleDateString('id-ID', { ...opt, year: 'numeric' })
+  return `${a} – ${b}`
+})
+
+// Input date (hari mana pun) → snap ke Senin minggunya, lalu reload.
+function onPickWeek(e) {
+  const v = e.target.value
+  weekStart.value = v ? mondayOf(v) : null
+  loadJadwal()
+}
+function shiftWeek(n) {
+  const base = weekStart.value ?? mondayOf(new Date().toISOString().slice(0, 10))
+  weekStart.value = addDays(base, n * 7)
+  loadJadwal()
+}
+function clearWeek() { weekStart.value = null; loadJadwal() }
+
+// ── Helpers mapping ────────────────────────────────────────────────────────
+function ageFromDob(dob) {
+  if (!dob) return null
+  const b = new Date(dob); if (isNaN(b)) return null
+  const now = new Date()
+  let a = now.getFullYear() - b.getFullYear()
+  const m = now.getMonth() - b.getMonth()
+  if (m < 0 || (m === 0 && now.getDate() < b.getDate())) a--
+  return a
+}
+
+function iolLabel(i) {
+  return [i.brand, i.model].filter(Boolean).join(' ') || i.iol_type || 'IOL'
+}
+
+// Map satu surgery_schedule (dengan visit/patient/examination/package) → bentuk view
+function mapSchedule(s) {
+  const v   = s.visit ?? null
+  const pt  = v?.patient ?? null
+  const ex  = v?.doctor_examination ?? null
+  const pkg = s.surgery_package ?? null
+  const items = pkg?.items ?? []
+  const bhpCount = items.filter(it => it.item_type === 'BHP').length
+  const iolCount = items.filter(it => it.item_type === 'IOL').length
+
+  // IOL dari rekomendasi biometri (PenunjangView) — per mata. Kosong jika belum ada.
+  const recs = v?.iol_recommendations ?? []
+  const iolByEye = (eye) => {
+    const r = recs.find(x => (x.eye_side || '').toUpperCase() === eye)
+    if (!r) return null
+    const power = r.recommended_power != null ? `+${Number(r.recommended_power)} D` : null
+    return { power, type: r.iol_type ?? null, brand: r.brand ?? null }
+  }
+  const iol = { od: iolByEye('OD'), os: iolByEye('OS') }
+
+  return {
+    id:        s.id,
+    visitId:   v?.id ?? null,
+    name:      pt?.name ?? '—',
+    rm:        pt?.no_rm ?? '—',
+    age:       ageFromDob(pt?.date_of_birth),
+    gender:    pt?.gender ?? '—',
+    ptype:     v?.guarantor_type === 'BPJS' ? 'bpjs' : 'umum',
+    dpjp:      s.lead_surgeon?.name ?? '—',
+    diagnosa:  ex?.diagnosis_utama ?? '—',
+    prosedur:  pkg?.name ?? '—',
+    scheduledDate: s.scheduled_date,
+    scheduledTime: s.scheduled_time,
+    ruang:     s.operation_room ?? '—',
+    iol,
+    paket: {
+      id:   pkg?.id ?? null,
+      kode: pkg?.code ?? '—',
+      nama: pkg?.name ?? 'Paket bedah',
+      bhpCount, iolCount,
+    },
+  }
+}
+
+// Map satu surgery_request (per pasien/operasi → Bedah) → bentuk view
+function mapRequest(r) {
+  return {
+    id:          'sr-' + r.id,
+    rawId:       r.id,
+    kind:        'bedah',
+    tanggal:     (r.created_at ?? '').slice(0, 10),
+    number:      null,
+    pasienName:  r.visit?.patient?.name ?? null,
+    paketKode:   r.surgery_schedule?.surgery_package?.code ?? null,
+    keterangan:  '',
+    status:      r.status ?? 'PENDING',
+    rawItems:    [],
+    bhpItems: (r.bhp_items ?? []).map(b => ({
+      item:   b.bhp_item?.name ?? '—',
+      jumlah: b.quantity,
+      satuan: b.bhp_item?.unit ?? '',
+    })),
+    iolItems: (r.iol_items ?? []).map(o => ({
+      item:   o.iol_item ? iolLabel(o.iol_item) : (o.requested_iol_type ?? 'IOL'),
+      jumlah: 1,
+      satuan: 'Pcs',
+      power:  o.requested_power != null ? `+${o.requested_power} D` : '',
+      eye:    o.eye_side,
+    })),
+  }
+}
+
+// Map satu unit_request (BHP/IOL → Inventori Farmasi) → bentuk view
+function mapUnitRequest(r) {
+  const items = Array.isArray(r.items) ? r.items : []
+  return {
+    id:          'ur-' + r.id,
+    rawId:       r.id,
+    kind:        'gudang',
+    tanggal:     (r.request_date ?? r.created_at ?? '').slice(0, 10),
+    number:      r.request_number ?? null,
+    pasienName:  null,
+    paketKode:   null,
+    keterangan:  '',
+    status:      r.status ?? 'DRAFT',
+    // untuk prefill retur per-baris
+    rawItems:    items.map(it => ({ item_type: it.item_type, item_id: it.item_id, qty: Number(it.qty_delivered || it.qty_requested || 1) })),
+    bhpItems: items.filter(it => it.item_type === 'BHP').map(it => ({
+      item: it.item_name ?? '—', jumlah: Number(it.qty_requested ?? 0), satuan: it.item_unit ?? '',
+    })),
+    iolItems: items.filter(it => it.item_type === 'IOL').map(it => ({
+      item: it.item_name ?? 'IOL', jumlah: Number(it.qty_requested ?? 0), satuan: it.item_unit ?? 'Pcs', power: '', eye: null,
+    })),
+  }
+}
+
+// Map satu unit_return (retur BHP/IOL ke gudang) → bentuk view
+function mapUnitReturn(r) {
+  const items = Array.isArray(r.items) ? r.items : []
+  return {
+    id:          'rt-' + r.id,
+    rawId:       r.id,
+    kind:        'retur',
+    tanggal:     (r.return_date ?? r.created_at ?? '').slice(0, 10),
+    number:      r.return_number ?? null,
+    pasienName:  null,
+    paketKode:   null,
+    keterangan:  r.reason ?? '',
+    status:      r.status ?? 'DRAFT',
+    rawItems:    [],
+    bhpItems: items.filter(it => it.item_type === 'BHP').map(it => ({
+      item: it.item_name ?? '—', jumlah: Number(it.qty_returned ?? 0), satuan: it.item_unit ?? '',
+    })),
+    iolItems: items.filter(it => it.item_type === 'IOL').map(it => ({
+      item: it.item_name ?? 'IOL', jumlah: Number(it.qty_returned ?? 0), satuan: it.item_unit ?? 'Pcs', power: '', eye: null,
+    })),
+  }
+}
+
+// ── Loaders ──────────────────────────────────────────────────────────────────
+async function loadJadwal() {
+  loadingJadwal.value = true
+  try {
+    const params = weekStart.value
+      ? { date_from: weekStart.value, date_to: weekEnd.value }
+      : { upcoming: 1 }
+    const res = await bedahApi.jadwal(params)
+    const list = res.data?.data ?? []
+    jadwal.value = (Array.isArray(list) ? list : []).map(mapSchedule)
+  } catch (e) {
+    jadwal.value = []
+    toast('w', e.response?.data?.message ?? 'Gagal memuat pasien terjadwal')
+  } finally {
+    loadingJadwal.value = false
+  }
+}
+
+async function loadRequests() {
+  loadingRequests.value = true
+  try {
+    const [srRes, urRes, rtRes] = await Promise.all([
+      bedahApi.listRequests().catch(() => null),
+      unitRequestApi.list({ station: 'BEDAH', per_page: 100 }).catch(() => null),
+      unitReturnApi.list({ station: 'BEDAH', per_page: 100 }).catch(() => null),
+    ])
+    const sr = (srRes ? (Array.isArray(srRes.data?.data) ? srRes.data.data : []) : []).map(mapRequest)
+    const ur = (urRes ? unwrapList(urRes) : []).map(mapUnitRequest)
+    const rt = (rtRes ? unwrapList(rtRes) : []).map(mapUnitReturn)
+    requests.value = [...sr, ...ur, ...rt].sort((a, b) => (b.tanggal || '').localeCompare(a.tanggal || ''))
+  } catch (e) {
+    requests.value = []
+    toast('w', e.response?.data?.message ?? 'Gagal memuat permintaan')
+  } finally {
+    loadingRequests.value = false
+  }
+}
+
+// Envelope { data: { data: [...] } } (paginated) atau { data: [...] } → selalu Array.
+function unwrapList(res) {
+  const d = res?.data?.data
+  if (Array.isArray(d)) return d
+  if (d && Array.isArray(d.data)) return d.data   // LengthAwarePaginator
+  return Array.isArray(res?.data) ? res.data : []
+}
+
+async function loadMasters() {
+  try {
+    const [bhpRes, iolRes] = await Promise.all([
+      masterApi.bhp.list({ per_page: 500 }),
+      masterApi.iol.list({ per_page: 500 }),
+    ])
+    bhpOptions.value = unwrapList(bhpRes)
+    iolOptions.value = unwrapList(iolRes)
+  } catch {
+    bhpOptions.value = []
+    iolOptions.value = []
+  }
+}
+
+onMounted(() => {
+  loadJadwal()
+  loadRequests()
+  loadMasters()
+})
 
 // ── UI State ───────────────────────────────────────────────────────────────
 const tab = ref('pasien')
 const showModal = ref(false)
-const modalMode = ref('paket')      // 'paket' | 'manual'
 const sourcePasien = ref(null)
-const form = ref(emptyForm())
-const newBhp = ref({ item: '', jumlah: 1, satuan: 'Pcs' })
-const newIol = ref({ item: '', jumlah: 1, satuan: 'Pcs', power: '' })
+const submitting = ref(false)
+
+// Modal Minta/Retur stok ke gudang (konsep manajemen stok farmasi, station=BEDAH)
+const showMintaModal = ref(false)
+const showReturModal = ref(false)
+const returPrefill   = ref(null)   // prefill retur dari satu permintaan (per-baris)
+function onStockChanged(payload) {
+  if (payload?.message) toast(payload.type ?? 'i', payload.message)
+  showReturModal.value = false
+  returPrefill.value = null
+  loadRequests()
+}
+
+// Sub-tab tab 2: 'aktif' (berjalan) | 'riwayat' (final)
+const reqSubTab = ref('aktif')
+const FINAL_STATUSES = ['CLOSED', 'RECEIVED', 'REJECTED']
+const activeRequests  = computed(() => requests.value.filter(r => !FINAL_STATUSES.includes(r.status)))
+const historyRequests = computed(() => requests.value.filter(r =>  FINAL_STATUSES.includes(r.status)))
+const shownRequests   = computed(() => reqSubTab.value === 'riwayat' ? historyRequests.value : activeRequests.value)
+
+// Aksi per-baris
+const rowBusy = ref(null)
+async function rowAction(r, fn, msg) {
+  rowBusy.value = r.id
+  try {
+    await fn()
+    toast('s', msg)
+    await loadRequests()
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Aksi gagal')
+  } finally {
+    rowBusy.value = null
+  }
+}
+// Terima barang: gudang DELIVERED→close ; bedah SENT→terima
+function terimaRow(r) {
+  if (r.kind === 'gudang') return rowAction(r, () => unitRequestApi.close(r.rawId), `Barang ${r.number ?? ''} diterima`)
+  if (r.kind === 'bedah')  return rowAction(r, () => bedahApi.terimaRequest(r.rawId), 'BHP/IOL diterima')
+}
+const canTerima = (r) => (r.kind === 'gudang' && r.status === 'DELIVERED') || (r.kind === 'bedah' && r.status === 'SENT')
+// Retur: hanya permintaan gudang yang sudah diterima (CLOSED)
+const canRetur = (r) => r.kind === 'gudang' && r.status === 'CLOSED'
+function returRow(r) {
+  returPrefill.value = { unit_request_id: r.rawId, items: r.rawItems ?? [] }
+  showReturModal.value = true
+}
+
+// Modal konfirmasi 1-klik request dari isi paket bedah
+const previewLoading = ref(false)
+const preview = ref(null)   // { bhp_items:[...], iol_items:[...] } prefilled dari paket
 const toasts = ref([])
 let toastId = 0
 
-const bhpOptions = ['BSS 500ml', 'Viscoelastic (OVD)', 'Spatula Sinskey', 'Spons Microsponge', 'Kapas Steril', 'Silk Suture 8-0', 'Vicryl 7-0', 'Cannula I/A', 'Keratome 2.75mm', 'Cystitome', 'Tampon Lensa']
-
-function emptyForm() {
-  return { tanggal: new Date().toISOString().slice(0, 10), bhpItems: [], iolItems: [], notes: '' }
-}
-
 // ── Computed ───────────────────────────────────────────────────────────────
-const requestsByDate = computed(() => {
-  const groups = {}
-  const sorted = [...requests.value].sort((a, b) => a.tanggal.localeCompare(b.tanggal))
-  for (const r of sorted) {
-    if (!groups[r.tanggal]) groups[r.tanggal] = []
-    groups[r.tanggal].push(r)
-  }
-  return Object.entries(groups).map(([date, items]) => ({ date, items }))
-})
-
-const statusLabel = { PENDING: 'Menunggu', APPROVED: 'Disetujui', REJECTED: 'Ditolak', DELIVERED: 'Terkirim' }
-const statusCls   = { PENDING: 'st-pending', APPROVED: 'st-approved', REJECTED: 'st-rejected', DELIVERED: 'st-delivered' }
+const statusLabel = { DRAFT: 'Draft', SUBMITTED: 'Menunggu', PENDING: 'Menunggu', APPROVED: 'Disetujui', REJECTED: 'Ditolak', DELIVERED: 'Terkirim', SENT: 'Terkirim', RECEIVED: 'Diterima', CLOSED: 'Diterima' }
+const statusCls   = { DRAFT: 'st-pending', SUBMITTED: 'st-pending', PENDING: 'st-pending', APPROVED: 'st-approved', REJECTED: 'st-rejected', DELIVERED: 'st-delivered', SENT: 'st-delivered', RECEIVED: 'st-approved', CLOSED: 'st-approved' }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDate(d) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+// Ringkasan item permintaan → "BSS 500ml ×2, IOL X ×1"
+function reqItemsText(r) {
+  const parts = [
+    ...r.bhpItems.map(b => `${b.item} ×${b.jumlah}`),
+    ...r.iolItems.map(o => `${o.item}${o.power ? ` ${o.power}` : ''} ×${o.jumlah}`),
+  ]
+  return parts.length ? parts.join(', ') : '—'
 }
 
 function toast(type, msg) {
@@ -137,61 +331,66 @@ function toast(type, msg) {
   setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id) }, 3000)
 }
 
-// ── Modal actions ──────────────────────────────────────────────────────────
-function openRequestFromPasien(p) {
+// ── Modal konfirmasi (1-klik request dari isi paket) ─────────────────────────
+async function openRequestFromPasien(p) {
+  if (!p.visitId) { toast('w', 'Pasien terjadwal ini belum punya kunjungan terkait'); return }
   sourcePasien.value = p
-  modalMode.value = 'paket'
-  form.value = {
-    tanggal: p.scheduledDate,
-    bhpItems: p.paketOperasi.bhpItems.map(b => ({ ...b })),
-    iolItems: p.paketOperasi.iolItems.map(i => ({ ...i })),
-    notes: `Untuk operasi ${p.prosedur} — ${p.name} (${p.qNum})`,
-  }
+  preview.value = null
   showModal.value = true
-}
-
-function openRequestManual() {
-  sourcePasien.value = null
-  modalMode.value = 'manual'
-  form.value = emptyForm()
-  showModal.value = true
-}
-
-function addBhpRow() {
-  if (!newBhp.value.item) { toast('w', 'Pilih item BHP'); return }
-  form.value.bhpItems.push({ ...newBhp.value })
-  newBhp.value = { item: '', jumlah: 1, satuan: 'Pcs' }
-}
-function removeBhpRow(i) { form.value.bhpItems.splice(i, 1) }
-
-function addIolRow() {
-  if (!newIol.value.item.trim()) { toast('w', 'Nama IOL wajib'); return }
-  form.value.iolItems.push({ ...newIol.value })
-  newIol.value = { item: '', jumlah: 1, satuan: 'Pcs', power: '' }
-}
-function removeIolRow(i) { form.value.iolItems.splice(i, 1) }
-
-function submitRequest() {
-  if (!form.value.bhpItems.length && !form.value.iolItems.length) {
-    toast('w', 'Tambah minimal 1 item BHP atau IOL'); return
+  previewLoading.value = true
+  try {
+    const res = await bedahApi.autoRequestPreview(p.id)
+    const d = res.data?.data ?? {}
+    preview.value = {
+      package:   d.package ?? null,
+      bhp_items: (d.bhp_items ?? []).map(b => ({ ...b })),
+      iol_items: (d.iol_items ?? []).map(o => ({ ...o })),
+    }
+  } catch (e) {
+    showModal.value = false
+    toast('w', e.response?.data?.message ?? 'Gagal memuat isi paket')
+  } finally {
+    previewLoading.value = false
   }
-  const newReq = {
-    id: Date.now(),
-    tanggal: form.value.tanggal,
-    source: modalMode.value === 'paket' ? 'jadwal' : 'manual',
-    pasienId: sourcePasien.value?.id,
-    pasienName: sourcePasien.value?.name,
-    paketKode: sourcePasien.value?.paketOperasi?.kode,
-    requestedBy: 'Petugas Bedah',
-    notes: form.value.notes,
-    bhpItems: [...form.value.bhpItems],
-    iolItems: [...form.value.iolItems],
-    status: 'PENDING',
+}
+
+// IOL hanya bisa ke unit-request bila item paket menunjuk master IOL (item_id).
+const iolSendable = computed(() => (preview.value?.iol_items ?? []).filter(o => o.iol_item_id))
+const iolSkipped  = computed(() => (preview.value?.iol_items ?? []).filter(o => !o.iol_item_id).length)
+const previewEmpty = computed(() =>
+  preview.value && !(preview.value.bhp_items?.length) && !iolSendable.value.length
+)
+
+async function submitRequest() {
+  if (!preview.value) return
+  const bhp = preview.value.bhp_items ?? []
+  const iol = iolSendable.value
+  if (!bhp.length && !iol.length) {
+    toast('w', 'Paket tidak punya item BHP/IOL (dgn master) untuk dikirim ke gudang'); return
   }
-  requests.value.push(newReq)
-  showModal.value = false
-  toast('s', `Permintaan ${modalMode.value === 'paket' ? `untuk ${sourcePasien.value.name}` : 'manual'} terkirim ke gudang/farmasi`)
-  tab.value = 'request'
+  const items = [
+    ...bhp.map(b => ({ item_type: 'BHP', item_id: b.bhp_item_id, qty_requested: b.quantity })),
+    ...iol.map(o => ({ item_type: 'IOL', item_id: o.iol_item_id, qty_requested: o.quantity ?? 1 })),
+  ]
+  submitting.value = true
+  try {
+    const res = await unitRequestApi.create({
+      requesting_station: 'BEDAH',
+      notes: `Auto dari paket ${preview.value.package?.code ?? '-'} — ${sourcePasien.value.name}`,
+      items,
+    })
+    const created = res.data?.data
+    if (created?.id) await unitRequestApi.submit(created.id)
+    showModal.value = false
+    toast('s', `Permintaan ${sourcePasien.value.name} terkirim ke Inventori Farmasi`)
+    tab.value = 'request'
+    await loadRequests()
+  } catch (e) {
+    const errs = e.response?.data?.errors
+    toast('w', errs ? Object.values(errs).flat()[0] : (e.response?.data?.message ?? 'Gagal mengirim permintaan'))
+  } finally {
+    submitting.value = false
+  }
 }
 </script>
 
@@ -221,43 +420,78 @@ function submitRequest() {
 
     <!-- ───────── TAB 1: PASIEN TERJADWAL ───────── -->
     <div v-if="tab === 'pasien'" class="bdt-body">
-      <div class="bdt-table">
-        <div class="bdt-row bdt-row-head">
-          <div class="col-date">Tanggal</div>
-          <div class="col-name">Nama Pasien</div>
-          <div class="col-dx">Diagnosa</div>
-          <div class="col-op">Jenis Operasi</div>
-          <div class="col-paket">Paket Operasi</div>
-          <div class="col-act"></div>
+      <!-- Weekpicker toolbar -->
+      <div class="wk-bar">
+        <div class="wk-nav">
+          <button class="wk-btn" title="Minggu sebelumnya" @click="shiftWeek(-1)">‹</button>
+          <input type="date" class="wk-date" :value="weekStart || ''" @change="onPickWeek" />
+          <button class="wk-btn" title="Minggu berikutnya" @click="shiftWeek(1)">›</button>
         </div>
-
-        <div v-for="p in jadwal" :key="p.id" class="bdt-row">
-          <div class="col-date">
-            <div class="dt-day">{{ fmtDate(p.scheduledDate) }}</div>
-            <div class="dt-time">{{ p.scheduledTime }} · {{ p.ruang }}</div>
-          </div>
-          <div class="col-name">
-            <div class="pt-name">{{ p.name }}</div>
-            <div class="pt-meta">{{ p.rm }} · {{ p.age }} th · {{ p.gender }} · <span :class="['ptype', `ptype-${p.ptype}`]">{{ p.ptype.toUpperCase() }}</span></div>
-            <div class="pt-dpjp">DPJP: {{ p.dpjp }}</div>
-          </div>
-          <div class="col-dx">{{ p.diagnosa }}</div>
-          <div class="col-op">{{ p.prosedur }}</div>
-          <div class="col-paket">
-            <span class="paket-kode">{{ p.paketOperasi.kode }}</span>
-            <div class="paket-nama">{{ p.paketOperasi.nama }}</div>
-            <div class="paket-count">{{ p.paketOperasi.bhpItems.length }} BHP · {{ p.paketOperasi.iolItems.length }} IOL</div>
-          </div>
-          <div class="col-act">
-            <button class="btn-req" @click="openRequestFromPasien(p)">
-              <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              Request BHP/IOL
-            </button>
-          </div>
-        </div>
-
-        <div v-if="!jadwal.length" class="bdt-empty">Belum ada pasien terjadwal</div>
+        <span class="wk-label">{{ weekLabel }}</span>
+        <button v-if="weekStart" class="wk-clear" @click="clearWeek">Semua mendatang</button>
       </div>
+
+      <table class="jt">
+        <thead>
+          <tr>
+            <th class="jt-no">No.</th>
+            <th class="jt-tgl">Tanggal</th>
+            <th>Nama Pasien</th>
+            <th>Diagnosa</th>
+            <th>Jenis Operasi</th>
+            <th class="jt-iol">IOL (Biometri)</th>
+            <th>Paket Operasi</th>
+            <th class="jt-act"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(p, i) in jadwal" :key="p.id">
+            <td class="jt-no">{{ i + 1 }}</td>
+            <td class="jt-tgl">
+              <div class="dt-day">{{ fmtDate(p.scheduledDate) }}</div>
+              <div class="dt-time">{{ p.scheduledTime ? p.scheduledTime.slice(0,5) : 'Belum dijam' }} · {{ p.ruang }}</div>
+            </td>
+            <td>
+              <div class="pt-name">{{ p.name }}</div>
+              <div class="pt-meta">{{ p.rm }} · {{ p.age != null ? p.age + ' th' : '—' }} · {{ p.gender }} · <span :class="['ptype', `ptype-${p.ptype}`]">{{ p.ptype.toUpperCase() }}</span></div>
+              <div class="pt-dpjp">DPJP: {{ p.dpjp }}</div>
+            </td>
+            <td class="td-dx">{{ p.diagnosa }}</td>
+            <td class="td-op">{{ p.prosedur }}</td>
+            <td class="jt-iol">
+              <template v-if="p.iol.od || p.iol.os">
+                <div v-if="p.iol.od" class="iol-eye">
+                  <span class="iol-tag">OD</span> {{ p.iol.od.power || '—' }}
+                  <span v-if="p.iol.od.type" class="iol-type">{{ p.iol.od.type }}</span>
+                </div>
+                <div v-if="p.iol.os" class="iol-eye">
+                  <span class="iol-tag">OS</span> {{ p.iol.os.power || '—' }}
+                  <span v-if="p.iol.os.type" class="iol-type">{{ p.iol.os.type }}</span>
+                </div>
+              </template>
+              <span v-else class="iol-empty">—</span>
+            </td>
+            <td>
+              <span class="paket-kode">{{ p.paket.kode }}</span>
+              <div class="paket-nama">{{ p.paket.nama }}</div>
+              <div class="paket-count">{{ p.paket.bhpCount }} BHP · {{ p.paket.iolCount }} IOL</div>
+            </td>
+            <td class="jt-act">
+              <button v-if="p.visitId" class="btn-req" @click="openRequestFromPasien(p)">
+                <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                Request BHP/IOL
+              </button>
+              <span v-else class="no-visit" title="Jadwal ini belum terhubung kunjungan pasien">Tanpa kunjungan</span>
+            </td>
+          </tr>
+          <tr v-if="loadingJadwal">
+            <td colspan="8" class="jt-empty">Memuat pasien terjadwal…</td>
+          </tr>
+          <tr v-else-if="!jadwal.length">
+            <td colspan="8" class="jt-empty">{{ weekStart ? 'Tidak ada pasien terjadwal di minggu ini' : 'Belum ada pasien terjadwal mendatang' }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- ───────── TAB 2: REQUEST DASHBOARD ───────── -->
@@ -265,156 +499,154 @@ function submitRequest() {
       <div class="dash-head">
         <div>
           <div class="dash-title">Permintaan BHP &amp; IOL ke Gudang / Farmasi</div>
-          <div class="dash-sub">{{ requests.length }} permintaan · {{ requestsByDate.length }} tanggal</div>
+          <div class="dash-sub">{{ activeRequests.length }} berjalan · {{ historyRequests.length }} riwayat</div>
         </div>
-        <button class="btn-add" @click="openRequestManual">
-          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Tambah Permintaan
+        <div class="dash-actions">
+          <button class="btn-stock minta" @click="showMintaModal = true">
+            <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+            Minta BHP/IOL
+          </button>
+          <button class="btn-stock retur" @click="returPrefill = null; showReturModal = true">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+            Retur BHP/IOL
+          </button>
+        </div>
+      </div>
+
+      <!-- Sub-tab: Aktif | Riwayat -->
+      <div class="sub-tabs">
+        <button :class="['sub-tab', reqSubTab === 'aktif' ? 'a' : '']" @click="reqSubTab = 'aktif'">
+          Berjalan <span class="sub-ct">{{ activeRequests.length }}</span>
+        </button>
+        <button :class="['sub-tab', reqSubTab === 'riwayat' ? 'a' : '']" @click="reqSubTab = 'riwayat'">
+          Riwayat <span class="sub-ct">{{ historyRequests.length }}</span>
         </button>
       </div>
 
-      <div v-if="!requests.length" class="bdt-empty">Belum ada permintaan</div>
-
-      <div v-for="grp in requestsByDate" :key="grp.date" class="dash-group">
-        <div class="dash-date">
-          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-          {{ fmtDate(grp.date) }}
-          <span class="dash-date-ct">{{ grp.items.length }} permintaan</span>
-        </div>
-
-        <div v-for="r in grp.items" :key="r.id" class="req-card">
-          <div class="req-top">
-            <div class="req-source">
-              <span :class="['source-pill', r.source === 'jadwal' ? 'src-jadwal' : 'src-manual']">
-                <svg v-if="r.source === 'jadwal'" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/></svg>
-                <svg v-else viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                {{ r.source === 'jadwal' ? 'Dari Jadwal' : 'Manual' }}
+      <table class="jt">
+        <thead>
+          <tr>
+            <th class="jt-no">No.</th>
+            <th class="jt-tgl">Tanggal</th>
+            <th style="width:150px">Tujuan</th>
+            <th>Item</th>
+            <th style="width:150px">Keterangan</th>
+            <th class="jt-stat">Status</th>
+            <th class="jt-act2">Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(r, i) in shownRequests" :key="r.id">
+            <td class="jt-no">{{ i + 1 }}</td>
+            <td class="jt-tgl">
+              <div class="dt-day">{{ fmtDate(r.tanggal) }}</div>
+              <div v-if="r.number" class="dt-time">{{ r.number }}</div>
+            </td>
+            <td>
+              <span :class="['source-pill', r.kind === 'retur' ? 'src-retur' : (r.kind === 'gudang' ? 'src-gudang' : 'src-jadwal')]">
+                {{ r.kind === 'retur' ? 'Retur' : (r.kind === 'gudang' ? 'Inventori Farmasi' : 'Bedah') }}
               </span>
-              <span v-if="r.pasienName" class="req-pasien">{{ r.pasienName }}</span>
-              <span v-if="r.paketKode" class="req-paket">{{ r.paketKode }}</span>
-            </div>
-            <span :class="['status-pill', statusCls[r.status]]">{{ statusLabel[r.status] }}</span>
-          </div>
-
-          <div class="req-items">
-            <div v-if="r.bhpItems.length" class="items-block">
-              <div class="items-label">BHP ({{ r.bhpItems.length }} item)</div>
-              <table class="items-tbl">
-                <tr v-for="(b, i) in r.bhpItems" :key="i">
-                  <td>{{ b.item }}</td>
-                  <td class="num">{{ b.jumlah }} {{ b.satuan }}</td>
-                </tr>
-              </table>
-            </div>
-            <div v-if="r.iolItems.length" class="items-block items-iol">
-              <div class="items-label">IOL ({{ r.iolItems.length }} item)</div>
-              <table class="items-tbl">
-                <tr v-for="(o, i) in r.iolItems" :key="i">
-                  <td>{{ o.item }} <span v-if="o.power" class="iol-pwr">{{ o.power }}</span></td>
-                  <td class="num">{{ o.jumlah }} {{ o.satuan }}</td>
-                </tr>
-              </table>
-            </div>
-          </div>
-
-          <div v-if="r.notes" class="req-notes">{{ r.notes }}</div>
-          <div class="req-foot">
-            <span>Diminta oleh: <b>{{ r.requestedBy }}</b></span>
-          </div>
-        </div>
-      </div>
+              <div v-if="r.pasienName" class="req-sub">{{ r.pasienName }}<span v-if="r.paketKode"> · {{ r.paketKode }}</span></div>
+            </td>
+            <td class="td-items">{{ reqItemsText(r) }}</td>
+            <td class="td-ket">{{ r.keterangan || '—' }}</td>
+            <td class="jt-stat"><span :class="['status-pill', statusCls[r.status]]">{{ statusLabel[r.status] ?? r.status }}</span></td>
+            <td class="jt-act2">
+              <button v-if="canTerima(r)" class="row-btn ok" :disabled="rowBusy === r.id" @click="terimaRow(r)">
+                {{ rowBusy === r.id ? '…' : 'Terima' }}
+              </button>
+              <button v-if="canRetur(r)" class="row-btn warn" :disabled="rowBusy === r.id" @click="returRow(r)">Retur</button>
+              <span v-if="!canTerima(r) && !canRetur(r)" class="row-dash">—</span>
+            </td>
+          </tr>
+          <tr v-if="loadingRequests">
+            <td colspan="7" class="jt-empty">Memuat permintaan…</td>
+          </tr>
+          <tr v-else-if="!shownRequests.length">
+            <td colspan="7" class="jt-empty">
+              {{ reqSubTab === 'riwayat' ? 'Belum ada riwayat permintaan.' : 'Belum ada permintaan berjalan. Klik “Minta BHP/IOL” atau buat dari Pasien Terjadwal.' }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <!-- ───────── MODAL: REQUEST BHP/IOL ───────── -->
+    <!-- ───────── MODAL: KONFIRMASI REQUEST DARI PAKET ───────── -->
     <div v-if="showModal" class="overlay" @click.self="showModal = false">
       <div class="modal">
         <div class="modal-head">
           <div>
             <div class="modal-title">
               <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              {{ modalMode === 'paket' ? `Request BHP/IOL — ${sourcePasien?.name}` : 'Tambah Permintaan BHP/IOL' }}
+              Minta BHP/IOL ke Inventori Farmasi — {{ sourcePasien?.name }}
             </div>
-            <div v-if="modalMode === 'paket' && sourcePasien" class="modal-sub">
-              {{ sourcePasien.prosedur }} · Paket {{ sourcePasien.paketOperasi.kode }} — {{ sourcePasien.paketOperasi.nama }}
+            <div v-if="sourcePasien" class="modal-sub">
+              {{ sourcePasien.prosedur }} · Paket {{ sourcePasien.paket.kode }} — {{ sourcePasien.paket.nama }} · isi sesuai paket bedah
             </div>
-            <div v-else class="modal-sub">Permintaan manual ke gudang / farmasi</div>
           </div>
           <button class="modal-close" @click="showModal = false">×</button>
         </div>
 
         <div class="modal-body">
-          <div class="fld">
-            <label>Tanggal Permintaan</label>
-            <input type="date" v-model="form.tanggal" />
-          </div>
+          <div v-if="previewLoading" class="empty-inline">Memuat isi paket…</div>
 
-          <!-- BHP -->
-          <div class="sec">
-            <div class="sec-hd">BHP <span class="sec-ct">{{ form.bhpItems.length }}</span></div>
-            <table class="form-tbl" v-if="form.bhpItems.length">
-              <thead><tr><th>Item</th><th>Jml</th><th>Satuan</th><th></th></tr></thead>
-              <tbody>
-                <tr v-for="(b, i) in form.bhpItems" :key="i">
-                  <td>{{ b.item }}</td>
-                  <td><input type="number" min="1" v-model.number="b.jumlah" class="qty-input" /></td>
-                  <td>{{ b.satuan }}</td>
-                  <td><button class="del-btn" @click="removeBhpRow(i)">✕</button></td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-else class="empty-inline">Belum ada BHP</div>
-            <div class="add-row">
-              <select v-model="newBhp.item">
-                <option value="">— Pilih BHP —</option>
-                <option v-for="o in bhpOptions" :key="o">{{ o }}</option>
-              </select>
-              <input type="number" min="1" v-model.number="newBhp.jumlah" style="width:60px" />
-              <select v-model="newBhp.satuan">
-                <option>Pcs</option><option>Botol</option><option>Syringe</option><option>Lembar</option><option>Set</option>
-              </select>
-              <button class="btn-add-sm" @click="addBhpRow">+ Tambah BHP</button>
+          <template v-else-if="preview">
+            <div v-if="previewEmpty" class="bdt-empty">Paket ini tidak punya komponen BHP/IOL (dengan master stok) untuk diminta ke gudang.</div>
+
+            <!-- BHP (read-only, dari paket) -->
+            <div v-if="preview.bhp_items.length" class="sec">
+              <div class="sec-hd">BHP <span class="sec-ct">{{ preview.bhp_items.length }}</span> <span class="sec-note">sesuai paket</span></div>
+              <table class="form-tbl">
+                <thead><tr><th>Item</th><th style="width:90px">Jml</th><th style="width:90px">Satuan</th></tr></thead>
+                <tbody>
+                  <tr v-for="(b, i) in preview.bhp_items" :key="i">
+                    <td>{{ b.name }}</td>
+                    <td>{{ b.quantity }}</td>
+                    <td>{{ b.unit || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </div>
 
-          <!-- IOL -->
-          <div class="sec">
-            <div class="sec-hd">IOL <span class="sec-ct">{{ form.iolItems.length }}</span></div>
-            <table class="form-tbl" v-if="form.iolItems.length">
-              <thead><tr><th>Item / Model</th><th>Power</th><th>Jml</th><th>Satuan</th><th></th></tr></thead>
-              <tbody>
-                <tr v-for="(o, i) in form.iolItems" :key="i">
-                  <td>{{ o.item }}</td>
-                  <td>{{ o.power || '—' }}</td>
-                  <td><input type="number" min="1" v-model.number="o.jumlah" class="qty-input" /></td>
-                  <td>{{ o.satuan }}</td>
-                  <td><button class="del-btn" @click="removeIolRow(i)">✕</button></td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-else class="empty-inline">Belum ada IOL</div>
-            <div class="add-row">
-              <input type="text" v-model="newIol.item" placeholder="Nama / Model IOL" style="flex:2" />
-              <input type="text" v-model="newIol.power" placeholder="Power (mis. +21.0 D)" style="flex:1" />
-              <input type="number" min="1" v-model.number="newIol.jumlah" style="width:60px" />
-              <button class="btn-add-sm" @click="addIolRow">+ Tambah IOL</button>
+            <!-- IOL (read-only — hanya yang punya master stok yang dikirim) -->
+            <div v-if="iolSendable.length" class="sec">
+              <div class="sec-hd">IOL <span class="sec-ct">{{ iolSendable.length }}</span> <span class="sec-note">sesuai paket</span></div>
+              <table class="form-tbl">
+                <thead><tr><th>Item</th><th style="width:90px">Jml</th></tr></thead>
+                <tbody>
+                  <tr v-for="(o, i) in iolSendable" :key="i">
+                    <td>{{ o.master_label || 'IOL' }}</td>
+                    <td>{{ o.quantity ?? 1 }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </div>
 
-          <div class="fld">
-            <label>Catatan</label>
-            <textarea v-model="form.notes" rows="2" placeholder="Catatan tambahan untuk gudang / farmasi…"></textarea>
-          </div>
+            <div v-if="iolSkipped" class="empty-inline">
+              {{ iolSkipped }} item IOL di paket tidak terhubung master stok — tidak ikut dikirim ke gudang.
+            </div>
+          </template>
         </div>
 
         <div class="modal-foot">
           <button class="btn-sec" @click="showModal = false">Batal</button>
-          <button class="btn-primary" @click="submitRequest">
+          <button class="btn-primary" :disabled="submitting || previewLoading || previewEmpty" @click="submitRequest">
             <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            Kirim Permintaan
+            {{ submitting ? 'Mengirim…' : 'Kirim ke Inventori Farmasi' }}
           </button>
         </div>
       </div>
     </div>
+
+    <!-- ───────── MODAL: MINTA & RETUR STOK KE GUDANG ───────── -->
+    <RequestBhpIolModal
+      :open="showMintaModal" :bhp="bhpOptions" :iol="iolOptions"
+      @close="showMintaModal = false" @changed="onStockChanged"
+    />
+    <ReturBhpIolModal
+      :open="showReturModal" :bhp="bhpOptions" :iol="iolOptions" :prefill="returPrefill"
+      @close="showReturModal = false; returPrefill = null" @changed="onStockChanged"
+    />
 
     <!-- ───────── TOAST ───────── -->
     <div class="toast-wrap">
@@ -443,35 +675,56 @@ function submitRequest() {
 .bdt-body { min-height: 50vh; }
 .bdt-empty { text-align: center; padding: 2rem; font-size: 13px; color: var(--th); background: var(--bi); border: 1px dashed var(--gb); border-radius: 10px; }
 
-/* ── TAB 1: list table ── */
-.bdt-table { display: flex; flex-direction: column; border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; background: var(--bc); }
-.bdt-row { display: grid; grid-template-columns: 170px 1.4fr 1.5fr 1.2fr 1.4fr 150px; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--gb); align-items: flex-start; }
-.bdt-row:last-child { border-bottom: none; }
-.bdt-row-head { background: var(--bs); font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 16px; }
-.bdt-row:not(.bdt-row-head):hover { background: var(--gl); }
+/* ── TAB 1: weekpicker toolbar ── */
+.wk-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 0.9rem; flex-wrap: wrap; }
+.wk-nav { display: inline-flex; align-items: center; gap: 4px; }
+.wk-btn { width: 30px; height: 30px; border: 1.5px solid var(--gb); background: var(--bc); border-radius: 7px; font-size: 16px; line-height: 1; color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.wk-btn:hover { border-color: var(--ga); color: var(--ga); }
+.wk-date { height: 30px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 8px; font-size: 12px; font-family: 'DM Sans', sans-serif; background: var(--bs); color: var(--td); outline: none; }
+.wk-date:focus { border-color: var(--ga); background: #fff; }
+.wk-label { font-size: 12.5px; font-weight: 700; color: var(--gd); }
+.wk-clear { font-size: 11px; font-weight: 600; color: var(--ga); background: var(--gl); border: 1.5px solid var(--ga); border-radius: 7px; padding: 5px 10px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.wk-clear:hover { background: var(--ga); color: #fff; }
 
-.col-date { font-size: 12px; }
+/* ── TAB 1: tabel jadwal ── */
+.jt { width: 100%; border-collapse: collapse; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; font-size: 12px; }
+.jt thead th { background: var(--bs); font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--gb); }
+.jt tbody td { padding: 11px 14px; border-bottom: 1px solid var(--gb); vertical-align: top; }
+.jt tbody tr:last-child td { border-bottom: none; }
+.jt tbody tr:hover td { background: var(--gl); }
+.jt-no { width: 46px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--tu); }
+.jt-tgl { width: 168px; }
+.jt-act { width: 158px; text-align: right; }
+.jt-empty { text-align: center; padding: 1.8rem; color: var(--th); font-size: 13px; }
+
 .dt-day { font-weight: 700; color: var(--gd); }
 .dt-time { font-size: 11px; color: var(--tu); margin-top: 2px; }
-.col-name .pt-name { font-size: 13.5px; font-weight: 600; color: var(--td); }
-.col-name .pt-meta { font-size: 11px; color: var(--tu); margin-top: 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.col-name .pt-dpjp { font-size: 10.5px; color: var(--tu); margin-top: 3px; }
+.pt-name { font-size: 13px; font-weight: 600; color: var(--td); }
+.pt-meta { font-size: 11px; color: var(--tu); margin-top: 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pt-dpjp { font-size: 10.5px; color: var(--tu); margin-top: 3px; }
 .ptype { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
 .ptype-bpjs { background: #dbeafe; color: #1e40af; }
 .ptype-umum { background: var(--gl); color: var(--ga); }
 .ptype-asn  { background: var(--wb); color: var(--wt); }
 
-.col-dx { font-size: 12px; color: var(--td); line-height: 1.5; }
-.col-op { font-size: 12px; color: var(--gm); font-weight: 500; line-height: 1.5; }
+.td-dx { color: var(--td); line-height: 1.5; }
+.td-op { color: var(--gm); font-weight: 500; line-height: 1.5; }
 
-.col-paket .paket-kode { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 7px; background: var(--gl); color: var(--ga); border-radius: 4px; margin-bottom: 3px; font-family: 'DM Mono', monospace; }
-.col-paket .paket-nama { font-size: 11.5px; color: var(--td); line-height: 1.4; }
-.col-paket .paket-count { font-size: 10px; color: var(--tu); margin-top: 3px; }
+.jt-iol { width: 140px; }
+.iol-eye { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; color: var(--td); white-space: nowrap; }
+.iol-eye + .iol-eye { margin-top: 4px; }
+.iol-tag { flex: none; width: 24px; text-align: center; font-size: 9px; font-weight: 700; padding: 1px 0; border-radius: 4px; background: #ede9fe; color: #5b21b6; }
+.iol-type { font-size: 9.5px; font-weight: 600; color: var(--tu); }
+.iol-empty { color: var(--th); }
 
-.col-act { display: flex; justify-content: flex-end; align-items: flex-start; }
+.paket-kode { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 7px; background: var(--gl); color: var(--ga); border-radius: 4px; margin-bottom: 3px; font-family: 'DM Mono', monospace; }
+.paket-nama { font-size: 11.5px; color: var(--td); line-height: 1.4; }
+.paket-count { font-size: 10px; color: var(--tu); margin-top: 3px; }
+
 .btn-req { display: inline-flex; align-items: center; gap: 5px; padding: 7px 12px; background: var(--ga); color: #fff; border: none; border-radius: 8px; font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: background .14s; white-space: nowrap; }
 .btn-req:hover { background: var(--gm); }
 .btn-req svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.no-visit { font-size: 11px; color: var(--th); font-style: italic; white-space: nowrap; }
 
 /* ── TAB 2: dashboard ── */
 .dash-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
@@ -480,6 +733,14 @@ function submitRequest() {
 .btn-add { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; background: var(--ga); color: #fff; border: none; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: background .14s; }
 .btn-add:hover { background: var(--gm); }
 .btn-add svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+
+.dash-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-stock { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; border: 1.5px solid; background: var(--bc); transition: all .14s; }
+.btn-stock svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.btn-stock.minta { color: #1763d4; border-color: #1763d4; }
+.btn-stock.minta:hover { background: #1763d4; color: #fff; }
+.btn-stock.retur { color: #b45309; border-color: #f59e0b; }
+.btn-stock.retur:hover { background: #f59e0b; color: #fff; }
 
 .dash-group { margin-bottom: 1.25rem; }
 .dash-date { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--gd); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.55rem; padding: 0 4px; }
@@ -493,6 +754,7 @@ function submitRequest() {
 .source-pill svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .src-jadwal { background: #dbeafe; color: #1e40af; }
 .src-manual { background: var(--gl); color: var(--ga); }
+.src-gudang { background: #fef3c7; color: #92400e; }
 .req-pasien { font-size: 12.5px; font-weight: 600; color: var(--td); }
 .req-paket { font-size: 10px; font-weight: 700; padding: 2px 6px; background: var(--bi); color: var(--tu); border-radius: 4px; font-family: 'DM Mono', monospace; }
 
@@ -501,6 +763,28 @@ function submitRequest() {
 .st-approved  { background: var(--sb); color: var(--st); }
 .st-rejected  { background: var(--eb); color: var(--et); }
 .st-delivered { background: #dbeafe; color: #1e40af; }
+
+/* tab 2 — sub-tabs + tabel permintaan */
+.sub-tabs { display: flex; gap: 4px; margin-bottom: 0.8rem; }
+.sub-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: var(--tu); background: var(--bs); border: 1.5px solid var(--gb); border-radius: 8px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.sub-tab:hover { border-color: var(--ga); color: var(--ga); }
+.sub-tab.a { background: var(--ga); border-color: var(--ga); color: #fff; }
+.sub-ct { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: rgba(0,0,0,.08); }
+.sub-tab.a .sub-ct { background: rgba(255,255,255,.25); }
+
+.jt-stat { width: 110px; }
+.jt-act2 { width: 120px; text-align: right; }
+.req-sub { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
+.td-items { color: var(--td); line-height: 1.5; }
+.td-ket { font-size: 11px; color: var(--tm); line-height: 1.4; }
+.src-retur { background: var(--eb); color: var(--et); }
+.row-btn { padding: 5px 11px; font-size: 11px; font-weight: 600; border-radius: 6px; border: 1.5px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; background: var(--bc); margin-left: 4px; }
+.row-btn:disabled { opacity: .5; cursor: not-allowed; }
+.row-btn.ok { color: #166534; border-color: #16a34a; }
+.row-btn.ok:hover:not(:disabled) { background: #16a34a; color: #fff; }
+.row-btn.warn { color: #b45309; border-color: #f59e0b; }
+.row-btn.warn:hover:not(:disabled) { background: #f59e0b; color: #fff; }
+.row-dash { color: var(--th); }
 
 .req-items { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 9px; }
 .items-block { background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; padding: 8px 10px; }
@@ -534,7 +818,9 @@ function submitRequest() {
 .sec { margin-bottom: 14px; padding: 11px 12px; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; }
 .sec-hd { font-size: 11px; font-weight: 700; color: var(--td); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 .sec-ct { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: var(--gl); color: var(--ga); }
+.sec-note { font-size: 9.5px; font-weight: 600; color: var(--tu); text-transform: none; letter-spacing: 0; }
 .empty-inline { font-size: 11px; color: var(--th); font-style: italic; padding: 6px 0; }
+.rec-badge { display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: .03em; }
 
 .form-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; background: var(--bc); border-radius: 6px; overflow: hidden; }
 .form-tbl th { background: var(--bi); padding: 6px 8px; text-align: left; font-size: 10px; font-weight: 700; color: var(--tu); text-transform: uppercase; }

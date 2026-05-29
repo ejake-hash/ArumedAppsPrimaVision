@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Models\BhpItem;
 use App\Models\IolItem;
+use App\Models\IolRecommendation;
 use App\Models\Queue;
 use App\Models\SurgeryIolUsage;
 use App\Models\SurgeryRecord;
@@ -28,13 +30,67 @@ class BedahService
     // ANTRIAN
     // =========================================================================
 
-    public function getPatientQueue(): Collection
+    public function getPatientQueue(): array
     {
-        return Queue::with(['visit.patient', 'visit.doctorExamination.surgeryPackage'])
+        $queues = Queue::with([
+            'visit.patient',
+            'visit.insurer',
+            'visit.surgerySchedule.surgeryPackage',
+            'visit.doctorExamination.surgeryPackage',
+        ])
             ->where('station', 'BEDAH')
             ->whereDate('created_at', today())
             ->orderBy('queue_sequence')
             ->get();
+
+        return $queues->map(function (Queue $q) {
+            $visit   = $q->visit;
+            $patient = $visit?->patient;
+            $dob     = $patient?->date_of_birth;
+
+            // Schedule: prefer dari visit.surgery_schedule_id (preop flow),
+            // fallback ke doctor_examination.surgery_schedule (skenario C).
+            $schedule = $visit?->surgerySchedule ?? $visit?->doctorExamination?->surgerySchedule ?? null;
+            $package  = $schedule?->surgeryPackage ?? $visit?->doctorExamination?->surgeryPackage ?? null;
+
+            return [
+                'id'             => $q->id,
+                'queue_number'   => $q->queue_number,
+                'queue_sequence' => $q->queue_sequence,
+                'status'         => $q->status,
+                'called_at'      => $q->called_at?->toIso8601String(),
+                'started_at'     => $q->started_at?->toIso8601String(),
+                'completed_at'   => $q->completed_at?->toIso8601String(),
+
+                'visit' => $visit ? [
+                    'id'             => $visit->id,
+                    'classification' => $visit->classification,
+                    'visit_type'     => $visit->visit_type,
+                    'guarantor_type' => $visit->guarantor_type,
+                    'insurer_name'   => $visit->insurer?->name,
+                ] : null,
+
+                'patient' => $patient ? [
+                    'id'     => $patient->id,
+                    'no_rm'  => $patient->no_rm,
+                    'name'   => $patient->name,
+                    'gender' => $patient->gender,
+                    'age'    => $dob ? $dob->age : null,
+                ] : null,
+
+                'surgery_schedule' => $schedule ? [
+                    'id'             => $schedule->id,
+                    'scheduled_date' => $schedule->scheduled_date?->toDateString(),
+                    'scheduled_time' => $schedule->scheduled_time,
+                    'operation_room' => $schedule->operation_room,
+                    'status'         => $schedule->status,
+                    'package'        => $package ? [
+                        'id'   => $package->id,
+                        'name' => $package->name,
+                    ] : null,
+                ] : null,
+            ];
+        })->all();
     }
 
     public function panggilAntrian(string $queueId): Queue
@@ -60,14 +116,32 @@ class BedahService
     public function getScheduledSurgeries(array $filters = []): Collection
     {
         $query = SurgerySchedule::with([
-            'surgeryPackage',
+            'surgeryPackage.items',
             'leadSurgeon',
             'anesthesiologist',
             'surgeryRecord',
             'surgeryRequests',
+            'visit.patient',
+            'visit.doctorExamination',
+            'visit.iolRecommendations',
         ]);
 
-        if (! empty($filters['tanggal'])) {
+        // Rentang tanggal (weekpicker): tampilkan jadwal SCHEDULED dalam minggu terpilih.
+        if (! empty($filters['date_from']) || ! empty($filters['date_to'])) {
+            if (! empty($filters['date_from'])) {
+                $query->whereDate('scheduled_date', '>=', $filters['date_from']);
+            }
+            if (! empty($filters['date_to'])) {
+                $query->whereDate('scheduled_date', '<=', $filters['date_to']);
+            }
+            $query->where('status', 'SCHEDULED');
+        }
+        // Mode upcoming: jadwal SETELAH hari ini (pasien terjadwal mendatang).
+        // Jadwal hari ini sengaja dikecualikan — pasien itu sudah masuk antrean Bedah.
+        elseif (! empty($filters['upcoming'])) {
+            $query->whereDate('scheduled_date', '>', today())
+                  ->where('status', 'SCHEDULED');
+        } elseif (! empty($filters['tanggal'])) {
             $query->whereDate('scheduled_date', $filters['tanggal']);
         } else {
             $query->whereDate('scheduled_date', today());
@@ -77,7 +151,7 @@ class BedahService
             $query->where('status', $filters['status']);
         }
 
-        return $query->orderBy('scheduled_time')->get();
+        return $query->orderBy('scheduled_date')->orderBy('scheduled_time')->get();
     }
 
     public function getScheduleById(string $id): SurgerySchedule
@@ -408,11 +482,11 @@ class BedahService
             foreach ($data['iol_items'] ?? [] as $item) {
                 SurgeryRequestIol::create([
                     'surgery_request_id'  => $request->id,
-                    'eye_side'            => $item['eye_side'],
+                    'eye_side'            => $item['eye_side'] ?? 'OD',
                     'requested_iol_type'  => $item['requested_iol_type'] ?? 'MONOFOCAL',
-                    'requested_power'     => $item['requested_power'],
+                    'requested_power'     => $item['requested_power'] ?? null,
+                    'iol_item_id'         => $item['iol_item_id'] ?? null,
                     'notes'               => $item['notes'] ?? null,
-                    // iol_item_id = NULL sampai Farmasi assign
                 ]);
             }
 
@@ -496,6 +570,106 @@ class BedahService
     }
 
     /**
+     * Susun preview request BHP/IOL dari komposisi paket bedah pada satu jadwal.
+     * Dipakai BedahTerjadwalView untuk 1-klik "Request BHP/IOL" — BHP diisi penuh
+     * dari paket; IOL diisi dari IolRecommendation visit (eye_side+power+type),
+     * sisanya baris kosong (nullable) untuk dilengkapi user/Farmasi.
+     */
+    public function buildRequestPreviewFromSchedule(string $scheduleId): array
+    {
+        $schedule = SurgerySchedule::with(['surgeryPackage.items', 'visit.patient'])
+            ->findOrFail($scheduleId);
+
+        $visit = $schedule->visit;
+        if (! $visit) {
+            throw new \Exception('Jadwal operasi ini belum terhubung dengan kunjungan pasien.', 422);
+        }
+
+        $package = $schedule->surgeryPackage;
+        $items   = $package?->items ?? collect();
+
+        // --- BHP: langsung dari komposisi paket ---
+        $bhpItems = [];
+        foreach ($items->where('item_type', 'BHP') as $it) {
+            $bhp = BhpItem::find($it->item_id);
+            if (! $bhp) continue;
+            $bhpItems[] = [
+                'bhp_item_id' => $bhp->id,
+                'name'        => $bhp->name,
+                'code'        => $bhp->code,
+                'unit'        => $bhp->unit,
+                'quantity'    => (int) ($it->quantity ?? 1),
+            ];
+        }
+
+        // --- IOL: pasangkan item paket dengan IolRecommendation visit ---
+        $recs = IolRecommendation::where('visit_id', $visit->id)
+            ->orderByDesc('is_approved')
+            ->orderByDesc('created_at')
+            ->get()
+            ->values();
+
+        $iolItems = [];
+        $recIdx = 0;
+        foreach ($items->where('item_type', 'IOL') as $it) {
+            $rec  = $recs->get($recIdx);
+            $recIdx++;
+            $iol  = IolItem::find($it->item_id);
+            $iolItems[] = [
+                'iol_item_id'        => $iol?->id,
+                'quantity'           => (int) ($it->quantity ?? 1),
+                'eye_side'           => $rec?->eye_side ?? 'OD',
+                'requested_power'    => $rec ? (float) $rec->recommended_power : null,
+                'requested_iol_type' => $rec?->iol_type ?? $iol?->iol_type ?? null,
+                'from_recommendation'=> (bool) $rec,
+                'master_label'       => $iol ? trim(($iol->brand ?? '') . ' ' . ($iol->model ?? '')) : null,
+            ];
+        }
+
+        return [
+            'visit_id'    => $visit->id,
+            'schedule_id' => $schedule->id,
+            'patient'     => $visit->patient?->name,
+            'package'     => $package ? ['id' => $package->id, 'code' => $package->code, 'name' => $package->name] : null,
+            'bhp_items'   => $bhpItems,
+            'iol_items'   => $iolItems,
+        ];
+    }
+
+    /**
+     * 1-klik: buat request dari paket (BHP + IOL yang sudah dilengkapi user) lalu
+     * langsung kirim ke Bedah (REQUESTED → SENT) dalam satu transaksi.
+     */
+    public function sendRequestFromSchedule(string $scheduleId, array $data): SurgeryRequest
+    {
+        $schedule = SurgerySchedule::with(['surgeryPackage', 'visit.patient'])->findOrFail($scheduleId);
+        $visit = $schedule->visit;
+        if (! $visit) {
+            throw new \Exception('Jadwal operasi ini belum terhubung dengan kunjungan pasien.', 422);
+        }
+
+        $bhpItems = $data['bhp_items'] ?? [];
+        $iolItems = $data['iol_items'] ?? [];
+        if (empty($bhpItems) && empty($iolItems)) {
+            throw new \Exception('Paket tidak memiliki item BHP/IOL untuk dikirim.', 422);
+        }
+
+        $pkgCode = $schedule->surgeryPackage?->code ?? '-';
+        $notes   = "Auto dari paket {$pkgCode} — {$visit->patient?->name}";
+
+        return DB::transaction(function () use ($visit, $scheduleId, $bhpItems, $iolItems, $notes) {
+            $request = $this->createSupplyRequest($visit->id, [
+                'surgery_schedule_id' => $scheduleId,
+                'notes'               => $notes,
+                'bhp_items'           => $bhpItems,
+                'iol_items'           => $iolItems,
+            ]);
+
+            return $this->kirimRequest($request->id);
+        });
+    }
+
+    /**
      * Konfirmasi terima BHP+IOL dari Farmasi (SENT → RECEIVED).
      */
     public function terimaRequest(string $id): SurgeryRequest
@@ -506,20 +680,63 @@ class BedahService
             throw new \Exception('Hanya request dengan status SENT yang bisa dikonfirmasi.', 422);
         }
 
-        $request->update([
-            'status'      => 'RECEIVED',
-            'received_at' => now(),
-        ]);
+        return DB::transaction(function () use ($request, $id) {
+            $request->update([
+                'status'      => 'RECEIVED',
+                'received_at' => now(),
+            ]);
 
-        $this->log(
-            auth('api')->id(),
-            'TERIMA_REQUEST',
-            SurgeryRequest::class,
-            $id,
-            'BHP+IOL diterima dari Farmasi — siap operasi'
-        );
+            // Seed used_qty = quantity supaya billing langsung bisa hitung;
+            // bedah masih bisa adjust ± lewat adjustBhpUsage sebelum kasir consolidate.
+            SurgeryRequestBhp::where('surgery_request_id', $id)
+                ->whereNull('used_qty')
+                ->update(['used_qty' => DB::raw('quantity')]);
 
-        return $request->fresh(['bhpItems.bhpItem', 'iolItems.iolItem']);
+            $this->log(
+                auth('api')->id(),
+                'TERIMA_REQUEST',
+                SurgeryRequest::class,
+                $id,
+                'BHP+IOL diterima dari Farmasi — siap operasi'
+            );
+
+            return $request->fresh(['bhpItems.bhpItem', 'iolItems.iolItem']);
+        });
+    }
+
+    /**
+     * Bedah set/adjust qty BHP yang actual terpakai. Boleh > atau < quantity
+     * yang diminta (used_qty bisa nol kalau ternyata tidak jadi dipakai).
+     *
+     * Payload: items = [{ bhp_item_id, used_qty }]. Item yg tidak disebut
+     * dibiarkan apa adanya.
+     */
+    public function adjustBhpUsage(string $requestId, array $items): SurgeryRequest
+    {
+        $request = SurgeryRequest::findOrFail($requestId);
+
+        if (! in_array($request->status, ['SENT', 'RECEIVED'], true)) {
+            throw new \Exception('Adjust BHP hanya berlaku saat status SENT atau RECEIVED.', 422);
+        }
+
+        return DB::transaction(function () use ($request, $requestId, $items) {
+            foreach ($items as $row) {
+                if (empty($row['bhp_item_id'])) continue;
+                SurgeryRequestBhp::where('surgery_request_id', $requestId)
+                    ->where('bhp_item_id', $row['bhp_item_id'])
+                    ->update(['used_qty' => max(0, (int) ($row['used_qty'] ?? 0))]);
+            }
+
+            $this->log(
+                auth('api')->id(),
+                'ADJUST_BHP_USAGE',
+                SurgeryRequest::class,
+                $requestId,
+                'Adjust used_qty: ' . count($items) . ' baris'
+            );
+
+            return $request->fresh(['bhpItems.bhpItem']);
+        });
     }
 
     // =========================================================================

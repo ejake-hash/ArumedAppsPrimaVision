@@ -39,6 +39,7 @@ class PermissionSeeder extends Seeder
             'role_akses'         => 'Role & Hak Akses',
             'audit'              => 'Audit Log',
             'pengaturan'         => 'Pengaturan Sistem',
+            'form_template'      => 'Form Template (Rekam Medis)',
         ];
 
         $actions = [

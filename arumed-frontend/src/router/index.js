@@ -43,21 +43,27 @@ const router = createRouter({
         { path: 'farmasi', name: 'farmasi', component: FarmasiView, meta: { title: 'Farmasi' } },
         { path: 'kasir', name: 'kasir', component: KasirView, meta: { title: 'Kasir & Billing' } },
         { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim' } },
+        { path: 'asuransi', name: 'asuransi', component: () => import('@/views/AsuransiView.vue'), meta: { title: 'Asuransi & Klaim TPA' } },
         { path: 'DataPengguna', name: 'DataPengguna', component: DataPenggunaView, meta: { title: 'Kepegawaian & RBAC', permission: 'role_akses.read' } },
         { path: 'jadwal-dokter', name: 'jadwal-dokter', component: JadwalDokterView, meta: { title: 'Jadwal Dokter' } },
+        { path: 'ttd-dokumen', name: 'ttd-dokumen', component: () => import('@/views/TtdDokumenView.vue'), meta: { title: 'Tanda Tangan Dokumen' } },
         { path: 'pengaturan', name: 'pengaturan', component: StubView, props: { title: 'Pengaturan' }, meta: { title: 'Pengaturan' } },
 
         // Master Data — shell + child views (sub-route per resource)
         {
           path: 'master-data',
           component: () => import('@/views/master-data/MasterDataLayout.vue'),
-          meta: { title: 'Master Data', permission: 'pengaturan.read' },
+          meta: { title: 'Master Data', permissions: ['pengaturan.read', 'form_template.read'] },
           children: [
             { path: '',                name: 'master-data',          redirect: { name: 'master-profil-klinik' } },
             { path: 'profil-klinik',   name: 'master-profil-klinik', component: () => import('@/views/master-data/ProfilKlinikView.vue'),  meta: { title: 'Profil Klinik' } },
             { path: 'icd10',           name: 'master-icd10',         component: () => import('@/views/master-data/Icd10View.vue'),         meta: { title: 'ICD-10' } },
             { path: 'icd9',            name: 'master-icd9',          component: () => import('@/views/master-data/Icd9View.vue'),          meta: { title: 'ICD-9' } },
             { path: 'wilayah',         name: 'master-wilayah',       component: () => import('@/views/master-data/WilayahView.vue'),       meta: { title: 'Wilayah Indonesia' } },
+            { path: 'document-type',       name: 'master-document-type',      component: () => import('@/views/master-data/DocumentTypeView.vue'),                  meta: { title: 'Jenis Dokumen RM', permission: 'form_template.read' } },
+            { path: 'form-template',       name: 'master-form-template',      component: () => import('@/views/master-data/form-template/FormTemplateView.vue'),  meta: { title: 'Form Rekam Medis', permission: 'form_template.read' } },
+            { path: 'form-template/new',   name: 'master-form-template-new',  component: () => import('@/views/master-data/form-template/FormTemplateWizard.vue'), meta: { title: 'Form RM — Buat Baru', permission: 'form_template.write' } },
+            { path: 'form-template/:id',   name: 'master-form-template-edit', component: () => import('@/views/master-data/form-template/FormTemplateWizard.vue'), meta: { title: 'Form RM — Edit', permission: 'form_template.write' }, props: true },
           ],
         },
 
@@ -73,6 +79,7 @@ const router = createRouter({
             { path: 'metode-bayar/:id',  name: 'metode-bayar-detail',       component: () => import('@/views/tarif-paket/MetodeBayarDetailView.vue'),   meta: { title: 'Detail Metode Bayar' } },
             { path: 'paket-bedah',       name: 'paket-bedah-list',          component: () => import('@/views/tarif-paket/PaketBedahListView.vue'),      meta: { title: 'Paket Bedah' } },
             { path: 'paket-bedah/:id',   name: 'paket-bedah-detail',        component: () => import('@/views/tarif-paket/PaketBedahDetailView.vue'),    meta: { title: 'Detail Paket Bedah' } },
+            { path: 'kategori-tagihan',  name: 'tarif-paket-kategori-tagihan', component: () => import('@/views/tarif-paket/KategoriTagihanView.vue'),  meta: { title: 'Kategori Tagihan' } },
           ],
         },
 
@@ -82,23 +89,17 @@ const router = createRouter({
           component: () => import('@/views/inventori-farmasi/InventoriFarmasiLayout.vue'),
           meta: { title: 'Inventori Farmasi', permission: 'inventori_farmasi.read' },
           children: [
-            { path: '',     name: 'inventori-farmasi',      redirect: '/inventori-farmasi/obat' },
+            { path: '',     name: 'inventori-farmasi',      redirect: '/inventori-farmasi/request-unit' },
             { path: 'obat', name: 'inventori-farmasi-obat', component: () => import('@/views/master-data/ObatView.vue'), meta: { title: 'Obat' } },
             { path: 'bhp',  name: 'inventori-farmasi-bhp',  component: () => import('@/views/master-data/BhpView.vue'),  meta: { title: 'BHP' } },
             { path: 'iol',  name: 'inventori-farmasi-iol',  component: () => import('@/views/master-data/IolView.vue'),  meta: { title: 'IOL' } },
+            { path: 'alat-medis', name: 'inventori-farmasi-alat-medis', component: () => import('@/views/inventori-farmasi/AlatMedisView.vue'), meta: { title: 'Alat Medis' } },
             { path: 'harga', name: 'inventori-farmasi-harga', component: () => import('@/views/inventori-farmasi/PenentuanHargaView.vue'), meta: { title: 'Penentuan Harga' } },
             { path: 'supplier', name: 'inventori-farmasi-supplier', component: () => import('@/views/inventori-farmasi/SupplierView.vue'), meta: { title: 'Supplier', permission: 'supplier.read' } },
             { path: 'pembelian', name: 'inventori-farmasi-pembelian', component: () => import('@/views/inventori-farmasi/PembelianView.vue'), meta: { title: 'Pembelian', permission: 'pembelian.read' } },
             { path: 'penerimaan', name: 'inventori-farmasi-penerimaan', component: () => import('@/views/inventori-farmasi/PenerimaanView.vue'), meta: { title: 'Penerimaan', permission: 'penerimaan.read' } },
             { path: 'request-unit', name: 'inventori-farmasi-request-unit', component: () => import('@/views/inventori-farmasi/RequestUnitView.vue'), meta: { title: 'Request dari Unit', permission: 'request_unit.read' } },
           ],
-        },
-
-        {
-          path: 'rekam-medis/template-builder',
-          name: 'RmTemplateBuilder',
-          component: () => import('@/views/rekam-medis/RmTemplateBuilder.vue'),
-          meta: { title: 'Auto-Schema EMR Generator' }
         },
       ],
     },

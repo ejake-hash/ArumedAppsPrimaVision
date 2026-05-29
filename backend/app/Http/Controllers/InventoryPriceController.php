@@ -78,6 +78,59 @@ class InventoryPriceController extends Controller
         return $this->ok(null, 'Harga dihapus');
     }
 
+    /**
+     * Template CSV kosong per tipe.
+     * GET /api/inventori-farmasi/harga/{type}/template-csv
+     */
+    public function templateCsv(string $type): \Symfony\Component\HttpFoundation\Response
+    {
+        $type = strtoupper($type);
+        if (!in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
+            return $this->fail('Tipe harus MEDICATION, BHP, atau IOL', 422);
+        }
+        $csv = $this->service->templateCsv($type);
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"template-harga-" . strtolower($type) . ".csv\"",
+        ]);
+    }
+
+    /**
+     * Export harga item yang sudah diset (per tipe) ke CSV.
+     * GET /api/inventori-farmasi/harga/{type}/export-csv
+     */
+    public function exportCsv(string $type): \Symfony\Component\HttpFoundation\Response
+    {
+        $type = strtoupper($type);
+        if (!in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
+            return $this->fail('Tipe harus MEDICATION, BHP, atau IOL', 422);
+        }
+        $csv = $this->service->exportCsv($type);
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"harga-" . strtolower($type) . '-' . now()->format('Ymd') . ".csv\"",
+        ]);
+    }
+
+    /**
+     * Import harga dari CSV (upsert by kode/serial_number).
+     * POST /api/inventori-farmasi/harga/{type}/import-csv
+     */
+    public function importCsv(Request $request, string $type): JsonResponse
+    {
+        $type = strtoupper($type);
+        if (!in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
+            return $this->fail('Tipe harus MEDICATION, BHP, atau IOL', 422);
+        }
+        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $csv = file_get_contents($request->file('file')->getRealPath());
+        $result = $this->service->importCsv($type, $csv);
+        return $this->ok(
+            $result,
+            "Import selesai: {$result['inserted']} baru, {$result['updated']} update, {$result['skipped']} dilewati."
+        );
+    }
+
     // ---- Response helpers ----------------------------------------------------
     private function ok(mixed $data, string $message = 'Berhasil', int $status = 200): JsonResponse
     {

@@ -10,6 +10,13 @@ class DiagnosticTestType extends Model
 {
     use HasUuids, SoftDeletes;
 
+    /**
+     * Kode khusus pemeriksaan Biometri. Dipakai sebagai penanda untuk
+     * auto-generate rekomendasi IOL + form OD/OS khusus, menggantikan
+     * string nama 'Biometri' yang dulu di-hardcode di berbagai tempat.
+     */
+    public const BIOMETRI_CODE = 'BIOM';
+
     protected $keyType = 'string';
     public $incrementing = false;
 

@@ -30,9 +30,11 @@ class ClinicProfile extends Model
         'pdf_engine',
         'watermark_enabled',
         'watermark_type',
+        'operating_rooms',
     ];
 
     protected $casts = [
         'watermark_enabled' => 'boolean',
+        'operating_rooms'   => 'array',
     ];
 }
