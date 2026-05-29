@@ -11,6 +11,11 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <!-- Smoke: sweep endpoint terhadap DB DEV (Postgres) yang sudah seed.
+             Jalankan terpisah dengan flag testsuite=Smoke (lihat tests/Smoke). -->
+        <testsuite name="Smoke">
+            <directory>tests/Smoke</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
