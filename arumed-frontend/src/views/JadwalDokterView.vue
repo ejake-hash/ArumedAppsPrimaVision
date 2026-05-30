@@ -739,7 +739,7 @@ onMounted(async () => {
   padding: 1.75rem 2rem;
   max-width: 1400px;
   margin: 0 auto;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   color: var(--text, #1a2e1a);
 }
 
@@ -766,7 +766,7 @@ onMounted(async () => {
   background: var(--lm, var(--lm)); color: #fff;
   border: none; border-radius: 9px; padding: 8px 16px;
   font-size: 13px; font-weight: 600; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: opacity .15s, transform .15s;
+  font-family: 'Inter', sans-serif; transition: opacity .15s, transform .15s;
 }
 .btn-primary:hover { opacity: .88; transform: translateY(-1px); }
 .btn-primary:disabled { opacity: .45; cursor: not-allowed; transform: none; }
@@ -775,13 +775,13 @@ onMounted(async () => {
 .btn-ghost {
   background: #f3f4f2; color: #444; border: 1px solid #dde; border-radius: 9px;
   padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: background .15s;
+  font-family: 'Inter', sans-serif; transition: background .15s;
 }
 .btn-ghost:hover { background: #e8e9e7; }
 .btn-danger {
   background: #ef4444; color: #fff; border: none; border-radius: 9px;
   padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: opacity .15s;
+  font-family: 'Inter', sans-serif; transition: opacity .15s;
 }
 .btn-danger:hover { opacity: .85; }
 .btn-danger:disabled { opacity: .45; cursor: not-allowed; }
@@ -856,7 +856,7 @@ onMounted(async () => {
 .cell-toggle {
   font-size: 9.5px; font-weight: 700; padding: 2px 6px;
   border-radius: 10px; border: none; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: opacity .15s;
+  font-family: 'Inter', sans-serif; transition: opacity .15s;
 }
 .cell-toggle.aktif { background: rgba(56,189,248,.2); color: #2d7a1a; }
 .cell-toggle.nonaktif { background: #f3f4f2; color: #9a9b9a; }
@@ -912,7 +912,7 @@ onMounted(async () => {
 .status-toggle {
   font-size: 11px; font-weight: 600; padding: 3px 10px;
   border-radius: 10px; border: none; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: opacity .15s;
+  font-family: 'Inter', sans-serif; transition: opacity .15s;
 }
 .status-toggle.aktif { background: rgba(56,189,248,.2); color: #2d7a1a; }
 .status-toggle.nonaktif { background: #f3f4f2; color: #9a9b9a; }
@@ -971,7 +971,7 @@ onMounted(async () => {
 .inp {
   border: 1.5px solid #e0e4df; border-radius: 9px;
   padding: 8px 12px; font-size: 13px; color: #1a2e1a;
-  font-family: 'DM Sans', sans-serif; outline: none;
+  font-family: 'Inter', sans-serif; outline: none;
   transition: border-color .2s, box-shadow .2s;
   background: #fff;
 }
@@ -985,7 +985,7 @@ select.inp { cursor: pointer; }
   padding: 5px 12px; border-radius: 8px;
   border: 1.5px solid #e0e4df; background: transparent;
   font-size: 12px; font-weight: 500; color: #6b7a6b;
-  cursor: pointer; font-family: 'DM Sans', sans-serif;
+  cursor: pointer; font-family: 'Inter', sans-serif;
   transition: all .15s;
 }
 .hari-pill:hover { border-color: var(--lm, var(--lm)); color: #2d5a1a; }
@@ -1025,7 +1025,7 @@ select.inp { cursor: pointer; }
   padding: 10px 18px; border-radius: 12px;
   font-size: 13.5px; font-weight: 500;
   box-shadow: 0 8px 24px rgba(0,0,0,.12);
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 .toast svg { width: 15px; height: 15px; flex-shrink: 0; }
 .toast.s { background: #1a2e1a; color: #b8e68a; }
@@ -1051,7 +1051,7 @@ select.inp { cursor: pointer; }
 .svc-tab {
   padding: 7px 18px; border: none; background: transparent; cursor: pointer;
   font-size: 13px; font-weight: 600; color: #6b7a6b; border-radius: 8px;
-  font-family: 'DM Sans', sans-serif; transition: all .15s;
+  font-family: 'Inter', sans-serif; transition: all .15s;
 }
 .svc-tab:hover { color: #1a2e1a; }
 .svc-tab.active.bpjs { background: var(--lm); color: #fff; box-shadow: 0 2px 6px rgba(56,189,248,.35); }
@@ -1065,7 +1065,7 @@ select.inp { cursor: pointer; }
 .week-picker svg { width: 15px; height: 15px; stroke: var(--lm); flex-shrink: 0; }
 .week-select {
   border: none; outline: none; background: transparent; cursor: pointer;
-  font-size: 13px; font-weight: 600; color: #1a2e1a; font-family: 'DM Sans', sans-serif;
+  font-size: 13px; font-weight: 600; color: #1a2e1a; font-family: 'Inter', sans-serif;
   padding-right: 4px;
 }
 
@@ -1074,7 +1074,7 @@ select.inp { cursor: pointer; }
   display: flex; align-items: center; gap: 6px;
   background: #fff; color: #2d4a2d; border: 1.5px solid #dde4da; border-radius: 9px;
   padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-  font-family: 'DM Sans', sans-serif; transition: all .15s;
+  font-family: 'Inter', sans-serif; transition: all .15s;
 }
 .btn-soft svg { width: 14px; height: 14px; }
 .btn-soft:hover { border-color: var(--lm); background: #f6fdf0; color: #1a2e1a; }
@@ -1106,7 +1106,7 @@ select.inp { cursor: pointer; }
 .svc-seg-btn {
   flex: 1; padding: 9px 0; border: 1.5px solid #e0e4df; background: #fff; cursor: pointer;
   font-size: 13px; font-weight: 600; color: #6b7a6b; border-radius: 9px;
-  font-family: 'DM Sans', sans-serif; transition: all .15s;
+  font-family: 'Inter', sans-serif; transition: all .15s;
 }
 .svc-seg-btn:hover { border-color: #cdd6c7; }
 .svc-seg-btn.active.bpjs { background: var(--lm); border-color: var(--lm); color: #fff; }

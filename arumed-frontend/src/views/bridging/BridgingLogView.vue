@@ -141,7 +141,7 @@ onMounted(() => load(1))
 .tbl { width: 100%; border-collapse: collapse; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; font-size: 13px; }
 .tbl th { text-align: left; padding: 9px 12px; background: var(--bs); color: var(--tm); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .tbl td { padding: 9px 12px; border-top: 1px solid var(--gb); color: var(--td); }
-.tbl code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--gd); }
+.tbl code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--td); }
 .rw { cursor: pointer; }
 .rw:hover { background: var(--bs); }
 .chev { color: var(--tm); width: 24px; }

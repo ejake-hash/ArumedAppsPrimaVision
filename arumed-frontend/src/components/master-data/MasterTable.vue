@@ -191,7 +191,7 @@ function rowNumber(idx) {
 .mt-search-spacer { flex: 1; }
 .mt-toolbar-right { display: flex; align-items: center; gap: 0.6rem; }
 .mt-btn-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--bc); border: 1px solid var(--gb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--tm); transition: background 0.15s, color 0.15s; }
-.mt-btn-icon:hover { background: var(--gl); color: var(--gd); }
+.mt-btn-icon:hover { background: var(--gl); color: var(--td); }
 .mt-btn-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .mt-error { padding: 0.7rem 1rem; background: var(--eb); border: 1px solid var(--ebd); border-radius: 10px; color: var(--et); font-size: 13px; }

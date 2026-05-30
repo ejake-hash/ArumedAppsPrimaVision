@@ -2169,7 +2169,7 @@ async function saveAudioDefaults() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 
 /* TOP BAR */
@@ -2188,7 +2188,7 @@ async function saveAudioDefaults() {
 .tv-logo-img { width: 56px; height: 56px; object-fit: contain; }
 .tv-brand { display: flex; flex-direction: column; }
 .tv-brand-name {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 26px;
   line-height: 1;
 }
@@ -2313,7 +2313,7 @@ async function saveAudioDefaults() {
 }
 .tv-clock-wrap { text-align: right; }
 .tv-clock {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 32px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -2369,7 +2369,7 @@ async function saveAudioDefaults() {
 .video-placeholder svg { width: 180px; height: 180px; }
 .video-logo-img { width: 200px; height: 200px; object-fit: contain; }
 .video-title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 30px;
   color: #fff;
   font-weight: 400;
@@ -2441,7 +2441,7 @@ async function saveAudioDefaults() {
 }
 
 .queue-header-title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 20px;
 }
 .queue-header-sub {
@@ -2512,7 +2512,7 @@ async function saveAudioDefaults() {
 }
 .sc-called-lbl.muted { color: rgba(255, 255, 255, 0.3); }
 .sc-called-num {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 38px;
   line-height: 1;
   color: var(--lm);
@@ -2563,7 +2563,7 @@ async function saveAudioDefaults() {
   color: rgba(255, 255, 255, 0.55);
   font-size: 12px;
   font-weight: 600;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   border-radius: 7px;
   cursor: pointer;
   transition: all 0.15s;
@@ -2579,7 +2579,7 @@ async function saveAudioDefaults() {
   color: var(--lm);
   padding: 1px 6px;
   border-radius: 4px;
-  font-family: 'DM Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
 }
 .ctrl-feedback { font-size: 12px; padding: 6px 12px; border-radius: 8px; align-self: center; }
@@ -2600,7 +2600,7 @@ async function saveAudioDefaults() {
   border-radius: 10px;
   text-align: left;
   cursor: pointer;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   color: rgba(255, 255, 255, 0.7);
   display: flex;
   flex-direction: column;
@@ -2651,7 +2651,7 @@ async function saveAudioDefaults() {
   margin-bottom: 0.5rem;
 }
 .ns-number {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 88px;
   line-height: 1;
   color: var(--lm);
@@ -2692,7 +2692,7 @@ async function saveAudioDefaults() {
   margin-top: .65rem; padding: 5px 14px;
   background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
   border-radius: 20px; color: rgba(255,255,255,.7); font-size: 11px; font-weight: 600;
-  cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .2s;
+  cursor: pointer; font-family: 'Inter', sans-serif; transition: all .2s;
 }
 .ns-done-btn:hover { background: rgba(56,189,248,.2); border-color: rgba(56,189,248,.4); color: var(--lm); }
 .ns-done-btn svg { width: 12px; height: 12px; }
@@ -2706,7 +2706,7 @@ async function saveAudioDefaults() {
   flex: 1; padding: 8px 4px; font-size: 11px; font-weight: 600;
   color: rgba(255,255,255,.4); background: none; border: none; cursor: pointer;
   border-bottom: 2px solid transparent; margin-bottom: -1px;
-  font-family: 'DM Sans', sans-serif; display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-family: 'Inter', sans-serif; display: flex; align-items: center; justify-content: center; gap: 6px;
   transition: all .15s;
 }
 .qtab-tv:hover { color: rgba(255,255,255,.7); }
@@ -2740,7 +2740,7 @@ async function saveAudioDefaults() {
 }
 .queue-item.done { opacity: 0.65; }
 .qi-num {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 26px;
   color: var(--lm);
   letter-spacing: 0.03em;
@@ -2891,7 +2891,7 @@ async function saveAudioDefaults() {
 }
 .pin-icon svg { width: 26px; height: 26px; }
 .pin-title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 22px;
   font-weight: 400;
   margin: 0 0 4px;
@@ -2918,7 +2918,7 @@ async function saveAudioDefaults() {
   text-align: center;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   caret-color: transparent;
 }
 .pin-box:focus {
@@ -2973,10 +2973,10 @@ async function saveAudioDefaults() {
 .flash-label-top {
   font-size: 16px; letter-spacing: .3em; text-transform: uppercase;
   color: rgba(56,189,248,.7); font-weight: 600; margin-bottom: 1rem;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 .flash-num {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: clamp(100px, 20vw, 220px); line-height: 1;
   color: var(--lm); letter-spacing: .04em;
   text-shadow: 0 0 80px rgba(56,189,248,.6), 0 0 40px rgba(56,189,248,.3);
@@ -2985,17 +2985,17 @@ async function saveAudioDefaults() {
 @keyframes flash-pulse { 0%,100%{text-shadow:0 0 80px rgba(56,189,248,.6),0 0 40px rgba(56,189,248,.3)} 50%{text-shadow:0 0 120px rgba(56,189,248,.9),0 0 60px rgba(56,189,248,.5)} }
 .flash-name {
   font-size: clamp(22px, 3vw, 40px); font-weight: 500; margin-top: 1rem; color: #fff;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
-.flash-poly { font-size: clamp(14px, 2vw, 24px); color: rgba(255,255,255,.5); margin-top: .4rem; font-family: 'DM Sans', sans-serif; }
+.flash-poly { font-size: clamp(14px, 2vw, 24px); color: rgba(255,255,255,.5); margin-top: .4rem; font-family: 'Inter', sans-serif; }
 .flash-badge {
   display: inline-flex; align-items: center; gap: 8px; margin-top: 2rem;
   background: rgba(56,189,248,.2); border: 1.5px solid rgba(56,189,248,.4);
   color: var(--lm); padding: 10px 24px; border-radius: 30px;
-  font-size: clamp(13px, 1.5vw, 18px); font-weight: 700; font-family: 'DM Sans', sans-serif;
+  font-size: clamp(13px, 1.5vw, 18px); font-weight: 700; font-family: 'Inter', sans-serif;
 }
 .flash-badge svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-.flash-hint { font-size: 12px; color: rgba(255,255,255,.3); margin-top: 2.5rem; font-family: 'DM Sans', sans-serif; }
+.flash-hint { font-size: 12px; color: rgba(255,255,255,.3); margin-top: 2.5rem; font-family: 'Inter', sans-serif; }
 
 /* Ctrl toggles */
 .ctrl-toggles { display: flex; flex-direction: column; gap: 10px; }
@@ -3020,12 +3020,12 @@ async function saveAudioDefaults() {
 .antr-done { background: rgba(255,255,255,.08) !important; color: rgba(255,255,255,.7) !important; }
 .antr-current { background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.3); border-radius: 10px; padding: .7rem 1rem; text-align: center; margin-top: .4rem; }
 .antr-lbl { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: rgba(56,189,248,.7); font-weight: 600; margin-bottom: .25rem; }
-.antr-num { font-family: 'DM Serif Display', serif; font-size: 36px; color: var(--lm); line-height: 1; }
+.antr-num { font-family: 'Space Grotesk', serif; font-size: 36px; color: var(--lm); line-height: 1; }
 .antr-meta { font-size: 11px; color: rgba(255,255,255,.5); margin-top: .25rem; }
 .antr-empty { font-size: 12px; color: rgba(255,255,255,.3); text-align: center; padding: .65rem; }
 .antr-list { display: flex; flex-direction: column; gap: 5px; }
 .antr-item { display: flex; align-items: center; gap: .55rem; padding: .5rem .7rem; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; }
-.antr-item-num { font-size: 12px; font-weight: 700; color: var(--lm); width: 50px; flex-shrink: 0; font-family: 'DM Mono', monospace; }
+.antr-item-num { font-size: 12px; font-weight: 700; color: var(--lm); width: 50px; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }
 .antr-item-name { flex: 1; font-size: 12px; color: rgba(255,255,255,.8); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .antr-item-poly { font-size: 10px; color: rgba(255,255,255,.35); flex-shrink: 0; }
 .antr-call-btn { width: 26px; height: 26px; border-radius: 6px; background: rgba(56,189,248,.15); border: 1px solid rgba(56,189,248,.3); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--lm); transition: all .15s; flex-shrink: 0; }
@@ -3066,7 +3066,7 @@ async function saveAudioDefaults() {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 20px;
   color: #fff;
 }
@@ -3107,7 +3107,7 @@ async function saveAudioDefaults() {
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 .ctrl-tab svg { width: 15px; height: 15px; }
 .ctrl-tab:hover { background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.75); }
@@ -3177,7 +3177,7 @@ async function saveAudioDefaults() {
   padding: 10px 14px;
   color: #fff;
   font-size: 14px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
@@ -3195,7 +3195,7 @@ async function saveAudioDefaults() {
   padding: 10px 14px;
   color: #fff;
   font-size: 13px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   outline: none;
   resize: vertical;
   transition: border-color 0.2s;
@@ -3213,7 +3213,7 @@ async function saveAudioDefaults() {
   cursor: pointer;
   transition: opacity 0.2s, transform 0.15s;
   flex-shrink: 0;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 .ctrl-action-btn:hover { opacity: 0.85; transform: translateY(-1px); }
 .ctrl-action-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
@@ -3262,7 +3262,7 @@ async function saveAudioDefaults() {
   color: rgba(255, 255, 255, 0.5);
   cursor: pointer;
   transition: all 0.2s;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 .mode-card svg { width: 28px; height: 28px; }
 .mode-card span { font-size: 14px; font-weight: 600; }

@@ -483,16 +483,16 @@ watch(activeTab, () => { /* handled in switchTab */ })
 .ph-wrap { display: flex; flex-direction: column; gap: 1rem; }
 
 .ph-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
-.ph-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.ph-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .ph-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; max-width: 600px; }
 
 .ph-ppn-card { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 0.7rem 0.9rem; min-width: 240px; display: flex; flex-direction: column; gap: 4px; }
 .ph-ppn-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--tu); }
 .ph-ppn-display { display: flex; align-items: center; gap: 8px; }
-.ph-ppn-value { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--gd); }
+.ph-ppn-value { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); }
 .ph-ppn-edit { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .ph-ppn-edit svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.ph-ppn-edit:hover { background: var(--gl); color: var(--gd); }
+.ph-ppn-edit:hover { background: var(--gl); color: var(--td); }
 .ph-ppn-edit-row { display: flex; align-items: center; gap: 6px; }
 .ph-ppn-input { width: 80px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--gb); font-size: 13px; }
 .ph-ppn-suffix { font-size: 13px; color: var(--tm); }
@@ -500,7 +500,7 @@ watch(activeTab, () => { /* handled in switchTab */ })
 
 .ph-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); }
 .ph-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.ph-tab:hover { color: var(--gd); }
+.ph-tab:hover { color: var(--td); }
 .ph-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 
 .ph-csv-bar { display: flex; flex-direction: column; gap: 0.7rem; }
@@ -508,7 +508,7 @@ watch(activeTab, () => { /* handled in switchTab */ })
 .ph-csv-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .ph-csv-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .ph-csv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.ph-csv-template:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.ph-csv-template:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .ph-csv-import:hover:not(:disabled) { background: var(--ib); border-color: var(--ibd); color: var(--it); }
 .ph-csv-export:hover:not(:disabled) { background: var(--sb); border-color: var(--sbd); color: var(--st); }
 .ph-csv-hint { font-size: 11.5px; color: var(--tu); margin-left: 6px; }

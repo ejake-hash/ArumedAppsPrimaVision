@@ -434,7 +434,7 @@ function onNext() {
 @media (max-width: 1100px) { .ms-grid { grid-template-columns: 1fr; } }
 
 .ms-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; padding: 1rem 1.25rem; }
-.ms-card h4 { margin: 0 0 0.75rem; font-family: 'DM Serif Display', serif; font-size: 16px; color: var(--td); }
+.ms-card h4 { margin: 0 0 0.75rem; font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); }
 .ms-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 
 .ms-field { display: flex; flex-direction: column; margin-bottom: 0.75rem; }

@@ -107,7 +107,7 @@ function pick(key, score) {
 <style scoped>
 .mfs-wrap { display: flex; flex-direction: column; gap: 0.6rem; }
 .mfs-head { display: flex; flex-direction: column; gap: 4px; padding-bottom: 0.5rem; border-bottom: 1px solid var(--gb); }
-.mfs-head strong { font-size: 14.5px; color: var(--td); font-family: 'DM Serif Display', serif; }
+.mfs-head strong { font-size: 14.5px; color: var(--td); font-family: 'Space Grotesk', serif; }
 .mfs-sub { font-size: 11.5px; color: var(--tm); }
 
 .mfs-row { display: grid; grid-template-columns: 200px 1fr; gap: 0.6rem; padding: 0.4rem 0; }

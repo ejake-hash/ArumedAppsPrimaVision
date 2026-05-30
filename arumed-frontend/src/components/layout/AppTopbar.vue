@@ -69,9 +69,9 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
   flex-shrink: 0;
 }
 .topbar-title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 18px;
-  color: var(--gd);
+  color: var(--td);
   font-weight: 400;
 }
 .topbar-breadcrumb {
@@ -109,8 +109,8 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
   padding-right: 0.75rem;
   border-right: 1px solid var(--gb);
 }
-.topbar-doctor-name { font-size: 13px; font-weight: 700; color: #000; }
-.topbar-doctor-sip { font-size: 11px; font-weight: 500; color: #000; }
+.topbar-doctor-name { font-size: 13px; font-weight: 700; color: var(--td); }
+.topbar-doctor-sip { font-size: 11px; font-weight: 500; color: var(--tm); }
 .ws-indicator {
   display: flex;
   align-items: center;

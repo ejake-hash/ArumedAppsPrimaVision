@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdmisiStore } from '@/stores/admisiStore'
-import BrandMark from './BrandMark.vue'
+import logoPv from '@/assets/images/logo-pv.png'
 
 const auth    = useAuthStore()
 const admisi  = useAdmisiStore()
@@ -20,10 +20,10 @@ async function handleLogout() {
   <aside :class="['sidebar', { collapsed }]">
 
     <div class="sb-logo">
-      <BrandMark :size="34" />
+      <img :src="logoPv" alt="Prima Vision" class="sb-logo-img" />
       <div class="sb-brand">
-        <div class="sb-brand-name">Prima Vision</div>
-        <div class="sb-brand-sub">RS Mata</div>
+        <div class="sb-brand-name">SIMRS</div>
+        <div class="sb-brand-sub">RS Mata Prima Vision</div>
       </div>
       <button
         class="sb-toggle-top"
@@ -156,7 +156,8 @@ async function handleLogout() {
 <style scoped>
 .sidebar {
   width: var(--sidebar);
-  background: var(--gd);
+  background: var(--bc);
+  border-right: 1px solid var(--gb);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -169,7 +170,7 @@ async function handleLogout() {
 /* ─── LOGO / HEADER ─── */
 .sb-logo {
   padding: 1.1rem 1rem 1rem;
-  border-bottom: 1px solid rgba(56, 189, 248, 0.12);
+  border-bottom: 1px solid var(--gb);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -177,14 +178,19 @@ async function handleLogout() {
   position: relative;
 }
 .collapsed .sb-brand { display: none; }
+.sb-logo-img {
+  width: 34px; height: 34px;
+  object-fit: contain; flex-shrink: 0;
+}
+.collapsed .sb-logo-img { margin: 0 auto; }
 .sb-brand { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .sb-brand-name {
-  font-family: 'DM Serif Display', serif;
-  font-size: 18px; color: #fff; line-height: 1;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 18px; color: var(--td); line-height: 1; font-weight: 700; letter-spacing: 0.04em;
 }
 .sb-brand-sub {
-  font-size: 9px; color: var(--lm);
-  letter-spacing: 0.15em; text-transform: uppercase; margin-top: 3px;
+  font-size: 9px; color: var(--ga);
+  letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; font-weight: 600;
 }
 
 /* ─── COLLAPSE TOGGLE (top-right of header) ─── */
@@ -192,56 +198,57 @@ async function handleLogout() {
   flex-shrink: 0;
   width: 26px; height: 26px;
   display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--gb);
+  background: var(--bg);
   border-radius: 7px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.sb-toggle-top:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.2); }
+.sb-toggle-top:hover { background: var(--gl); border-color: var(--ga); }
 .sb-toggle-top svg {
   width: 13px; height: 13px;
-  fill: none; stroke: rgba(255,255,255,0.5);
+  fill: none; stroke: var(--tu);
   stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round;
   transition: stroke 0.15s;
 }
-.sb-toggle-top:hover svg { stroke: rgba(255,255,255,0.85); }
+.sb-toggle-top:hover svg { stroke: var(--ga); }
 .collapsed .sb-toggle-top { margin: 0 auto; }
 
 /* ─── NAV ─── */
 .sb-nav { flex: 1; overflow-y: auto; padding: 0.75rem 0.6rem; }
 .sb-nav::-webkit-scrollbar { width: 3px; }
-.sb-nav::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.2); }
+.sb-nav::-webkit-scrollbar-thumb { background: var(--gb); }
 .sb-section {
-  font-size: 9px; font-weight: 600;
-  color: rgba(255,255,255,0.25); letter-spacing: 0.15em;
+  font-size: 9px; font-weight: 700;
+  color: var(--th); letter-spacing: 0.15em;
   text-transform: uppercase; padding: 0.4rem 0.5rem 0.3rem; margin-top: 0.5rem;
 }
 .collapsed .sb-section { display: none; }
 .sb-item {
   display: flex; align-items: center; gap: 9px;
   padding: 8px 10px; border-radius: 9px;
-  cursor: pointer; transition: background 0.15s;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
   margin-bottom: 2px; text-decoration: none;
+  border: 1px solid transparent;
 }
 .collapsed .sb-item { justify-content: center; padding: 8px; gap: 0; }
-.sb-item:hover { background: rgba(255,255,255,0.06); }
+.sb-item:hover { background: var(--bg); }
 .sb-item.router-link-active {
-  background: rgba(56,189,248,0.15);
-  border: 1px solid rgba(56,189,248,0.2);
+  background: var(--gl);
+  border-color: var(--gb);
 }
 .sb-item svg {
   width: 16px; height: 16px; fill: none;
-  stroke: rgba(255,255,255,0.4); stroke-width: 2;
+  stroke: var(--tu); stroke-width: 2;
   stroke-linecap: round; flex-shrink: 0;
 }
-.sb-item.router-link-active svg { stroke: var(--lm); }
-.sb-item span { font-size: 12.5px; color: rgba(255,255,255,0.5); font-weight: 400; }
+.sb-item.router-link-active svg { stroke: var(--ga); }
+.sb-item span { font-size: 12.5px; color: var(--tm); font-weight: 500; }
 .collapsed .sb-item > span { display: none; }
-.sb-item.router-link-active span { color: #fff; font-weight: 500; }
+.sb-item.router-link-active span { color: var(--ga); font-weight: 600; }
 .sb-badge {
   margin-left: auto;
-  background: var(--lm); color: var(--gd);
+  background: var(--ga); color: #fff;
   font-size: 9px !important; font-weight: 700 !important;
   padding: 1px 6px; border-radius: 20px;
 }
@@ -253,7 +260,7 @@ async function handleLogout() {
   position: absolute;
   left: 4px; top: 50%;
   width: 6px; height: 1px;
-  background: rgba(255,255,255,0.15);
+  background: var(--gb);
 }
 .sb-subitem svg { width: 13px; height: 13px; }
 .sb-subitem span { font-size: 11.5px; }
@@ -263,7 +270,7 @@ async function handleLogout() {
 /* ─── FOOTER ─── */
 .sb-foot {
   padding: 0.75rem 0.8rem 0.85rem;
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid var(--gb);
   flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
 }
 .collapsed .sb-foot { padding: 0.75rem 0.5rem; }
@@ -273,31 +280,31 @@ async function handleLogout() {
 .collapsed .sb-user-info { display: none; }
 .sb-avatar {
   width: 32px; height: 32px; border-radius: 50%;
-  background: rgba(56,189,248,0.2);
+  background: var(--gl);
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 600; color: var(--lm); flex-shrink: 0;
+  font-size: 11px; font-weight: 700; color: var(--ga); flex-shrink: 0;
 }
-.sb-uname { font-size: 12px; color: #fff; font-weight: 500; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sb-urole { font-size: 10px; color: rgba(255,255,255,0.35); white-space: nowrap; text-transform: capitalize; }
+.sb-uname { font-size: 12px; color: var(--td); font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-urole { font-size: 10px; color: var(--tu); white-space: nowrap; text-transform: capitalize; }
 
 /* ─── LOGOUT BUTTON ─── */
 .sb-logout {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 7px 10px; border-radius: 9px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--gb);
+  background: var(--bg);
   cursor: pointer; transition: background 0.15s, border-color 0.15s;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
 }
-.sb-logout:hover { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.25); }
-.sb-logout:hover svg { stroke: #fca5a5; }
-.sb-logout:hover span { color: #fca5a5; }
+.sb-logout:hover { background: var(--eb); border-color: var(--ebd); }
+.sb-logout:hover svg { stroke: var(--et); }
+.sb-logout:hover span { color: var(--et); }
 .sb-logout svg {
   width: 15px; height: 15px; fill: none;
-  stroke: rgba(255,255,255,0.35); stroke-width: 2;
+  stroke: var(--tu); stroke-width: 2;
   stroke-linecap: round; flex-shrink: 0; transition: stroke 0.15s;
 }
-.sb-logout span { font-size: 12.5px; color: rgba(255,255,255,0.4); font-weight: 400; transition: color 0.15s; }
+.sb-logout span { font-size: 12.5px; color: var(--tm); font-weight: 500; transition: color 0.15s; }
 .collapsed .sb-logout { justify-content: center; padding: 7px; gap: 0; }
 .collapsed .sb-logout span { display: none; }
 </style>

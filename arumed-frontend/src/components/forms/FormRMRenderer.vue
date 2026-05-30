@@ -662,7 +662,7 @@ async function submitAddendum() {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gb);
 }
-.frr-modal-head h3 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 17px; }
+.frr-modal-head h3 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 17px; }
 .frr-modal-sub { margin: 2px 0 0; font-size: 11.5px; color: var(--tm); font-family: monospace; }
 .frr-modal-actions { display: flex; gap: 0.5rem; }
 
@@ -710,7 +710,7 @@ async function submitAddendum() {
   background: #fafbfc;
 }
 .frr-sig-section h4 {
-  margin: 0 0 0.75rem; font-family: 'DM Serif Display', serif; font-size: 14.5px; color: var(--td);
+  margin: 0 0 0.75rem; font-family: 'Space Grotesk', serif; font-size: 14.5px; color: var(--td);
 }
 .frr-sig-warn {
   padding: 0.5rem 0.85rem; background: #fff7ec; border: 1px solid #f0d2a5; border-radius: 6px;

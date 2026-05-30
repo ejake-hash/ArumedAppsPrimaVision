@@ -24,6 +24,6 @@ const title = computed(() => route.meta?.title ?? 'Halaman')
 .stub { padding: 4rem 2rem; text-align: center; color: var(--tm); display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
 .stub-icon { width: 64px; height: 64px; border-radius: 16px; background: var(--bs); border: 1px solid var(--gb); display: flex; align-items: center; justify-content: center; }
 .stub-icon svg { width: 28px; height: 28px; fill: none; stroke: var(--tu); stroke-width: 1.5; stroke-linecap: round; }
-.stub h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin: 0.5rem 0 0; }
+.stub h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0.5rem 0 0; }
 .stub p { font-size: 13px; color: var(--tu); margin: 0; max-width: 360px; }
 </style>

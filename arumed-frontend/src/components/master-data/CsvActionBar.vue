@@ -150,7 +150,7 @@ async function onFilePicked(e) {
 .csv-btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .csv-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .csv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.csv-btn-template:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.csv-btn-template:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .csv-btn-import:hover:not(:disabled) { background: var(--ib); border-color: var(--ibd); color: var(--it); }
 .csv-btn-export:hover:not(:disabled) { background: var(--sb); border-color: var(--sbd); color: var(--st); }
 

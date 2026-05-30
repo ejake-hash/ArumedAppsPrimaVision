@@ -351,7 +351,7 @@ onMounted(refresh)
 <style scoped>
 .pl-wrap { display: flex; flex-direction: column; gap: 1rem; }
 .pl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
-.pl-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.pl-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .pl-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 .pl-head-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
@@ -362,14 +362,14 @@ onMounted(refresh)
 .pl-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
 
 .pl-btn-ghost { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; }
-.pl-btn-ghost:hover:not(:disabled) { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pl-btn-ghost:hover:not(:disabled) { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pl-btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .pl-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .pl-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.55rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
 .pl-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }
 .pl-chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 11.5px; cursor: pointer; font-weight: 500; }
-.pl-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.pl-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .pl-chip.active { background: var(--ga); border-color: var(--ga); color: white; }
 
 .pl-cell-name { display: flex; flex-direction: column; gap: 1px; }
@@ -378,7 +378,7 @@ onMounted(refresh)
 .pl-name-link:hover { color: var(--ga); text-decoration: underline; }
 
 .pl-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
-.pl-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--gl); color: var(--gd); min-width: 28px; text-align: center; }
+.pl-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--gl); color: var(--td); min-width: 28px; text-align: center; }
 .pl-pill.zero { background: var(--bs); color: var(--tu); }
 .pl-price { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }
 .pl-status { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }
@@ -387,14 +387,14 @@ onMounted(refresh)
 
 .pl-icon-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; }
 .pl-icon-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.pl-icon-btn:hover { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pl-icon-btn:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pl-icon-danger:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 
 .pl-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
 .pl-confirm { background: var(--bc); border-radius: 16px; width: 420px; max-width: 95vw; border: 1px solid var(--gb); padding: 1.6rem 1.5rem 1.3rem; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.7rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); }
 .pl-confirm-icon { width: 48px; height: 48px; border-radius: 50%; background: var(--eb); display: flex; align-items: center; justify-content: center; }
 .pl-confirm-icon svg { width: 24px; height: 24px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.pl-confirm h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.pl-confirm h3 { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); margin: 0; }
 .pl-confirm p { font-size: 13px; color: var(--tm); margin: 0; line-height: 1.5; }
 .pl-confirm-actions { display: flex; gap: 0.6rem; margin-top: 0.5rem; width: 100%; justify-content: center; }
 .pl-btn-secondary { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 13px; cursor: pointer; font-weight: 500; }
@@ -410,7 +410,7 @@ onMounted(refresh)
 
 .pl-import-result { background: var(--bc); border-radius: 16px; width: 640px; max-width: 95vw; max-height: 85vh; border: 1px solid var(--gb); padding: 1.4rem 1.4rem 1.2rem; display: flex; flex-direction: column; gap: 0.9rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); overflow: hidden; }
 .pl-import-head { display: flex; align-items: center; justify-content: space-between; }
-.pl-import-head h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.pl-import-head h3 { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); margin: 0; }
 .pl-import-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
 .pl-stat-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0.7rem 0.6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; text-align: center; }
 .pl-stat-card.warn { background: var(--wb); border-color: var(--wbd); }

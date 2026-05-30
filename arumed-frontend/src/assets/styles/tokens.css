@@ -3,29 +3,29 @@
  * Mirrors the palette established across the static HTML prototypes. */
 
 :root {
-  /* Brand (primary) — tema biru Prima Vision */
-  --gd: #0a2a4d;
-  --gm: #11487f;
-  --ga: #1763d4;
-  --gl: #eef4fc;
-  --gb: #cdd9e6;
+  /* Brand — Prima Navy + Vision Sky (diturunkan dari logo Prima Vision) */
+  --gd: #0E3A66;   /* Prima Navy — primary: header, btn-primary, panel, navigasi */
+  --gm: #1A5384;   /* Prima Navy terang — hover state primary */
+  --ga: #1FAAE0;   /* Vision Sky — accent: tombol aksi, link, fokus, item aktif */
+  --gl: #E4F4FB;   /* tint Vision Sky sangat halus — bg item aktif/hover */
+  --gb: #DEE4EB;   /* border netral (--color-border) */
 
-  /* Accent */
-  --lm: #38bdf8;
-  --ld: #0284c7;
+  /* Accent — Vision Sky family (highlight kecil) */
+  --lm: #1FAAE0;   /* Vision Sky — highlight/chart accent */
+  --ld: #0E7FB0;   /* sky lebih gelap — teks link/verified */
 
   /* Backgrounds & surfaces */
-  --bg: #f0f5f1;
-  --bp: #f4f7f4;
-  --bc: #ffffff;
-  --bs: #f8fbf9;
-  --bi: #f4f8f5;
+  --bg: #F6F8FA;   /* latar aplikasi (--color-bg) */
+  --bp: #FBFCFD;   /* panel */
+  --bc: #FFFFFF;   /* kartu/surface utama (--color-surface) */
+  --bs: #F9FAFC;   /* surface lembut */
+  --bi: #F3F5F8;   /* surface info / baris zebra */
 
-  /* Text */
-  --td: #082b20;
-  --tm: #3d5248;
-  --tu: #7a8a7e;
-  --th: #9eb5a5;
+  /* Text — utama HITAM, sekunder slate (--color-text-soft) */
+  --td: #1a1a1a;   /* teks utama / judul — hitam pekat */
+  --tm: #4C5A6B;   /* teks sekunder — slate */
+  --tu: #6b7280;   /* muted — abu netral (aksesibel) */
+  --th: #9ca3af;   /* hint — abu netral terang */
 
   /* Semantic — success */
   --sb: #f0fdf4;
@@ -54,4 +54,9 @@
 
   /* Layout */
   --sidebar: 240px;
+
+  /* Typography — Inter (body/UI) + Space Grotesk (heading kontras) + JetBrains Mono */
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
 }

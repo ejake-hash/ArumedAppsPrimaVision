@@ -490,14 +490,14 @@ watch(paketId, async (id) => {
 .pd-wrap { display: flex; flex-direction: column; gap: 1rem; }
 
 .pd-back { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12px; font-weight: 500; cursor: pointer; align-self: flex-start; transition: background 0.15s, color 0.15s; }
-.pd-back:hover { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pd-back:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pd-back svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .pd-loading, .pd-error { padding: 2rem; text-align: center; color: var(--tm); font-size: 13px; }
 .pd-error { color: var(--et); }
 
 .pd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; padding: 1.2rem 1.3rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 12px; flex-wrap: wrap; }
-.pd-head-info h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin: 0 0 6px; }
+.pd-head-info h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0 0 6px; }
 .pd-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .pd-meta-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--bc); color: var(--tm); border: 1px solid var(--gb); }
 .pd-meta-pill.on { background: var(--sb); color: var(--st); border-color: var(--sbd); }
@@ -515,7 +515,7 @@ watch(paketId, async (id) => {
 
 .pd-panel { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.8rem; }
 .pd-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.pd-panel-head h3 { font-family: 'DM Serif Display', serif; font-size: 16px; color: var(--td); margin: 0; }
+.pd-panel-head h3 { font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); margin: 0; }
 .pd-panel-head p { font-size: 12px; color: var(--tm); margin: 2px 0 0; }
 
 .pd-btn-primary { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--ga); background: var(--ga); color: white; font-size: 12px; font-weight: 500; cursor: pointer; flex-shrink: 0; }
@@ -525,7 +525,7 @@ watch(paketId, async (id) => {
 
 .pd-head-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .pd-btn-ghost { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12px; font-weight: 500; cursor: pointer; }
-.pd-btn-ghost:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.pd-btn-ghost:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .pd-btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 .pd-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -536,7 +536,7 @@ watch(paketId, async (id) => {
 .pd-table tfoot td { background: var(--bs); padding: 10px; border-top: 2px solid var(--gb); font-size: 13px; }
 
 .pd-type-pill { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 600; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
-.pd-type-pill[data-t="PROCEDURE"]  { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pd-type-pill[data-t="PROCEDURE"]  { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pd-type-pill[data-t="MEDICATION"] { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .pd-type-pill[data-t="BHP"]        { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .pd-type-pill[data-t="IOL"]        { background: var(--pb); color: var(--pt); border-color: var(--pbd); }
@@ -564,7 +564,7 @@ watch(paketId, async (id) => {
 
 .pd-icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-left: 3px; }
 .pd-icon-btn svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.pd-icon-btn:hover { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.pd-icon-btn:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pd-icon-danger:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 
 .pd-empty { padding: 1.8rem 1rem; text-align: center; color: var(--tu); font-size: 12.5px; background: var(--bs); border-radius: 8px; }

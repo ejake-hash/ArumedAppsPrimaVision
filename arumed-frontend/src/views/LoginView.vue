@@ -2,32 +2,16 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import logoKlinik from '@/assets/images/logo-klinik.jpg'
+import logoKlinik from '@/assets/images/logo-rs-primavision.png'
 
 const router = useRouter()
 const auth = useAuthStore()
 
-const sel = ref('dokter')
 const showPw = ref(false)
 const form = ref({ username: '', password: '', remember: false })
 const errors = ref({ username: '', password: '' })
 const alert = ref({ show: false, type: 'e', message: '' })
-
-const roles = [
-  { id: 'admin', l: 'Admin', i: '<circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>' },
-  { id: 'dokter', l: 'Dokter', i: '<rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>' },
-  { id: 'perawat', l: 'Perawat / RO', i: '<path d="M12 2L4 6v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V6l-8-4z"/>' },
-  { id: 'farmasi', l: 'Farmasi', i: '<path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>' },
-  { id: 'kasir', l: 'Kasir', i: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>' },
-  { id: 'manajer', l: 'Manajer', i: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>' },
-]
-
-const features = [
-  { l: 'RME Spesialis Mata (PMK No. 24/2022)', i: '<path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>' },
-  { l: 'Integrasi BPJS VClaim, LUPIS & INA-CBG', i: '<rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>' },
-  { l: 'Antrean real-time WebSocket layar TV', i: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>' },
-  { l: 'Auto-send FHIR R4 ke Satu Sehat Kemenkes', i: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12"/>' },
-]
+const successPopup = ref(false)   // popup "Login Berhasil, Selamat Melayani!"
 
 const alertIcons = {
   e: '<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".6" fill="currentColor"/>',
@@ -68,8 +52,8 @@ async function login() {
   try {
     await auth.login(form.value.username.trim(), form.value.password)
     const dest = roleRouteMap[auth.roleName] ?? '/admisi'
-    alert.value = { show: true, type: 's', message: 'Login berhasil! Mengarahkan...' }
-    setTimeout(() => router.push(dest), 400)
+    successPopup.value = true
+    setTimeout(() => router.push(dest), 1400)
   } catch {
     alert.value = { show: true, type: 'e', message: auth.error ?? 'Login gagal. Periksa username dan password.' }
   }
@@ -78,60 +62,22 @@ async function login() {
 
 <template>
   <div class="login-shell">
-    <!-- LEFT BRAND PANEL -->
-    <div class="lp">
-      <div class="ring" style="width:520px;height:520px;bottom:-160px;right:-200px"></div>
-      <div class="ring" style="width:380px;height:380px;bottom:-100px;right:-140px;border-color:rgba(56,189,248,0.18)"></div>
-      <div class="ring" style="width:240px;height:240px;bottom:-40px;right:-80px;border-color:rgba(56,189,248,0.24)"></div>
-      <div class="ring" style="width:460px;height:460px;top:-180px;left:-180px;border-color:rgba(255,255,255,0.04)"></div>
-      <div class="ring" style="width:280px;height:280px;top:-100px;left:-110px;border-color:rgba(255,255,255,0.05)"></div>
-
-      <div class="logo-area">
-        <div class="eye-wrap">
-          <div class="ripple r1"></div>
-          <div class="ripple r2"></div>
-          <div class="ripple r3"></div>
-          <svg viewBox="0 0 90 90" fill="none" style="width:86px;height:86px;position:relative;z-index:1">
-            <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.13)" stroke-width="1"/>
-            <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.20)" stroke-width="1"/>
-            <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.30)" stroke-width="1.5"/>
-            <circle cx="45" cy="45" r="14" stroke="var(--lm)" stroke-width="1.5"/>
-            <circle cx="45" cy="45" r="6" fill="var(--lm)" opacity="0.9"/>
-            <line x1="45" y1="39" x2="45" y2="51" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
-            <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <p class="brand-sub">RS Mata</p>
-        <h1 class="brand-name">Prima Vision</h1>
-        <p class="brand-city">Medan</p>
-      </div>
-
-      <div class="middle-stack">
-        <p class="tagline">Sistem Informasi Manajemen Klinik Mata Terintegrasi — BPJS, Satu Sehat &amp; RME Digital</p>
-        <ul class="feat-list">
-          <li v-for="f in features" :key="f.l">
-            <div class="feat-icon"><svg viewBox="0 0 24 24" v-html="f.i"></svg></div>
-            {{ f.l }}
-          </li>
-        </ul>
-      </div>
-
-      <div class="pb-wrap">
-        <p class="pb-lbl">Terkoneksi dengan ekosistem</p>
-        <div class="pb-row">
-          <span class="pb pb-bpjs">
-            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-            BPJS Kesehatan
-          </span>
-          <span class="pb pb-ss">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3"/></svg>
-            Satu Sehat
-          </span>
+    <!-- POPUP SUKSES LOGIN -->
+    <Transition name="pop">
+      <div v-if="successPopup" class="success-overlay">
+        <div class="success-box">
+          <div class="success-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>
+            </svg>
+          </div>
+          <h3 class="success-title">Login Berhasil</h3>
+          <p class="success-sub">Selamat Melayani!</p>
         </div>
       </div>
-    </div>
+    </Transition>
 
-    <!-- RIGHT FORM PANEL -->
+    <!-- FORM PANEL (centered) -->
     <div class="rp">
       <div class="card">
         <img :src="logoKlinik" alt="RUMAH SAKIT MATA PRIMA VISION" class="card-logo" />
@@ -139,7 +85,7 @@ async function login() {
         <div class="ch">
           <p class="ch-eye">Selamat datang kembali</p>
           <h2>Masuk ke Sistem</h2>
-          <span class="ch-sub">Pilih peran dan masukkan kredensial Anda</span>
+          <span class="ch-sub">Silahkan masukkan Username dan Password Anda</span>
         </div>
 
         <div v-if="alert.show" :class="['alert', 'a' + alert.type]">
@@ -150,23 +96,8 @@ async function login() {
           </button>
         </div>
 
-        <label class="fl">Peran Akses</label>
-        <div class="rg">
-          <button
-            v-for="r in roles"
-            :key="r.id"
-            class="rb"
-            :class="{ active: sel === r.id }"
-            @click="sel = r.id"
-            type="button"
-          >
-            <svg viewBox="0 0 24 24" v-html="r.i"></svg>
-            <span class="rl">{{ r.l }}</span>
-          </button>
-        </div>
-
         <div class="fg">
-          <label class="fl">Username / NIP</label>
+          <label class="fl">Username</label>
           <div class="iw">
             <div class="ii"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></div>
             <input
@@ -174,7 +105,7 @@ async function login() {
               type="text"
               class="fi"
               :class="{ err: errors.username }"
-              placeholder="Username atau NIP pegawai"
+              placeholder="Username"
               @keydown.enter="focusPassword"
               @input="errors.username = ''"
             />
@@ -249,194 +180,38 @@ async function login() {
 <style scoped>
 .login-shell {
   display: flex;
-  height: 100vh;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
   width: 100vw;
-  overflow: hidden;
-}
-
-/* LEFT PANEL */
-.lp {
-  width: 46%;
-  background: var(--gd);
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 3rem 2.5rem;
-  overflow: hidden;
-}
-.ring {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-  border: 1px solid rgba(56, 189, 248, 0.11);
-}
-.logo-area {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  position: relative;
-  z-index: 2;
-}
-.eye-wrap {
-  position: relative;
-  width: 92px;
-  height: 92px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 1.25rem;
-}
-.ripple {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 1px solid rgba(56, 189, 248, 0.4);
-}
-.r1 { animation: ripple 3s ease-out infinite; }
-.r2 { animation: ripple 3s ease-out 1s infinite; }
-.r3 { animation: ripple 3s ease-out 2s infinite; }
-.brand-sub {
-  font-size: 10px;
-  letter-spacing: 0.3em;
-  color: var(--lm);
-  text-transform: uppercase;
-  margin-bottom: 4px;
-  font-weight: 500;
-}
-.brand-name {
-  font-family: 'DM Serif Display', serif;
-  font-size: 46px;
-  color: #fff;
-  letter-spacing: -1px;
-  line-height: 1;
-  margin-bottom: 2px;
-  font-weight: 400;
-}
-.brand-city {
-  font-size: 10px;
-  letter-spacing: 0.25em;
-  color: rgba(255, 255, 255, 0.3);
-  text-transform: uppercase;
-}
-.middle-stack {
-  position: relative;
-  z-index: 2;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-}
-.tagline {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.4);
-  text-align: center;
-  line-height: 1.7;
-  max-width: 270px;
-}
-.feat-list {
-  list-style: none;
-  width: 100%;
-  max-width: 290px;
-}
-.feat-list li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  margin-bottom: 6px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
-}
-.feat-icon {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: 8px;
-  background: rgba(56, 189, 248, 0.15);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.feat-icon svg {
-  width: 14px;
-  height: 14px;
-  stroke: var(--lm);
-  fill: none;
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-.pb-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  position: relative;
-  z-index: 2;
-}
-.pb-lbl {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
-  text-align: center;
-  margin-bottom: 8px;
-}
-.pb-row { display: flex; gap: 8px; }
-.pb {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.pb svg {
-  width: 11px;
-  height: 11px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  stroke-linecap: round;
-}
-.pb-bpjs {
-  background: rgba(21, 128, 61, 0.25);
-  color: #86efac;
-  border: 1px solid rgba(134, 239, 172, 0.2);
-}
-.pb-ss {
-  background: rgba(29, 78, 216, 0.25);
-  color: #93c5fd;
-  border: 1px solid rgba(147, 197, 253, 0.2);
-}
-
-/* RIGHT PANEL */
-.rp {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  /* scroll di shell + padding → kartu tidak pernah nabrak atas/bawah */
   overflow-y: auto;
-  padding: 2rem;
+  padding: 2.5rem 1.5rem;
   background: var(--bp);
-  position: relative;
+}
+
+/* FORM PANEL (centering wrapper) */
+.rp {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
 }
 .card {
   width: 100%;
-  max-width: 430px;
+  max-width: 420px;
   background: var(--bc);
   border-radius: 20px;
   padding: 2.25rem;
   border: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow: 0 12px 40px rgba(10, 42, 77, 0.12);
 }
 .card-logo {
   display: block;
-  max-width: 180px;
+  width: 100%;
+  max-width: 260px;
   height: auto;
-  margin: 0 auto 1.25rem;
+  margin: 0 auto 1.5rem;
 }
 .ch { margin-bottom: 1.5rem; }
 .ch-eye {
@@ -448,9 +223,9 @@ async function login() {
   margin-bottom: 4px;
 }
 .ch h2 {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 26px;
-  color: var(--gd);
+  color: var(--td);
   line-height: 1.1;
   font-weight: 400;
 }
@@ -507,52 +282,6 @@ async function login() {
   text-transform: uppercase;
   margin-bottom: 8px;
 }
-.rg {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-bottom: 1.1rem;
-}
-.rb {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 10px 6px;
-  border: 1.5px solid var(--gb);
-  border-radius: 12px;
-  background: var(--bi);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, transform 0.1s;
-  font-family: 'DM Sans', sans-serif;
-}
-.rb:hover {
-  border-color: var(--lm);
-  background: #f2f9eb;
-  transform: translateY(-1px);
-}
-.rb.active {
-  border-color: var(--ga);
-  background: var(--gl);
-}
-.rb svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: var(--tm);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.rb.active svg { stroke: var(--gd); }
-.rb .rl {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--tm);
-  text-align: center;
-  line-height: 1.2;
-}
-.rb.active .rl { color: var(--gd); font-weight: 600; }
 .fg { margin-bottom: 1rem; }
 .iw { position: relative; display: flex; align-items: center; }
 .ii {
@@ -575,7 +304,7 @@ async function login() {
   padding: 0 42px 0 40px;
   border: 1.5px solid var(--gb);
   border-radius: 11px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 14px;
   color: var(--td);
   background: var(--bi);
@@ -652,7 +381,7 @@ async function login() {
   color: #fff;
   border: none;
   border-radius: 11px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -723,4 +452,57 @@ async function login() {
   color: #c0cfc6;
   margin-top: 6px;
 }
+
+/* ─── POPUP SUKSES LOGIN ─── */
+.success-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 42, 77, 0.45);
+  backdrop-filter: blur(3px);
+}
+.success-box {
+  background: #fff;
+  border-radius: 18px;
+  padding: 2.25rem 2.75rem;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(10, 42, 77, 0.3);
+  min-width: 280px;
+}
+.success-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: var(--sb, #e8f3e9);
+  color: #16a34a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: success-pop 0.4s ease;
+}
+.success-icon svg { width: 34px; height: 34px; }
+.success-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--td);
+  margin-bottom: 4px;
+}
+.success-sub {
+  font-size: 14px;
+  color: var(--tu);
+}
+@keyframes success-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.12); }
+  100% { transform: scale(1); opacity: 1; }
+}
+/* Transition Vue untuk overlay */
+.pop-enter-active { transition: opacity 0.25s ease; }
+.pop-leave-active { transition: opacity 0.2s ease; }
+.pop-enter-from, .pop-leave-to { opacity: 0; }
 </style>

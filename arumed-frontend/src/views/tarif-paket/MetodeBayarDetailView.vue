@@ -135,7 +135,7 @@ onMounted(loadDetail)
 
 .mbd-back { margin-bottom: -0.3rem; }
 .mbd-back-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12px; cursor: pointer; }
-.mbd-back-btn:hover { background: var(--bs); color: var(--gd); }
+.mbd-back-btn:hover { background: var(--bs); color: var(--td); }
 .mbd-back-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .mbd-loading, .mbd-error { padding: 2rem; text-align: center; color: var(--tm); font-size: 14px; }
@@ -158,7 +158,7 @@ onMounted(loadDetail)
   border-radius: 10px;
   background: linear-gradient(135deg, var(--ga), var(--gm));
   color: white;
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 20px;
 }
 
@@ -166,7 +166,7 @@ onMounted(loadDetail)
 
 .mbd-title-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .mbd-title-row h1 {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 20px;
   color: var(--td);
   margin: 0;
@@ -213,7 +213,7 @@ onMounted(loadDetail)
 
 .mbd-section-head { padding-bottom: 0.9rem; border-bottom: 1px solid var(--gb); }
 .mbd-section-head h2 {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 26px;
   color: var(--td);
   margin: 0;

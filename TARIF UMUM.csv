@@ -1,0 +1,257 @@
+no,nama,kategori,harga_master,harga_jual
+,Aff Bandage Lensa,Tindakan,,143000
+,Aff Jahit Cornea,Tindakan,,1250000
+,Aff Jahit Mayor,Tindakan,,877500
+,Aff Jahit Minor,Tindakan,,487500
+,Aff Jahit Palpebra Mayor,Tindakan,,900000
+,Aff Jahit Palpebra Minor,Tindakan,,630000
+,Aspirasi Irigasi Mata,Tindakan,,3265881
+,Aspirasi Irigasi + IOL,Tindakan,,5369413
+,Aspirasi Irrigation + Primary Posterior Capsulotomy + Vitrectomy Anterior +/- IOL,Tindakan,,9393272
+,Aspirasi Massa Lensa,Tindakan,,8450000
+,Bandage Lensa,Tindakan,,455000
+,Biopsi Kelopak + Konjungtiva,Tindakan,,2785915
+,Blefaroplasti 1 Mata,Tindakan,,4500000
+,Blefaroplasti Satu Kelopak/Lebih,Tindakan,,5859858
+,Cornea Scrapping + Debridement,Tindakan,,1950000
+,Cryopexy,Tindakan,,5850000
+,DCR,Tindakan,,6305176
+,Debridement + Amnion Graft,Tindakan,,2300000
+,Eksenterasi,Tindakan,,9000000
+,Eksisi Atheroma,Tindakan,,3835000
+,Eksisi Biopsi,Tindakan,,3835000
+,Eksisi Granuloma Palpebra,Tindakan,,3835000
+,Eksisi Granuloma Pyogenikum (Konjungtiva),Tindakan,,3510000
+,Eksisi Mayor,Tindakan,,7406750
+,Eksisi Milioma,Tindakan,,1950000
+,Eksisi Minor,Tindakan,,4650750
+,Eksisi Nevus Konjungtiva,Tindakan,,3737500
+,Eksisi Nevus Palpebra,Tindakan,,3997500
+,Eksisi Papiloma,Tindakan,,4127500
+,Eksisi Pterygium,Tindakan,,2678571
+,Eksisi Pterygium + Graft,Tindakan,,4005651
+,Eksisi Pterygium + Graft + MMC,Tindakan,,4500000
+,Eksisi Pterygium Duplex + Graft,Tindakan,,5000000
+,Eksisi Pterygium Duplex + Graft + MMC,Tindakan,,6000000
+,Eksisi Tumor,Tindakan,,6110000
+,Eksisi Verucae Palpebra,Tindakan,,3867500
+,Eksplantasi IOL / Exchange IOL,Tindakan,,6200000
+,Ekstirpasi + Cauterisasi Veruka Vulgaris/ Naevus Sederhana,Tindakan,,2059418
+,Ekstirpasi Corpus Alienum Intra Orbita,Tindakan,,6579835
+,Ekstirpasi Granuloma,Tindakan,,2045774
+,Ekstirpasi Kista,Tindakan,,3640000
+,Ekstirpasi Pinguekula,Tindakan,,2051884
+,Ekstirpasi Tumor + Eksisi Luas + Rekonstruksi,Tindakan,,7616611
+,Ekstirpasi Tumor Jinak Palpebra Luas + Rekonstruksi,Tindakan,,5885215
+,Ekstirpasi Tumor Kecil,Tindakan,,2045969
+,Ekstirpasi Tumor Orbita melalui Anterior,Tindakan,,5917342
+,Ekstirpasi Tumor Palpebrae,Tindakan,,3591350
+,Ekstirpasi Veruka / Naevus Luas,Tindakan,,2902765
+,Ekstirpasi Xanthelasma 1 Mata,Tindakan,,4600000
+,Ekstra Capsular Cataract Extraction,Tindakan,,6983408
+,Ekstra Capsular Cataract Extraction + IOL,Tindakan,,7896520
+,Ekstra Capsular Cataract Extraction + IOL + Vitrectomy Anterior,Tindakan,,8900000
+,Ekstra Capsular Cataract Extraction + IOL + Vitrectomy Anterior + Trabeculectomy,Tindakan,,14500000
+,Ekstraksi Corpus Alienum di Ruang Operasi,Tindakan,,1900000
+,Ekstraksi Corpus Alienum Minor,Tindakan,,250000
+,Ektraksi Lithiasis / Concreation,Tindakan,,1056250
+,Enucleasi,Tindakan,,7540000
+,Enucleasi + CLK,Tindakan,,11500000
+,Epilasi Bulu Mata,Tindakan,,156000
+,Evakuasi Minyak Silicon,Tindakan,,6213285
+,Eversi Kelopak Mata + Tindakan Sederhana,Tindakan,,130000
+,Eviscerasi,Tindakan,,5169010
+,Eviscerasi + CLK,Tindakan,,9490000
+,Eye Wound Toilet,Tindakan,,325000
+,Fisioterapi Mata,Tindakan,,65000
+,Flap Konjungtiva,Tindakan,,5330000
+,Flap Konjungtiva + Graft,Tindakan,,6110000
+,Implantasi Protesa Bola Mata,Tindakan,,500000
+,Implantasi Secondary IOL,Tindakan,,6200000
+,Injeksi Intravitreal Anti VEGF,Tindakan,,2142857
+,Injeksi Intravitreal Anti VEGF Aflibercept,Tindakan,,3535714
+,Injeksi Intravitreal Anti VEGF Bevacizumab,Tindakan,,2142857
+,Injeksi Intravitreal Anti VEGF Brolucizumab,Tindakan,,3214286
+,Injeksi Intravitreal Anti VEGF Ranibizumab,Tindakan,,2678571
+,Injeksi Intravitreal Antibiotik,Tindakan,,1950000
+,Injeksi Intravitreal Triamcinolone / IVTA,Tindakan,,2135013
+,Insisi Abses Palpebra,Tindakan,,2941250
+,Insisi Chalazion,Tindakan,,1990915
+,Iridektomi,Tindakan,,2922048
+,Irigasi Bola Mata,Tindakan,,250000
+,Jahit Inter Marginal,Tindakan,,2010089
+,Jahit Kelopak Mata < 2 cm Tidak Mengenai Margo,Tindakan,,2072489
+,Jahit Konjungtiva,Tindakan,,3215000
+,Jahit Kornea,Tindakan,,2906086
+,Jahit Kornea + Flap,Tindakan,,3900000
+,Jahit Kornea + Sklera,Tindakan,,4902143
+,Jahit Luka Kelopak Mata > 2 cm,Tindakan,,3154335
+,Jahit Luka Kelopak Mata > 2 cm mengenai Margo,Tindakan,,3371530
+,Jahit Palpebra + Graft,Tindakan,,9587500
+,Jahit Palpebra Minor,Tindakan,,1950000
+,Jahit Palpebra Superior / Inferior,Tindakan,,3867500
+,Jahit Palpebra Superior + Inferior,Tindakan,,6467500
+,Jahit Sklera,Tindakan,,2859749
+,Jahit Sklera Posterior + Krio,Tindakan,,6223658
+,Kantotomi,Tindakan,,2763430
+,Keratoplasti + Ekstra Capsular Cataract Extraction + IOL,Tindakan,,8718437
+,Keratoplasti/Transplantasi Kornea,Tindakan,,6286888
+,Koreksi Forniks Dangkal,Tindakan,,6890000
+,Krio Koagulasi + Injeksi Steroid Intra-Tumor,Tindakan,,2802417
+,Kriodiatermi,Tindakan,,2745882
+,Lansektomy,Tindakan,,2925000
+,Laser Barrage,Tindakan,,5200000
+,Laser Glaucoma,Tindakan,,5200000
+,Laser Iridotomy,Tindakan,,5200000
+,Laser Peripheral Iridotomy,Tindakan,,5200000
+,Laser PRP,Tindakan,,5200000
+,Laser Retinopexy,Tindakan,,5525000
+,Laser ROP,Tindakan,,5525000
+,Laser SLT,Tindakan,,5525000
+,Laser Subhyaloidectomy,Tindakan,,5200000
+,Laser TCP,Tindakan,,5200000
+,Laser YAG Capsulotomy,Tindakan,,5142857
+,Lensektomy,Tindakan,,9100000
+,Lymphoma Conjunctiva/Cysta Dermoid,Tindakan,,6922500
+,Lysis Simblepharon,Tindakan,,4875000
+,Membranectomy + Synechiolysis + Vitrectomy Anterior + Pupilloplasty + Secondary IOL,Tindakan,,7131904
+,Micro Endoscopy,Tindakan,,7446385
+,Mini Express Shunt,Tindakan,,11000000
+,Orbitotomi Lateral,Tindakan,,7644811
+,Parasintesis,Tindakan,,3265881
+,Pars Plana Vitrectomy,Tindakan,,13081471
+,Pars Plana Vitrectomy + Ablatio Retina + Silicone Implantation,Tindakan,,22000000
+,Pars Plana Vitrectomy + Antibiotik Intravitreal,Tindakan,,16000000
+,Pars Plana Vitrectomy + Ekstraksi IOL + Vitrectomy Anterior,Tindakan,,20124418
+,Pars Plana Vitrectomy + Evakuasi IOL / Nucleus Posterior Mata (Vitreous),Tindakan,,18081471
+,Pars Plana Vitrectomy + Evakuasi IOL + Implantasi IOL,Tindakan,,25581471
+,Pars Plana Vitrectomy + Evakuasi Sillicone Oil + Phaco + IOL,Tindakan,,23000000
+,Pars Plana Vitrectomy + Extraksi Korpal Intra Ocular + Endolaser,Tindakan,,18127798
+,Pars Plana Vitrectomy + Extraksi Lensa/IOL + Heavy Fluid + Fiksasi Sklera IOL,Tindakan,,22000000
+,Pars Plana Vitrectomy + Implantasi IOL (Iris Claw Technique),Tindakan,,20581471
+,Pars Plana Vitrectomy + Kenacort,Tindakan,,16000000
+,Pars Plana Vitrectomy + Lensektomi,Tindakan,,18662743
+,Pars Plana Vitrectomy + Membrane/ILM Peeling + Endolaser,Tindakan,,18462800
+,Pars Plana Vitrectomy + Phaco + IOL,Tindakan,,22000000
+,Pars Plana Vitrectomy + Scleral Buckle + Endo Laser + Gas SF6,Tindakan,,22000000
+,Pars Plana Vitrectomy + Scleral Buckle + Endo Laser + Silicon Oil /Heavy Fluid,Tindakan,,22000000
+,Pars Plana Vitrectomy + Scleral Buckle + Phaco + IOL,Tindakan,,23000000
+,Pars Plana Vitrectomy + Silicone Evacuation,Tindakan,,22000000
+,Pars Plana Vitrectomy + Vitrectomy Anterior,Tindakan,,15000000
+,Pemasangan Katup Implant Glaucoma,Tindakan,,11800000
+,Pemasangan Mini Shunt (Ahmed Valve),Tindakan,,10851750
+,Phacoemulsifikasi,Tindakan,,7428571
+,Phacoemulsifikasi + Penyulit,Tindakan,,9657143
+,Pneumatic Displacement + Gas SF6,Tindakan,,4500000
+,Pneumatic Retinopexy + Gas C3F8,Tindakan,,3173588
+,Pneumoretinopexy + Laser,Tindakan,,13325000
+,Ptosis + Facia Lata,Tindakan,,9587500
+,Rekanalisasi Duktus Lakrimalis,Tindakan,,2415417
+,Rekonstruksi + Eksisi Tumor,Tindakan,,9587500
+,Rekonstruksi Fraktura Orbita + Implant,Tindakan,,7619794
+,Rekonstruksi Palpebra,Tindakan,,5655000
+,Repair Ptosis,Tindakan,,6235251
+,Repair Strabismus 1 s.d 2 Otot,Tindakan,,6616562
+,Reparasi Kanalis Lakrimalis,Tindakan,,9587500
+,Reposisi IOL,Tindakan,,4200000
+,Reposisi Iris Prolapse,Tindakan,,1500000
+,ROSO,Tindakan,,13650000
+,Scleral Buckle + Phaco + IOL,Tindakan,,9921384
+,Scraping Kornea,Tindakan,,2200000
+,Silicone Oil Removal + General Anastesi,Tindakan,,18525000
+,Simblefarektomi Kecil,Tindakan,,3097090
+,Simblefarektomi Luas,Tindakan,,6471385
+,Sklera Buckle,Tindakan,,6897131
+,Strabismus,Tindakan,,18395000
+,Strabismus 3 Otot / Lebih,Tindakan,,8389383
+,Tarsorafi,Tindakan,,2731447
+,Tarsotomi,Tindakan,,2865742
+,Tindakan Bilateral (Op. 2 Mata) + NU Khusus Bayi < 2 Bulan tanpa IOL,Tindakan,,8260353
+,Trabeculectomy,Tindakan,,8493382
+,Trabeculectomy + ECCE/Phaco + IOL,Tindakan,,13800000
+,Trabeculotomy,Tindakan,,9700000
+,Transclera Cryo Photo Coagulation,Tindakan,,4000000
+,Vitrectomi Anterior Sederhana,Tindakan,,3250341
+,Admisi Rawat Jalan Pasien Baru,Administrasi,,36400
+,Admisi Rawat Jalan Pasien Lama,Administrasi,,15600
+,Admisi Pasien IGD,Administrasi,,97500
+,Admisi Pasien Rawat Inap,Administrasi,,97500
+,Admisi Operasi,Administrasi,,97500
+,Konsultasi Dokter Sub-Spesialis,Konsultasi Dokter,,250000
+,Konsultasi Dokter Spesialis,Konsultasi Dokter,,210000
+,Konsultasi Dokter Umum,Konsultasi Dokter,,95000
+,Konsultasi Dokter Sub-Spesialis IGD,Konsultasi Dokter,,325000
+,Konsultasi Dokter Spesialis IGD,Konsultasi Dokter,,250000
+,Konsultasi Dokter Umum IGD,Konsultasi Dokter,,130000
+,Konsultasi Pre-Operasi,Konsultasi Dokter,,214500
+,Konsultasi Professor,Konsultasi Dokter,,300000
+,Kelas VIP,Sewa Kamar ,,1040000
+,Kelas 1,Sewa Kamar ,,650000
+,Kelas 2,Sewa Kamar ,,520000
+,Kelas 3,Sewa Kamar ,,390000
+,Kelas 4,Sewa Kamar ,,300000
+,Sewa Ruang Operasi,Sewa Kamar ,,1200000
+,Sewa Ruang Operasi Bius Total,Sewa Kamar ,,1820000
+,Visit Dokter Sub-Spesialis,Visit Dokter,,273000
+,Visit Dokter Spesialis,Visit Dokter,,182000
+,Visit Dokter Anestesi,Visit Dokter,,182000
+,Visit Dokter Umum,Visit Dokter,,65000
+,Visit Professor,Visit Dokter,,300000
+,Anterior Segment,Pemeriksaan Dasar ,,195000
+,Auto Refraktometry,Pemeriksaan Dasar,,39000
+,Auto Visiokeratometry,Pemeriksaan Dasar ,,71500
+,Keratometry,Pemeriksaan Dasar,,195000
+,Pemeriksaan Vital Sign,Pemeriksaan Dasar ,,26000
+,Slit Lamp,Pemeriksaan Dasar,,52000
+,Tonometry Contact,Pemeriksaan Dasar ,,130000
+,Tonometry Non Contact,Pemeriksaan Dasar,,26000
+,Visus,Pemeriksaan Dasar ,,45500
+,BUT/Schimer Test,Pemeriksaan Dasar Lainnya,,26000
+,Pemeriksaan Cardiff,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Cover Un Cover,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Eversi Kelopak Mata,Pemeriksaan Dasar Lainnya,,97500
+,Pemeriksaan Glaucoma,Pemeriksaan Dasar Lainnya,,130000
+,Pemeriksaan Goniometer,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Indirect,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Katarak,Pemeriksaan Dasar Lainnya,,130000
+,Pemeriksaan OKN Drum,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Perkins Tonometer,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Prisma,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan RAF Ruler,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Retina,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Retinometry,Pemeriksaan Dasar Lainnya,,188500
+,Pemeriksaan RPL,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Stereoskopis,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Teller Acuity Card/TAC,Pemeriksaan Dasar Lainnya,,39000
+,Pemeriksaan Trauma Mata,Pemeriksaan Dasar Lainnya,,130000
+,Tes Buta Warna,Pemeriksaan Dasar Lainnya,,97500
+,Foto Fundus,Penunjang,,156000
+,Pemeriksaan Bayi Prematur,Penunjang,,409500
+,Pemeriksaan Biometry,Penunjang,,84500
+,Pemeriksaan Funduscopy,Penunjang,,156000
+,Pemeriksaan Funduscopy Indirect,Penunjang,,78000
+,Pemeriksaan IOL Master,Penunjang,,91000
+,Pemeriksaan Lapang Pandang,Penunjang,,487500
+,Pemeriksaan OCT Fundus,Penunjang,,487500
+,Pemeriksaan OCT Glaucoma,Penunjang,,487500
+,Pemeriksaan OCT Makula,Penunjang,,487500
+,Pemeriksaan Paket OCT Lengkap,Penunjang,,780000
+,Pemeriksaan Trauma IGD,Penunjang,,130000
+,USG B Scan,Penunjang,,156000
+,Asistensi Tindakan Berat,Perawatan,,1300000
+,Asistensi Tindakan Ringan,Perawatan,,390000
+,Asistensi Tindakan Sedang,Perawatan,,650000
+,Nebulizer,Perawatan,,92950
+,Nursing Monitor Daycare,Perawatan,,195000
+,Nursing Service,Perawatan,,97500
+,Pre-Op And Recovery Monitoring,Perawatan,,325000
+,Racikan Obat Myopine,Kefarmasian,,65000
+,Tindakan Infus,Perawatan,,156000
+,Anesthesia Machine Set,Sewa Peralatan Medik,,1500000
+,Argon Laser Machine,Sewa Peralatan Medik,,780000
+,Constellation Vitrectomy Machine,Sewa Peralatan Medik,,2600000
+,Eibos Viewing System,Sewa Peralatan Medik,,2340000
+,Mesin Laser Retina,Sewa Peralatan Medik,,1105000
+,Mesin Laser PI Glaucoma,Sewa Peralatan Medik,,1354167
+,Microscope,Sewa Peralatan Medik,,1040000
+,Phacoemulsifikasi Machine,Sewa Peralatan Medik,,1500000

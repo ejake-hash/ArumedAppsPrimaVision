@@ -520,7 +520,7 @@ function onImported(result) {
 .tt-wrap { display: flex; flex-direction: column; gap: 1rem; }
 
 .tt-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
-.tt-section-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.tt-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .tt-section-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; max-width: 640px; }
 
 .tt-btn-primary { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 9px; border: 1px solid var(--ga); background: var(--ga); color: white; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 0.15s; }
@@ -530,7 +530,7 @@ function onImported(result) {
 .tt-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.6rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
 .tt-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }
 .tt-chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 11.5px; cursor: pointer; font-weight: 500; transition: background 0.15s, border-color 0.15s, color 0.15s; }
-.tt-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.tt-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .tt-chip.active { background: var(--ga); border-color: var(--ga); color: white; }
 
 .tt-code { font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--td); background: var(--bs); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--gb); }
@@ -544,14 +544,14 @@ function onImported(result) {
 
 .tt-icon-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .tt-icon-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tt-icon-btn:hover { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.tt-icon-btn:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .tt-icon-danger:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 
 .tt-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
 .tt-confirm { background: var(--bc); border-radius: 16px; width: 420px; max-width: 95vw; border: 1px solid var(--gb); padding: 1.6rem 1.5rem 1.3rem; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.7rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); }
 .tt-confirm-icon { width: 48px; height: 48px; border-radius: 50%; background: var(--eb); display: flex; align-items: center; justify-content: center; }
 .tt-confirm-icon svg { width: 24px; height: 24px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tt-confirm h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.tt-confirm h3 { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); margin: 0; }
 .tt-confirm p { font-size: 13px; color: var(--tm); margin: 0; line-height: 1.5; }
 .tt-confirm-actions { display: flex; gap: 0.6rem; margin-top: 0.5rem; width: 100%; justify-content: center; }
 .tt-btn-secondary { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 13px; cursor: pointer; font-weight: 500; }
@@ -582,11 +582,11 @@ function onImported(result) {
 .tt-kat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
 .tt-kat { background: var(--bc); border-radius: 16px; width: 720px; max-width: 95vw; max-height: 88vh; overflow-y: auto; border: 1px solid var(--gb); padding: 1.5rem 1.6rem; display: flex; flex-direction: column; gap: 0.9rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); }
 .tt-kat-head { display: flex; justify-content: space-between; align-items: center; }
-.tt-kat-head h3 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.tt-kat-head h3 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .tt-kat-close { background: transparent; border: none; font-size: 24px; color: var(--tm); cursor: pointer; padding: 0 8px; line-height: 1; }
 .tt-kat-close:hover { color: var(--td); }
 .tt-kat-sub { font-size: 12.5px; color: var(--tm); margin: 0; }
-.tt-kat-sub code { background: var(--bs); padding: 1px 6px; border-radius: 4px; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--gd); border: 1px solid var(--gb); }
+.tt-kat-sub code { background: var(--bs); padding: 1px 6px; border-radius: 4px; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--td); border: 1px solid var(--gb); }
 
 .tt-kat-form { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.7rem; }
 .tt-kat-form-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 0.7rem; }

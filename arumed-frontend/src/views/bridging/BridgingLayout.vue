@@ -57,7 +57,7 @@ const currentLabel = computed(
 
 <style scoped>
 .br-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 1400px; }
-.br-header h1 { font-family: 'DM Serif Display', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
+.br-header h1 { font-family: 'Space Grotesk', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
 .br-sub { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 .br-grid { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
@@ -66,8 +66,8 @@ const currentLabel = computed(
 .br-nav { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 0.6rem 0.5rem; position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: 1px; }
 .br-nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--tm); font-size: 13px; transition: background 0.15s, color 0.15s; }
 .br-nav-item svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
-.br-nav-item:hover { background: var(--bs); color: var(--gd); }
-.br-nav-item.router-link-active { background: var(--gl); color: var(--gd); font-weight: 600; }
+.br-nav-item:hover { background: var(--bs); color: var(--td); }
+.br-nav-item.router-link-active { background: var(--gl); color: var(--td); font-weight: 600; }
 
 .br-content { min-width: 0; }
 </style>

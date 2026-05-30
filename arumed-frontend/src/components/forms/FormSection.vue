@@ -136,7 +136,7 @@ watch(() => [props.station, props.section, props.visitId], load)
 .fs-titles { flex: 1; min-width: 0; }
 .fs-titles h3 {
   margin: 0; font-size: 14.5px;
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   color: var(--td); line-height: 1.2;
 }
 .fs-sub {

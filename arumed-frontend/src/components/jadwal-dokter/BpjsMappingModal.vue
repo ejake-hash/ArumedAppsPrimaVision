@@ -280,7 +280,7 @@ onMounted(load)
 .bm-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .bm-tbl th { text-align: left; padding: 7px 8px; background: var(--bs); color: var(--tm); font-size: 11px; text-transform: uppercase; }
 .bm-tbl td { padding: 7px 8px; border-top: 1px solid var(--gb); color: var(--td); vertical-align: top; }
-.bm-tbl code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--gd); }
+.bm-tbl code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--td); }
 .sub { font-size: 11px; color: var(--tm); margin-top: 2px; }
 
 .inp { padding: 6px 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 13px; color: #000; background: #fff; width: 100%; }

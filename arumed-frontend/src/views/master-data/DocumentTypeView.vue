@@ -375,7 +375,7 @@ function formatFreq(f) {
 .dt-wrap, .dt-wrap * { color: #000; }
 .dt-wrap { display: flex; flex-direction: column; gap: 1rem; }
 .dt-head { display: flex; justify-content: space-between; align-items: flex-end; }
-.dt-head h2 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 22px; }
+.dt-head h2 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 22px; }
 .dt-sub { margin: 4px 0 0; font-size: 13px; }
 
 .dt-toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
@@ -436,7 +436,7 @@ function formatFreq(f) {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0.85rem 1.25rem; border-bottom: 1px solid #000;
 }
-.dt-modal-head h3 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 17px; }
+.dt-modal-head h3 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 17px; }
 
 .dt-modal-body { padding: 1rem 1.25rem; overflow-y: auto; flex: 1; background: #fafafa; }
 .dt-modal-foot {

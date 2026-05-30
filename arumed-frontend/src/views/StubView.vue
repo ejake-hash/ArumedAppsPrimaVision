@@ -20,6 +20,6 @@ defineProps({ title: { type: String, default: 'Halaman' } })
 .stub { display: flex; align-items: center; justify-content: center; min-height: 60vh; }
 .stub-box { text-align: center; color: var(--tu); }
 .stub-box svg { width: 52px; height: 52px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; margin-bottom: 1rem; display: block; margin-inline: auto; }
-.stub-box h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin-bottom: 0.4rem; }
+.stub-box h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin-bottom: 0.4rem; }
 .stub-box p { font-size: 13px; }
 </style>

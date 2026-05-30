@@ -175,7 +175,7 @@ onMounted(load)
 .ttd-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1rem; max-width: 1100px; }
 
 .ttd-head { display: flex; justify-content: space-between; align-items: flex-end; }
-.ttd-head h1 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 24px; color: var(--td); }
+.ttd-head h1 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 24px; color: var(--td); }
 .ttd-sub { margin: 4px 0 0; color: var(--tm); font-size: 13px; }
 
 .ttd-btn-ghost { padding: 0.45rem 1rem; border: 1px solid var(--gb); border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
@@ -238,7 +238,7 @@ onMounted(load)
   display: flex; justify-content: space-between; align-items: center;
   padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gb);
 }
-.ttd-preview-head h3 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 17px; }
+.ttd-preview-head h3 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 17px; }
 .ttd-preview-body { padding: 1.5rem 2rem; overflow-y: auto; flex: 1; background: #fafafa; }
 .ttd-preview-foot { padding: 0.85rem 1.25rem; border-top: 1px solid var(--gb); display: flex; justify-content: center; }
 </style>

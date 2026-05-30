@@ -412,7 +412,7 @@ onMounted(refreshStock)
 <style scoped>
 .iss-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 90px); position: sticky; top: 1.5rem; }
 .iss-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--gb); background: var(--bs); }
-.iss-head h3 { font-family: 'DM Serif Display', serif; font-size: 15px; color: var(--td); margin: 0; }
+.iss-head h3 { font-family: 'Space Grotesk', serif; font-size: 15px; color: var(--td); margin: 0; }
 .iss-head-actions { display: flex; gap: 4px; }
 .iss-refresh { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; font-size: 14px; line-height: 1; }
 .iss-refresh:hover:not(:disabled) { background: var(--bs); color: var(--ga); }
@@ -421,14 +421,14 @@ onMounted(refreshStock)
 
 .iss-tabs { display: flex; padding: 8px 10px 0; gap: 4px; border-bottom: 1px solid var(--gb); }
 .iss-tab { flex: 1; padding: 6px 8px; font-size: 12px; font-weight: 600; color: var(--tm); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
-.iss-tab:hover { color: var(--gd); }
+.iss-tab:hover { color: var(--td); }
 .iss-tab.active { color: var(--ga); border-bottom-color: var(--ga); }
 
 .iss-loc { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--gb); background: var(--bs); }
 .iss-loc-lbl { font-size: 11px; font-weight: 600; color: var(--tm); }
 .iss-loc-seg { display: flex; flex: 1; gap: 4px; }
 .iss-loc-btn { flex: 1; padding: 4px 6px; font-size: 11px; font-weight: 600; color: var(--tm); background: var(--bc); border: 1px solid var(--gb); border-radius: 6px; cursor: pointer; }
-.iss-loc-btn:hover { background: var(--gl); color: var(--gd); }
+.iss-loc-btn:hover { background: var(--gl); color: var(--td); }
 .iss-loc-btn.active { background: var(--ga); color: #fff; border-color: var(--ga); }
 
 .iss-csv { padding: 10px 12px; border-bottom: 1px solid var(--gb); background: var(--bs); }

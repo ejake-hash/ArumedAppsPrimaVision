@@ -229,7 +229,7 @@ loadProvinces()
 <style scoped>
 .wv-wrap { display: flex; flex-direction: column; gap: 1rem; }
 
-.wv-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.wv-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .wv-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; line-height: 1.5; }
 .wv-head a { color: var(--ga); text-decoration: none; }
 .wv-head a:hover { text-decoration: underline; }
@@ -240,7 +240,7 @@ loadProvinces()
 .wv-crumb { display: flex; align-items: center; gap: 6px; padding: 0.6rem 1rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; font-size: 12.5px; color: var(--tm); flex-wrap: wrap; }
 .wv-crumb-label { font-weight: 500; color: var(--td); }
 .wv-crumb-item { padding: 2px 9px; border-radius: 6px; background: var(--bc); border: 1px solid var(--gb); }
-.wv-crumb-item.active { background: var(--gl); border-color: var(--ga); color: var(--gd); font-weight: 500; }
+.wv-crumb-item.active { background: var(--gl); border-color: var(--ga); color: var(--td); font-weight: 500; }
 .wv-crumb-sep { color: var(--tu); }
 
 .wv-cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; min-height: 460px; }
@@ -249,7 +249,7 @@ loadProvinces()
 
 .wv-col { display: flex; flex-direction: column; background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; min-height: 0; }
 .wv-col-head { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0.85rem; background: var(--bs); border-bottom: 1px solid var(--gb); font-size: 12px; color: var(--td); }
-.wv-count { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: var(--gl); color: var(--gd); font-weight: 600; }
+.wv-count { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: var(--gl); color: var(--td); font-weight: 600; }
 
 .wv-list { flex: 1; overflow-y: auto; padding: 0.3rem; display: flex; flex-direction: column; gap: 1px; max-height: 460px; }
 .wv-list::-webkit-scrollbar { width: 4px; }
@@ -257,7 +257,7 @@ loadProvinces()
 
 .wv-item { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 7px 10px; border: none; background: transparent; text-align: left; cursor: pointer; border-radius: 7px; font-size: 12.5px; color: var(--td); transition: background 0.1s; }
 .wv-item:hover { background: var(--bs); }
-.wv-item.active { background: var(--gl); color: var(--gd); font-weight: 500; }
+.wv-item.active { background: var(--gl); color: var(--td); font-weight: 500; }
 .wv-item-leaf { cursor: default; }
 .wv-item-leaf:hover { background: var(--bs); }
 

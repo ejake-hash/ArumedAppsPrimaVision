@@ -252,13 +252,13 @@ watch(() => props.open, (o) => {
 .ro-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
 .ro-modal { background: var(--bc); border-radius: 12px; max-width: 720px; width: 100%; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
 .ro-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--gb); }
-.ro-head h3 { margin: 0; font-size: 16px; color: var(--td); font-family: 'DM Serif Display', serif; }
+.ro-head h3 { margin: 0; font-size: 16px; color: var(--td); font-family: 'Space Grotesk', serif; }
 .ro-x { background: none; border: none; cursor: pointer; color: var(--tu); padding: 4px; }
 .ro-x svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .ro-x:hover { color: var(--td); }
 
 .ro-tabs { display: flex; gap: 4px; padding: 10px 20px 0; border-bottom: 1px solid var(--gb); }
-.ro-tab { padding: 7px 14px; font-size: 12.5px; font-weight: 500; color: var(--tu); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.ro-tab { padding: 7px 14px; font-size: 12.5px; font-weight: 500; color: var(--tu); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; font-family: 'Inter', sans-serif; }
 .ro-tab:hover { color: var(--td); }
 .ro-tab.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 .ro-tabcount { display: inline-block; min-width: 18px; padding: 1px 6px; margin-left: 6px; font-size: 10.5px; font-weight: 700; line-height: 1.4; color: #fff; background: var(--ga); border-radius: 10px; text-align: center; }
@@ -271,14 +271,14 @@ watch(() => props.open, (o) => {
 .ro-state { text-align: center; padding: 22px; color: var(--tu); }
 .ro-muted { color: var(--tu); }
 
-.ro-input { width: 100%; height: 30px; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.ro-input { width: 100%; height: 30px; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .ro-input:focus { border-color: var(--ga); background: #fff; }
 .ro-qty { text-align: center; }
-.ro-addrow { margin-top: 10px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--ga); background: var(--gl); border: 1.5px dashed var(--ga); border-radius: 7px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.ro-addrow { margin-top: 10px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--ga); background: var(--gl); border: 1.5px dashed var(--ga); border-radius: 7px; cursor: pointer; font-family: 'Inter', sans-serif; }
 
 .ro-items { color: var(--tm); font-size: 12px; line-height: 1.4; max-width: 280px; }
 .ro-acts { display: flex; gap: 5px; justify-content: center; }
-.ro-btn { padding: 5px 11px; font-size: 11.5px; font-weight: 600; border-radius: 6px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.ro-btn { padding: 5px 11px; font-size: 11.5px; font-weight: 600; border-radius: 6px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; }
 .ro-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }
 .ro-btn:disabled { opacity: .5; cursor: not-allowed; }
 .ro-btn.primary { background: var(--gd); color: #fff; border-color: var(--gd); }

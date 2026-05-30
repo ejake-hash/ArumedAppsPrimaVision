@@ -1471,13 +1471,13 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .stat-done    { color: var(--st); }
 
 .primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
-.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .pf-btn:hover { border-color: var(--ga); color: var(--ga); }
 .pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
 .pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
 
 .ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
-.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
+.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'Inter',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
 .ptype-tab:hover { border-color: var(--ga); color: var(--ga); }
 .ptype-tab.a { color: #fff; font-weight: 700; }
 .ptype-tab.ptype-bpjs.a { background: #1e40af; border-color: #1e40af; }
@@ -1485,14 +1485,14 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .ptype-tab.a:not(.ptype-bpjs):not(.ptype-umum) { background: var(--gd); border-color: var(--gd); }
 
 .q-search-wrap { margin-bottom: 0.5rem; }
-.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .q-search:focus { border-color: var(--ga); background: #fff; }
 
 .q-skeleton { height: 78px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; animation: shimmer 1.2s ease-in-out infinite; }
 @keyframes shimmer { 0%, 100% { opacity: .6 } 50% { opacity: .35 } }
 .empty-section { text-align: center; padding: 0.75rem 1rem; font-size: 11px; color: var(--th); background: var(--bi); border-radius: 7px; margin-bottom: 6px; border: 1px dashed var(--gb); }
 
-.q-item { display: flex; gap: 8px; padding: 8px 10px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; width: 100%; text-align: left; font-family: 'DM Sans', sans-serif; flex-wrap: wrap; }
+.q-item { display: flex; gap: 8px; padding: 8px 10px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; width: 100%; text-align: left; font-family: 'Inter', sans-serif; flex-wrap: wrap; }
 .q-item:hover { border-color: var(--lm); background: var(--gl); }
 .q-item.active { border-color: var(--ga); background: var(--gl); }
 .q-item.done { opacity: .55; }
@@ -1506,7 +1506,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }
 
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
-.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans',sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
+.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'Inter',sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
 .q-act-btn svg { width: 10px; height: 10px; }
 .q-act-btn.call { color: var(--ga); border-color: var(--ga); background: var(--gl); }
 .q-act-btn.call:hover { background: var(--ga); color: #fff; }
@@ -1536,7 +1536,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 /* ─── RIGHT ──────────────────────────────────────────────────────────────── */
 .rp { display: flex; flex-direction: column; gap: 0.75rem; }
 .nvt { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); padding: 0 0.5rem; }
-.nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans', sans-serif; display: inline-flex; align-items: center; gap: 6px; }
+.nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'Inter', sans-serif; display: inline-flex; align-items: center; gap: 6px; }
 .nt:hover { color: var(--td); }
 .nt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 .nt svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -1549,7 +1549,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
 .pt-banner { background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px; display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.85rem; }
 .pt-info { flex: 1; min-width: 0; }
-.pt-name { font-family: 'DM Serif Display', serif; font-size: 18px; line-height: 1.1; }
+.pt-name { font-family: 'Space Grotesk', serif; font-size: 18px; line-height: 1.1; }
 .pt-meta { font-size: 11px; color: rgba(255, 255, 255, 0.6); margin-top: 3px; }
 .pt-contact { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; }
 .pt-contact-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: rgba(255, 255, 255, 0.82); max-width: 340px; }
@@ -1581,7 +1581,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
 /* Panel info eligibility asuransi — readonly referensi, BUKAN auto-calculator */
 .elig-panel { background: var(--bc); border: 1.5px solid var(--ga); border-radius: 10px; padding: 0.75rem 0.85rem; margin-bottom: 0.7rem; }
-.elig-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--gd); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 7px; border-bottom: 1px solid var(--gb); margin-bottom: 9px; }
+.elig-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; color: var(--td); text-transform: uppercase; letter-spacing: .04em; padding-bottom: 7px; border-bottom: 1px solid var(--gb); margin-bottom: 9px; }
 .elig-head svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .elig-status { margin-left: auto; font-size: 9px; padding: 2px 8px; border-radius: 10px; letter-spacing: 0; text-transform: none; font-weight: 700; }
 .elig-status.es-verified { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
@@ -1594,7 +1594,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .elig-lbl { font-size: 9.5px; color: var(--tu); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px; }
 .elig-val { font-size: 13px; font-weight: 700; color: var(--td); font-family: 'Geist Mono', monospace; }
 .elig-val.val-warn { color: var(--et); }
-.elig-val.val-emphasis { color: var(--gd); }
+.elig-val.val-emphasis { color: var(--td); }
 
 .elig-meta { margin-top: 9px; font-size: 11px; color: var(--tm); padding-top: 7px; border-top: 1px dashed var(--gb); }
 .elig-notes { margin-top: 6px; font-size: 11px; color: var(--tm); padding: 5px 8px; background: var(--bs); border-radius: 5px; }
@@ -1634,9 +1634,9 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 /* ─── Group header per kategori ──────────────────────────────────────────── */
 .kat-group-head td { background: var(--bs); padding: 6px 14px; border-top: 1px solid var(--gb); }
 .kat-group-head td:first-child { border-left: 3px solid var(--ga); }
-.kat-group-name { font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gd); }
+.kat-group-name { font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--td); }
 .kat-group-count { font-size: 9.5px; color: var(--tu); margin-left: 8px; font-weight: 500; }
-.kat-group-head .num.strong { color: var(--gd); font-size: 11.5px; }
+.kat-group-head .num.strong { color: var(--td); font-size: 11.5px; }
 .kat-group:first-of-type .kat-group-head td { border-top: none; }
 .kat-group tr:first-child td { border-top: none; }
 .kat-bpjs { background: #dbeafe; color: #1e40af; }
@@ -1674,7 +1674,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .tindakan-search-input {
   flex: 1; min-width: 0; border: none; background: transparent;
   padding: 0; height: auto; font-size: 13px; color: var(--td);
-  outline: none; font-family: 'DM Sans', sans-serif;
+  outline: none; font-family: 'Inter', sans-serif;
 }
 .tindakan-search-input::placeholder { color: var(--th); }
 .tindakan-search-clear {
@@ -1700,13 +1700,13 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .tarif-list-item.in-list { background: var(--gl); }
 .tarif-list-item.is-adding { opacity: .55; pointer-events: none; }
 .tarif-list-name { flex: 1; font-size: 12px; font-weight: 500; color: var(--td); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--gd); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--td); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tarif-list-icon { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke-width: 2; stroke-linecap: round; }
 .tarif-list-icon.add { stroke: var(--ga); }
 .tarif-list-icon.check { stroke: var(--st); stroke-width: 2.5; }
 .tarif-kode { font-size: 9.5px; font-weight: 700; color: var(--ga); letter-spacing: 0.03em; white-space: nowrap; }
 .tarif-kat { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.03em; white-space: nowrap; }
-.tarif-kat.td { background: var(--gl); color: var(--gd); border: 1px solid rgba(31,125,74,0.2); }
+.tarif-kat.td { background: var(--gl); color: var(--td); border: 1px solid rgba(31,125,74,0.2); }
 .tarif-empty { text-align: center; padding: 1rem; font-size: 11px; color: var(--th); }
 
 .tbl-foot { padding: 0.75rem 1.1rem; border-top: 2px solid var(--gb); background: var(--bi); }
@@ -1717,7 +1717,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .totals .row.blue { color: var(--it); }
 .totals .row.red { color: var(--et); }
 .totals .row.green { color: var(--st); }
-.totals .row.grand { font-size: 15px; font-weight: 700; color: var(--gd); padding: 6px 0 0; border-top: 1px dashed var(--gb); margin-top: 4px; }
+.totals .row.grand { font-size: 15px; font-weight: 700; color: var(--td); padding: 6px 0 0; border-top: 1px dashed var(--gb); margin-top: 4px; }
 .totals .global-disc .disc-inputs { display: inline-flex; align-items: center; gap: 6px; }
 .totals .global-disc .fi { height: 28px; font-size: 11px; padding: 0 6px; }
 .totals .global-disc .disc-pc { width: 60px; text-align: right; }
@@ -1754,7 +1754,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
 .mixed-header { display: flex; justify-content: space-between; align-items: center; padding: .5rem .6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; margin-bottom: .55rem; }
 .mixed-lbl { font-size: 11px; color: var(--tu); font-weight: 600; }
-.mixed-total { font-size: 14px; font-weight: 700; color: var(--gd); }
+.mixed-total { font-size: 14px; font-weight: 700; color: var(--td); }
 .mixed-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: .5rem; }
 .mixed-row { display: flex; align-items: center; gap: 8px; }
 .pm-icon.sm { width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; }
@@ -1772,14 +1772,14 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .pm-icon { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; }
 .pm-icon svg { width: 13px; height: 13px; fill: none; stroke-width: 2; stroke-linecap: round; }
 .pm span { font-size: 11px; font-weight: 500; color: var(--td); }
-.pm.sel span { color: var(--gd); font-weight: 600; }
+.pm.sel span { color: var(--td); font-weight: 600; }
 .cash-row { margin-bottom: 0.6rem; }
 .kembalian { font-size: 11px; color: var(--st); margin-top: 3px; font-weight: 600; }
 
-.fi { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.fi { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .fi:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31, 125, 74, 0.09); }
 
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
 .btn-sm { height: 28px; padding: 0 10px; font-size: 11px; }
 .btn-lg { height: 42px; padding: 0 18px; font-size: 13px; font-weight: 600; }
 .btn-full { width: 100%; }
@@ -1789,7 +1789,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .btn-success:hover:not(:disabled) { background: var(--gm); }
 .btn-success:disabled { background: var(--th); cursor: not-allowed; }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
-.btn-secondary:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
+.btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .sp { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #fff; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1837,7 +1837,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
     display: block !important;
     position: relative;
     color: #000;
-    font-family: 'DM Sans', Arial, sans-serif;
+    font-family: 'Inter', Arial, sans-serif;
     font-size: 11px;
     line-height: 1.5;
   }

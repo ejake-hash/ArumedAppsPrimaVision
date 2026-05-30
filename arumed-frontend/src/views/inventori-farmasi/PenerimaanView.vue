@@ -745,7 +745,7 @@ const canDelete = computed(() => auth.can('penerimaan.delete'))
 .grn-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
 
 .grn-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.grn-section-head h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin: 0; }
+.grn-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0; }
 .grn-section-head p { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
 
 .grn-btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--ga); color: white; border: 0; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; }

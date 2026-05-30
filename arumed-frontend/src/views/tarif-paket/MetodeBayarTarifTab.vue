@@ -424,7 +424,7 @@ watch(() => props.insurerId, () => refresh())
 .tt-csv-bar { display: flex; gap: 6px; }
 .tt-btn-csv { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .tt-btn-csv svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tt-btn-csv:hover:not(:disabled) { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.tt-btn-csv:hover:not(:disabled) { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .tt-btn-csv:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .tt-code { font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--td); background: var(--bs); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--gb); }
@@ -442,14 +442,14 @@ watch(() => props.insurerId, () => refresh())
 
 .tt-icon-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .tt-icon-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tt-icon-btn:hover { background: var(--gl); color: var(--gd); border-color: var(--ga); }
+.tt-icon-btn:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .tt-icon-danger:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 
 .tt-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
 .tt-confirm { background: var(--bc); border-radius: 16px; width: 420px; max-width: 95vw; border: 1px solid var(--gb); padding: 1.6rem 1.5rem 1.3rem; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.7rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); }
 .tt-confirm-icon { width: 48px; height: 48px; border-radius: 50%; background: var(--eb); display: flex; align-items: center; justify-content: center; }
 .tt-confirm-icon svg { width: 24px; height: 24px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.tt-confirm h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.tt-confirm h3 { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); margin: 0; }
 .tt-confirm p { font-size: 13px; color: var(--tm); margin: 0; line-height: 1.5; }
 .tt-confirm-actions { display: flex; gap: 0.6rem; margin-top: 0.5rem; width: 100%; justify-content: center; }
 .tt-btn-secondary { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 13px; cursor: pointer; font-weight: 500; }

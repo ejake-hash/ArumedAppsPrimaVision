@@ -215,7 +215,7 @@ defineExpose({ persistDraft })
 <style scoped>
 .wz-wrap { display: flex; flex-direction: column; gap: 1.25rem; }
 .wz-head { display: flex; justify-content: space-between; align-items: flex-end; }
-.wz-head h2 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); }
+.wz-head h2 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); }
 .wz-sub { margin: 4px 0 0; color: var(--tm); font-size: 13px; }
 
 .wz-btn-ghost {

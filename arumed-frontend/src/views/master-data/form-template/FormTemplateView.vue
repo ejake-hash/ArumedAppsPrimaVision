@@ -128,7 +128,7 @@ function formatComplexity(c) {
 .ft-wrap { display: flex; flex-direction: column; gap: 1rem; color: #000; }
 .ft-wrap, .ft-wrap * { color: #000; }
 .ft-head { display: flex; justify-content: space-between; align-items: flex-end; }
-.ft-head h2 { margin: 0; font-family: 'DM Serif Display', serif; font-size: 22px; color: #000; }
+.ft-head h2 { margin: 0; font-family: 'Space Grotesk', serif; font-size: 22px; color: #000; }
 .ft-sub { margin: 4px 0 0; color: #000; font-size: 13px; }
 
 .ft-toolbar { display: flex; gap: 1rem; align-items: center; }

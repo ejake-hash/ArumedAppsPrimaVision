@@ -100,7 +100,7 @@ async function savePhoto() {
   position: relative; flex-shrink: 0; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   background: var(--gl, #e8f3ec); color: var(--gd, #1d5b3f);
-  font-family: 'DM Serif Display', serif; font-weight: 600; line-height: 1;
+  font-family: 'Space Grotesk', serif; font-weight: 600; line-height: 1;
   user-select: none;
 }
 .pa-img { width: 100%; height: 100%; object-fit: cover; display: block; }

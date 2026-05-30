@@ -86,7 +86,7 @@ const currentTabLabel = computed(() => {
 <style scoped>
 .tpl-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 1600px; }
 
-.tpl-header h1 { font-family: 'DM Serif Display', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
+.tpl-header h1 { font-family: 'Space Grotesk', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
 .tpl-sub { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 .tpl-grid { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
@@ -98,8 +98,8 @@ const currentTabLabel = computed(() => {
 
 .tpl-nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--tm); font-size: 13px; transition: background 0.15s, color 0.15s; }
 .tpl-nav-item svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
-.tpl-nav-item:hover { background: var(--bs); color: var(--gd); }
-.tpl-nav-item.router-link-exact-active { background: var(--gl); color: var(--gd); font-weight: 500; }
+.tpl-nav-item:hover { background: var(--bs); color: var(--td); }
+.tpl-nav-item.router-link-exact-active { background: var(--gl); color: var(--td); font-weight: 500; }
 .tpl-nav-item.router-link-exact-active svg { stroke: var(--ga); }
 
 .tpl-content { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1.3rem 1.4rem; min-height: 60vh; }

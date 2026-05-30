@@ -897,7 +897,7 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
 .po-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
 
 .po-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.po-section-head h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--td); margin: 0; }
+.po-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0; }
 .po-section-head p { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
 
 .po-tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--gb); }

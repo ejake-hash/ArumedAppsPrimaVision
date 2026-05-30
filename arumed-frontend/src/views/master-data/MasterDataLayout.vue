@@ -17,7 +17,7 @@ const tabs = computed(() => {
     {
       section: 'Administrasi',
       items: [
-        { to: '/master-data/profil-klinik', label: 'Profil Klinik',  icon: 'profile' },
+        { to: '/master-data/profil-klinik', label: 'Profil Institusi',  icon: 'profile' },
         { to: '/master-data/wilayah',       label: 'Wilayah Indonesia', icon: 'map' },
       ],
     },
@@ -101,7 +101,7 @@ const currentTabLabel = computed(() => {
 <style scoped>
 .mdl-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 1400px; }
 
-.mdl-header h1 { font-family: 'DM Serif Display', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
+.mdl-header h1 { font-family: 'Space Grotesk', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
 .mdl-sub { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 .mdl-grid {
@@ -156,10 +156,10 @@ const currentTabLabel = computed(() => {
   stroke-linejoin: round;
   flex-shrink: 0;
 }
-.mdl-nav-item:hover { background: var(--bs); color: var(--gd); }
+.mdl-nav-item:hover { background: var(--bs); color: var(--td); }
 .mdl-nav-item.router-link-exact-active {
   background: var(--gl);
-  color: var(--gd);
+  color: var(--td);
   font-weight: 500;
 }
 .mdl-nav-item.router-link-exact-active svg { stroke: var(--ga); }

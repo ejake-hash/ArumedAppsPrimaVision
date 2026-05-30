@@ -359,7 +359,7 @@ function exportMonCsv() {
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th { text-align: left; padding: 8px 10px; background: var(--bs); color: var(--tm); font-size: 11.5px; text-transform: uppercase; }
 .tbl td { padding: 8px 10px; border-top: 1px solid var(--gb); color: var(--td); }
-.tbl code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--gd); }
+.tbl code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--td); }
 
 /* Monitoring table */
 .tbl-meta { display: flex; align-items: center; gap: 0.5rem; }

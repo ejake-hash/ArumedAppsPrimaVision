@@ -213,7 +213,7 @@ function close() {
   display: flex; justify-content: space-between; align-items: flex-start;
   padding: 1rem 1.25rem; border-bottom: 1px solid var(--gb);
 }
-.bp-head h3 { margin: 0; font-size: 17px; font-family: 'DM Serif Display', serif; }
+.bp-head h3 { margin: 0; font-size: 17px; font-family: 'Space Grotesk', serif; }
 .bp-sub { margin: 4px 0 0; font-size: 12.5px; color: var(--tm); }
 .bp-close { background: 0; border: 0; font-size: 22px; cursor: pointer; color: var(--tm); line-height: 1; }
 

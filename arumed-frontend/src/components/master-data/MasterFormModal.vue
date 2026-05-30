@@ -200,9 +200,9 @@ const colsMap = computed(() => {
 .mfm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9000; backdrop-filter: blur(3px); padding: 1rem; }
 .mfm-modal { background: var(--bc); border-radius: 16px; max-width: 95vw; max-height: 90vh; border: 1px solid var(--gb); box-shadow: 0 20px 60px rgba(0,0,0,0.22); overflow: hidden; display: flex; flex-direction: column; }
 .mfm-head { padding: 1.1rem 1.4rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; background: var(--bs); }
-.mfm-head h3 { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--td); margin: 0; }
+.mfm-head h3 { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); margin: 0; }
 .mfm-close { width: 28px; height: 28px; border: none; background: transparent; border-radius: 7px; cursor: pointer; color: var(--tm); display: flex; align-items: center; justify-content: center; }
-.mfm-close:hover { background: var(--gl); color: var(--gd); }
+.mfm-close:hover { background: var(--gl); color: var(--td); }
 .mfm-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .mfm-body { padding: 1.3rem 1.4rem; display: grid; gap: 0.95rem 1rem; overflow-y: auto; }

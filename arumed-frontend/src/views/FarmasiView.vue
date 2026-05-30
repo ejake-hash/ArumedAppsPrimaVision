@@ -1044,7 +1044,7 @@ function toast(type, msg) {
 .tab-pane { display: flex; flex-direction: column; gap: 1rem; }
 
 .nav-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); padding: 0 4px; }
-.nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'DM Sans', sans-serif; display: inline-flex; align-items: center; gap: 6px; }
+.nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: 'Inter', sans-serif; display: inline-flex; align-items: center; gap: 6px; }
 .nt:hover { color: var(--td); }
 .nt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 .nt svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -1068,19 +1068,19 @@ function toast(type, msg) {
 .card-body { padding: 1rem; }
 .queue-scroll { padding: 0.6rem; max-height: calc(100vh - 240px); overflow-y: auto; }
 .pill-live { font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; letter-spacing: 0.05em; }
-.fi { height: 28px; font-size: 11px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 9px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); width: 110px; }
+.fi { height: 28px; font-size: 11px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 9px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); width: 110px; }
 .fi:focus { border-color: var(--ga); background: #fff; }
 
 /* Primary filter (Belum Dipanggil / Selesai) */
 .primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
-.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .pf-btn:hover { border-color: var(--ga); color: var(--ga); }
 .pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
 .pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
 
 /* Secondary filter (penjamin) */
 .ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
-.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
+.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'Inter',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
 .ptype-tab:hover { border-color: var(--ga); color: var(--ga); }
 .ptype-tab.a { color: #fff; font-weight: 700; }
 .ptype-bpjs.a { background: #1d4ed8; border-color: #1d4ed8; }
@@ -1088,7 +1088,7 @@ function toast(type, msg) {
 
 /* Search */
 .q-search-wrap { margin-bottom: 0.5rem; }
-.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .q-search:focus { border-color: var(--ga); background: #fff; }
 
 .rx-list { display: flex; flex-direction: column; gap: 5px; }
@@ -1126,7 +1126,7 @@ function toast(type, msg) {
 
 /* Panggil / Lewati actions */
 .rx-actions { display: flex; gap: 4px; margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--gb); }
-.rx-act-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .12s; }
+.rx-act-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'Inter', sans-serif; transition: all .12s; }
 .rx-act-btn svg { width: 10px; height: 10px; }
 .rx-act-btn.call { background: var(--gl); color: var(--ga); border-color: var(--ga); }
 .rx-act-btn.call:hover { background: var(--ga); color: #fff; }
@@ -1139,7 +1139,7 @@ function toast(type, msg) {
 .disp-empty p { font-size: 13px; }
 .disp-panel { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
 .disp-head { padding: 0.85rem 1.1rem; background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 0.85rem; }
-.disp-title { font-family: 'DM Serif Display', serif; font-size: 16px; line-height: 1.1; }
+.disp-title { font-family: 'Space Grotesk', serif; font-size: 16px; line-height: 1.1; }
 .disp-sub { font-size: 11px; color: rgba(255, 255, 255, 0.65); margin-top: 3px; }
 
 .disp-steps { display: flex; align-items: center; padding: 0.85rem 1.1rem; background: var(--bs); border-bottom: 1px solid var(--gb); }
@@ -1172,7 +1172,7 @@ function toast(type, msg) {
 .otc-tag { font-size: 8.5px; font-weight: 700; padding: 1px 6px; border-radius: 20px; border: 1px solid var(--ga); background: var(--gl); color: var(--ga); }
 .dd-qty-col { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .dd-qty-label { font-size: 9px; color: var(--tu); }
-.dd-qty { width: 60px; height: 30px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; text-align: center; font-size: 12px; font-weight: 600; outline: none; font-family: 'DM Sans', sans-serif; background: var(--bs); }
+.dd-qty { width: 60px; height: 30px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; text-align: center; font-size: 12px; font-weight: 600; outline: none; font-family: 'Inter', sans-serif; background: var(--bs); }
 .dd-qty:focus { border-color: var(--ga); background: #fff; }
 .dd-unit { font-size: 9px; color: var(--tu); }
 
@@ -1182,7 +1182,7 @@ function toast(type, msg) {
 .otc-section { padding: 0.6rem 1.1rem; border-top: 1px dashed var(--gb); }
 .otc-toggle { gap: 5px; }
 .otc-form { background: var(--gl); border: 1px solid var(--ga); border-radius: 9px; padding: .7rem .9rem; }
-.otc-form-title { font-size: 10.5px; font-weight: 700; color: var(--gm); margin-bottom: .5rem; text-transform: uppercase; letter-spacing: .04em; }
+.otc-form-title { font-size: 10.5px; font-weight: 700; color: var(--td); margin-bottom: .5rem; text-transform: uppercase; letter-spacing: .04em; }
 .otc-fields { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .55rem; }
 .otc-field { display: flex; flex-direction: column; gap: 2px; }
 .otc-wide { flex: 2; min-width: 160px; }
@@ -1193,20 +1193,20 @@ function toast(type, msg) {
 .otc-form-actions { display: flex; gap: .4rem; }
 
 .disp-actions { padding: 0.85rem 1.1rem; border-top: 1px solid var(--gb); display: flex; gap: 0.5rem; flex-wrap: wrap; background: var(--bs); }
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
 .btn-sm { height: 28px; padding: 0 10px; font-size: 11px; }
 .btn-lg { height: 42px; padding: 0 18px; font-size: 13px; font-weight: 600; }
 .btn-primary { background: var(--gd); color: #fff; border-color: var(--gd); }
 .btn-primary:hover { background: var(--gm); }
 .btn-info { background: var(--it); color: #fff; border-color: var(--it); }
 .btn-info:hover { background: #1e40af; }
-.btn-warning { background: var(--lm); color: var(--gd); border-color: var(--lm); }
+.btn-warning { background: var(--lm); color: var(--td); border-color: var(--lm); }
 .btn-warning:hover { background: var(--ld); color: #fff; }
 .btn-success { background: var(--ga); color: #fff; border-color: var(--ga); }
 .btn-success:hover:not(:disabled) { background: var(--gm); }
 .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
-.btn-secondary:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
+.btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .done-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -1264,7 +1264,7 @@ function toast(type, msg) {
 .ostat b.plus { color: var(--st); }
 .ostat b.minus { color: var(--et); }
 .opname-actions { display: flex; align-items: center; gap: 0.5rem; }
-.op-input { width: 92px; height: 30px; font-size: 12.5px; font-weight: 600; text-align: right; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.op-input { width: 92px; height: 30px; font-size: 12.5px; font-weight: 600; text-align: right; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .op-input:focus { border-color: var(--ga); background: #fff; }
 .op-sel { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--tu); }
 .op-sel.plus { color: var(--st); }
@@ -1291,7 +1291,7 @@ function toast(type, msg) {
 .es-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
 .es-modal { background: var(--bc); border-radius: 12px; max-width: 460px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.3); display: flex; flex-direction: column; }
 .es-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--gb); }
-.es-head h3 { margin: 0; font-size: 16px; color: var(--td); font-family: 'DM Serif Display', serif; }
+.es-head h3 { margin: 0; font-size: 16px; color: var(--td); font-family: 'Space Grotesk', serif; }
 .es-x { background: none; border: none; cursor: pointer; color: var(--tu); padding: 4px; }
 .es-x svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .es-x:hover { color: var(--td); }
@@ -1300,7 +1300,7 @@ function toast(type, msg) {
 .es-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .es-field { display: flex; flex-direction: column; gap: 4px; }
 .es-field label { font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .03em; }
-.es-input { height: 32px; font-size: 12.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 9px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.es-input { height: 32px; font-size: 12.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 9px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .es-input:focus { border-color: var(--ga); background: #fff; }
 .es-hint { font-size: 10.5px; color: var(--tu); margin: 12px 0 0; }
 .es-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--gb); }
@@ -1314,7 +1314,7 @@ function toast(type, msg) {
 /* Notifikasi gudang di tab Manajemen Stok */
 .stok-notif-wrap { position: relative; }
 .stok-bell { position: relative; width: 36px; height: 36px; border-radius: 9px; background: var(--bc); border: 1px solid var(--gb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--tm); transition: all 0.15s; }
-.stok-bell:hover { background: var(--bs); color: var(--gd); }
+.stok-bell:hover { background: var(--bs); color: var(--td); }
 .stok-bell.active { color: var(--ga); border-color: var(--ga); }
 .stok-bell svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .stok-bell-badge { position: absolute; top: -4px; right: -4px; background: #dc2626; color: white; font-size: 10px; font-weight: 700; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bc); }
@@ -1335,7 +1335,7 @@ function toast(type, msg) {
 .nb-muted { background: #e5e7eb; color: #374151; }
 .stok-notif-main { flex: 1; min-width: 0; }
 .stok-notif-title { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
-.stok-notif-title code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--gd); }
+.stok-notif-title code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--td); }
 .stok-notif-time { font-size: 11px; color: var(--tu); }
 .stok-notif-msg { font-size: 12px; color: var(--td); margin-top: 3px; line-height: 1.4; }
 </style>

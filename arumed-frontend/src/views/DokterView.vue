@@ -3255,13 +3255,13 @@ async function doFinalize() {
 .stat-done { color: var(--st); }
 
 .primary-filter { display: flex; gap: 4px; }
-.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .pf-btn:hover { border-color: var(--ga); color: var(--ga); }
 .pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
 .pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
 
 .ptype-tabs { display: flex; gap: 3px; }
-.ptype-tab { flex: 1; padding: 5px 3px; font-size: 9.5px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'DM Sans', sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
+.ptype-tab { flex: 1; padding: 5px 3px; font-size: 9.5px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'Inter', sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
 .ptype-tab:hover { border-color: var(--ga); color: var(--ga); }
 .ptype-tab.a { color: #fff; font-weight: 700; }
 .ptype-bpjs.a { background: #1d4ed8; border-color: #1d4ed8; }
@@ -3269,12 +3269,12 @@ async function doFinalize() {
 .ptype-asur.a { background: var(--pt); border-color: var(--pt); }
 
 .q-search-wrap { }
-.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'DM Sans', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .q-search:focus { border-color: var(--ga); background: #fff; }
 
 .empty-section { text-align: center; padding: 0.75rem 1rem; font-size: 11px; color: var(--th); background: var(--bi); border-radius: 7px; border: 1px dashed var(--gb); }
 
-.q-item { display: flex; gap: 8px; padding: 8px 10px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; font-family: 'DM Sans', sans-serif; }
+.q-item { display: flex; gap: 8px; padding: 8px 10px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; font-family: 'Inter', sans-serif; }
 .q-item:hover { border-color: var(--lm); background: var(--gl); }
 .q-item.active { border-color: var(--ga); background: var(--gl); }
 .q-item.done { opacity: .55; }
@@ -3302,7 +3302,7 @@ async function doFinalize() {
 .pill-allergy { background: var(--eb); color: var(--et); }
 
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
-.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
+.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: 'Inter', sans-serif; transition: background .12s, color .12s, border-color .12s, transform .07s, box-shadow .07s; background: none; user-select: none; }
 .q-act-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .q-act-btn.call { color: var(--ga); border-color: var(--ga); background: var(--gl); }
 .q-act-btn.call:hover { background: var(--ga); color: #fff; }
@@ -3347,7 +3347,7 @@ async function doFinalize() {
   font-weight: 700; font-size: 17px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;
 }
 .pti { min-width: 0; flex: 1; }
-.ptn { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--gd); line-height: 1.1; font-weight: 400; }
+.ptn { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); line-height: 1.1; font-weight: 400; }
 .ptm { font-size: 11px; color: var(--tu); margin-top: 3px; }
 .pt-address { font-size: 10.5px; color: var(--tu); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
 .pt-address svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
@@ -3374,7 +3374,7 @@ async function doFinalize() {
 .db {
   padding: 5px 10px; font-size: 10.5px; font-weight: 600; border-radius: 7px;
   border: 1.5px solid var(--gb); background: var(--bc); cursor: pointer; color: var(--tu);
-  transition: all 0.15s; font-family: 'DM Sans', sans-serif;
+  transition: all 0.15s; font-family: 'Inter', sans-serif;
 }
 .db:hover { color: var(--td); }
 .db.act { background: var(--gd); color: #fff; border-color: var(--gd); }
@@ -3446,7 +3446,7 @@ async function doFinalize() {
 .tr-keluhan { margin-top: 0.55rem; font-size: 11.5px; color: var(--tm); border-top: 1px solid var(--gb); padding-top: 0.5rem; }
 .tr-keluhan b { color: var(--td); font-weight: 600; }
 .histi { padding: 0.45rem 0.55rem; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); margin-bottom: 4px; }
-.hd { font-size: 10.5px; font-weight: 600; color: var(--gd); }
+.hd { font-size: 10.5px; font-weight: 600; color: var(--td); }
 .hdx { font-size: 11px; color: var(--td); margin-top: 2px; }
 .hdet { font-size: 10px; color: var(--tu); margin-top: 1px; }
 .hist-empty { font-size: 11px; color: var(--th); text-align: center; padding: 0.5rem; }
@@ -3461,7 +3461,7 @@ async function doFinalize() {
   padding: 0.7rem 0.85rem; font-size: 12px; font-weight: 500; color: var(--tu);
   background: none; border: none; cursor: pointer;
   border-bottom: 2px solid transparent; margin-bottom: -1px;
-  font-family: 'DM Sans', sans-serif; position: relative;
+  font-family: 'Inter', sans-serif; position: relative;
 }
 .rmt:hover { color: var(--td); }
 .rmt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
@@ -3516,7 +3516,7 @@ async function doFinalize() {
 .chip-lainnya { border-style: dashed; }
 .chip-lainnya.ordered { border-color: var(--ga); background: var(--gl); }
 .custom-penunjang { display: flex; gap: 8px; align-items: center; margin-bottom: 1rem; }
-.cp-input { flex: 1; min-width: 0; height: 34px; border: 1.5px solid var(--gb); border-radius: 8px; padding: 0 11px; font-size: 12.5px; font-family: 'DM Sans', sans-serif; color: var(--td); background: var(--bs); outline: none; }
+.cp-input { flex: 1; min-width: 0; height: 34px; border: 1.5px solid var(--gb); border-radius: 8px; padding: 0 11px; font-size: 12.5px; font-family: 'Inter', sans-serif; color: var(--td); background: var(--bs); outline: none; }
 .cp-input:focus { border-color: var(--ga); background: #fff; }
 .cp-cat { max-width: 150px; }
 .penunjang-modal-chip { padding: 0.65rem 0.8rem; border: 1.5px solid var(--gb); border-radius: 10px; cursor: pointer; background: var(--bs); transition: all .14s; position: relative; }
@@ -3574,7 +3574,7 @@ async function doFinalize() {
 .hasil-pending-title { font-size: 9.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.06em; padding: 0.4rem 0.85rem 0; border-top: 1px dashed var(--gb); }
 
 /* Lihat button */
-.btn-lihat { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid var(--ga); background: var(--gl); color: var(--ga); cursor: pointer; font-family: 'DM Sans',sans-serif; transition: all .12s; flex-shrink: 0; }
+.btn-lihat { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid var(--ga); background: var(--gl); color: var(--ga); cursor: pointer; font-family: 'Inter',sans-serif; transition: all .12s; flex-shrink: 0; }
 .btn-lihat:hover { background: var(--ga); color: #fff; }
 .btn-lihat svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .hasil-meta-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -3662,7 +3662,7 @@ async function doFinalize() {
   background: var(--bs);
   border: 1.5px solid var(--gb);
   border-radius: 8px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 12.5px;
   color: var(--td);
   outline: none;
@@ -3892,14 +3892,14 @@ async function doFinalize() {
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .sig-avatar svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
-.sig-name { font-size: 13px; font-weight: 600; color: var(--gd); }
+.sig-name { font-size: 13px; font-weight: 600; color: var(--td); }
 .sig-ts { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
 
 /* ── Tarif collapsible list ──────────────────────────────────────────────── */
 .tarif-toggle-row { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.55rem; }
-.tarif-toggle-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); font-size: 12.5px; font-weight: 500; color: var(--tm); cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .13s; }
-.tarif-toggle-btn:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
-.tarif-toggle-btn.open { border-color: var(--ga); background: var(--gl); color: var(--gd); }
+.tarif-toggle-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); font-size: 12.5px; font-weight: 500; color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; }
+.tarif-toggle-btn:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+.tarif-toggle-btn.open { border-color: var(--ga); background: var(--gl); color: var(--td); }
 .tarif-toggle-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .chevron-sm { transition: transform .18s; }
 .chevron-sm.up { transform: rotate(180deg); }
@@ -3911,7 +3911,7 @@ async function doFinalize() {
 .tarif-list-item:hover { background: var(--gl); }
 .tarif-list-item.in-list { background: var(--gl); }
 .tarif-list-name { flex: 1; font-size: 12px; font-weight: 500; color: var(--td); min-width: 0; }
-.tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--gd); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--td); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tarif-list-price em { font-style: normal; font-size: 9.5px; color: var(--tu); font-weight: 400; margin-left: 2px; }
 .tarif-list-icon { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke-width: 2; stroke-linecap: round; }
 .tarif-list-icon.add { stroke: var(--ga); }
@@ -4015,7 +4015,7 @@ async function doFinalize() {
 .lock-notice-undo {
   margin-left: auto; padding: 3px 10px; font-size: 11px; font-weight: 600;
   border: 1.5px solid #d97706; border-radius: 6px; background: none;
-  color: #92400e; cursor: pointer; font-family: 'DM Sans', sans-serif;
+  color: #92400e; cursor: pointer; font-family: 'Inter', sans-serif;
   white-space: nowrap;
 }
 .lock-notice-undo:hover { background: #fde68a; }
@@ -4028,8 +4028,8 @@ async function doFinalize() {
 .finalize-info { display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 220px; }
 .finalize-status-ic { width: 22px; height: 22px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .fin-title { font-size: 13px; font-weight: 700; color: var(--td); }
-.fin-title.fin-ready { color: var(--gd); }
-.fin-ready ~ .fin-sub { color: var(--gd); }
+.fin-title.fin-ready { color: var(--td); }
+.fin-ready ~ .fin-sub { color: var(--td); }
 .finalize-row:has(.fin-ready) .finalize-status-ic { stroke: var(--ga); }
 .fin-sub { font-size: 11px; color: var(--tu); margin-top: 2px; }
 /* Dua tombol sejajar & seukuran */
@@ -4082,7 +4082,7 @@ async function doFinalize() {
 .fab-container > * { pointer-events: all; }
 .fab-hint { display: inline-flex; align-items: center; gap: 5px; background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; padding: 5px 10px; font-size: 10px; color: var(--tu); box-shadow: 0 2px 8px rgba(0,0,0,.09); white-space: nowrap; }
 .fab-hint svg { width: 12px; height: 12px; fill: none; stroke: var(--it); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
-.fab-btn { display: inline-flex; align-items: center; gap: 7px; background: var(--gd); color: #fff; border: none; border-radius: 10px; padding: 0 20px; height: 44px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; box-shadow: 0 4px 18px rgba(31,125,74,.38); transition: all .15s; white-space: nowrap; }
+.fab-btn { display: inline-flex; align-items: center; gap: 7px; background: var(--gd); color: #fff; border: none; border-radius: 10px; padding: 0 20px; height: 44px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif; box-shadow: 0 4px 18px rgba(31,125,74,.38); transition: all .15s; white-space: nowrap; }
 .fab-btn:hover:not(:disabled) { background: var(--gm); box-shadow: 0 6px 22px rgba(31,125,74,.48); transform: translateY(-1px); }
 .fab-btn:disabled { opacity: .6; cursor: not-allowed; box-shadow: none; transform: none; }
 .fab-btn svg { width: 15px; height: 15px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
@@ -4095,7 +4095,7 @@ async function doFinalize() {
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   padding: 0 16px; height: 38px; border-radius: 9px;
-  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
   cursor: pointer; transition: all 0.15s; border: 1.5px solid transparent;
 }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -4105,7 +4105,7 @@ async function doFinalize() {
 .btn-success { background: var(--ga); color: #fff; border-color: var(--ga); }
 .btn-success:hover { background: var(--gm); }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
-.btn-secondary:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
+.btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
 .btn-sm { height: 28px; padding: 0 10px; font-size: 11px; }
 .btn-lg { height: 46px; padding: 0 22px; font-size: 14px; font-weight: 600; }
 
@@ -4137,7 +4137,7 @@ async function doFinalize() {
   font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.04em;
 }
 .tarif-type-badge.bpjs { background: #dbeafe; color: #1e40af; }
-.tarif-type-badge.umum { background: var(--gl); color: var(--gd); }
+.tarif-type-badge.umum { background: var(--gl); color: var(--td); }
 
 /* TARIF GRID */
 .tarif-grid {
@@ -4162,9 +4162,9 @@ async function doFinalize() {
 .tarif-kode { font-size: 9.5px; font-weight: 700; color: var(--ga); letter-spacing: 0.03em; }
 .tarif-kat { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.03em; }
 .tarif-kat.jm { background: var(--ib); color: var(--it); }
-.tarif-kat.td { background: var(--gl); color: var(--gd); border: 1px solid rgba(31,125,74,0.2); }
+.tarif-kat.td { background: var(--gl); color: var(--td); border: 1px solid rgba(31,125,74,0.2); }
 .tarif-nama { font-size: 11px; font-weight: 500; color: var(--td); margin-bottom: 5px; line-height: 1.35; }
-.tarif-harga { font-size: 11.5px; font-weight: 700; color: var(--gd); }
+.tarif-harga { font-size: 11.5px; font-weight: 700; color: var(--td); }
 .tarif-sat { font-size: 9px; font-weight: 400; color: var(--tu); }
 .tarif-empty { grid-column: span 3; text-align: center; padding: 1rem; font-size: 11px; color: var(--th); }
 
@@ -4211,7 +4211,7 @@ async function doFinalize() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0.7rem 0.85rem;
   background: var(--gl); border-top: 2px solid rgba(31,125,74,0.2);
-  font-size: 12px; font-weight: 600; color: var(--gd);
+  font-size: 12px; font-weight: 600; color: var(--td);
 }
 .tindakan-total-val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
@@ -4229,14 +4229,14 @@ async function doFinalize() {
 .pj-bill-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pj-bill-code { font-family: 'Geist Mono', monospace; font-size: 11px; color: #000; background: var(--bs); padding: 2px 7px; border-radius: 5px; border: 1px solid var(--gb); }
 .pj-bill-name { font-size: 12.5px; font-weight: 500; color: #000; }
-.pj-bill-eye { font-size: 9px; font-weight: 700; padding: 1px 6px; background: var(--gl); color: var(--gd); border-radius: 4px; margin-left: 4px; }
+.pj-bill-eye { font-size: 9px; font-weight: 700; padding: 1px 6px; background: var(--gl); color: var(--td); border-radius: 4px; margin-left: 4px; }
 .pj-bill-cat { font-size: 10px; color: var(--tu); }
 .pj-bill-price { font-size: 12.5px; font-weight: 600; color: #000; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .pj-bill-total {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0.7rem 0.85rem;
   background: var(--gl); border-top: 2px solid rgba(31,125,74,0.2);
-  font-size: 12px; font-weight: 600; color: var(--gd);
+  font-size: 12px; font-weight: 600; color: var(--td);
 }
 .pj-bill-total-val { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .pj-bill-estimasi {
@@ -4245,7 +4245,7 @@ async function doFinalize() {
   background: var(--bs); border: 1px dashed var(--gb); border-radius: 8px;
   font-size: 12px; font-weight: 600; color: #000;
 }
-.pj-bill-estimasi-val { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--gd); }
+.pj-bill-estimasi-val { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--td); }
 
 /* ── Catatan Kasir + Action row Tab 3 ───────────────────────────────────── */
 .kasir-note-counter {

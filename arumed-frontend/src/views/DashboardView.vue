@@ -47,7 +47,7 @@ const distUmumPct = computed(() => Math.round((distUmum.value / distTotal.value)
 const distAsnPct  = computed(() => 100 - distBpjsPct.value - distUmumPct.value)
 const distDonut   = computed(() => {
   const b = distBpjsPct.value, u = distUmumPct.value
-  return `conic-gradient(#3b82f6 0% ${b}%, var(--lm) ${b}% ${b+u}%, var(--pt) ${b+u}% 100%)`
+  return `conic-gradient(var(--ga) 0% ${b}%, var(--lm) ${b}% ${b+u}%, var(--pt) ${b+u}% 100%)`
 })
 
 // ─── FORMAT HELPERS ───────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ const revLinePoints   = computed(() => revenueTrend.value.map((d,i) => `${barX(i
 
 // ─── TOP DIAGNOSES ────────────────────────────────────────────────────────────
 const diagnoses = ref([
-  { code:'H25.9', name:'Katarak',        count:14, color:'#3b82f6' },
+  { code:'H25.9', name:'Katarak',        count:14, color:'var(--ga)' },
   { code:'H40.1', name:'Glaukoma',       count:11, color:'#dc2626' },
   { code:'H52.1', name:'Miopia',         count:9,  color:'#15803d' },
   { code:'H11.0', name:'Pterigium',      count:7,  color:'#b45309' },
@@ -97,7 +97,7 @@ const maxDx = computed(() => diagnoses.value[0].count)
 
 // ─── PENUNJANG ────────────────────────────────────────────────────────────────
 const penunjang = ref([
-  { type:'OCT',      icon:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 100 6 3 3 0 000-6z', color:'#3b82f6', bg:'var(--ib)', req:2, prg:1, done:4 },
+  { type:'OCT',      icon:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 100 6 3 3 0 000-6z', color:'var(--ga)', bg:'var(--ib)', req:2, prg:1, done:4 },
   { type:'USG',      icon:'M22 12h-4l-3 9L9 3l-3 9H2',                                                    color:'#7e22ce', bg:'var(--pb)', req:1, prg:1, done:2 },
   { type:'Biometri', icon:'M12 2a10 10 0 100 20A10 10 0 0012 2zM2 12h20M12 2a15.3 15.3 0 010 20',         color:'#b45309', bg:'var(--wb)', req:1, prg:0, done:3 },
 ])
@@ -120,19 +120,19 @@ const maxHour    = 22
 const keuanganFilter = ref('hari')
 const keuanganData = {
   hari:  { pendapatan:5120000,    transaksi:47,
-    breakdown:[ {label:'BPJS/JKN',val:2890000,pct:56,color:'#3b82f6'},{label:'Umum',val:1650000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:580000,pct:11,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:2890000,pct:56,color:'var(--ga)'},{label:'Umum',val:1650000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:580000,pct:11,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:1850000,pct:36},{label:'Tindakan',val:1920000,pct:38},{label:'Obat',val:810000,pct:16},{label:'Penunjang',val:540000,pct:11} ],
   },
   minggu:{ pendapatan:32480000,   transaksi:298,
-    breakdown:[ {label:'BPJS/JKN',val:18190000,pct:56,color:'#3b82f6'},{label:'Umum',val:10390000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:3900000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:18190000,pct:56,color:'var(--ga)'},{label:'Umum',val:10390000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:3900000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:11690000,pct:36},{label:'Tindakan',val:12340000,pct:38},{label:'Obat',val:5200000,pct:16},{label:'Penunjang',val:3250000,pct:10} ],
   },
   bulan: { pendapatan:143600000,  transaksi:1284,
-    breakdown:[ {label:'BPJS/JKN',val:80420000,pct:56,color:'#3b82f6'},{label:'Umum',val:45950000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:17230000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:80420000,pct:56,color:'var(--ga)'},{label:'Umum',val:45950000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:17230000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:51700000,pct:36},{label:'Tindakan',val:54570000,pct:38},{label:'Obat',val:22980000,pct:16},{label:'Penunjang',val:14350000,pct:10} ],
   },
   tahun: { pendapatan:1724000000, transaksi:15408,
-    breakdown:[ {label:'BPJS/JKN',val:965440000,pct:56,color:'#3b82f6'},{label:'Umum',val:551680000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:206880000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:965440000,pct:56,color:'var(--ga)'},{label:'Umum',val:551680000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:206880000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:620640000,pct:36},{label:'Tindakan',val:655120000,pct:38},{label:'Obat',val:275840000,pct:16},{label:'Penunjang',val:172400000,pct:10} ],
   },
 }
@@ -183,12 +183,12 @@ onUnmounted(() => clearInterval(liveTimer))
           <div class="kpi-sub">Hari ini · {{ dateStr.split(',')[0] }}</div>
         </div>
       </div>
-      <div class="kpi-card" style="border-top-color:#3b82f6">
+      <div class="kpi-card" style="border-top-color:var(--ga)">
         <div class="kpi-icon" style="background:#eff6ff">
-          <svg viewBox="0 0 24 24" stroke="#1d4ed8"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <svg viewBox="0 0 24 24" stroke="var(--gd)"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         </div>
         <div class="kpi-body">
-          <div class="kpi-val" style="color:#1d4ed8">{{ totalBpjs }}</div>
+          <div class="kpi-val" style="color:var(--gd)">{{ totalBpjs }}</div>
           <div class="kpi-lbl">Pasien BPJS</div>
           <div class="kpi-sub">{{ Math.round(totalBpjs / (totalToday||1) * 100) }}% dari hari ini</div>
         </div>
@@ -246,7 +246,7 @@ onUnmounted(() => clearInterval(liveTimer))
             </div>
           </div>
           <div class="donut-legend">
-            <div class="dl-row"><span class="dl-dot" style="background:#3b82f6"></span><span class="dl-name">BPJS/JKN</span><span class="dl-val">{{ distBpjs }} ({{ distBpjsPct }}%)</span></div>
+            <div class="dl-row"><span class="dl-dot" style="background:var(--ga)"></span><span class="dl-name">BPJS/JKN</span><span class="dl-val">{{ distBpjs }} ({{ distBpjsPct }}%)</span></div>
             <div class="dl-row"><span class="dl-dot" style="background:var(--lm)"></span><span class="dl-name">Umum</span><span class="dl-val">{{ distUmum }} ({{ distUmumPct }}%)</span></div>
             <div class="dl-row"><span class="dl-dot" style="background:var(--pt)"></span><span class="dl-name">Asuransi/Lain</span><span class="dl-val">{{ distAsn }} ({{ distAsnPct }}%)</span></div>
           </div>
@@ -450,7 +450,7 @@ onUnmounted(() => clearInterval(liveTimer))
 
 /* ─── WELCOME BAR ─── */
 .welcome-bar { display:flex; align-items:center; justify-content:space-between; background:linear-gradient(135deg,var(--gd),var(--gm)); border-radius:12px; padding:.85rem 1.25rem; gap:1rem; }
-.wb-title { font-family:'DM Serif Display',serif; font-size:18px; color:#fff; line-height:1.1; }
+.wb-title { font-family:'Space Grotesk',serif; font-size:18px; color:#fff; line-height:1.1; }
 .wb-date  { font-size:11px; color:rgba(255,255,255,.55); margin-top:3px; }
 .wb-right { display:flex; align-items:center; gap:.75rem; }
 .wb-updated { font-size:11px; color:rgba(255,255,255,.5); font-variant-numeric:tabular-nums; }
@@ -487,7 +487,7 @@ onUnmounted(() => clearInterval(liveTimer))
 .section-label { font-size:9.5px; font-weight:600; color:var(--tu); text-transform:uppercase; letter-spacing:.06em; margin-bottom:.4rem; }
 .d-filter-tabs { display:flex; gap:3px; }
 .d-ftab { padding:2px 8px; font-size:9.5px; font-weight:600; border:1px solid var(--gb); border-radius:6px; background:var(--bs); color:var(--tu); cursor:pointer; transition:all .15s; }
-.d-ftab:hover { border-color:var(--ga); color:var(--gm); }
+.d-ftab:hover { border-color:var(--ga); color: var(--td); }
 .d-ftab-a { background:var(--ga); color:#fff; border-color:var(--ga); }
 
 /* ─── DONUT ─── */
@@ -563,8 +563,8 @@ onUnmounted(() => clearInterval(liveTimer))
 /* ─── CHARTS ─── */
 .chart-area { padding:.65rem .9rem .4rem; }
 .trend-svg  { width:100%; overflow:visible; }
-.svgt-lbl   { font-size:7.5px; fill:var(--tu); font-family:'DM Sans',sans-serif; }
-.svgt-val   { font-size:7px; fill:var(--td); font-family:'DM Sans',sans-serif; font-weight:600; }
+.svgt-lbl   { font-size:7.5px; fill:var(--tu); font-family:'Inter',sans-serif; }
+.svgt-val   { font-size:7px; fill:var(--td); font-family:'Inter',sans-serif; font-weight:600; }
 .trend-line { fill:none; stroke:var(--ga); stroke-width:1.5; opacity:.5; }
 .trend-line.rev { stroke:var(--wt); }
 .chart-footer { font-size:10px; color:var(--tu); margin-top:.35rem; }
@@ -584,7 +584,7 @@ onUnmounted(() => clearInterval(liveTimer))
 .keu-bar-fill  { height:100%; border-radius:3px; transition:width .6s cubic-bezier(.22,1,.36,1); }
 .keu-cat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; align-items:end; }
 .keu-cat { display:flex; flex-direction:column; align-items:center; gap:3px; }
-.keu-cat-pct { font-size:10px; font-weight:700; color:var(--gm); }
+.keu-cat-pct { font-size:10px; font-weight:700; color: var(--td); }
 .keu-cat-bar-wrap { width:100%; height:40px; background:var(--bs); border-radius:4px; display:flex; align-items:flex-end; overflow:hidden; }
 .keu-cat-bar { width:100%; background:linear-gradient(to top,var(--ga),var(--lm)); border-radius:4px; transition:height .6s ease; }
 .keu-cat-lbl { font-size:9.5px; font-weight:600; color:var(--tu); text-align:center; }

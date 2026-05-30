@@ -931,7 +931,7 @@ function lastLoginText(u) {
 
 /* ─── NAV TABS ─── */
 .nvt { display: flex; align-items: center; background: var(--bc); border-bottom: 2px solid var(--gb); padding: 0 4px; flex-shrink: 0; gap: 2px; }
-.nt { padding: .45rem .85rem; font-size: 11px; font-weight: 500; color: var(--tu); cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-family: 'DM Sans', sans-serif; display: flex; align-items: center; gap: 4px; white-space: nowrap; transition: all .15s; flex-shrink: 0; }
+.nt { padding: .45rem .85rem; font-size: 11px; font-weight: 500; color: var(--tu); cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 4px; white-space: nowrap; transition: all .15s; flex-shrink: 0; }
 .nt:hover { color: var(--tm); }
 .nt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 .nt svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -1052,12 +1052,12 @@ function lastLoginText(u) {
 .fg { display: flex; flex-direction: column; }
 .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
 .g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .4rem; }
-.fi { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 12px; color: var(--td); outline: none; transition: border-color .15s; padding: 5px 7px; height: 31px; box-sizing: border-box; }
+.fi { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 12px; color: var(--td); outline: none; transition: border-color .15s; padding: 5px 7px; height: 31px; box-sizing: border-box; }
 .fi:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31,125,74,.08); }
 .fi:disabled { background: var(--bi); color: var(--tm); cursor: not-allowed; }
-.fs { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 12px; color: var(--td); outline: none; height: 31px; padding: 5px 7px; cursor: pointer; }
+.fs { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 12px; color: var(--td); outline: none; height: 31px; padding: 5px 7px; cursor: pointer; }
 .fs:focus { border-color: var(--ga); background: #fff; }
-.fta { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 12px; color: var(--td); outline: none; resize: vertical; min-height: 52px; padding: 6px 7px; line-height: 1.5; box-sizing: border-box; }
+.fta { width: 100%; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 12px; color: var(--td); outline: none; resize: vertical; min-height: 52px; padding: 6px 7px; line-height: 1.5; box-sizing: border-box; }
 .fta:focus { border-color: var(--ga); background: #fff; }
 .sec { font-size: 9px; font-weight: 600; color: var(--tm); letter-spacing: .06em; text-transform: uppercase; display: flex; align-items: center; gap: 4px; padding-bottom: .3rem; border-bottom: 1px solid var(--gb); margin-bottom: .4rem; }
 .sec svg { width: 10px; height: 10px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
@@ -1070,14 +1070,14 @@ function lastLoginText(u) {
 
 /* User detail modal */
 .user-profile-hdr { display: flex; align-items: center; gap: .75rem; padding: .65rem; background: linear-gradient(135deg, var(--gm), var(--gd)); border-radius: 10px; margin-bottom: .65rem; }
-.user-av-lg { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'DM Serif Display', serif; font-size: 16px; color: #fff; flex-shrink: 0; }
+.user-av-lg { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', serif; font-size: 16px; color: #fff; flex-shrink: 0; }
 .upd-info { flex: 1; min-width: 0; }
-.upd-name { font-size: 14px; font-weight: 600; color: #fff; font-family: 'DM Serif Display', serif; }
+.upd-name { font-size: 14px; font-weight: 600; color: #fff; font-family: 'Space Grotesk', serif; }
 .upd-role { font-size: 10px; color: rgba(255,255,255,.6); margin-top: 1px; }
 .upd-meta { font-size: 9.5px; color: rgba(255,255,255,.4); margin-top: 1px; }
 
 /* ─── BUTTONS ─── */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 0 10px; height: 29px; border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 500; cursor: pointer; transition: all .14s; border: 1.5px solid transparent; flex-shrink: 0; white-space: nowrap; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 0 10px; height: 29px; border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500; cursor: pointer; transition: all .14s; border: 1.5px solid transparent; flex-shrink: 0; white-space: nowrap; }
 .btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .btn-sm  { height: 25px; padding: 0 7px; font-size: 10.5px; }
 .btn-lg  { height: 36px; padding: 0 16px; font-size: 12.5px; font-weight: 600; }
@@ -1086,10 +1086,10 @@ function lastLoginText(u) {
 .btn-g:hover:not(:disabled) { background: var(--gm); }
 .btn-ga  { background: var(--ga); color: #fff; border-color: var(--ga); }
 .btn-ga:hover:not(:disabled) { background: var(--gm); }
-.btn-lm  { background: var(--lm); color: var(--gd); border-color: var(--lm); }
+.btn-lm  { background: var(--lm); color: var(--td); border-color: var(--lm); }
 .btn-lm:hover:not(:disabled) { background: #7aad38; }
 .btn-o   { background: transparent; color: var(--tm); border-color: var(--gb); }
-.btn-o:hover:not(:disabled) { border-color: var(--ga); color: var(--gd); }
+.btn-o:hover:not(:disabled) { border-color: var(--ga); color: var(--td); }
 .btn-i   { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .btn-e   { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .btn-w   { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
@@ -1101,7 +1101,7 @@ function lastLoginText(u) {
 .imp-stat.ok   { background: var(--sb); border-color: var(--sbd); }
 .imp-stat.warn { background: var(--wb); border-color: var(--wbd); }
 .imp-stat.err  { background: var(--eb); border-color: var(--ebd); }
-.imp-num { font-size: 22px; font-weight: 700; font-family: 'DM Serif Display', serif; line-height: 1; }
+.imp-num { font-size: 22px; font-weight: 700; font-family: 'Space Grotesk', serif; line-height: 1; }
 .imp-stat.ok   .imp-num { color: var(--st); }
 .imp-stat.warn .imp-num { color: var(--wt); }
 .imp-stat.err  .imp-num { color: var(--et); }

@@ -79,7 +79,7 @@ async function save() {
   errors.value = null
   try {
     await store.saveProfilKlinik({ ...form })
-    showToast('s', 'Profil klinik diperbarui')
+    showToast('s', 'Profil institusi diperbarui')
   } catch (e) {
     if (e.response?.status === 422) {
       errors.value = e.response.data?.errors ?? null
@@ -150,7 +150,7 @@ async function onLogoSelected(e) {
 }
 
 async function deleteLogo() {
-  if (!confirm('Hapus logo klinik? Dokumen yang sudah finalize tidak terpengaruh (snapshot immutable).')) return
+  if (!confirm('Hapus logo institusi? Dokumen yang sudah finalize tidak terpengaruh (snapshot immutable).')) return
   try {
     await masterApi.profilKlinik.deleteLogo()
     await load()
@@ -166,8 +166,8 @@ onMounted(load)
 <template>
   <div class="pk-wrap">
     <div class="pk-head">
-      <h2>Profil Klinik</h2>
-      <p>Data klinik akan tercetak di header dokumen, invoice, dan rekam medis.</p>
+      <h2>Profil Institusi</h2>
+      <p>Data institusi akan tercetak di header dokumen, invoice, dan rekam medis.</p>
     </div>
 
     <div v-if="store.profilLoading" class="pk-loading">
@@ -180,7 +180,7 @@ onMounted(load)
       <!-- ─── Logo & Kop Surat ─── -->
       <section class="pk-section">
         <header>
-          <h3>Logo Klinik (Kop Surat)</h3>
+          <h3>Logo Institusi (Kop Surat)</h3>
           <p class="pk-section-sub">
             Logo ini bisa di-bind ke template form RM via placeholder
             <code>&#123;&#123;clinic_logo&#125;&#125;</code> (binding: <code>clinic.logo_path</code>).
@@ -188,7 +188,7 @@ onMounted(load)
         </header>
         <div class="pk-logo-row">
           <div class="pk-logo-preview">
-            <img v-if="logoUrl" :src="logoUrl" alt="Logo Klinik" />
+            <img v-if="logoUrl" :src="logoUrl" alt="Logo Institusi" />
             <div v-else class="pk-logo-empty">Belum ada logo</div>
           </div>
           <div class="pk-logo-actions">
@@ -224,12 +224,12 @@ onMounted(load)
         </div>
       </section>
 
-      <!-- ─── Identitas Klinik ─── -->
+      <!-- ─── Identitas Institusi ─── -->
       <section class="pk-section">
-        <header><h3>Identitas Klinik</h3></header>
+        <header><h3>Identitas Institusi</h3></header>
         <div class="pk-grid">
           <div class="pk-field pk-col-2">
-            <label>Nama Klinik <span class="pk-req">*</span></label>
+            <label>Nama Institusi <span class="pk-req">*</span></label>
             <input type="text" v-model="form.clinic_name" :class="{ 'has-error': fieldErr('clinic_name') }" />
             <p v-if="fieldErr('clinic_name')" class="pk-err">{{ fieldErr('clinic_name') }}</p>
           </div>
@@ -321,7 +321,7 @@ onMounted(load)
       <section class="pk-section">
         <header>
           <h3>Ruang Operasi (OK)</h3>
-          <p class="pk-sub">Daftar ruang OK yang tersedia di klinik. Dipakai di modul Bedah saat menentukan ruang operasi pasien.</p>
+          <p class="pk-sub">Daftar ruang OK yang tersedia di institusi. Dipakai di modul Bedah saat menentukan ruang operasi pasien.</p>
         </header>
         <div class="pk-room-list">
           <div v-for="(room, i) in form.operating_rooms" :key="i" class="pk-room-chip">
@@ -367,7 +367,7 @@ onMounted(load)
 <style scoped>
 .pk-wrap { display: flex; flex-direction: column; gap: 1.2rem; }
 
-.pk-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.pk-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .pk-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 .pk-loading { display: flex; align-items: center; gap: 0.5rem; padding: 2rem; justify-content: center; color: var(--tu); font-size: 13px; }
@@ -423,8 +423,8 @@ onMounted(load)
 
 /* Ruang OK */
 .pk-room-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; }
-.pk-room-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; background: var(--gl); border: 1px solid var(--ga); color: var(--gm); border-radius: 20px; font-size: 12.5px; font-weight: 600; }
-.pk-room-del { background: none; border: none; color: var(--gm); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 6px; border-radius: 50%; transition: background .12s, color .12s; }
+.pk-room-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; background: var(--gl); border: 1px solid var(--ga); color: var(--td); border-radius: 20px; font-size: 12.5px; font-weight: 600; }
+.pk-room-del { background: none; border: none; color: var(--td); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 6px; border-radius: 50%; transition: background .12s, color .12s; }
 .pk-room-del:hover { background: var(--et); color: #fff; }
 .pk-room-empty { font-size: 12px; color: var(--th); font-style: italic; padding: 6px 4px; }
 .pk-room-add { display: flex; gap: 8px; align-items: center; }

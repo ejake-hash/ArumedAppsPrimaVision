@@ -186,7 +186,7 @@ onBeforeUnmount(stopCamera)
 .pc-backdrop { position: fixed; inset: 0; z-index: 9998; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .pc-shell { width: 100%; max-width: 460px; background: var(--bc, #fff); border-radius: 18px; overflow: hidden; box-shadow: 0 24px 64px rgba(0,0,0,0.3); display: flex; flex-direction: column; }
 .pc-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 1.1rem 1.3rem; border-bottom: 1px solid var(--gb, #e3e8e5); }
-.pc-title { font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--gd, #1d5b3f); }
+.pc-title { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--gd, #1d5b3f); }
 .pc-sub { font-size: 11.5px; color: var(--tu, #8a948f); margin-top: 3px; }
 .pc-x { background: none; border: none; cursor: pointer; color: var(--tu, #8a948f); padding: 4px; border-radius: 7px; }
 .pc-x:hover { background: var(--bi, #f2f5f3); }

@@ -334,7 +334,7 @@ onUnmounted(() => {
   flex-direction: column;
   background: linear-gradient(155deg, var(--gd) 0%, var(--gm) 100%);
   color: #fff;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   overflow: hidden;
 }
 
@@ -353,7 +353,7 @@ onUnmounted(() => {
 .ksk-logo-svg { width: 50px; height: 50px; }
 .ksk-brand { display: flex; flex-direction: column; }
 .ksk-brand-name {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 22px;
   line-height: 1;
   letter-spacing: 0.01em;
@@ -367,7 +367,7 @@ onUnmounted(() => {
 }
 .ksk-clock-box { text-align: right; }
 .ksk-clock {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 30px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -428,7 +428,7 @@ onUnmounted(() => {
 .home-screen { max-width: 900px; margin: 0 auto; }
 .home-head { text-align: center; margin-bottom: 2.5rem; }
 .welcome-title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 54px;
   font-weight: 400;
   line-height: 1.05;
@@ -449,7 +449,7 @@ onUnmounted(() => {
   border-radius: 22px;
   cursor: pointer;
   transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   color: #fff;
   text-align: center;
 }
@@ -528,7 +528,7 @@ onUnmounted(() => {
   animation: spin 0.85s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.load-title { font-family: 'DM Serif Display', serif; font-size: 34px; font-weight: 400; }
+.load-title { font-family: 'Space Grotesk', serif; font-size: 34px; font-weight: 400; }
 .load-sub { font-size: 16px; color: rgba(255, 255, 255, 0.45); }
 .load-sub.err-msg { max-width: 420px; color: #fca5a5; }
 .load-dots { display: flex; gap: 8px; }
@@ -551,7 +551,7 @@ onUnmounted(() => {
   flex: 1;
   height: 68px;
   border-radius: 14px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 17px;
   font-weight: 600;
   cursor: pointer;
@@ -594,7 +594,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
 }
-.tkt-clinic { font-family: 'DM Serif Display', serif; font-size: 14px; color: #fff; }
+.tkt-clinic { font-family: 'Space Grotesk', serif; font-size: 14px; color: #fff; }
 .tkt-type {
   font-size: 9px;
   font-weight: 700;
@@ -609,7 +609,7 @@ onUnmounted(() => {
   background: repeating-linear-gradient(90deg, transparent, transparent 6px, #fff 6px, #fff 7px) #f0f4f1;
 }
 .tkt-num {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', serif;
   font-size: 100px;
   color: var(--lm);
   text-align: center;
@@ -628,7 +628,7 @@ onUnmounted(() => {
 }
 .umum-body svg { width: 26px; height: 26px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .umum-body p { font-size: 14px; color: var(--td); line-height: 1.55; margin: 0; }
-.umum-body strong { color: var(--gd); }
+.umum-body strong { color: var(--td); }
 
 /* Ticket aside */
 .ticket-aside {
@@ -650,7 +650,7 @@ onUnmounted(() => {
 .ta-check svg { width: 24px; height: 24px; fill: none; stroke: var(--lm); stroke-width: 2.5; stroke-linecap: round; }
 .ta-check.err { background: rgba(220, 38, 38, 0.18); border-color: rgba(220, 38, 38, 0.45); }
 .ta-check.err svg { stroke: #fca5a5; }
-.ta-msg { font-family: 'DM Serif Display', serif; font-size: 28px; font-weight: 400; line-height: 1.2; }
+.ta-msg { font-family: 'Space Grotesk', serif; font-size: 28px; font-weight: 400; line-height: 1.2; }
 .ta-hint { font-size: 16px; color: rgba(255, 255, 255, 0.5); max-width: 280px; line-height: 1.5; margin-top: -0.5rem; }
 
 /* Countdown ring */
@@ -740,7 +740,7 @@ onUnmounted(() => {
     padding: 3mm 4mm 5mm;
     background: #fff;
     color: #000;
-    font-family: 'DM Sans', Arial, sans-serif;
+    font-family: 'Inter', Arial, sans-serif;
     text-align: center;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;

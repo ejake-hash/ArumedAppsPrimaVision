@@ -835,17 +835,17 @@ onBeforeUnmount(() => {
 <style scoped>
 .ru-wrap { display: flex; flex-direction: column; gap: 1rem; position: relative; }
 
-.ru-head h2 { font-family: 'DM Serif Display', serif; font-size: 20px; color: var(--td); margin: 0; }
+.ru-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
 .ru-sub { font-size: 12.5px; color: var(--tm); margin: 3px 0 0; }
 
 .ru-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); }
 .ru-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.ru-tab:hover { color: var(--gd); }
+.ru-tab:hover { color: var(--td); }
 .ru-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 
 .ru-subtabs { display: flex; gap: 4px; padding: 4px; background: var(--bs); border-radius: 8px; align-self: flex-start; }
 .ru-subtab { padding: 6px 14px; border: none; background: transparent; color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; border-radius: 6px; }
-.ru-subtab:hover { color: var(--gd); }
+.ru-subtab:hover { color: var(--td); }
 .ru-subtab.active { background: var(--bc); color: var(--ga); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
 
 .ru-panel { display: flex; flex-direction: column; gap: 12px; min-height: 40vh; }
@@ -871,7 +871,7 @@ onBeforeUnmount(() => {
 .ru-table th.r, .ru-table td.r { text-align: right; }
 .ru-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
 .ru-table tr:last-child td { border-bottom: none; }
-.ru-table code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--gd); }
+.ru-table code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--td); }
 .ru-loading, .ru-empty { padding: 1.5rem !important; text-align: center; color: var(--tm); font-size: 13px; }
 
 .ru-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }

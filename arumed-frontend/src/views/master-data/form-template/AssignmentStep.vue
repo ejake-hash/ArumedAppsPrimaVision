@@ -113,7 +113,7 @@ function isReadyToActivate() {
 <style scoped>
 .as-wrap { display: flex; flex-direction: column; gap: 1rem; }
 .as-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; padding: 1rem 1.25rem; }
-.as-card h4 { margin: 0 0 0.25rem; font-family: 'DM Serif Display', serif; font-size: 16px; color: var(--td); }
+.as-card h4 { margin: 0 0 0.25rem; font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); }
 .as-hint { color: var(--tm); font-size: 12.5px; margin: 0 0 0.75rem; }
 
 .as-stations { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.6rem; }
