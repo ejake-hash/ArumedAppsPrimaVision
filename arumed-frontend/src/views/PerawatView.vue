@@ -298,7 +298,7 @@ function printDoctorTicket() {
       .b strong { font-size:11pt; }
       .ft { text-align:center; padding:2mm 4mm 0; font-size:8pt; }
     </style></head><body>
-      <div class="h">Klinik Mata Arunika</div>
+      <div class="h">RUMAH SAKIT MATA PRIMA VISION</div>
       <div class="sub">Tiket Antrean Dokter</div>
       <div class="num">${escHtml(t.queue_number)}</div>
       <div class="sep"></div>

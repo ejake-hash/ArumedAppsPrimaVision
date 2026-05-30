@@ -1560,7 +1560,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .ptg { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
 .ptg-b { background: rgba(147, 197, 253, 0.2); color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.2); }
 .ptg-a { background: rgba(217, 70, 239, 0.18); color: #f0abfc; border: 1px solid rgba(217, 70, 239, 0.25); }
-.ptg-u { background: rgba(138, 191, 68, 0.2); color: var(--lm); border: 1px solid rgba(138, 191, 68, 0.25); }
+.ptg-u { background: rgba(56, 189, 248, 0.2); color: var(--lm); border: 1px solid rgba(56, 189, 248, 0.25); }
 .ptg-ok { background: rgba(134, 239, 172, 0.2); color: var(--sbd); border: 1px solid rgba(134, 239, 172, 0.25); }
 .pt-total { text-align: right; flex-shrink: 0; }
 .pt-total-v { font-size: 22px; font-weight: 700; color: var(--lm); font-variant-numeric: tabular-nums; line-height: 1; }

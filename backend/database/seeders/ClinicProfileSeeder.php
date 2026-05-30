@@ -10,13 +10,13 @@ class ClinicProfileSeeder extends Seeder
     public function run(): void
     {
         ClinicProfile::updateOrCreate(
-            ['clinic_code' => 'KMA'],
+            ['clinic_code' => 'RSKMPV'],
             [
-                'clinic_name'       => 'Klinik Mata Arunika',
-                'clinic_code'       => 'KMA',
-                'address'           => 'Jl. Kesehatan Mata No. 1',
-                'phone'             => '(021) 00000000',
-                'email'             => 'info@klinikmataarunika.id',
+                'clinic_name'       => 'RUMAH SAKIT MATA PRIMA VISION',
+                'clinic_code'       => 'RSKMPV',
+                'address'           => 'Medan',
+                'phone'             => '(061) 00000000',
+                'email'             => 'info@rsmataprimavision.id',
                 'director_name'     => null,
                 'director_sip'      => null,
                 'rm_format'         => 'YYYYMMSEQ',

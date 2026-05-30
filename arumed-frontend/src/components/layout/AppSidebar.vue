@@ -22,8 +22,8 @@ async function handleLogout() {
     <div class="sb-logo">
       <BrandMark :size="34" />
       <div class="sb-brand">
-        <div class="sb-brand-name">Arunika</div>
-        <div class="sb-brand-sub">Klinik Mata</div>
+        <div class="sb-brand-name">Prima Vision</div>
+        <div class="sb-brand-sub">RS Mata</div>
       </div>
       <button
         class="sb-toggle-top"
@@ -169,7 +169,7 @@ async function handleLogout() {
 /* ─── LOGO / HEADER ─── */
 .sb-logo {
   padding: 1.1rem 1rem 1rem;
-  border-bottom: 1px solid rgba(138, 191, 68, 0.12);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.12);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -211,7 +211,7 @@ async function handleLogout() {
 /* ─── NAV ─── */
 .sb-nav { flex: 1; overflow-y: auto; padding: 0.75rem 0.6rem; }
 .sb-nav::-webkit-scrollbar { width: 3px; }
-.sb-nav::-webkit-scrollbar-thumb { background: rgba(138, 191, 68, 0.2); }
+.sb-nav::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.2); }
 .sb-section {
   font-size: 9px; font-weight: 600;
   color: rgba(255,255,255,0.25); letter-spacing: 0.15em;
@@ -227,8 +227,8 @@ async function handleLogout() {
 .collapsed .sb-item { justify-content: center; padding: 8px; gap: 0; }
 .sb-item:hover { background: rgba(255,255,255,0.06); }
 .sb-item.router-link-active {
-  background: rgba(138,191,68,0.15);
-  border: 1px solid rgba(138,191,68,0.2);
+  background: rgba(56,189,248,0.15);
+  border: 1px solid rgba(56,189,248,0.2);
 }
 .sb-item svg {
   width: 16px; height: 16px; fill: none;
@@ -273,7 +273,7 @@ async function handleLogout() {
 .collapsed .sb-user-info { display: none; }
 .sb-avatar {
   width: 32px; height: 32px; border-radius: 50%;
-  background: rgba(138,191,68,0.2);
+  background: rgba(56,189,248,0.2);
   display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 600; color: var(--lm); flex-shrink: 0;
 }

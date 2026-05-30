@@ -155,17 +155,17 @@ onUnmounted(() => {
     <div class="ksk-top">
       <div class="ksk-logo">
         <svg class="ksk-logo-svg" viewBox="0 0 90 90" fill="none">
-          <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.18)" stroke-width="1"/>
-          <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.28)" stroke-width="1"/>
-          <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.42)" stroke-width="1.5"/>
-          <circle cx="45" cy="45" r="14" stroke="#8abf44" stroke-width="1.5"/>
-          <circle cx="45" cy="45" r="6" fill="#8abf44" opacity="0.9"/>
+          <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.18)" stroke-width="1"/>
+          <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.28)" stroke-width="1"/>
+          <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.42)" stroke-width="1.5"/>
+          <circle cx="45" cy="45" r="14" stroke="var(--lm)" stroke-width="1.5"/>
+          <circle cx="45" cy="45" r="6" fill="var(--lm)" opacity="0.9"/>
           <line x1="45" y1="39" x2="45" y2="51" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
           <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
         <div class="ksk-brand">
-          <span class="ksk-brand-name">Klinik Mata Arunika</span>
-          <span class="ksk-brand-sub">Cilegon · Anjungan Mandiri</span>
+          <span class="ksk-brand-name">RUMAH SAKIT MATA PRIMA VISION</span>
+          <span class="ksk-brand-sub">Medan · Anjungan Mandiri</span>
         </div>
       </div>
 
@@ -248,7 +248,7 @@ onUnmounted(() => {
         <div class="ticket-wrap">
           <div class="ticket">
             <div class="tkt-header">
-              <span class="tkt-clinic">Klinik Mata Arunika</span>
+              <span class="tkt-clinic">RUMAH SAKIT MATA PRIMA VISION</span>
             </div>
             <div class="tkt-perf"></div>
             <div class="tkt-num">{{ ticket.qNum }}</div>
@@ -312,8 +312,8 @@ onUnmounted(() => {
        trik visibility/absolute (rapuh karena body min-width:1280px). -->
   <Teleport to="body">
     <div v-if="ticket" id="print-ticket" aria-hidden="true">
-      <div class="pt-clinic">Klinik Mata Arunika</div>
-      <div class="pt-sub">Cilegon · Anjungan Mandiri</div>
+      <div class="pt-clinic">RUMAH SAKIT MATA PRIMA VISION</div>
+      <div class="pt-sub">Medan · Anjungan Mandiri</div>
       <div class="pt-rule"></div>
       <div class="pt-label">NOMOR ANTREAN</div>
       <div class="pt-num">{{ ticket.qNum }}</div>
@@ -362,7 +362,7 @@ onUnmounted(() => {
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(138, 191, 68, 0.75);
+  color: rgba(56, 189, 248, 0.75);
   margin-top: 5px;
 }
 .ksk-clock-box { text-align: right; }
@@ -393,15 +393,15 @@ onUnmounted(() => {
   box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
 }
 .ksk-status.online .dot {
-  background: #8abf44;
+  background: var(--lm);
   animation: pulseDot 2s infinite;
 }
 .ksk-status.offline .dot { background: #ef4444; }
 .ksk-status.offline { color: #fca5a5; }
 @keyframes pulseDot {
-  0% { box-shadow: 0 0 0 0 rgba(138, 191, 68, 0.55); }
-  70% { box-shadow: 0 0 0 6px rgba(138, 191, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(138, 191, 68, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55); }
+  70% { box-shadow: 0 0 0 6px rgba(56, 189, 248, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
 }
 
 /* ─── BODY ─── */
@@ -454,10 +454,10 @@ onUnmounted(() => {
   text-align: center;
 }
 .choice-card:not(:disabled):hover {
-  background: rgba(138, 191, 68, 0.13);
-  border-color: #8abf44;
+  background: rgba(56, 189, 248, 0.13);
+  border-color: var(--lm);
   transform: translateY(-4px);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(138, 191, 68, 0.3);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(56, 189, 248, 0.3);
 }
 .choice-card:disabled {
   cursor: not-allowed;
@@ -492,9 +492,9 @@ onUnmounted(() => {
   font-weight: 700;
   padding: 5px 14px;
   border-radius: 20px;
-  background: rgba(138, 191, 68, 0.18);
-  color: #8abf44;
-  border: 1px solid rgba(138, 191, 68, 0.38);
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--lm);
+  border: 1px solid rgba(56, 189, 248, 0.38);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   margin-top: auto;
@@ -508,7 +508,7 @@ onUnmounted(() => {
   font-size: 13px;
   color: rgba(255, 255, 255, 0.4);
 }
-.home-foot-hint strong { color: rgba(138, 191, 68, 0.85); font-weight: 600; }
+.home-foot-hint strong { color: rgba(56, 189, 248, 0.85); font-weight: 600; }
 
 /* ─── LOADING / ERROR SCREEN ─── */
 .center-screen {
@@ -523,8 +523,8 @@ onUnmounted(() => {
   width: 72px;
   height: 72px;
   border-radius: 50%;
-  border: 4px solid rgba(138, 191, 68, 0.2);
-  border-top-color: #8abf44;
+  border: 4px solid rgba(56, 189, 248, 0.2);
+  border-top-color: var(--lm);
   animation: spin 0.85s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -536,7 +536,7 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: rgba(138, 191, 68, 0.5);
+  background: rgba(56, 189, 248, 0.5);
   animation: blink 1.4s infinite;
 }
 .load-dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -564,7 +564,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .ksk-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
-.ksk-btn.pri { background: #8abf44; border-color: #8abf44; color: #061d15; }
+.ksk-btn.pri { background: var(--lm); border-color: var(--lm); color: #061d15; }
 .ksk-btn.pri:hover { background: var(--ld); border-color: var(--ld); }
 .ksk-btn.sec { background: transparent; border-color: rgba(255, 255, 255, 0.25); color: rgba(255, 255, 255, 0.75); }
 .ksk-btn.sec:hover { border-color: rgba(255, 255, 255, 0.55); color: #fff; }
@@ -611,7 +611,7 @@ onUnmounted(() => {
 .tkt-num {
   font-family: 'DM Serif Display', serif;
   font-size: 100px;
-  color: #8abf44;
+  color: var(--lm);
   text-align: center;
   line-height: 1;
   padding: 0.5rem 0 0.75rem;
@@ -641,13 +641,13 @@ onUnmounted(() => {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: rgba(138, 191, 68, 0.18);
-  border: 2px solid rgba(138, 191, 68, 0.4);
+  background: rgba(56, 189, 248, 0.18);
+  border: 2px solid rgba(56, 189, 248, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.ta-check svg { width: 24px; height: 24px; fill: none; stroke: #8abf44; stroke-width: 2.5; stroke-linecap: round; }
+.ta-check svg { width: 24px; height: 24px; fill: none; stroke: var(--lm); stroke-width: 2.5; stroke-linecap: round; }
 .ta-check.err { background: rgba(220, 38, 38, 0.18); border-color: rgba(220, 38, 38, 0.45); }
 .ta-check.err svg { stroke: #fca5a5; }
 .ta-msg { font-family: 'DM Serif Display', serif; font-size: 28px; font-weight: 400; line-height: 1.2; }
@@ -660,7 +660,7 @@ onUnmounted(() => {
 .cdown-bg { fill: none; stroke: rgba(255, 255, 255, 0.08); stroke-width: 9; }
 .cdown-fg {
   fill: none;
-  stroke: #8abf44;
+  stroke: var(--lm);
   stroke-width: 9;
   stroke-linecap: round;
   stroke-dasharray: 264;

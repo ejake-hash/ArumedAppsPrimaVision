@@ -1704,9 +1704,9 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-timer-display {
   font-size: 52px; font-weight: 900; color: #fff; font-family: 'DM Mono', monospace;
   letter-spacing: 2px; display: flex; align-items: center; gap: 10px;
-  text-shadow: 0 0 30px rgba(138,191,68,.4);
+  text-shadow: 0 0 30px rgba(56,189,248,.4);
 }
-.bd-pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: #8abf44; animation: bd-blink 1s infinite; }
+.bd-pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--lm); animation: bd-blink 1s infinite; }
 .bd-timer-actions { margin-top: 4px; }
 .bd-btn-timeout {
   display: flex; align-items: center; gap: 8px; padding: 10px 24px;

@@ -120,19 +120,19 @@ const maxHour    = 22
 const keuanganFilter = ref('hari')
 const keuanganData = {
   hari:  { pendapatan:5120000,    transaksi:47,
-    breakdown:[ {label:'BPJS/JKN',val:2890000,pct:56,color:'#3b82f6'},{label:'Umum',val:1650000,pct:32,color:'#8abf44'},{label:'ASN/Asuransi',val:580000,pct:11,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:2890000,pct:56,color:'#3b82f6'},{label:'Umum',val:1650000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:580000,pct:11,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:1850000,pct:36},{label:'Tindakan',val:1920000,pct:38},{label:'Obat',val:810000,pct:16},{label:'Penunjang',val:540000,pct:11} ],
   },
   minggu:{ pendapatan:32480000,   transaksi:298,
-    breakdown:[ {label:'BPJS/JKN',val:18190000,pct:56,color:'#3b82f6'},{label:'Umum',val:10390000,pct:32,color:'#8abf44'},{label:'ASN/Asuransi',val:3900000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:18190000,pct:56,color:'#3b82f6'},{label:'Umum',val:10390000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:3900000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:11690000,pct:36},{label:'Tindakan',val:12340000,pct:38},{label:'Obat',val:5200000,pct:16},{label:'Penunjang',val:3250000,pct:10} ],
   },
   bulan: { pendapatan:143600000,  transaksi:1284,
-    breakdown:[ {label:'BPJS/JKN',val:80420000,pct:56,color:'#3b82f6'},{label:'Umum',val:45950000,pct:32,color:'#8abf44'},{label:'ASN/Asuransi',val:17230000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:80420000,pct:56,color:'#3b82f6'},{label:'Umum',val:45950000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:17230000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:51700000,pct:36},{label:'Tindakan',val:54570000,pct:38},{label:'Obat',val:22980000,pct:16},{label:'Penunjang',val:14350000,pct:10} ],
   },
   tahun: { pendapatan:1724000000, transaksi:15408,
-    breakdown:[ {label:'BPJS/JKN',val:965440000,pct:56,color:'#3b82f6'},{label:'Umum',val:551680000,pct:32,color:'#8abf44'},{label:'ASN/Asuransi',val:206880000,pct:12,color:'#7e22ce'} ],
+    breakdown:[ {label:'BPJS/JKN',val:965440000,pct:56,color:'#3b82f6'},{label:'Umum',val:551680000,pct:32,color:'var(--lm)'},{label:'ASN/Asuransi',val:206880000,pct:12,color:'#7e22ce'} ],
     kategori: [ {label:'Konsultasi',val:620640000,pct:36},{label:'Tindakan',val:655120000,pct:38},{label:'Obat',val:275840000,pct:16},{label:'Penunjang',val:172400000,pct:10} ],
   },
 }
@@ -162,7 +162,7 @@ onUnmounted(() => clearInterval(liveTimer))
     <!-- ─── WELCOME BAR ─── -->
     <div class="welcome-bar">
       <div class="wb-left">
-        <div class="wb-title">Dashboard Klinik Mata Arunika</div>
+        <div class="wb-title">Dashboard RUMAH SAKIT MATA PRIMA VISION</div>
         <div class="wb-date">{{ dateStr }}</div>
       </div>
       <div class="wb-right">
@@ -195,7 +195,7 @@ onUnmounted(() => clearInterval(liveTimer))
       </div>
       <div class="kpi-card" style="border-top-color:var(--lm)">
         <div class="kpi-icon" style="background:#f7fde8">
-          <svg viewBox="0 0 24 24" stroke="#5a8228"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+          <svg viewBox="0 0 24 24" stroke="var(--ld)"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
         </div>
         <div class="kpi-body">
           <div class="kpi-val" style="color:var(--ld)">{{ totalUmum }}</div>
@@ -454,8 +454,8 @@ onUnmounted(() => clearInterval(liveTimer))
 .wb-date  { font-size:11px; color:rgba(255,255,255,.55); margin-top:3px; }
 .wb-right { display:flex; align-items:center; gap:.75rem; }
 .wb-updated { font-size:11px; color:rgba(255,255,255,.5); font-variant-numeric:tabular-nums; }
-.live-pill { display:inline-flex; align-items:center; gap:5px; background:rgba(138,191,68,.2); border:1px solid rgba(138,191,68,.4); color:#8abf44; font-size:9px; font-weight:700; padding:3px 9px; border-radius:20px; letter-spacing:.08em; }
-.live-dot  { width:6px; height:6px; border-radius:50%; background:#8abf44; animation:blink 1.5s infinite; flex-shrink:0; }
+.live-pill { display:inline-flex; align-items:center; gap:5px; background:rgba(56,189,248,.2); border:1px solid rgba(56,189,248,.4); color:var(--lm); font-size:9px; font-weight:700; padding:3px 9px; border-radius:20px; letter-spacing:.08em; }
+.live-dot  { width:6px; height:6px; border-radius:50%; background:var(--lm); animation:blink 1.5s infinite; flex-shrink:0; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
 /* ─── KPI ROW ─── */

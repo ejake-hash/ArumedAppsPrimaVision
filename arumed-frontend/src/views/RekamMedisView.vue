@@ -23,7 +23,7 @@ function hitungUsia(dob) {
   return a
 }
 function classColor(c) {
-  return ({ Baru:'#8abf44', Kontrol:'#1d4ed8', 'Pre-Op':'#b45309', 'Post-Op':'#15803d' })[c] ?? '#6b7280'
+  return ({ Baru:'var(--lm)', Kontrol:'#1d4ed8', 'Pre-Op':'#b45309', 'Post-Op':'#15803d' })[c] ?? '#6b7280'
 }
 function guarantorCls(g) {
   return ({ BPJS:'bpjs', UMUM:'umum', ASURANSI:'asn', PERUSAHAAN:'asn', SOSIAL:'asn' })[g] ?? 'umum'
@@ -794,7 +794,7 @@ async function printResume() {
 .rsb-item:hover { background: #eef4ff; }
 .rsb-sk { pointer-events: none; }
 .rsi-bar { width: 3px; height: 40px; border-radius: 2px; flex-shrink: 0; }
-.rsi-bar.bpjs { background: #3b82f6; } .rsi-bar.umum { background: #8abf44; } .rsi-bar.asn { background: #a855f7; }
+.rsi-bar.bpjs { background: #3b82f6; } .rsi-bar.umum { background: var(--lm); } .rsi-bar.asn { background: #a855f7; }
 .rsi-body { flex: 1; min-width: 0; }
 .rsi-top { display: flex; align-items: center; gap: 6px; }
 .rsi-rm { font-size: 10.5px; font-weight: 700; color: #1763d4; font-family: monospace; }

@@ -1444,7 +1444,7 @@ function printAdmisiTicket({ queueNo, patientName }) {
       .b strong { font-size:11pt; }
       .ft { text-align:center; padding:2mm 4mm 0; font-size:8pt; color:#000; }
     </style></head><body>
-      <div class="h">Klinik Mata Arunika</div>
+      <div class="h">RUMAH SAKIT MATA PRIMA VISION</div>
       <div class="sub">Tiket Antrean</div>
       <div class="num">${escHtml(queueNo)}</div>
       <div class="sep"></div>
@@ -3394,7 +3394,7 @@ onUnmounted(() => {
             </div>
             <p class="gc-text">
               Saya, <strong>{{ gcPatient.name }}</strong> (NIK: {{ gcPatient.nik }}),
-              dengan ini menyetujui pelayanan kesehatan di Klinik Mata Arunika sesuai standar yang berlaku,
+              dengan ini menyetujui pelayanan kesehatan di RUMAH SAKIT MATA PRIMA VISION sesuai standar yang berlaku,
               termasuk pemeriksaan, pengobatan, dan penggunaan data rekam medis untuk kepentingan pelayanan.
             </p>
           </div>

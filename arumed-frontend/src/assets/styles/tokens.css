@@ -3,16 +3,16 @@
  * Mirrors the palette established across the static HTML prototypes. */
 
 :root {
-  /* Greens (primary brand) */
-  --gd: #0d3d2e;
-  --gm: #145e38;
-  --ga: #1f7d4a;
-  --gl: #eaf6ef;
-  --gb: #d1ddd5;
+  /* Brand (primary) — tema biru Prima Vision */
+  --gd: #0a2a4d;
+  --gm: #11487f;
+  --ga: #1763d4;
+  --gl: #eef4fc;
+  --gb: #cdd9e6;
 
-  /* Lime accent */
-  --lm: #8abf44;
-  --ld: #5a8228;
+  /* Accent */
+  --lm: #38bdf8;
+  --ld: #0284c7;
 
   /* Backgrounds & surfaces */
   --bg: #f0f5f1;

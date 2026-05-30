@@ -4,12 +4,17 @@ namespace Database\Seeders;
 
 use App\Models\DoctorSchedule;
 use App\Models\Employee;
+use Carbon\Carbon;
 use Illuminate\Database\Seeder;
 
 class DoctorScheduleSeeder extends Seeder
 {
     public function run(): void
     {
+        // week_start = Senin minggu berjalan (WIB). Kolom NOT NULL sejak Jadwal
+        // Dokter v2 — wajib diisi eksplisit, tidak punya default DB.
+        $weekStart = Carbon::now('Asia/Jakarta')->startOfWeek(Carbon::MONDAY)->toDateString();
+
         // day_of_week: 1=Senin … 7=Minggu (ISO-8601)
         // `room` = nomor ruangan (derive queue_prefix D1/D2/D3 di model)
         // `poliklinik` = nama poli (sub-spesialisasi)
@@ -48,13 +53,15 @@ class DoctorScheduleSeeder extends Seeder
                     [
                         'employee_id' => $employee->id,
                         'day_of_week' => $row['day'],
+                        'week_start'  => $weekStart,
                     ],
                     [
-                        'start_time' => $row['start'],
-                        'end_time'   => $row['end'],
-                        'room'       => $row['room'],
-                        'poliklinik' => $row['poliklinik'],
-                        'is_active'  => true,
+                        'start_time'   => $row['start'],
+                        'end_time'     => $row['end'],
+                        'room'         => $row['room'],
+                        'poliklinik'   => $row['poliklinik'],
+                        'service_type' => 'BPJS',
+                        'is_active'    => true,
                     ]
                 );
             }

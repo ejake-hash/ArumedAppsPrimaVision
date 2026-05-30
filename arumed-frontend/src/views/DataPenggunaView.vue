@@ -8,7 +8,7 @@ const store = useDataPenggunaStore()
 const auth  = useAuthStore()
 
 // ─── Cosmetic role colors (frontend only — derived from name) ────────────────
-const ROLE_COLOR_PALETTE = ['#082b20','#1d4ed8','#7e22ce','#0891b2','#15803d','#b45309','#be185d','#9f1239','#374151','#0d3d2e','#1f7d4a','#8abf44']
+const ROLE_COLOR_PALETTE = ['#082b20','#1d4ed8','#7e22ce','#0891b2','#15803d','#b45309','#be185d','#9f1239','#374151','var(--gd)','var(--ga)','var(--lm)']
 function colorOf(role) {
   if (!role?.name) return 'var(--th)'
   if (role.name === 'superadmin') return '#082b20'
@@ -955,7 +955,7 @@ function lastLoginText(u) {
 /* ─── ROLE GRID ─── */
 .role-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: .55rem; }
 .role-card { background: var(--bc); border: 1.5px solid var(--gb); border-radius: 10px; padding: .65rem .8rem; cursor: pointer; transition: all .15s; }
-.role-card:hover { border-color: rgba(138, 191, 68, .4); background: var(--gl); }
+.role-card:hover { border-color: rgba(56, 189, 248, .4); background: var(--gl); }
 .role-card.sel { border-color: var(--ga); background: var(--gl); }
 .role-color { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: inline-block; margin-right: 5px; }
 .role-name { font-size: 12.5px; font-weight: 600; color: var(--td); display: flex; align-items: center; margin-bottom: 2px; }

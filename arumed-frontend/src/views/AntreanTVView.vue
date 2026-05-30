@@ -92,9 +92,9 @@ async function fetchAudioDefaults() {
 // Logo disimpan sebagai data URL base64 (≤512 KB) supaya tidak perlu storage file.
 const brandingDefaults = {
   logo_data:           null,
-  clinic_name:         'Klinik Mata Arunika',
-  clinic_subtitle:     'Cilegon · Layar Antrean',
-  placeholder_title:   'Klinik Mata Arunika Cilegon',
+  clinic_name:         'RUMAH SAKIT MATA PRIMA VISION',
+  clinic_subtitle:     'Medan · Layar Antrean',
+  placeholder_title:   'RS MATA PRIMA VISION MEDAN',
   placeholder_tagline: 'Spesialis kesehatan mata terpadu — PMK No. 24/2022',
 }
 const branding = ref({ ...brandingDefaults })
@@ -1388,11 +1388,11 @@ async function saveAudioDefaults() {
       <div class="tv-logo">
         <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="tv-logo-img" />
         <svg v-else viewBox="0 0 90 90" fill="none">
-          <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.15)" stroke-width="1" />
-          <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.22)" stroke-width="1" />
-          <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.32)" stroke-width="1.5" />
-          <circle cx="45" cy="45" r="14" stroke="#8abf44" stroke-width="1.5" />
-          <circle cx="45" cy="45" r="6" fill="#8abf44" opacity="0.9" />
+          <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.15)" stroke-width="1" />
+          <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.22)" stroke-width="1" />
+          <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.32)" stroke-width="1.5" />
+          <circle cx="45" cy="45" r="14" stroke="var(--lm)" stroke-width="1.5" />
+          <circle cx="45" cy="45" r="6" fill="var(--lm)" opacity="0.9" />
           <line x1="45" y1="39" x2="45" y2="51" stroke="#fff" stroke-width="1.5" stroke-linecap="round" />
           <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round" />
         </svg>
@@ -1426,13 +1426,13 @@ async function saveAudioDefaults() {
         <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
           <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="video-logo-img" />
           <svg v-else viewBox="0 0 90 90" fill="none">
-            <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.08)" stroke-width="1" />
-            <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.12)" stroke-width="1" />
-            <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.18)" stroke-width="1.5" />
-            <circle cx="45" cy="45" r="14" stroke="rgba(138,191,68,0.3)" stroke-width="1.5" />
-            <circle cx="45" cy="45" r="6" fill="rgba(138,191,68,0.2)" />
-            <line x1="45" y1="39" x2="45" y2="51" stroke="rgba(138,191,68,0.4)" stroke-width="1.5" stroke-linecap="round" />
-            <line x1="39" y1="45" x2="51" y2="45" stroke="rgba(138,191,68,0.4)" stroke-width="1.5" stroke-linecap="round" />
+            <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.08)" stroke-width="1" />
+            <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.12)" stroke-width="1" />
+            <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.18)" stroke-width="1.5" />
+            <circle cx="45" cy="45" r="14" stroke="rgba(56,189,248,0.3)" stroke-width="1.5" />
+            <circle cx="45" cy="45" r="6" fill="rgba(56,189,248,0.2)" />
+            <line x1="45" y1="39" x2="45" y2="51" stroke="rgba(56,189,248,0.4)" stroke-width="1.5" stroke-linecap="round" />
+            <line x1="39" y1="45" x2="51" y2="45" stroke="rgba(56,189,248,0.4)" stroke-width="1.5" stroke-linecap="round" />
           </svg>
           <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
           <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
@@ -1567,7 +1567,7 @@ async function saveAudioDefaults() {
     <div v-if="showPinModal" class="pin-overlay" @click.self="showPinModal = false">
       <div :class="['pin-dialog', { shake: pinShake }]">
         <div class="pin-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#8abf44" stroke-width="1.5" stroke-linecap="round">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--lm)" stroke-width="1.5" stroke-linecap="round">
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
             <path d="M7 11V7a5 5 0 0110 0v4"/>
           </svg>
@@ -1606,7 +1606,7 @@ async function saveAudioDefaults() {
       <div class="ctrl-panel">
         <div class="ctrl-header">
           <div class="ctrl-header-left">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#8abf44" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--lm)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2"/>
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
@@ -1679,7 +1679,7 @@ async function saveAudioDefaults() {
                 <span style="font-variant-numeric:tabular-nums;color:#fff">{{ mediaUploadPct }}% · {{ mediaUploadInfo }}</span>
               </div>
               <div style="height:8px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden">
-                <div :style="{ width: mediaUploadPct + '%', height: '100%', background: '#8abf44', transition: 'width .15s' }"></div>
+                <div :style="{ width: mediaUploadPct + '%', height: '100%', background: 'var(--lm)', transition: 'width .15s' }"></div>
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
                 <p style="font-size:11px;color:rgba(255,255,255,.7);margin:0">Jangan tutup tab — TV akan otomatis update saat upload selesai.</p>
@@ -1720,9 +1720,9 @@ async function saveAudioDefaults() {
               <p style="font-size:11px;color:rgba(255,255,255,.55);margin:4px 0 0">
                 Paste link MP4 langsung. Untuk Dropbox: ganti <code>?dl=0</code> jadi <code>?raw=1</code>. Untuk Drive: gunakan <code>uc?export=download&amp;id=FILE_ID</code>.
               </p>
-              <div v-if="externalVideoUrl" style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:8px;padding:8px 10px;background:rgba(138,191,68,.08);border:1px solid rgba(138,191,68,.2);border-radius:8px">
+              <div v-if="externalVideoUrl" style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:8px;padding:8px 10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:8px">
                 <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;color:#fff">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8abf44" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--lm)" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
                   <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">URL aktif: {{ externalVideoUrl }}</span>
                 </div>
                 <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);padding:4px 10px;font-size:12px" @click="clearExternalVideoUrl">
@@ -1947,7 +1947,7 @@ async function saveAudioDefaults() {
             </div>
 
             <div class="ctrl-sub-section" style="border-top:1px solid rgba(255,255,255,.08); padding-top:1rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
-              <button class="ctrl-action-btn" style="background:#8abf44; color:#061d15" @click="saveAudioDefaults">
+              <button class="ctrl-action-btn" style="background:var(--lm); color:#061d15" @click="saveAudioDefaults">
                 💾 Simpan sebagai Default
               </button>
               <p v-if="audioSaveMsg" :class="['ctrl-feedback', audioSaveMsgType]">{{ audioSaveMsg }}</p>
@@ -2134,7 +2134,7 @@ async function saveAudioDefaults() {
               </div>
 
               <div class="ctrl-sub-section" style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center">
-                <button class="ctrl-action-btn" style="background:#8abf44; color:#061d15" @click="saveBranding">Simpan</button>
+                <button class="ctrl-action-btn" style="background:var(--lm); color:#061d15" @click="saveBranding">Simpan</button>
                 <button class="ctrl-action-btn brand-btn-muted" @click="resetBrandingToDefault">Set ke Default</button>
                 <p v-if="brandingSaveMsg" :class="['ctrl-feedback', brandingSaveMsgType]" style="margin-left:.5rem">{{ brandingSaveMsg }}</p>
               </div>
@@ -2180,7 +2180,7 @@ async function saveAudioDefaults() {
   align-items: center;
   justify-content: space-between;
   background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid rgba(138, 191, 68, 0.15);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
   flex-shrink: 0;
 }
 .tv-logo { display: flex; align-items: center; gap: 1rem; }
@@ -2196,7 +2196,7 @@ async function saveAudioDefaults() {
   font-size: 12px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: rgba(138, 191, 68, 0.7);
+  color: rgba(56, 189, 248, 0.7);
   margin-top: 4px;
 }
 .tv-right { display: flex; align-items: center; gap: 1.5rem; }
@@ -2239,10 +2239,10 @@ async function saveAudioDefaults() {
   max-width: 560px;
   text-align: center;
   padding: 3rem 2.5rem;
-  background: linear-gradient(180deg, rgba(138, 191, 68, 0.08), rgba(138, 191, 68, 0.02));
-  border: 1px solid rgba(138, 191, 68, 0.25);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.08), rgba(56, 189, 248, 0.02));
+  border: 1px solid rgba(56, 189, 248, 0.25);
   border-radius: 24px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(138, 191, 68, 0.1);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(56, 189, 248, 0.1);
 }
 .audio-unlock-icon {
   width: 96px;
@@ -2280,7 +2280,7 @@ async function saveAudioDefaults() {
   align-items: center;
   gap: 10px;
   padding: 14px 28px;
-  background: #8abf44;
+  background: var(--lm);
   color: #061d15;
   border-radius: 30px;
   font-weight: 700;
@@ -2297,8 +2297,8 @@ async function saveAudioDefaults() {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(138, 191, 68, 0.15);
-  border: 1px solid rgba(138, 191, 68, 0.3);
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
   padding: 6px 14px;
   border-radius: 30px;
   font-size: 13px;
@@ -2308,7 +2308,7 @@ async function saveAudioDefaults() {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #8abf44;
+  background: var(--lm);
   animation: blink 1.5s infinite;
 }
 .tv-clock-wrap { text-align: right; }
@@ -2337,7 +2337,7 @@ async function saveAudioDefaults() {
 /* VIDEO PANEL */
 .video-panel {
   background: #061d15;
-  border: 1px solid rgba(138, 191, 68, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.15);
   border-radius: 18px;
   display: flex;
   align-items: center;
@@ -2424,12 +2424,12 @@ async function saveAudioDefaults() {
   background: rgba(255, 255, 255, 0.35);
   transition: background 0.3s;
 }
-.dot.active { background: #8abf44; }
+.dot.active { background: var(--lm); }
 
 /* QUEUE PANEL */
 .queue-panel {
   background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(138, 191, 68, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.15);
   border-radius: 18px;
   display: flex;
   flex-direction: column;
@@ -2437,7 +2437,7 @@ async function saveAudioDefaults() {
 }
 .queue-header {
   padding: 1rem 1.5rem;
-  border-bottom: 1px solid rgba(138, 191, 68, 0.15);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
 }
 
 .queue-header-title {
@@ -2471,9 +2471,9 @@ async function saveAudioDefaults() {
   transition: border-color 0.25s, background 0.25s;
 }
 .station-card.has-called {
-  background: linear-gradient(135deg, rgba(138, 191, 68, 0.18), rgba(138, 191, 68, 0.04));
-  border-color: rgba(138, 191, 68, 0.45);
-  box-shadow: 0 0 18px rgba(138, 191, 68, 0.15);
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.04));
+  border-color: rgba(56, 189, 248, 0.45);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.15);
 }
 .sc-head {
   display: flex;
@@ -2492,7 +2492,7 @@ async function saveAudioDefaults() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.station-card.has-called .sc-name { color: #8abf44; }
+.station-card.has-called .sc-name { color: var(--lm); }
 .sc-count {
   font-size: 9.5px;
   font-weight: 600;
@@ -2506,7 +2506,7 @@ async function saveAudioDefaults() {
   font-size: 9px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(138, 191, 68, 0.75);
+  color: rgba(56, 189, 248, 0.75);
   font-weight: 600;
   margin-bottom: 0.2rem;
 }
@@ -2515,9 +2515,9 @@ async function saveAudioDefaults() {
   font-family: 'DM Serif Display', serif;
   font-size: 38px;
   line-height: 1;
-  color: #8abf44;
+  color: var(--lm);
   letter-spacing: 0.03em;
-  text-shadow: 0 0 18px rgba(138, 191, 68, 0.3);
+  text-shadow: 0 0 18px rgba(56, 189, 248, 0.3);
 }
 .sc-called-num.muted {
   font-size: 28px;
@@ -2545,7 +2545,7 @@ async function saveAudioDefaults() {
   color: rgba(255, 255, 255, 0.45);
   margin-top: 4px;
 }
-.sc-next strong { color: rgba(138, 191, 68, 0.85); font-weight: 700; }
+.sc-next strong { color: rgba(56, 189, 248, 0.85); font-weight: 700; }
 
 /* STATION TABS (control panel, tab Tampilan) */
 .station-tabs {
@@ -2568,22 +2568,22 @@ async function saveAudioDefaults() {
   cursor: pointer;
   transition: all 0.15s;
 }
-.station-tab:hover { color: #fff; background: rgba(138, 191, 68, 0.08); }
+.station-tab:hover { color: #fff; background: rgba(56, 189, 248, 0.08); }
 .station-tab.active {
-  background: rgba(138, 191, 68, 0.18);
-  border-color: rgba(138, 191, 68, 0.4);
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.4);
   color: #fff;
 }
 .ctrl-section code {
-  background: rgba(138, 191, 68, 0.12);
-  color: #8abf44;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--lm);
   padding: 1px 6px;
   border-radius: 4px;
   font-family: 'DM Mono', monospace;
   font-size: 11px;
 }
 .ctrl-feedback { font-size: 12px; padding: 6px 12px; border-radius: 8px; align-self: center; }
-.ctrl-feedback.ok { background: rgba(138, 191, 68, 0.15); color: #8abf44; }
+.ctrl-feedback.ok { background: rgba(56, 189, 248, 0.15); color: var(--lm); }
 .ctrl-feedback.err { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 
 /* SOUND PRESET GRID (control panel) */
@@ -2607,10 +2607,10 @@ async function saveAudioDefaults() {
   gap: 3px;
   transition: all 0.15s;
 }
-.sound-card:hover { background: rgba(138, 191, 68, 0.08); border-color: rgba(138, 191, 68, 0.25); }
+.sound-card:hover { background: rgba(56, 189, 248, 0.08); border-color: rgba(56, 189, 248, 0.25); }
 .sound-card.active {
-  background: rgba(138, 191, 68, 0.15);
-  border-color: rgba(138, 191, 68, 0.5);
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.5);
   color: #fff;
 }
 .sound-card-name { font-size: 13px; font-weight: 600; }
@@ -2621,23 +2621,23 @@ async function saveAudioDefaults() {
   top: 8px; right: 8px;
   width: 24px; height: 24px;
   border-radius: 6px;
-  background: rgba(138, 191, 68, 0.18);
-  border: 1px solid rgba(138, 191, 68, 0.35);
-  color: #8abf44;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: var(--lm);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.15s;
 }
-.sound-test-btn:hover { background: rgba(138, 191, 68, 0.35); }
+.sound-test-btn:hover { background: rgba(56, 189, 248, 0.35); }
 .sound-test-btn svg { width: 10px; height: 10px; }
 
 .now-serving {
   margin: 1.25rem;
   padding: 1.5rem;
-  background: linear-gradient(135deg, rgba(138, 191, 68, 0.18), rgba(138, 191, 68, 0.05));
-  border: 1.5px solid rgba(138, 191, 68, 0.35);
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.05));
+  border: 1.5px solid rgba(56, 189, 248, 0.35);
   border-radius: 16px;
   text-align: center;
 }
@@ -2646,7 +2646,7 @@ async function saveAudioDefaults() {
   font-size: 11px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(138, 191, 68, 0.7);
+  color: rgba(56, 189, 248, 0.7);
   font-weight: 600;
   margin-bottom: 0.5rem;
 }
@@ -2654,10 +2654,10 @@ async function saveAudioDefaults() {
   font-family: 'DM Serif Display', serif;
   font-size: 88px;
   line-height: 1;
-  color: #8abf44;
+  color: var(--lm);
   letter-spacing: 0.04em;
   margin-bottom: 0.5rem;
-  text-shadow: 0 0 30px rgba(138, 191, 68, 0.4);
+  text-shadow: 0 0 30px rgba(56, 189, 248, 0.4);
 }
 .ns-number.muted { font-size: 56px; color: rgba(255, 255, 255, 0.3); text-shadow: none; }
 .ns-name {
@@ -2671,9 +2671,9 @@ async function saveAudioDefaults() {
   align-items: center;
   gap: 6px;
   margin-top: 0.85rem;
-  background: rgba(138, 191, 68, 0.2);
-  color: #8abf44;
-  border: 1px solid rgba(138, 191, 68, 0.4);
+  background: rgba(56, 189, 248, 0.2);
+  color: var(--lm);
+  border: 1px solid rgba(56, 189, 248, 0.4);
   padding: 6px 14px;
   border-radius: 20px;
   font-size: 12px;
@@ -2694,7 +2694,7 @@ async function saveAudioDefaults() {
   border-radius: 20px; color: rgba(255,255,255,.7); font-size: 11px; font-weight: 600;
   cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .2s;
 }
-.ns-done-btn:hover { background: rgba(138,191,68,.2); border-color: rgba(138,191,68,.4); color: #8abf44; }
+.ns-done-btn:hover { background: rgba(56,189,248,.2); border-color: rgba(56,189,248,.4); color: var(--lm); }
 .ns-done-btn svg { width: 12px; height: 12px; }
 
 /* Queue tabs bar */
@@ -2710,8 +2710,8 @@ async function saveAudioDefaults() {
   transition: all .15s;
 }
 .qtab-tv:hover { color: rgba(255,255,255,.7); }
-.qtab-tv.a { color: #8abf44; border-bottom-color: #8abf44; }
-.qtab-ct { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: rgba(138,191,68,.2); color: #8abf44; }
+.qtab-tv.a { color: var(--lm); border-bottom-color: var(--lm); }
+.qtab-ct { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: rgba(56,189,248,.2); color: var(--lm); }
 .qtab-ct.done { background: rgba(255,255,255,.1); color: rgba(255,255,255,.5); }
 
 .queue-list {
@@ -2742,7 +2742,7 @@ async function saveAudioDefaults() {
 .qi-num {
   font-family: 'DM Serif Display', serif;
   font-size: 26px;
-  color: #8abf44;
+  color: var(--lm);
   letter-spacing: 0.03em;
   min-width: 70px;
 }
@@ -2775,7 +2775,7 @@ async function saveAudioDefaults() {
   stroke-linecap: round;
 }
 .qi-status.waiting { background: rgba(252, 211, 77, 0.15); color: #fcd34d; }
-.qi-status.done { background: rgba(138, 191, 68, 0.15); color: #8abf44; }
+.qi-status.done { background: rgba(56, 189, 248, 0.15); color: var(--lm); }
 .qi-empty {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.25);
@@ -2789,11 +2789,11 @@ async function saveAudioDefaults() {
   display: flex;
   align-items: center;
   background: rgba(0, 0, 0, 0.3);
-  border-top: 1px solid rgba(138, 191, 68, 0.15);
+  border-top: 1px solid rgba(56, 189, 248, 0.15);
   flex-shrink: 0;
 }
 .ticker-label {
-  background: #8abf44;
+  background: var(--lm);
   color: #061d15;
   padding: 6px 18px;
   font-size: 13px;
@@ -2822,11 +2822,11 @@ async function saveAudioDefaults() {
   width: 14px;
   height: 14px;
   fill: none;
-  stroke: #8abf44;
+  stroke: var(--lm);
   stroke-width: 2;
   stroke-linecap: round;
 }
-.ticker-sep { color: rgba(138, 191, 68, 0.5); font-size: 18px; }
+.ticker-sep { color: rgba(56, 189, 248, 0.5); font-size: 18px; }
 .tv-bottom-right {
   padding: 0 0.75rem;
   font-size: 11px;
@@ -2853,8 +2853,8 @@ async function saveAudioDefaults() {
 }
 .ctrl-btn svg { width: 16px; height: 16px; }
 .ctrl-btn:hover {
-  color: #8abf44;
-  background: rgba(138, 191, 68, 0.1);
+  color: var(--lm);
+  background: rgba(56, 189, 248, 0.1);
 }
 
 /* PIN MODAL */
@@ -2870,7 +2870,7 @@ async function saveAudioDefaults() {
 }
 .pin-dialog {
   background: linear-gradient(160deg, #0e3524, #081f15);
-  border: 1px solid rgba(138, 191, 68, 0.25);
+  border: 1px solid rgba(56, 189, 248, 0.25);
   border-radius: 20px;
   padding: 2.5rem 2rem;
   width: 340px;
@@ -2882,8 +2882,8 @@ async function saveAudioDefaults() {
   width: 60px;
   height: 60px;
   border-radius: 50%;
-  background: rgba(138, 191, 68, 0.1);
-  border: 1px solid rgba(138, 191, 68, 0.25);
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2911,9 +2911,9 @@ async function saveAudioDefaults() {
   width: 56px;
   height: 64px;
   border-radius: 12px;
-  border: 1.5px solid rgba(138, 191, 68, 0.25);
+  border: 1.5px solid rgba(56, 189, 248, 0.25);
   background: rgba(0, 0, 0, 0.3);
-  color: #8abf44;
+  color: var(--lm);
   font-size: 28px;
   text-align: center;
   outline: none;
@@ -2922,10 +2922,10 @@ async function saveAudioDefaults() {
   caret-color: transparent;
 }
 .pin-box:focus {
-  border-color: #8abf44;
-  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.15);
+  border-color: var(--lm);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
 }
-.pin-box.filled { border-color: rgba(138, 191, 68, 0.5); }
+.pin-box.filled { border-color: rgba(56, 189, 248, 0.5); }
 .pin-box.error { border-color: rgba(239, 68, 68, 0.6); }
 .pin-err {
   display: flex;
@@ -2949,7 +2949,7 @@ async function saveAudioDefaults() {
 }
 .pin-btn:hover { opacity: 0.85; transform: translateY(-1px); }
 .pin-btn.primary {
-  background: #8abf44;
+  background: var(--lm);
   color: #061d15;
 }
 .pin-btn.ghost {
@@ -2972,17 +2972,17 @@ async function saveAudioDefaults() {
 .flash-content { text-align: center; }
 .flash-label-top {
   font-size: 16px; letter-spacing: .3em; text-transform: uppercase;
-  color: rgba(138,191,68,.7); font-weight: 600; margin-bottom: 1rem;
+  color: rgba(56,189,248,.7); font-weight: 600; margin-bottom: 1rem;
   font-family: 'DM Sans', sans-serif;
 }
 .flash-num {
   font-family: 'DM Serif Display', serif;
   font-size: clamp(100px, 20vw, 220px); line-height: 1;
-  color: #8abf44; letter-spacing: .04em;
-  text-shadow: 0 0 80px rgba(138,191,68,.6), 0 0 40px rgba(138,191,68,.3);
+  color: var(--lm); letter-spacing: .04em;
+  text-shadow: 0 0 80px rgba(56,189,248,.6), 0 0 40px rgba(56,189,248,.3);
   animation: flash-pulse 1.5s ease-in-out infinite;
 }
-@keyframes flash-pulse { 0%,100%{text-shadow:0 0 80px rgba(138,191,68,.6),0 0 40px rgba(138,191,68,.3)} 50%{text-shadow:0 0 120px rgba(138,191,68,.9),0 0 60px rgba(138,191,68,.5)} }
+@keyframes flash-pulse { 0%,100%{text-shadow:0 0 80px rgba(56,189,248,.6),0 0 40px rgba(56,189,248,.3)} 50%{text-shadow:0 0 120px rgba(56,189,248,.9),0 0 60px rgba(56,189,248,.5)} }
 .flash-name {
   font-size: clamp(22px, 3vw, 40px); font-weight: 500; margin-top: 1rem; color: #fff;
   font-family: 'DM Sans', sans-serif;
@@ -2990,8 +2990,8 @@ async function saveAudioDefaults() {
 .flash-poly { font-size: clamp(14px, 2vw, 24px); color: rgba(255,255,255,.5); margin-top: .4rem; font-family: 'DM Sans', sans-serif; }
 .flash-badge {
   display: inline-flex; align-items: center; gap: 8px; margin-top: 2rem;
-  background: rgba(138,191,68,.2); border: 1.5px solid rgba(138,191,68,.4);
-  color: #8abf44; padding: 10px 24px; border-radius: 30px;
+  background: rgba(56,189,248,.2); border: 1.5px solid rgba(56,189,248,.4);
+  color: var(--lm); padding: 10px 24px; border-radius: 30px;
   font-size: clamp(13px, 1.5vw, 18px); font-weight: 700; font-family: 'DM Sans', sans-serif;
 }
 .flash-badge svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -3005,7 +3005,7 @@ async function saveAudioDefaults() {
   width: 36px; height: 20px; border-radius: 10px; background: rgba(255,255,255,.15);
   position: relative; transition: background .2s; flex-shrink: 0;
 }
-.ctrl-toggle input:checked ~ .toggle-track { background: #8abf44; }
+.ctrl-toggle input:checked ~ .toggle-track { background: var(--lm); }
 .toggle-track::after {
   content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%;
   background: #fff; top: 3px; left: 3px; transition: left .2s;
@@ -3015,21 +3015,21 @@ async function saveAudioDefaults() {
 
 /* Antrean tab controls */
 .antr-ctrl-row { display: flex; gap: .5rem; margin-bottom: .85rem; flex-wrap: wrap; }
-.antr-call { background: rgba(138,191,68,.2) !important; color: #8abf44 !important; border-color: rgba(138,191,68,.35) !important; }
-.antr-call:hover:not(:disabled) { background: rgba(138,191,68,.35) !important; }
+.antr-call { background: rgba(56,189,248,.2) !important; color: var(--lm) !important; border-color: rgba(56,189,248,.35) !important; }
+.antr-call:hover:not(:disabled) { background: rgba(56,189,248,.35) !important; }
 .antr-done { background: rgba(255,255,255,.08) !important; color: rgba(255,255,255,.7) !important; }
-.antr-current { background: rgba(138,191,68,.12); border: 1px solid rgba(138,191,68,.3); border-radius: 10px; padding: .7rem 1rem; text-align: center; margin-top: .4rem; }
-.antr-lbl { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: rgba(138,191,68,.7); font-weight: 600; margin-bottom: .25rem; }
-.antr-num { font-family: 'DM Serif Display', serif; font-size: 36px; color: #8abf44; line-height: 1; }
+.antr-current { background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.3); border-radius: 10px; padding: .7rem 1rem; text-align: center; margin-top: .4rem; }
+.antr-lbl { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: rgba(56,189,248,.7); font-weight: 600; margin-bottom: .25rem; }
+.antr-num { font-family: 'DM Serif Display', serif; font-size: 36px; color: var(--lm); line-height: 1; }
 .antr-meta { font-size: 11px; color: rgba(255,255,255,.5); margin-top: .25rem; }
 .antr-empty { font-size: 12px; color: rgba(255,255,255,.3); text-align: center; padding: .65rem; }
 .antr-list { display: flex; flex-direction: column; gap: 5px; }
 .antr-item { display: flex; align-items: center; gap: .55rem; padding: .5rem .7rem; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; }
-.antr-item-num { font-size: 12px; font-weight: 700; color: #8abf44; width: 50px; flex-shrink: 0; font-family: 'DM Mono', monospace; }
+.antr-item-num { font-size: 12px; font-weight: 700; color: var(--lm); width: 50px; flex-shrink: 0; font-family: 'DM Mono', monospace; }
 .antr-item-name { flex: 1; font-size: 12px; color: rgba(255,255,255,.8); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .antr-item-poly { font-size: 10px; color: rgba(255,255,255,.35); flex-shrink: 0; }
-.antr-call-btn { width: 26px; height: 26px; border-radius: 6px; background: rgba(138,191,68,.15); border: 1px solid rgba(138,191,68,.3); display: flex; align-items: center; justify-content: center; cursor: pointer; color: #8abf44; transition: all .15s; flex-shrink: 0; }
-.antr-call-btn:hover { background: rgba(138,191,68,.3); }
+.antr-call-btn { width: 26px; height: 26px; border-radius: 6px; background: rgba(56,189,248,.15); border: 1px solid rgba(56,189,248,.3); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--lm); transition: all .15s; flex-shrink: 0; }
+.antr-call-btn:hover { background: rgba(56,189,248,.3); }
 .antr-call-btn svg { width: 12px; height: 12px; }
 
 /* CONTROL PANEL MODAL */
@@ -3045,7 +3045,7 @@ async function saveAudioDefaults() {
 }
 .ctrl-panel {
   background: linear-gradient(160deg, #0d3221, #071a10);
-  border: 1px solid rgba(138, 191, 68, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.2);
   border-radius: 20px;
   width: min(860px, 94vw);
   max-height: 88vh;
@@ -3059,7 +3059,7 @@ async function saveAudioDefaults() {
   align-items: center;
   justify-content: space-between;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid rgba(138, 191, 68, 0.15);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
   flex-shrink: 0;
 }
 .ctrl-header-left {
@@ -3091,7 +3091,7 @@ async function saveAudioDefaults() {
   display: flex;
   gap: 4px;
   padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid rgba(138, 191, 68, 0.12);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.12);
   flex-shrink: 0;
 }
 .ctrl-tab {
@@ -3112,9 +3112,9 @@ async function saveAudioDefaults() {
 .ctrl-tab svg { width: 15px; height: 15px; }
 .ctrl-tab:hover { background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.75); }
 .ctrl-tab.active {
-  background: rgba(138, 191, 68, 0.15);
-  border-color: rgba(138, 191, 68, 0.3);
-  color: #8abf44;
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.3);
+  color: var(--lm);
 }
 
 .ctrl-body {
@@ -3150,7 +3150,7 @@ async function saveAudioDefaults() {
   width: 120px;
   height: 120px;
   flex-shrink: 0;
-  border: 1px dashed rgba(138, 191, 68, 0.3);
+  border: 1px dashed rgba(56, 189, 248, 0.3);
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.25);
   display: flex;
@@ -3172,7 +3172,7 @@ async function saveAudioDefaults() {
 .ctrl-input {
   flex: 1;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(138, 191, 68, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.2);
   border-radius: 10px;
   padding: 10px 14px;
   color: #fff;
@@ -3182,15 +3182,15 @@ async function saveAudioDefaults() {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .ctrl-input:focus {
-  border-color: rgba(138, 191, 68, 0.5);
-  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.1);
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1);
 }
 .ctrl-input::placeholder { color: rgba(255, 255, 255, 0.25); }
 .ctrl-textarea {
   width: 100%;
   box-sizing: border-box;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(138, 191, 68, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.2);
   border-radius: 10px;
   padding: 10px 14px;
   color: #fff;
@@ -3200,11 +3200,11 @@ async function saveAudioDefaults() {
   resize: vertical;
   transition: border-color 0.2s;
 }
-.ctrl-textarea:focus { border-color: rgba(138, 191, 68, 0.5); }
+.ctrl-textarea:focus { border-color: rgba(56, 189, 248, 0.5); }
 .ctrl-textarea::placeholder { color: rgba(255, 255, 255, 0.25); }
 .ctrl-action-btn {
   padding: 10px 20px;
-  background: #8abf44;
+  background: var(--lm);
   color: #061d15;
   border: none;
   border-radius: 10px;
@@ -3223,7 +3223,7 @@ async function saveAudioDefaults() {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #8abf44;
+  color: var(--lm);
   margin: 4px 0 0;
 }
 .ctrl-ok svg { width: 14px; height: 14px; }
@@ -3241,7 +3241,7 @@ async function saveAudioDefaults() {
   padding: 8px 12px;
   border-radius: 8px;
 }
-.ctrl-feedback.ok { background: rgba(138, 191, 68, 0.12); color: #8abf44; border: 1px solid rgba(138, 191, 68, 0.25); }
+.ctrl-feedback.ok { background: rgba(56, 189, 248, 0.12); color: var(--lm); border: 1px solid rgba(56, 189, 248, 0.25); }
 .ctrl-feedback.err { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
 
 /* Mode cards */
@@ -3268,16 +3268,16 @@ async function saveAudioDefaults() {
 .mode-card span { font-size: 14px; font-weight: 600; }
 .mode-card small { font-size: 11px; color: rgba(255, 255, 255, 0.3); }
 .mode-card:hover {
-  border-color: rgba(138, 191, 68, 0.25);
-  background: rgba(138, 191, 68, 0.06);
+  border-color: rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.06);
   color: rgba(255, 255, 255, 0.8);
 }
 .mode-card.active {
-  border-color: #8abf44;
-  background: rgba(138, 191, 68, 0.12);
-  color: #8abf44;
+  border-color: var(--lm);
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--lm);
 }
-.mode-card.active small { color: rgba(138, 191, 68, 0.6); }
+.mode-card.active small { color: rgba(56, 189, 248, 0.6); }
 .mode-card:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Slideshow rows */
@@ -3314,11 +3314,11 @@ async function saveAudioDefaults() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ctrl-range { flex: 1; accent-color: #8abf44; }
+.ctrl-range { flex: 1; accent-color: var(--lm); }
 .ctrl-dur-val {
   font-size: 14px;
   font-weight: 600;
-  color: #8abf44;
+  color: var(--lm);
   min-width: 32px;
   text-align: right;
 }
@@ -3369,7 +3369,7 @@ async function saveAudioDefaults() {
 .icon-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
 .icon-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 .icon-btn.danger:hover { background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.2); }
-.icon-btn.ok:hover { background: rgba(138, 191, 68, 0.15); color: #8abf44; border-color: rgba(138, 191, 68, 0.3); }
+.icon-btn.ok:hover { background: rgba(56, 189, 248, 0.15); color: var(--lm); border-color: rgba(56, 189, 248, 0.3); }
 
 /* Animations */
 @keyframes scroll-left {

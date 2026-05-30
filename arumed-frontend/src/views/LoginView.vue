@@ -81,8 +81,8 @@ async function login() {
     <!-- LEFT BRAND PANEL -->
     <div class="lp">
       <div class="ring" style="width:520px;height:520px;bottom:-160px;right:-200px"></div>
-      <div class="ring" style="width:380px;height:380px;bottom:-100px;right:-140px;border-color:rgba(138,191,68,0.18)"></div>
-      <div class="ring" style="width:240px;height:240px;bottom:-40px;right:-80px;border-color:rgba(138,191,68,0.24)"></div>
+      <div class="ring" style="width:380px;height:380px;bottom:-100px;right:-140px;border-color:rgba(56,189,248,0.18)"></div>
+      <div class="ring" style="width:240px;height:240px;bottom:-40px;right:-80px;border-color:rgba(56,189,248,0.24)"></div>
       <div class="ring" style="width:460px;height:460px;top:-180px;left:-180px;border-color:rgba(255,255,255,0.04)"></div>
       <div class="ring" style="width:280px;height:280px;top:-100px;left:-110px;border-color:rgba(255,255,255,0.05)"></div>
 
@@ -92,18 +92,18 @@ async function login() {
           <div class="ripple r2"></div>
           <div class="ripple r3"></div>
           <svg viewBox="0 0 90 90" fill="none" style="width:86px;height:86px;position:relative;z-index:1">
-            <circle cx="45" cy="45" r="43" stroke="rgba(138,191,68,0.13)" stroke-width="1"/>
-            <circle cx="45" cy="45" r="34" stroke="rgba(138,191,68,0.20)" stroke-width="1"/>
-            <circle cx="45" cy="45" r="24" stroke="rgba(138,191,68,0.30)" stroke-width="1.5"/>
-            <circle cx="45" cy="45" r="14" stroke="#8abf44" stroke-width="1.5"/>
-            <circle cx="45" cy="45" r="6" fill="#8abf44" opacity="0.9"/>
+            <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.13)" stroke-width="1"/>
+            <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.20)" stroke-width="1"/>
+            <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.30)" stroke-width="1.5"/>
+            <circle cx="45" cy="45" r="14" stroke="var(--lm)" stroke-width="1.5"/>
+            <circle cx="45" cy="45" r="6" fill="var(--lm)" opacity="0.9"/>
             <line x1="45" y1="39" x2="45" y2="51" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
             <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
         </div>
-        <p class="brand-sub">Klinik Mata</p>
-        <h1 class="brand-name">Arunika</h1>
-        <p class="brand-city">Cilegon</p>
+        <p class="brand-sub">RS Mata</p>
+        <h1 class="brand-name">Prima Vision</h1>
+        <p class="brand-city">Medan</p>
       </div>
 
       <div class="middle-stack">
@@ -134,7 +134,7 @@ async function login() {
     <!-- RIGHT FORM PANEL -->
     <div class="rp">
       <div class="card">
-        <img :src="logoKlinik" alt="Klinik Mata Arunika" class="card-logo" />
+        <img :src="logoKlinik" alt="RUMAH SAKIT MATA PRIMA VISION" class="card-logo" />
 
         <div class="ch">
           <p class="ch-eye">Selamat datang kembali</p>
@@ -240,7 +240,7 @@ async function login() {
           </span>
         </div>
 
-        <p class="ver">Arumed Apps v1.0.0 &nbsp;·&nbsp; © 2026 Klinik Mata Arunika Cilegon</p>
+        <p class="ver">Arumed Apps v1.0.0 &nbsp;·&nbsp; © 2026 RS MATA PRIMA VISION MEDAN</p>
       </div>
     </div>
   </div>
@@ -270,7 +270,7 @@ async function login() {
   position: absolute;
   border-radius: 50%;
   pointer-events: none;
-  border: 1px solid rgba(138, 191, 68, 0.11);
+  border: 1px solid rgba(56, 189, 248, 0.11);
 }
 .logo-area {
   display: flex;
@@ -292,7 +292,7 @@ async function login() {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 1px solid rgba(138, 191, 68, 0.4);
+  border: 1px solid rgba(56, 189, 248, 0.4);
 }
 .r1 { animation: ripple 3s ease-out infinite; }
 .r2 { animation: ripple 3s ease-out 1s infinite; }
@@ -358,7 +358,7 @@ async function login() {
   height: 28px;
   flex-shrink: 0;
   border-radius: 8px;
-  background: rgba(138, 191, 68, 0.15);
+  background: rgba(56, 189, 248, 0.15);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -665,11 +665,11 @@ async function login() {
 }
 .bs:hover:not(:disabled) {
   background: var(--gm);
-  box-shadow: 0 4px 16px rgba(13, 61, 46, 0.2);
+  box-shadow: 0 4px 16px rgba(10, 42, 77, 0.2);
 }
 .bs:active:not(:disabled) {
   transform: scale(0.96);
-  box-shadow: 0 1px 6px rgba(13, 61, 46, 0.12);
+  box-shadow: 0 1px 6px rgba(10, 42, 77, 0.12);
   transition: transform 0.06s, box-shadow 0.06s;
 }
 .bs:disabled { background: #7aab8a; cursor: not-allowed; }

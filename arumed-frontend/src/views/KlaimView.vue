@@ -1640,14 +1640,14 @@ function stepIndex(status) {
 
 /* Patient Banner */
 .kl-banner { background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; padding: 0.9rem 1.1rem; border-radius: 12px; display: flex; align-items: center; gap: 1rem; }
-.kl-av { width: 48px; height: 48px; border-radius: 50%; background: rgba(138,191,68,0.2); border: 2px solid rgba(138,191,68,0.3); color: var(--lm); font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: 'DM Serif Display', serif; }
+.kl-av { width: 48px; height: 48px; border-radius: 50%; background: rgba(56,189,248,0.2); border: 2px solid rgba(56,189,248,0.3); color: var(--lm); font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: 'DM Serif Display', serif; }
 .kl-banner-info { flex: 1; min-width: 0; }
 .kl-banner-name { font-family: 'DM Serif Display', serif; font-size: 19px; line-height: 1.1; }
 .kl-banner-meta { font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 3px; }
 .kl-banner-tags { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
 .kl-btag { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
 .kl-btag-bpjs { background: rgba(147,197,253,0.2); color: #93c5fd; border: 1px solid rgba(147,197,253,0.25); }
-.kl-btag-sep { background: rgba(138,191,68,0.2); color: var(--lm); border: 1px solid rgba(138,191,68,0.25); }
+.kl-btag-sep { background: rgba(56,189,248,0.2); color: var(--lm); border: 1px solid rgba(56,189,248,0.25); }
 .kl-banner-tarif { text-align: right; flex-shrink: 0; }
 .kl-banner-tarif-v { font-size: 20px; font-weight: 700; color: var(--lm); font-variant-numeric: tabular-nums; line-height: 1; }
 .kl-banner-tarif-l { font-size: 9.5px; color: rgba(255,255,255,0.45); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 3px; }
