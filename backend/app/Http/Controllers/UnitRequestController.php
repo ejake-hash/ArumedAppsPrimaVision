@@ -85,6 +85,11 @@ class UnitRequestController extends Controller
 
         $search = trim((string) $request->query('search', ''));
 
+        $location = strtoupper(trim((string) $request->query('location', InventoryStock::LOC_INVENTORI)));
+        if (!in_array($location, InventoryStock::LOCATIONS, true)) {
+            $location = InventoryStock::LOC_INVENTORI;
+        }
+
         $masterQ = match ($type) {
             'MEDICATION' => Medication::query()->select(['id', 'code', 'name', 'unit_kecil', 'unit'])->where('is_active', true),
             'BHP'        => BhpItem::query()->select(['id', 'code', 'name', 'unit'])->where('is_active', true),
@@ -103,6 +108,7 @@ class UnitRequestController extends Controller
         $masters = $masterQ->orderBy($type === 'IOL' ? 'brand' : 'name')->limit(500)->get();
 
         $batches = InventoryStock::where('item_type', $type)
+            ->where('location', $location)
             ->whereIn('item_id', $masters->pluck('id'))
             ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
             ->get(['item_id', 'batch_no', 'expiry_date', 'qty_on_hand'])

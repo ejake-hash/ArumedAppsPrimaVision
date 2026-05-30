@@ -19,6 +19,7 @@ class Patient extends Model
         'no_rm',
         'identity_type',
         'nik',
+        'satusehat_ihs',
         'name',
         'gender',
         'date_of_birth',

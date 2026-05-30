@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\InventoryStock;
 use App\Services\InventoryStockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,6 +20,7 @@ class InventoryStockController extends Controller
         $data = $request->validate([
             'item_type'             => 'required|in:MEDICATION,BHP',
             'item_id'               => 'required|uuid',
+            'location'              => 'nullable|in:INVENTORI,BEDAH,FARMASI',
             'reason'                => 'nullable|string|max:255',
             'batches'               => 'nullable|array',
             'batches.*.stock_id'    => 'nullable|uuid',
@@ -49,28 +51,30 @@ class InventoryStockController extends Controller
         ]);
     }
 
-    /** GET /inventori-farmasi/stock/{type}/export-csv */
-    public function exportCsv(string $type): Response
+    /** GET /inventori-farmasi/stock/{type}/export-csv?location= */
+    public function exportCsv(Request $request, string $type): Response
     {
+        $location = $this->resolveLocation($request);
         try {
-            $csv = $this->service->exportCsv($type);
+            $csv = $this->service->exportCsv($type, $location);
         } catch (\Exception $e) {
             return response($e->getMessage(), $e->getCode() ?: 422);
         }
         return response($csv, 200, [
             'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"stok-{$type}-" . now()->format('Ymd') . ".csv\"",
+            'Content-Disposition' => "attachment; filename=\"stok-{$type}-{$location}-" . now()->format('Ymd') . ".csv\"",
         ]);
     }
 
-    /** POST /inventori-farmasi/stock/{type}/import-csv */
+    /** POST /inventori-farmasi/stock/{type}/import-csv  (location via query/body) */
     public function importCsv(Request $request, string $type): JsonResponse
     {
         $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $location = $this->resolveLocation($request);
 
         try {
             $content = file_get_contents($request->file('file')->getRealPath());
-            $result  = $this->service->importCsv($type, $content);
+            $result  = $this->service->importCsv($type, $content, $location);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
@@ -79,6 +83,13 @@ class InventoryStockController extends Controller
             $result,
             "Import selesai: {$result['applied']} item disesuaikan, {$result['skipped']} dilewati."
         );
+    }
+
+    /** Ambil lokasi dari query/body, default INVENTORI; tolak nilai tak dikenal → INVENTORI. */
+    private function resolveLocation(Request $request): string
+    {
+        $loc = strtoupper(trim((string) $request->input('location', InventoryStock::LOC_INVENTORI)));
+        return in_array($loc, InventoryStock::LOCATIONS, true) ? $loc : InventoryStock::LOC_INVENTORI;
     }
 
     private function ok(mixed $data, string $message = 'Berhasil', int $status = 200): JsonResponse

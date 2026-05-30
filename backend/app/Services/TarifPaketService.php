@@ -308,6 +308,9 @@ class TarifPaketService
     public function templatePaketCsv(): string
     {
         $output = fopen('php://temp', 'r+');
+        foreach ($this->paketCsvNotes() as $note) {
+            fwrite($output, '# ' . $note . "\n");
+        }
         fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
         rewind($output);
         $csv = stream_get_contents($output);
@@ -318,36 +321,76 @@ class TarifPaketService
     public function exportPaketCsv(): string
     {
         $packages = SurgeryPackage::with('items')->orderBy('name')->get();
+        return $this->buildPaketCsv($packages);
+    }
 
+    /**
+     * Template CSV utk SATU paket — header notes + komposisi item paket ini
+     * terisi (siap di-edit/import balik). Dipakai dari halaman detail paket.
+     * Kalau paket belum punya item → 1 baris header (kolom item kosong).
+     */
+    public function templatePaketCsvForPackage(string $packageId): string
+    {
+        $pkg = SurgeryPackage::with('items')->findOrFail($packageId);
+        return $this->buildPaketCsv(collect([$pkg]), withNotes: true);
+    }
+
+    /**
+     * Export komposisi SATU paket apa adanya (tanpa baris petunjuk).
+     */
+    public function exportPaketCsvForPackage(string $packageId): string
+    {
+        $pkg = SurgeryPackage::with('items')->findOrFail($packageId);
+        return $this->buildPaketCsv(collect([$pkg]));
+    }
+
+    /**
+     * Tulis CSV paket (long format) dari koleksi paket. Optional baris petunjuk
+     * "#" di atas header (template). Item master soft-deleted di-skip; paket
+     * tanpa item valid tetap dapat 1 baris header.
+     */
+    private function buildPaketCsv($packages, bool $withNotes = false): string
+    {
         $output = fopen('php://temp', 'r+');
+
+        if ($withNotes) {
+            foreach ($this->paketCsvNotes() as $note) {
+                fwrite($output, '# ' . $note . "\n");
+            }
+        }
+
         fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
 
         foreach ($packages as $pkg) {
-            $items = $pkg->items;
-            if ($items->isEmpty()) {
-                // Paket tanpa items tetap diekspor (1 baris, kolom item kosong)
-                fputcsv($output, [
-                    $pkg->name,
-                    $pkg->category ?? '',
-                    $pkg->description ?? '',
-                    $pkg->is_active ? '1' : '0',
-                    '', '', '', '',
-                ], ',', '"', '\\');
-                continue;
-            }
-            foreach ($items as $item) {
+            $headerRow = [
+                $pkg->name,
+                $pkg->category ?? '',
+                $pkg->description ?? '',
+                $pkg->is_active ? '1' : '0',
+            ];
+
+            $exportedItem = false;
+            foreach ($pkg->items as $item) {
                 $resolved = $item->resolveItem();
+                // Master item sudah soft-deleted → resolveItem null → nama kosong.
+                // Skip: kalau diekspor, import gagal "item_nama kosong" (export & import inkonsisten).
+                if (! $resolved) {
+                    continue;
+                }
                 $itemName = $this->formatItemNameForCsv($item->item_type, $resolved);
-                fputcsv($output, [
-                    $pkg->name,
-                    $pkg->category ?? '',
-                    $pkg->description ?? '',
-                    $pkg->is_active ? '1' : '0',
+                $exportedItem = true;
+                fputcsv($output, array_merge($headerRow, [
                     $item->item_type,
                     $itemName,
                     (string) $item->quantity,
                     $item->notes ?? '',
-                ], ',', '"', '\\');
+                ]), ',', '"', '\\');
+            }
+
+            // Paket tanpa item valid (kosong, atau semua master-nya sudah dihapus) →
+            // tetap diekspor 1 baris header (kolom item kosong) supaya paket tak hilang.
+            if (! $exportedItem) {
+                fputcsv($output, array_merge($headerRow, ['', '', '', '']), ',', '"', '\\');
             }
         }
 
@@ -355,6 +398,20 @@ class TarifPaketService
         $csv = stream_get_contents($output);
         fclose($output);
         return $csv;
+    }
+
+    /** Baris petunjuk pengisian (tanpa prefix '#') untuk template paket bedah. */
+    private function paketCsvNotes(): array
+    {
+        return [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+            'Format LONG: 1 baris = 1 item. Paket multi-item → ulang baris dgn nama_paket sama.',
+            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/deskripsi/aktif/catatan opsional)',
+            'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . '.',
+            'item_nama dicocokkan ke master (case-insensitive). IOL: tulis "Brand Model PowerD" mis. "Alcon AcrySof IQ 21D".',
+            'qty = angka >= 1 (kosong/0 → dianggap 1). aktif: 1 = aktif, 0 = nonaktif.',
+            'Import nama_paket yang SUDAH ada → komposisi item di-REPLACE (tarif jual per penjamin TIDAK disentuh).',
+        ];
     }
 
     /**
@@ -365,7 +422,7 @@ class TarifPaketService
      */
     public function importPaketCsv(string $csvContent): array
     {
-        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        $lines = $this->csvDataLines($csvContent);
         if (empty($lines)) {
             throw new \Exception('File CSV kosong.', 422);
         }
@@ -512,6 +569,20 @@ class TarifPaketService
     {
         $s = strtolower(trim((string) $v));
         return in_array($s, ['1', 'true', 'yes', 'y', 'ya', 'aktif'], true);
+    }
+
+    /**
+     * Pecah CSV jadi baris data: buang \r, baris kosong, dan baris komentar (#)
+     * — petunjuk pengisian di template. Elemen pertama hasil = header.
+     */
+    private function csvDataLines(string $csvContent): array
+    {
+        $raw = explode("\n", str_replace("\r", '', trim($csvContent)));
+        $lines = array_filter($raw, static function ($line) {
+            $t = trim($line);
+            return $t !== '' && ! str_starts_with($t, '#');
+        });
+        return array_values($lines);
     }
 
     /** Format item_nama untuk CSV (IOL pakai brand+model+power, lainnya pakai name). */

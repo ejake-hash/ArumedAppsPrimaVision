@@ -26,7 +26,7 @@ class IntegrationConfig extends Model
 
     protected $casts = [
         'is_enabled'    => 'boolean',
-        'credentials'   => 'array',
+        'credentials'   => 'encrypted:array', // cons_id / secret_key / user_key — terenkripsi at-rest
         'configuration' => 'array',
         'last_tested_at' => 'datetime',
     ];

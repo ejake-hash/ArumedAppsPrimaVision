@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useDataPenggunaStore } from '@/stores/dataPenggunaStore'
 import { useAuthStore } from '@/stores/auth'
+import { integrasiApi } from '@/services/api'
 
 const store = useDataPenggunaStore()
 const auth  = useAuthStore()
@@ -64,6 +65,9 @@ const editUser = ref({
   id: null, name: '', username: '', email: '',
   role_id: '', employee_id: null,
   password: '', pin: '', has_pin: false, is_active: true,
+  // Satu Sehat: NIK dokter (atribut employee). employee_nik_saved = nilai awal
+  // untuk deteksi perubahan; employee_ihs hanya info.
+  employee_nik: '', employee_nik_saved: '', employee_ihs: null,
 })
 
 // ─── Filters ─────────────────────────────────────────────────────────────────
@@ -76,6 +80,18 @@ const filterAktif = ref('')
 const canHavePin = computed(() => {
   const r = store.roleById[editUser.value.role_id]
   return r?.name === 'dokter' || r?.name === 'superadmin'
+})
+
+// Field NIK (Satu Sehat) tampil hanya saat role dokter DAN user punya employee.
+const isDokter = computed(() => store.roleById[editUser.value.role_id]?.name === 'dokter')
+const canSetNik = computed(() => isDokter.value && !!editUser.value.employee_id)
+
+// Profil nakes (NIP/SIP/STR) hanya relevan untuk tenaga kesehatan klinis: dokter,
+// perawat, refraksionis, penunjang. Disimpan ke pegawai tertaut via update pengguna.
+const NAKES_ROLES = ['dokter', 'perawat', 'refraksionis', 'penunjang']
+const isNakes = computed(() => {
+  const name = store.roleById[editUser.value.role_id]?.name || ''
+  return NAKES_ROLES.some((r) => name.includes(r))
 })
 
 const filtUsers = computed(() => {
@@ -253,6 +269,8 @@ function openNewUser() {
     id: null, name: '', username: '', email: '',
     role_id: defaultRoleId, employee_id: null,
     password: '', pin: '', has_pin: false, is_active: true,
+    employee_nik: '', employee_nik_saved: '', employee_ihs: null,
+    nip: '', sip: '', str: '',
   }
   modal.value = 'user'
 }
@@ -261,6 +279,12 @@ function openEditUser(u) {
     id: u.id, name: u.name, username: u.username, email: u.email,
     role_id: u.role?.id ?? '', employee_id: u.employee?.id ?? null,
     password: '', pin: '', has_pin: !!u.has_pin, is_active: u.is_active,
+    employee_nik: u.employee?.nik ?? '',
+    employee_nik_saved: u.employee?.nik ?? '',
+    employee_ihs: u.employee?.satusehat_ihs ?? null,
+    nip: u.employee?.nip ?? '',
+    sip: u.employee?.sip ?? '',
+    str: u.employee?.str ?? '',
   }
   modal.value = 'user'
 }
@@ -293,6 +317,14 @@ async function saveUser() {
   if (d.password) payload.password = d.password
   if (pin)        payload.pin = pin
 
+  // Profil nakes — kirim NIP/SIP/STR hanya untuk role nakes klinis. Backend
+  // menulisnya ke pegawai tertaut (akun non-nakes/non-employee mengabaikannya).
+  if (isNakes.value) {
+    payload.nip = d.nip?.trim() || null
+    payload.sip = d.sip?.trim() || null
+    payload.str = d.str?.trim() || null
+  }
+
   try {
     if (d.id) {
       await store.updateUser(d.id, payload)
@@ -301,6 +333,17 @@ async function saveUser() {
       await store.createUser(payload)
       toast('s', `Pengguna ${d.name} dibuat`)
     }
+
+    // NIK dokter (Satu Sehat) — simpan terpisah ke employee bila berubah.
+    if (canSetNik.value && d.employee_nik !== d.employee_nik_saved) {
+      try {
+        await integrasiApi.setEmployeeNik(d.employee_id, { nik: d.employee_nik || null })
+        toast('s', 'NIK dokter (Satu Sehat) disimpan')
+      } catch (e) {
+        toast('e', errMsg(e, 'NIK dokter gagal disimpan'))
+      }
+    }
+
     modal.value = null
   } catch (e) {
     toast('e', errMsg(e, 'Gagal menyimpan pengguna'))
@@ -478,9 +521,31 @@ function lastLoginText(u) {
             </div>
           </div>
           <div class="g2" style="margin-bottom:.4rem">
-            <div class="fg"><label class="fl">{{ editUser.id ? 'Password (kosongkan jika tidak diubah)' : 'Password Awal' }}</label><input v-model="editUser.password" class="fi" type="password" placeholder="Min. 6 karakter"/></div>
+            <div class="fg"><label class="fl">{{ editUser.id ? 'Password (kosongkan jika tidak diubah)' : 'Password Awal' }}</label><input v-model="editUser.password" class="fi" type="password" placeholder="Min. 6 karakter"/><span class="fhint">Default: 888888</span></div>
             <div class="fg"><label class="fl">Status</label>
               <select v-model="editUser.is_active" class="fs"><option :value="true">Aktif</option><option :value="false">Non-aktif</option></select>
+            </div>
+          </div>
+          <div v-if="isNakes" class="nakes-box" style="margin-bottom:.4rem">
+            <div class="nakes-hd">Profil Tenaga Kesehatan</div>
+            <div class="g2" style="margin-bottom:.4rem">
+              <div class="fg"><label class="fl">NIP</label>
+                <input v-model="editUser.nip" class="fi" maxlength="20" placeholder="No. Induk Pegawai (opsional)"/>
+              </div>
+              <div class="fg"><label class="fl">SIP</label>
+                <input v-model="editUser.sip" class="fi" maxlength="50" placeholder="No. Surat Izin Praktik (opsional)"/>
+              </div>
+            </div>
+            <div class="g2">
+              <div class="fg"><label class="fl">STR</label>
+                <input v-model="editUser.str" class="fi" maxlength="50" placeholder="No. Surat Tanda Registrasi (opsional)"/>
+              </div>
+              <div class="fg" style="justify-content:flex-end">
+                <span style="font-size:9.5px;color:var(--tu);line-height:1.4">NIP/SIP/STR disimpan di data pegawai &amp; dipakai pada dokumen RM, jadwal, dan kop surat. NIP harus unik antar pegawai.</span>
+              </div>
+            </div>
+            <div v-if="!editUser.employee_id" style="font-size:9.5px;color:var(--it);margin-top:.35rem">
+              Akun ini belum tertaut pegawai — mengisi salah satu field di atas akan membuat data pegawai otomatis saat disimpan.
             </div>
           </div>
           <div v-if="canHavePin" class="g2" style="margin-bottom:.4rem">
@@ -494,6 +559,22 @@ function lastLoginText(u) {
             <div class="fg" style="justify-content:flex-end">
               <span style="font-size:9.5px;color:var(--tu);line-height:1.4">PIN dipakai untuk menandatangani dokumen RM. Tersedia untuk akun dokter &amp; superadmin (untuk pengujian).</span>
             </div>
+          </div>
+          <div v-if="canSetNik" class="g2" style="margin-bottom:.4rem">
+            <div class="fg">
+              <label class="fl">NIK Dokter (Satu Sehat)
+                <span v-if="editUser.employee_ihs" style="color:var(--st);text-transform:none;letter-spacing:0">· IHS {{ editUser.employee_ihs }}</span>
+              </label>
+              <input v-model="editUser.employee_nik" class="fi" inputmode="numeric" maxlength="32"
+                     placeholder="16 digit NIK — untuk resolve IHS Practitioner"/>
+            </div>
+            <div class="fg" style="justify-content:flex-end">
+              <span style="font-size:9.5px;color:var(--tu);line-height:1.4">NIK dipakai untuk bridging Satu Sehat (Encounter/resep). Mengubah NIK akan me-reset IHS tersimpan agar di-resolve ulang.</span>
+            </div>
+          </div>
+          <div v-else-if="isDokter && !editUser.employee_id" class="default-note" style="margin-bottom:.4rem">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <span>Untuk mengisi <b>NIK dokter (Satu Sehat)</b>, akun ini harus terhubung ke data pegawai (employee) terlebih dahulu.</span>
           </div>
           <div style="display:flex;gap:.4rem;margin-top:.5rem">
             <button class="btn btn-ga btn-lg btn-full" @click="saveUser"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/></svg>Simpan Pengguna</button>
@@ -967,6 +1048,7 @@ function lastLoginText(u) {
 
 /* Modal form helpers */
 .fl { font-size: 9px; font-weight: 600; color: var(--tm); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 2px; display: block; }
+.fhint { font-size: 10px; color: var(--tm); margin-top: 3px; }
 .fg { display: flex; flex-direction: column; }
 .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
 .g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .4rem; }
@@ -1034,6 +1116,10 @@ function lastLoginText(u) {
 /* Catatan default sistem (superadmin) */
 .default-note { display: flex; align-items: flex-start; gap: .45rem; margin-top: .6rem; padding: .5rem .7rem; background: var(--ib); border: 1px solid var(--ibd); border-radius: 7px; font-size: 10.5px; color: var(--it); line-height: 1.5; }
 .default-note svg { width: 13px; height: 13px; fill: none; stroke: var(--it); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
+
+/* ─── NAKES PROFILE BOX ─── */
+.nakes-box { border: 1px solid var(--ibd); border-radius: 8px; padding: .55rem .7rem .65rem; background: var(--ib); }
+.nakes-hd { font-size: 9px; font-weight: 700; color: var(--it); letter-spacing: .05em; text-transform: uppercase; margin-bottom: .45rem; }
 
 /* ─── TOAST ─── */
 .twrap { position: fixed; top: .65rem; right: .65rem; z-index: 999; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }

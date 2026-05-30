@@ -24,7 +24,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
   const visitsMeta = ref({ total: 0, current_page: 1, last_page: 1 })
   const visitsLoading = ref(false)
   const visitsError = ref(null)
-  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '' })
+  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '', unfinished: false })
   const visitsPerPage = ref(15)
 
   // ─── Visit Detail Modal ───────────────────────────────────────────────────────
@@ -131,10 +131,16 @@ export const useAdmisiStore = defineStore('admisi', () => {
     visitsError.value = null
     try {
       const params = {
-        tanggal: new Date().toISOString().split('T')[0],
         per_page: visitsPerPage.value,
         page: 1,
         ...rest,
+      }
+      // Mode "Belum Selesai (semua tgl)" → kirim unfinished, JANGAN kirim tanggal
+      // (backend tampilkan semua visit aktif lintas-hari). Mode normal = per hari ini.
+      if (visitsFilter.value.unfinished) {
+        params.unfinished = 1
+      } else if (!('tanggal' in params)) {
+        params.tanggal = new Date().toISOString().split('T')[0]
       }
       if (visitsFilter.value.station && visitsFilter.value.station !== 'SEMUA') {
         params.station = visitsFilter.value.station

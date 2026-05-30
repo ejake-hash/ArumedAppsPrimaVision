@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\BhpItem;
+use App\Models\InventoryStock;
 use App\Models\IolItem;
 use App\Models\Medication;
 use App\Models\Prescription;
@@ -121,14 +122,14 @@ class FarmasiService
         }
 
         // Cek stok kecukupan sebelum deduct — sumber stok = `inventory_stocks`
-        // (per-batch FEFO), BUKAN kolom legacy `medications.stock` yang sudah
-        // tidak otoritatif pasca-redesign inventori.
+        // (per-batch FEFO) di lokasi UNIT FARMASI (strict). BUKAN kolom legacy
+        // `medications.stock`. Kalau stok unit kurang → minta transfer dari gudang.
         foreach ($prescription->items as $item) {
             if (! $item->medication) continue;
-            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id);
+            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id, InventoryStock::LOC_FARMASI);
             if ($onHand < $item->quantity) {
                 throw new \Exception(
-                    "Stok {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}.",
+                    "Stok unit FARMASI untuk {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}. Minta transfer dari gudang dulu.",
                     422
                 );
             }
@@ -137,11 +138,11 @@ class FarmasiService
         $user = auth('api')->user();
 
         DB::transaction(function () use ($prescription, $user) {
-            // Deduct dari inventory_stocks (FEFO, per-batch). consume() throw 422
-            // bila stok berubah & jadi tak cukup (race) — tetap atomik dalam transaksi.
+            // Deduct dari inventory_stocks lokasi FARMASI (FEFO, per-batch).
+            // consume() throw 422 bila stok berubah & jadi tak cukup (race).
             foreach ($prescription->items as $item) {
                 if ($item->medication) {
-                    $this->stockService->consume('MEDICATION', $item->medication_id, (float) $item->quantity);
+                    $this->stockService->consume('MEDICATION', $item->medication_id, (float) $item->quantity, InventoryStock::LOC_FARMASI);
                 }
             }
 
@@ -361,18 +362,19 @@ class FarmasiService
         }
 
         DB::transaction(function () use ($surgeryRequest) {
-            // Deduct BHP dari inventory_stocks (FEFO, per-batch) — bukan kolom
-            // legacy bhp_items.stock. Sama dengan perbaikan dispensing obat.
+            // Deduct BHP dari inventory_stocks lokasi UNIT BEDAH (FEFO, per-batch,
+            // strict) — bukan kolom legacy bhp_items.stock. Kalau stok unit BEDAH
+            // kurang → minta transfer dari gudang dulu.
             foreach ($surgeryRequest->bhpItems as $item) {
                 if ($item->bhpItem) {
-                    $onHand = $this->stockService->onHand('BHP', $item->bhp_item_id);
+                    $onHand = $this->stockService->onHand('BHP', $item->bhp_item_id, InventoryStock::LOC_BEDAH);
                     if ($onHand < $item->quantity) {
                         throw new \Exception(
-                            "Stok BHP {$item->bhpItem->name} tidak mencukupi. Tersedia: {$onHand}.",
+                            "Stok unit BEDAH untuk BHP {$item->bhpItem->name} tidak mencukupi. Tersedia: {$onHand}. Minta transfer dari gudang dulu.",
                             422
                         );
                     }
-                    $this->stockService->consume('BHP', $item->bhp_item_id, (float) $item->quantity);
+                    $this->stockService->consume('BHP', $item->bhp_item_id, (float) $item->quantity, InventoryStock::LOC_BEDAH);
                 }
             }
 
@@ -399,43 +401,57 @@ class FarmasiService
 
     public function getStokObat(array $filters = []): LengthAwarePaginator
     {
-        $query = Medication::query();
+        $query = $this->withFarmasiOnHand(Medication::query(), 'MEDICATION');
 
         if (! empty($filters['search'])) {
             $keyword = $filters['search'];
             $query->where(fn ($q) => $q
-                ->where('name', 'ilike', "%{$keyword}%")
-                ->orWhere('code', 'ilike', "%{$keyword}%")
-                ->orWhere('generic_name', 'ilike', "%{$keyword}%")
+                ->where('medications.name', 'ilike', "%{$keyword}%")
+                ->orWhere('medications.code', 'ilike', "%{$keyword}%")
+                ->orWhere('medications.generic_name', 'ilike', "%{$keyword}%")
             );
         }
 
         if (! empty($filters['formularium'])) {
-            $query->where('formularium', $filters['formularium']);
+            $query->where('medications.formularium', $filters['formularium']);
         }
 
         if (! empty($filters['alert'])) {
-            $query->whereColumn('stock', '<=', 'min_stock');
+            $query->whereRaw('COALESCE(farmasi_stock.qty, 0) <= medications.min_stock');
         }
 
-        return $query->orderBy('name')->paginate($filters['per_page'] ?? 25);
+        $page = $query->orderBy('medications.name')->paginate($filters['per_page'] ?? 25);
+        $page->getCollection()->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
+
+        return $page;
     }
 
     public function updateStokObat(string $id, array $data): Medication
     {
         $medication = Medication::findOrFail($id);
 
+        // Atribut master (min_stock/price) tetap di tabel medications.
         $medication->update(array_filter([
-            'stock'        => $data['stock'] ?? null,
-            'min_stock'    => $data['min_stock'] ?? null,
-            'expiry_date'  => $data['expiry_date'] ?? null,
-            'batch_number' => $data['batch_number'] ?? null,
-            'price'        => $data['price'] ?? null,
+            'min_stock' => $data['min_stock'] ?? null,
+            'price'     => $data['price'] ?? null,
         ], fn ($v) => ! is_null($v)));
 
-        $this->log(auth('api')->id(), 'UPDATE_STOK_OBAT', Medication::class, $id, "Stok diperbarui: {$medication->stock} → {$data['stock']}");
+        // Stok adalah per-batch di inventory_stocks lokasi FARMASI (sumber kebenaran
+        // yang dikonsumsi dispensing). Opname set-total ke lokasi FARMASI.
+        if (array_key_exists('stock', $data) && $data['stock'] !== null) {
+            $this->stockService->opname([
+                'item_type' => 'MEDICATION',
+                'item_id'   => $id,
+                'location'  => InventoryStock::LOC_FARMASI,
+                'new_qty'   => (float) $data['stock'],
+                'reason'    => 'Koreksi stok manual (Farmasi)',
+            ]);
+        }
 
-        return $medication->fresh();
+        $onHand = $this->stockService->onHand('MEDICATION', $id, InventoryStock::LOC_FARMASI);
+        $medication->stock = $onHand;
+
+        return $medication;
     }
 
     // =========================================================================
@@ -444,21 +460,24 @@ class FarmasiService
 
     public function getStokBhp(array $filters = []): LengthAwarePaginator
     {
-        $query = BhpItem::query();
+        $query = $this->withFarmasiOnHand(BhpItem::query(), 'BHP');
 
         if (! empty($filters['search'])) {
             $keyword = $filters['search'];
             $query->where(fn ($q) => $q
-                ->where('name', 'ilike', "%{$keyword}%")
-                ->orWhere('code', 'ilike', "%{$keyword}%")
+                ->where('bhp_items.name', 'ilike', "%{$keyword}%")
+                ->orWhere('bhp_items.code', 'ilike', "%{$keyword}%")
             );
         }
 
         if (! empty($filters['alert'])) {
-            $query->whereColumn('stock', '<=', 'min_stock');
+            $query->whereRaw('COALESCE(farmasi_stock.qty, 0) <= bhp_items.min_stock');
         }
 
-        return $query->orderBy('name')->paginate($filters['per_page'] ?? 25);
+        $page = $query->orderBy('bhp_items.name')->paginate($filters['per_page'] ?? 25);
+        $page->getCollection()->each(fn ($b) => $b->stock = (float) $b->farmasi_qty);
+
+        return $page;
     }
 
     public function updateStokBhp(string $id, array $data): BhpItem
@@ -466,14 +485,23 @@ class FarmasiService
         $bhp = BhpItem::findOrFail($id);
 
         $bhp->update(array_filter([
-            'stock'     => $data['stock'] ?? null,
             'min_stock' => $data['min_stock'] ?? null,
             'price'     => $data['price'] ?? null,
         ], fn ($v) => ! is_null($v)));
 
-        $this->log(auth('api')->id(), 'UPDATE_STOK_BHP', BhpItem::class, $id);
+        if (array_key_exists('stock', $data) && $data['stock'] !== null) {
+            $this->stockService->opname([
+                'item_type' => 'BHP',
+                'item_id'   => $id,
+                'location'  => InventoryStock::LOC_FARMASI,
+                'new_qty'   => (float) $data['stock'],
+                'reason'    => 'Koreksi stok manual (Farmasi)',
+            ]);
+        }
 
-        return $bhp->fresh();
+        $bhp->stock = $this->stockService->onHand('BHP', $id, InventoryStock::LOC_FARMASI);
+
+        return $bhp;
     }
 
     // =========================================================================
@@ -531,13 +559,17 @@ class FarmasiService
 
     public function getStokAlert(): array
     {
-        $obatAlert = Medication::whereColumn('stock', '<=', 'min_stock')
-            ->active()
-            ->get(['id', 'code', 'name', 'stock', 'min_stock', 'unit']);
+        $obatAlert = $this->withFarmasiOnHand(Medication::query(), 'MEDICATION')
+            ->where('medications.is_active', true)
+            ->whereRaw('COALESCE(farmasi_stock.qty, 0) <= medications.min_stock')
+            ->get(['medications.id', 'medications.code', 'medications.name', 'medications.min_stock', 'medications.unit'])
+            ->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
 
-        $bhpAlert = BhpItem::whereColumn('stock', '<=', 'min_stock')
-            ->active()
-            ->get(['id', 'code', 'name', 'stock', 'min_stock', 'unit']);
+        $bhpAlert = $this->withFarmasiOnHand(BhpItem::query(), 'BHP')
+            ->where('bhp_items.is_active', true)
+            ->whereRaw('COALESCE(farmasi_stock.qty, 0) <= bhp_items.min_stock')
+            ->get(['bhp_items.id', 'bhp_items.code', 'bhp_items.name', 'bhp_items.min_stock', 'bhp_items.unit'])
+            ->each(fn ($b) => $b->stock = (float) $b->farmasi_qty);
 
         return [
             'obat'  => $obatAlert,
@@ -546,32 +578,28 @@ class FarmasiService
         ];
     }
 
-    // =========================================================================
-    // GENERIC STOCK UPDATE (digunakan secara internal)
-    // =========================================================================
-
     /**
-     * @param  string  $type  'obat' | 'bhp'
-     * @param  string  $mode  'set' | 'increment' | 'decrement'
+     * Join sub-query SUM(qty_on_hand) inventory_stocks lokasi FARMASI ke query
+     * master (medications / bhp_items). Menyediakan kolom alias `farmasi_qty`
+     * (stok riil unit Farmasi yang dikonsumsi dispensing) + tabel `farmasi_stock`
+     * untuk dipakai di whereRaw alert. Kolom legacy `stock` di master TIDAK lagi
+     * otoritatif — selalu di-overlay dengan `farmasi_qty` oleh caller.
      */
-    public function updateStock(string $itemId, int $qty, string $type, string $mode = 'set'): void
+    private function withFarmasiOnHand($query, string $itemType)
     {
-        $model = match ($type) {
-            'obat' => Medication::class,
-            'bhp'  => BhpItem::class,
-            default => throw new \Exception("Tipe stok tidak dikenal: {$type}", 422),
-        };
+        $table = $query->getModel()->getTable();
 
-        $item = $model::findOrFail($itemId);
+        // inventory_stocks TIDAK pakai SoftDeletes — JANGAN tambah whereNull('deleted_at')
+        // (kolomnya tak ada → 500, bug kelas #4/#5 di audit pra-go-live).
+        $sub = DB::table('inventory_stocks')
+            ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
+            ->where('item_type', $itemType)
+            ->where('location', InventoryStock::LOC_FARMASI)
+            ->groupBy('item_id');
 
-        match ($mode) {
-            'set'       => $item->update(['stock' => $qty]),
-            'increment' => $model::where('id', $itemId)->increment('stock', $qty),
-            'decrement' => $model::where('id', $itemId)->decrement('stock', $qty),
-            default     => throw new \Exception("Mode update stok tidak valid: {$mode}", 422),
-        };
-
-        $this->log(auth('api')->id(), 'UPDATE_STOCK', $model, $itemId, "{$type} {$mode} {$qty}");
+        return $query
+            ->leftJoinSub($sub, 'farmasi_stock', "farmasi_stock.item_id", '=', "{$table}.id")
+            ->select("{$table}.*", DB::raw('COALESCE(farmasi_stock.qty, 0) as farmasi_qty'));
     }
 
     // =========================================================================

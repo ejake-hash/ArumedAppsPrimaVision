@@ -1,9 +1,16 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
+import { useAuthStore } from '@/stores/authStore'
 import { jadwalDokterApi } from '@/services/api'
+import BpjsMappingModal from '@/components/jadwal-dokter/BpjsMappingModal.vue'
 
 const store = useJadwalDokterStore()
+const auth = useAuthStore()
+
+// Pemetaan BPJS (poli/DPJP + sinkron jadwal) — config-level.
+const showBpjsMapping = ref(false)
+const canBpjsMapping = computed(() => auth.can?.('integrasi.read') || auth.isSuperadmin)
 
 const HARI = [
   { val: 1, label: 'Senin' },
@@ -361,6 +368,13 @@ onMounted(async () => {
         {{ importing ? 'Mengimpor...' : 'Import CSV' }}
       </button>
       <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onFileChosen" />
+
+      <button v-if="canBpjsMapping" class="btn-soft" @click="showBpjsMapping = true" title="Pemetaan poli & DPJP ke kode BPJS + sinkron jadwal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+        Pemetaan BPJS
+      </button>
     </div>
 
     <!-- ── LOADING / ERROR ───────────────────────────────────────────── -->
@@ -712,6 +726,9 @@ onMounted(async () => {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- ── PEMETAAN BPJS (poli/DPJP + sinkron jadwal) ─────────────────── -->
+    <BpjsMappingModal v-if="showBpjsMapping" :week-start="store.weekStart" @close="showBpjsMapping = false" />
 
   </div>
 </template>

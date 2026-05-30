@@ -101,6 +101,21 @@ const router = createRouter({
             { path: 'request-unit', name: 'inventori-farmasi-request-unit', component: () => import('@/views/inventori-farmasi/RequestUnitView.vue'), meta: { title: 'Request dari Unit', permission: 'request_unit.read' } },
           ],
         },
+
+        // Sub-modul standalone: Bridging BPJS (VClaim / Antrean / Satu Sehat)
+        {
+          path: 'bridging',
+          component: () => import('@/views/bridging/BridgingLayout.vue'),
+          meta: { title: 'Bridging BPJS' },
+          children: [
+            { path: '',            name: 'bridging',             redirect: '/bridging/konfigurasi' },
+            { path: 'konfigurasi', name: 'bridging-konfigurasi', component: () => import('@/views/bridging/BridgingKonfigurasiView.vue'), meta: { title: 'Konfigurasi & Status' } },
+            { path: 'vclaim',      name: 'bridging-vclaim',      component: () => import('@/views/bridging/BridgingVClaimView.vue'),       meta: { title: 'VClaim' } },
+            { path: 'antrean',     name: 'bridging-antrean',     component: () => import('@/views/bridging/BridgingAntreanView.vue'),      meta: { title: 'Antrean Online' } },
+            { path: 'satusehat',   name: 'bridging-satusehat',   component: () => import('@/views/bridging/BridgingSatusehatView.vue'),   meta: { title: 'Satu Sehat' } },
+            { path: 'log',         name: 'bridging-log',         component: () => import('@/views/bridging/BridgingLogView.vue'),         meta: { title: 'Log Integrasi' } },
+          ],
+        },
       ],
     },
   ],

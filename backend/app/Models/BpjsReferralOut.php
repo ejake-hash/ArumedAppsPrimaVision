@@ -22,6 +22,11 @@ class BpjsReferralOut extends Model
         'faskes_tujuan_kode',
         'faskes_tujuan_nama',
         'kode_spesialis',
+        'poli_rujukan',
+        'poli_rujukan_nama',
+        'tipe_rujukan',
+        'jns_pelayanan',
+        'tgl_rujukan',
         'urgency',
         'diagnosa_rujukan',
         'diagnosa_nama',
@@ -32,6 +37,7 @@ class BpjsReferralOut extends Model
     ];
 
     protected $casts = [
+        'tgl_rujukan'     => 'date',
         'tgl_expired'     => 'date',
         'vclaim_response' => 'array',
     ];

@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Events\AdmisiQueueUpdated;
 use App\Events\AntreanTvUpdated;
+use App\Models\BpjsControlLetter;
+use App\Models\BpjsPoliMapping;
 use App\Models\ClinicProfile;
 use App\Models\DoctorSchedule;
 use App\Models\DocumentTemplate;
@@ -34,6 +36,8 @@ class AdmisiService
         private readonly QueueService $queueService,
         private readonly DocumentRenderer $documentRenderer,
         private readonly SignatureService $signatureService,
+        private readonly BpjsVClaimService $vclaim,
+        private readonly BpjsAntreanService $antrean,
     ) {}
 
     /** Code template General Consent default. */
@@ -107,7 +111,7 @@ class AdmisiService
                               + ($paidPerPenjamin['SOSIAL'] ?? 0));
 
         // BPJS system status
-        $bpjsSystems = IntegrationConfig::whereIn('system_name', ['VCLAIM', 'ANTREAN', 'ICARE'])
+        $bpjsSystems = IntegrationConfig::whereIn('system_name', ['VCLAIM', 'ANTREAN', 'ICARE', 'SATUSEHAT'])
             ->get(['system_name', 'is_enabled', 'last_test_status', 'last_tested_at']);
 
         return [
@@ -151,7 +155,16 @@ class AdmisiService
             'queues' => fn ($q) => $q
                 ->select(['id', 'visit_id', 'station', 'queue_number', 'status', 'created_at'])
                 ->orderBy('created_at'),
-        ])->whereDate('visit_date', $filters['tanggal'] ?? today());
+        ]);
+
+        // Mode "Belum Selesai (semua tanggal)": tampilkan SEMUA kunjungan yang
+        // masih berjalan (current_station != SELESAI) lintas-hari — untuk melihat
+        // & membereskan ekor visit nyangkut. Selain mode ini, filter per-tanggal.
+        if (! empty($filters['unfinished'])) {
+            $query->where('current_station', '!=', 'SELESAI');
+        } else {
+            $query->whereDate('visit_date', $filters['tanggal'] ?? today());
+        }
 
         if (! empty($filters['station'])) {
             // "TRIASE" di UI mencakup stasiun paralel TRIASE + REFRAKSIONIS.
@@ -247,6 +260,7 @@ class AdmisiService
             'visitCob',
             'nurseAssessment',
             'refractionRecord',
+            'internalReferralFromSchedule:id,poliklinik',
         ])->findOrFail($id);
     }
 
@@ -285,7 +299,7 @@ class AdmisiService
      */
     public function cariPasien(string $keyword): Collection
     {
-        return Patient::active()
+        $patients = Patient::active()
             ->where(function ($q) use ($keyword) {
                 $q->where('nik', 'like', "%{$keyword}%")
                     ->orWhere('bpjs_number', 'like', "%{$keyword}%")
@@ -294,6 +308,27 @@ class AdmisiService
             })
             ->limit(15)
             ->get();
+
+        // Sertakan info kunjungan aktif (current_station != SELESAI) per pasien
+        // supaya petugas TAHU sebelum daftar — guard registerVisit akan menolak
+        // kalau pasien sudah punya visit aktif. Satu query batch (anti N+1).
+        $activeVisits = Visit::whereIn('patient_id', $patients->pluck('id'))
+            ->where('current_station', '!=', 'SELESAI')
+            ->orderByDesc('created_at')
+            ->get(['id', 'patient_id', 'no_registrasi', 'visit_date', 'current_station'])
+            ->groupBy('patient_id');
+
+        $patients->each(function ($p) use ($activeVisits) {
+            $av = $activeVisits->get($p->id)?->first();
+            $p->active_visit = $av ? [
+                'id'              => $av->id,
+                'no_registrasi'   => $av->no_registrasi,
+                'visit_date'      => optional($av->visit_date)->toDateString(),
+                'current_station' => $av->current_station,
+            ] : null;
+        });
+
+        return $patients;
     }
 
     public function storePasien(array $data): Patient
@@ -537,6 +572,27 @@ class AdmisiService
             }
 
             $user = auth('api')->user();
+
+            // ─── Guard: cegah visit aktif ganda ──────────────────────────
+            // Pasien tidak boleh punya >1 kunjungan yang masih berjalan
+            // (current_station != SELESAI). Mencegah data visit rangkap saat
+            // pasien lama (mis. nyangkut dari hari sebelumnya) didaftar ulang.
+            // lockForUpdate utk anti-race dua registrasi bersamaan.
+            $activeVisit = Visit::where('patient_id', $patient->id)
+                ->where('current_station', '!=', 'SELESAI')
+                ->orderByDesc('created_at')
+                ->lockForUpdate()
+                ->first();
+            if ($activeVisit) {
+                $stationLabel = $activeVisit->current_station ?? '-';
+                $regLabel     = $activeVisit->no_registrasi ?? substr($activeVisit->id, 0, 8);
+                $tgl          = optional($activeVisit->visit_date)->format('d/m/Y') ?? '-';
+                throw new \Exception(
+                    "Pasien {$patient->name} masih punya kunjungan aktif (No. {$regLabel}, tgl {$tgl}, di stasiun {$stationLabel}). "
+                    . "Selesaikan atau batalkan kunjungan itu dulu sebelum mendaftarkan kunjungan baru.",
+                    422
+                );
+            }
 
             // ─── Preop Bedah: validasi & auto-shift jadwal ───────────────
             $visitType         = $data['visit_type'] ?? 'REGULAR';
@@ -1054,7 +1110,12 @@ class AdmisiService
 
     public function getAntrian(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.doctorSchedule.employee:id,name', 'visit.insurer'])
+        return Queue::with([
+            'visit.patient',
+            'visit.doctorSchedule.employee:id,name',
+            'visit.insurer',
+            'visit.internalReferralFromSchedule:id,poliklinik',
+        ])
             ->where('station', 'ADMISI')
             ->whereDate('created_at', today())
             ->where('status', '!=', Queue::STATUS_CANCELLED)
@@ -1173,50 +1234,254 @@ class AdmisiService
     }
 
     // =========================================================================
-    // BPJS STUBS
-    // — Placeholder: aktifkan di IntegrasiService saat credentials tersedia
+    // BPJS — live via BpjsVClaimService / BpjsAntreanService
+    // Non-blocking: jika integrasi belum aktif → 503 jelas (tidak ganggu UMUM).
     // =========================================================================
 
     public function bpjsCekPeserta(array $data): array
     {
         $this->assertBpjsEnabled('VCLAIM');
-        // TODO: call VClaim GET peserta API
-        return [];
+
+        $type       = ! empty($data['bpjs_number']) ? 'nokartu' : 'nik';
+        $identifier = $data['bpjs_number'] ?: $data['nik'];
+
+        return $this->vclaim->checkPeserta($identifier, $type);
     }
 
+    /**
+     * Terbitkan SEP untuk sebuah kunjungan BPJS. Membentuk t_sep dari data visit:
+     * peserta (no kartu), rujukan, poli (mapping dari jadwal), DPJP, diagnosa awal.
+     * Sukses → simpan visits.no_sep.
+     */
     public function bpjsGenerateSep(array $data): array
     {
         $this->assertBpjsEnabled('VCLAIM');
-        // TODO: call VClaim POST generate SEP
-        return [];
+
+        $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($data['visit_id']);
+
+        if ($visit->no_sep) {
+            throw new \Exception("Kunjungan ini sudah punya SEP: {$visit->no_sep}", 422);
+        }
+
+        // No. kartu: dari request, fallback ke data pasien.
+        $data['bpjs_number'] = $data['bpjs_number'] ?? $visit->patient?->bpjs_number;
+        if (empty($data['bpjs_number'])) {
+            throw new \Exception('Nomor kartu BPJS pasien belum ada.', 422);
+        }
+
+        $schedule   = $visit->doctorSchedule;
+        $kodePoli   = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
+        $kodeDpjp   = $schedule?->employee?->bpjs_dpjp_code;
+        $kodeFaskes = (string) (IntegrationConfig::where('system_name', 'VCLAIM')->first()->configuration['kode_faskes'] ?? '');
+
+        if (! $kodePoli) {
+            throw new \Exception("Poli '{$schedule?->poli_code}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
+        }
+
+        $tSep = [
+            'noKartu'      => $data['bpjs_number'],
+            'tglSep'       => now('Asia/Jakarta')->toDateString(),
+            'ppkPelayanan' => $kodeFaskes,
+            'jnsPelayanan' => '2', // Rawat Jalan
+            'klsRawat'     => ['klsRawatHak' => (string) ($data['kls_rawat'] ?? '3'), 'klsRawatNaik' => '', 'pembiayaan' => '', 'penanggungJawab' => ''],
+            'noMR'         => $visit->patient?->no_rm ?? '',
+            'rujukan'      => [
+                'asalRujukan' => '1', // FKTP
+                'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
+                'noRujukan'   => $data['no_rujukan'] ?? '',
+                'ppkRujukan'  => $data['ppk_rujukan'] ?? '',
+            ],
+            'catatan'      => 'SEP dari Arumed',
+            'diagAwal'     => $data['diag_awal'] ?? '',
+            'poli'         => ['tujuan' => $kodePoli, 'eksekutif' => '0'],
+            'cob'          => ['cob' => '0'],
+            'katarak'      => ['katarak' => $data['katarak'] ?? '0'],
+            'jaminan'      => ['lakaLantas' => '0', 'noLP' => '', 'penjamin' => ['tglKejadian' => '', 'keterangan' => '', 'suplesi' => ['suplesi' => '0', 'noSepSuplesi' => '', 'lokasiLaka' => ['kdPropinsi' => '', 'kdKabupaten' => '', 'kdKecamatan' => '']]]],
+            'tujuanKunj'   => '0',
+            'flagProcedure' => '',
+            'kdPenunjang'  => '',
+            'assesmentPel' => '',
+            'skdp'         => ['noSurat' => $data['no_surat_kontrol'] ?? '', 'kodeDPJP' => $kodeDpjp ?? ''],
+            'dpjpLayan'    => $kodeDpjp ?? '',
+            'noTelp'       => $visit->patient?->phone ?? '',
+            'user'         => auth('api')->user()?->name ?? 'arumed',
+        ];
+
+        $result = $this->vclaim->generateSep($tSep, $visit->id);
+
+        $noSep = $result['response']['sep']['noSep'] ?? null;
+        if ($noSep) {
+            $visit->update(['no_sep' => $noSep]);
+        }
+
+        return $result;
     }
 
     public function bpjsCancelSep(array $data): array
     {
         $this->assertBpjsEnabled('VCLAIM');
-        // TODO: call VClaim DELETE SEP
-        return [];
+
+        $user   = auth('api')->user()?->name ?? 'arumed';
+        $result = $this->vclaim->cancelSep($data['no_sep'], $user);
+
+        // Sukses → kosongkan no_sep di visit terkait.
+        if (($result['is_success'] ?? false)) {
+            Visit::where('no_sep', $data['no_sep'])->update(['no_sep' => null]);
+        }
+
+        return $result;
     }
 
     public function bpjsCekRujukan(array $data): array
     {
         $this->assertBpjsEnabled('VCLAIM');
-        // TODO: call VClaim GET rujukan
-        return [];
+
+        $sumber = ($data['sumber'] ?? 'fktp') === 'rs' ? 'rs' : 'fktp';
+
+        return $sumber === 'rs'
+            ? $this->vclaim->checkRujukan($data['no_rujukan'])
+            : $this->vclaim->checkRujukanFktp($data['no_rujukan']);
     }
 
     public function bpjsCekSuratKontrol(array $data): array
     {
         $this->assertBpjsEnabled('VCLAIM');
-        // TODO: call VClaim GET surat kontrol
-        return [];
+
+        return $this->vclaim->getSuratKontrol($data['no_surat_kontrol']);
+    }
+
+    /**
+     * Surat Kontrol BPJS milik kunjungan ini (untuk prefill form edit di Admisi).
+     * Mengembalikan letter terbaru: { id, no_surat_kontrol, tanggal_rencana_kontrol,
+     * status, poli_kontrol(dari mapping), kode_dokter }.
+     */
+    public function bpjsGetSuratKontrol(string $visitId): ?array
+    {
+        $letter = BpjsControlLetter::where('visit_id', $visitId)
+            ->orderByDesc('created_at')
+            ->first();
+
+        if (! $letter) {
+            return null;
+        }
+
+        $visit    = Visit::with('doctorSchedule.employee')->find($visitId);
+        $schedule = $visit?->doctorSchedule;
+
+        return [
+            'id'                      => $letter->id,
+            'no_surat_kontrol'        => $letter->no_surat_kontrol,
+            'tanggal_rencana_kontrol' => $letter->tanggal_rencana_kontrol?->format('Y-m-d'),
+            'status'                  => $letter->status,
+            'poli_kontrol'            => BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code),
+            'kode_dokter'             => $schedule?->employee?->bpjs_dpjp_code,
+            'no_sep'                  => $visit?->no_sep,
+        ];
+    }
+
+    /**
+     * Edit Surat Kontrol yang SUDAH terbit di BPJS (PUT /RencanaKontrol/v2/Update).
+     * Hanya berlaku untuk letter status SUCCESS (punya no_surat_kontrol). Yang masih
+     * DRAFT belum ada di BPJS → terbitkan dulu (bukan edit).
+     */
+    public function bpjsEditSuratKontrol(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $letter = BpjsControlLetter::with('visit.doctorSchedule.employee')->findOrFail($data['id']);
+
+        if ($letter->status !== 'SUCCESS' || ! $letter->no_surat_kontrol) {
+            throw new \Exception('Hanya Surat Kontrol yang sudah terbit yang bisa diedit. Yang masih draft → terbitkan dulu.', 422);
+        }
+
+        $visit    = $letter->visit;
+        $schedule = $visit?->doctorSchedule;
+        $kodePoli = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
+
+        $result = $this->vclaim->updateRencanaKontrol([
+            'noSuratKontrol'    => $letter->no_surat_kontrol,
+            'noSEP'             => $visit?->no_sep,
+            'kodeDokter'        => $schedule?->employee?->bpjs_dpjp_code,
+            'poliKontrol'       => $kodePoli,
+            'tglRencanaKontrol' => $data['tgl_rencana_kontrol'],
+            'user'              => auth('api')->user()?->name ?? 'arumed',
+        ], $visit?->id);
+
+        $code = (string) ($result['metaData']['code'] ?? '');
+        if ($code !== '200') {
+            throw new \Exception(
+                'Gagal update Surat Kontrol: ' . ($result['metaData']['message'] ?? 'respons tidak dikenal'),
+                422
+            );
+        }
+
+        // Sukses → sinkronkan tanggal di letter lokal.
+        $letter->update([
+            'tanggal_rencana_kontrol' => $data['tgl_rencana_kontrol'],
+            'vclaim_response'         => $result,
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * Edit/Update SEP yang sudah terbit (PUT /SEP/2.0/update). Satu operasi VClaim
+     * (tidak ada "edit" terpisah dari "update"). Field editable ringkas (klinik mata
+     * RJ): kelas rawat, diagnosa awal, catatan, no.telp, flag katarak. Poli & DPJP
+     * tetap dari pemetaan Jadwal Dokter agar konsisten (tidak diubah manual).
+     */
+    public function bpjsUpdateSep(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($data['visit_id']);
+
+        if (! $visit->no_sep) {
+            throw new \Exception('Kunjungan ini belum punya SEP untuk diubah.', 422);
+        }
+
+        $schedule = $visit->doctorSchedule;
+        $kodePoli = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
+        $kodeDpjp = $schedule?->employee?->bpjs_dpjp_code;
+
+        $tSep = [
+            'noSep'     => $visit->no_sep,
+            'klsRawat'  => [
+                'klsRawatHak'     => (string) ($data['kls_rawat'] ?? '3'),
+                'klsRawatNaik'    => '',
+                'pembiayaan'      => '',
+                'penanggungJawab' => '',
+            ],
+            'noMR'      => $visit->patient?->no_rm ?? '',
+            'catatan'   => $data['catatan'] ?? '',
+            'diagAwal'  => $data['diag_awal'] ?? '',
+            'poli'      => ['tujuan' => $kodePoli, 'eksekutif' => '0'],
+            'cob'       => ['cob' => '0'],
+            'katarak'   => ['katarak' => (string) ($data['katarak'] ?? '0')],
+            'jaminan'   => ['lakaLantas' => '0', 'penjamin' => ['tglKejadian' => '', 'keterangan' => '', 'suplesi' => ['suplesi' => '0', 'noSepSuplesi' => '', 'lokasiLaka' => ['kdPropinsi' => '', 'kdKabupaten' => '', 'kdKecamatan' => '']]]],
+            'dpjpLayan' => $kodeDpjp ?? '',
+            'noTelp'    => $data['no_telp'] ?? ($visit->patient?->phone ?? ''),
+            'user'      => auth('api')->user()?->name ?? 'arumed',
+        ];
+
+        $result = $this->vclaim->updateSep($tSep, $visit->id);
+
+        $code = (string) ($result['metaData']['code'] ?? '');
+        if ($code !== '200') {
+            throw new \Exception(
+                'Gagal update SEP: ' . ($result['metaData']['message'] ?? 'respons tidak dikenal'),
+                422
+            );
+        }
+
+        return $result;
     }
 
     public function bpjsValidasiBooking(array $data): array
     {
         $this->assertBpjsEnabled('ANTREAN');
-        // TODO: call Antrean BPJS validate booking code
-        return [];
+
+        return $this->antrean->validateBookingCode($data['booking_code'], $data['tgl_periksa'] ?? '');
     }
 
     // =========================================================================

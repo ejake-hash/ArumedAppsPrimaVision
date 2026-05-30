@@ -30,11 +30,31 @@ class ClinicProfile extends Model
         'pdf_engine',
         'watermark_enabled',
         'watermark_type',
+        'receipt_print_settings',
         'operating_rooms',
     ];
 
     protected $casts = [
-        'watermark_enabled' => 'boolean',
-        'operating_rooms'   => 'array',
+        'watermark_enabled'      => 'boolean',
+        'receipt_print_settings' => 'array',
+        'operating_rooms'        => 'array',
     ];
+
+    /**
+     * Default toggle elemen cetak kwitansi/rincian kasir. Dipakai bila kolom
+     * `receipt_print_settings` masih null (klinik belum pernah set).
+     */
+    public const RECEIPT_PRINT_DEFAULTS = [
+        'show_logo'      => true,
+        'show_stamp'     => true,
+        'show_esign'     => true,
+        'show_footer'    => true,
+        'show_watermark' => true,
+    ];
+
+    /** Setting cetak final (default ditimpa nilai tersimpan). */
+    public function receiptPrintSettings(): array
+    {
+        return array_merge(self::RECEIPT_PRINT_DEFAULTS, $this->receipt_print_settings ?? []);
+    }
 }

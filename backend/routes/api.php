@@ -164,8 +164,11 @@ Route::prefix('v1')->group(function () {
                 Route::post('/cek-peserta',        [AdmisiController::class, 'bpjsCekPeserta']);
                 Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep']);
                 Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep']);
+                Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
+                Route::get('/surat-kontrol/{visitId}', [AdmisiController::class, 'bpjsGetSuratKontrol']);
+                Route::put('/edit-surat-kontrol',  [AdmisiController::class, 'bpjsEditSuratKontrol']);
                 Route::post('/validasi-booking',   [AdmisiController::class, 'bpjsValidasiBooking']);
             });
         });
@@ -236,6 +239,10 @@ Route::prefix('v1')->group(function () {
             Route::put('/antrian/{id}/selesai',                 [DokterController::class, 'selesaiAntrian']);
             Route::put('/antrian/{id}/ke-penunjang',            [DokterController::class, 'kirimKePenunjang']);
 
+            // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
+            Route::get('/kunjungan/{visitId}/rujuk-internal/targets', [DokterController::class, 'rujukInternalTargets']);
+            Route::post('/kunjungan/{visitId}/rujuk-internal',        [DokterController::class, 'rujukInternal']);
+
             // Referensi Tab 3: tarif tindakan per metode bayar + daftar obat ber-harga
             Route::get('/tarif-tindakan',                       [DokterController::class, 'tarifTindakan']);
             Route::get('/obat',                                 [DokterController::class, 'daftarObat']);
@@ -280,6 +287,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/resume-medis/{id}/finalize',          [DokterController::class, 'finalizeResumeMedis']);
 
             Route::post('/rujukan-keluar',                      [DokterController::class, 'storeRujukanKeluar']);
+
+            // Surat Kontrol BPJS (planning Pulang) — baca status + terbitkan ke VClaim
+            Route::get('/kunjungan/{visitId}/surat-kontrol',        [DokterController::class, 'getSuratKontrol']);
+            Route::post('/kunjungan/{visitId}/surat-kontrol/submit', [DokterController::class, 'submitSuratKontrol']);
 
             // (dihapus) /jadwal-bedah GET+POST — method indexJadwalBedah/storeJadwalBedah
             // tidak pernah ada (selalu 500), tanpa konsumen frontend. Penjadwalan bedah
@@ -427,6 +438,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice']);
             Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
             Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
+            Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);
             Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);
             Route::get('/invoice/{id}/cetak',              [KasirController::class, 'cetakInvoice']);
 
@@ -434,10 +446,15 @@ Route::prefix('v1')->group(function () {
             Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice']);
             Route::delete('/invoice-item/{id}',            [KasirController::class, 'deleteItemInvoice']);
 
+            // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master, bukan ketik manual).
+            Route::get('/tarif-tindakan',                  [KasirController::class, 'tarifTindakan']);
+
             Route::get('/cob/{visitId}',                   [KasirController::class, 'showCob']);
             Route::put('/cob/{visitId}',                   [KasirController::class, 'updateCob']);
 
             Route::put('/watermark',                       [KasirController::class, 'updateWatermark']);
+            Route::get('/print-settings',                  [KasirController::class, 'getPrintSettings']);
+            Route::put('/print-settings',                  [KasirController::class, 'updatePrintSettings']);
 
             Route::get('/laporan',                         [KasirController::class, 'laporanHarian']);
             Route::get('/laporan/rekap',                   [KasirController::class, 'laporanRekap']);
@@ -875,6 +892,10 @@ Route::prefix('v1')->group(function () {
             Route::put('/paket-bedah/{id}',                 [TarifPaketController::class, 'updatePaket'])->middleware('permission:tarif_paket.write');
             Route::delete('/paket-bedah/{id}',              [TarifPaketController::class, 'deletePaket'])->middleware('permission:tarif_paket.delete');
 
+            // --- PAKET BEDAH — CSV per-paket (template/export komposisi 1 paket) ---
+            Route::get('/paket-bedah/{id}/template-csv',    [TarifPaketController::class, 'templatePaketCsvForPackage'])->middleware('permission:tarif_paket.read');
+            Route::get('/paket-bedah/{id}/export-csv',      [TarifPaketController::class, 'exportPaketCsvForPackage'])->middleware('permission:tarif_paket.read');
+
             // --- PAKET BEDAH — items (komposisi paket) ---
             Route::get('/paket-bedah/{id}/items',           [TarifPaketController::class, 'indexItems'])->middleware('permission:tarif_paket.read');
             Route::post('/paket-bedah/{id}/items',          [TarifPaketController::class, 'addItem'])->middleware('permission:tarif_paket.write');
@@ -911,11 +932,45 @@ Route::prefix('v1')->group(function () {
             Route::get('/bpjs/surat-kontrol/{id}',          [IntegrasiController::class, 'showSuratKontrol']);
             Route::post('/bpjs/surat-kontrol/{id}/submit',  [IntegrasiController::class, 'submitSuratKontrol']);
 
+            Route::get('/satusehat/dashboard',              [IntegrasiController::class, 'satusehatDashboard']);
+            Route::get('/satusehat/kfa-search',             [IntegrasiController::class, 'satusehatKfaSearch']);
+            Route::put('/satusehat/dokter/{employeeId}/nik',[IntegrasiController::class, 'setEmployeeNik']);
+            Route::get('/satusehat/location',               [IntegrasiController::class, 'satusehatListLocations']);
+            Route::post('/satusehat/location',              [IntegrasiController::class, 'satusehatRegisterLocation']);
+            Route::put('/satusehat/location/{id}/active',   [IntegrasiController::class, 'satusehatSetActiveLocation']);
+            Route::put('/satusehat/location/{id}',          [IntegrasiController::class, 'satusehatUpdateLocation']);
+            Route::delete('/satusehat/location/{id}',       [IntegrasiController::class, 'satusehatDeactivateLocation']);
             Route::get('/satusehat/sync-log',               [IntegrasiController::class, 'satusehatSyncLog']);
             Route::get('/satusehat/sync-log/{id}',          [IntegrasiController::class, 'showSatusehatSyncLog']);
             Route::get('/satusehat/resource-log',           [IntegrasiController::class, 'satusehatResourceLog']);
             Route::post('/satusehat/sync-manual',           [IntegrasiController::class, 'satusehatSyncManual']);
             Route::post('/satusehat/retry/{logId}',         [IntegrasiController::class, 'satusehatRetry']);
+
+            // ---- VCLAIM live calls ----
+            Route::post('/vclaim/cek-peserta',              [IntegrasiController::class, 'vclaimCekPeserta']);
+            Route::post('/vclaim/cek-rujukan',              [IntegrasiController::class, 'vclaimCekRujukan']);
+            Route::get('/vclaim/rujukan-peserta/{noKartu}', [IntegrasiController::class, 'vclaimRujukanByKartu']);
+            Route::post('/vclaim/sep',                      [IntegrasiController::class, 'vclaimGenerateSep']);
+            Route::put('/vclaim/sep',                       [IntegrasiController::class, 'vclaimUpdateSep']);
+            Route::delete('/vclaim/sep',                    [IntegrasiController::class, 'vclaimCancelSep']);
+            Route::post('/vclaim/lpk',                      [IntegrasiController::class, 'vclaimInsertLpk']);
+            Route::get('/vclaim/monitoring/{jenis}',        [IntegrasiController::class, 'vclaimMonitoring']);
+            Route::get('/vclaim/referensi/{jenis}',         [IntegrasiController::class, 'vclaimReferensi']);
+
+            // ---- ANTREAN live calls ----
+            Route::post('/antrean/add',                     [IntegrasiController::class, 'antreanAdd']);
+            Route::post('/antrean/updatewaktu',             [IntegrasiController::class, 'antreanUpdateWaktu']);
+            Route::post('/antrean/batal',                   [IntegrasiController::class, 'antreanBatal']);
+            Route::get('/antrean/dashboard/{jenis}',        [IntegrasiController::class, 'antreanDashboard']);
+            Route::post('/antrean/validate-booking',        [IntegrasiController::class, 'antreanValidateBooking']);
+
+            // ---- Mapping Poli/DPJP BPJS (sinkron Jadwal Dokter) ----
+            Route::get('/bpjs/poli-mapping',                [IntegrasiController::class, 'indexPoliMapping']);
+            Route::get('/bpjs/poli-mapping/status',         [IntegrasiController::class, 'poliMappingStatus']);
+            Route::post('/bpjs/poli-mapping',               [IntegrasiController::class, 'upsertPoliMapping']);
+            Route::delete('/bpjs/poli-mapping/{id}',        [IntegrasiController::class, 'deletePoliMapping']);
+            Route::put('/bpjs/dokter/{employeeId}/dpjp',    [IntegrasiController::class, 'setDpjpCode']);
+            Route::post('/bpjs/sync-jadwal-dokter',         [IntegrasiController::class, 'syncJadwalDokter']);
         });
 
         // -----------------------------------------------------------------

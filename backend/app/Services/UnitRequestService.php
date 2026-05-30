@@ -17,6 +17,10 @@ class UnitRequestService
 {
     public const ITEM_TYPES = ['MEDICATION', 'BHP', 'IOL'];
 
+    public function __construct(private InventoryStockService $stockService)
+    {
+    }
+
     public function index(array $filters = []): LengthAwarePaginator
     {
         $q = UnitRequest::query()->with('items');
@@ -166,8 +170,8 @@ class UnitRequestService
     }
 
     /**
-     * Delivery — kurangi stock di inventori, set qty_delivered per item.
-     * Asumsi: qty diambil dari batch yg paling cepat expired (FEFO sederhana).
+     * Delivery — PINDAHKAN stok dari gudang (INVENTORI) ke lokasi unit pemohon.
+     * Stok gudang berkurang DAN stok unit bertambah dalam satu transaksi (FEFO).
      */
     public function deliver(string $id, array $data): UnitRequest
     {
@@ -177,9 +181,14 @@ class UnitRequestService
             abort(422, 'Hanya request APPROVED yang bisa di-deliver.');
         }
 
+        $destination = $req->requesting_station;
+        if (!in_array($destination, InventoryStock::LOCATIONS, true)) {
+            abort(422, "Lokasi tujuan '{$destination}' tidak didukung untuk transfer stok. Hanya: " . implode(', ', InventoryStock::LOCATIONS) . '.');
+        }
+
         $deliveryByItemId = collect($data['items'] ?? [])->keyBy('id');
 
-        $result = DB::transaction(function () use ($req, $deliveryByItemId) {
+        $result = DB::transaction(function () use ($req, $deliveryByItemId, $destination) {
             foreach ($req->items as $item) {
                 $row = $deliveryByItemId->get($item->id);
                 if (!$row) continue;
@@ -190,12 +199,23 @@ class UnitRequestService
                     abort(422, "Qty deliver melebihi qty_requested untuk item " . $this->itemLabel($item));
                 }
 
-                $consumed = $this->consumeStock($item->item_type, $item->item_id, $qty, $row['batch_no'] ?? null);
+                // IOL serialized → tidak dikelola di inventory_stocks; skip transfer.
+                $firstBatch = null;
+                if ($item->item_type !== 'IOL') {
+                    $moved = $this->stockService->transfer(
+                        $item->item_type,
+                        $item->item_id,
+                        $qty,
+                        InventoryStock::LOC_INVENTORI,
+                        $destination
+                    );
+                    $firstBatch = $moved[0] ?? null;
+                }
 
                 $item->update([
                     'qty_delivered' => $qty,
-                    'batch_no'      => $row['batch_no'] ?? $consumed['batch_no'] ?? $item->batch_no,
-                    'expiry_date'   => $row['expiry_date'] ?? $consumed['expiry_date'] ?? $item->expiry_date,
+                    'batch_no'      => $firstBatch['batch_no'] ?? $item->batch_no,
+                    'expiry_date'   => $firstBatch['expiry_date'] ?? $item->expiry_date,
                 ]);
             }
 
@@ -214,7 +234,11 @@ class UnitRequestService
     }
 
     /**
-     * Tutup request oleh unit (terima barang) — stok unit BERTAMBAH sebesar qty_delivered.
+     * Tutup request oleh unit (konfirmasi barang diterima fisik).
+     *
+     * Stok unit SUDAH bertambah saat deliver (transfer INVENTORI → unit), jadi
+     * close murni transisi status DELIVERED → CLOSED + audit. TIDAK lagi
+     * menambah kolom legacy `stock`.
      */
     public function close(string $id): UnitRequest
     {
@@ -223,17 +247,8 @@ class UnitRequestService
             abort(422, 'Hanya request DELIVERED yang bisa ditutup.');
         }
 
-        return DB::transaction(function () use ($req) {
-            foreach ($req->items as $item) {
-                $qty = (float) $item->qty_delivered;
-                if ($qty > 0) {
-                    $this->addUnitStock($item->item_type, $item->item_id, $qty);
-                }
-            }
-
-            $req->update(['status' => UnitRequest::STATUS_CLOSED]);
-            return $req->fresh('items');
-        });
+        $req->update(['status' => UnitRequest::STATUS_CLOSED]);
+        return $req->fresh('items');
     }
 
     public function delete(string $id): void
@@ -285,65 +300,6 @@ class UnitRequestService
             'expiry_date'     => $row['expiry_date'] ?? null,
             'notes'           => $row['notes'] ?? null,
         ]);
-    }
-
-    /**
-     * Konsumsi stok: kurangi qty dari batch yang ditentukan, atau FEFO kalau null.
-     */
-    private function consumeStock(string $type, string $itemId, float $qty, ?string $batchNo): array
-    {
-        if ($batchNo) {
-            $stock = InventoryStock::where([
-                'item_type' => $type,
-                'item_id'   => $itemId,
-                'batch_no'  => $batchNo,
-            ])->first();
-            if (!$stock || (float) $stock->qty_on_hand < $qty) {
-                abort(422, "Stok batch {$batchNo} tidak cukup untuk item {$type}.");
-            }
-            $stock->decrement('qty_on_hand', $qty);
-            return ['batch_no' => $stock->batch_no, 'expiry_date' => $stock->expiry_date];
-        }
-
-        // FEFO — ambil dari batch yg paling cepat expired
-        $remaining = $qty;
-        $stocks = InventoryStock::where('item_type', $type)
-            ->where('item_id', $itemId)
-            ->where('qty_on_hand', '>', 0)
-            ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
-            ->lockForUpdate()
-            ->get();
-
-        $firstUsed = null;
-        foreach ($stocks as $st) {
-            if ($remaining <= 0) break;
-            $take = min($remaining, (float) $st->qty_on_hand);
-            $st->decrement('qty_on_hand', $take);
-            $remaining -= $take;
-            if (!$firstUsed) {
-                $firstUsed = ['batch_no' => $st->batch_no, 'expiry_date' => $st->expiry_date];
-            }
-        }
-
-        if ($remaining > 0.001) {
-            abort(422, "Stok tidak cukup untuk item {$type}. Kurang {$remaining} unit.");
-        }
-
-        return $firstUsed ?? ['batch_no' => null, 'expiry_date' => null];
-    }
-
-    /**
-     * Tambah stok master unit saat barang diterima (close).
-     * MEDICATION/BHP punya kolom `stock`; IOL serialized → diabaikan.
-     */
-    private function addUnitStock(string $type, string $itemId, float $qty): void
-    {
-        $model = match ($type) {
-            'MEDICATION' => Medication::find($itemId),
-            'BHP'        => BhpItem::find($itemId),
-            default      => null,
-        };
-        $model?->increment('stock', $qty);
     }
 
     /**

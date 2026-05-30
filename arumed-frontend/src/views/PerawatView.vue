@@ -196,8 +196,8 @@ async function skipPt(q, e) {
   try {
     await store.lewatiAntrian(q.id)
     if (store.selectedQueue?.id === q.id) store.clearSelected()
-    toast('w', `${q.patient?.name} (${q.queue_number}) dipindah ke akhir antrean`)
-    // Refresh untuk sinkron urutan dari backend (queue_sequence di-reset di server)
+    toast('w', `${q.patient?.name} (${q.queue_number}) diturunkan 1 antrean`)
+    // Refresh untuk sinkron urutan dari backend (queue_sequence di-tukar di server)
     await store.fetchAntrian()
   } catch (err) {
     toast('w', err.message)

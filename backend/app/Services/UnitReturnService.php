@@ -18,6 +18,10 @@ class UnitReturnService
 {
     public const ITEM_TYPES = ['MEDICATION', 'BHP', 'IOL'];
 
+    public function __construct(private InventoryStockService $stockService)
+    {
+    }
+
     public function index(array $filters = []): LengthAwarePaginator
     {
         $q = UnitReturn::query()->with(['unitRequest:id,request_number', 'items']);
@@ -152,10 +156,12 @@ class UnitReturnService
             abort(422, 'Hanya retur SUBMITTED yang bisa di-receive.');
         }
 
-        $result = DB::transaction(function () use ($ret) {
+        $station = $ret->returning_station;
+
+        $result = DB::transaction(function () use ($ret, $station) {
             foreach ($ret->items as $item) {
-                $this->returnStock($item);                              // gudang bertambah
-                $this->removeUnitStock($item->item_type, $item->item_id, (float) $item->qty_returned); // stok unit berkurang
+                $this->removeUnitStock($item->item_type, $item->item_id, (float) $item->qty_returned, $station); // stok unit berkurang (FEFO)
+                $this->returnStock($item);                              // gudang (INVENTORI) bertambah
             }
 
             $ret->update([
@@ -246,12 +252,13 @@ class UnitReturnService
     }
 
     /**
-     * Tambah stok kembali ke inventori (upsert per item+batch).
+     * Tambah stok kembali ke GUDANG (INVENTORI), upsert per item+batch.
      */
     private function returnStock(UnitReturnItem $item): void
     {
         $stock = InventoryStock::firstOrNew([
             'item_type' => $item->item_type,
+            'location'  => InventoryStock::LOC_INVENTORI,
             'item_id'   => $item->item_id,
             'batch_no'  => $item->batch_no,
         ]);
@@ -262,20 +269,14 @@ class UnitReturnService
     }
 
     /**
-     * Kurangi stok master unit saat retur diterima gudang (clamp ≥ 0).
-     * MEDICATION/BHP punya kolom `stock`; IOL serialized → diabaikan.
+     * Kurangi stok di lokasi UNIT peretur saat retur diterima gudang (FEFO,
+     * strict). Abort 422 kalau stok unit kurang dari qty retur. IOL serialized
+     * → tidak dikelola di inventory_stocks, diabaikan.
      */
-    private function removeUnitStock(string $type, string $itemId, float $qty): void
+    private function removeUnitStock(string $type, string $itemId, float $qty, string $location): void
     {
-        $model = match ($type) {
-            'MEDICATION' => Medication::find($itemId),
-            'BHP'        => BhpItem::find($itemId),
-            default      => null,
-        };
-        if (!$model) return;
-
-        $newStock = max(0, (float) $model->stock - $qty);
-        $model->update(['stock' => $newStock]);
+        if ($type === 'IOL' || $qty <= 0) return;
+        $this->stockService->consume($type, $itemId, $qty, $location);
     }
 
     /**

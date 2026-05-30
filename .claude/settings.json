@@ -41,7 +41,8 @@
       "Bash(php -l app/Services/DokterService.php)",
       "Bash(php -l app/Http/Controllers/TarifPaketController.php)",
       "Bash(php -l app/Http/Controllers/DokterController.php)",
-      "Bash(node_modules/.bin/vite build *)"
+      "Bash(node_modules/.bin/vite build *)",
+      "Bash(php -l \"d:/apps- cl/backend/app/Http/Controllers/UnitRequestController.php\")"
     ]
   },
   "defaultMode": "auto",

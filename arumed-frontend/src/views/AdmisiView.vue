@@ -8,7 +8,7 @@ import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
 import FormSection from '@/components/forms/FormSection.vue'
 import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
-import { admisiApi } from '@/services/api'
+import { admisiApi, integrasiApi } from '@/services/api'
 
 const admisiStore   = useAdmisiStore()
 const jadwalStore   = useJadwalDokterStore()
@@ -97,6 +97,7 @@ function mapQueueItem(q) {
     guarantor:  q.visit?.guarantor_type ?? '—',
     station:    q.visit?.current_station ?? '—',
     classification: q.visit?.classification ?? '—',
+    internalRefFrom: q.visit?.internal_referral_from_schedule?.poliklinik ?? null,
     status:     q.status,
     doctor:     q.visit?.doctor_schedule?.employee?.name ?? null,
     arrivedAt:  fmtTime(q.created_at),
@@ -241,6 +242,7 @@ function mapVisitRow(v) {
     guarantor:  v.guarantor_type ?? '—',
     station:    v.current_station ?? '—',
     classification: v.classification ?? '—',
+    internalRefFrom: v.internal_referral_from_schedule?.poliklinik ?? null,
     doctor:     v.doctor_schedule?.employee?.name ?? null,
     status:     'WAITING',  // sentinel — uiStatus akan derive dari station
     arrivedAt:  fmtTime(v.created_at),
@@ -294,6 +296,14 @@ const filteredQueue = computed(() =>
 const rowOffset = computed(() =>
   (admisiStore.visitsMeta.current_page - 1) * admisiStore.visitsPerPage,
 )
+
+// Mode "Belum Selesai (semua tgl)" — tampilkan visit aktif lintas-hari.
+const showUnfinished = ref(false)
+function toggleUnfinished() {
+  showUnfinished.value = !showUnfinished.value
+  admisiStore.visitsFilter.unfinished = showUnfinished.value
+  admisiStore.fetchVisits({ page: 1 })
+}
 
 // Terapkan filter/search ke server, selalu balik ke halaman 1.
 function applyVisitFilters() {
@@ -553,6 +563,9 @@ const searchResults  = ref([])
 const searchLoading  = ref(false)
 const showSearchDrop = ref(false)
 let   _searchTimer   = null
+// Info kunjungan aktif pasien terpilih (current_station != SELESAI). Bila ada,
+// registrasi baru AKAN ditolak guard backend — tampilkan peringatan lebih awal.
+const selectedActiveVisit = ref(null)
 
 async function searchPatient() {
   const key = form.searchKey.trim()
@@ -604,7 +617,12 @@ function selectPatient(pt) {
   })
   insuranceSearch.value = ''
   showSearchDrop.value  = false
-  toast('s', `Data pasien ${pt.name} ditemukan`)
+  selectedActiveVisit.value = pt.active_visit ?? null
+  if (selectedActiveVisit.value) {
+    toast('w', `${pt.name} masih punya kunjungan aktif — selesaikan/batalkan dulu`)
+  } else {
+    toast('s', `Data pasien ${pt.name} ditemukan`)
+  }
   loadJadwalBedah(pt.id)
 }
 
@@ -649,6 +667,7 @@ function onLookupInput() {
 function onLookupBlur() { setTimeout(() => { lookupDropOpen.value = false }, 200) }
 
 /* Modal Profil Pasien — Tab 1: detail data, Tab 2: riwayat kunjungan (paginated) */
+const todayStr       = computed(() => new Date().toISOString().split('T')[0])
 const profileOpen    = ref(false)
 const profileTab     = ref('detail')   // 'detail' | 'history'
 const profilePatient = ref(null)
@@ -672,15 +691,23 @@ async function loadRiwayat(page = 1) {
     })
     profileVisits.value = res.data.map(v => ({
       id:             v.id,
+      visitId:        v.id,
       date:           fmtDate(v.visit_date ?? v.created_at),
       photo:          v.photo_url ?? null,
       classification: v.classification ?? '—',
+      internalRefFrom: v.internal_referral_from_schedule?.poliklinik ?? null,
       guarantor:      v.guarantor_type ?? '—',
       station:        v.current_station ?? '—',
       doctor:         v.doctor_schedule?.employee?.name ?? '—',
       poliklinik:     v.doctor_schedule?.poliklinik ?? null,
       insurer:        v.insurer?.name ?? null,
       noSep:          v.no_sep ?? null,
+      // Field tambahan agar baris ini bisa dibuka di modal Detail Kunjungan
+      // (edit/update SEP & Surat Kontrol). Pasien diambil dari profilePatient.
+      noRegistrasi:   v.no_registrasi ?? '—',
+      queueNo:        v.no_antreen ?? v.no_antrian ?? '—',
+      arrivedDate:    fmtDate(v.visit_date ?? v.created_at),
+      walkIn:         false,
     }))
     riwayatMeta.value = res.meta
   } catch (e) {
@@ -695,6 +722,7 @@ async function openProfile(pt) {
   lookupKey.value      = ''
   lookupResults.value  = []
   profileTab.value     = 'detail'
+  profileEdit.open     = false       // mode baca saat buka profil pasien baru
   profilePatient.value = pt          // tampilkan data ringkas dulu sambil fetch detail
   profileOpen.value    = true
   profileLoading.value = true
@@ -711,7 +739,54 @@ async function openProfile(pt) {
     profileLoading.value = false
   }
 }
-function closeProfile() { profileOpen.value = false }
+function closeProfile() { profileOpen.value = false; profileEdit.open = false }
+
+/* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
+const profileEdit = reactive({
+  open: false, loading: false, errors: null,
+  name: '', gender: 'L', date_of_birth: '', phone: '',
+  address: '', province: '', blood_type: '',
+})
+function startProfileEdit() {
+  const p = profilePatient.value || {}
+  Object.assign(profileEdit, {
+    open: true, loading: false, errors: null,
+    name:          p.name ?? '',
+    gender:        p.gender ?? 'L',
+    date_of_birth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
+    phone:         p.phone ?? '',
+    address:       p.address ?? '',
+    province:      p.province ?? '',
+    blood_type:    p.blood_type ?? '',
+  })
+}
+function cancelProfileEdit() { profileEdit.open = false; profileEdit.errors = null }
+async function saveProfileEdit() {
+  const p = profilePatient.value
+  if (!p?.id) return
+  if (!profileEdit.name.trim()) { toast('w', 'Nama pasien wajib diisi'); return }
+  profileEdit.loading = true; profileEdit.errors = null
+  try {
+    const payload = {
+      name:          profileEdit.name.trim(),
+      gender:        profileEdit.gender,
+      date_of_birth: profileEdit.date_of_birth || null,
+      phone:         profileEdit.phone.trim() || null,
+      address:       profileEdit.address.trim() || null,
+      province:      profileEdit.province || null,
+      blood_type:    profileEdit.blood_type || null,
+    }
+    const updated = await admisiStore.updatePasien(p.id, payload)
+    profilePatient.value = { ...p, ...updated }
+    profileEdit.open = false
+    toast('s', 'Data pasien diperbarui')
+  } catch (e) {
+    profileEdit.errors = e.errors || null
+    toast('e', e.message || 'Gagal memperbarui data pasien')
+  } finally {
+    profileEdit.loading = false
+  }
+}
 
 /* ============================================================
    REGISTRATION WIZARD (3 steps)
@@ -736,6 +811,12 @@ function formatPreopDate(d) {
   if (!d) return ''
   const dt = new Date(d)
   return dt.toLocaleDateString('id-ID', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })
+}
+
+function formatAvDate(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  return dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 function resetPreopState() {
@@ -817,6 +898,212 @@ const blankForm = () => ({
   doctor_schedule_id: '',
 })
 const form = reactive(blankForm())
+
+/* ─── Cek eligibilitas BPJS (VClaim) — non-blocking, hanya bantu petugas ───
+ * Tidak memblok pendaftaran: kalau integrasi belum aktif, tampil pesan jelas. */
+const bpjsCheck = reactive({ loading: false, error: '', peserta: null })
+async function cekPesertaBpjs() {
+  const id = (form.bpjsNo || form.nik || '').trim()
+  if (!id) { bpjsCheck.error = 'Isi No. Kartu BPJS atau NIK dulu'; return }
+  bpjsCheck.loading = true; bpjsCheck.error = ''; bpjsCheck.peserta = null
+  try {
+    const type = form.bpjsNo ? 'nokartu' : 'nik'
+    const res = await integrasiApi.cekPeserta({ identifier: id, type })
+    const b = res.data?.data ?? {}
+    if (b.is_success && b.response?.peserta) {
+      bpjsCheck.peserta = b.response.peserta
+      // Prefill nomor kartu kalau cari via NIK.
+      if (!form.bpjsNo && bpjsCheck.peserta.noKartu) form.bpjsNo = bpjsCheck.peserta.noKartu
+    } else {
+      bpjsCheck.error = b.metaData?.message || 'Peserta tidak ditemukan'
+    }
+  } catch (e) {
+    bpjsCheck.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal cek peserta')
+  } finally {
+    bpjsCheck.loading = false
+  }
+}
+
+const rujukanCheck = reactive({ loading: false, error: '', data: null })
+async function cekRujukanBpjs() {
+  if (!form.referralNo) { rujukanCheck.error = 'Isi nomor rujukan dulu'; return }
+  rujukanCheck.loading = true; rujukanCheck.error = ''; rujukanCheck.data = null
+  try {
+    const res = await integrasiApi.cekRujukan({ no_rujukan: form.referralNo.trim(), sumber: 'fktp' })
+    const b = res.data?.data ?? {}
+    if (b.is_success && b.response?.rujukan) {
+      rujukanCheck.data = b.response.rujukan
+    } else {
+      rujukanCheck.error = b.metaData?.message || 'Rujukan tidak ditemukan'
+    }
+  } catch (e) {
+    rujukanCheck.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal cek rujukan')
+  } finally {
+    rujukanCheck.loading = false
+  }
+}
+
+/* ─── Aksi Cepat: panel mana yang terbuka ('' | 'rujukan' | 'peserta') ─── */
+const quickPanel = ref('')   // default: semua tertutup (search bar ter-hide)
+function toggleQuickPanel(name) {
+  quickPanel.value = quickPanel.value === name ? '' : name
+}
+
+/* ─── Aksi Cepat: Cek No. Rujukan ke VClaim (standalone, mandiri form) ─── */
+const rujukanQuick = reactive({ no: '', sumber: 'fktp', loading: false, error: '', data: null })
+async function cekRujukanQuick() {
+  const no = rujukanQuick.no.trim()
+  if (!no) { rujukanQuick.error = 'Isi nomor rujukan dulu'; rujukanQuick.data = null; return }
+  rujukanQuick.loading = true; rujukanQuick.error = ''; rujukanQuick.data = null
+  try {
+    const res = await integrasiApi.cekRujukan({ no_rujukan: no, sumber: rujukanQuick.sumber })
+    const b = res.data?.data ?? {}
+    if (b.is_success && b.response?.rujukan) {
+      rujukanQuick.data = b.response.rujukan
+    } else {
+      rujukanQuick.error = b.metaData?.message || 'Rujukan tidak ditemukan'
+    }
+  } catch (e) {
+    rujukanQuick.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal cek rujukan')
+  } finally {
+    rujukanQuick.loading = false
+  }
+}
+// Pakai No. Rujukan hasil cek → buka wizard pendaftaran BPJS dgn tipe rujukan terisi.
+function pakaiRujukanQuick() {
+  const no = rujukanQuick.no.trim()
+  openWizard()                 // reset form + buka modal
+  form.guarantor = 'BPJS'
+  form.sepType   = 'rujukan'
+  form.referralNo = no
+  rujukanCheck.data  = rujukanQuick.data   // tampilkan hasil cek di field rujukan wizard
+  rujukanCheck.error = ''
+  toast('s', 'No. rujukan disalin ke form pendaftaran')
+}
+
+/* ─── Aksi Cepat: Cek Status BPJS (= Cek Peserta VClaim), standalone ──── */
+const pesertaQuick = reactive({ id: '', type: 'nik', loading: false, error: '', data: null })
+async function cekPesertaQuick() {
+  const id = pesertaQuick.id.trim()
+  if (!id) { pesertaQuick.error = 'Isi No. Kartu BPJS atau NIK dulu'; pesertaQuick.data = null; return }
+  pesertaQuick.loading = true; pesertaQuick.error = ''; pesertaQuick.data = null
+  try {
+    const res = await integrasiApi.cekPeserta({ identifier: id, type: pesertaQuick.type })
+    const b = res.data?.data ?? {}
+    if (b.is_success && b.response?.peserta) {
+      pesertaQuick.data = b.response.peserta
+    } else {
+      pesertaQuick.error = b.metaData?.message || 'Peserta tidak ditemukan'
+    }
+  } catch (e) {
+    pesertaQuick.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal cek status BPJS')
+  } finally {
+    pesertaQuick.loading = false
+  }
+}
+
+/* ─── Terbitkan / Batalkan SEP dari panel detail kunjungan ───────────── */
+const sepAction = reactive({ loading: false })
+async function terbitkanSep() {
+  const row = visitDetailRow.value
+  if (!row?.id) return
+  sepAction.loading = true
+  try {
+    const res = await admisiApi.bpjs.generateSep({ visit_id: row.id })
+    const b = res.data?.data ?? {}
+    const noSep = b.response?.sep?.noSep
+    if (noSep) {
+      row.noSep = noSep
+      toast('s', `SEP terbit: ${noSep}`)
+      admisiStore.fetchVisits?.()
+    } else {
+      toast('e', b.metaData?.message || res.data?.message || 'Gagal terbitkan SEP')
+    }
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal terbitkan SEP'))
+  } finally {
+    sepAction.loading = false
+  }
+}
+async function batalkanSep() {
+  const row = visitDetailRow.value
+  if (!row?.noSep) return
+  if (!confirm(`Batalkan SEP ${row.noSep}?`)) return
+  sepAction.loading = true
+  try {
+    const res = await admisiApi.bpjs.cancelSep({ no_sep: row.noSep, alasan: 'Dibatalkan dari Admisi' })
+    const b = res.data?.data ?? {}
+    if (b.is_success) {
+      toast('s', 'SEP dibatalkan')
+      row.noSep = null
+      admisiStore.fetchVisits?.()
+    } else {
+      toast('e', b.metaData?.message || 'Gagal batalkan SEP')
+    }
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal batalkan SEP'))
+  } finally {
+    sepAction.loading = false
+  }
+}
+
+/* ─── Edit SEP (PUT /SEP/2.0/update) dari panel detail — field ringkas ─── */
+const sepEdit = reactive({ open: false, loading: false, kls_rawat: '3', diag_awal: '', catatan: '', no_telp: '', katarak: '0' })
+function startEditSep() {
+  // Prefill seadanya; field SEP detail tak di-cache lokal, dokter isi koreksi.
+  Object.assign(sepEdit, { open: true, kls_rawat: '3', diag_awal: '', catatan: '', no_telp: '', katarak: '0' })
+}
+async function saveEditSep() {
+  const row = visitDetailRow.value
+  if (!row?.id) return
+  sepEdit.loading = true
+  try {
+    await admisiApi.bpjs.updateSep({
+      visit_id: row.id,
+      kls_rawat: sepEdit.kls_rawat || null,
+      diag_awal: sepEdit.diag_awal || null,
+      catatan: sepEdit.catatan || null,
+      no_telp: sepEdit.no_telp || null,
+      katarak: sepEdit.katarak || '0',
+    })
+    toast('s', 'SEP diperbarui di BPJS')
+    sepEdit.open = false
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal update SEP'))
+  } finally {
+    sepEdit.loading = false
+  }
+}
+
+/* ─── Surat Kontrol BPJS: status + edit tanggal dari panel detail ────── */
+const skAction = reactive({ loading: false, data: null, editing: false, newDate: '' })
+async function loadSuratKontrolDetail(visitId) {
+  skAction.data = null; skAction.editing = false; skAction.newDate = ''
+  if (!visitId) return
+  try {
+    const { data } = await admisiApi.bpjs.getSuratKontrol(visitId)
+    skAction.data = data.data ?? null
+  } catch { skAction.data = null }
+}
+function startEditSuratKontrol() {
+  skAction.editing = true
+  skAction.newDate = skAction.data?.tanggal_rencana_kontrol ?? ''
+}
+async function saveEditSuratKontrol() {
+  if (!skAction.data?.id) return
+  if (!skAction.newDate) { toast('e', 'Isi tanggal kontrol baru'); return }
+  skAction.loading = true
+  try {
+    await admisiApi.bpjs.editSuratKontrol({ id: skAction.data.id, tgl_rencana_kontrol: skAction.newDate })
+    toast('s', 'Surat Kontrol diperbarui di BPJS')
+    skAction.editing = false
+    await loadSuratKontrolDetail(visitDetailRow.value?.id)
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal update Surat Kontrol'))
+  } finally {
+    skAction.loading = false
+  }
+}
 
 /* Jenis identitas — KTP wajib 16 digit, lainnya nomor bebas, Tanpa Identitas boleh kosong */
 const identityTypes = [
@@ -967,6 +1254,7 @@ function openWizard() {
   Object.assign(form, blankForm())
   insuranceSearch.value = ''
   searchResults.value   = []
+  selectedActiveVisit.value = null
   wizardStep.value = 1
   wizardOpen.value = true
   resetPreopState()
@@ -992,6 +1280,7 @@ function setPatientMode(mode) {
   form.patientMode      = mode
   insuranceSearch.value = ''
   searchResults.value   = []
+  selectedActiveVisit.value = null
   resetPreopState()
   resetConsentState()
 }
@@ -1206,7 +1495,13 @@ watch(() => form.birthDate, (iso) => {
 const visitDetailOpen = ref(false)
 const visitDetailRow  = ref(null)
 
-function openVisitDetail(p) { visitDetailRow.value = p; visitDetailOpen.value = true }
+function openVisitDetail(p) {
+  visitDetailRow.value = p
+  visitDetailOpen.value = true
+  sepEdit.open = false
+  if (p?.guarantor === 'BPJS' && p?.id) loadSuratKontrolDetail(p.id)
+  else { skAction.data = null; skAction.editing = false }
+}
 function closeVisitDetail() { visitDetailOpen.value = false }
 
 // Klik nama pasien di Detail Kunjungan → buka Profil Pasien (detail + riwayat).
@@ -1214,6 +1509,20 @@ function openPatientFromVisit() {
   const p = visitDetailRow.value
   if (!p?.patientId) { toast('w', 'Pasien walk-in belum terdaftar — tidak ada profil'); return }
   openProfile({ id: p.patientId, name: p.name })
+}
+
+// Klik baris riwayat kunjungan (modal Profil Pasien) → buka modal Detail Kunjungan
+// untuk kunjungan itu (lihat detail + edit/update SEP & Surat Kontrol).
+// Tutup modal Profil dulu supaya tidak ada dua modal-sm bertumpuk.
+function openVisitDetailFromRiwayat(v) {
+  const pt = profilePatient.value
+  const row = {
+    ...v,
+    name:      pt?.name ?? '—',
+    patientId: pt?.id ?? null,
+  }
+  closeProfile()
+  openVisitDetail(row)
 }
 
 function gotoRekamMedis(p) {
@@ -1574,6 +1883,16 @@ onUnmounted(() => {
           <transition name="collapse">
             <div v-show="tableExpanded">
               <div class="table-toolbar">
+                <button
+                  type="button"
+                  class="unfinished-toggle"
+                  :class="{ active: showUnfinished }"
+                  :title="showUnfinished ? 'Tampilkan kunjungan hari ini' : 'Tampilkan semua kunjungan yang belum selesai (lintas tanggal)'"
+                  @click="toggleUnfinished"
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+                  {{ showUnfinished ? 'Belum Selesai (semua tgl)' : 'Belum Selesai' }}
+                </button>
                 <select v-model="filterGuarantor" class="form-select compact" aria-label="Filter penjamin">
                   <option value="all">Semua Penjamin</option>
                   <option value="BPJS">BPJS</option>
@@ -1725,11 +2044,93 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="card-body actions-stack">
-            <button class="btn btn-secondary btn-full" disabled title="Menunggu bridging BPJS VClaim">
+            <!-- ===== Cek No. Rujukan ke VClaim (search bar default hidden) ===== -->
+            <button
+              type="button"
+              :class="['btn', 'btn-full', 'qa-trigger', quickPanel === 'rujukan' ? 'qa-trigger-on' : 'btn-secondary']"
+              @click="toggleQuickPanel('rujukan')"
+            >
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+              Cek No. Rujukan
+              <svg class="qa-caret" :class="{ open: quickPanel === 'rujukan' }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+
+            <div v-if="quickPanel === 'rujukan'" class="qa-rujukan">
+              <div class="seg-toggle full mini">
+                <button type="button" :class="['seg', rujukanQuick.sumber === 'fktp' ? 'seg-on' : '']" @click="rujukanQuick.sumber = 'fktp'">FKTP (Faskes 1)</button>
+                <button type="button" :class="['seg', rujukanQuick.sumber === 'rs' ? 'seg-on' : '']" @click="rujukanQuick.sumber = 'rs'">Antar-RS</button>
+              </div>
+              <div class="inline-check">
+                <input
+                  v-model="rujukanQuick.no"
+                  class="form-input"
+                  placeholder="Nomor rujukan…"
+                  @keyup.enter="cekRujukanQuick"
+                />
+                <button type="button" class="btn-check" :disabled="rujukanQuick.loading" @click="cekRujukanQuick">
+                  {{ rujukanQuick.loading ? 'Mengecek…' : 'Cek' }}
+                </button>
+              </div>
+
+              <div v-if="rujukanQuick.error" class="check-msg err">{{ rujukanQuick.error }}</div>
+              <div v-else-if="rujukanQuick.data" class="qa-rujukan-res">
+                <div class="qa-res-row"><span class="qa-res-k">Peserta</span><span class="qa-res-v">{{ rujukanQuick.data.peserta?.nama ?? '—' }}<template v-if="rujukanQuick.data.peserta?.noKartu"> · {{ rujukanQuick.data.peserta.noKartu }}</template></span></div>
+                <div class="qa-res-row"><span class="qa-res-k">Diagnosa</span><span class="qa-res-v">{{ rujukanQuick.data.diagnosa?.nama ?? '—' }}</span></div>
+                <div class="qa-res-row"><span class="qa-res-k">Poli Tujuan</span><span class="qa-res-v">{{ rujukanQuick.data.poliRujukan?.nama || rujukanQuick.data.poliRujukan?.kode || '—' }}</span></div>
+                <div class="qa-res-row"><span class="qa-res-k">Faskes Perujuk</span><span class="qa-res-v">{{ rujukanQuick.data.provPerujuk?.nama ?? '—' }}</span></div>
+                <div class="qa-res-row"><span class="qa-res-k">Tgl Rujukan</span><span class="qa-res-v">{{ rujukanQuick.data.tglKunjungan ?? '—' }}</span></div>
+                <button type="button" class="btn btn-primary btn-full qa-use-btn" @click="pakaiRujukanQuick">
+                  <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Daftarkan dengan Rujukan Ini
+                </button>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- ===== Cek Status BPJS = Cek Peserta VClaim (search bar default hidden) ===== -->
+            <button
+              type="button"
+              :class="['btn', 'btn-full', 'qa-trigger', quickPanel === 'peserta' ? 'qa-trigger-on' : 'btn-secondary']"
+              @click="toggleQuickPanel('peserta')"
+            >
               <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
               Cek Status BPJS
-              <span class="badge-soon" style="margin-left:auto">Segera Hadir</span>
+              <svg class="qa-caret" :class="{ open: quickPanel === 'peserta' }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
+
+            <div v-if="quickPanel === 'peserta'" class="qa-rujukan">
+              <div class="seg-toggle full mini">
+                <button type="button" :class="['seg', pesertaQuick.type === 'nik' ? 'seg-on' : '']" @click="pesertaQuick.type = 'nik'">NIK</button>
+                <button type="button" :class="['seg', pesertaQuick.type === 'nokartu' ? 'seg-on' : '']" @click="pesertaQuick.type = 'nokartu'">No. Kartu</button>
+              </div>
+              <div class="inline-check">
+                <input
+                  v-model="pesertaQuick.id"
+                  class="form-input"
+                  :placeholder="pesertaQuick.type === 'nik' ? 'Nomor NIK…' : 'Nomor Kartu BPJS…'"
+                  @keyup.enter="cekPesertaQuick"
+                />
+                <button type="button" class="btn-check" :disabled="pesertaQuick.loading" @click="cekPesertaQuick">
+                  {{ pesertaQuick.loading ? 'Mengecek…' : 'Cek' }}
+                </button>
+              </div>
+
+              <div v-if="pesertaQuick.error" class="check-msg err">{{ pesertaQuick.error }}</div>
+              <div v-else-if="pesertaQuick.data" class="qa-rujukan-res">
+                <div class="qa-res-row"><span class="qa-res-k">Nama</span><span class="qa-res-v">{{ pesertaQuick.data.nama ?? '—' }}</span></div>
+                <div class="qa-res-row"><span class="qa-res-k">No. Kartu</span><span class="qa-res-v">{{ pesertaQuick.data.noKartu ?? '—' }}</span></div>
+                <div class="qa-res-row"><span class="qa-res-k">Hak Kelas</span><span class="qa-res-v">{{ pesertaQuick.data.hakKelas?.keterangan ?? '—' }}</span></div>
+                <div class="qa-res-row">
+                  <span class="qa-res-k">Status</span>
+                  <span class="qa-res-v" :class="pesertaQuick.data.statusPeserta?.kode === '0' ? 'st-ok' : 'st-warn'">
+                    {{ pesertaQuick.data.statusPeserta?.keterangan ?? '—' }}
+                  </span>
+                </div>
+                <div v-if="pesertaQuick.data.cob?.nmAsuransi" class="qa-res-row"><span class="qa-res-k">COB</span><span class="qa-res-v">{{ pesertaQuick.data.cob.nmAsuransi }}</span></div>
+                <div v-if="pesertaQuick.data.jenisPeserta?.keterangan" class="qa-res-row"><span class="qa-res-k">Jenis Peserta</span><span class="qa-res-v">{{ pesertaQuick.data.jenisPeserta.keterangan }}</span></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1880,7 +2281,10 @@ onUnmounted(() => {
                         >
                           <PatientAvatar :name="pt.name" :src="pt.photo_url" :size="32" :zoomable="false" radius="50%" />
                           <div class="combo-info">
-                            <div class="combo-name">{{ pt.name }}</div>
+                            <div class="combo-name">
+                              {{ pt.name }}
+                              <span v-if="pt.active_visit" class="combo-av-badge" title="Pasien masih punya kunjungan aktif">● kunjungan aktif</span>
+                            </div>
                             <div class="combo-meta">
                               <span class="combo-rm">RM {{ pt.no_rm }}</span>
                               <span class="combo-nik" v-if="pt.nik">· NIK {{ pt.nik }}</span>
@@ -1900,9 +2304,23 @@ onUnmounted(() => {
                   <div class="hint">Ketik 1 huruf saja — pencarian otomatis berdasarkan nama, NIK, atau No. RM</div>
                 </div>
 
-                <div v-if="form.found" class="found-banner full">
+                <div v-if="form.found && !selectedActiveVisit" class="found-banner full">
                   <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                   Data ditemukan — periksa kembali sebelum lanjut
+                </div>
+
+                <!-- Peringatan: pasien masih punya kunjungan aktif → registrasi baru akan ditolak -->
+                <div v-if="form.found && selectedActiveVisit" class="active-visit-banner full">
+                  <svg viewBox="0 0 24 24" width="20" height="20"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <div class="avb-body">
+                    <strong>Pasien masih punya kunjungan aktif</strong>
+                    <div class="avb-meta">
+                      <span v-if="selectedActiveVisit.no_registrasi">No. {{ selectedActiveVisit.no_registrasi }} · </span>
+                      Stasiun <b>{{ selectedActiveVisit.current_station }}</b>
+                      <span v-if="selectedActiveVisit.visit_date"> · tgl {{ formatAvDate(selectedActiveVisit.visit_date) }}</span>
+                    </div>
+                    <div class="avb-note">Registrasi baru akan ditolak. Selesaikan alur kunjungan itu atau batalkan dulu di Daftar Kunjungan.</div>
+                  </div>
                 </div>
 
                 <!-- Banner Preop Bedah (auto-suggest) -->
@@ -2093,7 +2511,21 @@ onUnmounted(() => {
               <template v-if="form.guarantor === 'BPJS'">
                 <div class="field full">
                   <label class="field-lbl">No. Kartu BPJS</label>
-                  <input v-model="form.bpjsNo" class="form-input" placeholder="13 digit nomor kartu" />
+                  <div class="inline-check">
+                    <input v-model="form.bpjsNo" class="form-input" placeholder="13 digit nomor kartu" />
+                    <button type="button" class="btn-check" :disabled="bpjsCheck.loading" @click="cekPesertaBpjs">
+                      {{ bpjsCheck.loading ? 'Mengecek…' : 'Cek Peserta' }}
+                    </button>
+                  </div>
+                  <div v-if="bpjsCheck.error" class="check-msg err">{{ bpjsCheck.error }}</div>
+                  <div v-else-if="bpjsCheck.peserta" class="check-msg ok">
+                    <b>{{ bpjsCheck.peserta.nama }}</b> ·
+                    {{ bpjsCheck.peserta.hakKelas?.keterangan ?? '—' }} ·
+                    <span :class="bpjsCheck.peserta.statusPeserta?.kode === '0' ? 'st-ok' : 'st-warn'">
+                      {{ bpjsCheck.peserta.statusPeserta?.keterangan ?? '—' }}
+                    </span>
+                    <template v-if="bpjsCheck.peserta.cob?.nmAsuransi"> · COB: {{ bpjsCheck.peserta.cob.nmAsuransi }}</template>
+                  </div>
                 </div>
                 <div class="seg-toggle full sub">
                   <button :class="['seg', form.sepType === 'rujukan' ? 'seg-on' : '']" @click="form.sepType = 'rujukan'">
@@ -2108,8 +2540,18 @@ onUnmounted(() => {
                 </div>
                 <div v-if="form.sepType === 'rujukan'" class="field full">
                   <label class="field-lbl">No. Surat Rujukan FKTP</label>
-                  <input v-model="form.referralNo" class="form-input" placeholder="Nomor rujukan dari Faskes 1" />
+                  <div class="inline-check">
+                    <input v-model="form.referralNo" class="form-input" placeholder="Nomor rujukan dari Faskes 1" />
+                    <button type="button" class="btn-check" :disabled="rujukanCheck.loading" @click="cekRujukanBpjs">
+                      {{ rujukanCheck.loading ? 'Mengecek…' : 'Cek Rujukan' }}
+                    </button>
+                  </div>
                   <div class="hint">Wajib untuk kunjungan pertama pasien BPJS ke FKRTL</div>
+                  <div v-if="rujukanCheck.error" class="check-msg err">{{ rujukanCheck.error }}</div>
+                  <div v-else-if="rujukanCheck.data" class="check-msg ok">
+                    {{ rujukanCheck.data.diagnosa?.nama ?? '—' }} · Poli {{ rujukanCheck.data.poliRujukan?.nama || rujukanCheck.data.poliRujukan?.kode || '—' }}
+                    · {{ rujukanCheck.data.provPerujuk?.nama ?? '—' }} · {{ rujukanCheck.data.tglKunjungan ?? '—' }}
+                  </div>
                 </div>
                 <div v-else-if="form.sepType === 'kontrol'" class="field full">
                   <label class="field-lbl">No. Surat Kontrol (SC)</label>
@@ -2574,6 +3016,11 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <!-- Banner: kunjungan ini hasil rujukan internal antar-poli -->
+            <div v-if="visitDetailRow.classification === 'Rujukan Internal'" class="vd-rujuk-banner">
+              ↪ Kunjungan ini <b>rujukan internal</b>{{ visitDetailRow.internalRefFrom ? ' dari ' + visitDetailRow.internalRefFrom : '' }}.
+            </div>
+
             <!-- SEP — hanya untuk pasien BPJS -->
             <div v-if="visitDetailRow.guarantor === 'BPJS'" class="vd-section">
               <div class="vd-section-row">
@@ -2581,22 +3028,66 @@ onUnmounted(() => {
                   <div class="vd-section-title">SEP (Surat Eligibilitas Peserta)</div>
                   <div class="vd-section-val">{{ visitDetailRow.noSep ?? 'Belum terbit' }}</div>
                 </div>
-                <span class="badge-soon">Segera Hadir</span>
+                <span v-if="visitDetailRow.noSep" class="badge-soon" style="background:#dcfce7;color:#166534">Terbit</span>
               </div>
               <div class="vd-actions">
-                <button class="btn btn-sm btn-secondary" disabled title="Cetak SEP — aktif setelah bridging BPJS VClaim">
+                <button v-if="!visitDetailRow.noSep" class="btn btn-sm btn-primary" :disabled="sepAction.loading" @click="terbitkanSep">
                   <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
-                  Cetak SEP
+                  {{ sepAction.loading ? 'Menerbitkan…' : 'Terbitkan SEP' }}
                 </button>
-                <button class="btn btn-sm btn-secondary" disabled title="Update SEP — aktif setelah bridging BPJS VClaim">
-                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-                  Update SEP
-                </button>
-                <button class="btn btn-sm btn-danger" disabled title="Hapus SEP — aktif setelah bridging BPJS VClaim">
-                  <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-                  Hapus SEP
-                </button>
+                <template v-else>
+                  <button class="btn btn-sm btn-primary" :disabled="sepEdit.loading" @click="startEditSep">
+                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    Edit SEP
+                  </button>
+                  <button class="btn btn-sm btn-danger" :disabled="sepAction.loading" @click="batalkanSep">
+                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                    {{ sepAction.loading ? 'Membatalkan…' : 'Batalkan SEP' }}
+                  </button>
+                </template>
               </div>
+
+              <!-- Form Edit SEP (PUT /SEP/2.0/update) — field ringkas -->
+              <div v-if="sepEdit.open" class="vd-sep-edit">
+                <div class="vd-sep-grid">
+                  <div class="fg-sm">
+                    <label>Kelas Rawat</label>
+                    <select v-model="sepEdit.kls_rawat" class="form-input">
+                      <option value="1">Kelas 1</option>
+                      <option value="2">Kelas 2</option>
+                      <option value="3">Kelas 3</option>
+                    </select>
+                  </div>
+                  <div class="fg-sm">
+                    <label>Diagnosa Awal (ICD-10)</label>
+                    <input v-model="sepEdit.diag_awal" class="form-input" placeholder="mis. H25.9" />
+                  </div>
+                  <div class="fg-sm">
+                    <label>No. Telp</label>
+                    <input v-model="sepEdit.no_telp" class="form-input" placeholder="08…" />
+                  </div>
+                  <div class="fg-sm">
+                    <label>Flag Katarak</label>
+                    <select v-model="sepEdit.katarak" class="form-input">
+                      <option value="0">Tidak</option>
+                      <option value="1">Ya</option>
+                    </select>
+                  </div>
+                  <div class="fg-sm fg-wide">
+                    <label>Catatan</label>
+                    <input v-model="sepEdit.catatan" class="form-input" placeholder="Catatan SEP…" />
+                  </div>
+                </div>
+                <div class="vd-actions">
+                  <button class="btn btn-sm btn-primary" :disabled="sepEdit.loading" @click="saveEditSep">
+                    {{ sepEdit.loading ? 'Menyimpan…' : 'Simpan ke BPJS' }}
+                  </button>
+                  <button class="btn btn-sm btn-secondary" :disabled="sepEdit.loading" @click="sepEdit.open = false">Batal</button>
+                </div>
+                <div class="hint">Poli &amp; DPJP tetap dari pemetaan Jadwal Dokter (tak diubah di sini).</div>
+              </div>
+
+              <div v-else class="hint">SEP otomatis memakai pemetaan poli &amp; DPJP dari Jadwal Dokter. Aktif setelah bridging VClaim dinyalakan.</div>
             </div>
 
             <!-- SKDP / Surat Kontrol — hanya pasien BPJS -->
@@ -2604,19 +3095,44 @@ onUnmounted(() => {
               <div class="vd-section-row">
                 <div>
                   <div class="vd-section-title">SKDP / Surat Kontrol</div>
-                  <div class="vd-section-val">{{ visitDetailRow.controlLetter ?? 'Belum ada' }}</div>
+                  <div class="vd-section-val">{{ skAction.data?.no_surat_kontrol ?? 'Belum ada' }}</div>
+                  <div v-if="skAction.data?.tanggal_rencana_kontrol" class="hint">
+                    Kontrol: {{ skAction.data.tanggal_rencana_kontrol }}
+                  </div>
                 </div>
-                <span class="badge-soon">Segera Hadir</span>
+                <span v-if="skAction.data?.status === 'SUCCESS'" class="badge-soon" style="background:#dcfce7;color:#166534">Terbit</span>
+                <span v-else-if="skAction.data?.status === 'DRAFT'" class="badge-soon" style="background:#fef9c3;color:#854d0e">Draft</span>
+                <span v-else-if="skAction.data?.status === 'FAILED'" class="badge-soon" style="background:#fee2e2;color:#991b1b">Gagal</span>
               </div>
-              <div class="vd-actions">
-                <button class="btn btn-sm btn-secondary" disabled title="Buat SKDP — aktif setelah bridging BPJS VClaim">
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-                  Buat SKDP
-                </button>
-                <button class="btn btn-sm btn-secondary" disabled title="Update SKDP — aktif setelah bridging BPJS VClaim">
-                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-                  Update SKDP
-                </button>
+
+              <!-- SUCCESS → boleh edit tanggal kontrol (PUT VClaim) -->
+              <template v-if="skAction.data?.status === 'SUCCESS'">
+                <div v-if="!skAction.editing" class="vd-actions">
+                  <button class="btn btn-sm btn-primary" @click="startEditSuratKontrol">
+                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    Edit Tanggal Kontrol
+                  </button>
+                </div>
+                <div v-else class="vd-edit-sk">
+                  <input type="date" v-model="skAction.newDate" class="form-input" style="max-width:200px" />
+                  <button class="btn btn-sm btn-primary" :disabled="skAction.loading" @click="saveEditSuratKontrol">
+                    {{ skAction.loading ? 'Menyimpan…' : 'Simpan ke BPJS' }}
+                  </button>
+                  <button class="btn btn-sm btn-secondary" :disabled="skAction.loading" @click="skAction.editing = false">Batal</button>
+                </div>
+                <div class="hint">Mengubah tanggal kontrol di VClaim (PUT RencanaKontrol/v2/Update).</div>
+              </template>
+
+              <!-- DRAFT → diterbitkan otomatis oleh dokter saat finalisasi -->
+              <div v-else-if="skAction.data?.status === 'DRAFT'" class="hint">
+                Draft dibuat dokter. Akan terbit otomatis ke VClaim saat dokter finalisasi pemeriksaan.
+              </div>
+              <!-- FAILED → bisa diterbitkan ulang dari Bridging -->
+              <div v-else-if="skAction.data?.status === 'FAILED'" class="hint">
+                Penerbitan gagal — coba terbitkan ulang dari menu Bridging.
+              </div>
+              <div v-else class="hint">
+                Belum ada Surat Kontrol. Dibuat saat dokter menentukan tanggal kontrol (planning Pulang).
               </div>
             </div>
 
@@ -2695,16 +3211,86 @@ onUnmounted(() => {
                 </span>
               </div>
 
-              <div class="detail-grid">
-                <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ profilePatient.no_rm ?? '—' }}</span></div>
-                <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik ?? '—' }}</span></div>
-                <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
-                <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
-                <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone ?? '—' }}</span></div>
-                <div class="cf"><span class="cf-k">Golongan Darah</span><span class="cf-v">{{ profilePatient.blood_type ?? '—' }}</span></div>
-                <div class="cf"><span class="cf-k">Provinsi</span><span class="cf-v">{{ profilePatient.province ?? '—' }}</span></div>
-                <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ profilePatient.address ?? '—' }}</span></div>
-              </div>
+              <!-- MODE BACA -->
+              <template v-if="!profileEdit.open">
+                <div class="detail-grid">
+                  <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ profilePatient.no_rm ?? '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik ?? '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
+                  <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
+                  <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Golongan Darah</span><span class="cf-v">{{ profilePatient.blood_type || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Provinsi</span><span class="cf-v">{{ profilePatient.province || '—' }}</span></div>
+                  <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ profilePatient.address || '—' }}</span></div>
+                </div>
+                <div class="detail-edit-bar">
+                  <button class="btn btn-secondary btn-sm" @click="startProfileEdit">
+                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    Edit Data Pasien
+                  </button>
+                </div>
+              </template>
+
+              <!-- MODE EDIT -->
+              <template v-else>
+                <div class="detail-edit-grid">
+                  <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v locked">{{ profilePatient.no_rm ?? '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v locked">{{ profilePatient.nik ?? '—' }}</span></div>
+
+                  <div class="fg-sm fg-wide">
+                    <label>Nama Lengkap <span class="req">*</span></label>
+                    <input v-model="profileEdit.name" class="form-input" placeholder="Nama pasien" />
+                    <div v-if="profileEdit.errors?.name" class="fld-err">{{ profileEdit.errors.name[0] }}</div>
+                  </div>
+
+                  <div class="fg-sm">
+                    <label>Tanggal Lahir</label>
+                    <input type="date" v-model="profileEdit.date_of_birth" class="form-input" :max="todayStr" />
+                    <div v-if="profileEdit.errors?.date_of_birth" class="fld-err">{{ profileEdit.errors.date_of_birth[0] }}</div>
+                  </div>
+                  <div class="fg-sm">
+                    <label>Jenis Kelamin</label>
+                    <select v-model="profileEdit.gender" class="form-input">
+                      <option value="L">Laki-laki</option>
+                      <option value="P">Perempuan</option>
+                    </select>
+                  </div>
+
+                  <div class="fg-sm">
+                    <label>No. Telepon</label>
+                    <input v-model="profileEdit.phone" class="form-input" placeholder="08xx-xxxx-xxxx" />
+                    <div v-if="profileEdit.errors?.phone" class="fld-err">{{ profileEdit.errors.phone[0] }}</div>
+                  </div>
+                  <div class="fg-sm">
+                    <label>Golongan Darah</label>
+                    <select v-model="profileEdit.blood_type" class="form-input">
+                      <option value="">—</option>
+                      <option value="A">A</option>
+                      <option value="B">B</option>
+                      <option value="AB">AB</option>
+                      <option value="O">O</option>
+                    </select>
+                  </div>
+
+                  <div class="fg-sm fg-wide">
+                    <label>Provinsi</label>
+                    <input v-model="profileEdit.province" class="form-input" placeholder="mis. Nusa Tenggara Barat" />
+                    <div v-if="profileEdit.errors?.province" class="fld-err">{{ profileEdit.errors.province[0] }}</div>
+                  </div>
+
+                  <div class="fg-sm fg-wide">
+                    <label>Alamat</label>
+                    <textarea v-model="profileEdit.address" class="form-input" rows="2" placeholder="Alamat lengkap"></textarea>
+                    <div v-if="profileEdit.errors?.address" class="fld-err">{{ profileEdit.errors.address[0] }}</div>
+                  </div>
+                </div>
+                <div class="detail-edit-bar">
+                  <button class="btn btn-secondary btn-sm" :disabled="profileEdit.loading" @click="cancelProfileEdit">Batal</button>
+                  <button class="btn btn-primary btn-sm" :disabled="profileEdit.loading" @click="saveProfileEdit">
+                    {{ profileEdit.loading ? 'Menyimpan…' : 'Simpan Perubahan' }}
+                  </button>
+                </div>
+              </template>
             </template>
 
             <!-- TAB 2: Riwayat kunjungan — paginated + filter tanggal -->
@@ -2724,7 +3310,14 @@ onUnmounted(() => {
               </div>
               <template v-else>
                 <div class="visit-history">
-                  <div v-for="(v, i) in profileVisits" :key="v.id" class="vh-row">
+                  <button
+                    v-for="(v, i) in profileVisits"
+                    :key="v.id"
+                    type="button"
+                    class="vh-row vh-row-btn"
+                    title="Lihat detail kunjungan (edit/update SEP & Surat Kontrol)"
+                    @click="openVisitDetailFromRiwayat(v)"
+                  >
                     <div class="vh-num">{{ (riwayatMeta.current_page - 1) * RIWAYAT_PER_PAGE + i + 1 }}</div>
                     <PatientAvatar :name="profilePatient.name" :src="v.photo" :size="48" radius="10px" />
                     <div class="vh-body">
@@ -2744,7 +3337,8 @@ onUnmounted(() => {
                         <span v-if="v.noSep">· SEP {{ v.noSep }}</span>
                       </div>
                     </div>
-                  </div>
+                    <svg class="vh-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
                 </div>
 
                 <div v-if="riwayatMeta.last_page > 1" class="table-pager">
@@ -2899,6 +3493,10 @@ onUnmounted(() => {
 
 /* TABLE TOOLBAR */
 .table-toolbar { display: flex; gap: 0.5rem; align-items: center; padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gb); flex-wrap: wrap; }
+.unfinished-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 8px; border: 1px solid #fca5a5; background: #fff; color: #b91c1c; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.unfinished-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.unfinished-toggle:hover { background: #fef2f2; }
+.unfinished-toggle.active { background: #dc2626; border-color: #dc2626; color: #fff; }
 
 /* CALLABLE QUEUE */
 .call-card { border-color: var(--ga); }
@@ -3202,15 +3800,54 @@ onUnmounted(() => {
 .vd-name-link svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .vd-insurer { font-size: 12px; color: var(--tu); }
 .vd-section { margin-top: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--gb); border-radius: 12px; background: var(--bi); }
+.vd-rujuk-banner { margin-top: 1rem; padding: 0.6rem 0.85rem; border-radius: 9px; background: #cffafe; border: 1px solid #a5f3fc; color: #0e7490; font-size: 12.5px; }
+.vd-rujuk-banner b { color: #0e7490; }
 .vd-section-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .vd-section-title { font-size: 11px; font-weight: 700; color: var(--tm); text-transform: uppercase; letter-spacing: 0.03em; }
 .vd-section-val { font-size: 14px; font-weight: 600; color: var(--td); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .vd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.vd-edit-sk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.vd-sep-edit { margin-top: 10px; padding: 0.7rem; border: 1px dashed var(--gb); border-radius: 9px; background: var(--bs); }
+.vd-sep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fg-sm { display: flex; flex-direction: column; gap: 3px; }
+.fg-sm label { font-size: 10.5px; font-weight: 600; color: var(--gd); }
+.fg-sm.fg-wide { grid-column: 1 / -1; }
 .section-label { font-size: 11px; font-weight: 700; color: var(--gd); text-transform: uppercase; letter-spacing: 0.05em; padding-top: 0.4rem; border-top: 1px solid var(--gb); margin-top: 0.2rem; }
 .section-label:first-child { border-top: none; padding-top: 0; margin-top: 0; }
 .lbl-note { font-weight: 500; color: var(--tu); text-transform: none; letter-spacing: 0; font-size: 10px; }
 .hint { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
 .hint code { background: var(--bi); padding: 1px 5px; border-radius: 4px; font-size: 10px; color: var(--ga); font-weight: 600; }
+
+/* Cek eligibilitas BPJS inline (Cek Peserta / Cek Rujukan) */
+.inline-check { display: flex; gap: 6px; align-items: stretch; }
+.inline-check .form-input { flex: 1; }
+.btn-check { padding: 0 12px; border-radius: 7px; border: 1px solid #1763d4; background: #fff; color: #1763d4; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn-check:disabled { opacity: 0.55; cursor: not-allowed; }
+.check-msg { font-size: 11.5px; margin-top: 4px; padding: 5px 8px; border-radius: 6px; line-height: 1.4; }
+.check-msg.err { background: #fef3c7; color: #92400e; }
+.check-msg.ok { background: #dcfce7; color: #166534; }
+.check-msg .st-ok { color: #166534; font-weight: 600; }
+.check-msg .st-warn { color: #991b1b; font-weight: 600; }
+
+/* Aksi Cepat — trigger button (search bar default hidden) */
+.qa-trigger { justify-content: flex-start; gap: 8px; }
+.qa-trigger .qa-caret { margin-left: auto; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.18s; }
+.qa-trigger .qa-caret.open { transform: rotate(180deg); }
+.qa-trigger-on { background: var(--gl); color: var(--gd); border: 1px solid var(--ga); }
+
+/* Aksi Cepat — panel cek (rujukan / status BPJS) */
+.qa-rujukan { display: flex; flex-direction: column; gap: 8px; padding: 2px 2px 6px; }
+.qa-lbl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: var(--tm); text-transform: uppercase; letter-spacing: 0.03em; }
+.qa-lbl svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.seg-toggle.mini { padding: 3px; gap: 4px; }
+.seg-toggle.mini .seg { height: 30px; font-size: 11.5px; }
+.qa-rujukan-res { display: flex; flex-direction: column; gap: 5px; padding: 9px 11px; border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 9px; }
+.qa-res-row { display: flex; gap: 8px; font-size: 11.5px; line-height: 1.35; }
+.qa-res-k { flex-shrink: 0; width: 92px; color: var(--tu); font-weight: 600; }
+.qa-res-v { color: var(--td); font-weight: 500; word-break: break-word; }
+.qa-res-v.st-ok { color: #166534; font-weight: 700; }
+.qa-res-v.st-warn { color: #991b1b; font-weight: 700; }
+.qa-use-btn { margin-top: 4px; }
 
 /* SEGMENT TOGGLE */
 .seg-toggle { display: flex; gap: 6px; background: var(--bi); padding: 4px; border-radius: 11px; }
@@ -3225,6 +3862,17 @@ onUnmounted(() => {
 /* BANNERS / INFO */
 .found-banner { display: flex; align-items: center; gap: 8px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 9px; padding: 10px 13px; font-size: 12px; font-weight: 500; }
 .found-banner svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+
+/* Banner kunjungan aktif — merah peringatan (registrasi akan ditolak) */
+.active-visit-banner { display: flex; align-items: flex-start; gap: 10px; background: #fef2f2; border: 1.5px solid #ef4444; border-radius: 10px; padding: 11px 14px; color: #000; }
+.active-visit-banner svg { fill: none; stroke: #dc2626; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; margin-top: 1px; }
+.active-visit-banner .avb-body { display: flex; flex-direction: column; gap: 3px; }
+.active-visit-banner strong { font-size: 13px; color: #991b1b; }
+.active-visit-banner .avb-meta { font-size: 12px; color: #000; }
+.active-visit-banner .avb-meta b { color: #991b1b; }
+.active-visit-banner .avb-note { font-size: 11.5px; color: #7f1d1d; }
+/* badge kecil di dropdown hasil cari */
+.combo-av-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600; color: #b91c1c; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 999px; padding: 1px 7px; vertical-align: middle; }
 
 /* Banner Preop Bedah — hijau (hari ini) / kuning (hari lain) */
 .preop-banner { display: flex; flex-direction: column; gap: 8px; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; border: 1.5px solid; }
@@ -3286,6 +3934,12 @@ onUnmounted(() => {
 .visit-history { display: flex; flex-direction: column; gap: 8px; }
 .vh-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--gb); border-radius: 12px; background: var(--bc); transition: border-color 0.15s; }
 .vh-row:hover { border-color: var(--ga); }
+/* Baris riwayat sebagai tombol → buka Detail Kunjungan */
+.vh-row-btn { width: 100%; text-align: left; cursor: pointer; font: inherit; }
+.vh-row-btn:hover { border-color: var(--ga); background: var(--bi); }
+.vh-row-btn:active { transform: translateY(1px); }
+.vh-chevron { flex-shrink: 0; width: 16px; height: 16px; fill: none; stroke: var(--gb); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: stroke 0.15s, transform 0.15s; }
+.vh-row-btn:hover .vh-chevron { stroke: var(--ga); transform: translateX(2px); }
 .vh-num { flex-shrink: 0; width: 20px; font-size: 12px; font-weight: 700; color: var(--tu); font-variant-numeric: tabular-nums; text-align: right; }
 .vh-date, .vh-date-inline { font-size: 12px; font-weight: 700; color: var(--gd); font-variant-numeric: tabular-nums; }
 .vh-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
@@ -3296,6 +3950,17 @@ onUnmounted(() => {
 .vh-meta svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .vh-meta.vh-sub { font-variant-numeric: tabular-nums; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem 1.1rem; }
+
+/* Detail Pasien — edit/update */
+.detail-edit-bar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--gb); }
+.detail-edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem 1rem; }
+.detail-edit-grid .fg-sm label { text-transform: uppercase; letter-spacing: 0.03em; color: var(--tm); }
+.detail-edit-grid .form-input { width: 100%; }
+.detail-edit-grid textarea.form-input { resize: vertical; min-height: 44px; }
+.cf-v.locked { color: var(--tu); font-weight: 500; }
+.req { color: #dc2626; font-weight: 700; }
+.fld-err { font-size: 10.5px; color: #dc2626; margin-top: 2px; }
+@media (max-width: 560px) { .detail-edit-grid { grid-template-columns: 1fr; } }
 
 /* MODAL FOOTER */
 .modal-foot { display: flex; align-items: center; gap: 0.6rem; padding: 1.1rem 1.5rem; border-top: 1px solid var(--gb); background: var(--bi); }

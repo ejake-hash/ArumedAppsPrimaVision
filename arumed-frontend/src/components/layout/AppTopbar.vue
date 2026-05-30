@@ -1,8 +1,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const auth = useAuthStore()
 const now = ref(new Date())
 let timer = null
 
@@ -16,6 +18,22 @@ const clock = computed(() =>
 )
 
 const title = computed(() => route.meta?.title ?? 'Arumed Apps')
+
+// ─── Identitas dokter (hanya akun dokter) ───────────────────────────────────
+// Data nama + SIP dari akun login (Data Pengguna → employee). Ditampilkan inline
+// di topbar (tanpa card), tidak hanya di RME Dokter.
+const isDoctorAccount = computed(() => {
+  const prof = (auth.user?.employee?.profession ?? '').toLowerCase()
+  const role = (auth.user?.role?.name ?? '').toLowerCase()
+  const rdisp = (auth.user?.role?.display_name ?? '').toLowerCase()
+  return prof.includes('dokter') || role.includes('dokter') || rdisp.includes('dokter')
+})
+const doctorName = computed(() => {
+  const n = auth.user?.employee?.name ?? auth.user?.name ?? ''
+  if (!n) return 'Dokter'
+  return /^dr\.?\s/i.test(n) ? n : `dr. ${n}`
+})
+const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
 </script>
 
 <template>
@@ -26,6 +44,10 @@ const title = computed(() => route.meta?.title ?? 'Arumed Apps')
       <span>{{ title }}</span>
     </div>
     <div class="topbar-right">
+      <div v-if="isDoctorAccount" class="topbar-doctor">
+        <span class="topbar-doctor-name">{{ doctorName }}</span>
+        <span class="topbar-doctor-sip">SIP: {{ doctorSip || '—' }}</span>
+      </div>
       <div class="ws-indicator">
         <span class="ws-dot"></span>
         <span>Realtime aktif</span>
@@ -79,6 +101,16 @@ const title = computed(() => route.meta?.title ?? 'Arumed Apps')
   color: var(--tm);
   font-variant-numeric: tabular-nums;
 }
+.topbar-doctor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+  padding-right: 0.75rem;
+  border-right: 1px solid var(--gb);
+}
+.topbar-doctor-name { font-size: 13px; font-weight: 700; color: #000; }
+.topbar-doctor-sip { font-size: 11px; font-weight: 500; color: #000; }
 .ws-indicator {
   display: flex;
   align-items: center;

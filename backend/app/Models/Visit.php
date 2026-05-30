@@ -30,6 +30,9 @@ class Visit extends Model
         'classification',
         'visit_type',
         'surgery_schedule_id',
+        'parent_visit_id',
+        'internal_referral_from_schedule_id',
+        'internal_referral_reason',
         'current_station',
         'guarantor_type',
         'triase_completed_at',
@@ -114,6 +117,24 @@ class Visit extends Model
     public function surgerySchedule(): BelongsTo
     {
         return $this->belongsTo(SurgerySchedule::class);
+    }
+
+    /** Visit induk (jika kunjungan ini hasil rujukan internal antar-poli). */
+    public function parentVisit(): BelongsTo
+    {
+        return $this->belongsTo(Visit::class, 'parent_visit_id');
+    }
+
+    /** Visit anak hasil rujukan internal dari kunjungan ini. */
+    public function childVisits(): HasMany
+    {
+        return $this->hasMany(Visit::class, 'parent_visit_id');
+    }
+
+    /** Jadwal dokter/poli ASAL rujukan internal (untuk label "Rujukan dari Poli X"). */
+    public function internalReferralFromSchedule(): BelongsTo
+    {
+        return $this->belongsTo(DoctorSchedule::class, 'internal_referral_from_schedule_id');
     }
 
     public function queues(): HasMany

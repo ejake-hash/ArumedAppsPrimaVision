@@ -57,6 +57,10 @@ class UserController extends Controller
             'password'    => 'nullable|string|min:6',
             'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'nullable|boolean',
+            // Profil nakes (ditulis ke pegawai tertaut bila ada). NIP unik lintas pegawai.
+            'nip'         => 'nullable|string|max:20|unique:employees,nip',
+            'sip'         => 'nullable|string|max:50',
+            'str'         => 'nullable|string|max:50',
         ]);
 
         $data = $this->service->create($validated);
@@ -69,14 +73,25 @@ class UserController extends Controller
 
     public function update(Request $request, string $id): JsonResponse
     {
+        // NIP unik lintas pegawai, tapi abaikan pegawai milik user ini sendiri agar
+        // edit tanpa mengubah NIP tidak ditolak. employee_id boleh null (tak ada nakes).
+        $ownEmployeeId = \App\Models\User::whereKey($id)->value('employee_id');
+        $nipRule = 'nullable|string|max:20|unique:employees,nip'
+            . ($ownEmployeeId ? ',' . $ownEmployeeId : '');
+
         $validated = $request->validate([
             'name'        => 'sometimes|string|max:100',
             'username'    => 'sometimes|string|max:50|unique:users,username,'.$id,
             'email'       => 'sometimes|email|unique:users,email,'.$id,
             'role_id'     => 'sometimes|uuid|exists:roles,id',
             'employee_id' => 'nullable|uuid|exists:employees,id',
+            'password'    => 'nullable|string|min:6',
             'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'sometimes|boolean',
+            // Profil nakes (ditulis ke pegawai tertaut bila ada).
+            'nip'         => $nipRule,
+            'sip'         => 'nullable|string|max:50',
+            'str'         => 'nullable|string|max:50',
         ]);
 
         try {

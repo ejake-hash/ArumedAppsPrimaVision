@@ -211,26 +211,53 @@ class QueueService
     }
 
     /**
-     * Lewati / skip pasien: pindahkan ke akhir antrean station yang sama.
+     * Lewati / skip pasien: turunkan SATU posisi — tukar urutan dengan pasien
+     * berikutnya yang masih aktif (WAITING/CALLED) di station yang sama. Bila
+     * pasien ini sudah paling bawah (tak ada yang aktif di bawahnya), tetap di
+     * tempat (no-op posisi). Status selalu di-reset ke WAITING (kalau tadinya
+     * CALLED, panggilannya dibatalkan).
      */
     public function lewati(string $queueId): Queue
     {
-        $queue = Queue::whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
-            ->findOrFail($queueId);
+        return DB::transaction(function () use ($queueId) {
+            $queue = Queue::whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+                ->lockForUpdate()
+                ->findOrFail($queueId);
 
-        $maxSeq = Queue::byStation($queue->station)
-            ->whereDate('created_at', today())
-            ->max('queue_sequence') ?? 0;
+            // Pasien berikutnya = baris aktif dengan queue_sequence terkecil yang
+            // masih lebih besar dari baris ini (kandidat layanan setelah ini).
+            $next = Queue::byStation($queue->station)
+                ->whereDate('created_at', today())
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+                ->where('id', '!=', $queue->id)
+                ->where('queue_sequence', '>', $queue->queue_sequence)
+                ->orderBy('queue_sequence')
+                ->lockForUpdate()
+                ->first();
 
-        $queue->update([
-            'queue_sequence' => $maxSeq + 1,
-            'status'         => Queue::STATUS_WAITING,
-            'called_at'      => null,
-        ]);
+            if ($next) {
+                // Tukar urutan: pasien ini turun 1, pasien berikutnya naik 1.
+                $thisSeq = $queue->queue_sequence;
+                $nextSeq = $next->queue_sequence;
+                $next->update(['queue_sequence' => $thisSeq]);
+                $queue->update([
+                    'queue_sequence' => $nextSeq,
+                    'status'         => Queue::STATUS_WAITING,
+                    'called_at'      => null,
+                ]);
+                $this->broadcastQueueUpdate($next->fresh(['visit.patient']));
+            } else {
+                // Sudah paling bawah — cuma reset status (batalkan panggilan bila CALLED).
+                $queue->update([
+                    'status'    => Queue::STATUS_WAITING,
+                    'called_at' => null,
+                ]);
+            }
 
-        $this->broadcastQueueUpdate($queue->fresh(['visit.patient']));
+            $this->broadcastQueueUpdate($queue->fresh(['visit.patient']));
 
-        return $queue->fresh(['visit.patient']);
+            return $queue->fresh(['visit.patient']);
+        });
     }
 
     /**
@@ -263,7 +290,7 @@ class QueueService
      */
     public function advanceFromStation(string $queueId, string $expectedStation): array
     {
-        return DB::transaction(function () use ($queueId, $expectedStation) {
+        $result = DB::transaction(function () use ($queueId, $expectedStation) {
             $queue = Queue::with('visit')->findOrFail($queueId);
 
             if ($queue->station !== $expectedStation) {
@@ -339,6 +366,51 @@ class QueueService
                 'next_queue'   => $nextQueue,
             ];
         });
+
+        // Lapor waktu antrean ke BPJS SETELAH commit (post-transaction) — non-blocking:
+        // kegagalan/timeout/credential-kosong tidak boleh membatalkan transisi lokal.
+        $this->reportAntreanWaktu($result['visit'] ?? null, $expectedStation, $result['next_station'] ?? null);
+
+        return $result;
+    }
+
+    /**
+     * Kirim updatewaktu ke BPJS Antrean untuk kunjungan BPJS yang punya kode booking.
+     * taskid BPJS dipetakan dari station: DOKTER mulai=3/selesai=4, FARMASI mulai=5/selesai=6.
+     * Selalu dibungkus try/catch + hanya jika ANTREAN aktif — TIDAK pernah melempar.
+     */
+    private function reportAntreanWaktu(?Visit $visit, string $fromStation, ?string $nextStation): void
+    {
+        try {
+            if (! $visit || $visit->guarantor_type !== 'BPJS' || empty($visit->bpjs_booking_code)) {
+                return;
+            }
+
+            $antrean = app(\App\Services\BpjsAntreanService::class);
+            if (! $antrean->isEnabled()) {
+                return;
+            }
+
+            // Pemetaan taskid: selesai di station = lapor task selesai station tsb.
+            $taskMap = [
+                'DOKTER'  => 4, // selesai layan poli
+                'FARMASI' => 6, // selesai farmasi
+                'KASIR'   => 7, // selesai (pulang)
+            ];
+            $taskId = $taskMap[$fromStation] ?? null;
+            if ($taskId === null) {
+                return; // station lain (ADMISI/TRIASE/dll) tidak wajib lapor per BPJS
+            }
+
+            $antrean->updateWaktuAntrean([
+                'kodebooking' => $visit->bpjs_booking_code,
+                'taskid'      => $taskId,
+                'waktu'       => (int) (microtime(true) * 1000),
+            ], $visit->id);
+        } catch (\Throwable $e) {
+            // Diam-diam — sudah tercatat di bpjs_antrean_logs lewat service; jangan ganggu flow.
+            \Illuminate\Support\Facades\Log::warning('BPJS updatewaktu gagal: ' . $e->getMessage());
+        }
     }
 
     /**

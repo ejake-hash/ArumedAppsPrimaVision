@@ -178,6 +178,26 @@ class KasirController extends Controller
         return $this->ok($invoice, 'Tagihan dikonfirmasi ditanggung asuransi. Kunjungan selesai.');
     }
 
+    /**
+     * POST /kasir/invoice/{id}/confirm-bpjs
+     * Konfirmasi kunjungan BPJS — pasien tidak membayar (ditagih via klaim INA-CBG).
+     * Body: { notes? }
+     */
+    public function confirmBpjs(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'notes' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $invoice = $this->service->confirmBpjsCoverage($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($invoice, 'Kunjungan BPJS dikonfirmasi. Kunjungan selesai.');
+    }
+
     /** POST /kasir/invoice/{id}/cancel */
     public function cancelInvoice(string $id): JsonResponse
     {
@@ -308,6 +328,35 @@ class KasirController extends Controller
         return $this->ok(null, 'Setting watermark diperbarui');
     }
 
+    /** GET /kasir/print-settings — toggle elemen cetak kwitansi/rincian. */
+    public function getPrintSettings(): JsonResponse
+    {
+        return $this->ok($this->service->getReceiptPrintSettings());
+    }
+
+    /**
+     * PUT /kasir/print-settings
+     * Body: { show_logo?, show_stamp?, show_esign?, show_footer?, show_watermark? }
+     */
+    public function updatePrintSettings(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'show_logo'      => 'sometimes|boolean',
+            'show_stamp'     => 'sometimes|boolean',
+            'show_esign'     => 'sometimes|boolean',
+            'show_footer'    => 'sometimes|boolean',
+            'show_watermark' => 'sometimes|boolean',
+        ]);
+
+        try {
+            $settings = $this->service->updateReceiptPrintSettings($validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($settings, 'Setting cetak diperbarui');
+    }
+
     // =========================================================================
     // RECEIPT & LAPORAN
     // =========================================================================
@@ -325,6 +374,17 @@ class KasirController extends Controller
         }
 
         return $this->ok($receiptData, 'Data kwitansi siap cetak');
+    }
+
+    /**
+     * GET /kasir/tarif-tindakan?visit_id=…
+     * Daftar tindakan + harga per-penjamin (untuk Edit Tagihan kasir).
+     */
+    public function tarifTindakan(Request $request): JsonResponse
+    {
+        $request->validate(['visit_id' => 'required|uuid|exists:visits,id']);
+
+        return $this->ok($this->service->getTarifTindakan($request->query('visit_id')));
     }
 
     /**

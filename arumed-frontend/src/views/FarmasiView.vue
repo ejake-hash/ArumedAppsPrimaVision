@@ -503,7 +503,7 @@ function connectInventoriWs() {
 onMounted(() => {
   fetchQueue()
   fetchStok()
-  _poll = setInterval(fetchQueue, 30_000)
+  _poll = setInterval(fetchQueue, 8_000)
   connectInventoriWs()
   pollNotifs()
   _notifPoll = setInterval(pollNotifs, 10_000)
@@ -733,6 +733,10 @@ function toast(type, msg) {
 
     <!-- STOK -->
     <div v-if="pgTab === 'stok'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Stok yang ditampilkan = <b>stok unit Farmasi</b> (yang dipakai saat penyerahan obat), bukan stok gudang. Minta transfer lewat <b>Minta Barang</b> bila kurang.</span>
+      </div>
       <div class="stok-head">
         <div class="stok-actions">
           <div class="stok-search">
@@ -837,6 +841,10 @@ function toast(type, msg) {
 
     <!-- STOK OPNAME -->
     <div v-if="pgTab === 'opname'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Opname terhadap <b>stok unit Farmasi</b>. Penyesuaian akan menyamakan stok sistem unit Farmasi dengan stok fisik di rak Farmasi (bukan gudang).</span>
+      </div>
       <div class="opname-head">
         <div class="opname-stats">
           <div class="ostat"><span class="ostat-lbl">Item</span><b>{{ opnameStats.total }}</b></div>
@@ -1213,6 +1221,10 @@ function toast(type, msg) {
 .stok-search-input { padding-left: 30px !important; width: 220px; }
 .low-alert { display: flex; align-items: center; gap: 8px; padding: 9px 13px; background: var(--eb); border: 1px solid var(--ebd); border-radius: 9px; color: var(--et); font-size: 11.5px; }
 .low-alert svg { width: 16px; height: 16px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+
+.loc-note { display: flex; align-items: center; gap: 8px; padding: 9px 13px; margin-bottom: 0.75rem; background: #eaf2fe; border: 1px solid #b9d4f7; border-radius: 9px; color: #000; font-size: 11.5px; line-height: 1.45; }
+.loc-note b { color: #000; }
+.loc-note svg { width: 16px; height: 16px; fill: none; stroke: #1763d4; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 
 .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
 /* Tabel stok — selaras dengan tabel Inventori Farmasi (.po-table) */

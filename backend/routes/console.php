@@ -14,3 +14,15 @@ Schedule::command('antrian:purge-walkin')
     ->dailyAt('00:00')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
+
+// Satu Sehat — batch sync kunjungan SELESAI hari ini (Encounter/Condition/obat).
+// 23:59 batch utama, 01:00 retry PARTIAL/FAILED. No-op bila integrasi belum aktif.
+Schedule::command('satusehat:batch-sync')
+    ->dailyAt('23:59')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();
+
+Schedule::command('satusehat:batch-sync --retry')
+    ->dailyAt('01:00')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();

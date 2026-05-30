@@ -1,10 +1,10 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useDokterStore } from '@/stores/dokterStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/auth'
-import { masterApi, dokterApi } from '@/services/api'
+import { masterApi, dokterApi, integrasiApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 
@@ -15,21 +15,7 @@ const auth       = useAuthStore()
 // ─── Status Saya Hari Ini (Jadwal Dokter quick panel) ───────────────────────
 const myEmployeeId = computed(() => auth.user?.employee?.id ?? null)
 
-// ─── Identitas Dokter (topbar) ──────────────────────────────────────────────
-// Data nama + SIP berasal dari akun pengguna yang login (Data Pengguna → employee).
-// Hanya akun dokter (profesi mengandung "Dokter" / role dokter) yang ditampilkan.
-const isDoctorAccount = computed(() => {
-  const prof = (auth.user?.employee?.profession ?? '').toLowerCase()
-  const role = (auth.user?.role?.name ?? '').toLowerCase()
-  const rdisp = (auth.user?.role?.display_name ?? '').toLowerCase()
-  return prof.includes('dokter') || role.includes('dokter') || rdisp.includes('dokter')
-})
-const doctorName = computed(() => {
-  const n = auth.user?.employee?.name ?? auth.user?.name ?? ''
-  if (!n) return 'Dokter'
-  return /^dr\.?\s/i.test(n) ? n : `dr. ${n}`
-})
-const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
+// Identitas dokter (nama + SIP) dipindah ke topbar global (AppTopbar.vue).
 const todayIso     = () => {
   const d = new Date().getDay()        // 0=Sun..6=Sat
   return d === 0 ? 7 : d               // 1=Mon..7=Sun
@@ -154,6 +140,7 @@ function mapPatient(q) {
   return {
     id:      q.id,
     visitId: v.id ?? null,
+    patientId: p.id ?? null,
     qNum:    q.queue_number,
     name:    p.name ?? '—',
     rm:      p.no_rm ?? '—',
@@ -163,6 +150,7 @@ function mapPatient(q) {
     gender:  p.gender ?? '—',
     address: p.address ?? '',
     classification: v.classification ?? '',
+    internalRefFrom: v.internal_referral_from_schedule?.poliklinik ?? null,
     poli:    ptype === 'bpjs' ? 'Poli BPJS'
            : ptype === 'asn'  ? 'Poli Asuransi'
            : 'Poli Umum',
@@ -213,9 +201,10 @@ function mapPatient(q) {
     },
     // List berikut belum di-fetch dari API saat antrian list (perlu separate call ke
     // /dokter/kunjungan/{visitId}). Default kosong supaya template tidak crash.
+    // (soapHistory tidak lagi di sini — di-fetch terpisah ke soapHistoryData
+    //  lewat RME aggregator saat pasien dipilih.)
     history:     [],
     penunjang:   [],
-    soapHistory: [],
     _raw: q,
   }
 }
@@ -247,8 +236,44 @@ const roRows = computed(() => {
 // ─── SOAP / CPPT: paginasi per tanggal kunjungan ─────────────────────────────
 // 1 halaman = 1 tanggal. Entri perawat + dokter di hari yang sama tetap 1 halaman.
 // Urutan descending (kunjungan terbaru = halaman pertama).
+// Sumber data = RME aggregator lintas-kunjungan pasien (di-fetch saat pasien dipilih),
+// BUKAN selP.soapHistory yang selalu kosong di mapPatient.
+const soapHistoryData = ref([])
+const soapHistoryLoading = ref(false)
+const soapPageIdx = ref(0)
+
+// Map respons RME (/rekam-medis/pasien/{id}/kunjungan) → entri kartu SOAP/CPPT.
+// Tiap visit yang punya SOAP terisi → 1 entri Dokter. Vitals perawat tetap di kartu
+// "Riwayat Kunjungan" (PerawatView), di sini fokus narasi SOAP.
+function _mapSoapHistory(rows) {
+  const out = []
+  for (const v of rows ?? []) {
+    const date = v.visit_date ?? '—'
+    const s = v.detail?.soap ?? null
+    if (s && (s.s || s.o || s.a || s.p)) {
+      out.push({ date, role: 'Dokter', S: s.s ?? '', O: s.o ?? '', A: s.a ?? '', P: s.p ?? '' })
+    }
+  }
+  return out
+}
+
+async function loadSoapHistory() {
+  const patientId = selP.value?.patientId
+  soapPageIdx.value = 0
+  if (!patientId) { soapHistoryData.value = []; return }
+  soapHistoryLoading.value = true
+  try {
+    const { data } = await dokterApi.riwayatKunjungan(patientId)
+    soapHistoryData.value = _mapSoapHistory(data.data ?? [])
+  } catch {
+    soapHistoryData.value = []
+  } finally {
+    soapHistoryLoading.value = false
+  }
+}
+
 const soapPages = computed(() => {
-  const list = selP.value?.soapHistory ?? []
+  const list = soapHistoryData.value ?? []
   const groups = new Map()
   for (const e of list) {
     const key = e.date ?? '—'
@@ -263,8 +288,12 @@ const soapPages = computed(() => {
     })
     .map(([date, entries]) => ({ date, entries }))
 })
-const soapPageIdx = ref(0)
 const currentSoapPage = computed(() => soapPages.value[soapPageIdx.value] ?? soapPages.value[0] ?? null)
+// Label di bawah tanggal: idx 0 (descending) = kunjungan terakhir, sisanya = sebelumnya.
+const soapPageLabel = computed(() => (soapPageIdx.value === 0 ? 'Kunjungan terakhir' : 'Kunjungan sebelumnya'))
+
+// Muat riwayat SOAP/CPPT tiap kali pasien (bukan sekadar kunjungan) berganti.
+watch(() => selP.value?.patientId, loadSoapHistory, { immediate: true })
 
 const tab = ref('data') // 'data' | 'pemeriksaan' | 'tindakan' | 'soap'
 const dw = ref(null)
@@ -279,8 +308,7 @@ const filtQ = computed(() => {
     list = list.filter((p) => p.status !== 'done' && p.status !== 'skip')
   }
   if (ptypeFilter.value === 'BPJS')          list = list.filter((p) => p.ptype === 'bpjs')
-  else if (ptypeFilter.value === 'Umum')     list = list.filter((p) => p.ptype === 'umum')
-  else if (ptypeFilter.value === 'Asuransi') list = list.filter((p) => p.ptype === 'asn')
+  else if (ptypeFilter.value === 'UmumAsn')  list = list.filter((p) => p.ptype === 'umum' || p.ptype === 'asn')
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
     list = list.filter((p) => p.name.toLowerCase().includes(s) || p.qNum.toLowerCase().includes(s))
@@ -291,8 +319,7 @@ const filtQ = computed(() => {
 const cWait = computed(() => patients.value.filter((p) => ['waiting', 'progress', 'penunjang', 'penunjang_done'].includes(p.status)).length)
 const cDone = computed(() => patients.value.filter((p) => p.status === 'done').length)
 const bpjsCount = computed(() => patients.value.filter((p) => p.ptype === 'bpjs' && p.status !== 'done' && p.status !== 'skip').length)
-const umumCount = computed(() => patients.value.filter((p) => p.ptype === 'umum' && p.status !== 'done' && p.status !== 'skip').length)
-const asnCount  = computed(() => patients.value.filter((p) => p.ptype === 'asn'  && p.status !== 'done' && p.status !== 'skip').length)
+const umumAsnCount = computed(() => patients.value.filter((p) => (p.ptype === 'umum' || p.ptype === 'asn') && p.status !== 'done' && p.status !== 'skip').length)
 
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
@@ -335,6 +362,13 @@ function resetFormState() {
   bedahSlotInfo.value = null
   rujukFaskes.value = ''
   rujukAlasan.value = ''
+  rujukMode.value = 'EXTERNAL'
+  internalTargets.value = []
+  internalTargetId.value = ''
+  internalReason.value = ''
+  Object.assign(rk, { faskesKode: '', faskesNama: '', poliKode: '', poliNama: '', tipeRujukan: '1', jnsPelayanan: '2', diagKode: '', diagNama: '', catatan: '' })
+  rkFaskesQ.value = ''; rkFaskesRes.value = []; rkPoliQ.value = ''; rkPoliRes.value = []
+  suratKontrol.value = null
   dxSearch.value = ''
   dxSearchSek.value = ''
   icd9Search.value = ''
@@ -342,7 +376,7 @@ function resetFormState() {
   signTimestamp.value = null
   pinInput.value = ''
   pinError.value = ''
-  showPinForm.value = false
+  showSignModal.value = false
   penunjangOrders.value = []
   showPenunjangModal.value = false
   showCustomPenunjang.value = false
@@ -516,11 +550,64 @@ async function loadPenunjangTypes() {
     penunjangTypes.value = []
   }
 }
-const penunjangOrders = ref([])   // order REQUESTED (pending) dari DB
-const hasilPenunjang  = ref([])   // hasil IN_PROGRESS/COMPLETED dari DB
+const penunjangOrders = ref([])   // order REQUESTED (pending) dari DB — KUNJUNGAN AKTIF saja
 const showPenunjangModal = ref(false)
 const selectedHasil = ref(null)
 const showHasilModal = ref(false)
+
+// Riwayat HASIL penunjang LINTAS-kunjungan (RME aggregator) — dipaginasi per tanggal
+// kunjungan seperti kartu SOAP/CPPT (kunjungan terakhir dulu, descending).
+const penunjangHistory = ref([])
+const penunjangHistoryLoading = ref(false)
+const penunjangPageIdx = ref(0)
+
+async function loadPenunjangHistory() {
+  const patientId = selP.value?.patientId
+  penunjangPageIdx.value = 0
+  if (!patientId) { penunjangHistory.value = []; return }
+  penunjangHistoryLoading.value = true
+  try {
+    const { data } = await dokterApi.riwayatPenunjang(patientId)
+    penunjangHistory.value = (data.data ?? []).map((r) => ({
+      id:            r.order_id,
+      date:          r.visit_date ?? '—',
+      name:          r.test_name ?? r.test_type,
+      eyeSide:       r.eye_side ?? '',
+      status:        r.status ?? '',
+      result:        r.summary || (r.status === 'IN_PROGRESS' ? 'Sedang diproses' : '(lihat detail hasil)'),
+      kesimpulan:    r.detail?.expertise_data?.kesimpulan ?? '',
+      ringkasan:     r.detail?.expertise_data?.ringkasan ?? '',
+      notes:         r.detail?.notes ?? '',
+      biometri:      (r.test_type === 'Biometri' && (r.detail?.expertise_data?.od || r.detail?.expertise_data?.os))
+        ? { od: r.detail.expertise_data.od ?? null, os: r.detail.expertise_data.os ?? null } : null,
+      attachmentUrl:  r.attachment_url ?? null,
+      attachmentPath: r.attachment_url ?? '',   // regex ekstensi gambar di modal pakai URL
+    }))
+  } catch {
+    penunjangHistory.value = []
+  } finally {
+    penunjangHistoryLoading.value = false
+  }
+}
+
+// Group per tanggal kunjungan (descending — terbaru di halaman pertama).
+const penunjangPages = computed(() => {
+  const groups = new Map()
+  for (const h of penunjangHistory.value) {
+    const key = h.date ?? '—'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(h)
+  }
+  return [...groups.entries()]
+    .sort((a, b) => {
+      const ta = Date.parse(a[0]), tb = Date.parse(b[0])
+      if (!Number.isNaN(ta) && !Number.isNaN(tb)) return tb - ta
+      return a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0
+    })
+    .map(([date, items]) => ({ date, items }))
+})
+const currentPenunjangPage = computed(() => penunjangPages.value[penunjangPageIdx.value] ?? penunjangPages.value[0] ?? null)
+const penunjangPageLabel = computed(() => (penunjangPageIdx.value === 0 ? 'Kunjungan terakhir' : 'Kunjungan sebelumnya'))
 
 // Modal "Dokumen Rekam Medis Pasien" (Form Registry) — dibuka dari kartu launcher
 // di Tab SOAP supaya form-form tidak memanjang ke bawah / butuh scroll panjang.
@@ -543,10 +630,11 @@ function _mapOrder(o) {
   }
 }
 
-// Muat order + hasil penunjang milik kunjungan yang dipilih.
+// Muat order penunjang PENDING milik kunjungan AKTIF (workflow order).
+// HASIL (riwayat lintas-kunjungan) di-load terpisah via loadPenunjangHistory.
 async function loadPenunjangData() {
   const visitId = selP.value?.visitId
-  if (!visitId) { penunjangOrders.value = []; hasilPenunjang.value = []; return }
+  if (!visitId) { penunjangOrders.value = []; return }
   try {
     const { data } = await dokterApi.indexOrderPenunjang(visitId)
     penunjangOrders.value = (data.data ?? [])
@@ -555,30 +643,6 @@ async function loadPenunjangData() {
   } catch { /* abaikan, biarkan list apa adanya */ }
   // Catatan: chip "Dipesan" cocok by `name` (bukan id), supaya entry persisted
   // dari backend (UUID) dan staging (tmp-id) sama-sama match dengan master `t.id`.
-  try {
-    const { data } = await dokterApi.indexHasilPenunjang(visitId)
-    hasilPenunjang.value = (data.data ?? []).map((o) => {
-      const r  = o.results?.[0] ?? null
-      const ed = r?.expertise_data ?? {}
-      return {
-        name:       o.test_type,
-        status:     o.status,
-        date:       (r?.uploaded_at ?? o.created_at ?? '').slice(0, 10) || '—',
-        kesimpulan: ed.kesimpulan ?? '',
-        ringkasan:  ed.ringkasan ?? '',
-        notes:      r?.notes ?? '',
-        // Biometri menyimpan ringkasan per-mata di expertise_data.od / .os
-        biometri:   (o.test_type === 'Biometri' && (ed.od || ed.os))
-          ? { od: ed.od ?? null, os: ed.os ?? null }
-          : null,
-        attachmentUrl:  r?.attachment_url ?? null,
-        attachmentPath: r?.attachment_path ?? '',
-        // Ringkasan teks untuk tampilan ringkas: prioritas kesimpulan → ringkasan → notes
-        result: ed.kesimpulan || ed.ringkasan || r?.notes
-          || (o.status === 'IN_PROGRESS' ? 'Sedang diproses' : '(lihat detail hasil)'),
-      }
-    })
-  } catch { /* abaikan */ }
 }
 
 // Toggle staging lokal — order baru benar-benar dikirim ke backend saat klik
@@ -671,8 +735,9 @@ async function confirmPenunjang() {
   }
 }
 
-// Muat order + hasil penunjang setiap kali kunjungan yang dipilih berganti.
+// Order pending (kunjungan aktif) di-load per visit; riwayat HASIL per pasien.
 watch(() => selP.value?.visitId, loadPenunjangData, { immediate: true })
+watch(() => selP.value?.patientId, loadPenunjangHistory, { immediate: true })
 
 // Watch utk muat tarif/tindakan/resep dipindah ke bawah (setelah deklarasi
 // `tindakanList` & `rxList`) agar tidak kena temporal dead zone saat
@@ -720,23 +785,6 @@ const tindakanSubtotal = computed(() =>
 )
 
 function fmtRp(v) { return 'Rp ' + Number(v).toLocaleString('id-ID') }
-
-// Penunjang yang sudah diperiksa (COMPLETED) + harga per penjamin — READ-ONLY.
-// Ditampilkan di Tab 3 sbg preview tagihan; kasir yang menagih (baris PENUNJANG).
-// JANGAN gabung ke tindakanList → akan dobel-tagih sebagai TINDAKAN.
-const penunjangBilling = ref([])
-async function loadPenunjangBilling() {
-  const visitId = selP.value?.visitId
-  if (!visitId) { penunjangBilling.value = []; return }
-  try {
-    const { data } = await dokterApi.penunjangBilling(visitId)
-    penunjangBilling.value = data.data ?? []
-  } catch { penunjangBilling.value = [] }
-}
-const penunjangSubtotal = computed(() =>
-  penunjangBilling.value.reduce((sum, p) => sum + (Number(p.price) || 0), 0)
-)
-const estimasiTotal = computed(() => tindakanSubtotal.value + penunjangSubtotal.value)
 
 function addTindakan(t) {
   const existing = tindakanList.value.find((x) => x.id === t.id)
@@ -842,7 +890,7 @@ async function loadTindakanResep() {
 // Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
 // Ditaruh di sini (bukan di atas dekat watch penunjang) agar `tindakanList` &
 // `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
-watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep(); loadPenunjangBilling() }, { immediate: true })
+watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep() }, { immediate: true })
 
 let _saveTindakanTimer = null
 function scheduleSaveTindakan() { clearTimeout(_saveTindakanTimer); _saveTindakanTimer = setTimeout(saveTindakan, 600) }
@@ -1041,6 +1089,174 @@ const surgeryTime = ref('')       // jam rencana bedah (HH:MM) — opsional
 const rujukFaskes = ref('')
 const rujukAlasan = ref('')
 
+// ── Rujuk: dua mode — INTERNAL (antar-poli) vs EXTERNAL (faskes lain) ─────────
+const rujukMode = ref('EXTERNAL')          // 'INTERNAL' | 'EXTERNAL'
+const internalTargets = ref([])            // [{schedule_id, doctor_name, poliklinik, is_today, day_label, start_time, ...}]
+const internalTargetsLoading = ref(false)
+const internalTargetId = ref('')           // schedule_id tujuan terpilih
+const internalReason = ref('')
+const internalSubmitting = ref(false)
+
+async function loadInternalTargets() {
+  if (!store.selectedVisitId) return
+  internalTargetsLoading.value = true
+  try {
+    const { data } = await dokterApi.rujukInternalTargets(store.selectedVisitId)
+    internalTargets.value = data.data ?? []
+  } catch {
+    internalTargets.value = []
+  } finally {
+    internalTargetsLoading.value = false
+  }
+}
+
+// Tujuan dikelompokkan per poliklinik untuk <optgroup> (rapi saat banyak jadwal).
+const internalTargetsByPoli = computed(() => {
+  const groups = {}
+  for (const t of internalTargets.value) {
+    const key = t.poliklinik || 'Tanpa Poli'
+    ;(groups[key] ||= []).push(t)
+  }
+  return Object.entries(groups).map(([poli, items]) => ({ poli, items }))
+})
+
+const internalTargetSel = computed(() =>
+  internalTargets.value.find((t) => t.schedule_id === internalTargetId.value) || null
+)
+
+// Saat masuk mode internal pertama kali, muat daftar tujuan.
+watch(rujukMode, (m) => { if (m === 'INTERNAL' && !internalTargets.value.length) loadInternalTargets() })
+
+async function submitRujukInternal() {
+  if (!store.selectedVisitId) { toast('e', 'Pasien belum dipilih'); return }
+  if (!internalTargetId.value) { toast('e', 'Pilih poli/dokter tujuan dulu'); return }
+  internalSubmitting.value = true
+  try {
+    const { data } = await dokterApi.rujukInternal(store.selectedVisitId, {
+      target_schedule_id: internalTargetId.value,
+      reason: internalReason.value || null,
+    })
+    const r = data.data ?? {}
+    const t = r.target ?? {}
+    toast('s', r.enqueued
+      ? `Dirujuk ke ${t.poliklinik} (${t.doctor_name || 'dokter'}) — masuk antrean hari ini.`
+      : `Rujukan ke ${t.poliklinik} dibuat. Pasien daftar ulang hari ${t.day_label} (${t.start_time}).`)
+    // Reset sub-form internal; biarkan daftar tujuan agar bisa rujuk lagi bila perlu.
+    internalTargetId.value = ''
+    internalReason.value = ''
+  } catch (e) {
+    toast('e', e.response?.data?.message || 'Gagal membuat rujukan internal')
+  } finally {
+    internalSubmitting.value = false
+  }
+}
+
+// ── Rujuk EXTERNAL (faskes lain). Pasien BPJS → terbit ke VClaim ─────────────
+const isBpjsPatient = computed(() => selP.value?.ptype === 'bpjs')
+const rk = reactive({
+  faskesKode: '', faskesNama: '',
+  poliKode: '', poliNama: '',
+  tipeRujukan: '1',   // 0 penuh / 1 partial / 2 rujuk balik
+  jnsPelayanan: '2',  // 1 R.Inap / 2 R.Jalan
+  diagKode: '', diagNama: '',
+  catatan: '',
+})
+const rkSubmitting = ref(false)
+
+// Referensi BPJS pickers (faskes & poli) — cari via integrasiApi.referensi.
+const rkFaskesQ = ref(''); const rkFaskesRes = ref([]); const rkFaskesLoading = ref(false)
+const rkPoliQ = ref('');   const rkPoliRes = ref([]);   const rkPoliLoading = ref(false)
+
+async function searchFaskes() {
+  const q = rkFaskesQ.value.trim()
+  if (q.length < 3) { toast('e', 'Ketik minimal 3 huruf nama faskes'); return }
+  rkFaskesLoading.value = true; rkFaskesRes.value = []
+  try {
+    const { data } = await integrasiApi.referensi('faskes', { q, jns: '2' })
+    const b = data.data ?? {}
+    rkFaskesRes.value = b.response?.faskes ?? b.response?.list ?? []
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ Integrasi belum aktif. ' : '') + 'Gagal cari faskes')
+  } finally { rkFaskesLoading.value = false }
+}
+function pickFaskes(f) { rk.faskesKode = f.kode; rk.faskesNama = f.nama; rkFaskesRes.value = []; rkFaskesQ.value = f.nama }
+
+async function searchPoliRujuk() {
+  const q = rkPoliQ.value.trim()
+  if (q.length < 2) { toast('e', 'Ketik minimal 2 huruf nama poli'); return }
+  rkPoliLoading.value = true; rkPoliRes.value = []
+  try {
+    const { data } = await integrasiApi.referensi('poli', { q })
+    const b = data.data ?? {}
+    rkPoliRes.value = b.response?.poli ?? b.response?.list ?? []
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ Integrasi belum aktif. ' : '') + 'Gagal cari poli')
+  } finally { rkPoliLoading.value = false }
+}
+function pickPoliRujuk(p) { rk.poliKode = p.kode; rk.poliNama = p.nama; rkPoliRes.value = []; rkPoliQ.value = p.nama }
+
+// Prefill diagnosa rujukan dari diagnosis utama dokter (bisa diubah manual).
+watch(diagnosisUtama, (d) => {
+  if (d && !rk.diagKode) { rk.diagKode = d.code ?? ''; rk.diagNama = d.name ?? '' }
+}, { immediate: true })
+
+async function submitRujukKeluar() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Pilih pasien dulu'); return }
+  if (!rk.faskesKode) { toast('e', 'Pilih faskes tujuan dulu'); return }
+  if (!rk.diagKode)   { toast('e', 'Diagnosa rujukan wajib (isi diagnosis di Tab 4)'); return }
+  // BPJS: SEP wajib ada sebelum rujukan bisa terbit ke VClaim.
+  if (isBpjsPatient.value && (!selP.value?.sepNo || selP.value.sepNo === '—')) {
+    toast('e', 'Pasien BPJS belum punya SEP. Terbitkan SEP di Admisi dulu.'); return
+  }
+  rkSubmitting.value = true
+  try {
+    const { data } = await dokterApi.rujukanKeluar({
+      visit_id: visitId,
+      faskes_tujuan_kode: rk.faskesKode,
+      faskes_tujuan_nama: rk.faskesNama || null,
+      poli_rujukan: rk.poliKode || null,
+      poli_rujukan_nama: rk.poliNama || null,
+      tipe_rujukan: rk.tipeRujukan,
+      jns_pelayanan: rk.jnsPelayanan,
+      diagnosa_rujukan: rk.diagKode,
+      diagnosa_nama: rk.diagNama || null,
+      catatan_rujukan: rk.catatan || null,
+    })
+    const r = data.data ?? {}
+    toast('s', r.status === 'SUCCESS'
+      ? `Rujukan BPJS terbit. No: ${r.no_rujukan}`
+      : 'Surat rujukan tersimpan.')
+  } catch (e) {
+    toast('e', e.response?.data?.message || 'Gagal membuat rujukan')
+  } finally { rkSubmitting.value = false }
+}
+
+// ── Surat Kontrol BPJS (planning Pulang) ────────────────────────────────────
+// DRAFT dibuat backend saat finalisasi (Pulang + tgl kontrol + pasien BPJS).
+// Diterbitkan OTOMATIS ke VClaim di akhir doFinalize (non-blocking). Panel di
+// Tab 4 menampilkan HASIL (No. Surat Kontrol / FAILED) — info saja, read-only.
+const suratKontrol = ref(null)   // { status, no_surat_kontrol, tanggal_rencana_kontrol } | null
+
+// Dipanggil otomatis setelah finalisasi sukses. Non-blocking: kegagalan VClaim
+// tidak membatalkan finalisasi (pasien sudah diteruskan), hanya diberi tahu.
+async function autoSubmitSuratKontrol(visitId) {
+  if (!visitId || !isBpjsPatient.value) return
+  if (planning.value !== 'PULANG' || !tanggalKontrol.value) return
+  try {
+    const { data } = await dokterApi.submitSuratKontrol(visitId)
+    suratKontrol.value = data.data ?? null
+    toast('s', `Surat Kontrol BPJS terbit. No: ${suratKontrol.value?.no_surat_kontrol ?? '—'}`)
+  } catch (e) {
+    toast('w', 'Surat Kontrol BPJS belum terbit: ' + (e.response?.data?.message || 'gagal hubungi VClaim') + '. Bisa diterbitkan ulang dari Bridging.')
+    // Tampilkan status terbaru (mungkin FAILED) untuk transparansi.
+    try {
+      const { data } = await dokterApi.getSuratKontrol(visitId)
+      suratKontrol.value = data.data ?? null
+    } catch { /* abaikan */ }
+  }
+}
+
 // Slot jam bedah 07:00–17:00 per 30 menit (untuk dropdown jam).
 const SURGERY_TIME_SLOTS = (() => {
   const out = []
@@ -1118,8 +1334,15 @@ const signed = ref(false)
 const signTimestamp = ref(null)
 const pinInput = ref('')
 const pinError = ref('')
-const showPinForm = ref(false)
+const showSignModal = ref(false)     // popup PIN tanda tangan
 const pinVerifying = ref(false)
+
+// Buka popup PIN (tombol kecil di sudut kanan).
+function openSignModal() {
+  pinInput.value = ''
+  pinError.value = ''
+  showSignModal.value = true
+}
 async function doSign() {
   if (pinInput.value.length < 4) { pinError.value = 'PIN minimal 4 digit'; return }
   pinVerifying.value = true
@@ -1127,7 +1350,7 @@ async function doSign() {
   try {
     await dokterApi.verifyPin(pinInput.value)
     pinInput.value = ''
-    showPinForm.value = false
+    showSignModal.value = false
     signed.value = true
     signTimestamp.value = new Date().toLocaleString('id-ID')
     toast('s', 'Dokumen ditandatangani secara digital')
@@ -1145,7 +1368,7 @@ function undoSign() {
   signTimestamp.value = null
   pinInput.value = ''
   pinError.value = ''
-  showPinForm.value = false
+  showSignModal.value = false
   toast('w', 'Tanda tangan dihapus — halaman kembali terbuka')
 }
 
@@ -1202,6 +1425,10 @@ async function doFinalize() {
     toast('s', planning.value === 'BEDAH'
       ? 'RME difinalisasi — jadwal bedah dibuat & pasien diteruskan'
       : 'RME difinalisasi — pasien dikirim ke station berikutnya')
+
+    // Surat Kontrol BPJS: terbit otomatis bila Pulang + tgl kontrol + pasien BPJS.
+    // Non-blocking — finalisasi di atas sudah final, ini hanya menyusulkan ke VClaim.
+    await autoSubmitSuratKontrol(visitId)
     // Pasien sengaja TIDAK di-clear: agar dokter masih bisa melihat data tindakan &
     // resep (read-only) setelah finalisasi. `isLocked` sudah menutup edit (signed=true
     // + status='done' membuat seluruh panel pane-locked).
@@ -1335,11 +1562,8 @@ async function doFinalize() {
           <button :class="['ptype-tab ptype-bpjs', ptypeFilter === 'BPJS' ? 'a' : '']" @click="ptypeFilter = 'BPJS'">
             BPJS<span v-if="bpjsCount" class="ptype-ct">{{ bpjsCount }}</span>
           </button>
-          <button :class="['ptype-tab ptype-umum', ptypeFilter === 'Umum' ? 'a' : '']" @click="ptypeFilter = 'Umum'">
-            Umum<span v-if="umumCount" class="ptype-ct">{{ umumCount }}</span>
-          </button>
-          <button :class="['ptype-tab ptype-asur', ptypeFilter === 'Asuransi' ? 'a' : '']" @click="ptypeFilter = 'Asuransi'">
-            Asuransi<span v-if="asnCount" class="ptype-ct">{{ asnCount }}</span>
+          <button :class="['ptype-tab ptype-umum', ptypeFilter === 'UmumAsn' ? 'a' : '']" @click="ptypeFilter = 'UmumAsn'">
+            Umum &amp; Asuransi<span v-if="umumAsnCount" class="ptype-ct">{{ umumAsnCount }}</span>
           </button>
         </div>
 
@@ -1422,13 +1646,7 @@ async function doFinalize() {
     <!-- RIGHT: RME AREA -->
     <section class="rme">
 
-      <!-- TOPBAR: Identitas dokter yang sedang login (hanya akun dokter) -->
-      <div v-if="isDoctorAccount" class="dv-topbar">
-        <div class="dv-doctor">
-          <div class="dv-doctor-name">{{ doctorName }}</div>
-          <div class="dv-doctor-sip">SIP: {{ doctorSip || '—' }}</div>
-        </div>
-      </div>
+      <!-- Identitas dokter dipindah ke topbar global (AppTopbar) — tanpa card -->
 
       <div class="rme-card">
 
@@ -1449,7 +1667,12 @@ async function doFinalize() {
               {{ selP.address }}
             </div>
             <div class="ptags">
-              <span v-if="selP.classification" :class="['ptg', clsCls(selP.classification)]">{{ selP.classification }}</span>
+              <span
+                v-if="selP.classification === 'Rujukan Internal'"
+                class="ptg ptg-rujuk"
+                :title="selP.internalRefFrom ? 'Dirujuk dari ' + selP.internalRefFrom : 'Rujukan internal antar-poli'"
+              >↪ Rujukan{{ selP.internalRefFrom ? ' dari ' + selP.internalRefFrom : '' }}</span>
+              <span v-else-if="selP.classification" :class="['ptg', clsCls(selP.classification)]">{{ selP.classification }}</span>
               <span v-if="selP.ptype === 'bpjs'" class="ptg ptg-b">BPJS · SEP {{ selP.sepNo }}</span>
               <span v-if="selP.allergies.length" class="ptg ptg-a">⚠ Alergi: {{ selP.allergies.join(', ') }}</span>
             </div>
@@ -1779,26 +2002,31 @@ async function doFinalize() {
                   <span class="card-counter">{{ soapPages.length }} kunjungan</span>
                 </div>
 
-                <div v-if="!soapPages.length" class="penunjang-empty">
+                <div v-if="soapHistoryLoading" class="penunjang-empty">
+                  Memuat riwayat SOAP…
+                </div>
+
+                <div v-else-if="!soapPages.length" class="penunjang-empty">
                   Belum ada catatan SOAP/CPPT
                 </div>
 
                 <template v-else-if="currentSoapPage">
-                  <!-- Navigasi per tanggal kunjungan (descending) -->
+                  <!-- Navigasi per tanggal kunjungan: default kunjungan terakhir (idx 0,
+                       descending). Panah KANAN → kunjungan lebih lama, KIRI → lebih baru. -->
                   <div class="soap-pager">
-                    <button
-                      class="soap-pager-btn" title="Kunjungan lebih lama"
-                      :disabled="soapPageIdx >= soapPages.length - 1"
-                      @click="soapPageIdx++"
-                    >‹</button>
-                    <div class="soap-pager-info">
-                      <div class="soap-pager-date">{{ currentSoapPage.date }}</div>
-                      <div class="soap-pager-count">Kunjungan {{ soapPageIdx + 1 }} / {{ soapPages.length }}</div>
-                    </div>
                     <button
                       class="soap-pager-btn" title="Kunjungan lebih baru"
                       :disabled="soapPageIdx <= 0"
                       @click="soapPageIdx--"
+                    >‹</button>
+                    <div class="soap-pager-info">
+                      <div class="soap-pager-date">{{ currentSoapPage.date }}</div>
+                      <div class="soap-pager-count">{{ soapPageLabel }}</div>
+                    </div>
+                    <button
+                      class="soap-pager-btn" title="Kunjungan lebih lama"
+                      :disabled="soapPageIdx >= soapPages.length - 1"
+                      @click="soapPageIdx++"
                     >›</button>
                   </div>
 
@@ -1848,11 +2076,22 @@ async function doFinalize() {
                   </div>
                 </template>
 
-                <!-- Hasil -->
-                <template v-if="hasilPenunjang.length">
-                  <div class="hasil-pending-title">Hasil</div>
-                  <div class="hasil-list">
-                    <div v-for="h in hasilPenunjang" :key="h.name" class="hasil-item">
+                <!-- Hasil — riwayat per kunjungan (terbaru dulu) -->
+                <template v-if="penunjangPages.length">
+                  <!-- Pager kunjungan: ‹ lebih baru · › lebih lama -->
+                  <div class="soap-pager pj-pager">
+                    <button class="soap-pager-btn" title="Kunjungan lebih baru"
+                      :disabled="penunjangPageIdx <= 0" @click="penunjangPageIdx--">‹</button>
+                    <div class="soap-pager-info">
+                      <div class="soap-pager-date">{{ currentPenunjangPage.date }}</div>
+                      <div class="soap-pager-count">{{ penunjangPageLabel }}</div>
+                    </div>
+                    <button class="soap-pager-btn" title="Kunjungan lebih lama"
+                      :disabled="penunjangPageIdx >= penunjangPages.length - 1" @click="penunjangPageIdx++">›</button>
+                  </div>
+
+                  <div v-if="currentPenunjangPage" class="hasil-list">
+                    <div v-for="h in currentPenunjangPage.items" :key="h.id" class="hasil-item">
                       <div class="hasil-meta">
                         <span class="hasil-name">
                           {{ h.name }}
@@ -1860,7 +2099,6 @@ async function doFinalize() {
                           <span v-if="h.status === 'IN_PROGRESS'" class="hasil-prg-badge">Diproses</span>
                         </span>
                         <div class="hasil-meta-right">
-                          <span class="hasil-date">{{ h.date }}</span>
                           <button class="btn-lihat" @click="viewHasil(h)">
                             <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                             Lihat
@@ -1872,7 +2110,8 @@ async function doFinalize() {
                   </div>
                 </template>
 
-                <div v-if="!hasilPenunjang.length && !penunjangOrders.length" class="penunjang-empty">
+                <div v-if="penunjangHistoryLoading" class="penunjang-empty">Memuat riwayat penunjang…</div>
+                <div v-else-if="!penunjangPages.length && !penunjangOrders.length" class="penunjang-empty">
                   Belum ada pemeriksaan penunjang. Klik <b>Order</b> untuk memesan.
                 </div>
               </div>
@@ -1891,10 +2130,10 @@ async function doFinalize() {
             </div>
 
             <!-- Konten Tindakan + Resep + Catatan Kasir (lockable) -->
-            <div :class="(isLocked || tab3Sent) ? 'pane-locked' : ''">
+            <div :class="['tab3-stack', (isLocked || tab3Sent) ? 'pane-locked' : '']">
 
             <!-- Tindakan dari Master Tarif -->
-            <div class="card">
+            <div class="card card-dropdown-host">
               <div class="ch">
                 <div class="cht">
                   <svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
@@ -1984,44 +2223,6 @@ async function doFinalize() {
               </div>
             </div>
 
-            <!-- Penunjang sudah diperiksa (read-only, preview tagihan) -->
-            <div v-if="penunjangBilling.length" class="card">
-              <div class="ch">
-                <div class="cht">
-                  <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                  Penunjang (sudah diperiksa)
-                </div>
-                <span class="card-counter">{{ penunjangBilling.length }} pemeriksaan</span>
-              </div>
-              <div class="cb">
-                <div class="pj-bill-note">
-                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                  Hasil penunjang otomatis masuk tagihan kasir. Daftar ini hanya pratinjau — harga mengikuti penjamin pasien.
-                </div>
-                <div class="pj-bill-list">
-                  <div v-for="p in penunjangBilling" :key="p.id" class="pj-bill-row">
-                    <div class="pj-bill-info">
-                      <span class="pj-bill-code">{{ p.code }}</span>
-                      <span class="pj-bill-name">
-                        {{ p.name }}
-                        <span v-if="p.eye_side" class="pj-bill-eye">{{ p.eye_side }}</span>
-                      </span>
-                      <span v-if="p.category" class="pj-bill-cat">{{ p.category }}</span>
-                    </div>
-                    <div class="pj-bill-price">{{ fmtRp(p.price) }}</div>
-                  </div>
-                  <div class="pj-bill-total">
-                    <span>Total Penunjang</span>
-                    <span class="pj-bill-total-val">{{ fmtRp(penunjangSubtotal) }}</span>
-                  </div>
-                </div>
-                <div class="pj-bill-estimasi">
-                  <span>Estimasi Total (Tindakan + Penunjang)</span>
-                  <span class="pj-bill-estimasi-val">{{ fmtRp(estimasiTotal) }}</span>
-                </div>
-              </div>
-            </div>
-
             <!-- E-Resep -->
             <div class="card">
               <div class="ch">
@@ -2038,7 +2239,10 @@ async function doFinalize() {
                   <div v-if="obatSearch && filteredObat.length" class="rx-drop">
                     <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @click="pickObat(d)">
                       <span class="rx-drop-name">{{ d.name }}</span>
-                      <span class="rx-drop-meta">{{ d.form }} · stok {{ d.stock }}</span>
+                      <span class="rx-drop-meta">
+                        {{ d.form }} ·
+                        <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">Farmasi: {{ d.stock }}</span>
+                      </span>
                       <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
                     </div>
                   </div>
@@ -2105,45 +2309,46 @@ async function doFinalize() {
               </div>
             </div>
 
-            <!-- Catatan untuk Kasir -->
-            <div class="card">
-              <div class="ch">
-                <div class="cht">
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
-                  Catatan untuk Kasir
-                </div>
-                <span class="card-hint">opsional</span>
-              </div>
-              <div class="cb">
+            </div><!-- /pane-locked wrapper -->
+
+            <!-- Footer card Tab 3 — full-width, rata dengan card di atas.
+                 Kiri: Catatan Kasir (kompak). Kanan: aksi (Kirim ke Kasir + Lanjut ke SOAP). -->
+            <div class="tab3-footer">
+              <!-- Catatan untuk Kasir — kompak, label di atas field -->
+              <div :class="['kasir-note-inline', (isLocked || tab3Sent) ? 'pane-locked' : '']">
+                <label class="kasir-note-label" for="kasir-note">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+                  Catatan Kasir
+                  <span class="kasir-note-opsional">opsional</span>
+                </label>
                 <textarea
+                  id="kasir-note"
                   v-model="kasirNote"
-                  class="form-textarea"
-                  rows="3"
+                  class="form-textarea kasir-note-field"
+                  rows="2"
                   maxlength="500"
-                  placeholder="Catatan tambahan untuk kasir (cara bayar khusus, diskon, instruksi penagihan, dsb)…"
+                  placeholder="Catatan untuk kasir (diskon, instruksi penagihan, dsb)…"
                 ></textarea>
                 <div class="kasir-note-counter">{{ (kasirNote || '').length }}/500</div>
               </div>
-            </div>
 
-            </div><!-- /pane-locked wrapper -->
-
-            <!-- Action row: Simpan & Kirim ke Kasir + Lanjut ke SOAP -->
-            <div class="tab3-actions">
-              <button
-                v-if="!isLocked && !tab3Sent"
-                class="btn btn-success btn-lg"
-                :disabled="!tindakanList.length && !rxList.length"
-                @click="showSendKasirModal = true"
-                title="Kunci tindakan & resep — siap dikirim ke kasir setelah finalisasi"
-              >
-                <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
-                Simpan &amp; Kirim ke Kasir
-              </button>
-              <button class="btn btn-primary" @click="tab = 'soap'">
-                Lanjut ke SOAP &amp; Diagnosis
-                <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-              </button>
+              <!-- Grup aksi: Kirim ke Kasir + Lanjut ke SOAP, sejajar di kanan -->
+              <div class="tab3-action-group">
+                <button
+                  v-if="!isLocked && !tab3Sent"
+                  class="btn btn-success tab3-btn"
+                  :disabled="!tindakanList.length && !rxList.length"
+                  @click="showSendKasirModal = true"
+                  title="Kunci tindakan & resep — siap dikirim ke kasir setelah finalisasi"
+                >
+                  <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                  Kirim ke Kasir
+                </button>
+                <button class="btn btn-primary tab3-btn" @click="tab = 'soap'">
+                  Lanjut ke SOAP &amp; Diagnosis
+                  <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -2158,9 +2363,12 @@ async function doFinalize() {
             </div>
 
             <!-- SOAP + ICD + Planning — locked when signed -->
-            <div :class="isLocked ? 'pane-locked' : ''">
+            <div :class="['tab3-stack', isLocked ? 'pane-locked' : '']">
 
-            <!-- SOAP -->
+            <!-- 2 kolom: KIRI = SOAP (vertikal), KANAN = ICD-10 + ICD-9 -->
+            <div class="soap-dx-grid">
+
+            <!-- SOAP (kolom kiri) -->
             <div class="card">
               <div class="ch">
                 <div class="cht">
@@ -2172,43 +2380,45 @@ async function doFinalize() {
                   Muat ulang O
                 </button>
               </div>
-              <div class="cb stack">
-                <div class="soap-row">
-                  <div class="soap-letter s">S</div>
-                  <div class="fg" style="flex:1">
-                    <label class="fl">Subjektif — keluhan pasien <span class="auto-tag">otomatis dari anamnese</span></label>
-                    <textarea v-model="soap.S" class="form-textarea" rows="3"
+              <div class="cb">
+                <div class="soap-stack">
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter s">S</span> Subjektif — keluhan pasien
+                      <span class="auto-tag">otomatis dari anamnese</span>
+                    </label>
+                    <textarea v-model="soap.S" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
                   </div>
-                </div>
-                <div class="soap-row">
-                  <div class="soap-letter o">O</div>
-                  <div class="fg" style="flex:1">
-                    <label class="fl">Objektif <span class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span></label>
-                    <textarea v-model="soap.O" class="form-textarea" rows="5"
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter o">O</span> Objektif
+                      <span class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span>
+                    </label>
+                    <textarea v-model="soap.O" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
                   </div>
-                </div>
-                <div class="soap-row">
-                  <div class="soap-letter a">A</div>
-                  <div class="fg" style="flex:1">
-                    <label class="fl">Assessment — kesimpulan klinis <span class="req">*</span></label>
-                    <textarea v-model="soap.A" class="form-textarea" rows="2"
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter a">A</span> Assessment — kesimpulan klinis
+                      <span class="req">*</span>
+                    </label>
+                    <textarea v-model="soap.A" class="form-textarea" rows="4"
                       placeholder="Diferensial diagnosis, kesimpulan..."></textarea>
                   </div>
-                </div>
-                <div class="soap-row">
-                  <div class="soap-letter p">P</div>
-                  <div class="fg" style="flex:1">
-                    <label class="fl">Planning — rencana tindakan <span class="auto-tag">otomatis dari e-resep</span></label>
-                    <textarea v-model="soap.P" class="form-textarea" rows="2"
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter p">P</span> Planning — rencana tindakan
+                      <span class="auto-tag">otomatis dari e-resep</span>
+                    </label>
+                    <textarea v-model="soap.P" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari e-resep (Nama Obat, Signa, Posisi)…"></textarea>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- ICD-10 & ICD-9 side by side -->
+            <!-- ICD-10 + ICD-9 (kolom kanan, bertumpuk) -->
             <div class="dx-grid">
 
               <!-- ICD-10 -->
@@ -2317,9 +2527,7 @@ async function doFinalize() {
                 </div>
               </div>
 
-            </div>
-
-            <!-- Planning -->
+            <!-- Planning (kolom kanan, di bawah ICD — mengisi area kosong) -->
             <div class="card">
               <div class="ch">
                 <div class="cht">
@@ -2335,7 +2543,7 @@ async function doFinalize() {
                       <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
                     </div>
                     <div class="plan-body">
-                      <div class="plan-title">Pulang Berobat Jalan</div>
+                      <div class="plan-title">Pulang</div>
                       <div class="plan-sub">Resep & jadwal kontrol</div>
                     </div>
                     <div class="plan-check">
@@ -2348,7 +2556,7 @@ async function doFinalize() {
                       <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/><path d="M12 8v4l3 3"/></svg>
                     </div>
                     <div class="plan-body">
-                      <div class="plan-title">Jadwalkan Bedah</div>
+                      <div class="plan-title">Bedah</div>
                       <div class="plan-sub">Antrean kamar operasi</div>
                     </div>
                     <div class="plan-check">
@@ -2362,7 +2570,7 @@ async function doFinalize() {
                     </div>
                     <div class="plan-body">
                       <div class="plan-title">Rujuk</div>
-                      <div class="plan-sub">Ke RS / Faskes lain</div>
+                      <div class="plan-sub">Antar-poli / faskes lain</div>
                     </div>
                     <div class="plan-check">
                       <svg v-if="planning === 'RUJUK'" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -2376,6 +2584,23 @@ async function doFinalize() {
                     <label class="fl">Tanggal Kontrol Berikutnya</label>
                     <input type="date" v-model="tanggalKontrol" class="form-input" style="max-width:220px" />
                   </div>
+
+                  <!-- Surat Kontrol BPJS: info (sebelum finalisasi) + hasil (sesudah) -->
+                  <template v-if="isBpjsPatient">
+                    <div v-if="suratKontrol?.status === 'SUCCESS'" class="sk-panel sk-ok">
+                      <span class="sk-badge sk-badge-ok">Surat Kontrol BPJS terbit</span>
+                      No: <b>{{ suratKontrol.no_surat_kontrol }}</b> · kontrol {{ suratKontrol.tanggal_rencana_kontrol }}
+                    </div>
+                    <div v-else-if="suratKontrol?.status === 'FAILED'" class="sk-panel sk-fail">
+                      <span class="sk-badge sk-badge-fail">Surat Kontrol gagal terbit</span>
+                      Bisa diterbitkan ulang dari menu Bridging.
+                    </div>
+                    <div v-else-if="tanggalKontrol" class="sk-panel sk-info">
+                      <span class="sk-badge sk-badge-info">BPJS</span>
+                      Surat Kontrol akan diterbitkan otomatis ke VClaim saat finalisasi.
+                      <span class="sk-note">(butuh SEP aktif)</span>
+                    </div>
+                  </template>
                 </div>
 
                 <!-- Bedah: Kategori → Paket → Tanggal -->
@@ -2450,108 +2675,174 @@ async function doFinalize() {
                   </div>
                 </div>
 
-                <!-- Rujuk: Faskes + Alasan -->
+                <!-- Rujuk: pilih mode Internal (antar-poli) vs Eksternal (faskes lain) -->
                 <div v-if="planning === 'RUJUK'" class="plan-fields">
-                  <div class="g2">
-                    <div class="fg">
-                      <label class="fl">Faskes Tujuan</label>
-                      <input v-model="rujukFaskes" class="form-input" placeholder="Nama RS / Klinik / Puskesmas..." />
+                  <div class="rujuk-mode-tabs">
+                    <button type="button" :class="['rujuk-mode-tab', rujukMode === 'INTERNAL' ? 'active' : '']" @click="rujukMode = 'INTERNAL'">
+                      Rujuk Internal <span class="rmt-sub">(antar-poli)</span>
+                    </button>
+                    <button type="button" :class="['rujuk-mode-tab', rujukMode === 'EXTERNAL' ? 'active' : '']" @click="rujukMode = 'EXTERNAL'">
+                      Rujuk Eksternal <span class="rmt-sub">(faskes lain)</span>
+                    </button>
+                  </div>
+
+                  <!-- Mode INTERNAL: pilih poli/dokter tujuan + jadwal-aware -->
+                  <div v-if="rujukMode === 'INTERNAL'" class="rujuk-internal-box">
+                    <div class="g2">
+                      <div class="fg">
+                        <label class="fl">Poli / Dokter Tujuan</label>
+                        <select v-model="internalTargetId" class="form-select" :disabled="internalTargetsLoading">
+                          <option value="">{{ internalTargetsLoading ? 'Memuat…' : '— Pilih poli/dokter tujuan —' }}</option>
+                          <optgroup v-for="grp in internalTargetsByPoli" :key="grp.poli" :label="grp.poli">
+                            <option v-for="t in grp.items" :key="t.schedule_id" :value="t.schedule_id">
+                              {{ t.doctor_name || 'Dokter' }} · {{ t.day_label }} {{ t.start_time }}{{ t.is_today ? ' · HARI INI' : '' }}
+                            </option>
+                          </optgroup>
+                        </select>
+                        <div v-if="!internalTargetsLoading && !internalTargets.length" class="surgery-hint warn">
+                          Belum ada jadwal dokter lain minggu ini. Atur di Jadwal Dokter.
+                        </div>
+                      </div>
+                      <div class="fg">
+                        <label class="fl">Alasan Rujukan <span class="fl-opt">(opsional)</span></label>
+                        <input v-model="internalReason" class="form-input" placeholder="mis. Evaluasi retina / glaukoma..." />
+                      </div>
                     </div>
-                    <div class="fg">
-                      <label class="fl">Alasan Rujukan</label>
-                      <input v-model="rujukAlasan" class="form-input" placeholder="Diperlukan tindakan bedah..." />
+
+                    <!-- Preview jadwal dokter tujuan (jadwal-aware) -->
+                    <div v-if="internalTargetSel" class="rujuk-internal-preview">
+                      <template v-if="internalTargetSel.is_today">
+                        <span class="rip-badge rip-today">Praktik hari ini</span>
+                        Pasien langsung masuk antrean <b>{{ internalTargetSel.poliklinik }}</b>
+                        ({{ internalTargetSel.doctor_name }}, mulai {{ internalTargetSel.start_time }}).
+                      </template>
+                      <template v-else>
+                        <span class="rip-badge rip-later">Jadwal {{ internalTargetSel.day_label }}</span>
+                        Dokter tujuan tidak praktik hari ini — pasien <b>daftar ulang</b> hari
+                        {{ internalTargetSel.day_label }} ({{ internalTargetSel.start_time }}).
+                      </template>
+                    </div>
+
+                    <div class="rujuk-internal-actions">
+                      <button
+                        type="button" class="btn-rujuk-internal"
+                        :disabled="!internalTargetId || internalSubmitting"
+                        @click="submitRujukInternal"
+                      >
+                        {{ internalSubmitting ? 'Memproses…' : 'Buat Rujukan ke Poli Ini' }}
+                      </button>
+                      <span class="ri-hint">Membuat kunjungan baru untuk dokter tujuan. Tidak menutup pemeriksaan ini.</span>
+                    </div>
+                  </div>
+
+                  <!-- Mode EXTERNAL -->
+                  <div v-else>
+                    <!-- Pasien BPJS: form lengkap → terbit ke VClaim -->
+                    <div v-if="isBpjsPatient" class="rujuk-internal-box">
+                      <!-- Cari faskes tujuan (referensi BPJS) -->
+                      <div class="fg">
+                        <label class="fl">Faskes Tujuan (RS) <span class="req">*</span></label>
+                        <div class="rk-search">
+                          <input v-model="rkFaskesQ" class="form-input" placeholder="Ketik nama RS lalu Cari…" @keyup.enter="searchFaskes" />
+                          <button type="button" class="rk-search-btn" :disabled="rkFaskesLoading" @click="searchFaskes">{{ rkFaskesLoading ? '…' : 'Cari' }}</button>
+                        </div>
+                        <div v-if="rkFaskesRes.length" class="rk-result-list">
+                          <div v-for="f in rkFaskesRes" :key="f.kode" class="rk-result-item" @click="pickFaskes(f)">
+                            <b>{{ f.nama }}</b> <span class="rk-code">{{ f.kode }}</span>
+                          </div>
+                        </div>
+                        <div v-if="rk.faskesKode" class="rk-picked">✓ {{ rk.faskesNama }} ({{ rk.faskesKode }})</div>
+                      </div>
+
+                      <div class="g2">
+                        <!-- Poli rujukan (referensi BPJS) -->
+                        <div class="fg">
+                          <label class="fl">Poli Rujukan</label>
+                          <div class="rk-search">
+                            <input v-model="rkPoliQ" class="form-input" placeholder="mis. Mata…" @keyup.enter="searchPoliRujuk" />
+                            <button type="button" class="rk-search-btn" :disabled="rkPoliLoading" @click="searchPoliRujuk">{{ rkPoliLoading ? '…' : 'Cari' }}</button>
+                          </div>
+                          <div v-if="rkPoliRes.length" class="rk-result-list">
+                            <div v-for="p in rkPoliRes" :key="p.kode" class="rk-result-item" @click="pickPoliRujuk(p)">
+                              <b>{{ p.nama }}</b> <span class="rk-code">{{ p.kode }}</span>
+                            </div>
+                          </div>
+                          <div v-if="rk.poliKode" class="rk-picked">✓ {{ rk.poliNama }} ({{ rk.poliKode }})</div>
+                        </div>
+                        <!-- Diagnosa rujukan (prefill dari Tab 4) -->
+                        <div class="fg">
+                          <label class="fl">Diagnosa Rujukan <span class="req">*</span></label>
+                          <input v-model="rk.diagKode" class="form-input" placeholder="Kode ICD-10 (mis. H25.9)" />
+                          <div v-if="rk.diagNama" class="surgery-hint">{{ rk.diagNama }}</div>
+                        </div>
+                      </div>
+
+                      <div class="g2">
+                        <div class="fg">
+                          <label class="fl">Tipe Rujukan</label>
+                          <select v-model="rk.tipeRujukan" class="form-select">
+                            <option value="0">Penuh</option>
+                            <option value="1">Partial</option>
+                            <option value="2">Rujuk Balik</option>
+                          </select>
+                        </div>
+                        <div class="fg">
+                          <label class="fl">Jenis Pelayanan</label>
+                          <select v-model="rk.jnsPelayanan" class="form-select">
+                            <option value="2">Rawat Jalan</option>
+                            <option value="1">Rawat Inap</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div class="fg">
+                        <label class="fl">Catatan</label>
+                        <input v-model="rk.catatan" class="form-input" placeholder="Catatan rujukan…" />
+                      </div>
+
+                      <div v-if="!selP?.sepNo || selP.sepNo === '—'" class="surgery-hint warn">
+                        Pasien BPJS belum punya SEP — terbitkan SEP di Admisi sebelum membuat rujukan.
+                      </div>
+
+                      <div class="rujuk-internal-actions">
+                        <button
+                          type="button" class="btn-rujuk-internal"
+                          :disabled="rkSubmitting || !rk.faskesKode || !rk.diagKode"
+                          @click="submitRujukKeluar"
+                        >
+                          {{ rkSubmitting ? 'Menerbitkan…' : 'Terbitkan Rujukan BPJS' }}
+                        </button>
+                        <span class="ri-hint">Dikirim ke VClaim BPJS. Nomor rujukan muncul setelah berhasil.</span>
+                      </div>
+                    </div>
+
+                    <!-- Pasien non-BPJS: surat rujukan lokal (ikut Simpan Planning) -->
+                    <div v-else class="g2">
+                      <div class="fg">
+                        <label class="fl">Faskes Tujuan</label>
+                        <input v-model="rujukFaskes" class="form-input" placeholder="Nama RS / Klinik / Puskesmas..." />
+                      </div>
+                      <div class="fg">
+                        <label class="fl">Alasan Rujukan</label>
+                        <input v-model="rujukAlasan" class="form-input" placeholder="Diperlukan tindakan bedah..." />
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
+            </div><!-- /Planning card -->
+
+            </div><!-- /dx-grid (kolom kanan: ICD-10 + ICD-9 + Planning) -->
+            </div><!-- /soap-dx-grid -->
 
             </div><!-- end pane-locked -->
 
-            <!-- Tanda Tangan Digital -->
-            <div class="card">
-              <div class="ch">
-                <div class="cht">
-                  <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                  Tanda Tangan Digital
-                </div>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span v-if="signed" class="savedb">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    Ditandatangani
-                  </span>
-                  <button v-if="signed && !finalized" class="btn btn-sm btn-secondary undo-sig-btn" @click="undoSign">
-                    <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-                    Hapus Tanda Tangan
-                  </button>
-                </div>
-              </div>
-              <div class="cb">
-
-                <!-- Belum TTD -->
-                <div v-if="!signed">
-                  <div class="sig-action-wrap">
-                    <div class="sig-doctor-info">
-                      <div class="sig-avatar">
-                        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                      </div>
-                      <div>
-                        <div class="sig-name">{{ signerName }}</div>
-                        <div class="sig-role">{{ signerRole }}</div>
-                      </div>
-                    </div>
-                    <!-- Step 1: tombol tanda tangan -->
-                    <button v-if="!showPinForm" class="btn btn-primary" @click="showPinForm = true; pinInput = ''; pinError = ''">
-                      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                      Tanda Tangan
-                    </button>
-                  </div>
-
-                  <!-- Step 2: PIN inline muncul -->
-                  <div v-if="showPinForm" class="sig-pin-inline">
-                    <input
-                      v-model="pinInput"
-                      type="password"
-                      :class="['form-input sig-pin-input', { 'pin-error': pinError }]"
-                      placeholder="Masukkan PIN"
-                      maxlength="6"
-                      @keydown.enter="doSign"
-                    />
-                    <button class="btn btn-primary" :disabled="pinVerifying" @click="doSign">
-                      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-                      {{ pinVerifying ? 'Memverifikasi...' : 'Tanda Tangan' }}
-                    </button>
-                    <button class="btn btn-secondary" @click="showPinForm = false; pinInput = ''; pinError = ''">Batal</button>
-                  </div>
-                  <div v-if="showPinForm" class="sig-pin-feedback">
-                    <span v-if="pinError" class="sig-pin-error">
-                      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                      {{ pinError }}
-                    </span>
-                    <span v-else class="sig-pin-hint">Masukkan PIN tanda tangan Anda (diatur admin di Data Pengguna)</span>
-                  </div>
-                </div>
-
-                <!-- Sudah TTD -->
-                <div v-else class="sig-done">
-                  <div class="sig-avatar sig-av-success">
-                    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                  </div>
-                  <div>
-                    <div class="sig-name">{{ signerName }}</div>
-                    <div class="sig-role">{{ signerRole }}</div>
-                    <div class="sig-ts">Ditandatangani oleh akun login pada {{ signTimestamp }}</div>
-                  </div>
-                </div>
-
-              </div>
-            </div>
-
-            <!-- Finalisasi section — selalu accessible -->
-            <div class="fin-section">
-              <div v-if="!finalized" :class="['fin-card', !signed ? 'fin-disabled' : '']">
-                <div class="fin-info">
-                  <svg viewBox="0 0 24 24">
+            <!-- Penyelesaian RME — Tanda Tangan + Finalisasi dalam SATU card,
+                 dua tombol sejajar & seukuran. -->
+            <div class="card finalize-card">
+              <div v-if="!finalized" class="finalize-row">
+                <div class="finalize-info">
+                  <svg class="finalize-status-ic" viewBox="0 0 24 24">
                     <template v-if="signed">
                       <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>
                     </template>
@@ -2564,15 +2855,29 @@ async function doFinalize() {
                       {{ signed ? 'Siap Difinalisasi' : 'Belum Dapat Difinalisasi' }}
                     </div>
                     <div class="fin-sub">
-                      {{ signed ? 'Tanda tangan dokter terkonfirmasi — klik Finalisasi untuk kirim FHIR R4' : 'Lengkapi Dx · Assessment · Planning · Tanda Tangan terlebih dahulu' }}
+                      <template v-if="signed">Ditandatangani · {{ signTimestamp }} — klik Finalisasi untuk kirim FHIR R4</template>
+                      <template v-else>Lengkapi Dx · Assessment · Planning, lalu tanda tangan</template>
                     </div>
                   </div>
                 </div>
-                <button class="btn btn-primary btn-lg" :disabled="finalizing || !signed" @click="doFinalize">
-                  <div v-if="finalizing" class="sp"></div>
-                  <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                  {{ finalizing ? 'Memproses & mengirim FHIR...' : 'Finalisasi & Kirim ke Satu Sehat' }}
-                </button>
+
+                <div class="finalize-actions">
+                  <!-- Tanda Tangan -->
+                  <button v-if="!signed" class="btn btn-secondary finalize-btn" @click="openSignModal">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    Tanda Tangan
+                  </button>
+                  <button v-else class="btn btn-secondary finalize-btn is-signed" @click="undoSign" title="Hapus tanda tangan">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    Ditandatangani
+                  </button>
+                  <!-- Finalisasi -->
+                  <button class="btn btn-primary finalize-btn" :disabled="finalizing || !signed" @click="doFinalize">
+                    <div v-if="finalizing" class="sp"></div>
+                    <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                    {{ finalizing ? 'Memproses…' : 'Finalisasi' }}
+                  </button>
+                </div>
               </div>
               <div v-else class="fin-success">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -2590,6 +2895,58 @@ async function doFinalize() {
 
       </div><!-- end rme-card -->
     </section>
+
+    <!-- ═══ MODAL: TANDA TANGAN DIGITAL (PIN) ═══ -->
+    <Teleport to="body">
+      <div v-if="showSignModal" class="modal-overlay" @click.self="showSignModal = false">
+        <div class="modal-box sig-modal-box">
+          <div class="modal-box-head">
+            <div class="modal-box-title">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Tanda Tangan Digital
+            </div>
+            <button class="modal-box-close" @click="showSignModal = false">×</button>
+          </div>
+          <div class="modal-box-body sig-modal-body">
+            <div class="sig-doctor-info">
+              <div class="sig-avatar">
+                <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </div>
+              <div>
+                <div class="sig-name">{{ signerName }}</div>
+                <div class="sig-role">{{ signerRole }}</div>
+              </div>
+            </div>
+
+            <label class="fl" for="sig-pin">PIN Tanda Tangan</label>
+            <input
+              id="sig-pin"
+              v-model="pinInput"
+              type="password"
+              :class="['form-input sig-pin-input', { 'pin-error': pinError }]"
+              placeholder="Masukkan PIN"
+              maxlength="6"
+              autofocus
+              @keydown.enter="doSign"
+            />
+            <div class="sig-pin-feedback">
+              <span v-if="pinError" class="sig-pin-error">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                {{ pinError }}
+              </span>
+              <span v-else class="sig-pin-hint">Diatur admin di Data Pengguna</span>
+            </div>
+          </div>
+          <div class="sig-modal-actions">
+            <button class="btn btn-secondary" @click="showSignModal = false">Batal</button>
+            <button class="btn btn-primary" :disabled="pinVerifying" @click="doSign">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              {{ pinVerifying ? 'Memverifikasi…' : 'Tanda Tangan' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ═══ MODAL: DOKUMEN REKAM MEDIS (FORM REGISTRY) ═══ -->
     <Teleport to="body">
@@ -2968,15 +3325,6 @@ async function doFinalize() {
 .rme { flex: 1; display: flex; flex-direction: column; min-width: 0; margin: 0.75rem 0.75rem 0.75rem 0; }
 
 /* TOPBAR — identitas dokter (atas kanan) */
-.dv-topbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; flex-shrink: 0; }
-.dv-doctor {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 1px;
-  background: var(--bc); border: 1px solid var(--gb); border-radius: 10px;
-  padding: 0.4rem 0.8rem;
-}
-.dv-doctor-name { font-size: 13px; font-weight: 700; color: #000; line-height: 1.2; }
-.dv-doctor-sip { font-size: 11px; font-weight: 500; color: #000; }
-
 .rme-card {
   flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
   background: var(--bc); border: 1px solid var(--gb); border-radius: 12px;
@@ -3007,6 +3355,7 @@ async function doFinalize() {
 .ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.02em; }
 .ptg-b { background: #dbeafe; color: #1e40af; }
 .ptg-a { background: var(--eb); color: var(--et); }
+.ptg-rujuk { background: #cffafe; color: #0e7490; }
 .cls-baru    { background: #dbeafe; color: #1e40af; }
 .cls-preop   { background: #fef3c7; color: #92400e; }
 .cls-postop  { background: var(--sb); color: var(--st); }
@@ -3136,6 +3485,8 @@ async function doFinalize() {
 
 /* Pager SOAP/CPPT per tanggal kunjungan */
 .soap-pager { display: flex; align-items: center; gap: 8px; padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--gb); background: var(--bs); }
+/* Pager penunjang di sidebar card: beri border atas + radius supaya menyatu */
+.pj-pager { border-top: 1px solid var(--gb); }
 .soap-pager-btn { width: 28px; height: 28px; flex-shrink: 0; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); color: var(--td); font-size: 16px; line-height: 1; cursor: pointer; transition: all .13s; }
 .soap-pager-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); background: var(--gl); }
 .soap-pager-btn:disabled { opacity: .35; cursor: not-allowed; }
@@ -3252,6 +3603,9 @@ async function doFinalize() {
 .rmc::-webkit-scrollbar { width: 4px; }
 .rmc::-webkit-scrollbar-thumb { background: var(--gb); border-radius: 2px; }
 .af { display: flex; flex-direction: column; gap: 1rem; }
+/* Wrapper card lockable (Tab Tindakan & SOAP): beri jarak antar-card seperti .af,
+   karena div pane-locked memutus gap dari .af. */
+.tab3-stack { display: flex; flex-direction: column; gap: 1rem; }
 
 /* Read-only banner */
 .readonly-banner {
@@ -3267,6 +3621,9 @@ async function doFinalize() {
 
 /* CARDS */
 .card { background: var(--bc); border-radius: 12px; border: 1px solid var(--gb); overflow: hidden; }
+/* Card yang menampung dropdown absolute (search tindakan): jangan clip & angkat
+   ke atas card berikutnya supaya dropdown mengambang, bukan terpotong/tertutup. */
+.card-dropdown-host { overflow: visible; position: relative; z-index: 5; }
 .ch {
   padding: 0.7rem 1rem; border-bottom: 1px solid var(--gb);
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
@@ -3370,19 +3727,28 @@ async function doFinalize() {
   letter-spacing: 0; background: var(--gl); border-radius: 4px; padding: 1px 6px; margin-left: 5px;
 }
 
-/* SOAP */
-.soap-row { display: flex; gap: 0.75rem; align-items: flex-start; }
+/* Layout 2 kolom: KIRI = SOAP (vertikal), KANAN = ICD-10 + ICD-9 + Planning.
+   align-items:stretch (default) → kedua kolom sama tinggi, margin bawah sejajar. */
+.soap-dx-grid {
+  display: grid; grid-template-columns: 1.35fr 1fr; gap: 1rem; align-items: stretch;
+}
+/* SOAP vertikal (S → O → A → P ke bawah) di kolom kiri */
+.soap-stack { display: flex; flex-direction: column; gap: 0.7rem; }
+.soap-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.soap-cell .form-textarea { resize: vertical; }
+.soap-fl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .soap-letter {
-  width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; margin-top: 18px;
-  font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 5px; flex-shrink: 0;
+  font-size: 11px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center;
 }
 .soap-letter.s { background: #dbeafe; color: #1e40af; }
 .soap-letter.o { background: var(--sb); color: var(--st); }
 .soap-letter.a { background: var(--wb); color: var(--wt); }
 .soap-letter.p { background: var(--pb); color: var(--pt); }
+@media (max-width: 1024px) { .soap-dx-grid { grid-template-columns: 1fr; } }
 
-/* ── ICD side-by-side grid ───────────────────────────────────────────────── */
-.dx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+/* ── ICD-10 + ICD-9 (kolom kanan, bertumpuk vertikal) ────────────────────── */
+.dx-grid { display: flex; flex-direction: column; gap: 1rem; }
 
 /* DIAGNOSIS */
 .dx-section { margin-bottom: 0.75rem; }
@@ -3408,7 +3774,7 @@ async function doFinalize() {
 .dx-remove { background: none; border: none; cursor: pointer; color: var(--tu); padding: 2px; display: flex; }
 .dx-remove svg { width: 13px; height: 13px; }
 .dx-remove:hover { color: var(--et); }
-.dx-empty { text-align: center; padding: 1rem; font-size: 11.5px; color: var(--th); }
+.dx-empty { text-align: center; padding: 1.4rem 1rem; font-size: 11.5px; color: var(--th); }
 .dx-empty-sm { font-size: 11px; color: var(--th); font-style: italic; padding: 0.35rem 0; }
 .icd9-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--pb); color: var(--pt); letter-spacing: 0.04em; }
 
@@ -3422,23 +3788,31 @@ async function doFinalize() {
 .rx-meta { font-size: 10.5px; color: var(--tu); margin-top: 1px; }
 
 /* PLANNING */
-.plan-opts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.65rem; margin-bottom: 0.75rem; }
-.plan-opt { display: flex; align-items: center; gap: 0.75rem; padding: 0.85rem 0.9rem; border: 2px solid var(--gb); border-radius: 10px; background: var(--bs); cursor: pointer; transition: all 0.15s; }
+/* Planning di kolom kanan (sempit) → 3 opsi kompak sejajar: Pulang | Bedah | Rujuk.
+   Tiap opsi vertikal-center (icon di atas, judul di bawah), subtitle disembunyikan
+   agar muat 3 kolom. */
+.plan-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
+.plan-opt {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 0.6rem 0.4rem; border: 1.5px solid var(--gb); border-radius: 9px;
+  background: var(--bs); cursor: pointer; transition: all 0.15s; text-align: center; position: relative;
+}
 .plan-opt:hover { border-color: var(--ga); background: var(--gl); }
 .plan-opt.selected { border-color: var(--ga); background: var(--gl); }
-.plan-icon { width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.plan-icon { width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .plan-icon.pulang { background: var(--sb); }
 .plan-icon.bedah { background: var(--wb); }
 .plan-icon.rujuk { background: var(--ib); }
-.plan-icon svg { width: 16px; height: 16px; fill: none; stroke-width: 2; stroke-linecap: round; }
+.plan-icon svg { width: 15px; height: 15px; fill: none; stroke-width: 2; stroke-linecap: round; }
 .plan-icon.pulang svg { stroke: var(--st); }
 .plan-icon.bedah svg { stroke: var(--wt); }
 .plan-icon.rujuk svg { stroke: var(--it); }
-.plan-body { flex: 1; min-width: 0; }
-.plan-title { font-size: 12px; font-weight: 600; color: var(--td); }
-.plan-sub { font-size: 9.5px; color: var(--tu); margin-top: 2px; }
-.plan-check { width: 18px; flex-shrink: 0; }
-.plan-check svg { width: 18px; height: 18px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
+.plan-body { min-width: 0; }
+.plan-title { font-size: 11px; font-weight: 600; color: var(--td); line-height: 1.2; }
+.plan-sub { display: none; }
+/* Centang di pojok kanan-atas opsi terpilih */
+.plan-check { position: absolute; top: 4px; right: 4px; width: 15px; flex-shrink: 0; }
+.plan-check svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2.5; stroke-linecap: round; }
 .surgery-fields, .plan-fields { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; margin-top: 0; }
 .surgery-hint { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
 .surgery-hint.warn { color: var(--wt); }
@@ -3453,6 +3827,44 @@ async function doFinalize() {
 .bedah-preview-head b { color: #1763d4; }
 .bedah-preview-slots { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .bedah-slot-chip { font-size: 10.5px; font-weight: 600; color: #1763d4; background: #fff; border: 1px solid #c7dbff; border-radius: 6px; padding: 2px 7px; }
+
+/* RUJUK: mode internal / eksternal */
+.rujuk-mode-tabs { display: flex; gap: 6px; margin-bottom: 0.75rem; }
+.rujuk-mode-tab { flex: 1; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 600; color: #000; background: var(--bs); border: 2px solid var(--gb); border-radius: 8px; cursor: pointer; transition: all 0.15s; }
+.rujuk-mode-tab:hover { border-color: var(--ga); }
+.rujuk-mode-tab.active { border-color: #1763d4; background: #eef4ff; color: #1763d4; }
+.rujuk-mode-tab .rmt-sub { font-weight: 400; font-size: 10px; opacity: 0.8; }
+.rujuk-internal-box { display: flex; flex-direction: column; gap: 0.65rem; }
+.rujuk-internal-preview { padding: 0.55rem 0.7rem; background: #eef4ff; border: 1px solid #c7dbff; border-radius: 8px; font-size: 11.5px; color: #1a1a1a; line-height: 1.5; }
+.rujuk-internal-preview b { color: #1763d4; }
+.rip-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin-right: 6px; }
+.rip-today { background: #1f7d4a; color: #fff; }
+.rip-later { background: #c47f17; color: #fff; }
+.rujuk-internal-actions { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.btn-rujuk-internal { padding: 0.5rem 1rem; font-size: 12.5px; font-weight: 700; color: #fff !important; background: #1763d4; border: none; border-radius: 8px; cursor: pointer; transition: opacity 0.15s; }
+.btn-rujuk-internal:hover:not(:disabled) { opacity: 0.9; }
+.btn-rujuk-internal:disabled { opacity: 0.5; cursor: not-allowed; }
+.ri-hint { font-size: 10.5px; color: var(--tu); }
+.rk-search { display: flex; gap: 6px; }
+.rk-search .form-input { flex: 1; }
+.rk-search-btn { flex-shrink: 0; padding: 0 0.9rem; font-size: 12px; font-weight: 700; color: #fff !important; background: #1763d4; border: none; border-radius: 8px; cursor: pointer; }
+.rk-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.rk-result-list { margin-top: 5px; border: 1px solid var(--gb); border-radius: 8px; max-height: 160px; overflow-y: auto; background: var(--bs); }
+.rk-result-item { padding: 0.45rem 0.7rem; font-size: 12px; color: #000; cursor: pointer; border-bottom: 1px solid var(--gl); }
+.rk-result-item:last-child { border-bottom: none; }
+.rk-result-item:hover { background: #eef4ff; }
+.rk-result-item .rk-code { color: var(--tu); font-size: 10.5px; margin-left: 4px; }
+.rk-picked { margin-top: 5px; font-size: 11.5px; font-weight: 600; color: #1f7d4a; }
+.sk-panel { margin-top: 0.6rem; padding: 0.5rem 0.7rem; border-radius: 8px; font-size: 11.5px; line-height: 1.5; color: #1a1a1a; }
+.sk-panel b { color: #1763d4; }
+.sk-info { background: #eef4ff; border: 1px solid #c7dbff; }
+.sk-ok { background: #eafaf0; border: 1px solid #b6e6c8; }
+.sk-fail { background: #fdeeee; border: 1px solid #f3c2c2; }
+.sk-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin-right: 6px; color: #fff; }
+.sk-badge-info { background: #1763d4; }
+.sk-badge-ok { background: #1f7d4a; }
+.sk-badge-fail { background: #c0392b; }
+.sk-note { color: var(--tu); }
 
 /* DIGITAL SIGNATURE */
 .sig-action-wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -3583,6 +3995,9 @@ async function doFinalize() {
 .rx-drop-item:hover { background: var(--gl); }
 .rx-drop-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rx-drop-meta { font-size: 10px; color: var(--tu); flex-shrink: 0; }
+.rx-stok { font-weight: 600; }
+.rx-stok.ok { color: #15803d; }
+.rx-stok.zero { color: #b45309; }
 .rx-drop-price { font-size: 11.5px; font-weight: 700; color: var(--ga); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .rx-picked { display: flex; flex-direction: column; justify-content: center; padding: 4px 10px; background: var(--gl); border: 1px solid var(--sbd); border-radius: 8px; }
 .rx-picked-name { font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3605,20 +4020,41 @@ async function doFinalize() {
 }
 .lock-notice-undo:hover { background: #fde68a; }
 
-/* ── Finalisasi inline section ───────────────────────────────────────────── */
-.fin-section { margin-top: 0; }
-.fin-card {
-  display: flex; align-items: center; gap: 1rem;
-  padding: 1rem 1.25rem; background: var(--gl);
-  border: 2px solid rgba(31,125,74,.2); border-radius: 12px;
+/* ── Penyelesaian RME: Tanda Tangan + Finalisasi dalam 1 card ────────────── */
+.finalize-card { padding: 1rem 1.25rem; }
+.finalize-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
 }
-.fin-card.fin-disabled { background: var(--bs); border-color: var(--gb); opacity: .8; }
-.fin-info { display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 0; }
-.fin-info svg { width: 20px; height: 20px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
-.fin-card:not(.fin-disabled) .fin-info svg { stroke: var(--ga); }
+.finalize-info { display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 220px; }
+.finalize-status-ic { width: 22px; height: 22px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .fin-title { font-size: 13px; font-weight: 700; color: var(--td); }
 .fin-title.fin-ready { color: var(--gd); }
+.fin-ready ~ .fin-sub { color: var(--gd); }
+.finalize-row:has(.fin-ready) .finalize-status-ic { stroke: var(--ga); }
 .fin-sub { font-size: 11px; color: var(--tu); margin-top: 2px; }
+/* Dua tombol sejajar & seukuran */
+.finalize-actions { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.finalize-btn { min-width: 150px; justify-content: center; white-space: nowrap; }
+.finalize-btn.is-signed {
+  color: var(--st); border-color: var(--sbd); background: var(--sb);
+}
+.finalize-btn.is-signed:hover { background: var(--sb); filter: brightness(0.97); }
+.finalize-actions .btn-primary { box-shadow: 0 4px 14px rgba(31,125,74,.25); }
+.finalize-actions .btn-primary:disabled { box-shadow: none; }
+@media (max-width: 720px) {
+  .finalize-actions { width: 100%; }
+  .finalize-btn { flex: 1; }
+}
+
+/* Modal PIN tanda tangan */
+.sig-modal-box { max-width: 380px; }
+.sig-modal-body { display: flex; flex-direction: column; gap: 0.6rem; }
+.sig-modal-body .sig-pin-input { width: 100%; }
+.sig-modal-actions {
+  display: flex; justify-content: flex-end; gap: 0.5rem;
+  padding: 0.85rem 1.25rem; border-top: 1px solid var(--gb);
+}
+
 .fin-success {
   display: flex; align-items: center; gap: 10px;
   padding: 1rem 1.25rem; background: var(--sb);
@@ -3813,18 +4249,55 @@ async function doFinalize() {
 
 /* ── Catatan Kasir + Action row Tab 3 ───────────────────────────────────── */
 .kasir-note-counter {
-  margin-top: 5px; text-align: right;
+  margin-top: 3px; text-align: right;
   font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums;
 }
-.tab3-actions {
-  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
-  margin-top: 0.25rem; flex-wrap: wrap;
+/* Footer card Tab 3 — full-width, rata dengan card di atas. Kiri: Catatan,
+   Kanan: grup aksi (2 tombol seukuran, stacked). */
+.tab3-footer {
+  display: flex; align-items: stretch; gap: 1rem;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 12px;
+  padding: 0.9rem 1rem;
 }
-.tab3-actions .btn-success.btn-lg {
-  box-shadow: 0 4px 14px rgba(31,125,74,.30);
+.kasir-note-inline {
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1; min-width: 0;
 }
-.tab3-actions .btn-success.btn-lg:hover:not(:disabled) {
-  box-shadow: 0 6px 18px rgba(31,125,74,.40);
+.kasir-note-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 600; color: var(--tm); letter-spacing: 0.02em;
+}
+.kasir-note-label svg {
+  width: 12px; height: 12px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round;
+}
+.kasir-note-opsional {
+  font-size: 9px; font-weight: 500; color: var(--th); font-style: italic;
+  margin-left: 2px;
+}
+.kasir-note-field {
+  resize: vertical; min-height: 56px; font-size: 12px; line-height: 1.4; flex: 1;
+}
+.kasir-note-counter {
+  margin-top: 0; text-align: right;
+  font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums;
+}
+/* Grup aksi kanan: dua tombol selebar sama, ditumpuk vertikal & rata bawah */
+.tab3-action-group {
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 0.5rem;
+  flex-shrink: 0; width: 230px;
+}
+.tab3-btn {
+  width: 100%; justify-content: center; white-space: nowrap;
+}
+.tab3-action-group .btn-success {
+  box-shadow: 0 4px 14px rgba(31,125,74,.25);
+}
+.tab3-action-group .btn-success:hover:not(:disabled) {
+  box-shadow: 0 6px 18px rgba(31,125,74,.35);
+}
+@media (max-width: 820px) {
+  .tab3-footer { flex-direction: column; align-items: stretch; }
+  .tab3-action-group { width: 100%; }
 }
 
 /* Konfirmasi kirim kasir modal */

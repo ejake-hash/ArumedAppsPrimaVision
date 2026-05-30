@@ -94,7 +94,7 @@ export const useDokterStore = defineStore('dokter', () => {
   }
 
   // ─── Polling (Reverb belum broadcast untuk DOKTER per arsitektur saat ini) ──
-  function startPolling(intervalMs = 30_000) {
+  function startPolling(intervalMs = 8_000) {
     stopPolling()
     _pollInterval = setInterval(fetchAntrian, intervalMs)
   }

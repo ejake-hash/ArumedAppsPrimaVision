@@ -31,7 +31,7 @@ class AdmisiController extends Controller
     public function indexKunjungan(Request $request): JsonResponse
     {
         $data = $this->service->getKunjungan($request->only([
-            'tanggal', 'station', 'guarantor_type', 'classification', 'search', 'per_page', 'page',
+            'tanggal', 'station', 'guarantor_type', 'classification', 'search', 'per_page', 'page', 'unfinished',
         ]));
 
         return $this->ok($data);
@@ -218,7 +218,7 @@ class AdmisiController extends Controller
             'photo'        => 'nullable|string',
 
             // Data kunjungan
-            'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol',
+            'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol,Rujukan Internal',
             'guarantor_type'     => 'required|in:UMUM,BPJS,ASURANSI,PERUSAHAAN,SOSIAL',
             'insurer_id'         => 'nullable|uuid|exists:insurers,id',
             'bpjs_booking_code'  => 'nullable|string|max:50',
@@ -367,7 +367,7 @@ class AdmisiController extends Controller
             'photo'        => 'nullable|string',
 
             // Data kunjungan
-            'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol',
+            'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol,Rujukan Internal',
             'guarantor_type'     => 'required|in:UMUM,BPJS,ASURANSI,PERUSAHAAN,SOSIAL',
             'insurer_id'         => 'nullable|uuid|exists:insurers,id',
             'bpjs_booking_code'  => 'nullable|string|max:50',
@@ -534,8 +534,10 @@ class AdmisiController extends Controller
     {
         $request->validate([
             'visit_id'    => 'required|uuid|exists:visits,id',
-            'bpjs_number' => 'required|string|max:20',
+            'bpjs_number' => 'nullable|string|max:30',
             'no_rujukan'  => 'nullable|string|max:50',
+            'diag_awal'   => 'nullable|string|max:10',
+            'kls_rawat'   => 'nullable|string|max:2',
         ]);
 
         try {
@@ -587,6 +589,56 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($data, 'Data surat kontrol BPJS');
+    }
+
+    /** GET /admisi/bpjs/surat-kontrol/{visitId} — status SK BPJS visit ini (prefill edit). */
+    public function bpjsGetSuratKontrol(string $visitId): JsonResponse
+    {
+        try {
+            $data = $this->service->bpjsGetSuratKontrol($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data);
+    }
+
+    /** PUT /admisi/bpjs/edit-surat-kontrol — update SK terbit ke VClaim. */
+    public function bpjsEditSuratKontrol(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id'                  => 'required|uuid|exists:bpjs_control_letters,id',
+            'tgl_rencana_kontrol' => 'required|date',
+        ]);
+
+        try {
+            $data = $this->service->bpjsEditSuratKontrol($request->all());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data, 'Surat Kontrol diperbarui di BPJS');
+    }
+
+    /** PUT /admisi/bpjs/update-sep — edit/update SEP terbit ke VClaim (ringkas). */
+    public function bpjsUpdateSep(Request $request): JsonResponse
+    {
+        $request->validate([
+            'visit_id'  => 'required|uuid|exists:visits,id',
+            'kls_rawat' => 'nullable|string|max:2',
+            'diag_awal' => 'nullable|string|max:10',
+            'catatan'   => 'nullable|string|max:255',
+            'no_telp'   => 'nullable|string|max:20',
+            'katarak'   => 'nullable|in:0,1',
+        ]);
+
+        try {
+            $data = $this->service->bpjsUpdateSep($request->all());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data, 'SEP diperbarui di BPJS');
     }
 
     public function bpjsValidasiBooking(Request $request): JsonResponse

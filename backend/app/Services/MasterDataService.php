@@ -913,7 +913,27 @@ class MasterDataService
     public function templateTarifCsv(string $type): string
     {
         $this->tariffModel($type);
+
+        $itemLabel = match ($type) {
+            'tindakan' => 'tindakan (master Tarif Tindakan)',
+            'obat'     => 'obat',
+            'bhp'      => 'BHP',
+            'iol'      => 'IOL',
+            default    => $type,
+        };
+        $notes = [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+            'Tarif jual penjamin ini per ' . $itemLabel . '. Kolom WAJIB: nama, kategori, harga_jual.',
+            'nama + kategori dicocokkan (case-insensitive) ke master — item harus SUDAH ada di master.',
+            'kolom "no" & "harga_master" hanya info, DIABAIKAN saat import (harga_master = harga master, read-only).',
+            'harga_jual = tarif yang ditagih ke penjamin ini (angka >= 0).',
+            'Item sama (nama+kategori) yang sudah punya tarif → harga_jual di-update; belum ada → ditambah.',
+        ];
+
         $output = fopen('php://temp', 'r+');
+        foreach ($notes as $note) {
+            fwrite($output, '# ' . $note . "\n");
+        }
         fputcsv($output, ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'], ',', '"', '\\');
         rewind($output);
         $csv = stream_get_contents($output);
@@ -936,6 +956,8 @@ class MasterDataService
             ->join("{$itemTable} as item", "t.{$this->tariffFk($type)}", '=', 'item.id')
             ->where('t.insurer_id', $insurerId)
             ->whereNull('t.deleted_at')
+            ->whereNull('item.deleted_at')   // jangan ekspor tarif item master yg sudah dihapus
+                                             // (kalau diekspor, import gagal "tidak ditemukan" — export & import inkonsisten)
             ->select([
                 "item.{$itemNameCol} as nama",
                 "item.{$itemCatCol} as kategori",
@@ -971,7 +993,7 @@ class MasterDataService
      */
     public function importTarifCsvForInsurer(string $type, string $insurerId, string $csvContent): array
     {
-        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        $lines = $this->csvDataLines($csvContent);
         if (empty($lines)) {
             throw new \Exception('File CSV kosong.', 422);
         }
@@ -1119,7 +1141,7 @@ class MasterDataService
                 'table'     => 'medications',
                 'model'     => Medication::class,
                 'uniqueKey' => 'code',
-                'columns'   => ['code', 'name', 'generic_name', 'composition', 'manufacturer', 'formularium', 'form_sediaan', 'golongan', 'unit_besar', 'unit_kecil', 'konversi', 'stock', 'min_stock', 'price', 'expiry_date', 'batch_number', 'description', 'is_active'],
+                'columns'   => ['code', 'kfa_code', 'name', 'generic_name', 'composition', 'manufacturer', 'formularium', 'form_sediaan', 'golongan', 'unit_besar', 'unit_kecil', 'konversi', 'stock', 'min_stock', 'price', 'expiry_date', 'batch_number', 'description', 'is_active'],
                 'casts'     => ['konversi' => 'int', 'stock' => 'int', 'min_stock' => 'int', 'price' => 'float', 'is_active' => 'bool'],
             ],
             'bhp' => [
@@ -1205,6 +1227,53 @@ class MasterDataService
     }
 
     /**
+     * Cast satu sel CSV ke tipe target, dengan penanganan sel KOSONG yang aman
+     * terhadap kolom NOT NULL:
+     *   - int/float kosong → 0  (mis. stock/min_stock NOT NULL tanpa default →
+     *     dulu di-set null → INSERT crash 23502).
+     *   - bool kosong → false.
+     *   - string kosong → null (kolom string umumnya nullable).
+     * Sel berisi tetap di-cast sesuai tipe.
+     */
+    private function castCsvCell(mixed $raw, string $castType): mixed
+    {
+        $empty = ($raw === '' || $raw === null);
+
+        return match ($castType) {
+            'int'   => $empty ? 0 : (int) $raw,
+            'float' => $empty ? 0.0 : (float) $raw,
+            'bool'  => $empty ? false : in_array(strtolower((string) $raw), ['1', 'true', 'yes', 'y'], true),
+            default => $empty ? null : $raw,
+        };
+    }
+
+    /**
+     * Cocokkan nama kategori (case-insensitive) ke master ProcedureCategory dan
+     * kembalikan NAMA KANONIK yang terdaftar. Null kalau tidak ada yang cocok.
+     * Dipakai import tindakan supaya 'tindakan'/'TINDAKAN' = 'Tindakan'.
+     */
+    private function resolveCategoryName(string $category): ?string
+    {
+        $cat = ProcedureCategory::whereRaw('LOWER(name) = ?', [strtolower(trim($category))])->first();
+        return $cat?->name;
+    }
+
+    /**
+     * Parse nilai boolean dari sel CSV (status aktif/nonaktif, dll).
+     * Aktif: 1/true/yes/y/aktif/active. Nonaktif: 0/false/no/n/nonaktif/inactive.
+     * Kosong / nilai tak dikenal → $default.
+     */
+    private function parseCsvBool(mixed $raw, bool $default = true): bool
+    {
+        if ($raw === null) return $default;
+        $v = strtolower(trim((string) $raw));
+        if ($v === '') return $default;
+        if (in_array($v, ['1', 'true', 'yes', 'y', 'aktif', 'active'], true)) return true;
+        if (in_array($v, ['0', 'false', 'no', 'n', 'nonaktif', 'tidak aktif', 'inactive'], true)) return false;
+        return $default;
+    }
+
+    /**
      * Baris petunjuk pengisian (tanpa prefix '#') untuk template CSV.
      * Ditaruh di atas header; importer akan mengabaikannya saat parsing.
      */
@@ -1225,6 +1294,7 @@ class MasterDataService
             ]),
             'obat' => array_merge($common, [
                 'Kolom "code" dibuat otomatis (MED-001, ...) untuk item baru — tidak perlu diisi.',
+                'Kolom "kfa_code" = kode KFA Kemenkes (untuk Satu Sehat), boleh kosong. Isi dari menu Inventori Farmasi (tombol Cari KFA) atau ketik manual.',
                 'Kolom "expiry_date": format YYYY-MM-DD, boleh kosong. konversi/stock/min_stock = angka bulat, price = angka.',
             ]),
             'alat-medis' => array_merge($common, [
@@ -1234,9 +1304,13 @@ class MasterDataService
                 'Kolom tanggal (calibration_due_at, purchase_date): format YYYY-MM-DD, boleh kosong.',
                 'Contoh baris: Microscope Zeiss,MICROSCOPE,Zeiss,OPMI Lumera,SN-123,OK-1,ACTIVE,2026-12-31,2024-01-15,Catatan,1',
             ]),
-            'iol' => array_merge($common, [
-                'Identifier IOL = serial_number (bukan name). power/cylinder/price = angka, axis/stock = bulat.',
-            ]),
+            'iol' => [
+                'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+                'Identitas IOL = kombinasi brand + model + power (WAJIB ketiganya). Sama → perbarui, beda → tambah.',
+                'serial_number OPSIONAL (untuk unit fisik tertentu). power/cylinder/price = angka, axis/stock = bulat.',
+                'Kolom "iol_type": MONOFOCAL | MULTIFOCAL | TORIC | TRIFOCAL | EDOF | PHAKIC.',
+                'Kolom "is_active": 1 = aktif, 0 = nonaktif.',
+            ],
             default => $common,
         };
     }
@@ -1300,7 +1374,21 @@ class MasterDataService
      */
     private function tindakanCsvHeaderOnly(): string
     {
+        $kategori = ProcedureCategory::orderBy('name')->pluck('name')->implode(' | ');
+        $notes = [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+            'Kolom WAJIB: nama, kategori, harga. (keterangan & status opsional; kolom "no" diabaikan)',
+            'kategori HARUS terdaftar di master kategori (case-insensitive): ' . ($kategori ?: '-') . '.',
+            'Kategori baru? Tambah dulu di tombol "Kelola Kategori". Kode tindakan dibuat otomatis (mis. TND-001).',
+            'harga = angka >= 0 (kosong/negatif/bukan angka → baris ditolak).',
+            'status: aktif/1/true → aktif; nonaktif/0/false → nonaktif; kosong → aktif.',
+            'Identitas: nama + kategori (case-insensitive). Sudah ada → perbarui harga; baru → tambah.',
+        ];
+
         $output = fopen('php://temp', 'r+');
+        foreach ($notes as $note) {
+            fwrite($output, '# ' . $note . "\n");
+        }
         fputcsv($output, ['no', 'nama', 'kategori', 'harga', 'keterangan', 'status'], ',', '"', '\\');
         rewind($output);
         $csv = stream_get_contents($output);
@@ -1355,6 +1443,10 @@ class MasterDataService
             return $this->importItemByNameCsv($type, $csvContent);
         }
 
+        if ($type === 'iol') {
+            return $this->importIolCsv($csvContent);
+        }
+
         $schema = $this->resourceSchema($type);
         $model  = $schema['model'];
         $unique = $schema['uniqueKey'];
@@ -1402,17 +1494,7 @@ class MasterDataService
                 if (! array_key_exists($col, $row)) {
                     continue;
                 }
-                $raw = $row[$col];
-                if ($raw === '' || $raw === null) {
-                    $data[$col] = null;
-                    continue;
-                }
-                $data[$col] = match ($schema['casts'][$col] ?? 'string') {
-                    'int'   => (int) $raw,
-                    'float' => (float) $raw,
-                    'bool'  => in_array(strtolower((string) $raw), ['1', 'true', 'yes', 'y'], true),
-                    default => $raw,
-                };
+                $data[$col] = $this->castCsvCell($row[$col], $schema['casts'][$col] ?? 'string');
             }
 
             try {
@@ -1454,7 +1536,7 @@ class MasterDataService
      */
     private function importTindakanCsv(string $csvContent): array
     {
-        $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
+        $lines = $this->csvDataLines($csvContent);
         if (empty($lines)) {
             throw new \Exception('File CSV kosong.', 422);
         }
@@ -1486,36 +1568,51 @@ class MasterDataService
 
             $name     = trim((string) ($row['nama'] ?? ''));
             $category = trim((string) ($row['kategori'] ?? ''));
-            $price    = $row['harga'] ?? '';
+            $price    = trim((string) ($row['harga'] ?? ''));
 
-            if ($name === '' || $category === '' || $price === '') {
-                $errors[] = "Baris {$lineNum}: 'nama', 'kategori', atau 'harga' kosong";
+            if ($name === '' || $category === '') {
+                $errors[] = "Baris {$lineNum}: 'nama' atau 'kategori' kosong";
+                $skipped++;
+                continue;
+            }
+
+            // Validasi harga: WAJIB angka >= 0 (kosong/negatif/non-numeric ditolak).
+            // Cegah bug lama `(float)"abc"` → 0 yang diam-diam jadi tarif Rp 0.
+            if ($price === '' || ! is_numeric($price) || (float) $price < 0) {
+                $errors[] = "Baris {$lineNum}: 'harga' harus berupa angka >= 0 (diisi: '" . $price . "')";
+                $skipped++;
+                continue;
+            }
+
+            // Kategori dicocokkan case-insensitive ke master ProcedureCategory.
+            // Pakai NAMA KANONIK yang terdaftar (mis. 'tindakan' → 'Tindakan').
+            $canonicalCategory = $this->resolveCategoryName($category);
+            if ($canonicalCategory === null) {
+                $errors[] = "Baris {$lineNum}: kategori '{$category}' tidak terdaftar di master kategori. Tambah dulu di Kelola Kategori.";
                 $skipped++;
                 continue;
             }
 
             $data = [
                 'name'       => $name,
-                'category'   => $category,
+                'category'   => $canonicalCategory,
                 'base_price' => (float) $price,
                 'keterangan' => isset($row['keterangan']) && $row['keterangan'] !== '' ? $row['keterangan'] : null,
-                'is_active'  => isset($row['status'])
-                    ? in_array(strtolower((string) $row['status']), ['1', 'true', 'yes', 'y', 'aktif'], true)
-                    : true,
+                'is_active'  => $this->parseCsvBool($row['status'] ?? null, true),
             ];
 
             try {
-                // Lookup by (nama, kategori) — case-insensitive untuk fleksibilitas
+                // Lookup by (nama, kategori kanonik) — case-insensitive
                 $existing = Procedure::whereRaw('LOWER(name) = ?', [strtolower($name)])
-                    ->whereRaw('LOWER(category) = ?', [strtolower($category)])
+                    ->whereRaw('LOWER(category) = ?', [strtolower($canonicalCategory)])
                     ->first();
 
                 if ($existing) {
                     $existing->update($data);
                     $updated++;
                 } else {
-                    // CREATE + autogen code dari kategori (kategori harus terdaftar di procedure_categories)
-                    $autoCode = $this->generateProcedureCode($category);
+                    // CREATE + autogen code dari kategori kanonik (sudah pasti terdaftar)
+                    $autoCode = $this->generateProcedureCode($canonicalCategory);
                     Procedure::create($data + ['code' => $autoCode]);
                     $inserted++;
                 }
@@ -1584,17 +1681,7 @@ class MasterDataService
             $data = [];
             foreach ($schema['columns'] as $col) {
                 if (! array_key_exists($col, $row)) continue;
-                $raw = $row[$col];
-                if ($raw === '' || $raw === null) {
-                    $data[$col] = null;
-                    continue;
-                }
-                $data[$col] = match ($schema['casts'][$col] ?? 'string') {
-                    'int'   => (int) $raw,
-                    'float' => (float) $raw,
-                    'bool'  => in_array(strtolower((string) $raw), ['1', 'true', 'yes', 'y'], true),
-                    default => $raw,
-                };
+                $data[$col] = $this->castCsvCell($row[$col], $schema['casts'][$col] ?? 'string');
             }
             $data['name'] = $name;
 
@@ -1635,6 +1722,88 @@ class MasterDataService
             null,
             "type:{$type} inserted:{$inserted} updated:{$updated} skipped:{$skipped}"
         );
+
+        return compact('inserted', 'updated', 'skipped', 'errors');
+    }
+
+    /**
+     * Import CSV IOL. Identitas upsert = (brand, model, power) — katalog IOL.
+     * `serial_number` OPSIONAL (banyak IOL master belum diserialisasi per unit;
+     * kolomnya partial-unique hanya saat tidak null). DULU pakai serial_number
+     * sebagai kunci → export lalu import balik selalu gagal "serial kosong".
+     *
+     * Header wajib: brand, model, power. Sisanya opsional (lihat resourceSchema).
+     * Lookup case-insensitive utk brand/model.
+     */
+    private function importIolCsv(string $csvContent): array
+    {
+        $schema = $this->resourceSchema('iol');
+
+        $lines = $this->csvDataLines($csvContent);
+        if (empty($lines)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map('trim', str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['brand', 'model', 'power'] as $req) {
+            if (! in_array($req, $headers, true)) {
+                throw new \Exception("Header CSV IOL harus mengandung kolom '{$req}'.", 422);
+            }
+        }
+
+        $inserted = 0;
+        $updated  = 0;
+        $skipped  = 0;
+        $errors   = [];
+
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row = array_combine($headers, $values);
+
+            $brand = trim((string) ($row['brand'] ?? ''));
+            $model = trim((string) ($row['model'] ?? ''));
+            $power = $row['power'] ?? '';
+            if ($brand === '' || $model === '' || $power === '') {
+                $errors[] = "Baris {$lineNum}: 'brand', 'model', atau 'power' kosong (wajib untuk identitas IOL)";
+                $skipped++;
+                continue;
+            }
+
+            // Bangun data dari kolom schema + cast.
+            $data = [];
+            foreach ($schema['columns'] as $col) {
+                if (! array_key_exists($col, $row)) continue;
+                $data[$col] = $this->castCsvCell($row[$col], $schema['casts'][$col] ?? 'string');
+            }
+
+            try {
+                $existing = IolItem::whereRaw('LOWER(brand) = ?', [strtolower($brand)])
+                    ->whereRaw('LOWER(model) = ?', [strtolower($model)])
+                    ->where('power', (float) $power)
+                    ->first();
+
+                if ($existing) {
+                    $existing->update($data);
+                    $updated++;
+                } else {
+                    IolItem::create($data);
+                    $inserted++;
+                }
+            } catch (\Throwable $e) {
+                $errors[] = "Baris {$lineNum}: " . $e->getMessage();
+                $skipped++;
+            }
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_RESOURCE_CSV', null, null, "type:iol inserted:{$inserted} updated:{$updated} skipped:{$skipped}");
 
         return compact('inserted', 'updated', 'skipped', 'errors');
     }

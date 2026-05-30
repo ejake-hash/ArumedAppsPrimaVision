@@ -38,12 +38,14 @@ class InventoryStockService
     {
         $type = $data['item_type'];
         $itemId = $data['item_id'];
+        $location = $data['location'] ?? InventoryStock::LOC_INVENTORI;
 
-        return DB::transaction(function () use ($type, $itemId, $data) {
+        return DB::transaction(function () use ($type, $itemId, $location, $data) {
             $this->assertItemExists($type, $itemId);
 
             $existing = InventoryStock::where('item_type', $type)
                 ->where('item_id', $itemId)
+                ->where('location', $location)
                 ->lockForUpdate()
                 ->get();
             $existingTotal = (float) $existing->sum('qty_on_hand');
@@ -65,6 +67,7 @@ class InventoryStockService
                         if ($physical <= 0) continue;
                         InventoryStock::create([
                             'item_type'   => $type,
+                            'location'    => $location,
                             'item_id'     => $itemId,
                             'batch_no'    => $row['batch_no'] ?? ('OPNAME-' . now()->format('Ymd-His')),
                             'expiry_date' => $row['expiry_date'] ?? null,
@@ -78,24 +81,26 @@ class InventoryStockService
                 // Mode set-total (dipakai oleh CSV)
                 $target = (float) $data['new_qty'];
                 $delta  = $target - $existingTotal;
-                $this->applyDelta($type, $itemId, $delta, $existing);
+                $this->applyDelta($type, $itemId, $delta, $existing, $location);
                 $touched = abs($delta) > 0.0001 ? 1 : 0;
             }
 
             $newTotal = (float) InventoryStock::where('item_type', $type)
                 ->where('item_id', $itemId)
+                ->where('location', $location)
                 ->sum('qty_on_hand');
 
             $this->log(
                 'OPNAME_STOCK',
                 'InventoryStock',
                 $itemId,
-                "type:{$type} before:{$existingTotal} after:{$newTotal} touched:{$touched} reason:" . ($data['reason'] ?? '-')
+                "type:{$type} loc:{$location} before:{$existingTotal} after:{$newTotal} touched:{$touched} reason:" . ($data['reason'] ?? '-')
             );
 
             return [
                 'item_id'   => $itemId,
                 'item_type' => $type,
+                'location'  => $location,
                 'before'    => $existingTotal,
                 'after'     => $newTotal,
                 'touched'   => $touched,
@@ -104,12 +109,14 @@ class InventoryStockService
     }
 
     /**
-     * Total stok on-hand suatu item (semua batch) di `inventory_stocks`.
+     * Total stok on-hand suatu item (semua batch) di `inventory_stocks`
+     * pada satu lokasi (default gudang INVENTORI).
      */
-    public function onHand(string $type, string $itemId): float
+    public function onHand(string $type, string $itemId, string $location = InventoryStock::LOC_INVENTORI): float
     {
         return (float) InventoryStock::where('item_type', $type)
             ->where('item_id', $itemId)
+            ->where('location', $location)
             ->sum('qty_on_hand');
     }
 
@@ -121,9 +128,12 @@ class InventoryStockService
      * Catatan: ini sumber stok yang BENAR pasca-redesign inventori. Kolom
      * legacy `medications.stock`/`bhp_items.stock` TIDAK lagi otoritatif.
      *
+     * Konsumsi STRICT per lokasi: hanya batch di `$location` yang dipakai. Bila
+     * stok lokasi itu kurang → 422 (tidak ada fallback ke gudang).
+     *
      * @return list<array{batch_no:?string,expiry_date:mixed,qty:float}> batch yg dipakai
      */
-    public function consume(string $type, string $itemId, float $qty): array
+    public function consume(string $type, string $itemId, float $qty, string $location = InventoryStock::LOC_INVENTORI): array
     {
         if ($qty <= 0) return [];
 
@@ -132,6 +142,7 @@ class InventoryStockService
 
         $stocks = InventoryStock::where('item_type', $type)
             ->where('item_id', $itemId)
+            ->where('location', $location)
             ->where('qty_on_hand', '>', 0)
             ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
             ->lockForUpdate()
@@ -146,10 +157,48 @@ class InventoryStockService
         }
 
         if ($remaining > 0.001) {
-            abort(422, "Stok tidak mencukupi untuk item {$type}. Kurang " . round($remaining, 2) . " unit.");
+            $locLabel = $location === InventoryStock::LOC_INVENTORI ? 'gudang' : "unit {$location}";
+            abort(422, "Stok {$locLabel} tidak mencukupi untuk item {$type}. Kurang " . round($remaining, 2) . " unit. Minta transfer dari gudang dulu.");
         }
 
         return $used;
+    }
+
+    /**
+     * Pindahkan stok antar lokasi (mis. INVENTORI → FARMASI saat deliver request
+     * unit). FEFO-deduct dari `$from`, lalu tambahkan ke `$to` dengan
+     * MEMPERTAHANKAN batch_no & expiry_date tiap batch yang diambil — sehingga
+     * traceability batch tetap utuh di lokasi tujuan.
+     *
+     * @return list<array{batch_no:?string,expiry_date:mixed,qty:float}> batch yg dipindah
+     */
+    public function transfer(string $type, string $itemId, float $qty, string $from, string $to): array
+    {
+        if ($qty <= 0) return [];
+        if ($from === $to) {
+            abort(422, "Lokasi asal dan tujuan transfer tidak boleh sama ({$from}).");
+        }
+
+        return DB::transaction(function () use ($type, $itemId, $qty, $from, $to) {
+            // Ambil dari lokasi asal (FEFO, strict) — throw 422 bila kurang.
+            $moved = $this->consume($type, $itemId, $qty, $from);
+
+            // Tambahkan ke lokasi tujuan, jaga batch_no + expiry_date per batch.
+            foreach ($moved as $m) {
+                $stock = InventoryStock::firstOrNew([
+                    'item_type' => $type,
+                    'location'  => $to,
+                    'item_id'   => $itemId,
+                    'batch_no'  => $m['batch_no'],
+                ]);
+                $stock->expiry_date = $m['expiry_date'] ?? $stock->expiry_date;
+                $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + (float) $m['qty'];
+                $stock->last_received_at = now();
+                $stock->save();
+            }
+
+            return $moved;
+        });
     }
 
     /**
@@ -157,13 +206,14 @@ class InventoryStockService
      * - delta > 0 → batch baru OPNAME-{tgl}.
      * - delta < 0 → kurangi FEFO dari batch existing.
      */
-    private function applyDelta(string $type, string $itemId, float $delta, $existing): void
+    private function applyDelta(string $type, string $itemId, float $delta, $existing, string $location = InventoryStock::LOC_INVENTORI): void
     {
         if (abs($delta) < 0.0001) return;
 
         if ($delta > 0) {
             InventoryStock::create([
                 'item_type'   => $type,
+                'location'    => $location,
                 'item_id'     => $itemId,
                 'batch_no'    => 'OPNAME-' . now()->format('Ymd'),
                 'expiry_date' => null,
@@ -217,13 +267,14 @@ class InventoryStockService
         return $this->makeCsv([['code', 'name', 'qty']]);
     }
 
-    public function exportCsv(string $type): string
+    public function exportCsv(string $type, string $location = InventoryStock::LOC_INVENTORI): string
     {
         $this->assertCsvType($type);
         $itemType = $this->itemTypeOf($type);
 
         $masters = $this->mastersFor($type)->get();
         $totals  = InventoryStock::where('item_type', $itemType)
+            ->where('location', $location)
             ->whereIn('item_id', $masters->pluck('id'))
             ->groupBy('item_id')
             ->selectRaw('item_id, SUM(qty_on_hand) as total')
@@ -245,7 +296,7 @@ class InventoryStockService
      *
      * Selisih qty diaplikasikan via applyDelta (positif → batch OPNAME, negatif → FEFO).
      */
-    public function importCsv(string $type, string $csvContent): array
+    public function importCsv(string $type, string $csvContent, string $location = InventoryStock::LOC_INVENTORI): array
     {
         $this->assertCsvType($type);
         $itemType = $this->itemTypeOf($type);
@@ -329,6 +380,7 @@ class InventoryStockService
                 $this->opname([
                     'item_type' => $itemType,
                     'item_id'   => $master->id,
+                    'location'  => $location,
                     'new_qty'   => $qtyNum,
                     'reason'    => "Import CSV opname",
                 ]);

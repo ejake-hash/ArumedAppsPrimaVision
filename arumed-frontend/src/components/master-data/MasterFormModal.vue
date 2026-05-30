@@ -23,6 +23,8 @@
  *   update:open       (bool)
  *   submit            (obj)  — payload final
  *   close             ()
+ *   field-action      ({ key, form })  — tombol aksi opsional di samping field
+ *                                         (field config: action: { label, event? })
  */
 import { computed, watch, ref } from 'vue'
 
@@ -37,15 +39,27 @@ const props = defineProps({
   width:       { type: String, default: '520px' },
 })
 
-const emit = defineEmits(['update:modelValue', 'update:open', 'submit', 'close'])
+const emit = defineEmits(['update:modelValue', 'update:open', 'submit', 'close', 'field-action'])
 
 const form = ref({ ...props.modelValue })
 
-// Sync external -> local when modal opens with new data
-watch(() => props.modelValue, (v) => { form.value = { ...v } }, { deep: true })
+// Sync external -> local HANYA saat nilai luar benar-benar berbeda dari form
+// (mis. modal dibuka dengan data baru, atau parent setModalField). Tanpa guard
+// ini, emit `update:modelValue` di bawah memicu watcher ini balik → ping-pong
+// tak berujung ("Maximum recursive updates exceeded").
+watch(() => props.modelValue, (v) => {
+  if (JSON.stringify(v) !== JSON.stringify(form.value)) {
+    form.value = { ...v }
+  }
+}, { deep: true })
 
-// Sync local -> external on every change
-watch(form, (v) => emit('update:modelValue', { ...v }), { deep: true })
+// Sync local -> external — skip emit kalau nilainya sudah identik dgn prop
+// (hindari memicu watcher di atas tanpa perlu).
+watch(form, (v) => {
+  if (JSON.stringify(v) !== JSON.stringify(props.modelValue)) {
+    emit('update:modelValue', { ...v })
+  }
+}, { deep: true })
 
 function fieldError(key) {
   if (!props.errors) return null
@@ -138,20 +152,27 @@ const colsMap = computed(() => {
               <span>{{ f.label }}</span>
             </label>
 
-            <!-- INPUT (text/number/date) -->
-            <input
-              v-else
-              :id="`mfm-${f.key}`"
-              :type="f.type ?? 'text'"
-              v-model="form[f.key]"
-              :placeholder="f.placeholder"
-              :disabled="f.disabled"
-              :min="f.min"
-              :max="f.max"
-              :step="f.step"
-              :list="f.datalistId"
-              :class="{ 'has-error': fieldError(f.key) }"
-            />
+            <!-- INPUT (text/number/date) — dgn tombol aksi opsional di samping -->
+            <div v-else :class="{ 'mfm-input-row': f.action }">
+              <input
+                :id="`mfm-${f.key}`"
+                :type="f.type ?? 'text'"
+                v-model="form[f.key]"
+                :placeholder="f.placeholder"
+                :disabled="f.disabled"
+                :min="f.min"
+                :max="f.max"
+                :step="f.step"
+                :list="f.datalistId"
+                :class="{ 'has-error': fieldError(f.key) }"
+              />
+              <button
+                v-if="f.action"
+                type="button"
+                class="mfm-field-action"
+                @click="emit('field-action', { key: f.key, form })"
+              >{{ f.action.label }}</button>
+            </div>
             <datalist v-if="f.datalistId && f.datalistOptions" :id="f.datalistId">
               <option v-for="o in f.datalistOptions" :key="o" :value="o" />
             </datalist>
@@ -162,6 +183,7 @@ const colsMap = computed(() => {
 
           <!-- Footer actions span full grid -->
           <div class="mfm-actions">
+            <span class="mfm-legend"><span class="mfm-req">*</span> wajib diisi</span>
             <button type="button" class="mfm-btn-secondary" :disabled="submitting" @click="close">Batal</button>
             <button type="submit" class="mfm-btn-primary" :disabled="submitting">
               <span v-if="submitting" class="mfm-spinner"></span>
@@ -187,7 +209,7 @@ const colsMap = computed(() => {
 
 .mfm-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .mfm-field label { font-size: 12px; font-weight: 600; color: var(--tm); text-transform: uppercase; letter-spacing: 0.03em; }
-.mfm-req { color: var(--et); margin-left: 2px; }
+.mfm-req { color: #dc2626; font-weight: 700; margin-left: 2px; }
 
 .mfm-field input,
 .mfm-field select,
@@ -226,8 +248,13 @@ const colsMap = computed(() => {
 
 .mfm-err { font-size: 11px; color: var(--et); margin: 0; }
 .mfm-hint { font-size: 11px; color: var(--tu); margin: 0; }
+.mfm-input-row { display: flex; gap: 6px; align-items: stretch; }
+.mfm-input-row input { flex: 1; }
+.mfm-field-action { flex-shrink: 0; padding: 0 12px; border: 1px solid #1763d4; background: #fff; color: #1763d4; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.mfm-field-action:hover { background: #1763d4; color: #fff; }
 
-.mfm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--gb); margin-top: 0.3rem; }
+.mfm-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--gb); margin-top: 0.3rem; }
+.mfm-legend { margin-right: auto; font-size: 11.5px; color: var(--tm); }
 .mfm-btn-primary,
 .mfm-btn-secondary { padding: 9px 18px; border-radius: 9px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid; display: inline-flex; align-items: center; gap: 7px; transition: background 0.15s, border-color 0.15s; }
 .mfm-btn-primary { background: var(--ga); color: white; border-color: var(--ga); }

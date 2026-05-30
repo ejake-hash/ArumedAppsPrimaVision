@@ -256,6 +256,53 @@ function showToast(t, msg) {
   setTimeout(() => { if (toast.value?.msg === msg) toast.value = null }, 3500)
 }
 
+// ─── CSV per-paket (template / export / import komposisi paket ini) ─────────
+const csvBusy = ref(false)
+const csvFileInput = ref(null)
+
+async function onDownloadTemplate() {
+  csvBusy.value = true
+  try {
+    await store.downloadPaketTemplateOne(paketId.value, paket.value?.name)
+    showToast('s', 'Template komposisi paket diunduh')
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal mengunduh template')
+  } finally { csvBusy.value = false }
+}
+
+async function onExportCsv() {
+  csvBusy.value = true
+  try {
+    await store.exportPaketCsvOne(paketId.value, paket.value?.name)
+    showToast('s', 'Komposisi paket diunduh')
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal mengunduh CSV')
+  } finally { csvBusy.value = false }
+}
+
+function triggerImport() {
+  csvFileInput.value?.click()
+}
+
+async function onImportFile(e) {
+  const file = e.target.files?.[0]
+  e.target.value = '' // reset supaya bisa pilih file sama lagi
+  if (!file) return
+  if (!confirm(`Ganti komposisi paket "${paket.value?.name}" dari file ini? Item lama akan diganti (tarif jual per penjamin tidak berubah).`)) return
+  csvBusy.value = true
+  try {
+    const res = await store.importPaketCsvOne(file, paketId.value)
+    const fail = res?.items_lookup_fail ?? 0
+    const ins = res?.items_inserted ?? 0
+    showToast(fail ? 'w' : 's', `Komposisi diperbarui: ${ins} item${fail ? `, ${fail} gagal lookup` : ''}.`)
+    if (res?.errors?.length) {
+      console.warn('[import paket]', res.errors)
+    }
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal import komposisi')
+  } finally { csvBusy.value = false }
+}
+
 onMounted(async () => {
   await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns()])
 })
@@ -305,10 +352,25 @@ watch(paketId, async (id) => {
               <h3>Komposisi Items</h3>
               <p>Tindakan / Obat / BHP / IOL — harga snapshot saat ditambahkan.</p>
             </div>
-            <button class="pd-btn-primary" @click="openAddItem">
-              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Tambah Item
-            </button>
+            <div class="pd-head-actions">
+              <button class="pd-btn-ghost" :disabled="csvBusy" title="Unduh template CSV komposisi paket ini (terisi)" @click="onDownloadTemplate">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Template
+              </button>
+              <button class="pd-btn-ghost" :disabled="csvBusy || !itemsEnriched.length" title="Unduh komposisi paket ini" @click="onExportCsv">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Export
+              </button>
+              <button class="pd-btn-ghost" :disabled="csvBusy" title="Ganti komposisi paket ini dari CSV" @click="triggerImport">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Import
+              </button>
+              <input ref="csvFileInput" type="file" accept=".csv,text/csv" style="display:none" @change="onImportFile" />
+              <button class="pd-btn-primary" @click="openAddItem">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Tambah Item
+              </button>
+            </div>
           </div>
 
           <table v-if="itemsEnriched.length" class="pd-table">
@@ -460,6 +522,12 @@ watch(paketId, async (id) => {
 .pd-btn-primary:hover:not(:disabled) { background: var(--gm); border-color: var(--gm); }
 .pd-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .pd-btn-primary svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+
+.pd-head-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.pd-btn-ghost { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12px; font-weight: 500; cursor: pointer; }
+.pd-btn-ghost:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--gd); }
+.pd-btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+.pd-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .pd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .pd-table th, .pd-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--gb); }

@@ -40,6 +40,7 @@ class PermissionSeeder extends Seeder
             'audit'              => 'Audit Log',
             'pengaturan'         => 'Pengaturan Sistem',
             'form_template'      => 'Form Template (Rekam Medis)',
+            'integrasi'          => 'Bridging BPJS (VClaim/Antrean)',
         ];
 
         $actions = [

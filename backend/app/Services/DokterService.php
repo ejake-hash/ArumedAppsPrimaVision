@@ -3,12 +3,16 @@
 namespace App\Services;
 
 use App\Models\BpjsControlLetter;
+use App\Models\BpjsPoliMapping;
 use App\Models\BpjsReferralOut;
 use App\Models\ClinicProfile;
+use App\Models\IntegrationConfig;
 use App\Models\DiagnosticOrder;
 use App\Models\DoctorExamination;
+use App\Models\DoctorSchedule;
 use App\Models\DocumentType;
 use App\Models\DocumentVerification;
+use App\Models\InventoryStock;
 use App\Models\IolRecommendation;
 use App\Models\MedicalResume;
 use App\Models\Notification;
@@ -33,6 +37,7 @@ class DokterService
         private readonly Request $request,
         private readonly QueueService $queueService,
         private readonly KasirService $kasirService,
+        private readonly BpjsVClaimService $vclaim,
     ) {}
 
     // =========================================================================
@@ -43,7 +48,12 @@ class DokterService
     {
         $user = auth('api')->user();
 
-        $query = Queue::with(['visit.patient', 'visit.nurseAssessment', 'visit.refractionRecord'])
+        $query = Queue::with([
+            'visit.patient',
+            'visit.nurseAssessment',
+            'visit.refractionRecord',
+            'visit.internalReferralFromSchedule:id,poliklinik',
+        ])
             ->where('station', 'DOKTER')
             ->whereDate('created_at', today())
             ->whereHas('visit');   // exclude zombie row (visit soft-deleted)
@@ -286,15 +296,27 @@ class DokterService
     }
 
     /**
-     * Daftar obat yang sudah punya harga jual (inventori farmasi → penentuan harga).
-     * Hanya obat ber-harga (inner join inventory_prices) yang bisa diresepkan dokter.
+     * Daftar obat aktif untuk e-resep dokter. LEFT JOIN ke inventory_prices:
+     * obat yang belum di-set harga (HJA) tetap MUNCUL & bisa diresepkan dengan
+     * hja=0 (konsisten dengan perilaku Tarif Tindakan). Harga final tetap
+     * di-resolve di kasir (getPrice); HJA di sini hanya hint estimasi untuk dokter.
      */
     public function getDaftarObat(?string $search = null): array
     {
+        // Stok yang ditampilkan = on-hand lokasi FARMASI (inventory_stocks),
+        // BUKAN kolom legacy medications.stock (tak lagi otoritatif). Hanya info
+        // ketersediaan di unit Farmasi; dokter tetap bisa resep walau 0.
+        $farmasiStock = DB::table('inventory_stocks')
+            ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
+            ->where('item_type', InventoryStock::TYPE_MEDICATION)
+            ->where('location', InventoryStock::LOC_FARMASI)
+            ->groupBy('item_id');
+
         return DB::table('medications as m')
-            ->join('inventory_prices as ip', function ($j) {
+            ->leftJoin('inventory_prices as ip', function ($j) {
                 $j->on('ip.item_id', '=', 'm.id')->where('ip.item_type', '=', 'MEDICATION');
             })
+            ->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id'))
             ->whereNull('m.deleted_at')
             ->where('m.is_active', true)
             ->when($search, function ($q) use ($search) {
@@ -306,7 +328,7 @@ class DokterService
             })
             ->orderBy('m.name')
             ->limit(100)
-            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'm.stock', 'ip.hja'])
+            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'ip.hja', 'fs.qty as farmasi_qty'])
             ->map(fn ($r) => [
                 'id'       => $r->id,
                 'code'     => $r->code,
@@ -314,7 +336,7 @@ class DokterService
                 'form'     => $r->form_sediaan,
                 'golongan' => $r->golongan,
                 'unit'     => $r->unit,
-                'stock'    => $r->stock,
+                'stock'    => (float) ($r->farmasi_qty ?? 0),
                 'hja'      => (float) $r->hja,
             ])
             ->all();
@@ -384,7 +406,17 @@ class DokterService
         $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
-        return DB::transaction(function () use ($visitId, $data, $user) {
+        $items = $data['items'] ?? [];
+
+        // Resep WAJIB punya peresep (prescriptions.prescribed_by_id NOT NULL, FK
+        // employees). Akun tanpa employee (mis. Superadmin) tidak boleh membuat
+        // resep berisi item — beri 422 jelas, bukan biarkan jadi 23502/500.
+        // Pengosongan resep (items kosong) tetap diizinkan tanpa employee.
+        if (!empty($items) && !$user->employee_id) {
+            throw new \Exception('Akun Anda tidak terhubung ke data pegawai/dokter, sehingga tidak bisa membuat resep. Silakan login dengan akun dokter.', 422);
+        }
+
+        return DB::transaction(function () use ($visitId, $data, $user, $items) {
             // Bersihkan resep DRAFT lama + itemnya.
             $drafts = Prescription::where('visit_id', $visitId)->where('status', 'DRAFT')->get();
             foreach ($drafts as $d) {
@@ -392,7 +424,6 @@ class DokterService
                 $d->delete();
             }
 
-            $items = $data['items'] ?? [];
             if (empty($items)) {
                 $this->log($user->id, 'STORE_RESEP', Prescription::class, $visitId, 'Resep dikosongkan');
                 return null;
@@ -1053,26 +1084,169 @@ class DokterService
     // RUJUKAN KELUAR
     // =========================================================================
 
+    /**
+     * Buat rujukan keluar (ke RS/faskes lain). Untuk pasien BPJS yang sudah
+     * punya SEP, dikirim LANGSUNG (blocking) ke VClaim insertRujukanKeluar dan
+     * noRujukan dari BPJS disimpan. Untuk non-BPJS / VClaim non-aktif, hanya
+     * disimpan sebagai catatan lokal (status LOCAL).
+     */
     public function storeRujukanKeluar(array $data): BpjsReferralOut
     {
-        $this->authorizeVisitOwnership($data['visit_id']);
+        $visit = $this->authorizeVisitOwnership($data['visit_id']);
+        $visit->loadMissing(['patient', 'doctorSchedule.employee']);
+        $user  = auth('api')->user();
 
-        $user     = auth('api')->user();
-        $rujukan  = BpjsReferralOut::create([
-            'visit_id'            => $data['visit_id'],
-            'faskes_tujuan_kode'  => $data['faskes_tujuan_kode'],
-            'faskes_tujuan_nama'  => $data['faskes_tujuan_nama'] ?? null,
-            'kode_spesialis'      => $data['kode_spesialis'] ?? null,
-            'urgency'             => $data['urgency'] ?? 'ELEKTIF',
-            'diagnosa_rujukan'    => $data['diagnosa_rujukan'],
-            'diagnosa_nama'       => $data['diagnosa_nama'] ?? null,
-            'catatan_rujukan'     => $data['catatan_rujukan'] ?? null,
-            'status'              => 'DRAFT',
+        $tglRujukan = $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString();
+
+        return DB::transaction(function () use ($visit, $data, $user, $tglRujukan) {
+            $rujukan = BpjsReferralOut::create([
+                'visit_id'           => $visit->id,
+                'faskes_tujuan_kode' => $data['faskes_tujuan_kode'],
+                'faskes_tujuan_nama' => $data['faskes_tujuan_nama'] ?? null,
+                'kode_spesialis'     => $data['kode_spesialis'] ?? null,
+                'poli_rujukan'       => $data['poli_rujukan'] ?? null,
+                'poli_rujukan_nama'  => $data['poli_rujukan_nama'] ?? null,
+                'tipe_rujukan'       => $data['tipe_rujukan'] ?? '1', // partial
+                'jns_pelayanan'      => $data['jns_pelayanan'] ?? '2', // rawat jalan
+                'tgl_rujukan'        => $tglRujukan,
+                'urgency'            => $data['urgency'] ?? 'ELEKTIF',
+                'diagnosa_rujukan'   => $data['diagnosa_rujukan'],
+                'diagnosa_nama'      => $data['diagnosa_nama'] ?? null,
+                'catatan_rujukan'    => $data['catatan_rujukan'] ?? null,
+                'status'             => 'DRAFT',
+            ]);
+
+            // Kirim ke VClaim hanya bila pasien BPJS, sudah ada SEP, & VCLAIM aktif.
+            $vclaimEnabled = IntegrationConfig::where('system_name', 'VCLAIM')->value('is_enabled');
+
+            if ($visit->guarantor_type === 'BPJS' && $visit->no_sep && $vclaimEnabled) {
+                $tRujukan = [
+                    'noSep'        => $visit->no_sep,
+                    'tglRujukan'   => $tglRujukan,
+                    'ppkDirujuk'   => $data['faskes_tujuan_kode'],
+                    'jnsPelayanan' => $rujukan->jns_pelayanan,
+                    'catatan'      => $rujukan->catatan_rujukan ?? '',
+                    'diagRujukan'  => $data['diagnosa_rujukan'],
+                    'tipeRujukan'  => $rujukan->tipe_rujukan,
+                    'poliRujukan'  => $data['poli_rujukan'] ?? '',
+                    'user'         => $user?->name ?? 'Arumed',
+                ];
+
+                $res = $this->vclaim->insertRujukanKeluar($tRujukan, $visit->id);
+
+                $code = (string) ($res['metaData']['code'] ?? '');
+                if ($code !== '200') {
+                    // Blocking: dokter melihat pesan error BPJS agar bisa diperbaiki.
+                    throw new \Exception(
+                        'Gagal terbitkan rujukan BPJS: ' . ($res['metaData']['message'] ?? 'respons tidak dikenal'),
+                        422
+                    );
+                }
+
+                $noRujukan = $res['response']['rujukan']['noRujukan']
+                    ?? $res['response']['noRujukan']
+                    ?? null;
+
+                $rujukan->update([
+                    'no_rujukan'      => $noRujukan,
+                    'status'          => 'SUCCESS',
+                    'vclaim_response' => $res['response'] ?? null,
+                ]);
+            } elseif ($visit->guarantor_type !== 'BPJS') {
+                // Non-BPJS: rujukan dicatat lokal saja (tidak ada VClaim).
+                $rujukan->update(['status' => 'LOCAL']);
+            }
+            // BPJS tapi belum SEP / VCLAIM non-aktif → biarkan DRAFT (bisa dikirim nanti).
+
+            $this->log($user?->id, 'STORE_RUJUKAN_KELUAR', BpjsReferralOut::class, $rujukan->id,
+                "Rujukan keluar {$rujukan->status} → {$rujukan->faskes_tujuan_nama}");
+
+            return $rujukan->fresh();
+        });
+    }
+
+    // =========================================================================
+    // SURAT KONTROL BPJS (Rencana Kontrol) — untuk planning Pulang/berobat jalan
+    // =========================================================================
+
+    /**
+     * Status Surat Kontrol BPJS milik kunjungan ini (untuk panel Tab 4 Pulang).
+     * Mengembalikan letter terbaru (DRAFT/SUCCESS/FAILED) atau null bila belum ada.
+     * DRAFT dibuat otomatis oleh handlePlanningFollowUp saat dokter set tgl kontrol.
+     */
+    public function getSuratKontrol(string $visitId): ?BpjsControlLetter
+    {
+        $this->authorizeVisitOwnership($visitId);
+
+        return BpjsControlLetter::where('visit_id', $visitId)
+            ->orderByDesc('created_at')
+            ->first();
+    }
+
+    /**
+     * Terbitkan Surat Kontrol DRAFT milik kunjungan ini ke VClaim
+     * (POST /RencanaKontrol/v2/Insert). Blocking — dokter melihat noSuratKontrol
+     * atau pesan error BPJS. Mapping dokter/poli dari kunjungan asal.
+     */
+    public function submitSuratKontrol(string $visitId): BpjsControlLetter
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+        $visit->loadMissing(['doctorSchedule.employee']);
+        $user  = auth('api')->user();
+
+        $letter = BpjsControlLetter::where('visit_id', $visitId)
+            ->orderByDesc('created_at')
+            ->firstOrFail();
+
+        if ($letter->status === 'SUCCESS') {
+            throw new \Exception("Surat Kontrol sudah terbit: {$letter->no_surat_kontrol}", 422);
+        }
+        if (! $visit->no_sep) {
+            throw new \Exception('Pasien BPJS belum punya SEP. Terbitkan SEP di Admisi dulu.', 422);
+        }
+
+        $vclaimEnabled = IntegrationConfig::where('system_name', 'VCLAIM')->value('is_enabled');
+        if (! $vclaimEnabled) {
+            throw new \Exception('Integrasi VClaim belum diaktifkan.', 503);
+        }
+
+        $schedule   = $visit->doctorSchedule;
+        $kodeDokter = $schedule?->employee?->bpjs_dpjp_code;
+        $kodePoli   = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
+
+        if (! $kodePoli) {
+            throw new \Exception("Poli '{$schedule?->poli_code}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
+        }
+
+        $result = $this->vclaim->postSuratKontrol([
+            'noSEP'             => $visit->no_sep,
+            'kodeDokter'        => $kodeDokter,
+            'poliKontrol'       => $kodePoli,
+            'tglRencanaKontrol' => $letter->tanggal_rencana_kontrol?->format('Y-m-d'),
+            'user'              => $user?->name ?? 'arumed',
+        ], $visitId);
+
+        $code = (string) ($result['metaData']['code'] ?? '');
+        $noSuratKontrol = $result['response']['noSuratKontrol'] ?? null;
+
+        if ($code !== '200' || ! $noSuratKontrol) {
+            $letter->update(['status' => 'FAILED', 'vclaim_response' => $result]);
+            throw new \Exception(
+                'Gagal terbitkan Surat Kontrol: ' . ($result['metaData']['message'] ?? 'respons tidak dikenal'),
+                422
+            );
+        }
+
+        $letter->update([
+            'status'           => 'SUCCESS',
+            'no_surat_kontrol' => $noSuratKontrol,
+            'vclaim_response'  => $result,
         ]);
 
-        $this->log($user->id, 'STORE_RUJUKAN_KELUAR', BpjsReferralOut::class, $rujukan->id);
+        $this->log($user?->id, 'SUBMIT_SURAT_KONTROL', BpjsControlLetter::class, $letter->id,
+            "Surat Kontrol terbit {$noSuratKontrol} — kunjungan {$visitId}");
 
-        return $rujukan;
+        return $letter->fresh();
     }
 
     // =========================================================================
@@ -1215,6 +1389,152 @@ class DokterService
         $this->log(auth('api')->id(), 'REJECT_DOCUMENT', PatientDocument::class, $documentId, "Alasan: {$reason}");
 
         return $document->fresh(['patient', 'documentType']);
+    }
+
+    // =========================================================================
+    // RUJUKAN INTERNAL ANTAR-POLI (mis. Poli Mata Umum → Poli Retina)
+    // =========================================================================
+
+    /**
+     * Daftar tujuan rujukan internal: jadwal dokter/poli minggu ini selain dokter
+     * pemilik kunjungan saat ini. Tiap baris memberi tahu apakah dokter tujuan
+     * praktik HARI INI (bisa langsung di-antrekan) atau praktik berikutnya
+     * (pasien daftar ulang di hari itu).
+     */
+    public function getRujukInternalTargets(string $visitId): array
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+
+        $weekStart = DoctorSchedule::currentWeekStart();
+        $todayDow  = (int) now('Asia/Jakarta')->isoWeekday();   // 1=Mon..7=Sun
+        $selfSchedId = $visit->doctor_schedule_id;
+
+        $schedules = DoctorSchedule::with('employee')
+            ->forWeek($weekStart)
+            ->where('is_active', true)
+            ->when($selfSchedId, fn ($q) => $q->where('id', '!=', $selfSchedId))
+            ->orderBy('poliklinik')
+            ->orderBy('day_of_week')
+            ->orderBy('start_time')
+            ->get();
+
+        return $schedules->map(function (DoctorSchedule $s) use ($todayDow) {
+            $isToday = $s->day_of_week === $todayDow;
+
+            return [
+                'schedule_id'  => $s->id,
+                'doctor_id'    => $s->employee_id,
+                'doctor_name'  => $s->employee?->name,
+                'poliklinik'   => $s->poliklinik,
+                'poli_code'    => $s->poli_code,
+                'service_type' => $s->service_type,
+                'room'         => $s->room,
+                'day_of_week'  => $s->day_of_week,
+                'day_label'    => $this->dayLabel($s->day_of_week),
+                'start_time'   => substr((string) $s->start_time, 0, 5),
+                'end_time'     => substr((string) $s->end_time, 0, 5),
+                'is_today'     => $isToday,
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * Rujuk pasien ke dokter/poli lain (rujukan internal). Membuat VISIT ANAK
+     * (1:1 dengan doctor_examination & billing-nya sendiri — sesuai model BPJS
+     * poli-berbeda) yang ditautkan ke visit induk via parent_visit_id.
+     *
+     * - Dokter tujuan praktik HARI INI → visit anak langsung masuk antrean DOKTER.
+     * - Tidak praktik hari ini → visit anak dibuat sebagai penanda (current_station
+     *   = ADMISI); petugas Admisi memunculkannya ke antrean di hari praktik dokter.
+     *
+     * @return array { child_visit, enqueued, target }
+     */
+    public function rujukInternal(string $visitId, string $targetScheduleId, ?string $reason = null): array
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+        $user  = auth('api')->user();
+
+        $target = DoctorSchedule::with('employee')->findOrFail($targetScheduleId);
+
+        if ($target->id === $visit->doctor_schedule_id) {
+            throw new \Exception('Tidak bisa merujuk ke poli/dokter yang sama.', 422);
+        }
+
+        $todayDow = (int) now('Asia/Jakarta')->isoWeekday();
+        $isToday  = $target->week_start?->toDateString() === DoctorSchedule::currentWeekStart()
+            && $target->day_of_week === $todayDow
+            && $target->is_active;
+
+        return DB::transaction(function () use ($visit, $target, $reason, $user, $isToday) {
+            $child = Visit::create([
+                'parent_visit_id'                    => $visit->id,
+                'patient_id'                         => $visit->patient_id,
+                'insurer_id'                         => $visit->insurer_id,
+                'registered_by_id'                   => $user?->employee_id,
+                'doctor_schedule_id'                 => $target->id,
+                'internal_referral_from_schedule_id' => $visit->doctor_schedule_id,
+                'internal_referral_reason'           => $reason,
+                'no_registrasi'                      => $this->generateChildNoRegistrasi(),
+                'visit_date'                         => today(),
+                'classification'                     => 'Rujukan Internal',
+                'visit_type'                         => 'REGULAR',
+                // Hari ini → langsung antrean DOKTER. Hari lain → penanda di ADMISI
+                // (petugas memunculkan ke antrean saat pasien datang di hari-H).
+                'current_station'                    => $isToday ? 'DOKTER' : 'ADMISI',
+                'guarantor_type'                     => $visit->guarantor_type,
+                'satusehat_sync_status'              => 'PENDING',
+                'insurance_verification_status'      => 'NONE',
+            ]);
+
+            if ($isToday) {
+                $this->queueService->enqueue($child->id, 'DOKTER');
+            }
+
+            $this->log(
+                $user?->id,
+                'RUJUK_INTERNAL',
+                Visit::class,
+                $child->id,
+                "Rujukan internal dari kunjungan {$visit->id} → poli {$target->poliklinik}"
+                . ($isToday ? ' (antrean hari ini)' : ' (jadwal ' . $this->dayLabel($target->day_of_week) . ')')
+            );
+
+            return [
+                'child_visit' => $child->fresh(['patient', 'doctorSchedule.employee', 'internalReferralFromSchedule']),
+                'enqueued'    => $isToday,
+                'target'      => [
+                    'schedule_id' => $target->id,
+                    'doctor_name' => $target->employee?->name,
+                    'poliklinik'  => $target->poliklinik,
+                    'day_label'   => $this->dayLabel($target->day_of_week),
+                    'start_time'  => substr((string) $target->start_time, 0, 5),
+                ],
+            ];
+        });
+    }
+
+    /**
+     * Nomor registrasi untuk visit anak — selaras dengan
+     * AdmisiService::generateNoRegistrasi (REG-Ymd-NNN, withTrashed agar nomor
+     * tak bentrok dengan visit yang sudah di-soft-delete).
+     */
+    private function generateChildNoRegistrasi(): string
+    {
+        $prefix = 'REG-' . today()->format('Ymd') . '-';
+
+        $last = Visit::withTrashed()
+            ->where('no_registrasi', 'like', $prefix . '%')
+            ->orderByDesc('no_registrasi')
+            ->value('no_registrasi');
+
+        $next = $last ? ((int) substr($last, strrpos($last, '-') + 1)) + 1 : 1;
+
+        return $prefix . str_pad((string) $next, 3, '0', STR_PAD_LEFT);
+    }
+
+    private function dayLabel(int $dow): string
+    {
+        return [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'][$dow] ?? '-';
     }
 
     // =========================================================================

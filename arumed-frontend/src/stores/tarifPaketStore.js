@@ -198,6 +198,28 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
     return res.data?.data ?? res.data
   }
 
+  // ─── Paket CSV per-paket (dari halaman detail) ─────────────────────────────
+  async function downloadPaketTemplateOne(paketId, paketName = '') {
+    const { data } = await tarifPaketApi.paket.csvTemplateOne(paketId)
+    const slug = (paketName || paketId).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    triggerDownload(data, `template-paket-${slug || paketId}.csv`)
+  }
+
+  async function exportPaketCsvOne(paketId, paketName = '') {
+    const { data } = await tarifPaketApi.paket.csvExportOne(paketId)
+    const slug = (paketName || paketId).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(data, `paket-${slug || paketId}-${stamp}.csv`)
+  }
+
+  // Import komposisi 1 paket (endpoint import paket = replace by nama_paket).
+  // Refresh DETAIL paket ini, bukan list.
+  async function importPaketCsvOne(file, paketId) {
+    const res = await tarifPaketApi.paket.csvImport(file)
+    if (paketId) await fetchPaketDetail(paketId)
+    return res.data?.data ?? res.data
+  }
+
   // ─── Items paket ────────────────────────────────────────────────────────
   async function addItem(paketId, data) {
     const res = await tarifPaketApi.items.add(paketId, data)
@@ -244,6 +266,7 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
     fetchPaketList, fetchPaketDetail,
     createPaket, updatePaket, removePaket,
     downloadPaketTemplate, exportPaketCsv, importPaketCsv,
+    downloadPaketTemplateOne, exportPaketCsvOne, importPaketCsvOne,
 
     // items/tariffs ops
     addItem, updateItem, removeItem,

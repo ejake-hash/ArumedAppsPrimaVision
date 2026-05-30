@@ -31,6 +31,8 @@ const props = defineProps({
   config: { type: Object, required: true },
 })
 
+const emit = defineEmits(['field-action'])
+
 const store = useMasterDataStore()
 const KEY = computed(() => props.config.resourceKey)
 
@@ -85,7 +87,12 @@ function updateFilter(key, value) {
   refresh()
 }
 
-defineExpose({ refresh, updateFilter })
+/** Set satu field di payload modal yang sedang terbuka (dipakai parent, mis. isi kfa_code). */
+function setModalField(key, value) {
+  modal.value.payload = { ...modal.value.payload, [key]: value }
+}
+
+defineExpose({ refresh, updateFilter, setModalField })
 
 function openCreate() {
   modal.value = {
@@ -250,6 +257,7 @@ onMounted(refresh)
       :submit-label="modal.mode === 'create' ? 'Simpan' : 'Simpan Perubahan'"
       width="560px"
       @submit="onSubmit"
+      @field-action="(e) => emit('field-action', e)"
     />
 
     <!-- Confirm delete -->

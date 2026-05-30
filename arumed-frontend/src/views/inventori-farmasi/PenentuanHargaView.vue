@@ -391,6 +391,7 @@ watch(activeTab, () => { /* handled in switchTab */ })
       <table v-else class="ph-table">
         <thead>
           <tr>
+            <th class="r col-no">No</th>
             <th class="col-name">Item</th>
             <th class="r col-num">HPP (Rp)</th>
             <th class="r col-num">Margin %</th>
@@ -401,7 +402,8 @@ watch(activeTab, () => { /* handled in switchTab */ })
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in items" :key="row.id" :class="{ dirty: row._dirty, 'no-price': !row._hasPrice }">
+          <tr v-for="(row, i) in items" :key="row.id" :class="{ dirty: row._dirty, 'no-price': !row._hasPrice }">
+            <td class="r col-no">{{ (meta.current_page - 1) * meta.per_page + i + 1 }}</td>
             <td class="col-name">
               <div class="ph-name-cell">
                 <strong>{{ displayName(row) }}</strong>
@@ -543,6 +545,7 @@ watch(activeTab, () => { /* handled in switchTab */ })
 .ph-table tr.dirty td { background: rgba(250, 204, 21, 0.06); }
 .ph-table tr.no-price td { background: rgba(0,0,0,0.015); }
 
+.col-no { width: 48px; color: var(--tu); font-variant-numeric: tabular-nums; }
 .col-name { min-width: 220px; }
 .col-num { width: 130px; }
 .col-ppn { width: 70px; }

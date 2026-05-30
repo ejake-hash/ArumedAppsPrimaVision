@@ -141,10 +141,23 @@ export const dokterApi = {
 
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
   finalize:         (visitId)             => api.post(`/dokter/kunjungan/${visitId}/finalize`),
+  // Riwayat SOAP/CPPT lintas-kunjungan pasien (RME aggregator) untuk kartu "SOAP / CPPT".
+  riwayatKunjungan: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/kunjungan`),
+  // Riwayat hasil penunjang lintas-kunjungan (RME aggregator) untuk kartu sidebar.
+  riwayatPenunjang: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/penunjang`),
 
   tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
   daftarObat:       (search)              => api.get('/dokter/obat', { params: { search } }),
   bedahSlot:        (tanggal)             => api.get('/dokter/bedah/slot', { params: { tanggal } }),
+
+  // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
+  rujukInternalTargets: (visitId)         => api.get(`/dokter/kunjungan/${visitId}/rujuk-internal/targets`),
+  rujukInternal:    (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/rujuk-internal`, data),
+  // Rujukan keluar (faskes lain). Pasien BPJS → terbit ke VClaim.
+  rujukanKeluar:    (data)                => api.post('/dokter/rujukan-keluar', data),
+  // Surat Kontrol BPJS (planning Pulang) — status + terbitkan ke VClaim
+  getSuratKontrol:  (visitId)             => api.get(`/dokter/kunjungan/${visitId}/surat-kontrol`),
+  submitSuratKontrol: (visitId)           => api.post(`/dokter/kunjungan/${visitId}/surat-kontrol/submit`),
 
   showTab2:         (visitId)             => api.get(`/dokter/kunjungan/${visitId}/tab2`),
   storeTab2:        (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/tab2`, data),
@@ -469,6 +482,9 @@ export const tarifPaketApi = {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
     },
+    // CSV per-paket (dari halaman detail) — template/export komposisi 1 paket
+    csvTemplateOne: (id) => api.get(`/tarif-paket/paket-bedah/${id}/template-csv`, { responseType: 'blob' }),
+    csvExportOne:   (id) => api.get(`/tarif-paket/paket-bedah/${id}/export-csv`,   { responseType: 'blob' }),
   },
 
   // --- Items paket (komposisi) ---
@@ -554,6 +570,19 @@ export const admisiApi = {
   daftar:        (data)         => api.post('/admisi/daftar', data),
   daftarkanWalkIn: (visitId, data) => api.put(`/admisi/kunjungan/${visitId}/daftarkan-walkin`, data),
   previewConsent: (data)        => api.post('/admisi/consent/preview', data),
+
+  // BPJS (VClaim/Antrean) — cek peserta/rujukan + terbitkan/batal SEP
+  bpjs: {
+    cekPeserta:      (data) => api.post('/admisi/bpjs/cek-peserta', data),
+    generateSep:     (data) => api.post('/admisi/bpjs/generate-sep', data),
+    updateSep:       (data) => api.put('/admisi/bpjs/update-sep', data),
+    cancelSep:       (data) => api.post('/admisi/bpjs/cancel-sep', data),
+    cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
+    cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
+    getSuratKontrol: (visitId) => api.get(`/admisi/bpjs/surat-kontrol/${visitId}`),
+    editSuratKontrol:(data) => api.put('/admisi/bpjs/edit-surat-kontrol', data),
+    validasiBooking: (data) => api.post('/admisi/bpjs/validasi-booking', data),
+  },
 }
 
 /** Farmasi — dispensing resep, antrian, stok obat/BHP */
@@ -621,10 +650,11 @@ export const inventoriStockApi = {
   list: (type, params) => api.get(`/inventori-farmasi/stock/${type}`, { params }),
   opname: (payload) => api.post('/inventori-farmasi/stock/opname', payload),
   templateCsv: (type) => api.get(`/inventori-farmasi/stock/${type}/template-csv`, { responseType: 'blob' }),
-  exportCsv:   (type) => api.get(`/inventori-farmasi/stock/${type}/export-csv`,   { responseType: 'blob' }),
-  importCsv:   (type, file) => {
+  exportCsv:   (type, location) => api.get(`/inventori-farmasi/stock/${type}/export-csv`, { params: location ? { location } : {}, responseType: 'blob' }),
+  importCsv:   (type, file, location) => {
     const fd = new FormData()
     fd.append('file', file)
+    if (location) fd.append('location', location)
     return api.post(`/inventori-farmasi/stock/${type}/import-csv`, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -706,6 +736,17 @@ export const bedahApi = {
   kirimRequest:   (id)     => api.put(`/bedah/request/${id}/kirim`),
   terimaRequest:  (id)     => api.put(`/bedah/request/${id}/terima`),
   adjustBhpUsage: (id, items) => api.post(`/bedah/request/${id}/adjust-bhp`, { items }),
+
+  // Operasi lifecycle (jadwal): Sign In → Time Out
+  mulaiOperasi:   (id)       => api.put(`/bedah/jadwal/${id}/mulai`),
+  selesaiOperasi: (id, data) => api.put(`/bedah/jadwal/${id}/selesai`, data),
+
+  // Laporan operasi (surgery_records): laporan + post-op + finalize
+  showRecord:     (scheduleId) => api.get(`/bedah/record/${scheduleId}`),
+  storeRecord:    (data)       => api.post('/bedah/record', data),
+  updateRecord:   (id, data)   => api.put(`/bedah/record/${id}`, data),
+  storePostOp:    (id, data)   => api.put(`/bedah/record/${id}/post-op`, data),
+  finalizeRecord: (id)         => api.post(`/bedah/record/${id}/finalize`),
 }
 
 /** Penunjang — antrian, order, hasil pemeriksaan */
@@ -754,6 +795,7 @@ export const kasirApi = {
   finalizeInvoice:   (id)                 => api.post(`/kasir/invoice/${id}/finalize`),
   bayarInvoice:      (id, data)           => api.post(`/kasir/invoice/${id}/bayar`, data),
   confirmCoverage:   (id, data)           => api.post(`/kasir/invoice/${id}/confirm-coverage`, data),
+  confirmBpjs:       (id, data)           => api.post(`/kasir/invoice/${id}/confirm-bpjs`, data ?? {}),
   cancelInvoice:     (id)                 => api.post(`/kasir/invoice/${id}/cancel`),
   cetakInvoice:      (id)                 => api.get(`/kasir/invoice/${id}/cetak`),
 
@@ -761,6 +803,13 @@ export const kasirApi = {
   storeItem:         (invoiceId, data)    => api.post(`/kasir/invoice/${invoiceId}/item`, data),
   updateItem:        (id, data)           => api.put(`/kasir/invoice-item/${id}`, data),
   deleteItem:        (id)                 => api.delete(`/kasir/invoice-item/${id}`),
+
+  // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master)
+  tarifTindakan:     (visitId)            => api.get('/kasir/tarif-tindakan', { params: { visit_id: visitId } }),
+
+  // Setting cetak kwitansi/rincian (toggle logo/stempel/e-sign/footer/watermark)
+  getPrintSettings:  ()                   => api.get('/kasir/print-settings'),
+  updatePrintSettings: (data)             => api.put('/kasir/print-settings', data),
 
   // Laporan
   laporanHarian:     (params)             => api.get('/kasir/laporan', { params }),
@@ -833,6 +882,62 @@ export const asuransiApi = {
   createDocReq:     (insurerId, data)   => api.post(`/asuransi/insurer/${insurerId}/dokumen-requirement`, data),
   updateDocReq:     (id, data)          => api.put(`/asuransi/dokumen-requirement/${id}`, data),
   deleteDocReq:     (id)                => api.delete(`/asuransi/dokumen-requirement/${id}`),
+}
+
+// ─── Integrasi / Bridging BPJS (VClaim + Antrean + SatuSehat) ───────────────
+export const integrasiApi = {
+  // Status & konfigurasi semua sistem
+  status:        ()              => api.get('/integrasi/status'),
+  listConfig:    ()              => api.get('/integrasi/config'),
+  updateConfig:  (id, data)      => api.put(`/integrasi/config/${id}`, data),
+  testKoneksi:   (system)        => api.post(`/integrasi/test/${system}`),
+
+  // Log audit
+  vclaimLog:     (params)        => api.get('/integrasi/bpjs/vclaim-log', { params }),
+  antreanLog:    (params)        => api.get('/integrasi/bpjs/antrean-log', { params }),
+  icareLog:      (params)        => api.get('/integrasi/bpjs/icare-log', { params }),
+
+  // VClaim live calls
+  cekPeserta:    (data)          => api.post('/integrasi/vclaim/cek-peserta', data),
+  cekRujukan:    (data)          => api.post('/integrasi/vclaim/cek-rujukan', data),
+  rujukanByKartu:(noKartu, p)    => api.get(`/integrasi/vclaim/rujukan-peserta/${noKartu}`, { params: p }),
+  generateSep:   (data)          => api.post('/integrasi/vclaim/sep', data),
+  updateSep:     (data)          => api.put('/integrasi/vclaim/sep', data),
+  cancelSep:     (data)          => api.delete('/integrasi/vclaim/sep', { data }),
+  insertLpk:     (data)          => api.post('/integrasi/vclaim/lpk', data),
+  monitoring:    (jenis, p)      => api.get(`/integrasi/vclaim/monitoring/${jenis}`, { params: p }),
+  referensi:     (jenis, p)      => api.get(`/integrasi/vclaim/referensi/${jenis}`, { params: p }),
+
+  // Antrean live calls
+  antreanAdd:        (data)      => api.post('/integrasi/antrean/add', data),
+  antreanUpdateWaktu:(data)      => api.post('/integrasi/antrean/updatewaktu', data),
+  antreanBatal:      (data)      => api.post('/integrasi/antrean/batal', data),
+  antreanDashboard:  (jenis, p)  => api.get(`/integrasi/antrean/dashboard/${jenis}`, { params: p }),
+  validateBooking:   (data)      => api.post('/integrasi/antrean/validate-booking', data),
+
+  // Mapping Poli/DPJP BPJS (sinkron Jadwal Dokter)
+  poliMapping:        ()         => api.get('/integrasi/bpjs/poli-mapping'),
+  poliMappingStatus:  ()         => api.get('/integrasi/bpjs/poli-mapping/status'),
+  upsertPoliMapping:  (data)     => api.post('/integrasi/bpjs/poli-mapping', data),
+  deletePoliMapping:  (id)       => api.delete(`/integrasi/bpjs/poli-mapping/${id}`),
+  setDpjpCode:        (empId, d) => api.put(`/integrasi/bpjs/dokter/${empId}/dpjp`, d),
+  syncJadwalDokter:   (data)     => api.post('/integrasi/bpjs/sync-jadwal-dokter', data),
+
+  // Satu Sehat (dashboard monitoring + sync/log/retry)
+  satusehatDashboard: (params)   => api.get('/integrasi/satusehat/dashboard', { params }),
+  satusehatSyncManual:()         => api.post('/integrasi/satusehat/sync-manual'),
+  satusehatRetry:     (logId)    => api.post(`/integrasi/satusehat/retry/${logId}`),
+  satusehatSyncLog:   (params)   => api.get('/integrasi/satusehat/sync-log', { params }),
+  satusehatResourceLog:(params)  => api.get('/integrasi/satusehat/resource-log', { params }),
+  satusehatKfaSearch: (params)   => api.get('/integrasi/satusehat/kfa-search', { params }),
+  setEmployeeNik:     (empId, d) => api.put(`/integrasi/satusehat/dokter/${empId}/nik`, d),
+
+  // Satu Sehat Location (daftar/registrasi/edit/nonaktif/set-aktif)
+  satusehatLocations:       ()       => api.get('/integrasi/satusehat/location'),
+  satusehatRegisterLocation:(data)   => api.post('/integrasi/satusehat/location', data),
+  satusehatUpdateLocation:  (id, d)  => api.put(`/integrasi/satusehat/location/${id}`, d),
+  satusehatDeleteLocation:  (id, p)  => api.delete(`/integrasi/satusehat/location/${id}`, { params: p }),
+  satusehatSetActiveLocation:(id)    => api.put(`/integrasi/satusehat/location/${id}/active`),
 }
 
 export default api

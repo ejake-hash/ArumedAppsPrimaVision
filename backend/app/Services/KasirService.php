@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BhpItem;
 use App\Models\BillingInvoice;
 use App\Models\BillingItem;
 use App\Models\ClinicProfile;
@@ -103,6 +104,32 @@ class KasirService
             ->first();
     }
 
+    /**
+     * Daftar tarif tindakan (procedure) yang harganya sudah di-resolve per
+     * penjamin visit ybs — dipakai kasir saat "Edit Tagihan" untuk menambah
+     * item dengan harga yang BENAR sesuai metode bayar (bukan ketik manual).
+     * Mirror dari DokterService::getTarifTindakan tapi tanpa gate ownership
+     * dokter (kasir bukan pemilik visit).
+     *
+     * @return array<array{id:string,code:?string,name:string,category:?string,price:float}>
+     */
+    public function getTarifTindakan(string $visitId): array
+    {
+        $visit = Visit::findOrFail($visitId);
+
+        return \App\Models\Procedure::where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'code', 'name', 'category'])
+            ->map(fn ($p) => [
+                'id'       => $p->id,
+                'code'     => $p->code,
+                'name'     => $p->name,
+                'category' => $p->category,
+                'price'    => $this->getPrice('procedure', $p->id, $visit->guarantor_type, $visit->insurer_id),
+            ])
+            ->all();
+    }
+
     // =========================================================================
     // CONSOLIDATE BILLING (generate invoice dari semua sumber)
     // =========================================================================
@@ -120,6 +147,7 @@ class KasirService
             'prescriptions.items.medication',
             'diagnosticOrders',
             'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
+            'doctorExamination.surgeryPackage.items',
             'surgeryRequests.bhpItems.bhpItem',
             'equipmentUsages.equipment',
             'visitCob.penjamin1',
@@ -139,6 +167,7 @@ class KasirService
                 $this->buildObatLines($visit),
                 $this->buildPenunjangLines($visit),
                 $this->buildBhpLines($visit),
+                $this->buildPaketRoomBhpLines($visit),
                 $this->buildIolLines($visit),
                 $this->buildEquipmentLines($visit),
             );
@@ -309,6 +338,62 @@ class KasirService
                     'net_price'    => $total,
                 ];
             }
+        }
+        return $lines;
+    }
+
+    /**
+     * BHP "kamar bedah" dari komposisi PAKET — kategori CSSD & INSTRUMENT_SET.
+     *
+     * Item ini ada fisik di kamar bedah (TIDAK diminta ke gudang lewat unit-request),
+     * tapi tetap ditagih sesuai paket. Sumber: surgery_package.items kategori
+     * CSSD/INSTRUMENT_SET. Anti dobel-tagih: lewati BHP yang sudah masuk via
+     * buildBhpLines (jalur used_qty surgery_requests).
+     */
+    private function buildPaketRoomBhpLines(Visit $visit): array
+    {
+        $package = $visit->doctorExamination?->surgeryPackage;
+        if (! $package) {
+            return [];
+        }
+
+        // BHP yang sudah ditagih lewat pemakaian operasi (used_qty) — jangan dobel.
+        $alreadyBilled = [];
+        foreach ($visit->surgeryRequests as $req) {
+            if ($req->status !== 'RECEIVED') continue;
+            foreach ($req->bhpItems as $bhp) {
+                if ((int) ($bhp->used_qty ?? 0) > 0) {
+                    $alreadyBilled[$bhp->bhp_item_id] = true;
+                }
+            }
+        }
+
+        $roomCategories = [BhpItem::CATEGORY_CSSD, BhpItem::CATEGORY_INSTRUMENT_SET];
+
+        $lines = [];
+        foreach ($package->items as $pi) {
+            if ($pi->item_type !== 'BHP') continue;
+            if (isset($alreadyBilled[$pi->item_id])) continue;
+
+            $bhp = BhpItem::find($pi->item_id);
+            if (! $bhp || ! in_array($bhp->category, $roomCategories, true)) {
+                continue;
+            }
+
+            $qty   = (int) ($pi->quantity ?? 1);
+            $price = $this->getPrice('bhp', $bhp->id, $visit->guarantor_type, $visit->insurer_id);
+            $total = $price * $qty;
+            $cat   = $bhp->category;
+            $lines[] = [
+                'item_type'    => 'BHP',
+                'category'     => $cat,
+                'reference_id' => $pi->id,
+                'description'  => "{$bhp->name} [{$cat}]",
+                'quantity'     => $qty,
+                'unit_price'   => $price,
+                'total_price'  => $total,
+                'net_price'    => $total,
+            ];
         }
         return $lines;
     }
@@ -564,7 +649,7 @@ class KasirService
 
         $user = auth('api')->user();
 
-        return DB::transaction(function () use ($invoice, $data, $paidAmount, $user) {
+        $fresh = DB::transaction(function () use ($invoice, $data, $paidAmount, $user) {
             $totalPaid   = $invoice->paid_amount + $paidAmount;
             // Tagihan dianggap lunas bila pembayaran pasien + porsi ditanggung asuransi
             // (covered_amount) sudah menutup total. Untuk pasien umum covered = 0.
@@ -609,6 +694,77 @@ class KasirService
 
             return $invoice->fresh(['items', 'visit.patient', 'cashier']);
         });
+
+        // LPK BPJS post-commit (non-blocking): kirim Lembar Pengajuan Klaim ke VClaim
+        // saat kunjungan BPJS lunas & punya SEP. Gagal/credential-kosong tidak ganggu.
+        if ($fresh->status === 'PAID') {
+            $this->maybeSubmitLpkBpjs($fresh->visit_id);
+        }
+
+        return $fresh;
+    }
+
+    /**
+     * Kirim LPK ke VClaim untuk kunjungan BPJS yang sudah punya no_sep.
+     * Membentuk t_lpk dari diagnosa & tindakan dokter. Non-blocking total.
+     */
+    private function maybeSubmitLpkBpjs(?string $visitId): void
+    {
+        try {
+            if (! $visitId) {
+                return;
+            }
+            $visit = \App\Models\Visit::with(['doctorExamination', 'doctorSchedule.employee'])->find($visitId);
+            if (! $visit || $visit->guarantor_type !== 'BPJS' || empty($visit->no_sep)) {
+                return;
+            }
+
+            $vclaim = app(\App\Services\BpjsVClaimService::class);
+            if (! $vclaim->isEnabled()) {
+                return;
+            }
+
+            $exam     = $visit->doctorExamination;
+            $kodePoli = \App\Models\BpjsPoliMapping::bpjsCodeFor($visit->doctorSchedule?->poli_code);
+            $kodeDpjp = $visit->doctorSchedule?->employee?->bpjs_dpjp_code;
+
+            // Diagnosa: utama (level 1) + sekunder (level 2).
+            $diagnosa = [];
+            if ($exam?->diagnosis_utama) {
+                $diagnosa[] = ['kode' => $exam->diagnosis_utama, 'level' => '1'];
+            }
+            foreach ((array) ($exam?->diagnosis_sekunder ?? []) as $kode) {
+                if ($kode) $diagnosa[] = ['kode' => $kode, 'level' => '2'];
+            }
+
+            // Procedure: ICD-9 dari tindakan_codes.
+            $procedure = array_values(array_filter(array_map(
+                fn ($k) => $k ? ['kode' => $k] : null,
+                (array) ($exam?->tindakan_codes ?? [])
+            )));
+
+            // Diagnosa wajib minimal 1 — kalau dokter belum isi, skip (tidak kirim LPK kosong).
+            if (empty($diagnosa)) {
+                return;
+            }
+
+            $today = now('Asia/Jakarta')->toDateString();
+            $vclaim->insertLpk([
+                'noSep'      => $visit->no_sep,
+                'tglMasuk'   => $today,
+                'tglKeluar'  => $today,
+                'jaminan'    => '1',
+                'poli'       => ['poli' => $kodePoli ?? ''],
+                'perawatan'  => ['ruangRawat' => '', 'kelasRawat' => '', 'spesialistik' => '', 'caraKeluar' => '1', 'kondisiPulang' => '1'],
+                'diagnosa'   => $diagnosa,
+                'procedure'  => $procedure,
+                'rencanaTL'  => ['tindakLanjut' => '1', 'dirujukKe' => ['kodePPK' => ''], 'kontrolKembali' => ['tglKontrol' => '', 'poli' => '']],
+                'DPJP'       => $kodeDpjp ?? '',
+                'user'       => auth('api')->user()?->name ?? 'arumed',
+            ], $visit->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('BPJS LPK gagal: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -669,6 +825,67 @@ class KasirService
                 BillingInvoice::class,
                 $invoice->id,
                 "Ditanggung asuransi Rp {$covered} — status: PAID (INSURANCE)"
+            );
+
+            return $invoice->fresh(['items', 'visit.patient', 'cashier']);
+        });
+    }
+
+    /**
+     * Konfirmasi kunjungan BPJS — pasien TIDAK membayar di kasir. Tagihan
+     * diselesaikan via klaim INA-CBG (alur KlaimService terpisah), bukan
+     * pembayaran tunai. Kasir hanya menekan "Konfirmasi". Invoice ditandai
+     * PAID dengan payment_method BPJS, paid_amount = 0 (tidak menambah kas).
+     *
+     * BEDA dgn confirmInsuranceCoverage: TIDAK set covered_amount dan TIDAK
+     * membuat draft klaim TPA (BPJS punya jalur klaim sendiri).
+     */
+    public function confirmBpjsCoverage(string $invoiceId, array $data = []): BillingInvoice
+    {
+        $invoice = BillingInvoice::with('visit')->findOrFail($invoiceId);
+
+        if ($invoice->status === 'PAID' || $invoice->status === 'CANCELLED') {
+            throw new \Exception('Invoice sudah lunas atau dibatalkan.', 422);
+        }
+
+        $guarantor = strtoupper((string) ($invoice->visit?->guarantor_type ?? ''));
+        if ($guarantor !== 'BPJS') {
+            throw new \Exception('Konfirmasi BPJS hanya untuk kunjungan dengan penjamin BPJS.', 422);
+        }
+
+        $user = auth('api')->user();
+
+        return DB::transaction(function () use ($invoice, $data, $user) {
+            // Finalize dulu kalau masih DRAFT (kasir konfirmasi langsung tanpa step terpisah).
+            if ($invoice->status === 'DRAFT') {
+                $invoice->update(['status' => 'FINALIZED']);
+            }
+
+            $invoice->update([
+                'payment_method' => 'BPJS',
+                'status'         => 'PAID',
+                'paid_amount'    => 0,
+                'paid_at'        => now(),
+                'cashier_id'     => $user->employee_id,
+                'notes'          => $data['notes'] ?? $invoice->notes,
+            ]);
+
+            $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
+                ->where('station', 'KASIR')
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->first();
+            if ($kasirQueue) {
+                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
+            } else {
+                $invoice->visit->update(['current_station' => 'SELESAI']);
+            }
+
+            $this->log(
+                $user->id,
+                'CONFIRM_BPJS_COVERAGE',
+                BillingInvoice::class,
+                $invoice->id,
+                "Kunjungan BPJS dikonfirmasi — status: PAID (BPJS), ditagih via klaim INA-CBG"
             );
 
             return $invoice->fresh(['items', 'visit.patient', 'cashier']);
@@ -838,6 +1055,35 @@ class KasirService
         $this->log(auth('api')->id(), 'UPDATE_WATERMARK', ClinicProfile::class, null, "Watermark: {$data['watermark_type']}");
     }
 
+    /** Setting cetak kwitansi/rincian kasir saat ini (default ditimpa nilai tersimpan). */
+    public function getReceiptPrintSettings(): array
+    {
+        $clinic = ClinicProfile::first();
+        return $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
+    }
+
+    /** Simpan toggle elemen cetak (hanya key yang dikenal). */
+    public function updateReceiptPrintSettings(array $data): array
+    {
+        $clinic = ClinicProfile::first();
+        if (! $clinic) {
+            throw new \Exception('Profil klinik belum dibuat.', 422);
+        }
+
+        // Merge: pertahankan default, timpa key yang dikirim (cast bool).
+        $merged = $clinic->receiptPrintSettings();
+        foreach (array_keys(ClinicProfile::RECEIPT_PRINT_DEFAULTS) as $key) {
+            if (array_key_exists($key, $data)) {
+                $merged[$key] = (bool) $data[$key];
+            }
+        }
+
+        $clinic->update(['receipt_print_settings' => $merged]);
+        $this->log(auth('api')->id(), 'UPDATE_RECEIPT_PRINT_SETTINGS', ClinicProfile::class, $clinic->id);
+
+        return $merged;
+    }
+
     // =========================================================================
     // RECEIPT GENERATION
     // =========================================================================
@@ -863,6 +1109,9 @@ class KasirService
         $paid    = (float) $invoice->paid_amount;
         $covered = (float) $invoice->covered_amount;
 
+        // Toggle elemen cetak (logo/stempel/e-sign/footer/watermark) — admin atur via UI.
+        $print = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
+
         return [
             'clinic' => [
                 'name'           => $clinic?->clinic_name,
@@ -871,12 +1120,13 @@ class KasirService
                 'email'          => $clinic?->email,
                 'director_name'  => $clinic?->director_name,
                 'director_sip'   => $clinic?->director_sip,
-                'logo_path'      => $clinic?->logo_path,
-                'logo_url'       => $this->resolveAssetUrl($clinic?->logo_path),
-                'stamp_path'     => $clinic?->stamp_path,
-                'stamp_url'      => $this->resolveAssetUrl($clinic?->stamp_path),
-                'watermark_type' => $clinic?->watermark_enabled ? $clinic?->watermark_type : null,
+                'logo_path'      => $print['show_logo'] ? $clinic?->logo_path : null,
+                'logo_url'       => $print['show_logo'] ? $this->resolveAssetUrl($clinic?->logo_path) : null,
+                'stamp_path'     => $print['show_stamp'] ? $clinic?->stamp_path : null,
+                'stamp_url'      => $print['show_stamp'] ? $this->resolveAssetUrl($clinic?->stamp_path) : null,
+                'watermark_type' => ($print['show_watermark'] && $clinic?->watermark_enabled) ? $clinic?->watermark_type : null,
             ],
+            'print_settings' => $print,
             'invoice' => [
                 'number'         => $invoice->invoice_number,
                 'date'           => $invoice->created_at?->format('d/m/Y'),
@@ -908,7 +1158,12 @@ class KasirService
                 'change'           => max(0, ($paid + $covered) - $total),
                 'sisa'             => max(0, $total - $covered - $paid),
             ],
-            'cashier' => $invoice->cashier?->name,
+            // Nama penanda tangan: kasir tercatat di invoice; bila tidak ada
+            // (mis. invoice lama / user tanpa employee link), fallback ke user
+            // yang sedang login (kasir on-duty yang mencetak).
+            'cashier' => $invoice->cashier?->name
+                ?? auth('api')->user()?->employee?->name
+                ?? auth('api')->user()?->name,
         ];
     }
 

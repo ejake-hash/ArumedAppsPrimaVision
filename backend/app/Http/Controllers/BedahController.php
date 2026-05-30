@@ -156,7 +156,7 @@ class BedahController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($record, 'Operasi selesai. Time Out: ' . now()->format('H:i') . '. Pasien diteruskan ke Farmasi.');
+        return $this->ok($record, 'Operasi selesai. Time Out: ' . now()->format('H:i') . '. Lengkapi & kunci laporan untuk meneruskan pasien.');
     }
 
     // =========================================================================
@@ -243,7 +243,7 @@ class BedahController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($record, 'Laporan operasi dikunci');
+        return $this->ok($record, 'Laporan operasi dikunci. Pasien diteruskan ke Farmasi/Kasir.');
     }
 
     // =========================================================================

@@ -68,12 +68,9 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   async function lewatiAntrian(queueId) {
     const { data } = await refraksiApi.lewati(queueId)
     _updateQueueItem(data.data)
-    // Reorder lokal: pindah baris ke akhir agar UI segera reflect server.
-    const idx = antrian.value.findIndex((q) => q.id === queueId)
-    if (idx !== -1) {
-      const [row] = antrian.value.splice(idx, 1)
-      antrian.value.push({ ...row, ...data.data })
-    }
+    // Server hanya menukar 1 posisi (queue_sequence) — re-fetch agar urutan UI
+    // sinkron dengan server (bukan reorder lokal ke bawah).
+    await fetchAntrian()
     return data.data
   }
 
@@ -227,7 +224,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     stopPolling()
   }
 
-  function startPolling(intervalMs = 30_000) {
+  function startPolling(intervalMs = 8_000) {
     stopPolling()
     _pollInterval = setInterval(fetchAntrian, intervalMs)
   }

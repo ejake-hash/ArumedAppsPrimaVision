@@ -84,18 +84,11 @@ class RefraksiService
 
     public function mulaiAntrian(string $queueId): Queue
     {
-        $queue = Queue::where('station', 'REFRAKSIONIS')->findOrFail($queueId);
+        // Guard station di sini, lalu delegasi ke QueueService biar broadcast
+        // AntreanTvUpdated + TriaseQueueUpdated ikut ter-fire (TV station R).
+        Queue::where('station', 'REFRAKSIONIS')->findOrFail($queueId);
 
-        if ($queue->status !== 'CALLED') {
-            throw new \Exception('Panggil pasien terlebih dahulu.', 422);
-        }
-
-        $queue->update([
-            'status'     => 'IN_PROGRESS',
-            'started_at' => now(),
-        ]);
-
-        return $queue->fresh(['visit.patient']);
+        return $this->queueService->mulai($queueId);
     }
 
     /**
@@ -103,21 +96,10 @@ class RefraksiService
      */
     public function lewatiAntrian(string $queueId): Queue
     {
-        $queue = Queue::where('station', 'REFRAKSIONIS')
-            ->whereIn('status', ['WAITING', 'CALLED'])
-            ->findOrFail($queueId);
+        // Delegasi ke QueueService (sumber tunggal reorder + broadcast TV).
+        Queue::where('station', 'REFRAKSIONIS')->findOrFail($queueId);
 
-        $maxSeq = Queue::where('station', 'REFRAKSIONIS')
-            ->whereDate('created_at', today())
-            ->max('queue_sequence') ?? 0;
-
-        $queue->update([
-            'queue_sequence' => $maxSeq + 1,
-            'status'         => 'WAITING',
-            'called_at'      => null,
-        ]);
-
-        return $queue->fresh(['visit.patient', 'visit.refractionRecord']);
+        return $this->queueService->lewati($queueId);
     }
 
     // =========================================================================

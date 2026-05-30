@@ -346,6 +346,7 @@ async function openRequestFromPasien(p) {
       bhp_items: (d.bhp_items ?? []).map(b => ({ ...b })),
       iol_items: (d.iol_items ?? []).map(o => ({ ...o })),
     }
+    requestNote.value = ''
   } catch (e) {
     showModal.value = false
     toast('w', e.response?.data?.message ?? 'Gagal memuat isi paket')
@@ -354,16 +355,57 @@ async function openRequestFromPasien(p) {
   }
 }
 
+// Catatan tunggal untuk seluruh permintaan (1 textbox di footer).
+const requestNote = ref('')
+
+// Hanya 3 kategori yang DIMINTA ke gudang. CSSD & Set Instrumen tidak diminta
+// (sudah tersedia di kamar bedah) — tapi tetap masuk kwitansi via paket
+// (lihat KasirService::buildPaketRoomBhpLines). MEDICAL_BHP = "BHP".
+const REQUESTABLE_BHP_CATEGORIES = ['MEDICAL_SUPPLIES', 'MEDICAL_BHP']
+const CATEGORY_META = {
+  MEDICAL_SUPPLIES: 'Medical Supplies',
+  MEDICAL_BHP:      'BHP',
+}
+const catLabel = (c) => CATEGORY_META[c] ?? (c || 'Lainnya')
+
+// Keterangan IOL (read-only) — power/type/mata dari rekomendasi biometri.
+function iolMeta(o) {
+  const parts = []
+  if (o.requested_power != null) parts.push(`Power ${o.requested_power > 0 ? '+' : ''}${o.requested_power}D`)
+  if (o.requested_iol_type) parts.push(o.requested_iol_type)
+  if (o.eye_side) parts.push(o.eye_side)
+  return parts.join(' · ') || '—'
+}
+
+// Hanya BHP dari kategori yang boleh diminta ke gudang.
+const requestableBhp = computed(() =>
+  (preview.value?.bhp_items ?? []).filter(b => REQUESTABLE_BHP_CATEGORIES.includes(b.category || 'MEDICAL_BHP'))
+)
 // IOL hanya bisa ke unit-request bila item paket menunjuk master IOL (item_id).
 const iolSendable = computed(() => (preview.value?.iol_items ?? []).filter(o => o.iol_item_id))
 const iolSkipped  = computed(() => (preview.value?.iol_items ?? []).filter(o => !o.iol_item_id).length)
 const previewEmpty = computed(() =>
-  preview.value && !(preview.value.bhp_items?.length) && !iolSendable.value.length
+  preview.value && !requestableBhp.value.length && !iolSendable.value.length
 )
+
+// Section per kategori (Medical Supplies, BHP) + section IOL. Hanya item yang diminta.
+const groupedSections = computed(() => {
+  if (!preview.value) return []
+  const sections = []
+  for (const cat of REQUESTABLE_BHP_CATEGORIES) {
+    const items = requestableBhp.value.filter(b => (b.category || 'MEDICAL_BHP') === cat)
+    if (items.length) sections.push({ key: cat, label: catLabel(cat), type: 'BHP', items })
+  }
+  if (iolSendable.value.length) {
+    sections.push({ key: 'IOL', label: 'IOL', type: 'IOL', items: iolSendable.value })
+  }
+  return sections
+})
 
 async function submitRequest() {
   if (!preview.value) return
-  const bhp = preview.value.bhp_items ?? []
+  // Hanya kategori yang boleh diminta (Medical Supplies + BHP). CSSD/Instrumen dikecualikan.
+  const bhp = requestableBhp.value
   const iol = iolSendable.value
   if (!bhp.length && !iol.length) {
     toast('w', 'Paket tidak punya item BHP/IOL (dgn master) untuk dikirim ke gudang'); return
@@ -372,11 +414,14 @@ async function submitRequest() {
     ...bhp.map(b => ({ item_type: 'BHP', item_id: b.bhp_item_id, qty_requested: b.quantity })),
     ...iol.map(o => ({ item_type: 'IOL', item_id: o.iol_item_id, qty_requested: o.quantity ?? 1 })),
   ]
+  // Satu catatan untuk seluruh permintaan (footer). Gabung dgn jejak paket.
+  const auto = `Auto dari paket ${preview.value.package?.code ?? '-'} — ${sourcePasien.value.name}`
+  const note = requestNote.value?.trim()
   submitting.value = true
   try {
     const res = await unitRequestApi.create({
       requesting_station: 'BEDAH',
-      notes: `Auto dari paket ${preview.value.package?.code ?? '-'} — ${sourcePasien.value.name}`,
+      notes: note ? `${auto}\nCatatan: ${note}` : auto,
       items,
     })
     const created = res.data?.data
@@ -593,30 +638,30 @@ async function submitRequest() {
           <template v-else-if="preview">
             <div v-if="previewEmpty" class="bdt-empty">Paket ini tidak punya komponen BHP/IOL (dengan master stok) untuk diminta ke gudang.</div>
 
-            <!-- BHP (read-only, dari paket) -->
-            <div v-if="preview.bhp_items.length" class="sec">
-              <div class="sec-hd">BHP <span class="sec-ct">{{ preview.bhp_items.length }}</span> <span class="sec-note">sesuai paket</span></div>
-              <table class="form-tbl">
-                <thead><tr><th>Item</th><th style="width:90px">Jml</th><th style="width:90px">Satuan</th></tr></thead>
-                <tbody>
-                  <tr v-for="(b, i) in preview.bhp_items" :key="i">
-                    <td>{{ b.name }}</td>
-                    <td>{{ b.quantity }}</td>
-                    <td>{{ b.unit || '—' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <p class="req-hint">Hanya <strong>Medical Supplies</strong>, <strong>BHP</strong> &amp; <strong>IOL</strong> yang diminta ke gudang. CSSD &amp; Set Instrumen sudah tersedia di kamar bedah (tetap masuk kwitansi via paket).</p>
 
-            <!-- IOL (read-only — hanya yang punya master stok yang dikirim) -->
-            <div v-if="iolSendable.length" class="sec">
-              <div class="sec-hd">IOL <span class="sec-ct">{{ iolSendable.length }}</span> <span class="sec-note">sesuai paket</span></div>
+            <!-- Section per kategori yang diminta: Medical Supplies, BHP, IOL -->
+            <div v-for="sec in groupedSections" :key="sec.key" class="sec">
+              <div class="sec-hd">
+                {{ sec.label }}
+                <span class="sec-ct">{{ sec.items.length }}</span>
+                <span class="sec-note">sesuai paket</span>
+              </div>
               <table class="form-tbl">
-                <thead><tr><th>Item</th><th style="width:90px">Jml</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th style="width:64px" class="c">Jml</th>
+                    <th v-if="sec.type === 'BHP'" style="width:74px">Satuan</th>
+                    <th v-else>Keterangan</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  <tr v-for="(o, i) in iolSendable" :key="i">
-                    <td>{{ o.master_label || 'IOL' }}</td>
-                    <td>{{ o.quantity ?? 1 }}</td>
+                  <tr v-for="(it, i) in sec.items" :key="i">
+                    <td>{{ sec.type === 'IOL' ? (it.master_label || 'IOL') : it.name }}</td>
+                    <td class="c">{{ it.quantity ?? 1 }}</td>
+                    <td v-if="sec.type === 'BHP'" class="muted">{{ it.unit || '—' }}</td>
+                    <td v-else class="muted">{{ iolMeta(it) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -629,6 +674,15 @@ async function submitRequest() {
         </div>
 
         <div class="modal-foot">
+          <div class="foot-note">
+            <input
+              v-model="requestNote"
+              class="foot-note-inp"
+              type="text"
+              placeholder="Catatan untuk gudang (opsional)…"
+              :disabled="previewLoading || previewEmpty"
+            />
+          </div>
           <button class="btn-sec" @click="showModal = false">Batal</button>
           <button class="btn-primary" :disabled="submitting || previewLoading || previewEmpty" @click="submitRequest">
             <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -825,6 +879,10 @@ async function submitRequest() {
 .form-tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; background: var(--bc); border-radius: 6px; overflow: hidden; }
 .form-tbl th { background: var(--bi); padding: 6px 8px; text-align: left; font-size: 10px; font-weight: 700; color: var(--tu); text-transform: uppercase; }
 .form-tbl td { padding: 6px 8px; border-top: 1px solid var(--bg); color: var(--td); }
+.form-tbl th.c, .form-tbl td.c { text-align: center; }
+.form-tbl td.muted { color: var(--tu); }
+.req-hint { font-size: 11px; color: var(--tm); background: var(--gl); border-radius: 7px; padding: 8px 10px; margin: 0 0 12px; line-height: 1.45; }
+.req-hint strong { color: var(--td); }
 .qty-input { width: 56px; padding: 4px 6px; border: 1px solid var(--gb); border-radius: 5px; font-size: 12px; font-family: 'DM Sans', sans-serif; text-align: center; }
 .del-btn { background: none; border: none; color: var(--et); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
 .del-btn:hover { background: var(--eb); }
@@ -835,7 +893,12 @@ async function submitRequest() {
 .btn-add-sm { padding: 6px 12px; background: var(--gl); border: 1px solid var(--ga); color: var(--gm); border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; font-family: 'DM Sans', sans-serif; }
 .btn-add-sm:hover { background: var(--ga); color: #fff; }
 
-.modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--gb); background: var(--bs); }
+.modal-foot { display: flex; gap: 8px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--gb); background: var(--bs); }
+.foot-note { flex: 1; min-width: 0; }
+.foot-note-inp { width: 100%; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 7px; font-size: 12px; font-family: 'DM Sans', sans-serif; background: var(--bc); color: var(--td); box-sizing: border-box; }
+.foot-note-inp:focus { outline: none; border-color: var(--ga); background: #fff; }
+.foot-note-inp::placeholder { color: var(--th); }
+.foot-note-inp:disabled { opacity: .5; }
 .btn-sec { padding: 9px 18px; background: var(--bg); border: 1px solid var(--gb); color: var(--tm); border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; }
 .btn-sec:hover { border-color: var(--ga); }
 .btn-primary { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; background: var(--ga); color: #fff; border: none; border-radius: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: 'DM Sans', sans-serif; }

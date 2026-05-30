@@ -12,7 +12,15 @@ const STOCK_TABS = [
   { key: 'IOL',        label: 'IOL',  csvType: null,   csvable: false },
 ]
 
+// Lokasi stok: INVENTORI (gudang induk), BEDAH, FARMASI.
+const STOCK_LOCATIONS = [
+  { key: 'INVENTORI', label: 'Gudang' },
+  { key: 'FARMASI',   label: 'Farmasi' },
+  { key: 'BEDAH',     label: 'Bedah' },
+]
+
 const stockTab = ref('MEDICATION')
+const stockLocation = ref('INVENTORI')
 const stockSearch = ref('')
 const stockList = ref([])
 const stockLoading = ref(false)
@@ -20,12 +28,14 @@ const errorMsg = ref('')
 let stockSearchTimer = null
 
 const activeTab = computed(() => STOCK_TABS.find((t) => t.key === stockTab.value))
+const activeLocationLabel = computed(() => STOCK_LOCATIONS.find((l) => l.key === stockLocation.value)?.label ?? stockLocation.value)
 
 async function refreshStock() {
   stockLoading.value = true
   errorMsg.value = ''
   try {
-    const params = stockSearch.value.trim() ? { search: stockSearch.value.trim() } : {}
+    const params = { location: stockLocation.value }
+    if (stockSearch.value.trim()) params.search = stockSearch.value.trim()
     const res = await inventoriStockApi.list(stockTab.value, params)
     stockList.value = Array.isArray(res.data?.data) ? res.data.data : []
   } catch (e) {
@@ -34,6 +44,12 @@ async function refreshStock() {
   } finally {
     stockLoading.value = false
   }
+}
+
+function switchLocation(k) {
+  if (stockLocation.value === k) return
+  stockLocation.value = k
+  refreshStock()
 }
 
 function switchStockTab(k) {
@@ -137,6 +153,7 @@ async function submitOpname() {
     await inventoriStockApi.opname({
       item_type: stockTab.value,
       item_id: opnameItem.value.id,
+      location: stockLocation.value,
       new_qty: opnameTotalNew.value,
       reason: opnameForm.value.reason || 'Opname manual via sidebar',
     })
@@ -185,9 +202,9 @@ async function downloadTemplate() {
 async function downloadExport() {
   if (!activeTab.value?.csvable) return
   try {
-    const res = await inventoriStockApi.exportCsv(activeTab.value.csvType)
+    const res = await inventoriStockApi.exportCsv(activeTab.value.csvType, stockLocation.value)
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    downloadBlob(res.data, `stok-${activeTab.value.csvType}-${today}.csv`)
+    downloadBlob(res.data, `stok-${activeTab.value.csvType}-${stockLocation.value}-${today}.csv`)
   } catch {
     showToast('e', 'Gagal mengekspor stok')
   }
@@ -203,7 +220,7 @@ async function onCsvFile(e) {
   csvImporting.value = true
   csvResult.value = null
   try {
-    const res = await inventoriStockApi.importCsv(activeTab.value.csvType, file)
+    const res = await inventoriStockApi.importCsv(activeTab.value.csvType, file, stockLocation.value)
     csvResult.value = res.data?.data ?? null
     showToast('s', res.data?.message ?? 'Import selesai')
     await refreshStock()
@@ -236,6 +253,18 @@ onMounted(refreshStock)
       >{{ t.label }}</button>
     </nav>
 
+    <!-- Lokasi stok -->
+    <div class="iss-loc">
+      <span class="iss-loc-lbl">Lokasi</span>
+      <div class="iss-loc-seg">
+        <button
+          v-for="l in STOCK_LOCATIONS" :key="l.key"
+          class="iss-loc-btn" :class="{ active: stockLocation === l.key }"
+          @click="switchLocation(l.key)"
+        >{{ l.label }}</button>
+      </div>
+    </div>
+
     <!-- CSV toolbar (collapsible) -->
     <div v-if="csvOpen && activeTab?.csvable" class="iss-csv">
       <div class="iss-csv-row">
@@ -248,7 +277,7 @@ onMounted(refreshStock)
           @click="triggerImport"
         >{{ csvImporting ? '…' : '⬆ Import' }}</button>
       </div>
-      <p class="iss-csv-hint">Kolom: <code>code, name, qty</code>. <code>code</code> opsional (fallback ke nama).</p>
+      <p class="iss-csv-hint">Kolom: <code>code, name, qty</code>. <code>code</code> opsional (fallback ke nama). Berlaku untuk lokasi <strong>{{ activeLocationLabel }}</strong>.</p>
       <div v-if="csvResult" class="iss-csv-result">
         <strong>{{ csvResult.applied }}</strong> item diopname,
         <strong>{{ csvResult.skipped }}</strong> dilewati.
@@ -394,6 +423,13 @@ onMounted(refreshStock)
 .iss-tab { flex: 1; padding: 6px 8px; font-size: 12px; font-weight: 600; color: var(--tm); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
 .iss-tab:hover { color: var(--gd); }
 .iss-tab.active { color: var(--ga); border-bottom-color: var(--ga); }
+
+.iss-loc { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--gb); background: var(--bs); }
+.iss-loc-lbl { font-size: 11px; font-weight: 600; color: var(--tm); }
+.iss-loc-seg { display: flex; flex: 1; gap: 4px; }
+.iss-loc-btn { flex: 1; padding: 4px 6px; font-size: 11px; font-weight: 600; color: var(--tm); background: var(--bc); border: 1px solid var(--gb); border-radius: 6px; cursor: pointer; }
+.iss-loc-btn:hover { background: var(--gl); color: var(--gd); }
+.iss-loc-btn.active { background: var(--ga); color: #fff; border-color: var(--ga); }
 
 .iss-csv { padding: 10px 12px; border-bottom: 1px solid var(--gb); background: var(--bs); }
 .iss-csv-row { display: flex; gap: 6px; }

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { kasirApi, masterApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
@@ -241,6 +241,88 @@ const editTagihan = ref(false)
 const newItem = ref({ description: '', item_type: 'TINDAKAN', category: '', quantity: 1, unit_price: 0, discount_percent: 0, discount_amount: 0 })
 const itemTypes = ['REGISTRASI', 'TINDAKAN', 'OBAT', 'PENUNJANG', 'BHP', 'IOL', 'MEDICAL_EQUIPMENT', 'LAINNYA']
 
+// ─── Tarif tindakan per-penjamin (untuk Edit Tagihan) ────────────────────────
+// Saat menambah TINDAKAN, kasir pilih dari master tarif yang harganya sudah
+// di-resolve sesuai penjamin visit (bukan ketik manual). Harga ikut master.
+const tarifList = ref([])
+const tarifLoading = ref(false)
+
+async function fetchTarifTindakan() {
+  if (!selQ.value?.visit?.id) return
+  tarifLoading.value = true
+  try {
+    const { data } = await kasirApi.tarifTindakan(selQ.value.visit.id)
+    tarifList.value = Array.isArray(data.data) ? data.data : []
+  } catch (err) {
+    tarifList.value = []
+    toast('w', err.response?.data?.message ?? 'Gagal memuat tarif tindakan')
+  } finally {
+    tarifLoading.value = false
+  }
+}
+
+// Saat masuk mode edit (atau ganti pasien saat sedang edit), muat tarif sekali.
+watch(editTagihan, (on) => { if (on) fetchTarifTindakan() })
+
+// ── Search-driven picker tindakan (konsep sama Tab Tindakan DokterView) ──────
+const tindakanSearch      = ref('')
+const tindakanSearchFocus = ref(false)
+const tindakanSearchRef   = ref(null)
+const addingTindakanIds   = ref([])   // guard double-add saat POST berjalan
+
+function fmtRp(v) { return 'Rp ' + Number(v ?? 0).toLocaleString('id-ID') }
+
+// Hasil pencarian: tampil hanya saat ada query. Filter by nama / kode.
+const filteredTarif = computed(() => {
+  const s = tindakanSearch.value.trim().toLowerCase()
+  if (!s) return []
+  return tarifList.value
+    .filter((t) => (t.name ?? '').toLowerCase().includes(s) || (t.code ?? '').toLowerCase().includes(s))
+    .slice(0, 50)
+})
+
+// Tindakan yang sudah ada di invoice (untuk tanda ✓ "sudah ditambahkan").
+function tarifInInvoice(t) {
+  return (selInv.value?.items ?? []).some(
+    (it) => it.item_type === 'TINDAKAN' && it.description === t.name,
+  )
+}
+
+// Klik hasil → langsung POST item ke invoice dengan harga master per-penjamin.
+async function addTindakanFromTarif(t) {
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  if (addingTindakanIds.value.includes(t.id)) return
+  addingTindakanIds.value.push(t.id)
+  try {
+    await kasirApi.storeItem(selInv.value.id, {
+      item_type:   'TINDAKAN',
+      category:    t.category || 'Tindakan',
+      description: t.name,
+      quantity:    1,
+      unit_price:  Number(t.price) || 0,
+      reference_id: t.id,
+    })
+    await refreshInvoice()
+    toast('s', `${t.name} ditambahkan`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menambahkan tindakan')
+  } finally {
+    addingTindakanIds.value = addingTindakanIds.value.filter((id) => id !== t.id)
+  }
+}
+
+// Tutup dropdown saat klik di luar.
+function onClickOutsideTindakan(e) {
+  if (tindakanSearchFocus.value) {
+    const el = tindakanSearchRef.value
+    if (el && !el.contains(e.target)) tindakanSearchFocus.value = false
+  }
+  if (showPrintSettings.value) {
+    const ps = printSetRef.value
+    if (ps && !ps.contains(e.target)) showPrintSettings.value = false
+  }
+}
+
 async function removeItem(item) {
   if (!item?.id) return
   try {
@@ -400,11 +482,72 @@ async function prosesKonfirmasiCover() {
   }
 }
 
+// Konfirmasi kunjungan BPJS — pasien tidak membayar (ditagih via klaim INA-CBG).
+async function prosesKonfirmasiBpjs() {
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  paying.value = true
+  try {
+    const { data } = await kasirApi.confirmBpjs(selInv.value.id, {})
+    selInv.value = data.data
+    const localQ = queue.value.find((q) => q.id === selQ.value?.id)
+    if (localQ) localQ.status = 'COMPLETED'
+    toast('s', `Kunjungan BPJS dikonfirmasi — invoice ${selInv.value.invoice_number} selesai`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal konfirmasi kunjungan BPJS')
+  } finally {
+    paying.value = false
+  }
+}
+
 // ─── Cetak Rincian Biaya (A4) ────────────────────────────────────────────────
 const printData = ref(null)
 const printing  = ref(false)
 
+// ─── Setting cetak (toggle elemen kwitansi) ──────────────────────────────────
+const showPrintSettings = ref(false)   // popover terbuka/tidak
+const printSetRef = ref(null)          // utk deteksi klik di luar popover
+const printSettings = ref({ show_logo: true, show_stamp: true, show_esign: true, show_footer: true, show_watermark: true })
+const printSettingsSaving = ref(false)
+const printSettingItems = [
+  { key: 'show_logo',      label: 'Logo / Kop klinik' },
+  { key: 'show_stamp',     label: 'Stempel klinik' },
+  { key: 'show_esign',     label: 'Tanda tangan elektronik kasir' },
+  { key: 'show_footer',    label: 'Footer penanggung jawab' },
+  { key: 'show_watermark', label: 'Watermark' },
+]
+
+async function fetchPrintSettings() {
+  try {
+    const { data } = await kasirApi.getPrintSettings()
+    if (data.data) printSettings.value = { ...printSettings.value, ...data.data }
+  } catch { /* pakai default */ }
+}
+
+async function togglePrintSetting(key) {
+  printSettings.value[key] = !printSettings.value[key]
+  printSettingsSaving.value = true
+  try {
+    const { data } = await kasirApi.updatePrintSettings({ [key]: printSettings.value[key] })
+    if (data.data) printSettings.value = { ...printSettings.value, ...data.data }
+    toast('s', 'Setting cetak disimpan')
+  } catch (err) {
+    printSettings.value[key] = !printSettings.value[key]  // rollback
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan setting cetak')
+  } finally {
+    printSettingsSaving.value = false
+  }
+}
+
+// Pasien BPJS: kwitansi/rincian TIDAK dicetak untuk pasien (klaim ditagih ke BPJS).
+const isBpjsSelected = computed(() =>
+  (selQ.value?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS',
+)
+
 async function cetakRincian() {
+  if (isBpjsSelected.value) {
+    toast('w', 'Pasien BPJS — kwitansi tidak dicetak untuk pasien (ditagihkan ke BPJS).')
+    return
+  }
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   printing.value = true
   try {
@@ -477,9 +620,14 @@ onMounted(() => {
   fetchQueue()
   fetchHistory()
   fetchBillingCategories()
-  _poll = setInterval(fetchQueue, 30_000)
+  fetchPrintSettings()
+  _poll = setInterval(fetchQueue, 8_000)
+  document.addEventListener('mousedown', onClickOutsideTindakan)
 })
-onUnmounted(() => { if (_poll) clearInterval(_poll) })
+onUnmounted(() => {
+  if (_poll) clearInterval(_poll)
+  document.removeEventListener('mousedown', onClickOutsideTindakan)
+})
 
 // ─── Toast ──────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -705,6 +853,19 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
               <div class="pt-info">
                 <div class="pt-name">{{ selQ.visit?.patient?.name ?? '—' }}</div>
                 <div class="pt-meta">{{ selQ.visit?.patient?.no_rm ?? '—' }} · {{ selInv.invoice_number ?? 'Invoice' }}</div>
+                <div class="pt-contact">
+                  <span v-if="selQ.visit?.patient?.phone" class="pt-contact-item">
+                    <svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                    {{ selQ.visit.patient.phone }}
+                  </span>
+                  <span v-if="selQ.visit?.patient?.address" class="pt-contact-item">
+                    <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    {{ selQ.visit.patient.address }}<span v-if="selQ.visit.patient.province">, {{ selQ.visit.patient.province }}</span>
+                  </span>
+                  <span v-if="!selQ.visit?.patient?.phone && !selQ.visit?.patient?.address" class="pt-contact-item pt-contact-empty">
+                    Alamat & kontak belum diisi
+                  </span>
+                </div>
                 <div class="pt-tags">
                   <span :class="['ptg', ptypeOf(selQ) === 'bpjs' ? 'ptg-b' : ptypeOf(selQ) === 'asn' ? 'ptg-a' : 'ptg-u']">
                     {{ ptypeOf(selQ) === 'bpjs' ? 'BPJS' : ptypeOf(selQ) === 'asn' ? 'Asuransi' : 'Umum' }}
@@ -810,12 +971,70 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         {{ editTagihan ? 'Selesai Edit' : 'Edit Tagihan' }}
                       </button>
-                      <button class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
+                      <button v-if="!isBpjsSelected" class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
                         <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         {{ printing ? 'Menyiapkan…' : 'Cetak Rincian' }}
                       </button>
+                      <!-- 1 tombol: Setting Print (popover toggle elemen kwitansi) -->
+                      <div class="print-set-wrap" ref="printSetRef">
+                        <button class="btn btn-sm btn-secondary btn-icon" title="Setting cetak kwitansi" @click="showPrintSettings = !showPrintSettings">
+                          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                          Setting Print
+                        </button>
+                        <div v-if="showPrintSettings" class="print-set-pop">
+                          <div class="print-set-head">
+                            Tampil di Cetak Kwitansi
+                            <span v-if="printSettingsSaving" class="print-set-saving">menyimpan…</span>
+                          </div>
+                          <label v-for="opt in printSettingItems" :key="opt.key" class="print-set-row">
+                            <input type="checkbox" :checked="printSettings[opt.key]" @change="togglePrintSetting(opt.key)" />
+                            <span>{{ opt.label }}</span>
+                          </label>
+                          <div class="print-set-foot">Berlaku untuk semua cetak kwitansi/rincian kasir.</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
+
+                  <!-- Tambah tindakan (konsep sama Tab Tindakan DokterView): search → dropdown → klik tambah.
+                       Harga ikut tarif master per-penjamin visit. -->
+                  <div v-if="editTagihan" class="add-tindakan-bar">
+                    <div class="tindakan-search-wrap" ref="tindakanSearchRef">
+                      <div class="tindakan-search-field">
+                        <svg class="tindakan-search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input
+                          v-model="tindakanSearch"
+                          class="tindakan-search-input"
+                          placeholder="Ketik untuk cari & tambah tindakan (nama / kode)…"
+                          @focus="tindakanSearchFocus = true"
+                        />
+                        <button v-if="tindakanSearch" class="tindakan-search-clear" @click="tindakanSearch = ''" title="Hapus pencarian">
+                          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                      <div v-if="tindakanSearchFocus && tindakanSearch.trim()" class="tindakan-search-drop">
+                        <div
+                          v-for="t in filteredTarif" :key="t.id"
+                          :class="['tarif-list-item', tarifInInvoice(t) ? 'in-list' : '', addingTindakanIds.includes(t.id) ? 'is-adding' : '']"
+                          @mousedown.prevent="addTindakanFromTarif(t)"
+                        >
+                          <span v-if="t.code" class="tarif-kode">{{ t.code }}</span>
+                          <span v-if="t.category" class="tarif-kat td">{{ t.category }}</span>
+                          <span class="tarif-list-name">{{ t.name }}</span>
+                          <span class="tarif-list-price">{{ fmtRp(t.price) }}</span>
+                          <svg v-if="tarifInInvoice(t)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                          <svg v-else class="tarif-list-icon add" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </div>
+                        <div v-if="!filteredTarif.length" class="tarif-empty">
+                          {{ tarifList.length ? 'Tidak ditemukan' : (tarifLoading ? 'Memuat tarif…' : 'Belum ada master tarif tindakan') }}
+                        </div>
+                        <div v-else-if="filteredTarif.length >= 50" class="tindakan-search-hint">
+                          Menampilkan 50 teratas — sempitkan pencarian untuk hasil lebih spesifik
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <table class="tbl">
                     <thead>
                       <tr>
@@ -876,7 +1095,10 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                     </tbody>
                     <tbody>
                       <tr v-if="editTagihan" class="add-item-row">
-                        <td><input v-model="newItem.description" class="fi tbl-fi" placeholder="Keterangan item..." /></td>
+                        <td>
+                          <div class="add-item-label">Item manual lain</div>
+                          <input v-model="newItem.description" class="fi tbl-fi" placeholder="Keterangan item…" />
+                        </td>
                         <td>
                           <select v-model="newItem.item_type" class="fi tbl-fi tbl-select" style="margin-bottom:3px">
                             <option v-for="t in itemTypes" :key="t">{{ t }}</option>
@@ -933,16 +1155,35 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                   <div class="card-head">
                     <div class="card-head-title">
                       <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-                      {{ isFullCover && selInv.status !== 'PAID' ? 'Tanggungan Asuransi' : 'Metode Pembayaran' }}
+                      {{ (isBpjsSelected && selInv.status !== 'PAID') ? 'Tanggungan BPJS'
+                         : (isFullCover && selInv.status !== 'PAID') ? 'Tanggungan Asuransi'
+                         : 'Metode Pembayaran' }}
                     </div>
-                    <button v-if="!(isFullCover && selInv.status !== 'PAID')" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
+                    <button v-if="!(isBpjsSelected && selInv.status !== 'PAID') && !(isFullCover && selInv.status !== 'PAID')" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
                       Campuran
                     </button>
                   </div>
                   <div class="card-body">
-                    <!-- FULL COVER: pasien tidak membayar, kasir cukup konfirmasi -->
-                    <template v-if="isFullCover && selInv.status !== 'PAID'">
+                    <!-- BPJS: pasien tidak membayar di kasir (ditagih via klaim INA-CBG) — kasir cukup konfirmasi -->
+                    <template v-if="isBpjsSelected && selInv.status !== 'PAID'">
+                      <div class="cover-confirm-box cover-bpjs">
+                        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
+                        <div class="cover-confirm-title">Ditanggung BPJS Kesehatan</div>
+                        <div class="cover-confirm-amount">Rp {{ totalTagihan.toLocaleString('id-ID') }}</div>
+                        <div class="cover-confirm-sub">Pasien BPJS tidak membayar di kasir. Tagihan diklaim via INA-CBG. Klik konfirmasi untuk menyelesaikan kunjungan.</div>
+                      </div>
+                      <button class="btn btn-success btn-full btn-lg"
+                        :disabled="paying"
+                        @click="prosesKonfirmasiBpjs">
+                        <div v-if="paying" class="sp"></div>
+                        <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                        {{ paying ? 'Memproses...' : 'Konfirmasi (Ditanggung BPJS)' }}
+                      </button>
+                    </template>
+
+                    <!-- FULL COVER asuransi/TPA: pasien tidak membayar, kasir cukup konfirmasi -->
+                    <template v-else-if="isFullCover && selInv.status !== 'PAID'">
                       <div class="cover-confirm-box">
                         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
                         <div class="cover-confirm-title">Ditanggung Penuh Asuransi</div>
@@ -998,17 +1239,20 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                       </div>
                     </template>
 
-                    <button v-if="!(isFullCover && selInv.status !== 'PAID')" class="btn btn-success btn-full btn-lg"
+                    <button v-if="!(isFullCover && selInv.status !== 'PAID') && !(isBpjsSelected && selInv.status !== 'PAID')" class="btn btn-success btn-full btn-lg"
                       :disabled="!selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
                       @click="prosesBayar">
                       <div v-if="paying" class="sp"></div>
                       <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                       {{ selInv.status === 'PAID' ? 'Sudah Lunas' : paying ? 'Memproses...' : 'Proses Pembayaran' }}
                     </button>
-                    <button v-if="selInv.status === 'PAID'" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" :disabled="printing" @click="cetakRincian">
+                    <button v-if="selInv.status === 'PAID' && !isBpjsSelected" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" :disabled="printing" @click="cetakRincian">
                       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                       Cetak Kwitansi {{ selInv.invoice_number }}
                     </button>
+                    <p v-else-if="selInv.status === 'PAID' && isBpjsSelected" class="bpjs-noprint-note">
+                      Pasien BPJS — kwitansi tidak dicetak (ditagihkan ke BPJS).
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1131,42 +1375,28 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
           </tbody>
         </table>
 
-        <table class="rp-items">
-          <thead>
-            <tr>
-              <th class="c-no">No</th>
-              <th>Keterangan</th>
-              <th class="c-kat">Kategori</th>
-              <th class="c-num">Qty</th>
-              <th class="c-num">Harga</th>
-              <th class="c-num">Disc</th>
-              <th class="c-num">Jumlah</th>
-            </tr>
-          </thead>
-          <tbody v-for="grp in groupedPrintItems" :key="grp.name">
-            <tr class="rp-group-head">
-              <td colspan="6"><strong>{{ grp.name }}</strong></td>
-              <td class="c-num"><strong>{{ rupiah(grp.subtotal) }}</strong></td>
-            </tr>
-            <tr v-for="(item, i) in grp.items" :key="item.id ?? `${grp.name}-${i}`">
-              <td class="c-no">{{ i + 1 }}</td>
-              <td>{{ item.description }}</td>
-              <td class="c-kat">{{ item.category || item.item_type }}</td>
-              <td class="c-num">{{ item.quantity }}</td>
-              <td class="c-num">{{ rupiah(item.unit_price) }}</td>
-              <td class="c-num">
-                <template v-if="Number(item.discount_amount) > 0">
-                  −{{ rupiah(item.discount_amount) }}<span v-if="Number(item.discount_percent) > 0"> ({{ Number(item.discount_percent) }}%)</span>
-                </template>
-                <template v-else>—</template>
-              </td>
-              <td class="c-num">{{ rupiah(item.net_price ?? item.total_price) }}</td>
-            </tr>
-          </tbody>
-          <tbody v-if="!(printData.items ?? []).length">
-            <tr><td colspan="7" class="rp-empty">Tidak ada item</td></tr>
-          </tbody>
-        </table>
+        <div class="rp-items">
+          <div v-for="grp in groupedPrintItems" :key="grp.name" class="rp-group">
+            <div class="rp-group-head">
+              <span class="rp-group-name">{{ grp.name }}</span>
+              <span class="rp-group-sub">{{ rupiah(grp.subtotal) }}</span>
+            </div>
+            <div v-for="(item, i) in grp.items" :key="item.id ?? `${grp.name}-${i}`" class="rp-row">
+              <span class="rp-row-desc">
+                {{ item.description }}<span v-if="Number(item.quantity) > 1" class="rp-row-qty"> ({{ item.quantity }}×)</span>
+                <span v-if="Number(item.discount_amount) > 0" class="rp-row-disc">
+                  diskon −{{ rupiah(item.discount_amount) }}<span v-if="Number(item.discount_percent) > 0"> ({{ Number(item.discount_percent) }}%)</span>
+                </span>
+              </span>
+              <span class="rp-dots"></span>
+              <span class="rp-row-amt">
+                <span v-if="Number(item.discount_amount) > 0" class="rp-row-gross">{{ rupiah(item.total_price) }}</span>
+                {{ rupiah(item.net_price ?? item.total_price) }}
+              </span>
+            </div>
+          </div>
+          <div v-if="!(printData.items ?? []).length" class="rp-empty">Tidak ada item</div>
+        </div>
 
         <div class="rp-summary">
           <table>
@@ -1193,20 +1423,23 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
         <div class="rp-sign">
           <div class="rp-sign-col">
-            <div class="rp-sign-lbl">Penanggung Jawab / Pasien</div>
-            <div class="rp-sign-space"></div>
-            <div class="rp-sign-name">( ......................................... )</div>
-          </div>
-          <div class="rp-sign-col">
             <div class="rp-sign-lbl">Kasir</div>
-            <img v-if="printData.clinic?.stamp_url" :src="printData.clinic.stamp_url" alt="Stempel" class="rp-stamp" />
-            <div v-else class="rp-sign-space"></div>
-            <div class="rp-sign-name">( {{ printData.cashier ?? '.........................................' }} )</div>
+            <div v-if="printData.print_settings?.show_esign !== false && printData.cashier" class="rp-esign">
+              <span class="rp-esign-badge">✓ Ditandatangani elektronik</span>
+              <div class="rp-esign-name">{{ printData.cashier }}</div>
+              <div class="rp-esign-meta">
+                {{ printData.invoice?.number }}<span v-if="printData.invoice?.paid_at"> · {{ printData.invoice.paid_at }}</span>
+              </div>
+            </div>
+            <template v-else>
+              <div class="rp-sign-space"></div>
+              <div class="rp-sign-name">( ......................................... )</div>
+            </template>
           </div>
         </div>
 
         <footer class="rp-footer">
-          <span v-if="printData.clinic?.director_name">
+          <span v-if="printData.print_settings?.show_footer !== false && printData.clinic?.director_name">
             Penanggung Jawab Klinik: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
           </span>
           Dicetak: {{ new Date().toLocaleString('id-ID') }} · Arumed Apps
@@ -1312,10 +1545,17 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .empty-state svg { width: 56px; height: 56px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; }
 .empty-state p { font-size: 13px; }
 
+.bpjs-noprint-note { margin: .35rem 0 0; font-size: 11px; color: var(--tu); text-align: center; font-style: italic; }
+
 .pt-banner { background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px; display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.85rem; }
 .pt-info { flex: 1; min-width: 0; }
 .pt-name { font-family: 'DM Serif Display', serif; font-size: 18px; line-height: 1.1; }
 .pt-meta { font-size: 11px; color: rgba(255, 255, 255, 0.6); margin-top: 3px; }
+.pt-contact { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; }
+.pt-contact-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: rgba(255, 255, 255, 0.82); max-width: 340px; }
+.pt-contact-item svg { width: 12px; height: 12px; fill: none; stroke: rgba(255, 255, 255, 0.7); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.pt-contact-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-contact-empty { color: rgba(255, 255, 255, 0.5); font-style: italic; }
 .pt-tags { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
 .ptg { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
 .ptg-b { background: rgba(147, 197, 253, 0.2); color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.2); }
@@ -1370,10 +1610,11 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .card-body { padding: 1rem; }
 
 .tbl { width: 100%; border-collapse: collapse; }
-.tbl th { font-size: 10px; font-weight: 600; color: var(--tu); letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 13px; border-bottom: 1px solid var(--gb); text-align: left; }
-.tbl td { padding: 9px 13px; border-bottom: 1px solid rgba(0, 0, 0, 0.03); font-size: 12px; color: var(--td); }
-.tbl tr:last-child td { border-bottom: none; }
-.tbl tr:hover td { background: var(--bi); }
+.tbl th { font-size: 9.5px; font-weight: 600; color: var(--tu); letter-spacing: 0.07em; text-transform: uppercase; padding: 8px 14px; border-bottom: 1px solid var(--gb); text-align: left; background: var(--bs); }
+.tbl td { padding: 8px 14px; font-size: 12px; color: var(--td); vertical-align: middle; }
+/* Garis pemisah hanya antar item dalam satu grup — bukan tiap baris (lebih clean). */
+.kat-group tr + tr td { border-top: 1px solid rgba(0, 0, 0, 0.045); }
+.tbl tbody.kat-group tr:hover:not(.kat-group-head) td { background: var(--gl); }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl .strong { font-weight: 600; }
 .tbl .muted { color: var(--tu); font-size: 10.5px; }
@@ -1391,24 +1632,82 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .kat-lainnya    { background: var(--bi); color: var(--tm); }
 
 /* ─── Group header per kategori ──────────────────────────────────────────── */
-.kat-group-head td { background: linear-gradient(0deg, var(--gl), var(--bi)); padding: 7px 13px; border-top: 2px solid var(--ga) !important; border-bottom: 1px solid var(--gb); }
-.kat-group-name { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gd); }
-.kat-group-count { font-size: 10px; color: var(--tu); margin-left: 8px; font-weight: 500; }
-.kat-group:first-of-type .kat-group-head td { border-top: none !important; }
+.kat-group-head td { background: var(--bs); padding: 6px 14px; border-top: 1px solid var(--gb); }
+.kat-group-head td:first-child { border-left: 3px solid var(--ga); }
+.kat-group-name { font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gd); }
+.kat-group-count { font-size: 9.5px; color: var(--tu); margin-left: 8px; font-weight: 500; }
+.kat-group-head .num.strong { color: var(--gd); font-size: 11.5px; }
+.kat-group:first-of-type .kat-group-head td { border-top: none; }
+.kat-group tr:first-child td { border-top: none; }
 .kat-bpjs { background: #dbeafe; color: #1e40af; }
 .kat-umum { background: var(--gl); color: var(--ga); }
 .kat-asn  { background: var(--pb); color: var(--pt); }
 
-.tbl-fi { height: 26px; font-size: 11px; padding: 0 6px; border-radius: 5px; }
-.tbl-num { width: 80px; text-align: right; }
+.tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
+.tbl-fi:focus { border-color: var(--ga); outline: none; }
+.tbl-num { width: 78px; text-align: right; }
 .tbl-select { font-size: 11px; }
 .del-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ebd); background: var(--eb); color: var(--et); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .12s; }
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }
 .del-btn:disabled { opacity: .35; cursor: not-allowed; }
 .del-btn svg { width: 12px; height: 12px; }
-.add-item-row td { background: var(--gl); border-top: 1px dashed var(--ga) !important; vertical-align: top; }
-.add-item-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ga); background: var(--ga); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.add-item-btn svg { width: 12px; height: 12px; }
+.add-item-row td { background: var(--bs); border-top: 1px dashed var(--ga) !important; vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
+.add-item-label { font-size: 9px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+.add-item-btn { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--ga); background: var(--ga); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .12s; }
+.add-item-btn:hover { background: var(--gd); }
+.add-item-btn svg { width: 13px; height: 13px; }
+
+/* ── Tambah tindakan: search-driven picker (konsep sama DokterView Tab 3) ──── */
+.add-tindakan-bar { padding: 0.75rem 1rem 0.25rem; }
+.tindakan-search-wrap { position: relative; }
+.tindakan-search-field {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px 0 36px; height: 38px;
+  border: 1.5px solid var(--gb); border-radius: 9px;
+  background: var(--bs); transition: border-color .13s, background .13s;
+}
+.tindakan-search-field:focus-within { border-color: var(--ga); background: var(--bc); }
+.tindakan-search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round;
+}
+.tindakan-search-input {
+  flex: 1; min-width: 0; border: none; background: transparent;
+  padding: 0; height: auto; font-size: 13px; color: var(--td);
+  outline: none; font-family: 'DM Sans', sans-serif;
+}
+.tindakan-search-input::placeholder { color: var(--th); }
+.tindakan-search-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; border: none;
+  background: var(--gb); color: var(--tu); cursor: pointer; padding: 0;
+  flex-shrink: 0; transition: background .12s;
+}
+.tindakan-search-clear:hover { background: var(--th); color: #fff; }
+.tindakan-search-clear svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.tindakan-search-drop {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.10);
+  max-height: 320px; overflow-y: auto; padding: 4px;
+}
+.tindakan-search-hint {
+  padding: 7px 10px; font-size: 10.5px; color: var(--tu);
+  border-top: 1px dashed var(--gb); text-align: center; font-style: italic;
+}
+.tarif-list-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 7px; cursor: pointer; transition: background .12s; }
+.tarif-list-item:hover { background: var(--gl); }
+.tarif-list-item.in-list { background: var(--gl); }
+.tarif-list-item.is-adding { opacity: .55; pointer-events: none; }
+.tarif-list-name { flex: 1; font-size: 12px; font-weight: 500; color: var(--td); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--gd); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tarif-list-icon { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke-width: 2; stroke-linecap: round; }
+.tarif-list-icon.add { stroke: var(--ga); }
+.tarif-list-icon.check { stroke: var(--st); stroke-width: 2.5; }
+.tarif-kode { font-size: 9.5px; font-weight: 700; color: var(--ga); letter-spacing: 0.03em; white-space: nowrap; }
+.tarif-kat { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.03em; white-space: nowrap; }
+.tarif-kat.td { background: var(--gl); color: var(--gd); border: 1px solid rgba(31,125,74,0.2); }
+.tarif-empty { text-align: center; padding: 1rem; font-size: 11px; color: var(--th); }
 
 .tbl-foot { padding: 0.75rem 1.1rem; border-top: 2px solid var(--gb); background: var(--bi); }
 .fg { display: flex; flex-direction: column; gap: 4px; }
@@ -1432,6 +1731,26 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .cover-confirm-title { font-size: 12px; font-weight: 700; color: var(--st); text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
 .cover-confirm-amount { font-size: 24px; font-weight: 800; color: var(--st); font-family: 'Geist Mono', monospace; margin: 3px 0; }
 .cover-confirm-sub { font-size: 11.5px; color: var(--tm); line-height: 1.4; }
+/* Varian BPJS — biru (bedakan dari ditanggung asuransi/TPA yang hijau). */
+.cover-confirm-box.cover-bpjs { background: #dbeafe; border-color: #93c5fd; }
+.cover-confirm-box.cover-bpjs svg { stroke: #1e40af; }
+.cover-confirm-box.cover-bpjs .cover-confirm-title,
+.cover-confirm-box.cover-bpjs .cover-confirm-amount { color: #1e40af; }
+
+/* ── Setting Print: popover toggle elemen kwitansi ──────────────────────────── */
+.print-set-wrap { position: relative; display: inline-flex; }
+.btn.btn-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.print-set-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  width: 268px; background: var(--bc); border: 1px solid var(--gb);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.14); padding: 0.6rem;
+}
+.print-set-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .04em; padding: 0 4px 7px; border-bottom: 1px solid var(--gb); margin-bottom: 5px; }
+.print-set-saving { font-size: 9px; font-weight: 600; color: var(--ga); text-transform: none; letter-spacing: 0; font-style: italic; }
+.print-set-row { display: flex; align-items: center; gap: 9px; padding: 7px 4px; font-size: 12px; color: var(--td); cursor: pointer; border-radius: 6px; transition: background .12s; }
+.print-set-row:hover { background: var(--gl); }
+.print-set-row input { width: 15px; height: 15px; accent-color: var(--ga); cursor: pointer; flex-shrink: 0; }
+.print-set-foot { font-size: 10px; color: var(--tu); padding: 6px 4px 2px; border-top: 1px dashed var(--gb); margin-top: 4px; line-height: 1.4; }
 
 .mixed-header { display: flex; justify-content: space-between; align-items: center; padding: .5rem .6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; margin-bottom: .55rem; }
 .mixed-lbl { font-size: 11px; color: var(--tu); font-weight: 600; }
@@ -1544,14 +1863,19 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
   .rincian-print .rp-meta .s { width: 10px; }
   .rincian-print .rp-meta .v { width: 35%; font-weight: 600; }
 
-  .rincian-print .rp-items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  .rincian-print .rp-items th, .rincian-print .rp-items td { border: 1px solid #000; padding: 5px 7px; font-size: 10.5px; }
-  .rincian-print .rp-items th { background: #eee !important; text-align: left; font-weight: 700; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .rincian-print .rp-items .c-no { width: 26px; text-align: center; }
-  .rincian-print .rp-items .c-kat { width: 78px; }
-  .rincian-print .rp-items .c-num { text-align: right; white-space: nowrap; }
-  .rincian-print .rp-empty { text-align: center; font-style: italic; }
-  .rincian-print .rp-group-head td { background: #f3f4f6 !important; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Rincian item — daftar tanpa garis/tabel (list style). */
+  .rincian-print .rp-items { margin-bottom: 12px; }
+  .rincian-print .rp-group { margin-bottom: 9px; page-break-inside: avoid; }
+  .rincian-print .rp-group-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  .rincian-print .rp-group-sub { font-weight: 700; white-space: nowrap; }
+  .rincian-print .rp-row { display: flex; align-items: baseline; font-size: 10.8px; padding: 1.5px 0 1.5px 12px; }
+  .rincian-print .rp-row-desc { flex: 0 1 auto; }
+  .rincian-print .rp-row-qty { color: #555; }
+  .rincian-print .rp-row-disc { color: #b45309; font-size: 9.5px; margin-left: 6px; }
+  .rincian-print .rp-dots { flex: 1 1 auto; border-bottom: 1px dotted #bbb; margin: 0 6px; transform: translateY(-2px); min-width: 14px; }
+  .rincian-print .rp-row-amt { flex: 0 0 auto; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .rincian-print .rp-row-gross { color: #999; text-decoration: line-through; font-size: 9.5px; margin-right: 5px; }
+  .rincian-print .rp-empty { font-style: italic; color: #777; padding: 4px 12px; }
 
   .rincian-print .rp-summary { display: flex; justify-content: flex-end; margin-bottom: 16px; }
   .rincian-print .rp-summary table { border-collapse: collapse; min-width: 280px; }
@@ -1564,12 +1888,16 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
   .rincian-print .rp-status.lunas { color: #15803d; border-color: #15803d; }
   .rincian-print .rp-status.belum { color: #b45309; border-color: #b45309; }
 
-  .rincian-print .rp-sign { display: flex; justify-content: space-between; gap: 40px; page-break-inside: avoid; }
+  .rincian-print .rp-sign { display: flex; justify-content: flex-end; page-break-inside: avoid; }
   .rincian-print .rp-sign-col { width: 45%; text-align: center; }
   .rincian-print .rp-sign-lbl { font-size: 11px; margin-bottom: 4px; }
   .rincian-print .rp-sign-space { height: 62px; }
-  .rincian-print .rp-stamp { height: 62px; object-fit: contain; }
   .rincian-print .rp-sign-name { font-size: 11px; }
+  /* E-sign kasir — badge teks ringan (bukan TTD basah). */
+  .rincian-print .rp-esign { display: inline-block; padding-top: 6px; }
+  .rincian-print .rp-esign-badge { display: inline-block; font-size: 9px; font-weight: 700; color: #15803d; border: 1px solid #15803d; border-radius: 4px; padding: 2px 8px; letter-spacing: .02em; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rincian-print .rp-esign-name { font-size: 11.5px; font-weight: 700; margin-top: 5px; }
+  .rincian-print .rp-esign-meta { font-size: 8.5px; color: #555; margin-top: 1px; }
 
   .rincian-print .rp-footer { margin-top: 28px; padding-top: 7px; border-top: 1px solid #999; text-align: center; font-size: 9px; color: #444; }
 }

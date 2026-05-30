@@ -126,6 +126,10 @@ async function handleLogout() {
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span>Antrean TV</span>
       </RouterLink>
+      <RouterLink v-if="auth.can('integrasi.read') || auth.isSuperadmin" to="/bridging" class="sb-item" title="Bridging">
+        <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <span>BRIDGING</span>
+      </RouterLink>
       <RouterLink v-if="auth.can('pengaturan.read')" to="/pengaturan" class="sb-item" title="Pengaturan">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
         <span>Pengaturan</span>

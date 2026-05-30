@@ -13,11 +13,6 @@ const patients = ref([])
 const employees = ref([])
 const loadingQueue = ref(false)
 
-// Jadwal operasi (bedah terjadwal) — read-only dari /bedah/jadwal
-const schedules = ref([])
-const loadingSchedules = ref(false)
-const jadwalDate = ref(new Date().toISOString().slice(0, 10))  // YYYY-MM-DD
-
 // Daftar Ruang OK dari Profil Klinik (settings global).
 const operatingRooms = computed(() => masterStore.profilKlinik?.operating_rooms ?? [])
 
@@ -53,10 +48,11 @@ function transformQueueItem(q) {
                   : q.status === 'IN_PROGRESS' ? 'BERLANGSUNG'
                   : 'MENUNGGU',
     icdProsedur:    '',
-    dpjp:           '',
-    diagnosa:       '',
+    dpjp:           q.visit?.dpjp ?? '',          // operator utama (lead surgeon / dokter pemeriksa)
+    diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter
     diagnosaPasca:  '',
     isPhaco:        false,
+    recordId:       null,           // surgery_records.id (diisi saat mulai/timeout/pick)
     timIn:          null,
     timOut:         null,
     checklist:      { identitas: false, consent: false, lokasi: false, pupil: false, alergi: false },
@@ -97,27 +93,14 @@ async function loadEmployees() {
     const res = await masterApi.pegawai.list({ per_page: 200 })
     const list = res.data?.data?.data ?? res.data?.data ?? []
     employees.value = (Array.isArray(list) ? list : []).map((e) => ({
-      id:   e.id,
-      name: e.name,
-      role: e.profession ?? e.user?.role?.name ?? '—',
+      id:       e.id,
+      name:     e.name,
+      role:     e.profession ?? e.user?.role?.name ?? '—',  // label tampil di dropdown
+      roleName: (e.user?.role?.name ?? '').toLowerCase(),    // untuk filter per peran
+      prof:     (e.profession ?? '').toLowerCase(),
     }))
   } catch (e) {
     employees.value = []
-  }
-}
-
-// Jadwal operasi untuk tanggal terpilih (read-only)
-async function loadSchedules() {
-  loadingSchedules.value = true
-  try {
-    const res = await bedahApi.jadwal({ tanggal: jadwalDate.value })
-    const list = res.data?.data ?? []
-    schedules.value = Array.isArray(list) ? list : []
-  } catch (e) {
-    schedules.value = []
-    toast('w', e.response?.data?.message ?? 'Gagal memuat jadwal operasi')
-  } finally {
-    loadingSchedules.value = false
   }
 }
 
@@ -130,12 +113,6 @@ onMounted(async () => {
 })
 
 // ── UI State ───────────────────────────────────────────────────────────────────
-const leftMode = ref('antrean')            // 'antrean' | 'jadwal' — panel kiri
-
-// Reload jadwal saat ganti tanggal (hanya bila panel jadwal aktif)
-watch(jadwalDate, () => { if (leftMode.value === 'jadwal') loadSchedules() })
-// Load jadwal pertama kali saat user beralih ke panel jadwal
-watch(leftMode, (m) => { if (m === 'jadwal' && !schedules.value.length) loadSchedules() })
 const qPrimaryFilter   = ref('waiting')   // 'waiting' | 'done'
 const qSecondaryFilter = ref('semua')      // 'semua' | 'bpjs' | 'umum'
 const qSearch = ref('')
@@ -143,6 +120,7 @@ const selP = ref(null)
 const tab = ref('prabedah')
 const showMulaiModal = ref(false)
 const showFinalModal = ref(false)
+const busyOp = ref(false)          // lock tombol lifecycle (mulai/timeout/finalisasi)
 const mulaiStep = ref(1)
 const timDropdownOpen = ref({ operator: false, asisten1: false, asisten2: false, scrubNurse: false, circNurse: false, anestesi: false })
 const timSearch = ref({ operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' })
@@ -354,26 +332,11 @@ const belumDipanggilCount = computed(() => patients.value.filter(p => p.status !
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 
-// ── Jadwal helpers ───────────────────────────────────────────────────────────
-const SCHED_STATUS = {
-  SCHEDULED:   { label: 'Terjadwal',   cls: 'sched-scheduled' },
-  IN_PROGRESS: { label: 'Berlangsung', cls: 'sched-progress' },
-  DONE:        { label: 'Selesai',     cls: 'sched-done' },
-  CANCELLED:   { label: 'Dibatalkan',  cls: 'sched-cancelled' },
-}
-function schedStatusMeta(s) { return SCHED_STATUS[s] ?? { label: s ?? '—', cls: 'sched-scheduled' } }
+// Jam jadwal operasi (kartu antrean + detail). scheduled_time bisa "HH:mm:ss" atau "HH:mm".
 function fmtJamJadwal(t) {
   if (!t) return '—'
-  // scheduled_time bisa "HH:mm:ss" atau "HH:mm"
   return String(t).slice(0, 5)
 }
-const jadwalDateLabel = computed(() => {
-  try {
-    return new Date(jadwalDate.value + 'T00:00:00').toLocaleDateString('id-ID', {
-      weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
-    })
-  } catch { return jadwalDate.value }
-})
 
 const checklistAllDone = computed(() => {
   if (!selP.value) return false
@@ -387,13 +350,37 @@ function toast(type, msg) {
   setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id) }, 3500)
 }
 
-function pickPt(p) {
+async function pickPt(p) {
   if (selP.value?.id === p.id) return
   selP.value = p
   tab.value = 'prabedah'
-  if (p.status === 'BERLANGSUNG' && p.timIn && !p.timOut) startTimerInterval()
-  else stopTimerInterval()
   toast('i', `Membuka data bedah — ${p.name}`)
+
+  // Hidrasi laporan dari backend bila operasi sudah dimulai/selesai (mis. setelah
+  // reload): recordId/timIn/timOut untuk lifecycle + field klinis utk prefill.
+  if (p.scheduleId && p.status !== 'MENUNGGU' && !p.recordId) {
+    try {
+      const { data } = await bedahApi.showRecord(p.scheduleId)
+      const rec = data.data
+      if (rec && selP.value?.id === p.id) {
+        const s = selP.value
+        s.recordId = rec.id
+        s.timIn  = rec.time_in  ? new Date(rec.time_in)  : s.timIn
+        s.timOut = rec.time_out ? new Date(rec.time_out) : s.timOut
+        s.laporanFinalized = !!rec.finalized_at || s.laporanFinalized
+        // Prefill field klinis hanya bila belum disentuh user di sesi ini.
+        const notes = parseRecordNotes(rec.operation_notes)
+        if (!s.teknikOp)     s.teknikOp     = notes.teknikOp
+        if (!s.temuanIntra)  s.temuanIntra  = notes.temuanIntra
+        if (!s.catatanIntra) s.catatanIntra = notes.catatanIntra
+        s.komplikasi = !!rec.has_complication
+        if (rec.complication_detail && !s.komplikasiNote) s.komplikasiNote = rec.complication_detail
+      }
+    } catch { /* record belum ada — abaikan */ }
+  }
+
+  if (selP.value?.status === 'BERLANGSUNG' && selP.value?.timIn && !selP.value?.timOut) startTimerInterval()
+  else stopTimerInterval()
 }
 
 async function callPt(p, e) {
@@ -431,22 +418,97 @@ function fmtTime(d) {
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
 }
 
-function doMulaiOperasi() {
+async function doMulaiOperasi() {
   if (!selP.value) return
-  selP.value.status = 'BERLANGSUNG'
-  selP.value.timIn = new Date()
-  selP.value.timOut = null
-  tab.value = 'intraop'
-  showMulaiModal.value = false
-  startTimerInterval()
-  toast('s', 'Operasi dimulai — Timer Time In berjalan')
+  if (!selP.value.scheduleId) {
+    toast('w', 'Operasi tanpa jadwal — tidak dapat dimulai dari sini')
+    return
+  }
+  if (busyOp.value) return
+  busyOp.value = true
+  try {
+    // Backend: schedule SCHEDULED→IN_PROGRESS + buat SurgeryRecord (time_in).
+    // Guard supply BHP/IOL (belum RECEIVED) di-handle backend (422).
+    const { data } = await bedahApi.mulaiOperasi(selP.value.scheduleId)
+    selP.value.recordId = data.data?.id ?? null
+    selP.value.status = 'BERLANGSUNG'
+    selP.value.timIn = data.data?.time_in ? new Date(data.data.time_in) : new Date()
+    selP.value.timOut = null
+    tab.value = 'intraop'
+    showMulaiModal.value = false
+    startTimerInterval()
+    toast('s', 'Operasi dimulai — Timer Time In berjalan')
+    await loadQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memulai operasi')
+  } finally {
+    busyOp.value = false
+  }
 }
 
-function doTimeOut() {
+// Penanda section dalam operation_notes (1 kolom DB) supaya 3 field UI
+// (Teknik/Temuan/Catatan) bisa di-round-trip: buildRecordPayload menulis,
+// parseRecordNotes membaca balik. Urutan = urutan tampil di UI.
+const NOTE_SECTIONS = [
+  { key: 'teknikOp',     label: 'Teknik Operasi' },
+  { key: 'temuanIntra',  label: 'Temuan Intraoperatif' },
+  { key: 'catatanIntra', label: 'Catatan Intraoperatif' },
+]
+
+// Payload laporan operasi dari state lokal selP (dipakai Time Out + update record).
+function buildRecordPayload() {
+  const p = selP.value
+  const notes = NOTE_SECTIONS
+    .filter(s => (p[s.key] || '').trim())
+    .map(s => `[${s.label}]\n${p[s.key].trim()}`)
+    .join('\n\n')
+  return {
+    operation_notes:      notes || null,
+    has_complication:     !!p.komplikasi,
+    complication_detail:  p.komplikasi ? (p.komplikasiNote || p.komplikasiTipe || null) : null,
+    post_op_instructions: null,
+    followup_date:        null,
+  }
+}
+
+// Pecah operation_notes berlabel balik ke 3 field. Tanpa label (data lama / dari
+// sumber lain) → seluruh teks masuk Teknik Operasi agar tak hilang.
+function parseRecordNotes(text) {
+  const out = { teknikOp: '', temuanIntra: '', catatanIntra: '' }
+  if (!text) return out
+  const labels = NOTE_SECTIONS.map(s => s.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const re = new RegExp(`\\[(${labels.join('|')})\\]\\n?`, 'g')
+  if (!re.test(text)) { out.teknikOp = text.trim(); return out }
+  // Split sambil pertahankan label penanda lalu pasangkan ke field-nya.
+  const parts = text.split(new RegExp(`\\[(${labels.join('|')})\\]\\n?`)).filter(s => s !== undefined)
+  for (let i = 1; i < parts.length; i += 2) {
+    const sec = NOTE_SECTIONS.find(s => s.label === parts[i])
+    if (sec) out[sec.key] = (parts[i + 1] || '').trim()
+  }
+  return out
+}
+
+async function doTimeOut() {
   if (!selP.value) return
-  selP.value.timOut = new Date()
-  stopTimerInterval()
-  toast('s', `Time Out: ${timOutDisplay.value} — Durasi ${timerDisplay.value}`)
+  if (!selP.value.scheduleId) {
+    toast('w', 'Operasi tanpa jadwal — tidak dapat di-Time Out dari sini')
+    return
+  }
+  if (busyOp.value) return
+  busyOp.value = true
+  try {
+    // Backend: schedule IN_PROGRESS→DONE + isi laporan. TIDAK meneruskan pasien
+    // (advance dipindah ke finalisasi). Pasien jalan setelah laporan dikunci.
+    const { data } = await bedahApi.selesaiOperasi(selP.value.scheduleId, buildRecordPayload())
+    selP.value.recordId = data.data?.id ?? selP.value.recordId
+    selP.value.timOut = data.data?.time_out ? new Date(data.data.time_out) : new Date()
+    stopTimerInterval()
+    toast('s', `Time Out: ${timOutDisplay.value} — kunci laporan untuk meneruskan pasien`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan operasi')
+  } finally {
+    busyOp.value = false
+  }
 }
 
 // BHP
@@ -480,17 +542,36 @@ function kirimResep() {
 
 async function doFinalisasi() {
   if (!selP.value) return
+  if (!selP.value.scheduleId) {
+    toast('w', 'Operasi tanpa jadwal — tidak dapat difinalisasi dari sini')
+    return
+  }
+  if (busyOp.value) return
+  busyOp.value = true
   try {
-    await bedahApi.selesaiAntrian(selP.value.id)
+    // Resolve record.id (dari mulai/timeout, atau ambil ulang via scheduleId).
+    let recordId = selP.value.recordId
+    if (!recordId) {
+      const { data } = await bedahApi.showRecord(selP.value.scheduleId)
+      recordId = data.data?.id ?? null
+    }
+    if (!recordId) {
+      toast('w', 'Laporan operasi belum ada — mulai & Time Out operasi dulu')
+      return
+    }
+    // Backend: kunci laporan (finalized_at) + advance antrean ke Farmasi/Kasir.
+    await bedahApi.finalizeRecord(recordId)
     selP.value.laporanFinalized = true
     selP.value.status = 'SELESAI'
     selP.value.timOut = selP.value.timOut || new Date()
     stopTimerInterval()
     showFinalModal.value = false
-    toast('s', 'Bedah selesai — pasien diteruskan ke Kasir')
+    toast('s', 'Laporan dikunci — pasien diteruskan ke Farmasi/Kasir')
     await loadQueue()
   } catch (err) {
-    toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan bedah')
+    toast('w', err.response?.data?.message ?? 'Gagal memfinalisasi laporan')
+  } finally {
+    busyOp.value = false
   }
 }
 
@@ -504,9 +585,32 @@ const instruksiList = [
 ]
 
 // ── Tim Bedah Combobox ─────────────────────────────────────────────────────────
+// Peran yang valid per field Tim Bedah (cocokkan ke users.role.name):
+//   Operator (DPJP)  → dokter
+//   Asisten 1/2      → perawat
+//   Scrub/Circulating Nurse → perawat
+//   Anestesiologis   → dokter anestesi (fallback: dokter mana pun, karena belum ada role khusus)
+function employeeMatchesRole(e, key) {
+  switch (key) {
+    case 'operator':
+      return e.roleName === 'dokter'
+    case 'asisten1':
+    case 'asisten2':
+    case 'scrubNurse':
+    case 'circNurse':
+      return e.roleName === 'perawat'
+    case 'anestesi':
+      // dokter dengan profesi anestesi; kalau tak ada penanda, terima semua dokter
+      return e.roleName === 'dokter' && (e.prof.includes('anestesi') || !employees.value.some(x => x.roleName === 'dokter' && x.prof.includes('anestesi')))
+    default:
+      return true
+  }
+}
 function filteredEmployees(key) {
   const q = timSearch.value[key].toLowerCase()
-  return q ? employees.value.filter(e => e.name.toLowerCase().includes(q)) : employees.value
+  return employees.value.filter(e =>
+    employeeMatchesRole(e, key) && (!q || e.name.toLowerCase().includes(q))
+  )
 }
 function pickEmployee(key, emp) {
   selP.value.tim[key] = emp.name
@@ -536,62 +640,14 @@ function mulaiBack() { mulaiStep.value = 1 }
             <div>
               <div class="card-head-title">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
-                {{ leftMode === 'antrean' ? 'Antrean Bedah' : 'Jadwal Operasi' }}
+                Antrean Bedah
               </div>
-              <div class="card-head-sub">
-                {{ leftMode === 'antrean' ? `${patients.length} pasien hari ini` : `${schedules.length} operasi terjadwal` }}
-              </div>
+              <div class="card-head-sub">{{ patients.length }} pasien hari ini</div>
             </div>
-            <span v-if="leftMode === 'antrean'" class="pill-live">LIVE</span>
+            <span class="pill-live">LIVE</span>
           </div>
 
-          <!-- Mode toggle: Antrean vs Jadwal -->
-          <div class="bd-mode-toggle" role="group" aria-label="Mode panel bedah">
-            <button :class="['bd-mode-btn', leftMode === 'antrean' ? 'a' : '']" @click="leftMode = 'antrean'">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
-              Antrean
-            </button>
-            <button :class="['bd-mode-btn', leftMode === 'jadwal' ? 'a' : '']" @click="leftMode = 'jadwal'">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-              Jadwal
-            </button>
-          </div>
-
-          <!-- ══════════ JADWAL OPERASI (read-only) ══════════ -->
-          <div v-if="leftMode === 'jadwal'" class="card-body queue-scroll" role="region" aria-label="Jadwal operasi">
-            <div class="bd-jadwal-datebar">
-              <label class="bd-label" for="bd-jadwal-date">Tanggal</label>
-              <input id="bd-jadwal-date" type="date" class="bd-input bd-input-sm" v-model="jadwalDate" />
-            </div>
-            <div class="bd-jadwal-datelabel">{{ jadwalDateLabel }}</div>
-
-            <div v-if="loadingSchedules" class="empty-section" aria-live="polite">Memuat jadwal…</div>
-            <div v-else-if="!schedules.length" class="empty-section" aria-live="polite">
-              Tidak ada operasi terjadwal pada tanggal ini
-            </div>
-            <div v-else role="list" aria-label="Daftar operasi terjadwal">
-              <div v-for="s in schedules" :key="s.id" class="bd-sched-item" role="listitem">
-                <div :class="['bd-sched-time', !s.scheduled_time ? 'na' : '']">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                  {{ s.scheduled_time ? fmtJamJadwal(s.scheduled_time) : 'Belum dijam' }}
-                </div>
-                <div class="bd-sched-body">
-                  <div class="bd-sched-pkg">{{ s.surgery_package?.name ?? 'Paket bedah' }}</div>
-                  <div class="bd-sched-meta">
-                    <span v-if="s.lead_surgeon?.name">Operator: {{ s.lead_surgeon.name }}</span>
-                    <span v-if="s.anesthesiologist?.name"> · Anestesi: {{ s.anesthesiologist.name }}</span>
-                  </div>
-                  <div class="bd-sched-tags">
-                    <span :class="['pill', schedStatusMeta(s.status).cls]">{{ schedStatusMeta(s.status).label }}</span>
-                    <span v-if="s.operation_room" class="pill pill-ruang">{{ s.operation_room }}</span>
-                  </div>
-                  <div v-if="s.notes" class="bd-sched-notes">{{ s.notes }}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-else class="card-body queue-scroll" role="region" aria-label="Daftar antrean bedah">
+          <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean bedah">
 
             <!-- Stats bar -->
             <div class="stats-bar">
@@ -722,7 +778,7 @@ function mulaiBack() { mulaiStep.value = 1 }
           <div class="bd-banner-left">
             <div class="bd-banner-name">{{ selP.name }}</div>
             <div class="bd-banner-meta">
-              {{ selP.rm }} &middot; {{ selP.age }} thn &middot; {{ selP.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
+              {{ selP.rm }} &middot; {{ selP.age }} thn &middot; {{ selP.gender }}
             </div>
             <div class="bd-banner-prosedur">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
@@ -813,7 +869,7 @@ function mulaiBack() { mulaiStep.value = 1 }
             </div>
 
             <!-- Tim Bedah -->
-            <div class="bd-card bd-card-full">
+            <div class="bd-card bd-card-full bd-card-combo">
               <div class="bd-card-hd">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 Tim Bedah
@@ -928,10 +984,11 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <button
                     v-if="selP.status === 'BERLANGSUNG' && !selP.timOut"
                     class="bd-btn-timeout"
+                    :disabled="busyOp"
                     @click="doTimeOut"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
-                    Time Out
+                    {{ busyOp ? 'Memproses…' : 'Time Out' }}
                   </button>
                   <span v-else-if="selP.timOut" class="bd-timer-done-badge">Operasi Selesai · {{ timerDisplay }}</span>
                   <span v-else class="bd-timer-hint">Tekan "Mulai Operasi" di tab Pra-Bedah</span>
@@ -958,7 +1015,9 @@ function mulaiBack() { mulaiStep.value = 1 }
                         <td>{{ b.item }}</td>
                         <td>{{ b.jumlah }}</td>
                         <td>{{ b.satuan }}</td>
-                        <td><button class="bd-del" @click="removeBhp(i)" :disabled="selP.laporanFinalized">✕</button></td>
+                        <td><button class="bd-del" @click="removeBhp(i)" :disabled="selP.laporanFinalized" aria-label="Hapus BHP" title="Hapus BHP">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button></td>
                       </tr>
                     </tbody>
                   </table>
@@ -1091,7 +1150,9 @@ function mulaiBack() { mulaiStep.value = 1 }
                       <td>{{ u.equipment?.location ?? '—' }}</td>
                       <td>{{ u.used_at ? new Date(u.used_at).toLocaleString('id-ID') : '—' }}</td>
                       <td>
-                        <button class="bd-del" @click="removeEquipmentUsage(u)" :disabled="selP.laporanFinalized">✕</button>
+                        <button class="bd-del" @click="removeEquipmentUsage(u)" :disabled="selP.laporanFinalized" aria-label="Hapus pemakaian alat" title="Hapus pemakaian alat">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
                       </td>
                     </tr>
                   </tbody>
@@ -1152,7 +1213,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <div class="bd-field-row"><label class="bd-label">Time In</label><span class="bd-val">{{ timInDisplay }} WIB</span></div>
                   <div class="bd-field-row"><label class="bd-label">Time Out</label><span class="bd-val">{{ timOutDisplay }} WIB</span></div>
                   <div class="bd-field-row"><label class="bd-label">Durasi</label><span class="bd-val">{{ timerDisplay }}</span></div>
-                  <div class="bd-field-row"><label class="bd-label">Operator</label><span class="bd-val">{{ selP.tim.operator || selP.dpjp }}</span></div>
+                  <div class="bd-field-row"><label class="bd-label">Operator</label><span class="bd-val">{{ selP.tim.operator || selP.dpjp || '—' }}</span></div>
                   <div class="bd-field-row"><label class="bd-label">Asisten</label><span class="bd-val">{{ [selP.tim.asisten1, selP.tim.asisten2].filter(Boolean).join(', ') || '—' }}</span></div>
                   <div class="bd-field-row"><label class="bd-label">Anestesi</label><span class="bd-val">{{ selP.anestesi }}</span></div>
                 </div>
@@ -1166,7 +1227,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div class="bd-card-bd">
                   <div class="bd-iol-field">
                     <label class="bd-label">Diagnosis Pra-Bedah</label>
-                    <div class="bd-dx-chip">{{ selP.diagnosa }}</div>
+                    <div class="bd-dx-chip" :class="!selP.diagnosa && 'bd-dx-chip-empty'">{{ selP.diagnosa || 'Belum ada diagnosis dari dokter' }}</div>
                   </div>
                   <div class="bd-iol-field" style="margin-top:12px">
                     <label class="bd-label">Diagnosis Pasca-Bedah</label>
@@ -1235,7 +1296,8 @@ function mulaiBack() { mulaiStep.value = 1 }
               <button
                 v-if="!selP.laporanFinalized"
                 class="bd-btn-finalisasi"
-                :disabled="!selP.timIn"
+                :disabled="!selP.timOut || busyOp"
+                :title="!selP.timOut ? 'Lakukan Time Out dulu di tab Intraoperatif' : ''"
                 @click="showFinalModal = true"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -1279,7 +1341,9 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <tbody>
                       <tr v-for="(o, i) in selP.obatPasca" :key="i">
                         <td>{{ o.nama }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
-                        <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent">✕</button></td>
+                        <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button></td>
                       </tr>
                     </tbody>
                   </table>
@@ -1371,10 +1435,10 @@ function mulaiBack() { mulaiStep.value = 1 }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         </div>
         <h3>Finalisasi Laporan Operasi?</h3>
-        <p>Laporan akan dikunci dan tidak dapat diubah. Status pasien berubah menjadi <strong>SELESAI</strong>.</p>
+        <p>Laporan akan dikunci dan tidak dapat diubah. Pasien diteruskan ke <strong>Farmasi/Kasir</strong>.</p>
         <div class="bd-modal-actions">
-          <button class="bd-btn-sec" @click="showFinalModal = false">Batal</button>
-          <button class="bd-btn-finalisasi-confirm" @click="doFinalisasi">Finalisasi</button>
+          <button class="bd-btn-sec" :disabled="busyOp" @click="showFinalModal = false">Batal</button>
+          <button class="bd-btn-finalisasi-confirm" :disabled="busyOp" @click="doFinalisasi">{{ busyOp ? 'Memproses…' : 'Finalisasi' }}</button>
         </div>
       </div>
     </div>
@@ -1481,47 +1545,6 @@ function mulaiBack() { mulaiStep.value = 1 }
 .pill-time      { background: var(--bi); color: var(--tu); font-variant-numeric: tabular-nums; }
 .pill-time-na   { background: #fff4e5; color: #9a6700; font-style: italic; }
 
-/* Jadwal status pills */
-.sched-scheduled { background: #dbeafe; color: #1e40af; }
-.sched-progress  { background: #fef3c7; color: #92400e; }
-.sched-done      { background: var(--sb); color: var(--st); }
-.sched-cancelled { background: #fee2e2; color: #991b1b; }
-
-/* ── Mode toggle (Antrean / Jadwal) ─────────────────────────────── */
-.bd-mode-toggle { display: flex; gap: 4px; padding: 8px 1.1rem 0; }
-.bd-mode-btn {
-  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  padding: 7px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
-  background: var(--bi); color: var(--tu); border: 1px solid var(--gb); border-radius: 8px;
-  transition: all .15s;
-}
-.bd-mode-btn svg { width: 13px; height: 13px; }
-.bd-mode-btn:hover { background: var(--bc); }
-.bd-mode-btn.a { background: #1763d4; color: #fff; border-color: #1763d4; }
-
-/* ── Jadwal Operasi panel ───────────────────────────────────────── */
-.bd-jadwal-datebar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.bd-jadwal-datebar .bd-label { margin: 0; white-space: nowrap; }
-.bd-jadwal-datebar .bd-input { width: auto; flex: 1; }
-.bd-jadwal-datelabel { font-size: 11px; color: var(--tu); margin-bottom: 10px; text-transform: capitalize; }
-.bd-sched-item {
-  display: flex; gap: 10px; padding: 10px; margin-bottom: 8px;
-  background: var(--bs); border: 1px solid var(--gb); border-radius: 9px;
-}
-.bd-sched-time {
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  min-width: 52px; font-size: 13px; font-weight: 700; color: #000;
-  font-variant-numeric: tabular-nums;
-}
-.bd-sched-time svg { width: 15px; height: 15px; stroke: var(--ga); }
-.bd-sched-time.na { font-size: 10.5px; font-weight: 600; color: #9a6700; font-style: italic; }
-.bd-sched-time.na svg { stroke: #9a6700; }
-.bd-sched-body { flex: 1; min-width: 0; }
-.bd-sched-pkg { font-size: 12.5px; font-weight: 600; color: #000; margin-bottom: 2px; }
-.bd-sched-meta { font-size: 10.5px; color: var(--tu); margin-bottom: 5px; }
-.bd-sched-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.bd-sched-notes { font-size: 10.5px; color: var(--th); margin-top: 5px; font-style: italic; }
-
 /* Classification */
 .cls-baru    { background: #dbeafe; color: #1e40af; }
 .cls-preop   { background: #fef3c7; color: #92400e; }
@@ -1566,11 +1589,14 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-tab:hover { color: var(--gm); }
 .bd-tab-a { color: var(--gm); border-bottom-color: var(--ga); }
 
-.bd-tabcont { max-height: calc(100vh - 260px); overflow-y: auto; padding: 20px; }
+/* padding-bottom besar: beri ruang dropdown combobox di card terakhir (Tim Bedah) agar tak terpotong */
+.bd-tabcont { max-height: calc(100vh - 260px); overflow-y: auto; padding: 20px 20px 220px; }
 
 /* Cards */
 .bd-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
 .bd-card-full { margin-top: 16px; }
+/* card berisi combobox: jangan clip dropdown absolute (overflow hidden default memotongnya) */
+.bd-card-combo, .bd-card-combo .bd-card-bd { overflow: visible; }
 .bd-card-hd { display: flex; align-items: center; gap: 8px; padding: 12px 16px; font-size: 13px; font-weight: 700; color: var(--gd); border-bottom: 1px solid var(--gb); background: var(--bs); }
 .bd-card-hd svg { width: 16px; height: 16px; color: var(--ga); flex-shrink: 0; }
 .bd-card-bd { padding: 16px; }
@@ -1698,7 +1724,8 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-tbl td { padding: 8px 10px; border-top: 1px solid var(--bg); color: var(--td); }
 .bd-tbl-sm th, .bd-tbl-sm td { padding: 6px 8px; }
 .bd-tbl-empty { padding: 20px; text-align: center; color: var(--th); font-size: 12px; }
-.bd-del { background: none; border: none; color: var(--et); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
+.bd-del { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--et); cursor: pointer; padding: 4px; border-radius: 4px; }
+.bd-del svg { width: 15px; height: 15px; }
 .bd-del:hover:not(:disabled) { background: var(--eb); }
 .bd-del:disabled { opacity: .4; cursor: not-allowed; }
 
@@ -1728,6 +1755,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-finalized-banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--sb); border: 1px solid var(--sbd); border-radius: 10px; color: var(--st); font-size: 13px; font-weight: 600; margin-bottom: 16px; }
 .bd-finalized-banner svg { width: 16px; height: 16px; }
 .bd-dx-chip { padding: 8px 12px; background: var(--gl); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--gm); display: inline-block; }
+.bd-dx-chip-empty { background: #f3f4f6; color: #9ca3af; font-weight: 500; font-style: italic; }
 .bd-no-komplikasi { font-size: 12px; color: var(--st); background: var(--sb); padding: 6px 12px; border-radius: 6px; display: inline-block; }
 .bd-komplikasi { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .bd-laporan-actions { display: flex; align-items: center; gap: 12px; margin-top: 20px; }

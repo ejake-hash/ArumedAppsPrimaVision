@@ -36,7 +36,10 @@ class BedahService
             'visit.patient',
             'visit.insurer',
             'visit.surgerySchedule.surgeryPackage',
+            'visit.surgerySchedule.leadSurgeon',
             'visit.doctorExamination.surgeryPackage',
+            'visit.doctorExamination.surgerySchedule.leadSurgeon',
+            'visit.doctorExamination.doctor',
         ])
             ->where('station', 'BEDAH')
             ->whereDate('created_at', today())
@@ -54,6 +57,11 @@ class BedahService
             $schedule = $visit?->surgerySchedule ?? $visit?->doctorExamination?->surgerySchedule ?? null;
             $package  = $schedule?->surgeryPackage ?? $visit?->doctorExamination?->surgeryPackage ?? null;
 
+            // Konteks klinis utk prefill Laporan: diagnosis (kode ICD-10 dari dokter)
+            // + DPJP (operator utama dari jadwal, fallback dokter pemeriksa).
+            $exam = $visit?->doctorExamination;
+            $dpjp = $schedule?->leadSurgeon?->name ?? $exam?->doctor?->name ?? null;
+
             return [
                 'id'             => $q->id,
                 'queue_number'   => $q->queue_number,
@@ -69,6 +77,8 @@ class BedahService
                     'visit_type'     => $visit->visit_type,
                     'guarantor_type' => $visit->guarantor_type,
                     'insurer_name'   => $visit->insurer?->name,
+                    'diagnosa'       => $exam?->diagnosis_utama,
+                    'dpjp'           => $dpjp,
                 ] : null,
 
                 'patient' => $patient ? [
@@ -236,8 +246,10 @@ class BedahService
         return DB::transaction(function () use ($schedule) {
             $schedule->update(['status' => 'IN_PROGRESS']);
 
-            // Get visit_id from surgery_requests
-            $visitId = $schedule->surgeryRequests()->value('visit_id');
+            // Resolve visit_id: kunci utama visits.surgery_schedule_id; fallback ke
+            // surgery_requests (operasi tanpa supply-request tetap dapat visit yg benar).
+            $visitId = Visit::where('surgery_schedule_id', $schedule->id)->value('id')
+                ?? $schedule->surgeryRequests()->value('visit_id');
 
             $record = SurgeryRecord::create([
                 'surgery_schedule_id' => $schedule->id,
@@ -264,7 +276,10 @@ class BedahService
 
     /**
      * Time Out — selesai operasi + laporan.
-     * Routes visit ke FARMASI.
+     *
+     * TIDAK meneruskan pasien ke Farmasi/Kasir. Advance antrean dipindah ke
+     * finalizeRecord() supaya pasien baru jalan setelah laporan operasi dikunci.
+     * Di sini schedule cukup ditandai DONE (gerbang agar finalize boleh jalan).
      */
     public function completeOperation(string $scheduleId, array $data): SurgeryRecord
     {
@@ -291,31 +306,6 @@ class BedahService
             ]);
 
             $schedule->update(['status' => 'DONE']);
-
-            $visitId = $record->visit_id;
-
-            if ($visitId) {
-                // Selesaikan antrian BEDAH
-                Queue::where('visit_id', $visitId)
-                    ->where('station', 'BEDAH')
-                    ->where('status', 'IN_PROGRESS')
-                    ->update(['status' => 'COMPLETED', 'completed_at' => now()]);
-
-                // Buat antrian FARMASI
-                $lastSeq  = Queue::where('station', 'FARMASI')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
-                $sequence = $lastSeq + 1;
-
-                Queue::create([
-                    'visit_id'       => $visitId,
-                    'station'        => 'FARMASI',
-                    'queue_prefix'   => 'F',
-                    'queue_sequence' => $sequence,
-                    'queue_number'   => 'F-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
-                    'status'         => 'WAITING',
-                ]);
-
-                Visit::where('id', $visitId)->update(['current_station' => 'FARMASI']);
-            }
 
             $this->log(auth('api')->id(), 'COMPLETE_OPERATION', SurgeryRecord::class, $record->id, "Time Out: " . now()->toTimeString());
 
@@ -396,10 +386,21 @@ class BedahService
         return $record->fresh();
     }
 
+    /**
+     * Kunci laporan operasi + teruskan pasien ke Farmasi/Kasir.
+     *
+     * Advance antrean SENGAJA di sini (bukan di completeOperation/Time Out): pasien
+     * baru diteruskan setelah laporan dikunci. Delegasi ke QueueService sebagai
+     * sumber tunggal routing + broadcast TV (FARMASI bila ada resep aktif, else KASIR).
+     */
     public function finalizeRecord(string $id): SurgeryRecord
     {
         $record   = SurgeryRecord::with('surgerySchedule')->findOrFail($id);
         $schedule = $record->surgerySchedule;
+
+        if ($record->finalized_at) {
+            throw new \Exception('Laporan operasi sudah dikunci.', 422);
+        }
 
         if ($schedule->status !== 'DONE') {
             throw new \Exception('Operasi belum selesai — tidak bisa finalize laporan.', 422);
@@ -409,10 +410,27 @@ class BedahService
             throw new \Exception('Time In dan Time Out wajib diisi sebelum finalize.', 422);
         }
 
-        // No separate is_finalized field on surgery_records — DONE on schedule marks it
-        $this->log(auth('api')->id(), 'FINALIZE_RECORD', SurgeryRecord::class, $id, 'Laporan operasi dikunci');
+        return DB::transaction(function () use ($record) {
+            $record->update(['finalized_at' => now()]);
 
-        return $record->fresh(['surgerySchedule', 'iolUsages.iolItem']);
+            $visitId = $record->visit_id;
+
+            if ($visitId) {
+                $bedahQueue = Queue::where('visit_id', $visitId)
+                    ->where('station', Queue::STATION_BEDAH)
+                    ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                    ->latest('created_at')
+                    ->first();
+
+                if ($bedahQueue) {
+                    $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH);
+                }
+            }
+
+            $this->log(auth('api')->id(), 'FINALIZE_RECORD', SurgeryRecord::class, $record->id, 'Laporan operasi dikunci + pasien diteruskan');
+
+            return $record->fresh(['surgerySchedule', 'iolUsages.iolItem']);
+        });
     }
 
     // =========================================================================
@@ -599,6 +617,7 @@ class BedahService
                 'name'        => $bhp->name,
                 'code'        => $bhp->code,
                 'unit'        => $bhp->unit,
+                'category'    => $bhp->category,
                 'quantity'    => (int) ($it->quantity ?? 1),
             ];
         }

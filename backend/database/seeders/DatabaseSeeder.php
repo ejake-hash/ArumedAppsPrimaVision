@@ -24,6 +24,10 @@ class DatabaseSeeder extends Seeder
             DoctorScheduleSeeder::class,
             TvDisplaySettingSeeder::class,
             // PatientVisitSeeder::class, // demo only — run manually: php artisan db:seed --class=PatientVisitSeeder
+            // DokterDemoSeeder::class,   // demo only — run manually: php artisan db:seed --class=DokterDemoSeeder
+            // SoapHistoryDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=SoapHistoryDemoSeeder
+            // KasirDemoSeeder::class,    // demo only — run manually: php artisan db:seed --class=KasirDemoSeeder
+            // BedahRiwayatSeeder::class, // demo only — run manually: php artisan db:seed --class=BedahRiwayatSeeder (butuh master dari BedahDemoSeeder)
         ]);
     }
 }

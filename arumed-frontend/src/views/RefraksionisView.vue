@@ -254,7 +254,7 @@ async function skipPt(p) {
   try {
     await store.lewatiAntrian(p.id)
     if (store.selectedQueue?.id === p.id) store.clearSelected()
-    toast('w', `${p.qNum} diturunkan ke akhir antrean`)
+    toast('w', `${p.qNum} diturunkan 1 antrean`)
   } catch (err) {
     toast('w', err.response?.data?.message ?? err.message ?? 'Gagal melewati pasien')
   } finally {

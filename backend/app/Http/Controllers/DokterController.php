@@ -79,6 +79,47 @@ class DokterController extends Controller
     }
 
     // =========================================================================
+    // RUJUKAN INTERNAL ANTAR-POLI
+    // =========================================================================
+
+    /** GET /dokter/kunjungan/{visitId}/rujuk-internal/targets */
+    public function rujukInternalTargets(string $visitId): JsonResponse
+    {
+        try {
+            $targets = $this->service->getRujukInternalTargets($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($targets);
+    }
+
+    /** POST /dokter/kunjungan/{visitId}/rujuk-internal */
+    public function rujukInternal(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'target_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+            'reason'             => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $result = $this->service->rujukInternal(
+                $visitId,
+                $validated['target_schedule_id'],
+                $validated['reason'] ?? null
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        $msg = $result['enqueued']
+            ? 'Pasien dirujuk & masuk antrean dokter tujuan hari ini.'
+            : 'Rujukan dibuat. Pasien daftar ulang di hari praktik dokter tujuan.';
+
+        return $this->ok($result, $msg, 201);
+    }
+
+    // =========================================================================
     // TAB 1 — OVERVIEW (readonly: triase + refraksi)
     // =========================================================================
 
@@ -510,6 +551,11 @@ class DokterController extends Controller
             'faskes_tujuan_kode' => 'required|string|max:20',
             'faskes_tujuan_nama' => 'nullable|string|max:255',
             'kode_spesialis'     => 'nullable|string|max:10',
+            'poli_rujukan'       => 'nullable|string|max:20',
+            'poli_rujukan_nama'  => 'nullable|string|max:150',
+            'tipe_rujukan'       => 'nullable|in:0,1,2',   // 0 penuh, 1 partial, 2 rujuk balik
+            'jns_pelayanan'      => 'nullable|in:1,2',      // 1 R.Inap, 2 R.Jalan
+            'tgl_rujukan'        => 'nullable|date',
             'urgency'            => 'nullable|in:ELEKTIF,SEGERA,EMERGENCY',
             'diagnosa_rujukan'   => 'required|string|max:20',
             'diagnosa_nama'      => 'nullable|string|max:255',
@@ -522,7 +568,35 @@ class DokterController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($rujukan, 'Surat rujukan dibuat', 201);
+        $msg = $rujukan->status === 'SUCCESS'
+            ? "Rujukan BPJS terbit. No: {$rujukan->no_rujukan}"
+            : 'Surat rujukan dibuat.';
+
+        return $this->ok($rujukan, $msg, 201);
+    }
+
+    /** GET /dokter/kunjungan/{visitId}/surat-kontrol — status SK BPJS visit ini */
+    public function getSuratKontrol(string $visitId): JsonResponse
+    {
+        try {
+            $letter = $this->service->getSuratKontrol($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($letter);
+    }
+
+    /** POST /dokter/kunjungan/{visitId}/surat-kontrol/submit — terbitkan ke VClaim */
+    public function submitSuratKontrol(string $visitId): JsonResponse
+    {
+        try {
+            $letter = $this->service->submitSuratKontrol($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($letter, "Surat Kontrol terbit. No: {$letter->no_surat_kontrol}");
     }
 
     // =========================================================================
@@ -601,6 +675,14 @@ class DokterController extends Controller
 
     private function error(string $message, int $status = 500): JsonResponse
     {
+        // Guard: pemanggil sering mengoper $e->getCode(), yang untuk QueryException
+        // adalah SQLSTATE (mis. 23502) — BUKAN kode HTTP valid. Status di luar
+        // rentang 100–599 di-clamp ke 500 supaya tidak melempar
+        // InvalidArgumentException yang menutupi pesan asli.
+        if ($status < 100 || $status > 599) {
+            $status = 500;
+        }
+
         return response()->json([
             'success' => false,
             'data'    => null,

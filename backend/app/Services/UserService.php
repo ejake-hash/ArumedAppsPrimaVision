@@ -13,7 +13,7 @@ class UserService
 {
     public function getAll(array $filters = []): array
     {
-        $q = User::with(['role:id,name,display_name', 'employee:id,name,profession,nip']);
+        $q = User::with(['role:id,name,display_name', 'employee:id,name,profession,nip,sip,str,nik,satusehat_ihs']);
 
         if (! empty($filters['search'])) {
             $s = $filters['search'];
@@ -37,7 +37,7 @@ class UserService
 
     public function getById(string $id): array
     {
-        $user = User::with(['role:id,name,display_name', 'employee:id,name,profession,nip'])
+        $user = User::with(['role:id,name,display_name', 'employee:id,name,profession,nip,sip,str,nik,satusehat_ihs'])
             ->findOrFail($id);
 
         return $this->format($user);
@@ -63,10 +63,77 @@ class UserService
                 'is_active'   => $data['is_active'] ?? true,
             ]);
 
+            $this->ensureEmployeeForDoctor($user, $role);
+            $this->syncEmployeeProfile($user->fresh(), $data);
+
             return $user;
         });
 
         return $this->getById($user->id);
+    }
+
+    /**
+     * Tulis NIP/SIP/STR ke data pegawai tertaut (atribut nakes, bukan akun login).
+     * Field hanya disentuh bila key-nya hadir di payload (mendukung partial update).
+     * Bila user belum punya employee TAPI ada nilai NIP/SIP/STR yang diisi, buat
+     * pegawai dan tautkan — sehingga perawat/refraksionis/penunjang juga bisa simpan
+     * profil nakes lewat Data Pengguna (dokter sudah ditangani ensureEmployeeForDoctor).
+     * Idempoten.
+     */
+    private function syncEmployeeProfile(User $user, array $data): void
+    {
+        $payload = [];
+        foreach (['nip', 'sip', 'str'] as $field) {
+            if (array_key_exists($field, $data)) {
+                $value = $data[$field];
+                $payload[$field] = ($value === '' || $value === null) ? null : $value;
+            }
+        }
+
+        if (! $payload) {
+            return;
+        }
+
+        if (! $user->employee_id) {
+            // Tak ada nilai non-null → tak perlu buat pegawai kosong.
+            if (! array_filter($payload, fn ($v) => $v !== null)) {
+                return;
+            }
+
+            $role = $user->role_id ? Role::find($user->role_id) : null;
+            $employee = Employee::create([
+                'name'       => $user->name,
+                'profession' => $role?->display_name ?? 'Nakes',
+                'is_active'  => true,
+            ]);
+            $user->update(['employee_id' => $employee->id]);
+        }
+
+        Employee::where('id', $user->employee_id)->update($payload);
+    }
+
+    /**
+     * Akun ber-role dokter WAJIB tertaut ke data Pegawai (employees) — dipakai
+     * Jadwal Dokter, RME, TTD, billing yang semuanya berbasis employee_id.
+     * Bila belum tertaut, buat Pegawai dari nama user lalu tautkan. Idempoten.
+     */
+    private function ensureEmployeeForDoctor(User $user, ?Role $role): void
+    {
+        $roleName = strtolower($role?->name ?? '');
+        if (! str_contains($roleName, 'dokter')) {
+            return; // hanya untuk role dokter (dokter / dokter umum / dokter anastesi)
+        }
+        if ($user->employee_id) {
+            return; // sudah tertaut
+        }
+
+        $employee = Employee::create([
+            'name'       => $user->name,
+            'profession' => $role->display_name ?? 'Dokter',
+            'is_active'  => true,
+        ]);
+
+        $user->update(['employee_id' => $employee->id]);
     }
 
     public function update(string $id, array $data): array
@@ -88,12 +155,33 @@ class UserService
                 $payload['employee_id'] = null;
             }
 
+            // password: hanya diubah bila diisi. Field kosong = biarkan password lama
+            // (form Data Pengguna: "kosongkan jika tidak diubah"). Auto-hash via cast.
+            if (! empty($data['password'])) {
+                $payload['password'] = $data['password'];
+            }
+
             // pin: key hadir = ubah. '' / null = hapus PIN, angka = set PIN.
             if (array_key_exists('pin', $data)) {
                 $payload['pin'] = ($data['pin'] === '' || $data['pin'] === null) ? null : $data['pin'];
             }
 
             $user->update($payload);
+
+            // Akun dokter tanpa Pegawai → auto-buat & tautkan (sebab utama Eza
+            // tak muncul di Jadwal Dokter). Cek role terkini (baru atau lama).
+            $role = $user->role_id ? Role::find($user->role_id) : null;
+            $this->ensureEmployeeForDoctor($user, $role);
+
+            // Sinkronkan nama ke employee tertaut: employees.name adalah nama
+            // medis otoritatif yang dipakai Jadwal Dokter, RME, TTD, billing.
+            // Tanpa ini, ganti nama di Data Pengguna tidak terlihat di sana.
+            if (! empty($data['name']) && $user->employee_id) {
+                Employee::where('id', $user->employee_id)->update(['name' => $data['name']]);
+            }
+
+            // NIP/SIP/STR nakes → tulis ke pegawai tertaut (partial, hanya key yang hadir).
+            $this->syncEmployeeProfile($user->fresh(), $data);
         });
 
         return $this->getById($id);
@@ -160,7 +248,21 @@ class UserService
     // ─── CSV: Template / Export / Import ──────────────────────────────────────
 
     /** Kolom CSV data pengguna. Password sengaja tidak ada (auto-generate saat import). */
-    private const CSV_COLUMNS = ['name', 'username', 'email', 'role', 'is_active', 'nip'];
+    private const CSV_COLUMNS = ['name', 'username', 'email', 'role', 'is_active', 'nip', 'sip', 'str'];
+
+    /** Role nakes klinis — hanya untuk role ini sip/str ditulis & employee dibuat dari NIP baru. */
+    private const NAKES_ROLE_KEYWORDS = ['dokter', 'perawat', 'refraksionis', 'penunjang'];
+
+    private function isNakesRole(string $roleName): bool
+    {
+        $name = strtolower($roleName);
+        foreach (self::NAKES_ROLE_KEYWORDS as $kw) {
+            if (str_contains($name, $kw)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * Template CSV kosong + baris petunjuk (diawali '#', di-skip importer).
@@ -190,17 +292,22 @@ class UserService
             'Kolom WAJIB: name, username, email, role. Username & email harus unik.',
             'Kolom "role" diisi KODE role (bukan nama tampilan). Pilihan: ' . implode(' | ', $roleCodes) . '.',
             'Kolom "is_active": 1 = aktif, 0 = nonaktif (kosong dianggap aktif).',
-            'Kolom "nip" opsional: NIP pegawai untuk menautkan akun ke data pegawai (kosongkan jika tidak ada).',
+            'Kolom "nip" opsional: jika cocok dengan NIP pegawai yang sudah ada, akun ditautkan ke pegawai itu.',
+            '  Untuk role NAKES (dokter/perawat/refraksionis/penunjang), NIP baru otomatis membuat data pegawai.',
+            '  Untuk role non-nakes (admisi/kasir/dll), NIP yang tidak dikenal akan ditolak (baris gagal).',
+            'Kolom "sip" & "str" opsional: No. Surat Izin Praktik & Surat Tanda Registrasi — HANYA untuk role nakes.',
+            '  Mengisi sip/str pada role non-nakes akan diabaikan (tidak disimpan).',
             'Password TIDAK diisi di sini — sistem membuat password acak per user dan menampilkannya setelah import.',
             'Baris dengan username/email yang sudah terdaftar akan dilewati (dilaporkan di ringkasan).',
-            'Contoh baris: Budi Santoso,budi,budi@klinik.com,admisi,1,',
+            'Contoh non-nakes : Rina Wulandari,rina,rina@klinik.com,admisi,1,,,',
+            'Contoh nakes     : Siti Rahayu Amd.Kep,siti,siti@klinik.com,perawat,1,PR-001,SIP-123,STR-456',
         ];
     }
 
     /** Export seluruh user ke CSV (password tidak diekspor). */
     public function exportCsv(): string
     {
-        $users = User::with(['role:id,name', 'employee:id,nip'])->orderBy('name')->get();
+        $users = User::with(['role:id,name', 'employee:id,nip,sip,str'])->orderBy('name')->get();
 
         $output = fopen('php://temp', 'r+');
         fputcsv($output, self::CSV_COLUMNS, ',', '"', '\\');
@@ -213,6 +320,8 @@ class UserService
                 $u->role?->name ?? '',
                 $u->is_active ? 1 : 0,
                 $u->employee?->nip ?? '',
+                $u->employee?->sip ?? '',
+                $u->employee?->str ?? '',
             ], ',', '"', '\\');
         }
 
@@ -263,6 +372,8 @@ class UserService
             $email    = $get('email');
             $roleName = $get('role');
             $nip      = $get('nip');
+            $sip      = $get('sip');
+            $str      = $get('str');
             $isActive = $get('is_active');
 
             if ($name === '' || $username === '' || $email === '' || $roleName === '') {
@@ -281,21 +392,46 @@ class UserService
                 continue;
             }
 
+            $isNakes = $this->isNakesRole($role->name);
+
+            // Resolusi employee dari NIP. Cocok dengan pegawai ada → tautkan.
+            // NIP baru: untuk nakes → buat pegawai; non-nakes → tolak (jaga niat lama).
             $employeeId = null;
+            $createEmployee = false;
             if ($nip !== '') {
                 $emp = Employee::where('nip', $nip)->first();
-                if (! $emp) {
-                    $errors[] = ['row' => $rowNo, 'username' => $username, 'reason' => "NIP \"{$nip}\" tidak ditemukan"];
+                if ($emp) {
+                    $employeeId = $emp->id;
+                } elseif ($isNakes) {
+                    $createEmployee = true;
+                } else {
+                    $errors[] = ['row' => $rowNo, 'username' => $username, 'reason' => "NIP \"{$nip}\" tidak ditemukan (role non-nakes hanya boleh menautkan pegawai yang sudah ada)"];
                     continue;
                 }
-                $employeeId = $emp->id;
             }
+
+            // sip/str hanya relevan untuk nakes; pada non-nakes diabaikan diam-diam.
+            $sipVal = ($isNakes && $sip !== '') ? $sip : null;
+            $strVal = ($isNakes && $str !== '') ? $str : null;
 
             $password = Str::random(10);
 
             try {
-                DB::transaction(function () use ($name, $username, $email, $role, $employeeId, $isActive, $password) {
-                    User::create([
+                DB::transaction(function () use (
+                    $name, $username, $email, $role, $isActive, $password,
+                    $employeeId, $createEmployee, $isNakes, $nip, $sipVal, $strVal
+                ) {
+                    // Buat pegawai baru bila role nakes & NIP belum ada.
+                    if ($createEmployee) {
+                        $employeeId = Employee::create([
+                            'name'       => $name,
+                            'profession' => $role->display_name ?? 'Nakes',
+                            'nip'        => $nip,
+                            'is_active'  => true,
+                        ])->id;
+                    }
+
+                    $user = User::create([
                         'name'        => $name,
                         'username'    => $username,
                         'email'       => $email,
@@ -304,6 +440,18 @@ class UserService
                         'password'    => $password,   // auto-hash via cast
                         'is_active'   => $isActive === '' ? true : (bool) (int) $isActive,
                     ]);
+
+                    // Role dokter tanpa pegawai → auto-buat (jalur lama).
+                    $this->ensureEmployeeForDoctor($user->fresh(), $role);
+
+                    // Tulis sip/str ke pegawai tertaut (juga buat pegawai bila nakes
+                    // mengisi sip/str tanpa NIP). Hanya nilai non-null yang ditulis.
+                    if ($isNakes) {
+                        $this->syncEmployeeProfile($user->fresh(), array_filter(
+                            ['sip' => $sipVal, 'str' => $strVal],
+                            fn ($v) => $v !== null
+                        ));
+                    }
                 });
 
                 $created[] = ['name' => $name, 'username' => $username, 'email' => $email, 'password' => $password];
@@ -345,10 +493,14 @@ class UserService
                 'display_name' => $u->role->display_name,
             ] : null,
             'employee'       => $u->employee ? [
-                'id'         => $u->employee->id,
-                'name'       => $u->employee->name,
-                'nip'        => $u->employee->nip,
-                'profession' => $u->employee->profession,
+                'id'            => $u->employee->id,
+                'name'          => $u->employee->name,
+                'nip'           => $u->employee->nip,
+                'sip'           => $u->employee->sip,
+                'str'           => $u->employee->str,
+                'profession'    => $u->employee->profession,
+                'nik'           => $u->employee->nik,
+                'satusehat_ihs' => $u->employee->satusehat_ihs,
             ] : null,
             'created_at'     => $u->created_at,
             'updated_at'     => $u->updated_at,

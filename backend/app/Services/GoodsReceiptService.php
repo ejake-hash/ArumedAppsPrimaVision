@@ -264,9 +264,10 @@ class GoodsReceiptService
             'notes'        => $row['notes'] ?? null,
         ]);
 
-        // Apply ke stok per (type, item, batch) — upsert qty_on_hand
+        // Apply ke stok GUDANG (INVENTORI) per (type, item, batch) — upsert qty_on_hand
         $stock = InventoryStock::firstOrNew([
             'item_type' => $item->item_type,
+            'location'  => InventoryStock::LOC_INVENTORI,
             'item_id'   => $item->item_id,
             'batch_no'  => $item->batch_no,
         ]);
@@ -285,6 +286,7 @@ class GoodsReceiptService
     {
         $stock = InventoryStock::where([
             'item_type' => $it->item_type,
+            'location'  => InventoryStock::LOC_INVENTORI,
             'item_id'   => $it->item_id,
             'batch_no'  => $it->batch_no,
         ])->first();

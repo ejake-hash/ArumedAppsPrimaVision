@@ -240,6 +240,26 @@ class TarifPaketController extends Controller
         return $this->ok($result, $msg);
     }
 
+    /** Template CSV komposisi SATU paket (header notes + item paket ini terisi). */
+    public function templatePaketCsvForPackage(string $id): Response
+    {
+        $csv = $this->service->templatePaketCsvForPackage($id);
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="template-paket-' . $id . '.csv"',
+        ]);
+    }
+
+    /** Export komposisi SATU paket apa adanya. */
+    public function exportPaketCsvForPackage(string $id): Response
+    {
+        $csv = $this->service->exportPaketCsvForPackage($id);
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="paket-' . $id . '-' . now()->format('Ymd') . '.csv"',
+        ]);
+    }
+
     // =========================================================================
     // PAKET BEDAH — TARIFFS (harga jual per penjamin)
     // =========================================================================

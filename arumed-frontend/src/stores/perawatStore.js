@@ -370,7 +370,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     stopPolling()
   }
 
-  function startPolling(intervalMs = 30_000) {
+  function startPolling(intervalMs = 8_000) {
     stopPolling()
     _pollInterval = setInterval(fetchAntrian, intervalMs)
   }

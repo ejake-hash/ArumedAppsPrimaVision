@@ -19,6 +19,7 @@ class Medication extends Model
 
     protected $fillable = [
         'code',
+        'kfa_code',
         'name',
         'generic_name',
         'composition',

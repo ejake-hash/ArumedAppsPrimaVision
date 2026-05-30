@@ -25,6 +25,7 @@ class SurgeryRecord extends Model
         'complication_detail',
         'post_op_instructions',
         'followup_date',
+        'finalized_at',
     ];
 
     protected $casts = [
@@ -32,6 +33,7 @@ class SurgeryRecord extends Model
         'time_out'         => 'datetime',
         'has_complication' => 'boolean',
         'followup_date'    => 'date',
+        'finalized_at'     => 'datetime',
     ];
 
     public function surgerySchedule(): BelongsTo
