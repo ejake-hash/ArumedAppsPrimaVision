@@ -1,0 +1,61 @@
+                                               Table "public.biodata"
+         Column          |            Type             | Collation | Nullable |               Default               
+-------------------------+-----------------------------+-----------+----------+-------------------------------------
+ id                      | integer                     |           | not null | nextval('biodata_id_seq'::regclass)
+ uuid                    | character varying(50)       |           | not null | 
+ pengguna_id             | integer                     |           | not null | 
+ pengguna_uuid           | character varying(50)       |           | not null | 
+ nama_pengguna           | character varying(70)       |           | not null | '-'::character varying
+ username_pengguna       | character varying(50)       |           | not null | '-'::character varying
+ posisi_pengguna         | smallint                    |           | not null | 0
+ email_pengguna          | character varying(100)      |           |          | '-'::character varying
+ sebagai_pengguna        | character varying(50)       |           | not null | '-'::character varying
+ tempat_lahir            | character varying(50)       |           |          | '-'::character varying
+ tanggal_lahir           | date                        |           |          | '1000-01-01'::date
+ jenis_kelamin           | character varying(50)       |           |          | '-'::character varying
+ agama                   | character varying(50)       |           |          | '-'::character varying
+ status_pernikahan       | character varying(50)       |           |          | '-'::character varying
+ pendidikan_terakhir     | character varying(50)       |           |          | '-'::character varying
+ golongan_darah          | character varying(50)       |           |          | '-'::character varying
+ no_handphone            | character varying(30)       |           |          | '-'::character varying
+ ktp                     | character varying(50)       |           |          | '-'::character varying
+ sima                    | character varying(50)       |           |          | '-'::character varying
+ simc                    | character varying(50)       |           |          | '-'::character varying
+ passpor                 | character varying(50)       |           |          | '-'::character varying
+ npwp                    | character varying(50)       |           |          | '-'::character varying
+ alamat                  | character varying(100)      |           |          | '-'::character varying
+ provinsi_id             | integer                     |           |          | 0
+ nama_provinsi           | character varying(60)       |           |          | '-'::character varying
+ kab_kota_id             | integer                     |           |          | 0
+ nama_kab_kota           | character varying(60)       |           |          | '-'::character varying
+ kecamatan_id            | integer                     |           |          | 0
+ nama_kecamatan          | character varying(60)       |           |          | '-'::character varying
+ kelurahan_id            | integer                     |           |          | 0
+ nama_kelurahan          | character varying(60)       |           |          | '-'::character varying
+ kodepos                 | character varying(20)       |           |          | '-'::character varying
+ rt_rw                   | character varying(20)       |           |          | '-'::character varying
+ sd                      | character varying(100)      |           |          | '-'::character varying
+ smp                     | character varying(100)      |           |          | '-'::character varying
+ sma                     | character varying(100)      |           |          | '-'::character varying
+ sarjana                 | character varying(100)      |           |          | '-'::character varying
+ magister                | character varying(100)      |           |          | '-'::character varying
+ doktoral                | character varying(100)      |           |          | '-'::character varying
+ prefesi                 | character varying(100)      |           |          | '-'::character varying
+ darurat_nama            | character varying(70)       |           |          | '-'::character varying
+ darurat_jenis_kelamin   | character varying(70)       |           |          | '-'::character varying
+ darurat_no_handphone    | character varying(25)       |           |          | '-'::character varying
+ darurat_hubungan        | character varying(50)       |           |          | '-'::character varying
+ bank_nama               | character varying(50)       |           |          | '-'::character varying
+ bank_an                 | character varying(50)       |           |          | '-'::character varying
+ bank_norek              | character varying(50)       |           |          | '-'::character varying
+ mulai_bekerja           | date                        |           |          | '1000-01-01'::date
+ bpjs_ketenagakerjaan    | character varying(50)       |           |          | '-'::character varying
+ no_bpjs_ketenagakerjaan | character varying(50)       |           |          | '-'::character varying
+ status                  | character varying(10)       |           | not null | 'active'::character varying
+ delete_soft             | smallint                    |           | not null | 1
+ created_at              | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+ ttd                     | text                        |           |          | 
+Indexes:
+    "biodata_pk" PRIMARY KEY, btree (id, uuid)
+    "index_biodata" btree (nama_pengguna, username_pengguna, delete_soft, pengguna_id, pengguna_uuid)
+

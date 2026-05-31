@@ -67,6 +67,7 @@ function transformQueueItem(q) {
     komplikasi:     false,
     komplikasiTipe: '',
     komplikasiNote: '',
+    postOpDisposition: 'PULANG',   // PULANG → Kasir | RAWAT_INAP → Menunggu Kamar
     instruksi:      Array(6).fill(false),
     obatPasca:      [],
     resepSent:      false,
@@ -79,7 +80,33 @@ async function loadQueue() {
   try {
     const { data } = await bedahApi.antrian()
     const rows = data.data ?? []
-    patients.value = rows.map(transformQueueItem)
+    // Pertahankan working-state pasien yang sedang dibuka (selP): polling tidak
+    // boleh me-reset checklist/tim/BHP/IOL/recordId/timIn ke default. Untuk baris
+    // pasien terpilih, pakai kembali objek selP yang sudah ada (re-link), hanya
+    // sinkronkan status & jadwal dari server; baris lain di-transform normal.
+    const selId = selP.value?.id
+    const mapped = rows.map((q) => {
+      if (selId && q.id === selId && selP.value) {
+        const s = selP.value
+        // Sinkron field yg memang authoritative dari server (tanpa menimpa input lokal).
+        s.queueStatus = q.status
+        if (s.status === 'MENUNGGU') {
+          s.status = q.status === 'COMPLETED' ? 'SELESAI'
+                   : q.status === 'IN_PROGRESS' ? 'BERLANGSUNG'
+                   : 'MENUNGGU'
+        }
+        return s
+      }
+      return transformQueueItem(q)
+    })
+    // Pertahankan urutan tampilan lokal (mis. hasil skipPt) lintas-poll: baris yg
+    // sudah tampil ikut urutan lama, baris baru dari server ditambahkan di akhir.
+    const prevOrder = patients.value.map((p) => p.id)
+    const byId = new Map(mapped.map((p) => [p.id, p]))
+    const ordered = []
+    for (const id of prevOrder) { if (byId.has(id)) { ordered.push(byId.get(id)); byId.delete(id) } }
+    for (const p of byId.values()) ordered.push(p)
+    patients.value = ordered
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal memuat antrian bedah')
   } finally {
@@ -375,6 +402,7 @@ async function pickPt(p) {
         if (!s.catatanIntra) s.catatanIntra = notes.catatanIntra
         s.komplikasi = !!rec.has_complication
         if (rec.complication_detail && !s.komplikasiNote) s.komplikasiNote = rec.complication_detail
+        if (rec.post_op_disposition) s.postOpDisposition = rec.post_op_disposition
       }
     } catch { /* record belum ada — abaikan */ }
   }
@@ -468,6 +496,7 @@ function buildRecordPayload() {
     complication_detail:  p.komplikasi ? (p.komplikasiNote || p.komplikasiTipe || null) : null,
     post_op_instructions: null,
     followup_date:        null,
+    post_op_disposition:  p.postOpDisposition || 'PULANG',
   }
 }
 
@@ -1270,6 +1299,16 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </div>
                   <span v-else class="bd-no-komplikasi">Tidak ada komplikasi</span>
                 </div>
+                <div class="bd-iol-field" style="margin-top:12px">
+                  <label class="bd-label">Disposisi Pasca-Operasi</label>
+                  <select class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
+                    <option value="PULANG">Pulang (lanjut ke Kasir)</option>
+                    <option value="RAWAT_INAP">Rawat Inap (ke papan Menunggu Kamar)</option>
+                  </select>
+                  <span v-if="selP.postOpDisposition === 'RAWAT_INAP'" class="bd-disp-hint">
+                    Pasien akan masuk papan "Menunggu Kamar" Rawat Inap setelah laporan dikunci. Petugas ranap memilih bed.
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -1757,6 +1796,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-dx-chip { padding: 8px 12px; background: var(--gl); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--td); display: inline-block; }
 .bd-dx-chip-empty { background: #f3f4f6; color: #9ca3af; font-weight: 500; font-style: italic; }
 .bd-no-komplikasi { font-size: 12px; color: var(--st); background: var(--sb); padding: 6px 12px; border-radius: 6px; display: inline-block; }
+.bd-disp-hint { display: block; margin-top: 6px; font-size: 12px; color: #1763d4; }
 .bd-komplikasi { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .bd-laporan-actions { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
 .bd-btn-print { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--bs); border: 1px solid var(--gb); color: var(--tm); border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; }

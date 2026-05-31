@@ -29,6 +29,11 @@ class BpjsClaim extends Model
         'bpjs_status',
         'bpjs_response',
         'submitted_at',
+        'resubmission_count',
+        'rejection_reason',
+        'rejected_at',
+        'assigned_to_id',
+        'assigned_at',
     ];
 
     protected $casts = [
@@ -38,11 +43,19 @@ class BpjsClaim extends Model
         'bpjs_response'      => 'array',
         'inacbgs_tarif'      => 'decimal:2',
         'submitted_at'       => 'datetime',
+        'resubmission_count' => 'integer',
+        'rejected_at'        => 'datetime',
+        'assigned_at'        => 'datetime',
     ];
 
     public function visit(): BelongsTo
     {
         return $this->belongsTo(Visit::class);
+    }
+
+    public function assignedTo(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'assigned_to_id');
     }
 
     public function auditLogs(): HasMany

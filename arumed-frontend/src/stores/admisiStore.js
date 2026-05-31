@@ -5,7 +5,7 @@ import { admisiApi, masterApi, perawatApi } from '@/services/api'
 export const useAdmisiStore = defineStore('admisi', () => {
 
   // ─── Dashboard / Stats ───────────────────────────────────────────────────────
-  const stats = ref({ total: 0, bpjs: 0, asuransi: 0, bedah: 0, sep: 0, cancel: 0, waiting: 0, triage: 0, doctor: 0, done: 0 })
+  const stats = ref({ total: 0, bpjs: 0, asuransi: 0, bedah: 0, ranap: 0, sep: 0, cancel: 0, waiting: 0, triage: 0, doctor: 0, done: 0 })
   const bpjsStatus = ref([])
   const dashboardLoading = ref(false)
   const dashboardError = ref(null)
@@ -24,7 +24,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
   const visitsMeta = ref({ total: 0, current_page: 1, last_page: 1 })
   const visitsLoading = ref(false)
   const visitsError = ref(null)
-  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '', unfinished: false })
+  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '', unfinished: false, careType: 'RAJAL' })
   const visitsPerPage = ref(15)
 
   // ─── Visit Detail Modal ───────────────────────────────────────────────────────
@@ -71,6 +71,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
         umum:     sc.umum_count      ?? 0,
         asuransi: sc.asuransi_count  ?? 0,
         bedah:    sc.bedah_count     ?? 0,
+        ranap:    sc.ranap_count     ?? 0,
         sep:      sc.sep_count       ?? 0,
         cancel:   sc.cancel_count    ?? 0,
         waiting:  sc.antrian_aktif   ?? 0,
@@ -147,6 +148,10 @@ export const useAdmisiStore = defineStore('admisi', () => {
       }
       if (visitsFilter.value.search) params.search = visitsFilter.value.search
       if (visitsFilter.value.guarantor) params.guarantor_type = visitsFilter.value.guarantor
+      // Pisah Rawat Jalan (RAJAL/IGD) vs Rawat Inap (RANAP). 'SEMUA' → tak dikirim.
+      if (visitsFilter.value.careType && visitsFilter.value.careType !== 'SEMUA') {
+        params.care_type = visitsFilter.value.careType
+      }
 
       const { data } = await admisiApi.kunjungan(params)
       const payload = data.data

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Icd10Code;
+use App\Models\Icd9Code;
 use App\Services\KlaimService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,14 +23,75 @@ class KlaimController extends Controller
     public function index(Request $request): JsonResponse
     {
         return $this->ok($this->service->getClaimList(
-            $request->only(['status', 'search', 'tanggal_from', 'tanggal_to', 'per_page'])
+            $request->only(['status', 'search', 'tanggal_from', 'tanggal_to', 'jenis_pelayanan', 'per_page'])
         ));
     }
 
-    /** GET /klaim/{id} */
+    /** PUT /klaim/{id}/assign — tandai/lepas penanggung jawab (body: assigned_to_id|null) */
+    public function assign(Request $request, string $id): JsonResponse
+    {
+        $request->validate([
+            'assigned_to_id' => 'nullable|uuid|exists:users,id',
+        ]);
+
+        try {
+            $claim = $this->service->assignClaim($id, $request->input('assigned_to_id'));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($claim, $request->input('assigned_to_id') ? 'Klaim ditandai dikerjakan' : 'Penanda dilepas');
+    }
+
+    /** GET /klaim/{id} — diperkaya label ICD + total billing untuk KlaimView. */
     public function show(string $id): JsonResponse
     {
-        return $this->ok($this->service->getClaimById($id));
+        $claim = $this->service->getClaimById($id);
+
+        // Lookup label ICD (DB klaim hanya simpan kode). Cache per-request.
+        $icd10 = Icd10Code::pluck('description', 'code');
+        $icd10Id = Icd10Code::pluck('indonesian_description', 'code');
+        $icd9  = Icd9Code::pluck('description', 'code');
+        $icd9Id = Icd9Code::pluck('indonesian_description', 'code');
+
+        // Collection::get() aman bila kode tak ada (hindari "Undefined array key").
+        $dx10 = fn ($code) => $code
+            ? ['kode' => $code, 'label' => ($icd10Id->get($code) ?: $icd10->get($code)) ?? $code]
+            : null;
+        $dx9 = fn ($code) => $code
+            ? ['kode' => $code, 'label' => ($icd9Id->get($code) ?: $icd9->get($code)) ?? $code]
+            : null;
+
+        $data = $claim->toArray();
+        $data['diagnosis_utama_obj'] = $dx10($claim->diagnosis_utama);
+        $data['diagnosis_sekunder_obj'] = collect($claim->diagnosis_sekunder ?? [])
+            ->map(fn ($c) => $dx10(is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c))
+            ->filter()->values();
+        $data['tindakan_obj'] = collect($claim->procedure_codes ?? [])
+            ->map(fn ($c) => $dx9(is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c))
+            ->filter()->values();
+        $data['total_billing'] = $claim->visit?->billingInvoice?->total ?? 0;
+        $data['jenis_pelayanan'] = $claim->visit?->jenis_pelayanan ?? 'RAJAL';
+        $data['assigned_to'] = $claim->assignedTo ? [
+            'id'   => $claim->assignedTo->id,
+            'name' => $claim->assignedTo->name,
+        ] : null;
+
+        // Dokumen pendukung = PatientDocument pada visit klaim (FINAL diutamakan).
+        $data['dokumen_pendukung'] = \App\Models\PatientDocument::with('documentType')
+            ->where('visit_id', $claim->visit_id)
+            ->orderByDesc('finalized_at')
+            ->get()
+            ->map(fn ($d) => [
+                'id'       => $d->id,
+                'nama'     => $d->documentType?->name ?? $d->template_code ?? 'Dokumen',
+                'kode'     => $d->documentType?->code ?? $d->template_code,
+                'nomor'    => $d->document_number,
+                'status'   => $d->status,
+                'tanggal'  => $d->finalized_at?->toDateString() ?? $d->created_at?->toDateString(),
+            ]);
+
+        return $this->ok($data);
     }
 
     // =========================================================================
@@ -113,7 +176,7 @@ class KlaimController extends Controller
         return $this->ok($claim, 'Klaim terverifikasi. Siap disubmit.');
     }
 
-    /** PUT /klaim/{id}/reject */
+    /** PUT /klaim/{id}/reject — dikembalikan verifikator internal (→ DIKEMBALIKAN) */
     public function setReject(Request $request, string $id): JsonResponse
     {
         $request->validate([
@@ -126,7 +189,77 @@ class KlaimController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($claim, 'Klaim ditolak');
+        return $this->ok($claim, 'Klaim dikembalikan untuk perbaikan');
+    }
+
+    /** POST /klaim/{id}/resubmit — ajukan ulang klaim yang dikembalikan/ditolak (→ DRAFT) */
+    public function resubmitKlaim(string $id): JsonResponse
+    {
+        try {
+            $claim = $this->service->resubmitClaim($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($claim, 'Klaim diajukan ulang. Perbaiki data lalu jalankan grouping → LUPIS → verifikasi.');
+    }
+
+    // =========================================================================
+    // KODING — edit diagnosis/tindakan klaim + pencarian ICD
+    // =========================================================================
+
+    /**
+     * GET /klaim/icd-search?type=icd10|icd9&q=...
+     * Pencarian ICD untuk modal koding klaim (auth saja, tanpa permission master).
+     */
+    public function icdSearch(Request $request): JsonResponse
+    {
+        $type = $request->query('type', 'icd10');
+        $q    = trim((string) $request->query('q', ''));
+
+        if (mb_strlen($q) < 2) {
+            return $this->ok([]); // hindari query terlalu lebar
+        }
+
+        $model = $type === 'icd9' ? Icd9Code::query() : Icd10Code::query();
+        $rows  = $model
+            ->where(fn ($w) => $w
+                ->where('code', 'ilike', "%{$q}%")
+                ->orWhere('description', 'ilike', "%{$q}%")
+                ->orWhere('indonesian_description', 'ilike', "%{$q}%"))
+            ->orderByRaw("CASE WHEN code ILIKE ? THEN 0 ELSE 1 END", ["{$q}%"]) // prefix dulu
+            ->limit(25)
+            ->get(['code', 'description', 'indonesian_description'])
+            ->map(fn ($r) => [
+                'kode'  => $r->code,
+                'label' => $r->indonesian_description ?: $r->description,
+            ]);
+
+        return $this->ok($rows);
+    }
+
+    /**
+     * PUT /klaim/{id}/diagnosis
+     * Koreksi koding klaim (diagnosis utama/sekunder + tindakan) oleh verifikator/koder.
+     * Tidak mengubah rekam medis Dokter — hanya kolom klaim. Mereset grouping.
+     */
+    public function updateDiagnosis(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'diagnosis_utama'              => 'required|string|max:10',
+            'diagnosis_sekunder'          => 'array',
+            'diagnosis_sekunder.*'        => 'string|max:10',
+            'procedure_codes'             => 'array',
+            'procedure_codes.*'           => 'string|max:10',
+        ]);
+
+        try {
+            $claim = $this->service->updateClaimCoding($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($claim, 'Koding klaim diperbarui. Jalankan ulang grouping INA-CBGs.');
     }
 
     // =========================================================================

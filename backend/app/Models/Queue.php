@@ -24,7 +24,12 @@ class Queue extends Model
     public const STATION_BEDAH        = 'BEDAH';
     public const STATION_KASIR        = 'KASIR';
     public const STATION_FARMASI      = 'FARMASI';
+    // Rawat Inap: station long-lived (1 baris bertahan berhari-hari = kartu pasien
+    // di papan room). BUKAN antrean panggil → di-EXCLUDE dari Antrean TV (lihat STATIONS).
+    public const STATION_RANAP        = 'RANAP';
 
+    // Station yang muncul di Antrean TV / alur antrean panggil (FIFO harian).
+    // RANAP sengaja TIDAK di sini (bukan antrean panggil).
     public const STATIONS = [
         self::STATION_ADMISI,
         self::STATION_TRIASE,
@@ -34,6 +39,20 @@ class Queue extends Model
         self::STATION_BEDAH,
         self::STATION_KASIR,
         self::STATION_FARMASI,
+    ];
+
+    // Semua station termasuk yang long-lived (RANAP). Dipakai untuk validasi
+    // station yang sah, TANPA memasukkan RANAP ke papan TV.
+    public const ALL_STATIONS = [
+        self::STATION_ADMISI,
+        self::STATION_TRIASE,
+        self::STATION_REFRAKSIONIS,
+        self::STATION_DOKTER,
+        self::STATION_PENUNJANG,
+        self::STATION_BEDAH,
+        self::STATION_KASIR,
+        self::STATION_FARMASI,
+        self::STATION_RANAP,
     ];
 
     // Prefix mapping (queue_number = prefix + sequence).
@@ -48,6 +67,7 @@ class Queue extends Model
         self::STATION_BEDAH        => 'B',
         self::STATION_KASIR        => 'K',
         self::STATION_FARMASI      => 'F',
+        self::STATION_RANAP        => 'RI',
     ];
 
     // Stasiun yang berbagi prefix & sequence (paralel).

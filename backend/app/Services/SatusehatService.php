@@ -898,8 +898,25 @@ class SatusehatService
         $client  = $this->client();
         $orgId   = $client->organizationId();
         $locId   = $client->locationId();
-        $start   = $this->toWibIso($visit->visit_date ?? $visit->created_at);
-        $end     = $this->toWibIso($visit->satusehat_synced_at ?? now());
+
+        // Class + period conditional by jenis pelayanan:
+        //   RANAP → IMP (inpatient), period.start=admission_at, end=discharge_at??now()
+        //   IGD   → EMER (emergency)
+        //   else  → AMB (ambulatory) — perilaku lama rawat jalan
+        $jenis = $visit->jenis_pelayanan ?? 'RAJAL';
+        [$classCode, $classDisplay] = match ($jenis) {
+            'RANAP' => ['IMP', 'inpatient encounter'],
+            'IGD'   => ['EMER', 'emergency'],
+            default => ['AMB', 'ambulatory'],
+        };
+
+        if ($jenis === 'RANAP') {
+            $start = $this->toWibIso($visit->admission_at ?? $visit->visit_date ?? $visit->created_at);
+            $end   = $this->toWibIso($visit->discharge_at ?? now());
+        } else {
+            $start = $this->toWibIso($visit->visit_date ?? $visit->created_at);
+            $end   = $this->toWibIso($visit->satusehat_synced_at ?? now());
+        }
 
         $payload = [
             'resourceType' => 'Encounter',
@@ -911,8 +928,8 @@ class SatusehatService
             'status'       => 'finished',
             'class'        => [
                 'system'  => 'http://terminology.hl7.org/CodeSystem/v3-ActCode',
-                'code'    => 'AMB',
-                'display' => 'ambulatory',
+                'code'    => $classCode,
+                'display' => $classDisplay,
             ],
             'subject' => [
                 'reference' => "Patient/{$patientIhs}",

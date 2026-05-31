@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useDokterStore } from '@/stores/dokterStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
@@ -383,6 +383,10 @@ function resetFormState() {
   customPenunjang.value = { name: '', category: '' }
   selectedHasil.value = null
   showHasilModal.value = false
+  // Batalkan autosave tertunda dari pasien sebelumnya agar tidak fire dengan
+  // visitId pasien baru (saveTindakan/saveResep membaca selP saat timer jalan).
+  clearTimeout(_saveTindakanTimer)
+  clearTimeout(_saveResepTimer)
 }
 
 function pickPt(p) {
@@ -854,6 +858,7 @@ function addRx() {
 function removeRx(idx) { rxList.value.splice(idx, 1); scheduleSaveResep() }
 
 // ── Tab 3: muat data tersimpan + autosave (replace) ke DB ───────────────────
+let _loadingResep = false   // true saat loadTindakanResep menulis kasirNote (suppress autosave)
 async function loadTindakanResep() {
   const visitId = selP.value?.visitId
   if (!visitId) { tindakanList.value = []; rxList.value = []; return }
@@ -872,7 +877,10 @@ async function loadTindakanResep() {
     const { data } = await dokterApi.indexResep(visitId)
     const list = data.data ?? []
     const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
+    // Set kasirNote dari hasil load TANPA memicu autosave (watcher di-suppress).
+    _loadingResep = true
     kasirNote.value = presc?.notes ?? ''
+    nextTick(() => { _loadingResep = false })
     rxList.value = (presc?.items ?? []).map((it) => ({
       medication_id: it.medication_id,
       name: it.medication?.name ?? '—',
@@ -926,7 +934,8 @@ async function saveResep() {
 }
 
 // Autosave kasirNote ke prescriptions.notes (ikut payload saveResep).
-watch(kasirNote, () => { scheduleSaveResep() })
+// Di-skip saat perubahan berasal dari load (prefill), bukan ketikan dokter.
+watch(kasirNote, () => { if (!_loadingResep) scheduleSaveResep() })
 
 // Tombol "Simpan & Kirim ke Kasir": flush autosave kedua endpoint lalu lock Tab 3.
 // Data fisik baru masuk ke station Kasir saat doFinalize() menjalankan
@@ -952,7 +961,11 @@ async function konfirmKirimKasir() {
 // ── TAB 4: SOAP ─────────────────────────────────────────────────────────────
 
 const soap = ref({ S: '', O: '', A: '', P: '' })
-function resetSoap() { soap.value = { S: '', O: '', A: '', P: '' } }
+function resetSoap() {
+  soap.value = { S: '', O: '', A: '', P: '' }
+  // Kembalikan S/O/P ke mode auto untuk pasien berikutnya.
+  soapDirty.S = false; soapDirty.O = false; soapDirty.P = false
+}
 
 // Hanya tampilkan item yang punya nilai (bukan null / '—' / string kosong).
 function hasVal(v) { return v != null && v !== '—' && v !== '' }
@@ -1000,12 +1013,12 @@ const objectiveText = computed(() => {
   return lines.join('\n')
 })
 
-// Sinkron live: O mengikuti perubahan pemeriksaan (termasuk slitlamp) secara otomatis.
-watch(objectiveText, (v) => { soap.value.O = v })
-function autoO() { soap.value.O = objectiveText.value }
-
-// Subjektif (S) terisi otomatis dari Anamnese (Tab Pemeriksaan); tetap bisa diedit/dihapus.
-watch(() => exam.value.anamnese, (v) => { soap.value.S = v })
+// S/O/P terisi & ikut auto-update dari sumbernya (anamnese / pemeriksaan / e-resep)
+// SELAMA dokter belum mengetik manual di field tsb. Begitu disentuh manual, field
+// jadi "milik dokter" (dirty) dan auto-sync berhenti agar editannya tidak hilang.
+// Tombol "sync ulang" per field mengembalikan ke mode otomatis.
+const soapDirty = reactive({ S: false, O: false, P: false })
+function markSoapDirty(field) { soapDirty[field] = true }
 
 // Planning (P) disusun otomatis dari e-resep: satu baris per obat → "Nama, Signa, Posisi".
 const planningText = computed(() =>
@@ -1014,7 +1027,16 @@ const planningText = computed(() =>
     .map((r) => [r.name, r.signa, r.posisi].filter(Boolean).join(', '))
     .join('\n')
 )
-watch(planningText, (v) => { soap.value.P = v })
+
+// Sinkron live: hanya menimpa bila field belum diedit manual.
+watch(objectiveText, (v) => { if (!soapDirty.O) soap.value.O = v })
+watch(() => exam.value.anamnese, (v) => { if (!soapDirty.S) soap.value.S = v })
+watch(planningText, (v) => { if (!soapDirty.P) soap.value.P = v })
+
+// Sync ulang per field: tarik nilai terbaru dari sumber & kembalikan ke mode auto.
+function resyncSoapS() { soap.value.S = exam.value.anamnese ?? ''; soapDirty.S = false }
+function resyncSoapO() { soap.value.O = objectiveText.value; soapDirty.O = false }
+function resyncSoapP() { soap.value.P = planningText.value; soapDirty.P = false }
 
 // ── TAB 4: DIAGNOSIS ICD-10 ─────────────────────────────────────────────────
 
@@ -1375,7 +1397,7 @@ function undoSign() {
 // ── FINALISASI ───────────────────────────────────────────────────────────────
 
 // Map planning UI (PULANG/BEDAH/RUJUK) → enum backend Tab 4.
-const PLANNING_ENUM = { PULANG: 'PULANG_BEROBAT_JALAN', BEDAH: 'BEDAH', RUJUK: 'RUJUK' }
+const PLANNING_ENUM = { PULANG: 'PULANG_BEROBAT_JALAN', BEDAH: 'BEDAH', RAWAT_INAP: 'RAWAT_INAP', RUJUK: 'RUJUK' }
 
 async function doFinalize() {
   if (!diagnosisUtama.value) { toast('e', 'Wajib isi diagnosa utama ICD-10'); return }
@@ -1411,6 +1433,8 @@ async function doFinalize() {
       surgery_package_id: planning.value === 'BEDAH' ? surgeryPkg.value : null,
       surgery_date:       planning.value === 'BEDAH' ? surgeryDate.value : null,
       surgery_time:       planning.value === 'BEDAH' ? (surgeryTime.value || null) : null,
+      // Fase 8: bedah yang butuh inap (pre-op H-1). Hanya relevan saat planning BEDAH.
+      requires_inpatient: planning.value === 'BEDAH' ? requiresInpatient.value : false,
       follow_up_date:     planning.value === 'PULANG' && tanggalKontrol.value ? tanggalKontrol.value : null,
     })
 
@@ -1422,9 +1446,14 @@ async function doFinalize() {
 
     finalized.value = true
     qFilter.value = 'done'
-    toast('s', planning.value === 'BEDAH'
-      ? 'RME difinalisasi — jadwal bedah dibuat & pasien diteruskan'
-      : 'RME difinalisasi — pasien dikirim ke station berikutnya')
+    toast('s',
+      planning.value === 'BEDAH'
+        ? (requiresInpatient.value
+            ? 'RME difinalisasi — jadwal bedah dibuat (pre-op rawat inap, pasien datang H-1)'
+            : 'RME difinalisasi — jadwal bedah dibuat & pasien diteruskan')
+        : planning.value === 'RAWAT_INAP'
+          ? 'RME difinalisasi — pasien masuk papan Menunggu Kamar (rawat inap)'
+          : 'RME difinalisasi — pasien dikirim ke station berikutnya')
 
     // Surat Kontrol BPJS: terbit otomatis bila Pulang + tgl kontrol + pasien BPJS.
     // Non-blocking — finalisasi di atas sudah final, ini hanya menyusulkan ke VClaim.
@@ -2375,27 +2404,31 @@ async function doFinalize() {
                   <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                   SOAP
                 </div>
-                <button class="btn btn-sm btn-secondary" @click="autoO" title="Susun ulang O dari data pemeriksaan terbaru">
-                  <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-                  Muat ulang O
-                </button>
               </div>
               <div class="cb">
                 <div class="soap-stack">
                   <div class="soap-cell">
                     <label class="fl soap-fl">
                       <span class="soap-letter s">S</span> Subjektif — keluhan pasien
-                      <span class="auto-tag">otomatis dari anamnese</span>
+                      <span v-if="!soapDirty.S" class="auto-tag">otomatis dari anamnese</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapS"
+                          title="Susun ulang dari anamnese (Tab Pemeriksaan)">↺ sync</button>
+                      </span>
                     </label>
-                    <textarea v-model="soap.S" class="form-textarea" rows="4"
+                    <textarea v-model="soap.S" @input="markSoapDirty('S')" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
                   </div>
                   <div class="soap-cell">
                     <label class="fl soap-fl">
                       <span class="soap-letter o">O</span> Objektif
-                      <span class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span>
+                      <span v-if="!soapDirty.O" class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapO"
+                          title="Susun ulang dari data pemeriksaan terbaru">↺ sync</button>
+                      </span>
                     </label>
-                    <textarea v-model="soap.O" class="form-textarea" rows="4"
+                    <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
                   </div>
                   <div class="soap-cell">
@@ -2409,9 +2442,13 @@ async function doFinalize() {
                   <div class="soap-cell">
                     <label class="fl soap-fl">
                       <span class="soap-letter p">P</span> Planning — rencana tindakan
-                      <span class="auto-tag">otomatis dari e-resep</span>
+                      <span v-if="!soapDirty.P" class="auto-tag">otomatis dari e-resep</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapP"
+                          title="Susun ulang dari e-resep">↺ sync</button>
+                      </span>
                     </label>
-                    <textarea v-model="soap.P" class="form-textarea" rows="4"
+                    <textarea v-model="soap.P" @input="markSoapDirty('P')" class="form-textarea" rows="4"
                       placeholder="Terisi otomatis dari e-resep (Nama Obat, Signa, Posisi)…"></textarea>
                   </div>
                 </div>
@@ -2673,6 +2710,15 @@ async function doFinalize() {
                       </div>
                     </template>
                   </div>
+
+                  <!-- Fase 8: pre-op rawat inap (pasien datang H-1 untuk persiapan) -->
+                  <label class="ranap-check">
+                    <input type="checkbox" v-model="requiresInpatient" />
+                    <span class="ranap-check-tx">
+                      <b>Perlu rawat inap (pre-op H-1)</b>
+                      <small>Pasien datang H-1 untuk persiapan pre-op lalu diopname sampai operasi.</small>
+                    </span>
+                  </label>
                 </div>
 
                 <!-- Rujuk: pilih mode Internal (antar-poli) vs Eksternal (faskes lain) -->
@@ -3726,6 +3772,17 @@ async function doFinalize() {
   font-size: 9px; font-weight: 600; color: var(--ga); text-transform: none;
   letter-spacing: 0; background: var(--gl); border-radius: 4px; padding: 1px 6px; margin-left: 5px;
 }
+/* Penanda field SOAP yang sudah diedit manual (auto-sync berhenti) + tombol sync ulang. */
+.manual-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 9px; font-weight: 600; color: #b45309; text-transform: none;
+  letter-spacing: 0; background: #fef3c7; border-radius: 4px; padding: 1px 6px; margin-left: 5px;
+}
+.resync-btn {
+  font-size: 9px; font-weight: 700; color: #1763d4; background: #fff;
+  border: 1px solid #c7d6f0; border-radius: 4px; padding: 0 5px; cursor: pointer; line-height: 1.5;
+}
+.resync-btn:hover { background: #1763d4; color: #fff !important; border-color: #1763d4; }
 
 /* Layout 2 kolom: KIRI = SOAP (vertikal), KANAN = ICD-10 + ICD-9 + Planning.
    align-items:stretch (default) → kedua kolom sama tinggi, margin bawah sejajar. */
@@ -3816,6 +3873,14 @@ async function doFinalize() {
 .surgery-fields, .plan-fields { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; margin-top: 0; }
 .surgery-hint { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
 .surgery-hint.warn { color: var(--wt); }
+/* Fase 8 — Rawat Inap (observasi) note + checkbox pre-op pada Bedah */
+.ranap-note { display: flex; align-items: flex-start; gap: 8px; color: #0f766e; background: #f0fdfa; border-color: #99f6e4 !important; font-size: 12px; }
+.ranap-note svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px; }
+.ranap-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 9px; cursor: pointer; }
+.ranap-check input { width: 16px; height: 16px; margin-top: 2px; accent-color: #0d9488; flex-shrink: 0; }
+.ranap-check-tx { display: flex; flex-direction: column; gap: 2px; }
+.ranap-check-tx b { color: #0f766e; font-size: 12.5px; }
+.ranap-check-tx small { color: #475569; font-size: 11px; }
 .form-select:disabled { background: var(--bi); cursor: not-allowed; opacity: .7; }
 .fl-opt { font-weight: 400; color: var(--tu); font-size: 9.5px; }
 

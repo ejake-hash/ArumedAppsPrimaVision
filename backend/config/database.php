@@ -99,6 +99,24 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        // Koneksi read-only ke dump Prima Vision yang di-restore lokal
+        // (DB lama `runningprima`). HANYA dipakai command migrasi
+        // MigrateFromPrimaVision untuk membaca data sumber → tulis ke `pgsql`.
+        // Tidak menyentuh DB server Prima Vision; semua transform di lokal.
+        'primavision' => [
+            'driver' => 'pgsql',
+            'host' => env('PRIMAVISION_DB_HOST', '127.0.0.1'),
+            'port' => env('PRIMAVISION_DB_PORT', '5432'),
+            'database' => env('PRIMAVISION_DB_DATABASE', 'primavision_local'),
+            'username' => env('PRIMAVISION_DB_USERNAME', 'postgres'),
+            'password' => env('PRIMAVISION_DB_PASSWORD', ''),
+            'charset' => env('PRIMAVISION_DB_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('PRIMAVISION_DB_SSLMODE', 'prefer'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

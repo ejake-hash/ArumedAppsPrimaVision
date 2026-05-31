@@ -112,7 +112,7 @@ function mapQueueItem(q) {
     insuranceVerificationStatus: q.visit?.insurance_verification_status ?? null,
     callQueueId: q.id,
     callStatus:  q.status,
-    gcSigned:   !!q.visit?.general_consent_signed_at,
+    gcSigned:   !!q.visit?.general_consent_signed,
     walkIn,
   }
 }
@@ -129,6 +129,9 @@ const vpAsuransi = computed(() => admisiStore.stats?.asuransi ?? 0)
 // Bedah selesai hari ini — ambil dari backend (Queue BEDAH yg sudah COMPLETED).
 // Sumber: AdmisiService::getDashboard().stat_cards.bedah_count
 const vpBedah    = computed(() => admisiStore.stats?.bedah ?? 0)
+// Rawat Inap — pasien yang sedang dirawat inap (belum dipulangkan).
+// Sumber: AdmisiService::getDashboard().stat_cards.ranap_count
+const vpRanap    = computed(() => admisiStore.stats?.ranap ?? 0)
 const vpTotal    = computed(() => admisiStore.visitsMeta.total || vpAll.value.length)
 
 /* ============================================================
@@ -304,6 +307,17 @@ function toggleUnfinished() {
   admisiStore.visitsFilter.unfinished = showUnfinished.value
   admisiStore.fetchVisits({ page: 1 })
 }
+
+// Pisah Rawat Jalan (RAJAL/IGD) vs Rawat Inap (RANAP). RANAP long-lived → kalau
+// dicampur akan terus menumpuk di list. Default tampil Rawat Jalan.
+const careType = ref('RAJAL')   // 'RAJAL' | 'RANAP'
+function setCareType(t) {
+  if (careType.value === t) return
+  careType.value = t
+  admisiStore.visitsFilter.careType = t
+  admisiStore.fetchVisits({ page: 1 })
+}
+const careTypeLabel = computed(() => careType.value === 'RANAP' ? 'Rawat Inap' : 'Rawat Jalan')
 
 // Terapkan filter/search ke server, selalu balik ke halaman 1.
 function applyVisitFilters() {
@@ -604,9 +618,12 @@ function selectPatient(pt) {
     birthDate:     pt.date_of_birth,
     age:           calcAge(pt.date_of_birth),
     phone:         pt.phone        ?? '',
-    province:      pt.province     ?? '',
-    regency:       '',
-    district:      '',
+    province:      pt.province         ?? '',
+    regency:       pt.nama_kab_kota    ?? '',
+    district:      pt.nama_kecamatan   ?? '',
+    origProvince:  pt.province         ?? '',
+    origRegency:   pt.nama_kab_kota    ?? '',
+    origDistrict:  pt.nama_kecamatan   ?? '',
     addressDetail: pt.address      ?? '',
     guarantor:     pt.bpjs_number  ? 'BPJS' : 'UMUM',
     bpjsNo:        pt.bpjs_number  ?? '',
@@ -617,6 +634,9 @@ function selectPatient(pt) {
   })
   insuranceSearch.value = ''
   showSearchDrop.value  = false
+  // Reset status wilayah; WilayahPicker akan emit prefill-status saat load ulang.
+  wizPrefilled.value = null
+  wizWilayahTouched.value = false
   selectedActiveVisit.value = pt.active_visit ?? null
   if (selectedActiveVisit.value) {
     toast('w', `${pt.name} masih punya kunjungan aktif — selesaikan/batalkan dulu`)
@@ -741,12 +761,38 @@ async function openProfile(pt) {
 }
 function closeProfile() { profileOpen.value = false; profileEdit.open = false }
 
+/* Daftarkan kunjungan baru langsung dari modal Profil Pasien (hasil pencarian).
+   Buka wizard mode "existing" ter-prefill pasien ini, lalu tutup modal profil. */
+function daftarkanDariProfil() {
+  const pt = profilePatient.value
+  if (!pt?.id) return
+  openWizard()                 // reset wizard + buka modal
+  form.patientMode = 'existing'
+  selectPatient(pt)            // prefill form dari data pasien + cek kunjungan aktif
+  closeProfile()
+}
+
 /* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
 const profileEdit = reactive({
   open: false, loading: false, errors: null,
   name: '', gender: 'L', date_of_birth: '', phone: '',
-  address: '', province: '', blood_type: '',
+  address: '', province: '', nama_kab_kota: '', nama_kecamatan: '', blood_type: '',
+  // Snapshot wilayah asal (data lama). Dipakai untuk: (1) tampilkan info nilai
+  // lama, (2) jangan timpa dgn kosong kalau petugas tak menyentuh WilayahPicker
+  // (mis. data migrasi yg ejaannya tak cocok master → dropdown tampil kosong).
+  origProvince: '', origKabKota: '', origKecamatan: '',
 })
+// Status prefill dari WilayahPicker: true=ketemu master, false=tidak cocok,
+// null=belum/tak ada data lama. Saat false → tampilkan info nilai lama.
+const wilayahPrefilled = ref(null)
+// true begitu petugas benar-benar memilih dari dropdown (bukan prefill awal).
+// Inilah sinyal "data wilayah sengaja diubah" → boleh menimpa data lama.
+const wilayahTouched = ref(false)
+const wilayahNeedsRepick = computed(() =>
+  !!profileEdit.origProvince && wilayahPrefilled.value === false && !wilayahTouched.value
+)
+function onWilayahPrefill(ok) { wilayahPrefilled.value = ok }
+function onWilayahTouched() { wilayahTouched.value = true }
 function startProfileEdit() {
   const p = profilePatient.value || {}
   Object.assign(profileEdit, {
@@ -757,8 +803,15 @@ function startProfileEdit() {
     phone:         p.phone ?? '',
     address:       p.address ?? '',
     province:      p.province ?? '',
+    nama_kab_kota:  p.nama_kab_kota ?? '',
+    nama_kecamatan: p.nama_kecamatan ?? '',
     blood_type:    p.blood_type ?? '',
+    origProvince:   p.province ?? '',
+    origKabKota:    p.nama_kab_kota ?? '',
+    origKecamatan:  p.nama_kecamatan ?? '',
   })
+  wilayahPrefilled.value = null   // ditentukan oleh event prefill-status WilayahPicker
+  wilayahTouched.value = false    // reset; jadi true saat petugas pilih dropdown
 }
 function cancelProfileEdit() { profileEdit.open = false; profileEdit.errors = null }
 async function saveProfileEdit() {
@@ -773,8 +826,19 @@ async function saveProfileEdit() {
       date_of_birth: profileEdit.date_of_birth || null,
       phone:         profileEdit.phone.trim() || null,
       address:       profileEdit.address.trim() || null,
-      province:      profileEdit.province || null,
       blood_type:    profileEdit.blood_type || null,
+    }
+    // Wilayah: hanya timpa kalau petugas benar-benar memilih ulang dari dropdown.
+    // Kalau tidak disentuh (mis. data migrasi tak cocok master → dropdown kosong),
+    // pertahankan data lama apa adanya supaya tidak hilang tak sengaja.
+    if (wilayahTouched.value) {
+      payload.province       = profileEdit.province || null
+      payload.nama_kab_kota  = profileEdit.nama_kab_kota || null
+      payload.nama_kecamatan = profileEdit.nama_kecamatan || null
+    } else {
+      payload.province       = profileEdit.origProvince || null
+      payload.nama_kab_kota  = profileEdit.origKabKota || null
+      payload.nama_kecamatan = profileEdit.origKecamatan || null
     }
     const updated = await admisiStore.updatePasien(p.id, payload)
     profilePatient.value = { ...p, ...updated }
@@ -875,6 +939,11 @@ const blankForm = () => ({
   province:      '',
   regency:       '',
   district:      '',
+  // Snapshot wilayah asal pasien lama (regency/district = nama_kab_kota/nama_kecamatan).
+  // Dipakai untuk banner "data lama" + jaga agar tak hilang bila tak dipilih ulang.
+  origProvince:  '',
+  origRegency:   '',
+  origDistrict:  '',
   addressDetail: '',
   classification: 'Baru',
   guarantor:     'BPJS',
@@ -898,6 +967,24 @@ const blankForm = () => ({
   doctor_schedule_id: '',
 })
 const form = reactive(blankForm())
+
+/* Wilayah di wizard (pasien lama): status prefill & apakah petugas memilih ulang.
+   - wizPrefilled: true=provinsi lama cocok master (dropdown terisi → lock),
+                   false=tak cocok (tampil banner + boleh pilih ulang), null=n/a.
+   - wizWilayahTouched: true begitu petugas benar2 memilih dari dropdown. */
+const wizPrefilled = ref(null)
+const wizWilayahTouched = ref(false)
+function onWizWilayahPrefill(ok) { wizPrefilled.value = ok }
+function onWizWilayahTouched() { wizWilayahTouched.value = true }
+// Banner "data wilayah lama tak cocok master" — hanya pasien lama & belum dipilih ulang.
+const wizWilayahNeedsRepick = computed(() =>
+  form.patientMode === 'existing' && !!form.origProvince
+  && wizPrefilled.value === false && !wizWilayahTouched.value
+)
+// Kunci picker kalau data lama sudah cocok master (tak perlu diubah saat daftar).
+const wizWilayahLocked = computed(() =>
+  form.patientMode === 'existing' && !!form.origProvince && wizPrefilled.value === true
+)
 
 /* ─── Cek eligibilitas BPJS (VClaim) — non-blocking, hanya bantu petugas ───
  * Tidak memblok pendaftaran: kalau integrasi belum aktif, tampil pesan jelas. */
@@ -1228,10 +1315,13 @@ function isSignerSigned(signerType) {
 
 const canProceedStep1 = computed(() => {
   const idOk = noIdentity.value || !!form.nik
-  const base = form.patientMode === 'existing'
-    ? form.found && form.name
-    : form.name && form.birthDate && idOk
-  return base && form.province
+  if (form.patientMode === 'existing') {
+    // Pasien lama: provinsi tidak wajib di sini — data wilayah yang kosong
+    // (mis. hasil migrasi) bisa dilengkapi nanti via kartu Detail Pasien.
+    return !!(form.found && form.name)
+  }
+  // Pasien baru: identitas + tgl lahir + provinsi wajib.
+  return !!(form.name && form.birthDate && idOk && form.province)
 })
 
 const canProceedStep2 = computed(() => {
@@ -1248,6 +1338,8 @@ const canProceedStep2 = computed(() => {
   return pd
 })
 
+function resetWizWilayah() { wizPrefilled.value = null; wizWilayahTouched.value = false }
+
 function openWizard() {
   walkInVisitId.value = null
   walkInQueueNo.value = ''
@@ -1255,6 +1347,7 @@ function openWizard() {
   insuranceSearch.value = ''
   searchResults.value   = []
   selectedActiveVisit.value = null
+  resetWizWilayah()
   wizardStep.value = 1
   wizardOpen.value = true
   resetPreopState()
@@ -1269,7 +1362,12 @@ function closeWizard() {
 }
 
 function nextStep() {
-  if (wizardStep.value === 1 && !canProceedStep1.value) { toast('w', 'Lengkapi data pasien & provinsi terlebih dahulu'); return }
+  if (wizardStep.value === 1 && !canProceedStep1.value) {
+    toast('w', form.patientMode === 'existing'
+      ? 'Pilih pasien dari hasil pencarian terlebih dahulu'
+      : 'Lengkapi data pasien & provinsi terlebih dahulu')
+    return
+  }
   if (wizardStep.value === 2 && !canProceedStep2.value) { toast('w', 'Lengkapi data penjamin & pilih dokter tujuan'); return }
   if (wizardStep.value < 3) wizardStep.value++
 }
@@ -1281,6 +1379,7 @@ function setPatientMode(mode) {
   insuranceSearch.value = ''
   searchResults.value   = []
   selectedActiveVisit.value = null
+  resetWizWilayah()
   resetPreopState()
   resetConsentState()
 }
@@ -1348,6 +1447,15 @@ async function submitRegistration() {
 
     if (form.patientId) {
       payload.patient_id = form.patientId
+      // Pasien lama: kalau petugas memilih ulang wilayah (data lama tak cocok
+      // master), kirim perubahan agar di-replace ke data pasien saat daftar.
+      if (wizWilayahTouched.value) {
+        payload.update_wilayah = {
+          province:       form.province || null,
+          nama_kab_kota:  form.regency  || null,
+          nama_kecamatan: form.district || null,
+        }
+      }
     } else {
       Object.assign(payload, {
         identity_type: form.identityType,
@@ -1747,6 +1855,15 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="stat-card">
+        <div class="stat-icon" style="background: #e0f2fe">
+          <svg style="stroke: #0369a1" viewBox="0 0 24 24"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
+        </div>
+        <div>
+          <div class="stat-val" style="color: #0369a1">{{ vpRanap }}</div>
+          <div class="stat-lbl">Rawat Inap</div>
+        </div>
+      </div>
+      <div class="stat-card">
         <div class="stat-icon" style="background: var(--sb)">
           <svg style="stroke: var(--st)" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
         </div>
@@ -1870,7 +1987,7 @@ onUnmounted(() => {
             <div>
               <div class="card-head-title">
                 <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
-                Seluruh Kunjungan Hari Ini
+                Kunjungan {{ careTypeLabel }} Hari Ini
               </div>
               <div class="card-head-sub">{{ admisiStore.visitsMeta.total }} kunjungan · klik untuk {{ tableExpanded ? 'sembunyikan' : 'tampilkan' }}</div>
             </div>
@@ -1883,6 +2000,27 @@ onUnmounted(() => {
           <transition name="collapse">
             <div v-show="tableExpanded">
               <div class="table-toolbar">
+                <!-- Pisah Rawat Jalan vs Rawat Inap (RANAP long-lived) -->
+                <div class="care-toggle" role="tablist" aria-label="Jenis perawatan">
+                  <button
+                    type="button"
+                    role="tab"
+                    :class="['care-seg', careType === 'RAJAL' ? 'on' : '']"
+                    :aria-selected="careType === 'RAJAL'"
+                    @click="setCareType('RAJAL')"
+                  >
+                    Rawat Jalan
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    :class="['care-seg', careType === 'RANAP' ? 'on' : '']"
+                    :aria-selected="careType === 'RANAP'"
+                    @click="setCareType('RANAP')"
+                  >
+                    Rawat Inap
+                  </button>
+                </div>
                 <button
                   type="button"
                   class="unfinished-toggle"
@@ -2355,8 +2493,13 @@ onUnmounted(() => {
                         <template v-if="upcomingPreopSchedule.surgery_package">
                           · <strong>Paket:</strong> {{ upcomingPreopSchedule.surgery_package.name }}
                         </template>
+                        <strong v-if="upcomingPreopSchedule.requires_inpatient"> · Rawat Inap</strong>
                       </span>
-                      <div class="preop-question">Daftarkan preop hari ini? <em>Jadwal akan dipindah ke hari ini.</em></div>
+                      <!-- Fase 8B: pre-op rawat inap → pasien datang H-1, jadwal operasi TIDAK digeser -->
+                      <div v-if="upcomingPreopSchedule.requires_inpatient" class="preop-question">
+                        Daftarkan <strong>Pre-op Rawat Inap</strong>? <em>Pasien diopname sekarang (H-1); operasi tetap {{ formatPreopDate(upcomingPreopSchedule.scheduled_date) }}.</em>
+                      </div>
+                      <div v-else class="preop-question">Daftarkan preop hari ini? <em>Jadwal akan dipindah ke hari ini.</em></div>
                     </div>
                   </div>
 
@@ -2366,7 +2509,9 @@ onUnmounted(() => {
                       :class="['btn', 'btn-sm', preopChoice === 'PREOP' ? 'btn-primary' : 'btn-secondary']"
                       @click="choosePreop(preopBannerType === 'today' ? todayPreopSchedule : upcomingPreopSchedule)"
                     >
-                      {{ preopBannerType === 'today' ? 'Ya, Preop Bedah' : 'Ya, Preop Hari Ini (geser jadwal)' }}
+                      {{ preopBannerType === 'today'
+                          ? 'Ya, Preop Bedah'
+                          : (upcomingPreopSchedule?.requires_inpatient ? 'Ya, Pre-op Rawat Inap (H-1)' : 'Ya, Preop Hari Ini (geser jadwal)') }}
                     </button>
                     <button
                       type="button"
@@ -2454,11 +2599,25 @@ onUnmounted(() => {
 
               <div class="section-label full">Alamat <span class="lbl-note">(sesuai data identitas)</span></div>
               <div class="field full">
+                <!-- Pasien lama dgn wilayah tak cocok master → tampilkan data lama,
+                     boleh dibiarkan atau dipilih ulang. Kalau cocok → picker terkunci. -->
+                <div v-if="wizWilayahNeedsRepick" class="wilayah-keep-note">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span>
+                    Data wilayah saat ini:
+                    <strong>{{ [form.origProvince, form.origRegency, form.origDistrict].filter(Boolean).join(' · ') }}</strong>
+                    — tidak cocok dengan master. Biarkan tetap tersimpan, atau pilih ulang dari dropdown di bawah.
+                  </span>
+                </div>
                 <WilayahPicker
                   v-model:province="form.province"
                   v-model:regency="form.regency"
                   v-model:district="form.district"
-                  :disabled="form.patientMode === 'existing'"
+                  :disabled="wizWilayahLocked"
+                  @prefill-status="onWizWilayahPrefill"
+                  @update:province="onWizWilayahTouched"
+                  @update:regency="onWizWilayahTouched"
+                  @update:district="onWizWilayahTouched"
                 />
               </div>
               <div class="field full">
@@ -3206,9 +3365,15 @@ onUnmounted(() => {
                     {{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
                   </div>
                 </div>
-                <span :class="['ptype-tag', profilePatient.bpjs_number ? 'pt-bpjs' : 'pt-umum']" style="margin-left:auto">
-                  {{ profilePatient.bpjs_number ? 'BPJS' : 'UMUM' }}
-                </span>
+                <div class="detail-hero-right">
+                  <span :class="['ptype-tag', profilePatient.bpjs_number ? 'pt-bpjs' : 'pt-umum']">
+                    {{ profilePatient.bpjs_number ? 'BPJS' : 'UMUM' }}
+                  </span>
+                  <button v-if="!profileEdit.open" class="btn btn-secondary btn-sm" @click="startProfileEdit">
+                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    Edit
+                  </button>
+                </div>
               </div>
 
               <!-- MODE BACA -->
@@ -3221,13 +3386,9 @@ onUnmounted(() => {
                   <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Golongan Darah</span><span class="cf-v">{{ profilePatient.blood_type || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Provinsi</span><span class="cf-v">{{ profilePatient.province || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Kabupaten / Kota</span><span class="cf-v">{{ profilePatient.nama_kab_kota || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">Kecamatan</span><span class="cf-v">{{ profilePatient.nama_kecamatan || '—' }}</span></div>
                   <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ profilePatient.address || '—' }}</span></div>
-                </div>
-                <div class="detail-edit-bar">
-                  <button class="btn btn-secondary btn-sm" @click="startProfileEdit">
-                    <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
-                    Edit Data Pasien
-                  </button>
                 </div>
               </template>
 
@@ -3273,8 +3434,26 @@ onUnmounted(() => {
                   </div>
 
                   <div class="fg-sm fg-wide">
-                    <label>Provinsi</label>
-                    <input v-model="profileEdit.province" class="form-input" placeholder="mis. Nusa Tenggara Barat" />
+                    <label>Wilayah <span class="lbl-note">(Provinsi · Kab/Kota · Kecamatan)</span></label>
+                    <!-- Data lama tak cocok master → tampilkan nilai sekarang supaya
+                         tidak hilang; petugas boleh biarkan atau pilih ulang. -->
+                    <div v-if="wilayahNeedsRepick" class="wilayah-keep-note">
+                      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <span>
+                        Data wilayah saat ini:
+                        <strong>{{ [profileEdit.origProvince, profileEdit.origKabKota, profileEdit.origKecamatan].filter(Boolean).join(' · ') }}</strong>
+                        — tidak cocok dengan master. Biarkan tetap tersimpan, atau pilih ulang dari dropdown di bawah.
+                      </span>
+                    </div>
+                    <WilayahPicker
+                      v-model:province="profileEdit.province"
+                      v-model:regency="profileEdit.nama_kab_kota"
+                      v-model:district="profileEdit.nama_kecamatan"
+                      @prefill-status="onWilayahPrefill"
+                      @update:province="onWilayahTouched"
+                      @update:regency="onWilayahTouched"
+                      @update:district="onWilayahTouched"
+                    />
                     <div v-if="profileEdit.errors?.province" class="fld-err">{{ profileEdit.errors.province[0] }}</div>
                   </div>
 
@@ -3364,10 +3543,10 @@ onUnmounted(() => {
             <button
               class="btn btn-primary"
               :disabled="!profilePatient.id"
-              @click="gotoRekamMedis({ patientId: profilePatient.id }); closeProfile()"
+              @click="daftarkanDariProfil()"
             >
-              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              Buka Rekam Medis
+              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Daftarkan Pasien
             </button>
           </div>
         </div>
@@ -3454,12 +3633,12 @@ onUnmounted(() => {
 .clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tm); }
 
 /* STATS */
-.stats-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.75rem; }
-.stat-card { background: var(--bc); border-radius: 12px; padding: 0.9rem 1rem; border: 1px solid var(--gb); display: flex; align-items: center; gap: 10px; }
-.stat-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.stat-icon svg { width: 18px; height: 18px; fill: none; stroke-width: 2; stroke-linecap: round; }
-.stat-val { font-size: 22px; font-weight: 700; color: var(--td); line-height: 1; }
-.stat-lbl { font-size: 10px; color: var(--tu); margin-top: 2px; letter-spacing: 0.02em; }
+.stats-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0.5rem; }
+.stat-card { background: var(--bc); border-radius: 10px; padding: 0.6rem 0.65rem; border: 1px solid var(--gb); display: flex; align-items: center; gap: 8px; min-width: 0; }
+.stat-icon { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stat-icon svg { width: 16px; height: 16px; fill: none; stroke-width: 2; stroke-linecap: round; }
+.stat-val { font-size: 18px; font-weight: 700; color: var(--td); line-height: 1; }
+.stat-lbl { font-size: 9.5px; color: var(--tu); margin-top: 2px; letter-spacing: 0.01em; white-space: nowrap; }
 
 /* MAIN GRID */
 .main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 1rem; align-items: start; }
@@ -3497,6 +3676,11 @@ onUnmounted(() => {
 .unfinished-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .unfinished-toggle:hover { background: #fef2f2; }
 .unfinished-toggle.active { background: #dc2626; border-color: #dc2626; color: #fff; }
+/* Toggle Rawat Jalan vs Rawat Inap (segmented) */
+.care-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bi); gap: 2px; }
+.care-seg { padding: 0.32rem 0.75rem; border: none; border-radius: 6px; background: transparent; color: var(--tm); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.care-seg:hover { color: #1763d4; }
+.care-seg.on { background: #1763d4; color: #fff !important; box-shadow: 0 1px 2px rgba(23,99,212,0.3); }
 
 /* CALLABLE QUEUE */
 .call-card { border-color: var(--ga); }
@@ -3907,6 +4091,8 @@ onUnmounted(() => {
 
 /* DETAIL MODAL */
 .detail-hero { display: flex; align-items: center; gap: 14px; padding-bottom: 1.1rem; border-bottom: 1px solid var(--gb); margin-bottom: 1.1rem; }
+/* Badge penjamin + tombol Edit di ujung kanan hero, sejajar nama */
+.detail-hero-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .detail-avatar { width: 46px; height: 46px; border-radius: 12px; background: var(--gl); color: var(--td); display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', serif; font-size: 20px; flex-shrink: 0; }
 .detail-name { font-size: 16px; font-weight: 600; color: var(--td); }
 .detail-sub { font-size: 12px; color: var(--tu); margin-top: 2px; }
@@ -3960,6 +4146,10 @@ onUnmounted(() => {
 .cf-v.locked { color: var(--tu); font-weight: 500; }
 .req { color: #dc2626; font-weight: 700; }
 .fld-err { font-size: 10.5px; color: #dc2626; margin-top: 2px; }
+/* Catatan "data wilayah lama tak cocok master" di mode edit detail pasien */
+.wilayah-keep-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; margin-bottom: 8px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; font-size: 11.5px; color: #92400e; line-height: 1.45; }
+.wilayah-keep-note svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; fill: none; stroke: #d97706; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wilayah-keep-note strong { color: #78350f; }
 @media (max-width: 560px) { .detail-edit-grid { grid-template-columns: 1fr; } }
 
 /* MODAL FOOTER */

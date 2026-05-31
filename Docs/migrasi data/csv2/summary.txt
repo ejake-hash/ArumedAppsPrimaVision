@@ -1,0 +1,22 @@
+Ekstrak ringkasan - Min 31 Mei 2026 05:26:22  WIB
+
+obat                                            537 rows       27K
+harga_obat                                      536 rows       48K
+buku_tarif                                      346 rows       15K
+tindakan_rawat_jalan                            572 rows       25K
+tindakan_bedah                                  107 rows      4,7K
+tindakan_non_bedah                               18 rows       981
+carabayar_tindakan_rawat_jalan                 3484 rows      215K
+carabayar_tindakan_bedah                          1 rows       329
+carabayar_tindakan_non_bedah                      1 rows       271
+tarif                                             7 rows       651
+layanan                                          27 rows      1,4K
+paket_bedah                                     337 rows       20K
+list_paket_bedah_baru                         13249 rows      562K
+list_paket_bedah                                467 rows       20K
+list_form_tindakan_operasi                        0 rows       130
+stock_catat                                   18411 rows      1,3M
+stock_opname                                   1230 rows       85K
+pembelian                                      1816 rows       89K
+pembelian_detail                               4052 rows      372K
+resep                                        111297 rows      9,3M

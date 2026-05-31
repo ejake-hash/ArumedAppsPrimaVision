@@ -16,6 +16,7 @@ class Insurer extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'name',
         'type',
         'parent_id',

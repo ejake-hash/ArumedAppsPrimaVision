@@ -441,6 +441,26 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * PUT /rekam-medis/document/{id}/draft-content
+     * Edit isi dokumen DRAFT (override teks HTML manual oleh dokter sebelum TTD).
+     * Hanya status DRAFT; selain itu 422.
+     */
+    public function saveDraftContent(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'rendered_html' => 'required|string',
+        ]);
+
+        try {
+            $doc = $this->formRegistry->saveDraftContent($id, $validated['rendered_html']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($this->formRegistry->getSnapshot($doc->id), 'Isi dokumen disimpan');
+    }
+
+    /**
      * POST /rekam-medis/document/{id}/mark-rendered
      * Soft transition DRAFT → RENDERED (idempoten).
      */

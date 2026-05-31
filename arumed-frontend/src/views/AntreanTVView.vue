@@ -1947,7 +1947,7 @@ async function saveAudioDefaults() {
             </div>
 
             <div class="ctrl-sub-section" style="border-top:1px solid rgba(255,255,255,.08); padding-top:1rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
-              <button class="ctrl-action-btn" style="background:var(--lm); color:#061d15" @click="saveAudioDefaults">
+              <button class="ctrl-action-btn" style="background:var(--lm); color:#06182E" @click="saveAudioDefaults">
                 💾 Simpan sebagai Default
               </button>
               <p v-if="audioSaveMsg" :class="['ctrl-feedback', audioSaveMsgType]">{{ audioSaveMsg }}</p>
@@ -2134,7 +2134,7 @@ async function saveAudioDefaults() {
               </div>
 
               <div class="ctrl-sub-section" style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center">
-                <button class="ctrl-action-btn" style="background:var(--lm); color:#061d15" @click="saveBranding">Simpan</button>
+                <button class="ctrl-action-btn" style="background:var(--lm); color:#06182E" @click="saveBranding">Simpan</button>
                 <button class="ctrl-action-btn brand-btn-muted" @click="resetBrandingToDefault">Set ke Default</button>
                 <p v-if="brandingSaveMsg" :class="['ctrl-feedback', brandingSaveMsgType]" style="margin-left:.5rem">{{ brandingSaveMsg }}</p>
               </div>
@@ -2164,7 +2164,7 @@ async function saveAudioDefaults() {
 .tv {
   width: 100vw;
   height: 100vh;
-  background: linear-gradient(180deg, #0a2e22 0%, #061d15 100%);
+  background: linear-gradient(180deg, #0B2440 0%, #06182E 100%);
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -2281,7 +2281,7 @@ async function saveAudioDefaults() {
   gap: 10px;
   padding: 14px 28px;
   background: var(--lm);
-  color: #061d15;
+  color: #06182E;
   border-radius: 30px;
   font-weight: 700;
   font-size: 15px;
@@ -2336,7 +2336,7 @@ async function saveAudioDefaults() {
 
 /* VIDEO PANEL */
 .video-panel {
-  background: #061d15;
+  background: #06182E;
   border: 1px solid rgba(56, 189, 248, 0.15);
   border-radius: 18px;
   display: flex;
@@ -2794,7 +2794,7 @@ async function saveAudioDefaults() {
 }
 .ticker-label {
   background: var(--lm);
-  color: #061d15;
+  color: #06182E;
   padding: 6px 18px;
   font-size: 13px;
   font-weight: 700;
@@ -2869,7 +2869,7 @@ async function saveAudioDefaults() {
   backdrop-filter: blur(4px);
 }
 .pin-dialog {
-  background: linear-gradient(160deg, #0e3524, #081f15);
+  background: linear-gradient(160deg, #123154, #06182E);
   border: 1px solid rgba(56, 189, 248, 0.25);
   border-radius: 20px;
   padding: 2.5rem 2rem;
@@ -2950,7 +2950,7 @@ async function saveAudioDefaults() {
 .pin-btn:hover { opacity: 0.85; transform: translateY(-1px); }
 .pin-btn.primary {
   background: var(--lm);
-  color: #061d15;
+  color: #06182E;
 }
 .pin-btn.ghost {
   background: rgba(255, 255, 255, 0.07);
@@ -2964,7 +2964,7 @@ async function saveAudioDefaults() {
 /* FLASH OVERLAY */
 .flash-overlay {
   position: fixed; inset: 0; z-index: 9999;
-  background: linear-gradient(135deg, #061d15 0%, #0a2e22 50%, #061d15 100%);
+  background: linear-gradient(135deg, #06182E 0%, #0B2440 50%, #06182E 100%);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; animation: flash-in .3s ease;
 }
@@ -3044,7 +3044,7 @@ async function saveAudioDefaults() {
   backdrop-filter: blur(4px);
 }
 .ctrl-panel {
-  background: linear-gradient(160deg, #0d3221, #071a10);
+  background: linear-gradient(160deg, #102C4D, #07182C);
   border: 1px solid rgba(56, 189, 248, 0.2);
   border-radius: 20px;
   width: min(860px, 94vw);
@@ -3205,7 +3205,7 @@ async function saveAudioDefaults() {
 .ctrl-action-btn {
   padding: 10px 20px;
   background: var(--lm);
-  color: #061d15;
+  color: #06182E;
   border: none;
   border-radius: 10px;
   font-size: 13px;

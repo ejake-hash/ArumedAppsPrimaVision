@@ -96,6 +96,13 @@ class AdmisiService
             ->where('status', Queue::STATUS_COMPLETED)
             ->count();
 
+        // Rawat Inap = pasien yang sedang dirawat inap (belum dipulangkan).
+        // RANAP long-lived lintas-hari → TIDAK difilter visit_date hari ini.
+        // Belum discharge ditandai discharge_at NULL (lih. RanapService::pasienAktif).
+        $ranapCount = Visit::where('jenis_pelayanan', 'RANAP')
+            ->whereNull('discharge_at')
+            ->count();
+
         // Stat per penjamin dihitung dari pasien yang SUDAH BAYAR di kasir
         // (invoice status PAID) — bukan total kunjungan.
         $paidPerPenjamin = Visit::whereDate('visit_date', $today)
@@ -121,6 +128,7 @@ class AdmisiService
                 'umum_count'       => $umumCount,
                 'asuransi_count'   => $asuransiCount,
                 'bedah_count'      => $bedahCount,
+                'ranap_count'      => $ranapCount,
                 'sep_count'        => $sepCount,
                 'cancel_count'     => $cancelCount,
                 'antrian_aktif'    => $antrianAktif,
@@ -164,6 +172,30 @@ class AdmisiService
             $query->where('current_station', '!=', 'SELESAI');
         } else {
             $query->whereDate('visit_date', $filters['tanggal'] ?? today());
+        }
+
+        // Pisah Rawat Jalan vs Rawat Inap. RANAP long-lived (bertahan berhari-hari)
+        // sehingga jika dicampur akan terus muncul di list rawat jalan. Default UI
+        // mengirim care_type=RAJAL.
+        //
+        // Identifikasi pakai current_station (sumber kebenaran di papan), BUKAN hanya
+        // jenis_pelayanan: pasien "menunggu kamar" punya current_station=MENUNGGU_RANAP
+        // tapi jenis_pelayanan masih 'RAJAL'. Stasiun RANAP/MENUNGGU_RANAP = rawat inap.
+        $ranapStations = ['RANAP', 'MENUNGGU_RANAP'];
+        if (! empty($filters['care_type'])) {
+            if ($filters['care_type'] === 'RANAP') {
+                $query->where(function ($q) use ($ranapStations) {
+                    $q->whereIn('current_station', $ranapStations)
+                      ->orWhere('jenis_pelayanan', 'RANAP');
+                });
+            } elseif ($filters['care_type'] === 'RAJAL') {
+                $query->whereNotIn('current_station', $ranapStations)
+                      ->where(function ($q) {
+                          $q->where('jenis_pelayanan', '!=', 'RANAP')
+                            ->orWhereNull('jenis_pelayanan');
+                      });
+            }
+            // care_type lain (mis. 'SEMUA') → tidak memfilter (tampilkan semua).
         }
 
         if (! empty($filters['station'])) {
@@ -447,6 +479,9 @@ class AdmisiService
                 'name' => $s->surgeryPackage->name,
             ] : null,
             'is_today'        => $s->scheduled_date->isToday(),
+            // Fase 8B — pre-op rawat inap: banner Admisi pakai flag ini untuk memilih
+            // alur INAP (datang H-1 → Menunggu Kamar) vs bedah rawat jalan (hari-H).
+            'requires_inpatient' => (bool) $s->requires_inpatient,
         ])->all();
     }
 
@@ -469,6 +504,28 @@ class AdmisiService
         $this->log(auth('api')->id(), 'UPDATE_PASIEN', Patient::class, $id);
 
         return $patient->fresh();
+    }
+
+    /**
+     * Replace data wilayah pasien lama saat petugas memilih ulang di wizard
+     * (data hasil migrasi yang tak cocok master). Hanya menimpa field yang
+     * diisi (non-null) supaya tak mengosongkan data yang tak disentuh.
+     */
+    private function applyWilayahUpdate(Patient $patient, ?array $wilayah): void
+    {
+        if (empty($wilayah)) {
+            return;
+        }
+
+        $update = array_filter([
+            'province'       => $wilayah['province']       ?? null,
+            'nama_kab_kota'  => $wilayah['nama_kab_kota']  ?? null,
+            'nama_kecamatan' => $wilayah['nama_kecamatan'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+
+        if ($update) {
+            $patient->update($update);
+        }
     }
 
     // =========================================================================
@@ -566,6 +623,8 @@ class AdmisiService
                     $photoPath = $this->savePatientPhoto($data['photo'], $patient->name);
                     $patient->update(['photo_path' => $photoPath]); // foto terbaru pasien
                 }
+                // Petugas memilih ulang wilayah di wizard (data lama tak cocok master).
+                $this->applyWilayahUpdate($patient, $data['update_wilayah'] ?? null);
             } else {
                 $patient   = $this->storePasien($data);   // storePasien sudah simpan foto
                 $photoPath = $patient->photo_path;
@@ -574,12 +633,20 @@ class AdmisiService
             $user = auth('api')->user();
 
             // ─── Guard: cegah visit aktif ganda ──────────────────────────
-            // Pasien tidak boleh punya >1 kunjungan yang masih berjalan
-            // (current_station != SELESAI). Mencegah data visit rangkap saat
-            // pasien lama (mis. nyangkut dari hari sebelumnya) didaftar ulang.
+            // Pasien tidak boleh punya >1 kunjungan rawat JALAN yang masih
+            // berjalan (current_station != SELESAI). Mencegah data visit rangkap
+            // saat pasien lama (mis. nyangkut dari hari sebelumnya) didaftar ulang.
             // lockForUpdate utk anti-race dua registrasi bersamaan.
+            //
+            // RANAP DIKECUALIKAN: visit rawat inap long-lived (bertahan berhari-hari)
+            // tidak boleh memblok pendaftaran rawat jalan baru (mis. kontrol poli
+            // lain selama pasien masih dirawat). Lihat plan Rawat Inap Fase 2.
             $activeVisit = Visit::where('patient_id', $patient->id)
                 ->where('current_station', '!=', 'SELESAI')
+                ->where(function ($q) {
+                    $q->where('jenis_pelayanan', '!=', 'RANAP')
+                      ->orWhereNull('jenis_pelayanan');
+                })
                 ->orderByDesc('created_at')
                 ->lockForUpdate()
                 ->first();
@@ -597,6 +664,7 @@ class AdmisiService
             // ─── Preop Bedah: validasi & auto-shift jadwal ───────────────
             $visitType         = $data['visit_type'] ?? 'REGULAR';
             $surgeryScheduleId = null;
+            $inpatientReason   = null; // Fase 8B: PRE_OP bila jadwal butuh rawat inap.
 
             if ($visitType === 'PREOP_BEDAH') {
                 if (empty($data['surgery_schedule_id'])) {
@@ -624,8 +692,11 @@ class AdmisiService
                     throw new \Exception('Jadwal bedah sudah lewat tanggal (di masa lalu).', 422);
                 }
 
-                // Auto-shift: kalau jadwal bukan hari ini, geser ke hari ini + audit log
-                if (! $schedule->scheduled_date->isToday()) {
+                // Auto-shift: kalau jadwal bukan hari ini, geser ke hari ini + audit log.
+                // KECUALI pre-op RAWAT INAP (requires_inpatient): pasien sengaja datang
+                // H-1 untuk diopname, operasi tetap di tanggal asli (H). Menggeser ke hari
+                // ini akan salah — jadwal operasi inap dipertahankan apa adanya (Fase 8B).
+                if (! $schedule->scheduled_date->isToday() && ! $schedule->requires_inpatient) {
                     $oldDate = $schedule->scheduled_date->copy();
                     $schedule->update(['scheduled_date' => today()]);
 
@@ -640,6 +711,14 @@ class AdmisiService
                 }
 
                 $surgeryScheduleId = $schedule->id;
+
+                // Fase 8B — pre-op RAWAT INAP: jadwal bedah ditandai requires_inpatient
+                // oleh dokter (8A). Pasien datang H-1 → setelah TR+REF tidak ke BEDAH,
+                // tapi ke MENUNGGU_RANAP (perawat tekan "Kirim ke Rawat Inap"). Penanda
+                // PRE_OP dibawa di visit supaya banner/papan tahu konteks & gate tombolnya.
+                if ($schedule->requires_inpatient) {
+                    $inpatientReason = 'PRE_OP';
+                }
             }
 
             // Asuransi/Perusahaan non-BPJS → flag PENDING untuk diverifikasi billing
@@ -661,6 +740,7 @@ class AdmisiService
                 'classification'     => $data['classification'],
                 'visit_type'         => $visitType,
                 'surgery_schedule_id' => $surgeryScheduleId,
+                'inpatient_reason'   => $inpatientReason, // Fase 8B: PRE_OP utk pre-op inap
                 'current_station'    => 'TRIASE',       // skip ADMISI, langsung ke TR
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
@@ -878,6 +958,8 @@ class AdmisiService
                     $photoPath = $this->savePatientPhoto($data['photo'], $real->name);
                     $real->update(['photo_path' => $photoPath]);
                 }
+                // Petugas memilih ulang wilayah di wizard (data lama tak cocok master).
+                $this->applyWilayahUpdate($real, $data['update_wilayah'] ?? null);
 
                 $visit->patient_id = $real->id;
 
@@ -1110,7 +1192,7 @@ class AdmisiService
 
     public function getAntrian(): Collection
     {
-        return Queue::with([
+        $queues = Queue::with([
             'visit.patient',
             'visit.doctorSchedule.employee:id,name',
             'visit.insurer',
@@ -1122,6 +1204,30 @@ class AdmisiService
             ->whereHas('visit')                       // exclude queue dgn visit soft-deleted (zombie row)
             ->orderBy('queue_sequence')
             ->get();
+
+        // Set flag general_consent_signed per visit (sama seperti getVisits()),
+        // supaya frontend mapQueueItem bisa pakai field yang konsisten.
+        $patientIds = $queues->pluck('visit.patient_id')->filter()->unique()->values()->toArray();
+
+        $signedPatients = empty($patientIds)
+            ? collect()
+            : PatientDocument::whereIn('patient_id', $patientIds)
+                ->where('status', 'FINAL')
+                ->whereHas('documentType', fn ($q) => $q
+                    ->where('code', 'RM-0.1')
+                    ->orWhere('name', 'ilike', '%general consent%')
+                )
+                ->pluck('patient_id')
+                ->unique()
+                ->flip();
+
+        foreach ($queues as $queue) {
+            if ($queue->visit) {
+                $queue->visit->general_consent_signed = isset($signedPatients[$queue->visit->patient_id]);
+            }
+        }
+
+        return $queues;
     }
 
     public function createAntrianAdmisi(string $visitId): Queue
@@ -1278,12 +1384,20 @@ class AdmisiService
             throw new \Exception("Poli '{$schedule?->poli_code}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
         }
 
+        // Jenis pelayanan SEP conditional: RANAP='1' (rawat inap), RAJAL/IGD='2'.
+        // Kelas rawat hak: untuk RANAP ambil dari visit.kelas_rawat_hak (kelas HAK
+        // peserta, bukan kelas room titipan); fallback ke request/'3'.
+        $isRanap   = ($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP';
+        $klsRawatHak = (string) ($visit->kelas_rawat_hak ?? $data['kls_rawat'] ?? '3');
+
         $tSep = [
             'noKartu'      => $data['bpjs_number'],
-            'tglSep'       => now('Asia/Jakarta')->toDateString(),
+            'tglSep'       => $isRanap && $visit->admission_at
+                ? \Illuminate\Support\Carbon::parse($visit->admission_at)->setTimezone('Asia/Jakarta')->toDateString()
+                : now('Asia/Jakarta')->toDateString(),
             'ppkPelayanan' => $kodeFaskes,
-            'jnsPelayanan' => '2', // Rawat Jalan
-            'klsRawat'     => ['klsRawatHak' => (string) ($data['kls_rawat'] ?? '3'), 'klsRawatNaik' => '', 'pembiayaan' => '', 'penanggungJawab' => ''],
+            'jnsPelayanan' => $isRanap ? '1' : '2', // 1=Rawat Inap, 2=Rawat Jalan/IGD
+            'klsRawat'     => ['klsRawatHak' => $klsRawatHak, 'klsRawatNaik' => '', 'pembiayaan' => '', 'penanggungJawab' => ''],
             'noMR'         => $visit->patient?->no_rm ?? '',
             'rujukan'      => [
                 'asalRujukan' => '1', // FKTP

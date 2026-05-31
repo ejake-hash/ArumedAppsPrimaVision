@@ -43,10 +43,43 @@ export const usePenunjangStore = defineStore('penunjang', () => {
     try {
       const { data } = await penunjangApi.antrian()
       antrian.value   = data.data ?? []
+
+      // Re-link selectedQueue ke objek terbaru dari antrian (id sama) supaya:
+      //  - selectedOrders & badge order di list memakai REFERENSI yang sama
+      //    (list ↔ panel tidak lagi divergen), dan
+      //  - status antrean pasien terpilih ikut ter-update lintas-poll.
+      // Status order yang sudah lebih maju secara lokal (mis. baru saja IN_PROGRESS
+      // via saveHasil tapi server poll belum mencerminkan) dipertahankan.
+      if (selectedQueue.value) {
+        const fresh = antrian.value.find((q) => q.id === selectedQueue.value.id)
+        if (fresh) {
+          _mergeOrderStatuses(selectedQueue.value, fresh)
+          selectedQueue.value = fresh
+        }
+      }
     } catch (err) {
       queueError.value = err.response?.data?.message ?? 'Gagal memuat antrian penunjang'
     } finally {
       queueLoading.value = false
+    }
+  }
+
+  // Pertahankan status order lokal yang lebih maju agar tidak "mundur" saat poll
+  // server belum sinkron (REQUESTED < IN_PROGRESS < COMPLETED; CANCELLED final).
+  const _ORDER_RANK = { REQUESTED: 0, IN_PROGRESS: 1, COMPLETED: 2, CANCELLED: 3 }
+  function _mergeOrderStatuses(oldQ, freshQ) {
+    const oldOrders = oldQ?.visit?.diagnostic_orders ?? []
+    const newOrders = freshQ?.visit?.diagnostic_orders ?? []
+    if (!oldOrders.length || !newOrders.length) return
+    const oldById = new Map(oldOrders.map((o) => [o.id, o]))
+    for (const o of newOrders) {
+      const prev = oldById.get(o.id)
+      if (!prev) continue
+      const pr = _ORDER_RANK[prev.status] ?? 0
+      const nr = _ORDER_RANK[o.status] ?? 0
+      if (prev.status === 'CANCELLED' || (pr > nr && o.status !== 'CANCELLED')) {
+        o.status = prev.status
+      }
     }
   }
 
@@ -164,9 +197,11 @@ export const usePenunjangStore = defineStore('penunjang', () => {
       const { data } = await penunjangApi.selesaiAntrian(queueId)
       const idx = antrian.value.findIndex((q) => q.id === queueId)
       if (idx !== -1) {
-        antrian.value[idx] = { ...antrian.value[idx], status: 'COMPLETED' }
-      }
-      if (selectedQueue.value?.id === queueId) {
+        const updated = { ...antrian.value[idx], status: 'COMPLETED' }
+        antrian.value[idx] = updated
+        // Jaga identitas referensi list ↔ panel (lihat fetchAntrian re-link).
+        if (selectedQueue.value?.id === queueId) selectedQueue.value = updated
+      } else if (selectedQueue.value?.id === queueId) {
         selectedQueue.value = { ...selectedQueue.value, status: 'COMPLETED' }
       }
       return data.data
@@ -194,10 +229,17 @@ export const usePenunjangStore = defineStore('penunjang', () => {
   function _updateQueueItem(updatedQueue) {
     const idx = antrian.value.findIndex((q) => q.id === updatedQueue.id)
     if (idx !== -1) {
-      antrian.value[idx] = { ...antrian.value[idx], ...updatedQueue }
-    }
-    if (selectedQueue.value?.id === updatedQueue.id) {
-      selectedQueue.value = { ...selectedQueue.value, ...updatedQueue }
+      // Pertahankan `visit` (beserta diagnostic_orders) yang sudah ter-load bila
+      // payload server tidak menyertakannya, supaya panel order tidak hilang.
+      const merged = { ...antrian.value[idx], ...updatedQueue }
+      if (!updatedQueue.visit && antrian.value[idx].visit) merged.visit = antrian.value[idx].visit
+      antrian.value[idx] = merged
+      // Jaga identitas referensi list ↔ panel.
+      if (selectedQueue.value?.id === updatedQueue.id) selectedQueue.value = merged
+    } else if (selectedQueue.value?.id === updatedQueue.id) {
+      const merged = { ...selectedQueue.value, ...updatedQueue }
+      if (!updatedQueue.visit && selectedQueue.value.visit) merged.visit = selectedQueue.value.visit
+      selectedQueue.value = merged
     }
   }
 

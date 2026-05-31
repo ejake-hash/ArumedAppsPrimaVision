@@ -544,10 +544,6 @@ const isBpjsSelected = computed(() =>
 )
 
 async function cetakRincian() {
-  if (isBpjsSelected.value) {
-    toast('w', 'Pasien BPJS — kwitansi tidak dicetak untuk pasien (ditagihkan ke BPJS).')
-    return
-  }
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   printing.value = true
   try {
@@ -572,8 +568,16 @@ function penjaminLabel(g) {
 }
 
 // ─── History pembayaran ─────────────────────────────────────────────────────
+// Tanggal default = hari ini (format yyyy-mm-dd WIB). Backend getInvoiceList
+// memfilter `whereDate('created_at', tanggal)`, default today() bila kosong.
+function todayStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const history       = ref([])
 const historyLoading = ref(false)
+const hDate         = ref(todayStr())
 const hSearch       = ref('')
 const hFilterPtype  = ref('')
 const hFilterMetode = ref('')
@@ -581,13 +585,34 @@ const hFilterMetode = ref('')
 async function fetchHistory() {
   historyLoading.value = true
   try {
-    const { data } = await kasirApi.invoiceList({ status: 'PAID', per_page: 50 })
+    const { data } = await kasirApi.invoiceList({ status: 'PAID', per_page: 50, tanggal: hDate.value || todayStr() })
     const payload  = data.data
     history.value  = Array.isArray(payload) ? payload : (payload?.data ?? [])
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat history')
   } finally {
     historyLoading.value = false
+  }
+}
+
+// Cetak kwitansi dari baris history (reuse Teleport print template + printData).
+// Pasien BPJS dikecualikan (ditagih ke BPJS, tidak dicetak untuk pasien).
+async function cetakKwitansiHistory(h) {
+  if (ptypeOfHistory(h) === 'bpjs') {
+    toast('w', 'Pasien BPJS — kwitansi tidak dicetak untuk pasien (ditagihkan ke BPJS).')
+    return
+  }
+  if (!h?.id) { toast('w', 'Invoice tidak valid'); return }
+  printing.value = true
+  try {
+    const { data } = await kasirApi.cetakInvoice(h.id)
+    printData.value = data.data
+    await nextTick()
+    setTimeout(() => window.print(), 80)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyiapkan dokumen cetak')
+  } finally {
+    printing.value = false
   }
 }
 
@@ -971,7 +996,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         {{ editTagihan ? 'Selesai Edit' : 'Edit Tagihan' }}
                       </button>
-                      <button v-if="!isBpjsSelected" class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
+                      <button class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
                         <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         {{ printing ? 'Menyiapkan…' : 'Cetak Rincian' }}
                       </button>
@@ -1246,13 +1271,10 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                       <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                       {{ selInv.status === 'PAID' ? 'Sudah Lunas' : paying ? 'Memproses...' : 'Proses Pembayaran' }}
                     </button>
-                    <button v-if="selInv.status === 'PAID' && !isBpjsSelected" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" :disabled="printing" @click="cetakRincian">
+                    <button v-if="selInv.status === 'PAID'" class="btn btn-secondary btn-full btn-sm" style="margin-top:.35rem" :disabled="printing" @click="cetakRincian">
                       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
-                      Cetak Kwitansi {{ selInv.invoice_number }}
+                      {{ isBpjsSelected ? 'Cetak Rincian' : 'Cetak Kwitansi' }} {{ selInv.invoice_number }}
                     </button>
-                    <p v-else-if="selInv.status === 'PAID' && isBpjsSelected" class="bpjs-noprint-note">
-                      Pasien BPJS — kwitansi tidak dicetak (ditagihkan ke BPJS).
-                    </p>
                   </div>
                 </div>
               </div>
@@ -1291,6 +1313,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                 Riwayat Pembayaran
               </div>
               <div class="filter-row">
+                <input v-model="hDate" type="date" class="fi" title="Tanggal transaksi" @change="fetchHistory" />
                 <input v-model="hSearch" class="fi" placeholder="Cari pasien/no invoice..." />
                 <select v-model="hFilterPtype" class="fi">
                   <option value="">Semua jenis</option>
@@ -1307,25 +1330,41 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
             <table class="tbl">
               <thead>
                 <tr>
+                  <th class="num" style="width:44px">No</th>
                   <th>No. Invoice</th>
                   <th>Pasien</th>
                   <th>Jenis</th>
                   <th>Metode</th>
                   <th class="num">Total</th>
                   <th>Jam</th>
+                  <th style="width:96px">Aksi</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="historyLoading && !history.length"><td colspan="6" class="empty-row">Memuat history…</td></tr>
-                <tr v-for="h in histFiltered" :key="h.id">
+                <tr v-if="historyLoading && !history.length"><td colspan="8" class="empty-row">Memuat history…</td></tr>
+                <tr v-for="(h, i) in histFiltered" :key="h.id">
+                  <td class="num muted">{{ i + 1 }}</td>
                   <td class="strong">{{ h.invoice_number }}</td>
                   <td>{{ h.visit?.patient?.name ?? '—' }}<div class="muted">{{ h.visit?.patient?.no_rm ?? '—' }}</div></td>
                   <td><span :class="['kat-pill', `kat-${ptypeOfHistory(h)}`]">{{ ptypeOfHistory(h).toUpperCase() }}</span></td>
                   <td>{{ metodeLabel(h.payment_method) }}</td>
                   <td class="num strong">Rp {{ Number(h.paid_amount ?? h.total).toLocaleString('id-ID') }}</td>
                   <td class="muted">{{ formatTime(h.paid_at ?? h.updated_at) }}</td>
+                  <td>
+                    <button
+                      v-if="ptypeOfHistory(h) !== 'bpjs'"
+                      class="hist-print-btn"
+                      :disabled="printing"
+                      title="Cetak kwitansi"
+                      @click="cetakKwitansiHistory(h)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                      Cetak
+                    </button>
+                    <span v-else class="muted">—</span>
+                  </td>
                 </tr>
-                <tr v-if="!historyLoading && !histFiltered.length"><td colspan="6" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
+                <tr v-if="!historyLoading && !histFiltered.length"><td colspan="8" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
               </tbody>
             </table>
           </div>
@@ -1354,7 +1393,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
           </div>
         </header>
 
-        <h1 class="rp-title">RINCIAN BIAYA PELAYANAN</h1>
+        <h1 class="rp-title">{{ printData.inpatient ? 'KWITANSI RAWAT INAP' : 'RINCIAN BIAYA PELAYANAN' }}</h1>
         <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
 
         <table class="rp-meta">
@@ -1371,6 +1410,26 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
               <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
               <td class="k">Penjamin</td><td class="s">:</td>
               <td class="v">{{ penjaminLabel(printData.patient?.guarantor_type) }}<span v-if="printData.patient?.insurer"> — {{ printData.patient.insurer }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- BLOK RAWAT INAP (hanya untuk kwitansi RI) -->
+        <table v-if="printData.inpatient" class="rp-meta rp-meta-ranap">
+          <tbody>
+            <tr>
+              <td class="k">Ruang / Bed</td><td class="s">:</td>
+              <td class="v">{{ printData.inpatient.room || '—' }}<span v-if="printData.inpatient.bed"> / {{ printData.inpatient.bed }}</span></td>
+              <td class="k">Kelas Hak</td><td class="s">:</td>
+              <td class="v">{{ printData.inpatient.kelas_rawat_hak || '—' }}<span v-if="printData.inpatient.titip_note"> ({{ printData.inpatient.titip_note }})</span></td>
+            </tr>
+            <tr>
+              <td class="k">Tgl Masuk</td><td class="s">:</td><td class="v">{{ printData.inpatient.admission_at || '—' }}</td>
+              <td class="k">Tgl Keluar</td><td class="s">:</td><td class="v">{{ printData.inpatient.discharge_at || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="k">Lama Rawat</td><td class="s">:</td><td class="v"><strong>{{ printData.inpatient.los ?? '—' }} malam</strong></td>
+              <td class="k">Cara Keluar</td><td class="s">:</td><td class="v">{{ printData.inpatient.discharge_type || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -1545,7 +1604,6 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .empty-state svg { width: 56px; height: 56px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; }
 .empty-state p { font-size: 13px; }
 
-.bpjs-noprint-note { margin: .35rem 0 0; font-size: 11px; color: var(--tu); text-align: center; font-style: italic; }
 
 .pt-banner { background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px; display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.85rem; }
 .pt-info { flex: 1; min-width: 0; }
@@ -1803,6 +1861,18 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
 .filter-row { display: flex; gap: 0.4rem; align-items: center; }
 .filter-row .fi { width: 150px; height: 28px; font-size: 11px; }
+.filter-row input[type="date"].fi { width: 138px; }
+
+.hist-print-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; border-radius: 6px;
+  border: 1.5px solid var(--gb); background: var(--bs); color: var(--td);
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500; cursor: pointer;
+  transition: all .12s;
+}
+.hist-print-btn svg { width: 13px; height: 13px; }
+.hist-print-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); background: var(--gl); }
+.hist-print-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 999; display: flex; flex-direction: column; gap: 6px; }
 .toast { padding: 9px 13px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); min-width: 230px; }

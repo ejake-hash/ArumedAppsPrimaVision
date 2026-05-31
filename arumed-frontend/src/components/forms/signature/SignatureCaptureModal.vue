@@ -184,11 +184,16 @@ function close() {
   display: flex; justify-content: flex-end; gap: 0.5rem;
 }
 .scm-btn-ghost, .scm-btn-primary {
-  padding: 0.55rem 1.25rem; border: 1px solid var(--gb); border-radius: 6px;
-  background: white; cursor: pointer; font-size: 13.5px;
+  padding: 0.55rem 1.25rem; border-radius: 6px;
+  cursor: pointer; font-size: 13.5px; font-weight: 700;
 }
-.scm-btn-primary { background: var(--pri); color: white; border-color: var(--pri); }
-.scm-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.scm-btn-ghost {
+  background: var(--bi); color: var(--td); border: 1px solid var(--tu);
+}
+.scm-btn-ghost:hover { background: #e6e9ee; border-color: var(--tm); }
+.scm-btn-primary {
+  background: var(--ga); color: #fff !important; border: 1px solid var(--ga);
+}
+.scm-btn-primary:hover:not(:disabled) { background: var(--ld); border-color: var(--ld); }
 .scm-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.scm-btn-ghost:hover { background: var(--bg); }
 </style>

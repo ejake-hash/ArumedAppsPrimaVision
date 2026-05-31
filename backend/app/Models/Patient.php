@@ -16,6 +16,7 @@ class Patient extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'no_rm',
         'identity_type',
         'nik',
@@ -23,9 +24,14 @@ class Patient extends Model
         'name',
         'gender',
         'date_of_birth',
+        'tempat_lahir',
+        'pekerjaan',
         'phone',
         'address',
         'province',
+        'nama_kab_kota',
+        'nama_kecamatan',
+        'nama_kelurahan',
         'bpjs_number',
         'blood_type',
         'allergy_notes',

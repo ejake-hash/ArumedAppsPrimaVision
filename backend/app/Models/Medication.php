@@ -16,6 +16,8 @@ class Medication extends Model
 
     public const FORM_SEDIAAN = ['TABLET', 'KAPSUL', 'SIRUP', 'TETES_MATA', 'SALEP_MATA', 'INJEKSI', 'LAIN'];
     public const GOLONGAN    = ['BEBAS', 'BEBAS_TERBATAS', 'KERAS', 'NARKOTIKA', 'PSIKOTROPIKA'];
+    // Golongan yang boleh dijual sebagai obat tambahan apotek tanpa resep dokter.
+    public const GOLONGAN_OTC = ['BEBAS', 'BEBAS_TERBATAS'];
 
     protected $fillable = [
         'code',

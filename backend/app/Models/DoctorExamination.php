@@ -15,6 +15,7 @@ class DoctorExamination extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'visit_id',
         'doctor_id',
         // Tab 2 — Anamnese

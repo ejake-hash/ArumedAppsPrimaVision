@@ -179,7 +179,9 @@ class AdmisiController extends Controller
             'date_of_birth' => 'sometimes|date|before:today',
             'phone'        => 'nullable|string|max:20',
             'address'      => 'nullable|string|max:500',
-            'province'     => 'nullable|string|max:100',
+            'province'      => 'nullable|string|max:100',
+            'nama_kab_kota' => 'nullable|string|max:100',
+            'nama_kecamatan' => 'nullable|string|max:100',
             'bpjs_number'  => 'nullable|string|max:20|unique:patients,bpjs_number,' . $id,
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
@@ -216,6 +218,13 @@ class AdmisiController extends Controller
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
             'photo'        => 'nullable|string',
+
+            // Update wilayah pasien lama (opsional) — saat petugas memilih ulang
+            // wilayah di wizard karena data lama tak cocok master. Di-replace ke patient.
+            'update_wilayah'                => 'nullable|array',
+            'update_wilayah.province'       => 'nullable|string|max:100',
+            'update_wilayah.nama_kab_kota'  => 'nullable|string|max:100',
+            'update_wilayah.nama_kecamatan' => 'nullable|string|max:100',
 
             // Data kunjungan
             'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol,Rujukan Internal',
@@ -365,6 +374,13 @@ class AdmisiController extends Controller
             'blood_type'   => 'nullable|in:A,B,AB,O',
             'allergy_notes' => 'nullable|string|max:500',
             'photo'        => 'nullable|string',
+
+            // Update wilayah pasien lama (opsional) — saat petugas memilih ulang
+            // wilayah di wizard karena data lama tak cocok master. Di-replace ke patient.
+            'update_wilayah'                => 'nullable|array',
+            'update_wilayah.province'       => 'nullable|string|max:100',
+            'update_wilayah.nama_kab_kota'  => 'nullable|string|max:100',
+            'update_wilayah.nama_kecamatan' => 'nullable|string|max:100',
 
             // Data kunjungan
             'classification'     => 'required|in:Baru,Pre-Op,Post-Op,Kontrol,Rujukan Internal',

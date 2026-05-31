@@ -16,11 +16,12 @@ class InventoryStock extends Model
     public const TYPE_BHP        = 'BHP';
     public const TYPE_IOL        = 'IOL';
 
-    // Lokasi stok. INVENTORI = gudang induk (default), BEDAH/FARMASI = stok unit.
+    // Lokasi stok. INVENTORI = gudang induk (default), BEDAH/FARMASI/RANAP = stok unit (depo).
     public const LOC_INVENTORI = 'INVENTORI';
     public const LOC_BEDAH     = 'BEDAH';
     public const LOC_FARMASI   = 'FARMASI';
-    public const LOCATIONS     = [self::LOC_INVENTORI, self::LOC_BEDAH, self::LOC_FARMASI];
+    public const LOC_RANAP     = 'RANAP';
+    public const LOCATIONS     = [self::LOC_INVENTORI, self::LOC_BEDAH, self::LOC_FARMASI, self::LOC_RANAP];
 
     protected $fillable = [
         'item_type',

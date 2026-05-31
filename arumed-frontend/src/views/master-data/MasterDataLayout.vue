@@ -30,6 +30,17 @@ const tabs = computed(() => {
     },
   ]
 
+  // Fasilitas & Ruang — ruang operasi + ruangan/bed rawat inap + tarif kamar.
+  // Tampil untuk RANAP (rawat_inap) ATAU admin pengaturan. Satu blok agar tak dobel.
+  if (auth.can('rawat_inap.read') || auth.can('pengaturan.read')) {
+    out.push({
+      section: 'Fasilitas & Ruang',
+      items: [
+        { to: '/master-data/ruang-fasilitas', label: 'Ruang & Tempat Tidur', icon: 'bed' },
+      ],
+    })
+  }
+
   // Form Registry — hanya tampil untuk role yang granted form_template.read
   if (auth.can('form_template.read')) {
     out.push({
@@ -83,6 +94,7 @@ const currentTabLabel = computed(() => {
             <svg v-else-if="item.icon === 'box'" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
             <svg v-else-if="item.icon === 'lens'" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
             <svg v-else-if="item.icon === 'doc'" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+            <svg v-else-if="item.icon === 'bed'" viewBox="0 0 24 24"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
             <svg v-else viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
 
             <span>{{ item.label }}</span>

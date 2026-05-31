@@ -25,6 +25,7 @@ class SurgeryRecord extends Model
         'complication_detail',
         'post_op_instructions',
         'followup_date',
+        'post_op_disposition',
         'finalized_at',
     ];
 

@@ -423,6 +423,22 @@ class QueueService
      */
     public function resolveNextStation(Visit $visit, string $fromStation): string|array|null
     {
+        // Cabang per jenis pelayanan SEBELUM match station. Alur rawat jalan (RAJAL)
+        // dipindah PERSIS ke resolveNextRajal() agar zero-regression; RANAP punya
+        // alur long-lived sendiri. IGD diaktifkan di fase akhir.
+        return match ($visit->jenis_pelayanan ?? 'RAJAL') {
+            'RANAP' => $this->resolveNextRanap($visit, $fromStation),
+            // 'IGD' => $this->resolveNextIgd($visit, $fromStation), // diaktifkan di fase IGD (akhir)
+            default => $this->resolveNextRajal($visit, $fromStation),
+        };
+    }
+
+    /**
+     * Alur RAWAT JALAN (RAJAL) — body existing dipindah persis dari resolveNextStation.
+     * JANGAN ubah tanpa uji regresi A→TR→D→K→F→SELESAI.
+     */
+    private function resolveNextRajal(Visit $visit, string $fromStation): string|array|null
+    {
         return match ($fromStation) {
             Queue::STATION_ADMISI       => [Queue::STATION_TRIASE, Queue::STATION_REFRAKSIONIS],
             Queue::STATION_TRIASE       => $this->nextAfterTriaseOrRefraksi($visit),
@@ -434,6 +450,49 @@ class QueueService
             Queue::STATION_FARMASI      => self::END_OF_FLOW, // pasien pulang
             default                     => null,
         };
+    }
+
+    /**
+     * Alur RAWAT INAP (RANAP) — station RANAP long-lived (1 baris bertahan
+     * berhari-hari). Visite/tindakan/obat = sub-aktivitas (menulis inpatient_charges),
+     * BUKAN advanceFromStation. Transisi nyata hanya saat discharge.
+     *
+     *   RANAP    → KASIR        (HANYA jika discharge_at sudah terisi; else gate null)
+     *   PENUNJANG→ RANAP/NO_OP  (pasien inap order penunjang → balik ke baris RANAP yg masih hidup)
+     *   KASIR    → nextAfterKasir (reuse: FARMASI jika ada resep, else SELESAI)
+     *   FARMASI  → SELESAI
+     */
+    private function resolveNextRanap(Visit $visit, string $fromStation): string|array|null
+    {
+        return match ($fromStation) {
+            Queue::STATION_RANAP     => $visit->discharge_at
+                ? Queue::STATION_KASIR
+                : null, // belum discharge → tidak boleh tutup baris RANAP
+            // PENUNJANG & BEDAH = sub-aktivitas pasien inap → balik ke baris RANAP
+            // yang masih hidup (bed ditahan). Biaya masuk inpatient_charges, 1 invoice
+            // saat discharge. BUKAN BEDAH→KASIR seperti rawat jalan.
+            Queue::STATION_PENUNJANG => $this->returnToLiveRanap($visit),
+            Queue::STATION_BEDAH     => $this->returnToLiveRanap($visit),
+            Queue::STATION_KASIR     => $this->nextAfterKasir($visit),
+            Queue::STATION_FARMASI   => self::END_OF_FLOW,
+            default                  => null,
+        };
+    }
+
+    /**
+     * Sub-aktivitas RANAP (penunjang/bedah) selesai → balik ke baris RANAP yang
+     * masih hidup (long-lived, bed ditahan). Jika baris RANAP masih ada → NO_OP
+     * (jangan buat baris baru). Pasca-bedah, transfer ke HCU/ICU dilakukan terpisah
+     * lewat RanapService::transferBed (keputusan petugas).
+     */
+    private function returnToLiveRanap(Visit $visit): string
+    {
+        $hasLiveRanap = Queue::byStation(Queue::STATION_RANAP)
+            ->where('visit_id', $visit->id)
+            ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
+            ->exists();
+
+        return $hasLiveRanap ? self::NO_OP : Queue::STATION_RANAP;
     }
 
     /**
@@ -496,6 +555,20 @@ class QueueService
         $visit->loadMissing('doctorExamination');
         $exam = $visit->doctorExamination;
 
+        // 2b. Fase 8 — Dokter putuskan RAWAT INAP (observasi/pemeriksaan tanpa operasi):
+        //     tutup queue dokter TANPA enqueue otomatis. Pasien masuk papan "Menunggu
+        //     Kamar"; petugas ranap memilih bed via RanapService::admit (yang baru
+        //     meng-enqueue baris RANAP long-lived). inpatient_reason=OBSERVASI di-set
+        //     DokterService::applyInpatientReason.
+        if ($exam && $exam->planning === 'RAWAT_INAP') {
+            $visit->update(['current_station' => 'MENUNGGU_RANAP']);
+            return self::NO_OP;
+        }
+
+        // 2c. Planning BEDAH dgn jadwal HARI INI → BEDAH. BEDAH yang butuh inap (pre-op
+        //     H-1, requires_inpatient) jadwalnya pasti hari lain (pasien datang H-1) →
+        //     jatuh ke default KASIR (pulang dulu), lalu masuk via Admisi pre-op di
+        //     hari H-1 (Fase 8B). Tidak perlu cabang khusus di sini.
         if ($exam && $exam->planning === 'BEDAH' && $exam->surgery_schedule_id) {
             $isToday = SurgerySchedule::where('id', $exam->surgery_schedule_id)
                 ->whereDate('scheduled_date', today())
@@ -596,7 +669,7 @@ class QueueService
 
     private function assertStation(string $station): void
     {
-        if (! in_array($station, Queue::STATIONS, true)) {
+        if (! in_array($station, Queue::ALL_STATIONS, true)) {
             throw new \Exception("Station tidak dikenal: {$station}.", 422);
         }
     }

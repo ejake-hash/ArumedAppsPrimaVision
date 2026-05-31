@@ -1,0 +1,97 @@
+                                                     Table "public.pemeriksaan_ro"
+                Column                |            Type             | Collation | Nullable |                  Default                   
+--------------------------------------+-----------------------------+-----------+----------+--------------------------------------------
+ id                                   | integer                     |           | not null | nextval('pemeriksaan_ro_id_seq'::regclass)
+ uuid                                 | character varying(50)       |           | not null | 
+ registrasi_uuid                      | character varying(50)       |           |          | '-'::character varying
+ no_pendaftaran                       | character varying(50)       |           |          | '-'::character varying
+ registrasi_kode                      | character varying(50)       |           |          | '-'::character varying
+ registrasi_nomor                     | character varying(50)       |           |          | '-'::character varying
+ registrasi_jenis                     | character varying(100)      |           |          | '-'::character varying
+ pasien_uuid                          | character varying(50)       |           | not null | 
+ rekam_medis                          | character varying(25)       |           | not null | '-'::character varying
+ nama_pasien                          | character varying(100)      |           | not null | '-'::character varying
+ pengguna_uuid                        | character varying(50)       |           | not null | 
+ nama_dokter                          | character varying(70)       |           | not null | 
+ tanggal                              | date                        |           |          | '1990-09-09'::date
+ waktu                                | character varying(10)       |           |          | '00:00'::character varying
+ nama_pemeriksa                       | character varying(100)      |           |          | '-'::character varying
+ status_fungsional                    | character varying(100)      |           |          | '-'::character varying
+ keluhan_utama                        | character varying(100)      |           |          | '-'::character varying
+ kasus_urgent                         | character varying(50)       |           |          | '-'::character varying
+ kasus_urgent_show                    | smallint                    |           |          | 0
+ kasus_urgent_lainnya                 | character varying(100)      |           |          | '-'::character varying
+ riwayat_penyakit                     | character varying(100)      |           |          | '-'::character varying
+ status_psikologi                     | character varying(50)       |           |          | '-'::character varying
+ tekanan_darah                        | character varying(100)      |           |          | '-'::character varying
+ nadi                                 | character varying(100)      |           |          | '-'::character varying
+ respiratory_rate                     | character varying(100)      |           |          | '-'::character varying
+ suhu                                 | character varying(100)      |           |          | '-'::character varying
+ berat_badan                          | character varying(100)      |           |          | '-'::character varying
+ tinggi_badan                         | character varying(100)      |           |          | '-'::character varying
+ nyeri                                | character varying(100)      |           |          | '-'::character varying
+ nyeri_hilang_bila                    | character varying(100)      |           |          | '-'::character varying
+ nyeri_hilang_bila_show               | smallint                    |           |          | 0
+ nyeri_hilang_bila_lainnya            | character varying(100)      |           |          | '-'::character varying
+ skala_nyeri                          | character varying(100)      |           |          | '-'::character varying
+ lokasi_nyeri                         | character varying(100)      |           |          | '-'::character varying
+ karakteristik_nyeri                  | character varying(100)      |           |          | '-'::character varying
+ durasi_nyeri                         | character varying(100)      |           |          | '-'::character varying
+ keterangan_nyeri                     | character varying(100)      |           |          | '-'::character varying
+ masalah_kesehatan_nyeri              | character varying(100)      |           |          | '-'::character varying
+ penyakit_pernah_diderita             | character varying(100)      |           |          | '-'::character varying
+ penyakit_pernah_diderita_show        | smallint                    |           |          | 0
+ penyakit_pernah_diderita_lainnya     | character varying(100)      |           |          | '-'::character varying
+ pernah_dioperasi                     | character varying(100)      |           |          | '-'::character varying
+ pernah_dioperasi_show                | smallint                    |           |          | 0
+ pernah_dioperasi_lainnya             | character varying(100)      |           |          | '-'::character varying
+ riwayat_alergi_makanan               | character varying(100)      |           |          | '-'::character varying
+ riwayat_alergi_makanan_show          | smallint                    |           |          | 0
+ riwayat_alergi_makanan_lainnya       | character varying(100)      |           |          | '-'::character varying
+ riwayat_alergi_obatan                | character varying(100)      |           |          | '-'::character varying
+ riwayat_alergi_obatan_show           | smallint                    |           |          | 0
+ riwayat_alergi_obatan_lainnya        | character varying(100)      |           |          | '-'::character varying
+ obat_digunakan_saat_ini              | character varying(100)      |           |          | '-'::character varying
+ obat_digunakan_saat_ini_show         | smallint                    |           |          | 0
+ obat_digunakan_saat_ini_lainnya      | character varying(100)      |           |          | '-'::character varying
+ penilaian_resiko_jatuh               | character varying(100)      |           |          | '-'::character varying
+ diagnosa_keperawatan                 | text                        |           |          | '-'::text
+ intervensi_keperawatan               | text                        |           |          | '-'::text
+ ttd                                  | character varying(255)      |           |          | 'Dto'::character varying
+ ocular_dextra_pd                     | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_autoref                | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_keratometri_k1         | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_keratometri_k2         | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_tonometri              | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_visus                  | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_bcva1                  | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_bcva2                  | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_add                    | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_kacamata_lama_sph      | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_kacamata_lama_cyl      | character varying(50)       |           |          | '-'::character varying
+ ocular_dextra_kacamata_lama_addisi   | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_ro                   | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_autoref              | character varying(50)       |           |          | 0.0
+ ocular_sinistra_keratometri_k1       | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_keratometri_k2       | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_tonometri            | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_visus                | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_bcva1                | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_bcva2                | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_add                  | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_kacamata_lama_sph    | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_kacamata_lama_cyl    | character varying(50)       |           |          | '-'::character varying
+ ocular_sinistra_kacamata_lama_addisi | character varying(50)       |           |          | '-'::character varying
+ status                               | character varying(10)       |           | not null | 'active'::character varying
+ delete_soft                          | smallint                    |           | not null | 1
+ created_at                           | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+ penetesan_obat                       | character varying(50)       |           |          | '-'::character varying
+ kgd                                  | character varying(50)       |           |          | ''::character varying
+ ocular_sinistra_pinhole              | character varying(50)       |           |          | NULL::character varying
+ ocular_dextra_pinhole                | character varying(50)       |           |          | NULL::character varying
+ ocular_dextra_kacamata_lama_add      | character varying(50)       |           |          | NULL::character varying
+ ocular_sinistra_kacamata_lama_add    | character varying(50)       |           |          | NULL::character varying
+Indexes:
+    "pemeriksaan_ro_pk" PRIMARY KEY, btree (id, uuid)
+    "index_pemeriksaan_ro" btree (pasien_uuid, rekam_medis, nama_pasien, no_pendaftaran, registrasi_uuid)
+

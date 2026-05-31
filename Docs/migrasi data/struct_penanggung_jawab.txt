@@ -1,0 +1,31 @@
+                                                Table "public.penanggung_jawab"
+          Column           |            Type             | Collation | Nullable |                   Default                    
+---------------------------+-----------------------------+-----------+----------+----------------------------------------------
+ id                        | integer                     |           | not null | nextval('penanggung_jawab_id_seq'::regclass)
+ uuid                      | character varying(50)       |           | not null | 
+ registrasi_uuid           | character varying(50)       |           | not null | 
+ registrasi_no_pendaftaran | character varying(50)       |           | not null | '-'::character varying
+ registrasi_tipe           | character varying(100)      |           |          | '-'::character varying
+ registrasi_kode           | character varying(50)       |           |          | '-'::character varying
+ registrasi_nomor          | character varying(50)       |           |          | '-'::character varying
+ registrasi_jenis          | character varying(100)      |           |          | '-'::character varying
+ pasien_uuid               | character varying(50)       |           | not null | 
+ rekam_medis               | character varying(25)       |           | not null | '-'::character varying
+ nama_pasien               | character varying(70)       |           | not null | '-'::character varying
+ pengguna_uuid             | character varying(50)       |           |          | '-'::character varying
+ nama_dokter               | character varying(70)       |           |          | '-'::character varying
+ nama                      | character varying(65)       |           |          | '-'::character varying
+ hubungan                  | character varying(55)       |           |          | '-'::character varying
+ alamat                    | character varying(100)      |           |          | '-'::character varying
+ jenis_identitas           | character varying(30)       |           |          | '-'::character varying
+ no_identitas              | character varying(30)       |           |          | '-'::character varying
+ no_handphone              | character varying(35)       |           |          | '-'::character varying
+ status                    | character varying(10)       |           | not null | 'active'::character varying
+ delete_soft               | smallint                    |           | not null | 1
+ created_at                | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+ pengguna_umum_uuid        | character varying(50)       |           |          | '-'::character varying
+ nama_dokter_umum          | character varying(50)       |           |          | '-'::character varying
+Indexes:
+    "penanggung_jawab_pk" PRIMARY KEY, btree (id, uuid)
+    "index_penanggung_jawab" btree (pasien_uuid, nama, nama_pasien, registrasi_no_pendaftaran, registrasi_uuid)
+

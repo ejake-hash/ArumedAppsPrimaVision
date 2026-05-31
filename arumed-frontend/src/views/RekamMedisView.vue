@@ -51,24 +51,37 @@ const searchPlaceholder = computed(() =>
 )
 
 let _debounce = null
+let _searchSeq = 0   // guard race condition: hanya respons terbaru yang dipakai
 watch(searchQuery, (q) => {
   clearTimeout(_debounce)
-  if (!q.trim()) { searchResults.value = []; return }
+  if (!q.trim()) { _searchSeq++; searchResults.value = []; searching.value = false; return }
   _debounce = setTimeout(doSearch, 320)
 })
 
 async function doSearch() {
   const q = searchQuery.value.trim()
   if (!q) return
+  const seq = ++_searchSeq
   searching.value = true
   try {
     const { data } = await api.get('/rekam-medis/pasien', { params: { keyword: q, mode: searchMode.value } })
+    if (seq !== _searchSeq) return   // sudah ada pencarian lebih baru; abaikan hasil usang
     searchResults.value = data.data ?? []
-  } catch { searchResults.value = [] }
-  finally  { searching.value = false }
+  } catch {
+    if (seq === _searchSeq) searchResults.value = []
+  } finally {
+    if (seq === _searchSeq) searching.value = false
+  }
 }
 
-function setSearchMode(m) { searchMode.value = m; searchQuery.value = ''; searchResults.value = [] }
+function setSearchMode(m) {
+  clearTimeout(_debounce)
+  _searchSeq++                 // batalkan respons in-flight dari mode lama
+  searchMode.value = m
+  searchQuery.value = ''
+  searchResults.value = []
+  searching.value = false
+}
 function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 200) }
 
 // ─── PATIENT STATE ────────────────────────────────────────────────────────────
@@ -175,6 +188,13 @@ function trendTio(c, p) {
   return a > b ? 'down' : 'up' // TIO naik = perhatian (down=merah)
 }
 
+// ─── PENUNJANG (modal lihat hasil) ───────────────────────────────────────────
+const selPj = ref(null)  // baris penunjang yang sedang dilihat
+function openPenunjang(row) { selPj.value = row }
+function isImageAttachment(url) {
+  return !!url && /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url)
+}
+
 // ─── DOCUMENTS ───────────────────────────────────────────────────────────────
 const selDoc = ref(null)
 function docStatusLabel(s) {
@@ -240,10 +260,24 @@ async function openAudit(doc) {
 }
 
 // ─── MISC ────────────────────────────────────────────────────────────────────
-function copyRm() { navigator.clipboard?.writeText(patient.value.no_rm); toast('s', `No. RM ${patient.value.no_rm} disalin`) }
+async function copyRm() {
+  const rm = patient.value?.no_rm
+  if (!rm) return
+  try {
+    if (!navigator.clipboard) throw new Error('clipboard tidak tersedia')
+    await navigator.clipboard.writeText(rm)
+    toast('s', `No. RM ${rm} disalin`)
+  } catch {
+    toast('e', 'Gagal menyalin No. RM (clipboard tidak tersedia)')
+  }
+}
 async function printResume() {
   // Pastikan data kunjungan tersedia untuk lampiran resume.
   if (cache.value.kunjungan === undefined) await loadMenu('kunjungan')
+  if (errors.value.kunjungan) {
+    toast('e', 'Gagal memuat riwayat kunjungan untuk resume')
+    return
+  }
   window.print()
 }
 </script>
@@ -446,24 +480,24 @@ async function printResume() {
                     <tr v-if="expanded===v.visit_id" class="row-detail">
                       <td colspan="7">
                         <div class="det-grid">
-                          <div class="det-box"><div class="det-t">Keluhan Utama</div><div>{{ val(v.detail.keluhan) }}</div></div>
+                          <div class="det-box"><div class="det-t">Keluhan Utama</div><div>{{ val(v.detail?.keluhan) }}</div></div>
                           <div class="det-box">
                             <div class="det-t">Tanda Vital</div>
-                            <div class="vt-row" v-if="v.detail.ttv">
+                            <div class="vt-row" v-if="v.detail?.ttv">
                               <span>TD {{ val(v.detail.ttv.td) }}</span><span>Nadi {{ val(v.detail.ttv.nadi) }}</span>
                               <span>SpO₂ {{ val(v.detail.ttv.spo2) }}%</span><span>Suhu {{ val(v.detail.ttv.suhu) }}°</span>
                               <span>RR {{ val(v.detail.ttv.respirasi) }}</span><span>KGD {{ val(v.detail.ttv.kgd) }}</span>
                             </div>
                             <div v-else>–</div>
                           </div>
-                          <div class="det-box span2" v-if="v.detail.soap">
+                          <div class="det-box span2" v-if="v.detail?.soap">
                             <div class="det-t">SOAP</div>
                             <div class="soap-mini"><b>S</b> {{ val(v.detail.soap.s) }}</div>
                             <div class="soap-mini"><b>O</b> {{ val(v.detail.soap.o) }}</div>
                             <div class="soap-mini"><b>A</b> {{ val(v.detail.soap.a) }}</div>
                             <div class="soap-mini"><b>P</b> {{ val(v.detail.soap.p) }}</div>
                           </div>
-                          <div class="det-box" v-if="v.detail.planning || v.detail.follow_up_date">
+                          <div class="det-box" v-if="v.detail?.planning || v.detail?.follow_up_date">
                             <div class="det-t">Rencana</div>
                             <div>{{ val(v.detail.planning) }}</div>
                             <div v-if="v.detail.follow_up_date"><small>Kontrol: {{ fmtTgl(v.detail.follow_up_date) }}</small></div>
@@ -496,13 +530,13 @@ async function printResume() {
                     <tr v-if="expanded===r.visit_id" class="row-detail">
                       <td colspan="8">
                         <div class="det-grid">
-                          <div class="det-box"><div class="det-t">Visus Awal / Pinhole</div><div>OD {{ val(r.detail.visus_awal_od) }} / PH {{ val(r.detail.pinhole_od) }}</div><div>OS {{ val(r.detail.visus_awal_os) }} / PH {{ val(r.detail.pinhole_os) }}</div></div>
-                          <div class="det-box"><div class="det-t">Autoref</div><div class="mono">OD {{ val(r.detail.autoref_od) }}</div><div class="mono">OS {{ val(r.detail.autoref_os) }}</div></div>
-                          <div class="det-box"><div class="det-t">Refraksi Subjektif</div><div class="mono">OD {{ val(r.detail.subjektif_od) }}</div><div class="mono">OS {{ val(r.detail.subjektif_os) }}</div></div>
-                          <div class="det-box"><div class="det-t">Keratometri</div><div class="mono">OD {{ val(r.detail.keratometri_od) }}</div><div class="mono">OS {{ val(r.detail.keratometri_os) }}</div></div>
-                          <div class="det-box"><div class="det-t">Kacamata Lama</div><div class="mono">OD {{ val(r.detail.old_glasses_od) }}</div><div class="mono">OS {{ val(r.detail.old_glasses_os) }}</div></div>
-                          <div class="det-box"><div class="det-t">Resep Kacamata</div><div>{{ val(r.detail.glasses_type) }} · {{ val(r.detail.lens_material) }} · {{ val(r.detail.coating) }}</div><div v-if="r.detail.iop_method"><small>TIO: {{ r.detail.iop_method }}</small></div></div>
-                          <div class="det-box span2" v-if="r.detail.clinical_notes"><div class="det-t">Catatan Klinis</div><div>{{ r.detail.clinical_notes }}</div></div>
+                          <div class="det-box"><div class="det-t">Visus Awal / Pinhole</div><div>OD {{ val(r.detail?.visus_awal_od) }} / PH {{ val(r.detail?.pinhole_od) }}</div><div>OS {{ val(r.detail?.visus_awal_os) }} / PH {{ val(r.detail?.pinhole_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Autoref</div><div class="mono">OD {{ val(r.detail?.autoref_od) }}</div><div class="mono">OS {{ val(r.detail?.autoref_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Refraksi Subjektif</div><div class="mono">OD {{ val(r.detail?.subjektif_od) }}</div><div class="mono">OS {{ val(r.detail?.subjektif_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Keratometri</div><div class="mono">OD {{ val(r.detail?.keratometri_od) }}</div><div class="mono">OS {{ val(r.detail?.keratometri_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Kacamata Lama</div><div class="mono">OD {{ val(r.detail?.old_glasses_od) }}</div><div class="mono">OS {{ val(r.detail?.old_glasses_os) }}</div></div>
+                          <div class="det-box"><div class="det-t">Resep Kacamata</div><div>{{ val(r.detail?.glasses_type) }} · {{ val(r.detail?.lens_material) }} · {{ val(r.detail?.coating) }}</div><div v-if="r.detail?.iop_method"><small>TIO: {{ r.detail.iop_method }}</small></div></div>
+                          <div class="det-box span2" v-if="r.detail?.clinical_notes"><div class="det-t">Catatan Klinis</div><div>{{ r.detail.clinical_notes }}</div></div>
                         </div>
                       </td>
                     </tr>
@@ -516,7 +550,7 @@ async function printResume() {
               <div v-if="!cur.length" class="empty-mini">Belum ada hasil penunjang</div>
               <table v-else class="rme-table">
                 <thead><tr>
-                  <th>Tanggal</th><th>Jenis</th><th>Mata</th><th>Ringkasan Hasil</th><th>Status</th><th>Pemeriksa</th><th></th><th></th>
+                  <th>Tanggal</th><th>Jenis</th><th>Mata</th><th>Ringkasan Hasil</th><th>Status</th><th>Pemeriksa</th><th></th><th class="ta-r">Aksi</th><th></th>
                 </tr></thead>
                 <tbody>
                   <template v-for="p in cur" :key="p.order_id">
@@ -528,20 +562,21 @@ async function printResume() {
                       <td><span :class="['st-pill', (p.status||'').toLowerCase()]">{{ val(p.status) }}</span></td>
                       <td>{{ val(p.examiner) }}</td>
                       <td><a v-if="p.attachment_url" :href="p.attachment_url" target="_blank" class="att-link" @click.stop>📎</a></td>
+                      <td class="ta-r"><button class="dbtn" @click.stop="openPenunjang(p)">Lihat Hasil</button></td>
                       <td class="chev">{{ expanded===p.order_id ? '▲' : '▼' }}</td>
                     </tr>
                     <tr v-if="expanded===p.order_id" class="row-detail">
-                      <td colspan="8">
+                      <td colspan="9">
                         <div class="det-box">
                           <div class="det-t">Detail Hasil</div>
-                          <div v-if="p.detail.expertise_data" class="kv-grid">
+                          <div v-if="p.detail?.expertise_data" class="kv-grid">
                             <div v-for="(v2,k) in p.detail.expertise_data" :key="k" class="kv">
                               <span class="kv-k">{{ k }}</span><span class="kv-v">{{ v2 }}</span>
                             </div>
                           </div>
                           <div v-else>–</div>
-                          <div v-if="p.detail.notes" class="det-note">Catatan: {{ p.detail.notes }}</div>
-                          <div v-if="p.detail.reviewer" class="det-note">Diverifikasi: {{ p.detail.reviewer }} · {{ fmtTglPendek(p.detail.reviewed_at) }}</div>
+                          <div v-if="p.detail?.notes" class="det-note">Catatan: {{ p.detail.notes }}</div>
+                          <div v-if="p.detail?.reviewer" class="det-note">Diverifikasi: {{ p.detail.reviewer }} · {{ fmtTglPendek(p.detail.reviewed_at) }}</div>
                         </div>
                       </td>
                     </tr>
@@ -561,7 +596,7 @@ async function printResume() {
                       <td class="nowrap">{{ fmtTgl(o.visit_date) }}</td>
                       <td>{{ val(o.prescriber) }}</td>
                       <td>{{ o.item_count }} obat</td>
-                      <td class="trunc">{{ o.items.map(i => i.nama).join(', ') }}</td>
+                      <td class="trunc">{{ (o.items ?? []).map(i => i.nama).join(', ') }}</td>
                       <td class="chev">{{ expanded===o.visit_id ? '▲' : '▼' }}</td>
                     </tr>
                     <tr v-if="expanded===o.visit_id" class="row-detail">
@@ -569,7 +604,7 @@ async function printResume() {
                         <table class="sub-table">
                           <thead><tr><th>Obat</th><th>Qty</th><th>Dosis</th><th>Aturan Pakai</th><th>Catatan</th></tr></thead>
                           <tbody>
-                            <tr v-for="(it,i) in o.items" :key="i">
+                            <tr v-for="(it,i) in (o.items ?? [])" :key="i">
                               <td><b>{{ it.nama }}</b></td>
                               <td>{{ val(it.quantity) }} {{ it.unit ?? '' }}</td>
                               <td>{{ val(it.dosage) }}</td>
@@ -594,20 +629,20 @@ async function printResume() {
                   <template v-for="b in cur" :key="b.visit_id">
                     <tr class="row-click" @click="toggleRow(b.visit_id)">
                       <td class="nowrap">{{ fmtTgl(b.visit_date) }}</td>
-                      <td>{{ b.procedures.length ? b.procedures.join(', ') : '–' }}</td>
+                      <td>{{ (b.procedures ?? []).length ? b.procedures.join(', ') : '–' }}</td>
                       <td class="nowrap">{{ val(b.time_in) }}–{{ val(b.time_out) }}</td>
-                      <td class="trunc">{{ b.iol_used.length ? b.iol_used.join(', ') : '–' }}</td>
+                      <td class="trunc">{{ (b.iol_used ?? []).length ? b.iol_used.join(', ') : '–' }}</td>
                       <td><span v-if="b.has_complication" class="st-pill rejected">Ada</span><span v-else class="st-pill final">Tidak</span></td>
                       <td class="chev">{{ expanded===b.visit_id ? '▲' : '▼' }}</td>
                     </tr>
                     <tr v-if="expanded===b.visit_id" class="row-detail">
                       <td colspan="6">
                         <div class="det-grid">
-                          <div class="det-box span2" v-if="b.detail.operation_notes"><div class="det-t">Laporan Operasi</div><div>{{ b.detail.operation_notes }}</div></div>
-                          <div class="det-box" v-if="b.detail.complication_detail"><div class="det-t">Detail Komplikasi</div><div>{{ b.detail.complication_detail }}</div></div>
-                          <div class="det-box" v-if="b.detail.post_op_instructions"><div class="det-t">Instruksi Pasca-Op</div><div>{{ b.detail.post_op_instructions }}</div></div>
-                          <div class="det-box" v-if="b.detail.followup_date"><div class="det-t">Kontrol</div><div>{{ fmtTgl(b.detail.followup_date) }}</div></div>
-                          <div class="det-box" v-if="!b.detail.operation_notes && !b.detail.complication_detail && !b.detail.post_op_instructions && !b.detail.followup_date"><div>Tidak ada catatan tambahan</div></div>
+                          <div class="det-box span2" v-if="b.detail?.operation_notes"><div class="det-t">Laporan Operasi</div><div>{{ b.detail.operation_notes }}</div></div>
+                          <div class="det-box" v-if="b.detail?.complication_detail"><div class="det-t">Detail Komplikasi</div><div>{{ b.detail.complication_detail }}</div></div>
+                          <div class="det-box" v-if="b.detail?.post_op_instructions"><div class="det-t">Instruksi Pasca-Op</div><div>{{ b.detail.post_op_instructions }}</div></div>
+                          <div class="det-box" v-if="b.detail?.followup_date"><div class="det-t">Kontrol</div><div>{{ fmtTgl(b.detail.followup_date) }}</div></div>
+                          <div class="det-box" v-if="!b.detail?.operation_notes && !b.detail?.complication_detail && !b.detail?.post_op_instructions && !b.detail?.followup_date"><div>Tidak ada catatan tambahan</div></div>
                         </div>
                       </td>
                     </tr>
@@ -624,14 +659,14 @@ async function printResume() {
                 <tbody>
                   <tr v-for="d in cur" :key="d.visit_id">
                     <td class="nowrap">{{ fmtTgl(d.visit_date) }}</td>
-                    <td><span class="dx-inline"><b>{{ d.utama.kode }}</b> {{ d.utama.nama }}</span></td>
+                    <td><span v-if="d.utama" class="dx-inline"><b>{{ d.utama.kode }}</b> {{ d.utama.nama }}</span><span v-else>–</span></td>
                     <td>
-                      <div v-for="s in d.sekunder" :key="s.kode" class="dx-sub"><b>{{ s.kode }}</b> {{ s.nama }}</div>
-                      <span v-if="!d.sekunder.length">–</span>
+                      <div v-for="s in (d.sekunder ?? [])" :key="s.kode" class="dx-sub"><b>{{ s.kode }}</b> {{ s.nama }}</div>
+                      <span v-if="!(d.sekunder ?? []).length">–</span>
                     </td>
                     <td>
-                      <div v-for="t in d.tindakan" :key="t.kode" class="dx-sub"><b>{{ t.kode }}</b> {{ t.nama }}</div>
-                      <span v-if="!d.tindakan.length">–</span>
+                      <div v-for="t in (d.tindakan ?? [])" :key="t.kode" class="dx-sub"><b>{{ t.kode }}</b> {{ t.nama }}</div>
+                      <span v-if="!(d.tindakan ?? []).length">–</span>
                     </td>
                     <td>{{ val(d.planning) }}</td>
                   </tr>
@@ -689,6 +724,54 @@ async function printResume() {
         <div class="rp-footer">Dicetak: {{ new Date().toLocaleDateString('id-ID') }} · Arumed Apps</div>
       </div>
     </template>
+
+    <!-- ─── PENUNJANG MODAL (lihat hasil) ─── -->
+    <div v-if="selPj" class="ov" @click.self="selPj=null">
+      <div class="mbx mbx-lg">
+        <div class="mh">
+          <div>
+            <div class="mht">{{ selPj.test_name }}<span v-if="selPj.eye_side"> · {{ selPj.eye_side.toUpperCase() }}</span></div>
+            <div class="msub">{{ fmtTgl(selPj.visit_date) }} · Status: {{ val(selPj.status) }}</div>
+          </div>
+          <div style="display:flex;gap:.4rem">
+            <a v-if="selPj.attachment_url" :href="selPj.attachment_url" target="_blank" class="mbtn ghost">Buka Lampiran ↗</a>
+            <button class="mcl" @click="selPj=null">✕</button>
+          </div>
+        </div>
+        <div class="mb">
+          <div class="doc-patient-bar">Pasien: <strong>{{ patient.nama }}</strong> · {{ patient.no_rm }}</div>
+
+          <!-- Lampiran (gambar inline / file lain link) -->
+          <div class="pj-sec-t">Lampiran Hasil</div>
+          <div v-if="selPj.attachment_url" class="pj-attach">
+            <a v-if="isImageAttachment(selPj.attachment_url)" :href="selPj.attachment_url" target="_blank">
+              <img :src="selPj.attachment_url" alt="Lampiran hasil penunjang" class="pj-img" />
+            </a>
+            <a v-else :href="selPj.attachment_url" target="_blank" class="pj-file">
+              <span class="pj-file-ic">📄</span>
+              <span>Buka berkas hasil (PDF/dokumen) di tab baru</span>
+            </a>
+          </div>
+          <div v-else class="empty-mini" style="padding:1.2rem">Tidak ada lampiran terunggah</div>
+
+          <!-- Detail expertise -->
+          <div class="pj-sec-t">Detail Pemeriksaan</div>
+          <div v-if="selPj.detail?.expertise_data" class="kv-grid pj-kv">
+            <div v-for="(v2,k) in selPj.detail.expertise_data" :key="k" class="kv">
+              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ v2 }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-mini" style="padding:1rem">Belum ada data hasil</div>
+          <div v-if="selPj.detail?.notes" class="det-note">Catatan: {{ selPj.detail.notes }}</div>
+
+          <!-- Meta verifikasi -->
+          <div class="pj-meta">
+            <div><span class="pj-meta-k">Pemeriksa</span> {{ val(selPj.examiner) }}</div>
+            <div v-if="selPj.detail?.reviewer"><span class="pj-meta-k">Diverifikasi</span> {{ selPj.detail.reviewer }} · {{ fmtTglPendek(selPj.detail.reviewed_at) }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- ─── DOCUMENT MODAL ─── -->
     <div v-if="selDoc" class="ov" @click.self="selDoc=null">
@@ -933,6 +1016,18 @@ async function printResume() {
 /* ─── MODAL / OVERLAY ─── */
 .ov { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
 .mbx { background: #fff; border-radius: 14px; width: 100%; max-width: 480px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; }
+.mbx-lg { max-width: 620px; }
+/* ─── PENUNJANG MODAL ─── */
+.pj-sec-t { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; margin: 1rem 0 .5rem; }
+.pj-sec-t:first-of-type { margin-top: .4rem; }
+.pj-attach { text-align: center; }
+.pj-img { max-width: 100%; max-height: 340px; border-radius: 10px; border: 1px solid #e2e5ea; cursor: zoom-in; }
+.pj-file { display: inline-flex; align-items: center; gap: 9px; padding: .7rem 1rem; border: 1.5px solid #1763d4; border-radius: 10px; background: #eef4ff; color: #1763d4; font-size: 12.5px; font-weight: 600; text-decoration: none; }
+.pj-file:hover { background: #dbe8ff; }
+.pj-file-ic { font-size: 18px; }
+.pj-kv { background: #f8fafc; border: 1px solid #eceef2; border-radius: 8px; padding: .7rem .85rem; }
+.pj-meta { margin-top: 1rem; padding-top: .75rem; border-top: 1px dashed #e2e5ea; font-size: 11.5px; color: #374151; display: flex; flex-direction: column; gap: 4px; }
+.pj-meta-k { display: inline-block; min-width: 90px; color: #6b7280; font-weight: 600; }
 .drawer { background: #fff; border-radius: 14px; width: 100%; max-width: 420px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; margin-left: auto; }
 .mh { display: flex; justify-content: space-between; align-items: flex-start; padding: 1rem 1.2rem; border-bottom: 1px solid #eceef2; }
 .mht { font-size: 14px; font-weight: 700; color: #000; }
@@ -968,7 +1063,8 @@ async function printResume() {
 /* ─── TOAST ─── */
 .toast-wrap { position: fixed; bottom: 1.2rem; right: 1.2rem; display: flex; flex-direction: column; gap: .5rem; z-index: 2000; }
 .toast { padding: 10px 16px; border-radius: 9px; font-size: 12.5px; font-weight: 600; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,.15); animation: slideup .25s ease; }
-.toast-s { background: #15803d; } .toast-w { background: #dc2626; } .toast-i { background: #1763d4; }
+.toast-s { background: #15803d; } .toast-w { background: #b45309; } .toast-e { background: #dc2626; } .toast-i { background: #1763d4; }
+.toast-w { color: #fff !important; }
 @keyframes slideup { from { transform: translateY(10px); opacity: 0; } }
 
 /* ─── PRINT RESUME ─── */

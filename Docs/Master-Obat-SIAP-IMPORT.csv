@@ -1,0 +1,361 @@
+kfa_code,name,generic_name,composition,manufacturer,formularium,form_sediaan,golongan,unit_besar,unit_kecil,konversi,stock,min_stock,price,expiry_date,batch_number,description,is_active
+,"Acyclovir 400mg",Acyclovir,,"SAMPHARINDO PERDANA",-,,"OBAT KERAS",,,,200,,,,DG3541,,1
+,"Acyclovir 400mg Tab Inhealth",Acyclovir,,,-,,,,,,0,,,,,,1
+,"Acyclovir Salep Kulit",Acyclovir,,,-,,,,,,1,,,,,,1
+,"Akilen Eye Drop",,OFLOXACIN,SANBE,-,BOTOL,"OBAT KERAS",,,,14,,,2027-11-27,FL3559,,1
+,"Alegysal 5 Ml",,,,-,,,,,,0,,,,,,1
+,"Alletrol Compositum Eye Drop 5 Ml",,"DEXAMETHASONE, NEOMYCIN SULFATE, POLYMYXIN SULFATE",ERELA,-,BOTOL,"OBAT KERAS",,,,35,,,2027-10-10,D.2060037,,1
+,"Alletrol Compositum Eye Oint",,"DEXAMETHASONE, NEOMYCIN SULFATE, POLYMYXIN SULFATE",ERELA,-,SALEP,"OBAT KERAS",,,,10,,,2027-07-07,0.0860035,,1
+,"Alphagan P 5ml",,,,-,,,,,,0,,,,,,1
+,"Alprazolam 0.5 mg",,,,-,,,,,,0,,,,,,1
+,"Amaryl 2mg Tab",,,,-,,,,,,0,,,,,,1
+,"Ambroxol Sirup",,,,-,,,,,,1,,,,,,1
+,"Amikacin 250mg/ml Injeksi",,,,-,,,,,,0,,,,,,1
+,aminophilin,,"AMINOPHYLINE ANHIDRAT",ETHICA,-,AMPUL,"OBAT KERAS",,,,2,,,2026-10-10,E23K0222A,,1
+,"Amlodipin 10 mg",Amlodipin,,"SAMPHARINDO PERDANA",-,,"OBAT KERAS",,,,200,,,,EC1711,,1
+,"Amlodipin 5 mg",Amlodipin,,"SAMPHARINDO PERDANA",-,,"OBAT KERAS",,,,100,,,,EC3971,,1
+,"AMOXICILIN 500 MG",Amoxicilin,,NOVAPHARIN,-,,"OBAT KERAS",,,,100,,,,2602-02-115,,1
+,"Aprovel Tablet",,,,-,,,,,,0,,,,,,1
+,"Aquades 25 ml",,,,-,,,,,,4,,,,,,1
+,"Asam Mefenamat 500mg","Asam mefenamat",,"AFI FARMA",-,KAPLET,"OBAT KERAS",,,,500,,,,A51601,,1
+,"Asam Mefenamat 500mg Inhealth","Asam mefenamat",,,-,,,,,,80,,,,,,1
+,"Asam Mefenamat 500 Mg Tab","Asam mefenamat",,,-,,,,,,0,,,,,,1
+,"Asam Tranexamat 500 mg tablet","Asam tranexamat",,,-,,,,,,0,,,,,,1
+,"Asam Tranexamid Inj","Asam tranexamat","ASAM TRANEXAMAT",BERNOFARM,-,AMPUL,"OBAT KERAS",,,,22,,,2030-04-04,PIE10254,,1
+,"Aspar K","K l- Aspartate",,"MITSUBISHI TANABE PHARMA",-,TABLET,"OBAT KERAS",,,,100,,,,VD335B,,1
+,"ASTHENOF EYE DROPS",,"OXYMETAZOLINE HYDROCHLORIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,65,,,2028-10-10,5A51003,,1
+,atracurium,,,,-,,,,,,5,,,,,,1
+,"Atropin Inj 0,25mg/ml",,"ATROPIN SULFATE",ETHICA,-,AMPUL,"OBAT KERAS",,,,85,,,2028-09-09,E25I0482A,,1
+,"Avamab 100 Mg/4ml",,,,-,,,,,,1,,,,,,1
+,"Avastin 100mg/4ml Inj",,,,-,,,,,,0,,,,,,1
+,Azarga,,,,-,,,,,,0,,,,,,1
+,Azitromycin,,,,-,,,,,,0,,,,,,1
+,"Azopt 5ml",,,,-,,,,,,0,,,,,,1
+,"Benzatin Benzil Penicillin 2,4 Iu",,,,-,,,,,,0,,,,,,1
+,"Berry Vision",,,,-,,,,,,0,,,,,,1
+,"Berry Vision Dispersible",,"Bilberry Dry Extract, Retinol, Vitamin E, B-carotene",SANBE,-,TABLET,SUPLEMEN,,,,100,,,,FL2885,,1
+,"Bevagen 100 mg",,,,-,,,,,,0,,,,,,1
+,"Biosat Serum Anti Tetanus",,,,-,,,,,,0,,,,,,1
+,"Bisoprolol Fumarate",,,,-,,,,,,0,,,,,,1
+,"Bralifex Eye Drop",,,,-,,,,,,0,,,,,,1
+,"Bralifex Eye Drop Inhealth",,,,-,,,,,,0,,,,,,1
+,"Bupivacaine HCL Heavy Inj",,BUPIVACAINE,ETERCON,-,AMPUL,"OBAT KERAS",,,,31,,,2027-07-07,27G413A,,1
+,"Candesartan 16 Mg Tab",CANDESARTAN,CANDESARTAN,"SAMPHARINDO PERDANA",-,TABLET,"OBAT KERAS",,,,300,,,,EA1661,,1
+,"Candesartan 8 mg",CANDESARTAN,CANDESARTAN,"SAMPHARINDO PERDANA",-,TABLET,"OBAT KERAS",,,,200,,,,DG2013,,1
+,"Captopril 12,5 mg",,,,-,,,,,,100,,,,,,1
+,"Captropil 25 mg",,,,-,,,,,,0,,,,,,1
+,"Captropil 50 mg",,,,-,,,,,,0,,,,,,1
+,"Carmeson 8 mg ( Methylprednisolon 8 mg)",METHYLPREDNISOLON,METHYLPREDNISOLON,"MAHAKAM BETA FARMA",-,TABLET,"OBAT KERAS",,,,400,,,,BS25047,,1
+,"Carpine 2% BPJS",,"PILOCARPINE HYDROCHLORIDE",CENDO,-,STRIP,"OBAT KERAS",,,,17,,,2028-07-07,5C260722,,1
+,"Carpine 2% Strip Minidose",,,,-,,,,,,0,,,,,,1
+,"Cataflam 25mg",,,,-,,,,,,0,,,,,,1
+,"Catarlent Strip Minidose BPJS",,"POTASSIUM IODIDE",CENDO,-,STRIP,"OBAT KERAS",,,,175,,,,5CA60912,,1
+,"Cefadroxil 500mg",,,,-,,,,,,0,,,,,,1
+,"Cefila 200 Mg",,,,-,,,,,,0,,,,,,1
+,"Cefixime 100 mg tablet",CEFIXIME,CEFIXIME,"OGB PHARMA",-,KAPSUL,"OBAT KERAS",,,,100,,,,RB04B008,,1
+,"Cefixime 200",CEFIXIME,CEFIXIME,"OGB PHARMA",-,KAPSUL,"OBAT KERAS",,,,100,,,,RB04B008,,1
+,"Cefixime Dry Syrup 30ml",,,,-,,,,,,0,,,,,,1
+,"Cefspan 200mg",,,,-,,,,,,0,,,,,,1
+,"Ceftazidime 1G Inj",,Ceftazidime,BERNOFARM,-,VIAL,"OBAT KERAS",,,,5,,,2027-10-10,PSI13754,,1
+,"Ceftriaxone 1 gr",,CEFTRIAXONE,BERNOFARM,-,VIAL,"OBAT KERAS",,,,22,,,2030-02-02,PSC07055,,1
+,"Cendo Carpin 1% Drops",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Carpine 2 % Strip",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Catarlent Strip Minidose",,,CENDO,-,,,,,,10,,,,,,1
+,"Cendo Cendrid Strip Minidose",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Cyclon 1%",,"CYCLOPENTOLATE HYDROCHLORIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,7,,,2028-12-12,5CY1230,,1
+,"Cendo Edta Drop",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Efricel 10% Drops",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Eyefresh Drops 5cc",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Eyefresh Mild Minidose",,,CENDO,-,,,,,,31,,,,,,1
+,"Cendo Eyefresh Strip Minidose",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Fluorescein 2% Drop",,,CENDO,-,,,,,,2,,,,,,1
+,"Cendo Gentamycin Oint 3,5 Gr",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Glopac Drops",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Hervis Oint",,ACICLOVIR,CENDO,-,SALEP,"OBAT KERAS",,,,2,,,2029-01-01,630106,,1
+,"Cendo Hyalub Strip Inhealth",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Hyalub Strip Minidose",,"SODIUM HYALURONATE",CENDO,-,STRIP,"OBAT KERAS",,,,10,,,2028-04-04,5HA60410,,1
+,"Cendo Lyteers Drops 15 Cc",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Lyteers Strip Minidose",,"SODIUM CHLORIDE, POTASSIUM CHLORIDE",CENDO,-,STRIP,"OBAT KERAS",,,,70,,,2028-10-10,5L61024,,1
+,"Cendo Midriatil 1% Drops",,TROPICAMIDE,CENDO,-,BOTOL,"OBAT KERAS",,,,43,,,2028-11-11,5M1111,,1
+,"Cendo Natacen Strip Minidose",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Noncort Eye Drop",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Noncort Strip Minidose",,,CENDO,-,,,,,,20,,,,,,1
+,"Cendo Oculenta Oint",,"VITAMIN A PALMITATE",CENDO,-,SALEP,"OBAT KERAS",,,,5,,,2027-08-08,5OCG0221,,1
+,"Cendo Pantocain 0,5% Drops",,"TETRACAINE HYDROCHLORIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,10,,,2028-10-10,5P11003,,1
+,"Cendo Patacen Minidose",,,CENDO,-,,,,,,1,,,,,,1
+,"Cendo Posop Strip Minidose",,,CENDO,-,,,,,,10,,,,,,1
+,"Cendo P-pred Strip Minidose",,,CENDO,-,,,,,,55,,,,,,1
+,"Cendo Protagenta",,,CENDO,-,,,,,,30,,,,,,1
+,"Cendo Statrol",,,CENDO,-,,,,,,0,,,,,,1
+,"cendo TGF tablet",,,CENDO,-,,,,,,90,,,,,,1
+,"Cendo Timol 0.5% Drops",,,CENDO,-,,,,,,0,,,,,,1
+,"cendo timol 0,5% MD",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Tobroson",,,CENDO,-,,,,,,8,,,,,,1
+,"Cendo Tonor 0,5 % Drop",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Tonor 0,5% Strip",,,CENDO,-,,,,,,0,,,,,,1
+,"cendo vital",,"BETA CAROTENE, VITAMIN A ACETATE, VITAMIN E",CENDO,-,TABLET,SUPLEMEN,,,,150,,,,5VT210271,,1
+,"Cendo Vitrolenta Drops 5cc",,"POTASSIUM IODIDE, SODIUM IODIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,110,,,2028-12-12,5VL1231,,1
+,"Cendo Xitrol Drops 5cc",,,CENDO,-,,,,,,0,,,,,,1
+,"Cendo Xitrol Minidose",,,CENDO,-,,,,,,20,,,,,,1
+,"Cendo Xitrol Oint 3,5 Gr",,"DEXAMETHASONE, NEOMYCIN SULFATE, POLYMYXIN SULFATE",CENDO,-,SALEP,"OBAT KERAS",,,,10,,,2029-02-02,690224,,1
+,"CENFRESH EYE DROPS",,,CENDO,-,,,,,,0,,,,,,1
+,"Cenfresh Strip Minidose",,"CARMELLOSE SODIUM",CENDO,-,STRIP,"OBAT KERAS",,,,160,,,2029-01-01,6C60124,,1
+,"Cerecol 1000 Caplet",,,,-,,,,,,0,,,,,,1
+,"Cerecol Syr",,,,-,,,,,,0,,,,,,1
+,"Cetirizine Tablet",,,,-,,,,,,0,,,,,,1
+,"Ciprofloxacin 500mg",CIPROFLOXACIN,CIPROFLOXACIN,"SAMPHARINDO PERDANA",-,KAPLET,"OBAT KERAS",,,,800,,,,DK0891,,1
+,"Ciprofloxacin Infus 200 Mg/100ml",,,,-,,,,,,0,,,,,,1
+,"Ciprofloxacin Tab Inhealth",,,,-,,,,,,80,,,,,,1
+,Citicoline,"CITICOLINE SODIUM","CITICOLINE SODIUM","AFI FARMA",-,TABLET,SUPLEMEN,,,,30,,,,A20507,,1
+,Claneksi,,,,-,,,,,,0,,,,,,1
+,"Clindamycin 300mg","CLINDAMYCIN HCL","CLINDAMYCIN HCL","OGB PHARMA",-,KAPSUL,"OBAT KERAS",,,,200,,,,KPM73754,,1
+,"Codein 20",,,,-,,,,,,0,,,,,,1
+,"Codein 20 mg Inhealth",,,,-,,,,,,0,,,,,,1
+,"Concor 2.5 Mg Tab",,,,-,,,,,,0,,,,,,1
+,"Conver 2% Strip Minidose",,,,-,,,,,,3,,,,,,1
+,Cosopt,,,,-,,,,,,0,,,,,,1
+,"Cravit 5 Ml",,,,-,,,,,,0,,,,,,1
+,"Crome 10mg",,,,-,,,,,,0,,,,,,1
+,CTM,,,,-,,,,,,24,,,,,,1
+,Decolsin,,,,-,,,,,,0,,,,,,1
+,"Dermaplast Plaster",,,,-,,,,,,400,,,,,,1
+,"Dexamethasone 5mg/ml Inj",,DEXAMETHASONE,BERNOFARM,-,AMPUL,"OBAT KERAS",,,,128,,,2027-09-09,PIK28754,,1
+,"Dexa tablet",,,,-,,,,,,20,,,,,,1
+,dextamin,,,,-,,,,,,30,,,,,,1
+,"Dextrose 40%",,,,-,,,,,,5,,,,,,1
+,"Diamicron Mr 60 Mg",,,,-,,,,,,0,,,,,,1
+,"dibekacin opth sol 0.3%",,,,-,,,,,,5,,,,,,1
+,"Diclofenac Sodium 50mg Tablet","NA DICLOFENAK","NA DICLOFENAK",NOVAPHARIN,-,TABLET,"OBAT KERAS",,,,400,,,,2601-04-362,,1
+,"Diquas Opthalmic Drops",,,,-,,,,,,0,,,,,,1
+,"Domperidone Tablet",DOMPERIDONE,DOMPERIDONE,"SAMPHARINDO PERDANA",-,TABLET,"OBAT KERAS",,,,100,,,,DH3601,,1
+,"Dulcolac Suppositoria (Anal)",,,,-,,,,,,1,,,,,,1
+,"Dulcolac Tablet",,,,-,,,,,,0,,,,,,1
+,Duotrav,,,,-,,,,,,0,,,,,,1
+,"Ephedrine Hcl Inj 50 mg/ml",,EPHEDRINE,MAHAKAM,-,AMPUL,"OBAT KERAS",,,,11,,,2028-06-06,FJ25032,,1
+,"Epinefrine Injeksi",,EPINEPHRINE,ETHICA,-,AMPUL,"OBAT KERAS",,,,81,,,2026-10-10,E24IO411A,,1
+,"Epinephrine Inj 1mg",,,,-,,,,,,0,,,,,,1
+,"Erflox (Ofloxacin) Tetes mata",OFLOXACIN,OFLOXACIN,ERELA,-,BOTOL,"OBAT KERAS",,,,20,,,2027-09-09,D4460001,,1
+,Erkolin,,,,-,,,,,,0,,,,,,1
+,"Esilgan 2mg Tab",,,,-,,,,,,0,,,,,,1
+,"etanyl Inj",,,,-,,,,,,21,,,,,,1
+,"Eterfix (Paracetamol Infus)",,,,-,,,,,,3,,,,,,1
+,"Eyefresh Mild BPJS",,"HYPROMELLOSE, DEXTRAN 70",CENDO,-,STRIP,"OBAT KERAS",,,,442,,,2028-07-07,5EM60729,,1
+,"Eylea Inj",,,,-,,,,,,0,,,,,,1
+,"Fenicol Eye Ointment 3,5 GR",,CHLORAMPHENICOL,CENDO,-,SALEP,"OBAT KERAS",,,,5,,,2029-02-02,600210,,1
+,"Fentanex 0.05 mg/ml",,,,-,,,,,,0,,,,,,1
+,"Flamar Eye Drop",,,,-,,,,,,0,,,,,,1
+,"Flamicort 40mg/ml",,,,-,,,,,,2,,,,,,1
+,"FLOXA BOTOL",,,CENDO,-,,,,,,0,,,,,,1
+,"Floxa BPJS",,OFLOXACIN,CENDO,-,STRIP,"OBAT KERAS",,,,491,,,2028-05-05,5F361119,,1
+,"Floxa Inhealth",,,CENDO,-,,,,,,4,,,,,,1
+,"Floxa Strip Minidose",,,CENDO,-,,,,,,18,,,,,,1
+,"Formalin Tab",,,,-,,,,,,0,,,,,,1
+,Ganfort,,,,-,,,,,,0,,,,,,1
+,"Genoint Salep Mata",,"GENTAMICIN SULFATE",ERELA,-,SALEP,"OBAT KERAS",,,,35,,,2027-11-11,0.1660093,,1
+,"Genta Eye Drops",,,,-,,,,,,0,,,,,,1
+,"Gentamicin 80 Mg/2 Ml Injeksi",,"GENTAMICIN SULFATE",BERNOFARM,-,AMPUL,"OBAT KERAS",,,,110,,,2027-08-08,PIJ02154,,1
+,"Gentamicin Salep Kulit",,,,-,,,,,,3,,,,,,1
+,"Gentamisin Oint (genoint) Inhealth",,,,-,,,,,,2,,,,,,1
+,"Gentamycin 40mg/ml Injeksi",,,,-,,,,,,0,,,,,,1
+,"Glaopen Strip Minidose",,,,-,,,,,,50,,,,,,1
+,"Glauceta Tablet",ACETAZOLAMIDE,ACETAZOLAMIDE,SANBE,-,TABLET,"OBAT KERAS",,,,300,,,,GA2460,,1
+,Glaucon,ACETAZOLAMIDE,ACETAZOLAMIDE,CENDO,-,TABLET,"OBAT KERAS",,,,100,,,,5GL211121,,1
+,"Glauseta Inhealth",,,,-,,,,,,145,,,,,,1
+,"Glimepiride 2mg",,,,-,,,,,,0,,,,,,1
+,HCLT,,,,-,,,,,,0,,,,,,1
+,"Hervis Oint Inhealth",,,,-,,,,,,1,,,,,,1
+,Hialid,,,,-,,,,,,0,,,,,,1
+,"Hialid Inhealth",,,,-,,,,,,0,,,,,,1
+,"Homatro Eye Drops 2%",,,,-,,,,,,0,,,,,,1
+,"Hyaloph Eye Drop",,"SODIUM HYALURONATE",SANBE,-,BOTOL,"OBAT KERAS",,,,24,,,2028-03-12,GC3523,,1
+,"hyalub 0.6ML BPJS",,,,-,,,,,,0,,,,,,1
+,"Hylo-comod 10ml",,,,-,,,,,,0,,,,,,1
+,"Inpepsa 200 Ml Syr",,,,-,,,,,,0,,,,,,1
+,"itamol syrup (Paracetamol)",,,,-,,,,,,0,,,,,,1
+,"Janumet 50/500mg Mg Tab",,,,-,,,,,,0,,,,,,1
+,"Kalmetholone 1 Mg",Fluorometholone,Fluorometholone,KALBE,-,BOTOL,"OBAT KERAS",,,,156,,,2027-08-26,EAY802,,1
+,kcl,,,,-,,,,,,0,,,,,,1
+,"Ketamin 1000 mg/10 ml Inj",,,,-,,,,,,0,,,,,,1
+,Ketokenazole,KETOCONAZOLE,KETOCONAZOLE,"HJ Generik",-,TABLET,"OBAT KERAS",,,,300,,,,HTKCZB56647,,1
+,Ketorolac,KETOROLAC,KETOROLAC,BERNOFARM,-,AMPUL,"OBAT KERAS",,,,52,,,2028-02-02,PIC16955,,1
+,KSR,,,,-,,,,,,0,,,,,,1
+,"Lacoma 50mcg/ml",,,,-,,,,,,0,,,,,,1
+,"Lacoma 50 Mg/Ml Inhealth",,,,-,,,,,,5,,,,,,1
+,"Lamofer Eye Drop 2,5ml",,,,-,,,,,,9,,,,,,1
+,"Lance Tip",,,,-,,,,,,0,,,,,,1
+,"Lanosan Eye Drop",,,,-,,,,,,50,,,,,,1
+,"Lanosan Plus Eye Drop",,,,-,,,,,,0,,,,,,1
+,"Lansoprazole 30 mg",,,NOVAPHARIN,-,KAPSUL,"OBAT KERAS",,,,100,,,,2508-07-273,,1
+,Lantus,,,,-,,,,,,0,,,,,,1
+,"Lasal Nebu",,,,-,,,,,,0,,,,,,1
+,"Lasix 2 ml (Furosemide 10 mg)",,FUROSEMIDE,MERSI,-,AMPUL,"OBAT KERAS",,,,15,,,2027-03-03,D50148,,1
+,"Latanoprost BPJS",,,,-,,,,,,0,,,,,,1
+,"Latipress 2,5ml",,,,-,,,,,,0,,,,,,1
+,"Levica Inj 50mg/10ml",,,,-,,,,,,0,,,,,,1
+,"Levo 750 mg Infus",,,,-,,,,,,1,,,,,,1
+,"Levofloxacin 500 mg Tablet",LEVOFLOXACIN,LEVOFLOXACIN,NOVAPHARIN,-,TABLET,"OBAT KERAS",,,,100,,,,2509-01-309,,1
+,"Levofloxacin Eye Drops",LEVOFLOXACIN,LEVOFLOXACIN,"FERRON PAR PHARMACEUTICALS",-,BOTOL,"OBAT KERAS",,,,99,,,2027-10-10,5152483,,1
+,"Lidocain Hcl 2% Injeksi",LIDOCAIN,LIDOCAIN,BERNOFARM,-,AMPUL,"OBAT KERAS",,,,156,,,2030-09-09,PIK18554,,1
+,"Lidocain Hcl 2% Injeksi (bks)",,,,-,,,,,,0,,,,,,1
+,"Lidox 2% Injeksi",,,,-,,,,,,0,,,,,,1
+,"Litensan Capsule",,,,-,,,,,,0,,,,,,1
+,"lodia tablet",LOPERAMIDE,,,-,,,,,,0,,,,,,1
+,"Loperamid Tab",LOPERAMIDE,,,-,,,,,,100,,,,,,1
+,Lubran,,"SODIUM HYALURONATE","FERRON PAR PHARMACEUTICALS",-,BOTOL,"OBAT KERAS",,,,10,,,2027-11-11,5252728,,1
+,Lumireds,,"Lutein, Zeaxanthin, Copper, Zinc, Vitamin C, Vitamin E",KALBE,-,KAPLET,SUPLEMEN,,,,150,,,,KTLURA54008,,1
+,"Lyteers Drop BPJS",,,CENDO,-,,,,,,0,,,,,,1
+,"Lyteers Drop Inhealth",,,CENDO,-,,,,,,5,,,,,,1
+,"Manitol 20%",,,,-,,,,,,16,,,,,,1
+,"Marcain Heavy 5mg/ml",,,,-,,,,,,0,,,,,,1
+,"Marcain Liquid 5mg/ml",,,,-,,,,,,0,,,,,,1
+,"Medixon 16mg",,,,-,,,,,,0,,,,,,1
+,"Medixon 8mg",,,,-,,,,,,0,,,,,,1
+,merlopam,,,,-,,,,,,0,,,,,,1
+,"Metformin 500 mg tab",METFORMIN,Metformin,"HJ Generik",-,TABLET,"OBAT KERAS",,,,50,,,,HTMFNB56245,,1
+,"Methilprednisolon 16mg Tab Inhealth",,,,-,,,,,,0,,,,,,1
+,"Methylprednisolon 4mg",,Methylprednisolon,"MAHAKAM BETA FARMA",-,TABLET,"OBAT KERAS",,,,400,,,,BS25061,,1
+,"Methylprednisolone 16mg",,Methylprednisolon,"HJ Generik",-,TABLET,"OBAT KERAS",,,,200,,,,HTMPSE62103,,1
+,"Methylprednisolone Inj 125 mg",,Methylprednisolon,BERNOFARM,-,VIAL,"OBAT KERAS",,,,60,,,2027-09-09,PSK11554,,1
+,"Methylprednisolone Inj 125mg",,,,-,,,,,,0,,,,,,1
+,"Metronidazol 500 mg",,,,-,,,,,,0,,,,,,1
+,"Metronidazol Infus",,,,-,,,,,,0,,,,,,1
+,"Miloz Injeksi 5 mg",,,,-,,,,,,14,,,,,,1
+,"Miriwash 500 ml",,,,-,,,,,,0,,,,,,1
+,"Molcin Drop",,"MOXIFLOXACIN HCL","FERRON PAR PHARMACEUTICALS",-,BOTOL,"OBAT KERAS",,,,152,,,2027-11-11,5252812,,1
+,"Molcin Inhealth",,,,-,,,,,,4,,,,,,1
+,"Moxidrop 5 ml",,,,-,,,,,,0,,,,,,1
+,"Moxifloxacine OGB Eye Drop",,"MOXIFLOXACIN HCL","FERRON PAR PHARMACEUTICALS",-,BOTOL,"OBAT KERAS",,,,114,,,2027-09-09,5052288,,1
+,"Mycos Eye Oinment 3,5 Gr",,"HYDROCORTISONE ACETATE, CHLORAMPHENICOL",CENDO,-,SALEP,"OBAT KERAS",,,,7,,,2028-03-03,550312,,1
+,"Nacl 100ml",,,,-,,,,,,30,,,,,,1
+,"Nacl 500ml",,,,-,,,,,,22,,,,,,1
+,"Natacen BPJS",,NATAMYCIN,CENDO,-,STRIP,"OBAT KERAS",,,,25,,,2027-06-06,5NA60610,,1
+,"Natacen Strip Inhealth",,,,-,,,,,,0,,,,,,1
+,Navitae,,,,-,,,,,,0,,,,,,1
+,neostigmine,,"NEOSTIGMINE METHYLSULFATE",NOVELL,-,AMPUL,"OBAT KERAS",,,,28,,,2028-01-01,28AO49,,1
+,"Neurobion 5000 Injeksi",,,,-,,,,,,0,,,,,,1
+,"Neurosanbe Tab Inhealth",,,,-,,,,,,0,,,,,,1
+,"Neurosanbe Tablet",,,,-,,,,,,0,,,,,,1
+,"Neuvis Pro 1000 mg",,,,-,,,,,,0,,,,,,1
+,"Neuvis Pro 1000 Pro",,,,-,,,,,,0,,,,,,1
+,"Neuvis Pro Syrup",,,,-,,,,,,0,,,,,,1
+,"Nevanac Eye Drop",,,,-,,,,,,0,,,,,,1
+,"nicardipin Inj",,,,-,,,,,,9,,,,,,1
+,"Nifedipin 10mg",,NIFEDIPINE,"OGB DEXA",-,TABLET,"OBAT KERAS",,,,200,,,,AG3RDBPOG,,1
+,"Noncort BPJS",,"DICLOFENAC SODIUM",CENDO,-,STRIP,"OBAT KERAS",,,,275,,,2028-12-12,5N61217,,1
+,"Noncort Strip Inhealth",,,,-,,,,,,5,,,,,,1
+,"Norages Inj",,,,-,,,,,,10,,,,,,1
+,"Norepinephrine Bitartrate",,NOREPINEPHRINE,HEXPHARM,-,AMPUL,"OBAT KERAS",,,,1,,,2026-08-08,INONA40083,,1
+,norevell,,,,-,,,,,,2,,,,,,1
+,"Novorapid Pen",,,,-,,,,,,1,,,,,,1
+,nupovel,,,,-,,,,,,0,,,,,,1
+,"Nutriflam Neo",,,,-,,,,,,0,,,,,,1
+,Ocufresh,,,,-,,,,,,0,,,,,,1
+,"Ocufresh ED BPJS",,"SODIUM CHLORIDE, POTASSIUM CHLORIDE",SANBE,-,BOTOL,"OBAT KERAS",,,,327,,,2028-03-04,GC3511,,1
+,"Omeprazol 20mg Tab",,OMPERAZOLE,NOVAPHARIN,-,KAPSUL,"OBAT KERAS",,,,200,,,,2603-05-280,,1
+,"omeprazol injeksi",,,,-,,,,,,6,,,,,,1
+,"Ondansetron Inj",,ONDANSETRON,BERNOFARM,-,AMPUL,"OBAT KERAS",,,,33,,,2027-10-10,PIL55954,,1
+,"Ondansetron Inj 8 mg/4 ml",,ONDANSETRON,QUANTUM,-,AMPUL,"OBAT KERAS",,,,20,,,2030-08-08,ONDA215HO4,,1
+,"Opexa Drop",,LEVOFLOXACIN,"FERRON PAR PHARMACEUTICALS",-,BOTOL,"OBAT KERAS",,,,10,,,2027-10-10,5152484,,1
+,"Optiflox Tetes Mata 5 Ml",,LEVOFLOXACIN,ERELA,-,BOTOL,"OBAT KERAS",,,,10,,,2027-09-09,D3260006,,1
+,"Optimax For G",,,FERRON,-,KAPSUL,JAMU,,,,60,,,,57A0747,,1
+,"Optimax O3",,,,-,,,,,,0,,,,,,1
+,"Optimax Premio",,"Vitamin C, Vitamin E, Lutein, Zeaxanthin, Zinc",FERRON,-,KAPSUL,SUPLEMEN,,,,120,,,,56G4326,,1
+,"Optimax Syrup",,,,-,,,,,,0,,,,,,1
+,"Ozempic Single Dose",,,,-,,,,,,0,,,,,,1
+,"Pagenax Inj",,,,-,,,,,,0,,,,,,1
+,"pantocain 2%",,"TETRACAINE HYDROCHLORIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,21,,,2028-11-11,5P31104,,1
+,"Pantoprazol 40 Mg Inj",,,,-,,,,,,0,,,,,,1
+,"Pantozol 40 Mg Tab",,,,-,,,,,,0,,,,,,1
+,"Paracetamol 500mg",,Paracetamol,"SAMPHARINDO PERDANA",-,TABLET,"OBAT BEBAS",,,,100,,,,DE5011,,1
+,"Paracetamol Infus",,,,-,,,,,,4,,,,,,1
+,"Paracetamol sirup",,,,-,,,,,,2,,,,,,1
+,"Patacen Strip BPJS",,OLOPATADINE,CENDO,-,STRIP,"OBAT KERAS",,,,5,,,2028-12-12,5PC61216,,1
+,Patanol,,,,-,,,,,,0,,,,,,1
+,"Patizra 10/mg/ml Inj",,,,-,,,,,,0,,,,,,1
+,"Pehacain Inj",,"LIDOCAIN, EPINEPHRINE",PHAPROS,-,AMPUL,"OBAT KERAS",,,,3,,,2026-07-07,56052070,,1
+,"Polidemisin Eye Drop",,"NEOMYCIN SULFATE, POLYMYXIN SULFATE, DEXAMETHASONE",SANBE,-,BOTOL,"OBAT KERAS",,,,86,,,2027-08-13,GB3521,,1
+,"Polidemisin Oint",,,,-,,,,,,0,,,,,,1
+,"polydex bpjs",,"DEXAMETHASONE, NEOMYCIN SULFATE, POLYMYXIN SULFATE",CENDO,-,STRIP,"OBAT KERAS",,,,0,,,2028-01-01,5PX60716,,1
+,"Polydex Strip Minidose",,,,-,,,,,,20,,,,,,1
+,"Posop Minidose BPJS",,Fluorometholone,CENDO,-,STRIP,"OBAT KERAS",,,,55,,,2028-03-03,5P060917,,1
+,"Posop Strip Inhealth",,,CENDO,-,,,,,,4,,,,,,1
+,"Povidon Iodin",,,,-,,,,,,3,,,,,,1
+,"P-pred BPJS",,"PREDNISOLONE ACETATE",CENDO,-,STRIP,"OBAT KERAS",,,,625,,,2028-03-03,6PP60303,,1
+,"P-pred Strip Inhealth",,,CENDO,-,,,,,,5,,,,,,1
+,"Presept 0.5 Desinfectant",,,,-,,,,,,0,,,,,,1
+,"Propylthiouracil (PTU)",,,,-,,,,,,10,,,,,,1
+,"Protagenta BPJS",,POLYVINYLPYRROLIDONE,CENDO,-,STRIP,"OBAT KERAS",,,,430,,,2029-02-02,6PR60227,,1
+,"Protagenta Strip Inhealth",,,CENDO,-,,,,,,3,,,,,,1
+,"Pulmicort Respules",,,,-,,,,,,21,,,,,,1
+,"Ranitidin 150mg",,Ranitidine,"HJ Generik",-,TABLET,"OBAT KERAS",,,,500,,,,HTRNTC55700,,1
+,"Ranitidin 50mg/2ml Injeksi",,,,-,,,,,,0,,,,,,1
+,"Ranitidine Inj",,"RANITIDINE HCL",ETHICA,-,AMPUL,"OBAT KERAS",,,,179,,,2027-08-08,E25H0390A,,1
+,"Ranitidine Tablet",,,,-,,,,,,0,,,,,,1
+,"Recofol N",,PROPOFOL,PRIMEX,-,AMPUL,"OBAT KERAS",,,,7,,,2027-06-06,25A026A,,1
+,"Regivell 4 ml",,,,-,,,,,,0,,,,,,1
+,"Regivell Inj",,"BUPIVACAINE HCL",NOVELL,-,AMPUL,"OBAT KERAS",,,,24,,,2028-08-08,27H245,,1
+,"Retivit Kaplet",,,,-,,,,,,0,,,,,,1
+,"Retivit Plus Kaplet",,"Vitamin, Mineral, Lutein, Lycopene, Zeaxanthin",SANBE,-,KAPLET,SUPLEMEN,,,,1000,,,,GB2618B,,1
+,"Rg Choline 500 Mg",,,,-,,,,,,0,,,,,,1
+,"Rg Choline Syrup 60ml",,,,-,,,,,,0,,,,,,1
+,"Ringer Lactate BB",,,,-,,,,,,0,,,,,,1
+,"Ringer Lactat Mjb",,,,-,,,,,,65,,,,,,1
+,"Rocuronium Bromide",,,,-,,,,,,0,,,,,,1
+,"Rocuronium Inj",,,,-,,,,,,2,,,,,,1
+,Ropivell,,"ROPIVACAIN HCL",NOVELL,-,AMPUL,"OBAT KERAS",,,,27,,,2028-03-03,28C639,,1
+,"Sagestam Eye Ointment",,GENTAMICIN,SANBE,-,SALEP,"OBAT KERAS",,,,15,,,2027-08-31,FH3586,,1
+,"Sagestam Injeksi",,,,-,,,,,,0,,,,,,1
+,"sanbe fresh",,POLYVINYLPYRROLIDONE,SANBE,-,BOTOL,"OBAT KERAS",,,,120,,,2028-03-31,GC3542,,1
+,"Sanbe Tears",,,,-,,,,,,0,,,,,,1
+,"Sanexon 16mg",,,,-,,,,,,0,,,,,,1
+,"Sanexon 8mg",,,,-,,,,,,0,,,,,,1
+,"Sanexon Injeksi 125mg",,,,-,,,,,,0,,,,,,1
+,"Sanmol Tab Inhealth",,,,-,,,,,,0,,,,,,1
+,"Sanmol Tablet",,,,-,,,,,,0,,,,,,1
+,"Sanprima Forte",,,,-,,,,,,0,,,,,,1
+,"Sedacum Inj 15 mg/3 ml",,,,-,,,,,,0,,,,,,1
+,"Sidiadryl Diphenhydramine",,,,-,,,,,,2,,,,,,1
+,"Siloxan 5ml",,"SODIUM CHLORIDE",CENDO,-,BOTOL,"OBAT KERAS",,,,97,,,2027-11-11,5SI1126,,1
+,Simbrinza,,,,-,,,,,,0,,,,,,1
+,"Simbrinza Tetes Mata 5 ml",,,,-,,,,,,0,,,,,,1
+,"sodium chloride 0.9% 100ml",,,,-,,,,,,0,,,,,,1
+,spironolacton,,,,-,,,,,,29,,,,,,1
+,"spironolacton 100",,,,-,,,,,,0,,,,,,1
+,"Sucralfat Syr",,,,-,,,,,,1,,,,,,1
+,"Sucralfat Syr Inhealth",,,,-,,,,,,0,,,,,,1
+,Systane,,,,-,,,,,,0,,,,,,1
+,"Systane Ultra",,,,-,,,,,,0,,,,,,1
+,"Taflotan 2,5ml",,,,-,,,,,,0,,,,,,1
+,Taflotan-S,,,,-,,,,,,0,,,,,,1
+,"tamivell inj 100mg",,,,-,,,,,,2,,,,,,1
+,"Tapcom Botol",,,,-,,,,,,0,,,,,,1
+,"tetagam P",,,,-,,,,,,0,,,,,,1
+,"Timol 0,5% Strip Inhealth",,,CENDO,-,,,,,,7,,,,,,1
+,"Timolol BPJS",,"TIMOLOL MALEAT",FERRON,-,BOTOL,"OBAT KERAS",,,,120,,,2027-12-12,4260325,,1
+,"TIM-OPHTAL 0.5% ED",,"TIMOLOL MALEAT",SANBE,-,BOTOL,"OBAT KERAS",,,,24,,,2028-01-30,GA3552,,1
+,"Tobroson BPJS",,"TOBRAMYCIN, DEXAMETHASONE",CENDO,-,STRIP,"OBAT KERAS",,,,75,,,2028-03-03,5T560918,,1
+,"Tonor BPJS",,"BETAXOLOL HYDROCHLORIDE",CENDO,-,STRIP,"OBAT KERAS",,,,49,,,2028-07-07,5TR60703,,1
+,Travatan,,,,-,,,,,,0,,,,,,1
+,"Trilac Injeksi 40mg/ml",,"TRIAMCINOLONE ACITONIDE",NOVELL,-,VIAL,"OBAT KERAS",,,,0,,,2027-12-12,27K387,,1
+,"Tropin 0,5%",,"ATROPINE SULFATE",CENDO,-,STRIP,"OBAT KERAS",,,,0,,,2029-01-01,6T560119,,1
+,"Tropin 0,5% (myp)",,,CENDO,-,,,,,,50,,,,,,1
+,"Tropin BPJS",,,CENDO,-,,,,,,140,,,,,,1
+,"Univoxy Kapsul",,,,-,,,,,,0,,,,,,1
+,"Valisanbe 5mg",,,,-,,,,,,0,,,,,,1
+,"Vancep Injeksi",,,,-,,,,,,0,,,,,,1
+,"Vancomycin HCL 500 mg",,,,-,,,,,,7,,,,,,1
+,"Vanconex 500mg Inj",,,,-,,,,,,0,,,,,,1
+,"Ventasal 2.5 ml",,,,-,,,,,,14,,,,,,1
+,"Ventolin Nebules 2.5 mg",,,,-,,,,,,0,,,,,,1
+,"Vigamox 0,5% 3ml",,,,-,,,,,,0,,,,,,1
+,"Vigamox 0,5% 5ml",,,,-,,,,,,0,,,,,,1
+,Visionex,,,,-,,,,,,0,,,,,,1
+,"Visionlux Plus",,,,-,,,,,,0,,,,,,1
+,"Vitamin B.Complec",,,,-,,,,,,0,,,,,,1
+,"Voltaren 50 Mg",,,,-,,,,,,0,,,,,,1
+,"Wi Otsu 25ml",,"STERILLE WATER",OTSUKA,-,BOTOL,"OBAT KERAS",,,,0,,,2027-07-03,B72G55A,,1
+,"Wi Unicap 1liter",,,,-,,,,,,10,,,,,,1
+,"xiflox md",,,,-,,,,,,0,,,,,,1
+,"Xitrol Minidose BPJS",,"DEXAMETHASONE, NEOMYCIN SULFATE, POLYMYXIN SULFATE",CENDO,-,STRIP,"OBAT KERAS",,,,476,,,2028-04-04,5X61021,,1
+,"Xylocaine 2% Pdf 20ml",,,,-,,,,,,0,,,,,,1
+,"Zophtal Eye Drops",,,,-,,,,,,0,,,,,,1

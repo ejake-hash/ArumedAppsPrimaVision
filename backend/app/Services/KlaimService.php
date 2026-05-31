@@ -25,10 +25,16 @@ class KlaimService
 
     public function getClaimList(array $filters = []): LengthAwarePaginator
     {
-        $query = BpjsClaim::with(['visit.patient', 'visit.insurer']);
+        $query = BpjsClaim::with(['visit.patient', 'visit.insurer', 'assignedTo']);
 
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
+        }
+
+        // Filter Rawat Jalan (RAJAL) / Rawat Inap (RANAP) via visit.
+        if (! empty($filters['jenis_pelayanan'])) {
+            $jp = $filters['jenis_pelayanan'];
+            $query->whereHas('visit', fn ($v) => $v->where('jenis_pelayanan', $jp));
         }
 
         if (! empty($filters['search'])) {
@@ -55,8 +61,9 @@ class KlaimService
     {
         return BpjsClaim::with([
             'visit.patient',
-            'visit.doctorExamination',
+            'visit.doctorExamination.doctor',
             'visit.billingInvoice',
+            'assignedTo',
             'auditLogs.performedBy',
         ])->findOrFail($id);
     }
@@ -124,6 +131,91 @@ class KlaimService
         $this->log($user->id, 'PREPARE_CLAIM', BpjsClaim::class, $claim->id, "SEP {$visit->no_sep}");
 
         return $claim->fresh(['visit.patient', 'auditLogs.performedBy']);
+    }
+
+    // =========================================================================
+    // ASSIGNMENT — tandai "dikerjakan oleh siapa" (soft, anti double-work)
+    // =========================================================================
+
+    /**
+     * Tandai/lepas penanggung jawab klaim.
+     * $userId = null → lepaskan. Soft (tidak mengunci).
+     */
+    public function assignClaim(string $claimId, ?string $assignToId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+        $actor = auth('api')->user();
+
+        $claim->update([
+            'assigned_to_id' => $assignToId,
+            'assigned_at'    => $assignToId ? now() : null,
+        ]);
+
+        $note = $assignToId
+            ? 'Klaim ditandai dikerjakan oleh ' . (\App\Models\User::find($assignToId)?->name ?? $assignToId)
+            : 'Penanda pengerjaan dilepas';
+        $this->addAuditLog($claim->id, $actor?->employee_id, 'ASSIGN', $claim->status, $claim->status, $note);
+
+        return $claim->fresh(['assignedTo', 'auditLogs.performedBy']);
+    }
+
+    // =========================================================================
+    // KODING — edit diagnosis/tindakan klaim (oleh verifikator/koder)
+    // =========================================================================
+
+    /**
+     * Perbarui koding klaim (diagnosis utama/sekunder + tindakan ICD-9).
+     * Tidak menyentuh doctorExamination (rekam medis). Karena koding berubah,
+     * hasil grouping & LUPIS direset — wajib grouping ulang.
+     */
+    public function updateClaimCoding(string $claimId, array $data): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah dikirim ke BPJS, koding tidak bisa diubah.', 422);
+        }
+
+        // Validasi kode ICD ada di master (koding BPJS wajib kode valid).
+        $icd10Codes = array_filter(array_merge([$data['diagnosis_utama']], $data['diagnosis_sekunder'] ?? []));
+        $icd9Codes  = array_filter($data['procedure_codes'] ?? []);
+
+        $known10 = \App\Models\Icd10Code::whereIn('code', $icd10Codes)->pluck('code')->all();
+        $unknown10 = array_diff($icd10Codes, $known10);
+        if ($unknown10) {
+            throw new \Exception('Kode ICD-10 tidak ditemukan di master: ' . implode(', ', $unknown10), 422);
+        }
+
+        $known9 = \App\Models\Icd9Code::whereIn('code', $icd9Codes)->pluck('code')->all();
+        $unknown9 = array_diff($icd9Codes, $known9);
+        if ($unknown9) {
+            throw new \Exception('Kode ICD-9 tidak ditemukan di master: ' . implode(', ', $unknown9), 422);
+        }
+
+        $user      = auth('api')->user();
+        $oldUtama  = $claim->diagnosis_utama;
+
+        $claim->update([
+            'diagnosis_utama'    => $data['diagnosis_utama'],
+            'diagnosis_sekunder' => array_values($data['diagnosis_sekunder'] ?? []),
+            'procedure_codes'    => array_values($data['procedure_codes'] ?? []),
+            // Koding berubah → grouping & LUPIS tidak valid lagi.
+            'inacbgs_kode'       => null,
+            'inacbgs_tarif'      => null,
+            'lupis_data'         => null,
+        ]);
+
+        $this->addAuditLog(
+            $claim->id,
+            $user?->employee_id,
+            'EDIT_CODING',
+            $claim->status,
+            $claim->status,
+            "Koding klaim diperbarui (Dx utama: {$oldUtama} → {$data['diagnosis_utama']}). Grouping direset."
+        );
+        $this->log($user?->id, 'EDIT_CLAIM_CODING', BpjsClaim::class, $claimId);
+
+        return $claim->fresh(['auditLogs.performedBy']);
     }
 
     // =========================================================================
@@ -216,21 +308,54 @@ class KlaimService
         $visit   = $claim->visit;
         $patient = $visit->patient;
 
+        // Conditional rawat inap: jnsPelayanan '1' + field inap (tglMasuk/los/
+        // kelasRawat/caraKeluar). Kelas rawat = kelas HAK (kelas_rawat_hak).
+        $isRanap = ($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP';
+        $tglMasuk = $visit->admission_at
+            ? \Illuminate\Support\Carbon::parse($visit->admission_at)->format('Y-m-d')
+            : null;
+        $tglPulang = $visit->discharge_at
+            ? \Illuminate\Support\Carbon::parse($visit->discharge_at)->format('Y-m-d')
+            : $visit->updated_at?->format('Y-m-d'); // RAJAL: fallback ke updated_at (perilaku lama)
+
+        // LOS = malam admission..discharge, minimum 1 (masuk dihitung, pulang tidak).
+        $los = null;
+        if ($isRanap && $visit->admission_at && $visit->discharge_at) {
+            $los = max(1, \Illuminate\Support\Carbon::parse($visit->admission_at)->startOfDay()
+                ->diffInDays(\Illuminate\Support\Carbon::parse($visit->discharge_at)->startOfDay()));
+        }
+
+        // Cara keluar dari discharge_type (PULANG_SEHAT|RUJUK|APS|MENINGGAL).
+        $caraKeluarMap = [
+            'PULANG_SEHAT' => '1', // atas persetujuan dokter
+            'RUJUK'        => '2',
+            'APS'          => '3', // atas permintaan sendiri
+            'MENINGGAL'    => '4',
+        ];
+
         // LUPIS format (struktur sesuai spesifikasi BPJS)
         $lupisData = [
             'noSep'            => $claim->no_sep,
             'nik'              => $claim->patient_nik,
             'nama'             => $patient->name,
             'tglLahir'         => $patient->date_of_birth?->format('Y-m-d'),
-            'jnsPelayanan'     => '2', // 2 = rawat jalan
+            'jnsPelayanan'     => $isRanap ? '1' : '2', // 1=rawat inap, 2=rawat jalan
             'diagnosaUtama'    => $claim->diagnosis_utama,
             'diagnosaSekunder' => $claim->diagnosis_sekunder ?? [],
             'procedureCodes'   => $claim->procedure_codes ?? [],
             'cbgCode'          => $claim->inacbgs_kode,
             'cbgTarif'         => $claim->inacbgs_tarif,
             'totalBiaya'       => $visit->billingInvoice?->total ?? 0,
-            'tglPulang'        => $visit->updated_at?->format('Y-m-d'),
+            'tglPulang'        => $tglPulang,
         ];
+
+        // Field khusus rawat inap.
+        if ($isRanap) {
+            $lupisData['tglMasuk']   = $tglMasuk;
+            $lupisData['los']        = $los;
+            $lupisData['kelasRawat'] = (string) ($visit->kelas_rawat_hak ?? '3');
+            $lupisData['caraKeluar'] = $caraKeluarMap[$visit->discharge_type] ?? '1';
+        }
 
         $user = auth('api')->user();
 
@@ -270,17 +395,105 @@ class KlaimService
         return $this->transitionStatus($claimId, 'REVIEW', 'VERIFIED', 'VERIFIKASI');
     }
 
+    /**
+     * Tolak/kembalikan klaim oleh VERIFIKATOR INTERNAL (sebelum submit ke BPJS).
+     * Status → DIKEMBALIKAN. Bisa di-resubmit (perbaiki lalu ajukan ulang).
+     */
     public function setReject(string $claimId, string $reason): BpjsClaim
     {
         $claim = BpjsClaim::findOrFail($claimId);
 
-        $user     = auth('api')->user();
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah dikirim ke BPJS, tidak bisa dikembalikan internal. Gunakan respons BPJS.', 422);
+        }
+
+        $user      = auth('api')->user();
         $oldStatus = $claim->status;
 
-        $claim->update(['status' => 'DITOLAK']);
+        $claim->update([
+            'status'           => 'DIKEMBALIKAN',
+            'rejection_reason' => $reason,
+            'rejected_at'      => now(),
+        ]);
 
-        $this->addAuditLog($claim->id, $user->employee_id, 'REJECT', $oldStatus, 'DITOLAK', $reason);
-        $this->log($user->id, 'REJECT_CLAIM', BpjsClaim::class, $claimId, $reason);
+        $this->addAuditLog($claim->id, $user->employee_id, 'RETURN_INTERNAL', $oldStatus, 'DIKEMBALIKAN', $reason);
+        $this->log($user->id, 'RETURN_CLAIM', BpjsClaim::class, $claimId, $reason);
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Tandai klaim DITOLAK oleh BPJS (setelah submit). Dipanggil saat memproses
+     * respons VClaim / monitoring. Status → DITOLAK_BPJS.
+     */
+    public function markBpjsRejected(string $claimId, string $reason, ?array $bpjsResponse = null): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        if ($claim->status !== 'SUBMITTED') {
+            throw new \Exception('Hanya klaim berstatus SUBMITTED yang bisa ditandai ditolak BPJS.', 422);
+        }
+
+        $user      = auth('api')->user();
+        $oldStatus = $claim->status;
+
+        $claim->update([
+            'status'           => 'DITOLAK_BPJS',
+            'bpjs_status'      => 'DITOLAK',
+            'bpjs_response'    => $bpjsResponse ?? $claim->bpjs_response,
+            'rejection_reason' => $reason,
+            'rejected_at'      => now(),
+        ]);
+
+        $this->addAuditLog($claim->id, $user?->employee_id, 'REJECT_BPJS', $oldStatus, 'DITOLAK_BPJS', $reason);
+        $this->log($user?->id, 'REJECT_BPJS_CLAIM', BpjsClaim::class, $claimId, $reason);
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Ajukan ulang klaim yang DIKEMBALIKAN (internal) atau DITOLAK_BPJS.
+     * Mengembalikan ke DRAFT untuk diperbaiki & diproses ulang
+     * (grouping → LUPIS → verifikasi → submit). resubmission_count bertambah.
+     * Pola mengikuti AsuransiService::resubmitKlaim.
+     */
+    public function resubmitClaim(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        // Dukung status baru + 'DITOLAK' lama (backward-compat).
+        if (! in_array($claim->status, ['DIKEMBALIKAN', 'DITOLAK_BPJS', 'DITOLAK'], true)) {
+            throw new \Exception('Hanya klaim yang dikembalikan/ditolak yang bisa diajukan ulang.', 422);
+        }
+
+        $user      = auth('api')->user();
+        $oldStatus = $claim->status;
+        $newCount  = ($claim->resubmission_count ?? 0) + 1;
+
+        $claim->update([
+            'status'             => 'DRAFT',
+            'resubmission_count' => $newCount,
+            // Bersihkan jejak penolakan agar siklus baru bersih.
+            'rejection_reason'   => null,
+            'rejected_at'        => null,
+            'bpjs_status'        => null,
+            'bpjs_response'      => null,
+            // Reset hasil grouping/LUPIS — wajib di-run ulang setelah perbaikan data.
+            'inacbgs_kode'       => null,
+            'inacbgs_tarif'      => null,
+            'lupis_data'         => null,
+            'submitted_at'       => null,
+        ]);
+
+        $this->addAuditLog(
+            $claim->id,
+            $user?->employee_id,
+            'RESUBMIT',
+            $oldStatus,
+            'DRAFT',
+            "Klaim diajukan ulang (pengajuan ke-{$newCount}). Perbaiki data lalu jalankan grouping → LUPIS → verifikasi."
+        );
+        $this->log($user?->id, 'RESUBMIT_CLAIM', BpjsClaim::class, $claimId, "resubmission #{$newCount}");
 
         return $claim->fresh(['auditLogs.performedBy']);
     }

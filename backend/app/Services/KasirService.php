@@ -7,6 +7,7 @@ use App\Models\BillingInvoice;
 use App\Models\BillingItem;
 use App\Models\ClinicProfile;
 use App\Models\Insurer;
+use App\Models\InpatientCharge;
 use App\Models\IolItem;
 use App\Models\Medication;
 use App\Models\Prescription;
@@ -170,6 +171,7 @@ class KasirService
                 $this->buildPaketRoomBhpLines($visit),
                 $this->buildIolLines($visit),
                 $this->buildEquipmentLines($visit),
+                $this->buildInpatientChargeLines($visit),
             );
 
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
@@ -178,7 +180,7 @@ class KasirService
             $discount = $this->calculateCOBDiscount($subtotal, $visit->visitCob);
             $total    = max(0, $subtotal - $discount);
 
-            $invoiceNumber = $this->generateInvoiceNumber();
+            $invoiceNumber = $this->generateInvoiceNumber($visit);
 
             $invoice = BillingInvoice::create([
                 'visit_id'       => $visit->id,
@@ -192,6 +194,14 @@ class KasirService
 
             foreach ($lines as $line) {
                 BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
+            }
+
+            // RANAP: tandai inpatient_charges yang baru ditagih agar tak dobel saat
+            // (mis.) invoice di-cancel lalu konsolidasi ulang.
+            if (($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP') {
+                InpatientCharge::where('visit_id', $visit->id)
+                    ->where('is_billed', false)
+                    ->update(['is_billed' => true]);
             }
 
             $this->log(auth('api')->id(), 'CONSOLIDATE_BILLING', BillingInvoice::class, $invoice->id, "Invoice {$invoiceNumber} — total {$total}");
@@ -243,6 +253,13 @@ class KasirService
 
     private function buildObatLines(Visit $visit): array
     {
+        // RANAP: obat (termasuk obat pulang) ditagih lewat inpatient_charges type OBAT
+        // (buildInpatientChargeLines) — resep RANAP hanya untuk antrean Farmasi & potong
+        // stok, BUKAN sumber tagihan. Skip di sini agar tidak dobel-tagih.
+        if (($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP') {
+            return [];
+        }
+
         $lines = [];
         foreach ($visit->prescriptions as $prescription) {
             if ($prescription->status !== 'DISPENSED') {
@@ -448,6 +465,55 @@ class KasirService
     }
 
     /**
+     * RANAP — biaya inap dari inpatient_charges yang belum ditagih (is_billed=false):
+     * kamar/LOS + visite + tindakan/obat/BHP/penunjang/lainnya yang dicatat manual
+     * via modal RANAP. Return [] untuk visit non-RANAP (zero-diff alur rawat jalan).
+     *
+     * Sumber kebenaran harga = inpatient_charges (sudah di-resolve getPrice saat dicatat),
+     * jadi builder ini TIDAK lookup tarif ulang. Baris yang dipakai ditandai is_billed=true
+     * di dalam transaksi consolidate (lihat consolidateBilling) agar tak dobel-tagih.
+     */
+    private function buildInpatientChargeLines(Visit $visit): array
+    {
+        if (($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP') {
+            return [];
+        }
+
+        $charges = InpatientCharge::where('visit_id', $visit->id)
+            ->where('is_billed', false)
+            ->orderBy('charge_date')
+            ->get();
+
+        // Map charge_type RANAP → item_type/category invoice (label tetap informatif).
+        $map = [
+            InpatientCharge::TYPE_ROOM      => ['ROOM',      'Kamar Rawat Inap'],
+            InpatientCharge::TYPE_VISITE    => ['VISITE',    'Visite Dokter'],
+            InpatientCharge::TYPE_TINDAKAN  => ['TINDAKAN',  'Tindakan'],
+            InpatientCharge::TYPE_OBAT      => ['OBAT',      'Obat'],
+            InpatientCharge::TYPE_BHP       => ['BHP',       'BHP'],
+            InpatientCharge::TYPE_PENUNJANG => ['PENUNJANG', 'Penunjang'],
+            InpatientCharge::TYPE_LAINNYA   => ['LAINNYA',   'Lainnya'],
+        ];
+
+        $lines = [];
+        foreach ($charges as $c) {
+            [$itemType, $category] = $map[$c->charge_type] ?? ['LAINNYA', 'Lainnya'];
+            $total = (float) $c->total_price;
+            $lines[] = [
+                'item_type'    => $itemType,
+                'category'     => $category,
+                'reference_id' => $c->id,
+                'description'  => $c->description,
+                'quantity'     => (float) $c->quantity,
+                'unit_price'   => (float) $c->unit_price,
+                'total_price'  => $total,
+                'net_price'    => $total,
+            ];
+        }
+        return $lines;
+    }
+
+    /**
      * Tariff lookup by insurer (post drop_classification).
      *
      * Resolve order:
@@ -467,6 +533,9 @@ class KasirService
             'bhp'             => ['bhp_tariffs',                  'bhp_item_id'],
             'iol'             => ['iol_tariffs',                  'iol_item_id'],
             'equipment'       => ['medical_equipment_tariffs',    'medical_equipment_id'],
+            // RANAP: tarif kamar di-key oleh KELAS HAK (room_class), bukan UUID.
+            // Resolusi insurer + fallback UMUM sama dengan tipe lain.
+            'room'            => ['room_tariffs',                 'room_class'],
             default           => throw new \Exception("Item type tidak dikenal: {$itemType}", 422),
         };
 
@@ -1100,6 +1169,8 @@ class KasirService
         $invoice = BillingInvoice::with([
             'visit.patient',
             'visit.insurer',
+            'visit.room',
+            'visit.bed',
             'items',
             'cashier',
         ])->findOrFail($invoiceId);
@@ -1142,6 +1213,8 @@ class KasirService
                 'guarantor_type' => $invoice->visit->guarantor_type,
                 'insurer'        => $invoice->visit->insurer?->name,
             ],
+            // Blok inap (null bila bukan RANAP) — kamar/bed/kelas/tgl/LOS untuk kwitansi RI.
+            'inpatient'  => $this->receiptInpatientBlock($invoice->visit),
             'items'      => $invoice->items->toArray(),
             'categories' => \App\Models\BillingCategory::where('is_active', true)
                 ->orderBy('sort_order')->orderBy('name')
@@ -1164,6 +1237,37 @@ class KasirService
             'cashier' => $invoice->cashier?->name
                 ?? auth('api')->user()?->employee?->name
                 ?? auth('api')->user()?->name,
+        ];
+    }
+
+    /**
+     * Blok data inap untuk kwitansi RANAP. Null bila visit bukan RANAP (kwitansi
+     * rawat jalan tidak menampilkan blok ini). LOS dihitung konsisten dengan
+     * generateRoomCharges: max(1, malam admission_at..discharge_at) per hari kalender.
+     */
+    private function receiptInpatientBlock(?Visit $visit): ?array
+    {
+        if (! $visit || ($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP') {
+            return null;
+        }
+
+        $los = null;
+        if ($visit->admission_at) {
+            $end = $visit->discharge_at ?? now();
+            $los = max(1, \Illuminate\Support\Carbon::parse($visit->admission_at)
+                ->startOfDay()
+                ->diffInDays(\Illuminate\Support\Carbon::parse($end)->startOfDay()));
+        }
+
+        return [
+            'room'           => $visit->room?->name ?? $visit->room?->code,
+            'bed'            => $visit->bed?->label ?? $visit->bed?->code,
+            'kelas_rawat_hak' => $visit->kelas_rawat_hak,
+            'kelas_rawat'    => $visit->kelas_rawat,
+            'admission_at'   => $visit->admission_at?->format('d/m/Y H:i'),
+            'discharge_at'   => $visit->discharge_at?->format('d/m/Y H:i'),
+            'discharge_type' => $visit->discharge_type,
+            'los'            => $los,
         ];
     }
 
@@ -1251,20 +1355,39 @@ class KasirService
         $invoice->update(['subtotal' => $subtotal, 'total' => $total]);
     }
 
-    private function generateInvoiceNumber(): string
+    /**
+     * Nomor invoice per jenis pelayanan dengan COUNTER TERPISAH per tipe:
+     *   - RAJAL → "INV-{code}/{Y}/{m}/{seq}"     (TIDAK diubah — backward compatible)
+     *   - RANAP → "INV-RI/{code}/{Y}/{m}/{seq}"
+     *   - IGD   → "INV-IGD/{code}/{Y}/{m}/{seq}"
+     * Seq dihitung dari jumlah invoice bulan berjalan yang prefix-nya sama (bukan
+     * count global), supaya tiap tipe punya nomor mulai 001 sendiri.
+     */
+    private function generateInvoiceNumber(?Visit $visit = null): string
     {
         $clinic  = ClinicProfile::first();
         $code    = $clinic?->clinic_code ?? 'KMA';
         $year    = now()->format('Y');
         $month   = now()->format('m');
 
+        $jenis   = $visit?->jenis_pelayanan ?? 'RAJAL';
+        $prefix  = match ($jenis) {
+            'RANAP' => "INV-RI/{$code}/",
+            'IGD'   => "INV-IGD/{$code}/",
+            default => "INV-{$code}/",
+        };
+
+        // Counter per-tipe: hitung invoice bulan berjalan dgn prefix yang sama.
+        // RAJAL prefix "INV-{code}/" juga cocok ke "INV-RI/..."? TIDAK — RI/IGD pakai
+        // segmen tipe di depan code, jadi prefix RAJAL tak akan match RI/IGD.
         $lastSeq = BillingInvoice::whereYear('created_at', $year)
             ->whereMonth('created_at', $month)
+            ->where('invoice_number', 'like', $prefix . '%')
             ->count();
 
         $seq = str_pad($lastSeq + 1, 3, '0', STR_PAD_LEFT);
 
-        return "INV-{$code}/{$year}/{$month}/{$seq}";
+        return "{$prefix}{$year}/{$month}/{$seq}";
     }
 
     // =========================================================================

@@ -16,6 +16,7 @@ class RefractionRecord extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'visit_id',
         'examined_by_id',
         'examination_date',
@@ -71,6 +72,7 @@ class RefractionRecord extends Model
         // Shared
         'pd_distance',
         'clinical_notes',
+        'raw_data',
         // Finalisasi
         'is_finalized',
         'finalized_at',
@@ -111,6 +113,7 @@ class RefractionRecord extends Model
         'iop_os'                      => 'decimal:2',
         // Shared
         'pd_distance'                 => 'decimal:2',
+        'raw_data'                    => 'array',
         // Finalisasi
         'is_finalized'                => 'boolean',
         'finalized_at'                => 'datetime',

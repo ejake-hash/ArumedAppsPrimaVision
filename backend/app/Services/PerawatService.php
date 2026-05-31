@@ -333,6 +333,86 @@ class PerawatService
         });
     }
 
+    /**
+     * Fase 8B — Transisi manual TRIASE → MENUNGGU_RANAP untuk pasien PRE-OP RAWAT INAP.
+     *
+     * Dipanggil dari tombol "Kirim ke Rawat Inap" di PerawatView setelah asesmen pre-op
+     * (TRIASE + REFRAKSIONIS) selesai. Beda dari kirimKeBedah: pasien TIDAK ke antrean
+     * BEDAH (operasi hari-H), melainkan masuk papan "Menunggu Kamar" (current_station=
+     * MENUNGGU_RANAP) untuk diopname H-1. Petugas RANAP admit bed via RanapService::admit;
+     * saat hari operasi, RANAP→Bedah (RanapService::sendToBedah) pakai jadwal dokter (8C).
+     *
+     * MENUNGGU_RANAP = PAPAN (nilai current_station), bukan station antrean → tutup baris
+     * TR/REF langsung + set current_station, TANPA enqueue baris baru (pola disposisi
+     * pasca-op BedahService).
+     *
+     * Gate sama spt kirimKeBedah: NurseAssessment.is_finalized & RefractionRecord.is_finalized.
+     */
+    public function kirimKeRanap(string $queueId): array
+    {
+        return DB::transaction(function () use ($queueId) {
+            $user = auth('api')->user();
+
+            $roleName = $user?->role?->name;
+            if (! in_array($roleName, ['perawat', 'dokter', 'superadmin'], true)) {
+                throw new \Exception('Hanya perawat atau dokter umum yang boleh mengirim pasien ke rawat inap.', 403);
+            }
+
+            $queue = Queue::with('visit')->lockForUpdate()->findOrFail($queueId);
+
+            if ($queue->station !== Queue::STATION_TRIASE) {
+                throw new \Exception("Tombol ini hanya untuk antrian TRIASE (saat ini: {$queue->station}).", 422);
+            }
+
+            $visit = $queue->visit;
+            if ($visit->visit_type !== 'PREOP_BEDAH' || $visit->inpatient_reason !== 'PRE_OP') {
+                throw new \Exception('Pasien ini bukan pre-op rawat inap — gunakan tombol yang sesuai.', 422);
+            }
+
+            // Gate paralel (sama dengan kirimKeBedah).
+            $triaseDone   = NurseAssessment::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            $refraksiDone = RefractionRecord::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            if (! $triaseDone) {
+                throw new \Exception('Asesmen triase belum di-finalize.', 422);
+            }
+            if (! $refraksiDone) {
+                throw new \Exception('Pemeriksaan refraksi belum di-finalize.', 422);
+            }
+
+            // Anti-duplikat: sudah di papan Menunggu Kamar / sudah RANAP.
+            if (in_array($visit->current_station, ['MENUNGGU_RANAP', 'RANAP'], true)) {
+                throw new \Exception('Pasien sudah berada di alur rawat inap.', 422);
+            }
+
+            // Tutup queue TRIASE & REFRAKSIONIS yg masih aktif untuk visit ini.
+            Queue::where('visit_id', $visit->id)
+                ->whereIn('station', [Queue::STATION_TRIASE, Queue::STATION_REFRAKSIONIS])
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
+
+            // Masuk papan Menunggu Kamar (TANPA enqueue baris baru).
+            $visit->update([
+                'ready_for_doctor'      => true,  // semantik: gate pre-op selesai
+                'triase_completed_at'   => $visit->triase_completed_at ?? now(),
+                'refraksi_completed_at' => $visit->refraksi_completed_at ?? now(),
+                'current_station'       => 'MENUNGGU_RANAP',
+            ]);
+
+            $this->log(
+                $user?->id,
+                'KIRIM_KE_RANAP',
+                Visit::class,
+                $visit->id,
+                "Pre-op rawat inap selesai (oleh {$roleName}) → papan Menunggu Kamar"
+            );
+
+            return [
+                'queue' => $queue->fresh(['visit.patient']),
+                'visit' => $visit->fresh(['patient', 'queues']),
+            ];
+        });
+    }
+
     // =========================================================================
     // REKAM MEDIS PASIEN
     // =========================================================================

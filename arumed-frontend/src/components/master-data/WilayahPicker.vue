@@ -29,6 +29,9 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:province', 'update:regency', 'update:district',
+  // Dipancarkan setelah load awal: true jika props.province ketemu di master
+  // (dropdown ter-prefill), false jika tidak (mis. data migrasi ejaan beda).
+  'prefill-status',
 ])
 
 const provinces = ref([])    // [{id, name}]
@@ -41,19 +44,32 @@ const errorMsg = ref(null)
 const selectedProvId = ref('')
 const selectedRegId  = ref('')
 
+// Coba cocokkan props.province ke master & prefill chain. Emit prefill-status
+// supaya parent tahu apakah data lama ketemu (true) atau tidak (false).
+async function prefillFromProvince() {
+  if (!props.province) return
+  const p = provinces.value.find((x) => x.name === props.province)
+  if (p) {
+    selectedProvId.value = p.id
+    await loadRegencies(p.id, true)
+    emit('prefill-status', true)
+  } else {
+    // Nama lama tak cocok master → dropdown kosong, nilai lama dibiarkan utuh.
+    selectedProvId.value = ''
+    selectedRegId.value = ''
+    regencies.value = []
+    districts.value = []
+    emit('prefill-status', false)
+  }
+}
+
 async function loadProvinces() {
   loading.value.prov = true
   errorMsg.value = null
   try {
     provinces.value = await wilayahApi.provinces()
-    // Kalau prop sudah ada nilai province (mode edit), set selectedProvId
-    if (props.province) {
-      const p = provinces.value.find((x) => x.name === props.province)
-      if (p) {
-        selectedProvId.value = p.id
-        await loadRegencies(p.id, true)
-      }
-    }
+    // Kalau prop sudah ada nilai province (mode edit), prefill dropdown.
+    await prefillFromProvince()
   } catch (e) {
     errorMsg.value = 'Gagal memuat daftar provinsi (cek koneksi internet).'
   } finally {
@@ -131,14 +147,20 @@ function onDistrictChange(e) {
 
 onMounted(loadProvinces)
 
-// Kalau parent ganti props.province dari luar (mis. reset form), reload chain
+// Parent mengubah props.province dari luar (reset form / ganti pasien di wizard).
 watch(() => props.province, (newName) => {
   if (!newName) {
     selectedProvId.value = ''
     selectedRegId.value = ''
     regencies.value = []
     districts.value = []
+    return
   }
+  // Abaikan kalau perubahan ini berasal dari pilihan user sendiri (dropdown sudah
+  // sinkron). Hanya re-prefill bila nilai baru ≠ provinsi yang sedang terpilih.
+  const current = provinces.value.find((x) => x.id === selectedProvId.value)
+  if (current?.name === newName) return
+  if (provinces.value.length) prefillFromProvince()
 })
 </script>
 

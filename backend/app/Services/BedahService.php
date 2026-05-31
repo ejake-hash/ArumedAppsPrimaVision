@@ -296,6 +296,13 @@ class BedahService
         }
 
         return DB::transaction(function () use ($schedule, $record, $data) {
+            // Disposisi pasca-op: PULANG (default → KASIR) atau RAWAT_INAP
+            // (→ papan Menunggu Kamar). Validasi nilai yang sah.
+            $disposition = $data['post_op_disposition'] ?? 'PULANG';
+            if (! in_array($disposition, ['PULANG', 'RAWAT_INAP'], true)) {
+                throw new \Exception('post_op_disposition harus PULANG atau RAWAT_INAP.', 422);
+            }
+
             $record->update([
                 'time_out'             => now(),
                 'operation_notes'      => $data['operation_notes'] ?? null,
@@ -303,6 +310,7 @@ class BedahService
                 'complication_detail'  => ($data['has_complication'] ?? false) ? ($data['complication_detail'] ?? null) : null,
                 'post_op_instructions' => $data['post_op_instructions'] ?? null,
                 'followup_date'        => $data['followup_date'] ?? null,
+                'post_op_disposition'  => $disposition,
             ]);
 
             $schedule->update(['status' => 'DONE']);
@@ -416,13 +424,31 @@ class BedahService
             $visitId = $record->visit_id;
 
             if ($visitId) {
+                $visit = Visit::find($visitId);
+
                 $bedahQueue = Queue::where('visit_id', $visitId)
                     ->where('station', Queue::STATION_BEDAH)
                     ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
                     ->latest('created_at')
                     ->first();
 
-                if ($bedahQueue) {
+                // Disposisi RAWAT_INAP untuk pasien rawat JALAN/PREOP (belum RANAP):
+                // tutup baris bedah TANPA enqueue otomatis, arahkan ke papan
+                // "Menunggu Kamar". Petugas ranap admit bed via RanapService::admit
+                // (yang baru men-set jenis_pelayanan=RANAP + enqueue baris RANAP).
+                // Pasien yang SUDAH RANAP (bedah = sub-aktivitas) ditangani normal
+                // oleh resolveNextRanap → returnToLiveRanap (NO_OP, bed ditahan).
+                $toRanap = $record->post_op_disposition === 'RAWAT_INAP'
+                    && $visit
+                    && ($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP';
+
+                if ($bedahQueue && $toRanap) {
+                    $bedahQueue->update([
+                        'status'       => Queue::STATUS_COMPLETED,
+                        'completed_at' => now(),
+                    ]);
+                    $visit->update(['current_station' => 'MENUNGGU_RANAP']);
+                } elseif ($bedahQueue) {
                     $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH);
                 }
             }

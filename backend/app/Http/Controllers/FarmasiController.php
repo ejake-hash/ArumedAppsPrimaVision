@@ -104,9 +104,36 @@ class FarmasiController extends Controller
 
     /**
      * POST /farmasi/resep/{resepId}/item
-     * Body: { items: [{medication_id, quantity, dosage, instructions, notes}] }
+     * Body: { items: [{medication_id, quantity, dosage, instructions, notes, source?}] }
+     * source: RESEP (default) | TAMBAHAN (obat tambahan apotek, golongan BEBAS/BEBAS_TERBATAS).
      */
     public function storeItemDispensing(Request $request, string $resepId): JsonResponse
+    {
+        $validated = $request->validate([
+            'items'                    => 'required|array|min:1',
+            'items.*.medication_id'    => 'required|uuid|exists:medications,id',
+            'items.*.quantity'         => 'required|integer|min:1',
+            'items.*.dosage'           => 'nullable|string|max:100',
+            'items.*.instructions'     => 'nullable|string|max:255',
+            'items.*.notes'            => 'nullable|string|max:255',
+            'items.*.source'           => 'nullable|in:RESEP,TAMBAHAN',
+        ]);
+
+        try {
+            $items = $this->service->storeItemDispensing($resepId, $validated['items']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($items, 'Item resep ditambahkan', 201);
+    }
+
+    /**
+     * POST /farmasi/kunjungan/{visitId}/resep-otc
+     * Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi tanpa resep dokter.
+     * Body: { items: [{medication_id, quantity, dosage, instructions, notes}] }
+     */
+    public function storeOtcPrescription(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate([
             'items'                    => 'required|array|min:1',
@@ -118,12 +145,12 @@ class FarmasiController extends Controller
         ]);
 
         try {
-            $items = $this->service->storeItemDispensing($resepId, $validated['items']);
+            $prescription = $this->service->createOtcPrescription($visitId, $validated['items']);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($items, 'Item resep ditambahkan', 201);
+        return $this->ok($prescription, 'Penjualan obat tambahan dibuat', 201);
     }
 
     /** PUT /farmasi/resep-item/{id} */

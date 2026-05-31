@@ -1,8 +1,154 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import api, { integrasiApi } from '@/services/api'
+import { useAuthStore } from '@/stores/authStore'
 
-// ── Mock Data ─────────────────────────────────────────────────────────────────
-const claims = ref([
+const auth = useAuthStore()
+
+// ── State (live, dari backend) ─────────────────────────────────────────────────
+const claims      = ref([])      // ringkasan list (dari GET /klaim)
+const loadingList = ref(false)
+const loadingDetail = ref(false)
+const actionBusy  = ref(false)   // guard aksi (review/verifikasi/dll)
+
+// Bentuk objek yang dipakai template (dipertahankan agar template stabil).
+// Mapper dari response backend → bentuk ini.
+function mapListItem(c) {
+  return {
+    id: c.id,
+    no_sep: c.no_sep,
+    no_kartu_bpjs: c.visit?.patient?.bpjs_number ?? '—',
+    nik: c.patient_nik,
+    nama_pasien: c.visit?.patient?.name ?? '—',
+    tanggal_pelayanan: c.visit?.visit_date ?? c.created_at?.slice(0, 10),
+    jenis_pelayanan: (c.visit?.jenis_pelayanan === 'RANAP') ? 'Rawat Inap' : 'Rawat Jalan',
+    dpjp: c.visit?.doctor_examination?.doctor?.name ?? '—',
+    diagnosis_utama: { kode: c.diagnosis_utama ?? '—', label: '' },
+    inacbgs_tarif: Number(c.inacbgs_tarif ?? 0),
+    status: c.status,
+    bpjs_status: c.bpjs_status,
+    assigned_to: c.assigned_to ? { id: c.assigned_to.id, name: c.assigned_to.name } : null,
+  }
+}
+
+// Mapper detail (GET /klaim/{id}) → objek `selected` lengkap.
+function mapDetail(c) {
+  return {
+    id: c.id,
+    visit_id: c.visit_id,
+    no_sep: c.no_sep,
+    no_kartu_bpjs: c.visit?.patient?.bpjs_number ?? '—',
+    nik: c.patient_nik,
+    nama_pasien: c.visit?.patient?.name ?? '—',
+    tanggal_pelayanan: c.visit?.visit_date ?? c.created_at?.slice(0, 10),
+    jenis_pelayanan: (c.visit?.jenis_pelayanan === 'RANAP') ? 'Rawat Inap' : 'Rawat Jalan',
+    dpjp: c.visit?.doctor_examination?.doctor?.name ?? '—',
+    diagnosis_utama: c.diagnosis_utama_obj ?? { kode: c.diagnosis_utama ?? '—', label: '' },
+    diagnosis_sekunder: c.diagnosis_sekunder_obj ?? [],
+    tindakan: c.tindakan_obj ?? [],
+    inacbgs_kode: c.inacbgs_kode ?? '',
+    inacbgs_tarif: Number(c.inacbgs_tarif ?? 0),
+    harga_kasir: Number(c.total_billing ?? 0),   // total tagihan riil RS
+    has_lupis: !!c.lupis_data,
+    resubmission_count: c.resubmission_count ?? 0,
+    rejection_reason: c.rejection_reason ?? null,
+    assigned_to: c.assigned_to ? { id: c.assigned_to.id, name: c.assigned_to.name } : null,
+    dokumen_pendukung: c.dokumen_pendukung ?? [],   // PatientDocument visit klaim
+    status: c.status,
+    bpjs_status: c.bpjs_status,
+    verified_by: deriveVerifier(c),
+    verified_at: deriveVerifiedAt(c),
+    verification_notes: deriveRejectNote(c) ?? '',
+    // Checklist = state UI lokal (tidak dipersist). Default DITURUNKAN dari data nyata.
+    checklist: {
+      sep: !!c.no_sep,
+      resume_medis: (c.dokumen_pendukung ?? []).some((d) => d.kode === 'RM-2.3'),
+      diagnosis_utama: !!c.diagnosis_utama,
+      kode_tindakan: (c.procedure_codes ?? []).length > 0,
+      dokumen_pendukung: (c.dokumen_pendukung ?? []).length > 0,
+    },
+    audit_trail: (c.audit_logs ?? []).map((l) => ({
+      action: l.action,
+      by: l.performed_by?.name ?? 'Sistem',
+      at: l.created_at,
+      note: l.notes ?? '',
+      old_status: l.old_status,
+      new_status: l.new_status,
+    })),
+  }
+}
+
+function deriveVerifier(c) {
+  const v = (c.audit_logs ?? []).find((l) => l.action === 'VERIFIKASI' || l.new_status === 'VERIFIED')
+  return v?.performed_by?.name ?? null
+}
+function deriveVerifiedAt(c) {
+  const v = (c.audit_logs ?? []).find((l) => l.action === 'VERIFIKASI' || l.new_status === 'VERIFIED')
+  return v?.created_at ?? null
+}
+function deriveRejectNote(c) {
+  const r = (c.audit_logs ?? []).find((l) => l.action === 'REJECT' || l.new_status === 'DITOLAK')
+  return r?.notes ?? null
+}
+
+async function fetchClaims() {
+  loadingList.value = true
+  try {
+    const params = {}
+    if (statusFilter.value !== 'SEMUA') params.status = statusFilter.value
+    if (searchQuery.value) params.search = searchQuery.value
+    if (dateFrom.value) params.tanggal_from = dateFrom.value
+    if (dateTo.value) params.tanggal_to = dateTo.value
+    if (jenisFilter.value !== 'SEMUA') params.jenis_pelayanan = jenisFilter.value
+    params.per_page = 100
+    const { data } = await api.get('/klaim', { params })
+    const rows = data.data?.data ?? data.data ?? []
+    claims.value = rows.map(mapListItem)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat daftar klaim')
+    claims.value = []
+  } finally {
+    loadingList.value = false
+  }
+}
+
+// ── Auto-refresh (polling) — supaya perubahan antar anggota tim terlihat ───────
+const POLL_MS = 12000
+let _poll = null
+function startPolling() {
+  stopPolling()
+  _poll = setInterval(() => {
+    // Jangan ganggu saat ada modal aktif / sedang aksi.
+    if (anyModalOpen.value || actionBusy.value || submitting.value) return
+    fetchClaims()
+    fetchAllForStats()
+    if (selected.value) refreshSelectedSilent()
+  }, POLL_MS)
+}
+function stopPolling() { if (_poll) { clearInterval(_poll); _poll = null } }
+
+// refresh detail tanpa toast/spinner (untuk polling).
+// Pertahankan centang checklist manual verifikator bila status tak berubah.
+async function refreshSelectedSilent() {
+  if (!selected.value) return
+  const prevId = selected.value.id
+  const prevStatus = selected.value.status
+  const prevChecklist = { ...selected.value.checklist }
+  try {
+    const { data } = await api.get(`/klaim/${prevId}`)
+    // Klaim lain mungkin sudah dipilih saat request berjalan — abaikan respons basi.
+    if (!selected.value || selected.value.id !== prevId) return
+    const mapped = mapDetail(data.data)
+    // Status sama → jangan timpa centang manual yang sudah dilakukan verifikator.
+    if (mapped.status === prevStatus) mapped.checklist = prevChecklist
+    selected.value = mapped
+  } catch { /* diam */ }
+}
+
+onMounted(() => { fetchClaims(); fetchAllForStats(); startPolling() })
+onUnmounted(stopPolling)
+
+const _legacyMockUnused = ([
   {
     id: 'CLM-001', no_sep: '0901R003DCB2500123', no_kartu_bpjs: '0000124567890',
     nik: '3271010101900001', nama_pasien: 'Siti Rahayu',
@@ -189,42 +335,137 @@ const claims = ref([
     ],
   },
 ])
+void _legacyMockUnused
 
 // ── Filters ───────────────────────────────────────────────────────────────────
+// #1 Default tanggal: dari tgl 1 bulan berjalan s/d hari ini.
+function firstDayOfMonth() {
+  const n = new Date()
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-01`
+}
+function todayStr() {
+  const n = new Date()
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+}
+
 const statusFilter = ref('SEMUA')
 const searchQuery = ref('')
-const dateFrom = ref('')
-const dateTo = ref('')
-const statusTabs = ['SEMUA', 'DRAFT', 'REVIEW', 'VERIFIED', 'SUBMITTED', 'SELESAI', 'DITOLAK']
+const dateFrom = ref(firstDayOfMonth())   // default: awal bulan
+const dateTo = ref(todayStr())            // default: hari ini
+const jenisFilter = ref('SEMUA')          // SEMUA | RAJAL | RANAP
+const statusTabs = ['SEMUA', 'DRAFT', 'REVIEW', 'VERIFIED', 'SUBMITTED', 'SELESAI', 'DIKEMBALIKAN', 'DITOLAK_BPJS']
+const jenisTabs = [{ v: 'SEMUA', l: 'Semua' }, { v: 'RAJAL', l: 'Rawat Jalan' }, { v: 'RANAP', l: 'Rawat Inap' }]
 
-const filteredClaims = computed(() => {
-  let l = claims.value
-  if (statusFilter.value !== 'SEMUA') l = l.filter((c) => c.status === statusFilter.value)
-  if (searchQuery.value) {
-    const s = searchQuery.value.toLowerCase()
-    l = l.filter((c) => c.nama_pasien.toLowerCase().includes(s) || c.no_sep.toLowerCase().includes(s) || c.no_kartu_bpjs.includes(s))
-  }
-  if (dateFrom.value) l = l.filter((c) => c.tanggal_pelayanan >= dateFrom.value)
-  if (dateTo.value) l = l.filter((c) => c.tanggal_pelayanan <= dateTo.value)
-  return l
+// Daftar sudah difilter server-side (fetchClaims kirim status/search/tanggal).
+const filteredClaims = computed(() => claims.value)
+
+// Re-fetch saat filter berubah (search di-debounce).
+let _searchDebounce = null
+watch(searchQuery, () => {
+  clearTimeout(_searchDebounce)
+  _searchDebounce = setTimeout(fetchClaims, 350)
 })
+watch([statusFilter], fetchClaims)
+watch([dateFrom, dateTo, jenisFilter], () => { fetchClaims(); fetchAllForStats() })
 
+// Snapshot untuk stat cards & badge per-status. Mengikuti scope jenis+tanggal
+// (TANPA status filter) agar stat card sesuai data yang sedang ditampilkan.
+const allClaims = ref([])
+async function fetchAllForStats() {
+  try {
+    const params = { per_page: 500 }
+    if (jenisFilter.value !== 'SEMUA') params.jenis_pelayanan = jenisFilter.value
+    if (dateFrom.value) params.tanggal_from = dateFrom.value
+    if (dateTo.value) params.tanggal_to = dateTo.value
+    const { data } = await api.get('/klaim', { params })
+    const rows = data.data?.data ?? data.data ?? []
+    allClaims.value = rows.map(mapListItem)
+  } catch { /* diam — stats opsional */ }
+}
+
+const REJECTED_STATUSES = ['DIKEMBALIKAN', 'DITOLAK_BPJS', 'DITOLAK']
 const stats = computed(() => ({
-  total: claims.value.length,
-  menunggu: claims.value.filter((c) => c.status === 'DRAFT' || c.status === 'REVIEW').length,
-  siapSubmit: claims.value.filter((c) => c.status === 'VERIFIED').length,
-  ditolak: claims.value.filter((c) => c.status === 'DITOLAK' || c.bpjs_status === 'DITOLAK').length,
+  total: allClaims.value.length,
+  menunggu: allClaims.value.filter((c) => c.status === 'DRAFT' || c.status === 'REVIEW').length,
+  siapSubmit: allClaims.value.filter((c) => c.status === 'VERIFIED').length,
+  ditolak: allClaims.value.filter((c) => REJECTED_STATUSES.includes(c.status) || c.bpjs_status === 'DITOLAK').length,
 }))
+function statusCount(s) { return allClaims.value.filter((c) => c.status === s).length }
 
 const dateFilterActive = computed(() => !!(dateFrom.value || dateTo.value))
+
+// ── Aging (umur klaim) — batas pengajuan BPJS umumnya akhir bulan berikutnya ───
+function claimAgeDays(c) {
+  if (!c.tanggal_pelayanan) return null
+  const start = new Date(c.tanggal_pelayanan)
+  return Math.floor((Date.now() - start.getTime()) / 86400000)
+}
+function ageClass(c) {
+  const d = claimAgeDays(c)
+  if (d == null) return ''
+  // Klaim belum SELESAI yang sudah tua = perhatian.
+  if (['SELESAI'].includes(c.status)) return ''
+  if (d >= 30) return 'age-danger'
+  if (d >= 14) return 'age-warn'
+  return ''
+}
+
+// ── Page tab (Klaim | Monitoring) ──────────────────────────────────────────────
+const pageTab = ref('klaim') // 'klaim' | 'monitoring'
 
 // ── Selection ─────────────────────────────────────────────────────────────────
 const selected = ref(null)
 const activeDetailTab = ref('data')
 
-function selectClaim(c) { selected.value = c; activeDetailTab.value = 'data'; koreksiNote.value = '' }
+let _selectSeq = 0
+async function selectClaim(c) {
+  const seq = ++_selectSeq
+  activeDetailTab.value = 'data'
+  koreksiNote.value = ''
+  loadingDetail.value = true
+  selected.value = { ...c, audit_trail: [], diagnosis_sekunder: [], tindakan: [], checklist: {}, dokumen_pendukung: [] }
+  try {
+    const { data } = await api.get(`/klaim/${c.id}`)
+    if (seq !== _selectSeq) return // user sudah memilih klaim lain — abaikan respons basi
+    selected.value = mapDetail(data.data)
+  } catch (e) {
+    if (seq !== _selectSeq) return
+    toast('w', e.response?.data?.message ?? 'Gagal memuat detail klaim')
+    selected.value = null
+  } finally {
+    if (seq === _selectSeq) loadingDetail.value = false
+  }
+}
+async function refreshSelected() {
+  if (!selected.value) return
+  const id = selected.value.id
+  const { data } = await api.get(`/klaim/${id}`)
+  selected.value = mapDetail(data.data)
+  await fetchClaims()
+}
 function handleListKeydown(e, c) {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectClaim(c) }
+}
+
+// ── #3 Assignment (tandai dikerjakan oleh akun login) ──────────────────────────
+const assigning = ref(false)
+const myId = computed(() => auth.user?.id ?? null)
+const myName = computed(() => auth.employeeName || auth.user?.name || 'Saya')
+
+// Assign satu klaim (detail) ke diri sendiri, atau lepas bila sudah milik sendiri.
+async function toggleAssignSelf() {
+  if (!selected.value || assigning.value) return
+  assigning.value = true
+  const mine = selected.value.assigned_to?.id === myId.value
+  try {
+    await api.put(`/klaim/${selected.value.id}/assign`, { assigned_to_id: mine ? null : myId.value })
+    await refreshSelected()
+    toast(mine ? 'i' : 's', mine ? 'Penanda dilepas' : `Ditandai dikerjakan oleh ${myName.value}`)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menandai klaim')
+  } finally {
+    assigning.value = false
+  }
 }
 
 // ── Checklist ─────────────────────────────────────────────────────────────────
@@ -248,167 +489,369 @@ const koreksiNote = ref('')
 const showSubmitModal = ref(false)
 const submitting = ref(false)
 
-// ── Item Modals ───────────────────────────────────────────────────────────────
+// ── Item Modals ────────────────────────────────────────────────────────────────
 const showResumeMedisModal  = ref(false)
 const showDiagnosisModal    = ref(false)
 const showTindakanModal     = ref(false)
 const showDokumenModal      = ref(false)
-const resumeMedisEditMode   = ref(false)
-const diagnosisEditMode     = ref(false)
-const tindakanEditMode      = ref(false)
+const anyModalOpen = computed(() =>
+  showSubmitModal.value || showResumeMedisModal.value || showDiagnosisModal.value ||
+  showTindakanModal.value || showDokumenModal.value)
 
-const editDiagnosis = ref({ utama: { kode: '', label: '' }, sekunder: [] })
-const editTindakan  = ref([])
-const uploadDocName = ref('')
-const uploadDocTipe = ref('resume_medis')
-
-// ── Grouper & Kasir ───────────────────────────────────────────────────────────
-const editingGrouper  = ref(false)
-const editGrouperKode = ref('')
-const showKasirModal  = ref(false)
-
-const grouperTarifMap = {
-  'B-4-13-I': 3850000, 'B-4-12-I': 4200000, 'B-4-11-II': 2750000,
-  'B-4-14-I': 7500000, 'B-4-16-III': 1200000, 'B-4-11-I': 2100000,
-  'B-4-13-II': 4500000, 'B-4-12-II': 1800000,
+// ── Bulk selection (untuk aksi massal) ─────────────────────────────────────────
+const bulkSelected = ref(new Set())
+const bulkBusy = ref(false)
+function toggleBulk(id) {
+  const s = new Set(bulkSelected.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  bulkSelected.value = s
+}
+function clearBulk() { bulkSelected.value = new Set() }
+const bulkCount = computed(() => bulkSelected.value.size)
+// Aksi massal hanya untuk klaim sejenis: status sama di antara yang dipilih.
+const bulkActionable = computed(() => {
+  if (!bulkCount.value) return null
+  const picked = claims.value.filter((c) => bulkSelected.value.has(c.id))
+  const statuses = new Set(picked.map((c) => c.status))
+  if (statuses.size !== 1) return null
+  const st = [...statuses][0]
+  if (st === 'DRAFT') return { action: 'review', label: 'Mulai Review', endpoint: (id) => api.put(`/klaim/${id}/review`) }
+  if (st === 'VERIFIED') return { action: 'submit', label: 'Kirim ke BPJS', endpoint: (id) => api.post(`/klaim/${id}/submit`) }
+  return null
+})
+async function runBulk() {
+  const act = bulkActionable.value
+  if (!act || bulkBusy.value) return
+  bulkBusy.value = true
+  const ids = [...bulkSelected.value]
+  let ok = 0, fail = 0
+  for (const id of ids) {
+    try { await act.endpoint(id); ok++ } catch { fail++ }
+  }
+  await fetchClaims(); await fetchAllForStats()
+  clearBulk()
+  bulkBusy.value = false
+  toast(fail ? 'w' : 's', `Aksi massal: ${ok} berhasil${fail ? `, ${fail} gagal` : ''}`)
 }
 
-function startEditGrouper() {
+// #3 Bulk: tandai klaim terpilih dikerjakan oleh akun login (anti double-work).
+async function bulkAssignSelf() {
+  if (!bulkCount.value || bulkBusy.value) return
+  bulkBusy.value = true
+  const ids = [...bulkSelected.value]
+  let ok = 0, fail = 0
+  for (const id of ids) {
+    try { await api.put(`/klaim/${id}/assign`, { assigned_to_id: myId.value }); ok++ } catch { fail++ }
+  }
+  await fetchClaims(); await fetchAllForStats()
+  if (selected.value && ids.includes(selected.value.id)) await refreshSelected()
+  clearBulk()
+  bulkBusy.value = false
+  toast(fail ? 'w' : 's', `${ok} klaim ditandai dikerjakan oleh ${myName.value}${fail ? `, ${fail} gagal` : ''}`)
+}
+
+// ── Edit Koding (diagnosis/tindakan) — ambil dari master ICD ───────────────────
+const editUtama     = ref({ kode: '', label: '' })
+const editSekunder  = ref([])     // [{kode,label}]
+const editTindakanList = ref([])  // [{kode,label}]
+const savingCoding  = ref(false)
+
+// ICD search (live ke /klaim/icd-search). target: 'utama' | 'sekunder:i' | 'tindakan:i'
+const icdSearchTarget = ref(null)
+const icdSearchType   = ref('icd10')
+const icdQuery        = ref('')
+const icdResults      = ref([])
+const icdSearching    = ref(false)
+let _icdDebounce = null
+
+function openCodingEditor() {
   if (!selected.value) return
-  editGrouperKode.value = selected.value.inacbgs_kode
-  editingGrouper.value = true
-}
-function saveGrouper() {
-  if (!selected.value || !editGrouperKode.value.trim()) return
-  const kode = editGrouperKode.value.trim().toUpperCase()
-  selected.value.inacbgs_kode = kode
-  const tarif = grouperTarifMap[kode]
-  if (tarif !== undefined) {
-    selected.value.inacbgs_tarif = tarif
-    toast('s', `Kode grouper diperbarui → Tarif INA-CBGs: ${fmtRp(tarif)}`)
-  } else {
-    toast('i', 'Kode grouper diperbarui. Sinkronkan dengan server INA-CBGs untuk tarif terbaru.')
-  }
-  editingGrouper.value = false
-}
-
-function openResumeMedis(mode = 'view') {
-  resumeMedisEditMode.value = mode === 'edit'
-  showResumeMedisModal.value = true
-}
-function openDiagnosis(mode = 'view') {
-  diagnosisEditMode.value = mode === 'edit'
-  if (selected.value) {
-    editDiagnosis.value = {
-      utama: { ...selected.value.diagnosis_utama },
-      sekunder: selected.value.diagnosis_sekunder.map((d) => ({ ...d })),
-    }
-  }
+  editUtama.value      = { ...selected.value.diagnosis_utama }
+  editSekunder.value   = selected.value.diagnosis_sekunder.map((d) => ({ ...d }))
+  editTindakanList.value = selected.value.tindakan.map((t) => ({ ...t }))
+  icdSearchTarget.value = null
+  icdQuery.value = ''
+  icdResults.value = []
   showDiagnosisModal.value = true
 }
-function openTindakan(mode = 'view') {
-  tindakanEditMode.value = mode === 'edit'
-  if (selected.value) editTindakan.value = selected.value.tindakan.map((t) => ({ ...t }))
-  showTindakanModal.value = true
-}
-function saveDiagnosis() {
-  if (!selected.value) return
-  selected.value.diagnosis_utama = { ...editDiagnosis.value.utama }
-  selected.value.diagnosis_sekunder = editDiagnosis.value.sekunder.map((d) => ({ ...d }))
-  selected.value.checklist.diagnosis_utama = true
-  showDiagnosisModal.value = false
-  toast('s', 'Diagnosis berhasil diperbarui')
-}
-function saveTindakan() {
-  if (!selected.value) return
-  selected.value.tindakan = editTindakan.value.map((t) => ({ ...t }))
-  selected.value.checklist.kode_tindakan = true
-  showTindakanModal.value = false
-  toast('s', 'Kode tindakan berhasil diperbarui')
-}
-function addDxSekunder() { editDiagnosis.value.sekunder.push({ kode: '', label: '' }) }
-function removeDxSekunder(i) { editDiagnosis.value.sekunder.splice(i, 1) }
-function addTindakanRow() { editTindakan.value.push({ kode: '', label: '' }) }
-function removeTindakanRow(i) { editTindakan.value.splice(i, 1) }
-function tambahDokumen() {
-  if (!uploadDocName.value.trim()) { toast('w', 'Nama dokumen tidak boleh kosong'); return }
-  selected.value.dokumen_pendukung.push({
-    tipe: uploadDocTipe.value,
-    nama: uploadDocName.value,
-    tanggal: new Date().toISOString().slice(0, 10),
-    size: '—',
-    status: 'ada',
-  })
-  selected.value.checklist.dokumen_pendukung = true
-  uploadDocName.value = ''
-  toast('s', 'Dokumen berhasil ditambahkan')
-}
-function hapusDokumen(i) {
-  selected.value.dokumen_pendukung.splice(i, 1)
-  if (!selected.value.dokumen_pendukung.length) selected.value.checklist.dokumen_pendukung = false
-  toast('i', 'Dokumen dihapus')
+
+function startIcdSearch(target, type) {
+  icdSearchTarget.value = target
+  icdSearchType.value = type
+  icdQuery.value = ''
+  icdResults.value = []
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
-function mulaiReview() {
-  if (!selected.value || selected.value.status !== 'DRAFT') return
-  selected.value.status = 'REVIEW'
-  addAuditLog('REVIEWED', 'Dewi Sari', 'Klaim masuk tahap review verifikator')
-  toast('i', `Klaim ${selected.value.no_sep.slice(-6)} dalam proses review`)
+watch(icdQuery, (q) => {
+  clearTimeout(_icdDebounce)
+  if (!q || q.trim().length < 2) { icdResults.value = []; return }
+  _icdDebounce = setTimeout(doIcdSearch, 300)
+})
+
+async function doIcdSearch() {
+  icdSearching.value = true
+  try {
+    const { data } = await api.get('/klaim/icd-search', { params: { type: icdSearchType.value, q: icdQuery.value.trim() } })
+    icdResults.value = data.data ?? []
+  } catch {
+    icdResults.value = []
+  } finally {
+    icdSearching.value = false
+  }
 }
 
-function verifikasi() {
-  if (!selected.value || selected.value.status !== 'REVIEW' || !checklistComplete.value) return
-  selected.value.status = 'VERIFIED'
-  selected.value.verified_by = 'Dewi Sari, S.Kep'
-  selected.value.verified_at = new Date().toISOString()
-  addAuditLog('VERIFIED', 'Dewi Sari', 'Semua berkas lengkap dan telah diverifikasi')
-  toast('s', `Klaim ${selected.value.no_sep.slice(-6)} berhasil diverifikasi`)
+function pickIcd(item) {
+  const t = icdSearchTarget.value
+  if (t === 'utama') {
+    editUtama.value = { ...item }
+  } else if (t?.startsWith('sekunder:')) {
+    const i = +t.split(':')[1]
+    editSekunder.value[i] = { ...item }
+  } else if (t?.startsWith('tindakan:')) {
+    const i = +t.split(':')[1]
+    editTindakanList.value[i] = { ...item }
+  }
+  icdSearchTarget.value = null
+  icdQuery.value = ''
+  icdResults.value = []
 }
 
-function kembalikanDraft() {
-  if (!selected.value || !koreksiNote.value.trim()) {
-    toast('w', 'Isi catatan koreksi sebelum mengembalikan ke Draft')
+function addSekunderRow() { editSekunder.value.push({ kode: '', label: '' }); startIcdSearch(`sekunder:${editSekunder.value.length - 1}`, 'icd10') }
+function removeSekunderRow(i) { editSekunder.value.splice(i, 1); if (icdSearchTarget.value === `sekunder:${i}`) icdSearchTarget.value = null }
+function addTindakanRow() { editTindakanList.value.push({ kode: '', label: '' }); startIcdSearch(`tindakan:${editTindakanList.value.length - 1}`, 'icd9') }
+function removeTindakanRow(i) { editTindakanList.value.splice(i, 1); if (icdSearchTarget.value === `tindakan:${i}`) icdSearchTarget.value = null }
+
+async function saveCoding() {
+  if (!selected.value || savingCoding.value) return
+  if (!editUtama.value.kode) { toast('w', 'Diagnosis utama wajib diisi'); return }
+  savingCoding.value = true
+  try {
+    await api.put(`/klaim/${selected.value.id}/diagnosis`, {
+      diagnosis_utama: editUtama.value.kode,
+      diagnosis_sekunder: editSekunder.value.filter((d) => d.kode).map((d) => d.kode),
+      procedure_codes: editTindakanList.value.filter((t) => t.kode).map((t) => t.kode),
+    })
+    await refreshSelected()
+    showDiagnosisModal.value = false
+    toast('s', 'Koding klaim diperbarui. Jalankan ulang Grouping INA-CBGs.')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menyimpan koding')
+  } finally {
+    savingCoding.value = false
+  }
+}
+
+// ── Grouper & Kasir ───────────────────────────────────────────────────────────
+const showKasirModal  = ref(false)
+const grouping        = ref(false)
+const generatingLupis = ref(false)
+
+// Jalankan INA-CBGs grouping via backend (grouper resmi, bukan map statis).
+async function runGrouping() {
+  if (!selected.value || grouping.value) return
+  grouping.value = true
+  try {
+    await api.post(`/klaim/${selected.value.id}/grouping`)
+    await refreshSelected()
+    toast('s', `Grouping INA-CBGs selesai → ${selected.value.inacbgs_kode} (${fmtRp(selected.value.inacbgs_tarif)})`)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Grouping gagal')
+  } finally {
+    grouping.value = false
+  }
+}
+
+// Generate LUPIS via backend (POST /klaim/{id}/lupis).
+async function generateLupis() {
+  if (!selected.value || generatingLupis.value) return
+  generatingLupis.value = true
+  try {
+    await api.post(`/klaim/${selected.value.id}/lupis`)
+    await refreshSelected()
+    toast('s', 'Data LUPIS berhasil di-generate')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal generate LUPIS')
+  } finally {
+    generatingLupis.value = false
+  }
+}
+
+function openResumeMedis() { showDokumenModal.value = true }
+function openTindakan() { showTindakanModal.value = true }
+
+// Buka dokumen pendukung (cetak via endpoint RME).
+function openDocument(doc) {
+  const base = import.meta.env.VITE_API_URL ?? '/api/v1'
+  window.open(`${base}/rekam-medis/dokumen/${doc.id}/cetak`, '_blank')
+  toast('i', `Membuka ${doc.nama}`)
+}
+
+// ── Actions (wired ke backend KlaimService) ────────────────────────────────────
+async function mulaiReview() {
+  if (!selected.value || selected.value.status !== 'DRAFT' || actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await api.put(`/klaim/${selected.value.id}/review`)
+    await refreshSelected()
+    toast('i', `Klaim ${selected.value.no_sep.slice(-6)} dalam proses review`)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memulai review')
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function verifikasi() {
+  if (!selected.value || selected.value.status !== 'REVIEW' || !checklistComplete.value || actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await api.put(`/klaim/${selected.value.id}/verifikasi`)
+    await refreshSelected()
+    toast('s', `Klaim ${selected.value.no_sep.slice(-6)} berhasil diverifikasi`)
+  } catch (e) {
+    // Pesan backend mis. "Grouping INA-CBGs belum dilakukan" / "LUPIS belum di-generate".
+    toast('w', e.response?.data?.message ?? 'Verifikasi gagal')
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function kembalikanDraft() {
+  if (!selected.value || actionBusy.value) return
+  if (!koreksiNote.value.trim() || koreksiNote.value.trim().length < 5) {
+    toast('w', 'Isi catatan koreksi (min. 5 karakter) sebelum mengembalikan klaim')
     return
   }
-  selected.value.status = 'DRAFT'
-  selected.value.verification_notes = koreksiNote.value
-  addAuditLog('RETURNED', 'Dewi Sari', koreksiNote.value)
-  koreksiNote.value = ''
-  toast('w', 'Klaim dikembalikan ke Draft untuk perbaikan')
+  actionBusy.value = true
+  try {
+    // Backend reject (DITOLAK) dengan alasan; UI menyebutnya "kembalikan untuk perbaikan".
+    await api.put(`/klaim/${selected.value.id}/reject`, { alasan: koreksiNote.value.trim() })
+    await refreshSelected()
+    koreksiNote.value = ''
+    toast('w', 'Klaim dikembalikan dengan catatan koreksi')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengembalikan klaim')
+  } finally {
+    actionBusy.value = false
+  }
 }
 
 function openSubmitModal() {
   if (!selected.value || selected.value.status !== 'VERIFIED') return
   showSubmitModal.value = true
 }
-
 function cancelSubmit() { showSubmitModal.value = false }
 
-function confirmSubmit() {
+async function confirmSubmit() {
+  if (!selected.value || submitting.value) return
   submitting.value = true
-  setTimeout(() => {
-    selected.value.status = 'SUBMITTED'
-    selected.value.bpjs_status = 'PENDING'
-    addAuditLog('SUBMITTED', 'Dewi Sari', 'Terkirim ke server BPJS VClaim secara otomatis')
-    submitting.value = false
+  try {
+    await api.post(`/klaim/${selected.value.id}/submit`)
+    await refreshSelected()
     showSubmitModal.value = false
     toast('s', `Klaim ${selected.value.no_sep.slice(-6)} berhasil dikirim ke BPJS`)
-  }, 1400)
+  } catch (e) {
+    // mis. 503 VClaim belum aktif.
+    toast('w', e.response?.data?.message ?? 'Gagal mengirim ke BPJS')
+  } finally {
+    submitting.value = false
+  }
 }
 
-function ajukanUlang() {
-  if (!selected.value || selected.value.status !== 'DITOLAK') return
-  selected.value.status = 'DRAFT'
-  selected.value.bpjs_status = null
-  selected.value.verification_notes = ''
-  addAuditLog('RETURNED', 'Dewi Sari', 'Diajukan ulang setelah penolakan BPJS — perlu perbaikan data')
-  toast('i', 'Klaim dikembalikan ke Draft untuk perbaikan sebelum pengajuan ulang')
+const isRejected = computed(() => selected.value && REJECTED_STATUSES.includes(selected.value.status))
+// Koding hanya boleh diedit sebelum dikirim ke BPJS.
+const codingEditable = computed(() => selected.value && !['SUBMITTED', 'SELESAI'].includes(selected.value.status))
+
+// Ajukan ulang klaim yang dikembalikan/ditolak → kembali ke DRAFT (resubmission_count++).
+async function ajukanUlang() {
+  if (!selected.value || !isRejected.value || actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await api.post(`/klaim/${selected.value.id}/resubmit`)
+    await refreshSelected()
+    toast('s', `Klaim diajukan ulang. Perbaiki data lalu jalankan Grouping → LUPIS → Verifikasi.`)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengajukan ulang klaim')
+  } finally {
+    actionBusy.value = false
+  }
 }
 
-function addAuditLog(action, by, note) {
-  selected.value.audit_trail.push({ action, by, at: new Date().toISOString(), note })
+// ── #4 Monitoring VClaim (live BPJS, pisah RJ/RI) ──────────────────────────────
+const mon = ref({
+  jns: '2',          // 2 = Rawat Jalan, 1 = Rawat Inap
+  tgl: todayStr(),
+  status: '1',       // 1 Proses Verifikasi, 2 Pending, 3 Klaim
+  loading: false,
+  error: '',
+  data: null,
+})
+async function cekMonitoring() {
+  mon.value.loading = true
+  mon.value.error = ''
+  mon.value.data = null
+  try {
+    const { data } = await integrasiApi.monitoring('klaim', {
+      tgl: mon.value.tgl, jns: mon.value.jns, status: mon.value.status,
+    })
+    mon.value.data = data.data ?? data
+  } catch (e) {
+    mon.value.error = e.response?.data?.message ?? 'Gagal memuat monitoring (pastikan VClaim aktif).'
+  } finally {
+    mon.value.loading = false
+  }
 }
+// Ambil baris tabel dari berbagai bentuk respons VClaim.
+function monRows(d) {
+  if (!d) return []
+  const arr = d.list ?? d.data?.list ?? d.response?.list ?? (Array.isArray(d) ? d : null)
+  return Array.isArray(arr) ? arr : []
+}
+function monCols(rows) {
+  if (!rows.length) return []
+  return Object.keys(rows[0]).slice(0, 8)
+}
+
+// ── #2 Audit riwayat: pilih tanggal + navigasi per-minggu ──────────────────────
+// Default: minggu yang memuat HARI INI. auditWeekStart = Senin minggu tsb.
+function mondayOf(dateStr) {
+  const d = new Date(dateStr)
+  const day = (d.getDay() + 6) % 7 // 0 = Senin
+  d.setDate(d.getDate() - day)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const auditWeekStart = ref(mondayOf(todayStr()))
+function auditWeekShift(deltaWeeks) {
+  const d = new Date(auditWeekStart.value)
+  d.setDate(d.getDate() + deltaWeeks * 7)
+  auditWeekStart.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const auditWeekEnd = computed(() => {
+  const d = new Date(auditWeekStart.value)
+  d.setDate(d.getDate() + 6)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+})
+const auditWeekDays = computed(() => {
+  const out = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(auditWeekStart.value)
+    d.setDate(d.getDate() + i)
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+  }
+  return out
+})
+// Default hari aktif = hari yang sama dgn hari ini bila ada di minggu, else Senin.
+const auditDay = ref(todayStr())
+watch(auditWeekStart, () => {
+  // Saat pindah minggu, pilih hari dengan day-of-week sama seperti sebelumnya.
+  const prevDow = (new Date(auditDay.value).getDay() + 6) % 7
+  auditDay.value = auditWeekDays.value[prevDow] ?? auditWeekStart.value
+})
+// Audit yang ditampilkan: difilter ke hari terpilih (auditDay).
+const auditFiltered = computed(() => {
+  if (!selected.value) return []
+  return selected.value.audit_trail.filter((l) => (l.at ?? '').slice(0, 10) === auditDay.value)
+})
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -431,12 +874,14 @@ function fmtDateTime(d) {
 function fmtRp(v) { return 'Rp ' + (v || 0).toLocaleString('id-ID') }
 
 const statusMeta = {
-  DRAFT:     { label: 'Draft',          bg: 'var(--bs)',  color: 'var(--tu)',  border: 'var(--gb)' },
-  REVIEW:    { label: 'Dalam Review',   bg: 'var(--ib)',  color: 'var(--it)',  border: 'var(--ibd)' },
-  VERIFIED:  { label: 'Terverifikasi',  bg: '#f0fdf4',    color: 'var(--ld)',  border: 'var(--sbd)' },
-  SUBMITTED: { label: 'Terkirim',       bg: 'var(--pb)',  color: 'var(--pt)',  border: 'var(--pbd)' },
-  SELESAI:   { label: 'Selesai',        bg: 'var(--sb)',  color: 'var(--st)',  border: 'var(--sbd)' },
-  DITOLAK:   { label: 'Ditolak',        bg: 'var(--eb)',  color: 'var(--et)',  border: 'var(--ebd)' },
+  DRAFT:        { label: 'Draft',           bg: 'var(--bs)',  color: 'var(--tu)',  border: 'var(--gb)' },
+  REVIEW:       { label: 'Dalam Review',    bg: 'var(--ib)',  color: 'var(--it)',  border: 'var(--ibd)' },
+  VERIFIED:     { label: 'Terverifikasi',   bg: '#f0fdf4',    color: 'var(--ld)',  border: 'var(--sbd)' },
+  SUBMITTED:    { label: 'Terkirim',        bg: 'var(--pb)',  color: 'var(--pt)',  border: 'var(--pbd)' },
+  SELESAI:      { label: 'Selesai',         bg: 'var(--sb)',  color: 'var(--st)',  border: 'var(--sbd)' },
+  DIKEMBALIKAN: { label: 'Dikembalikan',    bg: 'var(--wb)',  color: 'var(--wt)',  border: 'var(--wbd)' },
+  DITOLAK_BPJS: { label: 'Ditolak BPJS',    bg: 'var(--eb)',  color: 'var(--et)',  border: 'var(--ebd)' },
+  DITOLAK:      { label: 'Ditolak',         bg: 'var(--eb)',  color: 'var(--et)',  border: 'var(--ebd)' },
 }
 
 const bpjsStatusMeta = {
@@ -447,18 +892,28 @@ const bpjsStatusMeta = {
 }
 
 const auditActionMeta = {
-  CREATED:   { label: 'Klaim Dibuat',         color: 'var(--tu)' },
-  REVIEWED:  { label: 'Masuk Review',          color: 'var(--it)' },
-  VERIFIED:  { label: 'Terverifikasi',         color: 'var(--ld)' },
-  SUBMITTED: { label: 'Dikirim ke BPJS',       color: 'var(--pt)' },
-  SELESAI:   { label: 'Klaim Disetujui',       color: 'var(--st)' },
-  DITOLAK:   { label: 'Klaim Ditolak',         color: 'var(--et)' },
-  RETURNED:  { label: 'Dikembalikan ke Draft', color: 'var(--wt)' },
+  PREPARE:        { label: 'Klaim Disiapkan',       color: 'var(--tu)' },
+  CREATED:        { label: 'Klaim Dibuat',          color: 'var(--tu)' },
+  REVIEW:         { label: 'Masuk Review',          color: 'var(--it)' },
+  REVIEWED:       { label: 'Masuk Review',          color: 'var(--it)' },
+  GROUPING:       { label: 'Grouping INA-CBGs',     color: 'var(--it)' },
+  LUPIS_GENERATED:{ label: 'LUPIS Dibuat',          color: 'var(--it)' },
+  VERIFIKASI:     { label: 'Terverifikasi',         color: 'var(--ld)' },
+  VERIFIED:       { label: 'Terverifikasi',         color: 'var(--ld)' },
+  SUBMIT:         { label: 'Dikirim ke BPJS',       color: 'var(--pt)' },
+  SUBMITTED:      { label: 'Dikirim ke BPJS',       color: 'var(--pt)' },
+  SELESAI:        { label: 'Klaim Disetujui',       color: 'var(--st)' },
+  RETURN_INTERNAL:{ label: 'Dikembalikan (Internal)', color: 'var(--wt)' },
+  REJECT:         { label: 'Dikembalikan',          color: 'var(--wt)' },
+  REJECT_BPJS:    { label: 'Ditolak BPJS',          color: 'var(--et)' },
+  DITOLAK:        { label: 'Klaim Ditolak',         color: 'var(--et)' },
+  RESUBMIT:       { label: 'Diajukan Ulang',        color: 'var(--it)' },
+  RETURNED:       { label: 'Dikembalikan ke Draft', color: 'var(--wt)' },
 }
 
 const statusSteps = ['DRAFT', 'REVIEW', 'VERIFIED', 'SUBMITTED', 'SELESAI']
 function stepIndex(status) {
-  if (status === 'DITOLAK') return -1
+  if (REJECTED_STATUSES.includes(status)) return -1
   return statusSteps.indexOf(status)
 }
 </script>
@@ -466,6 +921,20 @@ function stepIndex(status) {
 <template>
   <div class="klaim">
 
+    <!-- ── PAGE TABS (Klaim | Monitoring) ──────────────────────────────────── -->
+    <div class="kl-pagetabs" role="tablist" aria-label="Tab halaman klaim">
+      <button :class="['kl-ptab', pageTab === 'klaim' ? 'a' : '']" role="tab" :aria-selected="pageTab === 'klaim'" @click="pageTab = 'klaim'">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+        Berkas Klaim
+      </button>
+      <button :class="['kl-ptab', pageTab === 'monitoring' ? 'a' : '']" role="tab" :aria-selected="pageTab === 'monitoring'" @click="pageTab = 'monitoring'">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Monitoring VClaim
+      </button>
+    </div>
+
+    <!-- ════════════════ TAB: BERKAS KLAIM ════════════════ -->
+    <template v-if="pageTab === 'klaim'">
     <!-- ── STAT CARDS ──────────────────────────────────────────────────────── -->
     <div class="stat-row" role="region" aria-label="Ringkasan klaim BPJS bulan ini">
       <div class="stat-card" style="border-top: 3px solid var(--ga)">
@@ -547,6 +1016,18 @@ function stepIndex(status) {
           </div>
         </div>
 
+        <!-- RJ/RI toggle -->
+        <div class="kl-jenis" role="tablist" aria-label="Filter jenis pelayanan">
+          <button
+            v-for="j in jenisTabs"
+            :key="j.v"
+            :class="['kl-jbtn', jenisFilter === j.v ? 'a' : '']"
+            role="tab"
+            :aria-selected="jenisFilter === j.v"
+            @click="jenisFilter = j.v"
+          >{{ j.l }}</button>
+        </div>
+
         <!-- Status tabs -->
         <div class="kl-stabs" role="tablist" aria-label="Filter status klaim">
           <button
@@ -559,7 +1040,7 @@ function stepIndex(status) {
           >
             {{ s === 'SEMUA' ? 'Semua' : statusMeta[s]?.label ?? s }}
             <span v-if="s !== 'SEMUA'" class="kl-stab-ct">
-              {{ claims.filter((c) => c.status === s).length }}
+              {{ statusCount(s) }}
             </span>
           </button>
         </div>
@@ -572,29 +1053,59 @@ function stepIndex(status) {
         </div>
 
         <!-- Claim list -->
+        <!-- Bulk action bar -->
+        <div v-if="bulkCount" class="kl-bulk-bar" role="region" aria-label="Aksi massal klaim">
+          <span class="kl-bulk-ct">{{ bulkCount }} dipilih</span>
+          <button class="btn btn-info btn-sm" :disabled="bulkBusy" title="Tandai dikerjakan oleh saya" @click="bulkAssignSelf">
+            <div v-if="bulkBusy" class="sp" aria-hidden="true"></div>
+            Saya kerjakan
+          </button>
+          <button v-if="bulkActionable" class="btn btn-success btn-sm" :disabled="bulkBusy" @click="runBulk">
+            {{ bulkActionable.label }}
+          </button>
+          <button class="kl-bulk-clear" @click="clearBulk">✕</button>
+        </div>
+
         <div class="kl-list" role="listbox" :aria-label="`${filteredClaims.length} klaim ditampilkan`">
           <div
             v-for="c in filteredClaims"
             :key="c.id"
-            :class="['kl-item', selected && selected.id === c.id ? 'ac' : '']"
-            :style="{ borderLeft: `3px solid ${statusMeta[c.status].color}` }"
+            :class="['kl-item', selected && selected.id === c.id ? 'ac' : '', bulkSelected.has(c.id) ? 'bulk' : '']"
+            :style="{ borderLeft: `3px solid ${(statusMeta[c.status] || {}).color || 'var(--gb)'}` }"
             role="option"
             :aria-selected="selected && selected.id === c.id"
             tabindex="0"
             @click="selectClaim(c)"
             @keydown="handleListKeydown($event, c)"
           >
+            <input
+              type="checkbox"
+              class="kl-item-check"
+              :checked="bulkSelected.has(c.id)"
+              :aria-label="`Pilih klaim ${c.nama_pasien}`"
+              @click.stop="toggleBulk(c.id)"
+            />
             <div class="kl-item-left">
-              <div class="kl-item-name">{{ c.nama_pasien }}</div>
+              <div class="kl-item-name">
+                {{ c.nama_pasien }}
+                <span class="kl-ri-tag" :title="c.jenis_pelayanan">{{ c.jenis_pelayanan === 'Rawat Inap' ? 'RI' : 'RJ' }}</span>
+              </div>
               <div class="kl-item-sep">{{ c.no_sep }}</div>
-              <div class="kl-item-date">{{ fmtDate(c.tanggal_pelayanan) }} · {{ c.dpjp.split(',')[0] }}</div>
-              <div class="kl-item-diag">{{ c.diagnosis_utama.kode }} · {{ c.diagnosis_utama.label }}</div>
+              <div class="kl-item-date">
+                {{ fmtDate(c.tanggal_pelayanan) }} · {{ c.dpjp.split(',')[0] }}
+                <span v-if="ageClass(c)" :class="['kl-age', ageClass(c)]" :title="`Umur klaim ${claimAgeDays(c)} hari`">{{ claimAgeDays(c) }}h</span>
+              </div>
+              <div class="kl-item-diag">{{ c.diagnosis_utama.kode }}</div>
+              <div v-if="c.assigned_to" class="kl-assigned" :title="`Dikerjakan oleh ${c.assigned_to.name}`">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                {{ c.assigned_to.id === myId ? 'Saya' : c.assigned_to.name.split(' ')[0] }}
+              </div>
             </div>
             <div class="kl-item-right">
               <div
                 class="kl-badge"
-                :style="{ background: statusMeta[c.status].bg, color: statusMeta[c.status].color, borderColor: statusMeta[c.status].border }"
-              >{{ statusMeta[c.status].label }}</div>
+                :style="{ background: (statusMeta[c.status] || {}).bg, color: (statusMeta[c.status] || {}).color, borderColor: (statusMeta[c.status] || {}).border }"
+              >{{ (statusMeta[c.status] || {}).label || c.status }}</div>
               <div class="kl-item-tarif">{{ fmtRp(c.inacbgs_tarif) }}</div>
             </div>
           </div>
@@ -637,6 +1148,18 @@ function stepIndex(status) {
                 :style="{ background: statusMeta[selected.status].bg, color: statusMeta[selected.status].color, border: `1px solid ${statusMeta[selected.status].border}` }"
               >{{ statusMeta[selected.status].label }}</div>
             </div>
+          </div>
+
+          <!-- #3 Assignment bar (anti double-work, soft) -->
+          <div class="kl-assign-bar" :class="{ other: selected.assigned_to && selected.assigned_to.id !== myId }">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <span v-if="!selected.assigned_to" class="kl-assign-txt">Belum ditandai dikerjakan siapa pun.</span>
+            <span v-else-if="selected.assigned_to.id === myId" class="kl-assign-txt">Dikerjakan oleh <strong>Anda</strong>.</span>
+            <span v-else class="kl-assign-txt">⚠ Sedang dikerjakan oleh <strong>{{ selected.assigned_to.name }}</strong>. Hindari kerja ganda.</span>
+            <button class="btn btn-secondary btn-sm" :disabled="assigning" @click="toggleAssignSelf">
+              <div v-if="assigning" class="sp" aria-hidden="true"></div>
+              {{ selected.assigned_to && selected.assigned_to.id === myId ? 'Lepas' : 'Saya kerjakan' }}
+            </button>
           </div>
 
           <!-- BPJS Response Alert -->
@@ -751,93 +1274,57 @@ function stepIndex(status) {
                 <div class="card-head">
                   <div class="card-head-title">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
-                    INA-CBGs & Rincian Biaya
+                    INA-CBGs & Tarif Klaim
                   </div>
                 </div>
                 <div class="card-body">
                   <div class="kl-cbgs-row">
                     <div class="kl-cbgs-item">
                       <div class="kl-info-label">Kode Grouper INA-CBGs</div>
-                      <div v-if="!editingGrouper" class="kl-cbgs-code-row">
-                        <span class="kl-cbgs-code">{{ selected.inacbgs_kode }}</span>
-                        <button class="cklist-act-btn edit kl-grouper-edit-btn" title="Edit Kode Grouper" @click="startEditGrouper">
-                          <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                        </button>
-                      </div>
-                      <div v-else class="kl-grouper-edit-row">
-                        <input
-                          v-model="editGrouperKode"
-                          class="fi kl-grouper-fi"
-                          placeholder="mis. B-4-13-I"
-                          @keydown.enter="saveGrouper"
-                          @keydown.escape="editingGrouper = false"
-                        />
-                        <button class="kl-grouper-save" title="Simpan" @click="saveGrouper">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                        </button>
-                        <button class="kl-grouper-cancel" title="Batal" @click="editingGrouper = false">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
+                      <div class="kl-cbgs-code-row">
+                        <span class="kl-cbgs-code">{{ selected.inacbgs_kode || '— belum di-grouping —' }}</span>
                       </div>
                     </div>
                     <div class="kl-cbgs-item">
-                      <div class="kl-info-label">Tarif INA-CBGs</div>
+                      <div class="kl-info-label">Tarif INA-CBGs (dibayar BPJS)</div>
                       <div class="kl-cbgs-tarif">{{ fmtRp(selected.inacbgs_tarif) }}</div>
                     </div>
                     <div class="kl-cbgs-item">
-                      <div class="kl-info-label">Harga Kasir</div>
+                      <div class="kl-info-label">Total Tagihan Riil (Kasir)</div>
                       <div class="kl-cbgs-tarif" style="color:var(--wt)">{{ fmtRp(selected.harga_kasir) }}</div>
                     </div>
                   </div>
-                  <table class="tbl" aria-label="Rincian biaya klaim">
-                    <caption class="sr-only">Rincian komponen biaya klaim INA-CBGs</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Komponen Biaya</th>
-                        <th scope="col" class="num">Nominal</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Jasa Medis & Keperawatan</td>
-                        <td class="num">{{ fmtRp(selected.rincian_biaya.jasa) }}</td>
-                      </tr>
-                      <tr>
-                        <td>Tindakan Medis</td>
-                        <td class="num">{{ fmtRp(selected.rincian_biaya.tindakan) }}</td>
-                      </tr>
-                      <tr>
-                        <td>Obat & BMHP</td>
-                        <td class="num">{{ fmtRp(selected.rincian_biaya.obat) }}</td>
-                      </tr>
-                    </tbody>
+
+                  <!-- Tarif paket INA-CBGs vs tagihan riil (sesuai Permenkes 3/2023:
+                       klaim BPJS = tarif paket CBG, bukan rincian per-item). -->
+                  <table class="tbl" aria-label="Perbandingan tarif klaim">
                     <tfoot>
                       <tr class="tbl-total-row">
-                        <td class="strong">Total Klaim (INA-CBGs)</td>
-                        <td class="num strong">{{ fmtRp(selected.rincian_biaya.jasa + selected.rincian_biaya.tindakan + selected.rincian_biaya.obat) }}</td>
+                        <td class="strong">Tarif Klaim INA-CBGs (paket)</td>
+                        <td class="num strong">{{ fmtRp(selected.inacbgs_tarif) }}</td>
                       </tr>
                       <tr class="tbl-kasir-row">
-                        <td>Harga Kasir (Tagihan Riil)</td>
+                        <td>Total Tagihan Riil RS</td>
                         <td class="num">{{ fmtRp(selected.harga_kasir) }}</td>
                       </tr>
                       <tr :class="['tbl-selisih-row', selected.harga_kasir > selected.inacbgs_tarif ? 'over' : 'under']">
-                        <td>Selisih (Kasir − INA-CBGs)</td>
+                        <td>Selisih (Tagihan − INA-CBGs)</td>
                         <td class="num">{{ selected.harga_kasir >= selected.inacbgs_tarif ? '+' : '' }}{{ fmtRp(selected.harga_kasir - selected.inacbgs_tarif) }}</td>
                       </tr>
                     </tfoot>
                   </table>
-                  <div class="kl-lupis-btn-row">
-                    <button class="btn btn-secondary btn-sm" aria-label="Lihat rincian biaya kasir" @click="showKasirModal = true">
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
-                      Rincian Biaya Kasir
+
+                  <!-- Aksi grouping & LUPIS (hanya saat klaim belum dikirim) -->
+                  <div v-if="!['SUBMITTED','SELESAI'].includes(selected.status)" class="kl-lupis-btn-row">
+                    <button class="btn btn-secondary btn-sm" :disabled="grouping" aria-label="Jalankan grouping INA-CBGs" @click="runGrouping">
+                      <div v-if="grouping" class="sp" aria-hidden="true"></div>
+                      <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+                      {{ selected.inacbgs_kode ? 'Grouping Ulang' : 'Jalankan Grouping' }}
                     </button>
-                    <button class="btn btn-secondary btn-sm" aria-label="Ekspor data ke format LUPIS">
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      Ekspor LUPIS
-                    </button>
-                    <button class="btn btn-secondary btn-sm" aria-label="Cetak detail klaim ini">
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                      Cetak Detail
+                    <button class="btn btn-secondary btn-sm" :disabled="generatingLupis || !selected.inacbgs_kode" :title="!selected.inacbgs_kode ? 'Jalankan grouping dulu' : undefined" aria-label="Generate data LUPIS" @click="generateLupis">
+                      <div v-if="generatingLupis" class="sp" aria-hidden="true"></div>
+                      <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      {{ selected.has_lupis ? 'LUPIS ✓ (Regenerate)' : 'Generate LUPIS' }}
                     </button>
                   </div>
                 </div>
@@ -854,24 +1341,21 @@ function stepIndex(status) {
                 </div>
                 <div class="card-body">
                   <div v-if="selected.dokumen_pendukung.length" class="doc-list">
-                    <div v-for="(doc, i) in selected.dokumen_pendukung" :key="i" class="doc-row">
-                      <div :class="['doc-icon', doc.tipe]">
+                    <div v-for="doc in selected.dokumen_pendukung" :key="doc.id" class="doc-row">
+                      <div class="doc-icon resume_medis">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                       </div>
                       <div class="doc-info">
                         <div class="doc-name">{{ doc.nama }}</div>
                         <div class="doc-meta">
-                          <span :class="['doc-tipe-badge', doc.tipe]">{{ doc.tipe === 'resume_medis' ? 'Resume Medis' : 'Penunjang Medis' }}</span>
-                          <span class="doc-size">{{ doc.size }}</span>
+                          <span class="doc-tipe-badge resume_medis">{{ doc.kode }}</span>
+                          <span :class="['doc-status-badge', doc.status === 'FINAL' ? 'ok' : 'pend']">{{ doc.status === 'FINAL' ? 'Final' : doc.status }}</span>
                           <span class="doc-date">{{ fmtDate(doc.tanggal) }}</span>
                         </div>
                       </div>
                       <div class="doc-actions">
-                        <button class="doc-btn" @click="toast('i', `Membuka ${doc.nama}`)">
+                        <button class="doc-btn" title="Lihat dokumen" @click="openDocument(doc)">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                        </button>
-                        <button class="doc-btn" @click="toast('i', `Mengunduh ${doc.nama}`)">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         </button>
                       </div>
                     </div>
@@ -880,10 +1364,7 @@ function stepIndex(status) {
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                     <span>Belum ada dokumen pendukung</span>
                   </div>
-                  <button class="btn btn-secondary btn-sm doc-upload-btn" @click="toast('i', 'Fitur upload dokumen akan tersedia segera')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    Upload Dokumen
-                  </button>
+                  <p v-if="!selected.dokumen_pendukung.length" class="kl-input-hint" style="text-align:center">Dokumen RM (resume, hasil penunjang) akan muncul di sini saat sudah final.</p>
                 </div>
               </div>
             </div>
@@ -905,7 +1386,7 @@ function stepIndex(status) {
                   <div
                     v-for="(step, i) in statusSteps"
                     :key="step"
-                    :class="['kl-step', selected.status === 'DITOLAK' ? 'reject' : i <= stepIndex(selected.status) ? 'done' : 'pending']"
+                    :class="['kl-step', isRejected ? 'reject' : i <= stepIndex(selected.status) ? 'done' : 'pending']"
                     role="listitem"
                     :aria-current="selected.status === step ? 'step' : undefined"
                   >
@@ -913,9 +1394,9 @@ function stepIndex(status) {
                     <div class="kl-step-label">{{ statusMeta[step].label }}</div>
                     <div v-if="i < statusSteps.length - 1" class="kl-step-line" aria-hidden="true"></div>
                   </div>
-                  <div v-if="selected.status === 'DITOLAK'" class="kl-step reject-final" role="listitem" aria-current="step">
+                  <div v-if="isRejected" class="kl-step reject-final" role="listitem" aria-current="step">
                     <div class="kl-step-dot" aria-hidden="true"></div>
-                    <div class="kl-step-label">Ditolak BPJS</div>
+                    <div class="kl-step-label">{{ statusMeta[selected.status]?.label || 'Ditolak' }}</div>
                   </div>
                 </div>
               </div>
@@ -962,31 +1443,17 @@ function stepIndex(status) {
                           <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         </button>
                       </template>
-                      <template v-else-if="item.key === 'diagnosis_utama'">
-                        <button class="cklist-act-btn" title="Lihat Diagnosis" @click="openDiagnosis('view')">
+                      <template v-else-if="item.key === 'diagnosis_utama' || item.key === 'kode_tindakan'">
+                        <button class="cklist-act-btn" title="Lihat Diagnosis & Tindakan" @click="showTindakanModal = true">
                           <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                         </button>
-                        <button class="cklist-act-btn edit" title="Edit Diagnosis" @click="openDiagnosis('edit')">
-                          <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                        </button>
-                      </template>
-                      <template v-else-if="item.key === 'kode_tindakan'">
-                        <button class="cklist-act-btn" title="Lihat Tindakan" @click="openTindakan('view')">
-                          <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                        </button>
-                        <button class="cklist-act-btn edit" title="Edit Tindakan" @click="openTindakan('edit')">
+                        <button v-if="codingEditable" class="cklist-act-btn edit" title="Edit Koding (ICD)" @click="openCodingEditor">
                           <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         </button>
                       </template>
                       <template v-else-if="item.key === 'dokumen_pendukung'">
                         <button class="cklist-act-btn" title="Lihat Dokumen" @click="showDokumenModal = true">
                           <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                        </button>
-                        <button class="cklist-act-btn edit" title="Kelola Dokumen" @click="showDokumenModal = true">
-                          <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                        </button>
-                        <button class="cklist-act-btn tambah" title="Tambah Dokumen" @click="showDokumenModal = true">
-                          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </button>
                       </template>
                     </div>
@@ -1124,21 +1591,39 @@ function stepIndex(status) {
                     </div>
                   </template>
 
-                  <!-- DITOLAK -->
-                  <template v-if="selected.status === 'DITOLAK'">
-                    <div class="kl-status-info kl-status-info-red" role="alert">
+                  <!-- DIKEMBALIKAN (internal) / DITOLAK_BPJS / DITOLAK (lama) -->
+                  <template v-if="isRejected">
+                    <!-- Dikembalikan verifikator internal (belum dikirim BPJS) -->
+                    <div v-if="selected.status === 'DIKEMBALIKAN'" class="kl-status-info" style="background:var(--wb);border:1px solid var(--wbd)" role="alert">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:var(--wt)"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                      <div>
+                        <div class="kl-si-title" style="color:var(--wt)">Dikembalikan untuk Perbaikan</div>
+                        <div class="kl-si-sub">{{ selected.rejection_reason || 'Lihat catatan koreksi di tab Riwayat & Audit' }}</div>
+                      </div>
+                    </div>
+                    <!-- Ditolak / dikembalikan BPJS (setelah submit) -->
+                    <div v-else class="kl-status-info kl-status-info-red" role="alert">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                       <div>
                         <div class="kl-si-title">Klaim Ditolak oleh BPJS</div>
-                        <div class="kl-si-sub">{{ selected.audit_trail.find(a => a.action === 'DITOLAK')?.note || 'Lihat alasan penolakan di tab Riwayat & Audit' }}</div>
+                        <div class="kl-si-sub">{{ selected.rejection_reason || 'Lihat alasan penolakan di tab Riwayat & Audit' }}</div>
                       </div>
                     </div>
+
+                    <p v-if="selected.resubmission_count" class="kl-action-hint" style="text-align:center">
+                      Sudah diajukan ulang <strong>{{ selected.resubmission_count }}×</strong>
+                    </p>
+
                     <div class="kl-sep-divider" aria-hidden="true"></div>
-                    <button class="btn btn-info btn-full" aria-label="Ajukan ulang klaim setelah diperbaiki" @click="ajukanUlang">
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+                    <button class="btn btn-info btn-full btn-lg" :disabled="actionBusy" aria-label="Ajukan ulang klaim setelah diperbaiki" @click="ajukanUlang">
+                      <div v-if="actionBusy" class="sp" aria-hidden="true"></div>
+                      <svg v-else viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                       Ajukan Ulang Klaim
                     </button>
-                    <p class="kl-action-hint">Klaim akan dikembalikan ke Draft untuk diperbaiki sebelum diajukan ulang</p>
+                    <p class="kl-action-hint">
+                      Klaim kembali ke <strong>Draft</strong>. Perbaiki diagnosis/tindakan (di stasiun Dokter) bila perlu,
+                      lalu jalankan ulang <strong>Grouping → LUPIS → Verifikasi</strong> sebelum dikirim ke BPJS.
+                    </p>
                   </template>
                 </div>
               </div>
@@ -1153,12 +1638,33 @@ function stepIndex(status) {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                   Riwayat & Audit Trail
                 </div>
-                <span class="kl-audit-ct">{{ selected.audit_trail.length }} entri</span>
+                <span class="kl-audit-ct">{{ auditFiltered.length }} / {{ selected.audit_trail.length }} entri</span>
               </div>
               <div class="card-body kl-audit-body">
-                <ol class="kl-timeline" aria-label="Kronologi perubahan status klaim">
+                <!-- #2 Week picker -->
+                <div class="kl-week">
+                  <button class="kl-week-nav" title="Minggu sebelumnya" @click="auditWeekShift(-1)">‹</button>
+                  <span class="kl-week-range">{{ fmtDate(auditWeekStart) }} – {{ fmtDate(auditWeekEnd) }}</span>
+                  <button class="kl-week-nav" title="Minggu berikutnya" @click="auditWeekShift(1)">›</button>
+                </div>
+                <div class="kl-week-days" role="tablist" aria-label="Pilih hari">
+                  <button
+                    v-for="(d, i) in auditWeekDays"
+                    :key="d"
+                    :class="['kl-day', auditDay === d ? 'a' : '', d === todayStr() ? 'today' : '']"
+                    role="tab"
+                    :aria-selected="auditDay === d"
+                    @click="auditDay = d"
+                  >
+                    <span class="kl-day-dow">{{ ['Sen','Sel','Rab','Kam','Jum','Sab','Min'][i] }}</span>
+                    <span class="kl-day-num">{{ d.slice(8, 10) }}</span>
+                    <span v-if="selected.audit_trail.some(l => (l.at ?? '').slice(0,10) === d)" class="kl-day-dot"></span>
+                  </button>
+                </div>
+
+                <ol v-if="auditFiltered.length" class="kl-timeline" aria-label="Kronologi perubahan status klaim">
                   <li
-                    v-for="(log, i) in [...selected.audit_trail].reverse()"
+                    v-for="(log, i) in [...auditFiltered].reverse()"
                     :key="i"
                     class="kl-tl-item"
                   >
@@ -1173,6 +1679,7 @@ function stepIndex(status) {
                     </div>
                   </li>
                 </ol>
+                <div v-else class="kl-audit-empty">Tidak ada aktivitas pada {{ fmtDate(auditDay) }}.</div>
                 <p class="kl-audit-footer" aria-label="Catatan privasi">
                   <svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;display:inline;vertical-align:middle;margin-right:3px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
                   Audit trail ini bersifat permanen dan tidak dapat dihapus sesuai ketentuan PMK No. 24 Tahun 2022
@@ -1184,6 +1691,51 @@ function stepIndex(status) {
         </template>
       </section>
     </div>
+    </template>
+
+    <!-- ════════════════ TAB: MONITORING VCLAIM ════════════════ -->
+    <template v-else-if="pageTab === 'monitoring'">
+      <div class="kl-mon">
+        <div class="kl-mon-head">
+          <h3 class="kl-mon-title">Monitoring Klaim — VClaim BPJS</h3>
+          <p class="kl-mon-sub">Data langsung dari server BPJS (butuh integrasi VClaim aktif).</p>
+        </div>
+        <div class="kl-mon-form">
+          <div class="kl-mon-jns" role="tablist" aria-label="Jenis pelayanan">
+            <button :class="['kl-jtab', mon.jns === '2' ? 'a' : '']" @click="mon.jns = '2'">Rawat Jalan</button>
+            <button :class="['kl-jtab', mon.jns === '1' ? 'a' : '']" @click="mon.jns = '1'">Rawat Inap</button>
+          </div>
+          <input v-model="mon.tgl" type="date" class="fi" aria-label="Tanggal" />
+          <select v-model="mon.status" class="fi" aria-label="Status klaim">
+            <option value="1">Proses Verifikasi</option>
+            <option value="2">Pending</option>
+            <option value="3">Klaim</option>
+          </select>
+          <button class="btn btn-info btn-sm" :disabled="mon.loading" @click="cekMonitoring">
+            <div v-if="mon.loading" class="sp" aria-hidden="true"></div>
+            {{ mon.loading ? 'Memuat…' : 'Tampilkan' }}
+          </button>
+        </div>
+
+        <div v-if="mon.error" class="kl-mon-err" role="alert">{{ mon.error }}</div>
+        <template v-else-if="mon.data">
+          <div v-if="monRows(mon.data).length" style="overflow-x:auto">
+            <div class="kl-mon-count">{{ monRows(mon.data).length }} data — {{ mon.jns === '1' ? 'Rawat Inap' : 'Rawat Jalan' }}</div>
+            <table class="tbl kl-mon-tbl">
+              <thead><tr><th class="num">No</th><th v-for="col in monCols(monRows(mon.data))" :key="col">{{ col }}</th></tr></thead>
+              <tbody>
+                <tr v-for="(row, i) in monRows(mon.data)" :key="row.noSep ?? i">
+                  <td class="num">{{ i + 1 }}</td>
+                  <td v-for="col in monCols(monRows(mon.data))" :key="col" :class="{ mono: /sep|kartu|nik/i.test(col) }">{{ row[col] ?? '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="kl-mon-empty">Tidak ada data monitoring untuk filter ini.</div>
+        </template>
+        <div v-else class="kl-mon-empty">Pilih jenis pelayanan, tanggal &amp; status, lalu klik <strong>Tampilkan</strong>.</div>
+      </div>
+    </template>
 
     <!-- ── SUBMIT CONFIRMATION MODAL ─────────────────────────────────────── -->
     <Teleport to="body">
@@ -1630,6 +2182,17 @@ function stepIndex(status) {
 .kl-item-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 .kl-badge { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; border: 1px solid; white-space: nowrap; }
 .kl-item-tarif { font-size: 10px; font-weight: 600; color: var(--ga); font-variant-numeric: tabular-nums; }
+.kl-item { position: relative; }
+.kl-item.bulk { background: var(--ib); }
+.kl-item-check { position: absolute; top: 6px; right: 6px; width: 15px; height: 15px; cursor: pointer; accent-color: var(--ga); z-index: 2; }
+.kl-age { font-size: 8.5px; font-weight: 700; padding: 0 4px; border-radius: 3px; margin-left: 4px; }
+.kl-age.age-warn { background: var(--wb); color: var(--wt); }
+.kl-age.age-danger { background: var(--eb); color: var(--et); }
+.kl-bulk-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 0 0.5rem 4px; background: var(--ib); border: 1px solid var(--ibd); border-radius: 8px; }
+.kl-bulk-ct { font-size: 11px; font-weight: 700; color: var(--it); }
+.kl-bulk-warn { font-size: 10px; color: var(--th); flex: 1; }
+.kl-bulk-clear { margin-left: auto; width: 22px; height: 22px; border: none; background: transparent; color: var(--th); cursor: pointer; font-size: 13px; border-radius: 5px; }
+.kl-bulk-clear:hover { background: var(--bs); color: var(--et); }
 .kl-empty-list { text-align: center; padding: 2rem 1rem; font-size: 11px; color: var(--th); }
 
 /* ── Right Panel ────────────────────────────────────────────────────────────── */
@@ -1927,6 +2490,20 @@ function stepIndex(status) {
 .im-del-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ebd); background: var(--eb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--et); }
 .im-del-btn svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .im-add-btn { margin-top: 4px; }
+/* ── Edit Koding ICD ── */
+.kl-icd-pick { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.kl-icd-current { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); font-size: 12px; }
+.kl-icd-current.empty { color: var(--th); font-style: italic; border-style: dashed; }
+.kl-icd-current .kl-dx-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kl-icd-search { margin-top: 8px; padding: 8px; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; }
+.kl-icd-results { margin-top: 6px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.kl-icd-result { display: flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bc); cursor: pointer; text-align: left; font-size: 12px; color: var(--td); }
+.kl-icd-result:hover { background: var(--ib); border-color: var(--ibd); }
+.kl-icd-result .kl-dx-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kl-icd-hint { padding: 8px; text-align: center; font-size: 11.5px; color: var(--th); }
+.doc-status-badge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+.doc-status-badge.ok { background: var(--sb); color: var(--st); }
+.doc-status-badge.pend { background: var(--wb); color: var(--wt); }
 .im-upload-area { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 1.25rem; background: var(--bs); border: 2px dashed var(--gb); border-radius: 10px; color: var(--th); font-size: 12px; text-align: center; }
 .im-upload-area svg { width: 32px; height: 32px; }
 .im-tambah-row { display: grid; grid-template-columns: 140px 1fr auto; gap: 6px; align-items: center; }
@@ -1938,4 +2515,60 @@ function stepIndex(status) {
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+
+/* ── Page tabs (Klaim | Monitoring) ── */
+.kl-pagetabs { display: flex; gap: 4px; margin-bottom: 0.75rem; border-bottom: 1px solid var(--gb); }
+.kl-ptab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border: none; background: transparent; color: var(--tu); font-size: 12.5px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.kl-ptab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.kl-ptab.a { color: var(--ga); border-bottom-color: var(--ga); }
+.kl-ptab:hover:not(.a) { color: var(--td); }
+
+/* ── RJ/RI toggle ── */
+.kl-jenis { display: flex; gap: 3px; padding: 0.4rem 0.6rem 0; }
+.kl-jbtn { flex: 1; padding: 5px 8px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bs); color: var(--tu); font-size: 10.5px; font-weight: 600; cursor: pointer; }
+.kl-jbtn.a { background: var(--ga); color: #fff !important; border-color: var(--ga); }
+
+/* ── RI tag + assignment in list ── */
+.kl-ri-tag { font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: var(--bs); color: var(--tu); border: 1px solid var(--gb); margin-left: 4px; vertical-align: middle; }
+.kl-assigned { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; color: var(--it); background: var(--ib); border: 1px solid var(--ibd); padding: 1px 6px; border-radius: 10px; margin-top: 3px; }
+.kl-assigned svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* ── Assignment bar (detail) ── */
+.kl-assign-bar { display: flex; align-items: center; gap: 8px; padding: 7px 11px; margin-bottom: 0.6rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; font-size: 11.5px; color: var(--td); }
+.kl-assign-bar.other { background: var(--wb); border-color: var(--wbd); color: var(--wt); }
+.kl-assign-bar svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; flex-shrink: 0; }
+.kl-assign-txt { flex: 1; }
+.kl-assign-bar .btn { margin-left: auto; }
+
+/* ── Audit week picker ── */
+.kl-week { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; }
+.kl-week-nav { width: 26px; height: 26px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bc); color: var(--td); font-size: 16px; cursor: pointer; line-height: 1; }
+.kl-week-nav:hover { background: var(--bs); border-color: var(--ga); }
+.kl-week-range { font-size: 11.5px; font-weight: 600; color: var(--td); min-width: 150px; text-align: center; }
+.kl-week-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 12px; }
+.kl-day { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 2px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); cursor: pointer; }
+.kl-day.a { background: var(--ga); border-color: var(--ga); }
+.kl-day.a .kl-day-dow, .kl-day.a .kl-day-num { color: #fff !important; }
+.kl-day.today:not(.a) { border-color: var(--ga); }
+.kl-day-dow { font-size: 8.5px; color: var(--tu); }
+.kl-day-num { font-size: 12px; font-weight: 700; color: var(--td); }
+.kl-day-dot { position: absolute; bottom: 2px; width: 4px; height: 4px; border-radius: 50%; background: var(--ga); }
+.kl-day.a .kl-day-dot { background: #fff; }
+.kl-audit-empty { text-align: center; padding: 1.5rem; font-size: 12px; color: var(--th); }
+
+/* ── Monitoring tab ── */
+.kl-mon { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1rem 1.2rem; }
+.kl-mon-title { font-size: 14px; font-weight: 700; color: var(--td); margin: 0; }
+.kl-mon-sub { font-size: 11px; color: var(--tu); margin: 2px 0 0; }
+.kl-mon-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0.9rem 0; }
+.kl-mon-jns { display: inline-flex; border: 1px solid var(--gb); border-radius: 7px; overflow: hidden; }
+.kl-jtab { padding: 6px 12px; border: none; background: var(--bs); color: var(--tu); font-size: 11px; font-weight: 600; cursor: pointer; }
+.kl-jtab.a { background: var(--ga); color: #fff !important; }
+.kl-mon-form .fi { width: auto; min-width: 130px; }
+.kl-mon-err { padding: 0.7rem 1rem; background: var(--eb); border: 1px solid var(--ebd); border-radius: 8px; color: var(--et); font-size: 12px; }
+.kl-mon-empty { padding: 2rem; text-align: center; color: var(--th); font-size: 12.5px; }
+.kl-mon-count { font-size: 11px; color: var(--tu); margin-bottom: 6px; }
+.kl-mon-tbl { width: 100%; font-size: 11.5px; }
+.kl-mon-tbl th { background: var(--bs); text-align: left; padding: 6px 8px; font-weight: 700; color: var(--tu); white-space: nowrap; }
+.kl-mon-tbl td { padding: 5px 8px; border-bottom: 1px solid var(--gb); }
 </style>

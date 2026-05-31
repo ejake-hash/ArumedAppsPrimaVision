@@ -24,11 +24,13 @@ class SurgerySchedule extends Model
         'scheduled_time',
         'operation_room',
         'status',
+        'requires_inpatient',
         'notes',
     ];
 
     protected $casts = [
-        'scheduled_date' => 'date',
+        'scheduled_date'     => 'date',
+        'requires_inpatient' => 'boolean',
     ];
 
     public function surgeryPackage(): BelongsTo

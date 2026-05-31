@@ -153,14 +153,20 @@ final class SignatureService
     {
         $docs = PatientDocument::query()
             ->whereIn('status', ['PENDING_SIGNATURE', 'RENDERED', 'DRAFT'])
-            ->with(['patient', 'visit', 'documentSignatures'])
+            ->with(['patient', 'visit.doctorExamination.doctor', 'documentSignatures'])
             ->whereHas('visit')
             ->orderByDesc('created_at')
             ->get();
 
+        // Resolve template per kode sekali saja (banyak dokumen berbagi template).
+        $codes = $docs->pluck('template_code')->filter()->unique()->all();
+        $templatesByCode = \App\Models\DocumentTemplate::whereIn('code', $codes)
+            ->get()
+            ->keyBy('code');
+
         // Filter: dokumen yang punya kebutuhan TTD dokter & dokter ini belum TTD.
-        $relevant = $docs->filter(function (PatientDocument $d) use ($userId) {
-            $tpl = $d->template_code ? \App\Models\DocumentTemplate::where('code', $d->template_code)->first() : null;
+        $relevant = $docs->filter(function (PatientDocument $d) use ($userId, $templatesByCode) {
+            $tpl = $d->template_code ? $templatesByCode->get($d->template_code) : null;
             if (!$tpl || !$tpl->field_schema) return false;
 
             $hasDoctorSig = $this->schemaRequiresDoctorSignature($tpl->field_schema);
@@ -175,7 +181,7 @@ final class SignatureService
         })->values();
 
         // Group by patient.
-        $grouped = $relevant->groupBy(fn ($d) => $d->patient_id)->map(function ($docs) {
+        $grouped = $relevant->groupBy(fn ($d) => $d->patient_id)->map(function ($docs) use ($templatesByCode) {
             $first = $docs->first();
             return [
                 'patient' => [
@@ -187,10 +193,12 @@ final class SignatureService
                 'documents' => $docs->map(fn ($d) => [
                     'id'             => $d->id,
                     'template_code'  => $d->template_code,
+                    'template_name'  => $templatesByCode->get($d->template_code)?->name,
                     'status'         => $d->status,
                     'created_at'     => $d->created_at,
                     'visit_id'       => $d->visit_id,
                     'visit_date'     => $d->visit?->visit_date,
+                    'review_doctor'  => $d->visit?->doctorExamination?->doctor?->name,
                     'signature_count'=> $d->documentSignatures->count(),
                 ])->values(),
             ];

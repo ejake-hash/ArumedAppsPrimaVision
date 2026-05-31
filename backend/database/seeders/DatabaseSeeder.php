@@ -28,6 +28,9 @@ class DatabaseSeeder extends Seeder
             // SoapHistoryDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=SoapHistoryDemoSeeder
             // KasirDemoSeeder::class,    // demo only — run manually: php artisan db:seed --class=KasirDemoSeeder
             // BedahRiwayatSeeder::class, // demo only — run manually: php artisan db:seed --class=BedahRiwayatSeeder (butuh master dari BedahDemoSeeder)
+            // PenunjangDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=PenunjangDemoSeeder
+            // BedahQueueDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=BedahQueueDemoSeeder (butuh SurgeryPackage dari BedahDemoSeeder)
+            // FarmasiDemoSeeder::class,  // demo only — run manually: php artisan db:seed --class=FarmasiDemoSeeder (butuh master Medication + Employee)
         ]);
     }
 }

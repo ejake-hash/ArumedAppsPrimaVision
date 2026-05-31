@@ -507,6 +507,12 @@ class DokterService
                 'surgery_schedule_id' => $scheduleId,
             ]);
 
+            // Fase 8 — tandai alasan inap di visit (dibaca admisi & papan RANAP):
+            //   RAWAT_INAP            → OBSERVASI (inap pemeriksaan tanpa operasi).
+            //   BEDAH + perlu inap    → PRE_OP    (pasien datang H-1, lalu operasi).
+            //   planning lain / batal → null      (bukan kandidat inap).
+            $this->applyInpatientReason($visit, $data);
+
             // Handle planning-specific side-effects
             $this->handlePlanningFollowUp($visit, $data, $examination);
 
@@ -522,6 +528,26 @@ class DokterService
     public function updatePlanning(string $visitId, array $data): array
     {
         return $this->storePlanning($visitId, $data);
+    }
+
+    /**
+     * Fase 8 — set visits.inpatient_reason dari planning Tab 4.
+     *   RAWAT_INAP         → OBSERVASI (inap pemeriksaan/observasi tanpa operasi).
+     *   BEDAH + perlu inap → PRE_OP    (inap karena operasi; pasien datang H-1).
+     *   selain itu         → null      (bukan kandidat inap — bersihkan bila ganti planning).
+     */
+    private function applyInpatientReason(Visit $visit, array $data): void
+    {
+        $planning = $data['planning'] ?? null;
+
+        $reason = null;
+        if ($planning === 'RAWAT_INAP') {
+            $reason = 'OBSERVASI';
+        } elseif ($planning === 'BEDAH' && ! empty($data['requires_inpatient'])) {
+            $reason = 'PRE_OP';
+        }
+
+        $visit->update(['inpatient_reason' => $reason]);
     }
 
     /**
@@ -642,6 +668,8 @@ class DokterService
             'scheduled_time'     => $data['surgery_time'] ?? null,
             'operation_room'     => $data['operation_room'] ?? $defaultRoom,
             'status'             => 'SCHEDULED',
+            // Fase 8 — pre-op H-1: jadwal bedah ini butuh rawat inap.
+            'requires_inpatient' => (bool) ($data['requires_inpatient'] ?? false),
         ];
 
         // Perbarui jadwal yang sudah terhubung & belum mulai; selain itu buat baru.

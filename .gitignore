@@ -23,3 +23,19 @@ arumed-frontend/.vite/
 .DS_Store
 Thumbs.db
 *.log
+
+# Recovery / scratch
+_recovery/
+_allblobs.txt
+_blob_*.txt
+_dbdiff.txt
+_difflist.txt
+_markers.txt
+_onlysrc.txt
+_scan_results.txt
+Docs/_recovery-manifest.md
+
+# Dump skema DB klien
+Docs/migrasi data/*.sql
+Docs/migrasi data/**/*.sql
+**/*_schema.sql

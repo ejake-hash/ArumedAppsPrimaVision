@@ -114,6 +114,7 @@ export const perawatApi = {
   selesai:         (id)               => api.put(`/perawat/antrian/${id}/selesai`),
   lewati:          (id)               => api.put(`/perawat/antrian/${id}/lewati`),
   kirimKeBedah:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-bedah`),
+  kirimKeRanap:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-ranap`),
 
   showAsesmen:     (visitId)          => api.get(`/perawat/asesmen/${visitId}`),
   storeAsesmen:    (data)             => api.post('/perawat/asesmen', data),
@@ -418,6 +419,7 @@ export const formTemplateApi = {
   markRendered:(docId) => api.post(`/rekam-medis/document/${docId}/mark-rendered`),
   finalize:    (docId, signatureIds = []) => api.post(`/rekam-medis/document/${docId}/finalize`, { signature_ids: signatureIds }),
   snapshot:    (docId) => api.get(`/rekam-medis/document/${docId}/render`),
+  saveDraftContent: (docId, renderedHtml) => api.put(`/rekam-medis/document/${docId}/draft-content`, { rendered_html: renderedHtml }),
 
   // ─── Fase 4 — Signature flow ───────────────────────────────────────────
   sign:                (docId, payload) => api.post(`/rekam-medis/document/${docId}/sign`, payload),
@@ -501,6 +503,73 @@ export const tarifPaketApi = {
     upsert: (paketId, data)        => api.post(`/tarif-paket/paket-bedah/${paketId}/tariffs`, data),
     remove: (paketId, tariffId)    => api.delete(`/tarif-paket/paket-bedah/${paketId}/tariffs/${tariffId}`),
   },
+}
+
+/**
+ * Master Fasilitas & Ruang (RANAP) — Room / Bed / Tarif Kamar.
+ * Dipakai RoomBedManager.vue & RawatInapView.vue. Endpoint: /master/room|bed|room-tariff.
+ */
+export const roomApi = {
+  list:       ()             => api.get('/master/room'),
+  store:      (data)         => api.post('/master/room', data),
+  update:     (id, data)     => api.put(`/master/room/${id}`, data),
+  destroy:    (id)           => api.delete(`/master/room/${id}`),
+  addBed:     (roomId, data) => api.post(`/master/room/${roomId}/bed`, data),
+  updateBed:  (id, data)     => api.put(`/master/bed/${id}`, data),
+  destroyBed: (id)           => api.delete(`/master/bed/${id}`),
+}
+
+/** Tarif Kamar (RANAP) — per kelas/penjamin. Endpoint: /master/room-tariff. */
+export const roomTarifApi = {
+  list:    ()      => api.get('/master/room-tariff'),
+  upsert:  (data)  => api.post('/master/room-tariff', data),
+  destroy: (id)    => api.delete(`/master/room-tariff/${id}`),
+}
+
+/**
+ * Rawat Inap (RANAP) — papan bed, admit/transfer/discharge, CPPT,
+ * tindakan/obat/charge, SEP/SPRI, riwayat. Endpoint: /rawat-inap/*.
+ */
+export const ranapApi = {
+  // Papan & daftar
+  bedBoard:      ()                  => api.get('/rawat-inap/bed-board'),
+  menungguKamar: ()                  => api.get('/rawat-inap/menunggu-kamar'),
+  aktif:         ()                  => api.get('/rawat-inap/aktif'),
+  history:       (dateFrom, dateTo)  => api.get('/rawat-inap/history', { params: { date_from: dateFrom, date_to: dateTo } }),
+  detail:        (visitId)           => api.get(`/rawat-inap/${visitId}`),
+
+  // Aksi pasien
+  admit:         (visitId, payload)  => api.post(`/rawat-inap/${visitId}/admit`, payload),
+  transfer:      (visitId, payload)  => api.post(`/rawat-inap/${visitId}/transfer`, payload),
+  discharge:     (visitId, payload)  => api.post(`/rawat-inap/${visitId}/discharge`, payload),
+  kirimBedah:    (visitId, payload)  => api.post(`/rawat-inap/${visitId}/kirim-bedah`, payload),
+
+  // Fase 8C — dokumen/hasil eksternal (lab/radiologi pihak ke-3 pre-op).
+  documents:      (visitId)           => api.get(`/rawat-inap/${visitId}/dokumen`),
+  uploadDocument: (visitId, formData) => api.post(`/rawat-inap/${visitId}/dokumen`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  deleteDocument: (visitId, docId)    => api.delete(`/rawat-inap/${visitId}/dokumen/${docId}`),
+
+  // Charge / tindakan / obat
+  tarifTindakan: (visitId)           => api.get(`/rawat-inap/${visitId}/tarif-tindakan`),
+  daftarObat:    (visitId, search)   => api.get(`/rawat-inap/${visitId}/daftar-obat`, { params: { search } }),
+  addCharge:     (visitId, payload)  => api.post(`/rawat-inap/${visitId}/charge`, payload),
+  addTindakan:   (visitId, payload)  => api.post(`/rawat-inap/${visitId}/tindakan`, payload),
+  addObat:       (visitId, payload)  => api.post(`/rawat-inap/${visitId}/obat`, payload),
+  deleteCharge:  (visitId, chargeId) => api.delete(`/rawat-inap/${visitId}/charge/${chargeId}`),
+
+  // CPPT
+  cpptList:      (visitId)           => api.get(`/rawat-inap/${visitId}/cppt`),
+  addCppt:       (visitId, payload)  => api.post(`/rawat-inap/${visitId}/cppt`, payload),
+  updateCppt:    (cpptId, payload)   => api.put(`/rawat-inap/cppt/${cpptId}`, payload),
+  verifyCppt:    (cpptId)            => api.post(`/rawat-inap/cppt/${cpptId}/verify`),
+
+  // SEP / SPRI
+  getSep:        (visitId)           => api.get(`/rawat-inap/${visitId}/sep`),
+  updateSep:     (visitId, payload)  => api.put(`/rawat-inap/${visitId}/sep`, payload),
+  listSpri:      (visitId)           => api.get(`/rawat-inap/${visitId}/spri`),
+  createSpri:    (visitId, payload)  => api.post(`/rawat-inap/${visitId}/spri`, payload),
+  updateSpri:    (spriId, payload)   => api.put(`/rawat-inap/spri/${spriId}`, payload),
+  deleteSpri:    (spriId)            => api.delete(`/rawat-inap/spri/${spriId}`),
 }
 
 /** Anjungan Mandiri (Kiosk — public, no auth) */
@@ -599,12 +668,21 @@ export const farmasiApi = {
   selesaiDispensing: (id)         => api.put(`/farmasi/resep/${id}/selesai`),
   cancelResep:       (id)         => api.put(`/farmasi/resep/${id}/cancel`),
   storeItem:         (rid, items) => api.post(`/farmasi/resep/${rid}/item`, { items }),
+  updateItem:        (id, data)   => api.put(`/farmasi/resep-item/${id}`, data),
   deleteItem:        (id)         => api.delete(`/farmasi/resep-item/${id}`),
+  // Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi tanpa resep dokter.
+  storeOtc:          (visitId, items) => api.post(`/farmasi/kunjungan/${visitId}/resep-otc`, { items }),
 
   // Stok
   stokObat:          (params)     => api.get('/farmasi/stok/obat', { params }),
   updateStokObat:    (id, data)   => api.put(`/farmasi/stok/obat/${id}`, data),
   stokAlert:         ()           => api.get('/farmasi/stok/alert'),
+
+  // Penjualan obat bebas (POS apotek) — walk-in tanpa resep/kunjungan.
+  penjualanList:     (params)     => api.get('/farmasi/penjualan', { params }),
+  penjualanCreate:   (data)       => api.post('/farmasi/penjualan', data),
+  penjualanShow:     (id)         => api.get(`/farmasi/penjualan/${id}`),
+  penjualanBatal:    (id, data)   => api.post(`/farmasi/penjualan/${id}/batal`, data),
 }
 
 /** Inventori Farmasi — Pembelian (Purchase Order) */

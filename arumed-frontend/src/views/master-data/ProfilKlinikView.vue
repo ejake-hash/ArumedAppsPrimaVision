@@ -317,33 +317,10 @@ onMounted(load)
         </div>
       </section>
 
-      <!-- ─── Ruang Operasi ─── -->
-      <section class="pk-section">
-        <header>
-          <h3>Ruang Operasi (OK)</h3>
-          <p class="pk-sub">Daftar ruang OK yang tersedia di institusi. Dipakai di modul Bedah saat menentukan ruang operasi pasien.</p>
-        </header>
-        <div class="pk-room-list">
-          <div v-for="(room, i) in form.operating_rooms" :key="i" class="pk-room-chip">
-            <span>{{ room }}</span>
-            <button type="button" class="pk-room-del" @click="removeRoom(i)" aria-label="Hapus ruang">×</button>
-          </div>
-          <div v-if="!form.operating_rooms.length" class="pk-room-empty">
-            Belum ada ruang OK. Tambahkan minimal 1 ruang.
-          </div>
-        </div>
-        <div class="pk-room-add">
-          <input
-            type="text"
-            v-model="newRoom"
-            placeholder="Nama ruang (mis. OK 1, OK Phaco, OK Laser)"
-            maxlength="50"
-            @keydown.enter.prevent="addRoom"
-          />
-          <button type="button" class="pk-btn-secondary" @click="addRoom" :disabled="!newRoom.trim()">+ Tambah</button>
-        </div>
-        <p v-if="fieldErr('operating_rooms')" class="pk-err">{{ fieldErr('operating_rooms') }}</p>
-      </section>
+      <!--
+        Ruang Operasi (OK), Master Room/Bed & Tarif Kamar dipindah ke menu
+        "Fasilitas & Ruang" (RuangFasilitasView) di bawah Form Rekam Medis.
+      -->
 
       <!-- Footer actions -->
       <div class="pk-actions">

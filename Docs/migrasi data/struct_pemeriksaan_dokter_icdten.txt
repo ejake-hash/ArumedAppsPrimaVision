@@ -1,0 +1,20 @@
+                                               Table "public.pemeriksaan_dokter_icdten"
+         Column          |            Type             | Collation | Nullable |                        Default                        
+-------------------------+-----------------------------+-----------+----------+-------------------------------------------------------
+ id                      | integer                     |           | not null | nextval('pemeriksaan_dokter_icdten_id_seq'::regclass)
+ uuid                    | character varying(50)       |           | not null | 
+ registrasi_uuid         | character varying(50)       |           |          | 
+ pemeriksaan_dokter_uuid | character varying(50)       |           |          | 
+ icdten_uuid             | character varying(50)       |           |          | 
+ kode_icdten             | character varying(250)      |           |          | 
+ nama_icdten             | character varying(250)      |           |          | 
+ registrasi_kode         | character varying(250)      |           |          | 
+ registrasi_nomor        | character varying(250)      |           |          | 
+ pasien_uuid             | character varying(50)       |           |          | 
+ nama_pasien             | character varying(250)      |           |          | 
+ rekam_medis             | character varying(250)      |           |          | 
+ pengguna_uuid           | character varying(50)       |           |          | 
+ created_at              | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+Indexes:
+    "pemeriksaan_dokter_icdten_pkey" PRIMARY KEY, btree (uuid)
+

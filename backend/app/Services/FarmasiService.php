@@ -13,6 +13,7 @@ use App\Models\SurgeryRequest;
 use App\Models\SurgeryRequestBhp;
 use App\Models\SurgeryRequestIol;
 use App\Models\SystemLog;
+use App\Models\Visit;
 use App\Services\QueueService;
 use App\Services\InventoryStockService;
 use Illuminate\Database\Eloquent\Collection;
@@ -190,12 +191,26 @@ class FarmasiService
             throw new \Exception('Resep sudah diselesaikan, tidak bisa tambah item.', 422);
         }
 
-        return DB::transaction(function () use ($prescriptionId, $items) {
+        $userId     = auth('api')->id();
+        $employeeId = auth('api')->user()?->employee_id;
+
+        return DB::transaction(function () use ($prescriptionId, $items, $employeeId, $userId) {
             $created = [];
+            $adaTambahan = false;
             foreach ($items as $item) {
+                $source = ($item['source'] ?? 'RESEP') === 'TAMBAHAN' ? 'TAMBAHAN' : 'RESEP';
+
+                // Item tambahan apotek: hanya obat BEBAS/BEBAS_TERBATAS + catat petugas.
+                if ($source === 'TAMBAHAN') {
+                    $this->assertObatBolehTambahan($item['medication_id']);
+                    $adaTambahan = true;
+                }
+
                 $created[] = PrescriptionItem::create([
                     'prescription_id' => $prescriptionId,
                     'medication_id'   => $item['medication_id'],
+                    'source'          => $source,
+                    'added_by_id'     => $source === 'TAMBAHAN' ? $employeeId : null,
                     'quantity'        => $item['quantity'],
                     'dosage'          => $item['dosage'] ?? null,
                     'instructions'    => $item['instructions'] ?? null,
@@ -203,8 +218,103 @@ class FarmasiService
                 ]);
             }
 
-            return collect($created)->load('medication');
+            if ($adaTambahan) {
+                $this->log($userId, 'ADD_ITEM_TAMBAHAN', Prescription::class, $prescriptionId,
+                    'Tambah obat di luar resep dokter (TAMBAHAN apotek)');
+            }
+
+            // Eloquent collection (bukan base collection) supaya ->load() valid.
+            return PrescriptionItem::with('medication')
+                ->whereIn('id', collect($created)->pluck('id'))
+                ->get();
         });
+    }
+
+    /**
+     * Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi yang BELUM punya
+     * resep. Buat Prescription baru atas nama petugas farmasi (prescribed_by_id),
+     * status DISPENSING (skip verifikasi), semua item dipaksa source=TAMBAHAN.
+     */
+    public function createOtcPrescription(string $visitId, array $items): Prescription
+    {
+        $visit = Visit::findOrFail($visitId);
+
+        // Hanya untuk pasien yang ada di antrean FARMASI hari ini.
+        $diFarmasi = Queue::where('visit_id', $visitId)
+            ->where('station', Queue::STATION_FARMASI)
+            ->whereDate('created_at', today())
+            ->exists();
+        if (! $diFarmasi) {
+            throw new \Exception('Penjualan obat tambahan hanya untuk pasien yang ada di antrean Farmasi.', 422);
+        }
+
+        $userId     = auth('api')->id();
+        $employeeId = auth('api')->user()?->employee_id;
+
+        return DB::transaction(function () use ($visit, $items, $employeeId, $userId) {
+            $prescription = Prescription::create([
+                'visit_id'         => $visit->id,
+                'prescribed_by_id' => $employeeId,
+                'status'           => 'DISPENSING',
+                'notes'            => 'Pembelian obat tambahan (OTC) di apotek',
+            ]);
+
+            foreach ($items as $item) {
+                $this->assertObatBolehTambahan($item['medication_id']);
+                PrescriptionItem::create([
+                    'prescription_id' => $prescription->id,
+                    'medication_id'   => $item['medication_id'],
+                    'source'          => 'TAMBAHAN',
+                    'added_by_id'     => $employeeId,
+                    'quantity'        => $item['quantity'],
+                    'dosage'          => $item['dosage'] ?? null,
+                    'instructions'    => $item['instructions'] ?? null,
+                    'notes'           => $item['notes'] ?? null,
+                ]);
+            }
+
+            $this->log($userId, 'CREATE_OTC_PRESCRIPTION', Prescription::class, $prescription->id,
+                'Penjualan obat tambahan (OTC) — ' . count($items) . ' item');
+
+            return $prescription->load('items.medication');
+        });
+    }
+
+    /**
+     * Pastikan obat boleh dijual sebagai item TAMBAHAN tanpa resep dokter.
+     *
+     * Hanya golongan setara BEBAS / BEBAS_TERBATAS / SUPLEMEN / JAMU yang boleh.
+     * Obat KERAS/NARKOTIKA/PSIKOTROPIKA dan obat TANPA label golongan (NULL) DITOLAK
+     * (konservatif — petugas wajib melengkapi golongan di master dulu).
+     *
+     * NB: master `golongan` di DB tidak seragam (mis. "OBAT KERAS", "OBAT BEBAS",
+     * "SUPLEMEN", NULL), jadi normalisasi via kata kunci, bukan match enum persis.
+     */
+    private function assertObatBolehTambahan(string $medicationId): void
+    {
+        $med = Medication::findOrFail($medicationId);
+        $g = strtoupper(trim((string) $med->golongan));
+
+        $terlarang = $g === ''
+            || str_contains($g, 'KERAS')
+            || str_contains($g, 'NARKOTIKA')
+            || str_contains($g, 'PSIKOTROPIKA');
+
+        $boleh = ! $terlarang && (
+            str_contains($g, 'BEBAS')
+            || str_contains($g, 'SUPLEMEN')
+            || str_contains($g, 'JAMU')
+        );
+
+        if (! $boleh) {
+            $label = $g === '' ? 'tanpa golongan' : "golongan {$med->golongan}";
+            throw new \Exception(
+                "Obat {$med->name} ({$label}) tidak boleh ditambahkan tanpa resep dokter. " .
+                "Hanya obat bebas/bebas terbatas/suplemen/jamu yang boleh dijual sebagai tambahan apotek. " .
+                "Lengkapi golongan obat di master bila perlu.",
+                422
+            );
+        }
     }
 
     public function updateItemDispensing(string $id, array $data): PrescriptionItem
@@ -422,6 +532,16 @@ class FarmasiService
 
         $page = $query->orderBy('medications.name')->paginate($filters['per_page'] ?? 25);
         $page->getCollection()->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
+
+        // Lampirkan HJA (Harga Jual Apotek) dari modul Penentuan Harga — dipakai
+        // POS penjualan obat bebas untuk preview harga/total di UI.
+        $ids = $page->getCollection()->pluck('id')->all();
+        if (! empty($ids)) {
+            $hjaMap = \App\Models\InventoryPrice::where('item_type', 'MEDICATION')
+                ->whereIn('item_id', $ids)
+                ->pluck('hja', 'item_id');
+            $page->getCollection()->each(fn ($m) => $m->hja = isset($hjaMap[$m->id]) ? (float) $hjaMap[$m->id] : null);
+        }
 
         return $page;
     }

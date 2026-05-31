@@ -24,6 +24,7 @@ class NurseCpptEntry extends Model
     protected $fillable = [
         'visit_id',
         'nurse_assessment_id',
+        'ppa_role',
         'td_sistol',
         'td_diastol',
         'nadi',
@@ -32,17 +33,32 @@ class NurseCpptEntry extends Model
         'spo2',
         'kgd',
         'pain_scale',
+        'visus_od',
+        'visus_os',
+        'iop_od',
+        'iop_os',
+        'iop_method',
         'notes',
+        'soap_s',
+        'soap_o',
+        'soap_a',
+        'soap_p',
+        'instruksi',
         'created_by_id',
         'edited_at',
         'edited_by_id',
+        'verified_by_id',
+        'verified_at',
     ];
 
     protected $casts = [
-        'suhu'      => 'decimal:2',
-        'spo2'      => 'decimal:2',
-        'kgd'       => 'decimal:2',
-        'edited_at' => 'datetime',
+        'suhu'        => 'decimal:2',
+        'spo2'        => 'decimal:2',
+        'kgd'         => 'decimal:2',
+        'iop_od'      => 'decimal:2',
+        'iop_os'      => 'decimal:2',
+        'edited_at'   => 'datetime',
+        'verified_at' => 'datetime',
     ];
 
     public function visit(): BelongsTo
@@ -63,5 +79,10 @@ class NurseCpptEntry extends Model
     public function editedBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'edited_by_id');
+    }
+
+    public function verifiedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'verified_by_id');
     }
 }

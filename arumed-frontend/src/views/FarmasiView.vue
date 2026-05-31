@@ -24,6 +24,19 @@ function pickActiveRx(prescriptions = []) {
   return active ?? prescriptions.find((r) => r.status === 'DISPENSED') ?? prescriptions[0]
 }
 
+// Buang ID resep yang sudah tidak ada lagi di antrean hari ini, supaya Set
+// "verifikasi UI-only" tidak tumbuh tanpa batas & status tidak salah lintas-hari.
+function pruneVerifiedRxIds() {
+  if (!verifiedRxIds.value.size) return
+  const live = new Set()
+  for (const q of queue.value) {
+    for (const rx of (q.visit?.prescriptions ?? [])) live.add(rx.id)
+  }
+  const next = new Set()
+  for (const id of verifiedRxIds.value) if (live.has(id)) next.add(id)
+  if (next.size !== verifiedRxIds.value.size) verifiedRxIds.value = next
+}
+
 function rxStatusOf(q) {
   if (q.status === 'COMPLETED') return 'done'
   const rx = pickActiveRx(q.visit?.prescriptions)
@@ -76,6 +89,7 @@ async function fetchQueue() {
   try {
     const { data } = await farmasiApi.antrian()
     queue.value = data.data ?? []
+    pruneVerifiedRxIds()
   } catch (err) {
     queueError.value = err.response?.data?.message ?? 'Gagal memuat antrean'
     toast('w', queueError.value)
@@ -98,21 +112,104 @@ const dispStep = computed(() => {
   return 0
 })
 
+/* Normalisasi resep dari backend:
+   - _origQty: snapshot quantity awal untuk diff sebelum kirim ke backend
+   - checked : pertahankan centang lama bila item sama di-load ulang (mis. setelah
+     startDispensing/selesaiDispensing), supaya centang tidak ter-reset di tengah alur. */
+function hydrateRx(rx, prev = null) {
+  if (!rx) return rx
+  const prevChecked = new Map((prev?.items ?? []).map((d) => [d.id, !!d.checked]))
+  rx.items = (rx.items ?? []).map((d) => ({
+    ...d,
+    _origQty: Number(d.quantity ?? 0),
+    checked:  prevChecked.get(d.id) ?? false,
+  }))
+  return rx
+}
+
 async function pickRx(q) {
   selQ.value  = q
   selRx.value = null
+  resetAddObat()
 
   const stub = pickActiveRx(q.visit?.prescriptions)
-  if (!stub) { toast('i', 'Pasien belum punya resep.'); return }
+  // Tanpa resep dokter → panel akan menawarkan "Buat Penjualan OTC" (obat tambahan).
+  if (!stub) return
 
   selRxLoading.value = true
   try {
     const { data } = await farmasiApi.showResep(stub.id)
-    selRx.value = data.data
+    selRx.value = hydrateRx(data.data)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat resep')
   } finally {
     selRxLoading.value = false
+  }
+}
+
+// ─── Tambah obat di luar resep dokter (TAMBAHAN apotek / OTC) ────────────────
+const addObatOpen   = ref(false)
+const addObatSaving = ref(false)
+const addObatForm   = ref({ medication_id: '', quantity: 1, dosage: '', instructions: '' })
+
+// Hanya obat bebas/bebas terbatas/suplemen/jamu yang boleh jadi tambahan apotek.
+// Master `golongan` tidak seragam → cek via kata kunci (mirror guard backend).
+function isObatOtc(g) {
+  const s = String(g ?? '').toUpperCase().trim()
+  if (!s) return false
+  if (s.includes('KERAS') || s.includes('NARKOTIKA') || s.includes('PSIKOTROPIKA')) return false
+  return s.includes('BEBAS') || s.includes('SUPLEMEN') || s.includes('JAMU')
+}
+const otcMedications = computed(() => stokList.value.filter((m) => isObatOtc(m.golongan)))
+
+function resetAddObat() {
+  addObatOpen.value   = false
+  addObatSaving.value = false
+  addObatForm.value   = { medication_id: '', quantity: 1, dosage: '', instructions: '' }
+}
+
+function toggleAddObat() {
+  addObatOpen.value = !addObatOpen.value
+  if (addObatOpen.value && !stokList.value.length) fetchStok()
+}
+
+function buildAddObatItem() {
+  const f = addObatForm.value
+  if (!f.medication_id) { toast('w', 'Pilih obat tambahan dulu'); return null }
+  if (!Number.isFinite(Number(f.quantity)) || Number(f.quantity) < 1) {
+    toast('w', 'Jumlah obat minimal 1'); return null
+  }
+  return {
+    medication_id: f.medication_id,
+    quantity:      Number(f.quantity),
+    dosage:        f.dosage || null,
+    instructions:  f.instructions || null,
+    source:        'TAMBAHAN',
+  }
+}
+
+// Tambah ke resep yang sedang dispensing (pasien sudah punya resep dokter).
+async function submitAddObat() {
+  const item = buildAddObatItem()
+  if (!item) return
+  addObatSaving.value = true
+  try {
+    if (selRx.value?.id) {
+      await farmasiApi.storeItem(selRx.value.id, [item])
+      const { data } = await farmasiApi.showResep(selRx.value.id)
+      selRx.value = hydrateRx(data.data, selRx.value)
+    } else {
+      // Belum ada resep → buat penjualan OTC baru untuk visit ini.
+      const { data } = await farmasiApi.storeOtc(selQ.value?.visit?.id, [item])
+      selRx.value = hydrateRx(data.data)
+      refreshQueueForRx(data.data)
+    }
+    toast('s', 'Obat tambahan ditambahkan')
+    resetAddObat()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menambah obat')
+  } finally {
+    addObatSaving.value = false
   }
 }
 
@@ -137,7 +234,7 @@ async function siapkanRx() {
   if (!selRx.value) return
   try {
     const { data } = await farmasiApi.startDispensing(selRx.value.id)
-    selRx.value = data.data
+    selRx.value = hydrateRx(data.data, selRx.value)
     refreshQueueForRx(data.data)
     toast('s', 'Obat disiapkan, cek kembali sebelum diserahkan')
   } catch (err) {
@@ -145,17 +242,35 @@ async function siapkanRx() {
   }
 }
 
+const serahkanLoading = ref(false)
 async function serahkanRx() {
-  if (!selRx.value) return
-  if (!(selRx.value.items ?? []).every((d) => d.checked)) {
+  if (!selRx.value || serahkanLoading.value) return
+  const items = selRx.value.items ?? []
+  if (!items.length) { toast('w', 'Resep tidak punya item obat'); return }
+  if (!items.every((d) => d.checked)) {
     toast('w', 'Cek semua item terlebih dahulu'); return
   }
+  // Validasi quantity terkoreksi (>=1) sebelum kirim.
+  const invalid = items.find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
+  if (invalid) {
+    toast('w', `Jumlah obat ${invalid.medication?.name ?? ''} tidak valid (min. 1)`); return
+  }
+  serahkanLoading.value = true
   try {
+    // 1) Persist quantity yang diubah petugas (diff dari _origQty) → backend,
+    //    supaya stok inventori Farmasi dipotong sesuai jumlah final saat serah.
+    const changed = items.filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
+    for (const d of changed) {
+      await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+    }
+
+    // 2) DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
+    //    lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
     const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
-    selRx.value = data.data
+    selRx.value = hydrateRx(data.data, selRx.value)
     refreshQueueForRx(data.data)
 
-    // Selesaikan antrean farmasi → pasien PULANG.
+    // 3) Selesaikan antrean farmasi → pasien PULANG.
     if (selQ.value?.id) {
       try {
         const { data: qData } = await farmasiApi.selesaiAntrian(selQ.value.id)
@@ -163,9 +278,13 @@ async function serahkanRx() {
         if (updated?.id) Object.assign(selQ.value, updated)
       } catch { /* ignore — resep sudah DISPENSED */ }
     }
-    toast('s', 'Obat diserahkan ke pasien')
+    toast('s', 'Obat diserahkan ke pasien, stok Farmasi diperbarui')
+    // Refresh stok unit Farmasi supaya tampilan stok ikut turun.
+    fetchStok()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan dispensing')
+  } finally {
+    serahkanLoading.value = false
   }
 }
 
@@ -500,6 +619,297 @@ function connectInventoriWs() {
   } catch { /* abaikan — fallback diam */ }
 }
 
+// ─── Cetak Etiket Obat (Permenkes 73/2016) ──────────────────────────────────
+// Satu etiket per item, ukuran 8×5 cm. Header BIRU untuk obat luar (tetes/salep
+// mata, krim, suntik), PUTIH untuk obat dalam/oral (tablet, kapsul, sirup).
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+// Heuristik: obat mata mayoritas sediaan luar (tetes/salep) → default BIRU bila ragu.
+function isObatLuar(item) {
+  const hay = `${item.medication?.name ?? ''} ${item.medication?.form ?? ''} ${item.dosage ?? ''}`.toLowerCase()
+  const luar = ['tetes', 'eye drop', 'minidose', 'salep', 'salf', 'zalf', 'ointment', 'krim', 'cream', 'gel', 'suntik', 'inject', 'midriatil', ' ed', 'eod', 'tetes mata', 'tetes telinga']
+  const oral = ['tablet', 'tab ', 'kaplet', 'kapsul', 'capsule', 'kapl', 'sirup', 'syrup', 'pulv', 'puyer', 'oral', 'po ']
+  if (oral.some((k) => hay.includes(k))) return false
+  if (luar.some((k) => hay.includes(k))) return true
+  return true   // default obat mata = sediaan luar
+}
+
+// Apakah perlu label "Kocok dahulu" (suspensi/emulsi/sirup kering).
+function needsKocok(item) {
+  const hay = `${item.medication?.name ?? ''} ${item.medication?.form ?? ''}`.toLowerCase()
+  return ['suspensi', 'suspension', 'emulsi', 'emulsion', 'kering'].some((k) => hay.includes(k))
+}
+
+function todayStrId() {
+  return new Date().toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+function fmtDateId(d) {
+  if (!d) return '—'
+  const dt = new Date(d)
+  return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+function printEtiket() {
+  const rx = selRx.value
+  const pt = selQ.value?.visit?.patient ?? {}
+  const items = (rx?.items ?? [])
+  if (!items.length) { toast('w', 'Resep belum punya item obat'); return }
+
+  const clinic = 'RS MATA PRIMA VISION'
+  const cards = items.map((d) => {
+    const luar  = isObatLuar(d)
+    const headBg = luar ? '#1d4ed8' : '#ffffff'
+    const headFg = luar ? '#ffffff' : '#000000'
+    const headBorder = luar ? '#1d4ed8' : '#000000'
+    const jenis  = luar ? 'OBAT LUAR' : 'OBAT DALAM'
+    const kocok  = needsKocok(d) ? '<div class="kocok">★ KOCOK DAHULU SEBELUM DIPAKAI</div>' : ''
+    return `
+      <div class="etiket">
+        <div class="head" style="background:${headBg};color:${headFg};border-bottom:1px solid ${headBorder}">
+          <span class="clinic">${escHtml(clinic)}</span>
+          <span class="jenis">${jenis}</span>
+        </div>
+        <div class="body">
+          <div class="row"><span class="k">Tgl</span><span class="v">${escHtml(todayStrId())}</span></div>
+          <div class="row"><span class="k">Nama</span><span class="v">${escHtml(pt.name ?? '—')}</span></div>
+          <div class="row"><span class="k">No.RM / Lahir</span><span class="v">${escHtml(pt.no_rm ?? '—')} · ${escHtml(fmtDateId(pt.date_of_birth))}</span></div>
+          <div class="obat">${escHtml(d.medication?.name ?? '—')} <span class="qty">(${escHtml(d.quantity ?? '-')} ${escHtml(d.medication?.unit ?? '')})</span></div>
+          <div class="aturan">${escHtml(d.dosage ?? '')}${d.dosage && d.instructions ? ' — ' : ''}${escHtml(d.instructions ?? '')}</div>
+          ${d.notes ? `<div class="note">${escHtml(d.notes)}</div>` : ''}
+          ${kocok}
+        </div>
+      </div>`
+  }).join('')
+
+  const html = `
+    <html><head><title>Etiket — ${escHtml(pt.name ?? '')}</title>
+    <style>
+      @page { size: 80mm 50mm; margin: 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:Arial,'Helvetica Neue',sans-serif; color:#000; }
+      body { width:80mm; }
+      .etiket { width:80mm; height:50mm; padding:2mm 3mm; page-break-after:always; display:flex; flex-direction:column; }
+      .head { display:flex; justify-content:space-between; align-items:center; padding:1mm 2mm; border-radius:2px; margin-bottom:1.5mm; }
+      .clinic { font-size:8pt; font-weight:700; letter-spacing:.02em; }
+      .jenis { font-size:6.5pt; font-weight:700; }
+      .body { flex:1; font-size:8pt; line-height:1.35; }
+      .row { display:flex; gap:3mm; }
+      .row .k { width:22mm; color:#333; flex-shrink:0; }
+      .row .v { font-weight:600; }
+      .obat { margin-top:1mm; font-size:9.5pt; font-weight:700; border-top:1px dashed #000; padding-top:1mm; }
+      .obat .qty { font-weight:400; font-size:8pt; }
+      .aturan { font-size:9pt; font-weight:700; margin-top:.5mm; }
+      .note { font-size:7.5pt; font-style:italic; margin-top:.5mm; }
+      .kocok { font-size:7.5pt; font-weight:700; margin-top:1mm; }
+    </style></head><body>${cards}</body></html>`
+
+  const w = window.open('', '_blank', 'width=360,height=260')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk cetak etiket'); return }
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  w.onload = () => { try { w.print() } catch {} }
+  setTimeout(() => { try { w.print() } catch {} }, 400)
+  toast('i', `Etiket ${items.length} obat dikirim ke printer`)
+}
+
+// ─── POS: Penjualan Obat Bebas (walk-in tanpa resep) ────────────────────────
+// Obat yang boleh dijual bebas DAN punya HJA (harga jual apotek) terisi.
+const posMedications = computed(() =>
+  stokList.value.filter((m) => isObatOtc(m.golongan) && Number(m.hja ?? 0) > 0),
+)
+
+const posSearch  = ref('')
+const posCart    = ref([])   // [{ medication_id, name, unit, hja, stock, quantity }]
+const posBuyer   = ref('')
+const posPhone   = ref('')
+const posPay     = ref('CASH')
+const posPaid    = ref(0)
+const posDisc    = ref(0)    // diskon global (Rp)
+const posSaving  = ref(false)
+
+const posSearchResults = computed(() => {
+  const s = posSearch.value.toLowerCase().trim()
+  const list = posMedications.value
+  if (!s) return list.slice(0, 20)
+  return list.filter((m) => (m.name ?? '').toLowerCase().includes(s)).slice(0, 20)
+})
+
+const posSubtotal = computed(() =>
+  posCart.value.reduce((sum, it) => sum + Number(it.hja) * Number(it.quantity), 0),
+)
+const posTotal  = computed(() => Math.max(0, posSubtotal.value - Number(posDisc.value || 0)))
+const posChange = computed(() => Math.max(0, Number(posPaid.value || 0) - posTotal.value))
+
+function posAddItem(m) {
+  const exist = posCart.value.find((it) => it.medication_id === m.id)
+  if (exist) {
+    if (exist.quantity < Number(m.stock ?? 0)) exist.quantity++
+    else toast('w', `Stok ${m.name} tidak cukup`)
+  } else {
+    if (Number(m.stock ?? 0) < 1) { toast('w', `Stok ${m.name} habis`); return }
+    posCart.value.push({
+      medication_id: m.id, name: m.name, unit: m.unit ?? '',
+      hja: Number(m.hja), stock: Number(m.stock ?? 0), quantity: 1,
+    })
+  }
+  posSearch.value = ''
+}
+function posRemoveItem(i) { posCart.value.splice(i, 1) }
+function posClampQty(it) {
+  let q = Number(it.quantity)
+  if (!Number.isFinite(q) || q < 1) q = 1
+  if (q > it.stock) { q = it.stock; toast('w', `Maks stok ${it.name}: ${it.stock}`) }
+  it.quantity = q
+}
+function resetPos() {
+  posCart.value = []; posBuyer.value = ''; posPhone.value = ''
+  posPay.value = 'CASH'; posPaid.value = 0; posDisc.value = 0; posSearch.value = ''
+}
+
+async function posCheckout() {
+  if (!posCart.value.length) { toast('w', 'Keranjang masih kosong'); return }
+  if (Number(posPaid.value || 0) < posTotal.value) { toast('w', 'Uang dibayar kurang dari total'); return }
+  posSaving.value = true
+  try {
+    const payload = {
+      buyer_name:     posBuyer.value || null,
+      buyer_phone:    posPhone.value || null,
+      payment_method: posPay.value,
+      paid_amount:    Number(posPaid.value || 0),
+      discount:       Number(posDisc.value || 0),
+      items: posCart.value.map((it) => ({ medication_id: it.medication_id, quantity: it.quantity })),
+    }
+    const { data } = await farmasiApi.penjualanCreate(payload)
+    const sale = data.data
+    toast('s', `Penjualan ${sale.sale_number} berhasil`)
+    printStrukPos(sale)
+    resetPos()
+    fetchStok()
+    if (pgTab.value === 'penjualan') loadPosHistory()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memproses penjualan')
+  } finally {
+    posSaving.value = false
+  }
+}
+
+// ─── Riwayat penjualan ───
+const posHistory = ref([])
+const posHistoryLoading = ref(false)
+const posHistorySearch = ref('')
+
+async function loadPosHistory() {
+  posHistoryLoading.value = true
+  try {
+    const { data } = await farmasiApi.penjualanList({ search: posHistorySearch.value || undefined, per_page: 50 })
+    const payload = data.data
+    posHistory.value = Array.isArray(payload) ? payload : (payload?.data ?? [])
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat riwayat')
+  } finally {
+    posHistoryLoading.value = false
+  }
+}
+
+async function posReprint(saleId) {
+  try {
+    const { data } = await farmasiApi.penjualanShow(saleId)
+    printStrukPos(data.data)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat struk')
+  }
+}
+
+async function posCancel(sale) {
+  if (sale.status === 'CANCELLED') return
+  const reason = window.prompt(`Batalkan penjualan ${sale.sale_number}? Stok akan dikembalikan.\n\nAlasan (opsional):`, '')
+  if (reason === null) return
+  try {
+    await farmasiApi.penjualanBatal(sale.id, { reason: reason || null })
+    toast('s', `Penjualan ${sale.sale_number} dibatalkan`)
+    fetchStok()
+    loadPosHistory()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membatalkan penjualan')
+  }
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+// Struk thermal 80mm — reuse pola printEtiket/escHtml.
+function printStrukPos(sale) {
+  if (!sale) return
+  const rows = (sale.items ?? []).map((it) => `
+    <tr>
+      <td class="l">${escHtml(it.medication_name)}<br/><span class="sm">${it.quantity} x ${rp(it.unit_price)}</span></td>
+      <td class="r">${rp(it.total_price)}</td>
+    </tr>`).join('')
+
+  const html = `
+    <html><head><title>Struk ${escHtml(sale.sale_number)}</title>
+    <style>
+      @page { size: 80mm auto; margin: 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:'Helvetica Neue',Arial,sans-serif; color:#000; }
+      body { width:80mm; padding:4mm 4mm 6mm; font-size:9pt; }
+      .h { text-align:center; font-size:11pt; font-weight:700; }
+      .sub { text-align:center; font-size:7.5pt; text-transform:uppercase; letter-spacing:.05em; margin-bottom:2mm; }
+      .meta { font-size:8pt; line-height:1.4; }
+      .meta b { font-weight:700; }
+      .sep { border-top:1px dashed #000; margin:2mm 0; }
+      table { width:100%; border-collapse:collapse; }
+      td { font-size:8.5pt; padding:.6mm 0; vertical-align:top; }
+      td.l { text-align:left; } td.r { text-align:right; white-space:nowrap; padding-left:2mm; }
+      .sm { font-size:7pt; color:#000; }
+      .tot td { font-size:9pt; }
+      .tot .r { font-weight:700; }
+      .grand td { font-size:11pt; font-weight:700; border-top:1px solid #000; padding-top:1mm; }
+      .ft { text-align:center; font-size:7.5pt; margin-top:3mm; }
+    </style></head><body>
+      <div class="h">RS MATA PRIMA VISION</div>
+      <div class="sub">Struk Penjualan Apotek</div>
+      <div class="meta">
+        <div>No&nbsp;&nbsp;: <b>${escHtml(sale.sale_number)}</b></div>
+        <div>Tgl&nbsp;: ${escHtml(fmtDateTime(sale.created_at))}</div>
+        ${sale.buyer_name ? `<div>Pembeli: ${escHtml(sale.buyer_name)}</div>` : ''}
+      </div>
+      <div class="sep"></div>
+      <table>${rows}</table>
+      <div class="sep"></div>
+      <table>
+        <tr class="tot"><td class="l">Subtotal</td><td class="r">${rp(sale.subtotal)}</td></tr>
+        ${Number(sale.discount) > 0 ? `<tr class="tot"><td class="l">Diskon</td><td class="r">- ${rp(sale.discount)}</td></tr>` : ''}
+        <tr class="grand"><td class="l">TOTAL</td><td class="r">${rp(sale.total)}</td></tr>
+        <tr class="tot"><td class="l">Bayar (${escHtml(sale.payment_method)})</td><td class="r">${rp(sale.paid_amount)}</td></tr>
+        <tr class="tot"><td class="l">Kembali</td><td class="r">${rp(sale.change_amount)}</td></tr>
+      </table>
+      ${sale.status === 'CANCELLED' ? '<div class="sep"></div><div class="h" style="font-size:10pt">** DIBATALKAN **</div>' : ''}
+      <div class="ft">Terima kasih atas kunjungan Anda<br/>Semoga lekas sembuh</div>
+    </body></html>`
+
+  const w = window.open('', '_blank', 'width=340,height=560')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk cetak struk'); return }
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  w.onload = () => { try { w.print() } catch {} }
+  setTimeout(() => { try { w.print() } catch {} }, 400)
+}
+
+// Muat riwayat saat tab penjualan dibuka pertama kali.
+watch(() => pgTab.value, (t) => {
+  if (t === 'penjualan') {
+    if (!stokList.value.length) fetchStok()
+    if (!posHistory.value.length) loadPosHistory()
+  }
+})
+
 onMounted(() => {
   fetchQueue()
   fetchStok()
@@ -545,6 +955,10 @@ function toast(type, msg) {
         <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
         Stok Opname
       </button>
+      <button :class="['nt', pgTab === 'penjualan' ? 'a' : '']" @click="pgTab = 'penjualan'">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+        Penjualan Obat Bebas
+      </button>
       <button :class="['nt', pgTab === 'laporan' ? 'a' : '']" @click="pgTab = 'laporan'">
         <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Laporan
@@ -570,11 +984,11 @@ function toast(type, msg) {
           <div class="stat-icon" style="background: var(--sb)"><svg viewBox="0 0 24 24" stroke="var(--st)"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
           <div><div class="stat-val" style="color: var(--st)">{{ queue.filter((q) => rxStatusOf(q) === 'done').length }}</div><div class="stat-lbl">Selesai</div></div>
         </div>
-        <div :class="['stat-card', outStockCount ? 'alert-card' : '']">
-          <div class="stat-icon" :style="{ background: outStockCount ? 'var(--eb)' : 'var(--gl)' }">
-            <svg viewBox="0 0 24 24" :stroke="outStockCount ? 'var(--et)' : 'var(--ga)'"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <div :class="['stat-card', lowStockCount ? 'alert-card' : '']">
+          <div class="stat-icon" :style="{ background: lowStockCount ? 'var(--eb)' : 'var(--gl)' }">
+            <svg viewBox="0 0 24 24" :stroke="lowStockCount ? 'var(--et)' : 'var(--ga)'"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
           </div>
-          <div><div class="stat-val" :style="{ color: outStockCount ? 'var(--et)' : '' }">{{ lowStockCount }}</div><div class="stat-lbl">Stok Low/Habis</div></div>
+          <div><div class="stat-val" :style="{ color: lowStockCount ? 'var(--et)' : '' }">{{ lowStockCount }}</div><div class="stat-lbl">Stok Low/Habis</div></div>
         </div>
       </div>
 
@@ -662,7 +1076,44 @@ function toast(type, msg) {
             <p>Memuat resep…</p>
           </div>
           <div v-else-if="!selRx" class="disp-empty">
-            <p>Resep tidak ditemukan untuk pasien ini.</p>
+            <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+            <p>Pasien ini belum punya resep dokter.<br/>Bisa buat <b>penjualan obat tambahan</b> (obat bebas) langsung di apotek.</p>
+            <button class="btn btn-primary btn-sm" @click="toggleAddObat">
+              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Buat Penjualan OTC
+            </button>
+            <!-- Form tambah obat (mode OTC tanpa resep) -->
+            <div v-if="addObatOpen" class="otc-form" style="margin-top:.9rem; text-align:left; width:100%; max-width:420px">
+              <div class="otc-form-title">Obat Tambahan (Bebas / OTC)</div>
+              <div class="otc-fields">
+                <div class="otc-field otc-wide">
+                  <label class="otc-label">Obat (bebas/bebas terbatas)</label>
+                  <select v-model="addObatForm.medication_id" class="fi otc-input">
+                    <option value="">— pilih obat —</option>
+                    <option v-for="m in otcMedications" :key="m.id" :value="m.id">{{ m.name }} ({{ m.golongan }})</option>
+                  </select>
+                </div>
+                <div class="otc-field otc-narrow">
+                  <label class="otc-label">Jumlah</label>
+                  <input v-model.number="addObatForm.quantity" type="number" min="1" class="fi otc-input" />
+                </div>
+                <div class="otc-field">
+                  <label class="otc-label">Dosis</label>
+                  <input v-model="addObatForm.dosage" class="fi otc-input" placeholder="mis. 1 tablet" />
+                </div>
+                <div class="otc-field">
+                  <label class="otc-label">Aturan pakai</label>
+                  <input v-model="addObatForm.instructions" class="fi otc-input" placeholder="mis. 3x/hari" />
+                </div>
+              </div>
+              <div class="otc-form-actions">
+                <button class="btn btn-success btn-sm" :disabled="addObatSaving" @click="submitAddObat">
+                  {{ addObatSaving ? 'Menyimpan…' : 'Tambahkan' }}
+                </button>
+                <button class="btn btn-secondary btn-sm" @click="resetAddObat">Batal</button>
+              </div>
+              <div v-if="!otcMedications.length" class="otc-hint">Tidak ada obat bebas di stok. Lengkapi golongan obat di master.</div>
+            </div>
           </div>
           <div v-else class="disp-panel">
             <div class="disp-head">
@@ -670,7 +1121,7 @@ function toast(type, msg) {
                 <div class="disp-title">{{ selQ.visit?.patient?.name ?? '—' }} — {{ selQ.queue_number }}</div>
                 <div class="disp-sub">{{ selQ.visit?.patient?.no_rm ?? '—' }} · dr. {{ selRx.prescribed_by?.name ?? '—' }} · {{ selRx.items?.length ?? 0 }} item</div>
               </div>
-              <button class="btn btn-secondary btn-sm" @click="toast('i', 'Cetak etiket obat')">
+              <button class="btn btn-etiket btn-sm" :disabled="!(selRx.items ?? []).length" @click="printEtiket">
                 <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                 Etiket
               </button>
@@ -688,10 +1139,13 @@ function toast(type, msg) {
             </div>
 
             <div class="sec-title">Item Obat Resep</div>
-            <div v-for="(d, i) in selRx.items" :key="d.id ?? i" class="dd">
+            <div v-for="(d, i) in selRx.items" :key="d.id ?? i" :class="['dd', { otc: d.source === 'TAMBAHAN' }]">
               <input type="checkbox" v-model="d.checked" />
               <div class="dd-info">
-                <div class="dd-name">{{ d.medication?.name ?? '—' }}</div>
+                <div class="dd-name">
+                  {{ d.medication?.name ?? '—' }}
+                  <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">TAMBAHAN APOTEK</span>
+                </div>
                 <div class="dd-dose">{{ d.dosage ?? '-' }} · {{ d.instructions ?? '-' }}</div>
                 <div :class="['dd-stock', Number(d.medication?.stock ?? 0) > 10 ? 'ok' : Number(d.medication?.stock ?? 0) > 0 ? 'low' : 'out']">
                   Stok: {{ d.medication?.stock ?? 0 }} {{ d.medication?.unit ?? '' }}{{ Number(d.medication?.stock ?? 0) === 0 ? ' — HABIS' : Number(d.medication?.stock ?? 0) <= 3 ? ' — LOW' : '' }}
@@ -706,6 +1160,45 @@ function toast(type, msg) {
             </div>
             <div v-if="!selRx.items?.length" class="empty-rx">Resep belum punya item obat.</div>
 
+            <!-- Tambah obat di luar resep dokter (hanya selama belum diserahkan) -->
+            <div v-if="selRx.status !== 'DISPENSED'" class="otc-section">
+              <button class="btn btn-secondary btn-sm otc-toggle" @click="toggleAddObat">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                {{ addObatOpen ? 'Tutup' : 'Tambah Obat (di luar resep)' }}
+              </button>
+              <div v-if="addObatOpen" class="otc-form" style="margin-top:.6rem">
+                <div class="otc-form-title">Obat Tambahan (Bebas / OTC)</div>
+                <div class="otc-fields">
+                  <div class="otc-field otc-wide">
+                    <label class="otc-label">Obat (bebas/bebas terbatas)</label>
+                    <select v-model="addObatForm.medication_id" class="fi otc-input">
+                      <option value="">— pilih obat —</option>
+                      <option v-for="m in otcMedications" :key="m.id" :value="m.id">{{ m.name }} ({{ m.golongan }})</option>
+                    </select>
+                  </div>
+                  <div class="otc-field otc-narrow">
+                    <label class="otc-label">Jumlah</label>
+                    <input v-model.number="addObatForm.quantity" type="number" min="1" class="fi otc-input" />
+                  </div>
+                  <div class="otc-field">
+                    <label class="otc-label">Dosis</label>
+                    <input v-model="addObatForm.dosage" class="fi otc-input" placeholder="mis. 1 tablet" />
+                  </div>
+                  <div class="otc-field">
+                    <label class="otc-label">Aturan pakai</label>
+                    <input v-model="addObatForm.instructions" class="fi otc-input" placeholder="mis. 3x/hari" />
+                  </div>
+                </div>
+                <div class="otc-form-actions">
+                  <button class="btn btn-success btn-sm" :disabled="addObatSaving" @click="submitAddObat">
+                    {{ addObatSaving ? 'Menyimpan…' : 'Tambahkan' }}
+                  </button>
+                  <button class="btn btn-secondary btn-sm" @click="resetAddObat">Batal</button>
+                </div>
+                <div v-if="!otcMedications.length" class="otc-hint">Tidak ada obat bebas di stok. Lengkapi golongan obat di master.</div>
+              </div>
+            </div>
+
             <div v-if="selRx.notes" class="doc-note"><b>Catatan Dokter:</b> {{ selRx.notes }}</div>
 
             <div class="disp-actions">
@@ -717,9 +1210,9 @@ function toast(type, msg) {
                 <svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
                 Siapkan Obat
               </button>
-              <button v-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="!(selRx.items ?? []).length || !(selRx.items ?? []).every((d) => d.checked)" @click="serahkanRx">
+              <button v-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="serahkanLoading || !(selRx.items ?? []).length || !(selRx.items ?? []).every((d) => d.checked)" @click="serahkanRx">
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                Serahkan ke Pasien
+                {{ serahkanLoading ? 'Memproses…' : 'Serahkan ke Pasien' }}
               </button>
               <span v-if="dispStep === 3" class="done-pill">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -899,6 +1392,154 @@ function toast(type, msg) {
         </table>
       </div>
     </div>
+    <!-- PENJUALAN OBAT BEBAS (POS) -->
+    <div v-if="pgTab === 'penjualan'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Penjualan <b>obat bebas</b> untuk pembeli walk-in (tanpa resep dokter). Hanya obat golongan bebas/bebas terbatas/suplemen/jamu yang punya <b>harga jual (HJA)</b>. Stok dipotong dari unit Farmasi.</span>
+      </div>
+
+      <div class="pos-grid">
+        <!-- Pencarian + keranjang -->
+        <div class="card pos-cart-col">
+          <div class="card-head">
+            <div class="card-head-title">
+              <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+              Kasir Apotek
+            </div>
+          </div>
+          <div class="pos-body">
+            <div class="q-search-wrap" style="position:relative">
+              <input v-model="posSearch" class="q-search" placeholder="Cari obat bebas untuk dijual…" />
+              <div v-if="posSearch.trim()" class="pos-search-drop">
+                <div v-if="!posSearchResults.length" class="empty-rx">Tidak ada obat bebas cocok</div>
+                <div v-for="m in posSearchResults" :key="m.id" class="pos-search-item" @click="posAddItem(m)">
+                  <div class="pos-si-name">{{ m.name }}</div>
+                  <div class="pos-si-meta">
+                    <span class="kategori-pill">{{ m.golongan }}</span>
+                    <span>{{ rp(m.hja) }}</span>
+                    <span :class="Number(m.stock) > 0 ? '' : 'pos-out'">stok {{ m.stock }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="!posCart.length" class="empty-rx">Keranjang kosong — cari & klik obat untuk menambah.</div>
+            <table v-else class="pos-cart-table">
+              <thead>
+                <tr><th>Obat</th><th class="r">Harga</th><th class="c">Qty</th><th class="r">Subtotal</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(it, i) in posCart" :key="it.medication_id">
+                  <td><strong>{{ it.name }}</strong><div class="sm muted">{{ it.unit }}</div></td>
+                  <td class="r">{{ rp(it.hja) }}</td>
+                  <td class="c">
+                    <input v-model.number="it.quantity" type="number" min="1" :max="it.stock" class="op-input pos-qty" @change="posClampQty(it)" />
+                  </td>
+                  <td class="r"><strong>{{ rp(it.hja * it.quantity) }}</strong></td>
+                  <td class="c"><button class="po-icon-btn" title="Hapus" @click="posRemoveItem(i)">
+                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Ringkasan + bayar -->
+        <div class="card pos-pay-col">
+          <div class="card-head"><div class="card-head-title">Pembayaran</div></div>
+          <div class="pos-body">
+            <div class="pos-field">
+              <label>Nama Pembeli (opsional)</label>
+              <input v-model="posBuyer" class="fi pos-input" placeholder="mis. Umum" />
+            </div>
+            <div class="pos-field">
+              <label>No. Telp (opsional)</label>
+              <input v-model="posPhone" class="fi pos-input" placeholder="08…" />
+            </div>
+
+            <div class="pos-summary">
+              <div class="pos-row"><span>Subtotal</span><b>{{ rp(posSubtotal) }}</b></div>
+              <div class="pos-row">
+                <span>Diskon (Rp)</span>
+                <input v-model.number="posDisc" type="number" min="0" class="op-input" style="width:110px" />
+              </div>
+              <div class="pos-row pos-grand"><span>Total</span><b>{{ rp(posTotal) }}</b></div>
+            </div>
+
+            <div class="pos-field">
+              <label>Metode Bayar</label>
+              <select v-model="posPay" class="fi pos-input">
+                <option value="CASH">Tunai</option>
+                <option value="CARD">Kartu (Debit/Kredit)</option>
+                <option value="TRANSFER">Transfer</option>
+              </select>
+            </div>
+            <div class="pos-field">
+              <label>Uang Dibayar</label>
+              <input v-model.number="posPaid" type="number" min="0" class="fi pos-input" />
+            </div>
+            <div class="pos-row pos-change"><span>Kembalian</span><b>{{ rp(posChange) }}</b></div>
+
+            <button class="btn btn-success btn-lg" style="width:100%; justify-content:center; margin-top:.8rem"
+              :disabled="posSaving || !posCart.length || posPaid < posTotal" @click="posCheckout">
+              <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              {{ posSaving ? 'Memproses…' : 'Bayar & Cetak Struk' }}
+            </button>
+            <button v-if="posCart.length" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center; margin-top:.4rem" @click="resetPos">Kosongkan</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Riwayat penjualan -->
+      <div class="pos-history">
+        <div class="opname-head">
+          <div class="lap-section" style="margin:0">Riwayat Penjualan Hari Ini</div>
+          <div class="opname-actions">
+            <input v-model="posHistorySearch" class="fi" placeholder="Cari no/pembeli…" style="width:180px" @keyup.enter="loadPosHistory" />
+            <button class="btn btn-secondary btn-sm" @click="loadPosHistory">
+              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+              Muat Ulang
+            </button>
+          </div>
+        </div>
+        <div class="po-table-wrap">
+          <table class="po-table">
+            <thead>
+              <tr>
+                <th>No. Transaksi</th><th>Pembeli</th><th class="r">Total</th>
+                <th>Bayar</th><th>Waktu</th><th class="c">Status</th><th class="c">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="posHistoryLoading && !posHistory.length"><td colspan="7" class="po-state">Memuat…</td></tr>
+              <tr v-for="s in posHistory" :key="s.id" :class="{ 'pos-cancelled': s.status === 'CANCELLED' }">
+                <td><strong>{{ s.sale_number }}</strong></td>
+                <td>{{ s.buyer_name || '—' }}</td>
+                <td class="r"><strong>{{ rp(s.total) }}</strong></td>
+                <td class="muted">{{ s.payment_method }}</td>
+                <td class="muted">{{ fmtDateTime(s.created_at) }}</td>
+                <td class="c">
+                  <span class="lap-badge" :class="s.status === 'CANCELLED' ? 'b-out' : 'b-low'" style="background:var(--sb);color:var(--st)" v-if="s.status !== 'CANCELLED'">PAID</span>
+                  <span class="lap-badge b-out" v-else>BATAL</span>
+                </td>
+                <td class="c">
+                  <button class="po-icon-btn" title="Cetak ulang struk" @click="posReprint(s.id)">
+                    <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  </button>
+                  <button v-if="s.status !== 'CANCELLED'" class="po-icon-btn" title="Batalkan" @click="posCancel(s)">
+                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!posHistoryLoading && !posHistory.length"><td colspan="7" class="po-state">Belum ada penjualan</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- LAPORAN -->
     <div v-if="pgTab === 'laporan'" class="tab-pane">
       <div class="lap-grid">
@@ -1191,6 +1832,7 @@ function toast(type, msg) {
 .otc-label { font-size: 9px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .03em; }
 .otc-input { height: 28px; font-size: 11px; width: 100%; box-sizing: border-box; }
 .otc-form-actions { display: flex; gap: .4rem; }
+.otc-hint { font-size: 10px; color: var(--et); margin-top: .45rem; }
 
 .disp-actions { padding: 0.85rem 1.1rem; border-top: 1px solid var(--gb); display: flex; gap: 0.5rem; flex-wrap: wrap; background: var(--bs); }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
@@ -1207,6 +1849,11 @@ function toast(type, msg) {
 .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
 .btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+/* Tombol Etiket di header gelap (disp-head) — kartu putih solid agar kontras. */
+.btn-etiket { background: #fff; color: #1d4ed8 !important; border-color: #fff; }
+.btn-etiket svg { stroke: #1d4ed8; }
+.btn-etiket:hover:not(:disabled) { background: #eff4ff; color: #1d4ed8 !important; }
+.btn-etiket:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .done-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -1286,6 +1933,35 @@ function toast(type, msg) {
 .lap-days { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--tu); }
 .lap-days.warn { color: var(--wt); }
 .lap-days.err { color: var(--et); }
+
+/* POS — Penjualan Obat Bebas */
+.pos-grid { display: grid; grid-template-columns: 1fr 320px; gap: 0.75rem; align-items: start; }
+.pos-body { padding: 0.9rem 1.1rem; }
+.pos-search-drop { position: absolute; top: 34px; left: 0; right: 0; z-index: 30; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 280px; overflow-y: auto; }
+.pos-search-item { padding: 7px 11px; cursor: pointer; border-bottom: 1px solid var(--gb); }
+.pos-search-item:hover { background: var(--gl); }
+.pos-si-name { font-size: 12px; font-weight: 600; color: var(--td); }
+.pos-si-meta { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--tu); margin-top: 2px; }
+.pos-out { color: var(--et); font-weight: 700; }
+.pos-cart-table { width: 100%; border-collapse: collapse; margin-top: .6rem; }
+.pos-cart-table th { font-size: 10px; font-weight: 700; color: var(--tu); text-transform: uppercase; text-align: left; padding: 4px 6px; border-bottom: 1.5px solid var(--gb); }
+.pos-cart-table td { font-size: 12px; padding: 6px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
+.pos-cart-table .r { text-align: right; } .pos-cart-table .c { text-align: center; }
+.pos-cart-table .sm { font-size: 9.5px; }
+.pos-qty { width: 64px; }
+.pos-field { display: flex; flex-direction: column; gap: 3px; margin-bottom: .55rem; }
+.pos-field label { font-size: 9.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .03em; }
+.pos-input { width: 100%; box-sizing: border-box; }
+.pos-summary { background: var(--gl); border: 1px solid var(--gb); border-radius: 8px; padding: .6rem .7rem; margin: .5rem 0; }
+.pos-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; padding: 3px 0; color: var(--tm); }
+.pos-row b { color: var(--td); font-variant-numeric: tabular-nums; }
+.pos-grand { border-top: 1px dashed var(--gb); margin-top: 3px; padding-top: 6px; font-size: 13px; }
+.pos-grand b { font-size: 15px; color: var(--ga); }
+.pos-change { background: var(--sb); border-radius: 7px; padding: 6px 10px; font-weight: 600; }
+.pos-change b { font-size: 14px; color: var(--st); }
+.pos-history { margin-top: 1rem; }
+.po-table tbody tr.pos-cancelled { opacity: .55; }
+@media (max-width: 900px) { .pos-grid { grid-template-columns: 1fr; } }
 
 /* Modal koreksi stok */
 .es-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }

@@ -24,6 +24,8 @@ class PermissionSeeder extends Seeder
             'bedah'              => 'Unit Bedah',
             'farmasi'            => 'Farmasi Unit',
             'kasir'              => 'Kasir & Billing',
+            'rawat_inap'         => 'Rawat Inap (RANAP)',
+            'igd'                => 'Instalasi Gawat Darurat (IGD)',
             'bpjs'               => 'BPJS & Klaim',
             'laporan'            => 'Laporan & Analitik',
             'tarif_paket'        => 'Tarif & Paket Bedah',

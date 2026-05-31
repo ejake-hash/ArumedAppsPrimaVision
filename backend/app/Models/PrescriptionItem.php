@@ -17,6 +17,9 @@ class PrescriptionItem extends Model
     protected $fillable = [
         'prescription_id',
         'medication_id',
+        // Asal item: RESEP | TAMBAHAN (obat tambahan apotek / OTC) + petugas penambah.
+        'source',
+        'added_by_id',
         'quantity',
         'dosage',
         'instructions',
@@ -37,5 +40,10 @@ class PrescriptionItem extends Model
     public function medication(): BelongsTo
     {
         return $this->belongsTo(Medication::class);
+    }
+
+    public function addedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'added_by_id');
     }
 }

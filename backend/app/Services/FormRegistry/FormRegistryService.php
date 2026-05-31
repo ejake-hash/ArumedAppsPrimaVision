@@ -328,6 +328,45 @@ final class FormRegistryService
     }
 
     /**
+     * Edit isi dokumen DRAFT secara manual (dokter mengoreksi teks HTML hasil
+     * render sebelum TTD). Hanya boleh saat status DRAFT — begitu masuk
+     * RENDERED/PENDING_SIGNATURE/FINALIZED, isi terkunci (immutability dokumen
+     * medis; koreksi setelah final lewat addendum).
+     *
+     * Menimpa langsung `rendered_html` (plain). Kolom `rendered_html_gz`
+     * di-null-kan — bytea Postgres menolak string gzcompress (lihat catatan di
+     * finalize()). Override ini lepas dari binding rekam medis (by design:
+     * dokter mengetik bebas).
+     */
+    public function saveDraftContent(string $patientDocumentId, string $html): PatientDocument
+    {
+        $doc = PatientDocument::query()->findOrFail($patientDocumentId);
+
+        if ($doc->status !== 'DRAFT') {
+            throw new RuntimeException(
+                "Isi dokumen hanya bisa diubah saat status DRAFT. Status saat ini: {$doc->status}."
+            );
+        }
+
+        $doc->rendered_html    = $html;
+        $doc->rendered_html_gz = null;
+        $doc->save();
+
+        FormRegistryAudit::record(
+            'FORM_DOC_DRAFT_EDITED',
+            model: 'PatientDocument',
+            modelId: $doc->id,
+            description: 'Isi DRAFT diedit manual oleh dokter',
+            context: [
+                'template_code'      => $doc->template_code,
+                'rendered_html_size' => strlen($html),
+            ],
+        );
+
+        return $doc;
+    }
+
+    /**
      * Buat addendum (koreksi post-FINALIZED). Wajib status dokumen sudah
      * FINALIZED / FINAL. Addendum sendiri perlu di-finalize via signature.
      */

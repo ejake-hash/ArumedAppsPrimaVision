@@ -84,6 +84,21 @@ class PerawatController extends Controller
         return $this->ok($result, 'Pasien dikirim ke antrian Bedah');
     }
 
+    /**
+     * POST /perawat/antrian/{queueId}/kirim-ke-ranap
+     * Pre-op RAWAT INAP (Fase 8B): setelah TR+REF finalize, masuk papan Menunggu Kamar.
+     */
+    public function kirimKeRanap(string $id): JsonResponse
+    {
+        try {
+            $result = $this->service->kirimKeRanap($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Pasien dikirim ke Rawat Inap (Menunggu Kamar)');
+    }
+
     // =========================================================================
     // ASESMEN
     // =========================================================================

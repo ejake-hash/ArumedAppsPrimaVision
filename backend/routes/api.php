@@ -8,7 +8,10 @@ use App\Http\Controllers\RefraksiController;
 use App\Http\Controllers\DokterController;
 use App\Http\Controllers\PenunjangController;
 use App\Http\Controllers\BedahController;
+use App\Http\Controllers\RanapController;
+use App\Http\Controllers\RoomController;
 use App\Http\Controllers\FarmasiController;
+use App\Http\Controllers\PharmacySaleController;
 use App\Http\Controllers\KasirController;
 use App\Http\Controllers\KlaimController;
 use App\Http\Controllers\RekamMedisController;
@@ -194,6 +197,7 @@ Route::prefix('v1')->group(function () {
 
             Route::put('/antrian/{id}/lewati',                     [PerawatController::class, 'lewatiAntrian']);
             Route::post('/antrian/{id}/kirim-ke-bedah',            [PerawatController::class, 'kirimKeBedah']);
+            Route::post('/antrian/{id}/kirim-ke-ranap',            [PerawatController::class, 'kirimKeRanap']);
             Route::get('/kunjungan/{visitId}',                     [PerawatController::class, 'showKunjungan']);
             Route::get('/kunjungan/{visitId}/status-parallel',     [PerawatController::class, 'statusParallel']);
             Route::get('/pasien/{patientId}/vital-history',        [PerawatController::class, 'vitalHistory']);
@@ -386,6 +390,47 @@ Route::prefix('v1')->group(function () {
         });
 
         // -----------------------------------------------------------------
+        // RAWAT INAP (RANAP)
+        // -----------------------------------------------------------------
+        Route::prefix('rawat-inap')->group(function () {
+            Route::get('/bed-board',                  [RanapController::class, 'bedBoard'])->middleware('permission:rawat_inap.read');
+            Route::get('/menunggu-kamar',             [RanapController::class, 'waitingForBed'])->middleware('permission:rawat_inap.read');
+            Route::get('/aktif',                      [RanapController::class, 'activeInpatients'])->middleware('permission:rawat_inap.read');
+            // Literal 'history' WAJIB sebelum '/{visitId}' agar tak ditangkap sbg visitId.
+            Route::get('/history',                    [RanapController::class, 'dischargedHistory'])->middleware('permission:rawat_inap.read');
+            Route::get('/{visitId}',                  [RanapController::class, 'detail'])->middleware('permission:rawat_inap.read');
+
+            Route::get('/{visitId}/tarif-tindakan',   [RanapController::class, 'tarifTindakan'])->middleware('permission:rawat_inap.read');
+            Route::get('/{visitId}/daftar-obat',      [RanapController::class, 'daftarObat'])->middleware('permission:rawat_inap.read');
+            Route::get('/{visitId}/cppt',             [RanapController::class, 'indexCppt'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/cppt',            [RanapController::class, 'addCppt'])->middleware('permission:rawat_inap.write');
+            Route::put('/cppt/{id}',                  [RanapController::class, 'updateCppt'])->middleware('permission:rawat_inap.write');
+            Route::post('/cppt/{id}/verify',          [RanapController::class, 'verifyCppt'])->middleware('permission:rawat_inap.write');
+
+            // BPJS SEP (view/update) + SPRI (CRU). spri/{id} aman (mirip cppt/{id}).
+            Route::get('/{visitId}/sep',              [RanapController::class, 'getSep'])->middleware('permission:rawat_inap.read');
+            Route::put('/{visitId}/sep',              [RanapController::class, 'updateSep'])->middleware('permission:rawat_inap.write');
+            Route::get('/{visitId}/spri',             [RanapController::class, 'listSpri'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/spri',            [RanapController::class, 'createSpri'])->middleware('permission:rawat_inap.write');
+            Route::put('/spri/{spriId}',              [RanapController::class, 'updateSpri'])->middleware('permission:rawat_inap.write');
+            Route::delete('/spri/{spriId}',           [RanapController::class, 'deleteSpri'])->middleware('permission:rawat_inap.write');
+
+            Route::post('/{visitId}/admit',           [RanapController::class, 'admit'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/transfer',        [RanapController::class, 'transfer'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/charge',          [RanapController::class, 'addCharge'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/tindakan',        [RanapController::class, 'addTindakan'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/obat',            [RanapController::class, 'addObat'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/charge/{chargeId}', [RanapController::class, 'deleteCharge'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/kirim-bedah',     [RanapController::class, 'sendToBedah'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/discharge',       [RanapController::class, 'discharge'])->middleware('permission:rawat_inap.write');
+
+            // Fase 8C — dokumen/hasil eksternal (lab/radiologi pihak ke-3 pre-op).
+            Route::get('/{visitId}/dokumen',              [RanapController::class, 'indexDocuments'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/dokumen',             [RanapController::class, 'uploadDocument'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/dokumen/{documentId}', [RanapController::class, 'deleteDocument'])->middleware('permission:rawat_inap.write');
+        });
+
+        // -----------------------------------------------------------------
         // FARMASI
         // -----------------------------------------------------------------
         Route::prefix('farmasi')->group(function () {
@@ -402,6 +447,13 @@ Route::prefix('v1')->group(function () {
             Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);
             Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing']);
             Route::delete('/resep-item/{id}',                [FarmasiController::class, 'deleteItemDispensing']);
+            Route::post('/kunjungan/{visitId}/resep-otc',    [FarmasiController::class, 'storeOtcPrescription']);
+
+            // Penjualan obat bebas lepas (POS apotek) — tanpa Visit/RME.
+            Route::get('/penjualan',                         [PharmacySaleController::class, 'index']);
+            Route::post('/penjualan',                        [PharmacySaleController::class, 'checkout']);
+            Route::get('/penjualan/{id}',                    [PharmacySaleController::class, 'show']);
+            Route::post('/penjualan/{id}/batal',             [PharmacySaleController::class, 'cancel']);
 
             Route::get('/surgery-request',                   [FarmasiController::class, 'indexSurgeryRequest']);
             Route::get('/surgery-request/{id}',              [FarmasiController::class, 'showSurgeryRequest']);
@@ -471,14 +523,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/vclaim-log',                     [KlaimController::class, 'vclaimpLog']);
             Route::get('/icare/monitoring',               [KlaimController::class, 'icareMonitoring']);
             Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
+            Route::get('/icd-search',                     [KlaimController::class, 'icdSearch']);
 
             Route::get('/{id}',                           [KlaimController::class, 'show']);
+
+            Route::put('/{id}/diagnosis',                 [KlaimController::class, 'updateDiagnosis']);
+            Route::put('/{id}/assign',                    [KlaimController::class, 'assign']);
 
             Route::post('/{id}/grouping',                 [KlaimController::class, 'runGrouping']);
 
             Route::put('/{id}/review',                    [KlaimController::class, 'setReview']);
             Route::put('/{id}/verifikasi',                [KlaimController::class, 'setVerifikasi']);
             Route::put('/{id}/reject',                    [KlaimController::class, 'setReject']);
+            Route::post('/{id}/resubmit',                 [KlaimController::class, 'resubmitKlaim']);
 
             Route::post('/{id}/submit',                   [KlaimController::class, 'submitKlaim']);
 
@@ -530,6 +587,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/document/{id}/mark-rendered',    [RekamMedisController::class, 'markDocumentRendered']);
             Route::post('/document/{id}/finalize',         [RekamMedisController::class, 'finalizeDocument']);
             Route::get('/document/{id}/render',            [RekamMedisController::class, 'showDocumentSnapshot']);
+            Route::put('/document/{id}/draft-content',     [RekamMedisController::class, 'saveDraftContent']);
 
             // Fase 4 — Signature flow
             Route::post('/document/{id}/sign',             [RekamMedisController::class, 'signDocument']);
@@ -575,6 +633,20 @@ Route::prefix('v1')->group(function () {
             Route::put('/profil-klinik',                    [MasterDataController::class, 'updateProfilKlinik']);
             Route::post('/profil-klinik/logo',              [MasterDataController::class, 'uploadProfilKlinikLogo']);
             Route::delete('/profil-klinik/logo',            [MasterDataController::class, 'deleteProfilKlinikLogo']);
+
+            // Master Room & Bed (Rawat Inap) — dikelola dari Profil Klinik (permission pengaturan).
+            Route::get('/room',                             [RoomController::class, 'index'])->middleware('permission:pengaturan.read');
+            Route::post('/room',                            [RoomController::class, 'store'])->middleware('permission:pengaturan.write');
+            Route::put('/room/{id}',                        [RoomController::class, 'update'])->middleware('permission:pengaturan.write');
+            Route::delete('/room/{id}',                     [RoomController::class, 'destroy'])->middleware('permission:pengaturan.write');
+            Route::post('/room/{roomId}/bed',               [RoomController::class, 'storeBed'])->middleware('permission:pengaturan.write');
+            Route::put('/bed/{id}',                         [RoomController::class, 'updateBed'])->middleware('permission:pengaturan.write');
+            Route::delete('/bed/{id}',                      [RoomController::class, 'destroyBed'])->middleware('permission:pengaturan.write');
+
+            // Tarif kamar per kelas per insurer (Rawat Inap).
+            Route::get('/room-tariff',                      [RoomController::class, 'indexTariff'])->middleware('permission:tarif_paket.read');
+            Route::post('/room-tariff',                     [RoomController::class, 'storeTariff'])->middleware('permission:tarif_paket.write');
+            Route::delete('/room-tariff/{id}',              [RoomController::class, 'destroyTariff'])->middleware('permission:tarif_paket.delete');
 
             Route::get('/nomor-dokumen',                    [MasterDataController::class, 'indexNomorDokumen']);
             Route::put('/nomor-dokumen/{id}',               [MasterDataController::class, 'updateNomorDokumen']);
@@ -737,6 +809,68 @@ Route::prefix('v1')->group(function () {
             Route::put('/form-template/{id}',                          [MasterDataController::class, 'updateFormTemplate'])->middleware('permission:form_template.write');
             Route::post('/form-template/{id}/activate',                [MasterDataController::class, 'activateFormTemplate'])->middleware('permission:form_template.write');
             Route::post('/form-template/{id}/deactivate',              [MasterDataController::class, 'deactivateFormTemplate'])->middleware('permission:form_template.write');
+
+            // -------------------------------------------------------------
+            // FASILITAS & RUANG — Master Room / Bed / Tarif Kamar (RANAP)
+            // Dikelola di Master Data → Fasilitas & Ruang (RoomBedManager).
+            // -------------------------------------------------------------
+            Route::get('/room',                 [RoomController::class, 'index'])->middleware('permission:rawat_inap.read');
+            Route::post('/room',                [RoomController::class, 'store'])->middleware('permission:rawat_inap.write');
+            Route::put('/room/{id}',            [RoomController::class, 'update'])->middleware('permission:rawat_inap.write');
+            Route::delete('/room/{id}',         [RoomController::class, 'destroy'])->middleware('permission:rawat_inap.write');
+            Route::post('/room/{roomId}/bed',   [RoomController::class, 'storeBed'])->middleware('permission:rawat_inap.write');
+            Route::put('/bed/{id}',             [RoomController::class, 'updateBed'])->middleware('permission:rawat_inap.write');
+            Route::delete('/bed/{id}',          [RoomController::class, 'destroyBed'])->middleware('permission:rawat_inap.write');
+            Route::get('/room-tariff',          [RoomController::class, 'indexTariff'])->middleware('permission:rawat_inap.read');
+            Route::post('/room-tariff',         [RoomController::class, 'storeTariff'])->middleware('permission:rawat_inap.write');
+            Route::delete('/room-tariff/{id}',  [RoomController::class, 'destroyTariff'])->middleware('permission:rawat_inap.write');
+        });
+
+        // -----------------------------------------------------------------
+        // RAWAT INAP (RANAP) — papan bed, admit/transfer/discharge, CPPT,
+        // tindakan/obat/charge, SEP/SPRI, riwayat. (RanapController)
+        // PENTING urutan: route literal & /spri /cppt WAJIB sebelum /{visitId}
+        // wildcard, agar tak ter-shadow.
+        // -----------------------------------------------------------------
+        Route::prefix('rawat-inap')->group(function () {
+            // --- Papan & daftar (literal, harus sebelum /{visitId}) ---
+            Route::get('/bed-board',                [RanapController::class, 'bedBoard'])->middleware('permission:rawat_inap.read');
+            Route::get('/menunggu-kamar',           [RanapController::class, 'waitingForBed'])->middleware('permission:rawat_inap.read');
+            Route::get('/aktif',                    [RanapController::class, 'activeInpatients'])->middleware('permission:rawat_inap.read');
+            Route::get('/history',                  [RanapController::class, 'dischargedHistory'])->middleware('permission:rawat_inap.read');
+
+            // --- CPPT by id & SPRI by id (literal segmen, sebelum /{visitId}) ---
+            Route::put('/cppt/{id}',                [RanapController::class, 'updateCppt'])->middleware('permission:rawat_inap.write');
+            Route::post('/cppt/{id}/verify',        [RanapController::class, 'verifyCppt'])->middleware('permission:rawat_inap.write');
+            Route::put('/spri/{spriId}',            [RanapController::class, 'updateSpri'])->middleware('permission:rawat_inap.write');
+            Route::delete('/spri/{spriId}',         [RanapController::class, 'deleteSpri'])->middleware('permission:rawat_inap.write');
+
+            // --- Aksi per pasien (visitId di akhir segmen) ---
+            Route::post('/{visitId}/admit',         [RanapController::class, 'admit'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/transfer',      [RanapController::class, 'transfer'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/discharge',     [RanapController::class, 'discharge'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/kirim-bedah',   [RanapController::class, 'sendToBedah'])->middleware('permission:rawat_inap.write');
+
+            // Charge / tindakan / obat
+            Route::get('/{visitId}/tarif-tindakan', [RanapController::class, 'tarifTindakan'])->middleware('permission:rawat_inap.read');
+            Route::get('/{visitId}/daftar-obat',    [RanapController::class, 'daftarObat'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/charge',        [RanapController::class, 'addCharge'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/tindakan',      [RanapController::class, 'addTindakan'])->middleware('permission:rawat_inap.write');
+            Route::post('/{visitId}/obat',          [RanapController::class, 'addObat'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/charge/{chargeId}', [RanapController::class, 'deleteCharge'])->middleware('permission:rawat_inap.write');
+
+            // CPPT list & tambah (per pasien)
+            Route::get('/{visitId}/cppt',           [RanapController::class, 'indexCppt'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/cppt',          [RanapController::class, 'addCppt'])->middleware('permission:rawat_inap.write');
+
+            // SEP / SPRI per pasien
+            Route::get('/{visitId}/sep',            [RanapController::class, 'getSep'])->middleware('permission:rawat_inap.read');
+            Route::put('/{visitId}/sep',            [RanapController::class, 'updateSep'])->middleware('permission:rawat_inap.write');
+            Route::get('/{visitId}/spri',           [RanapController::class, 'listSpri'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/spri',          [RanapController::class, 'createSpri'])->middleware('permission:rawat_inap.write');
+
+            // Detail pasien (wildcard paling generic — WAJIB paling akhir)
+            Route::get('/{visitId}',                [RanapController::class, 'detail'])->middleware('permission:rawat_inap.read');
         });
 
         // -----------------------------------------------------------------
