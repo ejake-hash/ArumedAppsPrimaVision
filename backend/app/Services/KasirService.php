@@ -260,12 +260,24 @@ class KasirService
             return [];
         }
 
+        // Alur RAJAL/Bedah: DOKTER → KASIR → FARMASI. Kasir konsolidasi billing
+        // SEBELUM farmasi men-dispense, jadi resep masih DRAFT/SUBMITTED (belum
+        // DISPENSED). Tagih semua resep yang BUKAN CANCELLED — kalau hanya menagih
+        // DISPENSED, obat pulang RAJAL/Bedah tak pernah masuk invoice (pasien pulang
+        // tanpa dibayar). DRAFT pun ditagih: resep dokter dibuat status DRAFT dan
+        // tetap DRAFT sampai farmasi memprosesnya (tak ada langkah submit terpisah
+        // untuk RAJAL — lihat DokterService::storePrescription & FarmasiService::startDispensing).
         $lines = [];
         foreach ($visit->prescriptions as $prescription) {
-            if ($prescription->status !== 'DISPENSED') {
+            if ($prescription->status === 'CANCELLED') {
                 continue;
             }
             foreach ($prescription->items as $item) {
+                // Obat operasi yang sudah tercakup paket bedah (is_bedah) ditagih lewat
+                // builder paket — jangan dobel-tagih di sini.
+                if ($item->is_bedah) {
+                    continue;
+                }
                 $price = $this->getPrice('medication', $item->medication_id, $visit->guarantor_type, $visit->insurer_id);
                 $total = $price * $item->quantity;
                 $lines[] = [
