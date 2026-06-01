@@ -46,3 +46,10 @@ Docs/migrasi data/csv/
 Docs/migrasi data/csv2/
 Docs/migrasi data/**/*.csv.gz
 Docs/migrasi data/**/*.csv
+
+# Scratch / tooling dev — jangan ke server
+..bfg-report/
+Docs/migrasi data/test_*.php
+backend/_*.php
+backend/_*.txt
+_verify_tmp.txt

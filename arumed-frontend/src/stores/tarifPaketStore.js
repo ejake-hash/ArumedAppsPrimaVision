@@ -11,7 +11,7 @@
 
 import { defineStore } from 'pinia'
 import { reactive, ref } from 'vue'
-import { tarifPaketApi } from '@/services/api'
+import { tarifPaketApi, masterApi } from '@/services/api'
 
 const TARIF_TYPES = ['tindakan', 'obat', 'bhp', 'iol']
 
@@ -124,8 +124,19 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
     }, 100)
   }
 
-  // CSV global per-type sudah dipindah ke per-insurer di MetodeBayarTarifTab.vue.
-  // Fungsi lama dihapus karena endpoint /tarif/{type}/{export,import}-csv sudah tidak ada.
+  // Export/Import tarif SEMUA penjamin (lossless, kolom 'penjamin') untuk satu type.
+  // Endpoint: GET/POST /master/tarif/{type}/{export,import}-csv via masterApi.csv generik.
+  // Dipakai tombol Export/Import di TarifPenjaminView.vue.
+  async function exportTarifCsv(type) {
+    const { data } = await masterApi.csv.export(`tarif/${type}`)
+    const stamp = new Date().toISOString().slice(0, 10)
+    triggerDownload(data, `tarif-${type}-${stamp}.csv`)
+  }
+
+  async function importTarifCsv(type, file) {
+    const res = await masterApi.csv.import(`tarif/${type}`, file)
+    return res.data?.data ?? res.data ?? {}
+  }
 
   // ─── Paket actions (CRUD) ───────────────────────────────────────────────
   async function fetchPaketList(params = {}) {
@@ -261,6 +272,7 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
 
     // tarif ops
     fetchTarif, createTarif, updateTarif, removeTarif,
+    exportTarifCsv, importTarifCsv,
 
     // paket ops
     fetchPaketList, fetchPaketDetail,

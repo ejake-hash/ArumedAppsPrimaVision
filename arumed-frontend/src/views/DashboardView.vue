@@ -265,14 +265,22 @@ onUnmounted(() => clearInterval(liveTimer))
 
       <div class="card">
         <div class="ch">
-          <div class="cht"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>Laporan Keuangan</div>
+          <div class="cht"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>Laporan Keuangan <span class="badge-soon-dash">Segera Hadir</span></div>
           <div class="d-filter-tabs">
             <button v-for="f in [{k:'hari',l:'Hari Ini'},{k:'minggu',l:'Minggu'},{k:'bulan',l:'Bulan'},{k:'tahun',l:'Tahun'}]" :key="f.k"
-              :class="['d-ftab', keuanganFilter===f.k && 'd-ftab-a']"
+              :class="['d-ftab', keuanganFilter===f.k && 'd-ftab-a']" disabled
               @click="keuanganFilter = f.k">{{ f.l }}</button>
           </div>
         </div>
-        <div class="cb">
+        <!-- Laporan keuangan belum di-wire ke database (angka di bawah masih contoh). -->
+        <!-- Ditandai "Segera Hadir" + di-blur supaya tidak dianggap data riil saat go-live. -->
+        <div class="cb keu-soon-wrap">
+          <div class="keu-soon-overlay">
+            <div class="keu-soon-box">
+              <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+              <div>Laporan keuangan akan tersedia setelah integrasi data transaksi selesai.</div>
+            </div>
+          </div>
           <div class="keu-summary">
             <div class="keu-kpi"><div class="keu-val">{{ fmtRpBig(activeKeu.pendapatan) }}</div><div class="keu-lbl">Total Pendapatan</div></div>
             <div class="keu-kpi"><div class="keu-val" style="color:var(--it)">{{ activeKeu.transaksi.toLocaleString('id-ID') }}</div><div class="keu-lbl">Transaksi</div></div>
@@ -570,6 +578,26 @@ onUnmounted(() => clearInterval(liveTimer))
 .chart-footer { font-size:10px; color:var(--tu); margin-top:.35rem; }
 
 /* ─── LAPORAN KEUANGAN ─── */
+/* Badge "Segera Hadir" pada judul kartu (palet kuning konsisten dgn AdmisiView). */
+.badge-soon-dash {
+  display:inline-flex; align-items:center; font-size:9px; font-weight:700;
+  padding:2px 7px; border-radius:20px; letter-spacing:.04em; text-transform:uppercase;
+  background:rgba(251,191,36,.16); color:#b45309; border:1px solid rgba(251,191,36,.4);
+  margin-left:6px; vertical-align:middle;
+}
+/* Overlay "segera hadir" untuk Laporan Keuangan: body mock di-blur, tak bisa diklik. */
+.keu-soon-wrap { position:relative; }
+.keu-soon-wrap > :not(.keu-soon-overlay) { filter:blur(3px); opacity:.55; pointer-events:none; user-select:none; }
+.keu-soon-overlay {
+  position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(180deg, rgba(255,255,255,.35), rgba(255,255,255,.65)); border-radius:8px;
+}
+.keu-soon-box {
+  display:flex; align-items:center; gap:.55rem; max-width:80%; text-align:left;
+  background:var(--bc); border:1px solid var(--gb); border-radius:10px; padding:.7rem .9rem;
+  box-shadow:0 4px 14px rgba(0,0,0,.08); font-size:12.5px; color:var(--td); font-weight:600;
+}
+.keu-soon-box svg { flex:none; stroke:#b45309; fill:none; stroke-width:2; }
 .keu-summary { display:flex; gap:1.5rem; margin-bottom:.4rem; }
 .keu-kpi { display:flex; flex-direction:column; gap:2px; }
 .keu-val  { font-size:20px; font-weight:700; color:var(--td); line-height:1; }

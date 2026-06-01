@@ -1065,6 +1065,139 @@ class MasterDataService
         return compact('inserted', 'updated', 'skipped', 'errors');
     }
 
+    /**
+     * Export tarif SEMUA penjamin (lossless) untuk satu type.
+     * Header: no, nama, kategori, penjamin, harga_master, harga_jual.
+     * Dipakai oleh GET /master/tarif/{type}/export-csv (insurer-less).
+     */
+    public function exportTarifCsv(string $type): string
+    {
+        $itemTable    = $this->itemTable($type);
+        $itemNameCol  = $this->itemNameColumn($type);
+        $itemCatCol   = $this->itemKategoriColumn($type);
+        $itemPriceCol = $this->itemMasterPriceColumn($type);
+
+        $rows = DB::table($this->tariffTable($type) . ' as t')
+            ->join("{$itemTable} as item", "t.{$this->tariffFk($type)}", '=', 'item.id')
+            ->leftJoin('insurers as ins', 't.insurer_id', '=', 'ins.id')
+            ->whereNull('t.deleted_at')
+            ->whereNull('item.deleted_at')   // jangan ekspor tarif item master yang sudah dihapus
+            ->select([
+                "item.{$itemNameCol} as nama",
+                "item.{$itemCatCol} as kategori",
+                'ins.name as penjamin',
+                "item.{$itemPriceCol} as harga_master",
+                't.price as harga_jual',
+            ])
+            ->orderBy("item.{$itemNameCol}")
+            ->orderBy('ins.name')
+            ->get();
+
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, ['no', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'], ',', '"', '\\');
+        $no = 1;
+        foreach ($rows as $row) {
+            fputcsv($output, [
+                $no++,
+                $row->nama,
+                $row->kategori,
+                $row->penjamin ?? 'SEMUA',
+                $row->harga_master,
+                $row->harga_jual,
+            ], ',', '"', '\\');
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /**
+     * Import tarif SEMUA penjamin dari CSV.
+     * Header wajib (case-insensitive): nama, kategori, penjamin, harga_jual.
+     * Item di-lookup via (nama, kategori); penjamin via name; upsert by (item_id, insurer_id).
+     */
+    public function importTarifCsv(string $type, string $csvContent): array
+    {
+        $lines = $this->csvDataLines($csvContent);
+        if (empty($lines)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['nama', 'kategori', 'penjamin', 'harga_jual'] as $required) {
+            if (! in_array($required, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
+            }
+        }
+
+        $model       = $this->tariffModel($type);
+        $fk          = $this->tariffFk($type);
+        $itemTable   = $this->itemTable($type);
+        $itemNameCol = $this->itemNameColumn($type);
+        $itemCatCol  = $this->itemKategoriColumn($type);
+
+        $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
+
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row = array_combine($headers, $values);
+
+            $nama      = trim((string) ($row['nama'] ?? ''));
+            $kategori  = trim((string) ($row['kategori'] ?? ''));
+            $penjamin  = trim((string) ($row['penjamin'] ?? ''));
+            $hargaJual = $row['harga_jual'] ?? '';
+
+            if ($nama === '' || $kategori === '' || $penjamin === '' || $hargaJual === '') {
+                $errors[] = "Baris {$lineNum}: 'nama', 'kategori', 'penjamin', atau 'harga_jual' kosong";
+                $skipped++;
+                continue;
+            }
+
+            $item = DB::table($itemTable)
+                ->whereRaw("LOWER({$itemNameCol}) = ?", [strtolower($nama)])
+                ->whereRaw("LOWER({$itemCatCol}) = ?", [strtolower($kategori)])
+                ->whereNull('deleted_at')
+                ->first();
+            if (! $item) {
+                $errors[] = "Baris {$lineNum}: item '{$nama}' kategori '{$kategori}' tidak ditemukan di master";
+                $skipped++;
+                continue;
+            }
+
+            $insurer = DB::table('insurers')
+                ->whereRaw('LOWER(name) = ?', [strtolower($penjamin)])
+                ->whereNull('deleted_at')
+                ->first();
+            if (! $insurer) {
+                $errors[] = "Baris {$lineNum}: penjamin '{$penjamin}' tidak ditemukan";
+                $skipped++;
+                continue;
+            }
+
+            $existing = $model::where($fk, $item->id)->where('insurer_id', $insurer->id)->first();
+            $model::updateOrCreate(
+                [$fk => $item->id, 'insurer_id' => $insurer->id],
+                ['price' => (float) $hargaJual, 'is_active' => true]
+            );
+            if ($existing) $updated++; else $inserted++;
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_TARIF_CSV', null, null, "type:{$type} all-insurer new:{$inserted} upd:{$updated} skip:{$skipped}");
+
+        // 'imported' = alias agar pesan controller (yang memakai key 'imported') tetap valid.
+        $imported = $inserted + $updated;
+        return compact('imported', 'inserted', 'updated', 'skipped', 'errors');
+    }
+
     private function tariffTable(string $type): string
     {
         return match ($type) {

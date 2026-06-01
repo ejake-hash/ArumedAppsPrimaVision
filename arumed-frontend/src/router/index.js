@@ -41,6 +41,7 @@ const router = createRouter({
         { path: 'bedah', name: 'bedah', component: BedahView, meta: { title: 'Bedah' } },
         { path: 'bedah/terjadwal', name: 'bedah-terjadwal', component: BedahTerjadwalView, meta: { title: 'Pasien Terjadwal Bedah' } },
         { path: 'rawat-inap', name: 'rawat-inap', component: () => import('@/views/RawatInapView.vue'), meta: { title: 'Rawat Inap', permission: 'rawat_inap.read' } },
+        { path: 'igd', name: 'igd', component: () => import('@/views/IgdView.vue'), meta: { title: 'IGD (Darurat)', permission: 'igd.read' } },
         { path: 'farmasi', name: 'farmasi', component: FarmasiView, meta: { title: 'Farmasi' } },
         { path: 'kasir', name: 'kasir', component: KasirView, meta: { title: 'Kasir & Billing' } },
         { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim' } },

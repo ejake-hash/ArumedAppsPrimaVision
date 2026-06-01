@@ -97,8 +97,10 @@ class InventoryStockController extends Controller
         return response()->json(['success' => true, 'message' => $message, 'data' => $data], $status);
     }
 
-    private function error(string $message, int $status = 422): JsonResponse
+    private function error(string $message, int|string $status = 422): JsonResponse
     {
+        // Coerce non-int status (e.g. PDO SQLSTATE string from QueryException) to a valid HTTP code.
+        $status = (is_int($status) && $status >= 400 && $status < 600) ? $status : 422;
         return response()->json(['success' => false, 'message' => $message], $status);
     }
 }

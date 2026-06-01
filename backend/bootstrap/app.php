@@ -22,8 +22,10 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
 
         $middleware->alias([
-            'role'       => \App\Http\Middleware\RoleMiddleware::class,
-            'permission' => \App\Http\Middleware\PermissionMiddleware::class,
+            'role'                => \App\Http\Middleware\RoleMiddleware::class,
+            'permission'          => \App\Http\Middleware\PermissionMiddleware::class,
+            // Antrol (Antrean Online BPJS, Sisi B): validasi header x-token Mobile JKN.
+            'verify-antrol-token' => \App\Http\Middleware\VerifyAntrolToken::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

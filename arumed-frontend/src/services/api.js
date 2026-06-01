@@ -572,6 +572,36 @@ export const ranapApi = {
   deleteSpri:    (spriId)            => api.delete(`/rawat-inap/spri/${spriId}`),
 }
 
+/** IGD — Instalasi Gawat Darurat (papan triase berlevel, 1 stasiun gabung). */
+export const igdApi = {
+  // Papan & detail
+  board:         ()                  => api.get('/igd/board'),
+  detail:        (visitId)           => api.get(`/igd/${visitId}`),
+
+  // Registrasi darurat
+  register:      (payload)           => api.post('/igd/register', payload),
+  registerNew:   (payload)           => api.post('/igd/register-baru', payload),
+
+  // Triase + charge/tindakan/obat
+  triase:        (visitId, payload)  => api.post(`/igd/${visitId}/triase`, payload),
+  tarifTindakan: (visitId)           => api.get(`/igd/${visitId}/tarif-tindakan`),
+  daftarObat:    (visitId, search)   => api.get(`/igd/${visitId}/daftar-obat`, { params: { search } }),
+  addTindakan:   (visitId, payload)  => api.post(`/igd/${visitId}/tindakan`, payload),
+  addObat:       (visitId, payload)  => api.post(`/igd/${visitId}/obat`, payload),
+  deleteCharge:  (visitId, chargeId) => api.delete(`/igd/${visitId}/charge/${chargeId}`),
+  disposisi:     (visitId, payload)  => api.post(`/igd/${visitId}/disposisi`, payload),
+
+  // CPPT IGD
+  cpptList:      (visitId)           => api.get(`/igd/${visitId}/cppt`),
+  addCppt:       (visitId, payload)  => api.post(`/igd/${visitId}/cppt`, payload),
+  updateCppt:    (cpptId, payload)   => api.put(`/igd/cppt/${cpptId}`, payload),
+  verifyCppt:    (cpptId)            => api.post(`/igd/cppt/${cpptId}/verify`),
+
+  // SEP IGD (BPJS gawat darurat)
+  sepInfo:       (visitId)           => api.get(`/igd/${visitId}/sep`),
+  generateSep:   (visitId, payload)  => api.post(`/igd/${visitId}/sep`, payload),
+}
+
 /** Anjungan Mandiri (Kiosk — public, no auth) */
 export const anjunganApi = {
   tiketUmum: () => api.post('/anjungan/tiket-umum'),

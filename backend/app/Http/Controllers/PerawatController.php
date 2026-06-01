@@ -304,8 +304,10 @@ class PerawatController extends Controller
         ], $status);
     }
 
-    private function error(string $message, int $status = 500): JsonResponse
+    private function error(string $message, int|string $status = 500): JsonResponse
     {
+        // Coerce non-int status (e.g. PDO SQLSTATE string from QueryException) to a valid HTTP code.
+        $status = (is_int($status) && $status >= 400 && $status < 600) ? $status : 500;
         return response()->json([
             'success' => false,
             'data'    => null,

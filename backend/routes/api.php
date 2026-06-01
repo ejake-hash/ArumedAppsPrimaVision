@@ -37,6 +37,8 @@ use App\Http\Controllers\TvAudioSettingController;
 use App\Http\Controllers\TvMediaSettingController;
 use App\Http\Controllers\TvBrandingSettingController;
 use App\Http\Controllers\AsuransiController;
+use App\Http\Controllers\IgdController;
+use App\Http\Controllers\AntrolMobileController;
 
 /*
 |--------------------------------------------------------------------------
@@ -49,6 +51,22 @@ use App\Http\Controllers\AsuransiController;
 */
 
 Route::prefix('v1')->group(function () {
+
+    // =========================================================================
+    // 0. ROUTE PATTERNS — id params yang SELALU UUID di-constraint ke format UUID.
+    //    Tujuan: request dengan id non-UUID (mis. /farmasi/resep/notauuid) langsung
+    //    404 sebelum menyentuh DB, sehingga TIDAK melempar QueryException 22P02 (500).
+    //    Param non-UUID (type, station, jenis, module, code, token, system, noKartu)
+    //    SENGAJA tidak di-constraint.
+    // =========================================================================
+    $uuid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+    foreach ([
+        'id', 'visitId', 'patientId', 'itemId', 'spriId', 'tariffId', 'signatureId',
+        'roomId', 'insurerId', 'employeeId', 'documentId', 'chargeId', 'scheduleId',
+        'resepId', 'refractionId', 'poId', 'orderId', 'logId', 'klaimId', 'invoiceId', 'parseId',
+    ] as $uuidParam) {
+        Route::pattern($uuidParam, $uuid);
+    }
 
     // =========================================================================
     // 1. PUBLIC — Auth (no middleware)
@@ -89,6 +107,28 @@ Route::prefix('v1')->group(function () {
         Route::get('/branding-settings', [TvBrandingSettingController::class, 'show']);
         // Media (mode, YouTube URL, video lokal, slideshow) — public read
         Route::get('/media-settings',    [TvMediaSettingController::class, 'show']);
+    });
+
+    // =========================================================================
+    // 2d. PUBLIC — Antrol (Antrean Online BPJS, Sisi B: Mobile JKN → RS).
+    //     BUKAN JWT — auth via header x-token BPJS (middleware verify-antrol-token).
+    //     /token PUBLIC tanpa middleware (terbitkan token via x-username+x-password).
+    // =========================================================================
+    Route::prefix('antrol')->group(function () {
+        Route::get('/token', [AntrolMobileController::class, 'token']);
+
+        Route::middleware('verify-antrol-token')->group(function () {
+            Route::post('/status',                 [AntrolMobileController::class, 'status']);
+            Route::post('/ambil',                  [AntrolMobileController::class, 'ambil']);
+            Route::post('/sisa',                   [AntrolMobileController::class, 'sisa']);
+            Route::post('/batal',                  [AntrolMobileController::class, 'batal']);
+            Route::post('/checkin',                [AntrolMobileController::class, 'checkin']);
+            Route::post('/pasien-baru',            [AntrolMobileController::class, 'pasienBaru']);
+            Route::post('/jadwal-operasi',         [AntrolMobileController::class, 'jadwalOperasi']);
+            Route::post('/jadwal-operasi-pasien',  [AntrolMobileController::class, 'jadwalOperasiPasien']);
+            Route::post('/farmasi/ambil',          [AntrolMobileController::class, 'farmasiAmbil']);
+            Route::post('/farmasi/status',         [AntrolMobileController::class, 'farmasiStatus']);
+        });
     });
 
     // =========================================================================
@@ -428,6 +468,35 @@ Route::prefix('v1')->group(function () {
             Route::get('/{visitId}/dokumen',              [RanapController::class, 'indexDocuments'])->middleware('permission:rawat_inap.read');
             Route::post('/{visitId}/dokumen',             [RanapController::class, 'uploadDocument'])->middleware('permission:rawat_inap.write');
             Route::delete('/{visitId}/dokumen/{documentId}', [RanapController::class, 'deleteDocument'])->middleware('permission:rawat_inap.write');
+        });
+
+        // -----------------------------------------------------------------
+        // IGD — Instalasi Gawat Darurat (1 stasiun gabung, papan triase berlevel)
+        // Literal path ('board') WAJIB sebelum '/{visitId}'; 'cppt/{id}' aman.
+        // -----------------------------------------------------------------
+        Route::prefix('igd')->group(function () {
+            Route::get('/board',                          [IgdController::class, 'board'])->middleware('permission:igd.read');
+            Route::post('/register',                      [IgdController::class, 'register'])->middleware('permission:igd.write');
+            Route::post('/register-baru',                 [IgdController::class, 'registerNew'])->middleware('permission:igd.write');
+            Route::get('/{visitId}',                      [IgdController::class, 'detail'])->middleware('permission:igd.read');
+
+            Route::post('/{visitId}/triase',              [IgdController::class, 'triase'])->middleware('permission:igd.write');
+            Route::get('/{visitId}/tarif-tindakan',       [IgdController::class, 'tarifTindakan'])->middleware('permission:igd.read');
+            Route::get('/{visitId}/daftar-obat',          [IgdController::class, 'daftarObat'])->middleware('permission:igd.read');
+            Route::post('/{visitId}/tindakan',            [IgdController::class, 'addTindakan'])->middleware('permission:igd.write');
+            Route::post('/{visitId}/obat',                [IgdController::class, 'addObat'])->middleware('permission:igd.write');
+            Route::delete('/{visitId}/charge/{chargeId}', [IgdController::class, 'deleteCharge'])->middleware('permission:igd.write');
+            Route::post('/{visitId}/disposisi',           [IgdController::class, 'disposisi'])->middleware('permission:igd.write');
+
+            // CPPT IGD (delegasi mesin RANAP); cppt/{id} literal sebelum tak perlu (id UUID).
+            Route::get('/{visitId}/cppt',                 [IgdController::class, 'indexCppt'])->middleware('permission:igd.read');
+            Route::post('/{visitId}/cppt',                [IgdController::class, 'addCppt'])->middleware('permission:igd.write');
+            Route::put('/cppt/{id}',                      [IgdController::class, 'updateCppt'])->middleware('permission:igd.write');
+            Route::post('/cppt/{id}/verify',              [IgdController::class, 'verifyCppt'])->middleware('permission:igd.write');
+
+            // SEP IGD (BPJS gawat darurat).
+            Route::get('/{visitId}/sep',                  [IgdController::class, 'sepInfo'])->middleware('permission:igd.read');
+            Route::post('/{visitId}/sep',                 [IgdController::class, 'generateSep'])->middleware('permission:igd.write');
         });
 
         // -----------------------------------------------------------------

@@ -87,6 +87,11 @@ async function handleLogout() {
         <span>Rawat Inap</span>
       </RouterLink>
 
+      <RouterLink v-if="auth.can('igd.read')" to="/igd" class="sb-item" title="IGD (Darurat)">
+        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
+        <span>IGD (Darurat)</span>
+      </RouterLink>
+
       <div class="sb-section">Operasional</div>
       <RouterLink v-if="auth.can('farmasi.read')" to="/farmasi" class="sb-item" title="Farmasi">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>

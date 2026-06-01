@@ -673,13 +673,13 @@ class DokterController extends Controller
         ], $status);
     }
 
-    private function error(string $message, int $status = 500): JsonResponse
+    private function error(string $message, int|string $status = 500): JsonResponse
     {
         // Guard: pemanggil sering mengoper $e->getCode(), yang untuk QueryException
-        // adalah SQLSTATE (mis. 23502) — BUKAN kode HTTP valid. Status di luar
-        // rentang 100–599 di-clamp ke 500 supaya tidak melempar
-        // InvalidArgumentException yang menutupi pesan asli.
-        if ($status < 100 || $status > 599) {
+        // adalah SQLSTATE STRING (mis. '23502') — BUKAN kode HTTP valid. Status non-int
+        // atau di luar rentang 100–599 di-clamp ke 500 supaya tidak melempar
+        // TypeError/InvalidArgumentException yang menutupi pesan asli.
+        if (!is_int($status) || $status < 100 || $status > 599) {
             $status = 500;
         }
 
