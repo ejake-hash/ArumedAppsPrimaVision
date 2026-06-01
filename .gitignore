@@ -39,3 +39,10 @@ Docs/_recovery-manifest.md
 Docs/migrasi data/*.sql
 Docs/migrasi data/**/*.sql
 **/*_schema.sql
+
+# DATA PASIEN SENSITIF — JANGAN PERNAH commit ke git (upload ke server via SCP saja).
+# Berisi 55rb pasien asli (NIK/nama/alamat) + resep/tarif. Bocor = pelanggaran privasi.
+Docs/migrasi data/csv/
+Docs/migrasi data/csv2/
+Docs/migrasi data/**/*.csv.gz
+Docs/migrasi data/**/*.csv
