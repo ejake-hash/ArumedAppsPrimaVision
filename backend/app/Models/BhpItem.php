@@ -27,6 +27,7 @@ class BhpItem extends Model
     ];
 
     protected $fillable = [
+        'legacy_uuid',
         'name',
         'code',
         'category',

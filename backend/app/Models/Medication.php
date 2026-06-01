@@ -20,6 +20,7 @@ class Medication extends Model
     public const GOLONGAN_OTC = ['BEBAS', 'BEBAS_TERBATAS'];
 
     protected $fillable = [
+        'legacy_uuid',
         'code',
         'kfa_code',
         'name',

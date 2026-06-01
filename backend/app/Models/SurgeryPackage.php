@@ -15,6 +15,7 @@ class SurgeryPackage extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'name',
         'code',
         'category',

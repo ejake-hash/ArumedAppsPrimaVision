@@ -17,6 +17,7 @@ class SurgeryPackageTariff extends Model
     public const CLASSIFICATIONS = ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL'];
 
     protected $fillable = [
+        'legacy_uuid',
         'surgery_package_id',
         'insurer_id',
         'classification',

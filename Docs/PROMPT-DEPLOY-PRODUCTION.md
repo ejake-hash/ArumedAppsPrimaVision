@@ -4,15 +4,17 @@
 **Konteks penting:**
 - Mesin `192.168.100.20` = **PRODUCTION**, sudah menjalankan **program lain di port 8000** (produksi aktif, dipakai user). **JANGAN diganggu.**
 - DEV sudah terbukti jalan & test E2E di komputer lokal. Ini **penerapan ke production**, bukan uji coba.
-- Aplikasi: backend Laravel 13 (PHP 8.3) di `backend/`, frontend Vue 3/Vite di `arumed-frontend/`.
+- Aplikasi: backend Laravel 13 di `backend/`, frontend Vue 3/Vite di `arumed-frontend/`.
+- **PHP: dev pakai 8.5; minimal 8.3** (composer.json `^8.3`). PHP 8.3 cukup — kode & command migrasi tak pakai fitur 8.5-only. Pakai versi server bila ≥8.3 (jangan upgrade global tanpa izin).
 - Database baru terpisah (PostgreSQL), user DB khusus, port web `:8080`, Nginx + PHP-FPM (bukan `php artisan serve`).
 
 ---
 
 ## ⚠️ Checklist SEBELUM jalankan prompt (lakukan dari PC lokal)
 
-- [ ] **Commit & push kode terbaru ke `main` GitHub.** Per cek terakhir, `origin/main` masih versi 30 Mei dan ada ~100 file belum di-commit (RANAP, billing, dll). Kalau tidak di-push, server dapat versi lama.
-- [ ] Pastikan file sampah TIDAK ikut ter-commit (`_blob_*.txt`, `_recovery/`, `hello.js`, `_scan_results.txt`, dll).
+- [ ] **Commit & push kode terbaru ke `main` GitHub.** Branch kerja `Server-Dev`, ada banyak file belum di-commit (RANAP, billing, **migrasi Gel-1 & Gel-2**). Kalau tidak di-push ke `main`, server dapat versi lama / tanpa command migrasi.
+- [ ] ✅ **Data pasien (csv) sudah dikeluarkan dari git** (2026-06-01: `git rm --cached` + BFG bersihkan history + force-push; `.gitignore` ignore `csv/`,`csv2/`,`*.csv.gz`). File fisik tetap di disk untuk SCP. **Jangan commit csv lagi.**
+- [ ] Pastikan file sampah TIDAK ikut ter-commit (`_blob_*.txt`, `_recovery/`, `hello.js`, `_scan_results.txt`, `test_*_parse.php`, dll).
 - [ ] Pastikan punya akses **sudo** di server.
 - [ ] Pastikan tahu **nama database** yang mau dipakai (akan ditanya Claude saat di server).
 
@@ -85,10 +87,13 @@ menjalankan perintah yang mengubah sistem.
      (CATATAN: default repo DB_CONNECTION=sqlite — WAJIB ganti ke pgsql)
    - php artisan key:generate
    - php artisan migrate --force
-   - SEEDER: TANYA saya dulu. Jalankan HANYA seeder esensial (Permission,
-     RolePermission, master data). JANGAN PERNAH jalankan seeder demo
-     (DokterDemoSeeder/BedahDemoSeeder/KasirDemoSeeder/RmeDemoSeeder) — ini
-     production, data demo dilarang.
+   - SEEDER: TANYA saya dulu. WAJIB seeder esensial SEBELUM migrasi data
+     (else login 401 / insurer_id NULL): InsurerSystem (UMUM/BPJS/SOSIAL),
+     User+Permission+RolePermission (RBAC), ClinicProfile, master data dasar.
+     JANGAN PERNAH jalankan seeder demo (DokterDemoSeeder/BedahDemoSeeder/
+     KasirDemoSeeder/RmeDemoSeeder/FarmasiDemoSeeder) — production, demo dilarang.
+   - php artisan jwt:secret --force  (else login lolos password tapi error
+     "Secret is not set" saat issue token) + config:clear.
    - php artisan config:cache && php artisan route:cache
    - storage/ dan bootstrap/cache/ writable oleh www-data.
 6. Frontend (arumed-frontend):
@@ -133,12 +138,30 @@ Aturan: **uji di lokal/dev dulu → backup production → baru inject ke product
 |---|---|
 | Data demo (DokterDemo/BedahDemo/KasirDemo/RmeDemo) | ❌ TIDAK PERNAH |
 | Master data (ICD-10, wilayah, tarif, obat, BHP) | ✅ setelah teruji |
-| Migrasi data asli (pasien/visit Prima Vision lama, `migrasi:primavision`) | ✅ setelah verifikasi + **backup `pg_dump` dulu** |
+| Migrasi Gel-1 (pasien/visit/dokter, `migrasi:primavision`) | ✅ setelah verifikasi + **backup `pg_dump` dulu** |
+| Migrasi Gel-2 (master harga/tarif/resep, `migrasi:primavision-master`) | ✅ **HARUS setelah Gel-1 commit penuh** |
 
-Urutan aman inject ke production:
-1. `pg_dump` backup DB production dulu (wajib).
-2. Jalankan migrasi/import master yang sudah terbukti benar di lokal.
-3. Verifikasi jumlah baris & cek orphan sama dengan hasil lokal.
+### Migrasi data Prima Vision — DUA GELOMBANG (urut, jangan dibalik)
+Detail lengkap: `Docs/migrasi data/PLAN-MIGRASI-GABUNGAN.md` (Bagian C runbook).
+
+```
+0. pg_dump backup DB production dulu (WAJIB).
+1. Upload folder csv/ + csv2/ ke <root>/Docs/migrasi data/ via SCP
+   (BUKAN git — data pasien sensitif, sudah di-.gitignore).
+2. php -d memory_limit=1024M artisan migrasi:primavision          # GEL-1 dulu
+   verifikasi: patients ~55.442 · visits ~53.140 · insurers ~236 · 0 FK orphan
+3. php -d memory_limit=1024M artisan migrasi:primavision-master   # GEL-2 menyusul
+   verifikasi: medications ~411 · inventory_prices ~530 · procedures ~606 ·
+               procedure_tariffs ~3.000 · surgery_packages ~280
+```
+
+**Kenapa urut:** Gel-2 tarif butuh `insurers` hasil Gel-1, resep butuh `visits.legacy_uuid`
+hasil Gel-1. Terbalik → tarif & resep banyak gagal match. Keduanya **idempotent** (aman
+re-run via `legacy_uuid`). `memory_limit=1024M` wajib di kedua. Bisa `--dry-run` dulu.
+
+**Catatan go-live:** penjamin "Asuransi Admedika Group" (38 tarif) belum ada padanan —
+buat manual di master penjamin, atau biarkan ter-skip. ~39% procedures base_price=0
+(gap data sumber buku_tarif, normal).
 
 ---
 
@@ -148,3 +171,17 @@ Kode diubah di lokal → push ke GitHub → di server jalankan `./deploy.sh`.
 Jangan pernah edit kode langsung di server (memicu konflik `git pull`).
 File `.env`, folder `dist`, `vendor`, `node_modules` tidak ikut Git — itu sebabnya
 `deploy.sh` menjalankan `composer install` & `npm run build` di server.
+
+---
+
+## ✅ Pembersihan CSV (data pasien) dari git — SUDAH DILAKUKAN 2026-06-01
+
+`Docs/migrasi data/csv/` & `csv2/` (44 MB, 55rb pasien) pernah ter-push ke GitHub.
+Sudah dibersihkan: `git rm -r --cached` + commit + **BFG Repo-Cleaner** (`--delete-files "*.csv.gz"`)
++ `git gc` + force-push `Server-Dev`. Hasil: `.git` 52M→6.5M, 0 blob csv di history,
+`origin/Server-Dev` bersih. **`.gitignore` ignore `csv/`,`csv2/`,`**/*.csv.gz`** → tak akan
+ter-commit lagi. File csv fisik tetap di disk (untuk SCP). Backup `.git` ada di
+`../ArumedAppsPrimaVision-git-backup-20260601`.
+
+> **Sisa:** `origin/main` perlu disamakan ke versi bersih saat push ke produksi (lihat status git).
+> Verifikasi bersih: `git log --all --oneline -- ".../pasien.csv.gz"` harus KOSONG.

@@ -16,6 +16,7 @@ class Prescription extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'visit_id',
         'prescribed_by_id',
         'status',

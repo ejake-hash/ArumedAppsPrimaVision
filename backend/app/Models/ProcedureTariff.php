@@ -14,7 +14,7 @@ class ProcedureTariff extends Model
     protected $keyType   = 'string';
     public $incrementing = false;
 
-    protected $fillable = ['procedure_id', 'insurer_id', 'price', 'is_active'];
+    protected $fillable = ['legacy_uuid', 'procedure_id', 'insurer_id', 'price', 'is_active'];
 
     protected $casts = ['price' => 'decimal:2', 'is_active' => 'boolean'];
 

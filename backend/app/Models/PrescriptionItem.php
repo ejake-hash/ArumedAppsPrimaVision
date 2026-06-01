@@ -15,6 +15,7 @@ class PrescriptionItem extends Model
     public $incrementing = false;
 
     protected $fillable = [
+        'legacy_uuid',
         'prescription_id',
         'medication_id',
         // Asal item: RESEP | TAMBAHAN (obat tambahan apotek / OTC) + petugas penambah.
@@ -30,6 +31,12 @@ class PrescriptionItem extends Model
         'frequency',
         'route',
         'duration_days',
+        // Penanda obat operasi (migrasi Gel-2): tercakup paket bedah, jangan dobel-tagih.
+        'is_bedah',
+    ];
+
+    protected $casts = [
+        'is_bedah' => 'boolean',
     ];
 
     public function prescription(): BelongsTo
