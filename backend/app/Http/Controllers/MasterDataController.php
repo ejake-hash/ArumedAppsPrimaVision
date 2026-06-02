@@ -684,6 +684,40 @@ class MasterDataController extends Controller
         ));
     }
 
+    /**
+     * POST /master/iol/scan
+     * Body: { code: string } — string mentah hasil scan DataMatrix/UDI atau ketik manual.
+     *
+     * Parse GS1 → cari IolItem by gtin (fallback gs1_barcode / serial). Kembalikan
+     * apakah cocok dengan master + hasil parse (gtin/lot/serial/expiry) untuk
+     * auto-fill form penerimaan ATAU prefill master baru bila belum ada.
+     */
+    public function scanIol(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['code' => 'required|string|max:512']);
+
+        $parsed = \App\Support\Gs1Parser::parse($validated['code']);
+
+        $iol = null;
+        if (! empty($parsed['gtin'])) {
+            $iol = \App\Models\IolItem::where('gtin', $parsed['gtin'])->first();
+        }
+        // Fallback: gs1_barcode mengandung GTIN, atau serial cocok (data lama).
+        if (! $iol && ! empty($parsed['gtin'])) {
+            $iol = \App\Models\IolItem::where('gs1_barcode', 'ilike', '%' . $parsed['gtin'] . '%')->first();
+        }
+        if (! $iol && ! empty($parsed['serial_number'])) {
+            $iol = \App\Models\IolItem::where('serial_number', $parsed['serial_number'])->first();
+        }
+
+        return $this->ok([
+            'matched'  => $iol !== null,
+            'iol_item' => $iol,
+            'on_hand'  => $iol ? $iol->onHandStock() : 0,
+            'parsed'   => $parsed,
+        ], $iol ? 'IOL ditemukan' : 'IOL belum terdaftar — lengkapi data master');
+    }
+
     public function storeIol(Request $request): JsonResponse
     {
         $validated = $request->validate([

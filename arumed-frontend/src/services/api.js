@@ -342,6 +342,7 @@ export const masterApi = {
     create: (data)     => api.post('/master/iol', data),
     update: (id, data) => api.put(`/master/iol/${id}`, data),
     remove: (id)       => api.delete(`/master/iol/${id}`),
+    scan:   (code)     => api.post('/master/iol/scan', { code }), // parse UDI + lookup master
   },
 
   // Jenis Penunjang (diagnostic_test_types) — master jenis pemeriksaan penunjang

@@ -854,6 +854,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/iol/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.read');
             Route::post('/iol/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.write');
             Route::get('/iol',                              [MasterDataController::class, 'indexIol'])->middleware('permission:master_iol.read');
+            Route::post('/iol/scan',                        [MasterDataController::class, 'scanIol'])->middleware('permission:master_iol.read'); // parse UDI + lookup (penerimaan & bedah)
             Route::post('/iol',                             [MasterDataController::class, 'storeIol'])->middleware('permission:master_iol.write');
             Route::put('/iol/{id}',                         [MasterDataController::class, 'updateIol'])->middleware('permission:master_iol.write');
             Route::delete('/iol/{id}',                      [MasterDataController::class, 'deleteIol'])->middleware('permission:master_iol.delete');

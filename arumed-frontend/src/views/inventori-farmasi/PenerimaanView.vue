@@ -11,6 +11,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { penerimaanApi, pembelianApi, masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
+import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
 
 const auth = useAuthStore()
 
@@ -314,6 +315,50 @@ function displayMasterSub(row) {
 }
 
 watch(() => itemPicker.value.type, searchItems)
+
+// ─── Scan GTIN IOL (DataMatrix/UDI) ─────────────────────────────────────
+const scan = ref({ open: false, lineKey: null, busy: false })
+
+function openScan(line) {
+  scan.value = { open: true, lineKey: line._key, busy: false }
+}
+
+async function onScanDecoded(rawCode) {
+  const line = receipt.value.form.items.find((it) => it._key === scan.value.lineKey)
+  if (!line) return
+  scan.value.busy = true
+  try {
+    const res = await masterApi.iol.scan(rawCode)
+    const d = res.data?.data ?? {}
+    const p = d.parsed ?? {}
+
+    // Lot & expiry dari hasil parse → auto-isi batch_no & expiry_date.
+    if (p.lot_number) line.batch_no = p.lot_number
+    if (p.expiry_date) line.expiry_date = p.expiry_date
+
+    if (d.matched && d.iol_item) {
+      const m = d.iol_item
+      line.item_type = 'IOL'
+      line.item_id = m.id
+      line.item_code = m.code ?? m.gtin ?? ''
+      line.item_name = `${m.brand ?? ''} ${m.model ?? ''}${m.power != null ? ' (' + m.power + 'D)' : ''}`.trim()
+      line.item_unit = 'pcs'
+      recalcLine(line)
+      showToast('s', `IOL cocok: ${line.item_name}`)
+    } else {
+      // Belum terdaftar → arahkan user pilih/buat master. Batch & expiry sudah terisi.
+      showToast('w', `GTIN ${p.gtin ?? '-'} belum terdaftar di master IOL. Pilih item manual atau tambahkan dulu.`)
+    }
+    if (Array.isArray(p.errors) && p.errors.length) {
+      showToast('w', 'Catatan scan: ' + p.errors.join('; '))
+    }
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal memproses barcode')
+  } finally {
+    scan.value.busy = false
+    scan.value.open = false
+  }
+}
 
 // ─── Submit ─────────────────────────────────────────────────────────────
 function todayPlus1() {
