@@ -55,6 +55,26 @@ class IolItem extends Model
     }
 
     /**
+     * Tambahkan kolom terhitung `on_hand` (SUM qty inventory_stocks SEMUA lokasi)
+     * via leftJoinSub — sumber stok tunggal pasca-redesign per-tipe. Dipakai untuk
+     * filter "tersedia" (on_hand > 0) tanpa N+1.
+     *
+     * inventory_stocks TIDAK pakai SoftDeletes → jangan tambah whereNull('deleted_at')
+     * (kolom tak ada → 500; lihat gotcha audit pra-go-live).
+     */
+    public function scopeWithOnHand($query)
+    {
+        $sub = \Illuminate\Support\Facades\DB::table('inventory_stocks')
+            ->select('item_id', \Illuminate\Support\Facades\DB::raw('SUM(qty_on_hand) as qty'))
+            ->where('item_type', InventoryStock::TYPE_IOL)
+            ->groupBy('item_id');
+
+        return $query
+            ->leftJoinSub($sub, 'iol_stock', 'iol_stock.item_id', '=', 'iol_items.id')
+            ->select('iol_items.*', \Illuminate\Support\Facades\DB::raw('COALESCE(iol_stock.qty, 0) as on_hand'));
+    }
+
+    /**
      * Total stok on-hand IOL ini dari `inventory_stocks` (sumber stok tunggal
      * pasca-redesign per-tipe). Default jumlahkan SEMUA lokasi (gudang+unit) agar
      * "tersedia untuk dipakai" tidak bias ke satu depo. Kolom legacy `stock`

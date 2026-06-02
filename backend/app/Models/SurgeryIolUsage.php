@@ -25,10 +25,16 @@ class SurgeryIolUsage extends Model
         'power',
         'lot_number',
         'serial_number',
+        'gtin',
+        'gs1_barcode',
+        'expiry_date',
+        'stock_consumed',
     ];
 
     protected $casts = [
-        'power' => 'decimal:2',
+        'power'          => 'decimal:2',
+        'expiry_date'    => 'date',
+        'stock_consumed' => 'boolean',
     ];
 
     public function surgeryRecord(): BelongsTo

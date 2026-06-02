@@ -199,18 +199,17 @@ class UnitRequestService
                     abort(422, "Qty deliver melebihi qty_requested untuk item " . $this->itemLabel($item));
                 }
 
-                // IOL serialized → tidak dikelola di inventory_stocks; skip transfer.
-                $firstBatch = null;
-                if ($item->item_type !== 'IOL') {
-                    $moved = $this->stockService->transfer(
-                        $item->item_type,
-                        $item->item_id,
-                        $qty,
-                        InventoryStock::LOC_INVENTORI,
-                        $destination
-                    );
-                    $firstBatch = $moved[0] ?? null;
-                }
+                // IOL kini dikelola PER-TIPE di inventory_stocks (sama spt obat/BHP) →
+                // ikut transfer INVENTORI→unit. (Komentar lama "serialized/skip" usang
+                // pasca-redesign IOL per-tipe.)
+                $moved = $this->stockService->transfer(
+                    $item->item_type,
+                    $item->item_id,
+                    $qty,
+                    InventoryStock::LOC_INVENTORI,
+                    $destination
+                );
+                $firstBatch = $moved[0] ?? null;
 
                 $item->update([
                     'qty_delivered' => $qty,

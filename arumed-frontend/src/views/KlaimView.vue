@@ -870,6 +870,13 @@ function fmtDateTime(d) {
   return new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 function fmtRp(v) { return 'Rp ' + (v || 0).toLocaleString('id-ID') }
+// Format ISO 'YYYY-MM-DD' (nilai input date native) → 'DD/MM/YYYY' utk tampilan.
+// Split string langsung (bukan new Date) agar bebas pergeseran timezone.
+function fmtTglDMY(d) {
+  if (!d) return '—'
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : d
+}
 
 const statusMeta = {
   DRAFT:        { label: 'Draft',           bg: 'var(--bs)',  color: 'var(--tu)',  border: 'var(--gb)' },
@@ -1073,7 +1080,7 @@ function stepIndex(status) {
         <!-- Date filter active banner -->
         <div v-if="dateFilterActive" class="kl-date-active-banner">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-          <span>{{ dateFrom || '—' }} s/d {{ dateTo || '—' }} · <strong>{{ filteredClaims.length }} klaim</strong></span>
+          <span>{{ fmtTglDMY(dateFrom) }} s/d {{ fmtTglDMY(dateTo) }} · <strong>{{ filteredClaims.length }} klaim</strong></span>
           <button class="kl-date-clear" @click="dateFrom = ''; dateTo = ''">✕ Hapus Filter</button>
         </div>
 

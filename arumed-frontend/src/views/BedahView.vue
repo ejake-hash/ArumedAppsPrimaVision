@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { bedahApi, alatMedisApi, masterApi } from '@/services/api'
+import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
 
 const masterStore = useMasterDataStore()
 
@@ -74,7 +75,7 @@ function transformQueueItem(q) {
     tim:            { operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
     bhp:            [],
     iolRencana:     { merk: '', power: '', series: '', tipe: 'Monofocal' },
-    iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD' },
+    iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD', lot: '', serial: '', gtin: '', expiry: '' },
     iolUsageSaved:  false,          // true setelah storeIolUsage sukses (badge info)
     anestesi:       'Topikal',
     catatanIntra:   '',
@@ -388,10 +389,74 @@ function pickIolMaster(it) {
   d.itemId = it.id
   d.merk   = it.brand ?? d.merk
   d.power  = it.power != null ? String(it.power) : d.power
-  d.series = it.model ?? it.serial_number ?? d.series
+  d.series = it.model ?? d.series
+  d.gtin   = it.gtin ?? d.gtin
 }
 
-// Wiring IOL terpasang → backend (surgery_iol_usages). Wajib recordId & iol_item_id.
+// ── Daftar IOL terpasang (sumber kebenaran = server) ────────────────────────
+const iolUsages = ref([])           // [{id, eye_side, brand, model, power, lot_number, serial_number, gtin, ...}]
+
+async function loadIolUsages() {
+  const rid = selP.value?.recordId
+  if (!rid) { iolUsages.value = []; return }
+  try {
+    const res = await bedahApi.listIolUsage(rid)
+    iolUsages.value = res.data?.data ?? []
+    selP.value.iolUsageSaved = iolUsages.value.length > 0
+  } catch { iolUsages.value = [] }
+}
+
+async function hapusIolUsage(id) {
+  if (selP.value?.laporanFinalized) return
+  try {
+    await bedahApi.deleteIolUsage(id)
+    toast('s', 'Catatan IOL dihapus, stok dikembalikan')
+    await loadIolUsages()
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menghapus IOL')
+  }
+}
+
+// ── Scan barcode IOL (DataMatrix/UDI) saat catat pemakaian ──────────────────
+const iolScan = ref({ open: false, busy: false })
+
+function openIolScan() { iolScan.value = { open: true, busy: false } }
+
+async function onIolScanDecoded(rawCode) {
+  const d = selP.value?.iolDipasang
+  if (!d) return
+  iolScan.value.busy = true
+  try {
+    const res = await bedahApi.scanIol(rawCode)
+    const out = res.data?.data ?? {}
+    const p = out.parsed ?? {}
+    // Isi serial/lot/gtin/expiry dari hasil parse (lensa fisik yg ditanam).
+    if (p.serial_number) d.serial = p.serial_number
+    if (p.lot_number)    d.lot = p.lot_number
+    if (p.gtin)          d.gtin = p.gtin
+    if (p.expiry_date)   d.expiry = p.expiry_date
+
+    if (out.matched && out.iol_item) {
+      const m = out.iol_item
+      d.itemId = m.id
+      d.merk   = m.brand ?? d.merk
+      d.power  = m.power != null ? String(m.power) : d.power
+      d.series = m.model ?? d.series
+      toast('s', `IOL cocok: ${m.brand ?? ''} ${m.model ?? ''}`.trim())
+    } else {
+      toast('w', `GTIN ${p.gtin ?? '-'} belum terdaftar — pilih dari master atau catat manual.`)
+    }
+    if (Array.isArray(p.errors) && p.errors.length) toast('w', 'Catatan scan: ' + p.errors.join('; '))
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memproses barcode')
+  } finally {
+    iolScan.value.busy = false
+    iolScan.value.open = false
+  }
+}
+
+// Wiring IOL terpasang → backend (surgery_iol_usage). Wajib recordId.
+// iol_item_id boleh kosong (lensa non-master) → backend balas warning, tetap simpan.
 async function simpanIolTerpasang() {
   if (savingIol.value) return
   const d = selP.value?.iolDipasang
@@ -400,24 +465,34 @@ async function simpanIolTerpasang() {
     toast('w', 'Mulai & Time Out operasi dulu sebelum menyimpan IOL')
     return
   }
-  if (!d.itemId) {
-    toast('w', 'Pilih IOL dari master terlebih dahulu')
+  if (!d.itemId && !d.merk) {
+    toast('w', 'Pilih IOL dari master atau scan/isi data lensa terlebih dahulu')
     return
   }
   savingIol.value = true
   try {
-    await bedahApi.storeIolUsage({
+    const res = await bedahApi.storeIolUsage({
       surgery_record_id: selP.value.recordId,
-      iol_item_id:       d.itemId,
+      iol_item_id:       d.itemId || null,
       eye_side:          d.eyeSide || 'OD',
       brand:             d.merk || null,
       model:             d.series || null,
       power:             d.power ? Number(d.power) : null,
-      lot_number:        d.series || null,
-      serial_number:     null,
+      lot_number:        d.lot || null,
+      serial_number:     d.serial || null,
+      gtin:              d.gtin || null,
+      expiry_date:       d.expiry || null,
     })
+    const warnings = res.data?.data?.warnings ?? []
     selP.value.iolUsageSaved = true
-    toast('s', 'IOL terpasang tersimpan')
+    if (warnings.length) {
+      toast('w', 'Tersimpan dengan peringatan: ' + warnings.join(' '))
+    } else {
+      toast('s', `IOL ${d.eyeSide || 'OD'} tersimpan`)
+    }
+    await loadIolUsages()
+    // Reset field lensa fisik agar siap untuk mata berikutnya (pertahankan eyeSide).
+    d.serial = ''; d.lot = ''; d.gtin = ''; d.expiry = ''
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal menyimpan IOL terpasang')
   } finally {
@@ -544,6 +619,10 @@ async function pickPt(p) {
     } catch { /* record belum ada — abaikan */ }
   }
 
+  // Muat daftar IOL terpasang (server = sumber kebenaran) bila record sudah ada.
+  if (selP.value?.recordId) loadIolUsages()
+  else iolUsages.value = []
+
   if (selP.value?.status === 'BERLANGSUNG' && selP.value?.timIn && !selP.value?.timOut) startTimerInterval()
   else stopTimerInterval()
 }
@@ -669,6 +748,7 @@ async function doTimeOut() {
     selP.value.recordId = data.data?.id ?? selP.value.recordId
     selP.value.timOut = data.data?.time_out ? new Date(data.data.time_out) : new Date()
     stopTimerInterval()
+    if (selP.value.recordId) loadIolUsages()   // record kini ada → muat IOL terpasang
     toast('s', `Time Out: ${timOutDisplay.value} — kunci laporan untuk meneruskan pasien`)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan operasi')
@@ -1298,6 +1378,15 @@ function mulaiBack() { mulaiStep.value = 1 }
                       </span>
                     </div>
 
+                    <!-- Tombol Scan UDI (DataMatrix) → auto-isi serial/lot/expiry + cocokkan master -->
+                    <div style="margin:8px 0">
+                      <button class="bd-btn-scan" :disabled="selP.laporanFinalized" @click="openIolScan">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><line x1="14" y1="14" x2="14" y2="21"/><line x1="21" y1="14" x2="21" y2="21"/></svg>
+                        Scan IOL (UDI)
+                      </button>
+                      <span class="bd-disp-hint" style="margin-left:8px">Scan label lensa, atau pilih dari master & isi manual.</span>
+                    </div>
+
                     <div class="bd-iol-grid">
                       <div class="bd-iol-field">
                         <label class="bd-label">Merk / Nama</label>
@@ -1308,14 +1397,8 @@ function mulaiBack() { mulaiStep.value = 1 }
                         <input class="bd-input" v-model="selP.iolDipasang.power" :disabled="selP.laporanFinalized" />
                       </div>
                       <div class="bd-iol-field">
-                        <label class="bd-label">Series / Lot No.</label>
+                        <label class="bd-label">Model / Series</label>
                         <input class="bd-input" v-model="selP.iolDipasang.series" :disabled="selP.laporanFinalized" />
-                      </div>
-                      <div class="bd-iol-field">
-                        <label class="bd-label">Tipe</label>
-                        <select class="bd-select" v-model="selP.iolDipasang.tipe" :disabled="selP.laporanFinalized">
-                          <option>Monofocal</option><option>Multifocal</option><option>Toric</option><option>Extended Depth of Focus</option>
-                        </select>
                       </div>
                       <div class="bd-iol-field">
                         <label class="bd-label">Mata</label>
@@ -1324,19 +1407,46 @@ function mulaiBack() { mulaiStep.value = 1 }
                           <option value="OS">OS (Kiri)</option>
                         </select>
                       </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Lot No.</label>
+                        <input class="bd-input" v-model="selP.iolDipasang.lot" placeholder="dari scan / label" :disabled="selP.laporanFinalized" />
+                      </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Serial No.</label>
+                        <input class="bd-input" v-model="selP.iolDipasang.serial" placeholder="dari scan / label" :disabled="selP.laporanFinalized" />
+                      </div>
                     </div>
 
                     <div class="bd-iol-field" style="margin-top:8px">
                       <button
                         class="bd-btn-add"
-                        :disabled="selP.laporanFinalized || savingIol || !selP.recordId || !selP.iolDipasang.itemId"
+                        :disabled="selP.laporanFinalized || savingIol || !selP.recordId || (!selP.iolDipasang.itemId && !selP.iolDipasang.merk)"
                         @click="simpanIolTerpasang"
                       >
-                        {{ savingIol ? 'Menyimpan…' : 'Simpan IOL Terpasang' }}
+                        {{ savingIol ? 'Menyimpan…' : 'Catat IOL Terpasang' }}
                       </button>
-                      <span v-if="selP.iolUsageSaved" class="bd-sent-badge" style="margin-left:8px">IOL tersimpan</span>
-                      <span v-else-if="!selP.recordId" class="bd-disp-hint">Mulai & Time Out operasi dulu sebelum menyimpan IOL.</span>
-                      <span v-else-if="!selP.iolDipasang.itemId" class="bd-disp-hint">Pilih IOL dari master terlebih dahulu.</span>
+                      <span v-if="!selP.recordId" class="bd-disp-hint" style="margin-left:8px">Mulai & Time Out operasi dulu sebelum mencatat IOL.</span>
+                    </div>
+
+                    <!-- Daftar IOL terpasang (sumber: server) -->
+                    <div v-if="iolUsages.length" class="bd-iol-list">
+                      <table class="bd-tbl">
+                        <thead>
+                          <tr><th>Mata</th><th>Merk / Model</th><th class="num">Power</th><th>Lot</th><th>Serial</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="u in iolUsages" :key="u.id">
+                            <td><span class="bd-eye-pill">{{ u.eye_side }}</span></td>
+                            <td>{{ [u.brand, u.model].filter(Boolean).join(' ') || '—' }}</td>
+                            <td class="num">{{ u.power != null ? `${u.power} D` : '—' }}</td>
+                            <td>{{ u.lot_number || '—' }}</td>
+                            <td>{{ u.serial_number || '—' }}</td>
+                            <td>
+                              <button v-if="!selP.laporanFinalized" class="bd-iol-del" title="Hapus" @click="hapusIolUsage(u.id)">✕</button>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </template>
 
@@ -1743,6 +1853,14 @@ function mulaiBack() { mulaiStep.value = 1 }
       </div>
     </div>
 
+    <!-- ── SCAN IOL (DataMatrix/UDI) ───────────────────────────────── -->
+    <ScanBarcodeModal
+      v-model:open="iolScan.open"
+      title="Scan IOL (UDI)"
+      hint="Arahkan kamera ke kode DataMatrix di label lensa, atau ketik manual."
+      @decoded="onIolScanDecoded"
+    />
+
     <!-- ── TOASTS ──────────────────────────────────────────────────── -->
     <div class="bd-toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['bd-toast', `bd-toast-${t.type}`]">
@@ -2032,6 +2150,15 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-bhp-add { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .bd-btn-add { padding: 7px 14px; background: var(--gl); border: 1px solid var(--ga); color: var(--td); border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .bd-btn-add:hover { background: var(--ga); color: #fff; }
+.bd-btn-add:disabled { opacity: 0.5; cursor: not-allowed; }
+.bd-btn-scan { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; background: var(--gd); border: 1px solid var(--gd); color: #fff; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.bd-btn-scan:hover:not(:disabled) { background: var(--gm); }
+.bd-btn-scan:disabled { opacity: 0.5; cursor: not-allowed; }
+.bd-btn-scan svg { width: 14px; height: 14px; }
+.bd-iol-list { margin-top: 12px; }
+.bd-eye-pill { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; background: var(--gl); color: var(--gd); }
+.bd-iol-del { background: var(--eb); border: 1px solid var(--ebd); color: var(--et); border-radius: 6px; width: 22px; height: 22px; font-size: 12px; cursor: pointer; line-height: 1; }
+.bd-iol-del:hover { background: var(--et); color: #fff; }
 .bd-btn-add:disabled { opacity: .6; cursor: not-allowed; }
 
 .bd-obat-form { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

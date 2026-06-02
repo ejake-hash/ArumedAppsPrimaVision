@@ -443,8 +443,10 @@ Route::prefix('v1')->group(function () {
             // Resep obat pasca-bedah (F1/F2): SUBMITTED → otomatis masuk antrean Farmasi via QueueService::nextAfterKasir.
             Route::post('/record/{id}/resep-pasca',         [BedahController::class, 'storePostOpPrescription'])->middleware('permission:bedah.write');
 
+            Route::get('/iol-usage',                        [BedahController::class, 'indexIolUsage'])->middleware('permission:bedah.read');
             Route::post('/iol-usage',                       [BedahController::class, 'storeIolUsage'])->middleware('permission:bedah.write');
             Route::put('/iol-usage/{id}',                   [BedahController::class, 'updateIolUsage'])->middleware('permission:bedah.write');
+            Route::delete('/iol-usage/{id}',                [BedahController::class, 'destroyIolUsage'])->middleware('permission:bedah.write');
 
             // Master lookup read-only utk form resep & pemilihan IOL pasca-bedah (F1/F2).
             Route::get('/obat',                             [BedahController::class, 'daftarObat']);
@@ -854,7 +856,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/iol/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.read');
             Route::post('/iol/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.write');
             Route::get('/iol',                              [MasterDataController::class, 'indexIol'])->middleware('permission:master_iol.read');
-            Route::post('/iol/scan',                        [MasterDataController::class, 'scanIol'])->middleware('permission:master_iol.read'); // parse UDI + lookup (penerimaan & bedah)
+            Route::post('/iol/scan',                        [MasterDataController::class, 'scanIol'])->middleware('permission:master_iol.read|bedah.read'); // parse UDI + lookup (dipakai Penerimaan & Bedah)
             Route::post('/iol',                             [MasterDataController::class, 'storeIol'])->middleware('permission:master_iol.write');
             Route::put('/iol/{id}',                         [MasterDataController::class, 'updateIol'])->middleware('permission:master_iol.write');
             Route::delete('/iol/{id}',                      [MasterDataController::class, 'deleteIol'])->middleware('permission:master_iol.delete');

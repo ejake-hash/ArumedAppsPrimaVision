@@ -873,34 +873,34 @@ class MasterDataService
 
     public function indexIol(array $filters = []): LengthAwarePaginator
     {
-        $query = IolItem::query();
+        // Sertakan kolom on_hand (inventory_stocks, sumber stok tunggal per-tipe).
+        $query = IolItem::withOnHand();
         if (! empty($filters['search'])) {
             $kw = $filters['search'];
             $query->where(fn ($q) => $q
-                ->where('brand', 'ilike', "%{$kw}%")
-                ->orWhere('model', 'ilike', "%{$kw}%")
-                ->orWhere('manufacturer', 'ilike', "%{$kw}%")
-                ->orWhere('serial_number', 'ilike', "%{$kw}%")
-                ->orWhere('lot_number', 'ilike', "%{$kw}%")
+                ->where('iol_items.brand', 'ilike', "%{$kw}%")
+                ->orWhere('iol_items.model', 'ilike', "%{$kw}%")
+                ->orWhere('iol_items.manufacturer', 'ilike', "%{$kw}%")
+                ->orWhere('iol_items.serial_number', 'ilike', "%{$kw}%")
+                ->orWhere('iol_items.lot_number', 'ilike', "%{$kw}%")
+                ->orWhere('iol_items.gtin', 'ilike', "%{$kw}%")
             );
         }
         if (! empty($filters['iol_type'])) {
-            $query->where('iol_type', $filters['iol_type']);
+            $query->where('iol_items.iol_type', $filters['iol_type']);
         }
         if (! empty($filters['material'])) {
-            $query->where('material', $filters['material']);
+            $query->where('iol_items.material', $filters['material']);
         }
         if (isset($filters['active'])) {
-            $query->where('is_active', (bool) $filters['active']);
+            $query->where('iol_items.is_active', (bool) $filters['active']);
         }
-        if (isset($filters['is_used'])) {
-            $query->where('is_used', (bool) $filters['is_used']);
-        }
-        // available_only: belum dipakai (is_used=false), stok > 0, dan aktif
+        // available_only (per-tipe): aktif & on_hand > 0 (BUKAN lagi is_used/stock legacy).
         if (! empty($filters['available_only'])) {
-            $query->where('is_used', false)->where('stock', '>', 0)->where('is_active', true);
+            $query->where('iol_items.is_active', true)
+                ->whereRaw('COALESCE(iol_stock.qty, 0) > 0');
         }
-        return $query->orderBy('brand')->paginate($filters['per_page'] ?? 25);
+        return $query->orderBy('iol_items.brand')->paginate($filters['per_page'] ?? 25);
     }
 
     public function storeIol(array $data): IolItem
@@ -1460,8 +1460,10 @@ class MasterDataService
             'iol' => [
                 'table'     => 'iol_items',
                 'model'     => IolItem::class,
-                'uniqueKey' => 'serial_number',
-                'columns'   => ['brand', 'manufacturer', 'model', 'iol_type', 'material', 'power', 'cylinder', 'axis', 'lot_number', 'serial_number', 'gs1_barcode', 'expiry_date', 'stock', 'price', 'is_active'],
+                // Per-tipe: identitas master = (brand,model,power) — di-handle di importIolCsv().
+                // uniqueKey hanya dipakai utk orderBy export; pakai 'brand' (serial sering kosong).
+                'uniqueKey' => 'brand',
+                'columns'   => ['brand', 'manufacturer', 'model', 'iol_type', 'material', 'power', 'cylinder', 'axis', 'gtin', 'lot_number', 'serial_number', 'gs1_barcode', 'expiry_date', 'stock', 'price', 'is_active'],
                 'casts'     => ['power' => 'float', 'cylinder' => 'float', 'axis' => 'int', 'stock' => 'int', 'price' => 'float', 'is_active' => 'bool'],
             ],
             'icd10' => [

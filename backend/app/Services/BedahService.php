@@ -850,52 +850,142 @@ class BedahService
     // =========================================================================
 
     /**
-     * Record IOL yang dipakai saat operasi → mark iol_item.is_used = TRUE.
+     * Record IOL yang ditanam saat operasi (1 lensa per mata) → simpan ke
+     * surgery_iol_usage + DECREMENT stok `inventory_stocks` (LOC_BEDAH).
+     *
+     * Kebijakan validasi (keputusan user): expired / non-master / stok kurang →
+     * TIDAK menolak (bukan 422), tetap disimpan, tapi dikembalikan `warnings[]`
+     * agar FE menampilkan peringatan. Operasi tak boleh terhalang data master.
+     *
+     * Idempoten per (record, eye_side): bila mata itu sudah punya usage, stok IOL
+     * lama dikembalikan (consume di-revert) sebelum stok IOL baru dipotong.
+     *
+     * @return array{usage: SurgeryIolUsage, warnings: array<string>}
      */
-    public function recordIolUsage(string $surgeryRecordId, array $data): SurgeryIolUsage
+    public function recordIolUsage(string $surgeryRecordId, array $data): array
     {
         $record = SurgeryRecord::findOrFail($surgeryRecordId);
+        if ($record->finalized_at) {
+            throw new \Exception('Laporan operasi sudah dikunci — tidak bisa mengubah IOL.', 422);
+        }
 
-        return DB::transaction(function () use ($record, $data, $surgeryRecordId) {
-            // updateOrCreate per (record, mata) — cegah baris ganda kalau tombol Simpan
-            // diklik >1× / IOL diganti, yang akan menagih IOL dobel di invoice Kasir.
+        return DB::transaction(function () use ($data, $surgeryRecordId) {
+            $warnings = [];
+
+            $iol = ! empty($data['iol_item_id']) ? IolItem::find($data['iol_item_id']) : null;
+
+            // Peringatan (tidak memblokir).
+            if (! $iol) {
+                $warnings[] = 'IOL tidak terdaftar di master — dicatat sebagai data manual.';
+            }
+            $expiry = $data['expiry_date'] ?? ($iol?->expiry_date?->toDateString());
+            if ($expiry && $expiry < now()->toDateString()) {
+                $warnings[] = "Lensa kedaluwarsa ({$expiry}) — pastikan benar sebelum lanjut.";
+            }
+
+            // Usage lama utk mata ini (untuk revert stok bila IOL diganti).
+            $prev = SurgeryIolUsage::where('surgery_record_id', $surgeryRecordId)
+                ->where('eye_side', $data['eye_side'])
+                ->first();
+
+            $iolChanged = ! $prev || $prev->iol_item_id !== ($iol?->id);
+
+            // ── STOK (ATOMIK & SIMETRIS) ──────────────────────────────────────
+            // Urutan: consume IOL BARU dulu. Kalau berhasil → baru revert IOL LAMA.
+            // Bila consume gagal (stok kurang): JANGAN revert lama (cegah stok-bocor),
+            // operasi tetap lanjut (warning). stock_consumed melacak apakah benar
+            // dipotong → dipakai deleteIolUsage agar pengembalian stok simetris.
+            $stockConsumed = $prev && ! $iolChanged ? (bool) $prev->stock_consumed : false;
+
+            if ($iol && $iolChanged) {
+                $consumed = $this->consumeIolStock($iol->id, $expiry);
+                if ($consumed) {
+                    $stockConsumed = true;
+                    // Kembalikan stok IOL LAMA hanya setelah consume baru sukses.
+                    if ($prev && $prev->iol_item_id && $prev->stock_consumed) {
+                        $this->restoreIolStock($prev->iol_item_id, $prev->expiry_date);
+                    }
+                } else {
+                    $stockConsumed = false;
+                    $warnings[] = 'Stok IOL tidak mencukupi — usage tetap dicatat, stok TIDAK terpotong otomatis. Lakukan penyesuaian stok manual bila perlu.';
+                }
+            }
+
             $usage = SurgeryIolUsage::updateOrCreate(
                 [
                     'surgery_record_id' => $surgeryRecordId,
                     'eye_side'          => $data['eye_side'],
                 ],
                 [
-                    'iol_item_id'   => $data['iol_item_id'],
-                    'brand'         => $data['brand'] ?? null,
-                    'model'         => $data['model'] ?? null,
-                    'power'         => $data['power'] ?? null,
-                    'lot_number'    => $data['lot_number'] ?? null,
-                    'serial_number' => $data['serial_number'] ?? null,
+                    'iol_item_id'    => $iol?->id,
+                    'brand'          => $data['brand'] ?? $iol?->brand,
+                    'model'          => $data['model'] ?? $iol?->model,
+                    'power'          => $data['power'] ?? $iol?->power,
+                    'lot_number'     => $data['lot_number'] ?? null,
+                    'serial_number'  => $data['serial_number'] ?? null,
+                    'gtin'           => $data['gtin'] ?? $iol?->gtin,
+                    'gs1_barcode'    => $data['gs1_barcode'] ?? null,
+                    'expiry_date'    => $expiry,
+                    'stock_consumed' => $stockConsumed,
                 ]
             );
-
-            // Mark IOL item as used
-            if (! empty($data['iol_item_id'])) {
-                IolItem::where('id', $data['iol_item_id'])->update(['is_used' => true]);
-            }
 
             $this->log(
                 auth('api')->id(),
                 'RECORD_IOL_USAGE',
                 SurgeryIolUsage::class,
                 $usage->id,
-                "IOL {$data['eye_side']} dipakai — surgery record {$surgeryRecordId}"
+                "IOL {$data['eye_side']} dipakai — record {$surgeryRecordId}" . ($warnings ? ' [warn]' : '')
             );
 
-            return $usage->load('iolItem');
+            return ['usage' => $usage->load('iolItem'), 'warnings' => $warnings];
         });
+    }
+
+    /**
+     * Potong 1 unit stok IOL dari `inventory_stocks`. IOL per-tipe (bukan depo
+     * serialized) → coba LOC_BEDAH dulu (bila ada distribusi unit), fallback ke
+     * LOC_INVENTORI (gudang). Return true bila berhasil dipotong, false bila stok
+     * tak cukup di kedua lokasi (operasi tetap lanjut, lihat recordIolUsage).
+     */
+    private function consumeIolStock(string $iolItemId, $expiry = null): bool
+    {
+        $svc = app(\App\Services\InventoryStockService::class);
+        foreach ([\App\Models\InventoryStock::LOC_BEDAH, \App\Models\InventoryStock::LOC_INVENTORI] as $loc) {
+            try {
+                $svc->consume(\App\Models\InventoryStock::TYPE_IOL, $iolItemId, 1, $loc);
+
+                return true;
+            } catch (\Throwable $e) {
+                // lokasi ini kurang → coba lokasi berikut.
+            }
+        }
+
+        return false;
+    }
+
+    /** Kembalikan 1 unit stok IOL ke gudang INVENTORI (lokasi netral). */
+    private function restoreIolStock(string $iolItemId, $expiry = null): void
+    {
+        app(\App\Services\InventoryStockService::class)->upsertStock(
+            \App\Models\InventoryStock::TYPE_IOL,
+            $iolItemId,
+            \App\Models\InventoryStock::LOC_INVENTORI,
+            null,
+            1,
+            $expiry
+        );
     }
 
     public function updateIolUsage(string $id, array $data): SurgeryIolUsage
     {
-        $usage = SurgeryIolUsage::findOrFail($id);
+        $usage = SurgeryIolUsage::with('surgeryRecord')->findOrFail($id);
+        if ($usage->surgeryRecord?->finalized_at) {
+            throw new \Exception('Laporan operasi sudah dikunci.', 422);
+        }
 
         $usage->update(array_filter([
+            'eye_side'      => $data['eye_side'] ?? null,
             'brand'         => $data['brand'] ?? null,
             'model'         => $data['model'] ?? null,
             'power'         => $data['power'] ?? null,
@@ -906,6 +996,36 @@ class BedahService
         $this->log(auth('api')->id(), 'UPDATE_IOL_USAGE', SurgeryIolUsage::class, $id);
 
         return $usage->fresh('iolItem');
+    }
+
+    /** Daftar IOL terpasang untuk satu surgery record. */
+    public function listIolUsage(string $surgeryRecordId): \Illuminate\Support\Collection
+    {
+        return SurgeryIolUsage::with('iolItem')
+            ->where('surgery_record_id', $surgeryRecordId)
+            ->orderBy('eye_side')
+            ->get();
+    }
+
+    /**
+     * Hapus catatan IOL terpasang → kembalikan stok HANYA bila saat record stok
+     * benar-benar dipotong (stock_consumed). Mencegah stok-bocor (kembalikan stok
+     * yang tak pernah terpotong karena dulu stok kurang).
+     */
+    public function deleteIolUsage(string $id): void
+    {
+        $usage = SurgeryIolUsage::with('surgeryRecord')->findOrFail($id);
+        if ($usage->surgeryRecord?->finalized_at) {
+            throw new \Exception('Laporan operasi sudah dikunci.', 422);
+        }
+
+        DB::transaction(function () use ($usage) {
+            if ($usage->iol_item_id && $usage->stock_consumed) {
+                $this->restoreIolStock($usage->iol_item_id, $usage->expiry_date);
+            }
+            $usage->delete();
+            $this->log(auth('api')->id(), 'DELETE_IOL_USAGE', SurgeryIolUsage::class, $usage->id);
+        });
     }
 
     // =========================================================================

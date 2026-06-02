@@ -321,7 +321,23 @@ async function printResume() {
     toast('e', 'Gagal memuat riwayat kunjungan untuk resume')
     return
   }
+  document.body.classList.remove('print-op')   // mode resume penuh
   window.print()
+}
+
+// ─── CETAK LAPORAN OPERASI (A4, dengan IOL traceability) ───────────────────────
+const printOp = ref(null)   // baris bedah yang sedang dicetak
+
+function cetakLaporanOperasi(b) {
+  printOp.value = b
+  // Kelas pada <body> agar @media print hanya menampilkan kartu laporan operasi
+  // (menyembunyikan resume penuh & UI lain).
+  document.body.classList.add('print-op')
+  // Tunggu render container cetak sebelum panggil print.
+  setTimeout(() => {
+    window.print()
+    setTimeout(() => document.body.classList.remove('print-op'), 300)
+  }, 60)
 }
 </script>
 
@@ -685,7 +701,31 @@ async function printResume() {
                           <div class="det-box" v-if="b.detail?.complication_detail"><div class="det-t">Detail Komplikasi</div><div>{{ b.detail.complication_detail }}</div></div>
                           <div class="det-box" v-if="b.detail?.post_op_instructions"><div class="det-t">Instruksi Pasca-Op</div><div>{{ b.detail.post_op_instructions }}</div></div>
                           <div class="det-box" v-if="b.detail?.followup_date"><div class="det-t">Kontrol</div><div>{{ fmtTgl(b.detail.followup_date) }}</div></div>
-                          <div class="det-box" v-if="!b.detail?.operation_notes && !b.detail?.complication_detail && !b.detail?.post_op_instructions && !b.detail?.followup_date"><div>Tidak ada catatan tambahan</div></div>
+
+                          <!-- IOL Details — traceability implan (serial/lot/gtin) -->
+                          <div class="det-box span2" v-if="(b.iol_details ?? []).length">
+                            <div class="det-t">Lensa Intraokular (IOL) yang Ditanam</div>
+                            <table class="iol-det-tbl">
+                              <thead><tr><th>Mata</th><th>Merk / Model</th><th>Power</th><th>Lot</th><th>Serial</th><th>GTIN</th><th>Kadaluwarsa</th></tr></thead>
+                              <tbody>
+                                <tr v-for="(u, i) in b.iol_details" :key="i">
+                                  <td><strong>{{ u.eye_side }}</strong></td>
+                                  <td>{{ [u.brand, u.model].filter(Boolean).join(' ') || '–' }}</td>
+                                  <td>{{ u.power != null ? `+${u.power} D` : '–' }}</td>
+                                  <td>{{ u.lot_number || '–' }}</td>
+                                  <td>{{ u.serial_number || '–' }}</td>
+                                  <td class="mono">{{ u.gtin || '–' }}</td>
+                                  <td>{{ u.expiry_date ? fmtTgl(u.expiry_date) : '–' }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <div class="det-box span2" style="display:flex;justify-content:flex-end">
+                            <button class="rme-print-op" @click="cetakLaporanOperasi(b)">🖨 Cetak Laporan Operasi</button>
+                          </div>
+
+                          <div class="det-box" v-if="!b.detail?.operation_notes && !b.detail?.complication_detail && !b.detail?.post_op_instructions && !b.detail?.followup_date && !(b.iol_details ?? []).length"><div>Tidak ada catatan tambahan</div></div>
                         </div>
                       </td>
                     </tr>
@@ -888,6 +928,51 @@ async function printResume() {
         </div>
       </div>
     </div>
+
+    <!-- ─── CETAK LAPORAN OPERASI (A4) — hanya tampil saat print-op ─── -->
+    <Teleport to="body">
+      <div v-if="printOp" class="op-print">
+        <div class="op-title">LAPORAN OPERASI</div>
+        <table class="op-meta">
+          <tr><td class="k">Nama Pasien</td><td>: {{ val(patient?.nama) }}</td><td class="k">No. RM</td><td>: {{ val(patient?.no_rm) }}</td></tr>
+          <tr><td class="k">Tanggal Operasi</td><td>: {{ fmtTgl(printOp.visit_date) }}</td><td class="k">Jam</td><td>: {{ val(printOp.time_in) }}–{{ val(printOp.time_out) }}</td></tr>
+          <tr><td class="k">Prosedur</td><td colspan="3">: {{ (printOp.procedures ?? []).length ? printOp.procedures.join(', ') : '–' }}</td></tr>
+        </table>
+
+        <div class="op-sec">Laporan Tindakan</div>
+        <div class="op-notes">{{ printOp.detail?.operation_notes || '–' }}</div>
+
+        <div class="op-sec">Lensa Intraokular (IOL) yang Ditanam</div>
+        <table v-if="(printOp.iol_details ?? []).length" class="op-iol">
+          <thead><tr><th>Mata</th><th>Merk / Model</th><th>Power</th><th>Lot</th><th>Serial</th><th>GTIN</th><th>Kadaluwarsa</th></tr></thead>
+          <tbody>
+            <tr v-for="(u, i) in printOp.iol_details" :key="i">
+              <td><strong>{{ u.eye_side }}</strong></td>
+              <td>{{ [u.brand, u.model].filter(Boolean).join(' ') || '–' }}</td>
+              <td>{{ u.power != null ? `+${u.power} D` : '–' }}</td>
+              <td>{{ u.lot_number || '–' }}</td>
+              <td>{{ u.serial_number || '–' }}</td>
+              <td>{{ u.gtin || '–' }}</td>
+              <td>{{ u.expiry_date ? fmtTgl(u.expiry_date) : '–' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="op-muted">Tidak ada IOL yang ditanam pada operasi ini.</div>
+
+        <div class="op-row2">
+          <div><div class="op-sec">Komplikasi</div><div class="op-notes">{{ printOp.has_complication ? (printOp.detail?.complication_detail || 'Ada') : 'Tidak ada' }}</div></div>
+          <div><div class="op-sec">Instruksi Pasca-Op</div><div class="op-notes">{{ printOp.detail?.post_op_instructions || '–' }}</div><div v-if="printOp.detail?.followup_date" class="op-fu">Kontrol: {{ fmtTgl(printOp.detail.followup_date) }}</div></div>
+        </div>
+
+        <div class="op-sign">
+          <div>
+            <div>Dokter Operator,</div>
+            <div class="op-sign-space"></div>
+            <div class="op-sign-name">( ………………………… )</div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ─── TOAST ─── -->
     <div class="toast-wrap">
@@ -1110,14 +1195,25 @@ async function printResume() {
 .toast-w { color: #fff !important; }
 @keyframes slideup { from { transform: translateY(10px); opacity: 0; } }
 
-/* ─── PRINT RESUME ─── */
-.resume-print { display: none; }
+/* ─── Tabel IOL Details di baris bedah (layar) ─── */
+.iol-det-tbl { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+.iol-det-tbl th, .iol-det-tbl td { border: 1px solid var(--gb); padding: 4px 8px; text-align: left; }
+.iol-det-tbl th { background: var(--bs); color: var(--tm); font-weight: 600; font-size: 11px; }
+.iol-det-tbl .mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.rme-print-op { background: var(--gd); color: #fff; border: none; border-radius: 7px; padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.rme-print-op:hover { background: var(--gm); }
+
+/* ─── PRINT ─── */
+.resume-print, .op-print { display: none; }
 @media print {
   /* reset base.css agar tidak blank (lihat memori print A4) */
   :global(html), :global(body) { min-width: 0 !important; width: auto !important; height: auto !important; min-height: 0 !important; background: #fff !important; }
   :global(#app) { display: none !important; }
-  .resume-print { display: block !important; position: absolute; top: 0; left: 0; width: 100%; padding: 1.5cm; color: #000; font-size: 12px; }
   @page { size: A4; margin: 0; }
+
+  /* Resume penuh (default). Disembunyikan saat mode cetak laporan operasi. */
+  .resume-print { display: block; position: absolute; top: 0; left: 0; width: 100%; padding: 1.5cm; color: #000; font-size: 12px; }
+  :global(body.print-op) .resume-print { display: none !important; }
   .rp-header { text-align: center; font-size: 11px; line-height: 1.5; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px; }
   .resume-print h2 { text-align: center; font-size: 15px; margin: 12px 0; }
   .resume-print h3 { font-size: 13px; margin: 14px 0 6px; }
@@ -1128,5 +1224,25 @@ async function printResume() {
   .rp-grid th, .rp-grid td { border: 1px solid #000; padding: 4px 8px; font-size: 11px; text-align: left; }
   .rp-grid th { background: #f0f0f0; }
   .rp-footer { margin-top: 20px; font-size: 10px; text-align: right; color: #555; }
+
+  /* Laporan Operasi (hanya saat body.print-op). */
+  :global(body.print-op) .op-print { display: block !important; position: absolute; top: 0; left: 0; width: 100%; padding: 1.5cm; color: #000; font-size: 12px; }
+  .op-title { text-align: center; font-size: 16px; font-weight: 700; margin-bottom: 14px; letter-spacing: 0.5px; }
+  .op-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .op-meta td { padding: 3px 4px; font-size: 11.5px; vertical-align: top; }
+  .op-meta td.k { font-weight: 700; width: 16%; }
+  .op-sec { font-weight: 700; font-size: 12.5px; border-bottom: 1px solid #000; padding-bottom: 3px; margin: 14px 0 6px; }
+  .op-notes { font-size: 11.5px; white-space: pre-wrap; line-height: 1.5; min-height: 18px; }
+  .op-iol { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  .op-iol th, .op-iol td { border: 1px solid #000; padding: 4px 6px; font-size: 10.5px; text-align: left; }
+  .op-iol th { background: #f0f0f0; }
+  .op-muted { font-size: 11px; color: #555; font-style: italic; }
+  .op-row2 { display: flex; gap: 24px; margin-top: 4px; }
+  .op-row2 > div { flex: 1; }
+  .op-fu { font-size: 11px; margin-top: 4px; }
+  .op-sign { margin-top: 36px; display: flex; justify-content: flex-end; }
+  .op-sign { text-align: center; font-size: 11.5px; }
+  .op-sign-space { height: 56px; }
+  .op-sign-name { border-top: 1px solid #000; padding-top: 3px; }
 }
 </style>

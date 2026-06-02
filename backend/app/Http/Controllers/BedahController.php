@@ -474,39 +474,61 @@ class BedahController extends Controller
     // IOL USAGE
     // =========================================================================
 
+    /** GET /bedah/iol-usage?surgery_record_id=… — daftar IOL terpasang. */
+    public function indexIolUsage(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'surgery_record_id' => 'required|uuid|exists:surgery_records,id',
+        ]);
+
+        return $this->ok($this->service->listIolUsage($validated['surgery_record_id']));
+    }
+
     /**
      * POST /bedah/iol-usage
-     * Body: { surgery_record_id, iol_item_id, eye_side, brand, model, power, lot_number, serial_number }
+     * Body: { surgery_record_id, iol_item_id?, eye_side, brand?, model?, power?,
+     *         lot_number?, serial_number?, gtin?, gs1_barcode?, expiry_date? }
+     *
+     * iol_item_id NULLABLE: lensa non-master (belum terdaftar) tetap boleh dicatat
+     * (keputusan "peringatkan, bukan tolak"). Service mengembalikan warnings[].
      */
     public function storeIolUsage(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'surgery_record_id' => 'required|uuid|exists:surgery_records,id',
-            'iol_item_id'       => 'required|uuid|exists:iol_items,id',
+            'iol_item_id'       => 'nullable|uuid|exists:iol_items,id',
             'eye_side'          => 'required|in:OD,OS',
             'brand'             => 'nullable|string|max:100',
             'model'             => 'nullable|string|max:100',
-            'power'             => 'nullable|numeric|between:0,40',
+            'power'             => 'nullable|numeric|between:-20,40',
             'lot_number'        => 'nullable|string|max:100',
             'serial_number'     => 'nullable|string|max:100',
+            'gtin'              => 'nullable|string|max:14',
+            'gs1_barcode'       => 'nullable|string|max:512',
+            'expiry_date'       => 'nullable|date',
         ]);
 
         try {
-            $usage = $this->service->recordIolUsage($validated['surgery_record_id'], $validated);
+            $result = $this->service->recordIolUsage($validated['surgery_record_id'], $validated);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($usage, 'Pemakaian IOL dicatat', 201);
+        $msg = empty($result['warnings'])
+            ? 'Pemakaian IOL dicatat'
+            : 'Pemakaian IOL dicatat (dengan peringatan)';
+
+        return $this->ok($result, $msg, 201);
     }
 
     /** PUT /bedah/iol-usage/{id} */
     public function updateIolUsage(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
+            'eye_side'      => 'nullable|in:OD,OS',
             'brand'         => 'nullable|string|max:100',
             'model'         => 'nullable|string|max:100',
-            'power'         => 'nullable|numeric|between:0,40',
+            'power'         => 'nullable|numeric|between:-20,40',
             'lot_number'    => 'nullable|string|max:100',
             'serial_number' => 'nullable|string|max:100',
         ]);
@@ -518,6 +540,18 @@ class BedahController extends Controller
         }
 
         return $this->ok($usage, 'Pemakaian IOL diperbarui');
+    }
+
+    /** DELETE /bedah/iol-usage/{id} — hapus + kembalikan stok. */
+    public function destroyIolUsage(string $id): JsonResponse
+    {
+        try {
+            $this->service->deleteIolUsage($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Catatan IOL dihapus, stok dikembalikan');
     }
 
     // =========================================================================

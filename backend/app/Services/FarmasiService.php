@@ -689,25 +689,31 @@ class FarmasiService
 
     public function getStokIol(array $filters = []): LengthAwarePaginator
     {
-        $query = IolItem::where('is_active', true);
+        // on_hand dari inventory_stocks (sumber stok tunggal per-tipe).
+        $query = IolItem::withOnHand()->where('iol_items.is_active', true);
 
+        // available_only (per-tipe): on_hand > 0 (BUKAN lagi is_used legacy).
         if (! empty($filters['available_only'])) {
-            $query->where('is_used', false);
+            $query->whereRaw('COALESCE(iol_stock.qty, 0) > 0');
         }
 
         if (! empty($filters['iol_type'])) {
-            $query->where('iol_type', $filters['iol_type']);
+            $query->where('iol_items.iol_type', $filters['iol_type']);
         }
 
         if (! empty($filters['brand'])) {
-            $query->where('brand', 'ilike', "%{$filters['brand']}%");
+            $query->where('iol_items.brand', 'ilike', "%{$filters['brand']}%");
         }
 
         if (! empty($filters['power'])) {
-            $query->where('power', $filters['power']);
+            $query->where('iol_items.power', $filters['power']);
         }
 
-        return $query->orderBy('brand')->orderBy('power')->paginate($filters['per_page'] ?? 25);
+        $page = $query->orderBy('iol_items.brand')->orderBy('iol_items.power')->paginate($filters['per_page'] ?? 25);
+        // Tampilkan stok nyata di field `stock` untuk konsistensi UI (override legacy).
+        $page->getCollection()->each(fn ($i) => $i->stock = (float) ($i->on_hand ?? 0));
+
+        return $page;
     }
 
     public function updateStokIol(string $id, array $data): IolItem

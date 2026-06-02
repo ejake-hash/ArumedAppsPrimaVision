@@ -175,16 +175,23 @@ class Gs1Parser
 
     /**
      * Heuristik: apakah posisi $i tampak seperti awal AI berikutnya saat FNC1 hilang?
-     * Hanya percaya pada AI fixed-length yang formatnya pasti (01 + 14 digit, 17 + 6 digit),
-     * supaya tidak salah memenggal lot/serial yang kebetulan diawali "10"/"21".
+     *
+     * SENGAJA hanya percaya AI fixed-length yang formatnya PASTI (01+14digit,
+     * 17/11/15+6digit). Untuk batas variable→variable ((10)lot→(21)serial) TANPA FNC1,
+     * pembatasan TIDAK dilakukan karena AMBIGU: lot/serial sah bisa mengandung "10"/"21"
+     * → memenggal di situ akan MERUSAK lot/serial yang benar (lebih berbahaya daripada
+     * kasus langka barcode tanpa FNC1). UDI implan standar GS1 SELALU menyertakan FNC1
+     * antar-AI variable, jadi kasus FNC1-hilang seharusnya tidak terjadi pada label asli.
      */
     private static function looksLikeNextAi(string $s, int $i): bool
     {
-        $two = substr($s, $i, 2);
-        if ($two === '01' && preg_match('/^01\d{14}/', substr($s, $i, 16))) {
+        // HANYA 01 & 17 — keduanya jarang muncul literal di tengah lot/serial dan
+        // formatnya ketat. (11/15 SENGAJA TIDAK dipakai: '15' kerap muncul di serial
+        // numerik mis. "SN15791233050" → akan salah-penggal.)
+        if (substr($s, $i, 2) === '01' && preg_match('/^01\d{14}/', substr($s, $i, 16))) {
             return true;
         }
-        if ($two === '17' && preg_match('/^17\d{6}/', substr($s, $i, 8))) {
+        if (substr($s, $i, 2) === '17' && preg_match('/^17\d{6}/', substr($s, $i, 8))) {
             return true;
         }
 

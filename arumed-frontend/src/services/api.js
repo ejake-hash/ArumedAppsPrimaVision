@@ -896,9 +896,12 @@ export const bedahApi = {
   // Master lookup (Bedah-scoped, gate bedah.read)
   daftarObat:     (search) => api.get('/bedah/obat', { params: { search } }),
   listIol:        (params) => api.get('/bedah/iol', { params }),
-  // IOL terpasang saat operasi (surgery_iol_usages)
+  // IOL terpasang saat operasi (surgery_iol_usage)
+  listIolUsage:   (recordId) => api.get('/bedah/iol-usage', { params: { surgery_record_id: recordId } }),
   storeIolUsage:  (data)   => api.post('/bedah/iol-usage', data),
   updateIolUsage: (id, data) => api.put(`/bedah/iol-usage/${id}`, data),
+  deleteIolUsage: (id)     => api.delete(`/bedah/iol-usage/${id}`),
+  scanIol:        (code)   => masterApi.iol.scan(code), // delegasi parse UDI (master_iol.read)
   // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
   storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
 }

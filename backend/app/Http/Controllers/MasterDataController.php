@@ -698,24 +698,46 @@ class MasterDataController extends Controller
 
         $parsed = \App\Support\Gs1Parser::parse($validated['code']);
 
+        // Pilih kandidat TERBAIK bila >1 baris cocok: prioritaskan AKTIF & stok terbanyak.
+        $pickBest = function ($query) {
+            return (clone $query)->withOnHand()
+                ->orderByDesc('iol_items.is_active')
+                ->orderByDesc('on_hand')
+                ->first();
+        };
+
         $iol = null;
+        $ambiguous = false;   // >1 POWER berbeda utk GTIN sama → JANGAN auto-pilih (bahaya klinis)
         if (! empty($parsed['gtin'])) {
-            $iol = \App\Models\IolItem::where('gtin', $parsed['gtin'])->first();
+            $base = \App\Models\IolItem::where('iol_items.gtin', $parsed['gtin'])->where('iol_items.is_active', true);
+            // Bila GTIN cocok ke >1 POWER berbeda (data tak ideal), JANGAN tebak —
+            // power salah = lensa salah tanam. Biarkan operator pilih manual.
+            $distinctPowers = (clone $base)->distinct()->count('iol_items.power');
+            if ($distinctPowers > 1) {
+                $ambiguous = true;
+            } else {
+                $iol = $pickBest($base);
+            }
         }
         // Fallback: gs1_barcode mengandung GTIN, atau serial cocok (data lama).
-        if (! $iol && ! empty($parsed['gtin'])) {
-            $iol = \App\Models\IolItem::where('gs1_barcode', 'ilike', '%' . $parsed['gtin'] . '%')->first();
+        if (! $iol && ! $ambiguous && ! empty($parsed['gtin'])) {
+            $iol = $pickBest(\App\Models\IolItem::where('iol_items.gs1_barcode', 'ilike', '%' . $parsed['gtin'] . '%'));
         }
-        if (! $iol && ! empty($parsed['serial_number'])) {
-            $iol = \App\Models\IolItem::where('serial_number', $parsed['serial_number'])->first();
+        if (! $iol && ! $ambiguous && ! empty($parsed['serial_number'])) {
+            $iol = $pickBest(\App\Models\IolItem::where('iol_items.serial_number', $parsed['serial_number']));
         }
 
+        $message = $ambiguous
+            ? 'GTIN cocok ke beberapa power berbeda — pilih lensa yang benar secara manual.'
+            : ($iol ? 'IOL ditemukan' : 'IOL belum terdaftar — lengkapi data master');
+
         return $this->ok([
-            'matched'  => $iol !== null,
-            'iol_item' => $iol,
-            'on_hand'  => $iol ? $iol->onHandStock() : 0,
-            'parsed'   => $parsed,
-        ], $iol ? 'IOL ditemukan' : 'IOL belum terdaftar — lengkapi data master');
+            'matched'   => $iol !== null,
+            'ambiguous' => $ambiguous,
+            'iol_item'  => $iol,
+            'on_hand'   => $iol ? $iol->onHandStock() : 0,
+            'parsed'    => $parsed,
+        ], $message);
     }
 
     public function storeIol(Request $request): JsonResponse
@@ -729,8 +751,11 @@ class MasterDataController extends Controller
             'power'         => 'required|numeric|between:-20,40',
             'cylinder'      => 'nullable|required_if:iol_type,TORIC|numeric|between:0,10',
             'axis'          => 'nullable|required_if:iol_type,TORIC|integer|between:0,180',
+            // Per-tipe: serial/lot adalah data operasi-time, BUKAN identitas master →
+            // tidak lagi unique. Identitas = (brand,model,power).
             'lot_number'    => 'nullable|string|max:100',
-            'serial_number' => 'nullable|string|max:100|unique:iol_items,serial_number',
+            'serial_number' => 'nullable|string|max:100',
+            'gtin'          => 'nullable|string|max:14',
             'gs1_barcode'   => 'nullable|string|max:255',
             'expiry_date'   => 'nullable|date',
             'stock'         => 'nullable|integer|min:0',
@@ -753,7 +778,8 @@ class MasterDataController extends Controller
             'cylinder'      => 'nullable|required_if:iol_type,TORIC|numeric|between:0,10',
             'axis'          => 'nullable|required_if:iol_type,TORIC|integer|between:0,180',
             'lot_number'    => 'nullable|string|max:100',
-            'serial_number' => 'nullable|string|max:100|unique:iol_items,serial_number,' . $id,
+            'serial_number' => 'nullable|string|max:100',
+            'gtin'          => 'nullable|string|max:14',
             'gs1_barcode'   => 'nullable|string|max:255',
             'expiry_date'   => 'nullable|date',
             'stock'         => 'sometimes|integer|min:0',

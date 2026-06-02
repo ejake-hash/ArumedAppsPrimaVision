@@ -342,12 +342,25 @@ class RmeAggregatorService
 
             return [
                 'visit_id'    => $v?->id,
+                'record_id'   => $rec->id,
                 'visit_date'  => $v?->visit_date?->toDateString(),
                 'procedures'  => $procedures,
                 'time_in'     => $rec->time_in?->format('H:i'),
                 'time_out'    => $rec->time_out?->format('H:i'),
                 'has_complication' => $rec->has_complication,
+                // Ringkasan teks (backward-compat untuk tabel).
                 'iol_used'    => $rec->iolUsages->map(fn ($u) => trim(($u->brand ?? '') . ' ' . ($u->model ?? '') . ' ' . ($u->power ? "+{$u->power}D" : '') . ' (' . strtoupper($u->eye_side ?? '') . ')'))->all(),
+                // Detail terstruktur untuk traceability implan (serial/lot/gtin wajib regulasi).
+                'iol_details' => $rec->iolUsages->map(fn ($u) => [
+                    'eye_side'      => $u->eye_side,
+                    'brand'         => $u->brand,
+                    'model'         => $u->model,
+                    'power'         => $u->power,
+                    'lot_number'    => $u->lot_number,
+                    'serial_number' => $u->serial_number,
+                    'gtin'          => $u->gtin,
+                    'expiry_date'   => $u->expiry_date?->toDateString(),
+                ])->values()->all(),
                 'detail' => [
                     'operation_notes'      => $rec->operation_notes,
                     'complication_detail'  => $rec->complication_detail,
