@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\SurgeryPackageItem;
-use App\Models\SurgeryPackageTariff;
 use App\Services\TarifPaketService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,19 +63,16 @@ class TarifPaketController extends Controller
         return $this->ok($this->service->showMetodeBayar($id));
     }
 
-    public function templateMetodeBayarCsv(string $id, string $type): Response
+    public function templateMetodeBayarCsv(Request $request, string $id, string $type): Response
     {
         $this->assertTarifType($type);
         // Validasi insurer ada
         \App\Models\Insurer::findOrFail($id);
         $csv = $this->service->templateTarifCsv($type);
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"template-tarif-{$type}.csv\"",
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, "template-tarif-{$type}", 'Template Tarif');
     }
 
-    public function exportMetodeBayarCsv(string $id, string $type): Response
+    public function exportMetodeBayarCsv(Request $request, string $id, string $type): Response
     {
         $this->assertTarifType($type);
         $insurer = \App\Models\Insurer::findOrFail($id);
@@ -84,10 +80,7 @@ class TarifPaketController extends Controller
         $targetId = $insurer->tariffInsurerId();
         $csv = $this->service->exportTarifCsvForInsurer($type, $targetId);
         $code = $insurer->code ?? substr($insurer->id, 0, 8);
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"tarif-{$type}-{$code}-" . now()->format('Ymd') . ".csv\"",
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, "tarif-{$type}-{$code}-" . now()->format('Ymd'), 'Tarif');
     }
 
     public function importMetodeBayarCsv(Request $request, string $id, string $type): JsonResponse
@@ -102,13 +95,32 @@ class TarifPaketController extends Controller
                 'errors'  => null,
             ], 422);
         }
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
-        $csv = file_get_contents($request->file('file')->getRealPath());
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+        $csv = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
         $result = $this->service->importTarifCsvForInsurer($type, $insurer->id, $csv);
         return $this->ok(
             $result,
             "Import selesai: {$result['inserted']} baru, {$result['updated']} update, {$result['skipped']} dilewati."
         );
+    }
+
+    /**
+     * Kembalikan CSV string sebagai file CSV (default) atau XLSX bila ?format=xlsx.
+     * Logika data tetap di service (berbasis CSV); ini hanya adapter format.
+     */
+    private function csvOrXlsxResponse(Request $request, string $csv, string $baseName, string $sheetTitle): Response
+    {
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
+        ]);
     }
 
     /** Endpoint helper untuk frontend: harga master live per item. */
@@ -210,28 +222,22 @@ class TarifPaketController extends Controller
     // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
     // =========================================================================
 
-    public function templatePaketCsv(): Response
+    public function templatePaketCsv(Request $request): Response
     {
         $csv = $this->service->templatePaketCsv();
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="template-paket-bedah.csv"',
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, 'template-paket-bedah', 'Template Paket');
     }
 
-    public function exportPaketCsv(): Response
+    public function exportPaketCsv(Request $request): Response
     {
         $csv = $this->service->exportPaketCsv();
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="paket-bedah-' . now()->format('Ymd') . '.csv"',
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, 'paket-bedah-' . now()->format('Ymd'), 'Paket Bedah');
     }
 
     public function importPaketCsv(Request $request): JsonResponse
     {
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
-        $csv = file_get_contents($request->file('file')->getRealPath());
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+        $csv = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
         $result = $this->service->importPaketCsv($csv);
         $msg = "Import selesai: {$result['created']} paket baru, {$result['updated']} paket diperbarui, "
              . "{$result['items_inserted']} item dimasukkan"
@@ -241,23 +247,17 @@ class TarifPaketController extends Controller
     }
 
     /** Template CSV komposisi SATU paket (header notes + item paket ini terisi). */
-    public function templatePaketCsvForPackage(string $id): Response
+    public function templatePaketCsvForPackage(Request $request, string $id): Response
     {
         $csv = $this->service->templatePaketCsvForPackage($id);
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="template-paket-' . $id . '.csv"',
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, 'template-paket-' . $id, 'Template Paket');
     }
 
     /** Export komposisi SATU paket apa adanya. */
-    public function exportPaketCsvForPackage(string $id): Response
+    public function exportPaketCsvForPackage(Request $request, string $id): Response
     {
         $csv = $this->service->exportPaketCsvForPackage($id);
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="paket-' . $id . '-' . now()->format('Ymd') . '.csv"',
-        ]);
+        return $this->csvOrXlsxResponse($request, $csv, 'paket-' . $id . '-' . now()->format('Ymd'), 'Paket');
     }
 
     // =========================================================================
@@ -273,7 +273,6 @@ class TarifPaketController extends Controller
     {
         $validated = $request->validate([
             'insurer_id'     => 'nullable|uuid|exists:insurers,id',
-            'classification' => 'required|in:' . implode(',', SurgeryPackageTariff::CLASSIFICATIONS),
             'sell_price'     => 'required|numeric|min:0',
             'is_active'      => 'nullable|boolean',
         ]);

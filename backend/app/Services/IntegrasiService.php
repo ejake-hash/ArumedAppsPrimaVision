@@ -326,6 +326,19 @@ class IntegrasiService
         return $this->satusehat->retry($logId);
     }
 
+    /** Backfill: cek jumlah kunjungan historis yang layak (sebelum eksekusi). */
+    public function satusehatBackfillPreview(?string $from = null, ?string $to = null): array
+    {
+        $this->satusehat->boot();
+        return $this->satusehat->countBackfillEligible($from, $to);
+    }
+
+    /** Backfill: jalankan sync N kunjungan historis eligible (terlama dulu). */
+    public function satusehatBackfill(int $limit, ?string $from = null, ?string $to = null): SatusehatSyncLog
+    {
+        return $this->satusehat->backfillSync($limit, $from, $to);
+    }
+
     public function satusehatDashboard(?string $from = null, ?string $to = null): array
     {
         return $this->satusehat->dashboardStats($from, $to);

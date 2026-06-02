@@ -513,7 +513,7 @@ function lastLoginText(u) {
             <div class="fg"><label class="fl">Username</label><input v-model="editUser.username" class="fi" placeholder="username login"/></div>
           </div>
           <div class="g2" style="margin-bottom:.4rem">
-            <div class="fg"><label class="fl">Email</label><input v-model="editUser.email" class="fi" type="email" placeholder="email@klinik.com"/></div>
+            <div class="fg"><label class="fl">Email</label><input v-model="editUser.email" class="fi" type="email" placeholder="email@rumahsakit.id"/></div>
             <div class="fg"><label class="fl">Role</label>
               <select v-model="editUser.role_id" class="fs">
                 <option v-for="r in store.roles" :key="r.id" :value="r.id">{{ r.display_name || r.name }}</option>

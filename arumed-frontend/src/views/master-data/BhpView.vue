@@ -19,6 +19,7 @@ const config = {
   description: 'Master Bahan Habis Pakai medis & non-medis.',
   searchPlaceholder: 'Cari nama/kategori/pabrik…',
   extraSearchParam: 'search',
+  csvAllowExcel: true,
   csvShowTemplate: true,
   defaults: {
     name: '', category: 'MEDICAL_BHP', unit: '', manufacturer: '',

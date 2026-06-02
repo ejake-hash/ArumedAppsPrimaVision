@@ -50,6 +50,55 @@ class FarmasiService
     }
 
     /**
+     * Lewati pasien Farmasi yang tidak hadir → tukar urutan dengan pasien
+     * berikutnya (turun 1). Pola sama dengan stasiun lain (Kasir/Perawat/dst).
+     */
+    public function lewatiAntrian(string $queueId): Queue
+    {
+        Queue::byStation(Queue::STATION_FARMASI)->findOrFail($queueId);
+        return $this->queueService->lewati($queueId);
+    }
+
+    /**
+     * Preview harga obat tambahan (di luar resep) untuk satu visit, sesuai
+     * penjamin pasien — SUMBER HARGA YANG SAMA dengan yang ditagih kasir
+     * (KasirService::getPrice → medication_tariffs per-insurer), BUKAN HJA POS.
+     *
+     * Untuk visit RANAP/IGD obat ditagih lewat inpatient_charges (bukan resep),
+     * jadi tandai billed_via='RANAP' agar UI bisa memberi catatan yang benar.
+     *
+     * @return array{unit_price: float, billed_via: string, guarantor_type: ?string}
+     */
+    public function previewHargaObat(string $medicationId, ?string $visitId): array
+    {
+        $kasir = app(KasirService::class);
+
+        $guarantor = 'UMUM';
+        $insurerId = null;
+        $billedVia = 'INVOICE';
+
+        if ($visitId) {
+            $visit = Visit::find($visitId);
+            if ($visit) {
+                $guarantor = $visit->guarantor_type ?: 'UMUM';
+                $insurerId = $visit->insurer_id;
+                // RANAP/IGD: obat masuk inpatient_charges, bukan invoice resep.
+                if (in_array($visit->visit_type, ['RAWAT_INAP', 'IGD'], true)) {
+                    $billedVia = $visit->visit_type === 'IGD' ? 'IGD' : 'RANAP';
+                }
+            }
+        }
+
+        $price = $kasir->getPrice('medication', $medicationId, $guarantor, $insurerId);
+
+        return [
+            'unit_price'     => (float) $price,
+            'billed_via'     => $billedVia,
+            'guarantor_type' => $guarantor,
+        ];
+    }
+
+    /**
      * Selesai antrian Farmasi → pasien PULANG (current_station = SELESAI).
      * Section 11.3 step 6.
      */
@@ -108,6 +157,12 @@ class FarmasiService
 
         $this->log(auth('api')->id(), 'START_DISPENSING', Prescription::class, $prescriptionId);
 
+        // BPJS Antrol (Sisi A): daftarkan antrean farmasi + task 6 (mulai buat obat).
+        // Non-blocking — skip diam-diam bila bukan BPJS / ANTREAN nonaktif.
+        $visit = $prescription->visit;
+        $this->queueService->reportAntreanFarmasiAdd($visit);
+        $this->queueService->reportTask($visit, 6);
+
         return $prescription->fresh(['items.medication']);
     }
 
@@ -161,6 +216,10 @@ class FarmasiService
             $prescriptionId,
             "Resep diselesaikan — {$prescription->items->count()} item obat"
         );
+
+        // BPJS Antrol task 7 = akhir obat selesai dibuat (Docs/Antrol.md:346).
+        // Non-blocking — guard monoton memastikan urut 6 → 7.
+        $this->queueService->reportTask($prescription->visit, 7);
 
         return $prescription->fresh(['items.medication', 'dispensedBy']);
     }

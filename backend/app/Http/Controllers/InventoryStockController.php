@@ -69,11 +69,12 @@ class InventoryStockController extends Controller
     /** POST /inventori-farmasi/stock/{type}/import-csv  (location via query/body) */
     public function importCsv(Request $request, string $type): JsonResponse
     {
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
         $location = $this->resolveLocation($request);
 
         try {
-            $content = file_get_contents($request->file('file')->getRealPath());
+            // Terima CSV/TXT & Excel; helper normalisasi BOM + delimiter ';' → koma.
+            $content = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
             $result  = $this->service->importCsv($type, $content, $location);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);

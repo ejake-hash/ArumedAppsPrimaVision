@@ -2233,7 +2233,7 @@ onUnmounted(() => {
               @click="toggleQuickPanel('peserta')"
             >
               <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-              Cek Status BPJS
+              Cek Peserta
               <svg class="qa-caret" :class="{ open: quickPanel === 'peserta' }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
 
@@ -2341,7 +2341,7 @@ onUnmounted(() => {
                   <strong style="color: #c08a1a">{{ walkInQueueNo }}</strong>
                   dari Anjungan Mandiri
                 </template>
-                <template v-else>Klinik Utama Mata · FKRTL</template>
+                <template v-else>Rumah Sakit Mata · FKRTL</template>
               </div>
             </div>
             <button class="modal-x" aria-label="Tutup pendaftaran" @click="closeWizard">

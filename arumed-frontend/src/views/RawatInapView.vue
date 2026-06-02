@@ -171,6 +171,7 @@ const sepForm = ref({ kls_rawat: '', catatan: '', diag_awal: '', no_telp: '', ka
 async function openSep(p) {
   sepPt.value = p; sepData.value = null; showSep.value = true
   sepForm.value = { kls_rawat: p.kelas_rawat_hak || '', catatan: '', diag_awal: '', no_telp: '', katarak: '0' }
+  sepTglPulang.value = (p.discharge_at || '').slice(0, 10)
   try {
     const r = await ranapApi.getSep(p.visit_id)
     sepData.value = r.data?.data ?? null
@@ -182,6 +183,16 @@ async function submitSep() {
     await ranapApi.updateSep(sepPt.value.visit_id, { ...sepForm.value })
     notify('SEP diperbarui'); showSep.value = false
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal update SEP', false) } finally { busy.value = false }
+}
+// Lapor/ulang tgl pulang SEP ke BPJS (saat laporan otomatis discharge gagal, atau koreksi tgl).
+const sepTglPulang = ref('')
+async function submitTglPulang() {
+  busy.value = true
+  try {
+    const payload = sepTglPulang.value ? { tgl_pulang: sepTglPulang.value } : {}
+    await ranapApi.updateTglPulang(sepPt.value.visit_id, payload)
+    notify('Tanggal pulang dilaporkan ke BPJS')
+  } catch (e) { notify(e.response?.data?.message ?? 'Gagal lapor tgl pulang', false) } finally { busy.value = false }
 }
 
 // ── HISTORY (tab) ─────────────────────────────────────────────────────────────
@@ -447,45 +458,70 @@ async function removeCharge(c) {
 const bedStatusColor = { AVAILABLE: '#16a34a', OCCUPIED: '#1763d4', CLEANING: '#d97706', MAINTENANCE: '#6b7280', RESERVED: '#7c3aed' }
 function fmt(dt) { return dt ? new Date(dt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' }) : '—' }
 function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
+const statusPill = (s) => ({
+  APPROVED: 'pill-success', SUCCESS: 'pill-success', VERIFIED: 'pill-success',
+  REJECTED: 'pill-danger', FAILED: 'pill-danger',
+  PENDING: 'pill-warning', DRAFT: 'pill-warning', NONE: 'pill-gray',
+}[s] ?? 'pill-gray')
 </script>
 
 <template>
-  <div class="ranap">
-    <header class="head">
-      <div class="head-left">
-        <h2>Rawat Inap</h2>
-        <button class="btn-refresh" @click="refreshAll">↻ Muat ulang</button>
+  <div class="asuransi-view">
+    <!-- HEADER + SUMMARY -->
+    <div class="page-head">
+      <div>
+        <h1>Rawat Inap</h1>
+        <p class="sub">Papan kamar, admit/transfer/pulang, CPPT &amp; biaya pasien inap.</p>
       </div>
-      <div class="stat-cards">
-        <div class="stat-card">
-          <div class="stat-num">{{ stats.aktif }}</div>
-          <div class="stat-label">Pasien Dirawat</div>
-        </div>
-        <div class="stat-card warn">
-          <div class="stat-num">{{ stats.menunggu }}</div>
-          <div class="stat-label">Menunggu Kamar</div>
-        </div>
-        <div class="stat-card ok">
-          <div class="stat-num">{{ stats.available }}</div>
-          <div class="stat-label">Bed Kosong</div>
-        </div>
-      </div>
-    </header>
+      <button class="btn btn-secondary" @click="refreshAll">↻ Muat ulang</button>
+    </div>
 
-    <nav class="tabs">
-      <button :class="{ on: tab === 'board' }" @click="tab = 'board'">Papan Room</button>
-      <button :class="{ on: tab === 'menunggu' }" @click="tab = 'menunggu'">
-        Menunggu Kamar <span v-if="store.menungguKamar.length" class="badge">{{ store.menungguKamar.length }}</span>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon" style="background: var(--ib)">
+          <svg viewBox="0 0 24 24" stroke="var(--it)"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
+        </div>
+        <div><div class="stat-val">{{ stats.aktif }}</div><div class="stat-lbl">Pasien Dirawat</div></div>
+      </div>
+      <div :class="['stat-card', stats.menunggu ? 'alert-card' : '']">
+        <div class="stat-icon" style="background: var(--wb)">
+          <svg viewBox="0 0 24 24" stroke="var(--wt)"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <div><div class="stat-val" :style="{ color: stats.menunggu ? 'var(--wt)' : '' }">{{ stats.menunggu }}</div><div class="stat-lbl">Menunggu Kamar</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: var(--sb)">
+          <svg viewBox="0 0 24 24" stroke="var(--st)"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div><div class="stat-val" style="color: var(--st)">{{ stats.available }}</div><div class="stat-lbl">Bed Kosong</div></div>
+      </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="nav-tabs">
+      <button :class="['nt', tab === 'board' ? 'a' : '']" @click="tab = 'board'">
+        <svg viewBox="0 0 24 24"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/></svg>
+        Papan Room
       </button>
-      <button :class="{ on: tab === 'aktif' }" @click="tab = 'aktif'">
-        Pasien Aktif <span v-if="store.aktif.length" class="badge">{{ store.aktif.length }}</span>
+      <button :class="['nt', tab === 'menunggu' ? 'a' : '']" @click="tab = 'menunggu'">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Menunggu Kamar
+        <span v-if="store.menungguKamar.length" class="ntbg alert">{{ store.menungguKamar.length }}</span>
       </button>
-      <button :class="{ on: tab === 'history' }" @click="tab = 'history'; loadHistory()">Riwayat</button>
-    </nav>
+      <button :class="['nt', tab === 'aktif' ? 'a' : '']" @click="tab = 'aktif'">
+        <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        Pasien Aktif
+        <span v-if="store.aktif.length" class="ntbg">{{ store.aktif.length }}</span>
+      </button>
+      <button :class="['nt', tab === 'history' ? 'a' : '']" @click="tab = 'history'; loadHistory()">
+        <svg viewBox="0 0 24 24"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 106 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+        Riwayat
+      </button>
+    </div>
 
     <!-- PAPAN ROOM -->
-    <section v-if="tab === 'board'" class="board">
-      <p v-if="store.loading">Memuat…</p>
+    <section v-if="tab === 'board'" class="tab-pane board">
+      <p v-if="store.loading" class="po-state">Memuat…</p>
       <div v-for="room in store.bedBoard" :key="room.id" class="room-card">
         <div class="room-head">
           <strong>{{ room.name }}</strong>
@@ -512,84 +548,113 @@ function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
     </section>
 
     <!-- MENUNGGU KAMAR -->
-    <section v-if="tab === 'menunggu'" class="list">
-      <table>
-        <thead><tr><th class="col-no">No</th><th>Pasien</th><th>No. RM</th><th>Penjamin</th><th>Sejak</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="(p, i) in store.menungguKamar" :key="p.visit_id">
-            <td class="col-no">{{ i + 1 }}</td>
-            <td>{{ p.name }}</td><td>{{ p.no_rm }}</td><td>{{ p.guarantor_type }}</td><td>{{ fmt(p.since) }}</td>
-            <td><button class="btn-primary btn-press" @click="openAdmit(p)">Admit / Pilih Bed</button></td>
-          </tr>
-          <tr v-if="!store.menungguKamar.length"><td colspan="6" class="muted">Tidak ada pasien menunggu kamar</td></tr>
-        </tbody>
-      </table>
+    <section v-if="tab === 'menunggu'" class="tab-pane">
+      <div class="po-table-wrap">
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="width:50px">No.</th><th>Pasien</th><th>No. RM</th>
+              <th>Penjamin</th><th>Sejak</th><th class="c">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!store.menungguKamar.length"><td colspan="6" class="po-state">Tidak ada pasien menunggu kamar</td></tr>
+            <tr v-for="(p, i) in store.menungguKamar" :key="p.visit_id">
+              <td class="muted">{{ i + 1 }}</td>
+              <td>{{ p.name }}</td>
+              <td class="muted">{{ p.no_rm }}</td>
+              <td><span class="pill pill-gray">{{ p.guarantor_type }}</span></td>
+              <td class="muted">{{ fmt(p.since) }}</td>
+              <td class="c"><button class="btn btn-sm btn-primary" @click="openAdmit(p)">Admit / Pilih Bed</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- PASIEN AKTIF -->
-    <section v-if="tab === 'aktif'" class="list">
-      <table>
-        <thead><tr><th class="col-no">No</th><th>Pasien</th><th>RM</th><th>Room/Bed</th><th>Kls Hak</th><th>Masuk</th><th>Aksi</th></tr></thead>
-        <tbody>
-          <tr v-for="(p, i) in store.aktif" :key="p.visit_id">
-            <td class="col-no">{{ i + 1 }}</td>
-            <td>
-              <a href="#" @click.prevent="openDetail(p.visit_id)">{{ p.name }}</a>
-              <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op rawat inap — menunggu operasi terjadwal">PRE-OP</span>
-              <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Rawat inap observasi/pemeriksaan">OBSERVASI</span>
-            </td>
-            <td>{{ p.no_rm }}</td><td>{{ p.room }} / {{ p.bed }}</td><td>{{ p.kelas_rawat_hak }}</td><td>{{ fmt(p.admission_at) }}</td>
-            <td class="actions">
-              <button class="btn-press" @click="openDetail(p.visit_id)">Detail</button>
-              <button class="btn-press" @click="openTransfer(p)">Pindah</button>
-              <button v-if="p.guarantor_type === 'BPJS' && p.no_sep" class="btn-press btn-sep" @click="openSep(p)">SEP</button>
-              <button class="btn-press" @click="doKirimBedah(p)">→ Bedah</button>
-              <button class="btn-primary btn-press" @click="openDischarge(p)">Pulang</button>
-            </td>
-          </tr>
-          <tr v-if="!store.aktif.length"><td colspan="7" class="muted">Tidak ada pasien rawat inap aktif</td></tr>
-        </tbody>
-      </table>
+    <section v-if="tab === 'aktif'" class="tab-pane">
+      <div class="po-table-wrap">
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="width:50px">No.</th><th>Pasien</th><th>RM</th>
+              <th>Room/Bed</th><th>Kls Hak</th><th>Masuk</th><th class="c">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!store.aktif.length"><td colspan="7" class="po-state">Tidak ada pasien rawat inap aktif</td></tr>
+            <tr v-for="(p, i) in store.aktif" :key="p.visit_id">
+              <td class="muted">{{ i + 1 }}</td>
+              <td>
+                <a href="#" class="lnk" @click.prevent="openDetail(p.visit_id)">{{ p.name }}</a>
+                <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op rawat inap — menunggu operasi terjadwal">PRE-OP</span>
+                <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Rawat inap observasi/pemeriksaan">OBSERVASI</span>
+              </td>
+              <td class="muted">{{ p.no_rm }}</td>
+              <td>{{ p.room }} / {{ p.bed }}</td>
+              <td>{{ p.kelas_rawat_hak }}</td>
+              <td class="muted">{{ fmt(p.admission_at) }}</td>
+              <td class="c">
+                <div class="action-row">
+                  <button class="btn btn-sm btn-secondary" @click="openDetail(p.visit_id)">Detail</button>
+                  <button class="btn btn-sm btn-secondary" @click="openTransfer(p)">Pindah</button>
+                  <button v-if="p.guarantor_type === 'BPJS' && p.no_sep" class="btn btn-sm btn-info" @click="openSep(p)">SEP</button>
+                  <button class="btn btn-sm btn-secondary" @click="doKirimBedah(p)">→ Bedah</button>
+                  <button class="btn btn-sm btn-primary" @click="openDischarge(p)">Pulang</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- RIWAYAT PASIEN PULANG -->
-    <section v-if="tab === 'history'" class="list">
-      <div class="hist-filter">
-        <label>Dari <input v-model="histFrom" type="date" /></label>
-        <label>Sampai <input v-model="histTo" type="date" /></label>
-        <button class="btn-primary btn-press" @click="loadHistory">Tampilkan</button>
+    <section v-if="tab === 'history'" class="tab-pane">
+      <div class="filter-bar">
+        <input type="date" v-model="histFrom" class="filt" title="Dari tanggal" />
+        <input type="date" v-model="histTo" class="filt" title="Sampai tanggal" />
+        <button class="btn btn-primary" @click="loadHistory">Tampilkan</button>
       </div>
-      <table>
-        <thead><tr><th class="col-no">No</th><th>Pasien</th><th>RM</th><th>Penjamin</th><th>Masuk</th><th>Pulang</th><th>Jenis</th><th>Kontrol</th><th>SPRI</th><th>Aksi</th></tr></thead>
-        <tbody>
-          <tr v-for="(h, i) in histList" :key="h.visit_id">
-            <td class="col-no">{{ i + 1 }}</td>
-            <td>{{ h.name }}</td>
-            <td>{{ h.no_rm }}</td>
-            <td>{{ h.guarantor_type }}</td>
-            <td>{{ fmt(h.admission_at) }}</td>
-            <td>{{ fmt(h.discharge_at) }}</td>
-            <td>{{ h.discharge_type }}</td>
-            <td>{{ h.follow_up_date || '—' }}</td>
-            <td>
-              <span v-if="h.spri" class="spri-badge" :class="'spri-' + h.spri.status">
-                {{ h.spri.status }}<template v-if="h.spri.no_spri"> · {{ h.spri.no_spri }}</template>
-              </span>
-              <span v-else class="muted2">—</span>
-            </td>
-            <td class="actions">
-              <template v-if="h.guarantor_type === 'BPJS' && h.no_sep">
-                <button class="btn-press btn-sep" @click="openSep(h)">SEP</button>
-                <button v-if="!h.spri || h.spri.status === 'FAILED'" class="btn-press" @click="issueSpri(h)">+ SPRI</button>
-                <button v-if="h.spri && h.spri.status === 'SUCCESS'" class="btn-press" @click="editSpri(h)">Edit SPRI</button>
-                <button v-if="h.spri && h.spri.status !== 'SUCCESS'" class="btn-press btn-del" @click="removeSpri(h)">Hapus</button>
-              </template>
-              <span v-else class="muted2">—</span>
-            </td>
-          </tr>
-          <tr v-if="!histList.length"><td colspan="10" class="muted">Tidak ada pasien pulang pada rentang ini</td></tr>
-        </tbody>
-      </table>
+      <div class="po-table-wrap">
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="width:50px">No.</th><th>Pasien</th><th>RM</th><th>Penjamin</th>
+              <th>Masuk</th><th>Pulang</th><th>Jenis</th><th>Kontrol</th><th>SPRI</th><th class="c">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!histList.length"><td colspan="10" class="po-state">Tidak ada pasien pulang pada rentang ini</td></tr>
+            <tr v-for="(h, i) in histList" :key="h.visit_id">
+              <td class="muted">{{ i + 1 }}</td>
+              <td>{{ h.name }}</td>
+              <td class="muted">{{ h.no_rm }}</td>
+              <td>{{ h.guarantor_type }}</td>
+              <td class="muted">{{ fmt(h.admission_at) }}</td>
+              <td class="muted">{{ fmt(h.discharge_at) }}</td>
+              <td>{{ h.discharge_type }}</td>
+              <td class="muted">{{ h.follow_up_date || '—' }}</td>
+              <td>
+                <span v-if="h.spri" class="pill" :class="statusPill(h.spri.status === 'SUCCESS' ? 'APPROVED' : h.spri.status === 'FAILED' ? 'REJECTED' : 'PENDING')">
+                  {{ h.spri.status }}<template v-if="h.spri.no_spri"> · {{ h.spri.no_spri }}</template>
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td class="c">
+                <div class="action-row" v-if="h.guarantor_type === 'BPJS' && h.no_sep">
+                  <button class="btn btn-sm btn-info" @click="openSep(h)">SEP</button>
+                  <button v-if="!h.spri || h.spri.status === 'FAILED'" class="btn btn-sm btn-secondary" @click="issueSpri(h)">+ SPRI</button>
+                  <button v-if="h.spri && h.spri.status === 'SUCCESS'" class="btn btn-sm btn-secondary" @click="editSpri(h)">Edit SPRI</button>
+                  <button v-if="h.spri && h.spri.status !== 'SUCCESS'" class="btn btn-sm btn-warning" @click="removeSpri(h)">Hapus</button>
+                </div>
+                <span v-else class="muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- MODAL SEP -->
@@ -611,6 +676,14 @@ function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
           <div class="modal-actions">
             <button @click="showSep = false">Tutup</button>
             <button class="btn-primary" :disabled="busy" @click="submitSep">{{ busy ? '…' : 'Simpan ke VClaim' }}</button>
+          </div>
+          <hr />
+          <h4>Tanggal Pulang (BPJS)</h4>
+          <p class="muted2" v-if="sepData.discharge_at">Pasien dipulangkan {{ fmt(sepData.discharge_at) }}. Laporkan/koreksi tanggal pulang ke SEP bila pelaporan otomatis gagal.</p>
+          <p class="muted2" v-else>Pasien belum dipulangkan — lapor tgl pulang tersedia setelah pemulangan.</p>
+          <label>Tgl pulang<input v-model="sepTglPulang" type="date" :disabled="!sepData.discharge_at" /></label>
+          <div class="modal-actions">
+            <button class="btn-warning" :disabled="busy || !sepData.discharge_at" @click="submitTglPulang">{{ busy ? '…' : 'Lapor Tgl Pulang ke BPJS' }}</button>
           </div>
         </template>
         <p v-else class="muted">Memuat SEP…</p>
@@ -730,7 +803,7 @@ function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
           <div class="add-row">
             <input v-model="obatPulangSearch" placeholder="cari obat…" @input="searchObatPulang" class="add-search" style="flex:1" />
           </div>
-          <select @change="addObatPulang(obatPulangOptions.find(o => o.id === $event.target.value)); $event.target.value=''">
+          <select @change="addObatPulang(obatPulangOptions.find(o => String(o.id) === $event.target.value)); $event.target.value=''">
             <option value="">— pilih obat untuk ditambahkan —</option>
             <option v-for="o in obatPulangOptions" :key="o.id" :value="o.id">{{ o.name }} — {{ rupiah(o.price) }}</option>
           </select>
@@ -931,167 +1004,210 @@ function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
 </template>
 
 <style scoped>
-.ranap { padding: 1rem; }
-.head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-.head-left { display: flex; align-items: center; gap: .8rem; }
-.head h2 { color: #1763d4; margin: 0; }
-.btn-refresh { background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; padding: .4rem .8rem; cursor: pointer; }
+/* ===== Selaras AsuransiView (tokens.css) ===== */
+.asuransi-view { padding: 1rem 1.25rem; font-family: var(--font-sans); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1rem; gap: 1rem; }
+.page-head h1 { font-family: var(--font-display); font-size: 22px; margin: 0; color: var(--td); }
+.page-head .sub { font-size: 12px; color: var(--tu); margin: 4px 0 0; }
 
-/* Stat cards (kanan atas) */
-.stat-cards { display: flex; gap: .75rem; }
-.stat-card { background: #fff; border: 1px solid #e5e7eb; border-left: 4px solid #1763d4; border-radius: 8px; padding: .5rem .9rem; min-width: 92px; text-align: center; }
-.stat-card.warn { border-left-color: #d97706; }
-.stat-card.ok { border-left-color: #16a34a; }
-.stat-num { font-size: 1.5rem; font-weight: 700; color: #1763d4; line-height: 1.1; }
-.stat-card.warn .stat-num { color: #d97706; }
-.stat-card.ok .stat-num { color: #16a34a; }
-.stat-label { font-size: .72rem; color: #6b7280; margin-top: .1rem; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.6rem; margin-bottom: 1rem; }
+.stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; }
+.stat-card.alert-card { border-color: var(--wbd); }
+.stat-icon { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stat-icon svg { width: 16px; height: 16px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stat-val { font-size: 18px; font-weight: 700; color: var(--td); font-family: var(--font-mono); }
+.stat-lbl { font-size: 10.5px; color: var(--tu); }
 
-/* Kolom nomor urut */
-.col-no { width: 44px; text-align: center; color: #6b7280; }
+.nav-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); padding: 0 4px; margin-bottom: 1rem; flex-wrap: wrap; }
+.nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--font-sans); display: inline-flex; align-items: center; gap: 6px; }
+.nt:hover { color: var(--td); }
+.nt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
+.nt svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.ntbg { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 20px; background: var(--gl); color: var(--ga); border: 1px solid var(--ga); }
+.ntbg.alert { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
 
-/* Button press effect */
-.btn-press { transition: transform .08s ease, box-shadow .08s ease; }
-.btn-press:active { transform: translateY(1px) scale(.97); box-shadow: inset 0 2px 4px rgba(0,0,0,.15); }
-.btn-add { margin-left: auto; }
-.tabs { display: flex; gap: .5rem; margin: 1rem 0; }
-.tabs button { padding: .5rem 1rem; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; color: #000; }
-.tabs button.on { background: #1763d4; color: #fff !important; border-color: #1763d4; }
-.badge { background: #ef4444; color: #fff; border-radius: 10px; padding: 0 .4rem; font-size: .75rem; margin-left: .3rem; }
-.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-.room-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem; background: #fff; }
-.room-head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: baseline; border-bottom: 1px solid #eee; padding-bottom: .5rem; }
-.room-head .kelas { color: #6b7280; font-size: .8rem; }
-.room-head .occ { margin-left: auto; font-size: .8rem; color: #1763d4; }
+.tab-pane { display: flex; flex-direction: column; gap: 0.85rem; }
+
+.filter-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.filt { height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--gb); background: var(--bc); font-size: 12px; font-family: inherit; color: var(--td); }
+.filt:focus { outline: none; border-color: var(--ga); }
+
+/* Tabel (po-table) */
+.po-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; overflow-x: auto; }
+.po-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.po-table th, .po-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); color: var(--td); }
+.po-table th { background: var(--bs); font-weight: 600; color: var(--tm); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.po-table td.r, .po-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.po-table td.c, .po-table th.c { text-align: center; }
+.po-table td.muted, .po-table .muted { color: var(--tu); }
+.po-table tbody tr:hover { background: var(--bs); }
+.po-state { text-align: center; padding: 24px; color: var(--tu); font-size: 12.5px; }
+/* Nama pasien di tabel: tampil seperti teks tabel biasa (hitam, font & berat
+   seragam dgn sel lain) tapi tetap bisa diklik. */
+.lnk { color: var(--td); font-weight: inherit; font-size: inherit; font-family: inherit; text-decoration: none; cursor: pointer; }
+.lnk:hover { text-decoration: underline; }
+.action-row { display: inline-flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+
+.pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.pill-gray { background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
+.pill-info { background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
+.pill-success { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
+.pill-danger { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
+.pill-warning { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
+
+/* Tombol */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; height: 32px; border-radius: 7px; font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
+.btn-sm { height: 26px; padding: 0 10px; font-size: 11px; }
+.btn-primary { background: var(--gd); color: #fff; border-color: var(--gd); }
+.btn-primary:hover:not(:disabled) { background: var(--gm); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-info { background: var(--it); color: #fff; border-color: var(--it); }
+.btn-warning { background: var(--lm); color: var(--td); border-color: var(--lm); }
+.btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
+.btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+
+.hint { font-size: 11px; color: var(--tu); padding-left: 2px; }
+.muted { color: var(--tu); }
+.muted2 { color: var(--tu); font-size: .85rem; }
+
+/* Papan Room (cards) */
+.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.85rem; }
+.room-card { border: 1px solid var(--gb); border-radius: 11px; padding: .75rem; background: var(--bc); }
+.room-head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: baseline; border-bottom: 1px solid var(--gb); padding-bottom: .5rem; }
+.room-head strong { color: var(--td); }
+.room-head .kelas { color: var(--tu); font-size: .8rem; }
+.room-head .occ { margin-left: auto; font-size: .8rem; color: var(--ga); font-weight: 600; }
 .beds { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
-.bed { border: 2px solid; border-radius: 6px; padding: .4rem; min-width: 120px; font-size: .8rem; }
-.bed-label { font-weight: 700; color: #000; }
+.bed { border: 2px solid; border-radius: 8px; padding: .4rem; min-width: 120px; font-size: .8rem; }
+.bed-label { font-weight: 700; color: var(--td); }
 .bed-status { font-size: .7rem; font-weight: 600; }
-.bed-pt { margin-top: .3rem; cursor: pointer; color: #1763d4; }
-.bed-clean-btn { margin-top: .4rem; width: 100%; background: #d97706; color: #fff !important; border: none; border-radius: 4px; padding: .25rem; font-size: .72rem; cursor: pointer; }
-.list table { width: 100%; border-collapse: collapse; background: #fff; }
-.list th, .list td { border: 1px solid #e5e7eb; padding: .5rem; text-align: left; color: #000; }
-.list th { background: #f3f4f6; }
-.actions { display: flex; gap: .3rem; flex-wrap: wrap; }
-.actions button, .list button { padding: .3rem .6rem; border: 1px solid #d1d5db; border-radius: 5px; background: #fff; cursor: pointer; color: #000; }
-.btn-primary { background: #1763d4 !important; color: #fff !important; border-color: #1763d4 !important; }
-.btn-sep { background: #7c3aed !important; color: #fff !important; border-color: #7c3aed !important; }
-.btn-del { background: #ef4444 !important; color: #fff !important; border-color: #ef4444 !important; }
-/* Riwayat */
-.hist-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .6rem; margin-bottom: .8rem; }
-.hist-filter label { display: flex; flex-direction: column; font-size: .8rem; color: #374151; gap: .2rem; }
-.hist-filter input { padding: .35rem; border: 1px solid #d1d5db; border-radius: 5px; }
-.spri-badge { font-size: .7rem; font-weight: 700; padding: .1rem .4rem; border-radius: 8px; color: #fff; }
-.spri-SUCCESS { background: #16a34a; }
-.spri-DRAFT { background: #d97706; }
-.spri-FAILED { background: #ef4444; }
-/* Discharge sections */
-.discharge-section { border: 1px solid #e5e7eb; border-radius: 8px; padding: .5rem .7rem; margin: .6rem 0; }
-.discharge-section legend { font-size: .8rem; font-weight: 700; color: #1763d4; padding: 0 .3rem; }
-.spri-section legend { color: #7c3aed; }
-.obat-section legend { color: #047857; }
-.obat-pulang-tbl { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .82rem; }
-.obat-pulang-tbl th, .obat-pulang-tbl td { padding: .3rem .4rem; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: top; color: #000; }
-.obat-pulang-tbl th { color: #64748b; font-weight: 600; }
-.op-rule { width: 100%; box-sizing: border-box; padding: .25rem .4rem; border: 1px solid #cbd5e1; border-radius: 5px; margin-bottom: .25rem; font-size: .78rem; }
-/* Fase 8 — badge pre-op/observasi + note jadwal + upload hasil eksternal */
+.bed-pt { margin-top: .3rem; cursor: pointer; color: var(--ga); font-weight: 600; }
+.bed-clean-btn { margin-top: .4rem; width: 100%; background: var(--wt); color: #fff; border: none; border-radius: 5px; padding: .25rem; font-size: .72rem; cursor: pointer; }
+
+/* Fase 8 — badge pre-op/observasi */
 .ri-badge { display: inline-block; font-size: .62rem; font-weight: 700; padding: .08rem .35rem; border-radius: 7px; margin-left: .35rem; vertical-align: middle; letter-spacing: .3px; }
-.ri-preop { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
-.ri-obs   { background: #e0f2fe; color: #075985; border: 1px solid #7dd3fc; }
-.ri-preop-note { display: flex; align-items: flex-start; gap: .55rem; background: #f0fdfa; border: 1px solid #99f6e4; color: #0f766e; border-radius: 9px; padding: .6rem .75rem; margin: .6rem 0; font-size: .82rem; }
+.ri-preop { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
+.ri-obs   { background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
+.ri-preop-note { display: flex; align-items: flex-start; gap: .55rem; background: var(--gl); border: 1px solid var(--ibd); color: var(--it); border-radius: 9px; padding: .6rem .75rem; margin: .6rem 0; font-size: .82rem; }
 .ri-preop-note svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: .1rem; }
+
+/* ===== MODAL (gaya AsuransiView: header gradient navy) ===== */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 9100; padding: 1rem; }
+.modal { background: var(--bc); border-radius: 12px; width: 460px; max-width: 94vw; max-height: 90vh; overflow-y: auto; padding: 0 1.2rem 1.2rem; }
+.modal.wide { width: 860px; }
+/* Header full-bleed gradient navy (negative margin menutup padding samping .modal) */
+.modal h3 { margin: 0 -1.2rem 0.9rem; padding: 0.9rem 1.2rem; background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; font-family: var(--font-display); font-size: 16px; position: sticky; top: 0; z-index: 2; }
+.modal h4 { color: var(--gd); margin: .8rem 0 .4rem; font-size: .9rem; }
+.modal label { display: block; margin: .6rem 0; color: var(--td); font-size: 12.5px; }
+.modal input, .modal select, .modal textarea { width: 100%; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; margin-top: .2rem; font-size: 12.5px; font-family: inherit; background: var(--bc); color: var(--td); box-sizing: border-box; }
+.modal input:focus, .modal select:focus, .modal textarea:focus { outline: none; border-color: var(--ga); }
+.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; padding: 0.75rem 1.2rem; border-top: 1px solid var(--gb); background: var(--bs); margin: 1rem -1.2rem -1.2rem; }
+.modal-actions button { padding: 0 14px; height: 32px; border: 1.5px solid var(--gb); border-radius: 7px; background: transparent; cursor: pointer; color: var(--tm); font-family: inherit; font-size: 12px; }
+.modal-actions button:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+.modal-actions .btn-primary { background: var(--gd); color: #fff; border-color: var(--gd); }
+.modal-actions .btn-primary:hover:not(:disabled) { background: var(--gm); }
+.modal-actions .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Discharge sections */
+.discharge-section { border: 1px solid var(--gb); border-radius: 8px; padding: .5rem .7rem; margin: .6rem 0; }
+.discharge-section legend { font-size: .8rem; font-weight: 700; color: var(--gd); padding: 0 .3rem; }
+.spri-section legend { color: var(--pt); }
+.obat-section legend { color: var(--st); }
+.obat-pulang-tbl { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .82rem; }
+.obat-pulang-tbl th, .obat-pulang-tbl td { padding: .3rem .4rem; border-bottom: 1px solid var(--gb); text-align: left; vertical-align: top; color: var(--td); }
+.obat-pulang-tbl th { color: var(--tm); font-weight: 600; }
+.op-rule { width: 100%; box-sizing: border-box; padding: .25rem .4rem; border: 1px solid var(--gb); border-radius: 5px; margin-bottom: .25rem; font-size: .78rem; }
+.op-rule-row { display: flex; gap: .3rem; margin-bottom: .25rem; }
+.op-total-label { text-align: right; font-weight: 600; color: var(--tm); }
+.op-total-val { font-weight: 700; color: var(--st); }
+
+/* Hasil eksternal upload */
 .doc-upload { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .6rem 0; }
 .doc-cat { width: auto; min-width: 110px; }
 .doc-title { flex: 1; min-width: 160px; }
 .doc-file { flex: 1; min-width: 180px; }
-.muted { color: #9ca3af; text-align: center; }
-.muted2 { color: #6b7280; font-size: .85rem; }
-.hint { color: #1763d4; font-size: .8rem; }
-.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 9100; }
-.modal { background: #fff; border-radius: 10px; padding: 1.5rem; width: 440px; max-width: 92vw; max-height: 90vh; overflow-y: auto; }
-.modal.wide { width: 820px; }
-.modal h3 { color: #1763d4; margin-top: 0; }
-.modal h4 { color: #1763d4; margin: .8rem 0 .4rem; font-size: .9rem; }
-.modal label { display: block; margin: .6rem 0; color: #000; }
-.modal input, .modal select, .modal textarea { width: 100%; padding: .4rem; border: 1px solid #d1d5db; border-radius: 5px; margin-top: .2rem; }
-.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
-.modal-actions button { padding: .5rem 1rem; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; color: #000; }
+
+/* Tindakan/obat picker + bill */
 .add-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: .5rem 0 1rem; }
-.add-box { border: 1px solid #e5e7eb; border-radius: 8px; padding: .6rem; }
+.add-box { border: 1px solid var(--gb); border-radius: 8px; padding: .6rem; }
 .add-search { margin-bottom: .4rem; }
 .add-row { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
-.add-price { flex: 1; font-size: .85rem; color: #1763d4; font-weight: 600; }
+.add-price { flex: 1; font-size: .85rem; color: var(--ga); font-weight: 600; }
+.add-box h4 { color: var(--gd); margin: 0 0 .4rem; font-size: .9rem; }
 .bill { width: 100%; border-collapse: collapse; margin: .5rem 0; }
-.bill th, .bill td { border: 1px solid #e5e7eb; padding: .35rem; font-size: .8rem; color: #000; }
-.bill th { background: #f3f4f6; }
-.del-x { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 1rem; }
-.total { text-align: right; color: #000; }
+.bill th, .bill td { border-bottom: 1px solid var(--gb); padding: .4rem; font-size: .8rem; color: var(--td); text-align: left; }
+.bill th { background: var(--bs); color: var(--tm); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: .03em; }
+.del-x { background: none; border: none; color: var(--et); cursor: pointer; font-size: 1rem; }
+.total { text-align: right; color: var(--td); }
+.btn-add { margin-left: auto; }
+.btn-press { transition: transform .08s ease; }
+.btn-press:active { transform: translateY(1px) scale(.98); }
 
 /* Tab dalam modal detail */
-.dtabs { display: flex; gap: .4rem; margin: .8rem 0; border-bottom: 1px solid #e5e7eb; }
-.dtabs button { padding: .45rem .9rem; border: none; background: none; cursor: pointer; color: #6b7280; border-bottom: 2px solid transparent; font-size: .9rem; }
-.dtabs button.on { color: #1763d4; border-bottom-color: #1763d4; font-weight: 600; }
+.dtabs { display: flex; gap: .4rem; margin: .8rem 0; border-bottom: 1px solid var(--gb); }
+.dtabs button { padding: .45rem .9rem; border: none; background: none; cursor: pointer; color: var(--tu); border-bottom: 2px solid transparent; font-size: .9rem; }
+.dtabs button.on { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 
 /* CPPT */
-.cppt-form { border: 1px solid #e5e7eb; border-radius: 8px; padding: .7rem; margin-bottom: 1rem; }
-.cppt-form h4 { display: flex; align-items: center; gap: .5rem; margin: 0 0 .6rem; color: #000; }
+.cppt-form { border: 1px solid var(--gb); border-radius: 8px; padding: .7rem; margin-bottom: 1rem; background: var(--bs); }
+.cppt-form h4 { display: flex; align-items: center; gap: .5rem; margin: 0 0 .6rem; color: var(--td); }
 .ttv-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
-.ttv-row label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .8rem; color: #000; }
-.ttv-row input { width: 56px; padding: .25rem; margin: 0; border: 1px solid #d1d5db; border-radius: 4px; }
-.ttv-sep { color: #6b7280; }
-.cppt-form textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 5px; padding: .4rem; color: #000; }
-/* SOAP grid */
+.ttv-row label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .8rem; color: var(--td); }
+.ttv-row input { width: 56px; padding: .25rem; margin: 0; border: 1px solid var(--gb); border-radius: 4px; }
+.ttv-sep { color: var(--tu); }
+.cppt-form textarea { width: 100%; border: 1px solid var(--gb); border-radius: 5px; padding: .4rem; color: var(--td); }
 .soap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-bottom: .5rem; }
 .soap-cell { display: flex; gap: .4rem; align-items: flex-start; margin: 0; }
-.soap-tag { flex: 0 0 24px; height: 24px; line-height: 24px; text-align: center; font-weight: 700; color: #fff; background: #1763d4; border-radius: 5px; font-size: .82rem; }
+/* Label S/O/A/P: huruf polos hitam, tanpa kotak/background. */
+.soap-tag { flex: 0 0 24px; height: 24px; line-height: 24px; text-align: center; font-weight: 700; color: var(--td); background: none; font-size: .9rem; }
 .soap-cell textarea { flex: 1; }
-.instruksi-label { display: block; font-size: .8rem; color: #374151; margin-bottom: .5rem; }
+.instruksi-label { display: block; font-size: .8rem; color: var(--tm); margin-bottom: .5rem; }
 .ttv-collapse { margin-bottom: .6rem; }
-.ttv-collapse summary { cursor: pointer; font-size: .8rem; color: #1763d4; }
+.ttv-collapse summary { cursor: pointer; font-size: .8rem; color: var(--ga); }
 .cppt-actions { display: flex; gap: .5rem; }
-.btn-ghost { background: #fff; border: 1px solid #d1d5db; border-radius: 5px; padding: .4rem .8rem; cursor: pointer; color: #374151; }
+.btn-ghost { background: var(--bc); border: 1px solid var(--gb); border-radius: 5px; padding: .4rem .8rem; cursor: pointer; color: var(--tm); }
+.btn-ghost:hover { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .cppt-timeline { display: flex; flex-direction: column; gap: .5rem; }
-.cppt-item { border-left: 4px solid #1763d4; background: #f8fafc; padding: .5rem .7rem; border-radius: 0 6px 6px 0; }
-.cppt-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .78rem; color: #475569; }
-.cppt-meta strong { color: #000; }
-.cppt-time { color: #6b7280; }
-.cppt-edited { color: #d97706; font-style: italic; }
-.cppt-ttv { display: flex; flex-wrap: wrap; gap: .6rem; font-size: .78rem; color: #1763d4; margin: .25rem 0; }
-.cppt-mata { display: flex; flex-wrap: wrap; gap: .8rem; font-size: .78rem; color: #7c3aed; margin: .15rem 0 .3rem; font-weight: 600; }
-.cppt-soap { font-size: .85rem; color: #000; position: relative; }
+.cppt-item { border-left: 4px solid var(--ga); background: var(--bs); padding: .5rem .7rem; border-radius: 0 6px 6px 0; }
+.cppt-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .78rem; color: var(--tm); }
+.cppt-meta strong { color: var(--td); }
+.cppt-time { color: var(--tu); }
+.cppt-edited { color: var(--wt); font-style: italic; }
+.cppt-ttv { display: flex; flex-wrap: wrap; gap: .6rem; font-size: .78rem; color: var(--ga); margin: .25rem 0; }
+.cppt-mata { display: flex; flex-wrap: wrap; gap: .8rem; font-size: .78rem; color: var(--pt); margin: .15rem 0 .3rem; font-weight: 600; }
+.cppt-soap { font-size: .85rem; color: var(--td); position: relative; }
 .cppt-soap p { margin: .15rem 0; white-space: pre-wrap; }
-/* CPPT panjang: clamp ~5 baris lalu fade, expand via tombol */
+.cppt-soap p b { color: var(--td); }   /* label S/O/A/P hitam */
 .cppt-soap.clamped { max-height: 7.5em; overflow: hidden; }
-.cppt-soap.clamped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.2em; background: linear-gradient(to bottom, rgba(248,250,252,0), #f8fafc); }
+.cppt-soap.clamped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.2em; background: linear-gradient(to bottom, rgba(249,250,252,0), var(--bs)); }
 .cppt-toggle { margin-top: .25rem; }
-/* Refraksi ringkas di form */
-.refraksi-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .5rem; padding-top: .5rem; border-top: 1px dashed #e5e7eb; }
-.refraksi-head { font-size: .76rem; font-weight: 700; color: #7c3aed; }
-.refraksi-row label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .8rem; color: #000; }
-.refraksi-row input { width: 60px; padding: .25rem; margin: 0; border: 1px solid #d1d5db; border-radius: 4px; }
-.refraksi-row select { padding: .25rem; border: 1px solid #d1d5db; border-radius: 4px; color: #000; }
-.cppt-instruksi { color: #b45309; }
-.cppt-notes-legacy { color: #374151; font-style: italic; }
+.refraksi-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .5rem; padding-top: .5rem; border-top: 1px dashed var(--gb); }
+.refraksi-head { font-size: .76rem; font-weight: 700; color: var(--pt); }
+.refraksi-row label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .8rem; color: var(--td); }
+.refraksi-row input { width: 60px; padding: .25rem; margin: 0; border: 1px solid var(--gb); border-radius: 4px; }
+.refraksi-row select { padding: .25rem; border: 1px solid var(--gb); border-radius: 4px; color: var(--td); }
+.cppt-instruksi { color: var(--wt); }
+.cppt-notes-legacy { color: var(--tm); font-style: italic; }
 .cppt-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .4rem; font-size: .76rem; }
-.cppt-verified { color: #16a34a; font-weight: 600; }
-.cppt-unverified { color: #9ca3af; }
+.cppt-verified { color: var(--st); font-weight: 600; }
+.cppt-unverified { color: var(--tu); }
 .cppt-foot-actions { margin-left: auto; display: flex; gap: .6rem; }
-.btn-link { background: none; border: none; padding: 0; color: #1763d4; cursor: pointer; font-size: .76rem; text-decoration: underline; }
-.btn-verify { color: #16a34a; font-weight: 600; }
+.btn-link { background: none; border: none; padding: 0; color: var(--ga); cursor: pointer; font-size: .76rem; text-decoration: underline; }
+.btn-verify { color: var(--st); font-weight: 600; }
 /* Badge peran PPA */
 .ppa-badge { font-size: .68rem; font-weight: 700; padding: .1rem .45rem; border-radius: 10px; color: #fff; white-space: nowrap; }
-.ppa-DOKTER { background: #1763d4; }
+.ppa-DOKTER { background: var(--gd); }
 .ppa-PERAWAT { background: #0891b2; }
-.ppa-APOTEKER { background: #7c3aed; }
-.ppa-GIZI { background: #16a34a; }
+.ppa-APOTEKER { background: var(--pt); }
+.ppa-GIZI { background: var(--st); }
 .ppa-FISIOTERAPIS { background: #db2777; }
-.ppa-LAINNYA { background: #6b7280; }
-.ppa-edge-DOKTER { border-left-color: #1763d4; }
+.ppa-LAINNYA { background: var(--tu); }
+.ppa-edge-DOKTER { border-left-color: var(--gd); }
 .ppa-edge-PERAWAT { border-left-color: #0891b2; }
-.ppa-edge-APOTEKER { border-left-color: #7c3aed; }
-.ppa-edge-GIZI { border-left-color: #16a34a; }
+.ppa-edge-APOTEKER { border-left-color: var(--pt); }
+.ppa-edge-GIZI { border-left-color: var(--st); }
 .ppa-edge-FISIOTERAPIS { border-left-color: #db2777; }
-.ppa-edge-LAINNYA { border-left-color: #6b7280; }
-.toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #16a34a; color: #fff; padding: .75rem 1.25rem; border-radius: 8px; z-index: 9200; }
-.toast.err { background: #ef4444; }
+.ppa-edge-LAINNYA { border-left-color: var(--tu); }
+.toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--st); color: #fff; padding: .75rem 1.25rem; border-radius: 9px; z-index: 9200; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.toast.err { background: var(--et); }
 </style>

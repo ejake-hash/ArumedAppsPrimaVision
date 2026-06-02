@@ -160,8 +160,17 @@ class UnitReturnService
 
         $result = DB::transaction(function () use ($ret, $station) {
             foreach ($ret->items as $item) {
-                $this->removeUnitStock($item->item_type, $item->item_id, (float) $item->qty_returned, $station); // stok unit berkurang (FEFO)
-                $this->returnStock($item);                              // gudang (INVENTORI) bertambah
+                // Stok unit SELALU berkurang (barang fisik memang keluar dari unit,
+                // apa pun kondisinya).
+                $this->removeUnitStock($item->item_type, $item->item_id, (float) $item->qty_returned, $station);
+
+                // Gudang (INVENTORI) hanya bertambah untuk barang yang MASIH LAYAK
+                // pakai. Barang DAMAGED/EXPIRED tidak boleh masuk kembali ke stok
+                // jual/dispensing — itu jadi limbah, bukan stok. Kalau tidak
+                // difilter, barang rusak/kadaluarsa bisa terdispensing ke pasien.
+                if ($this->isReusableCondition($item->condition)) {
+                    $this->returnStock($item);                          // gudang (INVENTORI) bertambah
+                }
             }
 
             $ret->update([
@@ -252,20 +261,32 @@ class UnitReturnService
     }
 
     /**
+     * Barang retur yang masih layak masuk kembali ke stok jual/dispensing.
+     * GOOD & NEAR_EXPIRY masih bisa dipakai; DAMAGED & EXPIRED tidak (limbah).
+     */
+    private function isReusableCondition(?string $condition): bool
+    {
+        return in_array(
+            $condition ?? UnitReturnItem::CONDITION_GOOD,
+            [UnitReturnItem::CONDITION_GOOD, UnitReturnItem::CONDITION_NEAR_EXPIRY],
+            true
+        );
+    }
+
+    /**
      * Tambah stok kembali ke GUDANG (INVENTORI), upsert per item+batch.
      */
     private function returnStock(UnitReturnItem $item): void
     {
-        $stock = InventoryStock::firstOrNew([
-            'item_type' => $item->item_type,
-            'location'  => InventoryStock::LOC_INVENTORI,
-            'item_id'   => $item->item_id,
-            'batch_no'  => $item->batch_no,
-        ]);
-        $stock->expiry_date = $item->expiry_date ?? $stock->expiry_date;
-        $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + (float) $item->qty_returned;
-        $stock->last_received_at = now();
-        $stock->save();
+        // upsertStock = sumber tunggal (batch_no NULL tidak diduplikasi).
+        $this->stockService->upsertStock(
+            $item->item_type,
+            $item->item_id,
+            InventoryStock::LOC_INVENTORI,
+            $item->batch_no,
+            (float) $item->qty_returned,
+            $item->expiry_date ?? null
+        );
     }
 
     /**

@@ -114,6 +114,14 @@ function triggerPrint() {
   }
 }
 
+// Cetak ulang dari layar tiket: print + restart countdown 15s. Tanpa restart,
+// dialog print yang blocking bisa membuat countdown lama keburu habis → user
+// ketendang ke home tepat setelah menutup dialog cetak.
+function reprintTicket() {
+  triggerPrint()
+  startCountdown()
+}
+
 // ─── Countdown auto-reset ───────────────────────────────────────────────────
 function startCountdown() {
   clearInterval(cdTimer) // jaga-jaga bila timer lama belum dibersihkan
@@ -205,7 +213,7 @@ onUnmounted(() => {
             <span class="cc-badge muted">Integrasi VClaim Berjalan</span>
           </button>
 
-          <button class="choice-card umum-card" @click="goUmum" :disabled="backendStatus === 'offline'">
+          <button class="choice-card umum-card" @click="goUmum" :disabled="backendStatus === 'offline' || screen === 'umum-loading'">
             <div class="cc-icon">
               <svg viewBox="0 0 64 64" fill="none">
                 <circle cx="32" cy="22" r="11" stroke="rgba(255,255,255,0.75)" stroke-width="2.5"/>
@@ -284,7 +292,7 @@ onUnmounted(() => {
           </div>
 
           <div class="ta-actions">
-            <button class="ksk-btn sec sm" @click="triggerPrint" title="Cetak ulang tiket">
+            <button class="ksk-btn sec sm" @click="reprintTicket" title="Cetak ulang tiket">
               <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
               Cetak Ulang
             </button>
@@ -564,7 +572,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .ksk-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
-.ksk-btn.pri { background: var(--lm); border-color: var(--lm); color: #061d15; }
+.ksk-btn.pri { background: var(--lm); border-color: var(--lm); color: #06182E; }
 .ksk-btn.pri:hover { background: var(--ld); border-color: var(--ld); }
 .ksk-btn.sec { background: transparent; border-color: rgba(255, 255, 255, 0.25); color: rgba(255, 255, 255, 0.75); }
 .ksk-btn.sec:hover { border-color: rgba(255, 255, 255, 0.55); color: #fff; }
@@ -606,7 +614,7 @@ onUnmounted(() => {
 .tkt-type.u { background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }
 .tkt-perf {
   height: 14px;
-  background: repeating-linear-gradient(90deg, transparent, transparent 6px, #fff 6px, #fff 7px) #f0f4f1;
+  background: repeating-linear-gradient(90deg, transparent, transparent 6px, #fff 6px, #fff 7px) #eef4f9;
 }
 .tkt-num {
   font-family: 'Space Grotesk', serif;

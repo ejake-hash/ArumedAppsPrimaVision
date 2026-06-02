@@ -14,10 +14,10 @@ use Illuminate\Support\Facades\DB;
 
 class KlaimService
 {
-    // INA-CBGs grouper version — update annually
-    private const GROUPER_VERSION = '5.2';
-
-    public function __construct(private readonly Request $request) {}
+    public function __construct(
+        private readonly Request $request,
+        private readonly InaCbgsService $eklaim,
+    ) {}
 
     // =========================================================================
     // LIST & DETAIL
@@ -118,7 +118,7 @@ class KlaimService
 
             $this->addAuditLog(
                 $claim->id,
-                $user->employee_id,
+                $user?->employee_id,
                 'PREPARE',
                 $oldStatus,
                 $claim->status,
@@ -128,7 +128,7 @@ class KlaimService
             return $claim;
         });
 
-        $this->log($user->id, 'PREPARE_CLAIM', BpjsClaim::class, $claim->id, "SEP {$visit->no_sep}");
+        $this->log($user?->id, 'PREPARE_CLAIM', BpjsClaim::class, $claim->id, "SEP {$visit->no_sep}");
 
         return $claim->fresh(['visit.patient', 'auditLogs.performedBy']);
     }
@@ -223,8 +223,13 @@ class KlaimService
     // =========================================================================
 
     /**
-     * Run INA-CBGs grouper on claim data → get CBG code + tariff + severity.
-     * Placeholder: actual engine is JAR-based or API-based (configured per year).
+     * Grouping INA-CBGs via WS E-Klaim resmi (BUKAN grouper mock).
+     *
+     * Satu tombol "Jalankan Grouping" di UI = rangkaian WS lengkap:
+     *   new_claim → set_claim_data → grouper
+     * sehingga kode CBG + tarif yang tersimpan adalah hasil aplikasi E-Klaim,
+     * bukan angka placeholder. set_claim_data idempoten di sisi E-Klaim
+     * (mengirim ulang payload terkini), jadi aman dipanggil saat grouping ulang.
      */
     public function runInaCbgsGrouping(string $claimId): BpjsClaim
     {
@@ -238,59 +243,240 @@ class KlaimService
             throw new \Exception('Diagnosis utama belum ada.', 422);
         }
 
-        $config    = $this->getInaCbgsConfig();
-        $inputData = [
-            'diagnosis_utama'    => $claim->diagnosis_utama,
-            'diagnosis_sekunder' => $claim->diagnosis_sekunder ?? [],
-            'procedure_codes'    => $claim->procedure_codes ?? [],
-        ];
+        // 1) Registrasi klaim ke E-Klaim (idempoten: klaim yang sudah ada akan
+        //    dijawab "sudah terdaftar" oleh ws.php — tetap lanjut).
+        $this->eklaimNewClaim($claimId);
 
-        // Run grouper (placeholder — integrasikan JAR/API saat engine tersedia)
-        $result = $this->callGrouper($inputData, $config);
+        // 2) Kirim/refresh data klaim (diagnosa, prosedur, tarif RS, dll).
+        $this->eklaimSetData($claimId);
 
-        return DB::transaction(function () use ($claim, $inputData, $result, $config) {
-            $user = auth('api')->user();
+        // 3) Jalankan grouper resmi → simpan CBG + tarif balik ke klaim.
+        return $this->eklaimGrouper($claimId);
+    }
 
-            // Simpan grouping log
-            InacbgsGroupingLog::create([
-                'visit_id'        => $claim->visit_id,
-                'bpjs_claim_id'   => $claim->id,
-                'grouper_version' => $config['version'] ?? self::GROUPER_VERSION,
-                'input_diagnosis' => [
-                    'utama'    => $inputData['diagnosis_utama'],
-                    'sekunder' => $inputData['diagnosis_sekunder'],
-                ],
-                'input_tindakan'  => array_map(fn ($c) => ['code' => $c], $inputData['procedure_codes']),
-                'cbg_code'        => $result['cbg_code'],
-                'cbg_tarif'       => $result['cbg_tarif'],
-                'severity_level'  => $result['severity_level'],
-                'engine_type'     => $config['engine_type'] ?? 'JAR',
-                'status'          => $result['success'] ? 'SUCCESS' : 'FAILED',
-                'error_message'   => $result['error'] ?? null,
-            ]);
+    // =========================================================================
+    // E-KLAIM INA-CBG (Web Service ws.php)
+    // =========================================================================
+    //
+    // Alur: eklaimNewClaim -> eklaimSetData -> eklaimGrouper -> eklaimFinal,
+    // dengan eklaimStatus / eklaimReedit untuk sinkron & koreksi. Semua call
+    // didelegasikan ke InaCbgsService (WS client) dan tercatat di
+    // inacbgs_grouping_logs. Hasil grouping disimpan balik ke kolom klaim.
 
-            if (! $result['success']) {
-                throw new \Exception('Grouper gagal: ' . ($result['error'] ?? 'Unknown error'), 500);
-            }
+    /** new_claim — registrasi klaim (SEP/RM) ke E-Klaim. */
+    public function eklaimNewClaim(string $claimId): array
+    {
+        $claim = $this->guardEklaimReady($claimId);
 
-            $oldStatus = $claim->status;
+        $res = $this->eklaim->newClaim([
+            'nomor_sep' => $claim->no_sep,
+            'nomor_rm'  => $claim->visit?->patient?->no_rm ?? $claim->patient_nik,
+            'nomor_kartu' => $claim->visit?->patient?->bpjs_number,
+            'nama_pasien' => $claim->visit?->patient?->name,
+        ], $claim->id, $claim->visit_id);
 
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_NEW',
+            $claim->status, $claim->status, $res['message'] ?? ('code ' . ($res['code'] ?? '-')));
+
+        return $res;
+    }
+
+    /** set_claim_data — kirim payload klaim lengkap (builder Fase 4). */
+    public function eklaimSetData(string $claimId): array
+    {
+        $claim = $this->guardEklaimReady($claimId);
+
+        $payload = $this->buildEklaimPayload($claim);
+        $res = $this->eklaim->setClaimData($payload, $claim->id, $claim->visit_id);
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_SET_DATA',
+            $claim->status, $claim->status, $res['message'] ?? ('code ' . ($res['code'] ?? '-')));
+
+        return $res;
+    }
+
+    /** grouper — jalankan grouper E-Klaim, simpan CBG + tarif balik ke klaim. */
+    public function eklaimGrouper(string $claimId, int $stage = 1): BpjsClaim
+    {
+        $claim = $this->guardEklaimReady($claimId);
+
+        $res = $this->eklaim->grouper($claim->no_sep, $stage, $claim->id, $claim->visit_id);
+
+        // Bentuk respons grouper E-Klaim (umum): data.cbg.code / .tariff / .description.
+        $cbg = $res['data']['cbg'] ?? $res['raw']['response']['cbg'] ?? [];
+        $code  = $cbg['code']   ?? $cbg['kode']  ?? null;
+        $tarif = $cbg['tariff'] ?? $cbg['tarif'] ?? null;
+
+        if ($res['success'] && $code) {
             $claim->update([
-                'inacbgs_kode' => $result['cbg_code'],
-                'inacbgs_tarif' => $result['cbg_tarif'],
+                'inacbgs_kode'  => $code,
+                'inacbgs_tarif' => $tarif,
             ]);
+        }
 
-            $this->addAuditLog(
-                $claim->id,
-                $user->employee_id,
-                'GROUPING',
-                $oldStatus,
-                $claim->status,
-                "CBG: {$result['cbg_code']} — Tarif: " . number_format($result['cbg_tarif'])
-            );
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_GROUPER',
+            $claim->status, $claim->status,
+            $code ? "CBG: {$code} — Tarif: " . number_format((float) $tarif) : ($res['message'] ?? 'Grouper gagal'));
 
-            return $claim;
-        });
+        if (! $res['success']) {
+            throw new \Exception('Grouper E-Klaim gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /** claim_final — finalisasi (irreversible). Tandai klaim SUBMITTED. */
+    public function eklaimFinal(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        // Idempotensi: klaim yang sudah final/selesai jangan difinalisasi ulang
+        // (mencegah re-stamp submitted_at & panggilan WS claim_final berulang).
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah difinalisasi. Gunakan Re-edit bila perlu koreksi.', 422);
+        }
+
+        if (! $claim->inacbgs_kode) {
+            throw new \Exception('Grouping E-Klaim belum dilakukan sebelum finalisasi.', 422);
+        }
+
+        $res = $this->eklaim->claimFinal($claim->no_sep, $claim->id, $claim->visit_id);
+
+        if (! $res['success']) {
+            $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_FINAL_GAGAL',
+                $claim->status, $claim->status, $res['message'] ?? 'Finalisasi gagal');
+            throw new \Exception('Finalisasi E-Klaim gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        $user = auth('api')->user();
+        $old  = $claim->status;
+        $claim->update([
+            'status'        => 'SUBMITTED',
+            'bpjs_status'   => 'FINAL',
+            'bpjs_response' => $res['raw'] ?? null,
+            'submitted_at'  => now(),
+        ]);
+
+        $this->addAuditLog($claim->id, $user?->employee_id, 'EKLAIM_FINAL', $old, 'SUBMITTED',
+            'Klaim difinalisasi di E-Klaim. ' . ($res['message'] ?? ''));
+        $this->log($user?->id, 'EKLAIM_FINAL', BpjsClaim::class, $claim->id, "SEP {$claim->no_sep}");
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /** get_claim_status — status klaim di E-Klaim (tidak mengubah data lokal). */
+    public function eklaimStatus(string $claimId): array
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        return $this->eklaim->getClaimStatus($claim->no_sep, $claim->id, $claim->visit_id);
+    }
+
+    /** reedit_claim — buka kembali klaim final untuk koreksi. */
+    public function eklaimReedit(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        $res = $this->eklaim->reeditClaim($claim->no_sep, $claim->id, $claim->visit_id);
+
+        if (! $res['success']) {
+            throw new \Exception('Re-edit E-Klaim gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        // Kembalikan ke DRAFT agar bisa dikoreksi & diproses ulang.
+        $old = $claim->status;
+        $claim->update(['status' => 'DRAFT', 'bpjs_status' => null, 'submitted_at' => null]);
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_REEDIT',
+            $old, 'DRAFT', 'Klaim dibuka kembali dari E-Klaim untuk koreksi.');
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Fase 4 — Builder payload set_claim_data dari relasi Visit Arumed.
+     *
+     * ⚠️ PERLU VERIFIKASI ke Manual WS E-Klaim build 5.10.x: nama field,
+     * format tanggal, kode gender, separator diagnosa/prosedur, dan apakah
+     * tarif dikirim per-komponen atau total. Struktur di bawah memakai bentuk
+     * umum WS E-Klaim; sesuaikan setelah Manual WS tersedia.
+     */
+    public function buildEklaimPayload(BpjsClaim $claim): array
+    {
+        $visit   = $claim->visit;
+        $patient = $visit?->patient;
+        $exam    = $visit?->doctorExamination;
+        $invoice = $visit?->billingInvoice;
+
+        $isRanap = ($visit?->jenis_pelayanan ?? 'RAJAL') === 'RANAP';
+
+        $tglMasuk = $visit?->admission_at
+            ? \Illuminate\Support\Carbon::parse($visit->admission_at)->format('Y-m-d')
+            : \Illuminate\Support\Carbon::parse($visit?->visit_date ?? now())->format('Y-m-d');
+        $tglPulang = $visit?->discharge_at
+            ? \Illuminate\Support\Carbon::parse($visit->discharge_at)->format('Y-m-d')
+            : $tglMasuk;
+
+        // Diagnosa: utama + sekunder digabung separator ';' (umum WS E-Klaim).
+        $dxSekunder = collect($claim->diagnosis_sekunder ?? [])
+            ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
+            ->filter()->values()->all();
+        $diagnosa = implode(';', array_filter(array_merge([$claim->diagnosis_utama], $dxSekunder)));
+
+        $prosedur = collect($claim->procedure_codes ?? [])
+            ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
+            ->filter()->values()->all();
+
+        return [
+            'nomor_sep'      => $claim->no_sep,
+            'nomor_kartu'    => $patient?->bpjs_number,
+            'nomor_rm'       => $patient?->no_rm ?? $claim->patient_nik,
+            'nama_pasien'    => $patient?->name,
+            'tgl_lahir'      => $patient?->date_of_birth?->format('Y-m-d'),
+            // E-Klaim: 1=laki-laki, 2=perempuan. Patient Arumed: L/P.
+            'gender'         => ($patient?->gender === 'P') ? '2' : '1',
+            'tgl_masuk'      => $tglMasuk,
+            'tgl_pulang'     => $tglPulang,
+            'jenis_rawat'    => $isRanap ? '1' : '2', // 1=inap, 2=jalan
+            'kelas_rawat'    => (string) ($visit?->kelas_rawat_hak ?? '3'),
+            'diagnosa'       => $diagnosa,
+            'procedure'      => implode(';', $prosedur),
+            'tarif_rs'       => (float) ($invoice?->total ?? 0),
+            'kode_tarif'     => config('eklaim.kode_tarif', 'CS'),
+            'cara_pulang'    => $this->mapCaraPulang($visit?->discharge_type),
+            'dpjp'           => $exam?->doctor?->name,
+        ];
+    }
+
+    /** Map discharge_type Arumed -> kode cara pulang E-Klaim. */
+    private function mapCaraPulang(?string $type): string
+    {
+        if ($type === null) {
+            return '1'; // default: atas persetujuan dokter (hindari null array offset)
+        }
+
+        return [
+            'PULANG_SEHAT' => '1', // atas persetujuan dokter
+            'RUJUK'        => '2',
+            'APS'          => '3', // atas permintaan sendiri
+            'MENINGGAL'    => '4',
+        ][$type] ?? '1';
+    }
+
+    /** Guard umum sebelum call WS: klaim ada, SEP & diagnosis utama terisi. */
+    private function guardEklaimReady(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::with(['visit.patient', 'visit.doctorExamination.doctor', 'visit.billingInvoice'])
+            ->findOrFail($claimId);
+
+        if (empty($claim->no_sep)) {
+            throw new \Exception('Nomor SEP belum ada pada klaim.', 422);
+        }
+        if (empty($claim->diagnosis_utama)) {
+            throw new \Exception('Diagnosis utama belum diisi.', 422);
+        }
+
+        return $claim;
     }
 
     // =========================================================================
@@ -354,15 +540,15 @@ class KlaimService
             $lupisData['tglMasuk']   = $tglMasuk;
             $lupisData['los']        = $los;
             $lupisData['kelasRawat'] = (string) ($visit->kelas_rawat_hak ?? '3');
-            $lupisData['caraKeluar'] = $caraKeluarMap[$visit->discharge_type] ?? '1';
+            $lupisData['caraKeluar'] = $visit->discharge_type ? ($caraKeluarMap[$visit->discharge_type] ?? '1') : '1';
         }
 
         $user = auth('api')->user();
 
         $claim->update(['lupis_data' => $lupisData]);
 
-        $this->addAuditLog($claim->id, $user->employee_id, 'LUPIS_GENERATED', $claim->status, $claim->status);
-        $this->log($user->id, 'GENERATE_LUPIS', BpjsClaim::class, $claimId);
+        $this->addAuditLog($claim->id, $user?->employee_id, 'LUPIS_GENERATED', $claim->status, $claim->status);
+        $this->log($user?->id, 'GENERATE_LUPIS', BpjsClaim::class, $claimId);
 
         return $claim->fresh();
     }
@@ -416,8 +602,8 @@ class KlaimService
             'rejected_at'      => now(),
         ]);
 
-        $this->addAuditLog($claim->id, $user->employee_id, 'RETURN_INTERNAL', $oldStatus, 'DIKEMBALIKAN', $reason);
-        $this->log($user->id, 'RETURN_CLAIM', BpjsClaim::class, $claimId, $reason);
+        $this->addAuditLog($claim->id, $user?->employee_id, 'RETURN_INTERNAL', $oldStatus, 'DIKEMBALIKAN', $reason);
+        $this->log($user?->id, 'RETURN_CLAIM', BpjsClaim::class, $claimId, $reason);
 
         return $claim->fresh(['auditLogs.performedBy']);
     }
@@ -503,53 +689,104 @@ class KlaimService
     // =========================================================================
 
     /**
-     * Submit klaim ke VClaim API.
-     * Guard: harus VERIFIED + VClaim enabled.
-     * Placeholder — implementasi actual VClaim call di IntegrasiService.
+     * Kirim klaim final ke E-Klaim INA-CBG (BUKAN mock VClaim).
+     *
+     * Tombol "Kirim ke BPJS" di UI = claim_final WS E-Klaim (irreversible,
+     * hanya bisa dibuka via Re-edit). Delegasi penuh ke eklaimFinal() yang
+     * memanggil ws.php, menandai klaim SUBMITTED + bpjs_status FINAL, dan
+     * mencatat audit. Guard status VERIFIED dipertahankan di sini.
      */
     public function submitClaim(string $claimId): BpjsClaim
     {
         $claim = BpjsClaim::findOrFail($claimId);
 
         if ($claim->status !== 'VERIFIED') {
-            throw new \Exception('Klaim harus dalam status VERIFIED sebelum disubmit.', 422);
+            throw new \Exception('Klaim harus dalam status VERIFIED sebelum dikirim.', 422);
         }
 
-        $this->assertVclaimEnabled();
+        // eklaimFinal: cek inacbgs_kode, call claim_final WS, set SUBMITTED + audit.
+        return $this->eklaimFinal($claimId);
+    }
 
-        $user = auth('api')->user();
+    // =========================================================================
+    // LAMPIRAN BERKAS KLAIM (upload PDF/gambar: resume RJ, hasil penunjang, dll)
+    // =========================================================================
 
-        // TODO: Panggil IntegrasiService::submitVClaimKlaim($claim)
-        // Saat ini → placeholder response
-        $mockResponse = [
-            'noSep'    => $claim->no_sep,
-            'status'   => 'submitted',
-            'timestamp' => now()->toIso8601String(),
-        ];
+    /** Daftar lampiran klaim (terbaru dulu). */
+    public function getAttachments(string $claimId): array
+    {
+        BpjsClaim::findOrFail($claimId); // 404 bila klaim tak ada
 
-        return DB::transaction(function () use ($claim, $user, $mockResponse) {
-            $oldStatus = $claim->status;
+        return \App\Models\ClaimAttachment::with('uploadedBy:id,name')
+            ->where('bpjs_claim_id', $claimId)
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn ($d) => [
+                'id'        => $d->id,
+                'category'  => $d->category,
+                'title'     => $d->title,
+                'file_name' => $d->file_name,
+                'file_url'  => $d->file_path ? \Illuminate\Support\Facades\Storage::disk('public')->url($d->file_path) : null,
+                'mime_type' => $d->mime_type,
+                'file_size' => $d->file_size,
+                'by'        => $d->uploadedBy?->name,
+                'at'        => $d->created_at?->toIso8601String(),
+            ])->all();
+    }
 
-            $claim->update([
-                'status'        => 'SUBMITTED',
-                'bpjs_status'   => 'PENDING',
-                'bpjs_response' => $mockResponse,
-                'submitted_at'  => now(),
-            ]);
+    /** Upload lampiran (PDF/gambar) ke klaim. */
+    public function uploadAttachment(string $claimId, array $data, $file): \App\Models\ClaimAttachment
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
 
-            $this->addAuditLog(
-                $claim->id,
-                $user->employee_id,
-                'SUBMIT',
-                $oldStatus,
-                'SUBMITTED',
-                'Disubmit ke VClaim'
-            );
+        // Klaim yang sudah final/selesai tidak boleh ditambah lampiran.
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah dikirim/selesai — lampiran tidak bisa ditambah.', 422);
+        }
 
-            $this->log($user->id, 'SUBMIT_CLAIM', BpjsClaim::class, $claim->id, "SEP {$claim->no_sep}");
+        $category = in_array($data['category'] ?? null, \App\Models\ClaimAttachment::CATEGORIES, true)
+            ? $data['category']
+            : 'LAINNYA';
 
-            return $claim;
-        });
+        $path = $file->store('claim-attachments', 'public');
+
+        $att = \App\Models\ClaimAttachment::create([
+            'bpjs_claim_id'  => $claim->id,
+            'category'       => $category,
+            'title'          => $data['title'] ?? $file->getClientOriginalName(),
+            'file_path'      => $path,
+            'file_name'      => $file->getClientOriginalName(),
+            'mime_type'      => $file->getClientMimeType(),
+            'file_size'      => $file->getSize(),
+            'uploaded_by_id' => auth('api')->user()?->employee_id,
+        ]);
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'UPLOAD_LAMPIRAN',
+            $claim->status, $claim->status, "Lampiran {$category}: {$att->file_name}");
+
+        return $att;
+    }
+
+    /** Hapus lampiran (beserta file fisik). */
+    public function deleteAttachment(string $claimId, string $attachmentId): void
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah dikirim/selesai — lampiran tidak bisa dihapus.', 422);
+        }
+
+        $att = \App\Models\ClaimAttachment::where('bpjs_claim_id', $claimId)->findOrFail($attachmentId);
+
+        if ($att->file_path) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($att->file_path);
+        }
+
+        $name = $att->file_name;
+        $att->delete();
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'HAPUS_LAMPIRAN',
+            $claim->status, $claim->status, "Hapus lampiran: {$name}");
     }
 
     // =========================================================================
@@ -604,34 +841,6 @@ class KlaimService
     // PRIVATE HELPERS
     // =========================================================================
 
-    /**
-     * Mock grouper — replace with actual JAR/API call when engine is available.
-     * Real implementation: spawn Java process or call external grouper API.
-     */
-    private function callGrouper(array $input, array $config): array
-    {
-        // Placeholder response — INA-CBGs engine TBD
-        // In production: integrate JAR via proc_open() or API endpoint
-        return [
-            'success'        => true,
-            'cbg_code'       => 'N-1-13-I-0-0', // placeholder CBG mata
-            'cbg_tarif'      => 850000,
-            'severity_level' => '1',
-            'error'          => null,
-        ];
-    }
-
-    private function getInaCbgsConfig(): array
-    {
-        $config = IntegrationConfig::where('system_name', 'INACBGS')->first();
-
-        return [
-            'version'     => self::GROUPER_VERSION,
-            'engine_type' => $config?->configuration['engine_type'] ?? 'JAR',
-            'is_enabled'  => $config?->is_enabled ?? false,
-        ];
-    }
-
     private function transitionStatus(
         string $claimId,
         string $fromStatus,
@@ -647,8 +856,8 @@ class KlaimService
 
         $claim->update(['status' => $toStatus]);
 
-        $this->addAuditLog($claim->id, $user->employee_id, $action, $fromStatus, $toStatus);
-        $this->log($user->id, $action . '_CLAIM', BpjsClaim::class, $claimId, "{$fromStatus} → {$toStatus}");
+        $this->addAuditLog($claim->id, $user?->employee_id, $action, $fromStatus, $toStatus);
+        $this->log($user?->id, $action . '_CLAIM', BpjsClaim::class, $claimId, "{$fromStatus} → {$toStatus}");
 
         return $claim->fresh(['auditLogs.performedBy']);
     }
@@ -669,15 +878,6 @@ class KlaimService
             'new_status'      => $newStatus,
             'notes'           => $notes,
         ]);
-    }
-
-    private function assertVclaimEnabled(): void
-    {
-        $config = IntegrationConfig::where('system_name', 'VCLAIM')->first();
-
-        if (! $config?->is_enabled) {
-            throw new \Exception('Integrasi VClaim belum diaktifkan. Konfigurasi credentials terlebih dahulu.', 503);
-        }
     }
 
     private function assertIcareEnabled(): void

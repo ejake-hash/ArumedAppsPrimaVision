@@ -64,6 +64,8 @@ export const authApi = {
   refresh:        ()          => api.post('/auth/refresh'),
   me:             ()          => api.get('/auth/me'),
   changePassword: (data)      => api.put('/auth/password', data),
+  changePin:      (data)      => api.put('/auth/pin', data),
+  resetToDefault: ()          => api.post('/auth/reset-to-default'),
 }
 
 /** Antrian — multi-station */
@@ -137,6 +139,7 @@ export const dokterApi = {
   verifyPin:        (pin)                 => api.post('/dokter/verify-pin', { pin }),
   antrian:          ()                    => api.get('/dokter/antrian'),
   panggil:          (id)                  => api.put(`/dokter/antrian/${id}/panggil`),
+  lewati:           (id)                  => api.put(`/dokter/antrian/${id}/lewati`),
   selesai:          (id)                  => api.put(`/dokter/antrian/${id}/selesai`),
   kePenunjang:      (id)                  => api.put(`/dokter/antrian/${id}/ke-penunjang`),
 
@@ -202,6 +205,9 @@ export const refraksiApi = {
 
   riwayat:            (patientId)        => api.get(`/refraksi/pasien/${patientId}/riwayat`),
   statusParallel:     (visitId)          => api.get(`/refraksi/kunjungan/${visitId}/status-parallel`),
+
+  // Opsi combobox (kind → daftar nilai siap-pakai). Master di masterApi.refraksiOpsi.
+  opsi:               ()                 => api.get('/refraksi/opsi'),
 }
 
 /** Dashboard */
@@ -244,6 +250,14 @@ export const masterApi = {
     deleteLogo: () => api.delete('/master/profil-klinik/logo'),
   },
 
+  // Penomoran Dokumen (document_number_configs) — dipakai PengaturanView
+  nomorDokumen: {
+    list:   ()         => api.get('/master/nomor-dokumen'),
+    create: (data)     => api.post('/master/nomor-dokumen', data),
+    update: (id, data) => api.put(`/master/nomor-dokumen/${id}`, data),
+    remove: (id)       => api.delete(`/master/nomor-dokumen/${id}`),
+  },
+
   // Tindakan / Prosedur (procedures) — master tarif acuan
   tindakan: {
     list:          (params)   => api.get('/master/tindakan', { params }),
@@ -257,7 +271,22 @@ export const masterApi = {
       create: (data)     => api.post('/master/tindakan/kategori', data),
       update: (id, data) => api.put(`/master/tindakan/kategori/${id}`, data),
       remove: (id)       => api.delete(`/master/tindakan/kategori/${id}`),
+      csvTemplate: (format) => api.get('/master/tindakan/kategori/template-csv', { params: format ? { format } : {}, responseType: 'blob' }),
+      csvExport:   (format) => api.get('/master/tindakan/kategori/export-csv',   { params: format ? { format } : {}, responseType: 'blob' }),
+      csvImport:   (file) => {
+        const fd = new FormData()
+        fd.append('file', file)
+        return api.post('/master/tindakan/kategori/import-csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      },
     },
+  },
+
+  // Opsi Refraksi (master combobox RefraksionisView) — range/list per kind
+  refraksiOpsi: {
+    list:   (params)   => api.get('/master/refraksi-opsi', { params }),
+    create: (data)     => api.post('/master/refraksi-opsi', data),
+    update: (id, data) => api.put(`/master/refraksi-opsi/${id}`, data),
+    remove: (id)       => api.delete(`/master/refraksi-opsi/${id}`),
   },
 
   // Billing Categories (kategori grouping rincian tagihan Kasir)
@@ -362,8 +391,9 @@ export const masterApi = {
    * (tarif tidak punya template-csv di backend, hanya export & import.)
    */
   csv: {
-    template: (type)        => api.get(`/master/${type}/template-csv`, { responseType: 'blob' }),
-    export:   (type)        => api.get(`/master/${type}/export-csv`,   { responseType: 'blob' }),
+    // format: 'csv' (default) | 'xlsx' — backend menyalurkan ke csvOrXlsx().
+    template: (type, format) => api.get(`/master/${type}/template-csv`, { params: format ? { format } : {}, responseType: 'blob' }),
+    export:   (type, format) => api.get(`/master/${type}/export-csv`,   { params: format ? { format } : {}, responseType: 'blob' }),
     import:   (type, file)  => {
       const fd = new FormData()
       fd.append('file', file)
@@ -454,8 +484,8 @@ export const tarifPaketApi = {
   // --- Metode Bayar (detail insurer + CSV per-insurer per-type) ---
   metodeBayar: {
     detail:      (id)              => api.get(`/tarif-paket/metode-bayar/${id}`),
-    csvTemplate: (id, type)        => api.get(`/tarif-paket/metode-bayar/${id}/tarif/${type}/template-csv`, { responseType: 'blob' }),
-    csvExport:   (id, type)        => api.get(`/tarif-paket/metode-bayar/${id}/tarif/${type}/export-csv`,   { responseType: 'blob' }),
+    csvTemplate: (id, type, format)        => api.get(`/tarif-paket/metode-bayar/${id}/tarif/${type}/template-csv`, { params: format ? { format } : {}, responseType: 'blob' }),
+    csvExport:   (id, type, format)        => api.get(`/tarif-paket/metode-bayar/${id}/tarif/${type}/export-csv`,   { params: format ? { format } : {}, responseType: 'blob' }),
     csvImport:   (id, type, file)  => {
       const fd = new FormData()
       fd.append('file', file)
@@ -475,8 +505,8 @@ export const tarifPaketApi = {
     create: (data)     => api.post('/tarif-paket/paket-bedah', data),
     update: (id, data) => api.put(`/tarif-paket/paket-bedah/${id}`, data),
     remove: (id)       => api.delete(`/tarif-paket/paket-bedah/${id}`),
-    csvTemplate: ()    => api.get('/tarif-paket/paket-bedah/template-csv', { responseType: 'blob' }),
-    csvExport:   ()    => api.get('/tarif-paket/paket-bedah/export-csv',   { responseType: 'blob' }),
+    csvTemplate: (format)    => api.get('/tarif-paket/paket-bedah/template-csv', { params: format ? { format } : {}, responseType: 'blob' }),
+    csvExport:   (format)    => api.get('/tarif-paket/paket-bedah/export-csv',   { params: format ? { format } : {}, responseType: 'blob' }),
     csvImport:   (file) => {
       const fd = new FormData()
       fd.append('file', file)
@@ -485,8 +515,8 @@ export const tarifPaketApi = {
       })
     },
     // CSV per-paket (dari halaman detail) — template/export komposisi 1 paket
-    csvTemplateOne: (id) => api.get(`/tarif-paket/paket-bedah/${id}/template-csv`, { responseType: 'blob' }),
-    csvExportOne:   (id) => api.get(`/tarif-paket/paket-bedah/${id}/export-csv`,   { responseType: 'blob' }),
+    csvTemplateOne: (id, format) => api.get(`/tarif-paket/paket-bedah/${id}/template-csv`, { params: format ? { format } : {}, responseType: 'blob' }),
+    csvExportOne:   (id, format) => api.get(`/tarif-paket/paket-bedah/${id}/export-csv`,   { params: format ? { format } : {}, responseType: 'blob' }),
   },
 
   // --- Items paket (komposisi) ---
@@ -566,6 +596,7 @@ export const ranapApi = {
   // SEP / SPRI
   getSep:        (visitId)           => api.get(`/rawat-inap/${visitId}/sep`),
   updateSep:     (visitId, payload)  => api.put(`/rawat-inap/${visitId}/sep`, payload),
+  updateTglPulang: (visitId, payload) => api.put(`/rawat-inap/${visitId}/sep/tgl-pulang`, payload),
   listSpri:      (visitId)           => api.get(`/rawat-inap/${visitId}/spri`),
   createSpri:    (visitId, payload)  => api.post(`/rawat-inap/${visitId}/spri`, payload),
   updateSpri:    (spriId, payload)   => api.put(`/rawat-inap/spri/${spriId}`, payload),
@@ -641,7 +672,8 @@ export const jadwalDokterApi = {
   remove:        (id)         => api.delete(`/jadwal-dokter/${id}`),
   toggle:        (id)         => api.patch(`/jadwal-dokter/${id}/toggle`),
   copyNextWeek:  (weekStart)  => api.post('/jadwal-dokter/salin-minggu-depan', { week_start: weekStart }),
-  csvTemplate:   ()           => api.get('/jadwal-dokter/template-csv', { responseType: 'blob' }),
+  csvTemplate:   (format)     => api.get('/jadwal-dokter/template-csv', { params: format ? { format } : {}, responseType: 'blob' }),
+  csvExport:     (params, format) => api.get('/jadwal-dokter/export-csv', { params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob' }),
   csvImport:     (file, weekStart) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -689,7 +721,11 @@ export const farmasiApi = {
   // Antrian
   antrian:           ()           => api.get('/farmasi/antrian'),
   panggilAntrian:    (id)         => api.put(`/farmasi/antrian/${id}/panggil`),
+  lewatiAntrian:     (id)         => api.put(`/farmasi/antrian/${id}/lewati`),
   selesaiAntrian:    (id)         => api.put(`/farmasi/antrian/${id}/selesai`),
+
+  // Preview harga obat tambahan sesuai penjamin pasien (harga ditagih kasir).
+  hargaObat:         (params)     => api.get('/farmasi/harga-obat', { params }),
 
   // Resep
   resep:             (params)     => api.get('/farmasi/resep', { params }),
@@ -855,6 +891,15 @@ export const bedahApi = {
   updateRecord:   (id, data)   => api.put(`/bedah/record/${id}`, data),
   storePostOp:    (id, data)   => api.put(`/bedah/record/${id}/post-op`, data),
   finalizeRecord: (id)         => api.post(`/bedah/record/${id}/finalize`),
+
+  // Master lookup (Bedah-scoped, gate bedah.read)
+  daftarObat:     (search) => api.get('/bedah/obat', { params: { search } }),
+  listIol:        (params) => api.get('/bedah/iol', { params }),
+  // IOL terpasang saat operasi (surgery_iol_usages)
+  storeIolUsage:  (data)   => api.post('/bedah/iol-usage', data),
+  updateIolUsage: (id, data) => api.put(`/bedah/iol-usage/${id}`, data),
+  // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
+  storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
 }
 
 /** Penunjang — antrian, order, hasil pemeriksaan */
@@ -1035,6 +1080,8 @@ export const integrasiApi = {
   satusehatDashboard: (params)   => api.get('/integrasi/satusehat/dashboard', { params }),
   satusehatSyncManual:()         => api.post('/integrasi/satusehat/sync-manual'),
   satusehatRetry:     (logId)    => api.post(`/integrasi/satusehat/retry/${logId}`),
+  satusehatBackfillPreview: (params) => api.get('/integrasi/satusehat/backfill/preview', { params }),
+  satusehatBackfill:  (data)     => api.post('/integrasi/satusehat/backfill', data),
   satusehatSyncLog:   (params)   => api.get('/integrasi/satusehat/sync-log', { params }),
   satusehatResourceLog:(params)  => api.get('/integrasi/satusehat/resource-log', { params }),
   satusehatKfaSearch: (params)   => api.get('/integrasi/satusehat/kfa-search', { params }),

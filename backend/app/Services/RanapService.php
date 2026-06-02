@@ -850,19 +850,12 @@ class RanapService
             if (($visit->guarantor_type ?? null) !== 'BPJS' || empty($visit->no_sep) || empty($visit->discharge_at)) {
                 return;
             }
-
-            $vclaim = app(\App\Services\BpjsVClaimService::class);
-            if (! $vclaim->isEnabled()) {
+            if (! app(\App\Services\BpjsVClaimService::class)->isEnabled()) {
                 return;
             }
 
-            $vclaim->updateTglPulang([
-                'noSep'       => $visit->no_sep,
-                'tglPulang'   => \Illuminate\Support\Carbon::parse($visit->discharge_at)
-                    ->setTimezone('Asia/Jakarta')->toDateString(),
-                'noLPManual'  => '',
-                'user'        => auth('api')->user()?->name ?? 'arumed',
-            ], $visit->id);
+            // Delegasi ke jalur manual (blocking) — di sini ditelan jadi non-blocking.
+            $this->updateTglPulang($visit);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('BPJS updateTglPulang gagal: ' . $e->getMessage());
         }
@@ -989,6 +982,41 @@ class RanapService
 
         if ((string) ($result['metaData']['code'] ?? '') !== '200') {
             throw new \Exception('Gagal update SEP: ' . ($result['metaData']['message'] ?? 'respons tidak dikenal'), 422);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Update Tanggal Pulang SEP ke VClaim secara MANUAL (blocking).
+     *
+     * Berbeda dari maybeUpdateTglPulangBpjs() yang dipanggil otomatis &
+     * non-blocking saat discharge: ini dipicu petugas dari modal SEP untuk
+     * MENGULANG bila laporan otomatis gagal (BPJS down/timeout) atau bila
+     * tgl pulang dikoreksi. Kegagalan dilempar 422 supaya petugas tahu.
+     */
+    public function updateTglPulang(Visit $visit, ?string $tglPulang = null): array
+    {
+        $this->assertBpjsRanap($visit, requireEnabled: true);
+
+        // Default: pakai discharge_at lokal bila tgl tidak dioverride petugas.
+        $tgl = $tglPulang ?: ($visit->discharge_at
+            ? \Illuminate\Support\Carbon::parse($visit->discharge_at)->setTimezone('Asia/Jakarta')->toDateString()
+            : null);
+        if (empty($tgl)) {
+            throw new \Exception('Pasien belum dipulangkan — tanggal pulang belum ada.', 422);
+        }
+
+        $vclaim = app(\App\Services\BpjsVClaimService::class);
+        $result = $vclaim->updateTglPulang([
+            'noSep'      => $visit->no_sep,
+            'tglPulang'  => $tgl,
+            'noLPManual' => '',
+            'user'       => auth('api')->user()?->name ?? 'arumed',
+        ], $visit->id);
+
+        if ((string) ($result['metaData']['code'] ?? '') !== '200') {
+            throw new \Exception('Gagal update tgl pulang SEP: ' . ($result['metaData']['message'] ?? 'respons tidak dikenal'), 422);
         }
 
         return $result;

@@ -8,12 +8,15 @@ use App\Models\Medication;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
+use App\Services\Concerns\RetriesUniqueNumber;
 use Carbon\Carbon;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 
 class PurchaseOrderService
 {
+    use RetriesUniqueNumber;
+
     public const ITEM_TYPES = ['MEDICATION', 'BHP', 'IOL'];
 
     public function index(array $filters = []): LengthAwarePaginator
@@ -85,22 +88,27 @@ class PurchaseOrderService
         $items = $data['items'] ?? [];
         $this->validateItems($items);
 
-        return DB::transaction(function () use ($data, $items) {
-            $po = PurchaseOrder::create([
-                'po_number'     => $this->generatePoNumber($data['po_date'] ?? null),
-                'supplier_id'   => $data['supplier_id'],
-                'po_date'       => $data['po_date'] ?? now()->toDateString(),
-                'expected_date' => $data['expected_date'] ?? null,
-                'status'        => $data['status'] ?? PurchaseOrder::STATUS_DRAFT,
-                'notes'         => $data['notes'] ?? null,
-                'total_amount'  => 0,
-                'created_by'    => auth('api')->id(),
-            ]);
+        // Nomor PO via MAX+1 bisa tabrakan saat 2 request berbarengan → retry
+        // SELURUH transaksi saat unique-violation (Postgres membatalkan transaksi
+        // begitu satu statement gagal, jadi retry harus transaksi baru).
+        return $this->createWithRetry(function () use ($data, $items) {
+            return DB::transaction(function () use ($data, $items) {
+                $po = PurchaseOrder::create([
+                    'po_number'     => $this->generatePoNumber($data['po_date'] ?? null),
+                    'supplier_id'   => $data['supplier_id'],
+                    'po_date'       => $data['po_date'] ?? now()->toDateString(),
+                    'expected_date' => $data['expected_date'] ?? null,
+                    'status'        => $data['status'] ?? PurchaseOrder::STATUS_DRAFT,
+                    'notes'         => $data['notes'] ?? null,
+                    'total_amount'  => 0,
+                    'created_by'    => auth('api')->id(),
+                ]);
 
-            $this->syncItems($po, $items);
-            $this->recalcTotal($po);
+                $this->syncItems($po, $items);
+                $this->recalcTotal($po);
 
-            return $po->fresh(['supplier', 'items']);
+                return $po->fresh(['supplier', 'items']);
+            });
         });
     }
 

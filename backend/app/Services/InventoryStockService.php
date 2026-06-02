@@ -137,31 +137,76 @@ class InventoryStockService
     {
         if ($qty <= 0) return [];
 
-        $remaining = $qty;
-        $used = [];
+        // Bungkus transaksi sendiri agar lockForUpdate atomik walau dipanggil
+        // standalone (di luar transfer()). DB::transaction nested = savepoint,
+        // jadi aman dipanggil dari dalam transaksi pemanggil juga.
+        return DB::transaction(function () use ($type, $itemId, $qty, $location) {
+            $remaining = $qty;
+            $used = [];
 
-        $stocks = InventoryStock::where('item_type', $type)
-            ->where('item_id', $itemId)
+            $stocks = InventoryStock::where('item_type', $type)
+                ->where('item_id', $itemId)
+                ->where('location', $location)
+                ->where('qty_on_hand', '>', 0)
+                ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
+                ->lockForUpdate()
+                ->get();
+
+            foreach ($stocks as $st) {
+                if ($remaining <= 0) break;
+                $take = min($remaining, (float) $st->qty_on_hand);
+                $st->decrement('qty_on_hand', $take);
+                $remaining -= $take;
+                $used[] = ['batch_no' => $st->batch_no, 'expiry_date' => $st->expiry_date, 'qty' => $take];
+            }
+
+            if ($remaining > 0.001) {
+                $locLabel = $location === InventoryStock::LOC_INVENTORI ? 'gudang' : "unit {$location}";
+                abort(422, "Stok {$locLabel} tidak mencukupi untuk item {$type}. Kurang " . round($remaining, 2) . " unit. Minta transfer dari gudang dulu.");
+            }
+
+            return $used;
+        });
+    }
+
+    /**
+     * Tambah stok ke satu (item_type, location, item_id, batch_no) — SUMBER TUNGGAL
+     * penambahan stok. Jangan pakai InventoryStock::firstOrNew(...) langsung di
+     * pemanggil: saat batch_no NULL, UNIQUE Postgres MENGABAIKAN baris NULL sehingga
+     * firstOrNew tak menemukan baris lama → tercipta baris duplikat tiap kali.
+     * Helper ini mencocokkan batch_no NULL secara eksplisit (whereNull) sehingga
+     * baris NULL yang sudah ada dipakai ulang, bukan diduplikasi.
+     */
+    public function upsertStock(string $type, string $itemId, string $location, ?string $batchNo, float $qty, $expiryDate = null): InventoryStock
+    {
+        if ($qty <= 0) {
+            abort(422, 'Qty upsert stok harus > 0.');
+        }
+
+        $query = InventoryStock::where('item_type', $type)
             ->where('location', $location)
-            ->where('qty_on_hand', '>', 0)
-            ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
-            ->lockForUpdate()
-            ->get();
+            ->where('item_id', $itemId)
+            ->lockForUpdate();
 
-        foreach ($stocks as $st) {
-            if ($remaining <= 0) break;
-            $take = min($remaining, (float) $st->qty_on_hand);
-            $st->decrement('qty_on_hand', $take);
-            $remaining -= $take;
-            $used[] = ['batch_no' => $st->batch_no, 'expiry_date' => $st->expiry_date, 'qty' => $take];
+        // Cocokkan batch_no NULL secara eksplisit (UNIQUE Postgres abaikan NULL).
+        $batchNo === null ? $query->whereNull('batch_no') : $query->where('batch_no', $batchNo);
+
+        $stock = $query->first() ?? new InventoryStock([
+            'item_type' => $type,
+            'location'  => $location,
+            'item_id'   => $itemId,
+            'batch_no'  => $batchNo,
+            'qty_on_hand' => 0,
+        ]);
+
+        if ($expiryDate !== null) {
+            $stock->expiry_date = $expiryDate;
         }
+        $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + $qty;
+        $stock->last_received_at = now();
+        $stock->save();
 
-        if ($remaining > 0.001) {
-            $locLabel = $location === InventoryStock::LOC_INVENTORI ? 'gudang' : "unit {$location}";
-            abort(422, "Stok {$locLabel} tidak mencukupi untuk item {$type}. Kurang " . round($remaining, 2) . " unit. Minta transfer dari gudang dulu.");
-        }
-
-        return $used;
+        return $stock;
     }
 
     /**
@@ -183,18 +228,10 @@ class InventoryStockService
             // Ambil dari lokasi asal (FEFO, strict) — throw 422 bila kurang.
             $moved = $this->consume($type, $itemId, $qty, $from);
 
-            // Tambahkan ke lokasi tujuan, jaga batch_no + expiry_date per batch.
+            // Tambahkan ke lokasi tujuan via upsertStock (sumber tunggal) agar
+            // batch_no NULL tidak menciptakan baris duplikat. Jaga batch_no + expiry.
             foreach ($moved as $m) {
-                $stock = InventoryStock::firstOrNew([
-                    'item_type' => $type,
-                    'location'  => $to,
-                    'item_id'   => $itemId,
-                    'batch_no'  => $m['batch_no'],
-                ]);
-                $stock->expiry_date = $m['expiry_date'] ?? $stock->expiry_date;
-                $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + (float) $m['qty'];
-                $stock->last_received_at = now();
-                $stock->save();
+                $this->upsertStock($type, $itemId, $to, $m['batch_no'], (float) $m['qty'], $m['expiry_date'] ?? null);
             }
 
             return $moved;
@@ -211,15 +248,12 @@ class InventoryStockService
         if (abs($delta) < 0.0001) return;
 
         if ($delta > 0) {
-            InventoryStock::create([
-                'item_type'   => $type,
-                'location'    => $location,
-                'item_id'     => $itemId,
-                'batch_no'    => 'OPNAME-' . now()->format('Ymd'),
-                'expiry_date' => null,
-                'qty_on_hand' => $delta,
-                'last_received_at' => now(),
-            ]);
+            // Lewat upsertStock (sumber tunggal penambahan stok): kalau batch
+            // 'OPNAME-{Ymd}' sudah ada (opname positif KE-2 di hari sama untuk
+            // item+lokasi yg sama), increment baris itu — JANGAN create lagi
+            // (raw create() → unique violation 23505 (location,type,item,batch_no),
+            //  ditelan jadi "skipped" saat import CSV). upsertStock juga lock baris.
+            $this->upsertStock($type, $itemId, $location, 'OPNAME-' . now()->format('Ymd'), $delta, null);
             return;
         }
 
@@ -301,6 +335,10 @@ class InventoryStockService
         $this->assertCsvType($type);
         $itemType = $this->itemTypeOf($type);
 
+        // Buang BOM UTF-8 (Excel "Save as CSV") agar header kolom pertama tak rusak.
+        if (str_starts_with($csvContent, "\xEF\xBB\xBF")) {
+            $csvContent = substr($csvContent, 3);
+        }
         $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
         if (empty($lines)) {
             abort(422, 'File CSV kosong.');

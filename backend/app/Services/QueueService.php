@@ -105,27 +105,41 @@ class QueueService
     {
         $this->assertStation($station);
 
-        if ($sharedNumber) {
-            $data = $sharedNumber;
-        } elseif ($station === Queue::STATION_DOKTER) {
-            // Ambil ruangan dokter yang di-assign saat admisi
-            $visit = \App\Models\Visit::with('doctorSchedule')->find($visitId);
-            $room  = $visit?->doctorSchedule?->room;
-            $data  = $this->generateQueueNumber($station, $room);
-        } else {
-            $data = $this->generateQueueNumber($station);
-        }
+        // Generate-nomor + create DALAM SATU TRANSAKSI dengan lock baris station hari
+        // ini, supaya dua enqueue bersamaan tidak baca MAX(queue_sequence) yang sama →
+        // nomor antrean kembar (tak ada unique constraint yang menangkapnya).
+        $queue = DB::transaction(function () use ($visitId, $station, $sharedNumber) {
+            // Kunci baris station+hari ini (range lock praktis) sebelum baca MAX.
+            // sharedNumber (pasangan TR yg sudah pre-generated) tak perlu di-lock ulang.
+            if (! $sharedNumber) {
+                Queue::whereIn('station', Queue::SHARED_PREFIX_GROUPS[Queue::prefixFor($station)] ?? [$station])
+                    ->whereDate('created_at', today())
+                    ->lockForUpdate()
+                    ->get(['id']);
+            }
 
-        $queue = Queue::create([
-            'visit_id'       => $visitId,
-            'station'        => $station,
-            'queue_prefix'   => $data['queue_prefix'],
-            'queue_sequence' => $data['queue_sequence'],
-            'queue_number'   => $data['queue_number'],
-            'status'         => Queue::STATUS_WAITING,
-        ]);
+            if ($sharedNumber) {
+                $data = $sharedNumber;
+            } elseif ($station === Queue::STATION_DOKTER) {
+                $visit = \App\Models\Visit::with('doctorSchedule')->find($visitId);
+                $room  = $visit?->doctorSchedule?->room;
+                $data  = $this->generateQueueNumber($station, $room);
+            } else {
+                $data = $this->generateQueueNumber($station);
+            }
 
-        $this->broadcastQueueUpdate($queue->fresh(['visit.patient']), 'added');
+            return Queue::create([
+                'visit_id'       => $visitId,
+                'station'        => $station,
+                'queue_prefix'   => $data['queue_prefix'],
+                'queue_sequence' => $data['queue_sequence'],
+                'queue_number'   => $data['queue_number'],
+                'status'         => Queue::STATUS_WAITING,
+            ]);
+        });
+
+        // Broadcast SETELAH commit supaya TV tak menerima ghost row bila transaksi rollback.
+        DB::afterCommit(fn () => $this->broadcastQueueUpdate($queue->fresh(['visit.patient']), 'added'));
 
         return $queue;
     }
@@ -185,6 +199,13 @@ class QueueService
         ]);
 
         $this->broadcastQueueUpdate($queue->fresh(['visit.patient']));
+
+        // BPJS Antrol task 4 = mulai layan poli (pasien DIPANGGIL ke poli). Guard
+        // monoton di reportTask memastikan hanya panggilan pertama yang terkirim
+        // (re-call pasca-penunjang tak kirim ulang). Non-blocking.
+        if ($queue->station === Queue::STATION_DOKTER) {
+            $this->reportTask($queue->visit, 4);
+        }
 
         return $queue->fresh(['visit.patient']);
     }
@@ -286,9 +307,13 @@ class QueueService
      * Tandai antrian COMPLETED + buat antrian baru di station berikutnya
      * berdasarkan aturan transisi Section 11.3.
      *
+     * $reportBpjs: bila false, lewati pelaporan updatewaktu otomatis di sini —
+     * dipakai jalur kiosk (daftarkanWalkIn) yang melapor 1→2→3 berurutan sendiri
+     * agar urutan taskid tidak terbalik (lihat reportAdmisiKioskTasks).
+     *
      * @return array{queue: Queue, visit: Visit, next_station: ?string, next_queue: ?Queue}
      */
-    public function advanceFromStation(string $queueId, string $expectedStation): array
+    public function advanceFromStation(string $queueId, string $expectedStation, bool $reportBpjs = true): array
     {
         $result = DB::transaction(function () use ($queueId, $expectedStation) {
             $queue = Queue::with('visit')->findOrFail($queueId);
@@ -369,17 +394,117 @@ class QueueService
 
         // Lapor waktu antrean ke BPJS SETELAH commit (post-transaction) — non-blocking:
         // kegagalan/timeout/credential-kosong tidak boleh membatalkan transisi lokal.
-        $this->reportAntreanWaktu($result['visit'] ?? null, $expectedStation, $result['next_station'] ?? null);
+        // Dilewati bila caller akan melapor sendiri dgn urutan khusus (jalur kiosk).
+        if ($reportBpjs) {
+            $this->reportAntreanWaktu($result['visit'] ?? null, $expectedStation, $result['next_station'] ?? null);
+        }
 
         return $result;
     }
 
     /**
-     * Kirim updatewaktu ke BPJS Antrean untuk kunjungan BPJS yang punya kode booking.
-     * taskid BPJS dipetakan dari station: DOKTER mulai=3/selesai=4, FARMASI mulai=5/selesai=6.
-     * Selalu dibungkus try/catch + hanya jika ANTREAN aktif — TIDAK pernah melempar.
+     * Kirim updatewaktu ke BPJS Antrean berdasarkan PERPINDAHAN station.
+     *
+     * taskid RESMI BPJS Antrol (Docs/Antrol.md:339-347 — tiap task = SATU titik
+     * "akhir X / mulai Y"):
+     *   1 mulai tunggu admisi · 2 akhir tunggu admisi / mulai layan admisi
+     *   3 akhir layan admisi / mulai tunggu poli
+     *   4 akhir tunggu poli / mulai layan poli (pasien DIPANGGIL ke poli)
+     *   5 akhir layan poli / mulai tunggu farmasi
+     *   6 akhir tunggu farmasi / mulai layan farmasi (buat obat)
+     *   7 akhir obat selesai dibuat · 99 batal
+     *
+     * PENTING: pemetaan ini dulu OFF-BY-ONE (3 utk mulai poli, dst). Diperbaiki agar
+     * sesuai spec — BPJS memvalidasi makna & urutan task; salah-geser = laporan keliru.
+     *
+     * Yang dilapor dari transisi station di sini HANYA:
+     *   - selesai ADMISI            → task 3 (akhir layan admisi / mulai tunggu poli)
+     *   - selesai DOKTER → KASIR/FARMASI → task 5 (akhir layan poli / mulai tunggu farmasi)
+     *
+     * Task 4 (mulai layan poli) dilapor saat DOKTER MEMANGGIL pasien (lihat panggil()).
+     * Task 6 & 7 (mulai/selesai buat obat) dilapor dari FarmasiService (dispensing).
+     *
+     * Selalu non-blocking — reportTask tak pernah melempar.
      */
-    private function reportAntreanWaktu(?Visit $visit, string $fromStation, ?string $nextStation): void
+    private function reportAntreanWaktu(?Visit $visit, string $fromStation, ?string $nextStation = null): void
+    {
+        // task saat MENINGGALKAN (akhir layan) station sumber.
+        $finishMap = ['ADMISI' => 3, 'DOKTER' => 5];
+
+        if (isset($finishMap[$fromStation])) {
+            $this->reportTask($visit, $finishMap[$fromStation]);
+        }
+    }
+
+    /**
+     * Lapor antrean/add ke BPJS untuk kunjungan BPJS yang baru didaftarkan di loket.
+     * Payload disusun AntrolBuilderService (null bila poli belum dipetakan / dokter
+     * tanpa kode DPJP → skip diam-diam). Non-blocking, panggil SETELAH commit.
+     */
+    public function reportAntreanAdd(?Visit $visit): void
+    {
+        try {
+            if (! $visit || $visit->guarantor_type !== 'BPJS') {
+                return;
+            }
+
+            $antrean = app(\App\Services\BpjsAntreanService::class);
+            if (! $antrean->isEnabled()) {
+                return;
+            }
+
+            $payload = app(\App\Services\AntrolBuilderService::class)->buildAddPayload($visit);
+            if ($payload === null) {
+                return; // data belum cukup (mapping poli / kode DPJP) — bukan fatal
+            }
+
+            $antrean->addAntrean($payload, $visit->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('BPJS antrean/add gagal: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Lapor antrean/add + taskid 1→2→3 untuk pasien BPJS jalur KIOSK → loket admisi.
+     *
+     * Semantik resmi (Docs/Antrol.md:340-342):
+     *   - taskid 1 = mulai waktu tunggu admisi (pasien ambil tiket kiosk ke loket)
+     *   - taskid 2 = akhir tunggu admisi / mulai layan admisi (mulai didaftarkan)
+     *   - taskid 3 = akhir layan admisi / mulai tunggu poli (selesai daftar)
+     *
+     * Karena ketiganya terjadi pada satu aksi petugas (daftarkanWalkIn), dilapor
+     * sekaligus DI SINI dengan urutan benar — itulah kenapa advanceFromStation
+     * dipanggil dgn reportBpjs=false (kalau tidak, task 3-nya keduluan & guard
+     * monoton menolak 1 & 2). Urutan WAJIB add → 1 → 2 → 3: updatewaktu menargetkan
+     * kodebooking yang sudah didaftarkan via antrean/add.
+     *
+     * Dipanggil SETELAH commit. Non-blocking total: skip diam-diam bila bukan BPJS /
+     * ANTREAN nonaktif, dan reportTask sendiri tak pernah melempar.
+     */
+    public function reportAdmisiKioskTasks(?Visit $visit): void
+    {
+        if (! $visit || $visit->guarantor_type !== 'BPJS') {
+            return;
+        }
+
+        // Pastikan antrean terdaftar di BPJS dulu (idempoten bila sudah pernah).
+        $this->reportAntreanAdd($visit);
+
+        // 1 = mulai tunggu admisi, 2 = mulai layan admisi, 3 = selesai layan admisi.
+        $this->reportTask($visit, 1);
+        $this->reportTask($visit, 2);
+        $this->reportTask($visit, 3);
+    }
+
+    /**
+     * Lapor antrean/farmasi/add ke BPJS (Sisi A) — daftarkan antrean farmasi RS.
+     * Wajib bagi RS yang mengimplementasi antrean farmasi (Docs/Antrol.md:365).
+     * Dipanggil saat petugas MULAI menyiapkan obat (startDispensing). Idempoten
+     * di sisi BPJS ditangani BPJS; lokal cukup dipanggil sekali per resep.
+     *
+     * Non-blocking: skip diam-diam bila bukan BPJS / ANTREAN nonaktif / tanpa booking.
+     */
+    public function reportAntreanFarmasiAdd(?Visit $visit): void
     {
         try {
             if (! $visit || $visit->guarantor_type !== 'BPJS' || empty($visit->bpjs_booking_code)) {
@@ -391,22 +516,65 @@ class QueueService
                 return;
             }
 
-            // Pemetaan taskid: selesai di station = lapor task selesai station tsb.
-            $taskMap = [
-                'DOKTER'  => 4, // selesai layan poli
-                'FARMASI' => 6, // selesai farmasi
-                'KASIR'   => 7, // selesai (pulang)
-            ];
-            $taskId = $taskMap[$fromStation] ?? null;
-            if ($taskId === null) {
-                return; // station lain (ADMISI/TRIASE/dll) tidak wajib lapor per BPJS
+            $fq = Queue::byStation(Queue::STATION_FARMASI)
+                ->where('visit_id', $visit->id)
+                ->orderByDesc('created_at')
+                ->first();
+            if (! $fq) {
+                return; // belum ada antrean farmasi fisik
             }
 
-            $antrean->updateWaktuAntrean([
+            $antrean->addAntreanFarmasi([
+                'kodebooking'  => $visit->bpjs_booking_code,
+                'jenisresep'   => app(\App\Services\AntrolMobileService::class)->resolveJenisResep($visit->id),
+                'nomorantrean' => (string) $fq->queue_number,
+                'keterangan'   => '',
+            ], $visit->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('BPJS antrean/farmasi/add gagal: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Kirim satu taskid updatewaktu ke BPJS Antrean untuk kunjungan BPJS
+     * yang punya kode booking. Dipakai oleh alur station (reportAntreanWaktu)
+     * maupun Antrol Mobile JKN (B5 batal=99, B6 check-in=3).
+     *
+     * Guard monoton via visits.bpjs_last_taskid: BPJS menolak taskid yang sama
+     * atau mundur. Pada alur mata yang bolak-balik DOKTER↔PENUNJANG, task 3/4
+     * bisa terpicu berulang — kita skip kalan taskid <= yang terakhir terkirim
+     * (kecuali 99 batal yang selalu boleh).
+     *
+     * Selalu non-blocking: kegagalan/credential-kosong tidak melempar.
+     */
+    public function reportTask(?Visit $visit, int $taskId): void
+    {
+        try {
+            if (! $visit || $visit->guarantor_type !== 'BPJS' || empty($visit->bpjs_booking_code)) {
+                return;
+            }
+
+            $antrean = app(\App\Services\BpjsAntreanService::class);
+            if (! $antrean->isEnabled()) {
+                return;
+            }
+
+            // Guard monoton: jangan kirim taskid yang sama/mundur (99 batal dikecualikan).
+            $last = (int) ($visit->bpjs_last_taskid ?? 0);
+            if ($taskId !== 99 && $taskId <= $last) {
+                return;
+            }
+
+            $result = $antrean->updateWaktuAntrean([
                 'kodebooking' => $visit->bpjs_booking_code,
                 'taskid'      => $taskId,
                 'waktu'       => (int) (microtime(true) * 1000),
             ], $visit->id);
+
+            // Catat taskid terakhir HANYA bila BPJS menerima — agar retry mungkin.
+            if (($result['is_success'] ?? false) && $taskId !== 99) {
+                $visit->forceFill(['bpjs_last_taskid' => $taskId])->saveQuietly();
+            }
         } catch (\Throwable $e) {
             // Diam-diam — sudah tercatat di bpjs_antrean_logs lewat service; jangan ganggu flow.
             \Illuminate\Support\Facades\Log::warning('BPJS updatewaktu gagal: ' . $e->getMessage());
@@ -698,9 +866,13 @@ class QueueService
             default => null, // station lain (D/P/B/K/F) belum punya event station-specific
         };
 
-        // Generic channel untuk Antrean TV — fire untuk SEMUA station termasuk
-        // DOKTER, PENUNJANG, BEDAH, KASIR, FARMASI agar TV update real-time.
-        broadcast(new AntreanTvUpdated($payload, $action))->toOthers();
+        // Generic channel untuk Antrean TV — HANYA station papan TV (Queue::STATIONS).
+        // RANAP & IGD long-lived sengaja DI-EXCLUDE: channel antrean-tv publik tak
+        // berautentikasi, jadi nama+no_rm pasien rawat inap/IGD JANGAN dibroadcast ke
+        // layar lobi. (Read path getAllActive/getByStation sudah pakai STATIONS.)
+        if (in_array($queue->station, Queue::STATIONS, true)) {
+            broadcast(new AntreanTvUpdated($payload, $action))->toOthers();
+        }
     }
 
     private function formatLite(Queue $q): array

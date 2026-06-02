@@ -240,7 +240,7 @@ onMounted(load)
           </div>
           <div class="pk-field pk-col-1">
             <label>Email</label>
-            <input type="email" v-model="form.email" placeholder="info@klinik.id" :class="{ 'has-error': fieldErr('email') }" />
+            <input type="email" v-model="form.email" placeholder="info@rumahsakit.id" :class="{ 'has-error': fieldErr('email') }" />
             <p v-if="fieldErr('email')" class="pk-err">{{ fieldErr('email') }}</p>
           </div>
           <div class="pk-field pk-col-2">

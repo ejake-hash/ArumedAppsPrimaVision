@@ -5,6 +5,10 @@ import { bedahApi, alatMedisApi, masterApi } from '@/services/api'
 
 const masterStore = useMasterDataStore()
 
+// Deteksi prosedur Phaco/SICS (IOL) dari nama paket/prosedur → auto-set isPhaco.
+// Petugas tetap bisa override manual via checkbox di tab Pra-Bedah.
+const IOL_RE = /phaco|katarak|cataract|\biol\b|sics|lensa intraokular/i
+
 // ── Data ───────────────────────────────────────────────────────────────────────
 // Real queue dari backend (/bedah/antrian). UI tabs Pra-Bedah/Intraop/Laporan
 // pakai field default kalau real data tidak punya (untuk action operasi detail —
@@ -23,6 +27,9 @@ const operatingRooms = computed(() => masterStore.profilKlinik?.operating_rooms 
 function transformQueueItem(q) {
   const sched = q.surgery_schedule
   const pkg   = sched?.package
+  // Auto-deteksi prosedur IOL (Phaco/SICS) dari nama paket dokter / prosedur.
+  const prosedur = pkg?.name ?? 'Tindakan bedah'
+  const isIol    = IOL_RE.test(pkg?.name ?? prosedur)
   return {
     // ── Real data ──
     id:             q.id,
@@ -38,10 +45,18 @@ function transformQueueItem(q) {
     gender:         q.patient?.gender === 'L' ? 'Laki-laki' : (q.patient?.gender === 'P' ? 'Perempuan' : '—'),
     ptype:          q.visit?.guarantor_type === 'BPJS' ? 'bpjs' : 'umum',
     ruang:          sched?.operation_room ?? '—',
+    _schedRoom:     sched?.operation_room ?? '—',    // baseline ruang dr jadwal (deteksi "disentuh" saat poll)
     scheduledTime:  sched?.scheduled_time ?? null,   // null = jam belum ditentukan dokter (opsional)
     scheduledDate:  sched?.scheduled_date,
     paketBedah:     pkg ? { kode: (pkg.id || '').slice(0, 6), nama: pkg.name } : null,
-    prosedur:       pkg?.name ?? 'Tindakan bedah',
+    prosedur,
+
+    // Visus/IOP pre-op (backend kirim di key top-level `preop` dari RefractionRecord;
+    // null = sembunyikan baris di modal Mulai Operasi).
+    visusOD:        q.preop?.visus_od ?? null,
+    visusOS:        q.preop?.visus_os ?? null,
+    iopOD:          q.preop?.iop_od ?? null,
+    iopOS:          q.preop?.iop_os ?? null,
 
     // ── UI-mock defaults (action operasi belum diwire) ──
     status:         q.status === 'COMPLETED' ? 'SELESAI'
@@ -51,7 +66,7 @@ function transformQueueItem(q) {
     dpjp:           q.visit?.dpjp ?? '',          // operator utama (lead surgeon / dokter pemeriksa)
     diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter
     diagnosaPasca:  '',
-    isPhaco:        false,
+    isPhaco:        isIol,          // auto-deteksi IOL; petugas dpt override via checkbox Pra-Bedah
     recordId:       null,           // surgery_records.id (diisi saat mulai/timeout/pick)
     timIn:          null,
     timOut:         null,
@@ -59,7 +74,8 @@ function transformQueueItem(q) {
     tim:            { operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
     bhp:            [],
     iolRencana:     { merk: '', power: '', series: '', tipe: 'Monofocal' },
-    iolDipasang:    { merk: '', power: '', series: '', tipe: 'Monofocal' },
+    iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD' },
+    iolUsageSaved:  false,          // true setelah storeIolUsage sukses (badge info)
     anestesi:       'Topikal',
     catatanIntra:   '',
     teknikOp:       '',
@@ -75,28 +91,51 @@ function transformQueueItem(q) {
   }
 }
 
+// Sinkron field authoritative dari server ke objek working-state lokal TANPA
+// menimpa input lokal (checklist/tim/bhp/iol/anestesi/instruksi/diagnosa pasca/
+// komplikasi/teknik/temuan/catatan/recordId/timIn-out/isPhaco). Dipakai utk SEMUA
+// baris yg sudah ada di patients.value, bukan hanya selP — biar draft tak hilang
+// tiap poll 15s / tiap callPt.
+function syncAuthoritativeFields(s, q) {
+  const sched = q.surgery_schedule
+  s.queueStatus = q.status                       // WAITING/CALLED/IN_PROGRESS/COMPLETED
+  // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
+  if (s.status === 'MENUNGGU') {
+    s.status = q.status === 'COMPLETED' ? 'SELESAI'
+             : q.status === 'IN_PROGRESS' ? 'BERLANGSUNG'
+             : 'MENUNGGU'
+  }
+  // Jadwal dari dokter (ruang/jam/tanggal): ruang hanya disinkron bila petugas
+  // belum menyentuhnya (masih sama dgn jadwal lama atau placeholder '—').
+  if (sched?.scheduled_time !== undefined) s.scheduledTime = sched?.scheduled_time ?? null
+  if (sched?.scheduled_date !== undefined) s.scheduledDate = sched?.scheduled_date
+  const schedRoom = sched?.operation_room ?? '—'
+  if (s.ruang === '—' || s.ruang === s._schedRoom) s.ruang = schedRoom
+  s._schedRoom = schedRoom
+  // Visus/IOP pre-op = data server (RefractionRecord), bukan draft petugas → aman
+  // disinkron tiap poll (mis. setelah refraksionis melengkapi).
+  if (q.preop) {
+    s.visusOD = q.preop.visus_od ?? null
+    s.visusOS = q.preop.visus_os ?? null
+    s.iopOD   = q.preop.iop_od ?? null
+    s.iopOS   = q.preop.iop_os ?? null
+  }
+  return s
+}
+
 async function loadQueue() {
   loadingQueue.value = true
   try {
     const { data } = await bedahApi.antrian()
     const rows = data.data ?? []
-    // Pertahankan working-state pasien yang sedang dibuka (selP): polling tidak
-    // boleh me-reset checklist/tim/BHP/IOL/recordId/timIn ke default. Untuk baris
-    // pasien terpilih, pakai kembali objek selP yang sudah ada (re-link), hanya
-    // sinkronkan status & jadwal dari server; baris lain di-transform normal.
-    const selId = selP.value?.id
+    // Pertahankan working-state SEMUA pasien yg sudah ada (bukan cuma selP):
+    // polling tidak boleh me-reset checklist/tim/BHP/IOL/recordId/timIn ke default.
+    // Bangun Map id→objek lama; row server yg sudah ada → re-use objek lama (hanya
+    // sinkron field authoritative); hanya row BENAR-BENAR baru di-transform.
+    const prevById = new Map(patients.value.map((p) => [p.id, p]))
     const mapped = rows.map((q) => {
-      if (selId && q.id === selId && selP.value) {
-        const s = selP.value
-        // Sinkron field yg memang authoritative dari server (tanpa menimpa input lokal).
-        s.queueStatus = q.status
-        if (s.status === 'MENUNGGU') {
-          s.status = q.status === 'COMPLETED' ? 'SELESAI'
-                   : q.status === 'IN_PROGRESS' ? 'BERLANGSUNG'
-                   : 'MENUNGGU'
-        }
-        return s
-      }
+      const old = prevById.get(q.id)
+      if (old) return syncAuthoritativeFields(old, q)
       return transformQueueItem(q)
     })
     // Pertahankan urutan tampilan lokal (mis. hasil skipPt) lintas-poll: baris yg
@@ -199,9 +238,11 @@ watch(selP, (p) => {
   }
 })
 
-// Load master equipment sekali di mount (untuk dropdown pilihan)
+// Load master sekali di mount (dropdown pilihan: alat medis, IOL, obat pasca-bedah)
 onMounted(() => {
   loadEquipmentMaster()
+  loadIolMaster()
+  loadObatMaster()
 })
 
 // ── Surgery Requests (BHP/IOL dari Farmasi) — used_qty per item ───────────────
@@ -257,6 +298,7 @@ const equipmentList = ref([])  // master alat aktif (sumber pilihan)
 const equipmentUsages = ref([])  // log usage utk visit ini
 const equipmentLoading = ref(false)
 const newEquipmentId = ref('')
+const addingEquip = ref(false)   // guard cegah double-submit pemakaian alat
 
 async function loadEquipmentMaster() {
   try {
@@ -282,10 +324,12 @@ async function loadEquipmentUsages(visitId) {
 }
 
 async function addEquipmentUsage() {
+  if (addingEquip.value) return
   if (!newEquipmentId.value || !selP.value?.visitId) {
     toast('w', 'Pilih alat dulu')
     return
   }
+  addingEquip.value = true
   try {
     await alatMedisApi.recordUsage({
       medical_equipment_id: newEquipmentId.value,
@@ -297,6 +341,8 @@ async function addEquipmentUsage() {
     await loadEquipmentUsages(selP.value.visitId)
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal mencatat')
+  } finally {
+    addingEquip.value = false
   }
 }
 
@@ -310,6 +356,97 @@ async function removeEquipmentUsage(usage) {
     toast('e', e.response?.data?.message ?? 'Gagal menghapus')
   }
 }
+
+// ── IOL Master (untuk pilih lensa terpasang dari katalog) ─────────────────────
+const iolMaster = ref([])         // master IOL aktif & tersedia
+const iolSearch = ref('')          // query filter dropdown master IOL
+const savingIol = ref(false)       // guard cegah double simpan IOL terpasang
+
+async function loadIolMaster() {
+  try {
+    const res = await bedahApi.listIol({ active: 1, per_page: 200 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    iolMaster.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    iolMaster.value = []
+  }
+}
+
+const filteredIol = computed(() => {
+  const q = iolSearch.value.trim().toLowerCase()
+  if (!q) return iolMaster.value
+  return iolMaster.value.filter((it) =>
+    `${it.brand ?? ''} ${it.model ?? ''} ${it.manufacturer ?? ''} ${it.serial_number ?? ''}`
+      .toLowerCase().includes(q)
+  )
+})
+
+// Pilih IOL dari master → prefill merk/power/series + simpan iol_item_id ke state.
+function pickIolMaster(it) {
+  const d = selP.value?.iolDipasang
+  if (!d) return
+  d.itemId = it.id
+  d.merk   = it.brand ?? d.merk
+  d.power  = it.power != null ? String(it.power) : d.power
+  d.series = it.model ?? it.serial_number ?? d.series
+}
+
+// Wiring IOL terpasang → backend (surgery_iol_usages). Wajib recordId & iol_item_id.
+async function simpanIolTerpasang() {
+  if (savingIol.value) return
+  const d = selP.value?.iolDipasang
+  if (!d) return
+  if (!selP.value?.recordId) {
+    toast('w', 'Mulai & Time Out operasi dulu sebelum menyimpan IOL')
+    return
+  }
+  if (!d.itemId) {
+    toast('w', 'Pilih IOL dari master terlebih dahulu')
+    return
+  }
+  savingIol.value = true
+  try {
+    await bedahApi.storeIolUsage({
+      surgery_record_id: selP.value.recordId,
+      iol_item_id:       d.itemId,
+      eye_side:          d.eyeSide || 'OD',
+      brand:             d.merk || null,
+      model:             d.series || null,
+      power:             d.power ? Number(d.power) : null,
+      lot_number:        d.series || null,
+      serial_number:     null,
+    })
+    selP.value.iolUsageSaved = true
+    toast('s', 'IOL terpasang tersimpan')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyimpan IOL terpasang')
+  } finally {
+    savingIol.value = false
+  }
+}
+
+// ── Master Obat (untuk pilih obat pasca-bedah dari katalog) ───────────────────
+const obatMaster = ref([])         // master obat (bedah-scoped, RBAC bedah.read)
+const obatSearchPasca = ref('')     // query filter dropdown obat pasca-bedah
+const sendingResep = ref(false)     // guard cegah double kirim resep
+
+async function loadObatMaster() {
+  try {
+    const res = await bedahApi.daftarObat('')
+    const list = res.data?.data ?? []
+    obatMaster.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    obatMaster.value = []
+  }
+}
+
+const filteredObatPasca = computed(() => {
+  const q = obatSearchPasca.value.trim().toLowerCase()
+  if (!q) return obatMaster.value.slice(0, 30)
+  return obatMaster.value.filter((o) =>
+    `${o.name ?? ''} ${o.code ?? ''} ${o.golongan ?? ''}`.toLowerCase().includes(q)
+  ).slice(0, 30)
+})
 
 const timerDisplay = computed(() => {
   if (!selP.value?.timIn) return '--:--:--'
@@ -551,22 +688,76 @@ function addBhp() {
 }
 function removeBhp(idx) { selP.value?.bhp.splice(idx, 1) }
 
-// Obat Pasca Bedah
-const newObat = ref({ nama: '', dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
-const quickObat = ['Ciprofloxacin 0.3% ED', 'Dexamethasone 0.1% ED', 'Ketorolac 0.5% ED', 'Prednisolone 1% ED', 'Tobramycin 0.3% ED', 'Timolol 0.5% ED']
+// Obat Pasca Bedah — wajib pilih obat dari master (medication_id) supaya resep
+// bisa dikirim ke Farmasi (PrescriptionItem.medication_id NOT NULL).
+const newObat = ref({ medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
+
+// Pilih obat dari master → isi medication_id + nama, tutup dropdown pencarian.
+function pickObatMaster(o) {
+  newObat.value.medication_id = o.id
+  newObat.value.nama = o.name
+  obatSearchPasca.value = ''
+}
+
+// Parse durasi dropdown ('7 hari'→7, '1 bulan'→30) ke jumlah hari (integer).
+function parseDurDays(dur) {
+  if (!dur) return null
+  const s = String(dur).toLowerCase()
+  const n = parseInt(s.replace(/[^\d]/g, ''), 10)
+  if (!n) return null
+  if (s.includes('bulan')) return n * 30
+  if (s.includes('minggu')) return n * 7
+  return n   // default: hari
+}
+
 function addObat() {
-  if (!selP.value || !newObat.value.nama.trim()) { toast('w', 'Nama obat wajib'); return }
+  if (!selP.value) return
+  if (!newObat.value.medication_id) { toast('w', 'Pilih obat dari master dulu'); return }
   selP.value.obatPasca.push({ ...newObat.value })
-  newObat.value = { nama: '', dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' }
+  newObat.value = { medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' }
   toast('s', 'Obat pasca bedah ditambahkan')
 }
 function removeObat(idx) { selP.value?.obatPasca.splice(idx, 1) }
-function quickAddObat(nama) { newObat.value.nama = nama }
 
-function kirimResep() {
+async function kirimResep() {
+  if (sendingResep.value) return
   if (!selP.value || !selP.value.obatPasca.length) { toast('w', 'Belum ada obat ditambahkan'); return }
-  selP.value.resepSent = true
-  toast('s', 'Resep pasca bedah terkirim ke Farmasi')
+  // Resolve record.id (dari mulai/timeout, atau ambil ulang via scheduleId).
+  let recordId = selP.value.recordId
+  if (!recordId && selP.value.scheduleId) {
+    try {
+      const { data } = await bedahApi.showRecord(selP.value.scheduleId)
+      recordId = data.data?.id ?? null
+      if (recordId) selP.value.recordId = recordId
+    } catch { /* record belum ada */ }
+  }
+  if (!recordId) {
+    toast('w', 'Mulai & Time Out operasi dulu sebelum kirim resep')
+    return
+  }
+  // Map ke kontrak PrescriptionItem (skip item tanpa medication_id).
+  const items = selP.value.obatPasca
+    .filter((o) => o.medication_id)
+    .map((o) => ({
+      medication_id: o.medication_id,
+      quantity:      Math.max(1, Number(o.jumlah) || 1),
+      dose:          o.dosis || null,
+      frequency:     o.freq || null,
+      route:         o.rute || null,
+      duration_days: parseDurDays(o.dur),
+      notes:         null,
+    }))
+  if (!items.length) { toast('w', 'Obat harus dipilih dari master'); return }
+  sendingResep.value = true
+  try {
+    await bedahApi.storeResepPasca(recordId, { items })
+    selP.value.resepSent = true
+    toast('s', 'Resep pasca-bedah terkirim ke Farmasi')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal mengirim resep pasca-bedah')
+  } finally {
+    sendingResep.value = false
+  }
 }
 
 async function doFinalisasi() {
@@ -859,7 +1050,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                         {{ r }}
                       </label>
                     </div>
-                    <span v-else class="bd-val bd-val-na">Belum ada ruang OK — atur di Profil Klinik</span>
+                    <span v-else class="bd-val bd-val-na">Belum ada ruang OK — atur di Profil Rumah Sakit</span>
                   </div>
                   <div class="bd-field-row">
                     <label class="bd-label">Jadwal Operasi</label>
@@ -928,6 +1119,16 @@ function mulaiBack() { mulaiStep.value = 1 }
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- Toggle IOL — override auto-deteksi prosedur Phaco/SICS -->
+            <div class="bd-card bd-card-full">
+              <div class="bd-card-bd">
+                <label class="bd-chk-item">
+                  <input type="checkbox" v-model="selP.isPhaco" :disabled="selP.laporanFinalized" />
+                  <span :class="selP.isPhaco && 'bd-chk-done'">Pasang IOL (Phaco / SICS) — tampilkan kolom lensa intraokular</span>
+                </label>
               </div>
             </div>
 
@@ -1039,7 +1240,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <table class="bd-tbl" v-if="selP.bhp.length">
                     <thead><tr><th>No</th><th>Item</th><th>Jml</th><th>Satuan</th><th></th></tr></thead>
                     <tbody>
-                      <tr v-for="(b, i) in selP.bhp" :key="i">
+                      <tr v-for="(b, i) in selP.bhp" :key="`${b.item}-${i}`">
                         <td>{{ i + 1 }}</td>
                         <td>{{ b.item }}</td>
                         <td>{{ b.jumlah }}</td>
@@ -1073,26 +1274,72 @@ function mulaiBack() { mulaiStep.value = 1 }
                   {{ selP.isPhaco ? 'IOL Dipasang' : 'Anestesi & Catatan' }}
                 </div>
                 <div class="bd-card-bd">
-                  <div v-if="selP.isPhaco" class="bd-iol-grid">
-                    <div class="bd-iol-field">
-                      <label class="bd-label">Merk / Nama</label>
-                      <input class="bd-input" v-model="selP.iolDipasang.merk" :disabled="selP.laporanFinalized" />
+                  <template v-if="selP.isPhaco">
+                    <!-- Pilih IOL dari master (wajib utk simpan ke backend / billing) -->
+                    <div class="bd-iol-field" style="margin-bottom:8px">
+                      <label class="bd-label">Pilih IOL dari Master</label>
+                      <div class="bd-combo-wrap">
+                        <input
+                          class="bd-input bd-combo-input"
+                          v-model="iolSearch"
+                          placeholder="Cari merk / model / serial IOL…"
+                          :disabled="selP.laporanFinalized"
+                        />
+                        <div v-if="iolSearch.trim() && !selP.laporanFinalized" class="bd-combo-dropdown">
+                          <div v-for="it in filteredIol" :key="it.id" class="bd-combo-option" @mousedown.prevent="pickIolMaster(it)">
+                            <span class="bd-combo-name">{{ it.brand }} {{ it.model }}</span>
+                            <span class="bd-combo-role">{{ it.power != null ? `${it.power} D` : '' }}{{ it.serial_number ? ` · ${it.serial_number}` : '' }}</span>
+                          </div>
+                          <div v-if="!filteredIol.length" class="bd-combo-empty">Tidak ada hasil</div>
+                        </div>
+                      </div>
+                      <span v-if="selP.iolDipasang.itemId" class="bd-paket-source-pill" style="margin-top:6px;display:inline-block">
+                        Dipilih dari master · ID {{ String(selP.iolDipasang.itemId).slice(0, 8) }}
+                      </span>
                     </div>
-                    <div class="bd-iol-field">
-                      <label class="bd-label">Power (D)</label>
-                      <input class="bd-input" v-model="selP.iolDipasang.power" :disabled="selP.laporanFinalized" />
+
+                    <div class="bd-iol-grid">
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Merk / Nama</label>
+                        <input class="bd-input" v-model="selP.iolDipasang.merk" :disabled="selP.laporanFinalized" />
+                      </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Power (D)</label>
+                        <input class="bd-input" v-model="selP.iolDipasang.power" :disabled="selP.laporanFinalized" />
+                      </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Series / Lot No.</label>
+                        <input class="bd-input" v-model="selP.iolDipasang.series" :disabled="selP.laporanFinalized" />
+                      </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Tipe</label>
+                        <select class="bd-select" v-model="selP.iolDipasang.tipe" :disabled="selP.laporanFinalized">
+                          <option>Monofocal</option><option>Multifocal</option><option>Toric</option><option>Extended Depth of Focus</option>
+                        </select>
+                      </div>
+                      <div class="bd-iol-field">
+                        <label class="bd-label">Mata</label>
+                        <select class="bd-select" v-model="selP.iolDipasang.eyeSide" :disabled="selP.laporanFinalized">
+                          <option value="OD">OD (Kanan)</option>
+                          <option value="OS">OS (Kiri)</option>
+                        </select>
+                      </div>
                     </div>
-                    <div class="bd-iol-field">
-                      <label class="bd-label">Series / Lot No.</label>
-                      <input class="bd-input" v-model="selP.iolDipasang.series" :disabled="selP.laporanFinalized" />
+
+                    <div class="bd-iol-field" style="margin-top:8px">
+                      <button
+                        class="bd-btn-add"
+                        :disabled="selP.laporanFinalized || savingIol || !selP.recordId || !selP.iolDipasang.itemId"
+                        @click="simpanIolTerpasang"
+                      >
+                        {{ savingIol ? 'Menyimpan…' : 'Simpan IOL Terpasang' }}
+                      </button>
+                      <span v-if="selP.iolUsageSaved" class="bd-sent-badge" style="margin-left:8px">IOL tersimpan</span>
+                      <span v-else-if="!selP.recordId" class="bd-disp-hint">Mulai & Time Out operasi dulu sebelum menyimpan IOL.</span>
+                      <span v-else-if="!selP.iolDipasang.itemId" class="bd-disp-hint">Pilih IOL dari master terlebih dahulu.</span>
                     </div>
-                    <div class="bd-iol-field">
-                      <label class="bd-label">Tipe</label>
-                      <select class="bd-select" v-model="selP.iolDipasang.tipe" :disabled="selP.laporanFinalized">
-                        <option>Monofocal</option><option>Multifocal</option><option>Toric</option><option>Extended Depth of Focus</option>
-                      </select>
-                    </div>
-                  </div>
+                  </template>
+
                   <div class="bd-iol-field" style="margin-top:8px">
                     <label class="bd-label">Jenis Anestesi</label>
                     <select class="bd-select" v-model="selP.anestesi" :disabled="selP.laporanFinalized">
@@ -1201,7 +1448,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                       {{ eq.code }} · {{ eq.name }}{{ eq.location ? ` (${eq.location})` : '' }}
                     </option>
                   </select>
-                  <button class="bd-btn-add" @click="addEquipmentUsage">+ Catat Pemakaian</button>
+                  <button class="bd-btn-add" :disabled="addingEquip" @click="addEquipmentUsage">{{ addingEquip ? 'Menyimpan…' : '+ Catat Pemakaian' }}</button>
                 </div>
               </div>
             </div>
@@ -1371,15 +1618,11 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <span v-if="selP.resepSent" class="bd-sent-badge">Terkirim ke Farmasi</span>
                 </div>
                 <div class="bd-card-bd">
-                  <div class="bd-quick-obat">
-                    <span class="bd-label" style="margin-right:8px">Cepat:</span>
-                    <button v-for="o in quickObat" :key="o" class="bd-quick-btn" @click="quickAddObat(o)">{{ o.split(' ')[0] }}</button>
-                  </div>
-                  <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length" style="margin-top:8px">
-                    <thead><tr><th>Nama Obat</th><th>Dosis</th><th>Frek.</th><th>Durasi</th><th>Rute</th><th></th></tr></thead>
+                  <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length">
+                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Frek.</th><th>Durasi</th><th>Rute</th><th></th></tr></thead>
                     <tbody>
-                      <tr v-for="(o, i) in selP.obatPasca" :key="i">
-                        <td>{{ o.nama }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                      <tr v-for="(o, i) in selP.obatPasca" :key="`${o.medication_id}-${i}`">
+                        <td>{{ o.nama }}</td><td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
                         <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button></td>
@@ -1389,8 +1632,24 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <div v-else class="bd-tbl-empty">Belum ada obat ditambahkan</div>
 
                   <div v-if="!selP.resepSent" class="bd-obat-form">
-                    <input class="bd-input" v-model="newObat.nama" placeholder="Nama obat…" style="flex:2" />
+                    <!-- Pilih obat dari master (wajib medication_id utk kirim ke Farmasi) -->
+                    <div class="bd-combo-wrap" style="flex:2;min-width:200px">
+                      <input
+                        class="bd-input bd-combo-input"
+                        :value="newObat.medication_id ? newObat.nama : obatSearchPasca"
+                        placeholder="Cari obat dari master…"
+                        @input="e => { obatSearchPasca = e.target.value; newObat.medication_id = ''; newObat.nama = '' }"
+                      />
+                      <div v-if="obatSearchPasca.trim() && !newObat.medication_id" class="bd-combo-dropdown">
+                        <div v-for="o in filteredObatPasca" :key="o.id" class="bd-combo-option" @mousedown.prevent="pickObatMaster(o)">
+                          <span class="bd-combo-name">{{ o.name }}</span>
+                          <span class="bd-combo-role">{{ o.form_sediaan || o.golongan || '' }}{{ o.unit ? ` · ${o.unit}` : '' }}</span>
+                        </div>
+                        <div v-if="!filteredObatPasca.length" class="bd-combo-empty">Tidak ada hasil</div>
+                      </div>
+                    </div>
                     <input class="bd-input bd-input-sm" v-model="newObat.dosis" placeholder="Dosis" style="flex:1" />
+                    <input type="number" class="bd-input bd-input-sm" v-model.number="newObat.jumlah" min="1" title="Jumlah" placeholder="Jml" style="width:60px" />
                     <select class="bd-select bd-select-sm" v-model="newObat.freq">
                       <option>1×/hari</option><option>2×/hari</option><option>3×/hari</option><option>4×/hari</option><option>6×/hari</option>
                     </select>
@@ -1404,10 +1663,11 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <button
                     v-if="!selP.resepSent && selP.obatPasca.length"
                     class="bd-btn-kirim"
+                    :disabled="sendingResep"
                     @click="kirimResep"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                    Kirim ke Farmasi
+                    {{ sendingResep ? 'Mengirim…' : 'Kirim ke Farmasi' }}
                   </button>
                 </div>
               </div>
@@ -1433,11 +1693,12 @@ function mulaiBack() { mulaiStep.value = 1 }
             <div class="bd-mfield"><span class="bd-mlabel">Nama Pasien</span><span class="bd-mval">{{ selP?.name }}</span></div>
             <div class="bd-mfield"><span class="bd-mlabel">Diagnosa</span><span class="bd-mval">{{ selP?.diagnosa }}</span></div>
             <div class="bd-mfield"><span class="bd-mlabel">Nama Operasi</span><span class="bd-mval">{{ selP?.prosedur }}</span></div>
-            <div class="bd-mfield">
+            <!-- Visus/IOP hanya tampil bila ada datanya (hindari '—/—' menyesatkan). -->
+            <div v-if="selP?.visusOD || selP?.visusOS" class="bd-mfield">
               <span class="bd-mlabel">Visus Pre-op</span>
               <span class="bd-mval">OD: {{ selP?.visusOD || '—' }} / OS: {{ selP?.visusOS || '—' }}</span>
             </div>
-            <div class="bd-mfield">
+            <div v-if="selP?.iopOD || selP?.iopOS" class="bd-mfield">
               <span class="bd-mlabel">IOP Pre-op</span>
               <span class="bd-mval">OD: {{ selP?.iopOD || '—' }} mmHg / OS: {{ selP?.iopOS || '—' }} mmHg</span>
             </div>
@@ -1771,6 +2032,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-bhp-add { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .bd-btn-add { padding: 7px 14px; background: var(--gl); border: 1px solid var(--ga); color: var(--td); border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .bd-btn-add:hover { background: var(--ga); color: #fff; }
+.bd-btn-add:disabled { opacity: .6; cursor: not-allowed; }
 
 .bd-obat-form { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 

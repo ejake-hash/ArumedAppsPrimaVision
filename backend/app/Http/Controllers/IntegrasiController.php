@@ -535,6 +535,43 @@ class IntegrasiController extends Controller
         return $this->ok($syncLog, 'Retry sync Satu Sehat selesai');
     }
 
+    /**
+     * GET /integrasi/satusehat/backfill/preview?from=&to=
+     * Cek jumlah kunjungan HISTORIS yang layak di-backfill (sebelum eksekusi).
+     */
+    public function satusehatBackfillPreview(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->satusehatBackfillPreview(
+            $request->query('from'),
+            $request->query('to'),
+        ));
+    }
+
+    /**
+     * POST /integrasi/satusehat/backfill  Body: { limit, from?, to? }
+     * Jalankan backfill N kunjungan historis eligible (terlama dulu).
+     */
+    public function satusehatBackfill(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'limit' => ['required', 'integer', 'min:1', 'max:5000'],
+            'from'  => ['nullable', 'date'],
+            'to'    => ['nullable', 'date'],
+        ]);
+
+        try {
+            $syncLog = $this->service->satusehatBackfill(
+                (int) $data['limit'],
+                $data['from'] ?? null,
+                $data['to'] ?? null,
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($syncLog, 'Backfill Satu Sehat selesai');
+    }
+
     // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================

@@ -133,8 +133,12 @@ class BpjsClient
      * @param  string  $path        path relatif (diawali "/") setelah baseUrl()
      * @param  array|null  $body     body untuk POST/PUT/DELETE
      * @param  bool  $encrypted     true → response VClaim (AES + LZString); false → JSON polos (Antrean)
+     * @param  list<string>  $successCodes  metaData.code yang dianggap sukses.
+     *        VClaim = ['200']; Antrean RS = ['1','200'] (BPJS Antrean balas code "1"
+     *        untuk sukses, BUKAN "200" — kalau hanya cek '200' semua sukses Antrean
+     *        salah-tandai gagal di production).
      */
-    public function request(string $method, string $path, ?array $body = null, bool $encrypted = true): array
+    public function request(string $method, string $path, ?array $body = null, bool $encrypted = true, array $successCodes = ['200']): array
     {
         $this->assertEnabled();
 
@@ -166,7 +170,7 @@ class BpjsClient
             ];
         }
 
-        return $this->parse($resp, $timestamp, $encrypted);
+        return $this->parse($resp, $timestamp, $encrypted, $successCodes);
     }
 
     /**
@@ -174,7 +178,7 @@ class BpjsClient
      * BPJS membungkus payload di { metaData, response }. response bisa berupa
      * string terenkripsi (VClaim) atau objek/array (Antrean).
      */
-    private function parse(Response $resp, string $timestamp, bool $encrypted): array
+    private function parse(Response $resp, string $timestamp, bool $encrypted, array $successCodes = ['200']): array
     {
         $raw    = $resp->body();
         $status = $resp->status();
@@ -195,8 +199,13 @@ class BpjsClient
         $response = $json['response'] ?? null;
         $metaCode = (string) ($meta['code'] ?? $status);
 
-        // VClaim: response berupa string terenkripsi → decrypt + dekompres.
-        if ($encrypted && is_string($response) && $response !== '' && $metaCode === '200') {
+        // Sukses bila metaData.code termasuk daftar kode sukses layanan ybs.
+        // Antrean RS pakai "1"; VClaim pakai "200". (BPJS Antrean TIDAK balas "200".)
+        $isSuccess = in_array($metaCode, $successCodes, true);
+
+        // VClaim: response berupa string terenkripsi → decrypt + dekompres (hanya
+        // saat sukses; Antrean encrypted=false jadi blok ini dilewati).
+        if ($encrypted && $isSuccess && is_string($response) && $response !== '') {
             $decoded  = $this->decrypt($response, $timestamp);
             $response = $decoded !== null ? (json_decode($decoded, true) ?? $decoded) : $response;
         }
@@ -205,7 +214,7 @@ class BpjsClient
             'metaData'    => $meta,
             'response'    => $response,
             'http_status' => $status,
-            'is_success'  => $metaCode === '200',
+            'is_success'  => $isSuccess,
             'raw'         => $raw,
         ];
     }

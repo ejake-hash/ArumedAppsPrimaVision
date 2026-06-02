@@ -32,24 +32,24 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/admisi' },
         { path: 'admisi', name: 'admisi', component: AdmisiView, meta: { title: 'Admisi & Pendaftaran' } },
-        { path: 'dokter', name: 'dokter', component: DokterView, meta: { title: 'RME Dokter' } },
+        { path: 'dokter', name: 'dokter', component: DokterView, meta: { title: 'Poliklinik Dokter', permission: 'rme_dokter.read' } },
         { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { title: 'Dashboard' } },
-        { path: 'perawat', name: 'perawat', component: PerawatView, meta: { title: 'Triase / Perawat' } },
-        { path: 'refraksionis', name: 'refraksionis', component: RefraksionisView, meta: { title: 'Refraksionis' } },
-        { path: 'rekam-medis', name: 'rekam-medis', component: RekamMedisView, meta: { title: 'Rekam Medis' } },
-        { path: 'penunjang', name: 'penunjang', component: PenunjangView, meta: { title: 'Pemeriksaan Penunjang' } },
-        { path: 'bedah', name: 'bedah', component: BedahView, meta: { title: 'Bedah' } },
-        { path: 'bedah/terjadwal', name: 'bedah-terjadwal', component: BedahTerjadwalView, meta: { title: 'Pasien Terjadwal Bedah' } },
+        { path: 'perawat', name: 'perawat', component: PerawatView, meta: { title: 'Triase / Perawat', permission: 'perawat.read' } },
+        { path: 'refraksionis', name: 'refraksionis', component: RefraksionisView, meta: { title: 'Refraksionis', permission: 'refraksionis.read' } },
+        { path: 'rekam-medis', name: 'rekam-medis', component: RekamMedisView, meta: { title: 'Rekam Medis', permission: 'rekam_medis.read' } },
+        { path: 'penunjang', name: 'penunjang', component: PenunjangView, meta: { title: 'Pemeriksaan Penunjang', permission: 'penunjang.read' } },
+        { path: 'bedah', name: 'bedah', component: BedahView, meta: { title: 'Bedah', permission: 'bedah.read' } },
+        { path: 'bedah/terjadwal', name: 'bedah-terjadwal', component: BedahTerjadwalView, meta: { title: 'Pasien Terjadwal Bedah', permission: 'bedah.read' } },
         { path: 'rawat-inap', name: 'rawat-inap', component: () => import('@/views/RawatInapView.vue'), meta: { title: 'Rawat Inap', permission: 'rawat_inap.read' } },
         { path: 'igd', name: 'igd', component: () => import('@/views/IgdView.vue'), meta: { title: 'IGD (Darurat)', permission: 'igd.read' } },
-        { path: 'farmasi', name: 'farmasi', component: FarmasiView, meta: { title: 'Farmasi' } },
-        { path: 'kasir', name: 'kasir', component: KasirView, meta: { title: 'Kasir & Billing' } },
-        { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim' } },
-        { path: 'asuransi', name: 'asuransi', component: () => import('@/views/AsuransiView.vue'), meta: { title: 'Asuransi & Klaim TPA' } },
+        { path: 'farmasi', name: 'farmasi', component: FarmasiView, meta: { title: 'Farmasi', permission: 'farmasi.read' } },
+        { path: 'kasir', name: 'kasir', component: KasirView, meta: { title: 'Kasir & Billing', permission: 'kasir.read' } },
+        { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim', permission: 'bpjs.read' } },
+        { path: 'asuransi', name: 'asuransi', component: () => import('@/views/AsuransiView.vue'), meta: { title: 'Asuransi & Klaim TPA', permission: 'kasir.read' } },
         { path: 'DataPengguna', name: 'DataPengguna', component: DataPenggunaView, meta: { title: 'Kepegawaian & RBAC', permission: 'role_akses.read' } },
-        { path: 'jadwal-dokter', name: 'jadwal-dokter', component: JadwalDokterView, meta: { title: 'Jadwal Dokter' } },
-        { path: 'ttd-dokumen', name: 'ttd-dokumen', component: () => import('@/views/TtdDokumenView.vue'), meta: { title: 'Tanda Tangan Dokumen' } },
-        { path: 'pengaturan', name: 'pengaturan', component: StubView, props: { title: 'Pengaturan' }, meta: { title: 'Pengaturan' } },
+        { path: 'jadwal-dokter', name: 'jadwal-dokter', component: JadwalDokterView, meta: { title: 'Jadwal Dokter', permission: 'admisi.write' } },
+        { path: 'ttd-dokumen', name: 'ttd-dokumen', component: () => import('@/views/TtdDokumenView.vue'), meta: { title: 'Tanda Tangan Dokumen', permission: 'rekam_medis.read' } },
+        { path: 'pengaturan', name: 'pengaturan', component: () => import('@/views/PengaturanView.vue'), meta: { title: 'Pengaturan', permission: 'pengaturan.read' } },
 
         // Master Data — shell + child views (sub-route per resource)
         {
@@ -63,6 +63,7 @@ const router = createRouter({
             { path: 'icd9',            name: 'master-icd9',          component: () => import('@/views/master-data/Icd9View.vue'),          meta: { title: 'ICD-9' } },
             { path: 'wilayah',         name: 'master-wilayah',       component: () => import('@/views/master-data/WilayahView.vue'),       meta: { title: 'Wilayah Indonesia' } },
             { path: 'ruang-fasilitas', name: 'master-ruang-fasilitas', component: () => import('@/views/master-data/RuangFasilitasView.vue'), meta: { title: 'Fasilitas & Ruang', permission: 'rawat_inap.read' } },
+            { path: 'opsi-refraksi',   name: 'master-opsi-refraksi', component: () => import('@/views/master-data/OpsiRefraksiView.vue'), meta: { title: 'Opsi Refraksi', permission: 'pengaturan.read' } },
             { path: 'document-type',       name: 'master-document-type',      component: () => import('@/views/master-data/DocumentTypeView.vue'),                  meta: { title: 'Jenis Dokumen RM', permission: 'form_template.read' } },
             { path: 'form-template',       name: 'master-form-template',      component: () => import('@/views/master-data/form-template/FormTemplateView.vue'),  meta: { title: 'Form Rekam Medis', permission: 'form_template.read' } },
             { path: 'form-template/new',   name: 'master-form-template-new',  component: () => import('@/views/master-data/form-template/FormTemplateWizard.vue'), meta: { title: 'Form RM — Buat Baru', permission: 'form_template.write' } },
@@ -82,6 +83,7 @@ const router = createRouter({
             { path: 'metode-bayar/:id',  name: 'metode-bayar-detail',       component: () => import('@/views/tarif-paket/MetodeBayarDetailView.vue'),   meta: { title: 'Detail Metode Bayar' } },
             { path: 'paket-bedah',       name: 'paket-bedah-list',          component: () => import('@/views/tarif-paket/PaketBedahListView.vue'),      meta: { title: 'Paket Bedah' } },
             { path: 'paket-bedah/:id',   name: 'paket-bedah-detail',        component: () => import('@/views/tarif-paket/PaketBedahDetailView.vue'),    meta: { title: 'Detail Paket Bedah' } },
+            { path: 'tarif-kamar',       name: 'tarif-paket-tarif-kamar',   component: () => import('@/views/tarif-paket/TarifKamarView.vue'),          meta: { title: 'Tarif Kamar' } },
             { path: 'kategori-tagihan',  name: 'tarif-paket-kategori-tagihan', component: () => import('@/views/tarif-paket/KategoriTagihanView.vue'),  meta: { title: 'Kategori Tagihan' } },
           ],
         },
@@ -109,12 +111,13 @@ const router = createRouter({
         {
           path: 'bridging',
           component: () => import('@/views/bridging/BridgingLayout.vue'),
-          meta: { title: 'Bridging BPJS' },
+          meta: { title: 'Bridging BPJS', permission: 'integrasi.read' },
           children: [
             { path: '',            name: 'bridging',             redirect: '/bridging/konfigurasi' },
             { path: 'konfigurasi', name: 'bridging-konfigurasi', component: () => import('@/views/bridging/BridgingKonfigurasiView.vue'), meta: { title: 'Konfigurasi & Status' } },
             { path: 'vclaim',      name: 'bridging-vclaim',      component: () => import('@/views/bridging/BridgingVClaimView.vue'),       meta: { title: 'VClaim' } },
-            { path: 'antrean',     name: 'bridging-antrean',     component: () => import('@/views/bridging/BridgingAntreanView.vue'),      meta: { title: 'Antrean Online' } },
+            // Antrean Online dipindah ke Jadwal Dokter → Pemetaan BPJS. Redirect link lama.
+            { path: 'antrean',     name: 'bridging-antrean',     redirect: '/jadwal-dokter' },
             { path: 'satusehat',   name: 'bridging-satusehat',   component: () => import('@/views/bridging/BridgingSatusehatView.vue'),   meta: { title: 'Satu Sehat' } },
             { path: 'log',         name: 'bridging-log',         component: () => import('@/views/bridging/BridgingLogView.vue'),         meta: { title: 'Log Integrasi' } },
           ],
@@ -137,8 +140,18 @@ router.beforeEach((to) => {
     return { name: 'login' }
   }
 
-  // 2. Cek meta.permission (single key) atau meta.permissions (array, OR)
-  const perm = to.meta?.permission ?? to.meta?.permissions
+  // 2. Cek permission dengan pola DEEPEST-WINS.
+  //    Telusuri rantai `to.matched` (parent → child) dan ambil permission dari
+  //    segmen PALING SPESIFIK yang punya meta. Efek:
+  //    - child TANPA meta MEWARISI permission parent (mis. semua `bridging/*`,
+  //      `tarif-paket/*`, child master-data/inventori tanpa meta sendiri).
+  //    - child DENGAN meta MENIMPA parent (mis. `master-data/ruang-fasilitas`
+  //      butuh `rawat_inap.read`, bukan permission parent Master Data).
+  let perm = null
+  for (const record of to.matched) {
+    const recordPerm = record.meta?.permission ?? record.meta?.permissions
+    if (recordPerm) perm = recordPerm
+  }
   if (perm && auth.isAuthenticated && !auth.can(perm)) {
     // Tidak punya akses — redirect ke landing default
     return { name: 'dashboard' }

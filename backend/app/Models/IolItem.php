@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+// InventoryStock dipakai oleh onHandStock() — sumber stok tunggal IOL.
 
 class IolItem extends Model
 {
@@ -30,6 +31,7 @@ class IolItem extends Model
         'lot_number',
         'serial_number',
         'gs1_barcode',
+        'gtin',
         'expiry_date',
         'stock',
         'is_used',
@@ -50,6 +52,23 @@ class IolItem extends Model
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
+    }
+
+    /**
+     * Total stok on-hand IOL ini dari `inventory_stocks` (sumber stok tunggal
+     * pasca-redesign per-tipe). Default jumlahkan SEMUA lokasi (gudang+unit) agar
+     * "tersedia untuk dipakai" tidak bias ke satu depo. Kolom legacy `stock`
+     * TIDAK lagi otoritatif.
+     */
+    public function onHandStock(?string $location = null): float
+    {
+        $q = InventoryStock::where('item_type', InventoryStock::TYPE_IOL)
+            ->where('item_id', $this->id);
+        if ($location !== null) {
+            $q->where('location', $location);
+        }
+
+        return (float) $q->sum('qty_on_hand');
     }
 
     public function iolTariffs(): HasMany

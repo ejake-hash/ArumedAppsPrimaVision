@@ -94,8 +94,8 @@ const kasirCopayEstimate = computed(() => {
   const total = Number(selInv.value?.total) || 0
   if (!v || total === 0) return { label: '—', amount: 0 }
 
-  const pct = Number(v.copayment_percent) || 0
-  const fix = Number(v.copayment_amount) || 0
+  const pct = Math.max(0, Math.min(100, Number(v.copayment_percent) || 0))
+  const fix = Math.max(0, Number(v.copayment_amount) || 0)
   const fromPct = total * (pct / 100)
   const patientShare = Math.max(fromPct, fix)
 
@@ -129,6 +129,7 @@ async function pickP(q) {
   selPM.value        = null
   uangDibayar.value  = 0
   showMixed.value    = false
+  mixedAmounts.value = { 1: 0, 2: 0, 3: 0, 4: 0 }   // bersihkan agar nilai pasien lama tak bocor
   editTagihan.value  = false
   insuranceWarning.value = { show: false }
   if (!q.visit?.id) return
@@ -224,6 +225,20 @@ const paying = ref(false)
 const showMixed = ref(false)
 const mixedAmounts = ref({ 1: 0, 2: 0, 3: 0, 4: 0 })
 const mixedTotal = computed(() => Object.values(mixedAmounts.value).reduce((a, b) => a + (Number(b) || 0), 0))
+
+// Re-sync nominal bayar saat sisa tagihan berubah selama edit (tambah/hapus item,
+// diskon, atau cover asuransi di-update). Tanpa ini, nominal yang sudah terisi saat
+// pilih metode jadi stale → bisa kurang/lebih dari tagihan baru. Hanya jika sudah
+// pilih metode & invoice belum lunas.
+watch(sisaTagihan, (sisa) => {
+  if (!selInv.value || selInv.value.status === 'PAID' || selInv.value.status === 'CANCELLED') return
+  if (selPM.value === 1) {
+    uangDibayar.value = sisa
+  } else if (selPM.value === 99) {
+    // Bayar campuran: sinkronkan leg pertama (CASH) ke sisa, sisanya nol.
+    mixedAmounts.value = { 1: sisa, 2: 0, 3: 0, 4: 0 }
+  }
+})
 
 function toggleMixed() {
   showMixed.value = !showMixed.value
@@ -323,8 +338,11 @@ function onClickOutsideTindakan(e) {
   }
 }
 
+const itemMutating = ref(false)
+
 async function removeItem(item) {
-  if (!item?.id) return
+  if (!item?.id || itemMutating.value) return
+  itemMutating.value = true
   try {
     await kasirApi.deleteItem(item.id)
     selInv.value.items = selInv.value.items.filter((i) => i.id !== item.id)
@@ -332,21 +350,26 @@ async function removeItem(item) {
     toast('s', 'Item dihapus')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menghapus item')
+  } finally {
+    itemMutating.value = false
   }
 }
 
 async function addItem() {
-  if (!selInv.value?.id) return
+  if (!selInv.value?.id || itemMutating.value) return
   if (!newItem.value.description.trim()) { toast('w', 'Keterangan item wajib diisi'); return }
+  itemMutating.value = true
   try {
+    const qty   = Number(newItem.value.quantity) || 1
+    const price = Number(newItem.value.unit_price) || 0
     const payload = {
       item_type:        newItem.value.item_type,
       category:         newItem.value.category || null,
       description:      newItem.value.description,
-      quantity:         Number(newItem.value.quantity) || 1,
-      unit_price:       Number(newItem.value.unit_price) || 0,
-      discount_amount:  Number(newItem.value.discount_amount) || 0,
-      discount_percent: Number(newItem.value.discount_percent) || 0,
+      quantity:         qty,
+      unit_price:       price,
+      discount_amount:  Math.max(0, Math.min(Number(newItem.value.discount_amount) || 0, price * qty)),
+      discount_percent: Math.max(0, Math.min(100, Number(newItem.value.discount_percent) || 0)),
     }
     await kasirApi.storeItem(selInv.value.id, payload)
     await refreshInvoice()
@@ -354,6 +377,8 @@ async function addItem() {
     toast('s', 'Item ditambahkan')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menambahkan item')
+  } finally {
+    itemMutating.value = false
   }
 }
 
@@ -362,12 +387,15 @@ function onItemDiscChange(item, field) {
   if (itemDiscDebounce.value[item.id]) clearTimeout(itemDiscDebounce.value[item.id])
   itemDiscDebounce.value[item.id] = setTimeout(async () => {
     try {
+      // Clamp: % di 0–100; Rp tak boleh > subtotal item (unit_price × qty) → cegah total negatif.
+      const lineGross = (Number(item.unit_price) || 0) * (Number(item.quantity) || 0)
       const payload = field === 'discount_amount'
-        ? { discount_amount:  Number(item.discount_amount)  || 0 }
-        : { discount_percent: Number(item.discount_percent) || 0 }
-      const { data } = await kasirApi.updateItem(item.id, payload)
-      const fresh = data.data
-      Object.assign(item, fresh)
+        ? { discount_amount:  Math.max(0, Math.min(Number(item.discount_amount) || 0, lineGross)) }
+        : { discount_percent: Math.max(0, Math.min(100, Number(item.discount_percent) || 0)) }
+      await kasirApi.updateItem(item.id, payload)
+      // JANGAN Object.assign(item, fresh): menimpa field yang mungkin masih diketik kasir
+      // (race ketik-vs-respons). refreshInvoice() menarik ulang seluruh invoice dari
+      // server sebagai sumber kebenaran tunggal.
       await refreshInvoice()
     } catch (err) {
       toast('w', err.response?.data?.message ?? 'Gagal update diskon item')
@@ -400,7 +428,7 @@ function onGlobalDiscChange(field) {
     if (!selInv.value?.id) return
     try {
       const payload = field === 'rp'
-        ? { discount: Number(globalDiscRp.value) || 0, discount_percent: 0 }
+        ? { discount: Math.max(0, Math.min(Number(globalDiscRp.value) || 0, subtotalNet.value)), discount_percent: 0 }
         : { discount_percent: Math.max(0, Math.min(100, Number(globalDiscPc.value) || 0)) }
       const { data } = await kasirApi.updateInvoice(selInv.value.id, payload)
       selInv.value = data.data
@@ -413,6 +441,7 @@ function onGlobalDiscChange(field) {
 
 // ─── Proses pembayaran ──────────────────────────────────────────────────────
 async function prosesBayar() {
+  if (paying.value) return   // guard double-submit (backend mengakumulasi paid_amount)
   if (!selInv.value) { toast('w', 'Tagihan belum siap'); return }
   if (!selPM.value)  { toast('w', 'Pilih metode pembayaran terlebih dahulu'); return }
   const total = bayar()
@@ -427,23 +456,31 @@ async function prosesBayar() {
     }
 
     if (selPM.value === 99) {
+      // Bayar campuran: kirim tiap metode, tapi CLAMP ke sisa tagihan agar backend
+      // (yang mengakumulasi paid_amount tanpa clamp) tak pernah tercatat > total.
+      // Jangan 'break' saat PAID — metode lain yang sudah diisi tetap berkontribusi
+      // sampai sisa habis; sisa kelebihan input diabaikan (uang fisik = kembalian).
+      let remaining = total
       for (const pm of payMethods) {
-        const amount = Number(mixedAmounts.value[pm.id] || 0)
-        if (amount <= 0) continue
-        const { data } = await kasirApi.bayarInvoice(selInv.value.id, {
-          paid_amount:    amount,
-          payment_method: pm.code,
-        })
+        if (remaining <= 0) break
+        const input = Number(mixedAmounts.value[pm.id] || 0)
+        if (input <= 0) continue
+        const amount = Math.min(input, remaining)
+        const body = { paid_amount: amount, payment_method: pm.code }
+        // Leg CASH: kirim uang tunai fisik diterima agar kembalian benar tercetak
+        // di kwitansi (service mengakumulasi cash_received hanya utk metode CASH).
+        if (pm.code === 'CASH') body.cash_received = input
+        const { data } = await kasirApi.bayarInvoice(selInv.value.id, body)
         selInv.value = data.data
-        if (selInv.value.status === 'PAID') break
+        remaining -= amount
       }
     } else {
       const pm = payMethods.find((p) => p.id === selPM.value)
       const amount = selPM.value === 1 ? Math.min(uangDibayar.value, total) : total
-      const { data } = await kasirApi.bayarInvoice(selInv.value.id, {
-        paid_amount:    amount,
-        payment_method: pm.code,
-      })
+      const payload = { paid_amount: amount, payment_method: pm.code }
+      // CASH: kirim uang fisik diterima agar kembalian benar tercetak di kwitansi.
+      if (selPM.value === 1) payload.cash_received = Number(uangDibayar.value) || 0
+      const { data } = await kasirApi.bayarInvoice(selInv.value.id, payload)
       selInv.value = data.data
     }
 
@@ -463,6 +500,7 @@ async function prosesBayar() {
 
 // Konfirmasi tagihan ditanggung penuh asuransi — pasien tidak membayar.
 async function prosesKonfirmasiCover() {
+  if (paying.value) return
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   paying.value = true
   try {
@@ -484,6 +522,7 @@ async function prosesKonfirmasiCover() {
 
 // Konfirmasi kunjungan BPJS — pasien tidak membayar (ditagih via klaim INA-CBG).
 async function prosesKonfirmasiBpjs() {
+  if (paying.value) return
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   paying.value = true
   try {
@@ -509,8 +548,8 @@ const printSetRef = ref(null)          // utk deteksi klik di luar popover
 const printSettings = ref({ show_logo: true, show_stamp: true, show_esign: true, show_footer: true, show_watermark: true })
 const printSettingsSaving = ref(false)
 const printSettingItems = [
-  { key: 'show_logo',      label: 'Logo / Kop klinik' },
-  { key: 'show_stamp',     label: 'Stempel klinik' },
+  { key: 'show_logo',      label: 'Logo / Kop rumah sakit' },
+  { key: 'show_stamp',     label: 'Stempel rumah sakit' },
   { key: 'show_esign',     label: 'Tanda tangan elektronik kasir' },
   { key: 'show_footer',    label: 'Footer penanggung jawab' },
   { key: 'show_watermark', label: 'Watermark' },
@@ -1100,7 +1139,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <td v-if="editTagihan" class="num">
                           <input
                             v-model.number="item.discount_amount"
-                            type="number" min="0"
+                            type="number" min="0" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
                             class="fi tbl-fi tbl-num"
                             @input="onItemDiscChange(item, 'discount_amount')"
                           />
@@ -1112,7 +1151,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                           Rp {{ Number(item.net_price ?? item.total_price).toLocaleString('id-ID') }}
                         </td>
                         <td v-if="editTagihan">
-                          <button class="del-btn" @click="removeItem(item)" :disabled="(selInv.items?.length ?? 0) <= 1">
+                          <button class="del-btn" @click="removeItem(item)" :disabled="itemMutating || (selInv.items?.length ?? 0) <= 1">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                           </button>
                         </td>
@@ -1139,7 +1178,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <td class="num"><input v-model.number="newItem.discount_amount" type="number" min="0" class="fi tbl-fi tbl-num" /></td>
                         <td class="num">Rp {{ Math.max(0, ((newItem.quantity||0) * (newItem.unit_price||0)) - (Number(newItem.discount_amount)||0)).toLocaleString('id-ID') }}</td>
                         <td>
-                          <button class="add-item-btn" @click="addItem">
+                          <button class="add-item-btn" @click="addItem" :disabled="itemMutating">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                           </button>
                         </td>
@@ -1159,7 +1198,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <span class="disc-inputs">
                           <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="0.01" class="fi disc-pc" @input="onGlobalDiscChange('pc')" /><span class="disc-suffix">%</span>
                           <span class="disc-sep">atau</span>
-                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" class="fi disc-rp" @input="onGlobalDiscChange('rp')" /></span>
+                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" :max="subtotalNet" class="fi disc-rp" @input="onGlobalDiscChange('rp')" /></span>
                         </span>
                       </div>
                       <div v-else-if="discountAmount" class="row red"><span>Diskon Global<span v-if="Number(selInv.discount_percent) > 0"> ({{ Number(selInv.discount_percent) }}%)</span></span><span class="num">−Rp {{ discountAmount.toLocaleString('id-ID') }}</span></div>
@@ -1265,7 +1304,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                     </template>
 
                     <button v-if="!(isFullCover && selInv.status !== 'PAID') && !(isBpjsSelected && selInv.status !== 'PAID')" class="btn btn-success btn-full btn-lg"
-                      :disabled="!selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
+                      :disabled="paying || !selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
                       @click="prosesBayar">
                       <div v-if="paying" class="sp"></div>
                       <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -1384,7 +1423,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
         <header class="rp-kop">
           <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
           <div class="rp-kop-text">
-            <div class="rp-clinic">{{ printData.clinic?.name ?? 'Klinik' }}</div>
+            <div class="rp-clinic">{{ printData.clinic?.name ?? 'Rumah Sakit' }}</div>
             <div v-if="printData.clinic?.address" class="rp-line">{{ printData.clinic.address }}</div>
             <div class="rp-line">
               <span v-if="printData.clinic?.phone">Telp: {{ printData.clinic.phone }}</span>
@@ -1499,7 +1538,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
         <footer class="rp-footer">
           <span v-if="printData.print_settings?.show_footer !== false && printData.clinic?.director_name">
-            Penanggung Jawab Klinik: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
+            Penanggung Jawab Rumah Sakit: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
           </span>
           Dicetak: {{ new Date().toLocaleString('id-ID') }} · Arumed Apps
         </footer>

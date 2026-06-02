@@ -794,7 +794,7 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
           <header class="pp-kop">
             <img v-if="clinicLogoUrl" :src="clinicLogoUrl" alt="Logo" class="pp-logo" />
             <div class="pp-kop-text">
-              <div class="pp-clinic">{{ clinic?.clinic_name ?? 'Klinik' }}</div>
+              <div class="pp-clinic">{{ clinic?.clinic_name ?? 'Rumah Sakit' }}</div>
               <div v-if="clinic?.address" class="pp-line">{{ clinic.address }}</div>
               <div class="pp-line">
                 <span v-if="clinic?.phone">Telp: {{ clinic.phone }}</span>

@@ -148,6 +148,9 @@ class KasirService
             'prescriptions.items.medication',
             'diagnosticOrders',
             'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
+            // FIX B1: pasien pre-op Admisi & RANAP→Bedah (Fase 8C) set visits.surgery_schedule_id
+            // LANGSUNG tanpa doctorExamination → eager-load jalur visit langsung agar IOL tak hilang & tanpa N+1.
+            'surgerySchedule.surgeryRecord.iolUsages.iolItem',
             'doctorExamination.surgeryPackage.items',
             'surgeryRequests.bhpItems.bhpItem',
             'equipmentUsages.equipment',
@@ -196,9 +199,9 @@ class KasirService
                 BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
             }
 
-            // RANAP: tandai inpatient_charges yang baru ditagih agar tak dobel saat
+            // RANAP/IGD: tandai inpatient_charges yang baru ditagih agar tak dobel saat
             // (mis.) invoice di-cancel lalu konsolidasi ulang.
-            if (($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP') {
+            if ($this->usesInpatientCharges($visit)) {
                 InpatientCharge::where('visit_id', $visit->id)
                     ->where('is_billed', false)
                     ->update(['is_billed' => true]);
@@ -214,6 +217,18 @@ class KasirService
     // BUILDERS — satu method per sumber, dipanggil dari consolidateBilling.
     // Tiap builder return array<array> siap di-create sebagai BillingItem.
     // =========================================================================
+
+    /**
+     * Apakah visit menagih biaya lewat tabel inpatient_charges (bukan builder
+     * tindakan/obat/penunjang biasa)? Berlaku untuk RANAP DAN IGD — keduanya
+     * mencatat tindakan/obat/charge ke inpatient_charges (lihat IgdService::addCharge
+     * & RanapService). Sumber tunggal agar guard tidak hardcode 'RANAP' di banyak
+     * tempat dan biaya IGD tidak hilang dari invoice.
+     */
+    private function usesInpatientCharges(Visit $visit): bool
+    {
+        return in_array($visit->jenis_pelayanan ?? 'RAJAL', ['RANAP', 'IGD'], true);
+    }
 
     private function buildRegistrasiLines(Visit $visit): array
     {
@@ -253,10 +268,10 @@ class KasirService
 
     private function buildObatLines(Visit $visit): array
     {
-        // RANAP: obat (termasuk obat pulang) ditagih lewat inpatient_charges type OBAT
-        // (buildInpatientChargeLines) — resep RANAP hanya untuk antrean Farmasi & potong
-        // stok, BUKAN sumber tagihan. Skip di sini agar tidak dobel-tagih.
-        if (($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP') {
+        // RANAP/IGD: obat (termasuk obat pulang) ditagih lewat inpatient_charges type OBAT
+        // (buildInpatientChargeLines) — resep di sini hanya untuk antrean Farmasi & potong
+        // stok, BUKAN sumber tagihan. Skip agar tidak dobel-tagih.
+        if ($this->usesInpatientCharges($visit)) {
             return [];
         }
 
@@ -430,7 +445,10 @@ class KasirService
     private function buildIolLines(Visit $visit): array
     {
         $lines = [];
-        $record = $visit->doctorExamination?->surgerySchedule?->surgeryRecord;
+        // FIX B1 (KRITIS): prefer surgery_schedule_id pada visit (pasien pre-op Admisi &
+        // RANAP→Bedah Fase 8C yang set visits.surgery_schedule_id LANGSUNG tanpa doctorExamination),
+        // fallback ke jadwal via doctorExamination (alur poli/rawat-jalan klasik).
+        $record = ($visit->surgerySchedule ?? $visit->doctorExamination?->surgerySchedule)?->surgeryRecord;
         if (! $record) {
             return $lines;
         }
@@ -487,7 +505,7 @@ class KasirService
      */
     private function buildInpatientChargeLines(Visit $visit): array
     {
-        if (($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP') {
+        if (! $this->usesInpatientCharges($visit)) {
             return [];
         }
 
@@ -716,28 +734,48 @@ class KasirService
      */
     public function processPayment(string $invoiceId, array $data): BillingInvoice
     {
-        $invoice = BillingInvoice::with('visit')->findOrFail($invoiceId);
-
-        if (! in_array($invoice->status, ['FINALIZED', 'PARTIALLY_PAID'])) {
-            throw new \Exception('Invoice harus dalam status FINALIZED atau PARTIALLY_PAID untuk diproses.', 422);
-        }
-
-        $paidAmount = (float) $data['paid_amount'];
-
-        if ($paidAmount <= 0) {
+        $rawPaid = (float) $data['paid_amount'];
+        if ($rawPaid <= 0) {
             throw new \Exception('Nominal bayar harus lebih dari 0.', 422);
         }
 
         $user = auth('api')->user();
 
-        $fresh = DB::transaction(function () use ($invoice, $data, $paidAmount, $user) {
+        // SEMUA pembacaan status/sisa + update DALAM transaksi dengan lockForUpdate,
+        // supaya dua pembayaran bersamaan (double-click / 2 tab) tidak sama-sama baca
+        // paid_amount lama → over-collect / dobel mark PAID. Load di luar transaksi
+        // (tanpa lock) tidak aman: status & sisa harus dibaca dari baris yang terkunci.
+        $fresh = DB::transaction(function () use ($invoiceId, $data, $rawPaid, $user) {
+            $invoice = BillingInvoice::with('visit')->lockForUpdate()->findOrFail($invoiceId);
+
+            if (! in_array($invoice->status, ['FINALIZED', 'PARTIALLY_PAID'])) {
+                throw new \Exception('Invoice harus dalam status FINALIZED atau PARTIALLY_PAID untuk diproses.', 422);
+            }
+
+            // Sisa yang masih harus DIBAYAR pasien = total − ditanggung asuransi − sudah dibayar.
+            // Clamp pembayaran ke sisa ini supaya paid_amount tidak pernah melebihi tagihan
+            // (overpay = uang fisik kembalian, bukan pendapatan).
+            $sisaDue = max(0.0, (float) $invoice->total - (float) $invoice->covered_amount - (float) $invoice->paid_amount);
+            if ($sisaDue <= 0.009) {
+                throw new \Exception('Tagihan sudah lunas — tidak ada sisa yang harus dibayar.', 422);
+            }
+            $paidAmount = min($rawPaid, $sisaDue);
+
             $totalPaid   = $invoice->paid_amount + $paidAmount;
             // Tagihan dianggap lunas bila pembayaran pasien + porsi ditanggung asuransi
             // (covered_amount) sudah menutup total. Untuk pasien umum covered = 0.
             $isFullyPaid = ($totalPaid + (float) $invoice->covered_amount) >= $invoice->total;
 
+            // cash_received = uang tunai fisik diterima (utk hitung kembalian di kwitansi).
+            // Akumulasi bila bayar bertahap tunai. Hanya untuk metode CASH.
+            $cashReceived = $invoice->cash_received;
+            if (($data['payment_method'] ?? null) === 'CASH' && isset($data['cash_received'])) {
+                $cashReceived = (float) $invoice->cash_received + (float) $data['cash_received'];
+            }
+
             $invoice->update([
                 'paid_amount'    => $totalPaid,
+                'cash_received'  => $cashReceived,
                 'payment_method' => $data['payment_method'],
                 'status'         => $isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
                 'paid_at'        => $isFullyPaid ? now() : $invoice->paid_at,
@@ -761,8 +799,12 @@ class KasirService
                 }
 
                 // Auto-draft klaim TPA non-BPJS jika visit guarantor ASURANSI/PERUSAHAAN
-                // dan sudah VERIFIED. BPJS punya alurnya sendiri (KlaimService), tidak disentuh.
+                // dan sudah VERIFIED.
                 $this->maybeCreateInsuranceClaimDraft($invoice);
+
+                // Auto-draft klaim BPJS: kunjungan BPJS lunas yang sudah punya SEP +
+                // diagnosis dokter otomatis muncul sebagai klaim DRAFT di panel Klaim.
+                $this->maybeCreateBpjsClaimDraft($invoice);
             }
 
             $this->log(
@@ -1191,6 +1233,13 @@ class KasirService
         $total   = (float) $invoice->total;
         $paid    = (float) $invoice->paid_amount;
         $covered = (float) $invoice->covered_amount;
+        // Kembalian = uang tunai fisik − total. paid_amount di-clamp ke total (logika
+        // partial-pay), jadi tak bisa dipakai hitung kembalian. cash_received menyimpan
+        // uang fisik; bila ada, hitung kembalian darinya. Fallback ke perilaku lama.
+        $cashReceived = $invoice->cash_received !== null ? (float) $invoice->cash_received : null;
+        $change = $cashReceived !== null
+            ? max(0, ($cashReceived + $covered) - $total)
+            : max(0, ($paid + $covered) - $total);
 
         // Toggle elemen cetak (logo/stempel/e-sign/footer/watermark) — admin atur via UI.
         $print = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
@@ -1239,8 +1288,9 @@ class KasirService
                 'tax'              => $invoice->tax,
                 'total'            => $invoice->total,
                 'paid_amount'      => $invoice->paid_amount,
+                'cash_received'    => $cashReceived,
                 'covered_amount'   => $covered,
-                'change'           => max(0, ($paid + $covered) - $total),
+                'change'           => $change,
                 'sisa'             => max(0, $total - $covered - $paid),
             ],
             // Nama penanda tangan: kasir tercatat di invoice; bila tidak ada
@@ -1365,6 +1415,15 @@ class KasirService
         $total = max(0, $itemNet - $globalDisc + (float) $invoice->tax);
 
         $invoice->update(['subtotal' => $subtotal, 'total' => $total]);
+
+        // Cover asuransi tak boleh melebihi total baru. Saat item ditambah/dihapus
+        // atau diskon berubah, covered_amount lama bisa jadi > total (→ keliru dianggap
+        // "full cover" oleh kasir) atau menyisakan sisa negatif. Clamp ke total terkini.
+        // Hanya turunkan (clamp), tidak menaikkan otomatis — penetapan cover tetap manual.
+        $covered = (float) $invoice->covered_amount;
+        if ($covered > $total) {
+            $invoice->update(['covered_amount' => $total]);
+        }
     }
 
     /**
@@ -1389,15 +1448,25 @@ class KasirService
             default => "INV-{$code}/",
         };
 
-        // Counter per-tipe: hitung invoice bulan berjalan dgn prefix yang sama.
+        // Counter per-tipe: invoice bulan berjalan dgn prefix yang sama.
         // RAJAL prefix "INV-{code}/" juga cocok ke "INV-RI/..."? TIDAK — RI/IGD pakai
         // segmen tipe di depan code, jadi prefix RAJAL tak akan match RI/IGD.
-        $lastSeq = BillingInvoice::whereYear('created_at', $year)
+        //
+        // Dipanggil di dalam DB::transaction (consolidateBilling). lockForUpdate +
+        // baca sequence MAKS (bukan count) mencegah: (a) dua kasir bersamaan dapat
+        // nomor sama → 23505 pada invoice_number unik; (b) reuse nomor saat ada
+        // invoice yang terhapus (count turun). Pola sama QueueService::enqueue.
+        $rows = BillingInvoice::whereYear('created_at', $year)
             ->whereMonth('created_at', $month)
             ->where('invoice_number', 'like', $prefix . '%')
-            ->count();
+            ->lockForUpdate()
+            ->pluck('invoice_number');
 
-        $seq = str_pad($lastSeq + 1, 3, '0', STR_PAD_LEFT);
+        $maxSeq = $rows
+            ->map(fn ($num) => (int) substr((string) $num, strrpos((string) $num, '/') + 1))
+            ->max() ?? 0;
+
+        $seq = str_pad($maxSeq + 1, 3, '0', STR_PAD_LEFT);
 
         return "{$prefix}{$year}/{$month}/{$seq}";
     }
@@ -1504,6 +1573,72 @@ class KasirService
             $this->log(
                 auth('api')->id(),
                 'AUTO_DRAFT_CLAIM_FAILED',
+                BillingInvoice::class,
+                $invoice->id,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Auto-draft klaim BPJS saat kunjungan lunas. Kunjungan BPJS yang sudah
+     * punya SEP otomatis muncul sebagai klaim DRAFT di panel Klaim
+     * (tabel bpjs_claims) — tanpa petugas menarik manual.
+     *
+     * Diagnosis SENGAJA tidak dijadikan syarat: bila dokter belum/lupa mengisi
+     * diagnosis, draft TETAP dibuat (diagnosis kosong) agar tidak ada kunjungan
+     * yang hilang senyap. Petugas klaim melengkapi/mengganti diagnosis dari menu
+     * Klaim (Edit Koding → KlaimService::updateClaimCoding) sebelum grouping.
+     *
+     * Idempoten (updateOrCreate by visit_id) & non-blocking: kegagalan tidak
+     * mengganggu pembayaran yang sudah committed.
+     */
+    private function maybeCreateBpjsClaimDraft(BillingInvoice $invoice): void
+    {
+        try {
+            $visit = $invoice->visit;
+            if (! $visit) return;
+
+            if ($visit->guarantor_type !== 'BPJS') return;
+            if (empty($visit->no_sep)) return; // tanpa SEP, belum bisa diklaim
+
+            // Diagnosis dokter (bila ada) dipakai untuk pra-isi; bila kosong,
+            // draft tetap dibuat dengan diagnosis kosong untuk dilengkapi petugas.
+            $exam = $visit->doctorExamination()->first();
+
+            // Hindari menimpa klaim yang sudah diproses (mis. sudah grouping/dikirim).
+            $existing = \App\Models\BpjsClaim::where('visit_id', $visit->id)->first();
+            if ($existing && ! in_array($existing->status, ['DRAFT'], true)) {
+                return;
+            }
+
+            // Untuk draft existing yang sudah di-edit petugas, jangan timpa kembali
+            // diagnosa dengan nilai dari rekam medis (hormati koreksi koder).
+            $payload = [
+                'no_sep'      => $visit->no_sep,
+                'patient_nik' => $visit->patient?->nik,
+                'status'      => $existing?->status ?? 'DRAFT',
+            ];
+            if (! $existing) {
+                $payload['diagnosis_utama']    = $exam?->diagnosis_utama;
+                $payload['diagnosis_sekunder'] = $exam?->diagnosis_sekunder ?? [];
+                $payload['procedure_codes']    = $exam?->tindakan_codes ?? [];
+            }
+
+            \App\Models\BpjsClaim::updateOrCreate(['visit_id' => $visit->id], $payload);
+
+            $tanpaDx = empty($exam?->diagnosis_utama) ? ' (TANPA diagnosis — perlu dilengkapi)' : '';
+            $this->log(
+                auth('api')->id(),
+                'AUTO_DRAFT_BPJS_CLAIM',
+                BillingInvoice::class,
+                $invoice->id,
+                "Klaim BPJS draft dibuat otomatis dari kunjungan {$visit->id} (SEP {$visit->no_sep}){$tanpaDx}"
+            );
+        } catch (\Throwable $e) {
+            $this->log(
+                auth('api')->id(),
+                'AUTO_DRAFT_BPJS_CLAIM_FAILED',
                 BillingInvoice::class,
                 $invoice->id,
                 $e->getMessage()

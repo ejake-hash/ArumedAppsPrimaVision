@@ -55,6 +55,17 @@ class DokterController extends Controller
         return $this->ok($queue, 'Pasien dipanggil');
     }
 
+    public function lewatiAntrian(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->lewatiAntrian($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien diturunkan 1 antrean');
+    }
+
     public function selesaiAntrian(string $id): JsonResponse
     {
         try {
@@ -255,12 +266,13 @@ class DokterController extends Controller
 
     /**
      * POST /dokter/kunjungan/{visitId}/resep
-     * Body: { notes, items: [{medication_id, quantity, dose, frequency, route, duration_days, notes}] }
+     * Body: { notes, pharmacy_note, items: [{medication_id, quantity, dose, frequency, route, duration_days, notes}] }
      */
     public function storeResep(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate([
             'notes'                       => 'nullable|string|max:500',
+            'pharmacy_note'               => 'nullable|string|max:500',
             'items'                       => 'present|array',
             'items.*.medication_id'       => 'required|uuid|exists:medications,id',
             'items.*.quantity'            => 'required|integer|min:1',
@@ -342,14 +354,22 @@ class DokterController extends Controller
             'diagnosis_utama'    => 'required|string|max:20',
             'diagnosis_sekunder' => 'nullable|array',
             'diagnosis_sekunder.*' => 'string|max:20',
+            // Diagnosa naratif (teks bebas) saat dokter ragu kode ICD-10.
+            'diagnosis_text'     => 'nullable|string|max:1000',
             'tindakan_codes'     => 'nullable|array',
             'tindakan_codes.*'   => 'string|max:20',
-            'planning'           => 'required|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK',
+            'planning'           => 'required|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK,RAWAT_INAP',
             'surgery_package_id' => 'nullable|uuid|exists:surgery_packages,id',
             'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
             'surgery_date'       => 'nullable|date|after_or_equal:today',
             'surgery_time'       => 'nullable|string|max:8',
             'operation_room'     => 'nullable|string|max:60',
+            // Fase 8: BEDAH yang butuh inap pra-operasi (PRE_OP). Dibaca applyInpatientReason.
+            'requires_inpatient' => 'nullable|boolean',
+
+            // Rujukan EKSTERNAL non-BPJS (faskes lain) — disimpan ke RME & resume.
+            'external_referral_facility' => 'nullable|string|max:255',
+            'external_referral_reason'   => 'nullable|string|max:500',
 
             // Follow-up (opsional, hanya dalam PULANG_BEROBAT_JALAN)
             'follow_up_date'     => 'nullable|date|after_or_equal:today',

@@ -135,8 +135,13 @@ class MasterDataService
                     'role_id'     => $data['role_id'],
                     'name'        => $employee->name,
                     'email'       => $data['email'],
-                    'password'    => Hash::make($data['password']),
-                    'pin'         => Hash::make($data['pin'] ?? '123456'),
+                    // password: model User punya cast 'hashed' → biarkan plain, JANGAN
+                    // Hash::make di sini (kalau di-hash dulu jadi double-hash & login gagal).
+                    'password'    => $data['password'],
+                    // pin: DISIMPAN PLAINTEXT (model TIDAK punya cast 'pin'; verifikasi
+                    // pakai hash_equals mentah di DokterController). Konsisten dgn
+                    // UserService — kalau Hash::make di sini, verify-pin/TTD selalu gagal.
+                    'pin'         => $data['pin'] ?? '123456',
                     'is_active'   => true,
                 ]);
             }
@@ -177,7 +182,8 @@ class MasterDataService
             throw new \Exception('Pegawai ini tidak memiliki akun user.', 422);
         }
 
-        $employee->user->update(['password' => Hash::make($password)]);
+        // Model User punya cast 'hashed' → pass plain (Hash::make di sini = double-hash → login gagal).
+        $employee->user->update(['password' => $password]);
         $this->log(auth('api')->id(), 'RESET_PASSWORD', Employee::class, $id);
     }
 
@@ -427,6 +433,143 @@ class MasterDataService
         }
         $cat->delete();
         $this->log(auth('api')->id(), 'DELETE_PROC_CATEGORY', ProcedureCategory::class, $id);
+    }
+
+    // ─── Kategori Tindakan — CSV template / export / import ──────────────────
+
+    /** Template CSV kategori tindakan (header + petunjuk). */
+    public function templateKategoriCsv(): string
+    {
+        $notes = [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import.',
+            'Kolom WAJIB: nama, prefix_kode. Opsional: deskripsi, aktif (1/0, default 1).',
+            'prefix_kode = awalan kode tindakan (mis. TND), otomatis di-UPPERCASE; harus unik.',
+            'Kategori dicocokkan by NAMA: sudah ada → prefix/deskripsi/aktif di-update; belum → ditambah.',
+            'prefix_kode TIDAK akan diubah bila kategori existing sudah dipakai tindakan (dilewati dgn catatan).',
+        ];
+        $output = fopen('php://temp', 'r+');
+        foreach ($notes as $n) {
+            fwrite($output, '# ' . $n . "\n");
+        }
+        fputcsv($output, ['nama', 'prefix_kode', 'deskripsi', 'aktif'], ',', '"', '\\');
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /** Export semua kategori tindakan ke CSV. */
+    public function exportKategoriCsv(): string
+    {
+        $rows = ProcedureCategory::orderBy('name')->get(['name', 'code_prefix', 'description', 'is_active']);
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, ['nama', 'prefix_kode', 'deskripsi', 'aktif'], ',', '"', '\\');
+        foreach ($rows as $r) {
+            fputcsv($output, [$r->name, $r->code_prefix, $r->description ?? '', $r->is_active ? 1 : 0], ',', '"', '\\');
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /**
+     * Import kategori tindakan dari CSV.
+     * Header wajib (case-insensitive): nama, prefix_kode. Opsional: deskripsi, aktif.
+     * Upsert by NAMA (soft-delete aware). Bila kategori existing sudah dipakai tindakan
+     * dan prefix berbeda → prefix dipertahankan + dicatat sebagai warning (selaras
+     * dengan guard updateProcedureCategory), kolom lain tetap di-update.
+     */
+    public function importKategoriCsv(string $csvContent): array
+    {
+        $lines = $this->csvDataLines($csvContent);
+        if (empty($lines)) {
+            throw new \Exception('File kosong.', 422);
+        }
+        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['nama', 'prefix_kode'] as $req) {
+            if (! in_array($req, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$req}'.", 422);
+            }
+        }
+
+        $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
+
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row = array_combine($headers, $values);
+
+            $nama   = trim((string) ($row['nama'] ?? ''));
+            $prefix = strtoupper(trim((string) ($row['prefix_kode'] ?? '')));
+            if ($nama === '' || $prefix === '') {
+                $errors[] = "Baris {$lineNum}: 'nama' atau 'prefix_kode' kosong";
+                $skipped++;
+                continue;
+            }
+            $desc   = array_key_exists('deskripsi', $row) ? trim((string) $row['deskripsi']) : null;
+            $aktif  = array_key_exists('aktif', $row) ? (trim((string) $row['aktif']) !== '' ? (bool) (int) $row['aktif'] : true) : true;
+
+            // Cari existing by name (soft-delete aware) → restore bila trashed.
+            $existing = ProcedureCategory::withTrashed()->whereRaw('LOWER(name) = ?', [strtolower($nama)])->first();
+
+            if ($existing) {
+                if ($existing->trashed()) {
+                    $existing->restore();
+                }
+                $payload = ['description' => $desc, 'is_active' => $aktif];
+
+                // Guard prefix: kalau berbeda & sudah dipakai tindakan → pertahankan + warning.
+                if ($prefix !== $existing->code_prefix) {
+                    $used = Procedure::where('code', 'like', $existing->code_prefix . '-%')->count();
+                    if ($used > 0) {
+                        $errors[] = "Baris {$lineNum}: prefix '{$existing->code_prefix}' dipakai {$used} tindakan, prefix tidak diubah";
+                    } else {
+                        // Pastikan prefix baru tidak bentrok kategori lain.
+                        $clash = ProcedureCategory::withTrashed()
+                            ->where('code_prefix', $prefix)
+                            ->where('id', '!=', $existing->id)
+                            ->exists();
+                        if ($clash) {
+                            $errors[] = "Baris {$lineNum}: prefix '{$prefix}' sudah dipakai kategori lain, prefix tidak diubah";
+                        } else {
+                            $payload['code_prefix'] = $prefix;
+                        }
+                    }
+                }
+                $existing->update($payload);
+                $updated++;
+            } else {
+                // Cek bentrok prefix sebelum create.
+                $clash = ProcedureCategory::withTrashed()->where('code_prefix', $prefix)->first();
+                if ($clash) {
+                    if ($clash->trashed()) {
+                        // Reuse baris trashed yang prefix-nya sama: jadikan kategori ini.
+                        $clash->restore();
+                        $clash->update(['name' => $nama, 'description' => $desc, 'is_active' => $aktif]);
+                        $updated++;
+                    } else {
+                        $errors[] = "Baris {$lineNum}: prefix '{$prefix}' sudah dipakai kategori '{$clash->name}'";
+                        $skipped++;
+                    }
+                    continue;
+                }
+                ProcedureCategory::create([
+                    'name' => $nama, 'code_prefix' => $prefix, 'description' => $desc, 'is_active' => $aktif,
+                ]);
+                $inserted++;
+            }
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_PROC_CATEGORY_CSV', ProcedureCategory::class, null, "new:{$inserted} upd:{$updated} skip:{$skipped}");
+        return compact('inserted', 'updated', 'skipped', 'errors');
     }
 
     // =========================================================================
@@ -872,17 +1015,44 @@ class MasterDataService
         $model = $this->tariffModel($type);
         $fk    = $this->tariffFk($type);
 
-        $tariff = $model::updateOrCreate(
-            [
-                $fk            => $data[$fk],
-                'insurer_id'   => $data['insurer_id'],
-            ],
+        $tariff = $this->upsertTarifRow(
+            $model,
+            $fk,
+            $data[$fk],
+            $data['insurer_id'],
             ['price' => $data['price'], 'is_active' => $data['is_active'] ?? true]
         );
 
         $this->log(auth('api')->id(), 'UPSERT_TARIF', $model, $tariff->id, "type:{$type}");
 
         return $tariff;
+    }
+
+    /**
+     * Upsert satu baris tarif (item × insurer) yang AMAN terhadap soft-delete.
+     *
+     * Tabel tarif pakai SoftDeletes + unique index PLAIN (item_id, insurer_id) tanpa
+     * filter deleted_at. `updateOrCreate` biasa hanya melihat baris non-trashed → saat
+     * baris pernah dihapus (soft) lalu di-tambah ulang, ia mencoba INSERT dan kena
+     * unique violation (23505) → 500. Helper ini cek withTrashed: kalau ada baris
+     * trashed → restore + update; else updateOrCreate normal.
+     */
+    private function upsertTarifRow(string $model, string $fk, string $itemId, ?string $insurerId, array $values): mixed
+    {
+        $existing = $model::withTrashed()
+            ->where($fk, $itemId)
+            ->where('insurer_id', $insurerId)
+            ->first();
+
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            $existing->update($values);
+            return $existing;
+        }
+
+        return $model::create([$fk => $itemId, 'insurer_id' => $insurerId] + $values);
     }
 
     public function updateTarif(string $type, string $id, array $data): mixed
@@ -1052,9 +1222,12 @@ class MasterDataService
                 continue;
             }
 
-            $existing = $model::where($fk, $item->id)->where('insurer_id', $insurerId)->first();
-            $model::updateOrCreate(
-                [$fk => $item->id, 'insurer_id' => $insurerId],
+            $existing = $model::withTrashed()->where($fk, $item->id)->where('insurer_id', $insurerId)->first();
+            $this->upsertTarifRow(
+                $model,
+                $fk,
+                $item->id,
+                $insurerId,
                 ['price' => (float) $hargaJual, 'is_active' => true]
             );
             if ($existing) $updated++; else $inserted++;
@@ -1351,6 +1524,10 @@ class MasterDataService
      */
     private function csvDataLines(string $csvContent): array
     {
+        // Buang BOM UTF-8 (Excel "Save as CSV") agar header kolom pertama tak rusak.
+        if (str_starts_with($csvContent, "\xEF\xBB\xBF")) {
+            $csvContent = substr($csvContent, 3);
+        }
         $raw = explode("\n", str_replace("\r", '', trim($csvContent)));
         $lines = array_filter($raw, static function ($line) {
             $t = trim($line);
@@ -2068,20 +2245,66 @@ class MasterDataService
         return DocumentNumberConfig::orderBy('document_type_code')->get();
     }
 
+    public function storeNomorDokumen(array $data): DocumentNumberConfig
+    {
+        $code = strtoupper($data['document_type_code']);
+
+        // DB punya unique index pada document_type_code (termasuk baris soft-deleted),
+        // jadi kode yang pernah dihapus tak bisa di-insert ulang. Pulihkan & timpa
+        // baris lama bila ada, agar tak melanggar constraint.
+        $config = DocumentNumberConfig::withTrashed()
+            ->where('document_type_code', $code)
+            ->first();
+
+        $payload = [
+            'document_type_code' => $code,
+            'format'             => $data['format'],
+            'prefix'             => $data['prefix'] ?? null,
+            'reset_period'       => $data['reset_period'],
+            'seq_length'         => $data['seq_length'],
+            'last_seq'           => 0,
+        ];
+
+        if ($config) {
+            $config->restore();
+            $config->update($payload);
+        } else {
+            $config = DocumentNumberConfig::create($payload);
+        }
+
+        $this->log(auth('api')->id(), 'CREATE_DOC_NUMBER_CONFIG', DocumentNumberConfig::class, $config->id);
+
+        return $config;
+    }
+
     public function updateNomorDokumen(string $id, array $data): DocumentNumberConfig
     {
         $config = DocumentNumberConfig::findOrFail($id);
 
-        $config->update(array_filter([
-            'format'       => $data['format'] ?? null,
-            'prefix'       => $data['prefix'] ?? null,
-            'reset_period' => $data['reset_period'] ?? null,
-            'seq_length'   => $data['seq_length'] ?? null,
-        ], fn ($v) => ! is_null($v)));
+        // format/reset_period/seq_length sudah `required` di controller → set
+        // langsung. prefix opsional: array_key_exists membedakan "tidak dikirim"
+        // (jangan sentuh) vs "dikirim null" (clear). document_type_code immutable.
+        $update = [
+            'format'       => $data['format'],
+            'reset_period' => $data['reset_period'],
+            'seq_length'   => $data['seq_length'],
+        ];
+        if (array_key_exists('prefix', $data)) {
+            $update['prefix'] = $data['prefix'];
+        }
+        $config->update($update);
 
         $this->log(auth('api')->id(), 'UPDATE_DOC_NUMBER_CONFIG', DocumentNumberConfig::class, $id);
 
         return $config->fresh();
+    }
+
+    public function destroyNomorDokumen(string $id): void
+    {
+        $config = DocumentNumberConfig::findOrFail($id);
+        $config->delete();
+
+        $this->log(auth('api')->id(), 'DELETE_DOC_NUMBER_CONFIG', DocumentNumberConfig::class, $id);
     }
 
     // =========================================================================

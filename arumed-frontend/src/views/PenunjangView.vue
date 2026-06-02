@@ -58,8 +58,34 @@ function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 // ─── Queue actions ──────────────────────────────────────────────────────────
 async function pickPatient(q) {
   if (store.selectedQueue?.id === q.id) return
+  // Ganti pasien akan menghapus semua form (watch selectedQueue.id) — konfirmasi
+  // dulu kalau ada panel hasil dengan input belum tersimpan agar tak hilang diam2.
+  if (hasUnsavedForm() &&
+      !confirm('Ada input hasil pemeriksaan yang belum disimpan. Pindah pasien & buang perubahan?')) {
+    return
+  }
   store.pickPatient(q)
   toast('i', `Order — ${q.visit?.patient?.name ?? '—'} dibuka`)
+}
+
+// Dirty-check: panel hasil terbuka untuk order yang masih bisa diedit (bukan
+// COMPLETED) dengan minimal satu field terisi → dianggap ada perubahan belum disimpan.
+function hasUnsavedForm() {
+  const oid = activeOrderId.value
+  if (!oid) return false
+  const f = forms[oid]
+  if (!f) return false
+  const order = selectedOrders.value.find((o) => o.id === oid)
+  if (!order || order.status === 'COMPLETED') return false
+  if (f.kesimpulan?.trim() || f.ringkasan?.trim() || f.notes?.trim() || f.attachment_path) return true
+  // Biometri: cek nilai OD/OS apa pun yang terisi.
+  if (order.test_type === BIOMETRI_CODE) {
+    for (const eye of ['od', 'os']) {
+      const b = f.biometri?.[eye] ?? {}
+      if (b.recommended_iol_power || b.brand) return true
+    }
+  }
+  return false
 }
 
 async function callPt(q, e) {
@@ -84,7 +110,7 @@ async function skipPt(q, e) {
   try {
     await store.lewatiAntrian(q.id)
     if (store.selectedQueue?.id === q.id) store.clearSelected()
-    toast('w', `${q.visit?.patient?.name} (${q.queue_number}) dipindah ke akhir antrean`)
+    toast('w', `${q.visit?.patient?.name} (${q.queue_number}) diturunkan 1 antrean`)
     await store.fetchAntrian()
   } catch (err) {
     toast('w', err.message)
@@ -149,8 +175,8 @@ function blankForm() {
     attachment_path: '',
     attachment_url:  '',
     biometri: {
-      od: { axial_length: '', k1: '', k2: '', acd: '', recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
-      os: { axial_length: '', k1: '', k2: '', acd: '', recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
+      od: { recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
+      os: { recommended_iol_power: '', iol_type: 'MONOFOCAL', brand: '' },
     },
   }
 }
@@ -556,22 +582,12 @@ onUnmounted(() => {
 
                   <!-- Panel input hasil (per-order) -->
                   <div v-if="activeOrderId === o.id && forms[o.id]" class="hasil-panel">
-                    <!-- Form khusus Biometri -->
+                    <!-- Form khusus Biometri — fokus rekomendasi IOL (untuk request gudang Bedah) -->
                     <div v-if="o.test_type === BIOMETRI_CODE" class="biometri-grid">
                       <div v-for="eye in ['od', 'os']" :key="eye" class="biometri-col">
                         <div class="biometri-head">{{ eye === 'od' ? 'OD (Mata Kanan)' : 'OS (Mata Kiri)' }}</div>
                         <div class="bfield-row">
-                          <label class="bfield"><span>AL (mm)</span>
-                            <input v-model="forms[o.id].biometri[eye].axial_length" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
-                          <label class="bfield"><span>K1 (D)</span>
-                            <input v-model="forms[o.id].biometri[eye].k1" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
-                          <label class="bfield"><span>K2 (D)</span>
-                            <input v-model="forms[o.id].biometri[eye].k2" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
-                        </div>
-                        <div class="bfield-row">
-                          <label class="bfield"><span>ACD (mm)</span>
-                            <input v-model="forms[o.id].biometri[eye].acd" type="number" step="0.01" :disabled="o.status === 'COMPLETED'" /></label>
-                          <label class="bfield"><span>Rec. IOL (D)</span>
+                          <label class="bfield"><span>IOL Power (D)</span>
                             <input v-model="forms[o.id].biometri[eye].recommended_iol_power" type="number" step="0.25" :disabled="o.status === 'COMPLETED'" /></label>
                           <label class="bfield"><span>Tipe IOL</span>
                             <select v-model="forms[o.id].biometri[eye].iol_type" :disabled="o.status === 'COMPLETED'">
@@ -581,7 +597,7 @@ onUnmounted(() => {
                           </label>
                         </div>
                         <label class="bfield"><span>Brand IOL</span>
-                          <input v-model="forms[o.id].biometri[eye].brand" type="text" :disabled="o.status === 'COMPLETED'" /></label>
+                          <input v-model="forms[o.id].biometri[eye].brand" type="text" placeholder="cth: Alcon SN60WF" :disabled="o.status === 'COMPLETED'" /></label>
                       </div>
                     </div>
 

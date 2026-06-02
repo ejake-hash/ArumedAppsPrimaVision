@@ -14,7 +14,7 @@
  *   - Filter: search + chip kategori
  *   - CSV import/export — column code opsional saat import (kosong = autogen)
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { masterApi } from '@/services/api'
 import MasterTable from '@/components/master-data/MasterTable.vue'
@@ -118,6 +118,60 @@ async function deleteKategoriRow(row) {
     await loadKategoriList()
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal hapus kategori')
+  }
+}
+
+// ─── Kategori — CSV / Excel template / export / import ───────────────────
+const katMenu = ref(null)          // 'template' | 'export' | null
+const katFileInput = ref(null)
+const katCsvBusy = ref(false)
+
+function toggleKatMenu(name) { katMenu.value = katMenu.value === name ? null : name }
+function closeKatMenu(e) { if (!e.target.closest?.('.tt-split')) katMenu.value = null }
+
+function triggerKatDownload(blob, filename) {
+  const url = URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob]))
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+async function onKatTemplate(format = 'csv') {
+  katMenu.value = null
+  try {
+    const res = await masterApi.tindakan.kategori.csvTemplate(format === 'xlsx' ? 'xlsx' : undefined)
+    triggerKatDownload(res.data, `template-kategori-tindakan.${format}`)
+  } catch (e) { showToast('e', 'Gagal unduh template') }
+}
+
+async function onKatExport(format = 'csv') {
+  katMenu.value = null
+  try {
+    const res = await masterApi.tindakan.kategori.csvExport(format === 'xlsx' ? 'xlsx' : undefined)
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerKatDownload(res.data, `kategori-tindakan-${stamp}.${format}`)
+  } catch (e) { showToast('e', 'Gagal export') }
+}
+
+function pickKatImport() { katFileInput.value?.click() }
+
+async function onKatImport(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  katCsvBusy.value = true
+  try {
+    const res = await masterApi.tindakan.kategori.csvImport(file)
+    const r = res.data?.data ?? {}
+    const msg = `Import: ${r.inserted ?? 0} baru, ${r.updated ?? 0} update, ${r.skipped ?? 0} dilewati`
+    showToast((r.errors?.length || (r.skipped ?? 0) > 0) ? 'w' : 's', msg)
+    await refreshKategoriRows()
+    await loadKategoriList()
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal import')
+  } finally {
+    katCsvBusy.value = false
   }
 }
 
@@ -298,8 +352,10 @@ const modalFields = computed(() => {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
+  document.addEventListener('click', closeKatMenu)
   await Promise.all([refresh(), loadKategoriList()])
 })
+onUnmounted(() => document.removeEventListener('click', closeKatMenu))
 
 function onImported(result) {
   showToast('s', `Import: ${result.inserted ?? 0} baru, ${result.updated ?? 0} update`)
@@ -423,6 +479,37 @@ function onImported(result) {
             Kategori menentukan prefix kode tindakan. Mis. kategori "Tindakan" prefix <code>TND</code>
             → kode auto: <code>TND-001</code>, <code>TND-002</code>, dst.
           </p>
+
+          <!-- CSV / Excel: Template / Import / Export -->
+          <div class="tt-kat-csv">
+            <div class="tt-split">
+              <button class="tt-btn-csv" @click.stop="toggleKatMenu('template')" title="Unduh template (header + petunjuk)">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Template
+                <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div v-if="katMenu === 'template'" class="tt-menu">
+                <button @click="onKatTemplate('csv')">CSV (.csv)</button>
+                <button @click="onKatTemplate('xlsx')">Excel (.xlsx)</button>
+              </div>
+            </div>
+            <button class="tt-btn-csv" :disabled="katCsvBusy" @click="pickKatImport" title="Import kategori dari CSV/Excel">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              {{ katCsvBusy ? 'Mengimport…' : 'Import' }}
+            </button>
+            <div class="tt-split">
+              <button class="tt-btn-csv" @click.stop="toggleKatMenu('export')" title="Export semua kategori">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export
+                <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div v-if="katMenu === 'export'" class="tt-menu">
+                <button @click="onKatExport('csv')">CSV (.csv)</button>
+                <button @click="onKatExport('xlsx')">Excel (.xlsx)</button>
+              </div>
+            </div>
+            <input ref="katFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onKatImport" />
+          </div>
 
           <!-- Form add/edit -->
           <div class="tt-kat-form">
@@ -587,6 +674,17 @@ function onImported(result) {
 .tt-kat-close:hover { color: var(--td); }
 .tt-kat-sub { font-size: 12.5px; color: var(--tm); margin: 0; }
 .tt-kat-sub code { background: var(--bs); padding: 1px 6px; border-radius: 4px; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--td); border: 1px solid var(--gb); }
+
+.tt-kat-csv { display: flex; gap: 6px; flex-wrap: wrap; }
+.tt-split { position: relative; }
+.tt-caret { width: 11px !important; height: 11px !important; margin-left: 1px; }
+.tt-btn-csv { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.tt-btn-csv svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tt-btn-csv:hover:not(:disabled) { background: var(--gl); color: var(--td); border-color: var(--ga); }
+.tt-btn-csv:disabled { opacity: 0.45; cursor: not-allowed; }
+.tt-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.tt-menu button { text-align: left; padding: 7px 10px; border: none; background: transparent; border-radius: 6px; font-size: 12px; color: var(--td); cursor: pointer; }
+.tt-menu button:hover { background: var(--gl); color: var(--ga); }
 
 .tt-kat-form { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.7rem; }
 .tt-kat-form-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 0.7rem; }

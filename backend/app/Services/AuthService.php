@@ -133,6 +133,64 @@ class AuthService
         $this->log($user->id, 'PASSWORD_CHANGED', description: 'Password berhasil diubah');
     }
 
+    /**
+     * Daftar role yang boleh mengelola PIN tanda tangan sendiri.
+     */
+    private const DOCTOR_ROLES = ['dokter', 'dokter_anestesi', 'dokter_umum'];
+
+    private function assertDoctor(User $user): void
+    {
+        $role = $user->role?->name;
+        if (! in_array($role, self::DOCTOR_ROLES, true)) {
+            throw new \Exception('Fitur ini hanya untuk akun dokter.', 403);
+        }
+    }
+
+    /**
+     * Ubah PIN tanda tangan milik dokter yang sedang login.
+     * PIN disimpan PLAIN agar konsisten dengan DokterController::verifyPin
+     * (hash_equals plain) dan UserService::resetPin.
+     *
+     * @throws \Exception bila bukan dokter atau password salah
+     */
+    public function changePin(string $currentPassword, string $newPin): void
+    {
+        /** @var User $user */
+        $user = auth('api')->user();
+        $this->assertDoctor($user);
+
+        if (! Hash::check($currentPassword, $user->password)) {
+            throw new \Exception('Password tidak sesuai.', 422);
+        }
+
+        $user->update(['pin' => $newPin]);
+
+        $this->log($user->id, 'PIN_CHANGED', description: 'PIN tanda tangan diubah');
+    }
+
+    /**
+     * Reset kredensial user yang sedang login KE DEFAULT (berlaku semua role):
+     *   - password → 888888 (default akun stasiun)
+     *   - pin      → NULL (khusus dokter; dokter wajib set ulang sebelum tanda tangan)
+     */
+    public function resetToDefault(): void
+    {
+        /** @var User $user */
+        $user = auth('api')->user();
+
+        $payload = ['password' => Hash::make('888888')];
+        // PIN hanya relevan untuk akun dokter (tanda tangan). Kosongkan bila dokter.
+        if (in_array($user->role?->name, self::DOCTOR_ROLES, true)) {
+            $payload['pin'] = null;
+        }
+
+        $user->update($payload);
+
+        $this->log($user->id, 'CREDENTIALS_RESET_DEFAULT',
+            description: 'Password direset ke default (888888)'
+                . (array_key_exists('pin', $payload) ? ' & PIN dikosongkan' : ''));
+    }
+
     // -------------------------------------------------------------------------
 
     /**

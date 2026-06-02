@@ -174,28 +174,39 @@ class PerawatService
             throw new \Exception('Asesmen sudah dikunci, tidak bisa diubah.', 422);
         }
 
-        $patch = array_filter([
-            'td_sistol'        => $data['td_sistol'] ?? null,
-            'td_diastol'       => $data['td_diastol'] ?? null,
-            'nadi'             => $data['nadi'] ?? null,
-            'suhu'             => $data['suhu'] ?? null,
-            'respirasi'        => $data['respirasi'] ?? null,
-            'spo2'             => $data['spo2'] ?? null,
-            'kgd'              => $data['kgd'] ?? null,
-            'pain_scale'       => $data['pain_scale'] ?? null,
-            'berat_badan'      => $data['berat_badan'] ?? null,
-            'tinggi_badan'     => $data['tinggi_badan'] ?? null,
-            'has_allergy'      => $data['has_allergy'] ?? null,
-            'allergy_detail'   => ($data['has_allergy'] ?? false) ? ($data['allergy_detail'] ?? null) : null,
-            'chief_complaint'  => $data['chief_complaint'] ?? null,
-            'rps'              => $data['rps'] ?? null,
-            'assessment_notes' => $data['assessment_notes'] ?? null,
-        ], fn ($v) => ! is_null($v));
+        // Key-aware patch: hanya field yang BENAR-BENAR dikirim FE yang disentuh.
+        // PENTING: jangan pakai array_filter(!is_null) — null eksplisit harus
+        // tersimpan (mis. perawat hapus semua alergi → allergy_detail=null;
+        // kosongkan BB/TB → kolom + BMI ikut di-clear). Lihat regresi audit.
+        $patch = [];
+        $simpleFields = [
+            'td_sistol', 'td_diastol', 'nadi', 'suhu', 'respirasi', 'spo2', 'kgd',
+            'pain_scale', 'berat_badan', 'tinggi_badan',
+            'chief_complaint', 'rps', 'assessment_notes',
+        ];
+        foreach ($simpleFields as $field) {
+            if (array_key_exists($field, $data)) {
+                $patch[$field] = $data[$field];
+            }
+        }
 
-        $bb = $patch['berat_badan'] ?? $assessment->berat_badan;
-        $tb = $patch['tinggi_badan'] ?? $assessment->tinggi_badan;
-        if (isset($patch['berat_badan']) || isset($patch['tinggi_badan'])) {
-            $patch['bmi'] = $this->calculateBmi((float) $bb, (float) $tb);
+        // Alergi: bila has_allergy dikirim, normalisasi allergy_detail.
+        // has_allergy=false → detail di-null-kan (alergi lama tidak boleh "nempel").
+        if (array_key_exists('has_allergy', $data)) {
+            $patch['has_allergy']    = (bool) $data['has_allergy'];
+            $patch['allergy_detail'] = $patch['has_allergy'] ? ($data['allergy_detail'] ?? null) : null;
+        } elseif (array_key_exists('allergy_detail', $data)) {
+            $patch['allergy_detail'] = $data['allergy_detail'];
+        }
+
+        // Recompute BMI saat BB atau TB di-update (termasuk saat di-clear → BMI null).
+        if (array_key_exists('berat_badan', $data) || array_key_exists('tinggi_badan', $data)) {
+            $bb = $patch['berat_badan'] ?? $assessment->berat_badan;
+            $tb = $patch['tinggi_badan'] ?? $assessment->tinggi_badan;
+            $patch['bmi'] = $this->calculateBmi(
+                $bb !== null ? (float) $bb : null,
+                $tb !== null ? (float) $tb : null,
+            );
         }
 
         $assessment->update($patch);
@@ -263,9 +274,11 @@ class PerawatService
         return DB::transaction(function () use ($queueId) {
             $user = auth('api')->user();
 
-            // Role check: hanya perawat & dokter (superadmin bypass)
+            // Role check: hanya perawat & dokter (superadmin bypass).
+            // 'dokter_umum' bekerja di Triase (punya perawat.write) → wajib termasuk,
+            // selaras pesan error & desain (lihat memory feature-data-pengguna-view).
             $roleName = $user?->role?->name;
-            if (! in_array($roleName, ['perawat', 'dokter', 'superadmin'], true)) {
+            if (! in_array($roleName, ['perawat', 'dokter', 'dokter_umum', 'superadmin'], true)) {
                 throw new \Exception('Hanya perawat atau dokter umum yang boleh mengirim pasien ke bedah.', 403);
             }
 
@@ -354,7 +367,7 @@ class PerawatService
             $user = auth('api')->user();
 
             $roleName = $user?->role?->name;
-            if (! in_array($roleName, ['perawat', 'dokter', 'superadmin'], true)) {
+            if (! in_array($roleName, ['perawat', 'dokter', 'dokter_umum', 'superadmin'], true)) {
                 throw new \Exception('Hanya perawat atau dokter umum yang boleh mengirim pasien ke rawat inap.', 403);
             }
 
@@ -462,15 +475,14 @@ class PerawatService
 
     public function checkReadyForDoctor(string $visitId): bool
     {
+        // Cek murah di luar transaksi (fast path) — hindari lock kalau jelas belum siap.
         $visit = Visit::findOrFail($visitId);
-
         if ($visit->ready_for_doctor) {
             return true;
         }
 
         $triaseDone   = NurseAssessment::where('visit_id', $visitId)->where('is_finalized', true)->exists();
         $refraksiDone = RefractionRecord::where('visit_id', $visitId)->where('is_finalized', true)->exists();
-
         if (! $triaseDone || ! $refraksiDone) {
             return false;
         }
@@ -481,27 +493,39 @@ class PerawatService
             return true;
         }
 
-        DB::transaction(function () use ($visit) {
-            $visit->update([
+        // TOCTOU guard: Triase & Refraksi bisa finalize hampir bersamaan → dua
+        // checkReadyForDoctor lolos cek di atas → 2 baris DOKTER / 2 tiket
+        // (tak ada unique constraint queues(visit_id,station)). Kunci baris visit
+        // + re-cek ready_for_doctor & alreadyQueued DI DALAM transaksi.
+        $created = DB::transaction(function () use ($visitId) {
+            $locked = Visit::where('id', $visitId)->lockForUpdate()->firstOrFail();
+            if ($locked->ready_for_doctor) {
+                return false; // pemenang race sudah memproses
+            }
+
+            $locked->update([
                 'ready_for_doctor'      => true,
-                'triase_completed_at'   => $visit->triase_completed_at ?? now(),
-                'refraksi_completed_at' => $visit->refraksi_completed_at ?? now(),
+                'triase_completed_at'   => $locked->triase_completed_at ?? now(),
+                'refraksi_completed_at' => $locked->refraksi_completed_at ?? now(),
                 'current_station'       => 'DOKTER',
             ]);
 
-            // Hindari double-enqueue jika baris DOKTER sudah ada hari ini
             $alreadyQueued = Queue::byStation(Queue::STATION_DOKTER)
-                ->where('visit_id', $visit->id)
+                ->where('visit_id', $locked->id)
                 ->today()
                 ->exists();
 
             if (! $alreadyQueued) {
-                $this->queueService->enqueue($visit->id, Queue::STATION_DOKTER);
+                $this->queueService->enqueue($locked->id, Queue::STATION_DOKTER);
             }
+
+            return true;
         });
 
-        $this->log(null, 'READY_FOR_DOCTOR', Visit::class, $visit->id,
-            'Triase + Refraksionis selesai — antrian Dokter dibuat otomatis');
+        if ($created) {
+            $this->log(null, 'READY_FOR_DOCTOR', Visit::class, $visitId,
+                'Triase + Refraksionis selesai — antrian Dokter dibuat otomatis');
+        }
 
         return true;
     }
@@ -682,6 +706,7 @@ class PerawatService
                 'id'             => $visit->id,
                 'classification' => $visit->classification,
                 'visit_type'     => $visit->visit_type,
+                'inpatient_reason' => $visit->inpatient_reason,  // PRE_OP/OBSERVASI — gate tombol "Kirim ke Rawat Inap"
                 'guarantor_type' => $visit->guarantor_type,
                 'no_sep'         => $visit->no_sep,
                 'insurer_name'   => $visit->insurer?->name,
@@ -710,7 +735,11 @@ class PerawatService
             return null;
         }
 
-        return round($bb / pow($tb / 100, 2), 2);
+        // Kolom bmi = decimal(5,2) → maks 999.99. Input ekstrem-tapi-valid
+        // (mis. bb=300, tb=30 → 3333) bisa numeric-overflow 500. Clamp aman.
+        $bmi = round($bb / pow($tb / 100, 2), 2);
+
+        return min($bmi, 999.99);
     }
 
     private function generateQueueNumber(string $station): array

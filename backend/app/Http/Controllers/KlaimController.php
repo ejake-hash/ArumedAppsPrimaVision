@@ -37,7 +37,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->assignClaim($id, $request->input('assigned_to_id'));
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, $request->input('assigned_to_id') ? 'Klaim ditandai dikerjakan' : 'Penanda dilepas');
@@ -72,6 +72,9 @@ class KlaimController extends Controller
             ->filter()->values();
         $data['total_billing'] = $claim->visit?->billingInvoice?->total ?? 0;
         $data['jenis_pelayanan'] = $claim->visit?->jenis_pelayanan ?? 'RAJAL';
+        // Diagnosa naratif (teks bebas dokter saat ragu kode ICD) — dibaca langsung
+        // dari RME terbaru, tidak disalin ke bpjs_claims.
+        $data['diagnosis_text'] = $claim->visit?->doctorExamination?->diagnosis_text;
         $data['assigned_to'] = $claim->assignedTo ? [
             'id'   => $claim->assignedTo->id,
             'name' => $claim->assignedTo->name,
@@ -116,7 +119,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->prepareClaimData($request->visit_id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Data klaim disiapkan dari kunjungan', 201);
@@ -136,7 +139,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->runInaCbgsGrouping($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, "Grouping selesai. CBG: {$claim->inacbgs_kode}");
@@ -158,7 +161,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->setReview($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Klaim dalam proses review');
@@ -170,7 +173,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->setVerifikasi($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Klaim terverifikasi. Siap disubmit.');
@@ -186,7 +189,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->setReject($id, $request->alasan);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Klaim dikembalikan untuk perbaikan');
@@ -198,7 +201,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->resubmitClaim($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Klaim diajukan ulang. Perbaiki data lalu jalankan grouping → LUPIS → verifikasi.');
@@ -256,7 +259,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->updateClaimCoding($id, $validated);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Koding klaim diperbarui. Jalankan ulang grouping INA-CBGs.');
@@ -275,10 +278,88 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->generateLupis($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Data LUPIS berhasil di-generate');
+    }
+
+    // =========================================================================
+    // E-KLAIM INA-CBG (Web Service ws.php)
+    // =========================================================================
+
+    /** POST /klaim/{id}/eklaim/new — new_claim ke E-Klaim */
+    public function eklaimNewClaim(string $id): JsonResponse
+    {
+        try {
+            $res = $this->service->eklaimNewClaim($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, $res['message'] ?? 'Klaim diregistrasi ke E-Klaim');
+    }
+
+    /** POST /klaim/{id}/eklaim/set-data — set_claim_data (builder payload) */
+    public function eklaimSetData(string $id): JsonResponse
+    {
+        try {
+            $res = $this->service->eklaimSetData($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, $res['message'] ?? 'Data klaim dikirim ke E-Klaim');
+    }
+
+    /** POST /klaim/{id}/eklaim/grouper — jalankan grouper E-Klaim (body: stage?) */
+    public function eklaimGrouper(Request $request, string $id): JsonResponse
+    {
+        $stage = (int) $request->input('stage', 1);
+
+        try {
+            $claim = $this->service->eklaimGrouper($id, $stage);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, "Grouper E-Klaim selesai. CBG: {$claim->inacbgs_kode}");
+    }
+
+    /** POST /klaim/{id}/eklaim/final — claim_final (irreversible) */
+    public function eklaimFinal(string $id): JsonResponse
+    {
+        try {
+            $claim = $this->service->eklaimFinal($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Klaim difinalisasi di E-Klaim. Status: SUBMITTED.');
+    }
+
+    /** GET /klaim/{id}/eklaim/status — get_claim_status */
+    public function eklaimStatus(string $id): JsonResponse
+    {
+        try {
+            $res = $this->service->eklaimStatus($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, $res['message'] ?? 'Status klaim E-Klaim');
+    }
+
+    /** POST /klaim/{id}/eklaim/reedit — reedit_claim (buka klaim final) */
+    public function eklaimReedit(string $id): JsonResponse
+    {
+        try {
+            $claim = $this->service->eklaimReedit($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Klaim dibuka kembali dari E-Klaim untuk koreksi (DRAFT).');
     }
 
     // =========================================================================
@@ -295,7 +376,7 @@ class KlaimController extends Controller
         try {
             $claim = $this->service->submitClaim($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+            return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
         return $this->ok($claim, 'Klaim berhasil disubmit ke VClaim. Status: SUBMITTED.');
@@ -311,7 +392,7 @@ class KlaimController extends Controller
         try {
             $logs = $this->service->getAuditLog($id);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+            return $this->error($e->getMessage(), $this->statusFor($e, 404));
         }
 
         return $this->ok($logs);
@@ -337,10 +418,54 @@ class KlaimController extends Controller
         try {
             $data = $this->service->icareMonitoring();
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+            return $this->error($e->getMessage(), $this->statusFor($e, 503));
         }
 
         return $this->ok($data);
+    }
+
+    // =========================================================================
+    // LAMPIRAN BERKAS KLAIM (upload PDF/gambar)
+    // =========================================================================
+
+    /** GET /klaim/{id}/lampiran */
+    public function attachments(string $id): JsonResponse
+    {
+        try {
+            return $this->ok($this->service->getAttachments($id));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+    }
+
+    /** POST /klaim/{id}/lampiran (multipart: file, category, title?) */
+    public function uploadAttachment(Request $request, string $id): JsonResponse
+    {
+        $request->validate([
+            'file'     => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240', // 10 MB
+            'category' => 'nullable|string|max:30',
+            'title'    => 'nullable|string|max:200',
+        ]);
+
+        try {
+            $att = $this->service->uploadAttachment($id, $request->only(['category', 'title']), $request->file('file'));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($att, 'Lampiran berhasil diunggah', 201);
+    }
+
+    /** DELETE /klaim/{id}/lampiran/{attId} */
+    public function deleteAttachment(string $id, string $attId): JsonResponse
+    {
+        try {
+            $this->service->deleteAttachment($id, $attId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok(null, 'Lampiran dihapus');
     }
 
     // =========================================================================
@@ -367,5 +492,19 @@ class KlaimController extends Controller
             'message' => $message,
             'errors'  => null,
         ], $status);
+    }
+
+    /**
+     * Status HTTP dari exception. ModelNotFound (findOrFail) → 404, bukan 422.
+     * getCode() bisa 0 (mis. ModelNotFound) atau non-int (SQLSTATE) → fallback aman.
+     */
+    private function statusFor(\Throwable $e, int $default = 422): int
+    {
+        if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+            return 404;
+        }
+        $code = $e->getCode();
+
+        return (is_int($code) && $code >= 400 && $code < 600) ? $code : $default;
     }
 }

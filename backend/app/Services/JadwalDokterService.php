@@ -267,6 +267,44 @@ class JadwalDokterService
     }
 
     /**
+     * Export jadwal aktual ke CSV (format identik template → bisa di-import balik).
+     * Filter minggu (default minggu berjalan) + jenis layanan opsional.
+     */
+    public function getCsvExport(?string $weekStart = null, ?string $serviceType = null): string
+    {
+        $week = $weekStart ? DoctorSchedule::weekStartFor($weekStart) : DoctorSchedule::currentWeekStart();
+        $svc  = $serviceType ? $this->normalizeServiceType($serviceType, throwOnInvalid: false) : null;
+
+        $rows = DoctorSchedule::with('employee')
+            ->where('week_start', $week)
+            ->when($svc, fn ($q) => $q->where('service_type', $svc))
+            ->orderBy('day_of_week')
+            ->get()
+            ->sortBy(fn ($s) => $s->employee?->name)
+            ->values();
+
+        $fh = fopen('php://temp', 'r+');
+        fputcsv($fh, self::CSV_HEADER, ',', '"', '\\');
+        foreach ($rows as $s) {
+            fputcsv($fh, [
+                $s->employee?->name ?? '',
+                $s->service_type,
+                $s->poli_code ?? '',
+                $s->poliklinik ?? '',
+                DoctorSchedule::DAY_LABELS[$s->day_of_week] ?? '',
+                $s->start_time,
+                $s->end_time,
+                $s->room ?? '',
+            ], ',', '"', '\\');
+        }
+        rewind($fh);
+        $csv = stream_get_contents($fh);
+        fclose($fh);
+
+        return $csv;
+    }
+
+    /**
      * Import jadwal dari file CSV ke minggu tertentu.
      * Lookup dokter by nama (case-insensitive, trim). Baris invalid dilaporkan,
      * baris valid tetap diproses (partial success). Duplikat di-skip.

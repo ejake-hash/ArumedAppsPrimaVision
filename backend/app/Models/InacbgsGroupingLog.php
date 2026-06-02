@@ -17,8 +17,13 @@ class InacbgsGroupingLog extends Model
         'visit_id',
         'bpjs_claim_id',
         'grouper_version',
+        'method',
         'input_diagnosis',
         'input_tindakan',
+        'request',
+        'response',
+        'response_code',
+        'message',
         'cbg_code',
         'cbg_tarif',
         'severity_level',
@@ -30,6 +35,8 @@ class InacbgsGroupingLog extends Model
     protected $casts = [
         'input_diagnosis' => 'array',
         'input_tindakan'  => 'array',
+        'request'         => 'array',
+        'response'        => 'array',
         'cbg_tarif'       => 'decimal:2',
     ];
 

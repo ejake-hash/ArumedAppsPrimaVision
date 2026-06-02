@@ -8,6 +8,7 @@
 - [Rawat Inap + IGD (rencana)](project_rawat_inap_igd.md) — RANAP penuh dulu, IGD ditunda (data-only Fase 1). Perluas `visits`, master bed di Profil Klinik, kwitansi RJ/RI counter terpisah. Plan file di `.claude/plans/`.
 - [Nakes Profile (NIP/SIP/STR)](feature_nakes_profile_data_pengguna.md) — input NIP/SIP/STR di modal user, `UserService::syncEmployeeProfile`. CSV sip/str belum.
 - [PRE-GO-LIVE BUG AUDIT](project_pre_golive_bug_audit.md) — Audit E2E 2026-05-29: 9 bug difix (branch `fix/pre-golive-500-bugs`, belum merge) + smoke 35/35 + BedahDemoSeeder.
+- ⚠️ [Audit Bug Bedah (2 Jun 2026)](project_audit_bedah_bug_2026_06_02.md) — PENELUSURAN saja, BELUM difix/commit. 2 KRITIS terverifikasi: 🔴 IOL hilang dari invoice pasien pre-op Admisi/RANAP (KasirService::buildIolLines cuma jalur doctorExamination); 🔴 visit_id NOT NULL→crash 500 startOperation. +HIGH: RBAC /bedah cuma read, race startOperation 23505, kirimResep PALSU (tak ada API), isPhaco hardcode false (blok IOL mati), input tab tak persist (tim/checklist/BHP hilang reload). Prioritas: B1+B2 dulu.
 - [Realtime Antrean (Reverb)](feature_realtime_antrean.md) — Reverb disiapkan tapi belum aktif (`BROADCAST=log`); antrean polling 8s. Aktivasi = `.env` + `reverb:start`.
 - [Master Data Stage 1+2](feature_master_data_stage1.md) — Master Data kini: Profil/ICD-10/ICD-9/Wilayah. Procedures code autogen TND-001 per kategori.
 - [Tarif & Paket Bedah](feature_tarif_paket_bedah.md) — 3 section: Tarif Tindakan + Metode Bayar (insurer TPA + tarif per-insurer) + Paket Bedah. +CSV import/export paket.
@@ -15,7 +16,9 @@
 - [Master CSV Pipeline](feature_master_csv_pipeline.md) — pipeline generic CSV master (MasterDataService + REGISTRY). by-name vs uniqueKey. Validasi enum category obat/bhp belum.
 - [Inventori — Penentuan Harga](feature_inventori_harga.md) — `inventory_prices` + `ppn_rate`. HJA = HPP × (1+margin%) × (PPN?). Recompute auto.
 - [Pembelian & Penerimaan](feature_pembelian_penerimaan.md) — Supplier/PO/GRN, stok per-batch+expiry, status PO auto dari GRN, HPP manual. +Cetak PO A4.
-- [Anjungan Kiosk](feature_anjungan_kiosk.md) — UMUM wired, BPJS disabled (tunggu client ID VClaim). Thermal print 80mm fixed.
+- [Anjungan Kiosk](feature_anjungan_kiosk.md) — UMUM wired, BPJS disabled. Thermal print 80mm. +Bugfix 2026-06-01 (Cetak Ulang restart countdown, disable UMUM saat loading) + tema biru (residu hijau dibersihkan). Belum commit.
+- [Audit AntreanTVView (re-verif)](project_audit_antrean_tv_view.md) — 4 bug TERVERIFIKASI BELUM difix: CRIT `localVideoObjectUrl` ReferenceError onUnmounted, slideIndex tak di-clamp WS, PIN/ticker reset tengah-malam, AudioContext tak di-close. nested-button & flash-dobel sudah aman (koreksi "6 bug"→4).
+- [Rebrand Klinik→Rumah Sakit](project_rebrand_klinik_rumah_sakit.md) — 14 teks UI di 8 file FE (teks tampilan SAJA; var/kolom/route/komponen UTUH). Poliklinik & faskes-lain TIDAK diganti. Build OK, belum commit.
 - [Admisi View](feature_admisi_view.md) — WilayahPicker + print thermal; stat cards per-penjamin; SOSIAL→tarif; COB wired (split plafon placeholder).
 - [Visit Active Guard + UI](feature_visit_active_guard.md) — antrian difilter HARIAN; guard `registerVisit` tolak >1 visit aktif (422); badge active_visit. Belum ada auto-cleanup visit basi.
 - [Perawat View](feature_perawat_view.md) — 4 tab→1 card, validation TD+KGD+keluhan wajib. +CPPT timeline (`nurse_cppt_entries`, append+soft-edit).

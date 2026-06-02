@@ -83,10 +83,20 @@ class SatusehatService
 
             $sent   = 0;
             $failed = 0;
+            $kfaSkippedNames = [];   // nama obat ter-skip karena tak ber-KFA (unik se-batch)
+            $visitsWithSkip  = 0;    // jumlah kunjungan yang punya obat ter-skip
 
             foreach ($visits as $visit) {
                 $result = $this->syncVisit($visit, $syncLog->id);
                 $result ? $sent++ : $failed++;
+
+                // Diagnostik KFA: obat tanpa kfa_code tak ikut terkirim (MedicationRequest
+                // di-skip). Kumpulkan agar tampil sebagai warning di sync log/UI.
+                $skipped = $this->skippedNoKfaItems($visit);
+                if ($skipped) {
+                    $visitsWithSkip++;
+                    $kfaSkippedNames = array_merge($kfaSkippedNames, $skipped);
+                }
             }
 
             $status = match (true) {
@@ -99,12 +109,160 @@ class SatusehatService
                 'status'       => $status,
                 'total_sent'   => $sent,
                 'total_failed' => $failed,
+                'notes'        => $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames),
                 'next_retry_at' => $status !== 'SUCCESS'
                     ? now()->addHours(2)->setTime(1, 0)
                     : null,
             ]);
         } catch (\Throwable $e) {
             $syncLog->update(['status' => 'FAILED']);
+        }
+
+        return $syncLog->fresh();
+    }
+
+    // =========================================================================
+    // BACKFILL — sync kunjungan HISTORIS (puluhan ribu) sesuai regulasi Satu Sehat
+    // =========================================================================
+
+    /**
+     * Query kunjungan HISTORIS yang LAYAK di-backfill ke Satu Sehat.
+     *
+     * Regulasi Satu Sehat: Encounter WAJIB punya subject Patient/{ihs} +
+     * participant Practitioner/{ihs} + diagnosis (Condition). IHS di-resolve
+     * otomatis dari NIK saat sync. Maka eligibilitas operasional =
+     *   - Visit SELESAI & belum SYNCED (PENDING/FAILED/null),
+     *   - pasien punya NIK (→ IHS pasien dapat di-resolve),
+     *   - dokter pemeriksa punya NIK (→ IHS dokter dapat di-resolve),
+     *   - ada diagnosis utama (diagnosis_utama terisi).
+     * Resep ikut otomatis di Bundle bila ada & ber-KFA (bukan syarat Encounter).
+     *
+     * @param  string|null  $from  filter visit_date >= (YYYY-MM-DD), opsional
+     * @param  string|null  $to    filter visit_date <= (YYYY-MM-DD), opsional
+     */
+    public function backfillEligibleQuery(?string $from = null, ?string $to = null)
+    {
+        $q = Visit::query()
+            ->where('current_station', 'SELESAI')
+            ->where(fn ($w) => $w->whereNull('satusehat_sync_status')
+                ->orWhereIn('satusehat_sync_status', ['PENDING', 'FAILED']))
+            // pasien ber-NIK (untuk resolve IHS pasien)
+            ->whereHas('patient', fn ($p) => $p->whereNotNull('nik')->where('nik', '!=', ''))
+            // ada pemeriksaan dokter: diagnosis utama + dokter ber-NIK (resolve IHS dokter)
+            ->whereHas('doctorExamination', function ($e) {
+                $e->whereNotNull('diagnosis_utama')->where('diagnosis_utama', '!=', '')
+                    ->whereHas('doctor', fn ($d) => $d->whereNotNull('nik')->where('nik', '!=', ''));
+            });
+
+        if ($from) {
+            $q->whereDate('visit_date', '>=', $from);
+        }
+        if ($to) {
+            $q->whereDate('visit_date', '<=', $to);
+        }
+
+        return $q->orderBy('visit_date'); // historis: kirim dari yang terlama
+    }
+
+    /**
+     * Hitung kunjungan layak backfill (untuk tombol "Cek dulu" di UI sebelum
+     * eksekusi). Mengembalikan total eligible + diagnostik penyebab tak-eligible.
+     */
+    public function countBackfillEligible(?string $from = null, ?string $to = null): array
+    {
+        $eligible = (clone $this->backfillEligibleQuery($from, $to))->count();
+
+        // Diagnostik: visit SELESAI belum-SYNCED yang TERSARING (kenapa tak eligible).
+        $base = Visit::query()
+            ->where('current_station', 'SELESAI')
+            ->where(fn ($w) => $w->whereNull('satusehat_sync_status')
+                ->orWhereIn('satusehat_sync_status', ['PENDING', 'FAILED']));
+        if ($from) { $base->whereDate('visit_date', '>=', $from); }
+        if ($to) { $base->whereDate('visit_date', '<=', $to); }
+
+        $pendingTotal = (clone $base)->count();
+        $noPatientNik = (clone $base)->whereDoesntHave('patient', fn ($p) => $p->whereNotNull('nik')->where('nik', '!=', ''))->count();
+        $noDiagOrDoctor = (clone $base)->whereDoesntHave('doctorExamination', function ($e) {
+            $e->whereNotNull('diagnosis_utama')->where('diagnosis_utama', '!=', '')
+                ->whereHas('doctor', fn ($d) => $d->whereNotNull('nik')->where('nik', '!=', ''));
+        })->count();
+
+        return [
+            'eligible'                 => $eligible,
+            'pending_total'            => $pendingTotal,
+            'skipped_no_patient_nik'   => $noPatientNik,
+            'skipped_no_diag_or_doctor'=> $noDiagOrDoctor,
+            'range'                    => ['from' => $from, 'to' => $to],
+        ];
+    }
+
+    /**
+     * Jalankan backfill: sync N kunjungan historis eligible (terlama dulu),
+     * dibungkus satu SatusehatSyncLog bertipe BACKFILL. Dibatasi $limit agar
+     * operator bisa mencicil puluhan ribu data secara terkendali.
+     *
+     * @param  int  $limit  jumlah maksimum visit diproses dalam panggilan ini
+     */
+    public function backfillSync(int $limit = 100, ?string $from = null, ?string $to = null): SatusehatSyncLog
+    {
+        $this->assertEnabled();
+
+        $limit = max(1, min($limit, 5000)); // pagar atas: hindari satu run kelewat besar
+
+        $syncLog = SatusehatSyncLog::create([
+            'sync_date'    => today(),
+            'sync_type'    => 'BACKFILL',
+            'status'       => 'RUNNING',
+            'total_sent'   => 0,
+            'total_failed' => 0,
+            'retry_count'  => 0,
+        ]);
+
+        try {
+            $visits = $this->backfillEligibleQuery($from, $to)
+                ->with(['patient', 'doctorExamination.doctor', 'prescriptions.items.medication', 'prescriptions.prescribedBy', 'prescriptions.dispensedBy'])
+                ->limit($limit)
+                ->get();
+
+            $sent = 0;
+            $failed = 0;
+            $kfaSkippedNames = [];
+            $visitsWithSkip = 0;
+
+            foreach ($visits as $visit) {
+                $result = $this->syncVisit($visit, $syncLog->id);
+                $result ? $sent++ : $failed++;
+
+                $skipped = $this->skippedNoKfaItems($visit);
+                if ($skipped) {
+                    $visitsWithSkip++;
+                    $kfaSkippedNames = array_merge($kfaSkippedNames, $skipped);
+                }
+            }
+
+            $status = match (true) {
+                $visits->isEmpty() => 'SUCCESS', // tak ada yg eligible → sukses kosong
+                $failed === 0      => 'SUCCESS',
+                $sent === 0        => 'FAILED',
+                default            => 'PARTIAL',
+            };
+
+            // Sisa eligible setelah run ini → tampilkan agar operator tahu perlu lanjut.
+            $remaining = (clone $this->backfillEligibleQuery($from, $to))->count();
+            $kfaNote = $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames);
+            $note = "Backfill: {$sent} terkirim, {$failed} gagal dari " . $visits->count()
+                . " diproses. Sisa eligible: {$remaining}."
+                . ($kfaNote ? ' ' . $kfaNote : '');
+
+            $syncLog->update([
+                'status'       => $status,
+                'total_sent'   => $sent,
+                'total_failed' => $failed,
+                'notes'        => $note,
+                'next_retry_at'=> null,
+            ]);
+        } catch (\Throwable $e) {
+            $syncLog->update(['status' => 'FAILED', 'notes' => 'Backfill error: ' . $e->getMessage()]);
         }
 
         return $syncLog->fresh();
@@ -187,6 +345,11 @@ class SatusehatService
      */
     public function retry(string $syncLogId): SatusehatSyncLog
     {
+        // Konsisten dengan batchSync(): jangan proses retry kalau integrasi nonaktif
+        // (else tiap visit dipaksa sampai client lempar 503 satu-per-satu + set
+        // next_retry_at walau mati).
+        $this->assertEnabled();
+
         $syncLog = SatusehatSyncLog::findOrFail($syncLogId);
 
         if ($syncLog->status === 'SUCCESS') {
@@ -218,8 +381,11 @@ class SatusehatService
         $syncLog->update([
             'status'       => $newStatus,
             'retry_count'  => $syncLog->retry_count + 1,
+            // total_sent diakumulasi; total_failed = gagal AKTUAL retry ini (bukan
+            // selisih total_failed - sent yang bisa ngawur saat visit sukses lalu
+            // gagal lagi atau jumlah retry ≠ total_failed lama).
             'total_sent'   => $syncLog->total_sent + $sent,
-            'total_failed' => max(0, $syncLog->total_failed - $sent),
+            'total_failed' => $failed,
             'next_retry_at' => $newStatus !== 'SUCCESS' ? now()->addHours(2) : null,
         ]);
 
@@ -508,6 +674,7 @@ class SatusehatService
             'total_sent'   => $l->total_sent,
             'total_failed' => $l->total_failed,
             'retry_count'  => $l->retry_count,
+            'notes'        => $l->notes,
             'next_retry_at'=> $l->next_retry_at?->toIso8601String(),
             'created_at'   => $l->created_at?->toIso8601String(),
         ])->all();
@@ -767,12 +934,21 @@ class SatusehatService
             $visit->forceFill(['satusehat_sync_status' => 'FAILED'])->save();
         }
 
+        // Peringatan: obat tanpa kfa_code TIDAK ikut terkirim (MedicationRequest
+        // di-skip). Beri tahu pemanggil/UI agar tidak terlihat "sukses penuh"
+        // padahal peresepan kosong.
+        $skippedNoKfa = $this->skippedNoKfaItems($visit);
+
         return [
-            'is_success'   => $isSuccess,
-            'encounter_id' => $encounterId,
-            'duplicate'    => $isDuplicate,
-            'http_status'  => $result['http_status'] ?? 0,
-            'response'     => $resp,
+            'is_success'    => $isSuccess,
+            'encounter_id'  => $encounterId,
+            'duplicate'     => $isDuplicate,
+            'http_status'   => $result['http_status'] ?? 0,
+            'response'      => $resp,
+            'skipped_no_kfa' => $skippedNoKfa,
+            'warning'       => $skippedNoKfa
+                ? count($skippedNoKfa) . ' obat tidak terkirim ke Satu Sehat (belum punya kode KFA): ' . implode(', ', $skippedNoKfa)
+                : null,
         ];
     }
 
@@ -1261,6 +1437,56 @@ class SatusehatService
         }
 
         return $n;
+    }
+
+    /**
+     * Daftar nama obat yang DILEWATI saat membangun bundle karena medication
+     * belum punya kfa_code (lihat buildMedicationEntries: skip-aman). Dipakai
+     * untuk warning di hasil sync — agar petugas tahu peresepan tak terkirim,
+     * bukan diam-diam kosong. Lihat memory project-satusehat-kfa-resep-gap.
+     *
+     * @return list<string> nama obat unik tanpa KFA
+     */
+    public function skippedNoKfaItems(Visit $visit): array
+    {
+        $names = [];
+        foreach ($visit->prescriptions ?? [] as $presc) {
+            if ($presc->status === 'CANCELLED') {
+                continue;
+            }
+            foreach ($presc->items ?? [] as $item) {
+                if (empty($item->medication?->kfa_code)) {
+                    $names[] = $item->medication?->name ?? ('item ' . $item->id);
+                }
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    /**
+     * Ringkasan warning KFA untuk kolom notes sync log. Null bila tak ada yg
+     * ter-skip (notes dibiarkan kosong). Daftar nama obat dibatasi agar notes
+     * tak membengkak.
+     */
+    private function buildKfaWarningNote(int $visitsWithSkip, array $skippedNames): ?string
+    {
+        $names = array_values(array_unique($skippedNames));
+        if (empty($names)) {
+            return null;
+        }
+
+        $shown = array_slice($names, 0, 20);
+        $more  = count($names) - count($shown);
+
+        return sprintf(
+            '⚠ %d obat tanpa kode KFA tidak terkirim ke Satu Sehat (di %d kunjungan): %s%s. '
+            . 'Isi kfa_code via master Obat → Cari KFA, atau jalankan `php artisan satusehat:isi-kfa --apply`.',
+            count($names),
+            $visitsWithSkip,
+            implode(', ', $shown),
+            $more > 0 ? " (+{$more} lainnya)" : ''
+        );
     }
 
     /**

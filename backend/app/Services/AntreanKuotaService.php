@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\AntreanBooking;
 use App\Models\AntreanKuota;
 use App\Models\AntreanSpm;
 use App\Models\DoctorSchedule;
@@ -47,7 +48,18 @@ class AntreanKuotaService
         ];
     }
 
-    /** Jumlah antrean terpakai hari itu untuk poli/dokter, dipisah JKN vs non-JKN. */
+    /**
+     * Jumlah antrean terpakai hari itu untuk poli/dokter, dipisah JKN vs non-JKN.
+     *
+     * Menghitung DUA sumber agar kuota tidak over-booking:
+     *   1. Visit nyata (pasien sudah hadir/check-in/daftar loket).
+     *   2. Reservasi AntreanBooking aktif (DIBOOK) lewat Mobile JKN yang BELUM
+     *      jadi Visit (belum check-in). Booking yang sudah punya visit_id di-skip
+     *      agar tidak dobel-hitung dengan sumber #1.
+     *
+     * Tanpa #2, ratusan reservasi online bisa lolos meski kuota habis & sisakuota
+     * yang dikirim balik ke BPJS selalu salah (terlalu besar).
+     */
     public function terpakai(string $poliCode, ?string $employeeId, string $tanggal): array
     {
         $q = Visit::query()
@@ -59,10 +71,27 @@ class AntreanKuotaService
                 }
             });
 
-        $jkn    = (clone $q)->where('guarantor_type', 'BPJS')->count();
-        $nonjkn = (clone $q)->where('guarantor_type', '!=', 'BPJS')->count();
+        $jknVisit    = (clone $q)->where('guarantor_type', 'BPJS')->count();
+        $nonjknVisit = (clone $q)->where('guarantor_type', '!=', 'BPJS')->count();
 
-        return ['jkn' => $jkn, 'nonjkn' => $nonjkn];
+        // Reservasi online aktif yang belum jadi Visit (no-show belum mengotori kuota,
+        // tapi booking yang masih DIBOOK tetap memesan slot). DIBOOK = JKN (Mobile JKN
+        // hanya untuk peserta BPJS); ditambahkan ke hitungan JKN.
+        $jknBooking = AntreanBooking::query()
+            ->whereDate('tanggal_periksa', $tanggal)
+            ->where('poli_code', $poliCode)
+            ->where('status', AntreanBooking::STATUS_DIBOOK)
+            ->whereNull('visit_id')
+            ->when($employeeId, fn ($b) => $b->whereHas(
+                'doctorSchedule',
+                fn ($s) => $s->where('employee_id', $employeeId)
+            ))
+            ->count();
+
+        return [
+            'jkn'    => $jknVisit + $jknBooking,
+            'nonjkn' => $nonjknVisit,
+        ];
     }
 
     /**

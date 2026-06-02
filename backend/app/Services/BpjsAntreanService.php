@@ -48,8 +48,8 @@ class BpjsAntreanService
     public function refPoli(): array       { return $this->get('/ref/poli'); }
     /** GET /ref/dokter */
     public function refDokter(): array     { return $this->get('/ref/dokter'); }
-    /** GET /ref/jadwaldokter/kodepoli/{poli}/tanggal/{tgl} */
-    public function refJadwalDokter(string $kodePoli, string $tanggal): array { return $this->get("/ref/jadwaldokter/kodepoli/{$kodePoli}/tanggal/{$tanggal}"); }
+    /** GET /jadwaldokter/kodepoli/{poli}/tanggal/{tgl} (spec Antrol.md:73 — TANPA prefix /ref) */
+    public function refJadwalDokter(string $kodePoli, string $tanggal): array { return $this->get("/jadwaldokter/kodepoli/{$kodePoli}/tanggal/{$tanggal}"); }
     /** GET /ref/poligigi */
     public function refPoliFingerprint(): array { return $this->get('/ref/poli/fp'); }
 
@@ -75,13 +75,28 @@ class BpjsAntreanService
     /**
      * POST /antrean/updatewaktu — lapor waktu tiap tahap (WAJIB lapor BPJS).
      * $data = { kodebooking, taskid, waktu (epoch ms) }.
-     *   taskid: 1 mulai daftar, 2 selesai daftar, 3 mulai layan poli, 4 selesai layan,
-     *           5 mulai farmasi, 6 selesai farmasi, 7 mulai/selesai (sesuai mapping BPJS).
+     *   taskid (Docs/Antrol.md:340-347 — tiap task = SATU titik "akhir X / mulai Y"):
+     *     1 mulai tunggu admisi · 2 mulai layan admisi · 3 selesai layan admisi/mulai tunggu poli
+     *     4 mulai layan poli (dipanggil) · 5 selesai layan poli/mulai tunggu farmasi
+     *     6 mulai buat obat · 7 obat selesai dibuat · 99 batal
      */
     public function updateWaktuAntrean(array $data, ?string $visitId = null): array
     {
         $result = $this->post('/antrean/updatewaktu', $data);
         $this->log('UPDATE_WAKTU', $data, $result, $visitId);
+
+        return $result;
+    }
+
+    /**
+     * POST /antrean/farmasi/add — daftarkan antrean farmasi RS (spec Antrol.md:297).
+     * $data = { kodebooking, jenisresep (racikan|non racikan), nomorantrean, keterangan }.
+     * Wajib bagi RS yang sudah mengimplementasi antrean farmasi.
+     */
+    public function addAntreanFarmasi(array $data, ?string $visitId = null): array
+    {
+        $result = $this->post('/antrean/farmasi/add', $data);
+        $this->log('ADD_ANTREAN_FARMASI', $data, $result, $visitId);
 
         return $result;
     }
@@ -194,14 +209,20 @@ class BpjsAntreanService
     // PRIVATE — call helpers (Antrean = JSON polos, encrypted: false)
     // =========================================================================
 
+    // Antrean RS BPJS membalas metaData.code "1" untuk sukses (BUKAN "200" seperti
+    // VClaim). Lewatkan ['1','200'] agar is_success benar di production — kalau tidak,
+    // semua respons sukses Antrean (dashboard, validate booking, add/updatewaktu/batal)
+    // salah-tandai gagal & ditampilkan sebagai error di UI.
+    private const SUCCESS_CODES = ['1', '200'];
+
     private function get(string $path): array
     {
-        return $this->client->request('GET', $path, null, encrypted: false);
+        return $this->client->request('GET', $path, null, encrypted: false, successCodes: self::SUCCESS_CODES);
     }
 
     private function post(string $path, array $body): array
     {
-        return $this->client->request('POST', $path, $body, encrypted: false);
+        return $this->client->request('POST', $path, $body, encrypted: false, successCodes: self::SUCCESS_CODES);
     }
 
     private function log(string $action, array $request, array $result, ?string $visitId = null): void

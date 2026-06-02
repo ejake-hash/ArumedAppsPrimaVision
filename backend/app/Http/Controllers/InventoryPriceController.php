@@ -122,8 +122,9 @@ class InventoryPriceController extends Controller
         if (!in_array($type, ['MEDICATION', 'BHP', 'IOL'], true)) {
             return $this->fail('Tipe harus MEDICATION, BHP, atau IOL', 422);
         }
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
-        $csv = file_get_contents($request->file('file')->getRealPath());
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+        // Terima CSV/TXT & Excel; helper normalisasi BOM + delimiter ';' → koma.
+        $csv = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
         $result = $this->service->importCsv($type, $csv);
         return $this->ok(
             $result,

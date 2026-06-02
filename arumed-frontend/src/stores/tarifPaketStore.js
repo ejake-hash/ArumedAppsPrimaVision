@@ -192,15 +192,15 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
   }
 
   // ─── Paket CSV (template / export / import) ─────────────────────────────
-  async function downloadPaketTemplate() {
-    const { data } = await tarifPaketApi.paket.csvTemplate()
-    triggerDownload(data, 'template-paket-bedah.csv')
+  async function downloadPaketTemplate(format = 'csv') {
+    const { data } = await tarifPaketApi.paket.csvTemplate(format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(data, `template-paket-bedah.${format}`)
   }
 
-  async function exportPaketCsv() {
-    const { data } = await tarifPaketApi.paket.csvExport()
+  async function exportPaketCsv(format = 'csv') {
+    const { data } = await tarifPaketApi.paket.csvExport(format === 'xlsx' ? 'xlsx' : undefined)
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(data, `paket-bedah-${stamp}.csv`)
+    triggerDownload(data, `paket-bedah-${stamp}.${format}`)
   }
 
   async function importPaketCsv(file) {
@@ -210,17 +210,17 @@ export const useTarifPaketStore = defineStore('tarifPaket', () => {
   }
 
   // ─── Paket CSV per-paket (dari halaman detail) ─────────────────────────────
-  async function downloadPaketTemplateOne(paketId, paketName = '') {
-    const { data } = await tarifPaketApi.paket.csvTemplateOne(paketId)
+  async function downloadPaketTemplateOne(paketId, paketName = '', format = 'csv') {
+    const { data } = await tarifPaketApi.paket.csvTemplateOne(paketId, format === 'xlsx' ? 'xlsx' : undefined)
     const slug = (paketName || paketId).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    triggerDownload(data, `template-paket-${slug || paketId}.csv`)
+    triggerDownload(data, `template-paket-${slug || paketId}.${format}`)
   }
 
-  async function exportPaketCsvOne(paketId, paketName = '') {
-    const { data } = await tarifPaketApi.paket.csvExportOne(paketId)
+  async function exportPaketCsvOne(paketId, paketName = '', format = 'csv') {
+    const { data } = await tarifPaketApi.paket.csvExportOne(paketId, format === 'xlsx' ? 'xlsx' : undefined)
     const slug = (paketName || paketId).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(data, `paket-${slug || paketId}-${stamp}.csv`)
+    triggerDownload(data, `paket-${slug || paketId}-${stamp}.${format}`)
   }
 
   // Import komposisi 1 paket (endpoint import paket = replace by nama_paket).

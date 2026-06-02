@@ -39,6 +39,10 @@ function toast(type, msg) {
   setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id) }, 3200)
 }
 
+// ─── PATIENT STATE ──────────────────────────────────────────────────────────
+// Dideklarasi lebih awal karena dipakai searchPlaceholder (computed) di bawah.
+const patient = ref(null)
+
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
 const searchMode     = ref('nama')
 const searchQuery    = ref('')
@@ -46,15 +50,20 @@ const searchResults  = ref([])
 const searching      = ref(false)
 const showSearchDrop = ref(false)
 
-const searchPlaceholder = computed(() =>
-  ({ nama:'Cari nama pasien...', rm:'Cari No. Rekam Medis...', nik:'Cari NIK (16 digit)...' })[searchMode.value]
-)
+const searchPlaceholder = computed(() => {
+  const base = { nama:'Cari nama pasien...', rm:'Cari No. Rekam Medis...', nik:'Cari NIK (16 digit)...' }[searchMode.value]
+  // Saat sudah ada pasien terpilih, ajak user ketik utk ganti pasien lain.
+  return patient.value ? `Ketik untuk ganti pasien — ${base}` : base
+})
 
 let _debounce = null
 let _searchSeq = 0   // guard race condition: hanya respons terbaru yang dipakai
 watch(searchQuery, (q) => {
   clearTimeout(_debounce)
   if (!q.trim()) { _searchSeq++; searchResults.value = []; searching.value = false; return }
+  // Begitu user mengetik, pastikan dropdown terbuka — walau pasien sudah
+  // terpilih (memungkinkan ganti pasien kapan saja tanpa klik "Ganti Pasien").
+  showSearchDrop.value = true
   _debounce = setTimeout(doSearch, 320)
 })
 
@@ -83,9 +92,6 @@ function setSearchMode(m) {
   searching.value = false
 }
 function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 200) }
-
-// ─── PATIENT STATE ────────────────────────────────────────────────────────────
-const patient = ref(null)
 
 // ─── MENU (master-detail) ──────────────────────────────────────────────────────
 const MENUS = [
@@ -153,6 +159,8 @@ async function pickPatient(p) {
   activeMenu.value     = 'ringkasan'
   showSearchDrop.value = false
   searchQuery.value    = ''
+  searchResults.value  = []
+  _searchSeq++              // batalkan respons pencarian in-flight
   await loadMenu('ringkasan')
 }
 
@@ -194,21 +202,56 @@ function openPenunjang(row) { selPj.value = row }
 function isImageAttachment(url) {
   return !!url && /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url)
 }
+// expertise_data jsonb bebas bentuk → nilai bisa array/objek bersarang.
+// {{ v2 }} polos akan merender "[object Object]"; rapikan jadi teks terbaca.
+function fmtExpVal(v) {
+  if (v === null || v === undefined || v === '') return '–'
+  if (typeof v === 'object') {
+    try { return JSON.stringify(v) } catch { return String(v) }
+  }
+  return v
+}
 
 // ─── DOCUMENTS ───────────────────────────────────────────────────────────────
 const selDoc = ref(null)
+// Dokumen RM punya 2 jalur lifecycle: legacy RekamMedisService (FINAL) &
+// Form Registry (FINALIZED). Keduanya = "sudah final / boleh cetak & addendum".
+function isDocFinal(s) { return s === 'FINAL' || s === 'FINALIZED' }
 function docStatusLabel(s) {
-  return ({ FINAL:'Final', WAITING_SIGNATURE:'Menunggu TTD', PENDING_SIGNATURE:'Menunggu TTD', RENDERED:'Tersaji', DRAFT:'Draft', REJECTED:'Ditolak', VOID:'Void' })[s] ?? s
+  return ({ FINAL:'Final', FINALIZED:'Final', WAITING_SIGNATURE:'Menunggu TTD', PENDING_SIGNATURE:'Menunggu TTD', RENDERED:'Tersaji', DRAFT:'Draft', REJECTED:'Ditolak', VOID:'Void' })[s] ?? s
 }
 function docStatusCls(s) {
-  return ({ FINAL:'final', WAITING_SIGNATURE:'waiting', PENDING_SIGNATURE:'waiting', RENDERED:'waiting', DRAFT:'draft', REJECTED:'rejected', VOID:'void' })[s] ?? 'draft'
+  return ({ FINAL:'final', FINALIZED:'final', WAITING_SIGNATURE:'waiting', PENDING_SIGNATURE:'waiting', RENDERED:'waiting', DRAFT:'draft', REJECTED:'rejected', VOID:'void' })[s] ?? 'draft'
 }
-const docsFinalCount = computed(() => (cache.value.dokumen ?? []).filter(d => d.status === 'FINAL').length)
+const docsFinalCount = computed(() => (cache.value.dokumen ?? []).filter(d => isDocFinal(d.status)).length)
 
-function printDoc(doc) {
-  const base = import.meta.env.VITE_API_URL ?? '/api/v1'
-  window.open(`${base}/rekam-medis/dokumen/${doc.id}/cetak`, '_blank')
-  toast('i', `Mencetak ${doc.document_type?.code ?? 'dokumen'}`)
+// Cetak dokumen: ambil snapshot HTML final via Axios (auth-aware lewat
+// interceptor) lalu cetak di window baru — SAMA spt FormRMRenderer.printIt.
+// JANGAN window.open(URL API) langsung: navigasi browser tak bawa Bearer (401)
+// dan endpoint /cetak balas JSON (utk Puppeteer), bukan PDF.
+const printing = ref(false)
+async function printDoc(doc) {
+  if (printing.value) return
+  printing.value = true
+  try {
+    const { data } = await api.get(`/rekam-medis/document/${doc.id}/render`)
+    const html = data.data?.rendered_html
+    if (!html) { toast('w', 'Dokumen belum punya isi tersaji untuk dicetak'); return }
+    const title = `${doc.document_type?.code ?? 'Dokumen'} — ${patient.value?.nama ?? ''}`
+    const w = window.open('', '_blank', 'width=900,height=1200')
+    if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak'); return }
+    w.document.open()
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>@page { size: A4; margin: 1.5cm; } body { font-family: Arial, sans-serif; }</style>
+</head><body>${html}</body></html>`)
+    w.document.close()
+    w.focus()
+    setTimeout(() => w.print(), 200)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memuat dokumen untuk dicetak')
+  } finally {
+    printing.value = false
+  }
 }
 
 // ─── ADDENDUM (per-dokumen, Form Registry) ───────────────────────────────────
@@ -303,8 +346,9 @@ async function printResume() {
           </button>
         </div>
 
-        <!-- Dropdown -->
-        <div v-if="showSearchDrop && !patient" class="rsb-dropdown">
+        <!-- Dropdown — tetap aktif walau sudah ada pasien terpilih, agar bisa
+             ganti/cari pasien lain tanpa harus klik "Ganti Pasien" dulu. -->
+        <div v-if="showSearchDrop && searchQuery.trim()" class="rsb-dropdown">
           <template v-if="searching">
             <div v-for="i in 3" :key="i" class="rsb-item rsb-sk">
               <div class="rsi-bar" style="background:#e2e5ea"></div>
@@ -328,8 +372,7 @@ async function printResume() {
                 <div class="rsi-meta">{{ hitungUsia(p.date_of_birth) }} th · {{ p.gender === 'L' ? 'Laki-laki' : 'Perempuan' }} · {{ p.last_guarantor_type ?? 'UMUM' }}</div>
               </div>
             </div>
-            <div v-if="!searchResults.length && searchQuery.trim()" class="rsb-empty">Tidak ada pasien yang cocok</div>
-            <div v-if="!searchQuery.trim()" class="rsb-empty">Ketik untuk mencari pasien…</div>
+            <div v-if="!searchResults.length" class="rsb-empty">Tidak ada pasien yang cocok</div>
           </template>
         </div>
       </div>
@@ -571,7 +614,7 @@ async function printResume() {
                           <div class="det-t">Detail Hasil</div>
                           <div v-if="p.detail?.expertise_data" class="kv-grid">
                             <div v-for="(v2,k) in p.detail.expertise_data" :key="k" class="kv">
-                              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ v2 }}</span>
+                              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ fmtExpVal(v2) }}</span>
                             </div>
                           </div>
                           <div v-else>–</div>
@@ -688,8 +731,8 @@ async function printResume() {
                     <td><span :class="['st-pill', docStatusCls(doc.status)]">{{ docStatusLabel(doc.status) }}</span></td>
                     <td class="ta-r doc-acts">
                       <button class="dbtn" @click="selDoc=doc">Lihat</button>
-                      <button v-if="doc.status==='FINAL'" class="dbtn" @click="printDoc(doc)">Print</button>
-                      <button v-if="doc.status==='FINAL'" class="dbtn" @click="openAddendum(doc)">Addendum</button>
+                      <button v-if="isDocFinal(doc.status)" class="dbtn" @click="printDoc(doc)">Print</button>
+                      <button v-if="isDocFinal(doc.status)" class="dbtn" @click="openAddendum(doc)">Addendum</button>
                       <button class="dbtn ghost" @click="openAudit(doc)">Audit</button>
                     </td>
                   </tr>
@@ -702,7 +745,7 @@ async function printResume() {
 
       <!-- PRINT RESUME (hidden, shown on print) -->
       <div class="resume-print">
-        <div class="rp-header"><strong>KLINIK MATA</strong><br/>Resume Medis Rawat Jalan · PMK No. 24/2022</div>
+        <div class="rp-header"><strong>RUMAH SAKIT MATA</strong><br/>Resume Medis Rawat Jalan · PMK No. 24/2022</div>
         <h2>RESUME REKAM MEDIS</h2>
         <table class="rp-table">
           <tr><td>Nama</td><td>{{ patient.nama }}</td><td>No. RM</td><td>{{ patient.no_rm }}</td></tr>
@@ -758,7 +801,7 @@ async function printResume() {
           <div class="pj-sec-t">Detail Pemeriksaan</div>
           <div v-if="selPj.detail?.expertise_data" class="kv-grid pj-kv">
             <div v-for="(v2,k) in selPj.detail.expertise_data" :key="k" class="kv">
-              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ v2 }}</span>
+              <span class="kv-k">{{ k }}</span><span class="kv-v">{{ fmtExpVal(v2) }}</span>
             </div>
           </div>
           <div v-else class="empty-mini" style="padding:1rem">Belum ada data hasil</div>
@@ -782,7 +825,7 @@ async function printResume() {
             <div class="msub">{{ selDoc.created_by_station }} · Status: {{ docStatusLabel(selDoc.status) }}</div>
           </div>
           <div style="display:flex;gap:.4rem">
-            <button v-if="selDoc.status==='FINAL'" class="mbtn" @click="printDoc(selDoc)">Print</button>
+            <button v-if="isDocFinal(selDoc.status)" class="mbtn" @click="printDoc(selDoc)">Print</button>
             <button class="mcl" @click="selDoc=null">✕</button>
           </div>
         </div>
@@ -792,7 +835,7 @@ async function printResume() {
           <div :class="['doc-status-block', docStatusCls(selDoc.status)]">
             <div class="dsb-title">{{ docStatusLabel(selDoc.status) }}</div>
             <div class="dsb-desc">
-              <template v-if="selDoc.status==='FINAL'">Dokumen final<span v-if="selDoc.document_number"> · No: {{ selDoc.document_number }}</span>.<span v-if="selDoc.printed_count"> Dicetak {{ selDoc.printed_count }}×.</span></template>
+              <template v-if="isDocFinal(selDoc.status)">Dokumen final<span v-if="selDoc.document_number"> · No: {{ selDoc.document_number }}</span>.<span v-if="selDoc.printed_count"> Dicetak {{ selDoc.printed_count }}×.</span></template>
               <template v-else-if="docStatusCls(selDoc.status)==='waiting'">Menunggu tanda tangan. Akses dari stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
               <template v-else-if="selDoc.status==='REJECTED'">Dokumen ditolak. Perbaiki via stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
               <template v-else>Draft. Isi &amp; submit via stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>

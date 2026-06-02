@@ -271,6 +271,10 @@ class InventoryPriceService
     {
         $this->assertType($type);
 
+        // Buang BOM UTF-8 (Excel "Save as CSV") agar header kolom pertama tak rusak.
+        if (str_starts_with($csvContent, "\xEF\xBB\xBF")) {
+            $csvContent = substr($csvContent, 3);
+        }
         $lines = array_filter(explode("\n", str_replace("\r", '', trim($csvContent))));
         if (empty($lines)) {
             throw new \Exception('File CSV kosong.', 422);

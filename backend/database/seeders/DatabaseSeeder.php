@@ -23,6 +23,7 @@ class DatabaseSeeder extends Seeder
             StationMappingSeeder::class,
             DoctorScheduleSeeder::class,
             TvDisplaySettingSeeder::class,
+            RefractionOptionSeeder::class,   // master opsi combobox RefraksionisView
             // PatientVisitSeeder::class, // demo only — run manually: php artisan db:seed --class=PatientVisitSeeder
             // DokterDemoSeeder::class,   // demo only — run manually: php artisan db:seed --class=DokterDemoSeeder
             // SoapHistoryDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=SoapHistoryDemoSeeder

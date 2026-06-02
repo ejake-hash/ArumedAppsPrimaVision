@@ -9,6 +9,7 @@ use App\Models\Medication;
 use App\Models\PharmacySale;
 use App\Models\PharmacySaleItem;
 use App\Models\SystemLog;
+use App\Services\Concerns\RetriesUniqueNumber;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,8 @@ use Illuminate\Support\Facades\DB;
  */
 class PharmacySaleService
 {
+    use RetriesUniqueNumber;
+
     public function __construct(
         private readonly Request $request,
         private readonly InventoryStockService $stockService,
@@ -106,7 +109,9 @@ class PharmacySaleService
         $userId     = auth('api')->id();
         $employeeId = auth('api')->user()?->employee_id;
 
-        return DB::transaction(function () use ($resolved, $subtotal, $gDiscAmt, $gDiscPct, $total, $paid, $change, $data, $userId, $employeeId) {
+        // Nomor sale via count+1 bisa tabrakan saat 2 kasir checkout berbarengan →
+        // unique-violation. Retry SELURUH transaksi (generate nomor baru tiap attempt).
+        return $this->createWithRetry(fn () => DB::transaction(function () use ($resolved, $subtotal, $gDiscAmt, $gDiscPct, $total, $paid, $change, $data, $userId, $employeeId) {
             $sale = PharmacySale::create([
                 'sale_number'      => $this->generateSaleNumber(),
                 'buyer_name'       => $data['buyer_name']  ?? null,
@@ -144,7 +149,7 @@ class PharmacySaleService
                 "Penjualan obat bebas {$sale->sale_number} — " . count($resolved) . " item, total Rp " . number_format($total, 0, ',', '.'));
 
             return $sale->load('items.medication', 'soldBy');
-        });
+        }));
     }
 
     // =========================================================================
@@ -269,30 +274,22 @@ class PharmacySaleService
     {
         if (! empty($batches)) {
             foreach ($batches as $b) {
-                $stock = InventoryStock::firstOrNew([
-                    'item_type' => 'MEDICATION',
-                    'location'  => InventoryStock::LOC_FARMASI,
-                    'item_id'   => $medicationId,
-                    'batch_no'  => $b['batch_no'] ?? null,
-                ]);
-                $stock->expiry_date = $b['expiry_date'] ?? $stock->expiry_date;
-                $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + (float) ($b['qty'] ?? 0);
-                $stock->last_received_at = now();
-                $stock->save();
+                $addQty = (float) ($b['qty'] ?? 0);
+                if ($addQty <= 0) continue;
+                // upsertStock = sumber tunggal (batch_no NULL tidak diduplikasi).
+                $this->stockService->upsertStock(
+                    'MEDICATION', $medicationId, InventoryStock::LOC_FARMASI,
+                    $b['batch_no'] ?? null, $addQty, $b['expiry_date'] ?? null
+                );
             }
             return;
         }
 
         // Fallback (tak ada catatan batch): tambah batch retur.
-        $stock = InventoryStock::firstOrNew([
-            'item_type' => 'MEDICATION',
-            'location'  => InventoryStock::LOC_FARMASI,
-            'item_id'   => $medicationId,
-            'batch_no'  => 'RETUR-' . now()->format('Ymd'),
-        ]);
-        $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + $qty;
-        $stock->last_received_at = now();
-        $stock->save();
+        $this->stockService->upsertStock(
+            'MEDICATION', $medicationId, InventoryStock::LOC_FARMASI,
+            'RETUR-' . now()->format('Ymd'), (float) $qty
+        );
     }
 
     /** Nomor transaksi: INV-APT/{clinic_code}/{Y}/{m}/{seq} (counter per bulan). */
@@ -303,12 +300,21 @@ class PharmacySaleService
         $month = now()->format('m');
         $prefix = "INV-APT/{$code}/";
 
-        $count = PharmacySale::whereYear('created_at', $year)
-            ->whereMonth('created_at', $month)
-            ->where('sale_number', 'like', $prefix . '%')
-            ->count();
+        // withTrashed: row yang di-soft-delete tetap menempati nomor (unique
+        // constraint mencakup baris soft-deleted) → count tanpa trashed bisa
+        // menghasilkan nomor yang menabrak nomor lama. Pakai MAX seq, bukan count,
+        // agar tetap benar walau ada gap akibat penghapusan.
+        $last = PharmacySale::withTrashed()
+            ->where('sale_number', 'like', $prefix . $year . '/' . $month . '/%')
+            ->orderByDesc('sale_number')
+            ->value('sale_number');
 
-        $seq = str_pad((string) ($count + 1), 3, '0', STR_PAD_LEFT);
+        $next = 1;
+        if ($last && preg_match('#/(\d+)$#', $last, $m)) {
+            $next = (int) $m[1] + 1;
+        }
+
+        $seq = str_pad((string) $next, 3, '0', STR_PAD_LEFT);
 
         return "{$prefix}{$year}/{$month}/{$seq}";
     }

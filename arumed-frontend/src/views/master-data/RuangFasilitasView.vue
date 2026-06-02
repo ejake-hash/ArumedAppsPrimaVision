@@ -1,11 +1,12 @@
 <script setup>
 /**
  * Fasilitas & Ruang — menu master di bawah Form Rekam Medis.
- * Berisi: Ruang Operasi (OK), Ruangan & Tempat Tidur (Rawat Inap), Tarif Kamar.
+ * Berisi: Ruang Operasi (OK), Ruangan & Tempat Tidur (Rawat Inap).
+ * Tarif Kamar dipindah ke menu Tarif & Paket → Tarif Kamar (RoomTarifPanel).
  *
  * Ruang Operasi disimpan di clinic_profiles.operating_rooms (JSON) — view ini
  * load & patch field itu secara mandiri (tidak mengganggu form Profil Institusi).
- * Room/Bed/Tarif = tabel terpisah, dikelola oleh komponen RoomBedManager.
+ * Room/Bed = tabel terpisah, dikelola oleh komponen RoomBedManager.
  */
 import { ref, onMounted } from 'vue'
 import { masterApi } from '@/services/api'
@@ -100,7 +101,7 @@ async function saveOk() {
       </div>
     </section>
 
-    <!-- ─── Ruangan & Bed + Tarif Kamar (komponen mandiri) ─── -->
+    <!-- ─── Ruangan & Tempat Tidur (komponen mandiri) ─── -->
     <RoomBedManager />
 
     <Teleport to="body">

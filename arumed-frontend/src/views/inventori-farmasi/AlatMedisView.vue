@@ -32,6 +32,7 @@ const config = {
   description: 'Master alat medis reusable (microscope, mesin Phaco, biometri, dll). Tarif flat per pemakaian.',
   searchPlaceholder: 'Cari kode/nama/brand/serial…',
   extraSearchParam: 'search',
+  csvAllowExcel: true,
   defaults: {
     name: '', category: 'MICROSCOPE', brand: '', model: '', serial_number: '',
     location: '', status: 'ACTIVE', calibration_due_at: '', purchase_date: '',

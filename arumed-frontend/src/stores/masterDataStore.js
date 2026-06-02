@@ -152,19 +152,21 @@ export const useMasterDataStore = defineStore('masterData', () => {
     URL.revokeObjectURL(url)
   }
 
-  async function downloadTemplate(key) {
+  async function downloadTemplate(key, format = 'csv') {
     const { csvType, label } = assertResource(key)
-    if (!csvType) throw new Error(`${label} tidak mendukung CSV template`)
-    const res = await masterApi.csv.template(csvType)
-    triggerDownload(res.data, `template-${csvType.replace('/', '-')}.csv`)
+    if (!csvType) throw new Error(`${label} tidak mendukung template`)
+    const xlsx = format === 'xlsx'
+    const res = await masterApi.csv.template(csvType, xlsx ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-${csvType.replace('/', '-')}.${xlsx ? 'xlsx' : 'csv'}`)
   }
 
-  async function exportCsv(key) {
+  async function exportCsv(key, format = 'csv') {
     const { csvType, label } = assertResource(key)
-    if (!csvType) throw new Error(`${label} tidak mendukung CSV export`)
-    const res = await masterApi.csv.export(csvType)
+    if (!csvType) throw new Error(`${label} tidak mendukung export`)
+    const xlsx = format === 'xlsx'
+    const res = await masterApi.csv.export(csvType, xlsx ? 'xlsx' : undefined)
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(res.data, `${csvType.replace('/', '-')}-${today}.csv`)
+    triggerDownload(res.data, `${csvType.replace('/', '-')}-${today}.${xlsx ? 'xlsx' : 'csv'}`)
   }
 
   async function importCsv(key, file) {

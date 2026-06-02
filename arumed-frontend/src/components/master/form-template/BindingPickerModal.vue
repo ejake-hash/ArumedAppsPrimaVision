@@ -141,7 +141,7 @@ function close() {
         <nav class="bp-tabs">
           <button :class="{ active: tab === 'db' }"        @click="tab = 'db'">DB</button>
           <button :class="{ active: tab === 'aggregate' }" @click="tab = 'aggregate'">Aggregate</button>
-          <button :class="{ active: tab === 'clinic' }"    @click="tab = 'clinic'">Klinik</button>
+          <button :class="{ active: tab === 'clinic' }"    @click="tab = 'clinic'">Rumah Sakit</button>
           <button :class="{ active: tab === 'static' }"    @click="tab = 'static'">Static</button>
         </nav>
 

@@ -5,34 +5,13 @@
  * dari form profil yang di-save sekaligus). Struktur 2 level: Room → Bed.
  * Kelas melekat di Room; admin atur jumlah bed per room.
  */
-import { ref, computed, onMounted } from 'vue'
-import { roomApi, roomTarifApi, asuransiApi } from '@/services/api'
+import { ref, onMounted } from 'vue'
+import { roomApi } from '@/services/api'
 
 const rooms = ref([])
 const loading = ref(false)
 const err = ref(null)
 const toast = ref(null)
-
-// Tarif kamar per kelas per classification.
-const tariffs = ref([])
-const tarifForm = ref({ room_class: '', classification: 'UMUM', insurer_id: '', price: '' })
-
-// ASURANSI/PERUSAHAAN punya banyak penjamin → wajib pilih insurer spesifik.
-const insurerOptions = ref([])
-const needsInsurerPick = computed(() =>
-  ['ASURANSI', 'PERUSAHAAN'].includes(tarifForm.value.classification))
-
-async function onClassificationChange() {
-  tarifForm.value.insurer_id = ''
-  insurerOptions.value = []
-  if (!needsInsurerPick.value) return
-  try {
-    const res = await asuransiApi.insurers({ type: tarifForm.value.classification, active: 1 })
-    insurerOptions.value = res.data?.data ?? []
-  } catch {
-    insurerOptions.value = []
-  }
-}
 
 // Form tambah/edit room.
 const editingId = ref(null)
@@ -56,51 +35,7 @@ async function load() {
   }
 }
 
-async function loadTariffs() {
-  try {
-    const res = await roomTarifApi.list()
-    tariffs.value = res.data?.data ?? []
-  } catch { tariffs.value = [] }
-}
-
-async function saveTariff() {
-  if (!tarifForm.value.room_class || tarifForm.value.price === '') {
-    notify('Kelas & harga wajib diisi', false); return
-  }
-  if (needsInsurerPick.value && !tarifForm.value.insurer_id) {
-    notify('Pilih penjamin untuk tarif ini', false); return
-  }
-  try {
-    const payload = {
-      room_class: tarifForm.value.room_class,
-      classification: tarifForm.value.classification,
-      price: Number(tarifForm.value.price),
-    }
-    if (needsInsurerPick.value) payload.insurer_id = tarifForm.value.insurer_id
-    await roomTarifApi.upsert(payload)
-    tarifForm.value = { room_class: '', classification: 'UMUM', insurer_id: '', price: '' }
-    insurerOptions.value = []
-    notify('Tarif kamar disimpan')
-    await loadTariffs()
-  } catch (e) {
-    notify(e.response?.data?.message ?? 'Gagal menyimpan tarif', false)
-  }
-}
-
-async function deleteTariff(t) {
-  if (!confirm(`Hapus tarif Kelas ${t.room_class} (${t.classification})?`)) return
-  try {
-    await roomTarifApi.destroy(t.id)
-    notify('Tarif dihapus')
-    await loadTariffs()
-  } catch (e) {
-    notify(e.response?.data?.message ?? 'Gagal menghapus tarif', false)
-  }
-}
-
-function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
-
-onMounted(() => { load(); loadTariffs() })
+onMounted(() => { load() })
 
 function resetForm() {
   editingId.value = null
@@ -253,51 +188,9 @@ const bedStatusColor = {
 
     <p v-if="!loading && !rooms.length" class="rb-muted">Belum ada room. Tambah room pertama di atas.</p>
 
-    <!-- Tarif kamar per kelas per penjamin -->
-    <div class="rb-tarif">
-      <h4>Tarif Kamar (per malam)</h4>
-      <p class="pk-sub">Tarif ditagih per malam sesuai kelas HAK pasien. Pasien titip kelas tetap ditagih tarif kelas haknya.</p>
-      <div class="rb-form">
-        <label class="rb-field">
-          <span class="rb-flabel">Kelas Perawatan</span>
-          <input v-model="tarifForm.room_class" placeholder="1 / 2 / 3 / VIP" maxlength="5" />
-        </label>
-        <label class="rb-field">
-          <span class="rb-flabel">Penjamin</span>
-          <select v-model="tarifForm.classification" @change="onClassificationChange">
-            <option value="UMUM">Umum</option>
-            <option value="BPJS">BPJS</option>
-            <option value="SOSIAL">Sosial</option>
-            <option value="ASURANSI">Asuransi (TPA)</option>
-            <option value="PERUSAHAAN">Perusahaan</option>
-          </select>
-        </label>
-        <label v-if="needsInsurerPick" class="rb-field">
-          <span class="rb-flabel">{{ tarifForm.classification === 'PERUSAHAAN' ? 'Perusahaan' : 'Asuransi' }}</span>
-          <select v-model="tarifForm.insurer_id">
-            <option value="">— Pilih —</option>
-            <option v-for="ins in insurerOptions" :key="ins.id" :value="ins.id">{{ ins.name }}</option>
-          </select>
-        </label>
-        <label class="rb-field">
-          <span class="rb-flabel">Harga per Malam</span>
-          <input v-model="tarifForm.price" type="number" min="0" placeholder="mis. 350000" />
-        </label>
-        <button type="button" class="pk-btn-primary rb-fbtn" @click="saveTariff">Simpan Tarif</button>
-      </div>
-      <table class="rb-tarif-tbl" v-if="tariffs.length">
-        <thead><tr><th>Kelas</th><th>Penjamin</th><th>Harga / malam</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="t in tariffs" :key="t.id">
-            <td>{{ t.room_class }}</td>
-            <td>{{ t.classification }}{{ t.insurer ? ' · ' + t.insurer.name : '' }}</td>
-            <td>{{ rupiah(t.price) }}</td>
-            <td><button type="button" class="rb-link rb-del" @click="deleteTariff(t)">Hapus</button></td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="rb-muted">Belum ada tarif kamar.</p>
-    </div>
+    <p class="rb-muted rb-tarif-hint">
+      Tarif kamar per malam kini dikelola di menu <strong>Tarif &amp; Paket → Tarif Kamar</strong>.
+    </p>
 
     <Teleport to="body">
       <div v-if="toast" class="rb-toast" :class="{ err: !toast.ok }">{{ toast.msg }}</div>
@@ -330,11 +223,7 @@ const bedStatusColor = {
 .rb-bed-del:disabled { color: #d1d5db; cursor: not-allowed; }
 .rb-bed-add { display: flex; gap: 0.4rem; }
 .rb-bed-add input { padding: 0.35rem 0.6rem; border: 1px solid var(--gb, #d1d5db); border-radius: 8px; font-size: 13px; width: 160px; }
-.rb-tarif { border-top: 1px dashed var(--gb, #e5e7eb); padding-top: 0.9rem; margin-top: 0.4rem; }
-.rb-tarif h4 { margin: 0 0 0.2rem; color: #1763d4; font-size: 14px; }
-.rb-tarif-tbl { width: 100%; border-collapse: collapse; margin-top: 0.6rem; }
-.rb-tarif-tbl th, .rb-tarif-tbl td { border: 1px solid var(--gb, #e5e7eb); padding: 0.4rem 0.6rem; font-size: 13px; text-align: left; color: #000; }
-.rb-tarif-tbl th { background: #f3f4f6; }
+.rb-tarif-hint { border-top: 1px dashed var(--gb, #e5e7eb); padding-top: 0.9rem; margin-top: 0.6rem; }
 .rb-toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #16a34a; color: #fff; padding: 0.7rem 1.2rem; border-radius: 8px; z-index: 9300; font-size: 14px; }
 .rb-toast.err { background: #ef4444; }
 </style>

@@ -233,6 +233,28 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // ─── PREOP_BEDAH + inap (Fase 8B) — Kirim ke Rawat Inap (papan Menunggu Kamar) ──
+  const sendingRanap = ref(false)
+  async function kirimKeRanap() {
+    const queueId = selectedQueue.value?.id
+    if (!queueId) throw new Error('Pilih pasien terlebih dahulu')
+    sendingRanap.value = true
+    try {
+      const { data } = await perawatApi.kirimKeRanap(queueId)
+      // Tandai queue triase COMPLETED di list lokal (sama seperti kirimKeBedah).
+      const idx = antrian.value.findIndex((q) => q.id === queueId)
+      if (idx !== -1) {
+        antrian.value[idx] = { ...antrian.value[idx], status: 'COMPLETED' }
+      }
+      _syncStats()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal mengirim pasien ke rawat inap')
+    } finally {
+      sendingRanap.value = false
+    }
+  }
+
   // ─── Vital History ────────────────────────────────────────────────────────────
 
   async function loadVitalHistory(patientId) {
@@ -407,7 +429,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     antrian, stats, queueLoading, queueError,
     selectedQueue, asesmen, asesmenLoading,
     doctorTicket,
-    saving, finalizing, sendingBedah,
+    saving, finalizing, sendingBedah, sendingRanap,
     vitalHistory, vitalHistoryLoading,
     rekamMedis, rekamMedisLoading, rekamMedisError,
     selectedDokumen, dokumenLoading,
@@ -427,7 +449,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     saveAsesmen, finalizeAsesmen,
 
     // preop bedah
-    kirimKeBedah, parallelStatus, loadParallelStatus,
+    kirimKeBedah, kirimKeRanap, parallelStatus, loadParallelStatus,
 
     // cppt
     loadCpptTimeline, addCpptEntry, updateCpptEntry,

@@ -144,38 +144,39 @@ class RoomController extends Controller
         return $this->ok($tariffs);
     }
 
-    /** POST /master/room-tariff — upsert tarif (unik per room_class+insurer+classification). */
+    /** POST /master/room-tariff — upsert tarif kamar (unik per room_class + insurer). */
     public function storeTariff(Request $request): JsonResponse
     {
+        // Insurer-only (post drop_classification 2026_06_08). UMUM/BPJS/SOSIAL kini
+        // insurer sistem yang dipilih eksplisit; classification sudah tidak ada.
         $data = $request->validate([
-            'room_class'     => 'required|string|max:5',
-            'insurer_id'     => 'nullable|uuid',
-            'classification' => 'required|string|max:20',
-            'price'          => 'required|numeric|min:0',
-            'is_active'      => 'nullable|boolean',
+            'room_class' => 'required|string|max:5',
+            'insurer_id' => 'required|uuid|exists:insurers,id',
+            'price'      => 'required|numeric|min:0',
+            'is_active'  => 'nullable|boolean',
         ]);
 
-        // Jika insurer_id kosong, resolve ke sistem insurer dari classification
-        // (UMUM/BPJS/SOSIAL) agar KasirService::getPrice('room', ...) bisa menemukannya
-        // lewat resolveTariffInsurerId. Selain itu biarkan null (fallback UMUM jalan).
-        $insurerId = $data['insurer_id'] ?? null;
-        if (! $insurerId && in_array($data['classification'], ['UMUM', 'BPJS', 'SOSIAL'], true)) {
-            $insurerId = \App\Models\Insurer::where('is_system', true)
-                ->where('type', $data['classification'])
-                ->value('id');
-        }
+        // Soft-delete aware: tabel pakai SoftDeletes + unique (room_class, insurer_id)
+        // plain → updateOrCreate biasa tak lihat baris trashed → unique violation (23505)
+        // saat tarif yang pernah dihapus diset ulang. Cari withTrashed → restore.
+        $existing = RoomTariff::withTrashed()
+            ->where('room_class', $data['room_class'])
+            ->where('insurer_id', $data['insurer_id'])
+            ->first();
 
-        $tariff = RoomTariff::updateOrCreate(
-            [
-                'room_class'     => $data['room_class'],
-                'insurer_id'     => $insurerId,
-                'classification' => $data['classification'],
-            ],
-            [
-                'price'     => $data['price'],
-                'is_active' => $data['is_active'] ?? true,
-            ]
-        );
+        $values = ['price' => $data['price'], 'is_active' => $data['is_active'] ?? true];
+
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            $existing->update($values);
+            $tariff = $existing;
+        } else {
+            $tariff = RoomTariff::create(
+                ['room_class' => $data['room_class'], 'insurer_id' => $data['insurer_id']] + $values
+            );
+        }
 
         return $this->ok($tariff->fresh('insurer'), 'Tarif kamar disimpan');
     }
@@ -191,8 +192,12 @@ class RoomController extends Controller
 
     private function validateRoom(Request $request, ?string $ignoreId = null): array
     {
+        // code UNIQUE di DB (rooms.code). Validasi di sini agar duplikat → 422 ramah,
+        // bukan 500 bocor SQLSTATE 23505. ignore $ignoreId saat update.
+        $uniqueCode = 'unique:rooms,code' . ($ignoreId ? ",{$ignoreId},id" : '');
+
         return $request->validate([
-            'code'            => 'required|string|max:20',
+            'code'            => "required|string|max:20|{$uniqueCode}",
             'name'            => 'required|string|max:100',
             'kelas_rawat'     => 'required|string|max:5',
             'type'            => 'nullable|in:KAMAR,ICU,ISOLASI,HCU',

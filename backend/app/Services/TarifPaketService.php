@@ -275,17 +275,29 @@ class TarifPaketService
     {
         $pkg = SurgeryPackage::findOrFail($packageId);
 
-        $tariff = SurgeryPackageTariff::updateOrCreate(
-            [
-                'surgery_package_id' => $pkg->id,
-                'insurer_id'         => $data['insurer_id'] ?? null,
-                'classification'     => $data['classification'],
-            ],
-            [
-                'sell_price' => $data['sell_price'],
-                'is_active'  => $data['is_active'] ?? true,
-            ]
-        );
+        // Insurer-only (post drop_classification 2026_06_09). insurer_id NULL = "SEMUA".
+        // Soft-delete aware: tabel pakai SoftDeletes + unique (surgery_package_id, insurer_id)
+        // plain → updateOrCreate biasa tak lihat baris trashed → bisa kena unique violation
+        // (23505) saat tarif yg pernah dihapus ditambah ulang. Cari withTrashed → restore.
+        $insurerId = $data['insurer_id'] ?? null;
+        $existing  = SurgeryPackageTariff::withTrashed()
+            ->where('surgery_package_id', $pkg->id)
+            ->where('insurer_id', $insurerId)   // null-safe: Eloquent emit "is null"
+            ->first();
+
+        $values = ['sell_price' => $data['sell_price'], 'is_active' => $data['is_active'] ?? true];
+
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            $existing->update($values);
+            $tariff = $existing;
+        } else {
+            $tariff = SurgeryPackageTariff::create(
+                ['surgery_package_id' => $pkg->id, 'insurer_id' => $insurerId] + $values
+            );
+        }
 
         $this->log(auth('api')->id(), 'UPSERT_PAKET_TARIFF', SurgeryPackageTariff::class, $tariff->id, "package:{$pkg->id}");
         return $tariff->load('insurer');

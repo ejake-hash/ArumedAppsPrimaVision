@@ -13,9 +13,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
+import { useAppearance, FONT_SCALES } from '@/composables/useAppearance'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can?.('pengaturan.write') ?? auth.isSuperadmin)
+
+// ── Tampilan (ukuran font & kepadatan) — preferensi per-perangkat ────────────
+const appearance = useAppearance()
 
 const list    = ref([])
 const loading = ref(false)
@@ -158,10 +162,63 @@ onMounted(() => { loadList(); loadClinicCode() })
     <header class="pg-header">
       <div>
         <h1>Pengaturan</h1>
-        <p class="pg-sub">Penomoran Dokumen — atur format nomor otomatis tiap jenis dokumen.</p>
+        <p class="pg-sub">Atur tampilan aplikasi dan penomoran dokumen.</p>
       </div>
-      <button v-if="canWrite" class="btn-primary" @click="openCreate">+ Tambah Tipe</button>
     </header>
+
+    <!-- ── Bagian: Tampilan ──────────────────────────────────────────────── -->
+    <section class="card sec">
+      <div class="sec-head">
+        <h2>Tampilan</h2>
+        <p class="sec-sub">Ukuran teks dan kepadatan tampilan. Tersimpan di perangkat ini.</p>
+      </div>
+
+      <div class="opt-row">
+        <div class="opt-label">
+          <span class="opt-title">Ukuran Font</span>
+          <span class="opt-desc">Perbesar seluruh teks &amp; elemen secara proporsional.</span>
+        </div>
+        <div class="seg">
+          <button
+            v-for="s in FONT_SCALES"
+            :key="s.value"
+            class="seg-btn"
+            :class="{ active: appearance.state.fontScale === s.value }"
+            @click="appearance.setFontScale(s.value)"
+          >{{ s.label }}</button>
+        </div>
+      </div>
+
+      <div class="opt-row">
+        <div class="opt-label">
+          <span class="opt-title">Kepadatan</span>
+          <span class="opt-desc">Mode “Kompak” merapatkan baris tabel agar muat lebih banyak.</span>
+        </div>
+        <div class="seg">
+          <button
+            class="seg-btn"
+            :class="{ active: appearance.state.density === 'normal' }"
+            @click="appearance.setDensity('normal')"
+          >Normal</button>
+          <button
+            class="seg-btn"
+            :class="{ active: appearance.state.density === 'compact' }"
+            @click="appearance.setDensity('compact')"
+          >Kompak</button>
+        </div>
+      </div>
+
+      <div class="sec-foot">
+        <button class="btn-ghost" @click="appearance.reset()">Kembalikan default</button>
+      </div>
+    </section>
+
+    <!-- ── Bagian: Penomoran Dokumen ─────────────────────────────────────── -->
+    <div class="sec-head sec-head--inline">
+      <h2>Penomoran Dokumen</h2>
+      <p class="sec-sub">Atur format nomor otomatis tiap jenis dokumen.</p>
+      <button v-if="canWrite" class="btn-primary" @click="openCreate">+ Tambah Tipe</button>
+    </div>
 
     <!-- Legenda token -->
     <div class="legend">
@@ -306,4 +363,26 @@ onMounted(() => { loadList(); loadClinicCode() })
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.18s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* ── Bagian Tampilan ── */
+.card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; }
+.sec { padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 0.9rem; }
+.sec-head h2 { font-family: 'Space Grotesk', serif; font-size: 17px; color: var(--td); margin: 0; }
+.sec-sub { font-size: 12.5px; color: var(--tm); margin: 3px 0 0; }
+.sec-head--inline { display: flex; align-items: center; gap: 10px; margin-top: 0.3rem; }
+.sec-head--inline h2 { font-size: 17px; }
+.sec-head--inline .sec-sub { flex: 1; }
+
+.opt-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.55rem 0; border-top: 1px solid var(--gb); }
+.opt-row:first-of-type { border-top: none; }
+.opt-label { display: flex; flex-direction: column; gap: 2px; }
+.opt-title { font-size: 13.5px; font-weight: 600; color: var(--td); }
+.opt-desc { font-size: 12px; color: var(--tm); }
+
+.seg { display: inline-flex; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 3px; gap: 2px; flex-shrink: 0; }
+.seg-btn { background: transparent; border: none; border-radius: 6px; padding: 6px 13px; font-size: 12.5px; font-weight: 600; color: var(--tm); cursor: pointer; white-space: nowrap; transition: background 0.12s, color 0.12s; }
+.seg-btn:hover { color: var(--td); }
+.seg-btn.active { background: var(--gd); color: #fff; }
+
+.sec-foot { display: flex; justify-content: flex-end; }
 </style>

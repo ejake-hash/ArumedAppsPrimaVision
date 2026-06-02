@@ -2,10 +2,11 @@
 /**
  * InventoriFarmasiLayout — shell modul /inventori-farmasi/*.
  *
- * Mirror pattern MasterDataLayout (vertical tabs nav + RouterView).
- * Berisi 3 tab: Obat, BHP, IOL. View komponennya masih reside di
- * views/master-data/ supaya tidak memutus import path internal —
- * router yang mengarahkan ke sini, layout yang konsumsi.
+ * Mirror pattern MasterDataLayout (vertical tabs nav berkelompok + RouterView).
+ * Menu (lihat `allTabs`): Request dari Unit, Master Item (Obat/BHP/IOL/Alat Medis),
+ * Penentuan Harga, dan Pengadaan (Supplier/Pembelian/Penerimaan) + inbox notif.
+ * View Obat/BHP/IOL masih reside di views/master-data/ supaya tidak memutus import
+ * path internal — router yang mengarahkan ke sini, layout yang konsumsi.
  */
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'

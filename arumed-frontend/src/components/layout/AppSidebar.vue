@@ -1,8 +1,9 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdmisiStore } from '@/stores/admisiStore'
+import { authApi } from '@/services/api'
 import logoPv from '@/assets/images/logo-pv.png'
 
 const auth    = useAuthStore()
@@ -14,6 +15,94 @@ async function handleLogout() {
   await auth.logout()
   router.push('/login')
 }
+
+// ─── Ganti Password ─────────────────────────────────────────────────────────
+const showPwdModal = ref(false)
+const pwdSaving = ref(false)
+const pwdError = ref('')
+const pwdOk = ref('')
+const pwdForm = reactive({ current: '', next: '', confirm: '' })
+const pwdShow = reactive({ current: false, next: false, confirm: false })
+
+function openPwdModal() {
+  pwdForm.current = ''; pwdForm.next = ''; pwdForm.confirm = ''
+  pwdShow.current = false; pwdShow.next = false; pwdShow.confirm = false
+  pinForm.password = ''; pinForm.pin = ''; pinForm.confirm = ''
+  pinShow.pin = false
+  pwdError.value = ''; pwdOk.value = ''
+  showPwdModal.value = true
+}
+function closePwdModal() {
+  if (pwdSaving.value) return
+  showPwdModal.value = false
+}
+
+async function submitChangePassword() {
+  pwdError.value = ''; pwdOk.value = ''
+  if (!pwdForm.current) { pwdError.value = 'Password saat ini wajib diisi.'; return }
+  if ((pwdForm.next || '').length < 8) { pwdError.value = 'Password baru minimal 8 karakter.'; return }
+  if (pwdForm.next !== pwdForm.confirm) { pwdError.value = 'Konfirmasi password tidak cocok.'; return }
+  if (pwdForm.next === pwdForm.current) { pwdError.value = 'Password baru tidak boleh sama dengan password lama.'; return }
+
+  pwdSaving.value = true
+  try {
+    await authApi.changePassword({
+      current_password: pwdForm.current,
+      new_password: pwdForm.next,
+      new_password_confirmation: pwdForm.confirm,
+    })
+    pwdOk.value = 'Password berhasil diubah.'
+    pwdForm.current = ''; pwdForm.next = ''; pwdForm.confirm = ''
+  } catch (e) {
+    pwdError.value = e.response?.data?.message ?? 'Gagal mengubah password.'
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
+// ─── PIN tanda tangan (khusus dokter) ───────────────────────────────────────
+const pinForm = reactive({ password: '', pin: '', confirm: '' })
+const pinShow = reactive({ pin: false })
+
+async function submitChangePin() {
+  pwdError.value = ''; pwdOk.value = ''
+  if (!pinForm.password) { pwdError.value = 'Masukkan password saat ini untuk mengubah PIN.'; return }
+  if (!/^\d{4,6}$/.test(pinForm.pin)) { pwdError.value = 'PIN harus 4–6 digit angka.'; return }
+  if (pinForm.pin !== pinForm.confirm) { pwdError.value = 'Konfirmasi PIN tidak cocok.'; return }
+
+  pwdSaving.value = true
+  try {
+    await authApi.changePin({ current_password: pinForm.password, pin: pinForm.pin })
+    pwdOk.value = 'PIN tanda tangan berhasil diubah.'
+    pinForm.password = ''; pinForm.pin = ''; pinForm.confirm = ''
+  } catch (e) {
+    pwdError.value = e.response?.data?.message ?? 'Gagal mengubah PIN.'
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
+async function resetToDefault() {
+  pwdError.value = ''; pwdOk.value = ''
+  const msg = auth.isDoctor
+    ? 'Reset password ke 888888 dan KOSONGKAN PIN? Anda harus mengatur PIN baru sebelum bisa tanda tangan.'
+    : 'Reset password ke 888888?'
+  if (!window.confirm(msg)) return
+
+  pwdSaving.value = true
+  try {
+    await authApi.resetToDefault()
+    pwdOk.value = auth.isDoctor
+      ? 'Password direset ke 888888 & PIN dikosongkan. Atur PIN baru bila perlu.'
+      : 'Password direset ke 888888.'
+    pwdForm.current = ''; pwdForm.next = ''; pwdForm.confirm = ''
+    pinForm.password = ''; pinForm.pin = ''; pinForm.confirm = ''
+  } catch (e) {
+    pwdError.value = e.response?.data?.message ?? 'Gagal mereset kredensial.'
+  } finally {
+    pwdSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -22,8 +111,8 @@ async function handleLogout() {
     <div class="sb-logo">
       <img :src="logoPv" alt="Prima Vision" class="sb-logo-img" />
       <div class="sb-brand">
-        <div class="sb-brand-name">SIMRS</div>
-        <div class="sb-brand-sub">RS Mata Prima Vision</div>
+        <div class="sb-brand-name">ARUMED<br />APPS</div>
+        <div class="sb-brand-sub">RS Mata<br />Prima Vision</div>
       </div>
       <button
         class="sb-toggle-top"
@@ -50,7 +139,7 @@ async function handleLogout() {
       </RouterLink>
 
       <div class="sb-section">Klinis</div>
-      <RouterLink v-if="auth.can('rme_dokter.read')" to="/rekam-medis" class="sb-item" title="Rekam Medis">
+      <RouterLink v-if="auth.can('rekam_medis.read')" to="/rekam-medis" class="sb-item" title="Rekam Medis">
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         <span>Rekam Medis</span>
       </RouterLink>
@@ -66,11 +155,11 @@ async function handleLogout() {
         <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         <span>Pemeriksaan Dokter</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('rme_dokter.read')" to="/ttd-dokumen" class="sb-item" title="Tanda Tangan Dokumen">
+      <RouterLink v-if="auth.can('rekam_medis.read')" to="/ttd-dokumen" class="sb-item" title="Tanda Tangan Dokumen">
         <svg viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><path d="M3 21l8-8"/></svg>
         <span>Tanda Tangan Dokumen</span>
       </RouterLink>
-      <RouterLink to="/penunjang" class="sb-item" title="Penunjang">
+      <RouterLink v-if="auth.can('penunjang.read')" to="/penunjang" class="sb-item" title="Penunjang">
         <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
         <span>Penunjang</span>
       </RouterLink>
@@ -131,7 +220,7 @@ async function handleLogout() {
         <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
         <span>Hak Akses</span>
       </RouterLink>
-      <RouterLink to="/antrean-tv" class="sb-item" title="Antrean TV">
+      <RouterLink v-if="auth.can('antrian_tv.read')" to="/antrean-tv" class="sb-item" title="Antrean TV">
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span>Antrean TV</span>
       </RouterLink>
@@ -152,11 +241,114 @@ async function handleLogout() {
           <div class="sb-uname">{{ auth.employeeName }}</div>
           <div class="sb-urole">{{ auth.roleName }}</div>
         </div>
+        <button class="sb-pwd-icon" @click="openPwdModal" title="Ganti Password">
+          <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        </button>
       </div>
       <button class="sb-logout" @click="handleLogout" title="Keluar">
         <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span>Keluar</span>
       </button>
+    </div>
+
+    <!-- Modal Ganti Password (inline agar CSS scoped berlaku) -->
+    <div v-if="showPwdModal" class="pwd-overlay" @click.self="closePwdModal">
+      <div class="pwd-box">
+        <div class="pwd-head">
+          <div class="pwd-title">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            Ganti Password
+          </div>
+          <button class="pwd-close" @click="closePwdModal" :disabled="pwdSaving">×</button>
+        </div>
+
+        <form class="pwd-body" @submit.prevent="submitChangePassword">
+          <div class="pwd-fg">
+            <label>Password Saat Ini</label>
+            <div class="pwd-inwrap">
+              <input :type="pwdShow.current ? 'text' : 'password'" v-model="pwdForm.current"
+                class="pwd-input" autocomplete="current-password" placeholder="Password lama" />
+              <button type="button" class="pwd-eye" @click="pwdShow.current = !pwdShow.current"
+                :title="pwdShow.current ? 'Sembunyikan' : 'Tampilkan'">{{ pwdShow.current ? '🙈' : '👁' }}</button>
+            </div>
+          </div>
+
+          <div class="pwd-fg">
+            <label>Password Baru</label>
+            <div class="pwd-inwrap">
+              <input :type="pwdShow.next ? 'text' : 'password'" v-model="pwdForm.next"
+                class="pwd-input" autocomplete="new-password" placeholder="Minimal 8 karakter" />
+              <button type="button" class="pwd-eye" @click="pwdShow.next = !pwdShow.next"
+                :title="pwdShow.next ? 'Sembunyikan' : 'Tampilkan'">{{ pwdShow.next ? '🙈' : '👁' }}</button>
+            </div>
+          </div>
+
+          <div class="pwd-fg">
+            <label>Konfirmasi Password Baru</label>
+            <div class="pwd-inwrap">
+              <input :type="pwdShow.confirm ? 'text' : 'password'" v-model="pwdForm.confirm"
+                class="pwd-input" autocomplete="new-password" placeholder="Ulangi password baru" />
+              <button type="button" class="pwd-eye" @click="pwdShow.confirm = !pwdShow.confirm"
+                :title="pwdShow.confirm ? 'Sembunyikan' : 'Tampilkan'">{{ pwdShow.confirm ? '🙈' : '👁' }}</button>
+            </div>
+          </div>
+
+          <div class="pwd-actions">
+            <button type="button" class="pwd-btn cancel" @click="closePwdModal" :disabled="pwdSaving">Tutup</button>
+            <button type="submit" class="pwd-btn save" :disabled="pwdSaving">
+              {{ pwdSaving ? 'Menyimpan…' : 'Simpan Password' }}
+            </button>
+          </div>
+        </form>
+
+        <!-- PIN Tanda Tangan — khusus akun dokter -->
+        <template v-if="auth.isDoctor">
+          <div class="pwd-sep"><span>PIN Tanda Tangan</span></div>
+          <form class="pwd-body pwd-body-pin" @submit.prevent="submitChangePin">
+            <div class="pwd-fg">
+              <label>Password Saat Ini</label>
+              <input type="password" v-model="pinForm.password"
+                class="pwd-input" autocomplete="current-password" placeholder="Konfirmasi dengan password" />
+            </div>
+            <div class="pwd-fg">
+              <label>PIN Baru</label>
+              <div class="pwd-inwrap">
+                <input :type="pinShow.pin ? 'text' : 'password'" v-model="pinForm.pin"
+                  class="pwd-input" inputmode="numeric" maxlength="6" placeholder="4–6 digit angka" />
+                <button type="button" class="pwd-eye" @click="pinShow.pin = !pinShow.pin"
+                  :title="pinShow.pin ? 'Sembunyikan' : 'Tampilkan'">{{ pinShow.pin ? '🙈' : '👁' }}</button>
+              </div>
+            </div>
+            <div class="pwd-fg">
+              <label>Konfirmasi PIN Baru</label>
+              <input :type="pinShow.pin ? 'text' : 'password'" v-model="pinForm.confirm"
+                class="pwd-input" inputmode="numeric" maxlength="6" placeholder="Ulangi PIN" />
+            </div>
+            <div class="pwd-actions">
+              <button type="submit" class="pwd-btn save" :disabled="pwdSaving">
+                {{ pwdSaving ? 'Menyimpan…' : 'Simpan PIN' }}
+              </button>
+            </div>
+          </form>
+        </template>
+
+        <!-- Reset ke default — berlaku semua user (PIN hanya dikosongkan bila dokter) -->
+        <div class="pwd-sep danger"><span>Reset</span></div>
+        <div class="pwd-body pwd-body-reset">
+          <p class="pwd-reset-hint">
+            Kembalikan password ke <b>888888</b><template v-if="auth.isDoctor"> dan kosongkan PIN (atur PIN baru sebelum menandatangani dokumen)</template>.
+          </p>
+          <button type="button" class="pwd-btn reset" @click="resetToDefault" :disabled="pwdSaving">
+            {{ auth.isDoctor ? 'Reset Password & PIN ke Default' : 'Reset Password ke Default' }}
+          </button>
+        </div>
+
+        <!-- Pesan global (berlaku untuk semua aksi di modal) -->
+        <div v-if="pwdError || pwdOk" class="pwd-foot-msg">
+          <div v-if="pwdError" class="pwd-msg err">{{ pwdError }}</div>
+          <div v-if="pwdOk" class="pwd-msg ok">{{ pwdOk }}</div>
+        </div>
+      </div>
     </div>
 
   </aside>
@@ -178,7 +370,7 @@ async function handleLogout() {
 
 /* ─── LOGO / HEADER ─── */
 .sb-logo {
-  padding: 1.1rem 1rem 1rem;
+  padding: 0.65rem 1rem;
   border-bottom: 1px solid var(--gb);
   display: flex;
   align-items: center;
@@ -188,17 +380,17 @@ async function handleLogout() {
 }
 .collapsed .sb-brand { display: none; }
 .sb-logo-img {
-  width: 34px; height: 34px;
+  height: 34px; width: auto; max-width: 40px;
   object-fit: contain; flex-shrink: 0;
 }
 .collapsed .sb-logo-img { margin: 0 auto; }
 .sb-brand { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .sb-brand-name {
   font-family: 'Space Grotesk', sans-serif;
-  font-size: 18px; color: var(--td); line-height: 1; font-weight: 700; letter-spacing: 0.04em;
+  font-size: 16px; color: var(--td); line-height: 1.1; font-weight: 700; letter-spacing: 0.04em;
 }
 .sb-brand-sub {
-  font-size: 9px; color: var(--ga);
+  font-size: 8.5px; color: var(--ga); line-height: 1.25;
   letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; font-weight: 600;
 }
 
@@ -316,4 +508,88 @@ async function handleLogout() {
 .sb-logout span { font-size: 12.5px; color: var(--tm); font-weight: 500; transition: color 0.15s; }
 .collapsed .sb-logout { justify-content: center; padding: 7px; gap: 0; }
 .collapsed .sb-logout span { display: none; }
+
+/* Ikon kecil Ganti Password — di samping nama akun */
+.sb-pwd-icon {
+  flex-shrink: 0; width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 7px; border: 1px solid var(--gb); background: var(--bg);
+  cursor: pointer; transition: background 0.15s, border-color 0.15s;
+  padding: 0;
+}
+.sb-pwd-icon:hover { background: var(--gl); border-color: var(--ga); }
+.sb-pwd-icon:hover svg { stroke: var(--ga); }
+.sb-pwd-icon svg {
+  width: 15px; height: 15px; fill: none; stroke: var(--tu); stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; transition: stroke 0.15s;
+}
+.collapsed .sb-pwd-icon { display: none; }
+
+/* ── Modal Ganti Password ──────────────────────────────────────────────── */
+.pwd-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(15, 30, 50, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.pwd-box {
+  width: 100%; max-width: 380px;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.25); overflow: hidden;
+  font-family: 'Inter', sans-serif;
+}
+.pwd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--gb);
+}
+.pwd-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--td); }
+.pwd-title svg { width: 17px; height: 17px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pwd-close {
+  border: none; background: none; cursor: pointer; font-size: 22px; line-height: 1;
+  color: var(--tu); padding: 0 4px;
+}
+.pwd-close:hover { color: var(--td); }
+.pwd-close:disabled { opacity: 0.4; cursor: not-allowed; }
+.pwd-body { padding: 1rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: 0.7rem; }
+.pwd-fg { display: flex; flex-direction: column; gap: 4px; }
+.pwd-fg label { font-size: 11px; font-weight: 600; color: var(--tm); }
+.pwd-inwrap { position: relative; display: flex; align-items: center; }
+.pwd-input {
+  width: 100%; padding: 8px 34px 8px 11px; font-size: 13px;
+  border: 1px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--td);
+  font-family: 'Inter', sans-serif; transition: border-color 0.15s;
+}
+.pwd-input:focus { outline: none; border-color: var(--ga); }
+.pwd-eye {
+  position: absolute; right: 6px; border: none; background: none; cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 2px; opacity: 0.7;
+}
+.pwd-eye:hover { opacity: 1; }
+.pwd-msg { font-size: 11.5px; padding: 7px 10px; border-radius: 7px; line-height: 1.35; }
+.pwd-msg.err { background: var(--eb); border: 1px solid var(--ebd); color: var(--et); }
+.pwd-msg.ok  { background: var(--gl); border: 1px solid var(--ga); color: var(--gd); }
+.pwd-actions { display: flex; gap: 8px; margin-top: 0.3rem; }
+.pwd-btn {
+  flex: 1; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; font-family: 'Inter', sans-serif;
+}
+.pwd-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.pwd-btn.cancel { border: 1px solid var(--gb); background: var(--bg); color: var(--tm); }
+.pwd-btn.cancel:hover:not(:disabled) { background: var(--bs); }
+.pwd-btn.save { border: 1px solid var(--ga); background: var(--ga); color: #fff; }
+.pwd-btn.save:hover:not(:disabled) { filter: brightness(0.95); }
+.pwd-btn.reset { flex: 1; border: 1px solid var(--ebd); background: var(--eb); color: var(--et); }
+.pwd-btn.reset:hover:not(:disabled) { background: var(--et); color: #fff; }
+
+/* Pemisah antar-section dalam modal */
+.pwd-sep {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 1.1rem; margin-top: 0.2rem;
+  color: var(--tu); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.pwd-sep::before, .pwd-sep::after { content: ''; flex: 1; height: 1px; background: var(--gb); }
+.pwd-sep.danger { color: var(--et); }
+.pwd-sep.danger::before, .pwd-sep.danger::after { background: var(--ebd); }
+.pwd-body-pin, .pwd-body-reset { padding-top: 0.6rem; padding-bottom: 0.6rem; }
+.pwd-reset-hint { font-size: 11px; color: var(--tu); line-height: 1.4; margin: 0 0 0.2rem; }
+.pwd-foot-msg { padding: 0 1.1rem 1.1rem; }
 </style>

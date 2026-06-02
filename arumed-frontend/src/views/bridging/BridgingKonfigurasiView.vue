@@ -27,7 +27,7 @@ const LABELS = {
   ANTREAN:   'BPJS Antrean Online',
   ICARE:     'BPJS iCare',
   SATUSEHAT: 'Satu Sehat',
-  INACBGS:   'INA-CBGs Grouper',
+  INACBGS:   'E-Klaim INA-CBG (WS)',
 }
 
 // Draft input per-sistem (tidak ikut load dari server untuk field rahasia).
@@ -64,11 +64,17 @@ async function load() {
             secret_key:  '',
             user_key:    '',
             // Satu Sehat (FHIR / OAuth2). Field rahasia tetap write-only.
-            env:             cfg.configuration?.env ?? 'sandbox',
+            // Pilihan environment dihilangkan dari UI — selalu Production.
+            env:             cfg.configuration?.env ?? 'production',
             organization_id: cfg.configuration?.organization_id ?? '',
             location_id:     cfg.configuration?.location_id ?? '',
             client_id:       '',
             client_secret:   '',
+            // E-Klaim INA-CBG (WS ws.php). Encryption Key write-only.
+            kode_tarif:    cfg.configuration?.kode_tarif ?? 'CS',
+            key_encoding:  cfg.configuration?.key_encoding ?? 'hex',
+            verify_ssl:    cfg.configuration?.verify_ssl ?? false,
+            encryption_key: '',
             notes:       cfg.notes ?? '',
           }
         }
@@ -90,7 +96,8 @@ function buildPayload(sys) {
       base_url: d.base_url || null,
       configuration: {
         ...(sys.configuration ?? {}),
-        env:             d.env || 'sandbox',
+        // Environment dipaksa Production (pilihan dihilangkan dari UI).
+        env:             'production',
         // organization_id / location_id non-secret → boleh disimpan di configuration.
         organization_id: d.organization_id || '',
         location_id:     d.location_id || '',
@@ -101,6 +108,22 @@ function buildPayload(sys) {
     if (d.client_id)     cred.client_id     = d.client_id
     if (d.client_secret) cred.client_secret = d.client_secret
     if (Object.keys(cred).length) payload.credentials = cred
+    return payload
+  }
+
+  if (isEklaim(sys.system_name)) {
+    const payload = {
+      base_url: d.base_url || null,
+      configuration: {
+        ...(sys.configuration ?? {}),
+        kode_tarif:   d.kode_tarif || 'CS',
+        key_encoding: d.key_encoding || 'hex',
+        verify_ssl:   !!d.verify_ssl,
+      },
+      notes: d.notes || null,
+    }
+    // Encryption Key write-only: hanya dikirim bila diisi.
+    if (d.encryption_key) payload.credentials = { encryption_key: d.encryption_key.trim() }
     return payload
   }
 
@@ -127,7 +150,7 @@ async function save(sys) {
     await integrasiApi.updateConfig(sys.id, buildPayload(sys))
     // Kosongkan field rahasia setelah tersimpan (jangan tahan di memori UI).
     const d = drafts[sys.system_name]
-    d.cons_id = ''; d.secret_key = ''; d.user_key = ''
+    d.cons_id = ''; d.secret_key = ''; d.user_key = ''; d.encryption_key = ''
     flash(true, `Konfigurasi ${LABELS[sys.system_name] ?? sys.system_name} disimpan`)
     await load()
   } catch (e) {
@@ -174,6 +197,7 @@ function statusBadge(s) {
 
 const isBpjs = (name) => BPJS_SYSTEMS.includes(name)
 const isSatusehat = (name) => name === 'SATUSEHAT'
+const isEklaim = (name) => name === 'INACBGS'
 
 // ── Kelola Lokasi Satu Sehat ─────────────────────────────────────────────────
 const loc = reactive({
@@ -322,13 +346,6 @@ onMounted(load)
 
           <template v-else-if="isSatusehat(sys.system_name)">
             <label class="fld">
-              <span>Environment</span>
-              <select v-model="drafts[sys.system_name].env">
-                <option value="sandbox">Sandbox (staging)</option>
-                <option value="production">Production</option>
-              </select>
-            </label>
-            <label class="fld">
               <span>Organization ID</span>
               <input v-model="drafts[sys.system_name].organization_id" type="text" autocomplete="off" placeholder="378de02d-..." />
             </label>
@@ -352,6 +369,37 @@ onMounted(load)
               <label class="fld">
                 <span>Client Secret</span>
                 <input v-model="drafts[sys.system_name].client_secret" type="password" autocomplete="new-password" :placeholder="sys.has_credentials ? '••••• (tersimpan)' : 'client_secret Satu Sehat'" />
+              </label>
+            </div>
+          </template>
+
+          <template v-else-if="isEklaim(sys.system_name)">
+            <p class="ek-hint">Web Service E-Klaim INA-CBG lokal (<code>ws.php</code>). Base URL diisi alamat ws.php aplikasi E-Klaim di jaringan RS.</p>
+            <label class="fld">
+              <span>Kode Tarif INA-CBG</span>
+              <input v-model="drafts[sys.system_name].kode_tarif" type="text" placeholder="CS" />
+            </label>
+            <label class="fld">
+              <span>Encoding Key</span>
+              <select v-model="drafts[sys.system_name].key_encoding">
+                <option value="hex">hex (64 karakter)</option>
+                <option value="base64">base64</option>
+                <option value="raw">raw</option>
+              </select>
+            </label>
+            <label class="fld ek-check">
+              <input v-model="drafts[sys.system_name].verify_ssl" type="checkbox" />
+              <span>Verifikasi SSL (matikan untuk HTTP LAN)</span>
+            </label>
+
+            <div class="cred-grp">
+              <div class="cred-title">
+                Encryption Key
+                <span class="cred-hint">{{ sys.has_credentials ? 'tersimpan · isi untuk mengganti' : 'belum diisi' }}</span>
+              </div>
+              <label class="fld">
+                <span>Encryption Key (dari E-Klaim → Setup → Integrasi SIMRS)</span>
+                <input v-model="drafts[sys.system_name].encryption_key" type="password" autocomplete="new-password" :placeholder="sys.has_credentials ? '••••• (tersimpan)' : '64 karakter hex'" />
               </label>
             </div>
           </template>
@@ -471,6 +519,13 @@ onMounted(load)
 .fld input, .fld select { padding: 7px 9px; border: 1px solid var(--gb); border-radius: 7px; font-size: 13px; color: #000; background: #fff; }
 .fld input:focus, .fld select:focus { outline: none; border-color: #1763d4; }
 .fld .opt { font-style: normal; color: var(--tm); font-weight: 400; }
+
+/* E-Klaim INA-CBG */
+.ek-hint { font-size: 11.5px; color: var(--tm); margin: 0 0 0.2rem; line-height: 1.45; }
+.ek-hint code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: var(--bs); padding: 1px 5px; border-radius: 4px; }
+.ek-check { flex-direction: row; align-items: center; gap: 7px; }
+.ek-check input { width: auto; }
+.ek-check span { font-size: 12px; color: var(--td); }
 
 .cred-grp { border: 1px dashed var(--gb); border-radius: 8px; padding: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
 .cred-title { font-size: 12px; font-weight: 600; color: var(--td); display: flex; justify-content: space-between; align-items: center; }

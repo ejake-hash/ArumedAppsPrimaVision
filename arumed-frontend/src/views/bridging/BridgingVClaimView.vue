@@ -9,17 +9,20 @@
 import { ref, reactive } from 'vue'
 import { integrasiApi } from '@/services/api'
 
-const tab = ref('peserta') // peserta | rujukan | monitoring | referensi
+const tab = ref('peserta') // peserta | rujukan | monitoring
 
+// Tab "Referensi" dipindah ke modul Jadwal Dokter → Pemetaan BPJS → tab
+// "Referensi BPJS" (tempat kode itu dipakai untuk pemetaan poli/DPJP).
 const tabs = [
   { key: 'peserta',    label: 'Cek Peserta' },
   { key: 'rujukan',    label: 'Cek Rujukan' },
   { key: 'monitoring', label: 'Monitoring' },
-  { key: 'referensi',  label: 'Referensi' },
 ]
 
 // ── Util: jalankan call + ekstrak hasil/pesan secara seragam ────────────────
-const today = () => new Date().toISOString().slice(0, 10)
+// Tanggal lokal (WIB), BUKAN toISOString() (UTC) — di WIB jam 00:00–07:00 UTC
+// masih tanggal kemarin → kirim tgl salah ke BPJS. sv-SE = YYYY-MM-DD.
+const today = () => new Date().toLocaleDateString('sv-SE')
 
 function makePanel() {
   return reactive({ loading: false, error: '', meta: null, data: null })
@@ -70,26 +73,6 @@ function cekMonitoring() {
   else if (mon.jenis === 'klaim') { p.tgl = mon.tgl; p.jns = mon.jns; p.status = mon.status }
   else { p.noKartu = mon.noKartu.trim(); p.tglMulai = mon.tglMulai; p.tglAkhir = mon.tglAkhir }
   run(mon, () => integrasiApi.monitoring(mon.jenis, p))
-}
-
-// ── Referensi ───────────────────────────────────────────────────────────────
-const ref_ = reactive({ jenis: 'diagnosa', q: '', ...makePanel() })
-const REF_JENIS = [
-  { v: 'diagnosa', l: 'Diagnosa (ICD-10)', q: true },
-  { v: 'poli',     l: 'Poli', q: true },
-  { v: 'dokter',   l: 'Dokter (DPJP)', q: true },
-  { v: 'procedure', l: 'Prosedur (ICD-9)', q: true },
-  { v: 'spesialistik', l: 'Spesialistik', q: false },
-  { v: 'kelasrawat', l: 'Kelas Rawat', q: false },
-]
-function cekReferensi() {
-  run(ref_, () => integrasiApi.referensi(ref_.jenis, { q: ref_.q.trim() }))
-}
-// Hasil referensi sering berupa { list:[...] } atau { diagnosa:[...] } / { poli:[...] }
-function refList(data) {
-  if (!data) return []
-  if (Array.isArray(data)) return data
-  return data.list ?? data.diagnosa ?? data.poli ?? data.procedure ?? data.faskes ?? []
 }
 
 function pretty(v) {
@@ -298,29 +281,6 @@ function exportMonCsv() {
       </template>
     </section>
 
-    <!-- REFERENSI -->
-    <section v-else class="panel">
-      <p class="hint">Cari kode resmi BPJS — berguna untuk pemetaan poli &amp; DPJP di Jadwal Dokter. Hasil di-cache.</p>
-      <div class="form-row">
-        <select v-model="ref_.jenis" class="inp">
-          <option v-for="r in REF_JENIS" :key="r.v" :value="r.v">{{ r.l }}</option>
-        </select>
-        <input v-model="ref_.q" class="inp grow" placeholder="Kata kunci (kode atau nama)…" @keyup.enter="cekReferensi" />
-        <button class="btn primary" :disabled="ref_.loading" @click="cekReferensi">{{ ref_.loading ? 'Mencari…' : 'Cari' }}</button>
-      </div>
-
-      <p v-if="ref_.error" class="banner err">{{ ref_.error }}</p>
-      <table v-else-if="refList(ref_.data).length" class="tbl">
-        <thead><tr><th>Kode</th><th>Nama</th></tr></thead>
-        <tbody>
-          <tr v-for="(it, i) in refList(ref_.data)" :key="i">
-            <td><code>{{ it.kode ?? it.kodeDokter ?? it.kodePoli ?? '—' }}</code></td>
-            <td>{{ it.nama ?? it.namaDokter ?? it.namaPoli ?? '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else-if="ref_.data" class="banner">Tidak ada hasil.</p>
-    </section>
   </div>
 </template>
 

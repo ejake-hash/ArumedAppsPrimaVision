@@ -26,6 +26,16 @@ const suppliers = ref([])
 const formatRp = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
 const formatDate = (v) => v ? new Date(v).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 
+// Tanggal kalender LOKAL (WIB) 'YYYY-MM-DD'. JANGAN pakai toISOString().slice(0,10):
+// itu tanggal UTC → di WIB jam 00:00–07:00 jadi mundur 1 hari (GRN salah tanggal,
+// minExpiry off-by-one). Lihat memory feedback-timezone-wib.
+function localDateStr(d = new Date()) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 // ─── Toast ──────────────────────────────────────────────────────────────
 const toast = ref(null)
 function showToast(type, msg) {
@@ -133,7 +143,7 @@ function blankReceipt() {
     grn_number: '',
     po_id: null,
     supplier_id: '',
-    receipt_date: new Date().toISOString().slice(0, 10),
+    receipt_date: localDateStr(),
     invoice_number: '',
     notes: '',
     total_amount: 0,
@@ -308,7 +318,7 @@ watch(() => itemPicker.value.type, searchItems)
 // ─── Submit ─────────────────────────────────────────────────────────────
 function todayPlus1() {
   const d = new Date(); d.setDate(d.getDate() + 1)
-  return d.toISOString().slice(0, 10)
+  return localDateStr(d)
 }
 
 async function submit() {

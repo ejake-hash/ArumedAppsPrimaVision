@@ -43,7 +43,7 @@ class PenunjangService
         return $this->queueService->panggil($queue->id);
     }
 
-    /** Geser antrean Penunjang ke akhir (delegasi ke QueueService::lewati). */
+    /** Lewati antrean Penunjang: turun 1 posisi (delegasi ke QueueService::lewati). */
     public function lewatiAntrian(string $queueId): Queue
     {
         Queue::byStation(Queue::STATION_PENUNJANG)->findOrFail($queueId);
@@ -64,9 +64,20 @@ class PenunjangService
         $queue = Queue::byStation(Queue::STATION_PENUNJANG)->with('visit')->findOrFail($queueId);
 
         DB::transaction(function () use ($queue) {
-            DiagnosticOrder::where('visit_id', $queue->visit_id)
+            // Jujur: order yang BENAR-BENAR punya hasil → COMPLETED; order yang
+            // tak pernah diisi hasilnya saat operator menutup antrean → CANCELLED.
+            // Menandai COMPLETED order kosong = tagihan penunjang palsu di kasir
+            // (buildPenunjangLines menagih order COMPLETED) + rekomendasi IOL tak ada.
+            $orders = DiagnosticOrder::where('visit_id', $queue->visit_id)
                 ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
-                ->update(['status' => 'COMPLETED']);
+                ->withCount('results')
+                ->get();
+
+            foreach ($orders as $order) {
+                $order->update([
+                    'status' => $order->results_count > 0 ? 'COMPLETED' : 'CANCELLED',
+                ]);
+            }
 
             $this->requeueToDokter($queue->visit_id);
         });
@@ -267,8 +278,8 @@ class PenunjangService
 
             $order->update(['status' => 'COMPLETED']);
 
-            // Notify doctor: hasil penunjang siap
-            $this->notifyDoctor($order->visit_id, $order->test_type, $result->id);
+            // Notify doctor: hasil penunjang siap (ke dokter pemesan order)
+            $this->notifyDoctor($order, $order->test_type, $result->id);
 
             // Jika semua order untuk kunjungan ini selesai → re-queue DOKTER
             $pendingOrders = DiagnosticOrder::where('visit_id', $order->visit_id)
@@ -323,7 +334,8 @@ class PenunjangService
         $data    = $result->expertise_data ?? [];
         $visitId = $result->order->visit_id;
 
-        DB::transaction(function () use ($data, $visitId, $biometriResultId) {
+        $created = [];
+        DB::transaction(function () use ($data, $visitId, $biometriResultId, &$created) {
             foreach (['od', 'os'] as $eye) {
                 $eyeData = $data[$eye] ?? null;
 
@@ -341,16 +353,63 @@ class PenunjangService
                         'recommended_power'    => $eyeData['recommended_iol_power'],
                         'iol_type'             => $eyeData['iol_type'] ?? 'MONOFOCAL',
                         'brand'                => $eyeData['brand'] ?? null,
-                        'notes'                => isset($eyeData['axial_length'])
-                            ? "AL: {$eyeData['axial_length']} mm, K1: {$eyeData['k1']} D, K2: {$eyeData['k2']} D"
-                            : null,
+                        // Biometri kini IOL-only — tak ada lagi rakitan AL/K1/K2.
+                        'notes'                => null,
                         'is_approved'          => false,
                     ]
                 );
+
+                $created[] = strtoupper($eye) . ' ' . $eyeData['recommended_iol_power'] . 'D '
+                    . ($eyeData['iol_type'] ?? 'MONOFOCAL')
+                    . ($eyeData['brand'] ? " ({$eyeData['brand']})" : '');
             }
         });
 
         $this->log(null, 'GENERATE_IOL_REKOMENDASI', DiagnosticResult::class, $biometriResultId, "Rekomendasi IOL dari biometri untuk kunjungan {$visitId}");
+
+        // Push ke Bedah: bila pasien BEDAH TERJADWAL (visit.surgery_schedule_id), kirim
+        // notifikasi catatan IOL ke petugas bedah agar bisa di-request ke gudang.
+        if (! empty($created)) {
+            $this->notifyBedahIol($visitId, $created);
+        }
+    }
+
+    /**
+     * Notifikasi ke stasiun Bedah saat rekomendasi IOL siap UNTUK pasien bedah
+     * terjadwal (visit.surgery_schedule_id terisi). Catatan: IolRecommendation sudah
+     * otomatis dibaca BedahTerjadwalView (buildRequestPreviewFromSchedule); notifikasi
+     * ini sekadar "push" agar petugas bedah tahu ada rekomendasi baru → request gudang.
+     * Tak menjangkau dokter pemesan (itu sudah via notifyDoctor terpisah).
+     */
+    private function notifyBedahIol(string $visitId, array $summary): void
+    {
+        $visit = Visit::with('patient')->find($visitId);
+        if (! $visit || ! $visit->surgery_schedule_id) {
+            return; // bukan pasien bedah terjadwal → tak perlu push ke Bedah
+        }
+
+        // Penerima: semua user dengan akses tulis Bedah (petugas bedah).
+        $bedahUsers = User::whereHas('role.permissions', fn ($q) => $q->where('key', 'bedah.write'))->get();
+        if ($bedahUsers->isEmpty()) {
+            return;
+        }
+
+        $name = $visit->patient?->name ?? 'Pasien';
+        $detail = implode('; ', $summary);
+
+        foreach ($bedahUsers as $u) {
+            Notification::create([
+                'recipient_id'        => $u->id,
+                'type'                => 'IOL_RECOMMENDATION',
+                'patient_document_id' => null,
+                'title'               => 'Rekomendasi IOL Siap (Bedah Terjadwal)',
+                'message'             => "{$name}: {$detail}. Cek Bedah Terjadwal untuk request IOL/BHP ke gudang.",
+                'is_read'             => false,
+                'resend_count'        => 0,
+            ]);
+        }
+
+        $this->log(null, 'NOTIFY_BEDAH_IOL', Visit::class, $visitId, "Notif IOL ke Bedah ({$bedahUsers->count()} petugas): {$detail}");
     }
 
     /**
@@ -437,14 +496,25 @@ class PenunjangService
 
     /**
      * Notify doctor (via Notification inbox) that test result is ready.
+     *
+     * Sasaran = dokter PEMESAN order (order.ordered_by_id → employee → user),
+     * BUKAN dokter sembarang. Fallback ke dokter mana pun hanya bila pemesan tak
+     * terpetakan ke user (mis. order lama tanpa ordered_by_id).
      */
-    private function notifyDoctor(string $visitId, string $testType, string $resultId): void
+    private function notifyDoctor(DiagnosticOrder $order, string $testType, string $resultId): void
     {
-        // Find the doctor user for this visit
-        $doctorUser = User::whereHas(
-            'employee',
-            fn ($q) => $q->where('profession', 'like', '%Dokter%')
-        )->first();
+        $doctorUser = null;
+
+        if ($order->ordered_by_id) {
+            $doctorUser = User::where('employee_id', $order->ordered_by_id)->first();
+        }
+
+        if (! $doctorUser) {
+            $doctorUser = User::whereHas(
+                'employee',
+                fn ($q) => $q->where('profession', 'like', '%Dokter%')
+            )->first();
+        }
 
         if (! $doctorUser) {
             return;

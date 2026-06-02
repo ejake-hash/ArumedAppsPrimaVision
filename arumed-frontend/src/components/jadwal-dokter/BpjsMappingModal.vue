@@ -1,11 +1,14 @@
 <script setup>
 /**
- * BpjsMappingModal — pemetaan poli & DPJP ke kode BPJS + sinkron jadwal.
+ * BpjsMappingModal — pusat integrasi BPJS terkait Jadwal Dokter.
  * Dipakai dari JadwalDokterView. Endpoint via integrasiApi (semua sudah ada di BE).
  *
- *  1. Pemetaan Poli  : poli_code lokal → kode poli BPJS (sumber /referensi/poli)
- *  2. Kode DPJP      : set employees.bpjs_dpjp_code per dokter (sumber /referensi/dokter)
- *  3. Sinkron Jadwal : kirim jadwal minggu aktif ke BPJS Antrean
+ *  1. Pemetaan Poli   : poli_code lokal → kode poli BPJS (sumber /referensi/poli)
+ *  2. Kode DPJP       : set employees.bpjs_dpjp_code per dokter (sumber /referensi/dokter)
+ *  3. Sinkron Jadwal  : kirim jadwal minggu aktif ke BPJS Antrean
+ *  4. Referensi BPJS  : lookup kamus kode (dipindah dari Bridging → VClaim)
+ *  5. Waktu Tunggu    : dashboard waktu tunggu BPJS (dipindah dari Bridging → Antrean Online)
+ *  6. Validasi Booking: cek kode JKN Mobile (dipindah dari Bridging → Antrean Online)
  */
 import { ref, reactive, onMounted } from 'vue'
 import { integrasiApi, masterApi } from '@/services/api'
@@ -72,9 +75,13 @@ async function savePoli(row) {
 async function saveDpjp(d) {
   savingKey.value = 'dpjp:' + d.id
   try {
-    await integrasiApi.setDpjpCode(d.id, { bpjs_dpjp_code: d.draft || null })
-    d.saved = d.draft
-    flash(true, `Kode DPJP ${d.name} disimpan`)
+    // Normalisasi: field kosong → null (clear). Samakan draft & saved agar
+    // tombol Simpan & badge "Tersimpan" konsisten dengan nilai backend.
+    const val = d.draft.trim() || ''
+    await integrasiApi.setDpjpCode(d.id, { bpjs_dpjp_code: val || null })
+    d.draft = val
+    d.saved = val
+    flash(true, val ? `Kode DPJP ${d.name} disimpan` : `Kode DPJP ${d.name} dikosongkan`)
   } catch (e) {
     flash(false, e.response?.data?.message ?? 'Gagal menyimpan DPJP')
   } finally {
@@ -113,6 +120,72 @@ function pickRef(it) {
   refModal.open = false
 }
 
+// ── Referensi BPJS (lookup mandiri — kamus kode, dipindah dari tab VClaim) ────
+// Berbeda dari refModal di atas yg merupakan PICKER (terikat target pemetaan);
+// ini lookup browse-only 6 jenis untuk mencari kode resmi BPJS.
+const REF_JENIS = [
+  { v: 'diagnosa',     l: 'Diagnosa (ICD-10)' },
+  { v: 'poli',         l: 'Poli' },
+  { v: 'dokter',       l: 'Dokter (DPJP)' },
+  { v: 'procedure',    l: 'Prosedur (ICD-9)' },
+  { v: 'spesialistik', l: 'Spesialistik' },
+  { v: 'kelasrawat',   l: 'Kelas Rawat' },
+]
+const lookup = reactive({ jenis: 'diagnosa', q: '', loading: false, rows: [], searched: false })
+async function searchLookup() {
+  lookup.loading = true; lookup.rows = []; lookup.searched = true
+  try {
+    const res = await integrasiApi.referensi(lookup.jenis, { q: lookup.q.trim() })
+    const bpjs = res.data?.data ?? {}
+    if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
+    const d = bpjs.response ?? {}
+    lookup.rows = Array.isArray(d) ? d : (d.list ?? d.diagnosa ?? d.poli ?? d.procedure ?? d.faskes ?? [])
+  } catch (e) {
+    flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Referensi gagal'))
+  } finally {
+    lookup.loading = false
+  }
+}
+const refCode = (it) => it.kode ?? it.kodeDokter ?? it.kodePoli ?? it.kodeDiagnosa ?? '—'
+const refName = (it) => it.nama ?? it.namaDokter ?? it.namaPoli ?? it.namaDiagnosa ?? '—'
+async function copyCode(code) {
+  try { await navigator.clipboard.writeText(code); flash(true, `Kode "${code}" disalin`) } catch { /* clipboard tak tersedia */ }
+}
+
+// ── Antrean Online (Dashboard Waktu Tunggu + Validasi Booking) ────────────────
+// Dipindah dari section Bridging → Antrean Online ke modul Jadwal Dokter.
+// Tanggal lokal (WIB) — bukan toISOString() (UTC bisa mundur 1 hari di pagi WIB).
+const todayWib = () => new Date().toLocaleDateString('sv-SE')
+function makePanel() { return reactive({ loading: false, error: '', data: null }) }
+async function runAntrean(panel, fn) {
+  panel.loading = true; panel.error = ''; panel.data = null
+  try {
+    const res = await fn()
+    const bpjs = res.data?.data ?? {}
+    if (bpjs.is_success) panel.data = bpjs.response ?? bpjs
+    else panel.error = bpjs.metaData?.message || res.data?.message || 'Tidak ada data.'
+  } catch (e) {
+    const s = e.response?.status
+    panel.error = (s === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal memanggil layanan.')
+  } finally {
+    panel.loading = false
+  }
+}
+function prettyJson(v) { try { return JSON.stringify(v, null, 2) } catch { return String(v) } }
+
+const dash = reactive({ jenis: 'tanggal', tanggal: todayWib(), bulan: String(new Date().getMonth() + 1).padStart(2, '0'), tahun: String(new Date().getFullYear()), waktu: 'rs', ...makePanel() })
+function loadDashboard() {
+  const p = dash.jenis === 'bulan'
+    ? { bulan: dash.bulan, tahun: dash.tahun, waktu: dash.waktu }
+    : { tanggal: dash.tanggal, waktu: dash.waktu }
+  runAntrean(dash, () => integrasiApi.antreanDashboard(dash.jenis, p))
+}
+
+const booking = reactive({ code: '', tgl: todayWib(), ...makePanel() })
+function validateBooking() {
+  runAntrean(booking, () => integrasiApi.validateBooking({ booking_code: booking.code.trim(), tgl_periksa: booking.tgl }))
+}
+
 // ── Sinkron jadwal ke BPJS ──────────────────────────────────────────────────
 const syncing = ref(false)
 const syncResult = ref(null)
@@ -146,6 +219,9 @@ onMounted(load)
           <button :class="{ active: tab === 'poli' }" @click="tab = 'poli'">Pemetaan Poli</button>
           <button :class="{ active: tab === 'dpjp' }" @click="tab = 'dpjp'">Kode DPJP</button>
           <button :class="{ active: tab === 'sync' }" @click="tab = 'sync'">Sinkron Jadwal</button>
+          <button :class="{ active: tab === 'referensi' }" @click="tab = 'referensi'">Referensi BPJS</button>
+          <button :class="{ active: tab === 'waktutunggu' }" @click="tab = 'waktutunggu'">Waktu Tunggu</button>
+          <button :class="{ active: tab === 'booking' }" @click="tab = 'booking'">Validasi Booking</button>
         </div>
 
         <div class="bm-body">
@@ -182,14 +258,15 @@ onMounted(load)
             <p class="hint">Set kode DPJP BPJS tiap dokter (dari referensi dokter BPJS). Dipakai saat terbitkan SEP &amp; sinkron jadwal.</p>
             <p v-if="!dokter.length" class="muted">Tidak ada pegawai dengan profesi dokter.</p>
             <table v-else class="bm-tbl">
-              <thead><tr><th>Dokter</th><th>Kode DPJP BPJS</th><th></th></tr></thead>
+              <thead><tr><th class="num">No.</th><th>Dokter</th><th>Kode DPJP BPJS</th><th></th></tr></thead>
               <tbody>
-                <tr v-for="d in dokter" :key="d.id">
+                <tr v-for="(d, i) in dokter" :key="d.id">
+                  <td class="num">{{ i + 1 }}</td>
                   <td>{{ d.name }}<div class="sub">{{ d.sip || '—' }}</div></td>
                   <td><input v-model="d.draft" class="inp sm" placeholder="kode DPJP" /></td>
                   <td class="actions">
                     <button class="btn ghost" @click="openRef('dokter', d)">Cari</button>
-                    <button class="btn primary" :disabled="savingKey === 'dpjp:' + d.id || d.draft === d.saved" @click="saveDpjp(d)">
+                    <button class="btn primary" :disabled="savingKey === 'dpjp:' + d.id || d.draft.trim() === d.saved" @click="saveDpjp(d)">
                       {{ savingKey === 'dpjp:' + d.id ? '…' : 'Simpan' }}
                     </button>
                     <span v-if="d.saved" class="ok-dot" title="Tersimpan">✓</span>
@@ -200,7 +277,7 @@ onMounted(load)
           </template>
 
           <!-- SYNC -->
-          <template v-else>
+          <template v-else-if="tab === 'sync'">
             <p class="hint">Kirim jadwal dokter minggu aktif ke BPJS Antrean (untuk JKN Mobile). Dokter/poli yang belum dipetakan akan dilewati.</p>
             <button class="btn primary lg" :disabled="syncing" @click="doSync">
               {{ syncing ? 'Mengirim…' : 'Sinkron Jadwal Minggu Ini ke BPJS' }}
@@ -224,6 +301,66 @@ onMounted(load)
                 </ul>
               </div>
             </div>
+          </template>
+
+          <!-- REFERENSI BPJS (lookup kamus kode — dipindah dari tab VClaim) -->
+          <template v-else-if="tab === 'referensi'">
+            <p class="hint">Cari kode resmi BPJS (diagnosa, poli, dokter, prosedur, dll). Pakai kode ini untuk mengisi Pemetaan Poli &amp; Kode DPJP di tab sebelah. Klik kode untuk menyalin.</p>
+            <div class="form-row">
+              <select v-model="lookup.jenis" class="inp" style="flex:0 0 auto;width:auto">
+                <option v-for="r in REF_JENIS" :key="r.v" :value="r.v">{{ r.l }}</option>
+              </select>
+              <input v-model="lookup.q" class="inp" placeholder="Kata kunci (kode atau nama)…" @keyup.enter="searchLookup" />
+              <button class="btn primary" :disabled="lookup.loading" @click="searchLookup">{{ lookup.loading ? '…' : 'Cari' }}</button>
+            </div>
+
+            <table v-if="lookup.rows.length" class="bm-tbl">
+              <thead><tr><th>Kode</th><th>Nama</th></tr></thead>
+              <tbody>
+                <tr v-for="(it, i) in lookup.rows" :key="i">
+                  <td><button class="code-copy" :title="'Salin ' + refCode(it)" @click="copyCode(refCode(it))"><code>{{ refCode(it) }}</code></button></td>
+                  <td>{{ refName(it) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-else-if="lookup.searched && !lookup.loading" class="muted">Tidak ada hasil.</p>
+          </template>
+
+          <!-- WAKTU TUNGGU (Dashboard waktu tunggu BPJS — dipindah dari Antrean Online) -->
+          <template v-else-if="tab === 'waktutunggu'">
+            <p class="hint">Data waktu tunggu yang dilaporkan ke BPJS (penilaian keaktifan faskes).</p>
+            <div class="form-row">
+              <select v-model="dash.jenis" class="inp" style="flex:0 0 auto;width:auto">
+                <option value="tanggal">Per Tanggal</option>
+                <option value="bulan">Per Bulan</option>
+              </select>
+              <input v-if="dash.jenis === 'tanggal'" v-model="dash.tanggal" type="date" class="inp" style="flex:0 0 auto;width:auto" />
+              <template v-else>
+                <select v-model="dash.bulan" class="inp" style="flex:0 0 auto;width:auto">
+                  <option v-for="m in 12" :key="m" :value="String(m).padStart(2, '0')">{{ String(m).padStart(2, '0') }}</option>
+                </select>
+                <input v-model="dash.tahun" class="inp" style="flex:0 0 auto;width:80px" placeholder="Tahun" />
+              </template>
+              <select v-model="dash.waktu" class="inp" style="flex:0 0 auto;width:auto">
+                <option value="rs">Waktu RS</option>
+                <option value="server">Waktu Server BPJS</option>
+              </select>
+              <button class="btn primary" :disabled="dash.loading" @click="loadDashboard">{{ dash.loading ? '…' : 'Tampilkan' }}</button>
+            </div>
+            <p v-if="dash.error" class="muted err-note">{{ dash.error }}</p>
+            <pre v-else-if="dash.data" class="json">{{ prettyJson(dash.data) }}</pre>
+          </template>
+
+          <!-- VALIDASI BOOKING (cek kode JKN Mobile — dipindah dari Antrean Online) -->
+          <template v-else>
+            <p class="hint">Cek kode booking dari aplikasi Mobile JKN sebelum pasien dilayani.</p>
+            <div class="form-row">
+              <input v-model="booking.code" class="inp" placeholder="Kode booking JKN Mobile" @keyup.enter="validateBooking" />
+              <input v-model="booking.tgl" type="date" class="inp" style="flex:0 0 auto;width:auto" />
+              <button class="btn primary" :disabled="booking.loading || !booking.code" @click="validateBooking">{{ booking.loading ? '…' : 'Validasi' }}</button>
+            </div>
+            <p v-if="booking.error" class="muted err-note">{{ booking.error }}</p>
+            <pre v-else-if="booking.data" class="json">{{ prettyJson(booking.data) }}</pre>
           </template>
         </div>
       </div>
@@ -280,6 +417,7 @@ onMounted(load)
 .bm-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .bm-tbl th { text-align: left; padding: 7px 8px; background: var(--bs); color: var(--tm); font-size: 11px; text-transform: uppercase; }
 .bm-tbl td { padding: 7px 8px; border-top: 1px solid var(--gb); color: var(--td); vertical-align: top; }
+.bm-tbl th.num, .bm-tbl td.num { width: 38px; text-align: right; color: var(--tm); padding-right: 12px; }
 .bm-tbl code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--td); }
 .sub { font-size: 11px; color: var(--tm); margin-top: 2px; }
 
@@ -297,6 +435,15 @@ onMounted(load)
 
 .form-row { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
 .form-row .inp { flex: 1; }
+
+/* Referensi BPJS: kode dapat diklik untuk salin */
+.code-copy { border: none; background: transparent; padding: 0; cursor: pointer; }
+.code-copy code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #1763d4; font-weight: 600; }
+.code-copy:hover code { text-decoration: underline; }
+
+/* Antrean Online: output JSON + pesan error */
+.json { margin: 0.6rem 0 0; padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 8px; font-size: 11.5px; line-height: 1.5; max-height: 380px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.err-note { background: #fef3c7; color: #92400e; padding: 9px 11px; border-radius: 8px; margin: 0.6rem 0 0; }
 
 .sync-out { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.8rem; }
 .sync-sec strong { font-size: 12.5px; color: var(--td); }

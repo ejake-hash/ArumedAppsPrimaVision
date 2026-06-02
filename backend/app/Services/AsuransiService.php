@@ -95,19 +95,20 @@ class AsuransiService
         return DB::transaction(function () use ($verifId, $data, $userId) {
             $verif = InsuranceVerification::findOrFail($verifId);
 
-            $payload = array_filter([
-                'status'             => $data['status']             ?? null,
-                'policy_number'      => $data['policy_number']      ?? null,
-                'member_name'        => $data['member_name']        ?? null,
-                'member_card_number' => $data['member_card_number'] ?? null,
-                'plafon_amount'      => $data['plafon_amount']      ?? null,
-                'copayment_percent' => array_key_exists('copayment_percent', $data) ? $data['copayment_percent'] : null,
-                'copayment_amount'  => array_key_exists('copayment_amount',  $data) ? $data['copayment_amount']  : null,
-                'covered_amount'    => array_key_exists('covered_amount',    $data) ? $data['covered_amount']    : null,
-                'coverage_notes'     => $data['coverage_notes']     ?? null,
-                'exclusion_flags'    => $data['exclusion_flags']    ?? null,
-                'issue_notes'        => $data['issue_notes']        ?? null,
-            ], fn ($v) => $v !== null);
+            // Hanya kolom yang BENAR-BENAR dikirim yang di-update (cek key presence),
+            // BUKAN array_filter(!== null): array_filter membuang nilai 0/null/''
+            // sehingga admin tak bisa mereset cover ke null (batalkan cover) atau
+            // mengosongkan catatan. Field yang dikirim eksplisit → diterapkan apa adanya.
+            $payload = [];
+            foreach ([
+                'status', 'policy_number', 'member_name', 'member_card_number',
+                'plafon_amount', 'copayment_percent', 'copayment_amount',
+                'covered_amount', 'coverage_notes', 'exclusion_flags', 'issue_notes',
+            ] as $key) {
+                if (array_key_exists($key, $data)) {
+                    $payload[$key] = $data[$key];
+                }
+            }
 
             if (isset($data['status']) && $data['status'] !== InsuranceVerification::STATUS_PENDING) {
                 $payload['verified_at'] = now();

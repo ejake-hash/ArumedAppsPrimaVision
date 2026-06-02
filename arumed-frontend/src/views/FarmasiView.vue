@@ -162,10 +162,50 @@ function isObatOtc(g) {
 }
 const otcMedications = computed(() => stokList.value.filter((m) => isObatOtc(m.golongan)))
 
+// ─── Preview harga obat tambahan ────────────────────────────────────────────
+// Harga = yang DITAGIH KASIR (medication_tariffs per-penjamin), bukan HJA POS —
+// di-resolve backend lewat /farmasi/harga-obat sesuai penjamin visit terpilih.
+const hargaPreview = ref(null)   // { unit_price, billed_via, guarantor_type } | null
+const hargaLoading = ref(false)
+let _hargaSeq = 0   // anti-race: hanya pakai respons request terakhir
+
+async function fetchHargaPreview() {
+  const medId = addObatForm.value.medication_id
+  if (!medId) { hargaPreview.value = null; return }
+  const seq = ++_hargaSeq
+  hargaLoading.value = true
+  try {
+    const { data } = await farmasiApi.hargaObat({
+      medication_id: medId,
+      visit_id:      selQ.value?.visit?.id ?? undefined,
+    })
+    if (seq !== _hargaSeq) return   // sudah ada request lebih baru
+    hargaPreview.value = data.data
+  } catch {
+    if (seq === _hargaSeq) hargaPreview.value = null
+  } finally {
+    if (seq === _hargaSeq) hargaLoading.value = false
+  }
+}
+
+// Subtotal preview = harga satuan × jumlah.
+const hargaSubtotal = computed(() => {
+  const unit = Number(hargaPreview.value?.unit_price ?? 0)
+  const qty  = Number(addObatForm.value.quantity ?? 0)
+  return unit > 0 && qty > 0 ? unit * qty : 0
+})
+// RANAP/IGD: obat ditagih lewat tagihan rawat inap, bukan invoice resep biasa.
+const hargaInpatient = computed(() => ['RANAP', 'IGD'].includes(hargaPreview.value?.billed_via))
+
+// Ambil harga tiap kali obat berganti (qty cukup dihitung lokal di subtotal).
+watch(() => addObatForm.value.medication_id, fetchHargaPreview)
+
 function resetAddObat() {
   addObatOpen.value   = false
   addObatSaving.value = false
   addObatForm.value   = { medication_id: '', quantity: 1, dosage: '', instructions: '' }
+  hargaPreview.value  = null
+  _hargaSeq++   // batalkan request preview yang masih in-flight
 }
 
 function toggleAddObat() {
@@ -224,6 +264,21 @@ async function callRx(q, e) {
   }
 }
 
+// Lewati pasien yang tidak hadir → digeser ke belakang (tukar urutan dgn pasien
+// berikutnya). Backend QueueService::lewati menangani penukaran + broadcast TV.
+async function lewatiRx(q, e) {
+  e.stopPropagation()
+  try {
+    await farmasiApi.lewatiAntrian(q.id)
+    toast('i', `${q.visit?.patient?.name ?? 'Pasien'} (${q.queue_number ?? ''}) dilewati`)
+    // Bila pasien yang dilewati sedang terbuka di panel, tutup supaya tak rancu.
+    if (selQ.value?.id === q.id) { selQ.value = null; selRx.value = null }
+    await fetchQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal melewati pasien')
+  }
+}
+
 function verifikasiRx() {
   if (!selRx.value) return
   verifiedRxIds.value = new Set([...verifiedRxIds.value, selRx.value.id])
@@ -271,12 +326,16 @@ async function serahkanRx() {
     refreshQueueForRx(data.data)
 
     // 3) Selesaikan antrean farmasi → pasien PULANG.
+    //    Resep SUDAH DISPENSED (stok terpotong); kalau langkah ini gagal, pasien
+    //    masih nyangkut di antrean → JANGAN telan diam, beri tahu petugas.
     if (selQ.value?.id) {
       try {
         const { data: qData } = await farmasiApi.selesaiAntrian(selQ.value.id)
         const updated = qData.data?.queue ?? qData.data
         if (updated?.id) Object.assign(selQ.value, updated)
-      } catch { /* ignore — resep sudah DISPENSED */ }
+      } catch (e) {
+        toast('w', e.response?.data?.message ?? 'Obat sudah diserahkan, tetapi antrean gagal ditutup. Tutup manual bila perlu.')
+      }
     }
     toast('s', 'Obat diserahkan ke pasien, stok Farmasi diperbarui')
     // Refresh stok unit Farmasi supaya tampilan stok ikut turun.
@@ -317,11 +376,24 @@ const stokFiltered = computed(() => {
   const s = stokSearch.value.toLowerCase()
   return s ? stokList.value.filter((x) => (x.name ?? '').toLowerCase().includes(s)) : stokList.value
 })
+
+// On-hand RIIL unit FARMASI per medication_id (dari getStokObat: field `stock` =
+// inventory_stocks lokasi FARMASI, BUKAN kolom legacy medications.stock yang ikut
+// di relasi items.medication). Dipakai panel dispensing supaya angka stok = yang
+// benar-benar dipotong consume() saat serah. Lihat memory feature-farmasi-dispensing.
+const farmasiOnHand = computed(() => {
+  const m = new Map()
+  for (const s of stokList.value) m.set(s.id, Number(s.stock ?? 0))
+  return m
+})
+function itemStok(d) {
+  const id = d.medication_id ?? d.medication?.id
+  const onHand = id != null ? farmasiOnHand.value.get(id) : undefined
+  // Fallback ke legacy hanya bila stok unit belum termuat (stokList kosong).
+  return onHand ?? Number(d.medication?.stock ?? 0)
+}
 const lowStockCount = computed(
   () => stokList.value.filter((s) => Number(s.stock) <= Number(s.min_stock ?? 0)).length,
-)
-const outStockCount = computed(
-  () => stokList.value.filter((s) => Number(s.stock) === 0).length,
 )
 
 // ─── Request / Retur ke gudang Inventori Farmasi ─────────────────────────────
@@ -571,7 +643,17 @@ watch(() => pgTab.value, (t) => { if (t === 'opname' && !opnameRows.value.length
 
 // ─── Laporan Farmasi (derivasi dari stok) ────────────────────────────────────
 function rp(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
-function daysToExpiry(d) { return Math.ceil((new Date(d).getTime() - Date.now()) / 86_400_000) }
+// Selisih HARI KALENDER lokal (WIB). expiry_date 'YYYY-MM-DD' di-parse new Date() sbg
+// UTC-midnight → kalau dibanding Date.now() WIB hasilnya off-by-one. Jadi bandingkan
+// midnight-lokal vs midnight-lokal. Lihat memory feedback-timezone-wib.
+function daysToExpiry(d) {
+  const exp = new Date(d)
+  if (Number.isNaN(exp.getTime())) return NaN
+  const expLocal = new Date(exp.getUTCFullYear(), exp.getUTCMonth(), exp.getUTCDate())
+  const now = new Date()
+  const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((expLocal.getTime() - todayLocal.getTime()) / 86_400_000)
+}
 
 const lapNilaiStok = computed(
   () => stokList.value.reduce((sum, s) => sum + Number(s.stock || 0) * Number(s.price || 0), 0),
@@ -709,8 +791,11 @@ function printEtiket() {
   w.document.write(html)
   w.document.close()
   w.focus()
-  w.onload = () => { try { w.print() } catch {} }
-  setTimeout(() => { try { w.print() } catch {} }, 400)
+  // Cetak SEKALI saja: onload & setTimeout sama-sama bisa terpicu (race) → dialog dobel.
+  let printed = false
+  const doPrint = () => { if (printed) return; printed = true; try { w.print() } catch {} }
+  w.onload = doPrint
+  setTimeout(doPrint, 400)
   toast('i', `Etiket ${items.length} obat dikirim ke printer`)
 }
 
@@ -898,8 +983,11 @@ function printStrukPos(sale) {
   w.document.write(html)
   w.document.close()
   w.focus()
-  w.onload = () => { try { w.print() } catch {} }
-  setTimeout(() => { try { w.print() } catch {} }, 400)
+  // Cetak SEKALI saja (lihat printEtiket): hindari dialog cetak dobel akibat race.
+  let printed = false
+  const doPrint = () => { if (printed) return; printed = true; try { w.print() } catch {} }
+  w.onload = doPrint
+  setTimeout(doPrint, 400)
 }
 
 // Muat riwayat saat tab penjualan dibuka pertama kali.
@@ -1057,6 +1145,10 @@ function toast(type, msg) {
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
                     Panggil
                   </button>
+                  <button class="rx-act-btn skip" title="Lewati pasien (geser ke belakang)" @click="lewatiRx(q, $event)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                    Lewati
+                  </button>
                 </div>
               </div>
             </div>
@@ -1106,6 +1198,28 @@ function toast(type, msg) {
                   <input v-model="addObatForm.instructions" class="fi otc-input" placeholder="mis. 3x/hari" />
                 </div>
               </div>
+              <!-- Preview harga (harga yang ditagih kasir, sesuai penjamin pasien) -->
+              <div v-if="addObatForm.medication_id" class="otc-harga">
+                <template v-if="hargaLoading">
+                  <span class="otc-harga-load">Menghitung harga…</span>
+                </template>
+                <template v-else-if="hargaInpatient">
+                  <span class="otc-harga-note">Obat rawat inap/IGD — ditagih pada tagihan rawat inap (bukan invoice resep).</span>
+                </template>
+                <template v-else>
+                  <div class="otc-harga-row">
+                    <span>Harga satuan ({{ hargaPreview?.guarantor_type ?? 'UMUM' }})</span>
+                    <b>{{ rp(hargaPreview?.unit_price ?? 0) }}</b>
+                  </div>
+                  <div class="otc-harga-row total">
+                    <span>Subtotal ({{ addObatForm.quantity || 0 }} ×)</span>
+                    <b>{{ rp(hargaSubtotal) }}</b>
+                  </div>
+                  <div v-if="Number(hargaPreview?.unit_price ?? 0) === 0" class="otc-hint">
+                    Obat ini belum punya tarif untuk penjamin pasien — akan tertagih Rp 0. Atur di Metode Bayar / Tarif Obat.
+                  </div>
+                </template>
+              </div>
               <div class="otc-form-actions">
                 <button class="btn btn-success btn-sm" :disabled="addObatSaving" @click="submitAddObat">
                   {{ addObatSaving ? 'Menyimpan…' : 'Tambahkan' }}
@@ -1147,8 +1261,8 @@ function toast(type, msg) {
                   <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">TAMBAHAN APOTEK</span>
                 </div>
                 <div class="dd-dose">{{ d.dosage ?? '-' }} · {{ d.instructions ?? '-' }}</div>
-                <div :class="['dd-stock', Number(d.medication?.stock ?? 0) > 10 ? 'ok' : Number(d.medication?.stock ?? 0) > 0 ? 'low' : 'out']">
-                  Stok: {{ d.medication?.stock ?? 0 }} {{ d.medication?.unit ?? '' }}{{ Number(d.medication?.stock ?? 0) === 0 ? ' — HABIS' : Number(d.medication?.stock ?? 0) <= 3 ? ' — LOW' : '' }}
+                <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
+                  Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
                 </div>
                 <div v-if="d.notes" class="dd-dose">Catatan: {{ d.notes }}</div>
               </div>
@@ -1199,7 +1313,7 @@ function toast(type, msg) {
               </div>
             </div>
 
-            <div v-if="selRx.notes" class="doc-note"><b>Catatan Dokter:</b> {{ selRx.notes }}</div>
+            <div v-if="selRx.pharmacy_note" class="doc-note"><b>Catatan untuk Farmasi:</b> {{ selRx.pharmacy_note }}</div>
 
             <div class="disp-actions">
               <button v-if="dispStep === 0" class="btn btn-info btn-lg" @click="verifikasiRx">
@@ -1833,6 +1947,13 @@ function toast(type, msg) {
 .otc-input { height: 28px; font-size: 11px; width: 100%; box-sizing: border-box; }
 .otc-form-actions { display: flex; gap: .4rem; }
 .otc-hint { font-size: 10px; color: var(--et); margin-top: .45rem; }
+.otc-harga { margin: .55rem 0; padding: .5rem .6rem; background: var(--ib); border: 1px solid var(--gb); border-radius: 6px; }
+.otc-harga-load { font-size: 11px; color: var(--tu); }
+.otc-harga-note { font-size: 10.5px; color: var(--it); font-weight: 600; }
+.otc-harga-row { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--tu); }
+.otc-harga-row b { color: var(--td); font-size: 12px; }
+.otc-harga-row.total { margin-top: .25rem; padding-top: .3rem; border-top: 1px dashed var(--gb); }
+.otc-harga-row.total b { color: var(--it); font-size: 13.5px; }
 
 .disp-actions { padding: 0.85rem 1.1rem; border-top: 1px solid var(--gb); display: flex; gap: 0.5rem; flex-wrap: wrap; background: var(--bs); }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; height: 36px; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
@@ -1937,7 +2058,9 @@ function toast(type, msg) {
 /* POS — Penjualan Obat Bebas */
 .pos-grid { display: grid; grid-template-columns: 1fr 320px; gap: 0.75rem; align-items: start; }
 .pos-body { padding: 0.9rem 1.1rem; }
-.pos-search-drop { position: absolute; top: 34px; left: 0; right: 0; z-index: 30; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 280px; overflow-y: auto; }
+/* Hasil pencarian mengalir DI DALAM card (bukan dropdown melayang), agar tidak
+   keluar dari batas card saat mengetik. Tinggi dibatasi + scroll internal. */
+.pos-search-drop { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; max-height: 240px; overflow-y: auto; margin-top: 0.4rem; }
 .pos-search-item { padding: 7px 11px; cursor: pointer; border-bottom: 1px solid var(--gb); }
 .pos-search-item:hover { background: var(--gl); }
 .pos-si-name { font-size: 12px; font-weight: 600; color: var(--td); }

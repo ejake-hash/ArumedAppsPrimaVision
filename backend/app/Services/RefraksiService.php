@@ -27,7 +27,10 @@ class RefraksiService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.refractionRecord'])
+        // nurseAssessment WAJIB di-load: frontend mapQueueRow baca
+        // visit.nurse_assessment.allergy_detail untuk badge "⚠ Alergi" + bar vital
+        // triase. Tanpa ini badge/data triase tak pernah tampil di Refraksionis.
+        return Queue::with(['visit.patient', 'visit.refractionRecord', 'visit.nurseAssessment'])
             ->where('station', 'REFRAKSIONIS')
             ->whereDate('created_at', today())
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
@@ -450,15 +453,14 @@ class RefraksiService
      */
     private function checkReadyForDoctor(string $visitId): bool
     {
+        // Cek murah di luar transaksi (fast path).
         $visit = Visit::findOrFail($visitId);
-
         if ($visit->ready_for_doctor) {
             return true;
         }
 
         $triaseDone   = NurseAssessment::where('visit_id', $visitId)->where('is_finalized', true)->exists();
         $refraksiDone = RefractionRecord::where('visit_id', $visitId)->where('is_finalized', true)->exists();
-
         if (! $triaseDone || ! $refraksiDone) {
             return false;
         }
@@ -469,34 +471,44 @@ class RefraksiService
             return true;
         }
 
-        DB::transaction(function () use ($visit) {
-            $visit->update([
+        // TOCTOU guard (sama dengan PerawatService): kunci baris visit + re-cek
+        // di dalam transaksi agar finalize TR & REF yang nyaris bersamaan tidak
+        // membuat 2 baris DOKTER. Enqueue DELEGASI ke QueueService (sumber tunggal
+        // nomor D{room}-NNN per-ruang + broadcast TV) — JANGAN buat 'D-NNN' inline.
+        $created = DB::transaction(function () use ($visitId) {
+            $locked = Visit::where('id', $visitId)->lockForUpdate()->firstOrFail();
+            if ($locked->ready_for_doctor) {
+                return false;
+            }
+
+            $locked->update([
                 'ready_for_doctor'      => true,
-                'triase_completed_at'   => $visit->triase_completed_at ?? now(),
-                'refraksi_completed_at' => $visit->refraksi_completed_at ?? now(),
+                'triase_completed_at'   => $locked->triase_completed_at ?? now(),
+                'refraksi_completed_at' => $locked->refraksi_completed_at ?? now(),
                 'current_station'       => 'DOKTER',
             ]);
 
-            $lastSeq  = Queue::where('station', 'DOKTER')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
-            $sequence = $lastSeq + 1;
+            $alreadyQueued = Queue::byStation(Queue::STATION_DOKTER)
+                ->where('visit_id', $locked->id)
+                ->today()
+                ->exists();
 
-            Queue::create([
-                'visit_id'       => $visit->id,
-                'station'        => 'DOKTER',
-                'queue_prefix'   => 'D',
-                'queue_sequence' => $sequence,
-                'queue_number'   => 'D-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
-                'status'         => 'WAITING',
-            ]);
+            if (! $alreadyQueued) {
+                $this->queueService->enqueue($locked->id, Queue::STATION_DOKTER);
+            }
+
+            return true;
         });
 
-        $this->log(
-            null,
-            'READY_FOR_DOCTOR',
-            Visit::class,
-            $visit->id,
-            'Triase + Refraksionis selesai — antrian Dokter dibuat otomatis'
-        );
+        if ($created) {
+            $this->log(
+                null,
+                'READY_FOR_DOCTOR',
+                Visit::class,
+                $visitId,
+                'Triase + Refraksionis selesai — antrian Dokter dibuat otomatis'
+            );
+        }
 
         return true;
     }

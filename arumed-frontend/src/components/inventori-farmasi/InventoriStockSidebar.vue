@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { inventoriStockApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -63,6 +63,10 @@ watch(stockSearch, () => {
   clearTimeout(stockSearchTimer)
   stockSearchTimer = setTimeout(refreshStock, 300)
 })
+
+// Cegah timer search menembak refreshStock di komponen yang sudah unmount
+// (mis. user pindah route dalam <300ms setelah mengetik).
+onUnmounted(() => clearTimeout(stockSearchTimer))
 
 const formatDate = (v) => v ? new Date(v).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 
@@ -286,7 +290,7 @@ onMounted(refreshStock)
           <ul><li v-for="(er, i) in csvResult.errors" :key="i">{{ er }}</li></ul>
         </details>
       </div>
-      <input ref="csvFileInput" type="file" accept=".csv,text/csv" class="iss-file-hidden" @change="onCsvFile" />
+      <input ref="csvFileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="iss-file-hidden" @change="onCsvFile" />
     </div>
 
     <div class="iss-search">

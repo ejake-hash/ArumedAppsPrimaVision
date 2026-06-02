@@ -23,6 +23,7 @@ class Prescription extends Model
         'dispensed_by_id',
         'dispensed_at',
         'notes',
+        'pharmacy_note',
     ];
 
     protected $casts = [

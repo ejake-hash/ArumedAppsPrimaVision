@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Models\BhpItem;
 use App\Models\IolItem;
 use App\Models\IolRecommendation;
+use App\Models\Prescription;
+use App\Models\PrescriptionItem;
 use App\Models\Queue;
 use App\Models\SurgeryIolUsage;
 use App\Models\SurgeryRecord;
@@ -40,6 +42,9 @@ class BedahService
             'visit.doctorExamination.surgeryPackage',
             'visit.doctorExamination.surgerySchedule.leadSurgeon',
             'visit.doctorExamination.doctor',
+            // B7: data pra-op (visus + IOP) utk modal konfirmasi "Mulai Operasi".
+            // HasOne murah; sumber tunggal RefractionRecord (refraksionis).
+            'visit.refractionRecord',
         ])
             ->where('station', 'BEDAH')
             ->whereDate('created_at', today())
@@ -61,6 +66,11 @@ class BedahService
             // + DPJP (operator utama dari jadwal, fallback dokter pemeriksa).
             $exam = $visit?->doctorExamination;
             $dpjp = $schedule?->leadSurgeon?->name ?? $exam?->doctor?->name ?? null;
+
+            // B7: data pra-op (visus + IOP per mata) utk modal konfirmasi Mulai
+            // Operasi. Sumber: RefractionRecord; null bila pasien tak melalui
+            // refraksi (mis. IGD) — FE menyembunyikan field yang kosong.
+            $refr = $visit?->refractionRecord;
 
             return [
                 'id'             => $q->id,
@@ -99,6 +109,17 @@ class BedahService
                         'id'   => $package->id,
                         'name' => $package->name,
                     ] : null,
+                ] : null,
+
+                // B7: pra-op utk konfirmasi Mulai Operasi (visus akhir + IOP per mata).
+                'preop' => $refr ? [
+                    'visus_od'   => $refr->visus_akhir_od ?? $refr->visus_awal_od ?? null,
+                    'visus_os'   => $refr->visus_akhir_os ?? $refr->visus_awal_os ?? null,
+                    'pinhole_od' => $refr->pinhole_od ?? null,
+                    'pinhole_os' => $refr->pinhole_os ?? null,
+                    'iop_od'     => $refr->iop_od ?? null,
+                    'iop_os'     => $refr->iop_os ?? null,
+                    'iop_method' => $refr->iop_method ?? null,
                 ] : null,
             ];
         })->all();
@@ -228,14 +249,9 @@ class BedahService
      */
     public function startOperation(string $scheduleId): SurgeryRecord
     {
-        $schedule = SurgerySchedule::with(['surgeryRequests', 'surgeryRecord'])->findOrFail($scheduleId);
-
-        if ($schedule->status !== 'SCHEDULED') {
-            throw new \Exception('Jadwal tidak dalam status SCHEDULED.', 422);
-        }
-
-        // Cek BHP+IOL supply sudah diterima
-        $pendingSupply = $schedule->surgeryRequests()
+        // Guard supply (BHP+IOL diterima) boleh dicek di luar transaksi — read-only,
+        // tidak rentan race krk RECEIVED bersifat satu-arah dan tak diubah di sini.
+        $pendingSupply = SurgeryRequest::where('surgery_schedule_id', $scheduleId)
             ->whereNotIn('status', ['RECEIVED', 'CANCELLED'])
             ->exists();
 
@@ -243,13 +259,30 @@ class BedahService
             throw new \Exception('BHP dan IOL belum diterima dari Farmasi. Konfirmasi terlebih dahulu.', 422);
         }
 
-        return DB::transaction(function () use ($schedule) {
+        return DB::transaction(function () use ($scheduleId) {
+            // Kunci baris jadwal SELAMA transaksi untuk cegah double-start serentak:
+            // tanpa lock, dua request bisa lolos cek status SCHEDULED bersamaan lalu
+            // sama-sama INSERT SurgeryRecord → unique violation surgery_schedule_id
+            // (23505 → 500). Re-cek status DI DALAM lock = sumber kebenaran tunggal.
+            $schedule = SurgerySchedule::lockForUpdate()->findOrFail($scheduleId);
+
+            if ($schedule->status !== 'SCHEDULED') {
+                throw new \Exception('Jadwal tidak dalam status SCHEDULED.', 422);
+            }
+
             $schedule->update(['status' => 'IN_PROGRESS']);
 
             // Resolve visit_id: kunci utama visits.surgery_schedule_id; fallback ke
             // surgery_requests (operasi tanpa supply-request tetap dapat visit yg benar).
             $visitId = Visit::where('surgery_schedule_id', $schedule->id)->value('id')
                 ?? $schedule->surgeryRequests()->value('visit_id');
+
+            // Guard B2: visit_id WAJIB (kolom NOT NULL). Bila jadwal tak terhubung ke
+            // kunjungan manapun, lempar 422 SEBELUM create — cegah INSERT null →
+            // pelanggaran NOT NULL (500) + record orphan yg memacetkan antrean.
+            if (! $visitId) {
+                throw new \Exception('Jadwal operasi belum terhubung dengan kunjungan pasien — tidak dapat memulai operasi.', 422);
+            }
 
             $record = SurgeryRecord::create([
                 'surgery_schedule_id' => $schedule->id,
@@ -423,7 +456,14 @@ class BedahService
 
             $visitId = $record->visit_id;
 
-            if ($visitId) {
+            // B6: visit_id null seharusnya tak terjadi (dicegah di hulu oleh guard
+            // startOperation/B2). Bila tetap null karena data lama: JANGAN diam dan
+            // JANGAN gagal — finalized_at sudah terkunci di atas; cukup catat warning.
+            if (! $visitId) {
+                \Illuminate\Support\Facades\Log::warning('Finalize bedah: record tanpa visit_id — finalize tetap dikunci, routing antrean dilewati.', [
+                    'surgery_record_id' => $record->id,
+                ]);
+            } else {
                 $visit = Visit::find($visitId);
 
                 $bedahQueue = Queue::where('visit_id', $visitId)
@@ -433,22 +473,30 @@ class BedahService
                     ->first();
 
                 // Disposisi RAWAT_INAP untuk pasien rawat JALAN/PREOP (belum RANAP):
-                // tutup baris bedah TANPA enqueue otomatis, arahkan ke papan
-                // "Menunggu Kamar". Petugas ranap admit bed via RanapService::admit
-                // (yang baru men-set jenis_pelayanan=RANAP + enqueue baris RANAP).
-                // Pasien yang SUDAH RANAP (bedah = sub-aktivitas) ditangani normal
-                // oleh resolveNextRanap → returnToLiveRanap (NO_OP, bed ditahan).
+                // arahkan ke papan "Menunggu Kamar". Petugas ranap admit bed via
+                // RanapService::admit (yang men-set jenis_pelayanan=RANAP + enqueue
+                // baris RANAP). Pasien yang SUDAH RANAP (bedah = sub-aktivitas)
+                // ditangani normal oleh resolveNextRanap → returnToLiveRanap.
                 $toRanap = $record->post_op_disposition === 'RAWAT_INAP'
                     && $visit
                     && ($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP';
 
-                if ($bedahQueue && $toRanap) {
-                    $bedahQueue->update([
-                        'status'       => Queue::STATUS_COMPLETED,
-                        'completed_at' => now(),
-                    ]);
-                    $visit->update(['current_station' => 'MENUNGGU_RANAP']);
+                if ($toRanap) {
+                    // Tutup baris bedah bila masih ada (TANPA enqueue otomatis), lalu
+                    // SELALU set current_station ke MENUNGGU_RANAP — tidak bergantung
+                    // pada keberadaan bedahQueue (cegah pasien hilang dari papan ranap).
+                    if ($bedahQueue) {
+                        $bedahQueue->update([
+                            'status'       => Queue::STATUS_COMPLETED,
+                            'completed_at' => now(),
+                        ]);
+                    }
+                    if ($visit) {
+                        $visit->update(['current_station' => 'MENUNGGU_RANAP']);
+                    }
                 } elseif ($bedahQueue) {
+                    // PULANG atau RANAP-existing: teruskan normal (→ FARMASI/KASIR).
+                    // Jika bedahQueue null, pasien sudah ter-advance proses lain — biarkan.
                     $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH);
                 }
             }
@@ -754,8 +802,12 @@ class BedahService
      * Bedah set/adjust qty BHP yang actual terpakai. Boleh > atau < quantity
      * yang diminta (used_qty bisa nol kalau ternyata tidak jadi dipakai).
      *
-     * Payload: items = [{ bhp_item_id, used_qty }]. Item yg tidak disebut
-     * dibiarkan apa adanya.
+     * KONTRAK (diubah): payload `items` kini DAFTAR LENGKAP item yang terpakai —
+     * bersifat OTORITATIF. items = [{ bhp_item_id, used_qty }]. Setiap baris BHP
+     * pada request ini yang bhp_item_id-nya TIDAK ada di payload akan di-set
+     * used_qty = 0 (dianggap tidak jadi dipakai), supaya item RECEIVED yang
+     * seeded used_qty=quantity (terimaRequest) tidak diam-diam over-billing saat
+     * FE mengirim daftar parsial.
      */
     public function adjustBhpUsage(string $requestId, array $items): SurgeryRequest
     {
@@ -766,12 +818,20 @@ class BedahService
         }
 
         return DB::transaction(function () use ($request, $requestId, $items) {
+            // Kumpulkan bhp_item_id yang disebut + set used_qty masing-masing.
+            $mentionedIds = [];
             foreach ($items as $row) {
                 if (empty($row['bhp_item_id'])) continue;
+                $mentionedIds[] = $row['bhp_item_id'];
                 SurgeryRequestBhp::where('surgery_request_id', $requestId)
                     ->where('bhp_item_id', $row['bhp_item_id'])
                     ->update(['used_qty' => max(0, (int) ($row['used_qty'] ?? 0))]);
             }
+
+            // Otoritatif: item yang TIDAK disebut payload → tidak jadi dipakai → 0.
+            SurgeryRequestBhp::where('surgery_request_id', $requestId)
+                ->whereNotIn('bhp_item_id', $mentionedIds)
+                ->update(['used_qty' => 0]);
 
             $this->log(
                 auth('api')->id(),
@@ -797,16 +857,22 @@ class BedahService
         $record = SurgeryRecord::findOrFail($surgeryRecordId);
 
         return DB::transaction(function () use ($record, $data, $surgeryRecordId) {
-            $usage = SurgeryIolUsage::create([
-                'surgery_record_id' => $surgeryRecordId,
-                'iol_item_id'       => $data['iol_item_id'],
-                'eye_side'          => $data['eye_side'],
-                'brand'             => $data['brand'] ?? null,
-                'model'             => $data['model'] ?? null,
-                'power'             => $data['power'] ?? null,
-                'lot_number'        => $data['lot_number'] ?? null,
-                'serial_number'     => $data['serial_number'] ?? null,
-            ]);
+            // updateOrCreate per (record, mata) — cegah baris ganda kalau tombol Simpan
+            // diklik >1× / IOL diganti, yang akan menagih IOL dobel di invoice Kasir.
+            $usage = SurgeryIolUsage::updateOrCreate(
+                [
+                    'surgery_record_id' => $surgeryRecordId,
+                    'eye_side'          => $data['eye_side'],
+                ],
+                [
+                    'iol_item_id'   => $data['iol_item_id'],
+                    'brand'         => $data['brand'] ?? null,
+                    'model'         => $data['model'] ?? null,
+                    'power'         => $data['power'] ?? null,
+                    'lot_number'    => $data['lot_number'] ?? null,
+                    'serial_number' => $data['serial_number'] ?? null,
+                ]
+            );
 
             // Mark IOL item as used
             if (! empty($data['iol_item_id'])) {
@@ -840,6 +906,99 @@ class BedahService
         $this->log(auth('api')->id(), 'UPDATE_IOL_USAGE', SurgeryIolUsage::class, $id);
 
         return $usage->fresh('iolItem');
+    }
+
+    // =========================================================================
+    // RESEP PASCA-BEDAH (obat pulang dari Bedah → Farmasi)
+    // =========================================================================
+
+    /**
+     * Buat resep obat pasca-bedah → Farmasi. Pola sama dengan obat pulang RANAP
+     * (RanapService::createObatPulang): Prescription status SUBMITTED akan otomatis
+     * muncul di antrean Farmasi via QueueService::nextAfterKasir saat pasien selesai
+     * KASIR — TIDAK perlu enqueue manual.
+     *
+     * CATATAN is_bedah: SENGAJA dibiarkan default FALSE (tidak di-set true). Obat
+     * pulang/pasca-bedah adalah obat BAWA PULANG yang TIDAK tercakup harga paket
+     * bedah, jadi WAJIB ditagih. KasirService::buildObatLines (KasirService.php:293)
+     * SKIP item is_bedah=true (dianggap sudah masuk paket) — bila di-set true, obat
+     * pulang tidak akan pernah masuk invoice RAJAL/Bedah (pasien pulang tanpa bayar).
+     * Penanda is_bedah hanya untuk obat yang DIKONSUMSI saat operasi (bundled paket).
+     *
+     * @param array<int,array{medication_id?:string,quantity?:int,dose?:string,
+     *              frequency?:string,route?:string,duration_days?:int,notes?:string}> $items
+     * @param array{notes?:string,pharmacy_note?:string} $opts
+     */
+    public function storePostOpPrescription(string $visitId, array $items, array $opts = []): ?Prescription
+    {
+        $user = auth('api')->user();
+
+        // Resep WAJIB punya peresep (prescriptions.prescribed_by_id NOT NULL).
+        if (! $user->employee_id) {
+            throw new \Exception('Akun tidak punya data pegawai — tidak bisa membuat resep.', 422);
+        }
+
+        if (empty($items)) {
+            return null;
+        }
+
+        return DB::transaction(function () use ($visitId, $items, $opts, $user) {
+            $prescription = Prescription::create([
+                'visit_id'         => $visitId,
+                'prescribed_by_id' => $user->employee_id,
+                'status'           => 'SUBMITTED',
+                'notes'            => $opts['notes'] ?? 'Obat pasca-bedah',
+                'pharmacy_note'    => $opts['pharmacy_note'] ?? null,
+            ]);
+
+            foreach ($items as $it) {
+                if (empty($it['medication_id'])) {
+                    continue;
+                }
+                PrescriptionItem::create([
+                    'prescription_id' => $prescription->id,
+                    'medication_id'   => $it['medication_id'],
+                    'quantity'        => $it['quantity'] ?? 1,
+                    'dose'            => $it['dose'] ?? null,
+                    'frequency'       => $it['frequency'] ?? null,
+                    'route'           => $it['route'] ?? null,
+                    'duration_days'   => $it['duration_days'] ?? null,
+                    'notes'           => $it['notes'] ?? null,
+                    // is_bedah TIDAK di-set (default FALSE): obat bawa pulang WAJIB
+                    // ditagih (buildObatLines skip is_bedah=true). Lihat docblock.
+                ]);
+            }
+
+            $this->log(
+                $user->id,
+                'STORE_POSTOP_RESEP',
+                Prescription::class,
+                $prescription->id,
+                "Resep pasca-bedah untuk kunjungan {$visitId}"
+            );
+
+            return $prescription->load('items.medication');
+        });
+    }
+
+    /**
+     * Passthrough daftar obat (untuk picker resep pasca-bedah). Sumber tunggal
+     * DokterService::getDaftarObat — return [{id, code, name, form_sediaan,
+     * golongan, unit, hja, farmasi_qty}].
+     */
+    public function getDaftarObat(?string $search): array
+    {
+        return app(\App\Services\DokterService::class)->getDaftarObat($search);
+    }
+
+    /**
+     * Passthrough daftar IOL (untuk picker IOL terpakai). Sumber tunggal
+     * MasterDataService::indexIol — filters: search, iol_type, material, active,
+     * is_used, available_only, per_page.
+     */
+    public function getIolItems(array $filters): mixed
+    {
+        return app(\App\Services\MasterDataService::class)->indexIol($filters);
     }
 
     // =========================================================================

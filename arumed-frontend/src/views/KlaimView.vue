@@ -11,6 +11,58 @@ const loadingList = ref(false)
 const loadingDetail = ref(false)
 const actionBusy  = ref(false)   // guard aksi (review/verifikasi/dll)
 
+// ── Status koneksi E-Klaim INA-CBG (statcard) ──────────────────────────────────
+const eklaim = ref({ up: false, checked: false, checking: false, message: '' })
+const eklaimBusy = ref('')       // method E-Klaim yang sedang berjalan (new/set-data/grouper/final/status/reedit)
+
+async function checkEklaim(manual = false) {
+  if (eklaim.value.checking) return
+  eklaim.value.checking = true
+  try {
+    const { data } = await integrasiApi.testKoneksi('INACBGS')
+    const r = data?.data ?? {}
+    eklaim.value.up = !!r.success
+    eklaim.value.message = r.message ?? ''
+    eklaim.value.checked = true
+    if (manual) toast(r.success ? 's' : 'w', r.message ?? (r.success ? 'E-Klaim terhubung' : 'E-Klaim tidak terhubung'))
+  } catch (e) {
+    eklaim.value.up = false
+    eklaim.value.checked = true
+    eklaim.value.message = e.response?.data?.message ?? 'Tes koneksi gagal'
+    if (manual) toast('w', eklaim.value.message)
+  } finally {
+    eklaim.value.checking = false
+  }
+}
+
+// ── Aksi E-Klaim INA-CBG (WS) — new → set-data → grouper → final ────────────────
+async function runEklaim(method, { confirmMsg = null, successMsg } = {}) {
+  if (!selected.value || eklaimBusy.value) return
+  if (confirmMsg && !confirm(confirmMsg)) return
+  eklaimBusy.value = method
+  const id = selected.value.id
+  const url = {
+    new:      `/klaim/${id}/eklaim/new`,
+    'set-data': `/klaim/${id}/eklaim/set-data`,
+    grouper:  `/klaim/${id}/eklaim/grouper`,
+    final:    `/klaim/${id}/eklaim/final`,
+    status:   `/klaim/${id}/eklaim/status`,
+    reedit:   `/klaim/${id}/eklaim/reedit`,
+  }[method]
+  try {
+    const { data } = method === 'status' ? await api.get(url) : await api.post(url)
+    await refreshSelected()
+    const srvMsg = data?.data?.message || data?.message
+    toast('s', successMsg ?? srvMsg ?? 'Berhasil')
+    // Sukses call WS = koneksi hidup → perbarui statcard tanpa tes ulang.
+    eklaim.value.up = true; eklaim.value.checked = true
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? `Gagal ${method} E-Klaim`)
+  } finally {
+    eklaimBusy.value = ''
+  }
+}
+
 // Bentuk objek yang dipakai template (dipertahankan agar template stabil).
 // Mapper dari response backend → bentuk ini.
 function mapListItem(c) {
@@ -45,6 +97,7 @@ function mapDetail(c) {
     dpjp: c.visit?.doctor_examination?.doctor?.name ?? '—',
     diagnosis_utama: c.diagnosis_utama_obj ?? { kode: c.diagnosis_utama ?? '—', label: '' },
     diagnosis_sekunder: c.diagnosis_sekunder_obj ?? [],
+    diagnosis_text: c.diagnosis_text ?? '',
     tindakan: c.tindakan_obj ?? [],
     inacbgs_kode: c.inacbgs_kode ?? '',
     inacbgs_tarif: Number(c.inacbgs_tarif ?? 0),
@@ -145,197 +198,8 @@ async function refreshSelectedSilent() {
   } catch { /* diam */ }
 }
 
-onMounted(() => { fetchClaims(); fetchAllForStats(); startPolling() })
+onMounted(() => { fetchClaims(); fetchAllForStats(); startPolling(); checkEklaim() })
 onUnmounted(stopPolling)
-
-const _legacyMockUnused = ([
-  {
-    id: 'CLM-001', no_sep: '0901R003DCB2500123', no_kartu_bpjs: '0000124567890',
-    nik: '3271010101900001', nama_pasien: 'Siti Rahayu',
-    tanggal_pelayanan: '2026-05-12', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosis_utama: { kode: 'H26.9', label: 'Katarak, tidak spesifik' },
-    diagnosis_sekunder: [{ kode: 'H40.1', label: 'Glaukoma sudut terbuka' }],
-    tindakan: [{ kode: '13.19', label: 'Ekstraksi Katarak + Pemasangan IOL' }],
-    inacbgs_kode: 'B-4-13-I', inacbgs_tarif: 3850000, harga_kasir: 4200000,
-    rincian_biaya: { jasa: 1500000, tindakan: 2000000, obat: 350000 },
-    dokumen_pendukung: [
-      { tipe: 'resume_medis', nama: 'Resume Medis Siti Rahayu.pdf', tanggal: '2026-05-12', size: '142 KB', status: 'ada' },
-      { tipe: 'penunjang', nama: 'Hasil OCT PJ-003.pdf', tanggal: '2026-05-12', size: '2.1 MB', status: 'ada' },
-    ],
-    status: 'VERIFIED', bpjs_status: null,
-    verified_by: 'Dewi Sari, S.Kep', verified_at: '2026-05-14T09:30:00',
-    verification_notes: '',
-    checklist: { sep: true, resume_medis: true, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: true },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-12T08:00:00', note: 'Kunjungan selesai, klaim dibuat otomatis' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-13T14:00:00', note: '' },
-      { action: 'VERIFIED', by: 'Dewi Sari', at: '2026-05-14T09:30:00', note: 'Semua berkas lengkap dan sesuai' },
-    ],
-  },
-  {
-    id: 'CLM-002', no_sep: '0901R003DCB2500124', no_kartu_bpjs: '0000234567891',
-    nik: '3271020202850002', nama_pasien: 'Budi Santoso',
-    tanggal_pelayanan: '2026-05-13', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Rina Kusuma, Sp.M',
-    diagnosis_utama: { kode: 'H40.1', label: 'Glaukoma sudut terbuka primer' },
-    diagnosis_sekunder: [],
-    tindakan: [{ kode: '12.71', label: 'Trabekulektomi' }],
-    inacbgs_kode: 'B-4-12-I', inacbgs_tarif: 4200000, harga_kasir: 4650000,
-    rincian_biaya: { jasa: 1800000, tindakan: 2200000, obat: 200000 },
-    dokumen_pendukung: [],
-    status: 'DRAFT', bpjs_status: null,
-    verified_by: null, verified_at: null, verification_notes: '',
-    checklist: { sep: true, resume_medis: false, diagnosis_utama: false, kode_tindakan: true, dokumen_pendukung: false },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-13T09:15:00', note: 'Kunjungan selesai, klaim dibuat otomatis' },
-    ],
-  },
-  {
-    id: 'CLM-003', no_sep: '0901R003DCB2500125', no_kartu_bpjs: '0000345678902',
-    nik: '3271030303900003', nama_pasien: 'Dewi Lestari',
-    tanggal_pelayanan: '2026-05-13', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosis_utama: { kode: 'H11.0', label: 'Pterigium' },
-    diagnosis_sekunder: [],
-    tindakan: [{ kode: '11.39', label: 'Eksisi Pterigium + Konjungtiva Graft' }],
-    inacbgs_kode: 'B-4-11-II', inacbgs_tarif: 2750000, harga_kasir: 3100000,
-    rincian_biaya: { jasa: 1200000, tindakan: 1400000, obat: 150000 },
-    dokumen_pendukung: [
-      { tipe: 'resume_medis', nama: 'Resume Medis Dewi Lestari.pdf', tanggal: '2026-05-13', size: '118 KB', status: 'ada' },
-    ],
-    status: 'REVIEW', bpjs_status: null,
-    verified_by: null, verified_at: null,
-    verification_notes: 'Perlu cek kesesuaian kode ICD-9 tindakan',
-    checklist: { sep: true, resume_medis: true, diagnosis_utama: true, kode_tindakan: false, dokumen_pendukung: true },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-13T10:30:00', note: '' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-14T08:00:00', note: 'Perlu cek kesesuaian kode ICD-9 tindakan' },
-    ],
-  },
-  {
-    id: 'CLM-004', no_sep: '0901R003DCB2500121', no_kartu_bpjs: '0000456789013',
-    nik: '3271040404780004', nama_pasien: 'Ahmad Fauzi',
-    tanggal_pelayanan: '2026-05-10', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Rina Kusuma, Sp.M',
-    diagnosis_utama: { kode: 'H33.0', label: 'Ablasio Retina dengan Robekan' },
-    diagnosis_sekunder: [{ kode: 'H44.2', label: 'Degenerasi Kaca Badan' }],
-    tindakan: [
-      { kode: '14.59', label: 'Vitrektomi Posterior' },
-      { kode: '14.71', label: 'Laser Fotokoagulasi Retina' },
-    ],
-    inacbgs_kode: 'B-4-14-I', inacbgs_tarif: 7500000, harga_kasir: 8200000,
-    rincian_biaya: { jasa: 3000000, tindakan: 4000000, obat: 500000 },
-    dokumen_pendukung: [
-      { tipe: 'resume_medis', nama: 'Resume Medis Ahmad Fauzi.pdf', tanggal: '2026-05-10', size: '198 KB', status: 'ada' },
-      { tipe: 'penunjang', nama: 'Hasil USG Mata Ahmad.pdf', tanggal: '2026-05-10', size: '3.4 MB', status: 'ada' },
-      { tipe: 'penunjang', nama: 'Foto Fundus OD.jpg', tanggal: '2026-05-10', size: '1.8 MB', status: 'ada' },
-    ],
-    status: 'SUBMITTED', bpjs_status: 'PENDING',
-    verified_by: 'Dewi Sari, S.Kep', verified_at: '2026-05-11T14:00:00',
-    verification_notes: '',
-    checklist: { sep: true, resume_medis: true, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: true },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-10T16:00:00', note: '' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-11T09:00:00', note: '' },
-      { action: 'VERIFIED', by: 'Dewi Sari', at: '2026-05-11T14:00:00', note: '' },
-      { action: 'SUBMITTED', by: 'Dewi Sari', at: '2026-05-11T14:05:00', note: 'Terkirim ke server BPJS VClaim' },
-    ],
-  },
-  {
-    id: 'CLM-005', no_sep: '0901R003DCB2500119', no_kartu_bpjs: '0000567890124',
-    nik: '3271050505650005', nama_pasien: 'Hendra Wijaya',
-    tanggal_pelayanan: '2026-05-08', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosis_utama: { kode: 'H04.1', label: 'Mata Kering (Dry Eye Syndrome)' },
-    diagnosis_sekunder: [],
-    tindakan: [{ kode: '16.29', label: 'Pemasangan Plug Punctal' }],
-    inacbgs_kode: 'B-4-16-III', inacbgs_tarif: 1200000, harga_kasir: 1350000,
-    rincian_biaya: { jasa: 700000, tindakan: 350000, obat: 150000 },
-    dokumen_pendukung: [
-      { tipe: 'resume_medis', nama: 'Resume Medis Hendra Wijaya.pdf', tanggal: '2026-05-08', size: '95 KB', status: 'ada' },
-    ],
-    status: 'SELESAI', bpjs_status: 'SELESAI',
-    verified_by: 'Dewi Sari, S.Kep', verified_at: '2026-05-09T10:00:00',
-    verification_notes: '',
-    checklist: { sep: true, resume_medis: true, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: true },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-08T15:00:00', note: '' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-09T09:00:00', note: '' },
-      { action: 'VERIFIED', by: 'Dewi Sari', at: '2026-05-09T10:00:00', note: '' },
-      { action: 'SUBMITTED', by: 'Dewi Sari', at: '2026-05-09T10:02:00', note: 'Terkirim ke server BPJS VClaim' },
-      { action: 'SELESAI', by: 'Sistem BPJS', at: '2026-05-12T08:00:00', note: 'Klaim diterima dan disetujui BPJS' },
-    ],
-  },
-  {
-    id: 'CLM-006', no_sep: '0901R003DCB2500117', no_kartu_bpjs: '0000678901235',
-    nik: '3271060606720006', nama_pasien: 'Ratna Sari',
-    tanggal_pelayanan: '2026-05-06', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Rina Kusuma, Sp.M',
-    diagnosis_utama: { kode: 'H52.1', label: 'Miopia' },
-    diagnosis_sekunder: [],
-    tindakan: [{ kode: '11.71', label: 'LASIK' }],
-    inacbgs_kode: 'B-4-11-I', inacbgs_tarif: 2100000, harga_kasir: 2400000,
-    rincian_biaya: { jasa: 1000000, tindakan: 1100000, obat: 0 },
-    dokumen_pendukung: [
-      { tipe: 'resume_medis', nama: 'Resume Medis Ratna Sari.pdf', tanggal: '2026-05-06', size: '112 KB', status: 'ada' },
-    ],
-    status: 'DITOLAK', bpjs_status: 'DITOLAK',
-    verified_by: 'Dewi Sari, S.Kep', verified_at: '2026-05-07T11:00:00',
-    verification_notes: '',
-    checklist: { sep: true, resume_medis: true, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: true },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-06T17:00:00', note: '' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-07T10:00:00', note: '' },
-      { action: 'VERIFIED', by: 'Dewi Sari', at: '2026-05-07T11:00:00', note: '' },
-      { action: 'SUBMITTED', by: 'Dewi Sari', at: '2026-05-07T11:02:00', note: '' },
-      { action: 'DITOLAK', by: 'Sistem BPJS', at: '2026-05-09T14:00:00', note: 'LASIK tidak termasuk tanggungan BPJS (tindakan elektif refraktif)' },
-    ],
-  },
-  {
-    id: 'CLM-007', no_sep: '0901R003DCB2500126', no_kartu_bpjs: '0000789012346',
-    nik: '3271070707010007', nama_pasien: 'Eko Prasetyo',
-    tanggal_pelayanan: '2026-05-14', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Andi Wijaya, Sp.M',
-    diagnosis_utama: { kode: 'Q12.0', label: 'Katarak Kongenital' },
-    diagnosis_sekunder: [],
-    tindakan: [{ kode: '13.51', label: 'Ekstraksi Katarak Kongenital' }],
-    inacbgs_kode: 'B-4-13-II', inacbgs_tarif: 4500000, harga_kasir: 4980000,
-    rincian_biaya: { jasa: 2000000, tindakan: 2300000, obat: 200000 },
-    dokumen_pendukung: [],
-    status: 'DRAFT', bpjs_status: null,
-    verified_by: null, verified_at: null, verification_notes: '',
-    checklist: { sep: true, resume_medis: false, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: false },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-14T11:00:00', note: '' },
-    ],
-  },
-  {
-    id: 'CLM-008', no_sep: '0901R003DCB2500127', no_kartu_bpjs: '0000890123457',
-    nik: '3271080808880008', nama_pasien: 'Sri Wahyuni',
-    tanggal_pelayanan: '2026-05-14', jenis_pelayanan: 'Rawat Jalan',
-    dpjp: 'dr. Rina Kusuma, Sp.M',
-    diagnosis_utama: { kode: 'H20.0', label: 'Uveitis Anterior Akut' },
-    diagnosis_sekunder: [{ kode: 'H36.0', label: 'Retinopati Diabetik' }],
-    tindakan: [
-      { kode: '12.73', label: 'Injeksi Subkonjungtiva' },
-      { kode: '95.06', label: 'Pemeriksaan Biomikroskopi' },
-    ],
-    inacbgs_kode: 'B-4-12-II', inacbgs_tarif: 1800000, harga_kasir: 1950000,
-    rincian_biaya: { jasa: 900000, tindakan: 700000, obat: 200000 },
-    dokumen_pendukung: [
-      { tipe: 'penunjang', nama: 'Hasil Biomikroskopi Sri Wahyuni.pdf', tanggal: '2026-05-14', size: '876 KB', status: 'ada' },
-    ],
-    status: 'REVIEW', bpjs_status: null,
-    verified_by: null, verified_at: null, verification_notes: '',
-    checklist: { sep: true, resume_medis: false, diagnosis_utama: true, kode_tindakan: true, dokumen_pendukung: false },
-    audit_trail: [
-      { action: 'CREATED', by: 'Admin Admisi', at: '2026-05-14T13:00:00', note: '' },
-      { action: 'REVIEWED', by: 'Dewi Sari', at: '2026-05-15T08:30:00', note: '' },
-    ],
-  },
-])
-void _legacyMockUnused
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 // #1 Default tanggal: dari tgl 1 bulan berjalan s/d hari ini.
@@ -400,6 +264,11 @@ function claimAgeDays(c) {
   const start = new Date(c.tanggal_pelayanan)
   return Math.floor((Date.now() - start.getTime()) / 86400000)
 }
+// Diagnosis utama terisi? (draft auto dari kasir bisa kosong bila dokter belum isi)
+function hasDiagnosis(c) {
+  const k = c?.diagnosis_utama?.kode
+  return !!k && k !== '—'
+}
 function ageClass(c) {
   const d = claimAgeDays(c)
   if (d == null) return ''
@@ -428,6 +297,7 @@ async function selectClaim(c) {
     const { data } = await api.get(`/klaim/${c.id}`)
     if (seq !== _selectSeq) return // user sudah memilih klaim lain — abaikan respons basi
     selected.value = mapDetail(data.data)
+    fetchAttachments() // muat lampiran klaim (non-blocking)
   } catch (e) {
     if (seq !== _selectSeq) return
     toast('w', e.response?.data?.message ?? 'Gagal memuat detail klaim')
@@ -439,7 +309,10 @@ async function selectClaim(c) {
 async function refreshSelected() {
   if (!selected.value) return
   const id = selected.value.id
+  const seq = ++_selectSeq // tandai operasi ini; respons basi diabaikan bila user pindah klaim
   const { data } = await api.get(`/klaim/${id}`)
+  // Jangan timpa panel bila user sudah memilih klaim lain selama await.
+  if (seq !== _selectSeq || selected.value?.id !== id) return
   selected.value = mapDetail(data.data)
   await fetchClaims()
 }
@@ -480,6 +353,38 @@ const checklistDefs = [
 const checklistComplete = computed(() => {
   if (!selected.value) return false
   return checklistDefs.every((item) => selected.value.checklist[item.key])
+})
+
+// Ringkasan data nyata per item checklist — ditampilkan inline di sebelah centang
+// agar verifikator memutuskan sambil melihat datanya (tak perlu pindah tab/modal).
+// { text, ok } — ok=false menandai data belum ada (perlu dilengkapi sebelum centang).
+const checklistSummary = computed(() => {
+  const s = selected.value
+  if (!s) return {}
+  const dxUtama = s.diagnosis_utama?.kode && s.diagnosis_utama.kode !== '—' ? s.diagnosis_utama : null
+  const tindakan = s.tindakan ?? []
+  const dokCount = (s.dokumen_pendukung ?? []).length
+  return {
+    sep: { ok: !!s.no_sep && s.no_sep !== '—', text: s.no_sep && s.no_sep !== '—' ? s.no_sep : 'SEP belum ada' },
+    resume_medis: {
+      ok: (s.dokumen_pendukung ?? []).some((d) => d.kode === 'RM-2.3'),
+      text: (s.dokumen_pendukung ?? []).some((d) => d.kode === 'RM-2.3') ? 'Resume medis tersedia' : 'Resume medis belum final',
+    },
+    diagnosis_utama: {
+      ok: !!dxUtama,
+      text: dxUtama ? `${dxUtama.kode}${dxUtama.label ? ' · ' + dxUtama.label : ''}` : 'Diagnosis utama belum diisi',
+      pill: dxUtama?.kode,
+    },
+    kode_tindakan: {
+      ok: tindakan.length > 0,
+      text: tindakan.length ? tindakan.map((t) => t.kode).join(', ') : 'Belum ada kode tindakan (ICD-9)',
+      pills: tindakan.map((t) => t.kode),
+    },
+    dokumen_pendukung: {
+      ok: dokCount > 0,
+      text: dokCount ? `${dokCount} dokumen: ${(s.dokumen_pendukung ?? []).map((d) => d.kode).join(' · ')}` : 'Belum ada dokumen pendukung',
+    },
+  }
 })
 
 // ── Correction note ───────────────────────────────────────────────────────────
@@ -679,11 +584,104 @@ async function generateLupis() {
 function openResumeMedis() { showDokumenModal.value = true }
 function openTindakan() { showTindakanModal.value = true }
 
-// Buka dokumen pendukung (cetak via endpoint RME).
-function openDocument(doc) {
-  const base = import.meta.env.VITE_API_URL ?? '/api/v1'
-  window.open(`${base}/rekam-medis/dokumen/${doc.id}/cetak`, '_blank')
-  toast('i', `Membuka ${doc.nama}`)
+// Buka dokumen pendukung. Ambil snapshot HTML via Axios (auth-aware lewat
+// interceptor) lalu cetak/lihat di window baru. JANGAN window.open(URL API)
+// langsung: navigasi browser tak bawa Bearer (401) & endpoint /cetak balas
+// JSON (utk Puppeteer), bukan PDF. Pola sama spt FormRMRenderer/RekamMedisView.
+const openingDoc = ref(false)
+async function openDocument(doc) {
+  if (openingDoc.value) return
+  openingDoc.value = true
+  try {
+    const { data } = await api.get(`/rekam-medis/document/${doc.id}/render`)
+    const html = data.data?.rendered_html
+    if (!html) { toast('w', `${doc.nama} belum punya isi tersaji untuk dibuka`); return }
+    const w = window.open('', '_blank', 'width=900,height=1200')
+    if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk membuka dokumen'); return }
+    w.document.open()
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${doc.nama ?? 'Dokumen'}</title>
+<style>@page { size: A4; margin: 1.5cm; } body { font-family: Arial, sans-serif; }</style>
+</head><body>${html}</body></html>`)
+    w.document.close()
+    w.focus()
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? `Gagal membuka ${doc.nama}`)
+  } finally {
+    openingDoc.value = false
+  }
+}
+
+// ── Lampiran berkas klaim (upload PDF/gambar: resume RJ, hasil penunjang) ───────
+const attachments    = ref([])
+const loadingAtt     = ref(false)
+const uploadingAtt   = ref(false)
+const attCategory    = ref('PENUNJANG')
+const attFileInput   = ref(null)
+const ATT_CATEGORIES = [
+  { key: 'RESUME',    label: 'Resume Medis' },
+  { key: 'PENUNJANG', label: 'Hasil Penunjang' },
+  { key: 'SEP',       label: 'SEP' },
+  { key: 'SURAT',     label: 'Surat/Rujukan' },
+  { key: 'LAINNYA',   label: 'Lainnya' },
+]
+const attCanEdit = computed(() => selected.value && !['SUBMITTED', 'SELESAI'].includes(selected.value.status))
+
+async function fetchAttachments() {
+  if (!selected.value) { attachments.value = []; return }
+  const id = selected.value.id
+  loadingAtt.value = true
+  try {
+    const { data } = await api.get(`/klaim/${id}/lampiran`)
+    if (selected.value?.id !== id) return // klaim sudah berganti
+    attachments.value = data.data ?? []
+  } catch {
+    attachments.value = []
+  } finally {
+    loadingAtt.value = false
+  }
+}
+
+function pickAttFile() { attFileInput.value?.click() }
+
+async function onAttFileChange(e) {
+  const file = e.target.files?.[0]
+  e.target.value = '' // reset agar file sama bisa dipilih ulang
+  if (!file || !selected.value) return
+  if (file.size > 10 * 1024 * 1024) { toast('w', 'Ukuran berkas maksimal 10 MB'); return }
+
+  const id = selected.value.id
+  uploadingAtt.value = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('category', attCategory.value)
+    await api.post(`/klaim/${id}/lampiran`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
+    toast('s', 'Lampiran berhasil diunggah')
+    await fetchAttachments()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengunggah lampiran')
+  } finally {
+    uploadingAtt.value = false
+  }
+}
+
+async function deleteAttachment(att) {
+  if (!selected.value) return
+  if (!confirm(`Hapus lampiran "${att.title || att.file_name}"?`)) return
+  try {
+    await api.delete(`/klaim/${selected.value.id}/lampiran/${att.id}`)
+    toast('i', 'Lampiran dihapus')
+    await fetchAttachments()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menghapus lampiran')
+  }
+}
+
+function fmtFileSize(bytes) {
+  if (!bytes) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
 // ── Actions (wired ke backend KlaimService) ────────────────────────────────────
@@ -693,7 +691,7 @@ async function mulaiReview() {
   try {
     await api.put(`/klaim/${selected.value.id}/review`)
     await refreshSelected()
-    toast('i', `Klaim ${selected.value.no_sep.slice(-6)} dalam proses review`)
+    toast('i', `Klaim ${(selected.value.no_sep?.slice(-6) ?? selected.value.no_sep ?? "")} dalam proses review`)
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal memulai review')
   } finally {
@@ -707,7 +705,7 @@ async function verifikasi() {
   try {
     await api.put(`/klaim/${selected.value.id}/verifikasi`)
     await refreshSelected()
-    toast('s', `Klaim ${selected.value.no_sep.slice(-6)} berhasil diverifikasi`)
+    toast('s', `Klaim ${(selected.value.no_sep?.slice(-6) ?? selected.value.no_sep ?? "")} berhasil diverifikasi`)
   } catch (e) {
     // Pesan backend mis. "Grouping INA-CBGs belum dilakukan" / "LUPIS belum di-generate".
     toast('w', e.response?.data?.message ?? 'Verifikasi gagal')
@@ -749,7 +747,7 @@ async function confirmSubmit() {
     await api.post(`/klaim/${selected.value.id}/submit`)
     await refreshSelected()
     showSubmitModal.value = false
-    toast('s', `Klaim ${selected.value.no_sep.slice(-6)} berhasil dikirim ke BPJS`)
+    toast('s', `Klaim ${(selected.value.no_sep?.slice(-6) ?? selected.value.no_sep ?? "")} berhasil dikirim ke BPJS`)
   } catch (e) {
     // mis. 503 VClaim belum aktif.
     toast('w', e.response?.data?.message ?? 'Gagal mengirim ke BPJS')
@@ -888,8 +886,14 @@ const bpjsStatusMeta = {
   PENDING:  { label: 'Menunggu Respons', bg: 'var(--wb)', color: 'var(--wt)', border: 'var(--wbd)' },
   PROSES:   { label: 'Diproses BPJS',   bg: 'var(--ib)', color: 'var(--it)', border: 'var(--ibd)' },
   SELESAI:  { label: 'Disetujui BPJS',  bg: 'var(--sb)', color: 'var(--st)', border: 'var(--sbd)' },
+  // E-Klaim menulis bpjs_status='FINAL' setelah finalisasi (KlaimService L355).
+  FINAL:    { label: 'Final di E-Klaim', bg: 'var(--sb)', color: 'var(--st)', border: 'var(--sbd)' },
   DITOLAK:  { label: 'Ditolak BPJS',    bg: 'var(--eb)', color: 'var(--et)', border: 'var(--ebd)' },
 }
+// Fallback aman agar banner/badge tak crash bila status di luar daftar di atas.
+const FALLBACK_META = { label: '', bg: 'var(--bs)', color: 'var(--tu)', border: 'var(--gb)' }
+function statusMetaOf(s) { return statusMeta[s] ?? { ...FALLBACK_META, label: s ?? '—' } }
+function bpjsStatusMetaOf(s) { return bpjsStatusMeta[s] ?? { ...FALLBACK_META, label: s ?? '—' } }
 
 const auditActionMeta = {
   PREPARE:        { label: 'Klaim Disiapkan',       color: 'var(--tu)' },
@@ -973,6 +977,27 @@ function stepIndex(status) {
           <div class="stat-lbl">Ditolak BPJS</div>
         </div>
       </div>
+
+      <!-- Status koneksi E-Klaim INA-CBG (klik untuk tes ulang) -->
+      <button
+        class="stat-card ek-stat"
+        :style="`border-top: 3px solid ${eklaim.up ? 'var(--ld)' : (eklaim.checked ? 'var(--et)' : 'var(--bd)')}`"
+        :title="eklaim.checking ? 'Mengecek…' : 'Klik untuk tes koneksi E-Klaim'"
+        :disabled="eklaim.checking"
+        @click="checkEklaim(true)"
+      >
+        <div class="stat-icon" :style="`background: ${eklaim.up ? '#f0fdf4' : 'var(--eb)'}`" aria-hidden="true">
+          <svg v-if="eklaim.checking" class="ek-spin" viewBox="0 0 24 24" stroke="var(--tm)"><path d="M21 12a9 9 0 11-6.22-8.56"/></svg>
+          <svg v-else-if="eklaim.up" viewBox="0 0 24 24" stroke="var(--ld)"><path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+          <svg v-else viewBox="0 0 24 24" stroke="var(--et)"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0119 12.55"/><path d="M5 12.55a10.94 10.94 0 015.17-2.39"/><path d="M10.71 5.05A16 16 0 0122.58 9"/><path d="M1.42 9a15.91 15.91 0 014.7-2.88"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        </div>
+        <div>
+          <div class="stat-val ek-val" :style="`color: ${eklaim.up ? 'var(--ld)' : (eklaim.checked ? 'var(--et)' : 'var(--tm)')}`">
+            {{ eklaim.checking ? 'Cek…' : (eklaim.up ? 'Hidup' : (eklaim.checked ? 'Mati' : '—')) }}
+          </div>
+          <div class="stat-lbl">Koneksi E-Klaim</div>
+        </div>
+      </button>
     </div>
 
     <!-- ── MAIN GRID ───────────────────────────────────────────────────────── -->
@@ -1095,7 +1120,8 @@ function stepIndex(status) {
                 {{ fmtDate(c.tanggal_pelayanan) }} · {{ c.dpjp.split(',')[0] }}
                 <span v-if="ageClass(c)" :class="['kl-age', ageClass(c)]" :title="`Umur klaim ${claimAgeDays(c)} hari`">{{ claimAgeDays(c) }}h</span>
               </div>
-              <div class="kl-item-diag">{{ c.diagnosis_utama.kode }}</div>
+              <div v-if="hasDiagnosis(c)" class="kl-item-diag">{{ c.diagnosis_utama.kode }}</div>
+              <div v-else class="kl-item-diag kl-need-dx" title="Diagnosis belum diisi dokter — lengkapi via Edit Koding sebelum grouping">⚠ Perlu Diagnosis</div>
               <div v-if="c.assigned_to" class="kl-assigned" :title="`Dikerjakan oleh ${c.assigned_to.name}`">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 {{ c.assigned_to.id === myId ? 'Saya' : c.assigned_to.name.split(' ')[0] }}
@@ -1145,8 +1171,8 @@ function stepIndex(status) {
               <div class="kl-banner-tarif-l">INA-CBGs Tarif</div>
               <div
                 class="kl-banner-status"
-                :style="{ background: statusMeta[selected.status].bg, color: statusMeta[selected.status].color, border: `1px solid ${statusMeta[selected.status].border}` }"
-              >{{ statusMeta[selected.status].label }}</div>
+                :style="{ background: statusMetaOf(selected.status).bg, color: statusMetaOf(selected.status).color, border: `1px solid ${statusMetaOf(selected.status).border}` }"
+              >{{ statusMetaOf(selected.status).label }}</div>
             </div>
           </div>
 
@@ -1164,13 +1190,13 @@ function stepIndex(status) {
 
           <!-- BPJS Response Alert -->
           <div v-if="selected.bpjs_status" class="kl-bpjs-resp"
-            :style="{ background: bpjsStatusMeta[selected.bpjs_status].bg, borderColor: bpjsStatusMeta[selected.bpjs_status].border, color: bpjsStatusMeta[selected.bpjs_status].color }"
+            :style="{ background: bpjsStatusMetaOf(selected.bpjs_status).bg, borderColor: bpjsStatusMetaOf(selected.bpjs_status).border, color: bpjsStatusMetaOf(selected.bpjs_status).color }"
             role="status"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;flex-shrink:0">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <span>Respons BPJS: <strong>{{ bpjsStatusMeta[selected.bpjs_status].label }}</strong></span>
+            <span>Respons BPJS: <strong>{{ bpjsStatusMetaOf(selected.bpjs_status).label }}</strong></span>
           </div>
 
           <!-- Inner Tabs -->
@@ -1259,6 +1285,10 @@ function stepIndex(status) {
                       <span class="kl-dx-name">{{ ds.label }}</span>
                     </div>
                   </div>
+                  <div v-if="selected.diagnosis_text" class="kl-dx-section">
+                    <div class="kl-dx-label">Catatan Diagnosa Dokter (naratif)</div>
+                    <div class="kl-dx-freetext">{{ selected.diagnosis_text }}</div>
+                  </div>
                   <div class="kl-dx-section">
                     <div class="kl-dx-label">Tindakan (ICD-9 CM)</div>
                     <div v-for="t in selected.tindakan" :key="t.kode" class="kl-dx-row">
@@ -1327,6 +1357,60 @@ function stepIndex(status) {
                       {{ selected.has_lupis ? 'LUPIS ✓ (Regenerate)' : 'Generate LUPIS' }}
                     </button>
                   </div>
+
+                  <!-- ── E-Klaim INA-CBG (WS langsung ke aplikasi E-Klaim) ───────── -->
+                  <div class="kl-eklaim">
+                    <div class="kl-eklaim-head">
+                      <span class="kl-eklaim-title">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                        Koneksi E-Klaim INA-CBG
+                      </span>
+                      <span class="kl-eklaim-dot" :class="eklaim.up ? 'on' : (eklaim.checked ? 'off' : 'unk')">
+                        {{ eklaim.checking ? 'cek…' : (eklaim.up ? 'koneksi hidup' : (eklaim.checked ? 'koneksi mati' : '—')) }}
+                      </span>
+                    </div>
+
+                    <p v-if="!eklaim.up && eklaim.checked" class="kl-eklaim-warn">
+                      Koneksi E-Klaim mati. Aktifkan di <strong>Bridging → Konfigurasi</strong> sebelum grouping/mengirim klaim.
+                    </p>
+                    <p v-else class="kl-eklaim-note">
+                      Grouping &amp; pengiriman resmi memakai E-Klaim. Gunakan tombol <strong>Jalankan Grouping</strong> di atas, lalu <strong>Kirim ke BPJS</strong> di tab Verifikasi.
+                    </p>
+
+                    <div class="kl-eklaim-row sub">
+                      <button class="btn btn-ghost btn-sm" :disabled="!!eklaimBusy" @click="runEklaim('status')">
+                        <div v-if="eklaimBusy === 'status'" class="sp" aria-hidden="true"></div>
+                        Cek Status di E-Klaim
+                      </button>
+                      <button v-if="['SUBMITTED','SELESAI'].includes(selected.status)" class="btn btn-ghost btn-sm" :disabled="!!eklaimBusy" @click="runEklaim('reedit', { confirmMsg: 'Buka kembali klaim final untuk koreksi? Status klaim akan menjadi DRAFT.', successMsg: 'Klaim dibuka kembali (DRAFT)' })">
+                        <div v-if="eklaimBusy === 'reedit'" class="sp" aria-hidden="true"></div>
+                        Re-edit (buka klaim final)
+                      </button>
+                    </div>
+
+                    <!-- Langkah manual (lanjutan) — untuk troubleshooting bila satu tahap WS perlu diulang sendiri. -->
+                    <details v-if="!['SUBMITTED','SELESAI'].includes(selected.status)" class="kl-eklaim-adv">
+                      <summary>Langkah manual E-Klaim (lanjutan)</summary>
+                      <div class="kl-eklaim-row">
+                        <button class="btn btn-secondary btn-sm" :disabled="!!eklaimBusy" @click="runEklaim('new', { successMsg: 'Klaim diregistrasi ke E-Klaim' })">
+                          <div v-if="eklaimBusy === 'new'" class="sp" aria-hidden="true"></div>
+                          <span v-else class="kl-eklaim-step">1</span> Registrasi (new)
+                        </button>
+                        <button class="btn btn-secondary btn-sm" :disabled="!!eklaimBusy" @click="runEklaim('set-data', { successMsg: 'Data klaim dikirim ke E-Klaim' })">
+                          <div v-if="eklaimBusy === 'set-data'" class="sp" aria-hidden="true"></div>
+                          <span v-else class="kl-eklaim-step">2</span> Kirim Data
+                        </button>
+                        <button class="btn btn-secondary btn-sm" :disabled="!!eklaimBusy" @click="runEklaim('grouper')">
+                          <div v-if="eklaimBusy === 'grouper'" class="sp" aria-hidden="true"></div>
+                          <span v-else class="kl-eklaim-step">3</span> Grouper
+                        </button>
+                        <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || !selected.inacbgs_kode" :title="!selected.inacbgs_kode ? 'Jalankan grouper dulu' : 'Finalisasi (tidak bisa dibatalkan)'" @click="runEklaim('final', { confirmMsg: 'Finalisasi klaim di E-Klaim? Tindakan ini tidak bisa dibatalkan (hanya bisa dibuka via Re-edit).', successMsg: 'Klaim difinalisasi di E-Klaim' })">
+                          <div v-if="eklaimBusy === 'final'" class="sp" aria-hidden="true"></div>
+                          <span v-else class="kl-eklaim-step">4</span> Finalisasi
+                        </button>
+                      </div>
+                    </details>
+                  </div>
                 </div>
               </div>
 
@@ -1365,6 +1449,61 @@ function stepIndex(status) {
                     <span>Belum ada dokumen pendukung</span>
                   </div>
                   <p v-if="!selected.dokumen_pendukung.length" class="kl-input-hint" style="text-align:center">Dokumen RM (resume, hasil penunjang) akan muncul di sini saat sudah final.</p>
+                </div>
+              </div>
+
+              <!-- Lampiran Berkas Klaim (upload PDF/gambar) -->
+              <div class="card kl-dg-lampiran">
+                <div class="card-head">
+                  <div class="card-head-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                    Lampiran Berkas Klaim
+                  </div>
+                  <span class="doc-count-badge">{{ attachments.length }} berkas</span>
+                </div>
+                <div class="card-body">
+                  <!-- Uploader -->
+                  <div v-if="attCanEdit" class="att-uploader">
+                    <select v-model="attCategory" class="att-cat-select" aria-label="Kategori lampiran">
+                      <option v-for="c in ATT_CATEGORIES" :key="c.key" :value="c.key">{{ c.label }}</option>
+                    </select>
+                    <button class="btn btn-secondary btn-sm" :disabled="uploadingAtt" @click="pickAttFile">
+                      <div v-if="uploadingAtt" class="sp" aria-hidden="true"></div>
+                      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                      {{ uploadingAtt ? 'Mengunggah…' : 'Unggah PDF/Gambar' }}
+                    </button>
+                    <input ref="attFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png" hidden @change="onAttFileChange" />
+                  </div>
+                  <p class="kl-input-hint">PDF/JPG/PNG, maks 10 MB. Untuk dokumen yang belum tersedia digital (resume RJ, hasil penunjang). Pastikan sudah bertanda tangan & terbaca utuh.</p>
+
+                  <p v-if="loadingAtt" class="muted" style="font-size:12px">Memuat lampiran…</p>
+                  <div v-else-if="attachments.length" class="doc-list">
+                    <div v-for="att in attachments" :key="att.id" class="doc-row">
+                      <div class="doc-icon" :class="att.mime_type && att.mime_type.includes('pdf') ? 'resume_medis' : 'penunjang'">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      </div>
+                      <div class="doc-info">
+                        <div class="doc-name">{{ att.title || att.file_name }}</div>
+                        <div class="doc-meta">
+                          <span class="doc-tipe-badge penunjang">{{ (ATT_CATEGORIES.find(c => c.key === att.category) || {}).label || att.category }}</span>
+                          <span class="doc-date">{{ fmtFileSize(att.file_size) }}</span>
+                          <span v-if="att.by" class="doc-date">· {{ att.by }}</span>
+                        </div>
+                      </div>
+                      <div class="doc-actions">
+                        <a v-if="att.file_url" :href="att.file_url" target="_blank" rel="noopener" class="doc-btn" title="Lihat berkas">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </a>
+                        <button v-if="attCanEdit" class="doc-btn doc-btn-del" title="Hapus lampiran" @click="deleteAttachment(att)">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="doc-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                    <span>Belum ada lampiran diunggah</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1430,7 +1569,23 @@ function stepIndex(status) {
                         :disabled="selected.status !== 'REVIEW'"
                         :aria-label="item.label"
                       />
-                      <span :class="['kl-cklist-text', selected.checklist[item.key] ? 'checked' : '']">{{ item.label }}</span>
+                      <span class="kl-cklist-main">
+                        <span :class="['kl-cklist-text', selected.checklist[item.key] ? 'checked' : '']">{{ item.label }}</span>
+                        <!-- Ringkasan data nyata (inline) — verifikator melihat apa yang dicentang -->
+                        <span
+                          v-if="checklistSummary[item.key]"
+                          :class="['kl-cklist-data', checklistSummary[item.key].ok ? '' : 'missing']"
+                        >
+                          <template v-if="checklistSummary[item.key].pill">
+                            <span class="kl-code-pill kl-code-dx">{{ checklistSummary[item.key].pill }}</span>
+                            <span v-if="selected.diagnosis_utama.label" class="kl-cklist-data-txt">{{ selected.diagnosis_utama.label }}</span>
+                          </template>
+                          <template v-else-if="checklistSummary[item.key].pills && checklistSummary[item.key].pills.length">
+                            <span v-for="code in checklistSummary[item.key].pills" :key="code" class="kl-code-pill kl-code-tn">{{ code }}</span>
+                          </template>
+                          <template v-else>{{ checklistSummary[item.key].text }}</template>
+                        </span>
+                      </span>
                     </label>
 
                     <!-- Action buttons per item -->
@@ -1749,7 +1904,7 @@ function stepIndex(status) {
           </div>
           <div class="modal-body">
             <p id="modal-desc" class="modal-desc">
-              Anda akan mengirimkan klaim berikut ke server BPJS VClaim secara otomatis:
+              Anda akan <strong>memfinalisasi</strong> klaim berikut di aplikasi E-Klaim INA-CBG:
             </p>
             <div v-if="selected" class="modal-info-box" aria-label="Ringkasan klaim yang akan dikirim">
               <div class="modal-info-row"><span>Pasien</span><strong>{{ selected.nama_pasien }}</strong></div>
@@ -2132,7 +2287,9 @@ function stepIndex(status) {
 .klaim { padding: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; margin-bottom: 0.85rem; }
+.stat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.6rem; margin-bottom: 0.85rem; }
+@media (max-width: 1100px) { .stat-row { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 720px)  { .stat-row { grid-template-columns: repeat(2, 1fr); } }
 .stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; }
 .stat-icon { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .stat-icon svg { width: 17px; height: 17px; fill: none; stroke-width: 2; stroke-linecap: round; }
@@ -2179,6 +2336,7 @@ function stepIndex(status) {
 .kl-item-sep { font-size: 9.5px; color: var(--tu); font-variant-numeric: tabular-nums; margin-top: 1px; }
 .kl-item-date { font-size: 9.5px; color: var(--th); margin-top: 1px; }
 .kl-item-diag { font-size: 9.5px; color: var(--tu); margin-top: 2px; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.kl-need-dx { color: #b45309; font-style: normal; font-weight: 600; }
 .kl-item-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 .kl-badge { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; border: 1px solid; white-space: nowrap; }
 .kl-item-tarif { font-size: 10px; font-weight: 600; color: var(--ga); font-variant-numeric: tabular-nums; }
@@ -2243,6 +2401,15 @@ function stepIndex(status) {
 .kl-dg-diagnosis  { grid-column: 1;      grid-row: 2; }
 .kl-dg-dokumen    { grid-column: 2;      grid-row: 2; }
 .kl-dg-inacbgs   { grid-column: 1 / -1; grid-row: 3; }
+.kl-dg-lampiran  { grid-column: 1 / -1; grid-row: 4; }
+
+/* Uploader lampiran klaim */
+.att-uploader { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.att-cat-select { padding: 6px 8px; border: 1px solid var(--gb); border-radius: 7px; font-size: 12px; color: #000; background: #fff; }
+.att-cat-select:focus { outline: none; border-color: #1763d4; }
+.doc-icon.penunjang { background: #ecfeff; color: #0e7490; }
+.doc-tipe-badge.penunjang { background: #ecfeff; color: #0e7490; }
+.doc-btn-del:hover { color: #991b1b; border-color: #fca5a5; }
 .priv-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 600; color: var(--it); background: var(--ib); border: 1px solid var(--ibd); padding: 2px 8px; border-radius: 20px; }
 
 .kl-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem 1rem; }
@@ -2260,6 +2427,11 @@ function stepIndex(status) {
 .kl-code-ds { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
 .kl-code-tn { background: var(--pb); color: var(--pt); border: 1px solid var(--pbd); }
 .kl-dx-name { font-size: 12px; color: var(--td); line-height: 1.4; }
+.kl-dx-freetext {
+  font-size: 12px; color: var(--it); line-height: 1.45;
+  background: var(--ib); border: 1px solid var(--ibd); border-radius: 7px;
+  padding: 7px 10px; white-space: pre-wrap; word-break: break-word;
+}
 
 /* Grouper edit inline */
 .kl-cbgs-code-row { display: flex; align-items: center; gap: 6px; }
@@ -2344,6 +2516,37 @@ function stepIndex(status) {
 
 .kl-lupis-btn-row { display: flex; gap: 6px; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--gb); }
 
+/* Statcard koneksi E-Klaim (clickable) */
+.ek-stat { cursor: pointer; text-align: left; font: inherit; width: 100%; transition: box-shadow 0.15s, transform 0.1s; }
+.ek-stat:hover:not(:disabled) { box-shadow: 0 2px 10px rgba(15,23,42,0.08); }
+.ek-stat:active:not(:disabled) { transform: translateY(1px); }
+.ek-stat:disabled { cursor: progress; }
+.ek-val { font-weight: 700; }
+.ek-spin { animation: ek-rot 0.9s linear infinite; }
+@keyframes ek-rot { to { transform: rotate(360deg); } }
+
+/* Blok aksi E-Klaim di panel detail */
+.kl-eklaim { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px dashed var(--gb); }
+.kl-eklaim-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+.kl-eklaim-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--td); }
+.kl-eklaim-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2; }
+.kl-eklaim-dot { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 12px; white-space: nowrap; }
+.kl-eklaim-dot.on  { background: #dcfce7; color: #166534; }
+.kl-eklaim-dot.off { background: #fee2e2; color: #991b1b; }
+.kl-eklaim-dot.unk { background: #f1f5f9; color: #64748b; }
+.kl-eklaim-warn { font-size: 11.5px; color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; border-radius: 7px; padding: 6px 9px; margin: 0 0 0.5rem; }
+.kl-eklaim-note { font-size: 11.5px; color: var(--tm); margin: 0 0 0.5rem; line-height: 1.45; }
+.kl-eklaim-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.kl-eklaim-row.sub { margin-top: 6px; }
+.kl-eklaim-adv { margin-top: 8px; }
+.kl-eklaim-adv > summary { font-size: 11px; color: var(--tu); cursor: pointer; user-select: none; padding: 2px 0; }
+.kl-eklaim-adv > summary:hover { color: var(--ga); }
+.kl-eklaim-adv .kl-eklaim-row { margin-top: 7px; }
+.kl-eklaim-step { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--ga); color: #fff; font-size: 10px; font-weight: 700; margin-right: 2px; }
+.btn-ghost { background: transparent; color: var(--ga); border-color: transparent; }
+.btn-ghost:hover:not(:disabled) { background: var(--gl); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* Verifikasi Tab */
 .kl-verify-grid { display: grid; grid-template-columns: 1fr 340px; gap: 0.7rem; }
 .kl-action-col { display: flex; flex-direction: column; gap: 0.65rem; }
@@ -2365,14 +2568,19 @@ function stepIndex(status) {
 .kl-cklist-badge.pend { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
 
 .kl-checklist { display: flex; flex-direction: column; gap: 3px; }
-.kl-cklist-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.kl-cklist-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .kl-cklist-item:last-of-type { border-bottom: none; }
-.kl-cklist-label { display: flex; align-items: center; gap: 9px; cursor: pointer; flex: 1; }
-.kl-cklist-check { width: 15px; height: 15px; flex-shrink: 0; accent-color: var(--ga); cursor: pointer; }
+.kl-cklist-label { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; flex: 1; }
+.kl-cklist-check { width: 15px; height: 15px; flex-shrink: 0; accent-color: var(--ga); cursor: pointer; margin-top: 2px; }
 .kl-cklist-check:focus-visible { outline: 2px solid var(--ga); outline-offset: 2px; }
 .kl-cklist-check:disabled { cursor: not-allowed; opacity: 0.55; }
-.kl-cklist-text { font-size: 12px; color: var(--tm); line-height: 1.3; }
+.kl-cklist-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.kl-cklist-text { font-size: 12px; color: var(--tm); line-height: 1.3; font-weight: 600; }
 .kl-cklist-text.checked { color: var(--td); }
+.kl-cklist-data { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 11.5px; color: var(--td); line-height: 1.3; }
+.kl-cklist-data.missing { color: var(--et); font-style: italic; }
+.kl-cklist-data-txt { color: var(--tm); }
+.kl-cklist-ok, .kl-cklist-no { margin-top: 2px; }
 .kl-cklist-ok { width: 14px; height: 14px; fill: none; stroke: var(--st); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .kl-cklist-no { width: 14px; height: 14px; fill: none; stroke: var(--ebd); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .kl-cklist-hint { font-size: 10.5px; color: var(--tu); margin-top: 6px; font-style: italic; }

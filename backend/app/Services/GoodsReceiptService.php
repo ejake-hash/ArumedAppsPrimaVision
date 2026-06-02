@@ -11,12 +11,15 @@ use App\Models\Medication;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
+use App\Services\Concerns\RetriesUniqueNumber;
 use Carbon\Carbon;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 
 class GoodsReceiptService
 {
+    use RetriesUniqueNumber;
+
     public const ITEM_TYPES = ['MEDICATION', 'BHP', 'IOL'];
 
     public function index(array $filters = []): LengthAwarePaginator
@@ -131,29 +134,34 @@ class GoodsReceiptService
             $this->validateAgainstPo($po, $items);
         }
 
-        return DB::transaction(function () use ($data, $items, $po) {
-            $grn = GoodsReceipt::create([
-                'grn_number'     => $this->generateGrnNumber($data['receipt_date'] ?? null),
-                'po_id'          => $data['po_id'] ?? null,
-                'supplier_id'    => $data['supplier_id'],
-                'receipt_date'   => $data['receipt_date'] ?? now()->toDateString(),
-                'invoice_number' => $data['invoice_number'] ?? null,
-                'notes'          => $data['notes'] ?? null,
-                'total_amount'   => 0,
-                'received_by'    => auth('api')->id(),
-            ]);
+        // Nomor GRN via MAX+1 bisa tabrakan saat 2 request berbarengan → retry
+        // SELURUH transaksi saat unique-violation (Postgres membatalkan transaksi
+        // begitu satu statement gagal, jadi retry harus transaksi baru).
+        return $this->createWithRetry(function () use ($data, $items, $po) {
+            return DB::transaction(function () use ($data, $items, $po) {
+                $grn = GoodsReceipt::create([
+                    'grn_number'     => $this->generateGrnNumber($data['receipt_date'] ?? null),
+                    'po_id'          => $data['po_id'] ?? null,
+                    'supplier_id'    => $data['supplier_id'],
+                    'receipt_date'   => $data['receipt_date'] ?? now()->toDateString(),
+                    'invoice_number' => $data['invoice_number'] ?? null,
+                    'notes'          => $data['notes'] ?? null,
+                    'total_amount'   => 0,
+                    'received_by'    => auth('api')->id(),
+                ]);
 
-            foreach ($items as $row) {
-                $this->createItemAndApplyStock($grn, $row);
-            }
+                foreach ($items as $row) {
+                    $this->createItemAndApplyStock($grn, $row);
+                }
 
-            $this->recalcTotal($grn);
+                $this->recalcTotal($grn);
 
-            if ($po) {
-                $this->updatePoStatus($po);
-            }
+                if ($po) {
+                    $this->updatePoStatus($po);
+                }
 
-            return $grn->fresh(['supplier', 'purchaseOrder', 'items']);
+                return $grn->fresh(['supplier', 'purchaseOrder', 'items']);
+            });
         });
     }
 
@@ -264,17 +272,16 @@ class GoodsReceiptService
             'notes'        => $row['notes'] ?? null,
         ]);
 
-        // Apply ke stok GUDANG (INVENTORI) per (type, item, batch) — upsert qty_on_hand
-        $stock = InventoryStock::firstOrNew([
-            'item_type' => $item->item_type,
-            'location'  => InventoryStock::LOC_INVENTORI,
-            'item_id'   => $item->item_id,
-            'batch_no'  => $item->batch_no,
-        ]);
-        $stock->expiry_date = $item->expiry_date ?? $stock->expiry_date;
-        $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + $qty;
-        $stock->last_received_at = now();
-        $stock->save();
+        // Apply ke stok GUDANG (INVENTORI) per (type, item, batch) via upsertStock
+        // (sumber tunggal) agar batch_no NULL tidak menciptakan baris duplikat.
+        app(InventoryStockService::class)->upsertStock(
+            $item->item_type,
+            $item->item_id,
+            InventoryStock::LOC_INVENTORI,
+            $item->batch_no,
+            $qty,
+            $item->expiry_date ?? null
+        );
 
         // Update qty_received di PO item
         if (!empty($row['po_item_id'])) {
@@ -289,12 +296,28 @@ class GoodsReceiptService
             'location'  => InventoryStock::LOC_INVENTORI,
             'item_id'   => $it->item_id,
             'batch_no'  => $it->batch_no,
-        ])->first();
+        ])->lockForUpdate()->first();
 
-        if (!$stock) return;
+        $available = (float) ($stock->qty_on_hand ?? 0);
+        $toReverse = (float) $it->qty_received;
 
-        $newQty = (float) $stock->qty_on_hand - (float) $it->qty_received;
-        if ($newQty <= 0) {
+        // Stok hasil GRN ini sudah terlanjur dipakai/ditransfer (sisa < qty yang
+        // harus dikembalikan). Menolak penghapusan, bukan menghapus batch diam-diam
+        // (yang membuat stok gudang jadi 0 & akuntansi inventori salah). Admin harus
+        // selesaikan akuntansi stok yang sudah keluar dulu.
+        if ($available + 0.001 < $toReverse) {
+            $resolved = $this->resolveMasterRow($it->item_type, $it->item_id);
+            $name = $resolved['name'] ?? $it->item_id;
+            $batch = $it->batch_no ?? '(tanpa batch)';
+            abort(422,
+                "Penerimaan tidak bisa dibatalkan: stok '{$name}' batch {$batch} tinggal "
+                . round($available, 2) . " dari " . round($toReverse, 2)
+                . " yang diterima — sebagian sudah dipakai/ditransfer keluar gudang."
+            );
+        }
+
+        $newQty = $available - $toReverse;
+        if ($newQty <= 0.001) {
             $stock->delete();
         } else {
             $stock->update(['qty_on_hand' => $newQty]);

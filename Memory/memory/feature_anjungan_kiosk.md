@@ -24,3 +24,9 @@ Kiosk Anjungan Mandiri (`/anjungan`, public no-auth, `arumed-frontend/src/views/
 - **Pre-flight offline check** — `goUmum()` bail dengan error message friendly kalau `backendStatus === 'offline'` sebelum call API.
 
 **Numpad — SKIPPED sementara:** alur UMUM tidak ada input field (1 klik tombol). Numpad akan relevan saat BPJS aktif (input kode booking/NIK). [[feedback-bertahap-konfirmasi]]
+
+## Bugfix + Tema Biru (2026-06-01, belum commit)
+2 bug diperbaiki + selaraskan tema biru Prima Vision (ikut [[reference-design-tokens-primavision]] + pola [[feature-antrean-tv]]):
+- **Bug "Cetak Ulang" tak restart countdown**: tombol "Cetak Ulang" dulu cuma `triggerPrint()`. `window.print()` blocking → kalau diklik di detik akhir, countdown keburu habis saat dialog ditutup → user ketendang ke home. Fix: fungsi baru `reprintTicket()` = `triggerPrint()` + `startCountdown()` (reset 15s); tombol panggil itu.
+- **Tombol UMUM bisa diklik saat loading**: `:disabled` ditambah `|| screen === 'umum-loading'` (pertahanan berlapis anti double-tiket, di samping guard `return` di `goUmum`).
+- **Tema biru**: token (`--gd`/`--lm`/`--ga` dst di `assets/styles/tokens.css`) SUDAH biru, jadi gradient & accent otomatis biru. Yang dibersihkan = residu HIJAU hardcoded: `.ksk-btn.pri` color `#061d15`→`#06182E` (navy, sama teks tombol terang AntreanTVView), `.tkt-perf` tint `#f0f4f1`→`#eef4f9`. Accent `rgba(56,189,248)` (sky-400) & badge amber `#fbbf24` (semantik "Segera Hadir") DIPERTAHANKAN — identik dgn AntreanTVView. Build OK.

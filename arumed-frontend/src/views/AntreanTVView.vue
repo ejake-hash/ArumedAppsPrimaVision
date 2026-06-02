@@ -1386,7 +1386,7 @@ async function saveAudioDefaults() {
     <!-- TOP BAR -->
     <div class="tv-topbar">
       <div class="tv-logo">
-        <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="tv-logo-img" />
+        <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo rumah sakit" class="tv-logo-img" />
         <svg v-else viewBox="0 0 90 90" fill="none">
           <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.15)" stroke-width="1" />
           <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.22)" stroke-width="1" />
@@ -1424,7 +1424,7 @@ async function saveAudioDefaults() {
       <div class="video-panel">
         <!-- Placeholder -->
         <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
-          <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo klinik" class="video-logo-img" />
+          <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo rumah sakit" class="video-logo-img" />
           <svg v-else viewBox="0 0 90 90" fill="none">
             <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.08)" stroke-width="1" />
             <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.12)" stroke-width="1" />
@@ -1657,7 +1657,7 @@ async function saveAudioDefaults() {
               <button :class="['mode-card', { active: mediaMode === 'placeholder' }]" @click="setMediaMode('placeholder')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 <span>Placeholder</span>
-                <small>Logo + nama klinik</small>
+                <small>Logo + nama rumah sakit</small>
               </button>
               <button :class="['mode-card', { active: mediaMode === 'youtube' }]" @click="mediaMode === 'youtube' ? null : setMediaMode('youtube')" :disabled="!youtubeEmbedUrl">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 001.46 6.42 29 29 0 001 12a29 29 0 00.46 5.58 2.78 2.78 0 001.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.96A29 29 0 0023 12a29 29 0 00-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
@@ -2100,7 +2100,7 @@ async function saveAudioDefaults() {
             <template v-if="brandingDraft">
               <!-- LOGO -->
               <div class="ctrl-sub-section">
-                <p class="ctrl-lbl">Logo Klinik</p>
+                <p class="ctrl-lbl">Logo Rumah Sakit</p>
                 <div class="brand-logo-row">
                   <div class="brand-logo-preview">
                     <img v-if="brandingDraft.logo_data" :src="brandingDraft.logo_data" alt="Pratinjau logo" />
@@ -2118,7 +2118,7 @@ async function saveAudioDefaults() {
               <!-- TEKS BAR ATAS -->
               <div class="ctrl-sub-section">
                 <p class="ctrl-lbl">Teks Bar Atas (Header)</p>
-                <label class="ctrl-field-lbl">Nama Klinik</label>
+                <label class="ctrl-field-lbl">Nama Rumah Sakit</label>
                 <input v-model="brandingDraft.clinic_name" class="ctrl-input" type="text" maxlength="120" :placeholder="brandingDefaults.clinic_name" />
                 <label class="ctrl-field-lbl" style="margin-top:12px">Sub-judul Header</label>
                 <input v-model="brandingDraft.clinic_subtitle" class="ctrl-input" type="text" maxlength="160" :placeholder="brandingDefaults.clinic_subtitle" />
@@ -2446,7 +2446,7 @@ async function saveAudioDefaults() {
 }
 .queue-header-sub {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.4);
+  color: #fff;
   margin-top: 3px;
 }
 
@@ -2487,17 +2487,17 @@ async function saveAudioDefaults() {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.65);
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.station-card.has-called .sc-name { color: var(--lm); }
+.station-card.has-called .sc-name { color: #fff; }
 .sc-count {
   font-size: 9.5px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.4);
-  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
   padding: 2px 7px;
   border-radius: 10px;
   flex-shrink: 0;
@@ -2506,22 +2506,22 @@ async function saveAudioDefaults() {
   font-size: 9px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(56, 189, 248, 0.75);
+  color: #fff;
   font-weight: 600;
   margin-bottom: 0.2rem;
 }
-.sc-called-lbl.muted { color: rgba(255, 255, 255, 0.3); }
+.sc-called-lbl.muted { color: #fff; }
 .sc-called-num {
   font-family: 'Space Grotesk', serif;
   font-size: 38px;
   line-height: 1;
-  color: var(--lm);
+  color: #fff;
   letter-spacing: 0.03em;
   text-shadow: 0 0 18px rgba(56, 189, 248, 0.3);
 }
 .sc-called-num.muted {
   font-size: 28px;
-  color: rgba(255, 255, 255, 0.2);
+  color: #fff;
   text-shadow: none;
 }
 .sc-called-name {
@@ -2534,7 +2534,7 @@ async function saveAudioDefaults() {
 }
 .sc-called-poly {
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.55);
+  color: #fff;
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -2542,10 +2542,10 @@ async function saveAudioDefaults() {
 }
 .sc-next {
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.45);
+  color: #fff;
   margin-top: 4px;
 }
-.sc-next strong { color: rgba(56, 189, 248, 0.85); font-weight: 700; }
+.sc-next strong { color: #fff; font-weight: 700; }
 
 /* STATION TABS (control panel, tab Tampilan) */
 .station-tabs {

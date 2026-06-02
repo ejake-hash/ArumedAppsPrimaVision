@@ -30,6 +30,16 @@ const tabs = computed(() => {
     },
   ]
 
+  // Opsi Klinis — master pilihan dropdown/combobox stasiun klinis (Refraksi).
+  if (auth.can('pengaturan.read')) {
+    out.push({
+      section: 'Opsi Klinis',
+      items: [
+        { to: '/master-data/opsi-refraksi', label: 'Opsi Refraksi', icon: 'lens' },
+      ],
+    })
+  }
+
   // Fasilitas & Ruang — ruang operasi + ruangan/bed rawat inap + tarif kamar.
   // Tampil untuk RANAP (rawat_inap) ATAU admin pengaturan. Satu blok agar tak dobel.
   if (auth.can('rawat_inap.read') || auth.can('pengaturan.read')) {

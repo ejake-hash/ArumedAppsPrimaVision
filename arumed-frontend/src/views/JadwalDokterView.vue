@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/authStore'
 import { jadwalDokterApi } from '@/services/api'
@@ -78,18 +78,44 @@ async function doCopyNextWeek() {
   }
 }
 
-// ─── Download template CSV ───────────────────────────────────────────────────────
-async function downloadTemplate() {
+// ─── Menu format (CSV / Excel) ───────────────────────────────────────────────────
+const openMenu = ref(null) // 'template' | 'export' | null
+function toggleMenu(which) { openMenu.value = openMenu.value === which ? null : which }
+function closeMenu() { openMenu.value = null }
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// ─── Download template (CSV / Excel) ───────────────────────────────────────────────
+async function downloadTemplate(format = 'csv') {
+  closeMenu()
   try {
-    const res = await jadwalDokterApi.csvTemplate()
-    const url = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'template-jadwal-dokter.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    const res = await jadwalDokterApi.csvTemplate(format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-jadwal-dokter.${format}`)
   } catch (e) {
     toast('e', 'Gagal mengunduh template')
+  }
+}
+
+// ─── Export jadwal minggu aktif (CSV / Excel) ──────────────────────────────────────
+async function exportJadwal(format = 'csv') {
+  closeMenu()
+  try {
+    const params = {}
+    if (store.weekStart) params.week_start = store.weekStart
+    if (store.serviceType) params.service_type = store.serviceType
+    const res = await jadwalDokterApi.csvExport(params, format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(res.data, `jadwal-dokter-${store.weekStart || 'minggu-ini'}.${format}`)
+  } catch (e) {
+    toast('e', 'Gagal mengekspor jadwal')
   }
 }
 
@@ -163,6 +189,7 @@ function openEdit(jadwal, employeeId) {
 async function saveForm() {
   if (!form.value.employee_id) { toast('e', 'Pilih dokter terlebih dahulu'); return }
   if (!form.value.start_time || !form.value.end_time) { toast('e', 'Jam praktik wajib diisi'); return }
+  if (form.value.end_time <= form.value.start_time) { toast('e', 'Jam selesai harus lebih besar dari jam mulai'); return }
 
   saving.value = true
   try {
@@ -271,9 +298,11 @@ const activeWeekLabel = computed(() => {
 })
 
 onMounted(async () => {
+  document.addEventListener('click', closeMenu)
   await store.fetchAvailableWeeks() // set weekStart default = minggu ini
   await store.fetchAll()
 })
+onUnmounted(() => document.removeEventListener('click', closeMenu))
 </script>
 
 <template>
@@ -355,19 +384,43 @@ onMounted(async () => {
         </svg>
         {{ copying ? 'Menyalin...' : 'Salin ke Minggu Depan' }}
       </button>
-      <button class="btn-soft" @click="downloadTemplate" title="Unduh template CSV">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        Template
-      </button>
-      <button class="btn-soft accent" :disabled="importing" @click="triggerImport" title="Impor jadwal dari CSV">
+      <!-- Template (CSV / Excel) -->
+      <div class="fmt-wrap">
+        <button class="btn-soft" title="Unduh template — pilih format" @click.stop="toggleMenu('template')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Template
+          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div v-if="openMenu === 'template'" class="fmt-menu">
+          <button @click="downloadTemplate('csv')">CSV (.csv)</button>
+          <button @click="downloadTemplate('xlsx')">Excel (.xlsx)</button>
+        </div>
+      </div>
+
+      <!-- Export jadwal (CSV / Excel) -->
+      <div class="fmt-wrap">
+        <button class="btn-soft" title="Ekspor jadwal minggu aktif — pilih format" @click.stop="toggleMenu('export')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Export
+          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div v-if="openMenu === 'export'" class="fmt-menu">
+          <button @click="exportJadwal('csv')">CSV (.csv)</button>
+          <button @click="exportJadwal('xlsx')">Excel (.xlsx)</button>
+        </div>
+      </div>
+
+      <button class="btn-soft accent" :disabled="importing" @click="triggerImport" title="Impor jadwal dari CSV atau Excel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        {{ importing ? 'Mengimpor...' : 'Import CSV' }}
+        {{ importing ? 'Mengimpor...' : 'Import' }}
       </button>
-      <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden-file" @change="onFileChosen" />
+      <input ref="fileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden-file" @change="onFileChosen" />
 
       <button v-if="canBpjsMapping" class="btn-soft" @click="showBpjsMapping = true" title="Pemetaan poli & DPJP ke kode BPJS + sinkron jadwal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -1082,6 +1135,21 @@ select.inp { cursor: pointer; }
 .btn-soft.accent { background: #1763d4; color: #fff; border-color: #1763d4; }
 .btn-soft.accent:hover { background: #1255bb; border-color: #1255bb; color: #fff; }
 .hidden-file { display: none; }
+
+/* Dropdown pilih format (CSV / Excel) */
+.fmt-wrap { position: relative; }
+.fmt-wrap .caret { width: 12px; height: 12px; margin-left: -1px; }
+.fmt-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 50;
+  background: #fff; border: 1px solid #dde4da; border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.1); overflow: hidden; min-width: 130px;
+}
+.fmt-menu button {
+  display: block; width: 100%; text-align: left; padding: 8px 14px;
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12.5px; font-weight: 500; color: #2d4a2d; font-family: 'Inter', sans-serif;
+}
+.fmt-menu button:hover { background: #f6fdf0; color: #1a2e1a; }
 
 /* Chip jenis di tabel list */
 .svc-chip {

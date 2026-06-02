@@ -42,6 +42,37 @@ class FarmasiController extends Controller
         return $this->ok($queue, 'Antrian selesai');
     }
 
+    public function lewatiAntrian(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->lewatiAntrian($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien dipindah ke akhir antrean');
+    }
+
+    /**
+     * GET /farmasi/harga-obat?medication_id=&visit_id=
+     * Preview harga obat tambahan sesuai penjamin pasien (harga yang ditagih kasir).
+     */
+    public function previewHargaObat(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'medication_id' => ['required', 'string'],
+            'visit_id'      => ['nullable', 'string'],
+        ]);
+
+        try {
+            $preview = $this->service->previewHargaObat($data['medication_id'], $data['visit_id'] ?? null);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($preview);
+    }
+
     // =========================================================================
     // RESEP OBAT
     // =========================================================================

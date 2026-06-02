@@ -11,7 +11,7 @@
  * Cara kerja diskon (backend): selisih total_base_price (Σ qty × default_price)
  * dengan sell_price per penjamin. Ditampilkan otomatis di kolom diskon.
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTarifPaketStore } from '@/stores/tarifPaketStore'
 import { masterApi } from '@/services/api'
@@ -173,14 +173,14 @@ async function removeItem(item) {
 // ─── Modal Tariff ────────────────────────────────────────────────────────
 const tariffModal = ref({
   open: false,
-  payload: { insurer_id: '', classification: 'UMUM', sell_price: 0, is_active: true },
+  payload: { insurer_id: '', sell_price: 0, is_active: true },
   errors: null, submitting: false, editingId: null,
 })
 
 function openAddTariff() {
   tariffModal.value = {
     open: true,
-    payload: { insurer_id: '', classification: 'UMUM', sell_price: paket.value?.total_base_price ?? 0, is_active: true },
+    payload: { insurer_id: '', sell_price: paket.value?.total_base_price ?? 0, is_active: true },
     errors: null, submitting: false, editingId: null,
   }
 }
@@ -190,7 +190,6 @@ function openEditTariff(t) {
     open: true,
     payload: {
       insurer_id: t.insurer_id ?? '',
-      classification: t.classification,
       sell_price: t.sell_price,
       is_active: t.is_active,
     },
@@ -200,10 +199,8 @@ function openEditTariff(t) {
 
 const tariffFields = computed(() => {
   const insurerOpts = [{ value: '', label: 'SEMUA (default)' }, ...insurers.value.map((i) => ({ value: i.id, label: i.name }))]
-  const classOpts = ['UMUM','BPJS','ASURANSI','PERUSAHAAN','SOSIAL'].map((c) => ({ value: c, label: c }))
   return [
-    { key: 'insurer_id',     label: 'Penjamin',    type: 'select',   options: insurerOpts, cols: 1, hint: 'Kosongkan = semua penjamin' },
-    { key: 'classification', label: 'Klasifikasi', type: 'select',   options: classOpts,   required: true, cols: 1 },
+    { key: 'insurer_id',     label: 'Penjamin',    type: 'select',   options: insurerOpts, cols: 2, hint: 'Kosongkan = berlaku untuk semua penjamin' },
     { key: 'sell_price',     label: 'Harga Jual (Rp)', type: 'number', required: true, min: 0, cols: 2, hint: `Base total paket: Rp ${Number(paket.value?.total_base_price ?? 0).toLocaleString('id-ID')} — selisih jadi diskon` },
     { key: 'is_active',      label: 'Aktif',       type: 'checkbox', cols: 1 },
   ]
@@ -226,7 +223,7 @@ async function onSubmitTariff(payload) {
 }
 
 async function removeTariff(t) {
-  if (!confirm(`Hapus tarif untuk ${t.insurer_name ?? 'SEMUA'} (${t.classification})?`)) return
+  if (!confirm(`Hapus tarif untuk ${t.insurer?.name ?? 'SEMUA'}?`)) return
   try {
     await store.removeTariff(paketId.value, t.id)
     showToast('s', 'Tarif dihapus')
@@ -259,24 +256,34 @@ function showToast(t, msg) {
 // ─── CSV per-paket (template / export / import komposisi paket ini) ─────────
 const csvBusy = ref(false)
 const csvFileInput = ref(null)
+const openMenu = ref(null)   // 'template' | 'export' | null
 
-async function onDownloadTemplate() {
+function toggleMenu(name) {
+  openMenu.value = openMenu.value === name ? null : name
+}
+function closeMenuOnOutside(e) {
+  if (!e.target.closest?.('.pd-split')) openMenu.value = null
+}
+
+async function onDownloadTemplate(format = 'csv') {
+  openMenu.value = null
   csvBusy.value = true
   try {
-    await store.downloadPaketTemplateOne(paketId.value, paket.value?.name)
-    showToast('s', 'Template komposisi paket diunduh')
+    await store.downloadPaketTemplateOne(paketId.value, paket.value?.name, format)
+    showToast('s', `Template komposisi diunduh (${format.toUpperCase()})`)
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal mengunduh template')
   } finally { csvBusy.value = false }
 }
 
-async function onExportCsv() {
+async function onExportCsv(format = 'csv') {
+  openMenu.value = null
   csvBusy.value = true
   try {
-    await store.exportPaketCsvOne(paketId.value, paket.value?.name)
-    showToast('s', 'Komposisi paket diunduh')
+    await store.exportPaketCsvOne(paketId.value, paket.value?.name, format)
+    showToast('s', `Komposisi paket diunduh (${format.toUpperCase()})`)
   } catch (e) {
-    showToast('e', e.response?.data?.message ?? 'Gagal mengunduh CSV')
+    showToast('e', e.response?.data?.message ?? 'Gagal mengunduh')
   } finally { csvBusy.value = false }
 }
 
@@ -304,8 +311,10 @@ async function onImportFile(e) {
 }
 
 onMounted(async () => {
+  document.addEventListener('click', closeMenuOnOutside)
   await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns()])
 })
+onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 
 watch(paketId, async (id) => {
   if (id) await store.fetchPaketDetail(id)
@@ -353,19 +362,33 @@ watch(paketId, async (id) => {
               <p>Tindakan / Obat / BHP / IOL — harga snapshot saat ditambahkan.</p>
             </div>
             <div class="pd-head-actions">
-              <button class="pd-btn-ghost" :disabled="csvBusy" title="Unduh template CSV komposisi paket ini (terisi)" @click="onDownloadTemplate">
-                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Template
-              </button>
-              <button class="pd-btn-ghost" :disabled="csvBusy || !itemsEnriched.length" title="Unduh komposisi paket ini" @click="onExportCsv">
-                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                Export
-              </button>
-              <button class="pd-btn-ghost" :disabled="csvBusy" title="Ganti komposisi paket ini dari CSV" @click="triggerImport">
+              <div class="pd-split">
+                <button class="pd-btn-ghost" :disabled="csvBusy" title="Unduh template komposisi paket ini (terisi) — pilih format" @click.stop="toggleMenu('template')">
+                  <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Template
+                  <svg class="pd-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="openMenu === 'template'" class="pd-menu">
+                  <button @click="onDownloadTemplate('csv')">CSV (.csv)</button>
+                  <button @click="onDownloadTemplate('xlsx')">Excel (.xlsx)</button>
+                </div>
+              </div>
+              <div class="pd-split">
+                <button class="pd-btn-ghost" :disabled="csvBusy || !itemsEnriched.length" title="Unduh komposisi paket ini — pilih format" @click.stop="toggleMenu('export')">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  Export
+                  <svg class="pd-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="openMenu === 'export'" class="pd-menu">
+                  <button @click="onExportCsv('csv')">CSV (.csv)</button>
+                  <button @click="onExportCsv('xlsx')">Excel (.xlsx)</button>
+                </div>
+              </div>
+              <button class="pd-btn-ghost" :disabled="csvBusy" title="Ganti komposisi paket ini dari CSV/Excel" @click="triggerImport">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 Import
               </button>
-              <input ref="csvFileInput" type="file" accept=".csv,text/csv" style="display:none" @change="onImportFile" />
+              <input ref="csvFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onImportFile" />
               <button class="pd-btn-primary" @click="openAddItem">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Tambah Item
@@ -420,14 +443,13 @@ watch(paketId, async (id) => {
 
           <table v-if="tariffsRaw.length" class="pd-table">
             <thead>
-              <tr><th>Penjamin</th><th>Kelas</th><th class="r">Harga Jual</th><th class="r">Diskon</th><th>Status</th><th></th></tr>
+              <tr><th>Penjamin</th><th class="r">Harga Jual</th><th class="r">Diskon</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tariffsRaw" :key="t.id">
                 <td>
                   <span class="pd-insurer-pill" :class="{ all: !t.insurer_id }">{{ t.insurer?.name ?? 'SEMUA' }}</span>
                 </td>
-                <td><span class="pd-class-pill" :data-c="t.classification">{{ t.classification }}</span></td>
                 <td class="r"><strong>{{ formatRp(t.sell_price) }}</strong></td>
                 <td class="r">
                   <div v-if="t.discount_amount > 0" class="pd-disc">
@@ -528,6 +550,11 @@ watch(paketId, async (id) => {
 .pd-btn-ghost:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .pd-btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
 .pd-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pd-split { position: relative; }
+.pd-caret { width: 11px !important; height: 11px !important; margin-left: 1px; }
+.pd-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.pd-menu button { text-align: left; padding: 7px 10px; border: none; background: transparent; border-radius: 6px; font-size: 12px; color: var(--td); cursor: pointer; }
+.pd-menu button:hover { background: var(--gl); color: var(--ga); }
 
 .pd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .pd-table th, .pd-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--gb); }

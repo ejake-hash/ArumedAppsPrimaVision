@@ -61,6 +61,7 @@ const qFilter        = ref('waiting')
 const ptypeFilter    = ref('Semua')
 const qSearch        = ref('')
 const pendingCallIds = ref([])
+const pendingSkipIds = ref([])
 
 // ─── Adapter helpers ────────────────────────────────────────────────────────
 function ptypeOf(visit) {
@@ -347,11 +348,13 @@ function resetFormState() {
   obatSearch.value = ''
   newRx.value = makeRx()
   kasirNote.value = ''
+  pharmacyNote.value = ''
   tab3Sent.value = false
   showSendKasirModal.value = false
   sendingToKasir.value = false
   diagnosisUtama.value = null
   diagnosisSekunder.value = []
+  diagnosisText.value = ''
   icd9List.value = []
   planning.value = ''
   tanggalKontrol.value = ''
@@ -359,6 +362,7 @@ function resetFormState() {
   surgeryPkg.value = ''
   surgeryDate.value = ''
   surgeryTime.value = ''
+  requiresInpatient.value = false
   bedahSlotInfo.value = null
   rujukFaskes.value = ''
   rujukAlasan.value = ''
@@ -410,19 +414,23 @@ async function callPt(p) {
   }
 }
 
-function skipPt(p) {
-  // Client-side reorder — turunkan 1 posisi (konsisten dengan PerawatView/RefraksionisView)
-  const arr = store.antrian
-  const idx = arr.findIndex((x) => x.id === p.id)
-  if (idx === -1) return
-  if (idx >= arr.length - 1) {
-    toast('w', `${p.name} sudah di posisi paling bawah`)
-    return
+async function skipPt(p) {
+  if (p.status === 'done' || p.status === 'skip') {
+    toast('w', 'Pasien sudah selesai, tidak bisa dilewati'); return
   }
-  const next = arr[idx + 1]
-  arr.splice(idx, 2, next, arr[idx])
-  if (store.selectedQueue?.id === p.id) store.clearSelected()
-  toast('w', `${p.qNum} diturunkan 1 posisi`)
+  if (pendingSkipIds.value.includes(p.id)) return
+  pendingSkipIds.value.push(p.id)
+  try {
+    // Otoritatif di server (tukar queue_sequence + broadcast TV) — bukan reorder
+    // lokal yang dibuang polling 8s. Pola sama: Kasir/Penunjang/Refraksionis.
+    await store.lewatiAntrian(p.id)
+    if (store.selectedQueue?.id === p.id) store.clearSelected()
+    toast('w', `${p.qNum} diturunkan 1 antrean`)
+  } catch (err) {
+    toast('w', err.message ?? 'Gagal melewati pasien')
+  } finally {
+    pendingSkipIds.value = pendingSkipIds.value.filter((id) => id !== p.id)
+  }
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
@@ -507,6 +515,8 @@ async function loadTab2() {
     tab2Exists.value = true
     exam.value.anamnese = e.anamnese ?? ''
     exam.value.slitlamp_notes = e.slitlamp_notes ?? ''
+    // Diagnosa naratif (Tab 4) — pulihkan agar tampil saat buka ulang / read-only.
+    if (e.diagnosis_text != null) diagnosisText.value = e.diagnosis_text
     for (const f of saFields) {
       exam.value.sa[f.key].od = e[`sa_${f.key}_od`] ?? ''
       exam.value.sa[f.key].os = e[`sa_${f.key}_os`] ?? ''
@@ -810,6 +820,7 @@ const rxList = ref([])
 const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja}
 const obatSearch = ref('')
 const kasirNote = ref('')          // catatan dokter untuk kasir (dipersist ke prescriptions.notes)
+const pharmacyNote = ref('')       // catatan dokter untuk farmasi (dipersist ke prescriptions.pharmacy_note)
 const tab3Sent = ref(false)        // sudah klik "Simpan & Kirim ke Kasir" → Tab 3 read-only
 const showSendKasirModal = ref(false)
 const sendingToKasir = ref(false)
@@ -836,6 +847,10 @@ function pickObat(d) {
   newRx.value.hja  = d.hja
   obatSearch.value = ''
 }
+// Opsi durasi pemakaian (satuan hari — selaras dengan _parseDur → duration_days).
+const DURASI_OPTS = ['3 hari', '5 hari', '7 hari', '10 hari', '14 hari', '21 hari', '28 hari', '30 hari', '60 hari', '90 hari']
+// Opsi Signa (frekuensi pakai). Memuat default makeRx '2×/hari'.
+const SIGNA_OPTS = ['1×/hari', '2×/hari', '3×/hari', '4×/hari', '6×/hari', 'tiap 4 jam', 'tiap 6 jam', 'tiap 8 jam', 'tiap jam', 'bila perlu (prn)', 'sebelum tidur', '1 tetes tiap 1 jam']
 function makeRx() {
   return { medication_id: null, name: '', form: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'ODS' }
 }
@@ -877,9 +892,10 @@ async function loadTindakanResep() {
     const { data } = await dokterApi.indexResep(visitId)
     const list = data.data ?? []
     const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
-    // Set kasirNote dari hasil load TANPA memicu autosave (watcher di-suppress).
+    // Set kasirNote/pharmacyNote dari hasil load TANPA memicu autosave (watcher di-suppress).
     _loadingResep = true
     kasirNote.value = presc?.notes ?? ''
+    pharmacyNote.value = presc?.pharmacy_note ?? ''
     nextTick(() => { _loadingResep = false })
     rxList.value = (presc?.items ?? []).map((it) => ({
       medication_id: it.medication_id,
@@ -921,6 +937,7 @@ async function saveResep() {
   try {
     await dokterApi.storeResep(visitId, {
       notes: kasirNote.value?.trim() || null,
+      pharmacy_note: pharmacyNote.value?.trim() || null,
       items: rxList.value.map((r) => ({
         medication_id: r.medication_id,
         quantity: Number(r.qty) || 1,
@@ -933,9 +950,9 @@ async function saveResep() {
   } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan resep') }
 }
 
-// Autosave kasirNote ke prescriptions.notes (ikut payload saveResep).
+// Autosave kasirNote/pharmacyNote ke prescriptions (ikut payload saveResep).
 // Di-skip saat perubahan berasal dari load (prefill), bukan ketikan dokter.
-watch(kasirNote, () => { if (!_loadingResep) scheduleSaveResep() })
+watch([kasirNote, pharmacyNote], () => { if (!_loadingResep) scheduleSaveResep() })
 
 // Tombol "Simpan & Kirim ke Kasir": flush autosave kedua endpoint lalu lock Tab 3.
 // Data fisik baru masuk ke station Kasir saat doFinalize() menjalankan
@@ -1042,6 +1059,7 @@ function resyncSoapP() { soap.value.P = planningText.value; soapDirty.P = false 
 
 const diagnosisUtama = ref(null)
 const diagnosisSekunder = ref([])
+const diagnosisText = ref('')   // diagnosa naratif (teks bebas) saat ragu kode ICD
 const dxSearch = ref('')
 const dxSearchSek = ref('')
 const icd10DB = [
@@ -1108,6 +1126,7 @@ const surgeryCategory = ref('')   // kategori paket bedah terpilih
 const surgeryPkg = ref('')        // id paket bedah terpilih
 const surgeryDate = ref('')
 const surgeryTime = ref('')       // jam rencana bedah (HH:MM) — opsional
+const requiresInpatient = ref(false)  // Fase 8: bedah perlu rawat inap pre-op (pasien datang H-1)
 const rujukFaskes = ref('')
 const rujukAlasan = ref('')
 
@@ -1428,6 +1447,7 @@ async function doFinalize() {
       soap_plan:          soap.value.P || null,
       diagnosis_utama:    diagnosisUtama.value.code,
       diagnosis_sekunder: diagnosisSekunder.value.map((d) => d.code),
+      diagnosis_text:     diagnosisText.value?.trim() || null,
       tindakan_codes:     icd9List.value.map((t) => t.code),
       planning:           PLANNING_ENUM[planning.value] ?? planning.value,
       surgery_package_id: planning.value === 'BEDAH' ? surgeryPkg.value : null,
@@ -1435,6 +1455,10 @@ async function doFinalize() {
       surgery_time:       planning.value === 'BEDAH' ? (surgeryTime.value || null) : null,
       // Fase 8: bedah yang butuh inap (pre-op H-1). Hanya relevan saat planning BEDAH.
       requires_inpatient: planning.value === 'BEDAH' ? requiresInpatient.value : false,
+      // Rujukan eksternal non-BPJS (faskes lain). BPJS dirujuk lewat VClaim (submitRujukKeluar),
+      // jadi field ini hanya diisi untuk pasien non-BPJS saat planning RUJUK.
+      external_referral_facility: planning.value === 'RUJUK' && !isBpjsPatient.value ? (rujukFaskes.value || null) : null,
+      external_referral_reason:   planning.value === 'RUJUK' && !isBpjsPatient.value ? (rujukAlasan.value || null) : null,
       follow_up_date:     planning.value === 'PULANG' && tanggalKontrol.value ? tanggalKontrol.value : null,
     })
 
@@ -1657,9 +1681,9 @@ async function doFinalize() {
                      : p.rawStatus !== 'WAITING' ? 'Panggil Ulang'
                      : 'Panggil' }}
                 </button>
-                <button class="q-act-btn skip" @click.stop="skipPt(p)">
+                <button class="q-act-btn skip" :disabled="pendingSkipIds.includes(p.id)" @click.stop="skipPt(p)">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
-                  Lewati
+                  {{ pendingSkipIds.includes(p.id) ? 'Melewati…' : 'Lewati' }}
                 </button>
               </div>
             </div>
@@ -2297,11 +2321,17 @@ async function doFinalize() {
                   </div>
                   <div class="rx-fg rx-fg-sig">
                     <label class="rx-fl">Signa</label>
-                    <input v-model="newRx.signa" class="form-input" placeholder="cth: 3×/hari" />
+                    <select v-model="newRx.signa" class="form-input" title="Aturan pakai (frekuensi)">
+                      <option value="">— pilih —</option>
+                      <option v-for="s in SIGNA_OPTS" :key="s" :value="s">{{ s }}</option>
+                    </select>
                   </div>
                   <div class="rx-fg rx-fg-dur">
                     <label class="rx-fl">Durasi</label>
-                    <input v-model="newRx.dur" class="form-input" placeholder="cth: 7 hari" />
+                    <select v-model="newRx.dur" class="form-input" title="Lama pemakaian obat">
+                      <option value="">— pilih —</option>
+                      <option v-for="d in DURASI_OPTS" :key="d" :value="d">{{ d }}</option>
+                    </select>
                   </div>
                   <div class="rx-fg rx-fg-pos">
                     <label class="rx-fl">Posisi Mata</label>
@@ -2319,22 +2349,49 @@ async function doFinalize() {
                     </button>
                   </div>
                 </div>
-                <!-- Obat list -->
-                <div v-if="rxList.length" class="rx-list">
-                  <div v-for="(r, i) in rxList" :key="i" class="rx-row">
-                    <div class="rx-icon">
-                      <svg viewBox="0 0 24 24"><path d="M10 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/></svg>
-                    </div>
-                    <div class="rx-body">
-                      <div class="rx-name">{{ r.name }}</div>
-                      <div class="rx-meta">{{ [r.qty + ' unit', r.jumlah, r.signa, r.dur, r.posisi].filter(Boolean).join(' · ') }}</div>
-                    </div>
+                <!-- Obat yang sudah diresepkan — tabel ringkas -->
+                <div v-if="rxList.length" class="rx-table">
+                  <div class="rx-thead">
+                    <div>Obat / Alkes</div>
+                    <div>Qty</div>
+                    <div>Jumlah</div>
+                    <div>Signa</div>
+                    <div>Durasi</div>
+                    <div>Mata</div>
+                    <div></div>
+                  </div>
+                  <div v-for="(r, i) in rxList" :key="`${r.medication_id}-${i}`" class="rx-trow">
+                    <div class="rx-cell-name" :title="r.name">{{ r.name }}</div>
+                    <div class="rx-cell">{{ r.qty }}</div>
+                    <div class="rx-cell">{{ r.jumlah || '—' }}</div>
+                    <div class="rx-cell">{{ r.signa || '—' }}</div>
+                    <div class="rx-cell">{{ r.dur || '—' }}</div>
+                    <div class="rx-cell">{{ r.posisi || '—' }}</div>
                     <button class="dx-remove" @click="removeRx(i)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   </div>
                 </div>
                 <div v-else class="dx-empty">Belum ada obat dalam resep</div>
+
+                <!-- Catatan dokter KHUSUS untuk petugas farmasi (substitusi, racikan,
+                     instruksi penyerahan). Terpisah dari Catatan Kasir (penagihan). -->
+                <div class="farmasi-note">
+                  <label class="farmasi-note-label" for="farmasi-note">
+                    <svg viewBox="0 0 24 24"><path d="M10 2v6.5L4 13v7h16v-7l-6-4.5V2z"/><line x1="9" y1="2" x2="15" y2="2"/></svg>
+                    Catatan untuk Farmasi
+                    <span class="farmasi-note-opsional">opsional</span>
+                  </label>
+                  <textarea
+                    id="farmasi-note"
+                    v-model="pharmacyNote"
+                    class="form-textarea farmasi-note-field"
+                    rows="2"
+                    maxlength="500"
+                    placeholder="Instruksi untuk farmasi (substitusi merek, racikan, cara penyerahan, dsb)…"
+                  ></textarea>
+                  <div class="farmasi-note-counter">{{ (pharmacyNote || '').length }}/500</div>
+                </div>
               </div>
             </div>
 
@@ -2416,7 +2473,7 @@ async function doFinalize() {
                           title="Susun ulang dari anamnese (Tab Pemeriksaan)">↺ sync</button>
                       </span>
                     </label>
-                    <textarea v-model="soap.S" @input="markSoapDirty('S')" class="form-textarea" rows="4"
+                    <textarea v-model="soap.S" @input="markSoapDirty('S')" class="form-textarea" rows="6"
                       placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
                   </div>
                   <div class="soap-cell">
@@ -2428,7 +2485,7 @@ async function doFinalize() {
                           title="Susun ulang dari data pemeriksaan terbaru">↺ sync</button>
                       </span>
                     </label>
-                    <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="4"
+                    <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="8"
                       placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
                   </div>
                   <div class="soap-cell">
@@ -2436,7 +2493,7 @@ async function doFinalize() {
                       <span class="soap-letter a">A</span> Assessment — kesimpulan klinis
                       <span class="req">*</span>
                     </label>
-                    <textarea v-model="soap.A" class="form-textarea" rows="4"
+                    <textarea v-model="soap.A" class="form-textarea" rows="6"
                       placeholder="Diferensial diagnosis, kesimpulan..."></textarea>
                   </div>
                   <div class="soap-cell">
@@ -2448,7 +2505,7 @@ async function doFinalize() {
                           title="Susun ulang dari e-resep">↺ sync</button>
                       </span>
                     </label>
-                    <textarea v-model="soap.P" @input="markSoapDirty('P')" class="form-textarea" rows="4"
+                    <textarea v-model="soap.P" @input="markSoapDirty('P')" class="form-textarea" rows="6"
                       placeholder="Terisi otomatis dari e-resep (Nama Obat, Signa, Posisi)…"></textarea>
                   </div>
                 </div>
@@ -2525,6 +2582,24 @@ async function doFinalize() {
                       </div>
                     </div>
                   </div>
+
+                  <div class="dx-divider"></div>
+
+                  <!-- Tulis Diagnosa (teks bebas) — dipakai saat dokter ragu kode ICD.
+                       Terbaca verifikator di Klaim. -->
+                  <div class="dx-section">
+                    <div class="dx-section-title">
+                      <span class="dx-type freetext">Tulis Diagnosa</span>
+                      <span style="font-size:10px;color:var(--tu)">bila ragu kode</span>
+                    </div>
+                    <textarea
+                      v-model="diagnosisText"
+                      class="form-textarea"
+                      rows="2"
+                      maxlength="1000"
+                      placeholder="Tulis diagnosa dalam bentuk teks bila belum yakin kode ICD-10 yang sesuai…"
+                    ></textarea>
+                  </div>
                 </div>
               </div>
 
@@ -2598,6 +2673,19 @@ async function doFinalize() {
                     </div>
                     <div class="plan-check">
                       <svg v-if="planning === 'BEDAH'" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                    </div>
+                  </div>
+                  <!-- Rawat Inap (observasi) -->
+                  <div :class="['plan-opt', planning === 'RAWAT_INAP' ? 'selected' : '']" @click="planning = 'RAWAT_INAP'">
+                    <div class="plan-icon ranap">
+                      <svg viewBox="0 0 24 24"><path d="M3 18v-6a2 2 0 012-2h14a2 2 0 012 2v6"/><path d="M3 18h18"/><path d="M7 10V7a1 1 0 011-1h3a1 1 0 011 1v3"/></svg>
+                    </div>
+                    <div class="plan-body">
+                      <div class="plan-title">Rawat Inap</div>
+                      <div class="plan-sub">Observasi · menunggu kamar</div>
+                    </div>
+                    <div class="plan-check">
+                      <svg v-if="planning === 'RAWAT_INAP'" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                     </div>
                   </div>
                   <!-- Rujuk -->
@@ -3827,6 +3915,7 @@ async function doFinalize() {
 .dx-type { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.05em; text-transform: uppercase; flex-shrink: 0; }
 .dx-type.primary { background: var(--gd); color: #fff; }
 .dx-type.secondary { background: var(--gb); color: var(--tm); }
+.dx-type.freetext { background: var(--ga); color: #fff; }
 .dx-name { flex: 1; font-size: 12px; color: var(--td); }
 .dx-remove { background: none; border: none; cursor: pointer; color: var(--tu); padding: 2px; display: flex; }
 .dx-remove svg { width: 13px; height: 13px; }
@@ -3836,19 +3925,39 @@ async function doFinalize() {
 .icd9-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--pb); color: var(--pt); letter-spacing: 0.04em; }
 
 /* TINDAKAN / RX */
-.rx-list { display: flex; flex-direction: column; gap: 5px; }
-.rx-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; }
-.rx-icon { flex-shrink: 0; }
-.rx-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--ga); stroke-width: 1.5; stroke-linecap: round; }
-.rx-body { flex: 1; min-width: 0; }
-.rx-name { font-size: 12.5px; font-weight: 500; color: var(--td); }
-.rx-meta { font-size: 10.5px; color: var(--tu); margin-top: 1px; }
+/* Tabel obat yang sudah diresepkan — selaras dengan .tindakan-table */
+.rx-table { border: 1px solid var(--gb); border-radius: 9px; overflow: hidden; }
+.rx-thead, .rx-trow {
+  display: grid;
+  grid-template-columns: 1fr 52px 90px 90px 78px 56px 28px;
+  gap: 0.5rem; align-items: center;
+}
+.rx-thead {
+  padding: 0.45rem 0.85rem; background: var(--bs);
+  font-size: 9.5px; font-weight: 700; color: var(--tu);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--gb);
+}
+.rx-trow {
+  padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--gb);
+  transition: background 0.1s;
+}
+.rx-trow:last-child { border-bottom: none; }
+.rx-trow:hover { background: var(--bs); }
+.rx-cell-name {
+  font-size: 12px; font-weight: 500; color: var(--td);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.rx-cell {
+  font-size: 11.5px; color: var(--tu);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* PLANNING */
-/* Planning di kolom kanan (sempit) → 3 opsi kompak sejajar: Pulang | Bedah | Rujuk.
+/* Planning di kolom kanan (sempit) → 4 opsi kompak 2×2: Pulang | Rawat Inap | Bedah | Rujuk.
    Tiap opsi vertikal-center (icon di atas, judul di bawah), subtitle disembunyikan
-   agar muat 3 kolom. */
-.plan-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
+   agar muat dalam grid sempit. */
+.plan-opts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
 .plan-opt {
   display: flex; flex-direction: column; align-items: center; gap: 5px;
   padding: 0.6rem 0.4rem; border: 1.5px solid var(--gb); border-radius: 9px;
@@ -3858,10 +3967,12 @@ async function doFinalize() {
 .plan-opt.selected { border-color: var(--ga); background: var(--gl); }
 .plan-icon { width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .plan-icon.pulang { background: var(--sb); }
+.plan-icon.ranap { background: #ccfbf1; }
 .plan-icon.bedah { background: var(--wb); }
 .plan-icon.rujuk { background: var(--ib); }
 .plan-icon svg { width: 15px; height: 15px; fill: none; stroke-width: 2; stroke-linecap: round; }
 .plan-icon.pulang svg { stroke: var(--st); }
+.plan-icon.ranap svg { stroke: #0f766e; }
 .plan-icon.bedah svg { stroke: var(--wt); }
 .plan-icon.rujuk svg { stroke: var(--it); }
 .plan-body { min-width: 0; }
@@ -4343,6 +4454,31 @@ async function doFinalize() {
   resize: vertical; min-height: 56px; font-size: 12px; line-height: 1.4; flex: 1;
 }
 .kasir-note-counter {
+  margin-top: 0; text-align: right;
+  font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums;
+}
+/* ── Catatan untuk Farmasi (di dalam card E-Resep) ──────────────────────────
+   Mengikuti gaya Catatan Kasir; dipisah dari daftar obat dengan garis tipis. */
+.farmasi-note {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 0.75rem; padding-top: 0.75rem;
+  border-top: 1px dashed var(--gb);
+}
+.farmasi-note-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 600; color: var(--tm); letter-spacing: 0.02em;
+}
+.farmasi-note-label svg {
+  width: 12px; height: 12px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.farmasi-note-opsional {
+  font-size: 9px; font-weight: 500; color: var(--th); font-style: italic;
+  margin-left: 2px;
+}
+.farmasi-note-field {
+  resize: vertical; min-height: 52px; font-size: 12px; line-height: 1.4;
+}
+.farmasi-note-counter {
   margin-top: 0; text-align: right;
   font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums;
 }

@@ -118,4 +118,58 @@ class AuthController extends Controller
             'errors'  => null,
         ]);
     }
+
+    /**
+     * PUT /auth/pin — dokter mengubah PIN tanda tangan sendiri.
+     * Body: { current_password, pin (4-6 digit) }
+     */
+    public function changePin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'pin'              => 'required|string|min:4|max:6|regex:/^\d+$/',
+        ]);
+
+        try {
+            $this->service->changePin($validated['current_password'], $validated['pin']);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'data'    => null,
+                'message' => $e->getMessage(),
+                'errors'  => null,
+            ], $this->statusOf($e, 422));
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => null,
+            'message' => 'PIN berhasil diubah',
+            'errors'  => null,
+        ]);
+    }
+
+    /**
+     * POST /auth/reset-to-default — dokter mereset password (→888888) & PIN (→kosong).
+     */
+    public function resetToDefault(): JsonResponse
+    {
+        try {
+            $this->service->resetToDefault();
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'data'    => null,
+                'message' => $e->getMessage(),
+                'errors'  => null,
+            ], $this->statusOf($e, 422));
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => null,
+            'message' => 'Password direset ke default (888888) & PIN dikosongkan',
+            'errors'  => null,
+        ]);
+    }
 }

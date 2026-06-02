@@ -80,9 +80,17 @@ watch(() => store.selectedQueue, (q) => {
 const isPreopBedah = computed(() =>
   store.selectedQueue?.visit?.visit_type === 'PREOP_BEDAH'
 )
+// Fase 8B: pre-op yang butuh rawat inap H-1 (inpatient_reason=PRE_OP) → tujuan
+// "Menunggu Kamar", bukan langsung ke Bedah. Bedakan agar tombol yang muncul tepat.
+const isPreopRanap = computed(() =>
+  isPreopBedah.value && store.selectedQueue?.visit?.inpatient_reason === 'PRE_OP'
+)
 const parallelRefraksiDone = computed(() => !!store.parallelStatus?.refraksi_done)
 const canKirimKeBedah = computed(() =>
-  isPreopBedah.value && store.isFinalized && parallelRefraksiDone.value
+  isPreopBedah.value && !isPreopRanap.value && store.isFinalized && parallelRefraksiDone.value
+)
+const canKirimKeRanap = computed(() =>
+  isPreopRanap.value && store.isFinalized && parallelRefraksiDone.value
 )
 
 async function onKirimKeBedah() {
@@ -90,6 +98,16 @@ async function onKirimKeBedah() {
     await store.kirimKeBedah()
     toast('s', 'Pasien dikirim ke antrian Bedah')
     // Refresh antrian biar UI sinkron (queue triase jadi COMPLETED, dst.)
+    await store.fetchAntrian()
+  } catch (e) {
+    toast('w', e.message)
+  }
+}
+
+async function onKirimKeRanap() {
+  try {
+    await store.kirimKeRanap()
+    toast('s', 'Pasien dikirim ke papan Menunggu Kamar (Rawat Inap)')
     await store.fetchAntrian()
   } catch (e) {
     toast('w', e.message)
@@ -119,7 +137,10 @@ function vitalStatus(val, lo, hi) {
   return 'normal'
 }
 
-const tdStatus   = computed(() => vitalStatus(form.value.td_s,   90, 140))
+// Sistolik normal 90–139 (≥140 = hipertensi → warna high). Threshold ini
+// disetarakan dengan label hint "90–139 / 60–89" di template agar tak membingungkan.
+const tdStatus   = computed(() => vitalStatus(form.value.td_s,   90, 139))
+const tdDiaStatus = computed(() => vitalStatus(form.value.td_d,  60, 89))
 const nadiStatus = computed(() => vitalStatus(form.value.nadi,   60, 100))
 const spo2Status = computed(() => vitalStatus(form.value.spo2,   95, 100))
 const suhuStatus = computed(() => vitalStatus(form.value.suhu,   36.0, 37.5))
@@ -779,11 +800,11 @@ onUnmounted(() => {
               <div class="sec-title">Kardiovaskular</div>
               <div class="form-grid g4">
                 <div class="fg span2">
-                  <label class="fl" for="td-s">Tekanan Darah <span class="req">*</span> <span class="hint">90–120 / 60–80</span></label>
+                  <label class="fl" for="td-s">Tekanan Darah <span class="req">*</span> <span class="hint">90–139 / 60–89</span></label>
                   <div class="td-row">
                     <input id="td-s" v-model="form.td_s" type="number" :class="['form-input', `vital-${tdStatus}`]" placeholder="Sistolik" :disabled="formLocked" />
                     <span aria-hidden="true">/</span>
-                    <input v-model="form.td_d" type="number" class="form-input" placeholder="Diastolik" aria-label="Diastolik mmHg" :disabled="formLocked" />
+                    <input v-model="form.td_d" type="number" :class="['form-input', `vital-${tdDiaStatus}`]" placeholder="Diastolik" aria-label="Diastolik mmHg" :disabled="formLocked" />
                     <span class="unit" aria-hidden="true">mmHg</span>
                   </div>
                 </div>
@@ -992,8 +1013,8 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- ── Kartu aksi: Kirim ke Bedah (visit PREOP_BEDAH) ── -->
-          <div v-if="!store.asesmenLoading && isPreopBedah" class="card send-card preop-send-card">
+          <!-- ── Kartu aksi: Kirim ke Bedah (visit PREOP_BEDAH, non-inap) ── -->
+          <div v-if="!store.asesmenLoading && isPreopBedah && !isPreopRanap" class="card send-card preop-send-card">
             <div class="card-body send-card-body">
               <div class="send-card-info">
                 <div class="send-card-title">
@@ -1018,6 +1039,39 @@ onUnmounted(() => {
                   <div v-if="store.sendingBedah" class="sp" role="status" aria-label="Mengirim…"></div>
                   <template v-else>
                     Kirim ke Bedah
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  </template>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Kartu aksi: Kirim ke Rawat Inap (Fase 8B — pre-op inap H-1) ── -->
+          <div v-if="!store.asesmenLoading && isPreopRanap" class="card send-card preop-send-card">
+            <div class="card-body send-card-body">
+              <div class="send-card-info">
+                <div class="send-card-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18v-6a2 2 0 012-2h14a2 2 0 012 2v6"/><path d="M3 18h18"/><path d="M7 10V7a1 1 0 011-1h3a1 1 0 011 1v3"/></svg>
+                  Kirim ke Rawat Inap
+                  <span class="preop-pill">PRE-OP INAP</span>
+                </div>
+                <div class="send-card-sub">
+                  <template v-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu.</template>
+                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + KGD + keluhan terisi).</template>
+                  <template v-else-if="!parallelRefraksiDone">Asesmen triase dikunci ✓. Menunggu <strong>Refraksionis</strong> menyelesaikan pemeriksaan visus/IOP.</template>
+                  <template v-else>Triase &amp; Refraksi selesai ✓. Klik <strong>Kirim ke Rawat Inap</strong> — pasien masuk papan <strong>Menunggu Kamar</strong> untuk persiapan pre-op.</template>
+                </div>
+              </div>
+              <div class="send-actions">
+                <button
+                  class="btn btn-success btn-lg send-btn"
+                  :disabled="!canKirimKeRanap || store.sendingRanap"
+                  :title="canKirimKeRanap ? 'Kirim pasien ke papan Menunggu Kamar' : 'Tunggu Triase + Refraksi selesai'"
+                  @click="onKirimKeRanap"
+                >
+                  <div v-if="store.sendingRanap" class="sp" role="status" aria-label="Mengirim…"></div>
+                  <template v-else>
+                    Kirim ke Rawat Inap
                     <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
                   </template>
                 </button>

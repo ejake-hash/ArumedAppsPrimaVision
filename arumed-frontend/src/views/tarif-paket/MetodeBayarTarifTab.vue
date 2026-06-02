@@ -12,7 +12,7 @@
  *   Setelah pilih item dari dropdown, panggil GET /tarif-paket/master-price/{type}/{itemId}
  *   → isi field `price` (admin bisa edit override).
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { masterApi, tarifPaketApi } from '@/services/api'
 import MasterTable from '@/components/master-data/MasterTable.vue'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
@@ -50,6 +50,14 @@ const confirmDelete = ref({ open: false, row: null, busy: false })
 const toast = ref(null)
 const importing = ref(false)
 const fileInputRef = ref(null)
+const openMenu = ref(null)   // 'template' | 'export' | null — dropdown pilih format
+
+function toggleMenu(name) {
+  openMenu.value = openMenu.value === name ? null : name
+}
+function closeMenuOnOutside(e) {
+  if (!e.target.closest?.('.tt-split')) openMenu.value = null
+}
 
 function emptyForm() {
   return { item_id: '', price: 0, is_active: true }
@@ -248,23 +256,25 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url)
 }
 
-async function onCsvTemplate() {
+async function onCsvTemplate(format = 'csv') {
+  openMenu.value = null
   try {
-    const res = await tarifPaketApi.metodeBayar.csvTemplate(props.insurerId, props.type)
-    triggerDownload(res.data, `template-tarif-${props.type}.csv`)
+    const res = await tarifPaketApi.metodeBayar.csvTemplate(props.insurerId, props.type, format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-tarif-${props.type}.${format}`)
   } catch (e) {
     showToast('e', 'Gagal download template')
   }
 }
 
-async function onCsvExport() {
+async function onCsvExport(format = 'csv') {
+  openMenu.value = null
   try {
-    const res = await tarifPaketApi.metodeBayar.csvExport(props.insurerId, props.type)
+    const res = await tarifPaketApi.metodeBayar.csvExport(props.insurerId, props.type, format === 'xlsx' ? 'xlsx' : undefined)
     const code = props.insurerCode || 'tarif'
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(res.data, `tarif-${props.type}-${code}-${today}.csv`)
+    triggerDownload(res.data, `tarif-${props.type}-${code}-${today}.${format}`)
   } catch (e) {
-    showToast('e', 'Gagal export CSV')
+    showToast('e', 'Gagal export')
   }
 }
 
@@ -292,8 +302,10 @@ async function onCsvImportSelected(e) {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
+  document.addEventListener('click', closeMenuOnOutside)
   await Promise.all([refresh(), loadItemDropdown()])
 })
+onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 
 // Reload kalau insurerId berubah (saat user switch insurer di luar)
 watch(() => props.insurerId, () => refresh())
@@ -309,19 +321,38 @@ watch(() => props.insurerId, () => refresh())
       </button>
 
       <div class="tt-csv-bar">
-        <button class="tt-btn-csv" :disabled="readOnly" :title="readOnly ? 'Child tidak boleh import' : 'Download template CSV (header)'" @click="onCsvTemplate">
-          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          Template
-        </button>
-        <button class="tt-btn-csv" :disabled="readOnly || importing" :title="readOnly ? 'Child tidak boleh import' : 'Upload CSV'" @click="onCsvImportClick">
+        <!-- Template (CSV / Excel) -->
+        <div class="tt-split">
+          <button class="tt-btn-csv" :disabled="readOnly" :title="readOnly ? 'Child tidak boleh import' : 'Download template (header) — pilih format'" @click.stop="toggleMenu('template')">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Template
+            <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="openMenu === 'template'" class="tt-menu">
+            <button @click="onCsvTemplate('csv')">CSV (.csv)</button>
+            <button @click="onCsvTemplate('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+
+        <button class="tt-btn-csv" :disabled="readOnly || importing" :title="readOnly ? 'Child tidak boleh import' : 'Upload CSV atau Excel'" @click="onCsvImportClick">
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           {{ importing ? 'Mengimport…' : 'Import' }}
         </button>
-        <button class="tt-btn-csv" @click="onCsvExport" title="Download semua tarif insurer ini sebagai CSV">
-          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Export
-        </button>
-        <input ref="fileInputRef" type="file" accept=".csv,text/csv" style="display:none" @change="onCsvImportSelected" />
+
+        <!-- Export (CSV / Excel) -->
+        <div class="tt-split">
+          <button class="tt-btn-csv" title="Download semua tarif insurer ini — pilih format" @click.stop="toggleMenu('export')">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export
+            <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="openMenu === 'export'" class="tt-menu">
+            <button @click="onCsvExport('csv')">CSV (.csv)</button>
+            <button @click="onCsvExport('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+
+        <input ref="fileInputRef" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onCsvImportSelected" />
       </div>
     </div>
 
@@ -422,6 +453,11 @@ watch(() => props.insurerId, () => refresh())
 .tt-btn-primary svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
 
 .tt-csv-bar { display: flex; gap: 6px; }
+.tt-split { position: relative; }
+.tt-caret { width: 11px !important; height: 11px !important; margin-left: 2px; }
+.tt-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.tt-menu button { text-align: left; padding: 7px 10px; border: none; background: transparent; border-radius: 6px; font-size: 12px; color: var(--td); cursor: pointer; }
+.tt-menu button:hover { background: var(--gl); color: var(--ga); }
 .tt-btn-csv { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .tt-btn-csv svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tt-btn-csv:hover:not(:disabled) { background: var(--gl); color: var(--td); border-color: var(--ga); }

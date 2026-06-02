@@ -78,14 +78,17 @@ class AntrolMobileService
         // Cocokkan pasien: NIK dulu, lalu nomor kartu BPJS.
         $patient = $this->matchPatient($data['nik'] ?? null, $data['nomorkartu'] ?? null);
 
-        return DB::transaction(function () use ($data, $sched, $tanggal, $patient) {
+        try {
+            return DB::transaction(function () use ($data, $sched, $tanggal, $patient) {
             // Cegah double-booking aktif untuk NIK + dokter + tanggal yang sama.
+            // Cek eksplisit ini memberi pesan ramah pada kasus normal; jaring pengaman
+            // ATOMIK terhadap race ada di partial unique index DB (antrean_bookings_
+            // active_unique) yang ditangkap sebagai QueryException di bawah.
             if (! empty($data['nik'])) {
                 $dup = AntreanBooking::where('nik', $data['nik'])
                     ->where('doctor_schedule_id', $sched->id)
                     ->whereDate('tanggal_periksa', $tanggal)
                     ->whereIn('status', [AntreanBooking::STATUS_DIBOOK, AntreanBooking::STATUS_CHECKIN])
-                    ->lockForUpdate()
                     ->first();
                 if ($dup) {
                     return $this->fail('Pasien sudah memiliki antrean aktif untuk dokter & tanggal ini.');
@@ -138,7 +141,12 @@ class AntrolMobileService
             $msg  = $patient ? 'Ok' : 'Silahkan lengkapi data pasien baru.';
 
             return $this->ok($response, $code, $msg);
-        });
+            });
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            // Race: dua request paralel utk NIK sama lolos cek eksplisit lalu sama-sama
+            // create → partial unique index DB menolak yang kedua. Balas ramah ke BPJS.
+            return $this->fail('Pasien sudah memiliki antrean aktif untuk dokter & tanggal ini.');
+        }
     }
 
     // =========================================================================

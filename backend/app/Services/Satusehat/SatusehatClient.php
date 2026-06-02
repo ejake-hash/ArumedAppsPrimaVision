@@ -83,7 +83,12 @@ class SatusehatClient
         );
     }
 
-    /** sandbox (default) | production — menentukan base URL. */
+    /**
+     * sandbox | production — menentukan host resmi Kemenkes di host().
+     * Default 'sandbox' SENGAJA: hanya kena bila config belum pernah disimpan;
+     * instance yang belum dikonfigurasi tidak boleh diam-diam menembak endpoint
+     * produksi. UI Konfigurasi menulis 'production' saat admin menyimpan.
+     */
     public function env(): string
     {
         return strtolower((string) ($this->config->configuration['env'] ?? 'sandbox'));
@@ -98,22 +103,36 @@ class SatusehatClient
     // BASE URLS (per-env)
     // =========================================================================
 
+    /** Host resmi Kemenkes per-env. */
+    private const HOST_PRODUCTION = 'https://api-satusehat.kemkes.go.id';
+    private const HOST_SANDBOX    = 'https://api-satusehat-stg.dto.kemkes.go.id';
+
     /**
      * base_url di IntegrationConfig adalah HOST (tanpa /oauth2 atau /fhir-r4).
-     * Jika kosong → fallback host per-env. oauthBase()/fhirBase() menempelkan
-     * suffix versi resmi Kemenkes.
+     * oauthBase()/fhirBase() menempelkan suffix versi resmi Kemenkes.
+     *
+     * RESOLUSI: env() menentukan host resmi. base_url tersimpan HANYA dipakai
+     * bila benar-benar custom (mis. proxy RS) — bukan salah satu host Kemenkes
+     * baku. Ini mencegah base_url lama yang ter-seed ke staging "menang" atas
+     * env=production (regresi: UI memaksa production tapi call tetap ke staging).
      */
     private function host(): string
     {
-        $base = trim((string) ($this->config->base_url ?? ''), '/');
+        $envHost = $this->env() === 'production' ? self::HOST_PRODUCTION : self::HOST_SANDBOX;
 
-        if ($base !== '') {
-            return $base;
+        $base = trim((string) ($this->config->base_url ?? ''), '/');
+        if ($base === '') {
+            return $envHost;
         }
 
-        return $this->env() === 'production'
-            ? 'https://api-satusehat.kemkes.go.id'
-            : 'https://api-satusehat-stg.dto.kemkes.go.id';
+        // base_url yang sama dengan salah satu host Kemenkes baku → abaikan,
+        // biarkan env() yang menentukan. Hanya host non-Kemenkes (proxy) yang dihormati.
+        $known = [self::HOST_PRODUCTION, self::HOST_SANDBOX];
+        if (in_array($base, $known, true)) {
+            return $envHost;
+        }
+
+        return $base;
     }
 
     public function oauthBase(): string
@@ -136,7 +155,11 @@ class SatusehatClient
      */
     public function getAccessToken(): string
     {
-        $this->assertEnabled();
+        // Token cukup butuh kredensial (client_credentials) — toggle is_enabled
+        // menggate SYNC data, bukan penerbitan token. Memungkinkan Test Koneksi &
+        // Cari KFA sebelum integrasi diaktifkan. FHIR sync tetap digate via
+        // assertEnabled() di fhir().
+        $this->assertHasCredentials();
 
         $cacheKey = 'satusehat:token:' . substr(sha1($this->clientId() . '|' . $this->env()), 0, 16);
 
@@ -195,7 +218,9 @@ class SatusehatClient
      */
     public function kfaSearch(string $keyword, int $size = 15): array
     {
-        $this->assertEnabled();
+        // Cari KFA = prasyarat isi kfa_code obat SEBELUM sync → cukup kredensial,
+        // tidak perlu toggle is_enabled (konsisten dgn fetchTokenInfo).
+        $this->assertHasCredentials();
 
         try {
             $resp = Http::withToken($this->getAccessToken())

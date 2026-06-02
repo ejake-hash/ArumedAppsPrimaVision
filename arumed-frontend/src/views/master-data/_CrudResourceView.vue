@@ -196,6 +196,7 @@ onMounted(refresh)
       v-if="!config.readOnly"
       :resource-key="config.resourceKey"
       :show-template="config.csvShowTemplate ?? true"
+      :allow-excel="config.csvAllowExcel ?? false"
       @imported="onImported"
       @error="(m) => showToast('e', m)"
     />

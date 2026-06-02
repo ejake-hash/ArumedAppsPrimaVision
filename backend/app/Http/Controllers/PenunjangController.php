@@ -293,20 +293,14 @@ class PenunjangController extends Controller
                 'expertise_data.axial_length_os' => 'nullable|numeric|between:10,35',
                 'expertise_data.findings' => 'nullable|string',
             ],
+            // Biometri kini fokus rekomendasi IOL saja (power/tipe/brand per mata) —
+            // field AL/K1/K2/ACD dihapus (lihat IolRecommendation → request gudang Bedah).
             DiagnosticTestType::BIOMETRI_CODE => [
                 'expertise_data.od' => 'nullable|array',
-                'expertise_data.od.axial_length' => 'nullable|numeric|between:10,35',
-                'expertise_data.od.k1'            => 'nullable|numeric|between:30,60',
-                'expertise_data.od.k2'            => 'nullable|numeric|between:30,60',
-                'expertise_data.od.acd'           => 'nullable|numeric|between:1,6',
                 'expertise_data.od.recommended_iol_power' => 'nullable|numeric|between:0,40',
                 'expertise_data.od.iol_type' => 'nullable|in:MONOFOCAL,MULTIFOCAL,TORIC,TRIFOCAL,EDOF,PHAKIC',
                 'expertise_data.od.brand'    => 'nullable|string|max:100',
                 'expertise_data.os' => 'nullable|array',
-                'expertise_data.os.axial_length' => 'nullable|numeric|between:10,35',
-                'expertise_data.os.k1'            => 'nullable|numeric|between:30,60',
-                'expertise_data.os.k2'            => 'nullable|numeric|between:30,60',
-                'expertise_data.os.acd'           => 'nullable|numeric|between:1,6',
                 'expertise_data.os.recommended_iol_power' => 'nullable|numeric|between:0,40',
                 'expertise_data.os.iol_type' => 'nullable|in:MONOFOCAL,MULTIFOCAL,TORIC,TRIFOCAL,EDOF,PHAKIC',
                 'expertise_data.os.brand'    => 'nullable|string|max:100',

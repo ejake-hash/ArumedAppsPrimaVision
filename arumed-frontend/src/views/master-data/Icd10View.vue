@@ -9,6 +9,7 @@ const config = {
   searchPlaceholder: 'Cari kode/deskripsi/Bahasa Indonesia…',
   extraSearchParam: 'search',
   csvShowTemplate: true,
+  csvAllowExcel: true,
   defaults: {
     code: '', chapter: '', chapter_label: '', category: '',
     description: '', indonesian_description: '',

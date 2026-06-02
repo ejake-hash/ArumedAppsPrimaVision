@@ -54,6 +54,19 @@ export const useDokterStore = defineStore('dokter', () => {
     }
   }
 
+  async function lewatiAntrian(queueId) {
+    try {
+      const { data } = await dokterApi.lewati(queueId)
+      _updateQueueItem(data.data)
+      // Server menukar queue_sequence 2 baris — refetch agar urutan UI sinkron
+      // (bukan reorder lokal yang dibuang polling). Pola sama: refraksiStore.
+      await fetchAntrian()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal melewati pasien')
+    }
+  }
+
   // Kirim pasien ke pemeriksaan penunjang (baris DOKTER di-pause + turun ke bawah)
   async function kirimKePenunjang(queueId) {
     try {
@@ -127,7 +140,7 @@ export const useDokterStore = defineStore('dokter', () => {
     selectedVisitId, selectedPatientId,
 
     // actions
-    fetchAntrian, panggilAntrian, selesaiAntrian, kirimKePenunjang,
+    fetchAntrian, panggilAntrian, lewatiAntrian, selesaiAntrian, kirimKePenunjang,
     pickPatient, clearSelected,
     startPolling, stopPolling,
   }

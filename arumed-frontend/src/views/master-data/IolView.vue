@@ -23,6 +23,7 @@ const config = {
   description: 'Master lensa intraokular (1 baris = 1 unit fisik, serial unik).',
   searchPlaceholder: 'Cari brand/model/pabrik/serial/lot…',
   extraSearchParam: 'search',
+  csvAllowExcel: true,
   csvShowTemplate: true,
   defaults: {
     brand: '', manufacturer: '', model: '',

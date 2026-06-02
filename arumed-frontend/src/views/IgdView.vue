@@ -607,10 +607,11 @@ onMounted(loadBoard)
         <div class="panel-head">Papan IGD <span class="muted">(urut prioritas triase)</span></div>
         <div v-if="!board.length" class="empty">Tidak ada pasien IGD aktif.</div>
         <div v-else class="board-list">
-          <button
+          <div
             v-for="row in board" :key="row.queue_id"
             class="board-row" :class="{ active: detail && detail.id === row.visit_id }"
-            @click="openDetail(row.visit_id)"
+            role="button" tabindex="0"
+            @click="openDetail(row.visit_id)" @keydown.enter="openDetail(row.visit_id)" @keydown.space.prevent="openDetail(row.visit_id)"
           >
             <span class="tri-bar" :style="{ background: colorHex(row.triase_color) }"></span>
             <div class="br-main">
@@ -627,7 +628,7 @@ onMounted(loadBoard)
               </div>
             </div>
             <button v-if="auth.can('igd.write')" class="btn-mini" @click.stop="openTriase(row)">Triase</button>
-          </button>
+          </div>
         </div>
       </div>
 
@@ -927,7 +928,7 @@ onMounted(loadBoard)
         <div class="modal-actions">
           <button class="btn btn-ghost btn-press" @click="showRegister = false">Batal</button>
           <button v-if="regTab==='cari'" class="btn btn-primary btn-press" :disabled="busy || !regForm.patient_id" @click="submitRegister">Daftarkan</button>
-          <button v-else class="btn btn-primary btn-press" :disabled="busy || !newForm.name || !newForm.dob_display" @click="submitRegisterNew">Daftar Pasien Baru</button>
+          <button v-else class="btn btn-primary btn-press" :disabled="busy || !newForm.name || !dobToIso(newForm.dob_display)" @click="submitRegisterNew">Daftar Pasien Baru</button>
         </div>
       </div>
     </div>

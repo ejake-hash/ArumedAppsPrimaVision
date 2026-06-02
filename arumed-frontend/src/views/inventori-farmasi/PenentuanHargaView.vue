@@ -352,7 +352,7 @@ watch(activeTab, () => { /* handled in switchTab */ })
           <code>kode</code>{{ activeTab === 'IOL' ? ' (= serial number)' : '' }}.
           Item harus sudah ada di master data.
         </span>
-        <input ref="csvFileInput" type="file" accept=".csv,text/csv" @change="onCsvFilePicked" style="display:none" />
+        <input ref="csvFileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" @change="onCsvFilePicked" style="display:none" />
       </div>
 
       <div v-if="csvResult" class="ph-csv-result" :class="{ warn: csvResult.errors?.length }">

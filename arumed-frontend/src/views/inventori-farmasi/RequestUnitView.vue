@@ -119,15 +119,24 @@ async function openReqDetail(row) {
 }
 
 async function doReqAction(row, action) {
+  // Catatan: prompt/confirm dievaluasi LAZY di dalam tiap aksi — kalau ditaruh
+  // langsung di literal map, prompt 'Alasan tolak' ikut muncul saat approve/close.
   const map = {
-    approve: { fn: () => unitRequestApi.approve(row.id), msg: 'Permintaan disetujui', confirm: 'Setujui permintaan ini?' },
-    reject:  { fn: () => unitRequestApi.reject(row.id, prompt('Alasan tolak:') || ''), msg: 'Permintaan ditolak', confirm: null },
-    close:   { fn: () => unitRequestApi.close(row.id),   msg: 'Permintaan ditutup',   confirm: 'Tutup permintaan?' },
+    approve: { confirm: 'Setujui permintaan ini?', fn: () => unitRequestApi.approve(row.id),                 msg: 'Permintaan disetujui' },
+    reject:  { confirm: null,                       fn: (reason) => unitRequestApi.reject(row.id, reason),    msg: 'Permintaan ditolak' },
+    close:   { confirm: 'Tutup permintaan?',         fn: () => unitRequestApi.close(row.id),                  msg: 'Permintaan ditutup' },
   }
   const op = map[action]
   if (op.confirm && !confirm(op.confirm)) return
+
+  let reason = ''
+  if (action === 'reject') {
+    reason = prompt('Alasan tolak:')
+    if (reason === null) return   // user batal → jangan kirim
+  }
+
   try {
-    await op.fn()
+    await op.fn(reason)
     showToast('s', op.msg)
     if (activeTab.value === 'PENDING') refreshPending(pendingMeta.value.current_page)
     else refreshReq(reqMeta.value.current_page)
@@ -155,6 +164,15 @@ async function openDeliver(row) {
       },
     }
   } catch (e) { showToast('e', 'Gagal load detail') }
+}
+
+// Clamp qty kirim ke [0, qty_requested] saat diketik (max HTML tak mencegah ketik manual).
+function clampDeliverQty(it) {
+  let q = Number(it._qty_deliver)
+  if (!Number.isFinite(q) || q < 0) q = 0
+  const maxQ = Number(it.qty_requested ?? 0)
+  if (q > maxQ) q = maxQ
+  it._qty_deliver = q
 }
 
 async function submitDeliver() {
@@ -250,14 +268,22 @@ async function openRetDetail(row) {
 }
 
 async function doRetAction(row, action) {
+  // prompt LAZY (lihat doReqAction) — jangan taruh prompt di literal map.
   const map = {
-    receive: { fn: () => unitReturnApi.receive(row.id), msg: 'Retur diterima & stok kembali ke inventori', confirm: 'Terima retur? Stok akan otomatis bertambah di inventori.' },
-    reject:  { fn: () => unitReturnApi.reject(row.id, prompt('Alasan tolak:') || ''), msg: 'Retur ditolak', confirm: null },
+    receive: { confirm: 'Terima retur? Stok akan otomatis bertambah di inventori.', fn: () => unitReturnApi.receive(row.id),               msg: 'Retur diterima & stok kembali ke inventori' },
+    reject:  { confirm: null,                                                        fn: (reason) => unitReturnApi.reject(row.id, reason), msg: 'Retur ditolak' },
   }
   const op = map[action]
   if (op.confirm && !confirm(op.confirm)) return
+
+  let reason = ''
+  if (action === 'reject') {
+    reason = prompt('Alasan tolak:')
+    if (reason === null) return   // user batal
+  }
+
   try {
-    await op.fn()
+    await op.fn(reason)
     showToast('s', op.msg)
     refreshRet(retMeta.value.current_page)
   } catch (e) {
@@ -365,7 +391,7 @@ onBeforeUnmount(() => {
     <header class="ru-head">
       <div>
         <h2>Request &amp; Retur dari Unit</h2>
-        <p class="ru-sub">Inbox admin inventori — verifikasi &amp; proses permintaan / pengembalian stok dari unit klinik.</p>
+        <p class="ru-sub">Inbox admin inventori — verifikasi &amp; proses permintaan / pengembalian stok dari unit rumah sakit.</p>
       </div>
     </header>
 
@@ -755,7 +781,7 @@ onBeforeUnmount(() => {
               <tr v-for="it in deliverModal.request?.items ?? []" :key="it.id">
                 <td>{{ it.item_name }}<span v-if="it.item_unit" class="ru-unit"> · {{ it.item_unit }}</span></td>
                 <td class="r">{{ it.qty_requested }}</td>
-                <td><input type="number" v-model="it._qty_deliver" min="0" :max="it.qty_requested" step="0.01" class="ru-inp ru-inp-sm" /></td>
+                <td><input type="number" v-model.number="it._qty_deliver" min="0" :max="it.qty_requested" step="0.01" class="ru-inp ru-inp-sm" @input="clampDeliverQty(it)" /></td>
               </tr>
             </tbody>
           </table>

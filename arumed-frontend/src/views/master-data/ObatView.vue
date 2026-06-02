@@ -28,6 +28,7 @@ const config = {
   searchPlaceholder: 'Cari kode/nama/generic/komposisi/pabrik…',
   extraSearchParam: 'search',
   csvShowTemplate: true,
+  csvAllowExcel: true,
   defaults: {
     name: '', kfa_code: '', generic_name: '', composition: '', manufacturer: '',
     formularium: 'FORNAS', form_sediaan: '', golongan: '',
@@ -37,7 +38,6 @@ const config = {
     is_active: true,
   },
   columns: [
-    { key: 'code',         label: 'Kode',         width: '110px' },
     { key: 'name',         label: 'Nama Obat' },
     { key: 'kfa_code',     label: 'KFA',          width: '100px' },
     { key: 'form_sediaan', label: 'Sediaan',      width: '110px' },

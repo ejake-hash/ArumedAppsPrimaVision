@@ -171,30 +171,60 @@ class JadwalDokterController extends Controller
         ]);
     }
 
-    // GET /jadwal-dokter/template-csv
-    public function template(): Response
+    // GET /jadwal-dokter/template-csv  (?format=xlsx untuk Excel)
+    public function template(Request $request): Response
     {
-        $csv = $this->service->getCsvTemplate();
+        return $this->csvOrXlsx($request, $this->service->getCsvTemplate(), 'template-jadwal-dokter', 'Jadwal');
+    }
+
+    // GET /jadwal-dokter/export-csv?week_start=&service_type=  (?format=xlsx untuk Excel)
+    public function export(Request $request): Response
+    {
+        $csv = $this->service->getCsvExport(
+            $request->query('week_start'),
+            $request->query('service_type'),
+        );
+
+        return $this->csvOrXlsx($request, $csv, 'jadwal-dokter-' . now()->format('Ymd'), 'Jadwal');
+    }
+
+    /** Kirim CSV string sbg file CSV (default) atau XLSX bila ?format=xlsx. */
+    private function csvOrXlsx(Request $request, string $csv, string $baseName, string $sheetTitle): Response
+    {
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
 
         return response($csv, 200, [
             'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="template-jadwal-dokter.csv"',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
         ]);
     }
 
-    // POST /jadwal-dokter/import-csv  (multipart: file + week_start)
+    // POST /jadwal-dokter/import-csv  (multipart: file CSV/XLSX + week_start)
     public function import(Request $request): JsonResponse
     {
         $request->validate([
-            'file'       => 'required|file|mimes:csv,txt|max:5120',
+            'file'       => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120',
             'week_start' => 'nullable|date_format:Y-m-d',
         ]);
 
         try {
-            $result = $this->service->importCsv(
-                $request->file('file')->getRealPath(),
-                $request->input('week_start')
-            );
+            // CSV/XLSX/ODS → CSV string ternormalisasi → tulis tmp → jalur importer existing.
+            $csv = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
+            $tmp = tempnam(sys_get_temp_dir(), 'jadwal_') . '.csv';
+            file_put_contents($tmp, $csv);
+
+            try {
+                $result = $this->service->importCsv($tmp, $request->input('week_start'));
+            } finally {
+                @unlink($tmp);
+            }
 
             $msg = "Import selesai: {$result['imported']} jadwal masuk, {$result['skipped']} dilewati.";
             if (! empty($result['errors'])) {

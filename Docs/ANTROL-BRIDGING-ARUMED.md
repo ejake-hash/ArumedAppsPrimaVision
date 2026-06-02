@@ -70,16 +70,20 @@ Mobile JKN                         RS (Arumed)
 ### 3.2 Pelaporan TaskID otomatis (Sisi A) — menempel di alur antrean RS Mata
 Alur antrean RS: `ADMISI → [TRIASE + REFRAKSIONIS paralel] → DOKTER → (PENUNJANG↺) → KASIR → FARMASI → SELESAI`
 
-| Event lokal | TaskID | Catatan |
-|---|---|---|
-| Ambil tiket kiosk | 1 | hanya jalur kiosk |
-| ADMISI dipanggil | 2 | hanya jalur kiosk |
-| Registrasi loket selesai / selesai admisi kiosk | **3** | jalur loket mulai dari sini |
-| DOKTER dipanggil | 4 | **sekali saja** (panggilan ulang pasca-penunjang tak kirim ulang) |
-| Selesai DOKTER → KASIR/FARMASI | 5 | mulai tunggu farmasi |
-| FARMASI dimulai | 6 | mulai buat obat |
-| FARMASI selesai (serah obat) | 7 | obat selesai |
-| Antrean dibatalkan | 99 | tidak hadir/batal |
+Makna taskid mengikuti spec resmi (Antrol.md:340-347) — tiap task = SATU titik "akhir X / mulai Y":
+
+| Event lokal | TaskID | Makna spec | Catatan |
+|---|---|---|---|
+| Ambil tiket kiosk → loket admisi | 1 | mulai tunggu admisi | hanya jalur kiosk |
+| ADMISI mulai daftar (dipanggil) | 2 | mulai layan admisi | hanya jalur kiosk |
+| Selesai daftar admisi | **3** | akhir layan admisi / mulai tunggu poli | jalur loket & check-in Mobile JKN mulai dari sini |
+| DOKTER dipanggil | 4 | mulai layan poli | `panggil()` station DOKTER; **sekali saja** (re-call pasca-penunjang tak kirim ulang) |
+| Selesai DOKTER → KASIR/FARMASI | 5 | akhir layan poli / mulai tunggu farmasi | sisa antrean BPJS berkurang di task 5 |
+| FARMASI mulai dispensing | 6 | mulai layan farmasi (buat obat) | `startDispensing` + `antrean/farmasi/add` |
+| FARMASI selesai (serah obat) | 7 | akhir obat selesai dibuat | `selesaiDispensing` |
+| Antrean dibatalkan | 99 | tidak hadir/batal | |
+
+> ⚠️ **Koreksi 2026-06-02:** pemetaan taskid sebelumnya OFF-BY-ONE (task 3 dipakai utk "mulai poli", dst). Sudah diperbaiki agar sesuai spec — BPJS memvalidasi makna & urutan task. Jalur kiosk kini melapor 1→2→3 berurutan via `QueueService::reportAdmisiKioskTasks` (advance ADMISI dipanggil `reportBpjs=false` agar urutan tak terbalik). Task 4 di `panggil()` DOKTER; task 6/7 + `antrean/farmasi/add` di `FarmasiService`.
 
 **Guard monoton:** kolom `visits.bpjs_last_taskid` menyimpan taskid terakhir; hanya kirim bila taskid baru > terakhir. Mencegah duplikat & waktu mundur (kasus bolak-balik DOKTER↔PENUNJANG khas pasien mata). Task 99 dikecualikan (selalu boleh).
 
@@ -155,4 +159,11 @@ Audit semua call (masuk & keluar) → tabel `bpjs_antrean_logs`.
 - **`poli_code` jadwal lama NULL** — kolom `doctor_schedules.poli_code` ditambah setelah seeding awal, jadi jadwal lama kosong. Form jadwal dokter sudah punya input `poli_code`; admin perlu buka & isi tiap jadwal eksisting agar muncul di Pemetaan Poli & payload BPJS terisi. Tanpa itu, payload ter-skip aman (tak crash).
 - **Jenis resep racikan** — model resep belum punya penanda racikan eksplisit. `AntrolMobileService::resolveJenisResep()` sementara selalu "Non racikan" (1 titik, `#TODO RACIKAN`). Saat menu racikan dibuat, ubah method ini saja → A8/B10/B11 ikut otomatis.
 - **Uji live sandbox BPJS** — menunggu credential turun.
+
+### Bugfix 2026-06-02 (Antrol)
+- **Taskid OFF-BY-ONE diperbaiki** — task 3-7 dulu salah-geser vs spec; kini sesuai (lihat tabel §3.2). Jalur kiosk lapor 1→2→3 berurutan; task 4 di panggil DOKTER; task 6/7 di dispensing farmasi.
+- **Kuota over-booking** — `AntreanKuotaService::terpakai()` dulu hanya hitung `Visit`; kini juga menghitung reservasi `AntreanBooking` aktif (DIBOOK belum check-in, anti dobel via `visit_id IS NULL`). Tanpa ini `sisakuota` ke BPJS selalu salah & reservasi online bisa lewati plafon.
+- **Double-booking race (B3)** — `lockForUpdate` pada SELECT kosong tak mengunci apa-apa; ditambah **partial unique index** `antrean_bookings_active_unique` (nik+dokter+tanggal saat status aktif) + tangkap `UniqueConstraintViolationException` → balas ramah.
+- **`antrean/farmasi/add` (A8) tak pernah dipanggil** — kini dilapor di `FarmasiService::startDispensing` (`QueueService::reportAntreanFarmasiAdd`).
+- **Verifikasi:** `storage/app/e2e/test_antrol_fixes.php` 4/0 + `test_admisi_flows.php` 43/0 (no-regress walk-in). (IGD obat di `test_obat_pulang_billing.php` FAIL = pre-existing, soal billing inpatient_charges, di luar Antrol.)
 - **Belum di-commit.**

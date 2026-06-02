@@ -186,12 +186,18 @@ function refreshKlaims() {
 
 watch(klaimFilters, () => refreshKlaims(), { deep: true })
 
+// Format tanggal LOKAL (YYYY-MM-DD) tanpa konversi UTC. toISOString() menggeser
+// ke UTC → di WIB (UTC+7) tengah malam–07:00 bisa mundur 1 hari (filter salah tanggal).
+function localYmd(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 // Quick filter periode — set date_from/date_to dengan rentang umum.
 const activePeriod = ref('') // '', 'today', 'week', 'month'
 function setPeriod(p) {
   activePeriod.value = p
   const today = new Date()
-  const fmt = (d) => d.toISOString().slice(0, 10)
+  const fmt = (d) => localYmd(d)
   if (p === '') {
     klaimFilters.value.date_from = ''
     klaimFilters.value.date_to = ''
@@ -230,7 +236,7 @@ function exportAgingCsv() {
   const blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `aging-asuransi-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `aging-asuransi-${localYmd(new Date())}.csv`
   a.click()
 }
 

@@ -390,6 +390,12 @@ class AdmisiController extends Controller
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
 
+            // Pre-op bedah (pasien datang untuk persiapan operasi terjadwal). Tanpa
+            // rule ini Laravel men-drop field → pasien pre-op via walk-in salah
+            // dirutekan sebagai REGULAR (kehilangan surgery_schedule_id & PRE_OP inap).
+            'visit_type'          => 'nullable|in:REGULAR,PREOP_BEDAH',
+            'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
+
             // Data kartu asuransi/TPA — diisi petugas admisi dari kartu fisik pasien
             'policy_number'       => 'nullable|string|max:255',
             'member_name'         => 'nullable|string|max:255',

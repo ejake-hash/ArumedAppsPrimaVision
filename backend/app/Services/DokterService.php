@@ -83,6 +83,21 @@ class DokterService
     }
 
     /**
+     * Lewati/skip pasien di antrean DOKTER → turun 1 posisi (tukar queue_sequence
+     * dengan pasien aktif berikutnya). Delegasi ke QueueService::lewati agar
+     * otoritatif di server + broadcast TV (sumber tunggal reorder antrean).
+     */
+    public function lewatiAntrian(string $queueId): Queue
+    {
+        $queue = Queue::byStation(Queue::STATION_DOKTER)
+            ->with('visit.doctorSchedule')
+            ->findOrFail($queueId);
+        $this->authorizeQueueOwnership($queue);
+
+        return $this->queueService->lewati($queue->id);
+    }
+
+    /**
      * Selesai antrian Dokter → advance ke PENUNJANG / BEDAH / KASIR
      * (lihat QueueService::resolveNextStation Section 11.3).
      */
@@ -166,6 +181,19 @@ class DokterService
 
         if (! $ownerEmployeeId || $ownerEmployeeId !== $user?->employee_id) {
             throw new \Exception('Pasien ini bukan pasien Anda.', 403);
+        }
+    }
+
+    /**
+     * Tolak penulisan Tab 3 (tindakan/resep) bila pemeriksaan sudah difinalisasi.
+     * Melindungi dari race autosave yang nyangkut menulis setelah finalize —
+     * tanpa guard ini tindakan/resep bisa hilang/berubah dari tagihan kasir.
+     */
+    private function assertNotFinalized(string $visitId): void
+    {
+        $examination = DoctorExamination::where('visit_id', $visitId)->first();
+        if ($examination && $examination->is_finalized) {
+            throw new \Exception('Pemeriksaan sudah dikunci/difinalisasi, perubahan tindakan/resep ditolak.', 422);
         }
     }
 
@@ -359,6 +387,11 @@ class DokterService
         $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
+        // Guard race autosave vs finalisasi: autosave Tab 3 yang nyangkut tidak
+        // boleh menulis tindakan setelah pemeriksaan dikunci (else tindakan bisa
+        // hilang/berubah dari tagihan kasir).
+        $this->assertNotFinalized($visitId);
+
         return DB::transaction(function () use ($visitId, $services, $user) {
             // Bersihkan tindakan lama lalu tulis ulang dari daftar terkini.
             VisitService::where('visit_id', $visitId)->delete();
@@ -406,6 +439,9 @@ class DokterService
         $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
+        // Guard race autosave vs finalisasi (lihat storeVisitServices).
+        $this->assertNotFinalized($visitId);
+
         $items = $data['items'] ?? [];
 
         // Resep WAJIB punya peresep (prescriptions.prescribed_by_id NOT NULL, FK
@@ -434,6 +470,7 @@ class DokterService
                 'prescribed_by_id' => $user->employee_id,
                 'status'           => 'DRAFT',
                 'notes'            => $data['notes'] ?? null,
+                'pharmacy_note'    => $data['pharmacy_note'] ?? null,
             ]);
 
             foreach ($items as $item) {
@@ -501,10 +538,24 @@ class DokterService
                 'soap_plan'          => $data['soap_plan'] ?? null,
                 'diagnosis_utama'    => $data['diagnosis_utama'],
                 'diagnosis_sekunder' => $data['diagnosis_sekunder'] ?? [],
+                'diagnosis_text'     => $data['diagnosis_text'] ?? null,
                 'tindakan_codes'     => $data['tindakan_codes'] ?? [],
                 'planning'           => $data['planning'],
                 'surgery_package_id' => $data['planning'] === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
                 'surgery_schedule_id' => $scheduleId,
+                // Rujukan eksternal non-BPJS: simpan hanya saat planning RUJUK, selain
+                // itu bersihkan agar tak ada sisa data bila dokter ganti planning.
+                'external_referral_facility' => $data['planning'] === 'RUJUK' ? ($data['external_referral_facility'] ?? null) : null,
+                'external_referral_reason'   => $data['planning'] === 'RUJUK' ? ($data['external_referral_reason'] ?? null) : null,
+            ]);
+
+            // HIGH: propagasi surgery_schedule_id ke VISIT. BedahService::startOperation
+            // me-resolve visit via Visit::where('surgery_schedule_id', ...). Tanpa baris
+            // ini, bedah hari-ini langsung dari dokter (tanpa surgery_request) → visit
+            // tak punya schedule → SurgeryRecord orphan, startOperation gagal update antrean.
+            // Planning bukan BEDAH → bersihkan agar tak nyangkut jadwal lama.
+            $visit->update([
+                'surgery_schedule_id' => $data['planning'] === 'BEDAH' ? $scheduleId : null,
             ]);
 
             // Fase 8 — tandai alasan inap di visit (dibaca admisi & papan RANAP):

@@ -43,6 +43,48 @@ class AdmisiService
     /** Code template General Consent default. */
     private const CONSENT_DEFAULT_CODE = 'GENERAL_CONSENT';
 
+    /**
+     * Kode template General Consent yang dikenal lintas-seeder. FormTemplateSeeder
+     * memakai 'GENERAL_CONSENT', RM11ConsentSeeder memakai 'RM_1_1_GENERAL_CONSENT'.
+     * Resolver mencoba kode yang diminta dulu, lalu kandidat ini, terakhir fallback
+     * ke template aktif mana pun di bawah DocumentType 'RM-1.1'.
+     */
+    private const CONSENT_CODE_CANDIDATES = ['GENERAL_CONSENT', 'RM_1_1_GENERAL_CONSENT'];
+
+    /** DocumentType code untuk General Consent (acuan badge + fallback template). */
+    private const CONSENT_DOCTYPE_CODE = 'RM-1.1';
+
+    /**
+     * Resolusi template General Consent yang aktif & tidak deprecated, tahan
+     * terhadap perbedaan kode antar-seeder. Coba kode yang diminta → kandidat
+     * yang dikenal → fallback ke template aktif di bawah DocumentType RM-1.1.
+     */
+    private function resolveConsentTemplate(?string $requestedCode): ?DocumentTemplate
+    {
+        $codes = array_values(array_unique(array_filter(array_merge(
+            [$requestedCode],
+            self::CONSENT_CODE_CANDIDATES,
+        ))));
+
+        foreach ($codes as $code) {
+            $template = DocumentTemplate::query()
+                ->where('code', $code)
+                ->where('is_active', true)
+                ->whereNull('deprecated_at')
+                ->first();
+            if ($template) {
+                return $template;
+            }
+        }
+
+        // Fallback: template aktif mana pun di bawah DocumentType General Consent.
+        return DocumentTemplate::query()
+            ->where('is_active', true)
+            ->whereNull('deprecated_at')
+            ->whereHas('documentType', fn ($q) => $q->where('code', self::CONSENT_DOCTYPE_CODE))
+            ->first();
+    }
+
     // =========================================================================
     // DASHBOARD
     // =========================================================================
@@ -233,9 +275,9 @@ class AdmisiService
 
         if (! empty($patientIds)) {
             $signedPatients = PatientDocument::whereIn('patient_id', $patientIds)
-                ->where('status', 'FINAL')
+                ->where('status', 'FINALIZED')
                 ->whereHas('documentType', fn ($q) => $q
-                    ->where('code', 'RM-0.1')
+                    ->where('code', 'RM-1.1')
                     ->orWhere('name', 'ilike', '%general consent%')
                 )
                 ->pluck('patient_id')
@@ -550,11 +592,7 @@ class AdmisiService
     {
         $code = $data['template_code'] ?: self::CONSENT_DEFAULT_CODE;
 
-        $template = DocumentTemplate::query()
-            ->where('code', $code)
-            ->where('is_active', true)
-            ->whereNull('deprecated_at')
-            ->first();
+        $template = $this->resolveConsentTemplate($code);
 
         if (! $template) {
             throw new \Exception("Template consent '{$code}' tidak ditemukan / tidak aktif.", 404);
@@ -610,9 +648,86 @@ class AdmisiService
         ];
     }
 
+    /**
+     * Resolusi pre-op bedah: validasi jadwal, auto-shift tanggal (kecuali pre-op
+     * rawat inap), dan tentukan inpatient_reason. Dipakai registerVisit DAN
+     * daftarkanWalkIn supaya kedua jalur pendaftaran konsisten (Fase 8A/8B).
+     *
+     * @return array{visit_type:string, surgery_schedule_id:?string, inpatient_reason:?string}
+     */
+    private function resolvePreopSchedule(array $data, string $patientId, ?string $employeeId): array
+    {
+        $visitType         = $data['visit_type'] ?? 'REGULAR';
+        $surgeryScheduleId = null;
+        $inpatientReason   = null;
+
+        if ($visitType !== 'PREOP_BEDAH') {
+            return ['visit_type' => 'REGULAR', 'surgery_schedule_id' => null, 'inpatient_reason' => null];
+        }
+
+        if (empty($data['surgery_schedule_id'])) {
+            throw new \Exception('surgery_schedule_id wajib untuk visit_type PREOP_BEDAH.', 422);
+        }
+
+        $schedule = SurgerySchedule::lockForUpdate()->find($data['surgery_schedule_id']);
+        if (! $schedule) {
+            throw new \Exception('Jadwal bedah tidak ditemukan.', 404);
+        }
+
+        // Schedule harus milik patient yg sama (lewat surgery_requests.visit.patient_id)
+        $belongsToPatient = $schedule->surgeryRequests()
+            ->whereHas('visit', fn ($q) => $q->where('patient_id', $patientId))
+            ->exists();
+        if (! $belongsToPatient) {
+            throw new \Exception('Jadwal bedah ini bukan milik pasien yang dipilih.', 422);
+        }
+
+        if (! in_array($schedule->status, ['SCHEDULED', 'IN_PROGRESS'])) {
+            throw new \Exception("Jadwal bedah status {$schedule->status} tidak boleh diproses preop.", 422);
+        }
+
+        if ($schedule->scheduled_date->isBefore(today())) {
+            throw new \Exception('Jadwal bedah sudah lewat tanggal (di masa lalu).', 422);
+        }
+
+        // Auto-shift: kalau jadwal bukan hari ini, geser ke hari ini + audit log.
+        // KECUALI pre-op RAWAT INAP (requires_inpatient): pasien sengaja datang
+        // H-1 untuk diopname, operasi tetap di tanggal asli (H). Menggeser ke hari
+        // ini akan salah — jadwal operasi inap dipertahankan apa adanya (Fase 8B).
+        if (! $schedule->scheduled_date->isToday() && ! $schedule->requires_inpatient) {
+            $oldDate = $schedule->scheduled_date->copy();
+            $schedule->update(['scheduled_date' => today()]);
+
+            SurgeryScheduleAuditLog::create([
+                'surgery_schedule_id' => $schedule->id,
+                'old_date'   => $oldDate,
+                'new_date'   => today(),
+                'reason'     => 'PREOP_WALKIN: pasien datang preop di luar jadwal asli',
+                'changed_by_id' => $employeeId,
+                'changed_at' => now(),
+            ]);
+        }
+
+        $surgeryScheduleId = $schedule->id;
+
+        // Fase 8B — pre-op RAWAT INAP: jadwal bedah ditandai requires_inpatient
+        // oleh dokter (8A). Pasien datang H-1 → setelah TR+REF tidak ke BEDAH,
+        // tapi ke MENUNGGU_RANAP (perawat tekan "Kirim ke Rawat Inap"). Penanda
+        // PRE_OP dibawa di visit supaya banner/papan tahu konteks & gate tombolnya.
+        if ($schedule->requires_inpatient) {
+            $inpatientReason = 'PRE_OP';
+        }
+
+        return [
+            'visit_type'          => 'PREOP_BEDAH',
+            'surgery_schedule_id' => $surgeryScheduleId,
+            'inpatient_reason'    => $inpatientReason,
+        ];
+    }
+
     public function registerVisit(array $data): Visit
     {
-        return DB::transaction(function () use ($data) {
+        $visit = DB::transaction(function () use ($data) {
             // Resolve patient
             // Foto untuk kunjungan ini. File disimpan sekali, dirujuk oleh
             // visits.photo_path (riwayat per-kunjungan) DAN patients.photo_path (terbaru).
@@ -662,64 +777,10 @@ class AdmisiService
             }
 
             // ─── Preop Bedah: validasi & auto-shift jadwal ───────────────
-            $visitType         = $data['visit_type'] ?? 'REGULAR';
-            $surgeryScheduleId = null;
-            $inpatientReason   = null; // Fase 8B: PRE_OP bila jadwal butuh rawat inap.
-
-            if ($visitType === 'PREOP_BEDAH') {
-                if (empty($data['surgery_schedule_id'])) {
-                    throw new \Exception('surgery_schedule_id wajib untuk visit_type PREOP_BEDAH.', 422);
-                }
-
-                $schedule = SurgerySchedule::lockForUpdate()->find($data['surgery_schedule_id']);
-                if (! $schedule) {
-                    throw new \Exception('Jadwal bedah tidak ditemukan.', 404);
-                }
-
-                // Schedule harus milik patient yg sama (lewat surgery_requests.visit.patient_id)
-                $belongsToPatient = $schedule->surgeryRequests()
-                    ->whereHas('visit', fn ($q) => $q->where('patient_id', $patient->id))
-                    ->exists();
-                if (! $belongsToPatient) {
-                    throw new \Exception('Jadwal bedah ini bukan milik pasien yang dipilih.', 422);
-                }
-
-                if (! in_array($schedule->status, ['SCHEDULED', 'IN_PROGRESS'])) {
-                    throw new \Exception("Jadwal bedah status {$schedule->status} tidak boleh diproses preop.", 422);
-                }
-
-                if ($schedule->scheduled_date->isBefore(today())) {
-                    throw new \Exception('Jadwal bedah sudah lewat tanggal (di masa lalu).', 422);
-                }
-
-                // Auto-shift: kalau jadwal bukan hari ini, geser ke hari ini + audit log.
-                // KECUALI pre-op RAWAT INAP (requires_inpatient): pasien sengaja datang
-                // H-1 untuk diopname, operasi tetap di tanggal asli (H). Menggeser ke hari
-                // ini akan salah — jadwal operasi inap dipertahankan apa adanya (Fase 8B).
-                if (! $schedule->scheduled_date->isToday() && ! $schedule->requires_inpatient) {
-                    $oldDate = $schedule->scheduled_date->copy();
-                    $schedule->update(['scheduled_date' => today()]);
-
-                    SurgeryScheduleAuditLog::create([
-                        'surgery_schedule_id' => $schedule->id,
-                        'old_date'   => $oldDate,
-                        'new_date'   => today(),
-                        'reason'     => 'PREOP_WALKIN: pasien datang preop di luar jadwal asli',
-                        'changed_by_id' => $user?->employee_id,
-                        'changed_at' => now(),
-                    ]);
-                }
-
-                $surgeryScheduleId = $schedule->id;
-
-                // Fase 8B — pre-op RAWAT INAP: jadwal bedah ditandai requires_inpatient
-                // oleh dokter (8A). Pasien datang H-1 → setelah TR+REF tidak ke BEDAH,
-                // tapi ke MENUNGGU_RANAP (perawat tekan "Kirim ke Rawat Inap"). Penanda
-                // PRE_OP dibawa di visit supaya banner/papan tahu konteks & gate tombolnya.
-                if ($schedule->requires_inpatient) {
-                    $inpatientReason = 'PRE_OP';
-                }
-            }
+            $preop = $this->resolvePreopSchedule($data, $patient->id, $user?->employee_id);
+            $visitType         = $preop['visit_type'];
+            $surgeryScheduleId = $preop['surgery_schedule_id'];
+            $inpatientReason   = $preop['inpatient_reason']; // Fase 8B: PRE_OP bila jadwal butuh rawat inap.
 
             // Asuransi/Perusahaan non-BPJS → flag PENDING untuk diverifikasi billing
             // ke portal TPA secara paralel. UMUM/BPJS/SOSIAL → NONE (skip alur TPA).
@@ -796,6 +857,12 @@ class AdmisiService
 
             return $visit->load(['patient', 'queues']);
         });
+
+        // Lapor antrean/add ke BPJS SETELAH commit — non-blocking (skip diam-diam bila
+        // bukan BPJS / ANTREAN nonaktif / poli belum dipetakan). TIDAK pernah melempar.
+        $this->queueService->reportAntreanAdd($visit);
+
+        return $visit;
     }
 
     /**
@@ -816,11 +883,7 @@ class AdmisiService
     {
         $code = $consent['template_code'] ?? self::CONSENT_DEFAULT_CODE;
 
-        $template = DocumentTemplate::query()
-            ->where('code', $code)
-            ->where('is_active', true)
-            ->whereNull('deprecated_at')
-            ->first();
+        $template = $this->resolveConsentTemplate($code);
         if (! $template) {
             throw new \RuntimeException("Template consent '{$code}' tidak ditemukan.");
         }
@@ -918,7 +981,7 @@ class AdmisiService
      */
     public function daftarkanWalkIn(string $visitId, array $data): Visit
     {
-        return DB::transaction(function () use ($visitId, $data) {
+        $visit = DB::transaction(function () use ($visitId, $data) {
             $visit = Visit::with('patient')->lockForUpdate()->findOrFail($visitId);
 
             if ($visit->patient->name !== 'Belum Terdaftar') {
@@ -1008,6 +1071,10 @@ class AdmisiService
                 true
             );
 
+            // Pre-op bedah (pasien pre-op via Anjungan/walk-in). Konsisten dgn
+            // registerVisit — tanpa ini pasien pre-op kehilangan routing & PRE_OP inap.
+            $preop = $this->resolvePreopSchedule($data, $real->id, $user?->employee_id);
+
             // ─── Update Visit ────────────────────────────────────────────
             $visit->update([
                 'patient_id'         => $real->id,
@@ -1017,6 +1084,9 @@ class AdmisiService
                 'no_registrasi'      => $visit->no_registrasi ?? $this->generateNoRegistrasi(),
                 'photo_path'         => $photoPath ?? $visit->photo_path,
                 'classification'     => $data['classification'],
+                'visit_type'          => $preop['visit_type'],
+                'surgery_schedule_id' => $preop['surgery_schedule_id'],
+                'inpatient_reason'    => $preop['inpatient_reason'],
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
                 'insurance_verification_status' => $needsTpaVerificationWalkin ? 'PENDING' : 'NONE',
@@ -1038,8 +1108,10 @@ class AdmisiService
             $this->saveCob($visit->id, $data['cob'] ?? null);
 
             // ─── Auto-advance ke TRIASE + REFRAKSIONIS ───────────────────
-            // Selesaikan admisi otomatis — pasien sudah teridentifikasi & terdaftar
-            $this->queueService->advanceFromStation($admisiQueue->id, Queue::STATION_ADMISI);
+            // Selesaikan admisi otomatis — pasien sudah teridentifikasi & terdaftar.
+            // reportBpjs=false: pelaporan taskid 1→2→3 dilakukan pasca-commit dgn
+            // urutan benar via reportAdmisiKioskTasks (lihat di bawah).
+            $this->queueService->advanceFromStation($admisiQueue->id, Queue::STATION_ADMISI, reportBpjs: false);
 
             $this->log(
                 $user?->id,
@@ -1051,6 +1123,13 @@ class AdmisiService
 
             return $visit->fresh(['patient', 'queues']);
         });
+
+        // Jalur KIOSK → loket admisi: lapor antrean/add + taskid 1 (pilih ke loket)
+        // & 2 (selesai daftar) ke BPJS SETELAH commit — non-blocking, skip diam-diam
+        // bila bukan BPJS / ANTREAN nonaktif / poli belum dipetakan. Tak pernah melempar.
+        $this->queueService->reportAdmisiKioskTasks($visit);
+
+        return $visit;
     }
 
     // =========================================================================
@@ -1212,9 +1291,9 @@ class AdmisiService
         $signedPatients = empty($patientIds)
             ? collect()
             : PatientDocument::whereIn('patient_id', $patientIds)
-                ->where('status', 'FINAL')
+                ->where('status', 'FINALIZED')
                 ->whereHas('documentType', fn ($q) => $q
-                    ->where('code', 'RM-0.1')
+                    ->where('code', 'RM-1.1')
                     ->orWhere('name', 'ilike', '%general consent%')
                 )
                 ->pluck('patient_id')

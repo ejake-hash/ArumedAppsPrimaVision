@@ -19,6 +19,7 @@ class PermissionService
             'perawat'            => 'Stasiun Perawat',
             'refraksionis'       => 'Stasiun Refraksionis',
             'rme_dokter'         => 'RME Dokter',
+            'rekam_medis'        => 'Rekam Medis & TTD Dokumen',
             'bedah'              => 'Unit Bedah',
             'farmasi'            => 'Farmasi Unit',
             'kasir'              => 'Kasir & Billing',

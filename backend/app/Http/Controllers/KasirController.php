@@ -142,6 +142,7 @@ class KasirController extends Controller
         $validated = $request->validate([
             'paid_amount'    => 'required|numeric|min:0.01',
             'payment_method' => 'required|in:CASH,CREDIT_CARD,TRANSFER,BPJS',
+            'cash_received'  => 'nullable|numeric|min:0',   // uang tunai fisik (utk kembalian kwitansi)
             'notes'          => 'nullable|string|max:255',
         ]);
 

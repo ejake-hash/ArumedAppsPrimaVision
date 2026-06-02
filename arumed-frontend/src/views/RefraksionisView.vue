@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRefraksiStore } from '@/stores/refraksiStore'
+import { refraksiApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 
 const store = useRefraksiStore()
@@ -104,13 +105,13 @@ const cDone = computed(() => mappedQueue.value.filter((p) => p.status === 'done'
 const selP = computed(() => store.selectedQueue ? mapQueueRow(store.selectedQueue) : null)
 const activeTab = ref('autoref')
 const doneSteps = ref([])
+const showRxModal = ref(false)
 
 const steps = [
   { tab: 'autoref', label: 'Autoref', sub: 'Objektif + Keratometri' },
   { tab: 'iop', label: 'Tonometri', sub: 'NCT' },
   { tab: 'visus', label: 'Visus', sub: 'UCVA · Pinhole · BCVA' },
   { tab: 'refine', label: 'Refraksi', sub: 'Kacamata Lama + Subjektif' },
-  { tab: 'rx', label: 'Rx Final', sub: 'Resep kacamata' },
 ]
 
 const oldGlasses = ref({
@@ -363,6 +364,16 @@ async function saveStep(curTab, nextTab) {
   }
 }
 
+/**
+ * Simpan draft tab Refraksi lalu buka modal "Resep Kacamata Final".
+ * (Dulu Rx Final adalah tab ke-5; kini jadi modal yang muncul dari tab Refraksi.)
+ */
+async function openRxModal() {
+  await saveStep('refine', null)
+  if (!doneSteps.value.includes('refine')) return // saveStep gagal → jangan buka modal
+  showRxModal.value = true
+}
+
 function fillFromAutoref() {
   refine.value = { ...refine.value, od_s: autoref.value.od_s, od_c: autoref.value.od_c, od_ax: autoref.value.od_ax, os_s: autoref.value.os_s, os_c: autoref.value.os_c, os_ax: autoref.value.os_ax }
   toast('i', 'Refraksi diisi dari hasil autoref')
@@ -454,8 +465,40 @@ function printDoctorTicket() {
   setTimeout(() => { try { w.print() } catch {} }, 400)
 }
 
+// ─── Opsi combobox dari master (kind → daftar nilai) ────────────────────────
+// Fallback default kalau master belum termuat / endpoint gagal (degradasi mulus:
+// input tetap combobox dengan datalist kosong → petugas tetap bisa ketik manual).
+const DEFAULT_VA = ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF', 'HM', 'LP', 'NLP']
+// Pinhole TERPISAH dari Visus (tanpa HM/LP/NLP).
+const DEFAULT_PH = ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF']
+const refOpts = ref({
+  sphere: [], cylinder: [], axis: [], keratometri: [], add: [], visus: DEFAULT_VA, pinhole: DEFAULT_PH,
+})
+// Backward-compat: komponen visus pakai `vaOpts`; pinhole pakai `phOpts`.
+const vaOpts = computed(() => refOpts.value.visus?.length ? refOpts.value.visus : DEFAULT_VA)
+const phOpts = computed(() => refOpts.value.pinhole?.length ? refOpts.value.pinhole : DEFAULT_PH)
+
+async function loadRefOpts() {
+  try {
+    const { data } = await refraksiApi.opsi()
+    const m = data?.data ?? {}
+    refOpts.value = {
+      sphere:      m.sphere      ?? [],
+      cylinder:    m.cylinder    ?? [],
+      axis:        m.axis        ?? [],
+      keratometri: m.keratometri ?? [],
+      add:         m.add         ?? [],
+      visus:       m.visus?.length ? m.visus : DEFAULT_VA,
+      pinhole:     m.pinhole?.length ? m.pinhole : DEFAULT_PH,
+    }
+  } catch {
+    // diam — fallback default sudah aktif
+  }
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(async () => {
+  loadRefOpts()
   await store.fetchAntrian()
   store.connectWs()
 })
@@ -464,8 +507,6 @@ onUnmounted(() => {
   store.disconnectWs()
   store.clearSelected()
 })
-
-const vaOpts = ['6/6', '6/9', '6/12', '6/18', '6/24', '6/36', '6/60', '3/60', '1/60', 'HM', 'LP', 'NLP']
 
 const toasts = ref([])
 let tid = 0
@@ -478,6 +519,16 @@ function toast(type, msg) {
 
 <template>
   <div class="refraksi">
+    <!-- Datalist combobox opsi refraksi (dari master /refraksi/opsi). Input pakai
+         list=… → boleh pilih cepat ATAU ketik nilai di luar daftar. -->
+    <datalist id="dl-sphere"><option v-for="o in refOpts.sphere" :key="o" :value="o" /></datalist>
+    <datalist id="dl-cylinder"><option v-for="o in refOpts.cylinder" :key="o" :value="o" /></datalist>
+    <datalist id="dl-axis"><option v-for="o in refOpts.axis" :key="o" :value="o" /></datalist>
+    <datalist id="dl-keratometri"><option v-for="o in refOpts.keratometri" :key="o" :value="o" /></datalist>
+    <datalist id="dl-add"><option v-for="o in refOpts.add" :key="o" :value="o" /></datalist>
+    <datalist id="dl-visus"><option v-for="o in vaOpts" :key="o" :value="o" /></datalist>
+    <datalist id="dl-pinhole"><option v-for="o in phOpts" :key="o" :value="o" /></datalist>
+
     <div class="grid">
       <!-- QUEUE -->
       <aside class="col-queue">
@@ -687,30 +738,30 @@ function toast(type, msg) {
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="akr-od-s">Sferis (S)</label>
-                      <input id="akr-od-s" v-model="autoref.od_s" class="form-input" placeholder="-1.50" />
+                      <input id="akr-od-s" v-model="autoref.od_s" list="dl-sphere" class="form-input" placeholder="-1.50" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-od-c">Silindris (C)</label>
-                      <input id="akr-od-c" v-model="autoref.od_c" class="form-input" placeholder="-0.75" />
+                      <input id="akr-od-c" v-model="autoref.od_c" list="dl-cylinder" class="form-input" placeholder="-0.75" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-od-ax">Axis</label>
-                      <input id="akr-od-ax" v-model="autoref.od_ax" class="form-input" placeholder="180" />
+                      <input id="akr-od-ax" v-model="autoref.od_ax" list="dl-axis" class="form-input" placeholder="180" />
                     </div>
                   </div>
                   <div class="sec" aria-label="Keratometri mata kanan">Keratometri</div>
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="akr-k-od-1">K1 <span class="hint">D</span></label>
-                      <input id="akr-k-od-1" v-model="autoref.k_od_1" class="form-input" placeholder="43.50" />
+                      <input id="akr-k-od-1" v-model="autoref.k_od_1" list="dl-keratometri" class="form-input" placeholder="43.50" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-od-2">K2 <span class="hint">D</span></label>
-                      <input id="akr-k-od-2" v-model="autoref.k_od_2" class="form-input" placeholder="44.25" />
+                      <input id="akr-k-od-2" v-model="autoref.k_od_2" list="dl-keratometri" class="form-input" placeholder="44.25" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-od-add">Addisi</label>
-                      <input id="akr-k-od-add" v-model="autoref.k_add_od" class="form-input" placeholder="+1.50" />
+                      <input id="akr-k-od-add" v-model="autoref.k_add_od" list="dl-add" class="form-input" placeholder="+1.50" />
                     </div>
                   </div>
                 </div>
@@ -719,30 +770,30 @@ function toast(type, msg) {
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="akr-os-s">Sferis (S)</label>
-                      <input id="akr-os-s" v-model="autoref.os_s" class="form-input" placeholder="-1.75" />
+                      <input id="akr-os-s" v-model="autoref.os_s" list="dl-sphere" class="form-input" placeholder="-1.75" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-os-c">Silindris (C)</label>
-                      <input id="akr-os-c" v-model="autoref.os_c" class="form-input" placeholder="-0.50" />
+                      <input id="akr-os-c" v-model="autoref.os_c" list="dl-cylinder" class="form-input" placeholder="-0.50" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-os-ax">Axis</label>
-                      <input id="akr-os-ax" v-model="autoref.os_ax" class="form-input" placeholder="90" />
+                      <input id="akr-os-ax" v-model="autoref.os_ax" list="dl-axis" class="form-input" placeholder="90" />
                     </div>
                   </div>
                   <div class="sec" aria-label="Keratometri mata kiri">Keratometri</div>
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="akr-k-os-1">K1 <span class="hint">D</span></label>
-                      <input id="akr-k-os-1" v-model="autoref.k_os_1" class="form-input" placeholder="43.25" />
+                      <input id="akr-k-os-1" v-model="autoref.k_os_1" list="dl-keratometri" class="form-input" placeholder="43.25" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-os-2">K2 <span class="hint">D</span></label>
-                      <input id="akr-k-os-2" v-model="autoref.k_os_2" class="form-input" placeholder="44.00" />
+                      <input id="akr-k-os-2" v-model="autoref.k_os_2" list="dl-keratometri" class="form-input" placeholder="44.00" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-os-add">Addisi</label>
-                      <input id="akr-k-os-add" v-model="autoref.k_add_os" class="form-input" placeholder="+1.50" />
+                      <input id="akr-k-os-add" v-model="autoref.k_add_os" list="dl-add" class="form-input" placeholder="+1.50" />
                     </div>
                   </div>
                 </div>
@@ -803,51 +854,33 @@ function toast(type, msg) {
               <div class="g2">
                 <div class="fg">
                   <label class="fl" for="vis-ucva-od">UCVA OD</label>
-                  <select id="vis-ucva-od" v-model="visus.ucva_od" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="vis-ucva-od" v-model="visus.ucva_od" list="dl-visus" class="form-input" placeholder="6/6" />
                 </div>
                 <div class="fg">
                   <label class="fl" for="vis-ucva-os">UCVA OS</label>
-                  <select id="vis-ucva-os" v-model="visus.ucva_os" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="vis-ucva-os" v-model="visus.ucva_os" list="dl-visus" class="form-input" placeholder="6/6" />
                 </div>
               </div>
               <div class="sec">Pinhole Test <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— deteksi amblyopia</span></div>
               <div class="g2">
                 <div class="fg">
                   <label class="fl" for="ph-od">Pinhole OD</label>
-                  <select id="ph-od" v-model="pinhole.od" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="ph-od" v-model="pinhole.od" list="dl-pinhole" class="form-input" placeholder="6/6" />
                 </div>
                 <div class="fg">
                   <label class="fl" for="ph-os">Pinhole OS</label>
-                  <select id="ph-os" v-model="pinhole.os" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="ph-os" v-model="pinhole.os" list="dl-pinhole" class="form-input" placeholder="6/6" />
                 </div>
               </div>
               <div class="sec">Visus Akhir (BCVA)</div>
               <div class="g2">
                 <div class="fg">
                   <label class="fl" for="vis-bcva-od">BCVA OD</label>
-                  <select id="vis-bcva-od" v-model="visus.bcva_od" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="vis-bcva-od" v-model="visus.bcva_od" list="dl-visus" class="form-input" placeholder="6/6" />
                 </div>
                 <div class="fg">
                   <label class="fl" for="vis-bcva-os">BCVA OS</label>
-                  <select id="vis-bcva-os" v-model="visus.bcva_os" class="form-input">
-                    <option value="">—</option>
-                    <option v-for="v in vaOpts" :key="v">{{ v }}</option>
-                  </select>
+                  <input id="vis-bcva-os" v-model="visus.bcva_os" list="dl-visus" class="form-input" placeholder="6/6" />
                 </div>
               </div>
 
@@ -888,15 +921,15 @@ function toast(type, msg) {
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="ref-od-s">S</label>
-                      <input id="ref-od-s" v-model="refine.od_s" class="form-input" />
+                      <input id="ref-od-s" v-model="refine.od_s" list="dl-sphere" class="form-input" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="ref-od-c">C</label>
-                      <input id="ref-od-c" v-model="refine.od_c" class="form-input" />
+                      <input id="ref-od-c" v-model="refine.od_c" list="dl-cylinder" class="form-input" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="ref-od-ax">Axis</label>
-                      <input id="ref-od-ax" v-model="refine.od_ax" class="form-input" />
+                      <input id="ref-od-ax" v-model="refine.od_ax" list="dl-axis" class="form-input" />
                     </div>
                   </div>
                 </div>
@@ -905,15 +938,15 @@ function toast(type, msg) {
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="ref-os-s">S</label>
-                      <input id="ref-os-s" v-model="refine.os_s" class="form-input" />
+                      <input id="ref-os-s" v-model="refine.os_s" list="dl-sphere" class="form-input" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="ref-os-c">C</label>
-                      <input id="ref-os-c" v-model="refine.os_c" class="form-input" />
+                      <input id="ref-os-c" v-model="refine.os_c" list="dl-cylinder" class="form-input" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="ref-os-ax">Axis</label>
-                      <input id="ref-os-ax" v-model="refine.os_ax" class="form-input" />
+                      <input id="ref-os-ax" v-model="refine.os_ax" list="dl-axis" class="form-input" />
                     </div>
                   </div>
                 </div>
@@ -921,11 +954,11 @@ function toast(type, msg) {
               <div class="g3" style="margin-top: 0.65rem">
                 <div class="fg">
                   <label class="fl" for="ref-add-od">ADD OD <span class="hint">presbyopia</span></label>
-                  <input id="ref-add-od" v-model="refine.add_od" class="form-input" placeholder="+2.00" />
+                  <input id="ref-add-od" v-model="refine.add_od" list="dl-add" class="form-input" placeholder="+2.00" />
                 </div>
                 <div class="fg">
                   <label class="fl" for="ref-add-os">ADD OS <span class="hint">presbyopia</span></label>
-                  <input id="ref-add-os" v-model="refine.add_os" class="form-input" placeholder="+2.00" />
+                  <input id="ref-add-os" v-model="refine.add_os" list="dl-add" class="form-input" placeholder="+2.00" />
                 </div>
                 <div class="fg">
                   <label class="fl" for="ref-pd">PD <span class="hint">mm</span></label>
@@ -941,19 +974,19 @@ function toast(type, msg) {
                   <div class="g4">
                     <div class="fg">
                       <label class="fl" for="og-od-s">S</label>
-                      <input id="og-od-s" v-model="oldGlasses.od_s" class="form-input" placeholder="-1.00" />
+                      <input id="og-od-s" v-model="oldGlasses.od_s" list="dl-sphere" class="form-input" placeholder="-1.00" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-od-c">C</label>
-                      <input id="og-od-c" v-model="oldGlasses.od_c" class="form-input" placeholder="-0.50" />
+                      <input id="og-od-c" v-model="oldGlasses.od_c" list="dl-cylinder" class="form-input" placeholder="-0.50" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-od-ax">Axis</label>
-                      <input id="og-od-ax" v-model="oldGlasses.od_ax" class="form-input" placeholder="180" />
+                      <input id="og-od-ax" v-model="oldGlasses.od_ax" list="dl-axis" class="form-input" placeholder="180" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-od-add">ADD</label>
-                      <input id="og-od-add" v-model="oldGlasses.od_add" class="form-input" placeholder="+1.50" />
+                      <input id="og-od-add" v-model="oldGlasses.od_add" list="dl-add" class="form-input" placeholder="+1.50" />
                     </div>
                   </div>
                 </div>
@@ -962,19 +995,19 @@ function toast(type, msg) {
                   <div class="g4">
                     <div class="fg">
                       <label class="fl" for="og-os-s">S</label>
-                      <input id="og-os-s" v-model="oldGlasses.os_s" class="form-input" placeholder="-1.25" />
+                      <input id="og-os-s" v-model="oldGlasses.os_s" list="dl-sphere" class="form-input" placeholder="-1.25" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-os-c">C</label>
-                      <input id="og-os-c" v-model="oldGlasses.os_c" class="form-input" placeholder="-0.50" />
+                      <input id="og-os-c" v-model="oldGlasses.os_c" list="dl-cylinder" class="form-input" placeholder="-0.50" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-os-ax">Axis</label>
-                      <input id="og-os-ax" v-model="oldGlasses.os_ax" class="form-input" placeholder="90" />
+                      <input id="og-os-ax" v-model="oldGlasses.os_ax" list="dl-axis" class="form-input" placeholder="90" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="og-os-add">ADD</label>
-                      <input id="og-os-add" v-model="oldGlasses.os_add" class="form-input" placeholder="+1.50" />
+                      <input id="og-os-add" v-model="oldGlasses.os_add" list="dl-add" class="form-input" placeholder="+1.50" />
                     </div>
                   </div>
                 </div>
@@ -983,87 +1016,8 @@ function toast(type, msg) {
               <div class="action-row">
                 <button type="button" class="btn btn-secondary btn-sm" @click="goTab('visus')">← Kembali</button>
                 <button type="button" class="btn btn-primary"
-                  :disabled="store.saving || store.isFinalized"
-                  @click="saveStep('refine', 'rx')">Simpan &amp; Lanjut →</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- RX FINAL -->
-          <div v-if="activeTab === 'rx'" class="card" role="region" aria-labelledby="card-rx-title">
-            <div class="card-head">
-              <div class="card-head-title" id="card-rx-title">Resep Kacamata Final</div>
-            </div>
-            <div class="card-body">
-              <div class="sec">Jenis Resep</div>
-              <div class="seg" role="tablist" aria-label="Tipe persepsi kacamata">
-                <button type="button" :class="['seg-b', rxFinal.perception_type === 'JAUH' ? 'a' : '']" role="tab"
-                        :aria-selected="rxFinal.perception_type === 'JAUH'" @click="rxFinal.perception_type = 'JAUH'">
-                  Jauh (Distance)
-                </button>
-                <button type="button" :class="['seg-b', rxFinal.perception_type === 'DEKAT' ? 'a' : '']" role="tab"
-                        :aria-selected="rxFinal.perception_type === 'DEKAT'" @click="rxFinal.perception_type = 'DEKAT'">
-                  Dekat (Near)
-                </button>
-              </div>
-
-              <div class="rx-summary" aria-label="Ringkasan resep">
-                <div class="rx-row"><b>OD</b><span>{{ refine.od_s || '—' }} {{ refine.od_c }} {{ refine.od_ax ? `×${refine.od_ax}°` : '' }} <em v-if="rxFinal.od_add">ADD {{ rxFinal.od_add }}</em></span></div>
-                <div class="rx-row"><b>OS</b><span>{{ refine.os_s || '—' }} {{ refine.os_c }} {{ refine.os_ax ? `×${refine.os_ax}°` : '' }} <em v-if="rxFinal.os_add">ADD {{ rxFinal.os_add }}</em></span></div>
-                <div class="rx-row"><b>PD</b><span>{{ refine.pd }} mm</span></div>
-              </div>
-
-              <div class="sec">ADD Resep (Bifocal/Progresif)</div>
-              <div class="g2">
-                <div class="fg">
-                  <label class="fl" for="rx-add-od">ADD OD</label>
-                  <input id="rx-add-od" v-model="rxFinal.od_add" class="form-input" placeholder="+1.50" />
-                </div>
-                <div class="fg">
-                  <label class="fl" for="rx-add-os">ADD OS</label>
-                  <input id="rx-add-os" v-model="rxFinal.os_add" class="form-input" placeholder="+1.50" />
-                </div>
-              </div>
-
-              <div class="sec">Spesifikasi Kacamata</div>
-              <div class="g3">
-                <div class="fg">
-                  <label class="fl" for="rx-jenis">Jenis Lensa</label>
-                  <select id="rx-jenis" v-model="rxFinal.jenis" class="form-input">
-                    <option>Single Vision</option><option>Bifocal</option><option>Progresif</option><option>Office</option>
-                  </select>
-                </div>
-                <div class="fg">
-                  <label class="fl" for="rx-lensa">Material</label>
-                  <select id="rx-lensa" v-model="rxFinal.lensa" class="form-input">
-                    <option>CR-39</option><option>Polycarbonate</option><option>Trivex</option><option>Hi-index 1.67</option>
-                  </select>
-                </div>
-                <div class="fg">
-                  <label class="fl" for="rx-coating">Coating</label>
-                  <select id="rx-coating" v-model="rxFinal.coating" class="form-input">
-                    <option>Anti-reflection</option><option>UV</option><option>Blue light</option><option>Photochromic</option><option value="">—</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="fg" style="margin-top: 0.65rem">
-                <label class="fl" for="rx-remarks">Catatan Resep</label>
-                <textarea id="rx-remarks" v-model="rxFinal.remarks" class="form-input ta" rows="2" placeholder="Lensa kontak, frame, instruksi pakai, dll"></textarea>
-              </div>
-
-              <div class="alert-info" role="note">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
-                Resep akan dikirim ke dokter untuk ditanda-tangani secara digital sebelum diserahkan ke pasien.
-              </div>
-
-              <div class="action-row">
-                <button type="button" class="btn btn-secondary btn-sm" @click="goTab('refine')">← Kembali</button>
-                <button type="button" class="btn btn-secondary" @click="toast('i', 'Mencetak resep kacamata')"
-                        aria-label="Cetak resep kacamata">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                  Cetak Rx
-                </button>
+                  :disabled="store.saving"
+                  @click="openRxModal">Resep Kacamata →</button>
               </div>
             </div>
           </div>
@@ -1114,6 +1068,90 @@ function toast(type, msg) {
 
         </div>
       </section>
+    </div>
+
+    <!-- ── MODAL: Resep Kacamata Final (dibuka dari tab Refraksi) ───────────── -->
+    <div v-if="showRxModal" class="rx-overlay" role="dialog" aria-modal="true" aria-labelledby="rx-modal-title" @click.self="showRxModal = false">
+      <div class="rx-modal">
+        <div class="rx-modal-head">
+          <div class="card-head-title" id="rx-modal-title">Resep Kacamata Final</div>
+          <button type="button" class="rx-close" aria-label="Tutup" @click="showRxModal = false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="rx-modal-body">
+          <div class="sec">Jenis Resep</div>
+          <div class="seg" role="tablist" aria-label="Tipe persepsi kacamata">
+            <button type="button" :class="['seg-b', rxFinal.perception_type === 'JAUH' ? 'a' : '']" role="tab"
+                    :aria-selected="rxFinal.perception_type === 'JAUH'" @click="rxFinal.perception_type = 'JAUH'">
+              Jauh (Distance)
+            </button>
+            <button type="button" :class="['seg-b', rxFinal.perception_type === 'DEKAT' ? 'a' : '']" role="tab"
+                    :aria-selected="rxFinal.perception_type === 'DEKAT'" @click="rxFinal.perception_type = 'DEKAT'">
+              Dekat (Near)
+            </button>
+          </div>
+
+          <div class="rx-summary" aria-label="Ringkasan resep">
+            <div class="rx-row"><b>OD</b><span>{{ refine.od_s || '—' }} {{ refine.od_c }} {{ refine.od_ax ? `×${refine.od_ax}°` : '' }} <em v-if="rxFinal.od_add">ADD {{ rxFinal.od_add }}</em></span></div>
+            <div class="rx-row"><b>OS</b><span>{{ refine.os_s || '—' }} {{ refine.os_c }} {{ refine.os_ax ? `×${refine.os_ax}°` : '' }} <em v-if="rxFinal.os_add">ADD {{ rxFinal.os_add }}</em></span></div>
+            <div class="rx-row"><b>PD</b><span>{{ refine.pd }} mm</span></div>
+          </div>
+
+          <div class="sec">ADD Resep (Bifocal/Progresif)</div>
+          <div class="g2">
+            <div class="fg">
+              <label class="fl" for="rx-add-od">ADD OD</label>
+              <input id="rx-add-od" v-model="rxFinal.od_add" list="dl-add" class="form-input" placeholder="+1.50" />
+            </div>
+            <div class="fg">
+              <label class="fl" for="rx-add-os">ADD OS</label>
+              <input id="rx-add-os" v-model="rxFinal.os_add" list="dl-add" class="form-input" placeholder="+1.50" />
+            </div>
+          </div>
+
+          <div class="sec">Spesifikasi Kacamata</div>
+          <div class="g3">
+            <div class="fg">
+              <label class="fl" for="rx-jenis">Jenis Lensa</label>
+              <select id="rx-jenis" v-model="rxFinal.jenis" class="form-input">
+                <option>Single Vision</option><option>Bifocal</option><option>Progresif</option><option>Office</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label class="fl" for="rx-lensa">Material</label>
+              <select id="rx-lensa" v-model="rxFinal.lensa" class="form-input">
+                <option>CR-39</option><option>Polycarbonate</option><option>Trivex</option><option>Hi-index 1.67</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label class="fl" for="rx-coating">Coating</label>
+              <select id="rx-coating" v-model="rxFinal.coating" class="form-input">
+                <option>Anti-reflection</option><option>UV</option><option>Blue light</option><option>Photochromic</option><option value="">—</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="fg" style="margin-top: 0.65rem">
+            <label class="fl" for="rx-remarks">Catatan Resep</label>
+            <textarea id="rx-remarks" v-model="rxFinal.remarks" class="form-input ta" rows="2" placeholder="Lensa kontak, frame, instruksi pakai, dll"></textarea>
+          </div>
+
+          <div class="alert-info" role="note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
+            Resep akan dikirim ke dokter untuk ditanda-tangani secara digital sebelum diserahkan ke pasien.
+          </div>
+        </div>
+
+        <div class="rx-modal-foot">
+          <button type="button" class="btn btn-secondary btn-sm" @click="showRxModal = false">← Tutup</button>
+          <button type="button" class="btn btn-secondary" @click="toast('i', 'Mencetak resep kacamata')"
+                  aria-label="Cetak resep kacamata">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            Cetak Rx
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="toast-wrap" aria-live="polite" aria-atomic="false">
@@ -1352,4 +1390,14 @@ function toast(type, msg) {
 
 /* datetime-local consistent height */
 .form-input[type="datetime-local"] { padding-right: 8px; }
+
+/* ── Modal Resep Kacamata (inline overlay, hindari Teleport agar CSS scoped tetap) ── */
+.rx-overlay { position: fixed; inset: 0; z-index: 8000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); }
+.rx-modal { width: 100%; max-width: 620px; max-height: calc(100vh - 3rem); display: flex; flex-direction: column; background: var(--bc); border: 1px solid var(--gb); border-radius: 14px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35); overflow: hidden; }
+.rx-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--gb); flex-shrink: 0; }
+.rx-close { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all .13s; }
+.rx-close:hover { border-color: var(--ga); color: var(--ga); }
+.rx-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.rx-modal-body { padding: 1.1rem; overflow-y: auto; }
+.rx-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.85rem 1.1rem; border-top: 1px solid var(--gb); flex-shrink: 0; }
 </style>

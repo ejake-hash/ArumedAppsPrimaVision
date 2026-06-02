@@ -12,7 +12,10 @@ const tabs = [
   { key: 'booking',   label: 'Validasi Booking' },
 ]
 
-const today = () => new Date().toISOString().slice(0, 10)
+// Tanggal lokal (WIB), BUKAN toISOString() yang berbasis UTC — di WIB jam
+// 00:00–07:00 toISOString masih tanggal kemarin → dashboard/validasi booking
+// kirim tanggal salah ke BPJS. sv-SE menghasilkan format YYYY-MM-DD.
+const today = () => new Date().toLocaleDateString('sv-SE')
 
 // ── Status Antrean (dari /integrasi/status) ─────────────────────────────────
 const status = reactive({ loading: true, enabled: false, hasCred: false, lastTest: null, lastAt: null })

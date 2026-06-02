@@ -50,10 +50,13 @@ class DoctorExamination extends Model
         'soap_plan',
         'diagnosis_utama',
         'diagnosis_sekunder',
+        'diagnosis_text',
         'tindakan_codes',
         'planning',
         'surgery_package_id',
         'surgery_schedule_id',
+        'external_referral_facility',
+        'external_referral_reason',
         'medical_resume_id',
         // Finalisasi
         'is_finalized',

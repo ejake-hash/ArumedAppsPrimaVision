@@ -15,6 +15,7 @@
     "@tiptap/extension-table-row": "^3.23.6",
     "@tiptap/starter-kit": "^3.23.6",
     "@tiptap/vue-3": "^3.23.6",
+    "@zxing/library": "^0.21.3",
     "axios": "^1.7.0",
     "pinia": "^2.2.0",
     "pusher-js": "^8.5.0",

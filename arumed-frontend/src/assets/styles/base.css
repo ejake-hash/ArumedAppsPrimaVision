@@ -58,3 +58,19 @@ button {
   0% { transform: scale(1); opacity: 0.5; }
   100% { transform: scale(2.6); opacity: 0; }
 }
+
+/* ── Mode kepadatan (compact) ──────────────────────────────────────────────
+ * Diaktifkan via [data-density="compact"] pada <html> oleh useAppearance.
+ * Merapatkan padding tabel & kartu agar muat lebih banyak baris di satu layar.
+ * Selektor sengaja generik (th/td, .card, .modal) + universal padding-trim
+ * yang dibatasi pada elemen ber-padding besar saja, supaya aman lintas modul. */
+html[data-density="compact"] table th,
+html[data-density="compact"] table td {
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+}
+html[data-density="compact"] .card,
+html[data-density="compact"] .panel,
+html[data-density="compact"] .modal {
+  padding: 0.85rem 1rem !important;
+}

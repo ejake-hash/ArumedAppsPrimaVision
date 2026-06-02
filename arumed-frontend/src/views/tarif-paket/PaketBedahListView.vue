@@ -3,7 +3,7 @@
  * PaketBedahListView — daftar paket bedah dengan ringkasan komposisi & jumlah penjamin.
  * Edit detail (items + tariffs) buka di sub-page /tarif-paket/paket-bedah/:id
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTarifPaketStore } from '@/stores/tarifPaketStore'
 import MasterTable from '@/components/master-data/MasterTable.vue'
@@ -25,6 +25,14 @@ const filterActive = ref('')
 const csvBusy = ref({ template: false, export: false, import: false })
 const importResult = ref(null) // { created, updated, items_inserted, items_lookup_fail, errors }
 const importFileInput = ref(null)
+const openMenu = ref(null)   // 'template' | 'export' | null
+
+function toggleMenu(name) {
+  openMenu.value = openMenu.value === name ? null : name
+}
+function closeMenuOnOutside(e) {
+  if (!e.target.closest?.('.pl-split')) openMenu.value = null
+}
 
 function showToast(t, msg) {
   toast.value = { type: t, msg }
@@ -141,11 +149,12 @@ const fields = [
 function goDetail(row) { router.push(`/tarif-paket/paket-bedah/${row.id}`) }
 
 // ─── CSV Template / Export / Import ──────────────────────────────────────
-async function onDownloadTemplate() {
+async function onDownloadTemplate(format = 'csv') {
+  openMenu.value = null
   csvBusy.value.template = true
   try {
-    await store.downloadPaketTemplate()
-    showToast('s', 'Template CSV diunduh')
+    await store.downloadPaketTemplate(format)
+    showToast('s', `Template ${format.toUpperCase()} diunduh`)
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal mengunduh template')
   } finally {
@@ -153,13 +162,14 @@ async function onDownloadTemplate() {
   }
 }
 
-async function onExportCsv() {
+async function onExportCsv(format = 'csv') {
+  openMenu.value = null
   csvBusy.value.export = true
   try {
-    await store.exportPaketCsv()
-    showToast('s', 'CSV paket bedah diunduh')
+    await store.exportPaketCsv(format)
+    showToast('s', `Paket bedah diunduh (${format.toUpperCase()})`)
   } catch (e) {
-    showToast('e', e.response?.data?.message ?? 'Gagal export CSV')
+    showToast('e', e.response?.data?.message ?? 'Gagal export')
   } finally {
     csvBusy.value.export = false
   }
@@ -188,7 +198,11 @@ async function onImportFileChange(evt) {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  document.addEventListener('click', closeMenuOnOutside)
+  refresh()
+})
+onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 </script>
 
 <template>
@@ -199,19 +213,33 @@ onMounted(refresh)
         <p>Setiap paket berisi komposisi (tindakan + obat + BHP + IOL) + harga jual per penjamin (sistem auto-diskon).</p>
       </div>
       <div class="pl-head-actions">
-        <button class="pl-btn-ghost" :disabled="csvBusy.template" @click="onDownloadTemplate" title="Unduh template CSV kosong (header + contoh)">
-          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          Template
-        </button>
-        <button class="pl-btn-ghost" :disabled="csvBusy.export" @click="onExportCsv" title="Export semua paket + komposisi ke CSV">
-          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          {{ csvBusy.export ? 'Export…' : 'Export CSV' }}
-        </button>
-        <button class="pl-btn-ghost" :disabled="csvBusy.import" @click="pickImportFile" title="Import paket dari CSV (replace komposisi pada paket existing)">
+        <div class="pl-split">
+          <button class="pl-btn-ghost" :disabled="csvBusy.template" @click.stop="toggleMenu('template')" title="Unduh template kosong (header + contoh) — pilih format">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Template
+            <svg class="pl-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="openMenu === 'template'" class="pl-menu">
+            <button @click="onDownloadTemplate('csv')">CSV (.csv)</button>
+            <button @click="onDownloadTemplate('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+        <div class="pl-split">
+          <button class="pl-btn-ghost" :disabled="csvBusy.export" @click.stop="toggleMenu('export')" title="Export semua paket + komposisi — pilih format">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            {{ csvBusy.export ? 'Export…' : 'Export' }}
+            <svg class="pl-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="openMenu === 'export'" class="pl-menu">
+            <button @click="onExportCsv('csv')">CSV (.csv)</button>
+            <button @click="onExportCsv('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+        <button class="pl-btn-ghost" :disabled="csvBusy.import" @click="pickImportFile" title="Import paket dari CSV/Excel (replace komposisi pada paket existing)">
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          {{ csvBusy.import ? 'Import…' : 'Import CSV' }}
+          {{ csvBusy.import ? 'Import…' : 'Import' }}
         </button>
-        <input ref="importFileInput" type="file" accept=".csv,text/csv" hidden @change="onImportFileChange" />
+        <input ref="importFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden @change="onImportFileChange" />
         <button class="pl-btn-primary" @click="openCreate">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Tambah Paket
@@ -365,6 +393,11 @@ onMounted(refresh)
 .pl-btn-ghost:hover:not(:disabled) { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .pl-btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .pl-btn-ghost svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pl-split { position: relative; }
+.pl-caret { width: 11px !important; height: 11px !important; margin-left: 1px; }
+.pl-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.pl-menu button { text-align: left; padding: 7px 10px; border: none; background: transparent; border-radius: 6px; font-size: 12px; color: var(--td); cursor: pointer; }
+.pl-menu button:hover { background: var(--gl); color: var(--ga); }
 
 .pl-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.55rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
 .pl-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }

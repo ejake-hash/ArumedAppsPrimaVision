@@ -28,7 +28,8 @@ use Illuminate\Support\Facades\Schema;
  * (UMUM, BPJS, ASURANSI), dengan riwayat SOAP + kunjungan hari ini RME lengkap.
  *
  * Untuk SETIAP dokter yang punya jadwal hari ini:
- *   - 3 pasien WAITING di antrean DOKTER hari ini (UMUM, BPJS, ASURANSI),
+ *   - 4 pasien WAITING di antrean DOKTER hari ini (UMUM, BPJS, ASURANSI, dan
+ *     1 pasien dengan order PENUNJANG masih OPEN/REQUESTED untuk uji gate finalize),
  *     visit.doctor_schedule_id = jadwal dokter ybs (syarat getPatientQueue).
  *   - Tiap pasien: 2 kunjungan lama (finalized, SOAP) untuk riwayat RME.
  *   - Kunjungan hari ini diisi penuh (DRAFT, bukan read-only) supaya tiap tab
@@ -58,6 +59,16 @@ class DokterDemoSeeder extends Seeder
             'key' => 'asuransi', 'name' => 'Maria Gunawan', 'gender' => 'P', 'dob' => '1982-12-19',
             'guarantor' => 'ASURANSI', 'bpjs' => null, 'class' => 'Baru', 'allergy' => 'Sulfa',
             'chief' => 'Mata sering pegal dan kabur saat membaca dekat.',
+        ],
+        // Skenario uji: pasien dengan order PENUNJANG masih OPEN (REQUESTED, belum ada
+        // hasil). Dipakai untuk menguji gate finalize-vs-penunjang (nextAfterDokter
+        // merutekan ke PENUNJANG selama status REQUESTED/IN_PROGRESS). RME hari ini
+        // SENGAJA dibuat DRAFT tanpa hasil penunjang.
+        [
+            'key' => 'penunjang_open', 'name' => 'Bambang Wijaya', 'gender' => 'L', 'dob' => '1965-07-22',
+            'guarantor' => 'UMUM', 'bpjs' => null, 'class' => 'Baru', 'allergy' => null,
+            'chief' => 'Penglihatan kedua mata kabur, direncanakan biometri pra-bedah.',
+            'penunjang_open' => true,
         ],
     ];
 
@@ -126,7 +137,8 @@ class DokterDemoSeeder extends Seeder
 
         $this->command?->info(
             'DokterDemoSeeder selesai - ' . $schedulesToday->count()
-            . ' dokter on-duty x 3 pasien (UMUM/BPJS/ASURANSI) + riwayat SOAP + RME hari ini lengkap.'
+            . ' dokter on-duty x 4 pasien (UMUM/BPJS/ASURANSI + 1 PENUNJANG-OPEN) '
+            . '+ riwayat SOAP + RME hari ini lengkap.'
         );
     }
 
@@ -390,34 +402,44 @@ class DokterDemoSeeder extends Seeder
             }
         }
 
-        // Tab Penunjang: 1 order COMPLETED + hasil biometri.
+        // Tab Penunjang.
+        //   - Skenario `penunjang_open`: order REQUESTED (belum selesai, tanpa hasil)
+        //     → nextAfterDokter merutekan ke PENUNJANG; berguna menguji gate finalize.
+        //   - Pasien lain: order COMPLETED + hasil biometri (alur normal).
         if ($penunjang) {
+            $penunjangOpen = ! empty($prof['penunjang_open']);
+
             $order = DiagnosticOrder::firstOrCreate(
                 ['visit_id' => $visit->id, 'test_type' => $penunjang->code],
                 [
                     'ordered_by_id' => $employee->id,
                     'eye_side'      => 'ods',
-                    'notes'         => 'Pra-bedah katarak - biometri IOL.',
-                    'status'        => 'COMPLETED',
+                    'notes'         => $penunjangOpen
+                        ? 'Biometri IOL — MENUNGGU dikerjakan unit penunjang.'
+                        : 'Pra-bedah katarak - biometri IOL.',
+                    'status'        => $penunjangOpen ? 'REQUESTED' : 'COMPLETED',
                 ]
             );
-            DiagnosticResult::firstOrCreate(
-                ['diagnostic_order_id' => $order->id],
-                [
-                    'performed_by_id' => null,
-                    'expertise_data'  => [
-                        'AL (Axial Length)' => 'OD 23.45 mm, OS 23.60 mm',
-                        'K1 / K2'           => 'OD 43.50 / 44.00, OS 43.25 / 43.75',
-                        'Target IOL'        => 'OD +21.0 D, OS +20.5 D (SRK/T)',
-                        'kesimpulan'        => 'Biometri layak untuk implantasi IOL, target emetropia.',
-                    ],
-                    'notes'          => 'Hasil biometri telah diverifikasi.',
-                    'result_status'  => 'REVIEWED',
-                    'uploaded_at'    => now()->subHour(),
-                    'reviewed_by_id' => $employee->id,
-                    'reviewed_at'    => now()->subMinutes(30),
-                ]
-            );
+
+            if (! $penunjangOpen) {
+                DiagnosticResult::firstOrCreate(
+                    ['diagnostic_order_id' => $order->id],
+                    [
+                        'performed_by_id' => null,
+                        'expertise_data'  => [
+                            'AL (Axial Length)' => 'OD 23.45 mm, OS 23.60 mm',
+                            'K1 / K2'           => 'OD 43.50 / 44.00, OS 43.25 / 43.75',
+                            'Target IOL'        => 'OD +21.0 D, OS +20.5 D (SRK/T)',
+                            'kesimpulan'        => 'Biometri layak untuk implantasi IOL, target emetropia.',
+                        ],
+                        'notes'          => 'Hasil biometri telah diverifikasi.',
+                        'result_status'  => 'REVIEWED',
+                        'uploaded_at'    => now()->subHour(),
+                        'reviewed_by_id' => $employee->id,
+                        'reviewed_at'    => now()->subMinutes(30),
+                    ]
+                );
+            }
         }
 
         $this->enqueueDokter($visit);

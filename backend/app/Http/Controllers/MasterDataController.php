@@ -43,7 +43,7 @@ class MasterDataController extends Controller
             'rm_seq_length'     => 'nullable|integer|min:4|max:8',
             'pdf_engine'        => 'nullable|in:puppeteer',
             'watermark_enabled' => 'nullable|boolean',
-            'watermark_type'    => 'nullable|in:ORIGINAL,COPY,DRAFT',
+            'watermark_type'    => 'nullable|required_if:watermark_enabled,true,1|in:ORIGINAL,COPY,DRAFT',
             'operating_rooms'   => 'nullable|array|min:1|max:20',
             'operating_rooms.*' => 'required|string|max:50|distinct',
         ]);
@@ -366,6 +366,46 @@ class MasterDataController extends Controller
         return $this->ok(null, 'Kategori dihapus');
     }
 
+    // ─── Kategori Tindakan — CSV / Excel template / export / import ──────────
+
+    public function templateKategoriCsv(Request $request): Response
+    {
+        return $this->csvOrXlsx($request, $this->service->templateKategoriCsv(), 'template-kategori-tindakan', 'Kategori');
+    }
+
+    public function exportKategoriCsv(Request $request): Response
+    {
+        return $this->csvOrXlsx($request, $this->service->exportKategoriCsv(), 'kategori-tindakan-' . now()->format('Ymd'), 'Kategori');
+    }
+
+    public function importKategoriCsv(Request $request): JsonResponse
+    {
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+        try {
+            $csv    = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
+            $result = $this->service->importKategoriCsv($csv);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($result, "Import selesai: {$result['inserted']} baru, {$result['updated']} diperbarui, {$result['skipped']} dilewati.");
+    }
+
+    /** Kirim CSV string sbg file CSV (default) atau XLSX bila ?format=xlsx. */
+    private function csvOrXlsx(Request $request, string $csv, string $baseName, string $sheetTitle): Response
+    {
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
+        ]);
+    }
+
     // =========================================================================
     // ICD-10 / ICD-9
     // =========================================================================
@@ -528,6 +568,7 @@ class MasterDataController extends Controller
     {
         $validated = $request->validate([
             'code'         => 'nullable|string|max:50|unique:medications,code',
+            'kfa_code'     => 'nullable|string|max:32',
             'name'         => 'required|string|max:255',
             'generic_name' => 'nullable|string|max:255',
             'composition'  => 'nullable|string|max:500',
@@ -554,6 +595,7 @@ class MasterDataController extends Controller
     public function updateObat(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
+            'kfa_code'     => 'sometimes|nullable|string|max:32',
             'name'         => 'sometimes|string|max:255',
             'generic_name' => 'nullable|string|max:255',
             'composition'  => 'nullable|string|max:500',
@@ -875,10 +917,10 @@ class MasterDataController extends Controller
      */
     public function importTarifCsv(Request $request, string $type): JsonResponse
     {
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
 
         try {
-            $csvContent = file_get_contents($request->file('file')->getRealPath());
+            $csvContent = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
             $result     = $this->service->importTarifCsv($type, $csvContent);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
@@ -901,9 +943,9 @@ class MasterDataController extends Controller
     }
 
     /**
-     * GET /master/{type}/template-csv
+     * GET /master/{type}/template-csv  (?format=xlsx untuk Excel)
      */
-    public function templateCsv(string $type): Response
+    public function templateCsv(Request $request, string $type): Response
     {
         $this->assertCsvType($type);
 
@@ -913,16 +955,13 @@ class MasterDataController extends Controller
             return response($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"template-{$type}.csv\"",
-        ]);
+        return $this->csvOrXlsx($request, $csv, "template-{$type}", $this->csvSheetTitle($type));
     }
 
     /**
-     * GET /master/{type}/export-csv
+     * GET /master/{type}/export-csv  (?format=xlsx untuk Excel)
      */
-    public function exportCsv(string $type): Response
+    public function exportCsv(Request $request, string $type): Response
     {
         $this->assertCsvType($type);
 
@@ -932,10 +971,21 @@ class MasterDataController extends Controller
             return response($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"{$type}-" . now()->format('Ymd') . ".csv\"",
-        ]);
+        return $this->csvOrXlsx($request, $csv, "{$type}-" . now()->format('Ymd'), $this->csvSheetTitle($type));
+    }
+
+    /** Judul sheet Excel yang manusiawi per tipe resource (fallback: uppercase). */
+    private function csvSheetTitle(string $type): string
+    {
+        return [
+            'icd10'      => 'ICD-10',
+            'icd9'       => 'ICD-9',
+            'obat'       => 'Obat',
+            'bhp'        => 'BHP',
+            'iol'        => 'IOL',
+            'alat-medis' => 'Alat Medis',
+            'tindakan'   => 'Tarif Tindakan',
+        ][$type] ?? strtoupper($type);
     }
 
     /**
@@ -946,10 +996,11 @@ class MasterDataController extends Controller
     {
         $this->assertCsvType($type);
 
-        $request->validate(['file' => 'required|file|mimes:csv,txt|max:5120']);
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
 
         try {
-            $csvContent = file_get_contents($request->file('file')->getRealPath());
+            // Terima CSV/TXT & Excel; helper normalisasi BOM + delimiter ';' → koma.
+            $csvContent = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
             $result     = $this->service->importResourceCsv($type, $csvContent);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
@@ -1110,16 +1161,43 @@ class MasterDataController extends Controller
         return $this->ok($this->service->indexNomorDokumen());
     }
 
-    public function updateNomorDokumen(Request $request, string $id): JsonResponse
+    public function storeNomorDokumen(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'format'       => 'sometimes|string|max:255',
+            // Unik hanya terhadap baris aktif (soft-delete diabaikan) agar kode
+            // yang pernah dihapus bisa dipakai ulang.
+            'document_type_code' => [
+                'required', 'string', 'max:20',
+                \Illuminate\Validation\Rule::unique('document_number_configs', 'document_type_code')->whereNull('deleted_at'),
+            ],
+            'format'             => 'required|string|max:255',
+            'prefix'             => 'nullable|string|max:50',
+            'reset_period'       => 'required|in:DAILY,MONTHLY,YEARLY,NEVER',
+            'seq_length'         => 'required|integer|min:3|max:10',
+        ]);
+
+        return $this->ok($this->service->storeNomorDokumen($validated), 'Konfigurasi nomor dokumen dibuat', 201);
+    }
+
+    public function updateNomorDokumen(Request $request, string $id): JsonResponse
+    {
+        // format, reset_period & seq_length WAJIB: inti generator nomor — jangan
+        // biarkan ter-null-kan diam-diam saat update (pola "field hilang").
+        $validated = $request->validate([
+            'format'       => 'required|string|max:255',
             'prefix'       => 'nullable|string|max:50',
-            'reset_period' => 'nullable|in:DAILY,MONTHLY,YEARLY,NEVER',
-            'seq_length'   => 'nullable|integer|min:3|max:10',
+            'reset_period' => 'required|in:DAILY,MONTHLY,YEARLY,NEVER',
+            'seq_length'   => 'required|integer|min:3|max:10',
         ]);
 
         return $this->ok($this->service->updateNomorDokumen($id, $validated), 'Konfigurasi nomor dokumen diperbarui');
+    }
+
+    public function destroyNomorDokumen(string $id): JsonResponse
+    {
+        $this->service->destroyNomorDokumen($id);
+
+        return $this->ok(null, 'Konfigurasi nomor dokumen dihapus');
     }
 
     // =========================================================================
@@ -1386,7 +1464,7 @@ class MasterDataController extends Controller
             'parent_id'           => ['nullable', 'uuid', 'exists:document_types,id'],
             'required_signatures' => ['nullable', 'array'],
             'required_signatures.*.role'        => ['required_with:required_signatures.*', 'string'],
-            'required_signatures.*.sign_type'   => ['required_with:required_signatures.*', 'string'],
+            'required_signatures.*.sign_type'   => ['required_with:required_signatures.*', 'in:PIN,DRAW'],
             'required_signatures.*.is_required' => ['nullable', 'boolean'],
             'show_in_rme'         => ['nullable', 'boolean'],
             'sort_order'          => ['nullable', 'integer'],

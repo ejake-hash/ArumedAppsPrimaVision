@@ -424,6 +424,23 @@ class RanapController extends Controller
         return $this->ok($result, 'SEP diperbarui');
     }
 
+    /** PUT /rawat-inap/{visitId}/sep/tgl-pulang — lapor/ulang tgl pulang SEP ke VClaim. */
+    public function updateTglPulang(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'tgl_pulang' => 'nullable|date',
+        ]);
+
+        try {
+            $visit  = Visit::with('patient')->findOrFail($visitId);
+            $result = $this->service->updateTglPulang($visit, $data['tgl_pulang'] ?? null);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Tanggal pulang SEP dilaporkan ke BPJS');
+    }
+
     /** GET /rawat-inap/{visitId}/spri */
     public function listSpri(string $visitId): JsonResponse
     {

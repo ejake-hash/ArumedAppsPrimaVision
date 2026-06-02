@@ -148,6 +148,10 @@ class BedahController extends Controller
             'complication_detail'  => 'required_if:has_complication,true|nullable|string|max:2000',
             'post_op_instructions' => 'nullable|string|max:2000',
             'followup_date'        => 'nullable|date|after_or_equal:today',
+            // Disposisi pasca-op: PULANG → Kasir | RAWAT_INAP → papan Menunggu Kamar.
+            // Tanpa rule ini Laravel men-drop field → service selalu default PULANG
+            // (pasien rawat inap salah dirutekan ke Kasir).
+            'post_op_disposition'  => 'nullable|in:PULANG,RAWAT_INAP',
         ]);
 
         try {
@@ -244,6 +248,49 @@ class BedahController extends Controller
         }
 
         return $this->ok($record, 'Laporan operasi dikunci. Pasien diteruskan ke Farmasi/Kasir.');
+    }
+
+    /**
+     * POST /bedah/record/{id}/resep-pasca
+     * Resep obat pasca-bedah (obat pulang) → Prescription SUBMITTED utk Farmasi.
+     *
+     * Visit di-resolve dari laporan operasi (surgery_records.visit_id NOT NULL,
+     * di-set saat startOperation). Resep SUBMITTED otomatis muncul di Farmasi
+     * via QueueService::nextAfterKasir — TIDAK perlu enqueue manual.
+     *
+     * Param route bernama {id} (lihat routes/api.php) → binding scalar Laravel
+     * berdasar NAMA, jadi argumen WAJIB $id (bukan $recordId).
+     */
+    public function storePostOpPrescription(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'items'                  => 'required|array|min:1',
+            'items.*.medication_id'  => 'required|uuid|exists:medications,id',
+            'items.*.quantity'       => 'required|integer|min:1',
+            'items.*.dose'           => 'nullable|string|max:100',
+            'items.*.frequency'      => 'nullable|string|max:100',
+            'items.*.route'          => 'nullable|string|max:100',
+            'items.*.duration_days'  => 'nullable|integer|min:1',
+            'items.*.notes'          => 'nullable|string|max:255',
+            'pharmacy_note'          => 'nullable|string|max:500',
+        ]);
+
+        $record  = \App\Models\SurgeryRecord::findOrFail($id);
+        $visitId = $record->visit_id;
+
+        if (! $visitId) {
+            return $this->error('Laporan tidak terhubung kunjungan', 422);
+        }
+
+        try {
+            $resep = $this->service->storePostOpPrescription($visitId, $validated['items'], [
+                'pharmacy_note' => $validated['pharmacy_note'] ?? null,
+            ]);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($resep, 'Resep pasca-bedah dikirim ke Farmasi', 201);
     }
 
     // =========================================================================
@@ -471,6 +518,31 @@ class BedahController extends Controller
         }
 
         return $this->ok($usage, 'Pemakaian IOL diperbarui');
+    }
+
+    // =========================================================================
+    // MASTER LOOKUP (Bedah-scoped)
+    // =========================================================================
+
+    /**
+     * GET /bedah/obat
+     * Daftar obat utk resep pasca-bedah. Shape sama dgn dokterApi.daftarObat
+     * (id, code, name, form, golongan, unit, stock, hja).
+     */
+    public function daftarObat(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getDaftarObat($request->query('search')));
+    }
+
+    /**
+     * GET /bedah/iol
+     * Daftar IOL item (lensa tanam) utk pencatatan pemakaian saat operasi.
+     */
+    public function indexIol(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getIolItems(
+            $request->only(['search', 'iol_type', 'material', 'active', 'available_only', 'per_page'])
+        ));
     }
 
     // =========================================================================

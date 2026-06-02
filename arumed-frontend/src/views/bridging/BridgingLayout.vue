@@ -14,7 +14,7 @@ const auth = useAuthStore()
 const allTabs = [
   { to: '/bridging/konfigurasi', label: 'Konfigurasi & Status', icon: 'cog' },
   { to: '/bridging/vclaim',      label: 'VClaim',               icon: 'card' },
-  { to: '/bridging/antrean',     label: 'Antrean Online',       icon: 'queue' },
+  // Antrean Online dipindah ke modul Jadwal Dokter → Pemetaan BPJS.
   { to: '/bridging/satusehat',   label: 'Satu Sehat',           icon: 'health' },
   { to: '/bridging/log',         label: 'Log Integrasi',        icon: 'list' },
 ]
@@ -33,7 +33,7 @@ const currentLabel = computed(
   <div class="br-wrap">
     <header class="br-header">
       <h1>Bridging BPJS</h1>
-      <p class="br-sub">Integrasi VClaim, Antrean Online &amp; Satu Sehat — {{ currentLabel }}</p>
+      <p class="br-sub">Integrasi VClaim &amp; Satu Sehat — {{ currentLabel }}</p>
     </header>
 
     <div class="br-grid">
