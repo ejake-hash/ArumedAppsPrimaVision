@@ -53,3 +53,18 @@ Docs/migrasi data/test_*.php
 backend/_*.php
 backend/_*.txt
 _verify_tmp.txt
+
+# === CLEANUP: tidak perlu di server production ===
+
+# Dokumentasi & tooling dev
+Docs/
+.claude/
+Memory/
+skill/
+ARCHITECTURE.md
+
+# File data lepas
+*.csv
+
+# File testing
+hello.js
