@@ -106,6 +106,68 @@ class RoleController extends Controller
         ]);
     }
 
+    // ─── CSV / Excel: Template / Export / Import ──────────────────────────────
+
+    // GET /rbac/roles/csv-template  (?format=xlsx untuk Excel)
+    public function csvTemplate(Request $request): \Symfony\Component\HttpFoundation\Response
+    {
+        return $this->csvOrXlsx($request, $this->service->csvTemplate(), 'template-role', 'Role');
+    }
+
+    // GET /rbac/roles/export  (?format=xlsx untuk Excel)
+    public function exportCsv(Request $request): \Symfony\Component\HttpFoundation\Response
+    {
+        return $this->csvOrXlsx($request, $this->service->exportCsv(), 'data-role-' . now()->format('Ymd-His'), 'Role');
+    }
+
+    /** Kirim CSV string sbg file CSV (default) atau XLSX bila ?format=xlsx. */
+    private function csvOrXlsx(Request $request, string $csv, string $baseName, string $sheetTitle): \Symfony\Component\HttpFoundation\Response
+    {
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
+        ]);
+    }
+
+    // POST /rbac/roles/import  (multipart: file CSV/XLSX/ODS)
+    public function importCsv(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120',
+        ]);
+
+        try {
+            // CSV/XLSX/ODS → CSV string ternormalisasi → jalur importer CSV.
+            $result = $this->service->importCsv(\App\Support\SpreadsheetHelper::fileToCsv($request->file('file')));
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false, 'data' => null,
+                'message' => $e->getMessage(), 'errors' => null,
+            ], $this->statusOf($e, 422));
+        }
+
+        $created = count($result['created']);
+        $updated = count($result['updated']);
+        $skipped = count($result['skipped']);
+        $errors  = count($result['errors']);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $result,
+            'message' => "Import selesai: {$created} dibuat, {$updated} diperbarui, {$skipped} dilewati, {$errors} gagal.",
+            'errors'  => null,
+        ]);
+    }
+
     public function syncPermissions(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([

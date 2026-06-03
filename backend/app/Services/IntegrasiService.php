@@ -8,6 +8,8 @@ use App\Models\BpjsReferralIn;
 use App\Models\BpjsReferralOut;
 use App\Models\BpjsVClaimLog;
 use App\Models\DoctorSchedule;
+use App\Models\Icd10Code;
+use App\Models\Icd9Code;
 use App\Models\Employee;
 use App\Models\InacbgsGroupingLog;
 use App\Models\IntegrationConfig;
@@ -451,6 +453,157 @@ class IntegrasiService
     }
 
     // =========================================================================
+    // SINKRON MASTER ICD DARI REFERENSI VCLAIM (cakupan oftalmologi)
+    // =========================================================================
+
+    /**
+     * Keyword pencarian default untuk menyaring kode mata (Bab VII ICD-10
+     * H00–H59 + prosedur mata ICD-9-CM). Endpoint /referensi/diagnosa/{q} dan
+     * /referensi/procedure/{q} adalah SEARCH-by-keyword, jadi kita panggil
+     * dengan tiap keyword lalu kumpulkan hasilnya — cakupan tetap oftalmologi.
+     *
+     * Referensi VClaim = master nasional BPJS yang SAMA dengan yang dipakai
+     * grouper INA-CBG (ICD-10 + ICD-9-CM), jadi kode hasil sinkron dijamin
+     * diterima saat set_claim_data/grouper.
+     */
+    public const ICD10_EYE_KEYWORDS = [
+        'H00', 'H01', 'H02', 'H03', 'H04', 'H05', 'H06', 'H10', 'H11',
+        'H13', 'H15', 'H16', 'H17', 'H18', 'H19', 'H20', 'H21', 'H22',
+        'H25', 'H26', 'H27', 'H28', 'H30', 'H31', 'H33', 'H34', 'H35',
+        'H36', 'H40', 'H42', 'H43', 'H44', 'H46', 'H47', 'H49', 'H50',
+        'H51', 'H52', 'H53', 'H54', 'H55', 'H57', 'H59',
+    ];
+
+    public const ICD9_EYE_KEYWORDS = [
+        '08', '09', '10', '11', '12', '13', '14', '15', '16', '95.0', '95.1', '95.2',
+    ];
+
+    /**
+     * Sinkron kode ICD-10 (diagnosa) atau ICD-9 (procedure) dari VClaim ke master.
+     *
+     * @param string $type  'icd10' | 'icd9'
+     * @param array|null $keywords  override daftar keyword (default = blok mata)
+     * @return array {type, inserted, updated, total, per_keyword, failed_keywords}
+     */
+    public function syncIcdFromVclaim(string $type, ?array $keywords = null): array
+    {
+        if (! in_array($type, ['icd10', 'icd9'], true)) {
+            throw new \Exception("Tipe sinkron tidak dikenal: {$type}. Pakai 'icd10' atau 'icd9'.", 422);
+        }
+
+        // Lempar 503 lebih awal bila VClaim mati (di dev sandbox off) — pesan jelas.
+        if (! $this->vclaim->isEnabled()) {
+            throw new \Exception('VClaim belum aktif/terkonfigurasi. Sinkron ICD hanya bisa di lingkungan dgn VClaim aktif (produksi).', 503);
+        }
+
+        $keywords = $keywords ?: ($type === 'icd10' ? self::ICD10_EYE_KEYWORDS : self::ICD9_EYE_KEYWORDS);
+        $model    = $type === 'icd10' ? Icd10Code::class : Icd9Code::class;
+
+        $inserted = 0;
+        $updated  = 0;
+        $perKeyword = [];
+        $failed     = [];
+        $seen       = []; // dedup antar keyword (kode bisa muncul di >1 query)
+
+        foreach ($keywords as $kw) {
+            try {
+                $rows = $this->fetchVclaimIcdRows($type, (string) $kw);
+            } catch (\Throwable $e) {
+                $failed[] = ['keyword' => $kw, 'error' => $e->getMessage()];
+                continue;
+            }
+
+            $count = 0;
+            foreach ($rows as $row) {
+                $code = trim((string) ($row['kode'] ?? $row['kodeDiagnosa'] ?? ''));
+                $name = trim((string) ($row['nama'] ?? $row['namaDiagnosa'] ?? ''));
+                if ($code === '') {
+                    continue;
+                }
+                if (isset($seen[$code])) {
+                    continue;
+                }
+                $seen[$code] = true;
+                $count++;
+
+                $res = $this->upsertIcdCode($model, $code, $name);
+                $res === 'inserted' ? $inserted++ : $updated++;
+            }
+            $perKeyword[$kw] = $count;
+        }
+
+        $this->log(
+            auth('api')->id(),
+            'SYNC_ICD_VCLAIM',
+            $model,
+            null,
+            "type:{$type} inserted:{$inserted} updated:{$updated} keywords:" . count($keywords)
+        );
+
+        return [
+            'type'            => $type,
+            'inserted'        => $inserted,
+            'updated'         => $updated,
+            'total'           => $inserted + $updated,
+            'per_keyword'     => $perKeyword,
+            'failed_keywords' => $failed,
+        ];
+    }
+
+    /**
+     * Ambil baris referensi ICD dari VClaim + ratakan envelope.
+     * Envelope VClaim: response bisa array langsung ATAU {diagnosa|procedure|list:[...]}.
+     */
+    private function fetchVclaimIcdRows(string $type, string $keyword): array
+    {
+        $res = $type === 'icd10'
+            ? $this->vclaim->refDiagnosa($keyword)
+            : $this->vclaim->refProcedure($keyword);
+
+        if (! ($res['is_success'] ?? false)) {
+            throw new \Exception($res['metaData']['message'] ?? 'Referensi VClaim gagal', 502);
+        }
+
+        $d = $res['response'] ?? [];
+        if (is_array($d) && array_is_list($d)) {
+            return $d;
+        }
+
+        return $d['diagnosa'] ?? $d['procedure'] ?? $d['list'] ?? [];
+    }
+
+    /**
+     * Upsert satu kode ICD AMAN soft-delete (pola sama MasterDataService::upsertIcdRow).
+     * Tandai is_eye_related=true (cakupan sinkron memang oftalmologi). Hanya isi
+     * description bila kosong di master / dari BPJS — JANGAN timpa deskripsi ID
+     * yang mungkin sudah dikurasi manual.
+     */
+    private function upsertIcdCode(string $model, string $code, string $name): string
+    {
+        $existing = $model::withTrashed()->where('code', $code)->first();
+
+        if ($existing) {
+            $payload = ['is_eye_related' => true];
+            if ($name !== '' && empty($existing->description)) {
+                $payload['description'] = $name;
+            }
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            $existing->update($payload);
+            return 'updated';
+        }
+
+        $model::create([
+            'code'           => $code,
+            'description'    => $name !== '' ? $name : $code,
+            'is_eye_related' => true,
+            'is_favorite'    => false,
+        ]);
+        return 'inserted';
+    }
+
+    // =========================================================================
     // ANTREAN — PASSTHROUGH
     // =========================================================================
 
@@ -505,13 +658,27 @@ class IntegrasiService
 
         $mappings = BpjsPoliMapping::all()->keyBy('poli_code');
 
-        return $localCodes->map(fn ($s) => [
+        $rows = $localCodes->map(fn ($s) => [
             'poli_code'      => $s->poli_code,
             'poli_name'      => $s->poliklinik,
             'bpjs_poli_code' => $mappings[$s->poli_code]->bpjs_poli_code ?? null,
             'bpjs_poli_name' => $mappings[$s->poli_code]->bpjs_poli_name ?? null,
             'mapped'         => isset($mappings[$s->poli_code]),
         ])->values()->toArray();
+
+        // Baris IGD selalu hadir walau tak ada jadwal dokter (pasien IGD walk-in).
+        // SEP IGD me-resolve kode poli via poli_code 'IGD' → admin wajib bisa
+        // memetakannya dari UI. (Konvensi sama Queue::STATION_IGD / jenis_pelayanan.)
+        array_unshift($rows, [
+            'poli_code'      => 'IGD',
+            'poli_name'      => 'Instalasi Gawat Darurat',
+            'bpjs_poli_code' => $mappings['IGD']->bpjs_poli_code ?? null,
+            'bpjs_poli_name' => $mappings['IGD']->bpjs_poli_name ?? null,
+            'mapped'         => isset($mappings['IGD']),
+            'is_system'      => true,
+        ]);
+
+        return $rows;
     }
 
     public function upsertPoliMapping(array $data): BpjsPoliMapping

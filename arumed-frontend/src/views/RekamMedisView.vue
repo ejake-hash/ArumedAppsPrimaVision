@@ -325,6 +325,36 @@ async function printResume() {
   window.print()
 }
 
+// ─── CETAK RESUME MEDIS RAWAT JALAN (RM 1.7/RMRJ/22) per kunjungan ──────────────
+// Buka window A4 mandiri (tak terpengaruh CSS halaman) berisi layout formulir resmi.
+const cetakingResume = ref(false)
+async function cetakResumeMedis(visitId) {
+  if (cetakingResume.value) return
+  cetakingResume.value = true
+  try {
+    const { data } = await api.get(`/rekam-medis/kunjungan/${visitId}/resume-medis`)
+    const d = data.data ?? data
+    const html = d.rendered_html
+    if (!html) { toast('w', 'Resume medis belum tersaji untuk dicetak'); return }
+
+    const w = window.open('', '_blank', 'width=900,height=1000')
+    if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak'); return }
+    w.document.open()
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/>
+<title>Resume Medis Rawat Jalan — ${(patient.value?.nama ?? '').replace(/[<>&]/g, '')}</title>
+<style>@page { size: A4; margin: 14mm; } body { margin: 0; }</style>
+</head><body>${html}</body></html>`)
+    w.document.close()
+    // Cetak SETELAH konten ter-render (onload inline kadang menembak window kosong).
+    w.focus()
+    setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P manual */ } }, 350)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memuat resume medis untuk dicetak')
+  } finally {
+    cetakingResume.value = false
+  }
+}
+
 // ─── CETAK LAPORAN OPERASI (A4, dengan IOL traceability) ───────────────────────
 const printOp = ref(null)   // baris bedah yang sedang dicetak
 
@@ -333,11 +363,18 @@ function cetakLaporanOperasi(b) {
   // Kelas pada <body> agar @media print hanya menampilkan kartu laporan operasi
   // (menyembunyikan resume penuh & UI lain).
   document.body.classList.add('print-op')
+
+  // Lepas kelas via event 'afterprint' (BUKAN timer tetap): kalau dialog cetak
+  // lambat dibuka/ditutup, timer 300ms bisa mencopot kelas saat dialog masih
+  // terbuka → yang tercetak malah resume. afterprint pasti setelah dialog selesai.
+  const cleanup = () => {
+    document.body.classList.remove('print-op')
+    window.removeEventListener('afterprint', cleanup)
+  }
+  window.addEventListener('afterprint', cleanup)
+
   // Tunggu render container cetak sebelum panggil print.
-  setTimeout(() => {
-    window.print()
-    setTimeout(() => document.body.classList.remove('print-op'), 300)
-  }, 60)
+  setTimeout(() => window.print(), 60)
 }
 </script>
 
@@ -560,6 +597,13 @@ function cetakLaporanOperasi(b) {
                             <div class="det-t">Rencana</div>
                             <div>{{ val(v.detail.planning) }}</div>
                             <div v-if="v.detail.follow_up_date"><small>Kontrol: {{ fmtTgl(v.detail.follow_up_date) }}</small></div>
+                          </div>
+                          <div class="det-box span2 det-actions">
+                            <button class="rm17-btn" :disabled="cetakingResume" @click.stop="cetakResumeMedis(v.visit_id)">
+                              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                              Cetak Resume Medis (RM 1.7)
+                            </button>
+                            <small v-if="!v.is_finalized" class="rm17-hint">Belum difinalisasi — isi resume mungkin kosong.</small>
                           </div>
                         </div>
                       </td>
@@ -1086,6 +1130,11 @@ function cetakLaporanOperasi(b) {
 .det-box { background: #fff; border: 1px solid #eceef2; border-radius: 8px; padding: .55rem .7rem; font-size: 11.5px; line-height: 1.5; color: #000; }
 .det-box.span2 { grid-column: 1 / -1; }
 .det-t { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
+.det-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #f8fafc; }
+.rm17-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: #fff; background: #0E3A66; border: none; border-radius: 7px; cursor: pointer; }
+.rm17-btn:hover { filter: brightness(1.08); }
+.rm17-btn:disabled { opacity: .6; cursor: default; }
+.rm17-hint { color: #b45309; font-size: 11px; }
 .det-note { margin-top: 5px; color: #6b7280; font-size: 10.5px; }
 .vt-row { display: flex; flex-wrap: wrap; gap: .4rem .8rem; }
 .vt-row span { background: #f1f3f6; padding: 1px 7px; border-radius: 5px; font-size: 10.5px; }

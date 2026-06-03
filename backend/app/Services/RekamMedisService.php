@@ -8,6 +8,7 @@ use App\Models\DocumentType;
 use App\Models\DocumentVerification;
 use App\Models\MedicalRecord;
 use App\Models\MedicalRecordVersion;
+use App\Models\MedicalResume;
 use App\Models\Notification;
 use App\Models\Patient;
 use App\Models\PatientDocument;
@@ -463,8 +464,7 @@ class RekamMedisService
     public function verifyDocument(string $token): array
     {
         $verification = DocumentVerification::with([
-            'patientDocument.patient',
-            'patientDocument.documentType',
+            'patientDocument.documentSignatures',
         ])->where('verification_token', $token)->first();
 
         if (! $verification) {
@@ -477,18 +477,53 @@ class RekamMedisService
 
         $document = $verification->patientDocument;
 
+        // Daftar penandatangan + tanggal TTD (info yang ditampilkan saat scan).
+        // Sensitif (nama pasien/no RM/isi klinis) sengaja TIDAK diekspos publik.
+        $signers = collect($document?->documentSignatures ?? [])
+            ->sortBy('captured_at')
+            ->map(function ($sig) {
+                $waktu = null;
+                if (!empty($sig->captured_at)) {
+                    $waktu = optional($sig->captured_at)->timezone('Asia/Jakarta')?->format('d-m-Y H:i') . ' WIB';
+                }
+                return [
+                    'nama'        => $sig->signer_name_snapshot ?? $this->signerDisplayName($sig),
+                    'jabatan'     => $sig->signer_role_snapshot,
+                    'metode'      => $sig->sign_method === 'PIN' ? 'TTD Elektronik (PIN)' : 'TTD Manual',
+                    'ditandatangani_pada' => $waktu,
+                ];
+            })
+            ->values()
+            ->all();
+
         return [
-            'valid'          => $verification->is_valid,
-            'message'        => $verification->is_valid
+            'valid'        => $verification->is_valid,
+            'message'      => $verification->is_valid
                 ? 'Dokumen valid dan terverifikasi.'
                 : 'Dokumen sudah dibatalkan (VOID).',
-            'document_type'  => $document?->documentType?->name,
-            'document_number' => $document?->document_number,
-            'patient_name'   => $document?->patient?->name,
-            'patient_no_rm'  => $document?->patient?->no_rm,
-            'status'         => $document?->status,
-            'scan_count'     => $verification->scan_count,
+            'signers'      => $signers,
+            'finalized_at' => optional($document?->finalized_at)
+                ? optional($document->finalized_at)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB'
+                : null,
+            'scan_count'   => $verification->scan_count,
         ];
+    }
+
+    /**
+     * Nama tampilan penandatangan untuk halaman verifikasi bila snapshot kosong
+     * (mis. signature mode DRAW pasien/saksi).
+     */
+    private function signerDisplayName($sig): string
+    {
+        if (!empty($sig->signer_external_identity['nama'])) {
+            return $sig->signer_external_identity['nama'];
+        }
+        return match ($sig->signer_type) {
+            'patient'  => 'Pasien',
+            'guardian' => 'Wali',
+            'witness'  => 'Saksi',
+            default    => ucfirst((string) $sig->signer_type),
+        };
     }
 
     // =========================================================================
@@ -500,6 +535,47 @@ class RekamMedisService
         return MedicalRecord::with(['documentType', 'createdBy', 'versions.changedBy'])
             ->where('visit_id', $visitId)
             ->first();
+    }
+
+    /**
+     * Data Resume Medis Rawat Jalan (RM 1.7/RMRJ/22) untuk dicetak dari RME.
+     * Mengembalikan field formulir (rmrj_data) + identitas pasien + profil klinik
+     * (logo/nama) + nama dokter penandatangan. Read-only, permission rekam_medis.read.
+     */
+    public function resumeMedis(string $visitId): array
+    {
+        $resume = MedicalResume::with('doctor')->where('visit_id', $visitId)->first();
+        if (! $resume) {
+            throw new \Exception('Resume medis belum dibuat untuk kunjungan ini.', 404);
+        }
+
+        $visit  = Visit::with('patient')->find($visitId);
+        $clinic = ClinicProfile::query()->first();
+
+        // HTML siap-cetak (sumber tunggal builder di DokterService), agar cetak dari
+        // Kunjungan & dari menu Dokumen identik.
+        $html = app(\App\Services\DokterService::class)->buildRmrjHtml($resume, $visit);
+
+        return [
+            'rmrj'      => $resume->rmrj_data ?? [],
+            'rendered_html' => $html,
+            'is_final'  => (bool) $resume->is_finalized,
+            'doctor'    => $resume->doctor?->name ?? ($resume->rmrj_data['dokter_merawat'] ?? null),
+            'finalized_at' => optional($resume->finalized_at)->format('Y-m-d'),
+            'patient'   => $visit?->patient ? [
+                'nama'          => $visit->patient->name,
+                'no_rm'         => $visit->patient->no_rm,
+                'nik'           => $visit->patient->nik,
+                'gender'        => $visit->patient->gender,
+                'date_of_birth' => optional($visit->patient->date_of_birth)->format('Y-m-d'),
+            ] : null,
+            'clinic'    => [
+                'name'      => $clinic?->clinic_name,
+                'logo_path' => $clinic?->logo_path,
+                'address'   => $clinic?->address,
+            ],
+            'doc_code'  => 'RM 1.7/RMRJ/22',
+        ];
     }
 
     public function storeMedicalRecord(array $data): MedicalRecord

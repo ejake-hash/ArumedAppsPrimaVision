@@ -6,7 +6,6 @@ const BHP_CATEGORIES = [
   { value: 'MEDICAL_BHP',      label: 'BHP Medis' },
   { value: 'CSSD',             label: 'CSSD (Sterilisasi)' },
   { value: 'INSTRUMENT_SET',   label: 'Set Instrumen Bedah' },
-  { value: 'MEDICAL_SUPPLIES', label: 'Medical Supplies' },
 ]
 
 // Kategori reusable (disteril/dipakai ulang) — tidak butuh stok minimum & kadaluwarsa.
@@ -98,6 +97,5 @@ function labelCategory(v) {
 .cell-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
 .cell-tag[data-cat="CSSD"]             { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
 .cell-tag[data-cat="INSTRUMENT_SET"]   { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
-.cell-tag[data-cat="MEDICAL_SUPPLIES"] { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
 .cell-tag[data-cat="MEDICAL_BHP"]      { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
 </style>

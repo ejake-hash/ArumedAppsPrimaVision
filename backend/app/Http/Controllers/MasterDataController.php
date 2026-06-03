@@ -13,6 +13,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 class MasterDataController extends Controller
 {
@@ -222,7 +223,7 @@ class MasterDataController extends Controller
 
     public function indexPenjamin(Request $request): JsonResponse
     {
-        return $this->ok($this->service->indexPenjamin($request->only(['type', 'parent_id', 'is_system', 'per_page'])));
+        return $this->ok($this->service->indexPenjamin($request->only(['type', 'parent_id', 'is_system', 'only_tpa_view', 'per_page'])));
     }
 
     public function storePenjamin(Request $request): JsonResponse
@@ -236,6 +237,7 @@ class MasterDataController extends Controller
             'email'     => 'nullable|email|max:255',
             'address'   => 'nullable|string|max:500',
             'is_active' => 'nullable|boolean',
+            'is_tpa'    => 'nullable|boolean',
             // Kolom TPA — diisi untuk insurer tipe ASURANSI/PERUSAHAAN
             'portal_url'             => 'nullable|url|max:500',
             'pic_name'               => 'nullable|string|max:255',
@@ -259,6 +261,7 @@ class MasterDataController extends Controller
             'email'     => 'nullable|email|max:255',
             'address'   => 'nullable|string|max:500',
             'is_active' => 'nullable|boolean',
+            'is_tpa'    => 'nullable|boolean',
             'portal_url'             => 'nullable|url|max:500',
             'pic_name'               => 'nullable|string|max:255',
             'pic_phone'              => 'nullable|string|max:30',
@@ -275,6 +278,69 @@ class MasterDataController extends Controller
         $this->service->deletePenjamin($id);
 
         return $this->ok(null, 'Penjamin dihapus');
+    }
+
+    // ─── Penjamin — TPA membership (kelola anggota dari sisi TPA induk) ───────
+
+    public function candidateMembers(string $tpaId): JsonResponse
+    {
+        return $this->ok($this->service->candidateTpaMembers($tpaId));
+    }
+
+    public function addPenjaminMember(Request $request, string $tpaId): JsonResponse
+    {
+        // Terima SALAH SATU: insurer_id (kandidat existing) ATAU new_name (buat baru).
+        $validated = $request->validate([
+            'insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'new_name'   => 'nullable|string|max:255',
+        ]);
+        $newName = trim((string) ($validated['new_name'] ?? ''));
+        if (empty($validated['insurer_id']) && $newName === '') {
+            return $this->error('Pilih kandidat atau isi nama asuransi baru.', 422);
+        }
+        try {
+            // insurer_id diprioritaskan bila keduanya terisi.
+            $member = ! empty($validated['insurer_id'])
+                ? $this->service->addTpaMember($tpaId, $validated['insurer_id'])
+                : $this->service->addTpaMemberByName($tpaId, $newName);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($member, 'Anggota TPA ditambahkan');
+    }
+
+    public function removePenjaminMember(string $tpaId, string $memberId): JsonResponse
+    {
+        try {
+            $member = $this->service->removeTpaMember($tpaId, $memberId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($member, 'Anggota dikeluarkan dari TPA');
+    }
+
+    // ─── Penjamin — CSV / Excel template / export / import ───────────────────
+
+    public function templatePenjaminCsv(Request $request): Response
+    {
+        return $this->csvOrXlsx($request, $this->service->templatePenjaminCsv(), 'template-penjamin', 'Penjamin');
+    }
+
+    public function exportPenjaminCsv(Request $request): Response
+    {
+        return $this->csvOrXlsx($request, $this->service->exportPenjaminCsv(), 'penjamin-' . now()->format('Ymd'), 'Penjamin');
+    }
+
+    public function importPenjaminCsv(Request $request): JsonResponse
+    {
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+        try {
+            $csv    = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
+            $result = $this->service->importPenjaminCsv($csv);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($result, "Import selesai: {$result['inserted']} baru, {$result['updated']} diperbarui, {$result['skipped']} dilewati.");
     }
 
     // =========================================================================
@@ -422,7 +488,9 @@ class MasterDataController extends Controller
         // Admin BOLEH menambahkan code baru. Code mengikuti standar WHO,
         // sehingga setelah dibuat tidak boleh diubah (lihat updateIcd10).
         $validated = $request->validate([
-            'code'                   => 'required|string|max:10|unique:icd10_codes,code',
+            // unique HANYA atas baris aktif (whereNull deleted_at). Kode yang pernah
+            // di-soft-delete boleh ditambah ulang → service akan restore (lihat upsertIcdRow).
+            'code'                   => ['required', 'string', 'max:10', Rule::unique('icd10_codes', 'code')->whereNull('deleted_at')],
             'chapter'                => 'nullable|string|max:10',
             'chapter_label'          => 'nullable|string|max:255',
             'category'               => 'nullable|string|max:10',
@@ -472,7 +540,8 @@ class MasterDataController extends Controller
         // Admin BOLEH menambahkan code baru. Code mengikuti standar WHO ICD-9-CM,
         // sehingga setelah dibuat tidak boleh diubah (lihat updateIcd9).
         $validated = $request->validate([
-            'code'                   => 'required|string|max:10|unique:icd9_codes,code',
+            // unique HANYA atas baris aktif — kode soft-deleted boleh ditambah ulang (restore).
+            'code'                   => ['required', 'string', 'max:10', Rule::unique('icd9_codes', 'code')->whereNull('deleted_at')],
             'category'               => 'nullable|string|max:10',
             'description'            => 'required|string|max:500',
             'indonesian_description' => 'nullable|string|max:500',
@@ -637,7 +706,7 @@ class MasterDataController extends Controller
         $validated = $request->validate([
             'code'         => 'nullable|string|max:50|unique:bhp_items,code',
             'name'         => 'required|string|max:255',
-            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET,MEDICAL_SUPPLIES',
+            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET',
             'unit'         => 'nullable|string|max:50',
             'manufacturer' => 'nullable|string|max:255',
             'stock'        => 'nullable|integer|min:0',
@@ -656,7 +725,7 @@ class MasterDataController extends Controller
     {
         $validated = $request->validate([
             'name'         => 'sometimes|string|max:255',
-            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET,MEDICAL_SUPPLIES',
+            'category'     => 'nullable|in:MEDICAL_BHP,CSSD,INSTRUMENT_SET',
             'unit'         => 'sometimes|string|max:50',
             'manufacturer' => 'nullable|string|max:255',
             'stock'        => 'sometimes|integer|min:0',
@@ -803,7 +872,7 @@ class MasterDataController extends Controller
 
     public function indexPaketBedah(Request $request): JsonResponse
     {
-        return $this->ok($this->service->indexPaketBedah($request->only(['search', 'active', 'per_page'])));
+        return $this->ok($this->service->indexPaketBedah($request->only(['search', 'active', 'per_page', 'package_type'])));
     }
 
     public function storePaketBedah(Request $request): JsonResponse
@@ -811,6 +880,7 @@ class MasterDataController extends Controller
         $validated = $request->validate([
             'name'               => 'required|string|max:255',
             'code'               => 'required|string|max:50|unique:surgery_packages,code',
+            'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'description'        => 'nullable|string|max:1000',
             'estimated_duration' => 'nullable|integer|min:1',
             'price'              => 'nullable|numeric|min:0',
@@ -824,6 +894,7 @@ class MasterDataController extends Controller
     {
         $validated = $request->validate([
             'name'               => 'sometimes|string|max:255',
+            'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'description'        => 'nullable|string|max:1000',
             'estimated_duration' => 'nullable|integer|min:1',
             'price'              => 'nullable|numeric|min:0',
@@ -993,7 +1064,7 @@ class MasterDataController extends Controller
     // RESOURCE CSV — generic untuk obat / bhp / iol / icd10 / icd9
     // =========================================================================
 
-    private const CSV_TYPES = ['tindakan', 'obat', 'bhp', 'iol', 'icd10', 'icd9', 'alat-medis'];
+    private const CSV_TYPES = ['tindakan', 'obat', 'bhp', 'iol', 'icd10', 'icd9', 'alat-medis', 'supplier'];
 
     private function assertCsvType(string $type): void
     {
@@ -1045,6 +1116,7 @@ class MasterDataController extends Controller
             'iol'        => 'IOL',
             'alat-medis' => 'Alat Medis',
             'tindakan'   => 'Tarif Tindakan',
+            'supplier'   => 'Supplier',
         ][$type] ?? strtoupper($type);
     }
 

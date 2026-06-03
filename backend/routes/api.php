@@ -9,6 +9,7 @@ use App\Http\Controllers\RefractionOptionController;
 use App\Http\Controllers\DokterController;
 use App\Http\Controllers\PenunjangController;
 use App\Http\Controllers\BedahController;
+use App\Http\Controllers\RuangTindakanController;
 use App\Http\Controllers\RanapController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\FarmasiController;
@@ -18,7 +19,6 @@ use App\Http\Controllers\KlaimController;
 use App\Http\Controllers\RekamMedisController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\MasterDataController;
-use App\Http\Controllers\InventoryPriceController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\GoodsReceiptController;
@@ -30,6 +30,7 @@ use App\Http\Controllers\TarifPaketController;
 use App\Http\Controllers\IntegrasiController;
 use App\Http\Controllers\QueueController;
 use App\Http\Controllers\JadwalDokterController;
+use App\Http\Controllers\MarketingReportController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
@@ -327,6 +328,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/kunjungan/{visitId}/tindakan',        [DokterController::class, 'storeTindakan']);
             Route::delete('/tindakan/{id}',                     [DokterController::class, 'deleteTindakan']);
 
+            // Paket PEMERIKSAAN (poliklinik): terapkan/lepas — merge tindakan + snapshot diskon.
+            Route::post('/kunjungan/{visitId}/apply-package',   [DokterController::class, 'applyExaminationPackage']);
+            Route::delete('/kunjungan/{visitId}/package',       [DokterController::class, 'removeExaminationPackage']);
+
             Route::get('/kunjungan/{visitId}/resep',            [DokterController::class, 'indexResep']);
             Route::post('/kunjungan/{visitId}/resep',           [DokterController::class, 'storeResep']);
 
@@ -435,6 +440,15 @@ Route::prefix('v1')->group(function () {
             Route::put('/request/{id}/terima',              [BedahController::class, 'terimaRequest'])->middleware('permission:bedah.write');
             Route::post('/request/{id}/adjust-bhp',         [BedahController::class, 'adjustBhpUsage'])->middleware('permission:bedah.write');
 
+            // Komponen paket pasien (snapshot) — edit BHP & Tindakan saat operasi.
+            // Multi-paket: satu visit boleh punya >1 paket (mis. Phaco + TIVA).
+            Route::get('/visit-package/{visitId}',          [BedahController::class, 'getVisitPackage'])->middleware('permission:bedah.read');
+            Route::post('/visit-package/{visitId}/package', [BedahController::class, 'addVisitPackage'])->middleware('permission:bedah.write');
+            Route::delete('/visit-package/{snapshotId}',    [BedahController::class, 'removeVisitPackage'])->middleware('permission:bedah.write');
+            Route::post('/visit-package/{visitId}/items',   [BedahController::class, 'addVisitPackageItem'])->middleware('permission:bedah.write');
+            Route::put('/visit-package-item/{itemId}',      [BedahController::class, 'updateVisitPackageItem'])->middleware('permission:bedah.write');
+            Route::delete('/visit-package-item/{itemId}',   [BedahController::class, 'removeVisitPackageItem'])->middleware('permission:bedah.write');
+
             Route::get('/record/{scheduleId}',              [BedahController::class, 'showRecord']);
             Route::post('/record',                          [BedahController::class, 'storeRecord'])->middleware('permission:bedah.write');
             Route::put('/record/{id}',                      [BedahController::class, 'updateRecord'])->middleware('permission:bedah.write');
@@ -442,6 +456,22 @@ Route::prefix('v1')->group(function () {
             Route::post('/record/{id}/finalize',            [BedahController::class, 'finalizeRecord'])->middleware('permission:bedah.write');
             // Resep obat pasca-bedah (F1/F2): SUBMITTED → otomatis masuk antrean Farmasi via QueueService::nextAfterKasir.
             Route::post('/record/{id}/resep-pasca',         [BedahController::class, 'storePostOpPrescription'])->middleware('permission:bedah.write');
+
+            // Perioperatif (PAB/WHO): checklist keselamatan diisi perawat+dokter (bedah.checklist);
+            // laporan operasi & skor pemulihan tetap dokter (bedah.write).
+            Route::put('/record/{id}/safety-checklist',     [BedahController::class, 'saveSafetyChecklist'])->middleware('permission:bedah.checklist');
+            Route::put('/record/{id}/operation-report',     [BedahController::class, 'saveOperationReport'])->middleware('permission:bedah.write');
+            Route::put('/record/{id}/recovery-assessment',  [BedahController::class, 'saveRecoveryAssessment'])->middleware('permission:bedah.write');
+
+            // Anestesi (RM 5.2 + monitoring vital durante). GET = anestesi.read,
+            // tulis = anestesi.write (dokter anestesi). Dipakai AnesthesiaReportWizard.
+            Route::get('/anesthesiologists',                [BedahController::class, 'anesthesiologists'])->middleware('permission:anestesi.read');
+            Route::get('/record/{id}/anesthesia',           [BedahController::class, 'getAnesthesiaReport'])->middleware('permission:anestesi.read');
+            Route::post('/record/{id}/anesthesia',          [BedahController::class, 'saveAnesthesiaReport'])->middleware('permission:anestesi.write');
+            Route::get('/record/{id}/anesthesia-vitals',    [BedahController::class, 'listAnesthesiaVitals'])->middleware('permission:anestesi.read');
+            Route::post('/anesthesia-vital',                [BedahController::class, 'recordAnesthesiaVital'])->middleware('permission:anestesi.write');
+            Route::put('/anesthesia-vital/{id}',            [BedahController::class, 'updateAnesthesiaVital'])->middleware('permission:anestesi.write');
+            Route::delete('/anesthesia-vital/{id}',         [BedahController::class, 'destroyAnesthesiaVital'])->middleware('permission:anestesi.write');
 
             Route::get('/iol-usage',                        [BedahController::class, 'indexIolUsage'])->middleware('permission:bedah.read');
             Route::post('/iol-usage',                       [BedahController::class, 'storeIolUsage'])->middleware('permission:bedah.write');
@@ -451,6 +481,20 @@ Route::prefix('v1')->group(function () {
             // Master lookup read-only utk form resep & pemilihan IOL pasca-bedah (F1/F2).
             Route::get('/obat',                             [BedahController::class, 'daftarObat']);
             Route::get('/iol',                              [BedahController::class, 'indexIol']);
+        });
+
+        // -----------------------------------------------------------------
+        // RUANG TINDAKAN (Laser YAG / Retina-PRP) — stasiun terpisah dari Bedah,
+        // mem-filter surgery_schedules.location_type = RUANG_TINDAKAN.
+        // -----------------------------------------------------------------
+        Route::prefix('ruang-tindakan')->middleware('permission:ruang_tindakan.read')->group(function () {
+            Route::get('/antrian',              [RuangTindakanController::class, 'indexAntrian']);
+            Route::put('/antrian/{id}/panggil', [RuangTindakanController::class, 'panggilAntrian'])->middleware('permission:ruang_tindakan.write');
+            Route::put('/jadwal/{id}/mulai',    [RuangTindakanController::class, 'mulaiTindakan'])->middleware('permission:ruang_tindakan.write');
+            Route::put('/jadwal/{id}/selesai',  [RuangTindakanController::class, 'selesaiTindakan'])->middleware('permission:ruang_tindakan.write');
+            Route::get('/record/{scheduleId}',  [RuangTindakanController::class, 'showRecord']);
+            Route::put('/record/{id}/laporan',  [RuangTindakanController::class, 'saveLaporan'])->middleware('permission:ruang_tindakan.write');
+            Route::get('/procedures',           [RuangTindakanController::class, 'procedures']);
         });
 
         // -----------------------------------------------------------------
@@ -669,6 +713,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien/{patientId}/bedah',        [RekamMedisController::class, 'bedahPasien']);
             Route::get('/pasien/{patientId}/diagnosis',    [RekamMedisController::class, 'diagnosisPasien']);
             Route::get('/pasien/{patientId}/dokumen',      [RekamMedisController::class, 'dokumenPasien']);
+            Route::get('/kunjungan/{visitId}/resume-medis', [RekamMedisController::class, 'resumeMedis']);
 
             Route::get('/dokumen',                         [RekamMedisController::class, 'indexDokumen']);
             Route::get('/dokumen/{id}',                    [RekamMedisController::class, 'showDokumen']);
@@ -707,6 +752,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/signature/{signatureId}/verify',  [RekamMedisController::class, 'verifySignature']);
             Route::get('/signature/{signatureId}/audit',   [RekamMedisController::class, 'auditSignature']);
             Route::get('/ttd-queue',                       [RekamMedisController::class, 'ttdQueue']);
+            Route::post('/ttd-bulk-sign',                  [RekamMedisController::class, 'ttdBulkSign']);
+            Route::get('/ttd-count',                       [RekamMedisController::class, 'ttdCount']);
 
             // Fase 6 — Audit log per dokumen
             Route::get('/document/{id}/audit-log',         [RekamMedisController::class, 'documentAuditLog']);
@@ -734,6 +781,15 @@ Route::prefix('v1')->group(function () {
             Route::get('/laporan/kunjungan',                [DashboardController::class, 'laporanKunjungan']);
             Route::get('/laporan/pendapatan',               [DashboardController::class, 'laporanPendapatan']);
             Route::get('/laporan/klaim',                    [DashboardController::class, 'laporanKlaim']);
+        });
+
+        // -----------------------------------------------------------------
+        // LAPORAN MARKETING (read-only daftar pasien untuk campaign)
+        // -----------------------------------------------------------------
+        Route::prefix('laporan-marketing')->middleware('permission:marketing.read')->group(function () {
+            Route::get('/notifications', [MarketingReportController::class, 'notifications']);
+            Route::get('/export-csv',    [MarketingReportController::class, 'export']);
+            Route::get('/',              [MarketingReportController::class, 'index']);
         });
 
         // -----------------------------------------------------------------
@@ -784,6 +840,14 @@ Route::prefix('v1')->group(function () {
             Route::delete('/pegawai/{id}',                  [MasterDataController::class, 'deletePegawai'])->middleware('permission:role_akses.delete');
             Route::put('/pegawai/{id}/reset-password',      [MasterDataController::class, 'resetPasswordPegawai'])->middleware('permission:role_akses.write');
 
+            // CSV/Excel penjamin — WAJIB didaftar SEBELUM route generic /penjamin/{id}
+            Route::get('/penjamin/template-csv',            [MasterDataController::class, 'templatePenjaminCsv']);
+            Route::get('/penjamin/export-csv',              [MasterDataController::class, 'exportPenjaminCsv']);
+            Route::post('/penjamin/import-csv',             [MasterDataController::class, 'importPenjaminCsv'])->middleware('permission:pengaturan.write');
+            // TPA membership (kelola anggota dari sisi TPA) — WAJIB sebelum /penjamin/{id} generic
+            Route::get('/penjamin/{tpaId}/member-candidates', [MasterDataController::class, 'candidateMembers']);
+            Route::post('/penjamin/{tpaId}/members',          [MasterDataController::class, 'addPenjaminMember'])->middleware('permission:pengaturan.write');
+            Route::delete('/penjamin/{tpaId}/members/{memberId}', [MasterDataController::class, 'removePenjaminMember'])->middleware('permission:pengaturan.write');
             Route::get('/penjamin',                         [MasterDataController::class, 'indexPenjamin']);
             Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin'])->middleware('permission:pengaturan.write');
             Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin'])->middleware('permission:pengaturan.write');
@@ -866,6 +930,12 @@ Route::prefix('v1')->group(function () {
             Route::get('/alat-medis/template-csv',          [MasterDataController::class, 'templateCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.read');
             Route::get('/alat-medis/export-csv',            [MasterDataController::class, 'exportCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.read');
             Route::post('/alat-medis/import-csv',           [MasterDataController::class, 'importCsv'])->defaults('type', 'alat-medis')->middleware('permission:inventori_farmasi.write');
+
+            // Supplier CSV/Excel (view fisik di /inventori-farmasi/supplier, CRUD pakai SupplierController;
+            // CSV pakai generic MasterDataController karena frontend csv client hit /master/{type}/*-csv)
+            Route::get('/supplier/template-csv',            [MasterDataController::class, 'templateCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.read');
+            Route::get('/supplier/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.read');
+            Route::post('/supplier/import-csv',             [MasterDataController::class, 'importCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.write');
 
             Route::get('/paket-bedah',                      [MasterDataController::class, 'indexPaketBedah'])->middleware('permission:tarif_paket.read');
             Route::post('/paket-bedah',                     [MasterDataController::class, 'storePaketBedah'])->middleware('permission:tarif_paket.write');
@@ -1092,22 +1162,8 @@ Route::prefix('v1')->group(function () {
             Route::delete('/{id}',       [UnitReturnController::class, 'destroy'])->middleware('permission:request_unit.delete');
         });
 
-        // -----------------------------------------------------------------
-        // INVENTORI FARMASI — Penentuan Harga (HPP & HJA)
-        // -----------------------------------------------------------------
-        Route::prefix('inventori-farmasi/harga')->group(function () {
-            Route::get('/settings',           [InventoryPriceController::class, 'getSettings'])->middleware('permission:inventori_farmasi.read');
-            Route::put('/settings',           [InventoryPriceController::class, 'updateSettings'])->middleware('permission:inventori_farmasi.write');
-
-            // CSV — daftar SEBELUM route generic /{type} & /{type}/{itemId}
-            Route::get('/{type}/template-csv', [InventoryPriceController::class, 'templateCsv'])->middleware('permission:inventori_farmasi.read');
-            Route::get('/{type}/export-csv',   [InventoryPriceController::class, 'exportCsv'])->middleware('permission:inventori_farmasi.read');
-            Route::post('/{type}/import-csv',  [InventoryPriceController::class, 'importCsv'])->middleware('permission:inventori_farmasi.write');
-
-            Route::get('/{type}',             [InventoryPriceController::class, 'index'])->middleware('permission:inventori_farmasi.read');
-            Route::put('/{type}/{itemId}',    [InventoryPriceController::class, 'upsert'])->middleware('permission:inventori_farmasi.write');
-            Route::delete('/{type}/{itemId}', [InventoryPriceController::class, 'destroy'])->middleware('permission:inventori_farmasi.write');
-        });
+        // Penentuan Harga (inventory_prices) DIHAPUS — harga jual obat/BHP/IOL kini
+        // dikelola di Buku Tarif (medication_tariffs/bhp_tariffs/iol_tariffs baris UMUM).
 
         // -----------------------------------------------------------------
         // TARIF & PAKET BEDAH (sub-modul standalone)
@@ -1224,6 +1280,9 @@ Route::prefix('v1')->group(function () {
             Route::delete('/bpjs/poli-mapping/{id}',        [IntegrasiController::class, 'deletePoliMapping']);
             Route::put('/bpjs/dokter/{employeeId}/dpjp',    [IntegrasiController::class, 'setDpjpCode']);
             Route::post('/bpjs/sync-jadwal-dokter',         [IntegrasiController::class, 'syncJadwalDokter']);
+
+            // Sinkron master ICD-10/ICD-9 dari referensi VClaim (cakupan oftalmologi)
+            Route::post('/bpjs/sync-icd',                   [IntegrasiController::class, 'syncIcdFromVclaim'])->middleware('permission:integrasi.write');
         });
 
         // -----------------------------------------------------------------
@@ -1274,6 +1333,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/permissions/module-label/{module}/reset', [PermissionController::class, 'resetLabel']);
 
             // Roles
+            // CSV/Excel (definisikan sebelum /roles/{id} agar tidak ketangkap wildcard)
+            Route::get('/roles/csv-template',   [RoleController::class, 'csvTemplate']);
+            Route::get('/roles/export',         [RoleController::class, 'exportCsv']);
+            Route::post('/roles/import',        [RoleController::class, 'importCsv']);
+
             Route::get('/roles',                [RoleController::class, 'index']);
             Route::post('/roles',               [RoleController::class, 'store']);
             Route::get('/roles/{id}',           [RoleController::class, 'show']);

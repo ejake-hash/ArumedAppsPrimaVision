@@ -26,6 +26,7 @@ class Insurer extends Model
         'email',
         'is_active',
         'is_system',
+        'is_tpa',
         'portal_url',
         'pic_name',
         'pic_phone',
@@ -37,6 +38,7 @@ class Insurer extends Model
     protected $casts = [
         'is_active' => 'boolean',
         'is_system' => 'boolean',
+        'is_tpa'    => 'boolean',
         'sla_days'  => 'integer',
     ];
 

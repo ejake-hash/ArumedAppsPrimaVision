@@ -14,7 +14,7 @@
  *   - signature_canvas / signature_placeholder → render placeholder visual
  *     ("(akan di-tanda-tangan saat finalize)"), TIDAK kirim ke submit. Fase 4.
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import SignatureCaptureModal from './signature/SignatureCaptureModal.vue'
 
 const props = defineProps({
@@ -27,6 +27,38 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'capture-signature'])
 
 const sigModalOpen = ref(false)
+
+// Nakes internal (dokter/perawat/staf) → TTD via PIN (stempel digital), bukan
+// goresan kanvas. Pasien/saksi/wali tetap goresan.
+const isNakesSigner = computed(() =>
+  ['doctor', 'nurse', 'staff'].includes(props.field.signer_type)
+)
+
+// State input PIN (mode nakes).
+const pinModalOpen = ref(false)
+const pinValue     = ref('')
+const pinError     = ref('')
+
+function openPinModal() {
+  pinValue.value = ''
+  pinError.value = ''
+  pinModalOpen.value = true
+}
+
+function submitPin() {
+  const pin = (pinValue.value || '').trim()
+  if (!/^\d{4,6}$/.test(pin)) {
+    pinError.value = 'PIN harus 4–6 digit angka.'
+    return
+  }
+  // Emit ke FormRMRenderer → POST /document/{id}/sign dengan signature_pin.
+  // modelValue di-set sementara (akan ditimpa hasil capture oleh parent).
+  const payload = { signature_pin: pin }
+  emit('update:modelValue', payload)
+  emit('capture-signature', { field: props.field, payload })
+  pinModalOpen.value = false
+  pinValue.value = ''
+}
 
 function onMultiCheckChange(opt, checked) {
   const value = typeof opt === 'object' ? opt.value : opt
@@ -197,16 +229,42 @@ function onMultiCheckChange(opt, checked) {
       <span class="ffr-computed-hint"><code>{{ field.from }}</code> &rarr; <code>{{ field.to }}</code></span>
     </div>
 
-    <!-- SIGNATURE_CANVAS — Fase 4 capture flow -->
+    <!-- SIGNATURE_CANVAS — nakes via PIN (stempel), pasien/saksi via goresan -->
     <div v-else-if="field.type === 'signature_canvas'" class="ffr-signature-row">
+      <!-- Sudah tertanda -->
       <div v-if="modelValue" class="ffr-sig-captured">
         <span>Tertanda ✓</span>
-        <button type="button" class="ffr-sig-btn-ghost" :disabled="readonly" @click="sigModalOpen = true">Ulangi TTD</button>
+        <button
+          type="button"
+          class="ffr-sig-btn-ghost"
+          :disabled="readonly"
+          @click="isNakesSigner ? openPinModal() : (sigModalOpen = true)"
+        >Ulangi TTD</button>
       </div>
-      <button v-else type="button" class="ffr-sig-btn" :disabled="readonly" @click="sigModalOpen = true">
+
+      <!-- Belum tertanda: nakes → tombol PIN; pasien/saksi → kanvas -->
+      <button
+        v-else-if="isNakesSigner"
+        type="button"
+        class="ffr-sig-btn"
+        :disabled="readonly"
+        @click="openPinModal()"
+      >
+        Tanda Tangani dengan PIN
+      </button>
+      <button
+        v-else
+        type="button"
+        class="ffr-sig-btn"
+        :disabled="readonly"
+        @click="sigModalOpen = true"
+      >
         Buka Canvas Tanda Tangan
       </button>
+
+      <!-- Modal kanvas (pasien/saksi/wali) -->
       <SignatureCaptureModal
+        v-if="!isNakesSigner"
         v-model="sigModalOpen"
         :signer-type="field.signer_type || 'patient'"
         :signer-label="field.label"
@@ -214,6 +272,30 @@ function onMultiCheckChange(opt, checked) {
         :ask-external-identity="['witness', 'guardian'].includes(field.signer_type)"
         @capture="(payload) => { $emit('update:modelValue', payload); $emit('capture-signature', { field, payload }); }"
       />
+
+      <!-- Modal input PIN (nakes) -->
+      <div v-if="pinModalOpen" class="ffr-pin-overlay" @click.self="pinModalOpen = false">
+        <div class="ffr-pin-modal">
+          <h4 class="ffr-pin-title">Tanda Tangan Elektronik</h4>
+          <p class="ffr-pin-sub">{{ field.label }}</p>
+          <p class="ffr-pin-hint">Masukkan PIN tanda tangan Anda untuk membubuhkan stempel digital.</p>
+          <input
+            v-model="pinValue"
+            type="password"
+            inputmode="numeric"
+            maxlength="6"
+            class="ffr-pin-input"
+            placeholder="••••••"
+            autocomplete="off"
+            @keyup.enter="submitPin()"
+          />
+          <div v-if="pinError" class="ffr-pin-err">{{ pinError }}</div>
+          <div class="ffr-pin-actions">
+            <button type="button" class="ffr-pin-cancel" @click="pinModalOpen = false">Batal</button>
+            <button type="button" class="ffr-pin-ok" @click="submitPin()">Tanda Tangani</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- SIGNATURE_PLACEHOLDER — untuk print (TTD basah di kertas) -->
@@ -321,4 +403,30 @@ export default {
 }
 
 .ffr-error { margin-top: 4px; font-size: 11.5px; color: #d4495a; }
+
+/* PIN modal (TTD nakes) */
+.ffr-pin-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(14, 58, 102, 0.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.ffr-pin-modal {
+  background: #fff; border-radius: 10px; padding: 22px 24px; width: 320px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.25); text-align: center;
+}
+.ffr-pin-title { margin: 0 0 4px; font-size: 16px; color: #0E3A66; }
+.ffr-pin-sub { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: #333; }
+.ffr-pin-hint { margin: 0 0 14px; font-size: 12px; color: #777; line-height: 1.4; }
+.ffr-pin-input {
+  width: 100%; box-sizing: border-box; text-align: center; letter-spacing: 8px;
+  font-size: 22px; padding: 10px 12px; border: 1px solid #cdd6e0; border-radius: 8px;
+}
+.ffr-pin-input:focus { outline: 0; border-color: #1FAAE0; box-shadow: 0 0 0 3px rgba(31,170,224,0.15); }
+.ffr-pin-err { margin-top: 8px; font-size: 12px; color: #d4495a; }
+.ffr-pin-actions { display: flex; gap: 10px; margin-top: 16px; }
+.ffr-pin-cancel, .ffr-pin-ok {
+  flex: 1; padding: 9px 0; border-radius: 7px; font-size: 13px; cursor: pointer; border: 0;
+}
+.ffr-pin-cancel { background: #eef1f4; color: #555; }
+.ffr-pin-ok { background: #0E3A66; color: #fff; font-weight: 600; }
 </style>

@@ -36,18 +36,18 @@ class BedahBhpRequestSeeder extends Seeder
 {
     /** Master BHP untuk bedah katarak/phaco — kode BHP-95x agar tak bentrok demo (BHP-90x). */
     private const BHP_DEFS = [
-        ['code' => 'BHP-950', 'name' => 'Viscoelastic / OVD (Hydroxypropyl)', 'unit' => 'pcs', 'price' => 350000, 'category' => 'MEDICAL_SUPPLIES'],
+        ['code' => 'BHP-950', 'name' => 'Viscoelastic / OVD (Hydroxypropyl)', 'unit' => 'pcs', 'price' => 350000, 'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-951', 'name' => 'Phaco Tip 2.8mm',                    'unit' => 'pcs', 'price' => 650000, 'category' => 'INSTRUMENT_SET'],
         ['code' => 'BHP-952', 'name' => 'Phaco Sleeve Silikon',               'unit' => 'pcs', 'price' => 180000, 'category' => 'INSTRUMENT_SET'],
         ['code' => 'BHP-953', 'name' => 'Surgical Blade 2.75mm Keratom',      'unit' => 'pcs', 'price' => 95000,  'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-954', 'name' => 'Sideport Blade 15°',                 'unit' => 'pcs', 'price' => 75000,  'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-955', 'name' => 'Capsulorhexis Forceps (CSSD)',       'unit' => 'set', 'price' => 0,      'category' => 'CSSD'],
-        ['code' => 'BHP-956', 'name' => 'Irrigation/Aspiration Cannula',      'unit' => 'pcs', 'price' => 120000, 'category' => 'MEDICAL_SUPPLIES'],
-        ['code' => 'BHP-957', 'name' => 'Balanced Salt Solution (BSS) 500ml', 'unit' => 'botol','price' => 85000, 'category' => 'MEDICAL_SUPPLIES'],
-        ['code' => 'BHP-958', 'name' => 'IOL Injector Cartridge',             'unit' => 'pcs', 'price' => 220000, 'category' => 'MEDICAL_SUPPLIES'],
+        ['code' => 'BHP-956', 'name' => 'Irrigation/Aspiration Cannula',      'unit' => 'pcs', 'price' => 120000, 'category' => 'MEDICAL_BHP'],
+        ['code' => 'BHP-957', 'name' => 'Balanced Salt Solution (BSS) 500ml', 'unit' => 'botol','price' => 85000, 'category' => 'MEDICAL_BHP'],
+        ['code' => 'BHP-958', 'name' => 'IOL Injector Cartridge',             'unit' => 'pcs', 'price' => 220000, 'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-959', 'name' => 'Trypan Blue 0.06% (Pewarna Kapsul)',  'unit' => 'vial','price' => 145000, 'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-960', 'name' => 'Nylon Suture 10-0',                  'unit' => 'pcs', 'price' => 65000,  'category' => 'MEDICAL_BHP'],
-        ['code' => 'BHP-961', 'name' => 'Eye Drape Steril (Lubang)',          'unit' => 'pcs', 'price' => 40000,  'category' => 'MEDICAL_SUPPLIES'],
+        ['code' => 'BHP-961', 'name' => 'Eye Drape Steril (Lubang)',          'unit' => 'pcs', 'price' => 40000,  'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-962', 'name' => 'Sponge Spear / Weck-Cel',            'unit' => 'pak', 'price' => 30000,  'category' => 'MEDICAL_BHP'],
         ['code' => 'BHP-963', 'name' => 'Set Instrumen Katarak (CSSD)',       'unit' => 'set', 'price' => 0,      'category' => 'CSSD'],
     ];

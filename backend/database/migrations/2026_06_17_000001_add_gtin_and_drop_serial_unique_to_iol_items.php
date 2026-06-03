@@ -20,10 +20,13 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('iol_items', function (Blueprint $table) {
-            $table->string('gtin', 14)->nullable()->after('gs1_barcode');
-            $table->index('gtin', 'iol_items_gtin_index');
-        });
+        // Idempoten: aman di-run ulang / migrate:refresh (kolom & index dijaga hasColumn).
+        if (! Schema::hasColumn('iol_items', 'gtin')) {
+            Schema::table('iol_items', function (Blueprint $table) {
+                $table->string('gtin', 14)->nullable()->after('gs1_barcode');
+                $table->index('gtin', 'iol_items_gtin_index');
+            });
+        }
 
         // Per-tipe: serial tak lagi unik di master.
         DB::statement('DROP INDEX IF EXISTS iol_items_serial_number_unique');

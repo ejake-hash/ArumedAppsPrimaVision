@@ -14,16 +14,16 @@ class BhpItem extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
-    public const CATEGORY_MEDICAL_BHP      = 'MEDICAL_BHP';
-    public const CATEGORY_CSSD             = 'CSSD';
-    public const CATEGORY_INSTRUMENT_SET   = 'INSTRUMENT_SET';
-    public const CATEGORY_MEDICAL_SUPPLIES = 'MEDICAL_SUPPLIES';
+    public const CATEGORY_MEDICAL_BHP    = 'MEDICAL_BHP';
+    public const CATEGORY_CSSD           = 'CSSD';
+    public const CATEGORY_INSTRUMENT_SET = 'INSTRUMENT_SET';
 
+    // Kategori "MEDICAL_SUPPLIES" dihapus 2026-06-03 — item digabung ke MEDICAL_BHP
+    // (migrasi 2026_06_18_000008). Jangan tambahkan kembali.
     public const CATEGORIES = [
         self::CATEGORY_MEDICAL_BHP,
         self::CATEGORY_CSSD,
         self::CATEGORY_INSTRUMENT_SET,
-        self::CATEGORY_MEDICAL_SUPPLIES,
     ];
 
     protected $fillable = [

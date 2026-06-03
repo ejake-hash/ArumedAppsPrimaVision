@@ -243,10 +243,14 @@ async function onCaptureSignature(field, payload) {
   signError.value = ''
   signingField.value = field.key
 
+  const isNakes = ['doctor', 'nurse', 'staff'].includes(field.signer_type)
+
   const body = {
     signer_type: field.signer_type || 'patient',
-    signature_svg: payload.signature_svg,
-    signature_png_base64: payload.signature_png_base64,
+    // Nakes → TTD via PIN (tanpa goresan). Pasien/saksi → goresan SVG.
+    signature_svg: isNakes ? null : payload.signature_svg,
+    signature_png_base64: isNakes ? null : payload.signature_png_base64,
+    signature_pin: isNakes ? payload.signature_pin : undefined,
     biometric_metadata: payload.biometric_metadata,
     audit_log: payload.audit_log,
   }
@@ -255,14 +259,15 @@ async function onCaptureSignature(field, payload) {
   // - patient → signer_patient_id dari props.patientId (FormSection forward
   //   visit.patient_id). Fallback ke external_identity kalau patientId null.
   // - witness/guardian → external_identity dari modal
-  // - doctor/nurse/staff → signer_user_id dari current auth user
+  // - doctor/nurse/staff → signer_user_id dari current auth user (backend juga
+  //   fallback ke user login bila kosong)
   if (payload.external_identity) {
     body.signer_external_identity = payload.external_identity
   }
   if (field.signer_type === 'patient' && props.patientId) {
     body.signer_patient_id = props.patientId
   }
-  if (field.signer_type === 'doctor' || field.signer_type === 'nurse' || field.signer_type === 'staff') {
+  if (isNakes) {
     const userJson = localStorage.getItem('auth_user')
     try {
       const u = JSON.parse(userJson ?? '{}')

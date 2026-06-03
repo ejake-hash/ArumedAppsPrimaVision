@@ -98,6 +98,9 @@ class TarifPaketService
         if (! empty($filters['category'])) {
             $query->where('category', $filters['category']);
         }
+        if (! empty($filters['package_type'])) {
+            $query->where('package_type', $filters['package_type']);
+        }
         if (isset($filters['active'])) {
             $query->where('is_active', (bool) $filters['active']);
         }
@@ -178,6 +181,13 @@ class TarifPaketService
     public function addItem(string $packageId, array $data): SurgeryPackageItem
     {
         $pkg = SurgeryPackage::findOrFail($packageId);
+
+        // Paket PEMERIKSAAN (poliklinik) hanya boleh komponen PROCEDURE — tindakan/
+        // konsultasi/penunjang. BHP/IOL/obat tak relevan untuk paket pemeriksaan.
+        if ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN
+            && $data['item_type'] !== SurgeryPackageItem::TYPE_PROCEDURE) {
+            throw new \Exception('Paket pemeriksaan hanya boleh berisi komponen Tindakan (PROCEDURE).', 422);
+        }
 
         $defaultPrice = $data['default_price'] ?? $this->resolveMasterPrice($data['item_type'], $data['item_id']);
 

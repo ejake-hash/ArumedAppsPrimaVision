@@ -258,6 +258,38 @@ class DokterController extends Controller
         return $this->ok(null, 'Tindakan dihapus');
     }
 
+    /**
+     * POST /dokter/kunjungan/{visitId}/apply-package
+     * Terapkan paket PEMERIKSAAN: merge tindakan paket ke visitServices + snapshot diskon.
+     * Body: { package_id }
+     */
+    public function applyExaminationPackage(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'package_id' => 'required|uuid|exists:surgery_packages,id',
+        ]);
+
+        try {
+            $result = $this->service->applyExaminationPackage($visitId, $validated['package_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Paket pemeriksaan diterapkan');
+    }
+
+    /** DELETE /dokter/kunjungan/{visitId}/package — lepas paket pemeriksaan (snapshot dibuang). */
+    public function removeExaminationPackage(string $visitId): JsonResponse
+    {
+        try {
+            $this->service->removeExaminationPackage($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Paket pemeriksaan dilepas');
+    }
+
     /** GET /dokter/kunjungan/{visitId}/resep */
     public function indexResep(string $visitId): JsonResponse
     {
@@ -338,10 +370,14 @@ class DokterController extends Controller
     public function bedahSlot(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'tanggal' => 'required|date',
+            'tanggal'       => 'required|date',
+            'location_type' => 'nullable|in:RUANG_BEDAH,RUANG_TINDAKAN',
         ]);
 
-        return $this->ok($this->service->getBedahSlot($validated['tanggal']));
+        return $this->ok($this->service->getBedahSlot(
+            $validated['tanggal'],
+            $validated['location_type'] ?? null
+        ));
     }
 
     private function validateTab4(Request $request): array
@@ -361,6 +397,8 @@ class DokterController extends Controller
             'planning'           => 'required|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK,RAWAT_INAP',
             'surgery_package_id' => 'nullable|uuid|exists:surgery_packages,id',
             'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
+            // Lokasi pelaksanaan bedah: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
+            'location_type'      => 'nullable|in:RUANG_BEDAH,RUANG_TINDAKAN',
             'surgery_date'       => 'nullable|date|after_or_equal:today',
             'surgery_time'       => 'nullable|string|max:8',
             'operation_room'     => 'nullable|string|max:60',
@@ -536,6 +574,19 @@ class DokterController extends Controller
             'resume_o' => 'nullable|string|max:5000',
             'resume_a' => 'nullable|string|max:5000',
             'resume_p' => 'nullable|string|max:5000',
+            // Field formulir Resume Medis Rawat Jalan (RM 1.7) — bag. yang diedit dokter.
+            'rmrj_data'                        => 'nullable|array',
+            'rmrj_data.anamnese'               => 'nullable|string|max:5000',
+            'rmrj_data.pemeriksaan_fisik'      => 'nullable|string|max:5000',
+            'rmrj_data.alergi_obat'            => 'nullable|string|max:2000',
+            'rmrj_data.hasil_penunjang'        => 'nullable|string|max:5000',
+            'rmrj_data.diagnosa'               => 'nullable|string|max:5000',
+            'rmrj_data.tindakan'               => 'nullable|string|max:5000',
+            'rmrj_data.terapi'                 => 'nullable|string|max:5000',
+            'rmrj_data.riwayat_inap_operasi'   => 'nullable|string|max:5000',
+            'rmrj_data.instruksi_edukasi'      => 'nullable|string|max:5000',
+            'rmrj_data.kontrol_tanggal'        => 'nullable|string|max:30',
+            'rmrj_data.kontrol_tempat'         => 'nullable|string|max:255',
         ]);
 
         try {

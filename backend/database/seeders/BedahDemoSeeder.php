@@ -105,7 +105,7 @@ class BedahDemoSeeder extends Seeder
     private function seedBhp(): array
     {
         $defs = [
-            ['code' => 'BHP-901', 'name' => 'Viscoelastic (OVD)',        'unit' => 'pcs', 'price' => 350000, 'category' => 'MEDICAL_SUPPLIES'],
+            ['code' => 'BHP-901', 'name' => 'Viscoelastic (OVD)',        'unit' => 'pcs', 'price' => 350000, 'category' => 'MEDICAL_BHP'],
             ['code' => 'BHP-902', 'name' => 'Phaco Tip & Sleeve Set',    'unit' => 'set', 'price' => 750000, 'category' => 'INSTRUMENT_SET'],
             ['code' => 'BHP-903', 'name' => 'Surgical Blade 15°',        'unit' => 'pcs', 'price' => 25000,  'category' => 'MEDICAL_BHP'],
         ];

@@ -24,6 +24,7 @@ use App\Models\ProcedureCategory;
 use App\Models\ProcedureTariff;
 use App\Models\Role;
 use App\Models\StationDocumentMapping;
+use App\Models\Supplier;
 use App\Models\SurgeryPackage;
 use App\Models\SystemLog;
 use App\Models\User;
@@ -203,6 +204,13 @@ class MasterDataService
         if (array_key_exists('is_system', $filters) && $filters['is_system'] !== null && $filters['is_system'] !== '') {
             $query->where('is_system', (bool) $filters['is_system']);
         }
+        // only_tpa_view (opt-in, khusus halaman Metode Bayar): sembunyikan anggota TPA
+        // (yang punya parent_id) karena tarifnya identik dengan TPA induk → duplikatif.
+        // DEFAULT tanpa flag = kembalikan SEMUA, supaya dropdown Admisi/Tarif/dll yang
+        // pakai endpoint ini tetap bisa memilih anggota (mis. "Allianz").
+        if (! empty($filters['only_tpa_view'])) {
+            $query->whereNull('parent_id');
+        }
         return $query->orderBy('name')->paginate($filters['per_page'] ?? 20);
     }
 
@@ -210,6 +218,17 @@ class MasterDataService
     {
         // is_system tidak bisa di-set via API (hanya seeder)
         unset($data['is_system']);
+        // Guard keanggotaan TPA bila parent_id di-set lewat jalur API/CSV.
+        if (! empty($data['parent_id'])) {
+            $this->assertValidTpaParent($data['parent_id'], null);
+        }
+        // is_tpa: selalu eksplisit boolean (default false). Anggota TPA (punya parent)
+        // tidak boleh sekaligus jadi TPA induk.
+        $isTpa = ! empty($data['is_tpa']);
+        if ($isTpa && ! empty($data['parent_id'])) {
+            throw new \Exception('Anggota TPA tidak boleh ditandai sebagai TPA induk.', 422);
+        }
+        $data['is_tpa'] = $isTpa;
         $insurer = Insurer::create($data);
         $this->log(auth('api')->id(), 'CREATE_PENJAMIN', Insurer::class, $insurer->id);
         return $insurer;
@@ -231,10 +250,178 @@ class MasterDataService
         if (! empty($data['parent_id']) && $data['parent_id'] === $insurer->id) {
             throw new \Exception('parent_id tidak boleh sama dengan id sendiri.', 422);
         }
+        // Guard keanggotaan TPA bila parent_id di-set lewat jalur API/CSV.
+        if (array_key_exists('parent_id', $data) && ! empty($data['parent_id'])) {
+            if ($insurer->is_system) {
+                throw new \Exception('Penjamin sistem tidak boleh dijadikan anggota TPA.', 422);
+            }
+            $this->assertValidTpaParent($data['parent_id'], $insurer->id);
+        }
+
+        // is_tpa: penanda TPA induk. (Untuk sistem sudah ter-strip di atas.)
+        if (array_key_exists('is_tpa', $data)) {
+            $wantTpa = ! empty($data['is_tpa']);
+            // parent_id final = yang baru (kalau dikirim) atau yang lama.
+            $finalParent = array_key_exists('parent_id', $data) ? $data['parent_id'] : $insurer->parent_id;
+            if ($wantTpa && ! empty($finalParent)) {
+                throw new \Exception('Anggota TPA tidak boleh ditandai sebagai TPA induk. Keluarkan dulu dari TPA.', 422);
+            }
+            // Cegah menonaktifkan TPA yang masih punya anggota (hindari anggota orphan).
+            if (! $wantTpa && Insurer::where('parent_id', $insurer->id)->exists()) {
+                throw new \Exception('Tidak bisa menonaktifkan TPA: masih punya anggota. Keluarkan semua anggota dulu.', 422);
+            }
+            $data['is_tpa'] = $wantTpa;
+        }
 
         $insurer->update($data);
         $this->log(auth('api')->id(), 'UPDATE_PENJAMIN', Insurer::class, $id);
         return $insurer->fresh();
+    }
+
+    /**
+     * Validasi calon TPA induk untuk keanggotaan: harus ada, BUKAN sistem, dan harus
+     * root (parent_id null) — mencegah rantai 3-tingkat (A→B→C). $selfId = id insurer
+     * yang sedang dijadikan anggota (untuk cek calon parent tidak sama dgn diri sendiri).
+     */
+    private function assertValidTpaParent(string $parentId, ?string $selfId): void
+    {
+        if ($selfId !== null && $parentId === $selfId) {
+            throw new \Exception('TPA tidak boleh sama dengan diri sendiri.', 422);
+        }
+        $parent = Insurer::find($parentId);
+        if (! $parent) {
+            throw new \Exception('TPA induk tidak ditemukan.', 422);
+        }
+        if ($parent->is_system) {
+            throw new \Exception('Penjamin sistem tidak boleh dijadikan TPA induk.', 422);
+        }
+        if ($parent->parent_id !== null) {
+            throw new \Exception('TPA induk tidak boleh berupa anggota TPA lain (maks. 2 tingkat).', 422);
+        }
+    }
+
+    // ─── TPA membership (kelola anggota dari sisi TPA induk) ──────────────────
+
+    /**
+     * Jadikan satu penjamin (member) sebagai anggota TPA induk (tpa).
+     * Tarif lama member DIHAPUS (soft-delete) di 4 tabel tarif — anggota mengikuti
+     * tarif TPA 100% lewat Insurer::tariffInsurerId(), jadi tarif sendiri tak terpakai
+     * & menyisakan data nyangkut bila dibiarkan.
+     */
+    public function addTpaMember(string $tpaId, string $memberId): Insurer
+    {
+        $tpa    = Insurer::findOrFail($tpaId);
+        $member = Insurer::findOrFail($memberId);
+
+        if ($member->id === $tpa->id) {
+            throw new \Exception('Anggota tidak boleh sama dengan TPA.', 422);
+        }
+        if ($tpa->is_system || $member->is_system) {
+            throw new \Exception('Penjamin sistem (UMUM/BPJS/SOSIAL) tidak bisa jadi TPA maupun anggota.', 422);
+        }
+        if ($tpa->is_tpa !== true) {
+            throw new \Exception('Penjamin ini bukan TPA induk. Tandai sebagai TPA dulu.', 422);
+        }
+        if ($tpa->parent_id !== null) {
+            throw new \Exception('TPA induk tidak boleh berupa anggota TPA lain (maks. 2 tingkat).', 422);
+        }
+        if ($member->parent_id !== null) {
+            throw new \Exception('Penjamin ini sudah menjadi anggota TPA lain. Keluarkan dulu.', 422);
+        }
+        if (Insurer::where('parent_id', $member->id)->exists()) {
+            throw new \Exception('Penjamin ini adalah TPA induk yang punya anggota — tidak bisa dijadikan anggota.', 422);
+        }
+
+        DB::transaction(function () use ($tpa, $member) {
+            // Hapus tarif lama anggota (soft-delete). Anggota numpang tarif TPA.
+            ProcedureTariff::where('insurer_id', $member->id)->delete();
+            MedicationTariff::where('insurer_id', $member->id)->delete();
+            BhpTariff::where('insurer_id', $member->id)->delete();
+            IolTariff::where('insurer_id', $member->id)->delete();
+
+            $member->update(['parent_id' => $tpa->id]);
+        });
+
+        $this->log(auth('api')->id(), 'ADD_TPA_MEMBER', Insurer::class, $member->id, "tpa:{$tpa->id}");
+        return $member->fresh();
+    }
+
+    /**
+     * Tambah anggota TPA lewat NAMA BARU (buat penjamin baru sekaligus). Bila nama
+     * sudah ada (case-insensitive, soft-delete aware) → delegasikan ke addTpaMember
+     * supaya guard & penghapusan tarif lama konsisten. Anggota baru = tipe ASURANSI,
+     * aktif, tanpa tarif.
+     */
+    public function addTpaMemberByName(string $tpaId, string $name): Insurer
+    {
+        $tpa  = Insurer::findOrFail($tpaId);
+        $name = trim(preg_replace('/\s+/', ' ', $name));
+
+        if ($name === '') {
+            throw new \Exception('Nama asuransi wajib diisi.', 422);
+        }
+        if ($tpa->is_system) {
+            throw new \Exception('Penjamin sistem tidak bisa jadi TPA.', 422);
+        }
+        if ($tpa->is_tpa !== true || $tpa->parent_id !== null) {
+            throw new \Exception('Penjamin ini bukan TPA induk. Tandai sebagai TPA dulu.', 422);
+        }
+
+        $existing = Insurer::withTrashed()->whereRaw('LOWER(name) = ?', [strtolower($name)])->first();
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            if ($existing->is_system) {
+                throw new \Exception("Nama bentrok dengan penjamin sistem '{$existing->name}'.", 422);
+            }
+            // Existing yang valid → reuse addTpaMember (guard + hapus tarif lama).
+            return $this->addTpaMember($tpaId, $existing->id);
+        }
+
+        $member = Insurer::create([
+            'name'      => $name,
+            'type'      => 'ASURANSI',
+            'is_active' => true,
+            'is_tpa'    => false,
+            'parent_id' => $tpa->id,
+        ]);
+        $this->log(auth('api')->id(), 'ADD_TPA_MEMBER_NEW', Insurer::class, $member->id, "tpa:{$tpa->id}");
+        return $member->fresh();
+    }
+
+    /**
+     * Keluarkan anggota dari TPA (parent_id → null). Tarif yang dihapus saat join
+     * TIDAK dikembalikan — anggota keluar tanpa tarif (harus diisi manual). Diinfokan di UI.
+     */
+    public function removeTpaMember(string $tpaId, string $memberId): Insurer
+    {
+        $member = Insurer::findOrFail($memberId);
+        if ($member->parent_id !== $tpaId) {
+            throw new \Exception('Penjamin ini bukan anggota TPA tersebut.', 422);
+        }
+        $member->update(['parent_id' => null]);
+        $this->log(auth('api')->id(), 'REMOVE_TPA_MEMBER', Insurer::class, $member->id, "tpa:{$tpaId}");
+        return $member->fresh();
+    }
+
+    /**
+     * Kandidat anggota untuk dropdown "Tambah Anggota" di halaman TPA: penjamin
+     * ASURANSI/PERUSAHAAN yang root (bukan anggota), bukan sistem, bukan TPA itu sendiri,
+     * dan belum punya anggota sendiri (cegah rantai 3-tingkat).
+     */
+    public function candidateTpaMembers(string $tpaId): array
+    {
+        return Insurer::query()
+            ->whereNull('parent_id')
+            ->where('is_system', false)
+            ->where('is_tpa', false)   // TPA lain tidak boleh jadi anggota TPA
+            ->where('id', '!=', $tpaId)
+            ->whereIn('type', ['ASURANSI', 'PERUSAHAAN'])
+            ->whereDoesntHave('children')
+            ->orderBy('name')
+            ->get(['id', 'name', 'type'])
+            ->all();
     }
 
     public function deletePenjamin(string $id): void
@@ -259,7 +446,8 @@ class MasterDataService
      */
     public function showMetodeBayar(string $id): array
     {
-        $insurer = Insurer::with(['parent', 'children'])->findOrFail($id);
+        // children diringkas (id/name/type) untuk panel "Anggota TPA".
+        $insurer = Insurer::with(['parent', 'children:id,name,type,parent_id'])->findOrFail($id);
 
         // Lookup tarif via parent_id kalau child (inheritance murni)
         $tariffInsurerId = $insurer->tariffInsurerId();
@@ -271,12 +459,198 @@ class MasterDataService
             'iol'      => IolTariff::where('insurer_id', $tariffInsurerId)->count(),
         ];
 
+        // Boleh kelola anggota TPA bila: bukan sistem, root (bukan anggota), DAN ditandai is_tpa.
+        $canManageMembers = ! $insurer->is_system
+            && $insurer->parent_id === null
+            && $insurer->is_tpa === true;
+
         return [
-            'insurer'           => $insurer,
-            'is_child_tpa'      => $insurer->isChildTpa(),
-            'tariff_insurer_id' => $tariffInsurerId,
-            'counts'            => $counts,
+            'insurer'             => $insurer,
+            'is_child_tpa'        => $insurer->isChildTpa(),
+            'tariff_insurer_id'   => $tariffInsurerId,
+            'counts'              => $counts,
+            'can_manage_members'  => $canManageMembers,
         ];
+    }
+
+    // ─── Penjamin — CSV template / export / import ───────────────────────────
+
+    private const PENJAMIN_CSV_HEADER = ['nama', 'tipe', 'kode', 'parent', 'telepon', 'email', 'alamat', 'aktif', 'is_tpa'];
+
+    /** Template CSV penjamin (header + petunjuk pengisian). */
+    public function templatePenjaminCsv(): string
+    {
+        $notes = [
+            'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import.',
+            'Kolom WAJIB: nama, tipe. Opsional: kode, parent, telepon, email, alamat, aktif (1/0, default 1), is_tpa (1/0).',
+            'tipe = salah satu: UMUM, BPJS, ASURANSI, PERUSAHAAN, SOSIAL.',
+            'parent = NAMA penjamin induk (TPA) bila penjamin ini mewarisi tarif TPA (mis. Allianz via Admedika). Kosongkan kalau stand-alone.',
+            'is_tpa = 1 hanya untuk TPA induk (mis. Admedika). Penjamin sistem & anggota TPA harus 0.',
+            'Penjamin dicocokkan by NAMA: sudah ada → kolom lain di-update; belum → ditambah.',
+            'Baris sistem (UMUM/BPJS/SOSIAL) hanya boleh update telepon/email/alamat/aktif; nama & tipe dipertahankan.',
+        ];
+        $output = fopen('php://temp', 'r+');
+        foreach ($notes as $n) {
+            fwrite($output, '# ' . $n . "\n");
+        }
+        fputcsv($output, self::PENJAMIN_CSV_HEADER, ',', '"', '\\');
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /** Export semua penjamin ke CSV. */
+    public function exportPenjaminCsv(): string
+    {
+        $rows = Insurer::with('parent')->orderBy('name')->get();
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::PENJAMIN_CSV_HEADER, ',', '"', '\\');
+        foreach ($rows as $r) {
+            fputcsv($output, [
+                $r->name,
+                $r->type,
+                $r->code ?? '',
+                $r->parent?->name ?? '',
+                $r->phone ?? '',
+                $r->email ?? '',
+                $r->address ?? '',
+                $r->is_active ? 1 : 0,
+                $r->is_tpa ? 1 : 0,
+            ], ',', '"', '\\');
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /**
+     * Import penjamin dari CSV.
+     * Header wajib (case-insensitive): nama, tipe. Opsional: kode, parent, telepon, email, alamat, aktif.
+     * Upsert by NAMA (soft-delete aware → restore bila trashed). parent dicocokkan by nama
+     * (penjamin induk harus sudah ada). Baris sistem hanya update phone/email/address/is_active.
+     */
+    public function importPenjaminCsv(string $csvContent): array
+    {
+        $lines = $this->csvDataLines($csvContent);
+        if (empty($lines)) {
+            throw new \Exception('File kosong.', 422);
+        }
+        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        foreach (['nama', 'tipe'] as $req) {
+            if (! in_array($req, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$req}'.", 422);
+            }
+        }
+
+        $validTypes = ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL'];
+        $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
+
+        foreach ($lines as $idx => $line) {
+            $lineNum = $idx + 2;
+            if (trim($line) === '') continue;
+
+            $values = str_getcsv($line, ',', '"', '\\');
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row = array_combine($headers, $values);
+
+            $nama = trim((string) ($row['nama'] ?? ''));
+            $tipe = strtoupper(trim((string) ($row['tipe'] ?? '')));
+            if ($nama === '' || $tipe === '') {
+                $errors[] = "Baris {$lineNum}: 'nama' atau 'tipe' kosong";
+                $skipped++;
+                continue;
+            }
+            if (! in_array($tipe, $validTypes, true)) {
+                $errors[] = "Baris {$lineNum}: tipe '{$tipe}' tidak valid (harus " . implode('/', $validTypes) . ')';
+                $skipped++;
+                continue;
+            }
+
+            $kode    = array_key_exists('kode', $row) ? (trim((string) $row['kode']) ?: null) : null;
+            $telepon = array_key_exists('telepon', $row) ? (trim((string) $row['telepon']) ?: null) : null;
+            $email   = array_key_exists('email', $row) ? (trim((string) $row['email']) ?: null) : null;
+            $alamat  = array_key_exists('alamat', $row) ? (trim((string) $row['alamat']) ?: null) : null;
+            $aktif   = array_key_exists('aktif', $row) ? (trim((string) $row['aktif']) !== '' ? (bool) (int) $row['aktif'] : true) : true;
+            // is_tpa hanya dibaca bila kolomnya ADA di file — supaya import file lama
+            // (tanpa kolom) TIDAK melucuti flag TPA existing.
+            $hasIsTpaCol = array_key_exists('is_tpa', $row);
+            $isTpa = $hasIsTpaCol && in_array(strtolower(trim((string) $row['is_tpa'])), ['1', 'ya', 'true', 'y', 'yes'], true);
+
+            // Resolve parent (TPA) by nama bila diisi.
+            $parentId = null;
+            $parentName = array_key_exists('parent', $row) ? trim((string) $row['parent']) : '';
+            if ($parentName !== '') {
+                $parent = Insurer::whereRaw('LOWER(name) = ?', [strtolower($parentName)])->first();
+                if (! $parent) {
+                    $errors[] = "Baris {$lineNum}: parent '{$parentName}' tidak ditemukan, parent dikosongkan";
+                } else {
+                    $parentId = $parent->id;
+                }
+            }
+
+            // Upsert by name (soft-delete aware) → restore bila trashed.
+            $existing = Insurer::withTrashed()->whereRaw('LOWER(name) = ?', [strtolower($nama)])->first();
+
+            if ($existing) {
+                if ($existing->trashed()) {
+                    $existing->restore();
+                }
+                if ($existing->is_system) {
+                    // Baris sistem: hanya boleh ubah telepon/email/alamat/aktif. is_tpa diabaikan.
+                    if ($isTpa) {
+                        $errors[] = "Baris {$lineNum}: penjamin sistem tidak boleh is_tpa, diabaikan";
+                    }
+                    $existing->update(['phone' => $telepon, 'email' => $email, 'address' => $alamat, 'is_active' => $aktif]);
+                } else {
+                    // Cegah parent menunjuk diri sendiri.
+                    if ($parentId === $existing->id) {
+                        $parentId = null;
+                        $errors[] = "Baris {$lineNum}: parent tidak boleh diri sendiri, dikosongkan";
+                    }
+                    $payload = [
+                        'type' => $tipe, 'code' => $kode, 'parent_id' => $parentId,
+                        'phone' => $telepon, 'email' => $email, 'address' => $alamat, 'is_active' => $aktif,
+                    ];
+                    // is_tpa hanya disentuh bila kolom ada (jaga flag existing saat file lama).
+                    if ($hasIsTpaCol) {
+                        $wantTpa = $isTpa;
+                        if ($wantTpa && $parentId !== null) {
+                            $wantTpa = false;
+                            $errors[] = "Baris {$lineNum}: anggota TPA tidak boleh is_tpa, diset 0";
+                        }
+                        if (! $wantTpa && Insurer::where('parent_id', $existing->id)->exists()) {
+                            $wantTpa = true;
+                            $errors[] = "Baris {$lineNum}: TPA masih punya anggota, is_tpa dipertahankan 1";
+                        }
+                        $payload['is_tpa'] = $wantTpa;
+                    }
+                    $existing->update($payload);
+                }
+                $updated++;
+            } else {
+                // Baris baru: anggota (punya parent) tidak boleh is_tpa.
+                $wantTpa = $isTpa;
+                if ($wantTpa && $parentId !== null) {
+                    $wantTpa = false;
+                    $errors[] = "Baris {$lineNum}: anggota TPA tidak boleh is_tpa, diset 0";
+                }
+                Insurer::create([
+                    'name' => $nama, 'type' => $tipe, 'code' => $kode, 'parent_id' => $parentId,
+                    'phone' => $telepon, 'email' => $email, 'address' => $alamat, 'is_active' => $aktif,
+                    'is_tpa' => $wantTpa,
+                ]);
+                $inserted++;
+            }
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_PENJAMIN_CSV', Insurer::class, null, "new:{$inserted} upd:{$updated} skip:{$skipped}");
+        return compact('inserted', 'updated', 'skipped', 'errors');
     }
 
     // =========================================================================
@@ -601,9 +975,35 @@ class MasterDataService
 
     public function storeIcd10(array $data): Icd10Code
     {
-        $code = Icd10Code::create($data);
+        $code = $this->upsertIcdRow(Icd10Code::class, $data);
         $this->log(auth('api')->id(), 'CREATE_ICD10', Icd10Code::class, $code->id);
         return $code;
+    }
+
+    /**
+     * Tambah/restore satu kode ICD yang AMAN terhadap soft-delete.
+     *
+     * Tabel icd10_codes/icd9_codes pakai SoftDeletes + unique index PLAIN pada `code`
+     * tanpa filter deleted_at. `create()` biasa hanya melihat baris non-trashed → bila
+     * kode pernah dihapus (soft) lalu ditambah ulang, INSERT kena unique violation
+     * (23505) → 500. Helper ini cek withTrashed: kalau baris trashed → restore + update;
+     * kalau aktif → tetap blok (caller/validasi yang menolak). Pola sama upsertTarifRow.
+     */
+    private function upsertIcdRow(string $model, array $data): mixed
+    {
+        $existing = $model::withTrashed()->where('code', $data['code'])->first();
+
+        if ($existing) {
+            if (! $existing->trashed()) {
+                // Kode aktif sudah ada — biarkan unique violation/validasi yang menolak.
+                throw new \Exception("Kode '{$data['code']}' sudah terdaftar.", 422);
+            }
+            $existing->restore();
+            $existing->update($data);
+            return $existing;
+        }
+
+        return $model::create($data);
     }
 
     public function updateIcd10(string $id, array $data): Icd10Code
@@ -649,7 +1049,7 @@ class MasterDataService
 
     public function storeIcd9(array $data): Icd9Code
     {
-        $code = Icd9Code::create($data);
+        $code = $this->upsertIcdRow(Icd9Code::class, $data);
         $this->log(auth('api')->id(), 'CREATE_ICD9', Icd9Code::class, $code->id);
         return $code;
     }
@@ -853,6 +1253,19 @@ class MasterDataService
         return sprintf('MEQ-%03d', $next);
     }
 
+    private function generateSupplierCode(): string
+    {
+        $last = Supplier::withTrashed()
+            ->where('code', 'like', 'SUP-%')
+            ->orderByDesc('code')
+            ->value('code');
+        $next = 1;
+        if ($last && preg_match('/^SUP-(\d+)$/', $last, $m)) {
+            $next = ((int) $m[1]) + 1;
+        }
+        return sprintf('SUP-%03d', $next);
+    }
+
     public function updateBhp(string $id, array $data): BhpItem
     {
         $bhp = BhpItem::findOrFail($id);
@@ -905,17 +1318,49 @@ class MasterDataService
 
     public function storeIol(array $data): IolItem
     {
+        // Stok BUKAN ke kolom legacy iol_items.stock (tak otoritatif) — seed ke
+        // inventory_stocks (INVENTORI) bila form/klien mengirim stok awal > 0.
+        // Konsisten dgn importIolCsv(); sumber stok tunggal = inventory_stocks.
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
+
         $iol = IolItem::create($data);
+        if ($stockQty > 0) {
+            $this->seedIolStock($iol, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'CREATE_IOL', IolItem::class, $iol->id);
         return $iol;
     }
 
     public function updateIol(string $id, array $data): IolItem
     {
+        // Sama dgn storeIol: jangan tulis kolom legacy stock. Bila klien mengirim
+        // stok, seed/tambah ke inventory_stocks (bukan set ulang — penyesuaian stok
+        // sebenarnya lewat opname/penerimaan, bukan form master).
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
+
         $iol = IolItem::findOrFail($id);
         $iol->update($data);
+        if ($stockQty > 0) {
+            $this->seedIolStock($iol, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'UPDATE_IOL', IolItem::class, $id);
         return $iol->fresh();
+    }
+
+    /** Tambah stok awal IOL ke inventory_stocks lokasi INVENTORI (batch generik NULL). */
+    private function seedIolStock(IolItem $iol, int $qty, $expiry = null): void
+    {
+        if ($qty <= 0) return;
+        app(\App\Services\InventoryStockService::class)->upsertStock(
+            \App\Models\InventoryStock::TYPE_IOL,
+            (string) $iol->id,
+            \App\Models\InventoryStock::LOC_INVENTORI,
+            null,
+            $qty,
+            ($expiry !== null && $expiry !== '') ? $expiry : null,
+        );
     }
 
     public function deleteIol(string $id): void
@@ -939,6 +1384,9 @@ class MasterDataService
         }
         if (isset($filters['active'])) {
             $query->where('is_active', (bool) $filters['active']);
+        }
+        if (! empty($filters['package_type'])) {
+            $query->where('package_type', $filters['package_type']);
         }
         return $query->orderBy('name')->paginate($filters['per_page'] ?? 20);
     }
@@ -1015,17 +1463,36 @@ class MasterDataService
         $model = $this->tariffModel($type);
         $fk    = $this->tariffFk($type);
 
-        $tariff = $this->upsertTarifRow(
-            $model,
-            $fk,
-            $data[$fk],
-            $data['insurer_id'],
-            ['price' => $data['price'], 'is_active' => $data['is_active'] ?? true]
-        );
+        $values = ['price' => $data['price'], 'is_active' => $data['is_active'] ?? true];
+
+        // Pos kwitansi obat: 1 obat = 1 pos tetap → set di baris ini DAN propagasi ke
+        // semua baris tarif obat tsb (lintas penjamin) agar invariant terjaga (kasir
+        // baca pos dari baris UMUM). Hanya berlaku type 'obat'.
+        if ($type === 'obat' && array_key_exists('pos_kwitansi', $data) && $data['pos_kwitansi']) {
+            $values['pos_kwitansi'] = $data['pos_kwitansi'];
+        }
+
+        $tariff = $this->upsertTarifRow($model, $fk, $data[$fk], $data['insurer_id'], $values);
+
+        if ($type === 'obat' && ! empty($values['pos_kwitansi'])) {
+            $this->propagatePosKwitansi($data[$fk], $values['pos_kwitansi']);
+        }
 
         $this->log(auth('api')->id(), 'UPSERT_TARIF', $model, $tariff->id, "type:{$type}");
 
         return $tariff;
+    }
+
+    /**
+     * Samakan pos_kwitansi di SEMUA baris tarif satu obat (lintas penjamin, termasuk
+     * baris soft-deleted) → menjaga invariant "1 obat = 1 pos" walau kasir hanya membaca
+     * baris UMUM. Dipanggil saat store/update tarif obat dengan pos_kwitansi.
+     */
+    private function propagatePosKwitansi(string $medicationId, string $pos): void
+    {
+        \App\Models\MedicationTariff::withTrashed()
+            ->where('medication_id', $medicationId)
+            ->update(['pos_kwitansi' => $pos]);
     }
 
     /**
@@ -1059,7 +1526,18 @@ class MasterDataService
     {
         $model  = $this->tariffModel($type);
         $tariff = $model::findOrFail($id);
-        $tariff->update(['price' => $data['price'], 'is_active' => $data['is_active'] ?? $tariff->is_active]);
+
+        $values = ['price' => $data['price'], 'is_active' => $data['is_active'] ?? $tariff->is_active];
+        if ($type === 'obat' && array_key_exists('pos_kwitansi', $data) && $data['pos_kwitansi']) {
+            $values['pos_kwitansi'] = $data['pos_kwitansi'];
+        }
+        $tariff->update($values);
+
+        // Propagasi pos ke semua baris tarif obat ini (invariant 1 obat = 1 pos).
+        if ($type === 'obat' && ! empty($values['pos_kwitansi'])) {
+            $this->propagatePosKwitansi($tariff->medication_id, $values['pos_kwitansi']);
+        }
+
         $this->log(auth('api')->id(), 'UPDATE_TARIF', $model, $id);
         return $tariff->fresh('insurer');
     }
@@ -1447,24 +1925,30 @@ class MasterDataService
                 'table'     => 'medications',
                 'model'     => Medication::class,
                 'uniqueKey' => 'code',
-                'columns'   => ['code', 'kfa_code', 'name', 'generic_name', 'composition', 'manufacturer', 'formularium', 'form_sediaan', 'golongan', 'unit_besar', 'unit_kecil', 'konversi', 'stock', 'min_stock', 'price', 'expiry_date', 'batch_number', 'description', 'is_active'],
-                'casts'     => ['konversi' => 'int', 'stock' => 'int', 'min_stock' => 'int', 'price' => 'float', 'is_active' => 'bool'],
+                // Master = identitas/atribut item SAJA. Harga JUAL dikelola di Buku Tarif
+                // (medication_tariffs/bhp_tariffs/iol_tariffs baris UMUM); stok per-batch
+                // di Penerimaan/Stock Opname (inventory_stocks). Kolom legacy price/stock/
+                // min_stock/expiry_date/batch_number SENGAJA tidak diekspor/diimpor.
+                'columns'   => ['code', 'kfa_code', 'name', 'generic_name', 'composition', 'manufacturer', 'formularium', 'form_sediaan', 'golongan', 'unit_besar', 'unit_kecil', 'konversi', 'description', 'is_active'],
+                'casts'     => ['konversi' => 'int', 'is_active' => 'bool'],
             ],
             'bhp' => [
                 'table'     => 'bhp_items',
                 'model'     => BhpItem::class,
                 'uniqueKey' => 'code',
-                'columns'   => ['code', 'name', 'category', 'unit', 'manufacturer', 'stock', 'min_stock', 'price', 'expiry_date', 'batch_number', 'description', 'is_active'],
-                'casts'     => ['stock' => 'int', 'min_stock' => 'int', 'price' => 'float', 'is_active' => 'bool'],
+                // Lihat catatan 'obat': harga & stok dikelola di modulnya, bukan master.
+                'columns'   => ['code', 'name', 'category', 'unit', 'manufacturer', 'description', 'is_active'],
+                'casts'     => ['is_active' => 'bool'],
             ],
             'iol' => [
                 'table'     => 'iol_items',
                 'model'     => IolItem::class,
                 // Per-tipe: identitas master = (brand,model,power) — di-handle di importIolCsv().
                 // uniqueKey hanya dipakai utk orderBy export; pakai 'brand' (serial sering kosong).
+                // Lihat catatan 'obat': harga & stok dikelola di modulnya, bukan master.
                 'uniqueKey' => 'brand',
-                'columns'   => ['brand', 'manufacturer', 'model', 'iol_type', 'material', 'power', 'cylinder', 'axis', 'gtin', 'lot_number', 'serial_number', 'gs1_barcode', 'expiry_date', 'stock', 'price', 'is_active'],
-                'casts'     => ['power' => 'float', 'cylinder' => 'float', 'axis' => 'int', 'stock' => 'int', 'price' => 'float', 'is_active' => 'bool'],
+                'columns'   => ['brand', 'manufacturer', 'model', 'iol_type', 'material', 'power', 'cylinder', 'axis', 'gtin', 'lot_number', 'serial_number', 'gs1_barcode', 'is_active'],
+                'casts'     => ['power' => 'float', 'cylinder' => 'float', 'axis' => 'int', 'is_active' => 'bool'],
             ],
             'icd10' => [
                 'table'     => 'icd10_codes',
@@ -1485,6 +1969,13 @@ class MasterDataService
                 'model'     => MedicalEquipment::class,
                 'uniqueKey' => 'code', // export pakai uniqueKey utk orderBy; import by-name (code auto-gen MEQ-NNN)
                 'columns'   => ['code', 'name', 'category', 'brand', 'model', 'serial_number', 'location', 'status', 'calibration_due_at', 'purchase_date', 'description', 'is_active'],
+                'casts'     => ['is_active' => 'bool'],
+            ],
+            'supplier' => [
+                'table'     => 'suppliers',
+                'model'     => Supplier::class,
+                'uniqueKey' => 'code', // export orderBy; import by-name (code auto-gen SUP-NNN)
+                'columns'   => ['code', 'name', 'contact_person', 'phone', 'email', 'npwp', 'address', 'is_active'],
                 'casts'     => ['is_active' => 'bool'],
             ],
             default => throw new \Exception("Tipe resource tidak dikenal: {$type}", 422),
@@ -1601,13 +2092,13 @@ class MasterDataService
             'bhp' => array_merge($common, [
                 'Kolom "code" dibuat otomatis (BHP-001, BHP-002, ...) untuk item baru — tidak perlu diisi.',
                 'Kolom "category" WAJIB salah satu: ' . implode(' | ', \App\Models\BhpItem::CATEGORIES) . '.',
-                'Kolom "expiry_date": format YYYY-MM-DD (mis. 2027-01-31), boleh kosong.',
-                'Contoh baris: Kasa Steril 10x10,MEDICAL_BHP,pcs,Onemed,500,50,1500,2027-01-31,,Catatan,1',
+                'Harga & stok TIDAK di sini: harga di menu Penentuan Harga, stok di Penerimaan/Stock Opname.',
+                'Contoh baris: Kasa Steril 10x10,MEDICAL_BHP,pcs,Onemed,Catatan,1',
             ]),
             'obat' => array_merge($common, [
                 'Kolom "code" dibuat otomatis (MED-001, ...) untuk item baru — tidak perlu diisi.',
                 'Kolom "kfa_code" = kode KFA Kemenkes (untuk Satu Sehat), boleh kosong. Isi dari menu Inventori Farmasi (tombol Cari KFA) atau ketik manual.',
-                'Kolom "expiry_date": format YYYY-MM-DD, boleh kosong. konversi/stock/min_stock = angka bulat, price = angka.',
+                'Kolom "konversi" = angka bulat. Harga & stok TIDAK di sini: harga di menu Penentuan Harga, stok di Penerimaan/Stock Opname.',
             ]),
             'alat-medis' => array_merge($common, [
                 'Kolom "code" dibuat otomatis (MEQ-001, MEQ-002, ...) untuk item baru — tidak perlu diisi.',
@@ -1619,10 +2110,16 @@ class MasterDataService
             'iol' => [
                 'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
                 'Identitas IOL = kombinasi brand + model + power (WAJIB ketiganya). Sama → perbarui, beda → tambah.',
-                'serial_number OPSIONAL (untuk unit fisik tertentu). power/cylinder/price = angka, axis/stock = bulat.',
+                'serial_number OPSIONAL (untuk unit fisik tertentu). power/cylinder = angka, axis = bulat.',
+                'Harga & stok TIDAK di sini: harga di menu Penentuan Harga, stok di Penerimaan/Stock Opname.',
                 'Kolom "iol_type": MONOFOCAL | MULTIFOCAL | TORIC | TRIFOCAL | EDOF | PHAKIC.',
                 'Kolom "is_active": 1 = aktif, 0 = nonaktif.',
             ],
+            'supplier' => array_merge($common, [
+                'Kolom "code" dibuat otomatis (SUP-001, SUP-002, ...) untuk supplier baru — tidak perlu diisi.',
+                'Kolom opsional: contact_person, phone, email, npwp, address.',
+                'Contoh baris: PT. Kimia Farma Distributor,Budi,021-555111,sales@kf.co.id,01.234.567.8-901.000,Jl. Veteran No.1,1',
+            ]),
             default => $common,
         };
     }
@@ -1633,7 +2130,7 @@ class MasterDataService
      */
     private function csvHeaderColumns(string $type, array $schema): array
     {
-        if (in_array($type, ['obat', 'bhp', 'alat-medis'], true)) {
+        if (in_array($type, ['obat', 'bhp', 'alat-medis', 'supplier'], true)) {
             return array_values(array_filter($schema['columns'], fn ($c) => $c !== 'code'));
         }
         return $schema['columns'];
@@ -1651,7 +2148,7 @@ class MasterDataService
 
         $schema  = $this->resourceSchema($type);
         $columns = $this->csvHeaderColumns($type, $schema);
-        $orderBy = in_array($type, ['obat', 'bhp', 'alat-medis'], true) ? 'name' : $schema['uniqueKey'];
+        $orderBy = in_array($type, ['obat', 'bhp', 'alat-medis', 'supplier'], true) ? 'name' : $schema['uniqueKey'];
 
         $rows = DB::table($schema['table'])
             ->whereNull('deleted_at')
@@ -1751,7 +2248,7 @@ class MasterDataService
             return $this->importTindakanCsv($csvContent);
         }
 
-        if (in_array($type, ['obat', 'bhp', 'alat-medis'], true)) {
+        if (in_array($type, ['obat', 'bhp', 'alat-medis', 'supplier'], true)) {
             return $this->importItemByNameCsv($type, $csvContent);
         }
 
@@ -1810,8 +2307,22 @@ class MasterDataService
             }
 
             try {
-                $existing = $model::where($unique, $data[$unique])->first();
+                // withTrashed: bila baris pernah di-soft-delete, default scope tak
+                // melihatnya → create() kena unique violation (23505). Lookup trashed
+                // lalu restore agar re-import kode yang pernah dihapus tetap jalan.
+                $usesSoftDeletes = in_array(
+                    \Illuminate\Database\Eloquent\SoftDeletes::class,
+                    class_uses_recursive($model),
+                    true
+                );
+
+                $query    = $usesSoftDeletes ? $model::withTrashed() : $model::query();
+                $existing = $query->where($unique, $data[$unique])->first();
+
                 if ($existing) {
+                    if ($usesSoftDeletes && $existing->trashed()) {
+                        $existing->restore();
+                    }
                     $existing->update($data);
                     $updated++;
                 } else {
@@ -2016,6 +2527,7 @@ class MasterDataService
                             'obat'       => $this->generateObatCode(),
                             'bhp'        => $this->generateBhpCode(),
                             'alat-medis' => $this->generateAlatMedisCode(),
+                            'supplier'   => $this->generateSupplierCode(),
                         };
                     }
                     $model::create($data);
@@ -2096,6 +2608,17 @@ class MasterDataService
                 $data[$col] = $this->castCsvCell($row[$col], $schema['casts'][$col] ?? 'string');
             }
 
+            // Kolom `stock`/`expiry_date` TIDAK lagi bagian dari schema master IOL
+            // (tak diekspor) — tapi import MASIH menerimanya sebagai stok AWAL bila
+            // admin menyertakannya di file. Sumber stok sebenarnya = inventory_stocks,
+            // jadi nilai itu di-seed ke lokasi INVENTORI via seedIolStock(), BUKAN
+            // ditulis ke kolom legacy. Dibaca langsung dari $row (bukan $data) karena
+            // sudah dikeluarkan dari schema['columns'].
+            $rawStock = $row['stock'] ?? '';
+            $stockQty = ($rawStock !== '' && is_numeric($rawStock)) ? (int) $rawStock : 0;
+            $rawExpiry = trim((string) ($row['expiry_date'] ?? ''));
+            $expiry  = $rawExpiry !== '' ? $rawExpiry : null;
+
             try {
                 $existing = IolItem::whereRaw('LOWER(brand) = ?', [strtolower($brand)])
                     ->whereRaw('LOWER(model) = ?', [strtolower($model)])
@@ -2104,11 +2627,15 @@ class MasterDataService
 
                 if ($existing) {
                     $existing->update($data);
+                    $iolItem = $existing;
                     $updated++;
                 } else {
-                    IolItem::create($data);
+                    $iolItem = IolItem::create($data);
                     $inserted++;
                 }
+
+                // Seed stok awal ke inventory_stocks (INVENTORI) bila CSV menyertakan stok > 0.
+                $this->seedIolStock($iolItem, $stockQty, $expiry);
             } catch (\Throwable $e) {
                 $errors[] = "Baris {$lineNum}: " . $e->getMessage();
                 $skipped++;

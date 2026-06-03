@@ -41,7 +41,7 @@ function showToast(t, msg) {
 
 function emptyForm() {
   return {
-    name: '', category: '',
+    name: '', package_type: 'BEDAH', category: '',
     description: '', keterangan: '',
     price: 0,
     is_active: true,
@@ -50,6 +50,7 @@ function emptyForm() {
 
 const columns = [
   { key: 'name',             label: 'Nama Paket' },
+  { key: 'package_type',     label: 'Jenis',       width: '110px' },
   { key: 'category',         label: 'Kategori',    width: '140px' },
   { key: 'items_count',      label: 'Items',       width: '70px', align: 'right' },
   { key: 'total_base_price', label: 'Base Total',  width: '140px', align: 'right' },
@@ -89,6 +90,7 @@ function openEdit(row) {
     open: true, mode: 'edit',
     payload: {
       name: row.name ?? '',
+      package_type: row.package_type ?? 'BEDAH',
       category: row.category ?? '',
       description: row.description ?? '',
       keterangan: row.keterangan ?? '',
@@ -139,6 +141,7 @@ async function doDelete() {
 
 const fields = [
   { key: 'name',               label: 'Nama Paket',     type: 'text',     required: true, cols: 2, placeholder: 'mis. Paket Phaco + IOL Monofocal' },
+  { key: 'package_type',       label: 'Jenis Paket',    type: 'select',   cols: 1, options: [{ value: 'BEDAH', label: 'Bedah' }, { value: 'PEMERIKSAAN', label: 'Pemeriksaan' }], hint: 'Pemeriksaan: poliklinik, komponen tindakan saja' },
   { key: 'category',           label: 'Kategori',       type: 'text',     cols: 1, placeholder: 'mis. SBL / Glaukoma / Refraktif' },
   { key: 'price',              label: 'Harga Acuan (Rp)', type: 'number', min: 0, cols: 1, hint: 'Diabaikan jika ada tarif per penjamin' },
   { key: 'description',        label: 'Deskripsi',      type: 'textarea', cols: 2, rows: 2 },
@@ -272,6 +275,12 @@ onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
         <div class="pl-cell-name">
           <strong @click="goDetail(row)" class="pl-name-link">{{ row.name }}</strong>
         </div>
+      </template>
+
+      <template #cell-package_type="{ value }">
+        <span class="pl-jenis" :class="value === 'PEMERIKSAAN' ? 'pemeriksaan' : 'bedah'">
+          {{ value === 'PEMERIKSAAN' ? 'Pemeriksaan' : 'Bedah' }}
+        </span>
       </template>
 
       <template #cell-category="{ value }">
@@ -411,6 +420,9 @@ onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 .pl-name-link:hover { color: var(--ga); text-decoration: underline; }
 
 .pl-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
+.pl-jenis { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+.pl-jenis.bedah { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+.pl-jenis.pemeriksaan { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .pl-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--gl); color: var(--td); min-width: 28px; text-align: center; }
 .pl-pill.zero { background: var(--bs); color: var(--tu); }
 .pl-price { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }

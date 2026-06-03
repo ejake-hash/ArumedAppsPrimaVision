@@ -14,10 +14,14 @@ class SurgeryPackage extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
+    public const TYPE_BEDAH = 'BEDAH';
+    public const TYPE_PEMERIKSAAN = 'PEMERIKSAAN';
+
     protected $fillable = [
         'legacy_uuid',
         'name',
         'code',
+        'package_type',
         'category',
         'description',
         'keterangan',

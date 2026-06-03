@@ -358,6 +358,7 @@ function resetFormState() {
   icd9List.value = []
   planning.value = ''
   tanggalKontrol.value = ''
+  surgeryLocation.value = 'RUANG_BEDAH'
   surgeryCategory.value = ''
   surgeryPkg.value = ''
   surgeryDate.value = ''
@@ -366,6 +367,7 @@ function resetFormState() {
   bedahSlotInfo.value = null
   rujukFaskes.value = ''
   rujukAlasan.value = ''
+  rujukDone.value = false
   rujukMode.value = 'EXTERNAL'
   internalTargets.value = []
   internalTargetId.value = ''
@@ -445,6 +447,8 @@ onMounted(async () => {
   loadObat()
   // Load master paket bedah (untuk planning → Jadwalkan Bedah)
   loadSurgeryPackages()
+  // Load master paket pemeriksaan (untuk Tab Tindakan)
+  loadExamPackages()
   // Tutup dropdown pencarian tindakan saat klik di luar
   document.addEventListener('mousedown', _handleTindakanClickOutside)
 })
@@ -876,6 +880,9 @@ function removeRx(idx) { rxList.value.splice(idx, 1); scheduleSaveResep() }
 let _loadingResep = false   // true saat loadTindakanResep menulis kasirNote (suppress autosave)
 async function loadTindakanResep() {
   const visitId = selP.value?.visitId
+  // Reset state paket pemeriksaan agar tak bocor antar pasien.
+  examPackageSel.value = ''
+  examPackageInfo.value = null
   if (!visitId) { tindakanList.value = []; rxList.value = []; return }
   try {
     const { data } = await dokterApi.indexTindakan(visitId)
@@ -1122,6 +1129,7 @@ function removeIcd9(code) { icd9List.value = icd9List.value.filter((t) => t.code
 
 const planning = ref('')
 const tanggalKontrol = ref('')
+const surgeryLocation = ref('RUANG_BEDAH')  // lokasi pelaksanaan: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP)
 const surgeryCategory = ref('')   // kategori paket bedah terpilih
 const surgeryPkg = ref('')        // id paket bedah terpilih
 const surgeryDate = ref('')
@@ -1129,6 +1137,10 @@ const surgeryTime = ref('')       // jam rencana bedah (HH:MM) — opsional
 const requiresInpatient = ref(false)  // Fase 8: bedah perlu rawat inap pre-op (pasien datang H-1)
 const rujukFaskes = ref('')
 const rujukAlasan = ref('')
+// Penanda rujukan SUDAH dibuat (lewat tombol terpisah submitRujukInternal/Keluar).
+// Dipakai doFinalize untuk memperingatkan bila planning=RUJUK tapi belum ada rujukan.
+// (isRujukMade computed dideklarasikan setelah isBpjsPatient & rujukMode di bawah.)
+const rujukDone = ref(false)
 
 // ── Rujuk: dua mode — INTERNAL (antar-poli) vs EXTERNAL (faskes lain) ─────────
 const rujukMode = ref('EXTERNAL')          // 'INTERNAL' | 'EXTERNAL'
@@ -1182,6 +1194,7 @@ async function submitRujukInternal() {
     toast('s', r.enqueued
       ? `Dirujuk ke ${t.poliklinik} (${t.doctor_name || 'dokter'}) — masuk antrean hari ini.`
       : `Rujukan ke ${t.poliklinik} dibuat. Pasien daftar ulang hari ${t.day_label} (${t.start_time}).`)
+    rujukDone.value = true   // tandai rujukan sudah dibuat (cek di doFinalize)
     // Reset sub-form internal; biarkan daftar tujuan agar bisa rujuk lagi bila perlu.
     internalTargetId.value = ''
     internalReason.value = ''
@@ -1194,6 +1207,13 @@ async function submitRujukInternal() {
 
 // ── Rujuk EXTERNAL (faskes lain). Pasien BPJS → terbit ke VClaim ─────────────
 const isBpjsPatient = computed(() => selP.value?.ptype === 'bpjs')
+
+// Rujukan dianggap "dibuat" bila: tombol rujuk sukses (rujukDone), ATAU rujukan
+// eksternal non-BPJS (tak punya tombol terpisah — ikut Simpan Planning) dgn faskes terisi.
+const isRujukMade = computed(() =>
+  rujukDone.value ||
+  (rujukMode.value === 'EXTERNAL' && !isBpjsPatient.value && !!rujukFaskes.value.trim())
+)
 const rk = reactive({
   faskesKode: '', faskesNama: '',
   poliKode: '', poliNama: '',
@@ -1268,6 +1288,7 @@ async function submitRujukKeluar() {
     toast('s', r.status === 'SUCCESS'
       ? `Rujukan BPJS terbit. No: ${r.no_rujukan}`
       : 'Surat rujukan tersimpan.')
+    rujukDone.value = true   // tandai rujukan sudah dibuat (cek di doFinalize)
   } catch (e) {
     toast('e', e.response?.data?.message || 'Gagal membuat rujukan')
   } finally { rkSubmitting.value = false }
@@ -1319,7 +1340,9 @@ async function loadBedahSlot(tanggal) {
   if (!tanggal) { bedahSlotInfo.value = null; return }
   bedahSlotLoading.value = true
   try {
-    const { data } = await dokterApi.bedahSlot(tanggal)
+    // Filter preview slot sesuai lokasi terpilih (Ruang Bedah vs Ruang Tindakan)
+    // agar jumlah & jam terisi tidak tercampur antar-stasiun.
+    const { data } = await dokterApi.bedahSlot(tanggal, surgeryLocation.value)
     bedahSlotInfo.value = data.data ?? null
   } catch {
     bedahSlotInfo.value = null
@@ -1329,12 +1352,14 @@ async function loadBedahSlot(tanggal) {
 }
 // Tanggal berganti → muat preview & reset jam (hindari jam nyangkut dari tanggal lain).
 watch(surgeryDate, (d) => { surgeryTime.value = ''; loadBedahSlot(d) })
+// Ganti lokasi → muat ulang preview (slot Ruang Bedah ≠ slot Ruang Tindakan).
+watch(surgeryLocation, () => { if (surgeryDate.value) loadBedahSlot(surgeryDate.value) })
 
-// Master paket bedah (surgery_packages) — di-fetch dari tarif & paket bedah.
+// Master paket BEDAH (surgery_packages package_type=BEDAH) — untuk Tab 4 Jadwalkan Bedah.
 const surgeryPackages = ref([])   // {id, code, name, category, price}
 async function loadSurgeryPackages() {
   try {
-    const { data } = await masterApi.paketBedah.list({ active: 1, per_page: 200 })
+    const { data } = await masterApi.paketBedah.list({ active: 1, per_page: 200, package_type: 'BEDAH' })
     const rows = data.data?.data ?? data.data ?? []
     surgeryPackages.value = rows.map((p) => ({
       id: p.id, code: p.code ?? '', name: p.name,
@@ -1342,6 +1367,51 @@ async function loadSurgeryPackages() {
       price: Number(p.price ?? p.total_base_price) || 0,
     }))
   } catch { surgeryPackages.value = [] }
+}
+
+// ── PAKET PEMERIKSAAN (poliklinik) — Tab Tindakan ──────────────────────────
+// Memilih paket → tindakan paket masuk daftar (ditagih) + diskon paket di kasir.
+const examPackages = ref([])      // {id, code, name}
+const examPackageSel = ref('')    // id paket pemeriksaan terpilih utk kunjungan ini
+const examPackageInfo = ref(null) // {package_name, sell_price, total_base_price, discount_amount}
+const applyingExamPkg = ref(false)
+async function loadExamPackages() {
+  try {
+    const { data } = await masterApi.paketBedah.list({ active: 1, per_page: 200, package_type: 'PEMERIKSAAN' })
+    const rows = data.data?.data ?? data.data ?? []
+    examPackages.value = rows.map((p) => ({ id: p.id, code: p.code ?? '', name: p.name }))
+  } catch { examPackages.value = [] }
+}
+async function applyExamPackage() {
+  if (!examPackageSel.value || !visitId.value || applyingExamPkg.value) return
+  applyingExamPkg.value = true
+  try {
+    const { data } = await dokterApi.applyExaminationPackage(visitId.value, examPackageSel.value)
+    const res = data.data ?? {}
+    // Refresh daftar tindakan dari response (komponen paket sudah masuk).
+    const svc = res.visit_services ?? []
+    tindakanList.value = svc.map((vs) => ({
+      id: vs.procedure_id, code: vs.procedure?.code ?? '', name: vs.procedure?.name ?? 'Tindakan',
+      category: vs.procedure?.category ?? '', price: Number(vs.price) || 0, qty: vs.quantity ?? 1,
+    }))
+    examPackageInfo.value = res.snapshot ?? null
+    toast('s', 'Paket pemeriksaan diterapkan — tindakan masuk daftar')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal terapkan paket')
+  } finally {
+    applyingExamPkg.value = false
+  }
+}
+async function removeExamPackage() {
+  if (!visitId.value) return
+  try {
+    await dokterApi.removeExaminationPackage(visitId.value)
+    examPackageSel.value = ''
+    examPackageInfo.value = null
+    toast('s', 'Paket pemeriksaan dilepas (tindakan tetap, hapus manual bila perlu)')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal lepas paket')
+  }
 }
 
 // Daftar kategori unik (untuk dropdown kategori), urut alfabet.
@@ -1423,16 +1493,44 @@ async function doFinalize() {
   if (!soap.value.A) { toast('e', 'Wajib isi Assessment pada SOAP'); return }
   if (!planning.value) { toast('e', 'Wajib pilih planning (Pulang / Bedah / Rujuk)'); return }
   if (planning.value === 'BEDAH') {
-    if (!surgeryPkg.value) { toast('e', 'Pilih paket bedah terlebih dahulu'); return }
-    if (!surgeryDate.value) { toast('e', 'Isi tanggal rencana bedah'); return }
+    // Paket WAJIB hanya untuk operasi (Ruang Bedah). Tindakan laser (Ruang Tindakan)
+    // boleh tanpa paket — ditagih per-tindakan di stasiun Ruang Tindakan.
+    if (surgeryLocation.value === 'RUANG_BEDAH' && !surgeryPkg.value) {
+      toast('e', 'Pilih paket bedah terlebih dahulu'); return
+    }
+    if (!surgeryDate.value) {
+      toast('e', surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Isi tanggal rencana tindakan' : 'Isi tanggal rencana bedah'); return
+    }
   }
   if (!signed.value) { toast('e', 'Wajib tandatangani dokumen terlebih dahulu'); return }
   if (!store.selectedQueue) { toast('e', 'Tidak ada antrian aktif'); return }
   const visitId = selP.value?.visitId
   if (!visitId) { toast('e', 'Kunjungan tidak ditemukan'); return }
 
+  // Planning RUJUK tapi rujukan belum dibuat: rujukan dibuat lewat tombol terpisah
+  // ("Buat Rujukan ke Poli Ini" / "Terbitkan Rujukan BPJS"). Jika dilewati, pasien
+  // langsung di-advance ke KASIR tanpa surat rujukan. Peringatkan — boleh lanjut.
+  if (planning.value === 'RUJUK' && !isRujukMade.value) {
+    const lanjut = window.confirm(
+      'Planning RUJUK tapi rujukan belum dibuat.\n\n' +
+      'Rujukan internal/BPJS dibuat lewat tombol terpisah di panel Rujuk. ' +
+      'Bila dilanjutkan, pasien diteruskan ke kasir TANPA surat rujukan.\n\n' +
+      'Tetap finalisasi?'
+    )
+    if (!lanjut) return
+  }
+
   finalizing.value = true
   try {
+    // 0) Flush autosave Tab 3 (tindakan & resep) yang masih dalam debounce 600ms.
+    //    storeVisitServices = replace (hapus lalu re-create); bila POST telat fire
+    //    SETELAH finalize/advance, backend menolak (assertNotFinalized 422) dan
+    //    tindakan/resep terakhir hilang dari tagihan kasir (under-billing).
+    clearTimeout(_saveTindakanTimer)
+    clearTimeout(_saveResepTimer)
+    await saveTindakan()
+    await saveResep()
+
     // 1) Simpan Tab 2 (anamnese + segmen anterior/posterior + slitlamp) lebih dulu,
     //    karena POST tab2 menolak bila record sudah ada (storeTab4 pakai firstOrCreate).
     await saveTab2()
@@ -1450,11 +1548,13 @@ async function doFinalize() {
       diagnosis_text:     diagnosisText.value?.trim() || null,
       tindakan_codes:     icd9List.value.map((t) => t.code),
       planning:           PLANNING_ENUM[planning.value] ?? planning.value,
-      surgery_package_id: planning.value === 'BEDAH' ? surgeryPkg.value : null,
+      surgery_package_id: planning.value === 'BEDAH' ? (surgeryPkg.value || null) : null,
+      // Lokasi pelaksanaan: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
+      location_type:      planning.value === 'BEDAH' ? surgeryLocation.value : null,
       surgery_date:       planning.value === 'BEDAH' ? surgeryDate.value : null,
       surgery_time:       planning.value === 'BEDAH' ? (surgeryTime.value || null) : null,
-      // Fase 8: bedah yang butuh inap (pre-op H-1). Hanya relevan saat planning BEDAH.
-      requires_inpatient: planning.value === 'BEDAH' ? requiresInpatient.value : false,
+      // Fase 8: bedah yang butuh inap (pre-op H-1). Hanya relevan saat planning BEDAH di RUANG_BEDAH.
+      requires_inpatient: planning.value === 'BEDAH' && surgeryLocation.value === 'RUANG_BEDAH' ? requiresInpatient.value : false,
       // Rujukan eksternal non-BPJS (faskes lain). BPJS dirujuk lewat VClaim (submitRujukKeluar),
       // jadi field ini hanya diisi untuk pasien non-BPJS saat planning RUJUK.
       external_referral_facility: planning.value === 'RUJUK' && !isBpjsPatient.value ? (rujukFaskes.value || null) : null,
@@ -1482,6 +1582,11 @@ async function doFinalize() {
     // Surat Kontrol BPJS: terbit otomatis bila Pulang + tgl kontrol + pasien BPJS.
     // Non-blocking — finalisasi di atas sudah final, ini hanya menyusulkan ke VClaim.
     await autoSubmitSuratKontrol(visitId)
+
+    // Resume Medis: auto-generate dari data kunjungan yang baru saja dikunci, lalu
+    // tampilkan modal preview agar dokter bisa tinjau/edit & setujui (terbit). Non-
+    // blocking — finalisasi RME sudah final; kegagalan generate hanya diberi tahu.
+    await openResumePreview(visitId)
     // Pasien sengaja TIDAK di-clear: agar dokter masih bisa melihat data tindakan &
     // resep (read-only) setelah finalisasi. `isLocked` sudah menutup edit (signed=true
     // + status='done' membuat seluruh panel pane-locked).
@@ -1490,6 +1595,93 @@ async function doFinalize() {
   } finally {
     finalizing.value = false
   }
+}
+
+// ── Resume Medis Rawat Jalan (RM 1.7/RMRJ/22): preview → (edit) → Setuju → terbit ─
+// Dipanggil otomatis di akhir doFinalize (RME sudah terkunci). Resume di-generate
+// (field formulir auto-isi dari data kunjungan), ditinjau/diedit dokter di modal,
+// lalu "Setuju & Terbitkan" menyimpan editan + finalize (is_finalized=true).
+const showResumeModal = ref(false)
+const resumeData = ref(null)         // objek MedicalResume mentah (termasuk rmrj_data)
+const resumeGenerating = ref(false)  // sedang generate (buka modal)
+const resumeApproving = ref(false)   // sedang simpan+finalize (klik Setuju)
+
+// Field naratif yang DIEDIT dokter di modal (header/footer cetak tetap di rmrj_data).
+const RESUME_FIELDS = [
+  { key: 'anamnese',             label: 'Anamnese',                                      rows: 2 },
+  { key: 'pemeriksaan_fisik',    label: 'Pemeriksaan Fisik',                             rows: 3 },
+  { key: 'alergi_obat',          label: 'Alergi Obat',                                   rows: 1 },
+  { key: 'hasil_penunjang',      label: 'Hasil Penunjang Medis (Lab/Radiologi/dll)',     rows: 2 },
+  { key: 'diagnosa',             label: 'Diagnosa',                                      rows: 2 },
+  { key: 'tindakan',             label: 'Tindakan',                                      rows: 2 },
+  { key: 'terapi',               label: 'Terapi',                                        rows: 3 },
+  { key: 'riwayat_inap_operasi', label: 'Riwayat/Rawat Inap/Operasi/Tindakan',           rows: 2 },
+  { key: 'instruksi_edukasi',    label: 'Instruksi/Anjuran dan Edukasi Lanjutan',        rows: 2 },
+]
+const resumeForm = reactive(Object.fromEntries(RESUME_FIELDS.map((f) => [f.key, ''])))
+const resumeKontrol = reactive({ kontrol_tanggal: '', kontrol_tempat: '' })
+
+function hydrateResumeForm(r) {
+  const d = r?.rmrj_data ?? {}
+  for (const f of RESUME_FIELDS) resumeForm[f.key] = d[f.key] ?? ''
+  resumeKontrol.kontrol_tanggal = d.kontrol_tanggal ?? ''
+  resumeKontrol.kontrol_tempat  = d.kontrol_tempat ?? ''
+}
+
+// Header/footer cetak (read-only di modal — auto dari kunjungan).
+const resumeHeader = computed(() => resumeData.value?.rmrj_data ?? {})
+
+async function openResumePreview(visitId) {
+  resumeGenerating.value = true
+  try {
+    // Auto-generate (updateOrCreate di backend) lalu tampilkan untuk ditinjau.
+    const { data } = await dokterApi.generateResumeMedis(visitId)
+    const r = data.data ?? data
+    if (!r?.id) { toast('e', 'Gagal menyiapkan resume medis'); return }
+    // Resume bisa saja sudah difinalisasi (kunjungan diproses ulang) — skip modal.
+    if (r.is_finalized) return
+    resumeData.value = r
+    hydrateResumeForm(r)
+    showResumeModal.value = true
+  } catch (e) {
+    // Non-blocking: finalisasi RME sudah final. Dokter tetap bisa terbitkan resume
+    // lewat tombol Resume di antrean (FormDocsBrowser) bila modal gagal muncul.
+    toast('e', e.response?.data?.message ?? 'Resume medis belum bisa disiapkan (bisa diterbitkan manual lewat tombol Resume).')
+  } finally {
+    resumeGenerating.value = false
+  }
+}
+
+async function approveResume() {
+  const r = resumeData.value
+  if (!r?.id) { showResumeModal.value = false; return }
+  resumeApproving.value = true
+  try {
+    // Selalu kirim field yang diedit dokter (merge dgn header/footer di backend).
+    const rmrj = {}
+    for (const f of RESUME_FIELDS) rmrj[f.key] = resumeForm[f.key] || ''
+    rmrj.kontrol_tanggal = resumeKontrol.kontrol_tanggal || ''
+    rmrj.kontrol_tempat  = resumeKontrol.kontrol_tempat || ''
+    await dokterApi.updateResumeMedis(r.id, { rmrj_data: rmrj })
+
+    // Finalisasi resume → is_finalized=true, is_editable=false (terbit/dikunci).
+    await dokterApi.finalizeResumeMedis(r.id)
+    showResumeModal.value = false
+    resumeData.value = null
+    toast('s', 'Resume medis pasien diterbitkan.')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menerbitkan resume medis')
+  } finally {
+    resumeApproving.value = false
+  }
+}
+
+// Lewati persetujuan: resume tetap tersimpan sebagai DRAFT (is_finalized=false),
+// dokter bisa terbitkan nanti lewat tombol Resume. Tidak menghapus apa pun.
+function skipResume() {
+  showResumeModal.value = false
+  resumeData.value = null
+  toast('i', 'Resume disimpan sebagai draf — bisa diterbitkan nanti lewat tombol Resume.')
 }
 </script>
 
@@ -2200,6 +2392,28 @@ async function doFinalize() {
                 </div>
               </div>
               <div class="cb">
+                <!-- Paket Pemeriksaan (poliklinik): pilih → tindakan paket masuk daftar + diskon di kasir -->
+                <div v-if="examPackages.length" class="exam-pkg-bar">
+                  <div class="exam-pkg-row">
+                    <svg class="exam-pkg-icon" viewBox="0 0 24 24"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                    <select v-model="examPackageSel" class="form-input exam-pkg-select" :disabled="applyingExamPkg">
+                      <option value="">— Pilih paket pemeriksaan (opsional) —</option>
+                      <option v-for="p in examPackages" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}</option>
+                    </select>
+                    <button class="exam-pkg-apply" :disabled="!examPackageSel || applyingExamPkg" @click="applyExamPackage">
+                      {{ applyingExamPkg ? 'Menerapkan…' : 'Terapkan' }}
+                    </button>
+                    <button v-if="examPackageInfo" class="exam-pkg-remove" @click="removeExamPackage" title="Lepas paket (tindakan tetap)">Lepas</button>
+                  </div>
+                  <div v-if="examPackageInfo" class="exam-pkg-info">
+                    <strong>{{ examPackageInfo.package_name }}</strong> ·
+                    Harga paket {{ fmtRp(examPackageInfo.sell_price) }} ·
+                    Total komponen {{ fmtRp(examPackageInfo.total_base_price) }} ·
+                    <span class="exam-pkg-disc">Diskon {{ fmtRp(examPackageInfo.discount_amount) }}</span>
+                    <span class="exam-pkg-note">— tindakan paket dapat diskon di kasir; tambahan di luar paket ditagih penuh.</span>
+                  </div>
+                </div>
+
                 <!-- Search-driven add tindakan: hanya muncul saat focus + ada query -->
                 <div class="tindakan-search-wrap" ref="tindakanSearchRef">
                   <div class="tindakan-search-field">
@@ -2728,30 +2942,53 @@ async function doFinalize() {
                   </template>
                 </div>
 
-                <!-- Bedah: Kategori → Paket → Tanggal -->
+                <!-- Bedah: Lokasi → Kategori → Paket → Tanggal -->
                 <div v-if="planning === 'BEDAH'" class="surgery-fields">
+                  <!-- 0) Lokasi pelaksanaan: Ruang Bedah (operasi) vs Ruang Tindakan (laser) -->
+                  <div class="fg" style="margin-bottom:0.6rem">
+                    <label class="fl">Lokasi Pelaksanaan</label>
+                    <div class="loc-toggle">
+                      <label class="loc-opt" :class="{ active: surgeryLocation === 'RUANG_BEDAH' }">
+                        <input type="radio" value="RUANG_BEDAH" v-model="surgeryLocation" />
+                        <span><b>Ruang Bedah</b><small>Operasi (Phaco, SICS, Vitrektomi, dll)</small></span>
+                      </label>
+                      <label class="loc-opt" :class="{ active: surgeryLocation === 'RUANG_TINDAKAN' }">
+                        <input type="radio" value="RUANG_TINDAKAN" v-model="surgeryLocation" />
+                        <span><b>Ruang Tindakan</b><small>Tindakan laser (YAG, Retina/PRP)</small></span>
+                      </label>
+                    </div>
+                  </div>
                   <div class="g2">
                     <!-- 1) Pilih kategori dulu -->
                     <div class="fg">
-                      <label class="fl">Kategori Paket Bedah</label>
+                      <label class="fl">
+                        Kategori Paket {{ surgeryLocation === 'RUANG_TINDAKAN' ? 'Tindakan' : 'Bedah' }}
+                        <span v-if="surgeryLocation === 'RUANG_TINDAKAN'" class="fl-opt">(opsional)</span>
+                      </label>
                       <select v-model="surgeryCategory" class="form-select">
                         <option value="">— Pilih kategori —</option>
                         <option v-for="c in surgeryCategories" :key="c" :value="c">{{ c }}</option>
                       </select>
                       <div v-if="!surgeryPackages.length" class="surgery-hint warn">
-                        Belum ada master paket bedah aktif. Atur di Tarif &amp; Paket Bedah.
+                        Belum ada master paket aktif. Atur di Tarif &amp; Paket Bedah.
                       </div>
                     </div>
-                    <!-- 2) Paket bedah sesuai kategori -->
+                    <!-- 2) Paket sesuai kategori -->
                     <div class="fg">
-                      <label class="fl">Paket Bedah</label>
+                      <label class="fl">
+                        Paket {{ surgeryLocation === 'RUANG_TINDAKAN' ? 'Tindakan' : 'Bedah' }}
+                        <span v-if="surgeryLocation === 'RUANG_TINDAKAN'" class="fl-opt">(opsional)</span>
+                      </label>
                       <select v-model="surgeryPkg" class="form-select" :disabled="!surgeryCategory">
-                        <option value="">{{ surgeryCategory ? '— Pilih paket bedah —' : 'Pilih kategori dulu' }}</option>
+                        <option value="">{{ surgeryCategory ? '— Pilih paket —' : 'Pilih kategori dulu' }}</option>
                         <option v-for="p in filteredSurgeryPackages" :key="p.id" :value="p.id">
                           {{ p.code ? p.code + ' · ' : '' }}{{ p.name }}
                         </option>
                       </select>
-                      <div v-if="surgeryCategory && !filteredSurgeryPackages.length" class="surgery-hint">
+                      <div v-if="surgeryLocation === 'RUANG_TINDAKAN'" class="surgery-hint">
+                        Tindakan laser ditagih per-tindakan di Ruang Tindakan — paket boleh dikosongkan.
+                      </div>
+                      <div v-else-if="surgeryCategory && !filteredSurgeryPackages.length" class="surgery-hint">
                         Tidak ada paket pada kategori ini
                       </div>
                     </div>
@@ -2799,8 +3036,8 @@ async function doFinalize() {
                     </template>
                   </div>
 
-                  <!-- Fase 8: pre-op rawat inap (pasien datang H-1 untuk persiapan) -->
-                  <label class="ranap-check">
+                  <!-- Fase 8: pre-op rawat inap (pasien datang H-1) — hanya untuk operasi di Ruang Bedah -->
+                  <label v-if="surgeryLocation === 'RUANG_BEDAH'" class="ranap-check">
                     <input type="checkbox" v-model="requiresInpatient" />
                     <span class="ranap-check-tx">
                       <b>Perlu rawat inap (pre-op H-1)</b>
@@ -3301,6 +3538,66 @@ async function doFinalize() {
       </div>
     </Teleport>
 
+    <!-- ═══ MODAL: PREVIEW & TERBITKAN RESUME MEDIS (pasca-finalisasi) ═══ -->
+    <Teleport to="body">
+      <div v-if="showResumeModal && resumeData" class="modal-overlay">
+        <div class="modal-box">
+          <div class="modal-box-head">
+            <div class="modal-box-title">
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+              Resume Medis Rawat Jalan
+            </div>
+            <button class="modal-box-close" :disabled="resumeApproving" @click="skipResume">×</button>
+          </div>
+          <div class="modal-box-body">
+            <p class="resume-modal-hint">
+              Tinjau resume medis hasil pemeriksaan. Lengkapi <b>Tindakan</b>, <b>Riwayat</b>,
+              dan <b>Instruksi/Edukasi</b> bila perlu, lalu klik <b>Setuju &amp; Terbitkan</b>.
+            </p>
+
+            <!-- Header (read-only, auto dari kunjungan) -->
+            <div class="resume-head-grid">
+              <div><span class="rh-label">Tanggal Berobat</span><span class="rh-val">{{ resumeHeader.tanggal_berobat || '—' }}</span></div>
+              <div><span class="rh-label">Dokter yang Merawat</span><span class="rh-val">{{ resumeHeader.dokter_merawat || '—' }}</span></div>
+              <div><span class="rh-label">Ruang Poli</span><span class="rh-val">{{ resumeHeader.ruang_poli || '—' }}</span></div>
+              <div><span class="rh-label">Penanggung Pembayaran</span><span class="rh-val">{{ resumeHeader.penanggung_bayar || '—' }}</span></div>
+            </div>
+
+            <!-- Field naratif (editable) -->
+            <div v-for="f in RESUME_FIELDS" :key="f.key" class="resume-field">
+              <label>{{ f.label }}</label>
+              <textarea
+                v-model="resumeForm[f.key]"
+                class="form-input resume-ta"
+                :rows="f.rows"
+                :disabled="resumeApproving"
+                :placeholder="f.key === 'tindakan' ? 'Isi tindakan yang dilakukan…' : ''"
+              ></textarea>
+            </div>
+
+            <!-- Kontrol -->
+            <div class="resume-kontrol">
+              <div class="resume-field">
+                <label>Kontrol Tanggal</label>
+                <input v-model="resumeKontrol.kontrol_tanggal" type="date" class="form-input" :disabled="resumeApproving" />
+              </div>
+              <div class="resume-field">
+                <label>Kontrol di</label>
+                <input v-model="resumeKontrol.kontrol_tempat" type="text" class="form-input" :disabled="resumeApproving" placeholder="Tempat kontrol" />
+              </div>
+            </div>
+          </div>
+          <div class="modal-box-foot">
+            <button class="btn btn-secondary" :disabled="resumeApproving" @click="skipResume">Nanti Saja</button>
+            <button class="btn btn-success" :disabled="resumeApproving" @click="approveResume">
+              <span v-if="resumeApproving" class="sp"></span>
+              {{ resumeApproving ? 'Menerbitkan…' : 'Setuju & Terbitkan' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- TOASTS -->
     <div class="toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['toast', 'toast-' + t.type]">
@@ -3646,6 +3943,19 @@ async function doFinalize() {
 .modal-box-body { padding: 1rem 1.2rem; overflow-y: auto; flex: 1; }
 .modal-box-foot { padding: 0.75rem 1.2rem; border-top: 1px solid var(--gb); display: flex; justify-content: flex-end; gap: 0.5rem; flex-shrink: 0; }
 
+/* Modal Resume Medis (preview pasca-finalisasi) */
+.resume-modal-hint { font-size: 12px; color: var(--tm); line-height: 1.5; margin: 0 0 0.9rem; }
+.resume-field { margin-bottom: 0.85rem; }
+.resume-field label { display: block; font-size: 11px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.3rem; }
+.resume-ta { width: 100%; resize: vertical; font-family: 'Inter', sans-serif; font-size: 12.5px; line-height: 1.5; }
+.resume-penunjang { margin: 0; padding-left: 1.1rem; font-size: 12px; color: var(--tm); }
+.resume-penunjang li { margin-bottom: 2px; }
+.resume-head-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; padding: 0.7rem 0.85rem; margin-bottom: 1rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; }
+.resume-head-grid > div { display: flex; flex-direction: column; gap: 1px; }
+.rh-label { font-size: 9.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.04em; }
+.rh-val { font-size: 12.5px; color: var(--td); font-weight: 600; }
+.resume-kontrol { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+
 .penunjang-modal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 1rem; }
 .chip-lainnya { border-style: dashed; }
 .chip-lainnya.ordered { border-color: var(--ga); background: var(--gl); }
@@ -3984,6 +4294,15 @@ async function doFinalize() {
 .surgery-fields, .plan-fields { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.85rem 1rem; margin-top: 0; }
 .surgery-hint { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
 .surgery-hint.warn { color: var(--wt); }
+/* Toggle lokasi pelaksanaan: Ruang Bedah vs Ruang Tindakan (laser) */
+.loc-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.loc-opt { display: flex; align-items: flex-start; gap: 8px; padding: 9px 11px; border: 1px solid var(--bd, #cbd5e1); border-radius: 9px; cursor: pointer; background: #fff; transition: border-color .15s, background .15s; }
+.loc-opt:hover { border-color: #94a3b8; }
+.loc-opt.active { border-color: #1FAAE0; background: #f0f9ff; }
+.loc-opt input { width: 15px; height: 15px; margin-top: 2px; accent-color: #1FAAE0; flex-shrink: 0; }
+.loc-opt span { display: flex; flex-direction: column; gap: 1px; }
+.loc-opt b { font-size: 12.5px; color: #0E3A66; }
+.loc-opt small { font-size: 10.5px; color: var(--tu, #64748b); }
 /* Fase 8 — Rawat Inap (observasi) note + checkbox pre-op pada Bedah */
 .ranap-note { display: flex; align-items: flex-start; gap: 8px; color: #0f766e; background: #f0fdfa; border-color: #99f6e4 !important; font-size: 12px; }
 .ranap-note svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px; }
@@ -4094,6 +4413,19 @@ async function doFinalize() {
 .tarif-list-icon.check { stroke: var(--st); stroke-width: 2.5; }
 
 /* ── Tindakan search-driven picker ───────────────────────────────────────── */
+/* Paket Pemeriksaan bar (Tab Tindakan) */
+.exam-pkg-bar { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 0.7rem 0.85rem; margin-bottom: 0.75rem; }
+.exam-pkg-row { display: flex; align-items: center; gap: 0.5rem; }
+.exam-pkg-icon { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: var(--ga); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.exam-pkg-select { flex: 1; }
+.exam-pkg-apply { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--ga); background: var(--ga); color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.exam-pkg-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+.exam-pkg-remove { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--ebd); background: var(--eb); color: var(--et); font-size: 12.5px; cursor: pointer; }
+.exam-pkg-info { margin-top: 0.55rem; font-size: 12px; color: var(--tm); line-height: 1.5; }
+.exam-pkg-info strong { color: var(--td); }
+.exam-pkg-disc { color: var(--ga); font-weight: 600; }
+.exam-pkg-note { display: block; color: var(--tu); font-size: 11px; margin-top: 2px; }
+
 .tindakan-search-wrap { position: relative; margin-bottom: 0.75rem; }
 .tindakan-search-field {
   position: relative; display: flex; align-items: center; gap: 8px;

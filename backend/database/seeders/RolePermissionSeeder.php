@@ -25,7 +25,8 @@ class RolePermissionSeeder extends Seeder
                 'penunjang'     => ['R','W'],
                 'rme_dokter'    => ['R','W'],
                 'rekam_medis'   => ['R','W'],
-                'bedah'         => ['R','W'],
+                'bedah'         => ['R','W','C'],
+                'ruang_tindakan' => ['R','W'],
                 'rawat_inap'    => ['R','W'],
                 'farmasi'       => ['R'],
                 // Unit Bedah minta/retur BHP-IOL ke gudang (BedahTerjadwalView, station=BEDAH).
@@ -41,7 +42,8 @@ class RolePermissionSeeder extends Seeder
                 'refraksionis' => ['R'],
                 'rme_dokter'   => ['R'],
                 'rekam_medis'  => ['R'],
-                'bedah'        => ['R'],
+                'bedah'        => ['R','C'],
+                'ruang_tindakan' => ['R','W'],
                 'rawat_inap'   => ['R','W'],
                 'farmasi'      => ['R'],
                 'bpjs'         => ['R'],
@@ -125,6 +127,7 @@ class RolePermissionSeeder extends Seeder
                 'rme_dokter'        => ['R'],
                 'rekam_medis'       => ['R'],
                 'bedah'             => ['R'],
+                'ruang_tindakan'    => ['R'],
                 'farmasi'           => ['R'],
                 'kasir'             => ['R'],
                 'rawat_inap'        => ['R'],
@@ -137,6 +140,7 @@ class RolePermissionSeeder extends Seeder
                 'tarif_paket'       => ['R'],
                 'integrasi'         => ['R'],
                 'laporan'           => ['R','W'],
+                'marketing'         => ['R'],
                 'audit'             => ['R'],
                 'form_template'     => ['R'],
             ],
@@ -156,7 +160,8 @@ class RolePermissionSeeder extends Seeder
             ],
         ];
 
-        $actionMap = ['R' => 'read', 'W' => 'write', 'D' => 'delete'];
+        // 'C' = checklist (permission khusus bedah.checklist di luar pola R/W/D).
+        $actionMap = ['R' => 'read', 'W' => 'write', 'D' => 'delete', 'C' => 'checklist'];
         $permissions = Permission::all()->keyBy('key');
 
         foreach ($matrix as $roleName => $modules) {

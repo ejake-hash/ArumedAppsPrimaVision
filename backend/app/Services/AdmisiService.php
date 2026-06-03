@@ -1454,20 +1454,31 @@ class AdmisiService
             throw new \Exception('Nomor kartu BPJS pasien belum ada.', 422);
         }
 
+        $jenisPelayanan = $visit->jenis_pelayanan ?? 'RAJAL';
+        $isRanap        = $jenisPelayanan === 'RANAP';
+        $isIgd          = $jenisPelayanan === 'IGD';
+
         $schedule   = $visit->doctorSchedule;
-        $kodePoli   = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
+        // Poli IGD walk-in tak punya jadwal dokter → pakai poli_code konvensi 'IGD'
+        // (sama dgn Queue::STATION_IGD / jenis_pelayanan). Admin memetakannya di
+        // Jadwal Dokter → Pemetaan BPJS (poli_code 'IGD'). RAJAL/RANAP via schedule.
+        $poliCode   = $isIgd ? 'IGD' : $schedule?->poli_code;
+        $kodePoli   = BpjsPoliMapping::bpjsCodeFor($poliCode);
         $kodeDpjp   = $schedule?->employee?->bpjs_dpjp_code;
         $kodeFaskes = (string) (IntegrationConfig::where('system_name', 'VCLAIM')->first()->configuration['kode_faskes'] ?? '');
 
         if (! $kodePoli) {
-            throw new \Exception("Poli '{$schedule?->poli_code}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
+            throw new \Exception("Poli '{$poliCode}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
         }
 
         // Jenis pelayanan SEP conditional: RANAP='1' (rawat inap), RAJAL/IGD='2'.
         // Kelas rawat hak: untuk RANAP ambil dari visit.kelas_rawat_hak (kelas HAK
         // peserta, bukan kelas room titipan); fallback ke request/'3'.
-        $isRanap   = ($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP';
         $klsRawatHak = (string) ($visit->kelas_rawat_hak ?? $data['kls_rawat'] ?? '3');
+
+        // asalRujukan: '1'=FKTP (rujukan), '2'=gawat darurat (IGD tanpa rujukan FKTP).
+        // SEP IGD wajib '2' sesuai regulasi BPJS gawat darurat.
+        $asalRujukan = $isIgd ? '2' : '1';
 
         $tSep = [
             'noKartu'      => $data['bpjs_number'],
@@ -1479,7 +1490,7 @@ class AdmisiService
             'klsRawat'     => ['klsRawatHak' => $klsRawatHak, 'klsRawatNaik' => '', 'pembiayaan' => '', 'penanggungJawab' => ''],
             'noMR'         => $visit->patient?->no_rm ?? '',
             'rujukan'      => [
-                'asalRujukan' => '1', // FKTP
+                'asalRujukan' => $asalRujukan, // 1=FKTP, 2=gawat darurat (IGD)
                 'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
                 'noRujukan'   => $data['no_rujukan'] ?? '',
                 'ppkRujukan'  => $data['ppk_rujukan'] ?? '',

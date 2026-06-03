@@ -148,10 +148,10 @@ class BedahController extends Controller
             'complication_detail'  => 'required_if:has_complication,true|nullable|string|max:2000',
             'post_op_instructions' => 'nullable|string|max:2000',
             'followup_date'        => 'nullable|date|after_or_equal:today',
-            // Disposisi pasca-op: PULANG → Kasir | RAWAT_INAP → papan Menunggu Kamar.
-            // Tanpa rule ini Laravel men-drop field → service selalu default PULANG
-            // (pasien rawat inap salah dirutekan ke Kasir).
-            'post_op_disposition'  => 'nullable|in:PULANG,RAWAT_INAP',
+            // Disposisi pasca-op: PULANG → Kasir | RAWAT_INAP → papan Menunggu Kamar |
+            // LANJUT_RANAP → kembali ke kamar (pasien sudah RANAP) | HCU → RANAP + tanda HCU.
+            // Tanpa rule ini Laravel men-drop field → service selalu default PULANG.
+            'post_op_disposition'  => 'nullable|in:PULANG,RAWAT_INAP,LANJUT_RANAP,HCU',
         ]);
 
         try {
@@ -160,7 +160,200 @@ class BedahController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        return $this->ok($record, 'Operasi selesai. Time Out: ' . now()->format('H:i') . '. Lengkapi & kunci laporan untuk meneruskan pasien.');
+        $warnings = $record->warnings ?? [];
+        $message  = 'Operasi selesai. Time Out: ' . now()->format('H:i') . '. Lengkapi & kunci laporan untuk meneruskan pasien.';
+        if (! empty($warnings)) {
+            $message .= ' ⚠ ' . implode(' ', $warnings);
+        }
+
+        return $this->ok($record, $message);
+    }
+
+    /**
+     * PUT /bedah/record/{id}/safety-checklist
+     * Satu fase WHO Surgical Safety Checklist (sign_in/time_out/sign_out).
+     * Gating lunak: bypass_reason diisi = fase dilewati darurat (tercatat audit).
+     */
+    public function saveSafetyChecklist(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'phase'         => 'required|in:sign_in,time_out,sign_out',
+            'data'          => 'required|array',
+            'bypass_reason' => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $record = $this->service->saveSafetyChecklist(
+                $id,
+                $validated['phase'],
+                $validated['data'],
+                $validated['bypass_reason'] ?? null,
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($record, 'Checklist keselamatan disimpan.');
+    }
+
+    /**
+     * PUT /bedah/record/{id}/operation-report
+     * Laporan operasi terstruktur (isi minimal PAB). Implan auto dari IOL terpasang.
+     */
+    public function saveOperationReport(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'diagnosis_pre'        => 'nullable|string|max:1000',
+            'diagnosis_post'       => 'required|string|max:1000',
+            'procedure_name'       => 'nullable|string|max:255',
+            'operator'             => 'nullable|string|max:255',
+            'asisten'              => 'nullable|array',
+            'anesthesiologist'     => 'nullable|string|max:255',
+            'anesthesia_type'      => 'nullable|string|max:100',
+            'findings'             => 'nullable|string|max:5000',
+            'technique'            => 'nullable|string|max:5000',
+            'notes'                => 'nullable|string|max:5000',
+            'complication'         => 'nullable|array',
+            'estimated_blood_loss' => 'nullable|string|max:100',
+            'specimens'            => 'nullable|array',
+            'vitrectomy_details'   => 'nullable|array',
+            'closure'              => 'nullable|string|max:1000',
+            'post_op_disposition'  => 'nullable|in:PULANG,RAWAT_INAP,LANJUT_RANAP,HCU',
+        ]);
+
+        try {
+            $record = $this->service->saveOperationReport($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($record, 'Laporan operasi disimpan.');
+    }
+
+    /**
+     * PUT /bedah/record/{id}/recovery-assessment
+     * Skor pemulihan Aldrete + nyeri + vital (PACU). Total dihitung di server.
+     */
+    public function saveRecoveryAssessment(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'aldrete'                 => 'required|array',
+            'aldrete.activity'        => 'required|integer|between:0,2',
+            'aldrete.respiration'     => 'required|integer|between:0,2',
+            'aldrete.circulation'     => 'required|integer|between:0,2',
+            'aldrete.consciousness'   => 'required|integer|between:0,2',
+            'aldrete.spo2'            => 'required|integer|between:0,2',
+            'pain_score'              => 'nullable|integer|between:0,10',
+            'vitals'                  => 'nullable|array',
+            'notes'                   => 'nullable|string|max:1000',
+        ]);
+
+        try {
+            $record = $this->service->saveRecoveryAssessment($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($record, 'Skor pemulihan disimpan.');
+    }
+
+    // =========================================================================
+    // ANESTESI — Laporan (RM 5.2) + Monitoring vital durante
+    // =========================================================================
+
+    /** GET /bedah/anesthesiologists — dropdown DPJP Anestesi (role dokter_anestesi). */
+    public function anesthesiologists(): JsonResponse
+    {
+        return $this->ok($this->service->getAnesthesiologists());
+    }
+
+    /** GET /bedah/record/{id}/anesthesia */
+    public function getAnesthesiaReport(string $id): JsonResponse
+    {
+        return $this->ok($this->service->getAnesthesiaReport($id));
+    }
+
+    /** POST /bedah/record/{id}/anesthesia — simpan/perbarui laporan (form_data JSONB). */
+    public function saveAnesthesiaReport(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'form_data' => 'required|array',
+        ]);
+
+        try {
+            $report = $this->service->saveAnesthesiaReport($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($report, 'Laporan anestesi disimpan.');
+    }
+
+    /** GET /bedah/record/{id}/anesthesia-vitals */
+    public function listAnesthesiaVitals(string $id): JsonResponse
+    {
+        return $this->ok($this->service->listAnesthesiaVitals($id));
+    }
+
+    /** POST /bedah/anesthesia-vital — catat 1 pembacaan vital durante. */
+    public function recordAnesthesiaVital(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'surgery_record_id' => 'required|uuid|exists:surgery_records,id',
+            'recorded_at'       => 'nullable|date',
+            'td_sistol'         => 'nullable|integer|between:0,300',
+            'td_diastol'        => 'nullable|integer|between:0,200',
+            'nadi'              => 'nullable|integer|between:0,300',
+            'spo2'              => 'nullable|numeric|between:0,100',
+            'rr'                => 'nullable|integer|between:0,100',
+            'etco2'             => 'nullable|integer|between:0,150',
+            'suhu'              => 'nullable|numeric|between:25,45',
+            'obat_kejadian'     => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $vital = $this->service->recordAnesthesiaVital($validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($vital, 'Vital dicatat.', 201);
+    }
+
+    /** PUT /bedah/anesthesia-vital/{id} */
+    public function updateAnesthesiaVital(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'recorded_at'   => 'nullable|date',
+            'td_sistol'     => 'nullable|integer|between:0,300',
+            'td_diastol'    => 'nullable|integer|between:0,200',
+            'nadi'          => 'nullable|integer|between:0,300',
+            'spo2'          => 'nullable|numeric|between:0,100',
+            'rr'            => 'nullable|integer|between:0,100',
+            'etco2'         => 'nullable|integer|between:0,150',
+            'suhu'          => 'nullable|numeric|between:25,45',
+            'obat_kejadian' => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $vital = $this->service->updateAnesthesiaVital($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($vital, 'Vital diperbarui.');
+    }
+
+    /** DELETE /bedah/anesthesia-vital/{id} */
+    public function destroyAnesthesiaVital(string $id): JsonResponse
+    {
+        try {
+            $this->service->deleteAnesthesiaVital($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Vital dihapus.');
     }
 
     // =========================================================================
@@ -468,6 +661,94 @@ class BedahController extends Controller
         }
 
         return $this->ok($surgeryRequest, 'BHP usage diperbarui.');
+    }
+
+    // =========================================================================
+    // KOMPONEN PAKET PASIEN (snapshot) — edit BHP & Tindakan
+    // =========================================================================
+
+    /** GET /bedah/visit-package/{visitId} — SEMUA paket pasien + komponen (multi-paket). */
+    public function getVisitPackage(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getVisitPackages($visitId));
+    }
+
+    /** POST /bedah/visit-package/{visitId}/package — tambah paket (mis. anestesi TIVA). */
+    public function addVisitPackage(Request $request, string $visitId): JsonResponse
+    {
+        $data = $request->validate([
+            'package_id' => 'required|uuid',
+        ]);
+
+        try {
+            $result = $this->service->addVisitPackage($visitId, $data['package_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Paket ditambahkan');
+    }
+
+    /** DELETE /bedah/visit-package/{snapshotId} — hapus satu paket dari pasien. */
+    public function removeVisitPackage(string $snapshotId): JsonResponse
+    {
+        try {
+            $result = $this->service->removeVisitPackage($snapshotId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Paket dihapus');
+    }
+
+    /** POST /bedah/visit-package/{visitId}/items — tambah komponen (PROCEDURE/BHP). */
+    public function addVisitPackageItem(Request $request, string $visitId): JsonResponse
+    {
+        $data = $request->validate([
+            'item_type'  => 'required|in:PROCEDURE,BHP',
+            'item_id'    => 'required|uuid',
+            'quantity'   => 'nullable|integer|min:1',
+            'unit_price' => 'nullable|numeric|min:0',
+            'notes'      => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $result = $this->service->addVisitPackageItem($visitId, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Komponen paket ditambah');
+    }
+
+    /** PUT /bedah/visit-package-item/{itemId} — ubah qty/harga/notes. */
+    public function updateVisitPackageItem(Request $request, string $itemId): JsonResponse
+    {
+        $data = $request->validate([
+            'quantity'   => 'nullable|integer|min:1',
+            'unit_price' => 'nullable|numeric|min:0',
+            'notes'      => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $result = $this->service->updateVisitPackageItem($itemId, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Komponen paket diperbarui');
+    }
+
+    /** DELETE /bedah/visit-package-item/{itemId} — hapus komponen. */
+    public function removeVisitPackageItem(string $itemId): JsonResponse
+    {
+        try {
+            $result = $this->service->removeVisitPackageItem($itemId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Komponen paket dihapus');
     }
 
     // =========================================================================

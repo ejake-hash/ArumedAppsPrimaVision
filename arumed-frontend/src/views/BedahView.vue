@@ -1,10 +1,24 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
-import { bedahApi, alatMedisApi, masterApi } from '@/services/api'
+import { useAuthStore } from '@/stores/authStore'
+import { bedahApi, alatMedisApi, masterApi, dokterApi, tarifPaketApi } from '@/services/api'
 import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
+import AnesthesiaReportWizard from '@/components/bedah/AnesthesiaReportWizard.vue'
 
 const masterStore = useMasterDataStore()
+const auth = useAuthStore()
+
+// Deteksi prosedur vitrektomi (tanpa IOL) → tampilkan section khusus retina di laporan.
+const VITREK_RE = /vitrek|vitrec|vitreous|ppv\b|pars plana/i
+
+// ── UI adaptif per-role (editable matrix) ────────────────────────────────────
+// Checklist keselamatan: perawat + dokter (permission bedah.checklist).
+const canEditChecklist = computed(() => auth.can('bedah.checklist'))
+// Laporan operasi / diagnosa / disposisi / resep: dokter (bedah.write).
+const canEditReport    = computed(() => auth.can('bedah.write'))
+// Wizard + monitoring anestesi: dokter anestesi (anestesi.write).
+const canEditAnesthesia = computed(() => auth.can('anestesi.write'))
 
 // Deteksi prosedur Phaco/SICS (IOL) dari nama paket/prosedur → auto-set isPhaco.
 // Petugas tetap bisa override manual via checkbox di tab Pra-Bedah.
@@ -38,6 +52,7 @@ function transformQueueItem(q) {
     queueStatus:    q.status,            // WAITING/CALLED/IN_PROGRESS/COMPLETED
     visitId:        q.visit?.id,
     visitType:      q.visit?.visit_type,
+    jenisPelayanan: q.visit?.jenis_pelayanan ?? 'RAJAL',   // RANAP = pasien dari kamar
     scheduleId:     sched?.id ?? null,
     classification: q.visit?.classification ?? 'Pre-Op',
     rm:             q.patient?.no_rm ?? '—',
@@ -72,10 +87,25 @@ function transformQueueItem(q) {
     timIn:          null,
     timOut:         null,
     checklist:      { identitas: false, consent: false, lokasi: false, pupil: false, alergi: false },
+    // WHO Surgical Safety Checklist 3 fase (Sign In / Time Out / Sign Out) + bypass.
+    signIn:         { identitas: false, sisi_mata: '', consent: false, anestesi_siap: false, alergi_dikonfirmasi: false },
+    timeOut:        { tim_lengkap: false, identitas_prosedur: false, sisi_mata: false, antibiotik: false, iol_benar: false },
+    signOut:        { prosedur_dikonfirmasi: false, hitung_kasa: false, hitung_instrumen: false, spesimen: false, iol_dicatat: false, rencana_pemulihan: false },
+    signInSaved:    false,
+    timeOutSaved:   false,
+    signOutSaved:   false,
+    bypass:         {},   // { sign_in?, time_out?, sign_out? } reason tercatat
+    // Skor pemulihan Aldrete (PACU) — 5 komponen ×0-2.
+    aldrete:        { activity: 2, respiration: 2, circulation: 2, consciousness: 2, spo2: 2 },
+    painScore:      0,
+    recoverySaved:  false,
+    // Detail vitrektomi (hanya bila prosedur vitrektomi).
+    vitrek:         { tamponade: 'None', endolaser: false, membrane_peeling: false },
+    estimatedBloodLoss: '',
     tim:            { operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' },
     bhp:            [],
     iolRencana:     { merk: '', power: '', series: '', tipe: 'Monofocal' },
-    iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD', lot: '', serial: '', gtin: '', expiry: '' },
+    iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD', lot: '', serial: '', gtin: '', gs1_barcode: '', expiry: '' },
     iolUsageSaved:  false,          // true setelah storeIolUsage sukses (badge info)
     anestesi:       'Topikal',
     catatanIntra:   '',
@@ -84,7 +114,9 @@ function transformQueueItem(q) {
     komplikasi:     false,
     komplikasiTipe: '',
     komplikasiNote: '',
-    postOpDisposition: 'PULANG',   // PULANG → Kasir | RAWAT_INAP → Menunggu Kamar
+    // Default disposisi adaptif: pasien dari RANAP → kembali ke kamar (LANJUT_RANAP);
+    // pasien rawat jalan/pre-op → PULANG. Opsi lengkap difilter di template.
+    postOpDisposition: (q.visit?.jenis_pelayanan ?? 'RAJAL') === 'RANAP' ? 'LANJUT_RANAP' : 'PULANG',
     instruksi:      Array(6).fill(false),
     obatPasca:      [],
     resepSent:      false,
@@ -100,6 +132,8 @@ function transformQueueItem(q) {
 function syncAuthoritativeFields(s, q) {
   const sched = q.surgery_schedule
   s.queueStatus = q.status                       // WAITING/CALLED/IN_PROGRESS/COMPLETED
+  // jenis_pelayanan = server-authoritative (bisa berubah saat admit RANAP) → sinkron.
+  if (q.visit?.jenis_pelayanan) s.jenisPelayanan = q.visit.jenis_pelayanan
   // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
   if (s.status === 'MENUNGGU') {
     s.status = q.status === 'COMPLETED' ? 'SELESAI'
@@ -233,9 +267,13 @@ watch(selP, (p) => {
   if (p?.visitId) {
     loadSurgeryRequests(p.visitId)
     loadEquipmentUsages(p.visitId)
+    loadVisitPackage(p.visitId)
+    loadVpPickerOptions(p.visitId)
   } else {
     surgeryReqs.value = []
     equipmentUsages.value = []
+    visitPackages.value = []
+    vpAddPkgId.value = ''
   }
 })
 
@@ -430,6 +468,8 @@ async function onIolScanDecoded(rawCode) {
     const res = await bedahApi.scanIol(rawCode)
     const out = res.data?.data ?? {}
     const p = out.parsed ?? {}
+    // Simpan string UDI mentah utk jejak audit (dikirim ke BE saat simpan).
+    d.gs1_barcode = rawCode
     // Isi serial/lot/gtin/expiry dari hasil parse (lensa fisik yg ditanam).
     if (p.serial_number) d.serial = p.serial_number
     if (p.lot_number)    d.lot = p.lot_number
@@ -481,6 +521,7 @@ async function simpanIolTerpasang() {
       lot_number:        d.lot || null,
       serial_number:     d.serial || null,
       gtin:              d.gtin || null,
+      gs1_barcode:       d.gs1_barcode || null,
       expiry_date:       d.expiry || null,
     })
     const warnings = res.data?.data?.warnings ?? []
@@ -491,8 +532,10 @@ async function simpanIolTerpasang() {
       toast('s', `IOL ${d.eyeSide || 'OD'} tersimpan`)
     }
     await loadIolUsages()
-    // Reset field lensa fisik agar siap untuk mata berikutnya (pertahankan eyeSide).
-    d.serial = ''; d.lot = ''; d.gtin = ''; d.expiry = ''
+    // Reset PENUH identitas lensa agar tak nempel ke mata berikutnya (risiko salah
+    // catat brand/power/model). Pertahankan hanya eyeSide & tipe sebagai preferensi UI.
+    d.itemId = ''; d.merk = ''; d.power = ''; d.series = ''
+    d.serial = ''; d.lot = ''; d.gtin = ''; d.gs1_barcode = ''; d.expiry = ''
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal menyimpan IOL terpasang')
   } finally {
@@ -504,6 +547,7 @@ async function simpanIolTerpasang() {
 const obatMaster = ref([])         // master obat (bedah-scoped, RBAC bedah.read)
 const obatSearchPasca = ref('')     // query filter dropdown obat pasca-bedah
 const sendingResep = ref(false)     // guard cegah double kirim resep
+const savingInstruksi = ref(false)  // guard cegah double simpan instruksi pasca-op
 
 async function loadObatMaster() {
   try {
@@ -577,10 +621,53 @@ function fmtJamJadwal(t) {
   return String(t).slice(0, 5)
 }
 
-const checklistAllDone = computed(() => {
+// ── Perioperatif: anestesi adaptif + gating WHO ──────────────────────────────
+// Bagian anestesi (wizard/monitoring/sub-Sign In) hanya muncul bila operasi
+// melibatkan anestesi: jenis = Umum (GA) ATAU slot Anestesiologis terisi.
+const hasAnesthesia = computed(() => {
   if (!selP.value) return false
-  return Object.values(selP.value.checklist).every(Boolean)
+  return selP.value.anestesi === 'Umum' || !!(selP.value.tim?.anestesi || '').trim()
 })
+
+// Prosedur vitrektomi → section retina di laporan (tanpa IOL).
+const isVitrek = computed(() => {
+  if (!selP.value) return false
+  return VITREK_RE.test(selP.value.prosedur || '')
+})
+
+// Pasien yang SUDAH rawat inap (bedah = sub-aktivitas) → disposisi kembali ke kamar
+// (LANJUT_RANAP/HCU), BUKAN Pulang/Rawat-Inap-baru. Dipakai utk dropdown adaptif.
+const isFromRanap = computed(() => selP.value?.jenisPelayanan === 'RANAP')
+
+// Sign In lengkap = identitas + sisi mata ditandai + consent + alergi dikonfirmasi
+// (+ anestesi siap HANYA bila hasAnesthesia). Topikal cukup tanpa "anestesi_siap".
+const signInComplete = computed(() => {
+  const s = selP.value?.signIn
+  if (!s) return false
+  const base = s.identitas && !!s.sisi_mata && s.consent && s.alergi_dikonfirmasi
+  return base && (!hasAnesthesia.value || s.anestesi_siap)
+})
+
+const timeOutComplete = computed(() => {
+  const s = selP.value?.timeOut
+  return s ? Object.values(s).every(Boolean) : false
+})
+
+const signOutComplete = computed(() => {
+  const s = selP.value?.signOut
+  return s ? Object.values(s).every(Boolean) : false
+})
+
+const aldreteTotal = computed(() => {
+  const a = selP.value?.aldrete
+  if (!a) return 0
+  return ['activity','respiration','circulation','consciousness','spo2']
+    .reduce((sum, k) => sum + Math.max(0, Math.min(2, Number(a[k]) || 0)), 0)
+})
+
+// Operasi butuh IOL (Phaco) tapi belum dicatat → peringatan (non-blok).
+const iolReminderNeeded = computed(() =>
+  !!selP.value?.isPhaco && (iolUsages.value?.length ?? 0) === 0)
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 function toast(type, msg) {
@@ -614,7 +701,19 @@ async function pickPt(p) {
         if (!s.catatanIntra) s.catatanIntra = notes.catatanIntra
         s.komplikasi = !!rec.has_complication
         if (rec.complication_detail && !s.komplikasiNote) s.komplikasiNote = rec.complication_detail
-        if (rec.post_op_disposition) s.postOpDisposition = rec.post_op_disposition
+        if (rec.post_op_disposition) {
+          // Normalisasi ke opsi yang valid bagi jenis pasien: dropdown RANAP hanya
+          // punya LANJUT_RANAP/HCU; RAJAL hanya PULANG/RAWAT_INAP. Cegah <select> blank
+          // bila kolom berisi nilai dari kategori lain (mis. data lama).
+          const ranapVals = ['LANJUT_RANAP', 'HCU']
+          const rajalVals = ['PULANG', 'RAWAT_INAP']
+          const valid = s.jenisPelayanan === 'RANAP' ? ranapVals : rajalVals
+          s.postOpDisposition = valid.includes(rec.post_op_disposition)
+            ? rec.post_op_disposition
+            : (s.jenisPelayanan === 'RANAP' ? 'LANJUT_RANAP' : 'PULANG')
+        }
+        // Hidrasi checklist WHO + Aldrete + vitrektomi dari JSONB record.
+        hydratePerioperative(rec)
       }
     } catch { /* record belum ada — abaikan */ }
   }
@@ -682,6 +781,11 @@ async function doMulaiOperasi() {
     showMulaiModal.value = false
     startTimerInterval()
     toast('s', 'Operasi dimulai — Timer Time In berjalan')
+    // Record kini ada → simpan Sign In (WHO gerbang 1) + muat IOL terpasang.
+    if (selP.value.recordId) {
+      if (signInComplete.value && canEditChecklist.value) await saveChecklistPhase('sign_in')
+      await loadIolUsages()
+    }
     await loadQueue()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memulai operasi')
@@ -757,16 +861,269 @@ async function doTimeOut() {
   }
 }
 
-// BHP
-const newBhp = ref({ item: '', jumlah: 1, satuan: 'Pcs' })
-const bhpOptions = ['BSS 500ml', 'Viscoelastic (OVD)', 'Spatula Sinskey', 'Spons Microsponge', 'Kapas Steril', 'Silk Suture 8-0', 'Vicryl 7-0', 'Cannula I/A', 'Keratome 2.75mm', 'Cystitome', 'Tampon Lensa']
-function addBhp() {
-  if (!selP.value || !newBhp.value.item) { toast('w', 'Pilih item BHP'); return }
-  selP.value.bhp.push({ ...newBhp.value })
-  newBhp.value = { item: '', jumlah: 1, satuan: 'Pcs' }
-  toast('s', 'BHP ditambahkan')
+// ── Perioperatif: simpan checklist WHO / laporan / Aldrete ────────────────────
+const busyChecklist = ref(false)
+
+// Simpan satu fase Safety Checklist. bypassReason != null → fase dilewati darurat.
+async function saveChecklistPhase(phase, bypassReason = null) {
+  if (!selP.value?.recordId) {
+    toast('w', 'Mulai operasi dulu sebelum mengisi checklist keselamatan')
+    return false
+  }
+  const map = { sign_in: 'signIn', time_out: 'timeOut', sign_out: 'signOut' }
+  const stateKey = map[phase]
+  busyChecklist.value = true
+  try {
+    await bedahApi.saveSafetyChecklist(selP.value.recordId, phase, { ...selP.value[stateKey] }, bypassReason)
+    selP.value[stateKey + 'Saved'] = true
+    if (bypassReason) selP.value.bypass = { ...selP.value.bypass, [phase]: bypassReason }
+    toast('s', bypassReason ? 'Fase dilewati (alasan tercatat)' : 'Checklist keselamatan disimpan')
+    return true
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan checklist')
+    return false
+  } finally {
+    busyChecklist.value = false
+  }
 }
-function removeBhp(idx) { selP.value?.bhp.splice(idx, 1) }
+
+// Lewati fase darurat — minta alasan dulu (prompt sederhana, audit di backend).
+async function bypassChecklistPhase(phase) {
+  const reason = window.prompt('Alasan melewati fase ini (darurat) — akan tercatat di audit:')
+  if (!reason || !reason.trim()) return
+  await saveChecklistPhase(phase, reason.trim())
+}
+
+// Simpan Laporan Operasi terstruktur (JSONB). Implan auto dari IOL di backend.
+// silent=true → dipakai sbg auto-save dari doFinalisasi (toast sukses ditekan,
+// hanya error yg ditampilkan). Return true/false agar pemanggil bisa abort.
+async function saveOperationReport(silent = false) {
+  if (!selP.value?.recordId) { toast('w', 'Laporan belum tersedia'); return false }
+  const p = selP.value
+  try {
+    await bedahApi.saveOperationReport(p.recordId, {
+      diagnosis_pre:        p.diagnosa || null,
+      diagnosis_post:       p.diagnosaPasca || p.diagnosa || '-',
+      procedure_name:       p.prosedur || null,
+      operator:             p.tim?.operator || null,
+      asisten:              [p.tim?.asisten1, p.tim?.asisten2].filter(Boolean),
+      anesthesiologist:     p.tim?.anestesi || null,
+      anesthesia_type:      p.anestesi || null,
+      findings:             p.temuanIntra || null,
+      technique:            p.teknikOp || null,
+      notes:                p.catatanIntra || null,
+      complication:         { ada: !!p.komplikasi, type: p.komplikasiTipe || null, management: p.komplikasiNote || null },
+      estimated_blood_loss: p.estimatedBloodLoss || null,
+      vitrectomy_details:   isVitrek.value ? { ...p.vitrek } : null,
+      post_op_disposition:  p.postOpDisposition || 'PULANG',
+    })
+    if (!silent) toast('s', 'Laporan operasi disimpan')
+    return true
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan laporan operasi')
+    return false
+  }
+}
+
+// Serialisasi checkbox Instruksi Pasca-Operasi → teks (1 instruksi per baris).
+// Hanya yang dicentang. Kosong → null (storePostOp BE wajib non-kosong, jadi skip).
+function buildPostOpInstructions() {
+  const checked = instruksiList.filter((_, i) => selP.value?.instruksi?.[i])
+  return checked.length ? checked.join('\n') : null
+}
+
+// Simpan instruksi pasca-op (checkbox) ke kolom post_op_instructions.
+// silent=true utk auto-save dari doFinalisasi. Return true/false.
+async function savePostOpInstructions(silent = false) {
+  if (!selP.value?.recordId) return false
+  const text = buildPostOpInstructions()
+  if (!text) return true   // tak ada instruksi dicentang → tak perlu simpan
+  if (savingInstruksi.value) return false
+  savingInstruksi.value = true
+  try {
+    await bedahApi.storePostOp(selP.value.recordId, { post_op_instructions: text })
+    if (!silent) toast('s', 'Instruksi pasca-operasi disimpan')
+    return true
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan instruksi pasca-operasi')
+    return false
+  } finally {
+    savingInstruksi.value = false
+  }
+}
+
+// Simpan skor pemulihan Aldrete (total dihitung server).
+async function saveRecovery() {
+  if (!selP.value?.recordId) { toast('w', 'Laporan belum tersedia'); return }
+  const p = selP.value
+  try {
+    await bedahApi.saveRecoveryAssessment(p.recordId, {
+      aldrete: { ...p.aldrete },
+      pain_score: Number(p.painScore) || 0,
+    })
+    p.recoverySaved = true
+    toast('s', `Skor pemulihan disimpan (Aldrete ${aldreteTotal.value}/10)`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan skor pemulihan')
+  }
+}
+
+// Hidrasi state checklist/recovery/vitrek dari record server (dipanggil saat load record).
+// Field laporan klinis (anestesi/diagnosa pasca/tim/instruksi) HANYA di-prefill bila
+// belum disentuh user di sesi ini (cegah polling/re-pick menimpa draft lokal).
+function hydratePerioperative(rec) {
+  if (!rec || !selP.value) return
+  const s = selP.value
+  const sc = rec.safety_checklist || {}
+  if (sc.sign_in)  { s.signIn  = { ...s.signIn,  ...sc.sign_in };  s.signInSaved = true }
+  if (sc.time_out) { s.timeOut = { ...s.timeOut, ...sc.time_out }; s.timeOutSaved = true }
+  if (sc.sign_out) { s.signOut = { ...s.signOut, ...sc.sign_out }; s.signOutSaved = true }
+  if (sc.bypass)   s.bypass = { ...sc.bypass }
+  const ra = rec.recovery_assessment || {}
+  if (ra.aldrete) { s.aldrete = { ...s.aldrete, ...ra.aldrete }; s.recoverySaved = true }
+  if (ra.pain_score != null) s.painScore = ra.pain_score
+  const or = rec.operation_report || {}
+  if (or.vitrectomy_details) s.vitrek = { ...s.vitrek, ...or.vitrectomy_details }
+  if (or.estimated_blood_loss) s.estimatedBloodLoss = or.estimated_blood_loss
+  // Jenis anestesi & diagnosa pasca-bedah & tim — pulihkan dari laporan tersimpan
+  // (cegah default 'Topikal' menyesatkan + hasAnesthesia salah → panel anestesi hilang).
+  if (or.anesthesia_type) s.anestesi = or.anesthesia_type
+  if (or.diagnosis_post && or.diagnosis_post !== '-' && !s.diagnosaPasca) s.diagnosaPasca = or.diagnosis_post
+  if (or.operator && !s.tim.operator) s.tim.operator = or.operator
+  if (or.anesthesiologist && !s.tim.anestesi) s.tim.anestesi = or.anesthesiologist
+  if (Array.isArray(or.asisten)) {
+    if (or.asisten[0] && !s.tim.asisten1) s.tim.asisten1 = or.asisten[0]
+    if (or.asisten[1] && !s.tim.asisten2) s.tim.asisten2 = or.asisten[1]
+  }
+  // Instruksi pasca-op (teks 1-per-baris di kolom) → kembalikan ke checkbox.
+  if (rec.post_op_instructions) {
+    const saved = String(rec.post_op_instructions).split('\n').map(t => t.trim()).filter(Boolean)
+    s.instruksi = instruksiList.map(inst => saved.includes(inst))
+  }
+}
+
+// ── KOMPONEN PAKET PASIEN (snapshot) — multi-paket (mis. Phaco + TIVA) ───────
+const visitPackages = ref([])         // [{ id, package_name, sell_price, total_base_price, discount_amount, items[] }]
+const vpProcOptions = ref([])         // {id, name, code} master tindakan (tarif metode bayar)
+const vpBhpOptions = ref([])          // {id, name, code} master BHP
+const vpBusy = ref(false)
+// Form "tambah komponen" per-kartu (key = snapshot id) → {type, itemId, qty}.
+const vpAddForm = reactive({})
+function vpForm(snapId) {
+  if (!vpAddForm[snapId]) vpAddForm[snapId] = { type: 'PROCEDURE', itemId: '', qty: 1 }
+  return vpAddForm[snapId]
+}
+// Pilihan paket utk "Tambah Paket" (semua paket aktif; dokter sudah pilih 1 di planning).
+const vpAllPackages = ref([])         // {id, name, code, package_type}
+const vpAddPkgId = ref('')
+
+const fmtRp2 = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
+
+async function loadVisitPackage(visitId) {
+  visitPackages.value = []
+  if (!visitId) return
+  try {
+    const { data } = await bedahApi.getVisitPackage(visitId)
+    // BE kini balikkan ARRAY paket (multi-paket per visit).
+    visitPackages.value = Array.isArray(data.data) ? data.data : (data.data ? [data.data] : [])
+  } catch { visitPackages.value = [] }
+}
+async function loadVpPickerOptions(visitId) {
+  // Tindakan: tarif per metode bayar pasien (sama dgn kasir/dokter).
+  try {
+    const { data } = await dokterApi.tarifTindakan(visitId)
+    vpProcOptions.value = (data.data ?? []).map((t) => ({ id: t.id, name: t.name, code: t.code }))
+  } catch { vpProcOptions.value = [] }
+  // BHP: master item.
+  try {
+    const { data } = await masterApi.bhp.list({ per_page: 500, active: 1 })
+    const rows = data.data?.data ?? data.data ?? []
+    vpBhpOptions.value = rows.map((b) => ({ id: b.id, name: b.name, code: b.code }))
+  } catch { vpBhpOptions.value = [] }
+  // Daftar paket untuk "Tambah Paket" (mis. paket anestesi TIVA di samping Phaco).
+  try {
+    const { data } = await tarifPaketApi.paket.list({ per_page: 500, is_active: 1 })
+    const rows = data.data?.data ?? data.data ?? []
+    vpAllPackages.value = rows.map((p) => ({ id: p.id, name: p.name, code: p.code, package_type: p.package_type }))
+  } catch { vpAllPackages.value = [] }
+}
+// Opsi item utk form-tambah satu kartu (berdasar type form kartu itu).
+function vpOptionsFor(snapId) {
+  return vpForm(snapId).type === 'BHP' ? vpBhpOptions.value : vpProcOptions.value
+}
+// Paket yang belum dipakai pasien (sembunyikan yang sudah ter-snapshot).
+const vpAvailablePackages = computed(() => {
+  const used = new Set(visitPackages.value.map((p) => p.source_surgery_package_id ?? p.id))
+  const usedNames = new Set(visitPackages.value.map((p) => p.package_name))
+  return vpAllPackages.value.filter((p) => !used.has(p.id) && !usedNames.has(p.name))
+})
+
+async function vpAddItem(snap) {
+  const visitId = selP.value?.visitId
+  const form = vpForm(snap.id)
+  if (!visitId || !form.itemId || vpBusy.value) { toast('w', 'Pilih item dulu'); return }
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.addVisitPackageItem(visitId, {
+      visit_surgery_package_id: snap.id,
+      item_type: form.type, item_id: form.itemId, quantity: Math.max(1, form.qty || 1),
+    })
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+    form.itemId = ''; form.qty = 1
+    toast('s', 'Komponen paket ditambah')
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal tambah') }
+  finally { vpBusy.value = false }
+}
+async function vpUpdateQty(item, qty) {
+  if (vpBusy.value) { if (selP.value?.visitId) await loadVisitPackage(selP.value.visitId); return }
+  const q = Math.max(1, parseInt(qty) || 1)
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.updateVisitPackageItem(item.id, { quantity: q })
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal ubah')
+    // Gagal simpan → muat ulang paket agar input qty snap kembali ke nilai server
+    // (tanpa ini input tampil nilai yg diketik padahal data tak berubah).
+    if (selP.value?.visitId) await loadVisitPackage(selP.value.visitId)
+  }
+  finally { vpBusy.value = false }
+}
+async function vpRemoveItem(item) {
+  if (vpBusy.value) return
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.removeVisitPackageItem(item.id)
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+    toast('s', 'Komponen dihapus')
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal hapus') }
+  finally { vpBusy.value = false }
+}
+
+// ── Tambah / hapus PAKET (multi-paket: Phaco + TIVA) ──
+async function vpAddPackage() {
+  const visitId = selP.value?.visitId
+  if (!visitId || !vpAddPkgId.value || vpBusy.value) { toast('w', 'Pilih paket dulu'); return }
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.addVisitPackage(visitId, vpAddPkgId.value)
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+    vpAddPkgId.value = ''
+    toast('s', 'Paket ditambahkan')
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal tambah paket') }
+  finally { vpBusy.value = false }
+}
+async function vpRemovePackage(snap) {
+  if (vpBusy.value) return
+  if (!confirm(`Hapus paket "${snap.package_name}" dari pasien ini?`)) return
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.removeVisitPackage(snap.id)
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+    toast('s', 'Paket dihapus')
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal hapus paket') }
+  finally { vpBusy.value = false }
+}
 
 // Obat Pasca Bedah — wajib pilih obat dari master (medication_id) supaya resep
 // bisa dikirim ke Farmasi (PrescriptionItem.medication_id NOT NULL).
@@ -859,6 +1216,26 @@ async function doFinalisasi() {
       toast('w', 'Laporan operasi belum ada — mulai & Time Out operasi dulu')
       return
     }
+    // recordId pasti ada sekarang (mis. di-resolve dr scheduleId) → pastikan state
+    // lokal punya recordId agar saveOperationReport/savePostOpInstructions jalan.
+    selP.value.recordId = recordId
+    // PENTING (anti data-loss): persist laporan operasi + instruksi pasca-op SEBELUM
+    // mengunci. Finalize hanya set finalized_at + routing pasien berdasar KOLOM
+    // post_op_disposition — jadi field tab Laporan (teknik/temuan/diagnosa pasca/
+    // disposisi/EBL/vitrek) & instruksi WAJIB tersimpan dulu, else hilang diam-diam
+    // + pasien bisa salah dirutekan. Abort finalize bila save gagal.
+    if (canEditReport.value) {
+      const okReport = await saveOperationReport(true)
+      if (!okReport) {
+        toast('w', 'Laporan gagal disimpan — finalisasi dibatalkan. Coba lagi.')
+        return
+      }
+      const okInstr = await savePostOpInstructions(true)
+      if (!okInstr) {
+        toast('w', 'Instruksi pasca-op gagal disimpan — finalisasi dibatalkan. Coba lagi.')
+        return
+      }
+    }
     // Backend: kunci laporan (finalized_at) + advance antrean ke Farmasi/Kasir.
     await bedahApi.finalizeRecord(recordId)
     selP.value.laporanFinalized = true
@@ -882,6 +1259,15 @@ const instruksiList = [
   'Kontrol ulang ke klinik sesuai jadwal',
   'Tidak berenang selama 4 minggu',
   'Segera kembali jika: nyeri hebat, penglihatan turun mendadak, atau mata merah',
+]
+
+// Komponen skor Aldrete (PACU) — tiap komponen 0-2, total ≥9 layak transfer.
+const aldreteComponents = [
+  { key: 'activity',      label: 'Aktivitas',     opts: ['Tidak gerak', '2 ekstremitas', '4 ekstremitas'] },
+  { key: 'respiration',   label: 'Pernapasan',    opts: ['Apnea', 'Dangkal/sesak', 'Napas dalam/batuk'] },
+  { key: 'circulation',   label: 'Sirkulasi (TD)', opts: ['>50% deviasi', '20-50% deviasi', '<20% deviasi'] },
+  { key: 'consciousness', label: 'Kesadaran',     opts: ['Tidak respons', 'Bangun saat dipanggil', 'Sadar penuh'] },
+  { key: 'spo2',          label: 'Saturasi O₂',   opts: ['<90% dgn O₂', '>90% dgn O₂', '>92% udara bebas'] },
 ]
 
 // ── Tim Bedah Combobox ─────────────────────────────────────────────────────────
@@ -1144,25 +1530,41 @@ function mulaiBack() { mulaiStep.value = 1 }
                 </div>
               </div>
 
-              <!-- Checklist Pra-Bedah -->
+              <!-- 🟢 SIGN IN (WHO gerbang 1 — sebelum induksi anestesi) -->
               <div class="bd-card">
                 <div class="bd-card-hd">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-                  Checklist Pra-Bedah
-                  <span :class="['bd-chk-badge', checklistAllDone ? 'bd-chk-ok' : 'bd-chk-no']">
-                    {{ checklistAllDone ? 'Lengkap' : `${Object.values(selP.checklist).filter(Boolean).length}/5` }}
+                  Sign In — Keselamatan Pra-Induksi
+                  <span :class="['bd-chk-badge', (signInComplete || selP.signInSaved) ? 'bd-chk-ok' : 'bd-chk-no']">
+                    {{ selP.signInSaved ? 'Tersimpan' : (signInComplete ? 'Lengkap' : 'Belum lengkap') }}
                   </span>
                 </div>
                 <div class="bd-card-bd">
-                  <label v-for="(item, key) in {
-                    identitas: 'Identitas pasien terverifikasi (gelang, KTP)',
-                    consent: 'Informed consent ditandatangani',
-                    lokasi: 'Lokasi operasi ditandai',
-                    pupil: 'Pupil dilebarkan (bila diperlukan)',
-                    alergi: 'Alergi dikonfirmasi & didokumentasikan',
-                  }" :key="key" class="bd-chk-item">
-                    <input type="checkbox" v-model="selP.checklist[key]" :disabled="selP.laporanFinalized" />
-                    <span :class="selP.checklist[key] && 'bd-chk-done'">{{ item }}</span>
+                  <p v-if="!canEditChecklist" class="bd-rolehint">Diisi oleh perawat/dokter.</p>
+                  <label class="bd-chk-item">
+                    <input type="checkbox" v-model="selP.signIn.identitas" :disabled="selP.laporanFinalized || !canEditChecklist" />
+                    <span :class="selP.signIn.identitas && 'bd-chk-done'">Identitas pasien terverifikasi (gelang, KTP)</span>
+                  </label>
+                  <div class="bd-field-row" style="margin:6px 0">
+                    <label class="bd-label">Sisi mata ditandai</label>
+                    <div class="bd-radios">
+                      <label class="bd-radio-lbl"><input type="radio" value="OD" v-model="selP.signIn.sisi_mata" :disabled="selP.laporanFinalized || !canEditChecklist" /> OD (kanan)</label>
+                      <label class="bd-radio-lbl"><input type="radio" value="OS" v-model="selP.signIn.sisi_mata" :disabled="selP.laporanFinalized || !canEditChecklist" /> OS (kiri)</label>
+                      <label class="bd-radio-lbl"><input type="radio" value="ODS" v-model="selP.signIn.sisi_mata" :disabled="selP.laporanFinalized || !canEditChecklist" /> ODS</label>
+                    </div>
+                  </div>
+                  <label class="bd-chk-item">
+                    <input type="checkbox" v-model="selP.signIn.consent" :disabled="selP.laporanFinalized || !canEditChecklist" />
+                    <span :class="selP.signIn.consent && 'bd-chk-done'">Informed consent ditandatangani</span>
+                  </label>
+                  <!-- Sub-bagian anestesi: hanya bila operasi melibatkan anestesi -->
+                  <label v-if="hasAnesthesia" class="bd-chk-item">
+                    <input type="checkbox" v-model="selP.signIn.anestesi_siap" :disabled="selP.laporanFinalized || !canEditChecklist" />
+                    <span :class="selP.signIn.anestesi_siap && 'bd-chk-done'">Mesin & obat anestesi diperiksa & siap</span>
+                  </label>
+                  <label class="bd-chk-item">
+                    <input type="checkbox" v-model="selP.signIn.alergi_dikonfirmasi" :disabled="selP.laporanFinalized || !canEditChecklist" />
+                    <span :class="selP.signIn.alergi_dikonfirmasi && 'bd-chk-done'">Alergi dikonfirmasi & didokumentasikan</span>
                   </label>
                 </div>
               </div>
@@ -1245,17 +1647,17 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
-            <!-- Mulai Operasi Button -->
+            <!-- Mulai Operasi Button (gating lunak: Sign In lengkap) -->
             <div v-if="selP.status === 'MENUNGGU'" class="bd-mulai-wrap">
               <button
-                :class="['bd-btn-mulai', !checklistAllDone && 'bd-btn-disabled']"
-                :disabled="!checklistAllDone"
+                :class="['bd-btn-mulai', !signInComplete && 'bd-btn-disabled']"
+                :disabled="!signInComplete"
                 @click="openMulaiModal"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Mulai Operasi
               </button>
-              <span v-if="!checklistAllDone" class="bd-mulai-hint">Lengkapi checklist pra-bedah terlebih dahulu</span>
+              <span v-if="!signInComplete" class="bd-mulai-hint">Lengkapi Sign In keselamatan terlebih dahulu</span>
             </div>
             <div v-else-if="selP.status === 'BERLANGSUNG'" class="bd-status-info bd-status-live">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -1294,11 +1696,11 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <button
                     v-if="selP.status === 'BERLANGSUNG' && !selP.timOut"
                     class="bd-btn-timeout"
-                    :disabled="busyOp"
+                    :disabled="busyOp || (!timeOutComplete && !selP.bypass?.time_out)"
                     @click="doTimeOut"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
-                    {{ busyOp ? 'Memproses…' : 'Time Out' }}
+                    {{ busyOp ? 'Memproses…' : 'Selesaikan Operasi (Time Out)' }}
                   </button>
                   <span v-else-if="selP.timOut" class="bd-timer-done-badge">Operasi Selesai · {{ timerDisplay }}</span>
                   <span v-else class="bd-timer-hint">Tekan "Mulai Operasi" di tab Pra-Bedah</span>
@@ -1306,43 +1708,108 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
+            <!-- 🟡 TIME OUT (WHO gerbang 2 — sebelum insisi) -->
+            <div v-if="selP.status === 'BERLANGSUNG' && !selP.timOut" class="bd-card bd-card-full bd-timeout-card">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+                Time Out — Konfirmasi Tim Sebelum Insisi
+                <span :class="['bd-chk-badge', timeOutComplete ? 'bd-chk-ok' : 'bd-chk-no']">
+                  {{ timeOutComplete ? 'Lengkap' : (selP.bypass?.time_out ? 'Dilewati' : 'Belum lengkap') }}
+                </span>
+              </div>
+              <div class="bd-card-bd">
+                <p v-if="!canEditChecklist" class="bd-rolehint">Dipimpin perawat sirkuler; tim mengonfirmasi bersama.</p>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.timeOut.tim_lengkap" :disabled="!canEditChecklist" /><span :class="selP.timeOut.tim_lengkap && 'bd-chk-done'">Seluruh tim hadir & menyebut nama + peran</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.timeOut.identitas_prosedur" :disabled="!canEditChecklist" /><span :class="selP.timeOut.identitas_prosedur && 'bd-chk-done'">Identitas pasien & prosedur dikonfirmasi lisan</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.timeOut.sisi_mata" :disabled="!canEditChecklist" /><span :class="selP.timeOut.sisi_mata && 'bd-chk-done'">Sisi mata yang dioperasi dikonfirmasi ({{ selP.signIn.sisi_mata || '—' }})</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.timeOut.antibiotik" :disabled="!canEditChecklist" /><span :class="selP.timeOut.antibiotik && 'bd-chk-done'">Antibiotik profilaksis diberikan / tidak diindikasikan</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.timeOut.iol_benar" :disabled="!canEditChecklist" /><span :class="selP.timeOut.iol_benar && 'bd-chk-done'">{{ selP.isPhaco ? 'IOL & power lensa dikonfirmasi benar' : 'Antisipasi kejadian kritis dibahas' }}</span></label>
+                <div class="bd-timeout-actions">
+                  <button class="bd-btn-add" :disabled="!canEditChecklist || !timeOutComplete || busyChecklist" @click="saveChecklistPhase('time_out')">{{ busyChecklist ? 'Menyimpan…' : 'Simpan Time Out' }}</button>
+                  <button class="bd-btn-bypass" :disabled="!canEditChecklist" @click="bypassChecklistPhase('time_out')">Lewati (darurat)</button>
+                  <span v-if="selP.bypass?.time_out" class="bd-bypass-note">⚠ Dilewati: {{ selP.bypass.time_out }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pengingat IOL belum dicatat (non-blok) -->
+            <div v-if="selP.status === 'BERLANGSUNG' && iolReminderNeeded" class="bd-iol-reminder">
+              ⚠ IOL belum dicatat untuk operasi katarak ini — catat lensa terpasang di bawah sebelum mengunci laporan.
+            </div>
+
             <div class="bd-2col">
-              <!-- BHP Terpakai (default dari paket pemeriksaan dokter) -->
+              <!-- Komponen Paket Pasien (snapshot) — edit Tindakan & BHP -->
               <div class="bd-card">
                 <div class="bd-card-hd">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-                  BHP Terpakai
-                  <span v-if="selP.paketBedah" class="bd-paket-source-pill">
-                    Paket Dokter: {{ selP.paketBedah.kode }} · {{ selP.paketBedah.nama }}
-                  </span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                  Komponen Paket Pasien
+                  <span v-if="visitPackages.length" class="bd-paket-source-pill">{{ visitPackages.length }} paket</span>
                 </div>
                 <div class="bd-card-bd">
-                  <table class="bd-tbl" v-if="selP.bhp.length">
-                    <thead><tr><th>No</th><th>Item</th><th>Jml</th><th>Satuan</th><th></th></tr></thead>
-                    <tbody>
-                      <tr v-for="(b, i) in selP.bhp" :key="`${b.item}-${i}`">
-                        <td>{{ i + 1 }}</td>
-                        <td>{{ b.item }}</td>
-                        <td>{{ b.jumlah }}</td>
-                        <td>{{ b.satuan }}</td>
-                        <td><button class="bd-del" @click="removeBhp(i)" :disabled="selP.laporanFinalized" aria-label="Hapus BHP" title="Hapus BHP">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div v-else class="bd-tbl-empty">Belum ada BHP dicatat</div>
+                  <div v-if="!visitPackages.length" class="bd-tbl-empty">Pasien ini belum memakai paket. Komponen aktual ditagih langsung di Kasir.</div>
 
-                  <div v-if="!selP.laporanFinalized" class="bd-bhp-add">
-                    <select class="bd-select bd-select-sm" v-model="newBhp.item">
-                      <option value="">-- Pilih Item --</option>
-                      <option v-for="opt in bhpOptions" :key="opt">{{ opt }}</option>
+                  <!-- Satu kartu per paket (mis. Phaco + TIVA) -->
+                  <div v-for="snap in visitPackages" :key="snap.id" class="bd-vp-pkg">
+                    <div class="bd-vp-pkg-hd">
+                      <span class="bd-paket-source-pill">{{ snap.package_name }}</span>
+                      <span v-if="snap.package_type" class="bd-vp-type-tag">{{ snap.package_type }}</span>
+                      <button v-if="!selP.laporanFinalized" class="bd-vp-pkg-del" @click="vpRemovePackage(snap)" :disabled="vpBusy" title="Hapus paket ini dari pasien">Hapus paket</button>
+                    </div>
+
+                    <!-- Ringkasan harga paket & diskon -->
+                    <div class="bd-vp-summary">
+                      <span>Harga paket: <b>{{ fmtRp2(snap.sell_price) }}</b></span>
+                      <span>Total komponen: <b>{{ fmtRp2(snap.total_base_price) }}</b></span>
+                      <span class="bd-vp-disc">Diskon: <b>{{ fmtRp2(snap.discount_amount) }}</b></span>
+                    </div>
+
+                    <table class="bd-tbl" v-if="snap.items.length">
+                      <thead><tr><th>Jenis</th><th>Item</th><th>Tarif</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
+                      <tbody>
+                        <tr v-for="it in snap.items" :key="it.id">
+                          <td><span class="bd-vp-type" :class="it.item_type.toLowerCase()">{{ it.item_type === 'PROCEDURE' ? 'Tindakan' : it.item_type }}</span></td>
+                          <td>{{ it.item_name }}</td>
+                          <td>{{ fmtRp2(it.unit_price) }}</td>
+                          <td>
+                            <input v-if="it.editable && !selP.laporanFinalized" type="number" min="1" class="bd-input bd-input-sm" style="width:54px"
+                              :value="it.quantity" @change="vpUpdateQty(it, $event.target.value)" :disabled="vpBusy" />
+                            <span v-else>{{ it.quantity }}</span>
+                          </td>
+                          <td>{{ fmtRp2(it.subtotal) }}</td>
+                          <td>
+                            <button v-if="it.editable && !selP.laporanFinalized" class="bd-del" @click="vpRemoveItem(it)" :disabled="vpBusy" title="Hapus komponen">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            </button>
+                            <span v-else class="bd-vp-lock" title="IOL diatur di panel IOL">—</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div v-else class="bd-tbl-empty">Belum ada komponen.</div>
+
+                    <div v-if="!selP.laporanFinalized" class="bd-bhp-add">
+                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).type" style="width:110px">
+                        <option value="PROCEDURE">Tindakan</option>
+                        <option value="BHP">BHP</option>
+                      </select>
+                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).itemId" style="flex:1">
+                        <option value="">-- Pilih {{ vpForm(snap.id).type === 'BHP' ? 'BHP' : 'Tindakan' }} --</option>
+                        <option v-for="o in vpOptionsFor(snap.id)" :key="o.id" :value="o.id">{{ o.code ? `[${o.code}] ` : '' }}{{ o.name }}</option>
+                      </select>
+                      <input type="number" class="bd-input bd-input-sm" v-model.number="vpForm(snap.id).qty" min="1" style="width:54px" />
+                      <button class="bd-btn-add" @click="vpAddItem(snap)" :disabled="vpBusy">+ Tambah</button>
+                    </div>
+                  </div>
+
+                  <p v-if="visitPackages.length" class="bd-vp-hint">Ubah/tambah/kurang Tindakan & BHP tiap paket. Memengaruhi diskon paket di kwitansi; tagihan komponen tetap dari pemakaian aktual.</p>
+
+                  <!-- Tambah paket (mis. paket anestesi TIVA di samping Phaco) -->
+                  <div v-if="!selP.laporanFinalized" class="bd-vp-addpkg">
+                    <select class="bd-select bd-select-sm" v-model="vpAddPkgId" style="flex:1">
+                      <option value="">-- Tambah paket ke pasien --</option>
+                      <option v-for="p in vpAvailablePackages" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}{{ p.package_type ? ` · ${p.package_type}` : '' }}</option>
                     </select>
-                    <input type="number" class="bd-input bd-input-sm" v-model.number="newBhp.jumlah" min="1" style="width:60px" />
-                    <select class="bd-select bd-select-sm" v-model="newBhp.satuan">
-                      <option>Pcs</option><option>Botol</option><option>Syringe</option><option>Lembar</option><option>Set</option>
-                    </select>
-                    <button class="bd-btn-add" @click="addBhp">+ Tambah</button>
+                    <button class="bd-btn-add" @click="vpAddPackage" :disabled="vpBusy || !vpAddPkgId">+ Tambah Paket</button>
                   </div>
                 </div>
               </div>
@@ -1457,6 +1924,29 @@ function mulaiBack() { mulaiStep.value = 1 }
                     </select>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- Anestesi lengkap (wizard RM 5.2 + monitoring durante) — hanya bila operasi
+                 pakai anestesi (GA / ada anestesiolog). Wizard mengatur RBAC sendiri
+                 (anestesi.read tampil, anestesi.write edit) & memuat panel monitoring di hal 3. -->
+            <div v-if="hasAnesthesia && selP.recordId" class="bd-card bd-card-full">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+                Laporan & Monitoring Anestesi {{ selP.anestesi }}{{ selP.tim.anestesi ? ' — ' + selP.tim.anestesi : '' }}
+              </div>
+              <div class="bd-card-bd">
+                <p v-if="!canEditAnesthesia" class="bd-rolehint">Laporan & monitoring anestesi diisi oleh dokter anestesi; tim lain hanya melihat.</p>
+                <AnesthesiaReportWizard
+                  :record-id="selP.recordId"
+                  :visit-id="selP.visitId"
+                  :disabled="selP.laporanFinalized"
+                />
+              </div>
+            </div>
+            <div v-else-if="hasAnesthesia && !selP.recordId" class="bd-card bd-card-full">
+              <div class="bd-card-bd">
+                <p class="bd-anes-hint">Mulai operasi terlebih dahulu untuk mengisi Laporan & Monitoring Anestesi.</p>
               </div>
             </div>
 
@@ -1657,30 +2147,69 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <span v-else class="bd-no-komplikasi">Tidak ada komplikasi</span>
                 </div>
                 <div class="bd-iol-field" style="margin-top:12px">
+                  <label class="bd-label">Estimasi Perdarahan (EBL)</label>
+                  <input class="bd-input" v-model="selP.estimatedBloodLoss" :disabled="selP.laporanFinalized" placeholder="mis. minimal / 5 cc" />
+                </div>
+
+                <!-- Detail vitrektomi — hanya bila prosedur vitrektomi -->
+                <div v-if="isVitrek" class="bd-iol-field" style="margin-top:12px">
+                  <label class="bd-label">Detail Vitrektomi</label>
+                  <div class="bd-iol-grid">
+                    <div class="bd-iol-field">
+                      <label class="bd-label">Tamponade</label>
+                      <select class="bd-select" v-model="selP.vitrek.tamponade" :disabled="selP.laporanFinalized">
+                        <option>None</option><option>SF6</option><option>C3F8</option><option>Silicone Oil</option><option>Air</option>
+                      </select>
+                    </div>
+                    <label class="bd-chk-item"><input type="checkbox" v-model="selP.vitrek.endolaser" :disabled="selP.laporanFinalized" /><span>Endolaser</span></label>
+                    <label class="bd-chk-item"><input type="checkbox" v-model="selP.vitrek.membrane_peeling" :disabled="selP.laporanFinalized" /><span>Membrane peeling</span></label>
+                  </div>
+                </div>
+
+                <div class="bd-iol-field" style="margin-top:12px">
                   <label class="bd-label">Disposisi Pasca-Operasi</label>
-                  <select class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
+                  <!-- Adaptif: pasien dari RANAP kembali ke kamar (lanjut rawatan/HCU);
+                       pasien rawat jalan/pre-op → Pulang atau Rawat Inap baru. -->
+                  <select v-if="isFromRanap" class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
+                    <option value="LANJUT_RANAP">Kembali ke Rawat Inap (lanjut rawatan di kamar)</option>
+                    <option value="HCU">Pindah ke HCU (perawatan intensif)</option>
+                  </select>
+                  <select v-else class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
                     <option value="PULANG">Pulang (lanjut ke Kasir)</option>
                     <option value="RAWAT_INAP">Rawat Inap (ke papan Menunggu Kamar)</option>
                   </select>
                   <span v-if="selP.postOpDisposition === 'RAWAT_INAP'" class="bd-disp-hint">
                     Pasien akan masuk papan "Menunggu Kamar" Rawat Inap setelah laporan dikunci. Petugas ranap memilih bed.
                   </span>
+                  <span v-else-if="selP.postOpDisposition === 'LANJUT_RANAP'" class="bd-disp-hint">
+                    Pasien kembali ke kamar rawat inap (bed masih ditahan) untuk melanjutkan rawatan.
+                  </span>
+                  <span v-else-if="selP.postOpDisposition === 'HCU'" class="bd-disp-hint">
+                    Pasien kembali ke alur rawat inap & ditandai butuh HCU. Petugas RANAP memindahkan ke bed HCU (transfer bed).
+                  </span>
                 </div>
               </div>
             </div>
 
-            <div v-if="selP.isPhaco && selP.iolDipasang.merk" class="bd-card bd-card-full">
+            <!-- Implan IOL terpasang — auto dari iolUsages (sumber kebenaran, masuk laporan PAB) -->
+            <div v-if="iolUsages.length" class="bd-card bd-card-full">
               <div class="bd-card-hd">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-                IOL Terpasang
+                Implan IOL Terpasang (otomatis masuk laporan)
               </div>
               <div class="bd-card-bd">
-                <div class="bd-iol-summary">
-                  <div><span class="bd-label">Merk</span><span>{{ selP.iolDipasang.merk }}</span></div>
-                  <div><span class="bd-label">Power</span><span>{{ selP.iolDipasang.power }} D</span></div>
-                  <div><span class="bd-label">Series/Lot</span><span>{{ selP.iolDipasang.series }}</span></div>
-                  <div><span class="bd-label">Tipe</span><span>{{ selP.iolDipasang.tipe }}</span></div>
-                </div>
+                <table class="bd-tbl">
+                  <thead><tr><th>Mata</th><th>Merk / Model</th><th class="num">Power</th><th>Lot</th><th>Serial</th></tr></thead>
+                  <tbody>
+                    <tr v-for="u in iolUsages" :key="u.id">
+                      <td>{{ u.eye_side }}</td>
+                      <td>{{ u.brand }} {{ u.model }}</td>
+                      <td class="num">{{ u.power }} D</td>
+                      <td>{{ u.lot_number || '—' }}</td>
+                      <td>{{ u.serial_number || '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
@@ -1691,8 +2220,16 @@ function mulaiBack() { mulaiStep.value = 1 }
               </button>
               <button
                 v-if="!selP.laporanFinalized"
+                class="bd-btn-add"
+                :disabled="!selP.recordId || !canEditReport"
+                @click="saveOperationReport(false)"
+              >
+                Simpan Laporan
+              </button>
+              <button
+                v-if="!selP.laporanFinalized"
                 class="bd-btn-finalisasi"
-                :disabled="!selP.timOut || busyOp"
+                :disabled="!selP.timOut || busyOp || !canEditReport"
                 :title="!selP.timOut ? 'Lakukan Time Out dulu di tab Intraoperatif' : ''"
                 @click="showFinalModal = true"
               >
@@ -1705,6 +2242,64 @@ function mulaiBack() { mulaiStep.value = 1 }
 
           <!-- ── TAB 4: Pasca-Bedah ────────────────────────────── -->
           <div v-else-if="tab === 'pascabedah'" class="bd-pascabedah">
+            <!-- 🔴 SIGN OUT (WHO gerbang 3 — sebelum keluar OK) -->
+            <div class="bd-card bd-card-full bd-signout-card">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                Sign Out — Sebelum Pasien Keluar Kamar Operasi
+                <span :class="['bd-chk-badge', signOutComplete ? 'bd-chk-ok' : 'bd-chk-no']">
+                  {{ signOutComplete ? 'Lengkap' : (selP.bypass?.sign_out ? 'Dilewati' : 'Belum lengkap') }}
+                </span>
+              </div>
+              <div class="bd-card-bd">
+                <p v-if="!canEditChecklist" class="bd-rolehint">Dipimpin perawat sirkuler.</p>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.signOut.prosedur_dikonfirmasi" :disabled="!canEditChecklist" /><span :class="selP.signOut.prosedur_dikonfirmasi && 'bd-chk-done'">Nama prosedur yang dikerjakan dikonfirmasi</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.signOut.hitung_kasa" :disabled="!canEditChecklist" /><span :class="selP.signOut.hitung_kasa && 'bd-chk-done'">Hitung kasa lengkap & cocok</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.signOut.hitung_instrumen" :disabled="!canEditChecklist" /><span :class="selP.signOut.hitung_instrumen && 'bd-chk-done'">Hitung instrumen & jarum lengkap & cocok</span></label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.signOut.spesimen" :disabled="!canEditChecklist" /><span :class="selP.signOut.spesimen && 'bd-chk-done'">Spesimen dilabeli (nama pasien) — atau tidak ada</span></label>
+                <label class="bd-chk-item">
+                  <input type="checkbox" v-model="selP.signOut.iol_dicatat" :disabled="!canEditChecklist" />
+                  <span :class="selP.signOut.iol_dicatat && 'bd-chk-done'">Nomor seri IOL/implan dicatat ({{ iolUsages.length }} lensa) — atau tidak ada implan</span>
+                </label>
+                <label class="bd-chk-item"><input type="checkbox" v-model="selP.signOut.rencana_pemulihan" :disabled="!canEditChecklist" /><span :class="selP.signOut.rencana_pemulihan && 'bd-chk-done'">Rencana pemulihan & masalah utama disampaikan ke tim PACU</span></label>
+                <div v-if="selP.isPhaco && !iolUsages.length" class="bd-iol-reminder" style="margin-top:8px">⚠ Operasi katarak tanpa IOL tercatat — pastikan lensa dicatat di tab Intraoperatif.</div>
+                <div class="bd-timeout-actions">
+                  <button class="bd-btn-add" :disabled="!canEditChecklist || !signOutComplete || busyChecklist" @click="saveChecklistPhase('sign_out')">{{ busyChecklist ? 'Menyimpan…' : 'Simpan Sign Out' }}</button>
+                  <button class="bd-btn-bypass" :disabled="!canEditChecklist" @click="bypassChecklistPhase('sign_out')">Lewati (darurat)</button>
+                  <span v-if="selP.bypass?.sign_out" class="bd-bypass-note">⚠ Dilewati: {{ selP.bypass.sign_out }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Skor Pemulihan Aldrete (PACU) -->
+            <div class="bd-card bd-card-full">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                Skor Pemulihan (Aldrete)
+                <span :class="['bd-chk-badge', aldreteTotal >= 9 ? 'bd-chk-ok' : 'bd-chk-no']">{{ aldreteTotal }}/10 {{ aldreteTotal >= 9 ? '· Layak transfer' : '' }}</span>
+              </div>
+              <div class="bd-card-bd">
+                <div class="bd-aldrete-grid">
+                  <div v-for="cmp in aldreteComponents" :key="cmp.key" class="bd-iol-field">
+                    <label class="bd-label">{{ cmp.label }}</label>
+                    <select class="bd-select" v-model.number="selP.aldrete[cmp.key]" :disabled="selP.laporanFinalized">
+                      <option :value="0">0 — {{ cmp.opts[0] }}</option>
+                      <option :value="1">1 — {{ cmp.opts[1] }}</option>
+                      <option :value="2">2 — {{ cmp.opts[2] }}</option>
+                    </select>
+                  </div>
+                  <div class="bd-iol-field">
+                    <label class="bd-label">Skala Nyeri (0–10)</label>
+                    <input type="number" min="0" max="10" class="bd-input" v-model.number="selP.painScore" :disabled="selP.laporanFinalized" />
+                  </div>
+                </div>
+                <div class="bd-timeout-actions">
+                  <button class="bd-btn-add" :disabled="selP.laporanFinalized || !selP.recordId" @click="saveRecovery">Simpan Skor Pemulihan</button>
+                  <span v-if="selP.recoverySaved" class="bd-bypass-note" style="color:var(--bd-ok,#16a34a)">✓ Tersimpan</span>
+                </div>
+              </div>
+            </div>
+
             <div class="bd-2col">
               <!-- Instruksi Post-Op -->
               <div class="bd-card">
@@ -1714,9 +2309,16 @@ function mulaiBack() { mulaiStep.value = 1 }
                 </div>
                 <div class="bd-card-bd">
                   <label v-for="(inst, i) in instruksiList" :key="i" class="bd-chk-item">
-                    <input type="checkbox" v-model="selP.instruksi[i]" />
+                    <input type="checkbox" v-model="selP.instruksi[i]" :disabled="selP.laporanFinalized" />
                     <span :class="selP.instruksi[i] && 'bd-chk-done'">{{ inst }}</span>
                   </label>
+                  <div v-if="!selP.laporanFinalized" class="bd-timeout-actions">
+                    <button class="bd-btn-add" :disabled="!selP.recordId || savingInstruksi" @click="savePostOpInstructions(false)">
+                      {{ savingInstruksi ? 'Menyimpan…' : 'Simpan Instruksi' }}
+                    </button>
+                    <span v-if="!selP.recordId" class="bd-disp-hint">Mulai operasi dulu untuk menyimpan instruksi.</span>
+                  </div>
+                  <p v-else class="bd-rolehint">Instruksi tersimpan & dikunci bersama laporan.</p>
                 </div>
               </div>
 
@@ -2066,6 +2668,28 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-combo-role { font-size: 10px; color: var(--tu); }
 .bd-combo-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--th); font-style: italic; }
 
+/* Komponen Paket Pasien (snapshot) */
+.bd-vp-summary { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--tm); padding: 8px 10px; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; margin-bottom: 6px; }
+.bd-vp-summary b { color: var(--td); }
+.bd-vp-disc b { color: var(--ga); }
+.bd-vp-hint { font-size: 11px; color: var(--tu); margin: 0 0 8px; line-height: 1.45; }
+.bd-vp-type { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 5px; }
+.bd-vp-type.procedure { background: var(--ib); color: var(--it); }
+.bd-vp-type.bhp { background: var(--wb); color: var(--wt); }
+.bd-vp-type.iol { background: var(--gl); color: var(--td); }
+.bd-vp-lock { color: var(--tu); }
+
+/* Multi-paket: satu kartu per paket (Phaco + TIVA) */
+.bd-vp-pkg { border: 1px solid var(--gb); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; background: var(--bc); }
+.bd-vp-pkg:last-of-type { margin-bottom: 8px; }
+.bd-vp-pkg-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.bd-vp-pkg-hd .bd-paket-source-pill { margin-left: 0; }
+.bd-vp-type-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .3px; padding: 2px 7px; border-radius: 5px; background: var(--bs); color: var(--tu); border: 1px solid var(--gb); }
+.bd-vp-pkg-del { margin-left: auto; font-size: 11px; font-weight: 600; padding: 4px 10px; border: 1px solid var(--eb); color: var(--et); background: transparent; border-radius: 6px; cursor: pointer; }
+.bd-vp-pkg-del:hover:not(:disabled) { background: var(--eb); }
+.bd-vp-pkg-del:disabled { opacity: .5; cursor: not-allowed; }
+.bd-vp-addpkg { display: flex; gap: 8px; align-items: center; margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--gb); }
+
 /* Paket source pill (di header BHP Terpakai) */
 .bd-paket-source-pill { margin-left: auto; font-size: 10.5px; font-weight: 600; padding: 3px 9px; background: var(--gl); border: 1px solid var(--ga); color: var(--td); border-radius: 20px; }
 
@@ -2079,7 +2703,6 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-cat-pill { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 600; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
 .bd-cat-pill[data-cat="CSSD"]             { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
 .bd-cat-pill[data-cat="INSTRUMENT_SET"]   { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
-.bd-cat-pill[data-cat="MEDICAL_SUPPLIES"] { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
 .bd-cat-pill[data-cat="MEDICAL_BHP"]      { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
 .bd-cat-pill[data-cat="MICROSCOPE"]       { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
 .bd-cat-pill[data-cat="PHACO_MACHINE"]    { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
@@ -2187,6 +2810,18 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-no-komplikasi { font-size: 12px; color: var(--st); background: var(--sb); padding: 6px 12px; border-radius: 6px; display: inline-block; }
 .bd-disp-hint { display: block; margin-top: 6px; font-size: 12px; color: #1763d4; }
 .bd-komplikasi { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+/* Perioperatif (WHO checklist + Aldrete) */
+.bd-rolehint { font-size: 12px; color: var(--tu); font-style: italic; margin: 0 0 8px; }
+.bd-anes-hint { font-size: 12px; color: var(--tm); margin: 0; }
+.bd-timeout-card { border-left: 3px solid #eab308; }
+.bd-signout-card { border-left: 3px solid #ef4444; }
+.bd-timeout-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.bd-btn-bypass { padding: 6px 12px; background: transparent; border: 1px dashed var(--gb); color: var(--tu); border-radius: 8px; font-size: 12px; cursor: pointer; }
+.bd-btn-bypass:disabled { opacity: .5; cursor: not-allowed; }
+.bd-bypass-note { font-size: 12px; color: #b45309; }
+.bd-iol-reminder { background: #fef3c7; border: 1px solid #fcd34d; color: #92400e; font-size: 12px; padding: 8px 12px; border-radius: 8px; margin: 12px 0; }
+.bd-aldrete-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 720px) { .bd-aldrete-grid { grid-template-columns: 1fr; } }
 .bd-laporan-actions { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
 .bd-btn-print { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--bs); border: 1px solid var(--gb); color: var(--tm); border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .bd-btn-print svg { width: 14px; height: 14px; }

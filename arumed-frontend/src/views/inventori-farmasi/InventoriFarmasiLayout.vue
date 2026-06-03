@@ -4,7 +4,8 @@
  *
  * Mirror pattern MasterDataLayout (vertical tabs nav berkelompok + RouterView).
  * Menu (lihat `allTabs`): Request dari Unit, Master Item (Obat/BHP/IOL/Alat Medis),
- * Penentuan Harga, dan Pengadaan (Supplier/Pembelian/Penerimaan) + inbox notif.
+ * dan Pengadaan (Supplier/Pembelian/Penerimaan) + inbox notif.
+ * Harga JUAL dikelola di Buku Tarif (modul Tarif & Paket), bukan di sini.
  * View Obat/BHP/IOL masih reside di views/master-data/ supaya tidak memutus import
  * path internal — router yang mengarahkan ke sini, layout yang konsumsi.
  */
@@ -22,11 +23,11 @@ const showStockSidebar = computed(() => route.path.startsWith('/inventori-farmas
 
 const allTabs = [
   { to: '/inventori-farmasi/request-unit', label: 'Request dari Unit', icon: 'request', section: 'Operasional', perm: 'request_unit.read' },
+  { to: '/inventori-farmasi/stock-opname', label: 'Stock Opname',      icon: 'opname',  section: 'Operasional', perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/obat',       label: 'Obat',              icon: 'pill',     section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/bhp',        label: 'BHP',               icon: 'box',      section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/iol',        label: 'IOL',               icon: 'lens',     section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/alat-medis', label: 'Alat Medis',        icon: 'machine',  section: 'Master Item',  perm: 'inventori_farmasi.read' },
-  { to: '/inventori-farmasi/harga',      label: 'Penentuan Harga',   icon: 'price',    section: 'Harga',        perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/supplier',   label: 'Supplier',          icon: 'truck',    section: 'Pengadaan',    perm: 'supplier.read' },
   { to: '/inventori-farmasi/pembelian',  label: 'Pembelian (PO)',    icon: 'cart',     section: 'Pengadaan',    perm: 'pembelian.read' },
   { to: '/inventori-farmasi/penerimaan', label: 'Penerimaan',        icon: 'inbox',    section: 'Pengadaan',    perm: 'penerimaan.read' },
@@ -192,6 +193,7 @@ onBeforeUnmount(() => {
             <svg v-else-if="item.icon === 'cart'" viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
             <svg v-else-if="item.icon === 'inbox'" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
             <svg v-else-if="item.icon === 'request'" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="13" y2="18"/></svg>
+            <svg v-else-if="item.icon === 'opname'" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             <span>{{ item.label }}</span>
           </RouterLink>
         </template>

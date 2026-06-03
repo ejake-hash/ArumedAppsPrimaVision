@@ -22,6 +22,7 @@ class MedicalResume extends Model
         'resume_a',
         'resume_p',
         'penunjang_results',
+        'rmrj_data',
         'is_editable',
         'is_finalized',
         'finalized_at',
@@ -31,6 +32,7 @@ class MedicalResume extends Model
 
     protected $casts = [
         'penunjang_results' => 'array',
+        'rmrj_data'         => 'array',
         'is_editable'       => 'boolean',
         'is_finalized'      => 'boolean',
         'finalized_at'      => 'datetime',

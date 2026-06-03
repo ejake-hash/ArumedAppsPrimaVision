@@ -188,36 +188,45 @@ class UserController extends Controller
         ]);
     }
 
-    public function csvTemplate(): \Symfony\Component\HttpFoundation\StreamedResponse
+    // GET /rbac/users/csv-template  (?format=xlsx untuk Excel)
+    public function csvTemplate(Request $request): \Symfony\Component\HttpFoundation\Response
     {
-        $csv = $this->service->csvTemplate();
-
-        return response()->streamDownload(
-            fn () => print($csv),
-            'template-pengguna.csv',
-            ['Content-Type' => 'text/csv'],
-        );
+        return $this->csvOrXlsx($request, $this->service->csvTemplate(), 'template-pengguna', 'Pengguna');
     }
 
-    public function exportCsv(): \Symfony\Component\HttpFoundation\StreamedResponse
+    // GET /rbac/users/export  (?format=xlsx untuk Excel)
+    public function exportCsv(Request $request): \Symfony\Component\HttpFoundation\Response
     {
-        $csv = $this->service->exportCsv();
+        return $this->csvOrXlsx($request, $this->service->exportCsv(), 'data-pengguna-' . now()->format('Ymd-His'), 'Pengguna');
+    }
 
-        return response()->streamDownload(
-            fn () => print($csv),
-            'data-pengguna-' . now()->format('Ymd-His') . '.csv',
-            ['Content-Type' => 'text/csv'],
-        );
+    /** Kirim CSV string sbg file CSV (default) atau XLSX bila ?format=xlsx. */
+    private function csvOrXlsx(Request $request, string $csv, string $baseName, string $sheetTitle): \Symfony\Component\HttpFoundation\Response
+    {
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
+        ]);
     }
 
     public function importCsv(Request $request): JsonResponse
     {
         $request->validate([
-            'file' => 'required|file|mimes:csv,txt|max:2048',
+            'file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120',
         ]);
 
         try {
-            $result = $this->service->importCsv($request->file('file')->get());
+            // CSV/XLSX/ODS → CSV string ternormalisasi → jalur importer CSV existing.
+            $result = $this->service->importCsv(\App\Support\SpreadsheetHelper::fileToCsv($request->file('file')));
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false, 'data' => null,

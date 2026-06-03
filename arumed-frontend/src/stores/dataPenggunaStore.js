@@ -169,21 +169,45 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     URL.revokeObjectURL(url)
   }
 
-  async function downloadUserTemplate() {
-    const res = await userApi.csvTemplate()
-    triggerDownload(res.data, 'template-pengguna.csv')
+  // format: 'csv' (default) | 'xlsx' — backend menyalurkan ke csvOrXlsx().
+  async function downloadUserTemplate(format = 'csv') {
+    const isXlsx = format === 'xlsx'
+    const res = await userApi.csvTemplate(isXlsx ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-pengguna.${isXlsx ? 'xlsx' : 'csv'}`)
   }
 
-  async function exportUsersCsv() {
-    const res = await userApi.exportCsv()
+  async function exportUsersCsv(format = 'csv') {
+    const isXlsx = format === 'xlsx'
+    const res = await userApi.exportCsv(isXlsx ? 'xlsx' : undefined)
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(res.data, `data-pengguna-${today}.csv`)
+    triggerDownload(res.data, `data-pengguna-${today}.${isXlsx ? 'xlsx' : 'csv'}`)
   }
 
   async function importUsersCsv(file) {
     const { data } = await userApi.importCsv(file)
     await fetchUsers()
     return data?.data ?? data    // { created, skipped, errors }
+  }
+
+  // ─── CSV / Excel: Daftar Role ──────────────────────────────────────────────
+  // format: 'csv' (default) | 'xlsx' — backend menyalurkan ke csvOrXlsx().
+  async function downloadRoleTemplate(format = 'csv') {
+    const isXlsx = format === 'xlsx'
+    const res = await roleApi.csvTemplate(isXlsx ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-role.${isXlsx ? 'xlsx' : 'csv'}`)
+  }
+
+  async function exportRolesCsv(format = 'csv') {
+    const isXlsx = format === 'xlsx'
+    const res = await roleApi.exportCsv(isXlsx ? 'xlsx' : undefined)
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `data-role-${today}.${isXlsx ? 'xlsx' : 'csv'}`)
+  }
+
+  async function importRolesCsv(file) {
+    const { data } = await roleApi.importCsv(file)
+    await fetchRoles()
+    return data?.data ?? data    // { created, updated, skipped, errors }
   }
 
   // ─── Initial load (load semua untuk halaman manajemen) ──────────────────
@@ -206,6 +230,7 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     fetchRoles, createRole, updateRole, deleteRole, syncRolePermissions,
     fetchUsers, createUser, updateUser, deleteUser, toggleUserAktif, resetUserPassword, resetUserPin,
     downloadUserTemplate, exportUsersCsv, importUsersCsv,
+    downloadRoleTemplate, exportRolesCsv, importRolesCsv,
     loadAll,
   }
 })

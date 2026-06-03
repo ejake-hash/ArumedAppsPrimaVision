@@ -358,13 +358,13 @@ async function openRequestFromPasien(p) {
 // Catatan tunggal untuk seluruh permintaan (1 textbox di footer).
 const requestNote = ref('')
 
-// Hanya 3 kategori yang DIMINTA ke gudang. CSSD & Set Instrumen tidak diminta
+// Kategori BHP yang DIMINTA ke gudang. CSSD & Set Instrumen tidak diminta
 // (sudah tersedia di kamar bedah) — tapi tetap masuk kwitansi via paket
 // (lihat KasirService::buildPaketRoomBhpLines). MEDICAL_BHP = "BHP".
-const REQUESTABLE_BHP_CATEGORIES = ['MEDICAL_SUPPLIES', 'MEDICAL_BHP']
+// (Kategori MEDICAL_SUPPLIES dihapus 2026-06-03 → digabung ke MEDICAL_BHP.)
+const REQUESTABLE_BHP_CATEGORIES = ['MEDICAL_BHP']
 const CATEGORY_META = {
-  MEDICAL_SUPPLIES: 'Medical Supplies',
-  MEDICAL_BHP:      'BHP',
+  MEDICAL_BHP: 'BHP',
 }
 const catLabel = (c) => CATEGORY_META[c] ?? (c || 'Lainnya')
 
@@ -388,7 +388,7 @@ const previewEmpty = computed(() =>
   preview.value && !requestableBhp.value.length && !iolSendable.value.length
 )
 
-// Section per kategori (Medical Supplies, BHP) + section IOL. Hanya item yang diminta.
+// Section per kategori (BHP) + section IOL. Hanya item yang diminta.
 const groupedSections = computed(() => {
   if (!preview.value) return []
   const sections = []
@@ -404,7 +404,7 @@ const groupedSections = computed(() => {
 
 async function submitRequest() {
   if (!preview.value) return
-  // Hanya kategori yang boleh diminta (Medical Supplies + BHP). CSSD/Instrumen dikecualikan.
+  // Hanya kategori BHP yang boleh diminta. CSSD/Instrumen dikecualikan.
   const bhp = requestableBhp.value
   const iol = iolSendable.value
   if (!bhp.length && !iol.length) {
@@ -638,9 +638,9 @@ async function submitRequest() {
           <template v-else-if="preview">
             <div v-if="previewEmpty" class="bdt-empty">Paket ini tidak punya komponen BHP/IOL (dengan master stok) untuk diminta ke gudang.</div>
 
-            <p class="req-hint">Hanya <strong>Medical Supplies</strong>, <strong>BHP</strong> &amp; <strong>IOL</strong> yang diminta ke gudang. CSSD &amp; Set Instrumen sudah tersedia di kamar bedah (tetap masuk kwitansi via paket).</p>
+            <p class="req-hint">Hanya <strong>BHP</strong> &amp; <strong>IOL</strong> yang diminta ke gudang. CSSD &amp; Set Instrumen sudah tersedia di kamar bedah (tetap masuk kwitansi via paket).</p>
 
-            <!-- Section per kategori yang diminta: Medical Supplies, BHP, IOL -->
+            <!-- Section per kategori yang diminta: BHP, IOL -->
             <div v-for="sec in groupedSections" :key="sec.key" class="sec">
               <div class="sec-hd">
                 {{ sec.label }}

@@ -349,7 +349,16 @@ class RmeAggregatorService
                 'time_out'    => $rec->time_out?->format('H:i'),
                 'has_complication' => $rec->has_complication,
                 // Ringkasan teks (backward-compat untuk tabel).
-                'iol_used'    => $rec->iolUsages->map(fn ($u) => trim(($u->brand ?? '') . ' ' . ($u->model ?? '') . ' ' . ($u->power ? "+{$u->power}D" : '') . ' (' . strtoupper($u->eye_side ?? '') . ')'))->all(),
+                // NB: power 0 (plano) tetap ditampilkan; hanya null/'' yang disembunyikan.
+                // Daya negatif (minus) jangan dipaksa "+".
+                'iol_used'    => $rec->iolUsages->map(function ($u) {
+                    $power = $u->power;
+                    $powerStr = ($power === null || $power === '')
+                        ? ''
+                        : ((float) $power >= 0 ? "+{$power}D" : "{$power}D");
+
+                    return trim(($u->brand ?? '') . ' ' . ($u->model ?? '') . ' ' . $powerStr . ' (' . strtoupper($u->eye_side ?? '') . ')');
+                })->all(),
                 // Detail terstruktur untuk traceability implan (serial/lot/gtin wajib regulasi).
                 'iol_details' => $rec->iolUsages->map(fn ($u) => [
                     'eye_side'      => $u->eye_side,

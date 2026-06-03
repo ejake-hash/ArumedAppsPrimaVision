@@ -592,13 +592,20 @@ class FarmasiService
         $page = $query->orderBy('medications.name')->paginate($filters['per_page'] ?? 25);
         $page->getCollection()->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
 
-        // Lampirkan HJA (Harga Jual Apotek) dari modul Penentuan Harga — dipakai
-        // POS penjualan obat bebas untuk preview harga/total di UI.
+        // Lampirkan harga jual obat dari Buku Tarif (medication_tariffs, baris insurer
+        // UMUM = harga tunggal) — dipakai POS penjualan obat bebas untuk preview
+        // harga/total di UI. Field tetap bernama `hja` agar FE POS tak berubah.
         $ids = $page->getCollection()->pluck('id')->all();
         if (! empty($ids)) {
-            $hjaMap = \App\Models\InventoryPrice::where('item_type', 'MEDICATION')
-                ->whereIn('item_id', $ids)
-                ->pluck('hja', 'item_id');
+            $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+            $hjaMap = $umumId
+                ? DB::table('medication_tariffs')
+                    ->where('insurer_id', $umumId)
+                    ->whereIn('medication_id', $ids)
+                    ->where('is_active', true)
+                    ->whereNull('deleted_at')
+                    ->pluck('price', 'medication_id')
+                : collect();
             $page->getCollection()->each(fn ($m) => $m->hja = isset($hjaMap[$m->id]) ? (float) $hjaMap[$m->id] : null);
         }
 

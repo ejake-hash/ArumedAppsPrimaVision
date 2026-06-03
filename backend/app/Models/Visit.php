@@ -189,6 +189,26 @@ class Visit extends Model
         return $this->hasOne(DoctorExamination::class);
     }
 
+    /**
+     * Semua snapshot paket pasien (bedah/pemeriksaan/anestesi) untuk visit ini.
+     * Satu visit boleh punya >1 paket (mis. Phaco + TIVA) — dasar diskon paket
+     * per-paket di kwitansi.
+     */
+    public function surgeryPackageSnapshots(): HasMany
+    {
+        return $this->hasMany(VisitSurgeryPackage::class);
+    }
+
+    /**
+     * Snapshot paket TUNGGAL (terbaru) — backward-compat alur lama 1 paket/visit.
+     * Builder kasir & UI multi-paket memakai surgeryPackageSnapshots() (jamak).
+     * PG tidak punya MAX(uuid) → pakai orderByDesc(created_at), bukan latestOfMany().
+     */
+    public function surgeryPackageSnapshot(): HasOne
+    {
+        return $this->hasOne(VisitSurgeryPackage::class)->orderByDesc('created_at');
+    }
+
     public function visitServices(): HasMany
     {
         return $this->hasMany(VisitService::class);

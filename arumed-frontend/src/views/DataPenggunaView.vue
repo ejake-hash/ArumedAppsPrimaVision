@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useDataPenggunaStore } from '@/stores/dataPenggunaStore'
 import { useAuthStore } from '@/stores/auth'
 import { integrasiApi } from '@/services/api'
@@ -390,23 +390,30 @@ async function deleteUser(u) {
   }
 }
 
-// ─── CSV: Template / Export / Import ──────────────────────────────────────────
+// ─── CSV / Excel: Template / Export / Import ──────────────────────────────────
 const fileInput   = ref(null)
 const csvBusy     = ref(false)
 const importResult = ref(null)   // { created, skipped, errors } → tampil di modal
 
-async function downloadTemplate() {
+// Dropdown pilih format (CSV / Excel) untuk Template & Export.
+const openFmtMenu = ref(null)    // 'template' | 'export' | null
+function toggleFmtMenu(which) { openFmtMenu.value = openFmtMenu.value === which ? null : which }
+function closeFmtMenu() { openFmtMenu.value = null }
+
+async function downloadTemplate(format = 'csv') {
+  closeFmtMenu()
   try {
-    await store.downloadUserTemplate()
-    toast('s', 'Template CSV diunduh')
+    await store.downloadUserTemplate(format)
+    toast('s', `Template ${format === 'xlsx' ? 'Excel' : 'CSV'} diunduh`)
   } catch (e) {
     toast('e', errMsg(e, 'Gagal mengunduh template'))
   }
 }
-async function exportUsers() {
+async function exportUsers(format = 'csv') {
+  closeFmtMenu()
   try {
-    await store.exportUsersCsv()
-    toast('s', 'Data pengguna diekspor')
+    await store.exportUsersCsv(format)
+    toast('s', `Data pengguna diekspor (${format === 'xlsx' ? 'Excel' : 'CSV'})`)
   } catch (e) {
     toast('e', errMsg(e, 'Gagal mengekspor data'))
   }
@@ -441,9 +448,63 @@ function copyImportResult() {
     .catch(() => toast('e', 'Gagal menyalin'))
 }
 
+// ─── CSV / Excel: Daftar Role ──────────────────────────────────────────────
+const roleFileInput   = ref(null)
+const roleCsvBusy      = ref(false)
+const roleImportResult = ref(null)   // { created, updated, skipped, errors }
+
+async function downloadRoleTemplate(format = 'csv') {
+  closeFmtMenu()
+  try {
+    await store.downloadRoleTemplate(format)
+    toast('s', `Template ${format === 'xlsx' ? 'Excel' : 'CSV'} diunduh`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengunduh template'))
+  }
+}
+async function exportRoles(format = 'csv') {
+  closeFmtMenu()
+  try {
+    await store.exportRolesCsv(format)
+    toast('s', `Daftar role diekspor (${format === 'xlsx' ? 'Excel' : 'CSV'})`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengekspor data'))
+  }
+}
+function pickRoleImportFile() {
+  roleFileInput.value?.click()
+}
+async function onRoleImportFile(ev) {
+  const file = ev.target.files?.[0]
+  ev.target.value = ''   // reset supaya file sama bisa dipilih ulang
+  if (! file) return
+  roleCsvBusy.value = true
+  try {
+    const res = await store.importRolesCsv(file)
+    roleImportResult.value = res
+    modal.value = 'roleImportResult'
+    const c = res?.created?.length ?? 0
+    const u = res?.updated?.length ?? 0
+    toast('s', `Import selesai — ${c} role baru, ${u} diperbarui`)
+  } catch (e) {
+    toast('e', errMsg(e, 'Gagal mengimpor file'))
+  } finally {
+    roleCsvBusy.value = false
+  }
+}
+
 // ─── Initial load ────────────────────────────────────────────────────────────
+// Tutup dropdown format saat klik di luar.
+function onDocClick(e) {
+  if (! openFmtMenu.value) return
+  if (! e.target.closest('.fmt-wrap')) closeFmtMenu()
+}
 onMounted(async () => {
+  document.addEventListener('click', onDocClick)
   await store.loadAll()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
 })
 
 function userCount(roleId) {
@@ -701,6 +762,73 @@ function lastLoginText(u) {
       </div>
     </div>
 
+    <!-- ─── MODAL: HASIL IMPORT ROLE ─── -->
+    <div v-if="modal === 'roleImportResult'" class="ov" @click.self="modal = null">
+      <div class="mbx lg">
+        <div class="mh">
+          <span class="mht">Hasil Import Daftar Role</span>
+          <button class="mcl" @click="modal = null"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+        <div class="mb" v-if="roleImportResult">
+          <div class="imp-stats" style="grid-template-columns:repeat(4,1fr)">
+            <div class="imp-stat ok"><div class="imp-num">{{ roleImportResult.created?.length ?? 0 }}</div><div class="imp-lbl">Dibuat</div></div>
+            <div class="imp-stat ok"><div class="imp-num">{{ roleImportResult.updated?.length ?? 0 }}</div><div class="imp-lbl">Diperbarui</div></div>
+            <div class="imp-stat warn"><div class="imp-num">{{ roleImportResult.skipped?.length ?? 0 }}</div><div class="imp-lbl">Dilewati</div></div>
+            <div class="imp-stat err"><div class="imp-num">{{ roleImportResult.errors?.length ?? 0 }}</div><div class="imp-lbl">Gagal</div></div>
+          </div>
+
+          <!-- Dibuat / Diperbarui -->
+          <template v-if="roleImportResult.created?.length || roleImportResult.updated?.length">
+            <div class="sec" style="margin-top:.7rem"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Role Tersimpan</div>
+            <div class="imp-list">
+              <div v-for="(r, i) in roleImportResult.created" :key="'c'+i" class="imp-row" style="border-color:var(--sbd)">
+                <span class="imp-rowno">Baris {{ r.row }}</span>
+                <span class="pill p-ok" style="font-size:7.5px">BARU</span>
+                <span class="mono-cell">{{ r.name }}</span>
+                <span style="font-size:10.5px;color:var(--td)">{{ r.display_name }}</span>
+                <span v-if="r.warning" style="color:var(--wt);font-size:9.5px">{{ r.warning }}</span>
+              </div>
+              <div v-for="(r, i) in roleImportResult.updated" :key="'u'+i" class="imp-row">
+                <span class="imp-rowno">Baris {{ r.row }}</span>
+                <span class="pill" style="font-size:7.5px;background:var(--ib);color:var(--it);border-color:var(--ibd)">UPDATE</span>
+                <span class="mono-cell">{{ r.name }}</span>
+                <span style="font-size:10.5px;color:var(--td)">{{ r.display_name }}</span>
+                <span v-if="r.warning" style="color:var(--wt);font-size:9.5px">{{ r.warning }}</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Dilewati -->
+          <template v-if="roleImportResult.skipped?.length">
+            <div class="sec" style="margin-top:.7rem"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Dilewati</div>
+            <div class="imp-list">
+              <div v-for="(s, i) in roleImportResult.skipped" :key="i" class="imp-row warn">
+                <span class="imp-rowno">Baris {{ s.row }}</span>
+                <span class="mono-cell">{{ s.name }}</span>
+                <span style="color:var(--tu);font-size:10.5px">{{ s.reason }}</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Gagal -->
+          <template v-if="roleImportResult.errors?.length">
+            <div class="sec" style="margin-top:.7rem"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Gagal Diproses</div>
+            <div class="imp-list">
+              <div v-for="(er, i) in roleImportResult.errors" :key="i" class="imp-row err">
+                <span class="imp-rowno">Baris {{ er.row }}</span>
+                <span class="mono-cell">{{ er.name || '—' }}</span>
+                <span style="color:var(--et);font-size:10.5px">{{ er.reason }}</span>
+              </div>
+            </div>
+          </template>
+
+          <div style="margin-top:.85rem">
+            <button class="btn btn-ga btn-lg btn-full" @click="modal = null">Selesai</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ─── NAV TABS ─── -->
     <div class="nvt">
       <button :class="['nt', pgTab === 'roles' ? 'a' : '']" @click="pgTab = 'roles'">
@@ -726,6 +854,29 @@ function lastLoginText(u) {
 
     <!-- ─── TAB: DAFTAR ROLE ─── -->
     <div v-if="pgTab === 'roles'" class="pg">
+      <div class="tb-row">
+        <span style="font-size:11px;color:var(--tu)">Kelola daftar role via CSV/Excel — kolom kunci <code style="background:var(--bs);border:1px solid var(--gb);border-radius:4px;padding:0 4px">name</code> (kode role). Import bersifat upsert.</span>
+        <div style="margin-left:auto;display:flex;gap:.35rem">
+          <!-- Template (CSV / Excel) -->
+          <div class="fmt-wrap">
+            <button class="btn btn-o btn-sm" title="Unduh template kosong — pilih format" @click.stop="toggleFmtMenu('roleTemplate')"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Template ▾</button>
+            <div v-if="openFmtMenu === 'roleTemplate'" class="fmt-menu" @click.stop>
+              <button @click="downloadRoleTemplate('csv')">CSV (.csv)</button>
+              <button @click="downloadRoleTemplate('xlsx')">Excel (.xlsx)</button>
+            </div>
+          </div>
+          <!-- Export (CSV / Excel) -->
+          <div class="fmt-wrap">
+            <button class="btn btn-o btn-sm" title="Ekspor semua role — pilih format" @click.stop="toggleFmtMenu('roleExport')"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Export ▾</button>
+            <div v-if="openFmtMenu === 'roleExport'" class="fmt-menu" @click.stop>
+              <button @click="exportRoles('csv')">CSV (.csv)</button>
+              <button @click="exportRoles('xlsx')">Excel (.xlsx)</button>
+            </div>
+          </div>
+          <button class="btn btn-i btn-sm" :disabled="roleCsvBusy" @click="pickRoleImportFile" title="Impor role dari CSV atau Excel"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ roleCsvBusy ? 'Mengimpor...' : 'Import (CSV/Excel)' }}</button>
+        </div>
+        <input ref="roleFileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" @change="onRoleImportFile"/>
+      </div>
       <div v-if="store.rolesLoading" class="loading-state">Memuat data role...</div>
       <div v-else-if="!store.roles.length" class="empty-state">Belum ada role.</div>
       <template v-else>
@@ -858,12 +1009,26 @@ function lastLoginText(u) {
           <option value="false">Non-aktif</option>
         </select>
         <div style="margin-left:auto;display:flex;gap:.35rem">
-          <button class="btn btn-o btn-sm" @click="downloadTemplate" title="Unduh template CSV kosong"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Template</button>
-          <button class="btn btn-o btn-sm" @click="exportUsers" title="Ekspor semua pengguna ke CSV"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Export</button>
-          <button class="btn btn-i btn-sm" :disabled="csvBusy" @click="pickImportFile" title="Impor pengguna dari CSV"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ csvBusy ? 'Mengimpor...' : 'Import' }}</button>
+          <!-- Template (CSV / Excel) -->
+          <div class="fmt-wrap">
+            <button class="btn btn-o btn-sm" title="Unduh template kosong — pilih format" @click.stop="toggleFmtMenu('template')"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Template ▾</button>
+            <div v-if="openFmtMenu === 'template'" class="fmt-menu" @click.stop>
+              <button @click="downloadTemplate('csv')">CSV (.csv)</button>
+              <button @click="downloadTemplate('xlsx')">Excel (.xlsx)</button>
+            </div>
+          </div>
+          <!-- Export (CSV / Excel) -->
+          <div class="fmt-wrap">
+            <button class="btn btn-o btn-sm" title="Ekspor semua pengguna — pilih format" @click.stop="toggleFmtMenu('export')"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Export ▾</button>
+            <div v-if="openFmtMenu === 'export'" class="fmt-menu" @click.stop>
+              <button @click="exportUsers('csv')">CSV (.csv)</button>
+              <button @click="exportUsers('xlsx')">Excel (.xlsx)</button>
+            </div>
+          </div>
+          <button class="btn btn-i btn-sm" :disabled="csvBusy" @click="pickImportFile" title="Impor pengguna dari CSV atau Excel"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ csvBusy ? 'Mengimpor...' : 'Import (CSV/Excel)' }}</button>
           <button class="btn btn-lm btn-sm" @click="openNewUser"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Tambah Pengguna</button>
         </div>
-        <input ref="fileInput" type="file" accept=".csv,text/csv" style="display:none" @change="onImportFile"/>
+        <input ref="fileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" @change="onImportFile"/>
       </div>
       <div class="card">
         <div v-if="store.usersLoading" class="loading-state">Memuat data pengguna...</div>
@@ -1010,6 +1175,12 @@ function lastLoginText(u) {
 
 /* ─── TOOLBAR ROW ─── */
 .tb-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+
+/* Dropdown pilih format (CSV / Excel) */
+.fmt-wrap { position: relative; }
+.fmt-menu { position: absolute; top: calc(100% + 3px); right: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.12); padding: 3px; min-width: 130px; display: flex; flex-direction: column; gap: 2px; }
+.fmt-menu button { text-align: left; background: none; border: none; padding: 6px 10px; border-radius: 6px; font-family: 'Inter', sans-serif; font-size: 11px; color: var(--td); cursor: pointer; }
+.fmt-menu button:hover { background: var(--gl); color: var(--ga); }
 
 /* ─── TABLE ─── */
 .tbl { width: 100%; border-collapse: collapse; }

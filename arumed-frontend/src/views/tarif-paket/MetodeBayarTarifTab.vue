@@ -4,8 +4,8 @@
  *
  * Props:
  *   - type ('tindakan' | 'obat' | 'bhp' | 'iol')
- *   - insurerId (UUID) — insurer untuk lookup tarif (kalau child: pass parent.id)
- *   - readOnly (boolean) — true kalau insurer adalah child TPA (data dari parent, tidak boleh CRUD)
+ *   - insurerId (UUID) — insurer untuk lookup tarif (kalau anggota TPA: pass id TPA induk)
+ *   - readOnly (boolean) — true kalau insurer adalah anggota TPA (data dari TPA induk, tidak boleh CRUD)
  *   - insurerCode (string) — untuk label download CSV
  *
  * Auto-fill harga master saat tambah:
@@ -38,6 +38,16 @@ const fkKey = computed(() => ({
   tindakan: 'procedure_id', obat: 'medication_id', bhp: 'bhp_item_id', iol: 'iol_item_id',
 }[props.type]))
 
+// Pos kwitansi obat (Obat Pulang/Tindakan/Injeksi) — pemisah baris OBAT di kwitansi.
+// Hanya relevan untuk type 'obat'. Enum mirror MedicationTariff::POS_VALUES (backend).
+const isObat = computed(() => props.type === 'obat')
+const POS_OPTIONS = [
+  { value: 'OBAT_PULANG',   label: 'Obat Pulang' },
+  { value: 'OBAT_TINDAKAN', label: 'Obat Tindakan' },
+  { value: 'OBAT_INJEKSI',  label: 'Obat Injeksi' },
+]
+const posLabel = (v) => POS_OPTIONS.find((o) => o.value === v)?.label ?? 'Obat Pulang'
+
 const items = ref([])               // tarif rows
 const pageMeta = ref({ current_page: 1, last_page: 1, total: 0, per_page: 25 })
 const loading = ref(false)
@@ -60,7 +70,7 @@ function closeMenuOnOutside(e) {
 }
 
 function emptyForm() {
-  return { item_id: '', price: 0, is_active: true }
+  return { item_id: '', price: 0, is_active: true, pos_kwitansi: 'OBAT_PULANG' }
 }
 
 function showToast(type, msg) {
@@ -76,6 +86,8 @@ const columns = computed(() => [
   { key: 'item_code',    label: 'Kode',                     width: '150px' },
   { key: 'item_name',    label: 'Nama Item' },
   { key: 'item_kategori', label: meta.value.kategoriLabel,  width: '140px' },
+  // Pos kwitansi hanya untuk tab Obat.
+  ...(isObat.value ? [{ key: 'pos_kwitansi', label: 'Klasifikasi', width: '130px' }] : []),
   { key: 'master_price', label: 'Harga Master',             width: '140px', align: 'right' },
   { key: 'price',        label: 'Harga Jual',               width: '140px', align: 'right' },
   { key: 'is_active',    label: 'Status',                   width: '90px',  align: 'center' },
@@ -147,10 +159,11 @@ function openEdit(row) {
     open: true,
     mode: 'edit',
     payload: {
-      item_id:    row[fkKey.value],
-      _itemLabel: `${item[meta.value.itemCodeKey] ?? ''} · ${item[meta.value.itemNameKey] ?? ''}`,
-      price:      Number(row.price ?? 0),
-      is_active:  row.is_active ?? true,
+      item_id:      row[fkKey.value],
+      _itemLabel:   `${item[meta.value.itemCodeKey] ?? ''} · ${item[meta.value.itemNameKey] ?? ''}`,
+      price:        Number(row.price ?? 0),
+      is_active:    row.is_active ?? true,
+      pos_kwitansi: row.pos_kwitansi ?? 'OBAT_PULANG',
     },
     errors: null,
     submitting: false,
@@ -179,18 +192,26 @@ const modalFields = computed(() => {
     value: it.id,
     label: `${it[meta.value.itemCodeKey] ?? '-'} · ${it[meta.value.itemNameKey] ?? '-'}`,
   }))
+  // Field pos kwitansi hanya untuk tab Obat (1 obat = 1 pos; berlaku lintas penjamin).
+  const posField = isObat.value
+    ? [{ key: 'pos_kwitansi', label: 'Klasifikasi', type: 'select', options: POS_OPTIONS, cols: 2,
+        hint: 'Menentukan pos baris obat di kwitansi (Pulang/Tindakan/Injeksi). Berlaku untuk obat ini di semua penjamin.' }]
+    : []
+
   if (modal.value.mode === 'create') {
     return [
       { key: 'item_id',   label: meta.value.itemLabel,    type: 'select',   options: itemOpts, required: true, cols: 2,
         hint: 'Setelah pilih, harga master ter-isi otomatis. Anda bisa override.' },
       { key: 'price',     label: 'Harga (Rp)',  type: 'number',   required: true, min: 0, cols: 1 },
       { key: 'is_active', label: 'Aktif',       type: 'checkbox', cols: 1 },
+      ...posField,
     ]
   }
   return [
     { key: '_itemLabel', label: meta.value.itemLabel,    type: 'text',     disabled: true, cols: 2 },
     { key: 'price',      label: 'Harga (Rp)',  type: 'number',   required: true, min: 0, cols: 1 },
     { key: 'is_active',  label: 'Aktif',       type: 'checkbox', cols: 1 },
+    ...posField,
   ]
 })
 
@@ -205,13 +226,17 @@ async function onSubmit(payload) {
         price:         Number(payload.price),
         is_active:     payload.is_active ?? true,
       }
+      // Pos kwitansi hanya dikirim untuk tab Obat.
+      if (isObat.value) data.pos_kwitansi = payload.pos_kwitansi ?? 'OBAT_PULANG'
       await tarifPaketApi.tarif.create(props.type, data)
       showToast('s', 'Tarif disimpan')
     } else {
-      await tarifPaketApi.tarif.update(props.type, modal.value.editingId, {
+      const data = {
         price:     Number(payload.price),
         is_active: payload.is_active ?? true,
-      })
+      }
+      if (isObat.value) data.pos_kwitansi = payload.pos_kwitansi ?? 'OBAT_PULANG'
+      await tarifPaketApi.tarif.update(props.type, modal.value.editingId, data)
       showToast('s', 'Tarif diperbarui')
     }
     modal.value.open = false
@@ -377,6 +402,10 @@ watch(() => props.insurerId, () => refresh())
         <span v-else class="tt-dim">—</span>
       </template>
 
+      <template #cell-pos_kwitansi="{ value }">
+        <span class="tt-pos-pill">{{ posLabel(value) }}</span>
+      </template>
+
       <template #cell-master_price="{ value }">
         <span class="tt-master-price">{{ formatRp(value) }}</span>
       </template>
@@ -466,6 +495,7 @@ watch(() => props.insurerId, () => refresh())
 .tt-code { font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--td); background: var(--bs); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--gb); }
 .tt-name { font-weight: 500; color: var(--td); }
 .tt-kategori-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
+.tt-pos-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--gl); color: var(--ga); border: 1px solid var(--gb); }
 .tt-dim { color: var(--tu); font-size: 12px; }
 .tt-master-price { color: var(--tm); font-variant-numeric: tabular-nums; }
 .tt-price { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }

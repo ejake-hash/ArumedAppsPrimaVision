@@ -24,12 +24,14 @@ class PermissionSeeder extends Seeder
             'rme_dokter'         => 'RME Dokter',
             'rekam_medis'        => 'Rekam Medis & TTD Dokumen',
             'bedah'              => 'Unit Bedah',
+            'ruang_tindakan'     => 'Ruang Tindakan (Laser/PRP)',
             'farmasi'            => 'Farmasi Unit',
             'kasir'              => 'Kasir & Billing',
             'rawat_inap'         => 'Rawat Inap (RANAP)',
             'igd'                => 'Instalasi Gawat Darurat (IGD)',
             'bpjs'               => 'BPJS & Klaim',
             'laporan'            => 'Laporan & Analitik',
+            'marketing'          => 'Laporan Marketing',
             'tarif_paket'        => 'Tarif & Paket Bedah',
             'inventori_farmasi'  => 'Inventori Farmasi (Obat/BHP/IOL)',
             'supplier'           => 'Master Supplier',
@@ -69,5 +71,20 @@ class PermissionSeeder extends Seeder
                 );
             }
         }
+
+        // Permission khusus di luar pola R/W/D:
+        // bedah.checklist — mengisi WHO Surgical Safety Checklist (Sign In/Time Out/
+        // Sign Out). Sesuai praktik WHO, perawat sirkuler memimpin checklist, jadi
+        // izin ini diberikan ke perawat SELAIN dokter (lihat RolePermissionSeeder).
+        Permission::updateOrCreate(
+            ['key' => 'bedah.checklist'],
+            [
+                'module'      => 'bedah',
+                'action'      => 'C',
+                'label'       => 'Checklist Keselamatan (Sign In/Time Out/Sign Out) — Unit Bedah',
+                'description' => 'Mengisi WHO Surgical Safety Checklist saat operasi.',
+                'is_active'   => true,
+            ]
+        );
     }
 }

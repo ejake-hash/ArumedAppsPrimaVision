@@ -2,6 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Models\BillingInvoice;
+use App\Models\InsuranceVerification;
 use App\Models\Insurer;
 use App\Models\Patient;
 use App\Models\Procedure;
@@ -13,24 +15,32 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 /**
- * KasirDemoSeeder — pasien demo untuk stasiun KASIR, 1 per penjamin
- * (UMUM, BPJS, ASURANSI).
+ * KasirDemoSeeder — pasien demo untuk stasiun KASIR, 1 per SKENARIO penjamin.
+ * Tiap profil sengaja menargetkan SATU alur kasir yang berbeda supaya semua
+ * cabang UI (KasirView.vue) bisa diuji manual tanpa setup tambahan:
+ *
+ *   1. UMUM            → bayar tunai biasa (metode pembayaran + kembalian).
+ *   2. BPJS            → panel "Ditanggung BPJS" → tombol Konfirmasi (paid 0).
+ *   3. ASURANSI penuh  → verifikasi VERIFIED + covered_amount = total invoice →
+ *                        panel "Ditanggung Penuh Asuransi" → tombol Konfirmasi.
+ *   4. ASURANSI copay  → verifikasi VERIFIED dgn copay% + plafon → eligibility
+ *                        panel tampil estimasi pasien bayar, kasir bayar manual.
  *
  * Tiap pasien:
- *   - 1 kunjungan HARI INI dengan current_station = KASIR.
- *   - Beberapa VisitService (tindakan) supaya tagihan punya item nyata.
+ *   - 1 kunjungan HARI INI dengan current_station = KASIR (jenis RAJAL).
+ *   - 2 VisitService (tindakan master) + 1 item manual ber-harga → tagihan nyata.
  *   - 1 baris Queue station KASIR (WAITING) → tampil di antrean Kasir.
- *   - 1 BillingInvoice DRAFT digenerate via KasirService::consolidateBilling
+ *   - 1 BillingInvoice DRAFT via KasirService::consolidateBilling
  *     (registrasi + tindakan, tarif resolve per-penjamin via getPrice).
  *
  * IDEMPOTEN: aman dijalankan berulang (firstOrCreate via NIK + visit_date/station;
- * invoice & queue di-skip kalau sudah ada).
+ * invoice, queue, verifikasi, item manual di-skip kalau sudah ada).
  *
  * Jalankan: php artisan db:seed --class=KasirDemoSeeder
  */
 class KasirDemoSeeder extends Seeder
 {
-    /** Satu pasien per penjamin. */
+    /** Satu pasien per skenario penjamin. */
     private array $profiles = [
         [
             'key'       => 'umum',
@@ -40,6 +50,7 @@ class KasirDemoSeeder extends Seeder
             'guarantor' => 'UMUM',
             'bpjs'      => null,
             'address'   => 'Jl. Sisingamangaraja No. 45, Kel. Sukaraja',
+            'scenario'  => 'cash',
         ],
         [
             'key'       => 'bpjs',
@@ -49,15 +60,27 @@ class KasirDemoSeeder extends Seeder
             'guarantor' => 'BPJS',
             'bpjs'      => '0001122334455',
             'address'   => 'Jl. Gatot Subroto No. 12, Kel. Helvetia',
+            'scenario'  => 'bpjs',
         ],
         [
-            'key'       => 'asuransi',
+            'key'       => 'asuransi-full',
             'name'      => 'Bambang Santoso',
             'gender'    => 'L',
             'dob'       => '1988-03-07',
             'guarantor' => 'ASURANSI',
             'bpjs'      => null,
             'address'   => 'Jl. Dr. Mansyur No. 88, Kel. Padang Bulan',
+            'scenario'  => 'asuransi_full',   // ditanggung penuh
+        ],
+        [
+            'key'       => 'asuransi-copay',
+            'name'      => 'Dewi Lestari',
+            'gender'    => 'P',
+            'dob'       => '1991-11-19',
+            'guarantor' => 'ASURANSI',
+            'bpjs'      => null,
+            'address'   => 'Jl. Iskandar Muda No. 21, Kel. Babura',
+            'scenario'  => 'asuransi_copay',  // copay 20% + plafon → pasien bayar sisa
         ],
     ];
 
@@ -65,7 +88,7 @@ class KasirDemoSeeder extends Seeder
     {
         $asuransiInsurer = Insurer::where('type', 'ASURANSI')->where('is_active', true)->first();
         if (! $asuransiInsurer) {
-            $this->command?->warn('KasirDemoSeeder: belum ada insurer bertipe ASURANSI — pasien asuransi tetap dibuat tanpa insurer_id.');
+            $this->command?->warn('KasirDemoSeeder: belum ada insurer bertipe ASURANSI — pasien asuransi tetap dibuat tanpa insurer_id (verifikasi & full-cover dilewati).');
         }
 
         // Sistem insurer (UMUM/BPJS) supaya getPrice tidak rely on fallback.
@@ -75,7 +98,7 @@ class KasirDemoSeeder extends Seeder
         // Sampai 2 tindakan untuk dilampirkan ke tiap kunjungan (kalau master ada).
         $procedures = Procedure::query()->where('is_active', true)->orderBy('name')->limit(2)->get();
         if ($procedures->isEmpty()) {
-            $this->command?->warn('KasirDemoSeeder: belum ada master Procedure aktif — tagihan hanya berisi biaya registrasi.');
+            $this->command?->warn('KasirDemoSeeder: belum ada master Procedure aktif — tagihan hanya berisi biaya registrasi + item manual.');
         }
 
         $created = 0;
@@ -109,7 +132,7 @@ class KasirDemoSeeder extends Seeder
                     default    => $umumInsurer?->id,
                 };
 
-                // Kunjungan hari ini di stasiun KASIR.
+                // Kunjungan hari ini di stasiun KASIR (RAJAL).
                 $visit = Visit::firstOrNew([
                     'patient_id'      => $patient->id,
                     'visit_date'      => today()->toDateString(),
@@ -119,6 +142,7 @@ class KasirDemoSeeder extends Seeder
                 if ($isNew) {
                     $visit->fill([
                         'insurer_id'            => $insurerId,
+                        'jenis_pelayanan'       => 'RAJAL',
                         'classification'        => 'Kontrol',
                         'visit_type'            => 'REGULAR',
                         'guarantor_type'        => $prof['guarantor'],
@@ -141,13 +165,26 @@ class KasirDemoSeeder extends Seeder
                 $this->enqueueKasir($visit);
 
                 // Invoice DRAFT via konsolidasi billing (registrasi + tindakan).
-                $this->generateInvoice($visit->id);
+                $invoice = $this->generateInvoice($visit->id);
+
+                // Pastikan ada item ber-harga walau master tarif tindakan kosong
+                // (getPrice → 0). Tambah 1 item TINDAKAN manual Rp 250.000 supaya
+                // total invoice realistis untuk demo full-cover / copay.
+                if ($invoice) {
+                    $this->ensurePricedItem($invoice);
+                    $invoice->refresh();
+                }
+
+                // Skenario asuransi: tulis verifikasi + (full cover) covered_amount.
+                if ($invoice && in_array($prof['scenario'], ['asuransi_full', 'asuransi_copay'], true) && $asuransiInsurer) {
+                    $this->applyAsuransiScenario($visit, $invoice, $asuransiInsurer, $prof['scenario']);
+                }
 
                 $created++;
             }
         });
 
-        $this->command?->info("KasirDemoSeeder selesai — {$created} pasien (UMUM/BPJS/ASURANSI) di antrean Kasir + invoice DRAFT.");
+        $this->command?->info("KasirDemoSeeder selesai — {$created} pasien (UMUM tunai / BPJS konfirmasi / ASURANSI penuh / ASURANSI copay) di antrean Kasir + invoice DRAFT.");
     }
 
     /** Enqueue ke antrean KASIR hari ini (idempoten via visit+station). */
@@ -168,15 +205,83 @@ class KasirDemoSeeder extends Seeder
         ]);
     }
 
-    /** Generate invoice DRAFT lewat konsolidasi billing (skip kalau sudah ada). */
-    private function generateInvoice(string $visitId): void
+    /** Generate invoice DRAFT lewat konsolidasi billing (return existing kalau sudah ada). */
+    private function generateInvoice(string $visitId): ?BillingInvoice
     {
-        $exists = \App\Models\BillingInvoice::where('visit_id', $visitId)
+        $existing = BillingInvoice::where('visit_id', $visitId)
             ->whereNotIn('status', ['CANCELLED'])
-            ->exists();
-        if ($exists) {
+            ->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        return app(KasirService::class)->consolidateBilling($visitId);
+    }
+
+    /**
+     * Pastikan invoice punya minimal satu item TINDAKAN ber-harga > 0. Saat master
+     * tarif tindakan belum diisi, getPrice() me-return 0 → demo full-cover/copay
+     * jadi tak bermakna (total = hanya registrasi 50rb). Tambah 1 item manual.
+     * Idempoten: skip kalau sudah ada item demo ini.
+     */
+    private function ensurePricedItem(BillingInvoice $invoice): void
+    {
+        if (in_array($invoice->status, ['PAID', 'CANCELLED'], true)) {
             return;
         }
-        app(KasirService::class)->consolidateBilling($visitId);
+        $marker = 'Konsultasi Spesialis Mata (Demo)';
+        if ($invoice->items()->where('description', $marker)->exists()) {
+            return;
+        }
+
+        app(KasirService::class)->storeItemInvoice($invoice->id, [
+            'item_type'   => 'TINDAKAN',
+            'category'    => 'Tindakan',
+            'description' => $marker,
+            'quantity'    => 1,
+            'unit_price'  => 250000,
+        ]);
+    }
+
+    /**
+     * Tulis InsuranceVerification VERIFIED + set status cache di visit + (untuk
+     * full cover) covered_amount = total invoice agar FE memunculkan panel
+     * "Ditanggung Penuh Asuransi". Untuk copay: plafon + copay% saja (pasien bayar
+     * sisa), covered_amount dibiarkan 0 → bukan full cover.
+     */
+    private function applyAsuransiScenario(Visit $visit, BillingInvoice $invoice, Insurer $insurer, string $scenario): void
+    {
+        $isFull = $scenario === 'asuransi_full';
+
+        InsuranceVerification::firstOrCreate(
+            ['visit_id' => $visit->id, 'insurer_id' => $insurer->id],
+            [
+                'status'             => InsuranceVerification::STATUS_VERIFIED,
+                'policy_number'      => 'POL-' . strtoupper(substr($scenario, 0, 4)) . '-' . substr($visit->id, 0, 6),
+                'member_name'        => $visit->patient?->name,
+                'member_card_number' => 'CARD-' . substr($visit->id, 0, 8),
+                'plafon_amount'      => $isFull ? null : 1000000,        // copay: plafon 1jt; full: unlimited
+                'copayment_percent'  => $isFull ? 0 : 20,               // copay: pasien 20%
+                'copayment_amount'   => 0,
+                'covered_amount'     => $isFull ? (float) $invoice->total : null,
+                'coverage_notes'     => $isFull
+                    ? 'Ditanggung penuh sesuai polis (demo).'
+                    : 'Co-payment 20% ditanggung pasien, sisanya klaim TPA (demo).',
+                'exclusion_flags'    => $isFull ? null : ['KACAMATA'],
+                'verified_at'        => now()->subHour(),
+            ]
+        );
+
+        // Cache status verifikasi di visit (dipakai getInsuranceWarning & gating FE).
+        $visit->update([
+            'insurance_verification_status' => 'VERIFIED',
+            'insurance_verified_at'         => now()->subHour(),
+        ]);
+
+        // Full cover: tandai invoice ditanggung penuh asuransi → FE tampilkan
+        // tombol "Konfirmasi Lunas (Ditanggung Asuransi)" (isFullCover = true).
+        if ($isFull && ! in_array($invoice->status, ['PAID', 'CANCELLED'], true)) {
+            $invoice->update(['covered_amount' => (float) $invoice->total]);
+        }
     }
 }

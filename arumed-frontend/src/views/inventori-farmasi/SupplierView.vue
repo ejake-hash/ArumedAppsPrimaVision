@@ -8,7 +8,8 @@ const config = {
   description: 'Master daftar supplier/distributor obat, BHP, & IOL. Kode auto-generate SUP-NNN.',
   searchPlaceholder: 'Cari kode/nama/kontak/telp/email/NPWP…',
   extraSearchParam: 'search',
-  csvShowTemplate: false,
+  csvShowTemplate: true,
+  csvAllowExcel: true,
   defaults: {
     code: '', name: '', contact_person: '', phone: '', email: '',
     npwp: '', address: '', is_active: true,

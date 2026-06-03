@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\ClinicProfile;
-use App\Models\InventoryPrice;
 use App\Models\InventoryStock;
 use App\Models\Medication;
 use App\Models\PharmacySale;
@@ -19,7 +18,7 @@ use Illuminate\Support\Facades\DB;
  *
  * Berdiri sendiri, TIDAK terikat ke Visit/RME/Prescription/BillingInvoice.
  * Pembeli boleh anonim. Hanya obat golongan bebas yang boleh dijual.
- * Harga = HJA dari modul Penentuan Harga (inventory_prices.hja).
+ * Harga = harga jual obat dari Buku Tarif (medication_tariffs, baris insurer UMUM).
  * Stok dipotong dari unit FARMASI (FEFO) saat checkout; dikembalikan saat batal.
  */
 class PharmacySaleService
@@ -52,7 +51,7 @@ class PharmacySaleService
             $hja = $this->resolveHja($med->id);
             if ($hja <= 0) {
                 throw new \Exception(
-                    "Obat {$med->name} belum punya harga jual (HJA). Set dulu di Penentuan Harga.",
+                    "Obat {$med->name} belum punya harga jual. Set dulu di Buku Tarif (penjamin UMUM).",
                     422
                 );
             }
@@ -228,12 +227,33 @@ class PharmacySaleService
     // HELPERS
     // =========================================================================
 
-    /** Resolve HJA (Harga Jual Apotek) dari modul Penentuan Harga. */
+    /**
+     * Resolve harga jual obat dari Buku Tarif (medication_tariffs, baris insurer UMUM).
+     * Harga obat = harga tunggal (non per-penjamin) → disimpan di baris UMUM.
+     */
     private function resolveHja(string $medicationId): float
     {
-        return (float) (InventoryPrice::where('item_type', InventoryPrice::TYPE_MEDICATION)
-            ->where('item_id', $medicationId)
-            ->value('hja') ?? 0);
+        $umumId = $this->umumInsurerId();
+        if (! $umumId) {
+            return 0;
+        }
+        return (float) (DB::table('medication_tariffs')
+            ->where('medication_id', $medicationId)
+            ->where('insurer_id', $umumId)
+            ->where('is_active', true)
+            ->whereNull('deleted_at')
+            ->value('price') ?? 0);
+    }
+
+    /** Cache id insurer sistem UMUM. */
+    private ?string $umumInsurerIdCache = null;
+    private function umumInsurerId(): ?string
+    {
+        if ($this->umumInsurerIdCache === null) {
+            $this->umumInsurerIdCache = \App\Models\Insurer::where('is_system', true)
+                ->where('type', 'UMUM')->value('id') ?? '';
+        }
+        return $this->umumInsurerIdCache ?: null;
     }
 
     /**

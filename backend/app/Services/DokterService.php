@@ -8,11 +8,15 @@ use App\Models\BpjsReferralOut;
 use App\Models\ClinicProfile;
 use App\Models\IntegrationConfig;
 use App\Models\DiagnosticOrder;
+use App\Models\DiagnosticTestType;
 use App\Models\DoctorExamination;
 use App\Models\DoctorSchedule;
 use App\Models\DocumentType;
 use App\Models\DocumentVerification;
+use App\Models\Icd9Code;
+use App\Models\Icd10Code;
 use App\Models\InventoryStock;
+use App\Models\Medication;
 use App\Models\IolRecommendation;
 use App\Models\MedicalResume;
 use App\Models\Notification;
@@ -23,8 +27,11 @@ use App\Models\Procedure;
 use App\Models\Queue;
 use App\Models\SurgerySchedule;
 use App\Models\SystemLog;
+use App\Models\SurgeryPackage;
 use App\Models\Visit;
 use App\Models\VisitService;
+use App\Models\VisitSurgeryPackage;
+use App\Models\VisitSurgeryPackageItem;
 use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
@@ -324,10 +331,11 @@ class DokterService
     }
 
     /**
-     * Daftar obat aktif untuk e-resep dokter. LEFT JOIN ke inventory_prices:
-     * obat yang belum di-set harga (HJA) tetap MUNCUL & bisa diresepkan dengan
-     * hja=0 (konsisten dengan perilaku Tarif Tindakan). Harga final tetap
-     * di-resolve di kasir (getPrice); HJA di sini hanya hint estimasi untuk dokter.
+     * Daftar obat aktif untuk e-resep dokter. LEFT JOIN ke medication_tariffs
+     * (baris insurer UMUM = harga jual tunggal di Buku Tarif): obat yang belum
+     * di-set harga tetap MUNCUL & bisa diresepkan dengan hja=0 (konsisten dengan
+     * perilaku Tarif Tindakan). Harga final tetap di-resolve di kasir (getPrice);
+     * hja di sini hanya hint estimasi untuk dokter.
      */
     public function getDaftarObat(?string $search = null): array
     {
@@ -340,9 +348,15 @@ class DokterService
             ->where('location', InventoryStock::LOC_FARMASI)
             ->groupBy('item_id');
 
+        // Harga jual obat = baris insurer UMUM di medication_tariffs (harga tunggal).
+        $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+
         return DB::table('medications as m')
-            ->leftJoin('inventory_prices as ip', function ($j) {
-                $j->on('ip.item_id', '=', 'm.id')->where('ip.item_type', '=', 'MEDICATION');
+            ->leftJoin('medication_tariffs as ip', function ($j) use ($umumId) {
+                $j->on('ip.medication_id', '=', 'm.id')
+                  ->where('ip.insurer_id', '=', $umumId)
+                  ->where('ip.is_active', '=', true)
+                  ->whereNull('ip.deleted_at');
             })
             ->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id'))
             ->whereNull('m.deleted_at')
@@ -356,7 +370,7 @@ class DokterService
             })
             ->orderBy('m.name')
             ->limit(100)
-            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'ip.hja', 'fs.qty as farmasi_qty'])
+            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'ip.price as hja', 'fs.qty as farmasi_qty'])
             ->map(fn ($r) => [
                 'id'       => $r->id,
                 'code'     => $r->code,
@@ -558,6 +572,14 @@ class DokterService
                 'surgery_schedule_id' => $data['planning'] === 'BEDAH' ? $scheduleId : null,
             ]);
 
+            // Snapshot paket BEDAH pasien (komponen BHP/IOL/PROCEDURE → dasar diskon
+            // paket di kwitansi). Planning bukan BEDAH / tanpa paket → snapshot dibuang.
+            $this->syncVisitPackageSnapshot(
+                $visit,
+                $data['planning'] === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
+                $scheduleId
+            );
+
             // Fase 8 — tandai alasan inap di visit (dibaca admisi & papan RANAP):
             //   RAWAT_INAP            → OBSERVASI (inap pemeriksaan tanpa operasi).
             //   BEDAH + perlu inap    → PRE_OP    (pasien datang H-1, lalu operasi).
@@ -579,6 +601,193 @@ class DokterService
     public function updatePlanning(string $visitId, array $data): array
     {
         return $this->storePlanning($visitId, $data);
+    }
+
+    /**
+     * Snapshot paket pasien (generik — dipakai paket BEDAH via storePlanning &
+     * paket PEMERIKSAAN via applyExaminationPackage).
+     *
+     * Komponen paket master di-COPY jadi milik pasien ini (TANPA MEDICATION).
+     * unit_price tiap komponen di-resolve dari Buku Tarif per penjamin pasien.
+     * Snapshot = dasar diskon paket di kwitansi (BUKAN sumber tagih).
+     *
+     * packageId kosong → soft-delete snapshot existing (mis. dokter batal paket).
+     * Idempoten: paket SAMA → replace header + items (pola withTrashed→restore);
+     *            paket BERBEDA → TAMBAH snapshot baru (multi-paket per visit, mis.
+     *            paket tindakan Phaco + paket anestesi TIVA).
+     * Dipanggil DI DALAM transaksi pemanggil.
+     *
+     * @param string|null $clearType saat $packageId null — batasi soft-delete ke
+     *        snapshot package_type ini (default BEDAH: jalur planning dokter membatalkan
+     *        paket bedah saja, jangan ikut hapus paket PEMERIKSAAN / paket lain). null =
+     *        hapus SEMUA snapshot visit.
+     */
+    public function syncVisitPackageSnapshot(Visit $visit, ?string $packageId, ?string $scheduleId = null, ?string $clearType = VisitSurgeryPackage::TYPE_BEDAH): void
+    {
+        // Tanpa paket → buang snapshot (default: hanya tipe yg di-scope, mis. BEDAH).
+        if (! $packageId) {
+            $q = VisitSurgeryPackage::where('visit_id', $visit->id);
+            if ($clearType !== null) {
+                $q->where('package_type', $clearType);
+            }
+            $q->delete();
+            return;
+        }
+
+        $pkg = SurgeryPackage::with('items')->find($packageId);
+        if (! $pkg) {
+            return; // paket tak ditemukan — jangan gagalkan planning
+        }
+
+        $sellPrice = $this->kasirService->resolvePackageSellPrice(
+            $pkg->id, $visit->guarantor_type, $visit->insurer_id
+        );
+
+        // Header per-(visit, source_package): withTrashed → restore/update (anti unique
+        // vsp_visit_source_unique 23505) bila paket sama, atau create bila paket baru.
+        $snap = VisitSurgeryPackage::withTrashed()
+            ->where('visit_id', $visit->id)
+            ->where('source_surgery_package_id', $pkg->id)
+            ->first();
+        $headerData = [
+            'surgery_schedule_id'       => $scheduleId,
+            'source_surgery_package_id' => $pkg->id,
+            'package_type'              => $pkg->package_type ?? VisitSurgeryPackage::TYPE_BEDAH,
+            'package_name'              => $pkg->name,
+            'package_code'              => $pkg->code,
+            'sell_price'                => $sellPrice,
+            'is_active'                 => true,
+        ];
+        if ($snap) {
+            if ($snap->trashed()) {
+                $snap->restore();
+            }
+            $snap->update($headerData);
+        } else {
+            $snap = VisitSurgeryPackage::create(['visit_id' => $visit->id] + $headerData);
+        }
+
+        // Replace items: copy komponen paket (SKIP MEDICATION), resolve harga Buku Tarif.
+        $snap->items()->delete();
+        foreach ($pkg->items as $pi) {
+            // Obat tak masuk paket pasien — ditagih lewat resep / obat pulang.
+            if ($pi->item_type === 'MEDICATION') {
+                continue;
+            }
+            $getPriceType = match ($pi->item_type) {
+                'PROCEDURE' => 'procedure',
+                'BHP'       => 'bhp',
+                'IOL'       => 'iol',
+                default     => null,
+            };
+            if (! $getPriceType) {
+                continue;
+            }
+            $unitPrice = $this->kasirService->getPrice(
+                $getPriceType, $pi->item_id, $visit->guarantor_type, $visit->insurer_id
+            );
+            VisitSurgeryPackageItem::create([
+                'visit_surgery_package_id' => $snap->id,
+                'item_type'                => $pi->item_type,
+                'item_id'                  => $pi->item_id,
+                'quantity'                 => $pi->quantity ?? 1,
+                'unit_price'               => $unitPrice,
+                'notes'                    => $pi->notes ?? null,
+            ]);
+        }
+
+        $snap->recalcTotalBasePrice();
+        $this->log(auth('api')->id(), 'SNAPSHOT_VISIT_PACKAGE', VisitSurgeryPackage::class, $snap->id, "visit:{$visit->id} pkg:{$pkg->id}");
+    }
+
+    /**
+     * Terapkan PAKET PEMERIKSAAN (poliklinik) ke kunjungan: merge komponen tindakan
+     * paket ke visitServices (yang ditagih) + buat snapshot diskon. 1 transaksi.
+     *
+     * - Hanya paket package_type=PEMERIKSAAN (tolak paket BEDAH lewat jalur ini).
+     * - Tindakan paket digabung ke daftar visitServices yang ADA (tak menghapus
+     *   tindakan manual dokter). Harga = Buku Tarif per penjamin.
+     * - Snapshot dibuat lewat syncVisitPackageSnapshot (komponen PROCEDURE).
+     */
+    public function applyExaminationPackage(string $visitId, string $packageId): array
+    {
+        $this->authorizeVisitOwnership($visitId);
+        $this->assertNotFinalized($visitId);
+        $visit = Visit::findOrFail($visitId);
+
+        $pkg = SurgeryPackage::with('items')->findOrFail($packageId);
+        if (($pkg->package_type ?? SurgeryPackage::TYPE_BEDAH) !== SurgeryPackage::TYPE_PEMERIKSAAN) {
+            throw new \Exception('Hanya paket pemeriksaan yang dapat diterapkan di sini.', 422);
+        }
+
+        return DB::transaction(function () use ($visit, $pkg) {
+            // Daftar tindakan saat ini (procedure_id => row) supaya tak hilang & tak dobel.
+            $current = VisitService::where('visit_id', $visit->id)->get();
+            $byProc  = $current->keyBy('procedure_id');
+
+            // Merge komponen PROCEDURE paket ke list (harga Buku Tarif per penjamin).
+            $services = $current->map(fn ($vs) => [
+                'procedure_id' => $vs->procedure_id,
+                'quantity'     => $vs->quantity,
+                'price'        => $vs->price,
+            ])->values()->all();
+
+            foreach ($pkg->items as $pi) {
+                if ($pi->item_type !== 'PROCEDURE') {
+                    continue; // paket pemeriksaan komponen = PROCEDURE
+                }
+                if ($byProc->has($pi->item_id)) {
+                    continue; // sudah ada di daftar — jangan dobel
+                }
+                $price = $this->kasirService->getPrice('procedure', $pi->item_id, $visit->guarantor_type, $visit->insurer_id);
+                $services[] = [
+                    'procedure_id' => $pi->item_id,
+                    'quantity'     => $pi->quantity ?? 1,
+                    'price'        => $price,
+                ];
+            }
+
+            // Replace seluruh list (storeVisitServices = replace; union sudah dihitung).
+            $this->storeVisitServices($visit->id, $services);
+
+            // Poliklinik = 1 paket pemeriksaan: ganti paket PEMERIKSAAN lama (bila ada
+            // & beda) sebelum snapshot baru. Paket BEDAH/anestesi tak terganggu.
+            VisitSurgeryPackage::where('visit_id', $visit->id)
+                ->where('package_type', VisitSurgeryPackage::TYPE_PEMERIKSAAN)
+                ->where('source_surgery_package_id', '!=', $pkg->id)
+                ->delete();
+
+            // Snapshot diskon (komponen PROCEDURE) — tanpa schedule (poli).
+            $this->syncVisitPackageSnapshot($visit, $pkg->id, null);
+
+            $snap = VisitSurgeryPackage::with('items')
+                ->where('visit_id', $visit->id)
+                ->where('source_surgery_package_id', $pkg->id)
+                ->first();
+            return [
+                'visit_services' => $this->getVisitServices($visit->id),
+                'snapshot'       => $snap ? [
+                    'id'               => $snap->id,
+                    'package_name'     => $snap->package_name,
+                    'package_type'     => $snap->package_type,
+                    'sell_price'       => (float) $snap->sell_price,
+                    'total_base_price' => (float) $snap->total_base_price,
+                    'discount_amount'  => $snap->discountAmount(),
+                ] : null,
+            ];
+        });
+    }
+
+    /** Lepas paket pemeriksaan: buang snapshot PEMERIKSAAN saja (tindakan dibiarkan,
+     *  dokter kelola manual). Paket BEDAH/lain di visit yang sama tak terganggu. */
+    public function removeExaminationPackage(string $visitId): void
+    {
+        $this->authorizeVisitOwnership($visitId);
+        $this->assertNotFinalized($visitId);
+        VisitSurgeryPackage::where('visit_id', $visitId)
+            ->where('package_type', VisitSurgeryPackage::TYPE_PEMERIKSAAN)
+            ->delete();
+        $this->log(auth('api')->id(), 'REMOVE_VISIT_PACKAGE', VisitSurgeryPackage::class, $visitId, "visit:{$visitId}");
     }
 
     /**
@@ -704,8 +913,18 @@ class DokterService
         $packageId = $data['surgery_package_id'] ?? null;
         $date      = $data['surgery_date'] ?? null;
 
-        // Belum lengkap untuk membuat jadwal → pertahankan yang lama (kalau ada).
-        if (! $packageId || ! $date) {
+        // Lokasi pelaksanaan: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
+        $locationType = ($data['location_type'] ?? null) === SurgerySchedule::LOCATION_RUANG_TINDAKAN
+            ? SurgerySchedule::LOCATION_RUANG_TINDAKAN
+            : SurgerySchedule::LOCATION_RUANG_BEDAH;
+        $isTindakan = $locationType === SurgerySchedule::LOCATION_RUANG_TINDAKAN;
+
+        // Syarat minimal membuat jadwal:
+        //   - Operasi (RUANG_BEDAH)      → paket + tanggal WAJIB.
+        //   - Tindakan laser (RUANG_TINDAKAN) → cukup tanggal; paket OPSIONAL
+        //     (laser ditagih via procedure/visit_services, bukan komponen paket).
+        // Belum lengkap → pertahankan jadwal lama (kalau ada).
+        if (! $date || (! $isTindakan && ! $packageId)) {
             return $examination->surgery_schedule_id;
         }
 
@@ -715,12 +934,14 @@ class DokterService
 
         $payload = [
             'surgery_package_id' => $packageId,
+            'location_type'      => $locationType,
             'scheduled_date'     => $date,
             'scheduled_time'     => $data['surgery_time'] ?? null,
             'operation_room'     => $data['operation_room'] ?? $defaultRoom,
             'status'             => 'SCHEDULED',
             // Fase 8 — pre-op H-1: jadwal bedah ini butuh rawat inap.
-            'requires_inpatient' => (bool) ($data['requires_inpatient'] ?? false),
+            // Tindakan laser tak pakai pre-op inap → paksa false.
+            'requires_inpatient' => ! $isTindakan && (bool) ($data['requires_inpatient'] ?? false),
         ];
 
         // Perbarui jadwal yang sudah terhubung & belum mulai; selain itu buat baru.
@@ -743,13 +964,25 @@ class DokterService
      * Hanya jadwal aktif (status SCHEDULED). Mengembalikan total + daftar jam terisi
      * (untuk menandai slot bentrok di dropdown jam dokter).
      */
-    public function getBedahSlot(string $tanggal): array
+    public function getBedahSlot(string $tanggal, ?string $locationType = null): array
     {
+        // Pisahkan slot per lokasi: Ruang Bedah (operasi) ≠ Ruang Tindakan (laser).
+        // Default (null) = RUANG_BEDAH agar preview operasi tak tercampur jadwal laser.
+        $loc = $locationType === SurgerySchedule::LOCATION_RUANG_TINDAKAN
+            ? SurgerySchedule::LOCATION_RUANG_TINDAKAN
+            : SurgerySchedule::LOCATION_RUANG_BEDAH;
+
         $rows = SurgerySchedule::with('surgeryPackage:id,name')
             ->whereDate('scheduled_date', $tanggal)
             ->where('status', 'SCHEDULED')
+            // location_type null (jadwal lama) dianggap RUANG_BEDAH (backward-compat).
+            ->when($loc === SurgerySchedule::LOCATION_RUANG_BEDAH,
+                fn ($q) => $q->where(fn ($w) =>
+                    $w->where('location_type', SurgerySchedule::LOCATION_RUANG_BEDAH)
+                      ->orWhereNull('location_type')),
+                fn ($q) => $q->where('location_type', SurgerySchedule::LOCATION_RUANG_TINDAKAN))
             ->orderBy('scheduled_time')
-            ->get(['id', 'scheduled_time', 'operation_room', 'surgery_package_id']);
+            ->get(['id', 'scheduled_time', 'operation_room', 'surgery_package_id', 'location_type']);
 
         return [
             'tanggal' => $tanggal,
@@ -1093,6 +1326,11 @@ class DokterService
             ->values()
             ->toArray();
 
+        // Resume Medis Rawat Jalan (RM 1.7/RMRJ/22): field formulir resmi, auto-isi
+        // dari sumber yang sudah ada. Tindakan & Riwayat/Instruksi sengaja KOSONG
+        // (diisi dokter di modal preview). S/O/A/P di atas tetap diisi utk backward-compat.
+        $rmrjData = $this->buildRmrjData($visit, $nurse, $refraksi, $doctor);
+
         // Upsert MedicalResume
         $resume = MedicalResume::updateOrCreate(
             ['visit_id' => $visitId],
@@ -1103,6 +1341,7 @@ class DokterService
                 'resume_a'           => $a,
                 'resume_p'           => $p,
                 'penunjang_results'  => $penunjangResults,
+                'rmrj_data'          => $rmrjData,
                 'is_editable'        => true,
                 'is_finalized'       => false,
                 'generated_at'       => now(),
@@ -1119,6 +1358,138 @@ class DokterService
         return $resume->fresh();
     }
 
+    /**
+     * Susun field Resume Medis Rawat Jalan (RM 1.7/RMRJ/22) dari data kunjungan.
+     *
+     * Field cetak (header/footer) ikut disimpan agar resume final tetap utuh walau
+     * data sumber berubah kemudian. Field naratif (anamnese/pemeriksaan_fisik/dst)
+     * di-auto-isi; tindakan & riwayat/instruksi dikosongkan untuk diisi dokter.
+     */
+    private function buildRmrjData(Visit $visit, $nurse, $refraksi, $doctor): array
+    {
+        // --- Pemeriksaan Fisik: tanda vital (triase) + visus/IOP (refraksi) ---
+        $fisikParts = [];
+        if ($nurse) {
+            if ($nurse->td_sistol || $nurse->td_diastol) {
+                $fisikParts[] = "TD: {$nurse->td_sistol}/{$nurse->td_diastol} mmHg";
+            }
+            if ($nurse->nadi)      { $fisikParts[] = "Nadi: {$nurse->nadi} x/mnt"; }
+            if ($nurse->respirasi) { $fisikParts[] = "RR: {$nurse->respirasi} x/mnt"; }
+            if ($nurse->suhu)      { $fisikParts[] = "Suhu: {$nurse->suhu} C"; }
+            if ($nurse->spo2)      { $fisikParts[] = "SpO2: {$nurse->spo2}%"; }
+        }
+        if ($refraksi) {
+            $fisikParts[] = 'Visus OD: ' . ($refraksi->visus_akhir_od ?? '-') . ', OS: ' . ($refraksi->visus_akhir_os ?? '-');
+            if ($refraksi->iop_od || $refraksi->iop_os) {
+                $fisikParts[] = "TIO OD: {$refraksi->iop_od} mmHg, OS: {$refraksi->iop_os} mmHg";
+            }
+        }
+        $pemeriksaanFisik = implode("\n", $fisikParts);
+
+        // --- Alergi Obat (dari triase) ---
+        $alergi = ($nurse && $nurse->has_allergy)
+            ? ($nurse->allergy_detail ?: 'Ada alergi (detail tidak dicatat)')
+            : 'Tidak ada';
+
+        // --- Hasil Penunjang Medis: nama order penunjang yang COMPLETED ---
+        $penunjangParts = [];
+        foreach ($visit->diagnosticOrders ?? [] as $ord) {
+            if ($ord->status !== 'COMPLETED') {
+                continue;
+            }
+            $type = DiagnosticTestType::where('code', $ord->test_type)->value('name') ?? $ord->test_type;
+            $eye  = $ord->eye_side ? ' (' . strtoupper($ord->eye_side) . ')' : '';
+            $penunjangParts[] = $type . $eye;
+        }
+        $hasilPenunjang = implode("\n", array_unique($penunjangParts));
+
+        // --- Diagnosa: ICD-10 utama + sekunder (kode + nama) ---
+        $diagParts = [];
+        if ($doctor?->diagnosis_utama) {
+            $diagParts[] = $this->labelIcd10($doctor->diagnosis_utama);
+        }
+        foreach ($doctor->diagnosis_sekunder ?? [] as $kode) {
+            $diagParts[] = $this->labelIcd10($kode);
+        }
+        if ($doctor?->diagnosis_text) {
+            $diagParts[] = $doctor->diagnosis_text;
+        }
+        $diagnosa = implode("\n", array_filter($diagParts));
+
+        // --- Terapi: obat resep (nama + dosis/aturan pakai) ---
+        $terapiParts = [];
+        $prescriptions = Prescription::with('items.medication')
+            ->where('visit_id', $visit->id)
+            ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING', 'DISPENSED'])
+            ->get();
+        foreach ($prescriptions as $presc) {
+            foreach ($presc->items as $it) {
+                $nama = $it->medication?->name ?? Medication::where('id', $it->medication_id)->value('name') ?? 'Obat';
+                $aturan = trim(implode(' ', array_filter([
+                    $it->quantity ? ('x' . $it->quantity) : null,
+                    $it->dose,
+                    $it->frequency,
+                    $it->route,
+                    $it->duration_days ? ('selama ' . $it->duration_days . ' hari') : null,
+                ])));
+                $terapiParts[] = $aturan ? "{$nama} - {$aturan}" : $nama;
+            }
+        }
+        $terapi = implode("\n", $terapiParts);
+
+        // --- Header & footer (untuk cetak) ---
+        $visit->loadMissing(['doctorSchedule', 'insurer', 'patient']);
+        $doctorName = $doctor?->doctor?->name
+            ?? $visit->doctorSchedule?->employee?->name
+            ?? auth('api')->user()?->name
+            ?? '-';
+        $ruangPoli = $visit->doctorSchedule?->poliklinik ?: '-';
+        $penjamin  = $visit->insurer?->name ?: ($visit->guarantor_type ?: 'UMUM');
+
+        $kontrolTanggal = ($visit->planning_follow_up && $visit->follow_up_date)
+            ? $visit->follow_up_date->format('Y-m-d')
+            : null;
+        $clinicName = ClinicProfile::query()->value('clinic_name');
+
+        return [
+            // Header
+            'tanggal_berobat'      => optional($visit->visit_date)->format('Y-m-d') ?? now()->format('Y-m-d'),
+            'dokter_merawat'       => $doctorName,
+            'ruang_poli'           => $ruangPoli,
+            'penanggung_bayar'     => $penjamin,
+            // Isi (naratif)
+            'anamnese'             => $doctor?->anamnese ?? $nurse?->chief_complaint ?? '',
+            'pemeriksaan_fisik'    => $pemeriksaanFisik,
+            'alergi_obat'          => $alergi,
+            'hasil_penunjang'      => $hasilPenunjang,
+            'diagnosa'             => $diagnosa,
+            'tindakan'             => '',   // dikosongkan: diisi dokter
+            'terapi'               => $terapi,
+            'riwayat_inap_operasi' => '',   // diisi dokter
+            'instruksi_edukasi'    => '',   // diisi dokter
+            // Kontrol
+            'kontrol_tanggal'      => $kontrolTanggal,
+            'kontrol_tempat'       => $kontrolTanggal ? ($clinicName ?: '') : '',
+        ];
+    }
+
+    private array $icd10NameCache = [];
+
+    /** "H25.1 - Katarak senilis..." (nama dari icd10_codes bila ada). */
+    private function labelIcd10(?string $code): ?string
+    {
+        if (! $code) {
+            return null;
+        }
+        if (! array_key_exists($code, $this->icd10NameCache)) {
+            $row = Icd10Code::where('code', $code)->first();
+            $this->icd10NameCache[$code] = $row?->indonesian_description ?: $row?->description;
+        }
+        $name = $this->icd10NameCache[$code];
+
+        return $name ? "{$code} - {$name}" : $code;
+    }
+
     public function updateResumeMedis(string $id, array $data): MedicalResume
     {
         $resume = MedicalResume::findOrFail($id);
@@ -1132,7 +1503,15 @@ class DokterService
             throw new \Exception('Resume medis tidak bisa diedit.', 422);
         }
 
-        $resume->update(array_intersect_key($data, array_flip(['resume_s', 'resume_o', 'resume_a', 'resume_p'])));
+        // S/O/A/P lama (backward-compat) + rmrj_data (field formulir RM 1.7).
+        $payload = array_intersect_key($data, array_flip(['resume_s', 'resume_o', 'resume_a', 'resume_p']));
+
+        if (array_key_exists('rmrj_data', $data) && is_array($data['rmrj_data'])) {
+            // Merge agar field header/footer yang tak dikirim FE tidak hilang.
+            $payload['rmrj_data'] = array_merge($resume->rmrj_data ?? [], $data['rmrj_data']);
+        }
+
+        $resume->update($payload);
 
         $this->log(auth('api')->id(), 'UPDATE_RESUME', MedicalResume::class, $id);
 
@@ -1148,15 +1527,130 @@ class DokterService
             throw new \Exception('Resume medis sudah dikunci.', 422);
         }
 
-        $resume->update([
-            'is_finalized' => true,
-            'is_editable'  => false,
-            'finalized_at' => now(),
-        ]);
+        return DB::transaction(function () use ($resume, $id) {
+            $resume->update([
+                'is_finalized' => true,
+                'is_editable'  => false,
+                'finalized_at' => now(),
+            ]);
 
-        $this->log(auth('api')->id(), 'FINALIZE_RESUME', MedicalResume::class, $id);
+            // Terbitkan sebagai PatientDocument (tipe RMRJ) agar muncul di menu
+            // "Dokumen" RME dengan tombol Print (render dari rendered_html).
+            $this->publishResumeDocument($resume->fresh());
 
-        return $resume->fresh();
+            $this->log(auth('api')->id(), 'FINALIZE_RESUME', MedicalResume::class, $id);
+
+            return $resume->fresh();
+        });
+    }
+
+    /**
+     * Buat/update PatientDocument "Resume Medis Rawat Jalan" (RM 1.7/RMRJ/22)
+     * dari resume yang sudah final, beserta snapshot HTML cetak (rendered_html).
+     * Idempoten per (visit, tipe RMRJ).
+     */
+    private function publishResumeDocument(MedicalResume $resume): void
+    {
+        $visit = Visit::with('patient')->find($resume->visit_id);
+        if (! $visit) {
+            return;
+        }
+
+        $docType = DocumentType::firstOrCreate(
+            ['code' => 'RMRJ'],
+            [
+                'name'           => 'Resume Medis Rawat Jalan',
+                'fill_frequency' => 'PER_VISIT',
+                'generate_type'  => 'MANUAL',
+                'show_in_rme'    => true,
+                'is_active'      => true,
+            ]
+        );
+
+        $html = $this->buildRmrjHtml($resume, $visit);
+
+        PatientDocument::updateOrCreate(
+            ['visit_id' => $visit->id, 'document_type_id' => $docType->id],
+            [
+                'patient_id'              => $visit->patient_id,
+                'status'                  => 'FINAL',
+                'created_by_station'      => 'DOKTER',
+                'template_code'           => 'RMRJ',
+                'rendered_html'           => $html,
+                'pending_signature_roles' => [],
+                'signatures'              => [],
+                'finalized_at'            => now(),
+                'printed_count'           => 0,
+            ]
+        );
+    }
+
+    /** HTML A4 Resume Medis Rawat Jalan (RM 1.7/RMRJ/22) dari rmrj_data. */
+    public function buildRmrjHtml(MedicalResume $resume, ?Visit $visit = null): string
+    {
+        $visit   = $visit ?? Visit::with('patient')->find($resume->visit_id);
+        $patient = $visit?->patient;
+        $clinic  = ClinicProfile::query()->first();
+        $r       = $resume->rmrj_data ?? [];
+
+        $e = fn ($s) => htmlspecialchars((string) ($s ?? ''), ENT_QUOTES, 'UTF-8');
+        $nl = fn ($s) => nl2br($e($s));
+
+        $logo = $clinic?->logo_path
+            ? '<img src="' . $e($clinic->logo_path) . '" style="max-height:54px;max-width:180px;object-fit:contain"/>'
+            : '<div style="font-weight:700;font-size:13px">' . $e($clinic?->clinic_name ?: 'LOGO') . '</div>';
+        $gender = $patient?->gender === 'L' ? 'L' : ($patient?->gender === 'P' ? 'P' : '-');
+        $dob    = optional($patient?->date_of_birth)->format('Y-m-d');
+        $doctorName = $resume->doctor?->name ?? ($r['dokter_merawat'] ?? '');
+        $finalDate  = optional($resume->finalized_at)->format('Y-m-d') ?: ($r['tanggal_berobat'] ?? '');
+
+        $row = fn ($label, $val) => '<tr><td class="lbl">' . $e($label) . '</td><td class="val">' . $nl($val) . '</td></tr>';
+        $pair = fn ($l1, $v1, $l2, $v2) =>
+            '<tr><td class="lbl">' . $e($l1) . '</td><td class="val">' . $e($v1) . '</td>'
+            . '<td class="lbl">' . $e($l2) . '</td><td class="val">' . $e($v2) . '</td></tr>';
+
+        return '<div class="rmrj-doc"><style>'
+            . '.rmrj-doc { font-family: "Times New Roman", serif; font-size: 11pt; color:#000; }'
+            . '.rmrj-doc table { border-collapse: collapse; width: 100%; }'
+            . '.rmrj-doc td { border: 1px solid #000; padding: 3px 6px; vertical-align: top; }'
+            . '.rmrj-doc .ident td { border: none; padding: 1px 4px; font-size: 10pt; }'
+            . '.rmrj-doc .code { text-align: right; font-size: 9pt; margin-bottom: 2px; }'
+            . '.rmrj-doc .title { text-align: center; font-weight: 700; font-size: 11.5pt; padding: 4px; }'
+            . '.rmrj-doc .lbl { width: 26%; font-weight: 600; } .rmrj-doc .val { width: 24%; }'
+            . '.rmrj-doc .full .val { width: 74%; }'
+            . '.rmrj-doc .sign-wrap { margin-top: 18px; width: 320px; margin-left: auto; text-align: center; font-size: 10.5pt; }'
+            . '.rmrj-doc .sign-line { margin-top: 52px; border-top: 1px solid #000; padding-top: 2px; }'
+            . '</style>'
+            . '<div class="code">RM 1.7/RMRJ/22</div>'
+            . '<table><tr><td style="width:50%;border:none">' . $logo . '</td>'
+            . '<td style="width:50%;border:none"><table class="ident">'
+            . '<tr><td style="width:30%">Nama</td><td>: ' . $e($patient?->name) . '</td></tr>'
+            . '<tr><td>Tgl Lahir</td><td>: ' . $e($dob) . ' &nbsp; ' . $e($gender) . '</td></tr>'
+            . '<tr><td>No.RM</td><td>: ' . $e($patient?->no_rm) . '</td></tr>'
+            . '<tr><td>NIK</td><td>: ' . $e($patient?->nik) . '</td></tr>'
+            . '</table></td></tr></table>'
+            . '<table><tr><td colspan="4" class="title">RESUME MEDIS RAWAT JALAN</td></tr>'
+            . $pair('Tanggal Berobat', $r['tanggal_berobat'] ?? '', 'Dokter yang Merawat', $r['dokter_merawat'] ?? '')
+            . $pair('Ruang Poli', $r['ruang_poli'] ?? '', 'Penanggung Pembayaran', $r['penanggung_bayar'] ?? '')
+            . '</table>'
+            . '<table class="full">'
+            . $row('Anamnese', $r['anamnese'] ?? '')
+            . $row('Pemeriksaan Fisik', $r['pemeriksaan_fisik'] ?? '')
+            . $row('Alergi Obat', $r['alergi_obat'] ?? '')
+            . $row('Hasil Penunjang Medis Laboratorium/Radiologi/dll', $r['hasil_penunjang'] ?? '')
+            . $row('Diagnosa', $r['diagnosa'] ?? '')
+            . $row('Tindakan', $r['tindakan'] ?? '')
+            . $row('Terapi', $r['terapi'] ?? '')
+            . $row('Riwayat/Rawat Inap/Operasi/Tindakan', $r['riwayat_inap_operasi'] ?? '')
+            . $row('Instruksi/Anjuran dan Edukasi Lanjutan', $r['instruksi_edukasi'] ?? '')
+            . '<tr><td class="lbl">Kontrol Tanggal: ' . $e($r['kontrol_tanggal'] ?? '') . '</td>'
+            . '<td class="val">Di: ' . $e($r['kontrol_tempat'] ?? '') . '</td></tr>'
+            . '</table>'
+            . '<div class="sign-wrap"><div>Tanggal, ' . $e($finalDate) . '</div>'
+            . '<div>Dokter yang Memeriksa,</div>'
+            . '<div class="sign-line">' . $e($doctorName) . '</div>'
+            . '<div>Nama Jelas dan Tandatangan</div></div>'
+            . '</div>';
     }
 
     // =========================================================================
@@ -1366,8 +1860,10 @@ class DokterService
             throw new \Exception('Dokumen tidak dalam status menunggu TTD.', 422);
         }
 
-        // Verify PIN (pin is hidden in JSON but accessible in PHP)
-        if (! Hash::check($pin, $user->pin)) {
+        // Verify PIN. PIN disimpan PLAINTEXT (kolom tanpa cast 'hashed') — konsisten
+        // dgn DokterController::verifyPin, SignatureService, AuthService::changePin.
+        // Pakai hash_equals (timing-safe), BUKAN Hash::check (bug lama: TTD selalu 401).
+        if (empty($user->pin) || ! hash_equals((string) $user->pin, (string) $pin)) {
             throw new \Exception('PIN tidak sesuai.', 401);
         }
 

@@ -4,7 +4,8 @@
  *
  * Props:
  *   resourceKey  : string  — key di REGISTRY masterDataStore
- *   showTemplate : boolean (default true)  — tarif tidak punya template-csv di backend, set false
+ *   showTemplate : boolean (default true)  — set false bila resource tak punya template-csv di backend
+ *   allowExcel   : boolean (default false) — Template/Export jadi dropdown CSV/Excel + import terima .xlsx
  *
  * Internal:
  *   File input hidden — open via klik Import.

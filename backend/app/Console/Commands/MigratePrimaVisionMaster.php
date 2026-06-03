@@ -4,8 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\BhpItem;
 use App\Models\Insurer;
-use App\Models\InventoryPrice;
-use App\Models\InventoryPriceSetting;
 use App\Models\Medication;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
@@ -21,8 +19,8 @@ use Illuminate\Support\Facades\DB;
  * GELOMBANG-2 — Migrasi master harga/tarif/paket/resep Prima Vision → Arumed.
  *
  * Sumber  : CSV gzip di `Docs/migrasi data/csv2/*.csv.gz` (streaming, tak butuh restore).
- * Target  : DB Arumed aktif (medications, bhp_items, inventory_prices, procedures,
- *           procedure_tariffs, surgery_packages(+tariffs), prescriptions(+items)).
+ * Target  : DB Arumed aktif (medications, bhp_items, medication_tariffs/bhp_tariffs UMUM,
+ *           procedures, procedure_tariffs, surgery_packages(+tariffs), prescriptions(+items)).
  *
  * ⚠️ WAJIB DIJALANKAN SETELAH Gelombang-1 (`migrasi:primavision`) sudah commit penuh:
  *   - procedure_tariffs butuh `insurers` hasil Gel-1 (carabayar+asuransi, ~236 penjamin).
@@ -33,8 +31,8 @@ use Illuminate\Support\Facades\DB;
  * (case-insensitive), sesuai keputusan plan #8.
  *
  * Keputusan mapping FINAL (lihat Docs/migrasi data/PLAN-MIGRASI-GABUNGAN.md):
- *  - obat jenis=Obat → medications; Alkes→bhp(MEDICAL_SUPPLIES), Bhp→bhp(MEDICAL_BHP), CSSD→INSTRUMENT_SET.
- *  - harga_obat → inventory_prices (item_type MEDICATION/BHP, klasifikasi by-name ke master obat).
+ *  - obat jenis=Obat → medications; Alkes & Bhp → bhp(MEDICAL_BHP), CSSD→INSTRUMENT_SET.
+ *  - harga_obat → harga jual TUNGGAL di Buku Tarif: medication_tariffs/bhp_tariffs baris insurer UMUM (klasifikasi by-name ke master obat).
  *  - base_price procedures = buku_tarif by-name → fallback tarif Umum carabayar (39% tetap 0).
  *  - kategori procedures = label buku_tarif → fallback nama sumber.
  *  - carabayar_tindakan_rawat_jalan → procedure_tariffs (skip 'eksekutif', alias 3 penjamin).
@@ -153,11 +151,10 @@ class MigratePrimaVisionMaster extends Command
         foreach (Visit::query()->whereNotNull('legacy_uuid')->get(['id', 'legacy_uuid']) as $v) {
             $this->visitByLegacy[$v->legacy_uuid] = $v->id;
         }
-        // PPN aktif dari setting (default 11%).
-        $setting = InventoryPriceSetting::query()->first();
-        if ($setting) $this->ppnRate = (float) $setting->ppn_rate;
+        // PPN default 11% (modul Penentuan Harga / inventory_price_settings sudah dihapus).
+        // Dipakai hanya untuk fallback computeHja saat hja_resep kosong di CSV.
 
-        // Klasifikasi master obat by-name (untuk inventory_prices & resep).
+        // Klasifikasi master obat by-name (untuk harga tarif & resep).
         foreach ($this->readCsv('obat') as $r) {
             $this->obatJenisByName[mb_strtolower(trim((string) $r['nama']))] =
                 mb_strtolower(trim((string) ($r['jenis'] ?? '')));
@@ -226,7 +223,7 @@ class MigratePrimaVisionMaster extends Command
                 'formularium' => $this->truncate($this->clean($r['formularium'] ?? null), 100) ?? 'NON-FORNAS',
                 'min_stock'   => (int) ($r['min_stock'] ?? 0),
                 'stock'       => 0,                 // stok manual / opname, tidak dari migrasi
-                'price'       => 0,                 // harga via inventory_prices (step harga)
+                'price'       => 0,                 // kolom legacy; harga jual via Buku Tarif (step harga)
                 'is_active'   => ((string) ($r['delete_soft'] ?? '1')) === '1',
             ];
 
@@ -292,7 +289,8 @@ class MigratePrimaVisionMaster extends Command
     private function mapBhpCategory(string $jenis): ?string
     {
         return match ($jenis) {
-            'alkes' => BhpItem::CATEGORY_MEDICAL_SUPPLIES,
+            // Kategori MEDICAL_SUPPLIES dihapus 2026-06-03 → alkes ikut jadi MEDICAL_BHP.
+            'alkes' => BhpItem::CATEGORY_MEDICAL_BHP,
             'bhp'   => BhpItem::CATEGORY_MEDICAL_BHP,
             'cssd'  => BhpItem::CATEGORY_INSTRUMENT_SET,
             default => null,
@@ -304,8 +302,15 @@ class MigratePrimaVisionMaster extends Command
     private function migrateHarga(): void
     {
         $this->newLine();
-        $this->info('▶ inventory_prices (harga_obat → MEDICATION/BHP)');
+        $this->info('▶ harga jual (harga_obat → medication_tariffs / bhp_tariffs UMUM)');
         $created = 0; $skipped = 0; $n = 0;
+
+        // Harga obat/BHP = harga jual TUNGGAL di Buku Tarif → baris insurer UMUM.
+        $umumId = $this->insurerByName['umum'] ?? null;
+        if (! $umumId && ! $this->dry) {
+            $this->warn('  insurer UMUM tidak ditemukan — harga jual dilewati.');
+            return;
+        }
 
         $rows = iterator_to_array($this->readCsv('harga_obat'));
         $bar = $this->output->createProgressBar(count($rows));
@@ -322,34 +327,47 @@ class MigratePrimaVisionMaster extends Command
             $jenis = $this->obatJenisByName[$lname] ?? 'obat';
             $isMed = ($jenis === 'obat' || $jenis === '' || $jenis === '-');
 
-            $itemType = $isMed ? InventoryPrice::TYPE_MEDICATION : InventoryPrice::TYPE_BHP;
-            $itemId   = $isMed ? ($this->medByName[$lname] ?? null) : ($this->bhpByName[$lname] ?? null);
+            [$table, $fk] = $isMed ? ['medication_tariffs', 'medication_id'] : ['bhp_tariffs', 'bhp_item_id'];
+            $itemId = $isMed ? ($this->medByName[$lname] ?? null) : ($this->bhpByName[$lname] ?? null);
             if ($itemId === null || $itemId === 'dry') {
-                // Master belum ada (step medications/bhp belum jalan, atau dry-run) → skip senyap di dry.
-                if (! $this->dry) { $skipped++; continue; }
+                // Master belum ada (step medications/bhp belum jalan, atau dry-run) → skip.
                 $skipped++;
                 continue;
             }
 
+            // Harga jual = hja_resep; fallback hitung dari HPP+margin(+PPN) bila kosong.
             $hpp    = (float) ($r['hpp'] ?? 0);
             $margin = (float) ($r['margin_resep'] ?? 0);
             $ppnOn  = (float) ($r['harga_netto_ppn'] ?? 0) > 0;
             $hja    = (float) ($r['hja_resep'] ?? 0);
-            if ($hja <= 0) $hja = InventoryPrice::computeHja($hpp, $margin, $ppnOn, $this->ppnRate);
-
-            $data = [
-                'hpp'            => round($hpp, 2),
-                'margin_percent' => round($margin, 2),
-                'ppn_enabled'    => $ppnOn,
-                'hja'            => round($hja, 2),
-                'notes'          => 'migrasi prima vision',
-            ];
+            if ($hja <= 0) {
+                $base = $hpp * (1 + ($margin / 100));
+                if ($ppnOn) $base = $base * (1 + ($this->ppnRate / 100));
+                $hja = round($base, 2);
+            }
 
             if (! $this->dry) {
-                InventoryPrice::updateOrCreate(
-                    ['item_type' => $itemType, 'item_id' => $itemId],
-                    $data
-                );
+                // Soft-delete aware: cek baris UMUM existing (withTrashed) → restore/update.
+                $existing = \DB::table($table)
+                    ->where($fk, $itemId)->where('insurer_id', $umumId)->first();
+                if ($existing) {
+                    \DB::table($table)->where('id', $existing->id)->update([
+                        'price'      => round($hja, 2),
+                        'is_active'  => true,
+                        'deleted_at' => null,
+                        'updated_at' => now(),
+                    ]);
+                } else {
+                    \DB::table($table)->insert([
+                        'id'         => (string) \Illuminate\Support\Str::uuid(),
+                        $fk          => $itemId,
+                        'insurer_id' => $umumId,
+                        'price'      => round($hja, 2),
+                        'is_active'  => true,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
             }
             $created++;
         }

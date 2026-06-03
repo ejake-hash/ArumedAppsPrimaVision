@@ -709,6 +709,21 @@ function catCls(item) {
   return `kat-${(item.item_type || 'lainnya').toLowerCase()}`
 }
 
+// Baris diskon paket (net negatif) — redaksi editable, tanpa input diskon item.
+function isDiskonPaket(item) {
+  return item.item_type === 'DISKON_PAKET'
+}
+const paketDescDebounce = ref({})
+function onPaketDescChange(item) {
+  if (paketDescDebounce.value[item.id]) clearTimeout(paketDescDebounce.value[item.id])
+  paketDescDebounce.value[item.id] = setTimeout(async () => {
+    try {
+      await kasirApi.updateItem(item.id, { description: item.description || 'Diskon Paket' })
+      await refreshInvoice()
+    } catch { /* biarkan, refreshInvoice akan sinkron ulang */ }
+  }, 500)
+}
+
 // ─── Grouping rincian tagihan per kategori ───────────────────────────────────
 // Mengelompokkan selInv.items berdasarkan category, mengikuti sort_order dari
 // master billingCategories. Item yang category-nya tidak terdaftar di master
@@ -1123,13 +1138,23 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <td class="num strong">Rp {{ grp.subtotal.toLocaleString('id-ID') }}</td>
                         <td v-if="editTagihan"></td>
                       </tr>
-                      <tr v-for="item in grp.items" :key="item.id">
-                        <td class="strong">{{ item.description }}</td>
+                      <tr v-for="item in grp.items" :key="item.id" :class="{ 'is-diskon': isDiskonPaket(item) }">
+                        <td class="strong">
+                          <input
+                            v-if="editTagihan && isDiskonPaket(item)"
+                            v-model="item.description"
+                            class="fi tbl-fi"
+                            placeholder="Redaksi diskon (mis. Paket Bedah)"
+                            @input="onPaketDescChange(item)"
+                          />
+                          <template v-else>{{ item.description }}</template>
+                        </td>
                         <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
                         <td class="num">{{ item.quantity }}</td>
                         <td class="num">Rp {{ Number(item.unit_price).toLocaleString('id-ID') }}</td>
                         <td v-if="editTagihan" class="num">
                           <input
+                            v-if="!isDiskonPaket(item)"
                             v-model.number="item.discount_percent"
                             type="number" min="0" max="100" step="0.01"
                             class="fi tbl-fi tbl-num"
@@ -1138,6 +1163,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         </td>
                         <td v-if="editTagihan" class="num">
                           <input
+                            v-if="!isDiskonPaket(item)"
                             v-model.number="item.discount_amount"
                             type="number" min="0" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
                             class="fi tbl-fi tbl-num"
@@ -1333,7 +1359,7 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
             </div>
             <div class="stat-card">
               <div class="stat-icon" style="background: var(--gl)"><svg viewBox="0 0 24 24" stroke="var(--ga)"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg></div>
-              <div><div class="stat-val">Rp {{ (history.reduce((a, b) => a + Number(b.paid_amount ?? 0), 0) / 1000000).toFixed(2) }}jt</div><div class="stat-lbl">Total Pendapatan</div></div>
+              <div><div class="stat-val">Rp {{ (history.reduce((a, b) => a + Number(b.paid_amount ?? 0), 0) / 1000000).toFixed(2) }}jt</div><div class="stat-lbl">Kas Diterima</div></div>
             </div>
             <div class="stat-card">
               <div class="stat-icon" style="background: #dbeafe"><svg viewBox="0 0 24 24" stroke="#1e40af"><rect x="3" y="4" width="18" height="18" rx="2"/></svg></div>
@@ -1716,6 +1742,9 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .tbl .strong { font-weight: 600; }
 .tbl .muted { color: var(--tu); font-size: 10.5px; }
 .muted-strike { color: var(--tu); text-decoration: line-through; display: block; font-size: 10px; font-weight: 400; }
+/* Baris diskon paket — net negatif, warna potongan */
+.tbl tbody.kat-group tr.is-diskon td { color: var(--ga); }
+.tbl tbody.kat-group tr.is-diskon td.strong { font-weight: 600; }
 .empty-row { text-align: center !important; color: var(--th); padding: 1.5rem !important; }
 
 .kat-pill { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }

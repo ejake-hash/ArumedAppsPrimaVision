@@ -3,13 +3,14 @@
  * MetodeBayarView — list master penjamin (insurers).
  *
  * Fitur:
- * - Tabel: No, Nama, Tipe, Parent TPA, Children, Telepon, Status, Aksi
+ * - Tabel: No, Nama, Tipe, TPA, Telepon, Status, Aksi
  * - 3 baris sistem (UMUM/BPJS/SOSIAL) ditandai badge "Sistem", tidak boleh hapus
- * - Insurer dengan parent_id (child TPA) tampak badge `← Parent`
- * - Insurer dengan children > 0 (TPA parent) tampak badge `[n child]`
+ * - Anggota TPA (punya parent_id) DISEMBUNYIKAN dari daftar (only_tpa_view) — tarifnya
+ *   identik dgn TPA induk. Anggota dikelola dari halaman detail TPA induk.
+ * - TPA induk (punya anggota) tampak badge `Induk TPA · n anggota`
  * - Tombol "Kelola Tarif" navigate ke detail page
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { masterApi } from '@/services/api'
 import MasterTable from '@/components/master-data/MasterTable.vue'
@@ -39,7 +40,7 @@ const confirmDelete = ref({ open: false, row: null, busy: false })
 const toast = ref(null)
 
 function emptyForm() {
-  return { name: '', code: '', type: 'ASURANSI', parent_id: '', phone: '', email: '', address: '', is_active: true }
+  return { name: '', code: '', type: 'ASURANSI', phone: '', email: '', address: '', is_active: true, is_tpa: false }
 }
 
 function showToast(type, msg) {
@@ -47,21 +48,68 @@ function showToast(type, msg) {
   setTimeout(() => { if (toast.value?.msg === msg) toast.value = null }, 3500)
 }
 
+// ─── CSV / Excel: Template / Import / Export ────────────────────────────────
+const csvMenu = ref(null)          // 'template' | 'export' | null
+const csvFileInput = ref(null)
+const csvBusy = ref(false)
+
+function toggleCsvMenu(name) { csvMenu.value = csvMenu.value === name ? null : name }
+function closeCsvMenu(e) { if (!e.target.closest?.('.mb-split')) csvMenu.value = null }
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob]))
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+async function onTemplate(format = 'csv') {
+  csvMenu.value = null
+  try {
+    const res = await masterApi.penjamin.csvTemplate(format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(res.data, `template-penjamin.${format}`)
+  } catch (e) { showToast('e', 'Gagal unduh template') }
+}
+
+async function onExport(format = 'csv') {
+  csvMenu.value = null
+  try {
+    const res = await masterApi.penjamin.csvExport(format === 'xlsx' ? 'xlsx' : undefined)
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `penjamin-${stamp}.${format}`)
+  } catch (e) { showToast('e', 'Gagal export') }
+}
+
+function pickImport() { csvFileInput.value?.click() }
+
+async function onImport(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  csvBusy.value = true
+  try {
+    const res = await masterApi.penjamin.csvImport(file)
+    const r = res.data?.data ?? {}
+    const msg = `Import: ${r.inserted ?? 0} baru, ${r.updated ?? 0} update, ${r.skipped ?? 0} dilewati`
+    showToast((r.errors?.length || (r.skipped ?? 0) > 0) ? 'w' : 's', msg)
+    await refresh(meta.value.current_page)
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal import')
+  } finally {
+    csvBusy.value = false
+  }
+}
+
 // ─── Table ────────────────────────────────────────────────────────────────
 const columns = [
   { key: '_no',       label: 'No',     width: '50px',  align: 'center' },
   { key: 'name',      label: 'Nama Penjamin' },
   { key: 'type',      label: 'Tipe',   width: '120px' },
-  { key: 'parent',    label: 'Parent / Children', width: '180px' },
+  { key: 'tpa',       label: 'TPA',    width: '160px' },
   { key: 'phone',     label: 'Telepon', width: '130px' },
   { key: 'is_active', label: 'Status', width: '95px', align: 'center' },
 ]
-
-const parentLookup = computed(() => {
-  const m = {}
-  for (const it of items.value) m[it.id] = it.name
-  return m
-})
 
 const rows = computed(() => {
   const startIdx = ((meta.value.current_page ?? 1) - 1) * (meta.value.per_page ?? 25)
@@ -75,8 +123,8 @@ const rows = computed(() => {
   return filtered.map((r, i) => ({
     ...r,
     _no: startIdx + i + 1,
-    _parentName: r.parent_id ? (parentLookup.value[r.parent_id] ?? '—') : null,
     _childrenCount: r.children_count ?? 0,
+    _isTpa: !!r.is_tpa,
   }))
 })
 
@@ -87,7 +135,7 @@ async function refresh(page = 1) {
   loading.value = true
   error.value = null
   try {
-    const params = { page, per_page: meta.value.per_page }
+    const params = { page, per_page: meta.value.per_page, only_tpa_view: 1 }
     if (filterType.value) params.type = filterType.value
     const res = await masterApi.penjamin.list(params)
     const payload = res.data?.data
@@ -138,11 +186,11 @@ function openEdit(row) {
       name:      row.name ?? '',
       code:      row.code ?? '',
       type:      row.type ?? 'ASURANSI',
-      parent_id: row.parent_id ?? '',
       phone:     row.phone ?? '',
       email:     row.email ?? '',
       address:   row.address ?? '',
       is_active: row.is_active ?? true,
+      is_tpa:    !!row.is_tpa,
       _is_system: !!row.is_system,
     },
     errors: null,
@@ -157,8 +205,6 @@ async function onSubmit(payload) {
   try {
     const data = { ...payload }
     delete data._is_system
-    // empty string → null
-    if (!data.parent_id) data.parent_id = null
     if (modal.value.mode === 'create') {
       await masterApi.penjamin.create(data)
       showToast('s', 'Penjamin dibuat')
@@ -197,29 +243,29 @@ async function doDelete() {
 
 // ─── Modal fields ──────────────────────────────────────────────────────────
 const modalFields = computed(() => {
-  const editingId = modal.value.editingId
   const isSystem = modal.value.payload._is_system
-  const parentOpts = [
-    { value: '', label: '— tidak ada (stand-alone) —' },
-    ...items.value
-      .filter((it) => !it.is_system && it.id !== editingId)
-      .map((it) => ({ value: it.id, label: it.name })),
-  ]
 
+  // Keanggotaan TPA TIDAK diatur di sini — dikelola dari halaman detail TPA induk
+  // (panel "Anggota TPA"). Lihat MetodeBayarDetailView.
   const fields = [
     { key: 'name',      label: 'Nama Penjamin', type: 'text',     required: true, cols: 2, placeholder: 'cth. Mandiri Inhealth', disabled: isSystem },
     { key: 'type',      label: 'Tipe',          type: 'select',   required: true, cols: 2, options: TYPES, disabled: isSystem },
-    { key: 'parent_id', label: 'Parent (TPA)',  type: 'select',   cols: 2, options: parentOpts, disabled: isSystem,
-      hint: 'Pilih parent kalau insurer ini mewarisi tarif TPA (mis. Allianz via Admedika).' },
     { key: 'phone',     label: 'Telepon',       type: 'text',     cols: 1, placeholder: '021-xxx' },
     { key: 'email',     label: 'Email',         type: 'text',     cols: 1, placeholder: 'info@…' },
     { key: 'is_active', label: 'Aktif',         type: 'checkbox', cols: 2 },
+    { key: 'is_tpa',    label: 'Tandai sebagai TPA induk', type: 'checkbox', cols: 2,
+      hint: 'TPA induk bisa punya anggota (asuransi/perusahaan) yang mengikuti tarifnya. Kelola anggota dari halaman detail.',
+      showIf: (f) => !f._is_system },
     { key: 'address',   label: 'Alamat',        type: 'textarea', cols: 2, rows: 2 },
   ]
   return fields
 })
 
-onMounted(() => refresh())
+onMounted(() => {
+  document.addEventListener('click', closeCsvMenu)
+  refresh()
+})
+onUnmounted(() => document.removeEventListener('click', closeCsvMenu))
 </script>
 
 <template>
@@ -227,12 +273,43 @@ onMounted(() => refresh())
     <div class="mb-section-head">
       <div>
         <h2>Metode Bayar</h2>
-        <p>Master penjamin pembayaran. UMUM/BPJS/SOSIAL adalah baris sistem (tidak bisa dihapus). Asuransi swasta &amp; TPA dikelola di sini.</p>
+        <p>Master penjamin pembayaran. UMUM/BPJS/SOSIAL adalah baris sistem (tidak bisa dihapus). Anggota TPA tidak ditampilkan di sini — kelola dari halaman TPA induk.</p>
       </div>
-      <button class="mb-btn-primary" @click="openCreate">
-        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Tambah Penjamin
-      </button>
+      <div class="mb-header-actions">
+        <!-- CSV / Excel: Template / Import / Export -->
+        <div class="mb-split">
+          <button class="mb-btn-csv" @click.stop="toggleCsvMenu('template')" title="Unduh template (header + petunjuk)">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Template
+            <svg class="mb-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="csvMenu === 'template'" class="mb-menu">
+            <button @click="onTemplate('csv')">CSV (.csv)</button>
+            <button @click="onTemplate('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+        <button class="mb-btn-csv" :disabled="csvBusy" @click="pickImport" title="Import penjamin dari CSV/Excel">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          {{ csvBusy ? 'Mengimport…' : 'Import' }}
+        </button>
+        <div class="mb-split">
+          <button class="mb-btn-csv" @click.stop="toggleCsvMenu('export')" title="Export semua penjamin">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export
+            <svg class="mb-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="csvMenu === 'export'" class="mb-menu">
+            <button @click="onExport('csv')">CSV (.csv)</button>
+            <button @click="onExport('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+        <input ref="csvFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onImport" />
+
+        <button class="mb-btn-primary" @click="openCreate">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Tambah Penjamin
+        </button>
+      </div>
     </div>
 
     <div class="mb-filters">
@@ -264,15 +341,15 @@ onMounted(() => refresh())
         <span class="mb-type-pill" :data-t="value">{{ typeLabel(value) }}</span>
       </template>
 
-      <template #cell-parent="{ row }">
+      <template #cell-tpa="{ row }">
         <div class="mb-parent-cell">
-          <span v-if="row._parentName" class="mb-parent-tag" :title="`Inherit tarif dari ${row._parentName}`">
-            ← {{ row._parentName }}
+          <span v-if="row._childrenCount > 0" class="mb-children-tag" :title="`Induk TPA dengan ${row._childrenCount} anggota`">
+            Induk TPA · {{ row._childrenCount }} anggota
           </span>
-          <span v-if="row._childrenCount > 0" class="mb-children-tag" :title="`${row._childrenCount} insurer child`">
-            {{ row._childrenCount }} child
+          <span v-else-if="row._isTpa" class="mb-tpa-empty-tag" title="Ditandai sebagai TPA induk, belum ada anggota">
+            TPA · belum ada anggota
           </span>
-          <span v-if="!row._parentName && !row._childrenCount" class="mb-dim">—</span>
+          <span v-else class="mb-dim">—</span>
         </div>
       </template>
 
@@ -346,6 +423,18 @@ onMounted(() => refresh())
 .mb-btn-primary:hover { background: var(--gm); border-color: var(--gm); }
 .mb-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
 
+/* ─── CSV / Excel toolbar ─── */
+.mb-header-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.mb-split { position: relative; }
+.mb-caret { width: 11px !important; height: 11px !important; margin-left: 1px; }
+.mb-btn-csv { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.mb-btn-csv svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mb-btn-csv:hover:not(:disabled) { background: var(--bs); color: var(--td); border-color: var(--ga); }
+.mb-btn-csv:disabled { opacity: 0.45; cursor: not-allowed; }
+.mb-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.mb-menu button { text-align: left; padding: 7px 10px; border: none; background: transparent; border-radius: 6px; font-size: 12px; color: var(--td); cursor: pointer; }
+.mb-menu button:hover { background: var(--gl); color: var(--ga); }
+
 .mb-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.6rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
 .mb-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }
 .mb-chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 11.5px; cursor: pointer; font-weight: 500; transition: background 0.15s, border-color 0.15s, color 0.15s; }
@@ -368,6 +457,7 @@ onMounted(() => refresh())
 .mb-parent-cell { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .mb-parent-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; background: var(--pb); color: var(--pt); border: 1px solid var(--pbd); font-weight: 500; }
 .mb-children-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); font-weight: 500; }
+.mb-tpa-empty-tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; background: var(--bs); color: var(--tm); border: 1px dashed var(--gb); font-weight: 500; }
 .mb-dim { color: var(--tu); font-size: 12px; }
 
 .mb-status { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }

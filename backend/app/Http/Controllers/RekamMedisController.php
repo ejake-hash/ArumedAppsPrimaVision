@@ -261,6 +261,16 @@ class RekamMedisController extends Controller
         return $this->ok($this->service->showMedicalRecord($visitId));
     }
 
+    /** GET /rekam-medis/kunjungan/{visitId}/resume-medis — data cetak Resume Medis RM 1.7 */
+    public function resumeMedis(string $visitId): JsonResponse
+    {
+        try {
+            return $this->ok($this->service->resumeMedis($visitId));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
     /**
      * POST /rekam-medis/medical-record
      * Body: { visit_id, patient_id, document_type_id?, form_data }
@@ -481,7 +491,7 @@ class RekamMedisController extends Controller
     public function signDocument(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'signer_type'              => 'required|in:patient,guardian,witness,doctor,nurse,staff',
+            'signer_type'              => 'required|in:patient,guardian,witness,doctor,doctor_anestesi,nurse,staff',
             'signer_user_id'           => 'nullable|uuid|exists:users,id',
             'signer_patient_id'        => 'nullable|uuid|exists:patients,id',
             'signer_external_identity' => 'nullable|array',
@@ -490,6 +500,7 @@ class RekamMedisController extends Controller
             'signer_external_identity.hubungan'  => 'nullable|string|max:100',
             'signature_svg'            => 'nullable|string',
             'signature_png_base64'     => 'nullable|string',
+            'signature_pin'            => 'nullable|string|max:20',
             'biometric_metadata'       => 'nullable|array',
             'audit_log'                => 'nullable|array',
         ]);
@@ -501,10 +512,18 @@ class RekamMedisController extends Controller
         ];
         $validated['captured_by_facilitator_user_id'] = auth('api')->id();
 
+        // Nakes TTD via PIN: signer_user_id default ke user yang login bila kosong.
+        if (in_array($validated['signer_type'], \App\Services\FormRegistry\SignatureService::INTERNAL_SIGNER_TYPES, true)
+            && empty($validated['signer_user_id'])) {
+            $validated['signer_user_id'] = auth('api')->id();
+        }
+
         try {
             $sig = $this->signatures->capture($validated);
         } catch (\Throwable $e) {
-            return $this->error($e->getMessage(), 422);
+            // Pertahankan 401 untuk PIN salah (SignatureService set code 401).
+            $code = (int) $e->getCode();
+            return $this->error($e->getMessage(), in_array($code, [401, 403, 404], true) ? $code : 422);
         }
 
         return $this->ok($sig, 'Signature ter-capture', 201);
@@ -560,13 +579,73 @@ class RekamMedisController extends Controller
     }
 
     /**
-     * GET /rekam-medis/ttd-queue
-     * Antrian TTD untuk dokter yang login (grouped by patient).
+     * signer_type untuk antrean/TTD berdasarkan role user login.
+     * Dokter anestesi (role dokter_anestesi) → 'doctor_anestesi' (antrean & slot TTD
+     * anestesi terpisah); selain itu → 'doctor' (DPJP/operator, perilaku lama).
      */
-    public function ttdQueue(): JsonResponse
+    private function signerTypeForUser(): string
+    {
+        return auth('api')->user()?->role?->name === 'dokter_anestesi'
+            ? 'doctor_anestesi'
+            : 'doctor';
+    }
+
+    /**
+     * GET /rekam-medis/ttd-queue
+     * Antrian TTD dokter yang login — terfilter di SQL + pagination server-side.
+     * Query: page, per_page (default 10, maks 100), search, status.
+     */
+    public function ttdQueue(Request $request): JsonResponse
     {
         $userId = auth('api')->id();
-        return $this->ok($this->signatures->ttdQueueForDoctor($userId));
+        $paginator = $this->signatures->ttdQueueForDoctor($userId, [
+            'per_page' => (int) $request->query('per_page', 10),
+            'search'   => $request->query('search'),
+            'status'   => $request->query('status'),
+        ], $this->signerTypeForUser());
+        // Paginator di-serialize Laravel jadi {data, current_page, last_page, total, ...}
+        // → FE baca rows di data.data.data, meta di data.data.{total,last_page,...}.
+        return $this->ok($paginator);
+    }
+
+    /**
+     * POST /rekam-medis/ttd-bulk-sign
+     * Tandatangani banyak dokumen sekaligus sebagai dokter (1× PIN). Best-effort.
+     * Body: { document_ids: uuid[1..100], signature_pin: string }.
+     */
+    public function ttdBulkSign(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'document_ids'   => 'required|array|min:1|max:100',
+            'document_ids.*' => 'uuid',
+            'signature_pin'  => 'required|string|max:20',
+        ]);
+
+        $userId = auth('api')->id();
+        try {
+            $result = $this->signatures->bulkSignAsDoctor(
+                $userId,
+                $validated['document_ids'],
+                $validated['signature_pin'],
+                $this->signerTypeForUser(),
+            );
+        } catch (\Throwable $e) {
+            // Pertahankan 401 untuk PIN salah (service set code 401).
+            $code = (int) $e->getCode();
+            return $this->error($e->getMessage(), in_array($code, [401, 403, 404], true) ? $code : 422);
+        }
+
+        return $this->ok($result, 'Bulk TTD selesai');
+    }
+
+    /**
+     * GET /rekam-medis/ttd-count
+     * Jumlah dokumen di antrian TTD dokter (untuk badge sidebar).
+     */
+    public function ttdCount(): JsonResponse
+    {
+        $userId = auth('api')->id();
+        return $this->ok(['count' => $this->signatures->ttdCountForDoctor($userId, $this->signerTypeForUser())]);
     }
 
     /**

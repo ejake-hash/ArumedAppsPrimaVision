@@ -10,6 +10,7 @@ use App\Models\Insurer;
 use App\Models\InpatientCharge;
 use App\Models\IolItem;
 use App\Models\Medication;
+use App\Models\MedicationTariff;
 use App\Models\Prescription;
 use App\Models\Queue;
 use App\Models\SurgeryIolUsage;
@@ -154,6 +155,7 @@ class KasirService
             'doctorExamination.surgeryPackage.items',
             'surgeryRequests.bhpItems.bhpItem',
             'equipmentUsages.equipment',
+            'surgeryPackageSnapshots.items',
             'visitCob.penjamin1',
             'visitCob.penjamin2',
         ])->findOrFail($visitId);
@@ -175,6 +177,7 @@ class KasirService
                 $this->buildIolLines($visit),
                 $this->buildEquipmentLines($visit),
                 $this->buildInpatientChargeLines($visit),
+                $this->buildPaketDiscountLines($visit),
             );
 
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
@@ -282,6 +285,26 @@ class KasirService
         // tanpa dibayar). DRAFT pun ditagih: resep dokter dibuat status DRAFT dan
         // tetap DRAFT sampai farmasi memprosesnya (tak ada langkah submit terpisah
         // untuk RAJAL — lihat DokterService::storePrescription & FarmasiService::startDispensing).
+        // Pos kwitansi obat (Obat Pulang/Tindakan/Injeksi) = klasifikasi di TARIF obat,
+        // dibaca dari baris UMUM (harga tunggal acuan → 1 obat = 1 pos lintas penjamin).
+        // Pre-load map medication_id → pos dalam 1 query (hindari N+1). Item tanpa tarif
+        // UMUM → default OBAT_PULANG (lihat MedicationTariff::posLabel).
+        $medIds = $visit->prescriptions
+            ->where('status', '!=', 'CANCELLED')
+            ->flatMap(fn ($p) => $p->items->where('is_bedah', false)->pluck('medication_id'))
+            ->filter()->unique()->values()->all();
+
+        $posMap = [];
+        $umumId = $this->systemInsurerId('UMUM');
+        if ($umumId && $medIds) {
+            $posMap = DB::table('medication_tariffs')
+                ->whereIn('medication_id', $medIds)
+                ->where('insurer_id', $umumId)
+                ->whereNull('deleted_at')
+                ->pluck('pos_kwitansi', 'medication_id')
+                ->all();
+        }
+
         $lines = [];
         foreach ($visit->prescriptions as $prescription) {
             if ($prescription->status === 'CANCELLED') {
@@ -297,7 +320,7 @@ class KasirService
                 $total = $price * $item->quantity;
                 $lines[] = [
                     'item_type'    => 'OBAT',
-                    'category'     => 'Obat',
+                    'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
                     'reference_id' => $item->id,
                     'description'  => $item->medication?->name ?? 'Obat',
                     'quantity'     => $item->quantity,
@@ -390,14 +413,25 @@ class KasirService
      * BHP "kamar bedah" dari komposisi PAKET — kategori CSSD & INSTRUMENT_SET.
      *
      * Item ini ada fisik di kamar bedah (TIDAK diminta ke gudang lewat unit-request),
-     * tapi tetap ditagih sesuai paket. Sumber: surgery_package.items kategori
-     * CSSD/INSTRUMENT_SET. Anti dobel-tagih: lewati BHP yang sudah masuk via
-     * buildBhpLines (jalur used_qty surgery_requests).
+     * tapi tetap ditagih sesuai paket. Anti dobel-tagih: lewati BHP yang sudah
+     * masuk via buildBhpLines (jalur used_qty surgery_requests).
+     *
+     * Sumber: SNAPSHOT paket pasien bila ada (komponen yang sudah disesuaikan
+     * operator Bedah) → menjaga himpunan "komponen tertagih" = "basis diskon"
+     * (lihat buildPaketDiscountLines). Fallback ke package master bila snapshot
+     * belum ada (pasien lama / alur tanpa snapshot).
      */
     private function buildPaketRoomBhpLines(Visit $visit): array
     {
-        $package = $visit->doctorExamination?->surgeryPackage;
-        if (! $package) {
+        // Multi-paket: kumpulkan komponen BHP dari SEMUA snapshot paket pasien.
+        // Fallback ke package master bila belum ada snapshot (pasien lama).
+        $snaps = $visit->surgeryPackageSnapshots;
+        if ($snaps->isNotEmpty()) {
+            $items = $snaps->flatMap(fn ($s) => $s->items->where('item_type', 'BHP'));
+        } else {
+            $items = $visit->doctorExamination?->surgeryPackage?->items?->where('item_type', 'BHP');
+        }
+        if (! $items || $items->isEmpty()) {
             return [];
         }
 
@@ -415,8 +449,11 @@ class KasirService
         $roomCategories = [BhpItem::CATEGORY_CSSD, BhpItem::CATEGORY_INSTRUMENT_SET];
 
         $lines = [];
-        foreach ($package->items as $pi) {
-            if ($pi->item_type !== 'BHP') continue;
+        // Catatan: TIDAK men-dedup lintas paket — tiap paket menagih komponennya
+        // sendiri agar tetap konsisten dgn basis diskon per-paket (buildPaketDiscountLines
+        // menghitung basis per snapshot). Bila operator tak mau dobel, hapus komponen di
+        // salah satu paket lewat panel Komponen Paket modul Bedah.
+        foreach ($items as $pi) {
             if (isset($alreadyBilled[$pi->item_id])) continue;
 
             $bhp = BhpItem::find($pi->item_id);
@@ -424,7 +461,9 @@ class KasirService
                 continue;
             }
 
-            $qty   = (int) ($pi->quantity ?? 1);
+            $qty = (int) ($pi->quantity ?? 1);
+            // Harga SELALU live (getPrice) — baik dari snapshot maupun master — agar
+            // tagihan room-BHP = basis diskon (buildPaketDiscountLines juga pakai getPrice).
             $price = $this->getPrice('bhp', $bhp->id, $visit->guarantor_type, $visit->insurer_id);
             $total = $price * $qty;
             $cat   = $bhp->category;
@@ -544,6 +583,58 @@ class KasirService
     }
 
     /**
+     * Diskon paket pasien — SATU baris negatif bila pasien punya snapshot paket
+     * (bedah/pemeriksaan) yang harga jualnya < total komponen.
+     *
+     * Basis diskon dihitung LIVE dari snapshot.items via getPrice (bukan angka
+     * beku → bebas bug "snapshot basi"). Komponen aktual tetap ditagih dari sumber
+     * masing-masing (visitServices / used_qty / iolUsages); baris ini hanya
+     * mengurangi total sebesar (Σ komponen dalam paket − sell_price), sehingga
+     * pasien bayar = sell_price + komponen di luar paket. Anti dobel-tagih: tidak
+     * menambah/menghapus baris komponen, hanya 1 baris diskon.
+     */
+    private function buildPaketDiscountLines(Visit $visit): array
+    {
+        // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah).
+        $lines = [];
+        foreach ($visit->surgeryPackageSnapshots as $snap) {
+            // Basis = Σ harga Buku Tarif komponen snapshot (yang sudah disesuaikan operator).
+            $basis = 0.0;
+            foreach ($snap->items as $it) {
+                $type = match ($it->item_type) {
+                    'PROCEDURE' => 'procedure',
+                    'BHP'       => 'bhp',
+                    'IOL'       => 'iol',
+                    default     => null,
+                };
+                if (! $type) {
+                    continue;
+                }
+                $price = $this->getPrice($type, $it->item_id, $visit->guarantor_type, $visit->insurer_id);
+                $basis += $price * (int) $it->quantity;
+            }
+
+            $sell     = (float) $snap->sell_price;
+            $discount = round($basis - $sell, 2);
+            if ($discount <= 0) {
+                continue; // paket ini tidak lebih murah → tak ada diskon
+            }
+
+            $lines[] = [
+                'item_type'    => 'DISKON_PAKET',
+                'category'     => 'Diskon',
+                'reference_id' => $snap->id,
+                'description'  => $snap->effectiveLabel(),
+                'quantity'     => 1,
+                'unit_price'   => -$discount,
+                'total_price'  => -$discount,
+                'net_price'    => -$discount,
+            ];
+        }
+        return $lines;
+    }
+
+    /**
      * Tariff lookup by insurer (post drop_classification).
      *
      * Resolve order:
@@ -620,6 +711,32 @@ class KasirService
             $this->systemInsurerCache[$type] = Insurer::where('is_system', true)->where('type', $type)->value('id');
         }
         return $this->systemInsurerCache[$type];
+    }
+
+    /**
+     * Resolve harga jual paket (surgery_package_tariffs.sell_price) untuk penjamin
+     * pasien. Urutan: insurer terpilih (resolve TPA parent) → baris insurer_id NULL
+     * ("SEMUA") → 0. Dipakai DokterService saat membuat snapshot paket pasien.
+     */
+    public function resolvePackageSellPrice(string $packageId, string $guarantorType, ?string $insurerId): float
+    {
+        $resolvedInsurerId = $this->resolveTariffInsurerId($insurerId, $guarantorType);
+
+        $base = DB::table('surgery_package_tariffs')
+            ->where('surgery_package_id', $packageId)
+            ->where('is_active', true)
+            ->whereNull('deleted_at');
+
+        if ($resolvedInsurerId) {
+            $price = (clone $base)->where('insurer_id', $resolvedInsurerId)->value('sell_price');
+            if ($price !== null) {
+                return (float) $price;
+            }
+        }
+
+        // Fallback: tarif "SEMUA" (insurer_id NULL).
+        $price = (clone $base)->whereNull('insurer_id')->value('sell_price');
+        return $price !== null ? (float) $price : 0.0;
     }
 
     /**

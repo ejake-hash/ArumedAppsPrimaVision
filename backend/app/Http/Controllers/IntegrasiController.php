@@ -349,6 +349,31 @@ class IntegrasiController extends Controller
         return $this->ok($this->service->poliMappingStatus());
     }
 
+    /**
+     * POST /integrasi/bpjs/sync-icd
+     * Sinkron master ICD-10/ICD-9 dari referensi VClaim (cakupan oftalmologi).
+     * Body: { type: 'icd10'|'icd9', keywords?: string[] }.
+     */
+    public function syncIcdFromVclaim(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'type'       => 'required|in:icd10,icd9',
+            'keywords'   => 'nullable|array|max:200',
+            'keywords.*' => 'string|max:20',
+        ]);
+
+        try {
+            $result = $this->service->syncIcdFromVclaim($v['type'], $v['keywords'] ?? null);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(
+            $result,
+            "Sinkron {$result['type']} selesai: {$result['inserted']} baru, {$result['updated']} diperbarui."
+        );
+    }
+
     /** POST /integrasi/bpjs/poli-mapping */
     public function upsertPoliMapping(Request $request): JsonResponse
     {

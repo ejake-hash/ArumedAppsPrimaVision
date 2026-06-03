@@ -145,6 +145,12 @@ export const dokterApi = {
 
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
   finalize:         (visitId)             => api.post(`/dokter/kunjungan/${visitId}/finalize`),
+
+  // Resume Medis — auto-generate dari data kunjungan, edit, lalu finalisasi (terbit).
+  showResumeMedis:     (visitId)          => api.get(`/dokter/kunjungan/${visitId}/resume-medis`),
+  generateResumeMedis: (visitId)          => api.post(`/dokter/kunjungan/${visitId}/resume-medis`),
+  updateResumeMedis:   (id, data)         => api.put(`/dokter/resume-medis/${id}`, data),
+  finalizeResumeMedis: (id)               => api.post(`/dokter/resume-medis/${id}/finalize`),
   // Riwayat SOAP/CPPT lintas-kunjungan pasien (RME aggregator) untuk kartu "SOAP / CPPT".
   riwayatKunjungan: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/kunjungan`),
   // Riwayat hasil penunjang lintas-kunjungan (RME aggregator) untuk kartu sidebar.
@@ -152,7 +158,7 @@ export const dokterApi = {
 
   tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
   daftarObat:       (search)              => api.get('/dokter/obat', { params: { search } }),
-  bedahSlot:        (tanggal)             => api.get('/dokter/bedah/slot', { params: { tanggal } }),
+  bedahSlot:        (tanggal, locationType) => api.get('/dokter/bedah/slot', { params: { tanggal, location_type: locationType } }),
 
   // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
   rujukInternalTargets: (visitId)         => api.get(`/dokter/kunjungan/${visitId}/rujuk-internal/targets`),
@@ -174,6 +180,10 @@ export const dokterApi = {
   indexTindakan:    (visitId)             => api.get(`/dokter/kunjungan/${visitId}/tindakan`),
   storeTindakan:    (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/tindakan`, data),
   deleteTindakan:   (id)                  => api.delete(`/dokter/tindakan/${id}`),
+
+  // Paket PEMERIKSAAN (poliklinik): terapkan (merge tindakan + snapshot diskon) / lepas.
+  applyExaminationPackage:  (visitId, packageId) => api.post(`/dokter/kunjungan/${visitId}/apply-package`, { package_id: packageId }),
+  removeExaminationPackage: (visitId)            => api.delete(`/dokter/kunjungan/${visitId}/package`),
 
   indexResep:       (visitId)             => api.get(`/dokter/kunjungan/${visitId}/resep`),
   storeResep:       (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/resep`, data),
@@ -231,6 +241,24 @@ _penjamin.list   = (params)   => api.get('/master/penjamin', { params })
 _penjamin.create = (data)     => api.post('/master/penjamin', data)
 _penjamin.update = (id, data) => api.put(`/master/penjamin/${id}`, data)
 _penjamin.remove = (id)       => api.delete(`/master/penjamin/${id}`)
+// CSV / Excel — template / export / import (format='xlsx' utk Excel, default CSV)
+_penjamin.csvTemplate = (format) => api.get('/master/penjamin/template-csv', { params: format ? { format } : {}, responseType: 'blob' })
+_penjamin.csvExport   = (format) => api.get('/master/penjamin/export-csv',   { params: format ? { format } : {}, responseType: 'blob' })
+_penjamin.csvImport   = (file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return api.post('/master/penjamin/import-csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+// TPA membership — kelola anggota dari halaman TPA induk
+_penjamin.memberCandidates = (tpaId)            => api.get(`/master/penjamin/${tpaId}/member-candidates`)
+// addMember terima string (id existing) ATAU object { insurerId, newName }.
+_penjamin.addMember        = (tpaId, arg) => {
+  const body = typeof arg === 'string'
+    ? { insurer_id: arg }
+    : { insurer_id: arg?.insurerId || undefined, new_name: arg?.newName || undefined }
+  return api.post(`/master/penjamin/${tpaId}/members`, body)
+}
+_penjamin.removeMember     = (tpaId, memberId)  => api.delete(`/master/penjamin/${tpaId}/members/${memberId}`)
 
 export const masterApi = {
   penjamin: _penjamin,
@@ -457,7 +485,9 @@ export const formTemplateApi = {
   listSignatures:      (docId) => api.get(`/rekam-medis/document/${docId}/signatures`),
   verifySignature:     (sigId) => api.get(`/rekam-medis/signature/${sigId}/verify`),
   auditSignature:      (sigId) => api.get(`/rekam-medis/signature/${sigId}/audit`),
-  ttdQueue:            () => api.get('/rekam-medis/ttd-queue'),
+  ttdQueue:            (params) => api.get('/rekam-medis/ttd-queue', { params }),
+  ttdCount:            () => api.get('/rekam-medis/ttd-count'),
+  bulkSign:            (ids, pin) => api.post('/rekam-medis/ttd-bulk-sign', { document_ids: ids, signature_pin: pin }),
   createAddendum:      (docId, payload) => api.post(`/rekam-medis/document/${docId}/addendum`, payload),
   auditLog:            (docId) => api.get(`/rekam-medis/document/${docId}/audit-log`),
 }
@@ -685,6 +715,16 @@ export const jadwalDokterApi = {
   },
 }
 
+/** Laporan Marketing — daftar pasien siap-olah untuk campaign (read-only + export) */
+export const marketingApi = {
+  list:          (params)         => api.get('/laporan-marketing', { params }),
+  notifications: ()               => api.get('/laporan-marketing/notifications'),
+  csvExport:     (params, format) => api.get('/laporan-marketing/export-csv', {
+    params: { ...(params || {}), ...(format ? { format } : {}) },
+    responseType: 'blob',
+  }),
+}
+
 /** Admisi — dashboard, antrian, kunjungan, jadwal dokter */
 export const admisiApi = {
   dashboard:     ()             => api.get('/admisi/dashboard'),
@@ -837,28 +877,8 @@ export const inventoriInboxApi = {
   list: () => api.get('/inventori-farmasi/inbox'),
 }
 
-/** Inventori Farmasi — Penentuan Harga (HPP & HJA) */
-export const inventoriHargaApi = {
-  settings: {
-    get:    ()                      => api.get('/inventori-farmasi/harga/settings'),
-    update: (data)                  => api.put('/inventori-farmasi/harga/settings', data),
-  },
-  list:   (type, params)           => api.get(`/inventori-farmasi/harga/${type}`, { params }),
-  upsert: (type, itemId, data)     => api.put(`/inventori-farmasi/harga/${type}/${itemId}`, data),
-  remove: (type, itemId)           => api.delete(`/inventori-farmasi/harga/${type}/${itemId}`),
-
-  // CSV import/export per tipe
-  templateCsv: (type)              => api.get(`/inventori-farmasi/harga/${type}/template-csv`, { responseType: 'blob' }),
-  exportCsv:   (type)              => api.get(`/inventori-farmasi/harga/${type}/export-csv`, { responseType: 'blob' }),
-  importCsv:   (type, file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return api.post(`/inventori-farmasi/harga/${type}/import-csv`, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 60_000,
-    })
-  },
-}
+// Penentuan Harga (inventoriHargaApi) DIHAPUS — harga jual obat/BHP/IOL kini di
+// Buku Tarif (lihat tarifPaketApi.tarif & MetodeBayarTarifTab, baris insurer UMUM).
 
 /** Bedah — antrian + flow KASIR (action operasi detail belum diwire) */
 export const bedahApi = {
@@ -882,6 +902,15 @@ export const bedahApi = {
   terimaRequest:  (id)     => api.put(`/bedah/request/${id}/terima`),
   adjustBhpUsage: (id, items) => api.post(`/bedah/request/${id}/adjust-bhp`, { items }),
 
+  // Komponen paket pasien (snapshot) — edit BHP & Tindakan saat operasi.
+  // getVisitPackage kini balikkan ARRAY paket (multi-paket per visit, mis. Phaco + TIVA).
+  getVisitPackage:        (visitId)       => api.get(`/bedah/visit-package/${visitId}`),
+  addVisitPackage:        (visitId, packageId) => api.post(`/bedah/visit-package/${visitId}/package`, { package_id: packageId }),
+  removeVisitPackage:     (snapshotId)    => api.delete(`/bedah/visit-package/${snapshotId}`),
+  addVisitPackageItem:    (visitId, data) => api.post(`/bedah/visit-package/${visitId}/items`, data),
+  updateVisitPackageItem: (itemId, data)  => api.put(`/bedah/visit-package-item/${itemId}`, data),
+  removeVisitPackageItem: (itemId)        => api.delete(`/bedah/visit-package-item/${itemId}`),
+
   // Operasi lifecycle (jadwal): Sign In → Time Out
   mulaiOperasi:   (id)       => api.put(`/bedah/jadwal/${id}/mulai`),
   selesaiOperasi: (id, data) => api.put(`/bedah/jadwal/${id}/selesai`, data),
@@ -904,6 +933,32 @@ export const bedahApi = {
   scanIol:        (code)   => masterApi.iol.scan(code), // delegasi parse UDI (master_iol.read)
   // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
   storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
+
+  // Perioperatif (PAB/WHO): checklist keselamatan (bedah.checklist) + laporan + Aldrete
+  saveSafetyChecklist:    (id, phase, data, bypass_reason = null) =>
+    api.put(`/bedah/record/${id}/safety-checklist`, { phase, data, bypass_reason }),
+  saveOperationReport:    (id, data) => api.put(`/bedah/record/${id}/operation-report`, data),
+  saveRecoveryAssessment: (id, data) => api.put(`/bedah/record/${id}/recovery-assessment`, data),
+
+  // Anestesi (RM 5.2 + monitoring vital durante) — dipakai AnesthesiaReportWizard.
+  anesthesiologists:       ()           => api.get('/bedah/anesthesiologists'),
+  getAnesthesiaReport:     (recordId)   => api.get(`/bedah/record/${recordId}/anesthesia`),
+  saveAnesthesiaReport:    (recordId, data) => api.post(`/bedah/record/${recordId}/anesthesia`, data),
+  listAnesthesiaVitals:    (recordId)   => api.get(`/bedah/record/${recordId}/anesthesia-vitals`),
+  recordAnesthesiaVital:   (payload)    => api.post('/bedah/anesthesia-vital', payload),
+  updateAnesthesiaVital:   (id, payload) => api.put(`/bedah/anesthesia-vital/${id}`, payload),
+  deleteAnesthesiaVital:   (id)         => api.delete(`/bedah/anesthesia-vital/${id}`),
+}
+
+/** Ruang Tindakan — stasiun laser YAG/PRP (gate ruang_tindakan.*). */
+export const ruangTindakanApi = {
+  antrian:        ()         => api.get('/ruang-tindakan/antrian'),
+  panggil:        (id)       => api.put(`/ruang-tindakan/antrian/${id}/panggil`),
+  mulai:          (scheduleId) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/mulai`),
+  selesai:        (scheduleId, data) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/selesai`, data),
+  showRecord:     (scheduleId) => api.get(`/ruang-tindakan/record/${scheduleId}`),
+  saveLaporan:    (recordId, laporan) => api.put(`/ruang-tindakan/record/${recordId}/laporan`, { laporan }),
+  procedures:     (search)   => api.get('/ruang-tindakan/procedures', { params: { search } }),
 }
 
 /** Penunjang — antrian, order, hasil pemeriksaan */
@@ -982,8 +1037,9 @@ export const userApi = {
   toggleAktif:   (id)         => api.patch(`/rbac/users/${id}/toggle-aktif`),
   resetPassword: (id, data)   => api.put(`/rbac/users/${id}/reset-password`, data ?? {}),
   resetPin:      (id)         => api.put(`/rbac/users/${id}/reset-pin`),
-  csvTemplate:   ()           => api.get('/rbac/users/csv-template', { responseType: 'blob' }),
-  exportCsv:     ()           => api.get('/rbac/users/export',       { responseType: 'blob' }),
+  // CSV / Excel — template / export / import (format='xlsx' utk Excel, default CSV)
+  csvTemplate:   (format)     => api.get('/rbac/users/csv-template', { params: format ? { format } : {}, responseType: 'blob' }),
+  exportCsv:     (format)     => api.get('/rbac/users/export',       { params: format ? { format } : {}, responseType: 'blob' }),
   importCsv:     (file)       => {
     const fd = new FormData()
     fd.append('file', file)
@@ -1000,6 +1056,16 @@ export const roleApi = {
   update:          (id, data)   => api.put(`/rbac/roles/${id}`, data),
   remove:          (id)         => api.delete(`/rbac/roles/${id}`),
   syncPermissions: (id, ids)    => api.put(`/rbac/roles/${id}/permissions`, { permission_ids: ids }),
+  // CSV / Excel — template / export / import (format='xlsx' utk Excel, default CSV)
+  csvTemplate:     (format)     => api.get('/rbac/roles/csv-template', { params: format ? { format } : {}, responseType: 'blob' }),
+  exportCsv:       (format)     => api.get('/rbac/roles/export',       { params: format ? { format } : {}, responseType: 'blob' }),
+  importCsv:       (file)       => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post('/rbac/roles/import', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
 
 export const permissionApi = {
@@ -1079,6 +1145,8 @@ export const integrasiApi = {
   deletePoliMapping:  (id)       => api.delete(`/integrasi/bpjs/poli-mapping/${id}`),
   setDpjpCode:        (empId, d) => api.put(`/integrasi/bpjs/dokter/${empId}/dpjp`, d),
   syncJadwalDokter:   (data)     => api.post('/integrasi/bpjs/sync-jadwal-dokter', data),
+  // Sinkron master ICD-10/ICD-9 dari referensi VClaim (cakupan oftalmologi)
+  syncIcd:            (type, keywords) => api.post('/integrasi/bpjs/sync-icd', { type, ...(keywords ? { keywords } : {}) }),
 
   // Satu Sehat (dashboard monitoring + sync/log/retry)
   satusehatDashboard: (params)   => api.get('/integrasi/satusehat/dashboard', { params }),

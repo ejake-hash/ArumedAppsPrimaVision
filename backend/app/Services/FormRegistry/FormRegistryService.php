@@ -146,7 +146,13 @@ final class FormRegistryService
             $template = $this->findActiveTemplateByCode($doc->template_code);
 
             // Validasi: semua required signature sudah ter-capture.
-            $missing = $this->missingRequiredSigners($template->field_schema ?? [], $doc->id);
+            // Sumber schema untuk cek "wajib" bisa di-OVERRIDE per-dokumen lewat
+            // signatures.field_schema_override — dipakai saat slot signer tertentu
+            // bersifat KONDISIONAL (mis. laporan bedah tanpa anestesi → slot TTD
+            // anestesi di-set required=false). extractSignatureFieldMap + render
+            // tetap pakai field_schema TEMPLATE (peta placeholder & layout sama).
+            $signerSchema = $doc->signatures['field_schema_override'] ?? ($template->field_schema ?? []);
+            $missing = $this->missingRequiredSigners($signerSchema, $doc->id);
             if (!empty($missing)) {
                 throw new RuntimeException('Belum bisa finalize — signature wajib belum lengkap: ' . implode(', ', $missing));
             }
@@ -158,14 +164,26 @@ final class FormRegistryService
             // Render dengan payload (computed fields ter-resolve).
             $html = $this->renderer->render($template, $doc->visit_id, $payload);
 
-            // Embed SVG signature inline ke placeholder {{ttd_*}}.
+            // QR verifikasi: buat/refresh DocumentVerification SEBELUM embed,
+            // supaya stempel TTD (mode PIN) & footer bisa menanam URL token.
+            // document_hash di-update di akhir (setelah HTML final terbentuk).
+            $verification = $this->ensureVerification($doc->id);
+            $verifyUrl = $verification->verification_url;
+
+            // Embed bukti TTD inline ke placeholder {{ttd_*}}:
+            //   - mode DRAW → goresan SVG
+            //   - mode PIN  → kotak stempel "Ditandatangani elektronik" + QR
             $schema = $template->field_schema ?? [];
             $fieldMap = $this->renderer->extractSignatureFieldMap($schema);
             $sigByType = \App\Models\DocumentSignature::query()
                 ->where('patient_document_id', $doc->id)
                 ->get()
                 ->keyBy('signer_type');
-            $html = $this->renderer->embedSignatures($html, $fieldMap, $sigByType->all());
+            $html = $this->renderer->embedSignatures($html, $fieldMap, $sigByType->all(), $verifyUrl);
+
+            // Footer QR opsional: kalau template punya placeholder {{qr_verifikasi}},
+            // tanam QR + teks pindai-untuk-verifikasi.
+            $html = $this->embedFooterQr($html, $verifyUrl);
 
             // Hash include signature_ids di table (bukan dari param — supaya idempoten).
             $sigIds = $sigByType->pluck('signature_id')->sort()->values()->all();
@@ -185,6 +203,11 @@ final class FormRegistryService
             $doc->final_integrity_hash  = $hash;
             $doc->save();
 
+            // Sinkronkan document_hash verifikasi dengan integrity hash final.
+            $verification->document_hash = $hash;
+            $verification->is_valid      = true;
+            $verification->save();
+
             FormRegistryAudit::record(
                 'FORM_DOC_FINALIZED',
                 model: 'PatientDocument',
@@ -196,11 +219,58 @@ final class FormRegistryService
                     'signature_ids'      => $sigIds,
                     'integrity_hash'     => $hash,
                     'rendered_html_size' => strlen($html),
+                    'verification_token' => $verification->verification_token,
                 ],
             );
 
             return $doc;
         });
+    }
+
+    /**
+     * Buat/ambil DocumentVerification untuk dokumen (idempoten by patient_document_id).
+     * Token UUID acak + URL ke endpoint verifikasi publik. Hash diisi/diupdate
+     * oleh pemanggil setelah HTML final terbentuk.
+     */
+    private function ensureVerification(string $patientDocumentId): \App\Models\DocumentVerification
+    {
+        $existing = \App\Models\DocumentVerification::query()
+            ->where('patient_document_id', $patientDocumentId)
+            ->first();
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        $token = (string) \Illuminate\Support\Str::uuid();
+        return \App\Models\DocumentVerification::create([
+            'patient_document_id' => $patientDocumentId,
+            'verification_token'  => $token,
+            'verification_url'    => url('/api/v1/rekam-medis/verifikasi/' . $token),
+            'document_hash'       => '',     // diisi oleh finalize() setelah hash final
+            'is_valid'            => true,
+            'scan_count'          => 0,
+        ]);
+    }
+
+    /**
+     * Ganti placeholder {{qr_verifikasi}} (kalau ada di template) dengan blok QR
+     * + teks pindai-untuk-verifikasi. Kalau template tidak memuat placeholder,
+     * HTML dikembalikan apa adanya (QR per-stempel sudah cukup).
+     */
+    private function embedFooterQr(string $html, ?string $verifyUrl): string
+    {
+        if (!str_contains($html, '{{qr_verifikasi}}') && !str_contains($html, '{{ qr_verifikasi }}')) {
+            return $html;
+        }
+        $block = '';
+        if ($verifyUrl) {
+            $block = '<div style="display:inline-flex;flex-direction:column;align-items:center;gap:4px;">'
+                . '<div style="width:90px;height:90px;">' . QrCodeHelper::svg($verifyUrl, 90) . '</div>'
+                . '<div style="font-size:9px;color:#666;max-width:120px;text-align:center;">Pindai untuk memverifikasi keaslian dokumen</div>'
+                . '</div>';
+        }
+        return preg_replace('/\{\{\s*qr_verifikasi\s*\}\}/', $block, $html) ?? $html;
     }
 
     /**

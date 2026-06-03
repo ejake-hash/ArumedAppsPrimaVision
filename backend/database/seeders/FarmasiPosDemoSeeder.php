@@ -3,7 +3,6 @@
 namespace Database\Seeders;
 
 use App\Models\Employee;
-use App\Models\InventoryPrice;
 use App\Models\InventoryStock;
 use App\Models\Medication;
 use App\Models\PharmacySale;
@@ -145,20 +144,24 @@ class FarmasiPosDemoSeeder extends Seeder
 
         $picked = $existing->take(4)->values();
 
-        // Set HJA (Penentuan Harga) + stok unit FARMASI untuk tiap obat.
+        // Set harga jual (Buku Tarif: medication_tariffs baris insurer UMUM) + stok FARMASI.
+        $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
         foreach ($picked as $i => $med) {
             $hja = [12000, 8500, 25000, 15000][$i] ?? 10000;
-            InventoryPrice::updateOrCreate(
-                ['item_type' => InventoryPrice::TYPE_MEDICATION, 'item_id' => $med->id],
-                [
-                    'hpp'            => round($hja * 0.7, 2),
-                    'margin_percent' => 30,
-                    'ppn_enabled'    => false,
-                    'hja'            => $hja,
-                    'notes'          => 'Harga demo POS (FarmasiPosDemoSeeder)',
-                    'effective_date' => today()->toDateString(),
-                ]
-            );
+            if ($umumId) {
+                $existing = \DB::table('medication_tariffs')
+                    ->where('medication_id', $med->id)->where('insurer_id', $umumId)->first();
+                if ($existing) {
+                    \DB::table('medication_tariffs')->where('id', $existing->id)
+                        ->update(['price' => $hja, 'is_active' => true, 'deleted_at' => null, 'updated_at' => now()]);
+                } else {
+                    \DB::table('medication_tariffs')->insert([
+                        'id' => (string) \Illuminate\Support\Str::uuid(),
+                        'medication_id' => $med->id, 'insurer_id' => $umumId,
+                        'price' => $hja, 'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                }
+            }
 
             // Stok unit FARMASI aman untuk dijual.
             $onHand = $stockService->onHand('MEDICATION', $med->id, InventoryStock::LOC_FARMASI);

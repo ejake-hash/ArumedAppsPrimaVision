@@ -40,10 +40,14 @@ class TarifPaketController extends Controller
     public function updateTarif(Request $request, string $type, string $id): JsonResponse
     {
         $this->assertTarifType($type);
-        $validated = $request->validate([
+        $rules = [
             'price'     => 'required|numeric|min:0',
             'is_active' => 'nullable|boolean',
-        ]);
+        ];
+        if ($type === 'obat') {
+            $rules['pos_kwitansi'] = ['nullable', \Illuminate\Validation\Rule::in(\App\Models\MedicationTariff::POS_VALUES)];
+        }
+        $validated = $request->validate($rules);
         return $this->ok($this->service->updateTarif($type, $id, $validated), 'Tarif diperbarui');
     }
 
@@ -151,6 +155,7 @@ class TarifPaketController extends Controller
         $validated = $request->validate([
             'name'               => 'required|string|max:255',
             'code'               => 'nullable|string|max:50|unique:surgery_packages,code',
+            'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'category'           => 'nullable|string|max:100',
             'description'        => 'nullable|string|max:1000',
             'keterangan'         => 'nullable|string|max:500',
@@ -165,6 +170,7 @@ class TarifPaketController extends Controller
     {
         $validated = $request->validate([
             'name'               => 'sometimes|string|max:255',
+            'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'category'           => 'nullable|string|max:100',
             'description'        => 'nullable|string|max:1000',
             'keterangan'         => 'nullable|string|max:500',
@@ -305,11 +311,18 @@ class TarifPaketController extends Controller
             'iol'      => ['iol_item_id'   => 'required|uuid|exists:iol_items,id'],
         };
 
-        return $fkRules + [
+        $rules = $fkRules + [
             'insurer_id' => 'required|uuid|exists:insurers,id',
             'price'      => 'required|numeric|min:0',
             'is_active'  => 'nullable|boolean',
         ];
+
+        // Pos kwitansi obat (Obat Pulang/Tindakan/Injeksi) — hanya untuk type obat.
+        if ($type === 'obat') {
+            $rules['pos_kwitansi'] = ['nullable', \Illuminate\Validation\Rule::in(\App\Models\MedicationTariff::POS_VALUES)];
+        }
+
+        return $rules;
     }
 
     private function assertNotChildTpa(string $insurerId): void

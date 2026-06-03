@@ -34,6 +34,7 @@ const manual    = ref('')        // input fallback ketik manual
 const secure    = ref(true)      // apakah konteks aman (HTTPS/localhost)
 
 let reader = null
+let decodedOnce = false   // guard: cegah double-emit bila >1 frame decode sebelum cleanup
 
 // Hint format: prioritaskan DataMatrix, sertakan QR sebagai cadangan.
 function makeReader() {
@@ -57,6 +58,7 @@ async function startCamera() {
   }
 
   starting.value = true
+  decodedOnce = false
   try {
     // Prefer kamera belakang (tablet/HP); webcam desktop pakai default.
     let s
@@ -103,6 +105,10 @@ function startDecodeLoop() {
 }
 
 function onDecoded(text) {
+  // Guard: callback decode bisa terpicu beberapa frame berturut sebelum reader
+  // benar-benar berhenti → tanpa flag ini emit/close bisa jalan ganda.
+  if (decodedOnce) return
+  decodedOnce = true
   stopCamera()
   emit('decoded', text)
   close()
@@ -113,6 +119,10 @@ function stopCamera() {
   if (stream.value) {
     stream.value.getTracks().forEach(t => t.stop())
     stream.value = null
+  }
+  // Lepas referensi stream dari elemen video agar indikator kamera benar-benar padam.
+  if (videoEl.value) {
+    try { videoEl.value.srcObject = null } catch { /* noop */ }
   }
   cameraOn.value = false
 }

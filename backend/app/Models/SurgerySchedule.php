@@ -16,8 +16,13 @@ class SurgerySchedule extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
+    /** Lokasi pelaksanaan jadwal (lihat migrasi add_location_type_to_surgery_schedules). */
+    public const LOCATION_RUANG_BEDAH    = 'RUANG_BEDAH';    // operasi (alur Bedah)
+    public const LOCATION_RUANG_TINDAKAN = 'RUANG_TINDAKAN'; // tindakan laser (YAG/PRP)
+
     protected $fillable = [
         'surgery_package_id',
+        'location_type',
         'lead_surgeon_id',
         'anesthesiologist_id',
         'scheduled_date',

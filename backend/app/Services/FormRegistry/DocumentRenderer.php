@@ -211,39 +211,103 @@ final class DocumentRenderer
     }
 
     /**
-     * Embed SVG signature inline ke posisi placeholder `{{key}}`.
+     * Embed bukti TTD inline ke posisi placeholder `{{key}}`.
      *
-     * Fase 5: map field signature_canvas → DocumentSignature record berdasarkan
-     * `signer_type`. Render SVG inline (bukan PNG base64 — supaya tetap vector-
-     * crisp di print).
+     * Dua mode bukti TTD (lihat SignatureService):
+     *   - DRAW (pasien/saksi)  → goresan SVG inline, vector-crisp saat print.
+     *   - PIN  (nakes internal) → KOTAK STEMPEL "Ditandatangani secara
+     *     elektronik" berisi nama + jabatan/SIP + tanggal-jam + QR verifikasi.
      *
-     * @param string $html               HTML hasil substitusi placeholder text
-     * @param array  $fieldsByKey        ['key' => signer_type] mapping field
-     *                                   signature_canvas dari template
-     * @param array  $signaturesByType   ['signer_type' => DocumentSignature]
+     * @param string  $html              HTML hasil substitusi placeholder text
+     * @param array   $fieldsByKey       ['key' => signer_type] field signature_canvas
+     * @param array   $signaturesByType  ['signer_type' => DocumentSignature]
+     * @param ?string $verifyUrl         URL verifikasi dokumen (untuk QR per-stempel).
+     *                                   Null saat preview (QR di-skip).
      */
-    public function embedSignatures(string $html, array $fieldsByKey = [], array $signaturesByType = []): string
-    {
-        // Replace `{{key}}` di fieldsByKey dengan SVG kalau ada signature, atau
+    public function embedSignatures(
+        string $html,
+        array $fieldsByKey = [],
+        array $signaturesByType = [],
+        ?string $verifyUrl = null,
+    ): string {
+        // Replace `{{key}}` di fieldsByKey dengan bukti TTD kalau ada, atau
         // string kosong kalau belum ter-capture. Placeholder yang tidak terdaftar
         // sebagai signature field di-skip (biarkan utuh — kemungkinan placeholder
         // lain yang tidak ke-substitute di render()).
         return preg_replace_callback(
             '/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/',
-            function (array $m) use ($fieldsByKey, $signaturesByType): string {
+            function (array $m) use ($fieldsByKey, $signaturesByType, $verifyUrl): string {
                 $key = $m[1];
                 $signerType = $fieldsByKey[$key] ?? null;
                 if (!$signerType) return $m[0]; // bukan signature field
 
                 $sig = $signaturesByType[$signerType] ?? null;
-                if (!$sig || empty($sig->signature_svg)) return ''; // belum TTD → kosongkan
+                if (!$sig) return ''; // belum TTD → kosongkan
 
+                // Mode PIN → stempel digital.
+                if (($sig->sign_method ?? null) === 'PIN') {
+                    return $this->renderPinStamp($sig, $verifyUrl);
+                }
+
+                // Mode DRAW → goresan SVG.
+                if (empty($sig->signature_svg)) return '';
                 return '<div style="display:inline-block;max-width:180px;max-height:80px;overflow:hidden;">'
                     . $this->normalizeSvg($sig->signature_svg)
                     . '</div>';
             },
             $html
         ) ?? $html;
+    }
+
+    /**
+     * Kotak stempel TTD elektronik (mode PIN). Layout sesuai desain yang
+     * disetujui: badge "Ditandatangani elektronik" + nama + jabatan/SIP +
+     * tanggal-jam WIB, dengan QR verifikasi di sisi kanan.
+     *
+     * Inline-style semua (tidak ada <style> eksternal) supaya konsisten saat
+     * render Puppeteer / snapshot HTML.
+     */
+    private function renderPinStamp(object $sig, ?string $verifyUrl): string
+    {
+        $nama = htmlspecialchars((string) ($sig->signer_name_snapshot ?? '—'), ENT_QUOTES);
+        $jabatan = $sig->signer_role_snapshot ?? null;
+        $jabatanHtml = $jabatan ? '<div style="font-size:10px;color:#555;">' . htmlspecialchars((string) $jabatan, ENT_QUOTES) . '</div>' : '';
+
+        // Tanggal-jam WIB (Asia/Jakarta) dari captured_at server.
+        $waktu = '';
+        if (!empty($sig->captured_at)) {
+            try {
+                $dt = $sig->captured_at instanceof \Carbon\CarbonInterface
+                    ? $sig->captured_at->copy()
+                    : \Illuminate\Support\Carbon::parse($sig->captured_at);
+                $waktu = $dt->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB';
+            } catch (\Throwable) {
+                $waktu = '';
+            }
+        }
+
+        // QR verifikasi (kalau ada URL). SVG inline, no-GD.
+        $qrHtml = '';
+        if ($verifyUrl) {
+            $qrHtml = '<div style="flex:0 0 auto;width:64px;height:64px;">'
+                . QrCodeHelper::svg($verifyUrl, 64)
+                . '</div>';
+        }
+
+        $sigId = htmlspecialchars((string) ($sig->signature_id ?? ''), ENT_QUOTES);
+
+        return <<<HTML
+<div style="display:inline-flex;align-items:center;gap:10px;border:1px solid #1FAAE0;border-radius:6px;padding:8px 12px;background:#f5fbfe;max-width:320px;">
+  <div style="flex:1 1 auto;text-align:left;line-height:1.35;">
+    <div style="font-size:10px;font-weight:700;color:#0E3A66;letter-spacing:.3px;">✓ DITANDATANGANI SECARA ELEKTRONIK</div>
+    <div style="font-size:13px;font-weight:700;color:#111;margin-top:2px;">{$nama}</div>
+    {$jabatanHtml}
+    <div style="font-size:10px;color:#555;margin-top:2px;">{$waktu}</div>
+    <div style="font-size:8px;color:#999;margin-top:1px;">ID: {$sigId}</div>
+  </div>
+  {$qrHtml}
+</div>
+HTML;
     }
 
     /**

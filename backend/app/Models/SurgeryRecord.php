@@ -27,14 +27,20 @@ class SurgeryRecord extends Model
         'followup_date',
         'post_op_disposition',
         'finalized_at',
+        'safety_checklist',
+        'operation_report',
+        'recovery_assessment',
     ];
 
     protected $casts = [
-        'time_in'          => 'datetime',
-        'time_out'         => 'datetime',
-        'has_complication' => 'boolean',
-        'followup_date'    => 'date',
-        'finalized_at'     => 'datetime',
+        'time_in'             => 'datetime',
+        'time_out'            => 'datetime',
+        'has_complication'    => 'boolean',
+        'followup_date'       => 'date',
+        'finalized_at'        => 'datetime',
+        'safety_checklist'    => 'array',
+        'operation_report'    => 'array',
+        'recovery_assessment' => 'array',
     ];
 
     public function surgerySchedule(): BelongsTo

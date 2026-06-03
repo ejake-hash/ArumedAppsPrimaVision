@@ -22,15 +22,18 @@ class DocumentSignature extends Model
     /** Append-only — tidak ada updated_at. */
     public $timestamps = false;
 
-    public const SIGNER_TYPES = ['patient', 'guardian', 'witness', 'doctor', 'nurse', 'staff'];
+    public const SIGNER_TYPES = ['patient', 'guardian', 'witness', 'doctor', 'doctor_anestesi', 'nurse', 'staff'];
 
     protected $fillable = [
         'signature_id',
         'patient_document_id',
         'signer_type',
+        'sign_method',
         'signer_user_id',
         'signer_patient_id',
         'signer_external_identity',
+        'signer_name_snapshot',
+        'signer_role_snapshot',
         'signature_svg',
         'signature_png_base64',
         'captured_at',

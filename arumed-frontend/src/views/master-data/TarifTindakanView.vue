@@ -20,9 +20,34 @@ import { masterApi } from '@/services/api'
 import MasterTable from '@/components/master-data/MasterTable.vue'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
 import CsvActionBar from '@/components/master-data/CsvActionBar.vue'
+import MetodeBayarTarifTab from '@/views/tarif-paket/MetodeBayarTarifTab.vue'
 
 const store = useMasterDataStore()
 const KEY = 'tindakan'
+
+// ─── Tab Jenis (Buku Tarif) ──────────────────────────────────────────────
+// Tindakan = master procedures (per-penjamin diatur di Metode Bayar).
+// Obat/BHP/IOL = harga jual TUNGGAL → disimpan di baris insurer UMUM
+// (komponen MetodeBayarTarifTab di-reuse dengan insurerId = umumId).
+const TABS = [
+  { key: 'tindakan', label: 'Tindakan' },
+  { key: 'obat',     label: 'Obat' },
+  { key: 'bhp',      label: 'BHP' },
+  { key: 'iol',      label: 'IOL' },
+]
+const activeTab = ref('tindakan')
+const umumId = ref('')        // id insurer sistem UMUM (untuk tab obat/bhp/iol)
+
+async function loadUmumInsurer() {
+  try {
+    const res = await masterApi.penjamin({ type: 'UMUM', is_system: 1, per_page: 5 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    umumId.value = (Array.isArray(list) ? list : []).find((i) => i.is_system && i.type === 'UMUM')?.id
+      ?? (Array.isArray(list) ? list[0]?.id : '') ?? ''
+  } catch {
+    umumId.value = ''
+  }
+}
 
 // kategoriList: array of { id, name, code_prefix } dari /master/tindakan/kategori-list
 const kategoriList = ref([])
@@ -353,7 +378,7 @@ const modalFields = computed(() => {
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
   document.addEventListener('click', closeKatMenu)
-  await Promise.all([refresh(), loadKategoriList()])
+  await Promise.all([refresh(), loadKategoriList(), loadUmumInsurer()])
 })
 onUnmounted(() => document.removeEventListener('click', closeKatMenu))
 
@@ -369,10 +394,10 @@ function onImported(result) {
     <!-- Section header -->
     <div class="tt-section-head">
       <div>
-        <h2>Tarif Tindakan</h2>
-        <p>Master tarif tindakan acuan utama. Kode auto-generate per kategori (Tindakan→TND-001, Konsultasi→KSL-001, dst). Override per penjamin dikelola di sub-modul Tarif &amp; Paket Bedah.</p>
+        <h2>Buku Tarif</h2>
+        <p>Sumber tunggal harga jual ke pasien: Tindakan, Obat, BHP, IOL. Tindakan kode auto-generate per kategori; override per penjamin di Metode Bayar. Harga Obat/BHP/IOL = harga jual tunggal (penjamin UMUM).</p>
       </div>
-      <div class="tt-header-actions">
+      <div v-if="activeTab === 'tindakan'" class="tt-header-actions">
         <button class="tt-btn-secondary" @click="openKategoriModal" title="Kelola master kategori + prefix kode">
           <svg viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
           Kelola Kategori
@@ -384,8 +409,21 @@ function onImported(result) {
       </div>
     </div>
 
-    <!-- CSV bar -->
-    <CsvActionBar :resource-key="KEY" :show-template="true" @imported="onImported" @error="(m) => showToast('e', m)" />
+    <!-- Tab Jenis -->
+    <div class="tt-jenis-tabs">
+      <button
+        v-for="t in TABS"
+        :key="t.key"
+        class="tt-jenis-tab"
+        :class="{ active: activeTab === t.key }"
+        @click="activeTab = t.key"
+      >{{ t.label }}</button>
+    </div>
+
+    <!-- ══ Tab TINDAKAN (procedures) ══ -->
+    <template v-if="activeTab === 'tindakan'">
+    <!-- CSV / Excel bar — backend tindakan mendukung ?format=xlsx (csvOrXlsx) -->
+    <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
 
     <!-- Filter kategori chips -->
     <div v-if="kategoriList.length" class="tt-filters">
@@ -453,6 +491,21 @@ function onImported(result) {
         </button>
       </template>
     </MasterTable>
+    </template>
+
+    <!-- ══ Tab OBAT / BHP / IOL — harga jual tunggal (insurer UMUM) ══ -->
+    <template v-else>
+      <div v-if="!umumId" class="tt-jenis-warn">
+        Penjamin UMUM belum tersedia. Pastikan data penjamin sistem sudah ter-seed.
+      </div>
+      <MetodeBayarTarifTab
+        v-else
+        :key="activeTab"
+        :type="activeTab"
+        :insurer-id="umumId"
+        :read-only="false"
+      />
+    </template>
 
     <!-- Modal CRUD -->
     <MasterFormModal
@@ -605,6 +658,13 @@ function onImported(result) {
 
 <style scoped>
 .tt-wrap { display: flex; flex-direction: column; gap: 1rem; }
+
+/* ─── Tab Jenis (Buku Tarif) ─── */
+.tt-jenis-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--gb); }
+.tt-jenis-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s, border-color 0.15s; }
+.tt-jenis-tab:hover { color: var(--td); }
+.tt-jenis-tab.active { color: var(--ga); border-bottom-color: var(--ga); }
+.tt-jenis-warn { padding: 1.2rem; text-align: center; color: var(--wt); background: var(--wb); border: 1px solid var(--wbd); border-radius: 10px; font-size: 13px; }
 
 .tt-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
 .tt-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }

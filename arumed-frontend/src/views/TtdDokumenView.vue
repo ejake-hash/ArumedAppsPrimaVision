@@ -2,45 +2,72 @@
 /**
  * TtdDokumenView — halaman antrian TTD dokumen untuk dokter yang login.
  *
- * Backend (GET /rekam-medis/ttd-queue) mengembalikan data grouped by patient;
- * di sini kita FLATTEN jadi baris-per-dokumen agar bisa ditampilkan dalam
- * tabel ringkas (skala baik untuk banyak pasien). Tiap baris = 1 dokumen yang
- * menunggu TTD dokter ini.
+ * Backend (GET /rekam-medis/ttd-queue) kini mengembalikan PAGINATOR terfilter
+ * di SQL (skalabel 100+/hari): tiap item sudah FLAT (1 baris = 1 dokumen yang
+ * menunggu TTD dokter ini), dengan meta pagination. Search & status difilter di
+ * server (debounce).
  *
- * Filter: dokumen status PENDING_SIGNATURE / RENDERED / DRAFT yang punya field
+ * Filter server: dokumen status DRAFT/RENDERED/PENDING_SIGNATURE yang punya field
  * signature_canvas signer_type='doctor' dan belum di-TTD oleh dokter ini.
+ *
+ * Alur baru: centang dokumen siap → "Telaah & Tandatangani (N)" → telaah
+ * berurutan (wajib buka semua) → 1× PIN → stempel + QR (BulkTtdReviewModal).
+ * Single-sign (1 baris) kini juga via PIN, bukan goresan canvas.
+ *
+ * UI mengikuti gaya Bridging · Satu Sehat (kartu rounded, tombol .btn, header
+ * tabel uppercase, palet Prima Navy + Vision Sky).
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { formTemplateApi } from '@/services/api'
-import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
+import { useAuthStore } from '@/stores/authStore'
+import LayoutEditor from '@/components/master/form-template/LayoutEditor.vue'
+import BulkTtdReviewModal from '@/components/forms/BulkTtdReviewModal.vue'
 
-const groups  = ref([])
+// Dokter anestesi melihat antrean TTD-nya sendiri (backend resolve signer_type
+// dari role). Judul disesuaikan agar jelas konteks penandatangan.
+const auth = useAuthStore()
+const isAnestesi = computed(() => auth.roleName === 'dokter_anestesi')
+
+const rows    = ref([])
 const loading = ref(false)
 const error   = ref('')
 
-// Kontrol tabel
-const perPage      = ref(10)
-const statusFilter = ref('ALL')
-const search       = ref('')
-const page         = ref(1)
+// Pagination server-side
+const perPage = ref(10)
+const page    = ref(1)
+const meta    = ref({ total: 0, last_page: 1, current_page: 1 })
 
-// Preview + capture
+// Filter server-side
+const search       = ref('')
+const statusFilter = ref('ALL') // ALL | DRAFT | PENDING (RENDERED+PENDING_SIGNATURE)
+
+// Seleksi baris (centang). Simpan OBJEK dokumen (bukan sekadar id) supaya
+// seleksi BERTAHAN lintas-halaman — bulk modal butuh data lengkap tiap doc
+// (template_code, visit_id, patient) walau dokumen sudah tak di halaman aktif.
+const selectedMap = ref(new Map()) // id → row
+
+// Preview single-doc + edit DRAFT + PIN
 const modalOpen      = ref(false)
-const captureOpen    = ref(false)
 const currentDoc     = ref(null)
 const previewHtml    = ref('')
 const previewLoading = ref(false)
-
-// Edit isi DRAFT (override teks HTML manual sebelum TTD)
 const editMode   = ref(false)
 const editHtml   = ref('')
 const editSaving = ref(false)
 const isDraft    = computed(() => currentDoc.value?.status === 'DRAFT')
 
-// RENDERED + PENDING_SIGNATURE digabung jadi satu label "Menunggu TTD" —
-// dari sisi dokter aksinya sama (preview → tanda tangan). DRAFT tetap terpisah
-// sebagai sinyal bahwa isi dokumen belum final & masih bisa berubah (diedit di
-// station-nya, bukan di halaman ini).
+// PIN single-sign
+const pinModalOpen = ref(false)
+const pinValue     = ref('')
+const pinError     = ref('')
+const pinBusy      = ref(false)
+
+// Bulk review modal
+const bulkOpen = ref(false)
+const ttdCount = ref(0)
+
+// RENDERED + PENDING_SIGNATURE → satu label "Menunggu TTD". DRAFT terpisah
+// sebagai sinyal isi belum final.
 const STATUS_META = {
   DRAFT:             { label: 'Draf',         cls: 'st-draft'   },
   RENDERED:          { label: 'Menunggu TTD', cls: 'st-pending' },
@@ -50,65 +77,102 @@ function statusMeta(s) {
   return STATUS_META[s] ?? { label: s, cls: 'st-default' }
 }
 
-// Flatten grup → baris dokumen.
-const allRows = computed(() => {
-  const rows = []
-  for (const g of groups.value) {
-    for (const d of g.documents ?? []) {
-      rows.push({
-        ...d,
-        patient_name:   g.patient?.name ?? '—',
-        patient_no_rm:  g.patient?.no_rm ?? null,
-        patient_gender: g.patient?.gender ?? null,
-      })
-    }
-  }
-  return rows
+function rowDate(r) { return r.visit_date ?? r.created_at ?? null }
+function patientName(r) { return r.patient?.name ?? '—' }
+function patientRm(r)   { return r.patient?.no_rm ?? null }
+function patientGender(r) { return r.patient?.gender ?? null }
+
+const totalPages = computed(() => Math.max(1, meta.value.last_page ?? 1))
+const total      = computed(() => meta.value.total ?? 0)
+const rangeStart = computed(() => (total.value === 0 ? 0 : (page.value - 1) * perPage.value + 1))
+const rangeEnd   = computed(() => Math.min(page.value * perPage.value, total.value))
+const hasActiveFilter = computed(() => search.value.trim() || statusFilter.value !== 'ALL')
+
+// Halaman yang ditampilkan di pager (jendela ringkas di sekitar halaman aktif).
+const pageWindow = computed(() => {
+  const last = totalPages.value
+  const cur = page.value
+  const span = 2
+  let from = Math.max(1, cur - span)
+  let to = Math.min(last, cur + span)
+  if (cur <= span) to = Math.min(last, 1 + span * 2)
+  if (cur > last - span) from = Math.max(1, last - span * 2)
+  const out = []
+  for (let i = from; i <= to; i++) out.push(i)
+  return out
 })
 
-// Filter status: 'DRAFT' cocok hanya DRAFT; 'PENDING' mencakup RENDERED +
-// PENDING_SIGNATURE (keduanya tampil sebagai "Menunggu TTD").
-function matchStatus(status) {
-  if (statusFilter.value === 'ALL') return true
-  if (statusFilter.value === 'DRAFT') return status === 'DRAFT'
-  if (statusFilter.value === 'PENDING') return status === 'RENDERED' || status === 'PENDING_SIGNATURE'
-  return true
+// ── Seleksi ──────────────────────────────────────────────────────────
+function isSelected(id) { return selectedMap.value.has(id) }
+function toggleSelect(row) {
+  const m = new Map(selectedMap.value)
+  m.has(row.id) ? m.delete(row.id) : m.set(row.id, row)
+  selectedMap.value = m
+}
+const allPageSelected = computed(() =>
+  rows.value.length > 0 && rows.value.every((r) => selectedMap.value.has(r.id)),
+)
+function toggleSelectPage() {
+  const m = new Map(selectedMap.value)
+  if (allPageSelected.value) {
+    rows.value.forEach((r) => m.delete(r.id))
+  } else {
+    rows.value.forEach((r) => m.set(r.id, r))
+  }
+  selectedMap.value = m
+}
+function clearSelection() { selectedMap.value = new Map() }
+const selectedCount = computed(() => selectedMap.value.size)
+// Dokumen terpilih DI SELURUH HALAMAN (bukan cuma halaman aktif) — modal bulk
+// menandatangani persis sebanyak yang tertera di "{{ selectedCount }} dipilih".
+const selectedDocs = computed(() => Array.from(selectedMap.value.values()))
+
+// ── Filter & pagination control ──────────────────────────────────────
+function resetPage() { page.value = 1 }
+function clearFilters() {
+  search.value = ''
+  statusFilter.value = 'ALL'
+  resetPage()
+  load()
+}
+function goPrev() { if (page.value > 1) { page.value--; load() } }
+function goNext() { if (page.value < totalPages.value) { page.value++; load() } }
+function goPage(n) { if (n >= 1 && n <= totalPages.value) { page.value = n; load() } }
+function changePerPage() { resetPage(); load() }
+
+// Map filter UI → param status backend (whitelist 3 status).
+function statusParam() {
+  if (statusFilter.value === 'DRAFT') return 'DRAFT'
+  if (statusFilter.value === 'PENDING') return 'PENDING_SIGNATURE'
+  return undefined
 }
 
-const filteredRows = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  return allRows.value.filter((r) => {
-    if (!matchStatus(r.status)) return false
-    if (!q) return true
-    return (
-      (r.patient_name || '').toLowerCase().includes(q) ||
-      (r.patient_no_rm || '').toLowerCase().includes(q) ||
-      (r.template_name || r.template_code || '').toLowerCase().includes(q) ||
-      (r.review_doctor || '').toLowerCase().includes(q)
-    )
-  })
-})
-
-const totalFiltered = computed(() => filteredRows.value.length)
-const totalPages = computed(() => Math.max(1, Math.ceil(totalFiltered.value / perPage.value)))
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * perPage.value
-  return filteredRows.value.slice(start, start + perPage.value)
-})
-const rangeStart = computed(() => (totalFiltered.value === 0 ? 0 : (page.value - 1) * perPage.value + 1))
-const rangeEnd   = computed(() => Math.min(page.value * perPage.value, totalFiltered.value))
-
-function resetPage() { page.value = 1 }
-function goPrev() { if (page.value > 1) page.value-- }
-function goNext() { if (page.value < totalPages.value) page.value++ }
+let searchTimer = null
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { resetPage(); load() }, 350)
+}
+function onStatusChange() { resetPage(); load() }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const { data } = await formTemplateApi.ttdQueue()
-    groups.value = data.data ?? []
-    if (page.value > totalPages.value) page.value = 1
+    const { data } = await formTemplateApi.ttdQueue({
+      page: page.value,
+      per_page: perPage.value,
+      search: search.value.trim() || undefined,
+      status: statusParam(),
+    })
+    // ok() membungkus paginator: data.data = {data:[...rows], total, last_page, current_page,...}
+    const p = data.data ?? {}
+    rows.value = p.data ?? []
+    meta.value = {
+      total: p.total ?? 0,
+      last_page: p.last_page ?? 1,
+      current_page: p.current_page ?? 1,
+    }
+    if (page.value > totalPages.value) { page.value = 1 }
   } catch (e) {
     error.value = e.response?.data?.message ?? 'Gagal memuat antrian.'
   } finally {
@@ -116,6 +180,14 @@ async function load() {
   }
 }
 
+async function refreshCount() {
+  try {
+    const { data } = await formTemplateApi.ttdCount()
+    ttdCount.value = data.data?.count ?? 0
+  } catch (_) { /* abaikan — badge opsional */ }
+}
+
+// ── Single-doc modal (preview + edit + sign PIN) ─────────────────────
 async function openTtd(doc) {
   currentDoc.value = doc
   modalOpen.value = true
@@ -137,23 +209,23 @@ async function openTtd(doc) {
 
 function closeModal() {
   modalOpen.value = false
-  captureOpen.value = false
   currentDoc.value = null
   previewHtml.value = ''
   editMode.value = false
   editHtml.value = ''
+  pinModalOpen.value = false
+  pinValue.value = ''
+  pinError.value = ''
 }
 
 function startEdit() {
   editHtml.value = previewHtml.value
   editMode.value = true
 }
-
 function cancelEdit() {
   editMode.value = false
   editHtml.value = ''
 }
-
 async function saveEdit() {
   if (!currentDoc.value) return
   editSaving.value = true
@@ -169,381 +241,370 @@ async function saveEdit() {
   }
 }
 
-async function onCapture(payload) {
+// Single-sign via PIN → stempel + QR (konsisten dgn bulk).
+function openPin() {
+  pinValue.value = ''
+  pinError.value = ''
+  pinModalOpen.value = true
+}
+async function submitPin() {
   if (!currentDoc.value) return
+  const pin = pinValue.value.trim()
+  if (!/^\d{4,6}$/.test(pin)) { pinError.value = 'PIN harus 4–6 digit angka.'; return }
+  pinBusy.value = true
+  pinError.value = ''
   try {
-    const userJson = localStorage.getItem('auth_user')
-    let userId = null
-    try { userId = JSON.parse(userJson ?? '{}')?.id ?? null } catch (_) {}
-
-    await formTemplateApi.sign(currentDoc.value.id, {
-      signer_type: 'doctor',
-      signer_user_id: userId,
-      signature_svg: payload.signature_svg,
-      signature_png_base64: payload.signature_png_base64,
-      biometric_metadata: payload.biometric_metadata,
-      audit_log: payload.audit_log,
-    })
+    // Reuse endpoint bulk untuk 1 dokumen → otomatis capture PIN + finalize +
+    // stempel + QR. Hasil dipetakan ke pesan ramah.
+    const { data } = await formTemplateApi.bulkSign([currentDoc.value.id], pin)
+    const res = data.data ?? {}
+    if ((res.failed ?? []).length) {
+      pinError.value = res.failed[0]?.error ?? 'Gagal menandatangani.'
+      return
+    }
+    pinModalOpen.value = false
     closeModal()
-    await load()
+    await Promise.all([load(), refreshCount()])
   } catch (e) {
-    error.value = 'Gagal menyimpan TTD: ' + (e.response?.data?.message ?? e.message)
+    pinError.value = e.response?.status === 401
+      ? 'PIN tidak sesuai.'
+      : (e.response?.data?.message ?? 'Gagal menandatangani.')
+  } finally {
+    pinBusy.value = false
   }
+}
+
+// ── Bulk ─────────────────────────────────────────────────────────────
+function openBulk() {
+  if (selectedCount.value === 0) return
+  bulkOpen.value = true
+}
+async function onBulkDone(payload) {
+  // payload.signedIds = id yang sukses (FINALIZED). Buang dari seleksi & rows
+  // (optimistic) lalu refresh count + reload halaman.
+  const done = new Set(payload?.signedIds ?? [])
+  if (done.size) {
+    const m = new Map(selectedMap.value)
+    done.forEach((id) => m.delete(id))
+    selectedMap.value = m
+  }
+  bulkOpen.value = false
+  await Promise.all([load(), refreshCount()])
 }
 
 function formatDate(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  // Paksa zona WIB agar konsisten lintas mesin.
+  return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Jakarta' })
 }
 
-onMounted(load)
+onMounted(() => { load(); refreshCount() })
 </script>
 
 <template>
-  <div class="ttd-wrap">
-    <header class="ttd-banner">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/>
-      </svg>
-      <h1>Daftar Formulir — Perlu Tanda Tangan</h1>
-    </header>
+  <div class="ttd">
+    <!-- Banner -->
+    <section class="banner">
+      <div class="b-body">
+        <h1>{{ isAnestesi ? 'Tanda Tangan Dokumen — Dokter Anestesi' : 'Tanda Tangan Dokumen' }}</h1>
+        <p class="b-sub">{{ ttdCount }} dokumen menunggu tanda tangan{{ isAnestesi ? ' anestesi' : '' }}</p>
+      </div>
+      <button class="lnk" :disabled="loading" @click="load">{{ loading ? 'Memuat…' : 'Muat ulang' }}</button>
+    </section>
 
-    <div class="ttd-toolbar">
-      <div class="ttd-tool-left">
-        <label class="ttd-tool-inline">
-          Tampil
-          <select v-model.number="perPage" @change="resetPage" class="ttd-select-sm">
-            <option :value="10">10</option>
-            <option :value="25">25</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-          </select>
-          data
-        </label>
-        <select v-model="statusFilter" @change="resetPage" class="ttd-select">
-          <option value="ALL">Semua status</option>
-          <option value="DRAFT">Draf</option>
-          <option value="PENDING">Menunggu TTD</option>
-        </select>
-        <button class="ttd-btn-ghost" @click="load" :disabled="loading">↻ Refresh</button>
-      </div>
-      <div class="ttd-tool-right">
-        <label class="ttd-search">
-          Cari:
-          <input
-            v-model="search"
-            @input="resetPage"
-            type="text"
-            placeholder="Cari nama pasien, no. RM, dokumen…"
-          />
-        </label>
-      </div>
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <input
+        v-model="search"
+        @input="onSearchInput"
+        type="text"
+        placeholder="Cari pasien, No.RM, atau jenis dokumen"
+        class="search-inp"
+      />
+      <select v-model="statusFilter" @change="onStatusChange" class="sel">
+        <option value="ALL">Semua status</option>
+        <option value="PENDING">Menunggu TTD</option>
+        <option value="DRAFT">Draf</option>
+      </select>
+      <button v-if="hasActiveFilter" class="lnk" @click="clearFilters">Reset</button>
     </div>
 
-    <div class="ttd-table-card">
-      <table class="ttd-table">
+    <!-- Bar aksi massal -->
+    <div v-if="selectedCount > 0" class="bulkbar">
+      <span class="bulk-info">{{ selectedCount }} dipilih</span>
+      <button class="btn" @click="openBulk">Telaah &amp; tandatangani</button>
+      <button class="lnk" @click="clearSelection">Batal</button>
+    </div>
+
+    <!-- Tabel -->
+    <div class="tbl-wrap">
+      <table class="tbl">
         <thead>
           <tr>
-            <th style="width:52px">NO</th>
-            <th>PASIEN</th>
-            <th>REVIEW DOKTER</th>
-            <th>JENIS DOKUMEN</th>
-            <th style="width:120px">TANGGAL</th>
-            <th style="width:150px">STATUS</th>
-            <th style="width:120px" class="ttd-th-action">AKSI</th>
+            <th style="width:36px" class="ta-center">
+              <input type="checkbox" class="chk" :checked="allPageSelected" @change="toggleSelectPage" title="Pilih semua" />
+            </th>
+            <th>Pasien</th>
+            <th>Review Dokter</th>
+            <th>Jenis Dokumen</th>
+            <th style="width:110px">Tanggal</th>
+            <th style="width:120px">Status</th>
+            <th style="width:60px" class="ta-right"></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading && allRows.length === 0">
-            <td colspan="7" class="ttd-cell-state">Memuat antrian…</td>
+          <tr v-if="loading && rows.length === 0">
+            <td colspan="7" class="cell-state">Memuat antrian…</td>
           </tr>
           <tr v-else-if="error">
-            <td colspan="7" class="ttd-cell-state ttd-err">{{ error }}</td>
+            <td colspan="7" class="cell-state err">{{ error }}</td>
           </tr>
-          <tr v-else-if="totalFiltered === 0">
-            <td colspan="7" class="ttd-cell-state">
-              <div class="ttd-empty">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-                <p>{{ allRows.length === 0 ? 'Antrian tanda tangan kosong.' : 'Tidak ada dokumen yang cocok dengan filter.' }}</p>
-              </div>
+          <tr v-else-if="total === 0">
+            <td colspan="7" class="cell-state">
+              {{ hasActiveFilter ? 'Tidak ada dokumen yang cocok.' : 'Antrian tanda tangan kosong.' }}
             </td>
           </tr>
-          <tr v-for="(r, i) in pagedRows" :key="r.id" class="ttd-row">
-            <td class="ttd-num">{{ rangeStart + i }}</td>
+          <tr v-for="r in rows" :key="r.id" :class="{ 'row-sel': isSelected(r.id) }">
+            <td class="ta-center">
+              <input type="checkbox" class="chk" :checked="isSelected(r.id)" @change="toggleSelect(r)" />
+            </td>
             <td>
-              <div class="ttd-patient">
-                <strong>{{ r.patient_name }}</strong>
-                <span class="ttd-rm">No.RM {{ r.patient_no_rm ?? '—' }} · {{ r.patient_gender || '—' }}</span>
+              <div class="patient">
+                <span class="p-name">{{ patientName(r) }}</span>
+                <span class="rm">No.RM {{ patientRm(r) ?? '—' }} · {{ patientGender(r) || '—' }}</span>
               </div>
             </td>
-            <td>{{ r.review_doctor ?? '—' }}</td>
-            <td><span class="ttd-doc-chip">{{ r.template_name ?? r.template_code }}</span></td>
-            <td>{{ formatDate(r.visit_date ?? r.created_at) }}</td>
+            <td class="muted">{{ r.review_doctor ?? '—' }}</td>
+            <td>{{ r.template_name ?? r.template_code }}</td>
+            <td class="muted td-date">{{ formatDate(rowDate(r)) }}</td>
             <td>
-              <span class="ttd-status" :class="statusMeta(r.status).cls">
-                <span class="ttd-status-dot"></span>{{ statusMeta(r.status).label }}
-              </span>
+              <span class="st" :class="statusMeta(r.status).cls">{{ statusMeta(r.status).label }}</span>
             </td>
-            <td class="ttd-th-action">
-              <button class="ttd-act ttd-act-sign" @click="openTtd(r)" title="Tanda tangani">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
-                </svg>
-              </button>
-              <button class="ttd-act ttd-act-view" @click="openTtd(r)" title="Lihat dokumen">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-              </button>
+            <td class="ta-right">
+              <button class="lnk" @click="openTtd(r)">Buka</button>
             </td>
           </tr>
         </tbody>
       </table>
-
-      <footer class="ttd-table-foot">
-        <span class="ttd-foot-info">
-          Menampilkan {{ rangeStart }} s/d {{ rangeEnd }} dari {{ totalFiltered }} data
-        </span>
-        <div class="ttd-pager">
-          <button class="ttd-page-btn" @click="goPrev" :disabled="page <= 1">‹ Previous</button>
-          <button class="ttd-page-num">{{ page }}</button>
-          <button class="ttd-page-btn" @click="goNext" :disabled="page >= totalPages">Next ›</button>
-        </div>
-      </footer>
     </div>
+
+    <footer v-if="total > 0" class="foot">
+      <span class="foot-info">{{ rangeStart }}–{{ rangeEnd }} dari {{ total }}</span>
+      <div class="pager">
+        <button class="page-btn" @click="goPrev" :disabled="page <= 1">‹</button>
+        <button
+          v-for="n in pageWindow"
+          :key="n"
+          class="page-num"
+          :class="{ on: n === page }"
+          @click="goPage(n)"
+        >{{ n }}</button>
+        <button class="page-btn" @click="goNext" :disabled="page >= totalPages">›</button>
+      </div>
+    </footer>
 
     <!-- Preview modal -->
     <Teleport to="body">
-      <div v-if="modalOpen && currentDoc" class="ttd-preview-overlay" @click.self="closeModal">
-        <div class="ttd-preview-modal">
-          <header class="ttd-preview-head">
+      <div v-if="modalOpen && currentDoc" class="pv-overlay" @click.self="closeModal">
+        <div class="pv-modal">
+          <header class="pv-head">
             <div>
               <h3>{{ currentDoc.template_name ?? currentDoc.template_code }}</h3>
-              <p class="ttd-preview-sub">{{ currentDoc.patient_name }} · {{ statusMeta(currentDoc.status).label }}</p>
+              <p class="pv-sub">{{ patientName(currentDoc) }} · {{ statusMeta(currentDoc.status).label }}</p>
             </div>
-            <button class="ttd-btn-ghost" @click="closeModal">Tutup</button>
+            <button class="pv-close" @click="closeModal" title="Tutup">×</button>
           </header>
-          <div class="ttd-preview-body">
-            <div v-if="previewLoading" class="ttd-cell-state">Memuat preview…</div>
+          <div class="pv-body">
+            <div v-if="previewLoading" class="cell-state">Memuat preview…</div>
             <template v-else>
               <div v-if="!editMode" v-html="previewHtml"></div>
-              <div v-else class="ttd-edit-wrap">
-                <p class="ttd-edit-hint">
+              <div v-else class="edit-wrap">
+                <p class="edit-hint">
                   Edit isi dokumen (DRAFT). Perubahan menimpa isi dokumen ini dan
                   lepas dari data rekam medis.
                 </p>
-                <textarea
-                  v-model="editHtml"
-                  class="ttd-edit-area"
-                  spellcheck="false"
-                  placeholder="Isi dokumen (HTML)…"
-                ></textarea>
+                <LayoutEditor v-model="editHtml" />
               </div>
             </template>
           </div>
-          <footer class="ttd-preview-foot">
+          <footer class="pv-foot">
             <template v-if="editMode">
-              <button class="ttd-btn-secondary" @click="cancelEdit" :disabled="editSaving">Batal</button>
-              <button class="ttd-btn-primary" @click="saveEdit" :disabled="editSaving">
-                {{ editSaving ? 'Menyimpan…' : 'Simpan Perubahan' }}
+              <button class="lnk" @click="cancelEdit" :disabled="editSaving">Batal</button>
+              <button class="btn" @click="saveEdit" :disabled="editSaving">
+                {{ editSaving ? 'Menyimpan…' : 'Simpan' }}
               </button>
             </template>
             <template v-else>
-              <button v-if="isDraft" class="ttd-btn-edit" @click="startEdit">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-                Edit Isi
-              </button>
-              <button class="ttd-btn-primary" @click="captureOpen = true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
-                </svg>
-                Tanda Tangani Dokumen
-              </button>
+              <button v-if="isDraft" class="lnk" @click="startEdit">Edit isi</button>
+              <button class="btn" @click="openPin">Tanda tangani</button>
             </template>
           </footer>
         </div>
       </div>
     </Teleport>
 
-    <SignatureCaptureModal
-      v-if="currentDoc"
-      v-model="captureOpen"
-      signer-type="doctor"
-      signer-label="Tanda Tangan Dokter"
-      :document-name="currentDoc.template_name ?? currentDoc.template_code"
-      @capture="onCapture"
+    <!-- PIN single-sign -->
+    <Teleport to="body">
+      <div v-if="pinModalOpen" class="pin-overlay" @click.self="pinModalOpen = false">
+        <div class="pin-modal">
+          <h4 class="pin-title">Tanda Tangan Elektronik</h4>
+          <p class="pin-sub">{{ currentDoc?.template_name ?? currentDoc?.template_code }}</p>
+          <p class="pin-hint">Masukkan PIN tanda tangan Anda untuk membubuhkan stempel digital + QR.</p>
+          <input
+            v-model="pinValue"
+            type="password"
+            inputmode="numeric"
+            maxlength="6"
+            class="pin-input"
+            placeholder="••••••"
+            autocomplete="off"
+            @keyup.enter="submitPin()"
+          />
+          <div v-if="pinError" class="pin-err">{{ pinError }}</div>
+          <div class="pin-actions">
+            <button type="button" class="lnk" :disabled="pinBusy" @click="pinModalOpen = false">Batal</button>
+            <button type="button" class="btn" :disabled="pinBusy" @click="submitPin()">
+              {{ pinBusy ? 'Memproses…' : 'Tanda Tangani' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk telaah + tandatangani -->
+    <BulkTtdReviewModal
+      v-if="bulkOpen"
+      :documents="selectedDocs"
+      @close="bulkOpen = false"
+      @done="onBulkDone"
     />
   </div>
 </template>
 
 <style scoped>
-/* Palet "Prima Navy + Vision Sky" via token tokens.css:
-   --gd Prima Navy #0E3A66 (header/banner), --ga/--lm Vision Sky #1FAAE0 (aksi),
-   --gl tint Sky, --gb border, --bi zebra, --td/--tm teks. */
-.ttd-wrap { padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 0.9rem; }
-
-/* Banner — Prima Navy + teks putih, ikon Vision Sky */
-.ttd-banner {
-  display: flex; align-items: center; justify-content: center; gap: 0.6rem;
-  background: var(--gd); color: #fff;
-  padding: 0.75rem 1rem; border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(14,58,102,0.2);
-}
-.ttd-banner h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-.ttd-banner svg { flex: 0 0 auto; color: var(--ga); }
-
-/* Toolbar */
-.ttd-toolbar {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem;
-}
-.ttd-tool-left, .ttd-tool-right { display: flex; align-items: center; gap: 0.6rem; }
-.ttd-tool-inline { display: flex; align-items: center; gap: 0.4rem; font-size: 13px; color: var(--tm); }
-.ttd-select, .ttd-select-sm {
-  padding: 0.35rem 0.5rem; border: 1px solid var(--gb); border-radius: 6px;
-  font-size: 13px; background: #fff; cursor: pointer; color: var(--td);
-}
-.ttd-select-sm { padding: 0.3rem 0.4rem; }
-.ttd-search { display: flex; align-items: center; gap: 0.4rem; font-size: 13px; color: var(--tm); }
-.ttd-search input {
-  padding: 0.4rem 0.6rem; border: 1px solid var(--gb); border-radius: 6px;
-  font-size: 13px; min-width: 230px; color: var(--td);
-}
-.ttd-search input:focus, .ttd-select:focus, .ttd-select-sm:focus {
-  outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,0.18);
-}
-.ttd-btn-ghost {
-  padding: 0.4rem 0.85rem; border: 1px solid var(--gb); border-radius: 6px;
-  background: #fff; cursor: pointer; font-size: 13px; color: var(--td);
-}
-.ttd-btn-ghost:hover { background: var(--bi); }
-
-/* Table */
-.ttd-table-card {
-  background: #fff; border: 1px solid var(--gb); border-radius: 10px; overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-}
-.ttd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.ttd-table thead th {
-  background: var(--gd); color: #fff; text-align: left; font-weight: 700;
-  padding: 0.7rem 0.9rem; font-size: 11.5px; letter-spacing: 0.4px;
-  white-space: nowrap;
-}
-.ttd-th-action { text-align: right; }
-.ttd-table tbody td { padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
-.ttd-row:nth-child(even) { background: var(--bi); }
-.ttd-row:hover { background: var(--gl); }
-.ttd-num { color: var(--tu); font-weight: 600; text-align: center; }
-
-.ttd-patient { display: flex; flex-direction: column; }
-.ttd-patient strong { font-size: 13.5px; color: var(--td); }
-.ttd-rm { font-size: 11px; color: var(--tu); }
-
-.ttd-doc-chip {
-  display: inline-block; padding: 3px 10px; border-radius: 6px;
-  background: var(--gl); color: var(--ld); font-size: 12px; font-weight: 600;
-  border: 1px solid var(--gb);
+/* Minimalis: netral, hairline border, satu aksen navy, tanpa gradien/badge. */
+.ttd {
+  --ink: #1f2937; --muted: #6b7280; --faint: #9ca3af;
+  --line: #e5e7eb; --accent: #4b5563; --danger: #b42323;
+  display: flex; flex-direction: column; gap: 1.5rem;
+  color: var(--ink); font-size: 13px;
 }
 
-.ttd-status {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
-}
-.ttd-status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.st-draft   { background: var(--bi); color: var(--tm); }
-.st-ready   { background: var(--gl); color: var(--ld); }
-.st-pending { background: var(--wb); color: var(--wt); }
-.st-default { background: var(--bi); color: var(--tm); }
+/* ── HEADER ───────────────────────────────────────────────────────── */
+.banner { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
+.b-body h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.b-sub { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 
-.ttd-act {
-  width: 30px; height: 30px; border: 0; border-radius: 6px; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; margin-left: 4px;
-  color: #fff;
+/* ── BUTTONS / LINKS ──────────────────────────────────────────────── */
+.btn {
+  padding: 7px 14px; border: 1px solid var(--accent); border-radius: 7px;
+  font-size: 13px; font-weight: 500; background: var(--accent); color: #fff;
+  cursor: pointer; white-space: nowrap; transition: opacity .15s;
 }
-.ttd-act-sign { background: var(--ga); }
-.ttd-act-sign:hover { background: var(--ld); }
-.ttd-act-view { background: var(--gd); }
-.ttd-act-view:hover { background: var(--gm); }
+.btn:hover:not(:disabled) { opacity: 0.88; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.lnk {
+  border: 0; background: none; padding: 4px 2px; cursor: pointer;
+  font-size: 13px; color: var(--accent); font-weight: 500;
+}
+.lnk:hover:not(:disabled) { text-decoration: underline; }
+.lnk:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.ttd-cell-state { text-align: center; padding: 2.5rem 1rem; color: var(--tu); }
-.ttd-err { color: var(--et); }
-.ttd-empty { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
-.ttd-empty svg { color: var(--ga); }
-.ttd-empty p { margin: 0; }
+/* ── TOOLBAR ─────────────────────────────────────────────────────── */
+.toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.search-inp {
+  flex: 1; min-width: 200px; padding: 8px 12px; border: 1px solid var(--line);
+  border-radius: 7px; font-size: 13px; color: var(--ink); background: #fff;
+}
+.search-inp::placeholder { color: var(--faint); }
+.search-inp:focus { outline: none; border-color: var(--accent); }
+.sel {
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+  font-size: 13px; background: #fff; cursor: pointer; color: var(--ink);
+}
+.sel:focus { outline: none; border-color: var(--accent); }
 
-.ttd-table-foot {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem;
-  padding: 0.7rem 0.9rem; border-top: 1px solid var(--gb); background: #fff;
+/* ── BULK BAR ─────────────────────────────────────────────────────── */
+.bulkbar {
+  display: flex; align-items: center; gap: 1rem; padding: 0.6rem 0;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
 }
-.ttd-foot-info { font-size: 12.5px; color: var(--tu); }
-.ttd-pager { display: flex; align-items: center; gap: 0.4rem; }
-.ttd-page-btn, .ttd-page-num {
-  padding: 0.35rem 0.7rem; border: 1px solid var(--gb); border-radius: 6px;
-  background: #fff; cursor: pointer; font-size: 12.5px; color: var(--td);
-}
-.ttd-page-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.ttd-page-num { background: var(--ga); color: #fff; border-color: var(--ga); font-weight: 700; min-width: 32px; }
+.bulk-info { font-size: 13px; color: var(--muted); margin-right: auto; }
 
-/* Preview modal */
-.ttd-preview-overlay {
-  position: fixed; inset: 0; background: rgba(14,58,102,0.55);
-  display: flex; align-items: center; justify-content: center; z-index: 1050;
+/* ── TABLE ───────────────────────────────────────────────────────── */
+.chk { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.ta-center { text-align: center; }
+.ta-right { text-align: right; }
+.tbl-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl thead th {
+  text-align: left; font-weight: 500; color: var(--muted); font-size: 12px;
+  padding: 0 0.75rem 0.6rem; border-bottom: 1px solid var(--line); white-space: nowrap;
 }
-.ttd-preview-modal {
-  width: min(880px, 96vw); max-height: 92vh;
-  background: #fff; border-radius: 10px; overflow: hidden;
-  display: flex; flex-direction: column;
-}
-.ttd-preview-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gb);
-  background: var(--gd); color: #fff;
-}
-.ttd-preview-head h3 { margin: 0; font-size: 16px; color: #fff; }
-.ttd-preview-sub { margin: 3px 0 0; font-size: 12.5px; color: var(--ga); }
-.ttd-preview-head .ttd-btn-ghost { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); color: #fff; }
-.ttd-preview-head .ttd-btn-ghost:hover { background: rgba(255,255,255,0.2); }
-.ttd-preview-body { padding: 1.5rem 2rem; overflow-y: auto; flex: 1; background: var(--bg); }
-.ttd-preview-foot {
-  padding: 0.85rem 1.25rem; border-top: 1px solid var(--gb);
-  display: flex; justify-content: center; gap: 0.6rem;
-}
-.ttd-btn-primary {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 0.55rem 1.3rem; background: var(--ga); color: #fff !important; border: 0; border-radius: 7px;
-  cursor: pointer; font-size: 14px; font-weight: 700;
-}
-.ttd-btn-primary:hover { background: var(--ld); }
-.ttd-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-.ttd-btn-secondary {
-  padding: 0.55rem 1.2rem; border-radius: 7px; cursor: pointer; font-size: 14px; font-weight: 700;
-  background: var(--bi); color: var(--td); border: 1px solid var(--tu);
-}
-.ttd-btn-secondary:hover { background: #e6e9ee; border-color: var(--tm); }
-.ttd-btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
-.ttd-btn-edit {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 0.55rem 1.1rem; background: var(--gl); color: var(--gd); border: 1px solid var(--ga); border-radius: 7px;
-  cursor: pointer; font-size: 14px; font-weight: 700;
-}
-.ttd-btn-edit:hover { background: #d4ecf8; border-color: var(--ld); }
+.tbl tbody td { padding: 0.7rem 0.75rem; border-bottom: 1px solid #f1f2f4; vertical-align: middle; }
+.tbl tbody tr:hover { background: #fafafa; }
+.row-sel { background: #f5f8fb !important; }
+.muted { color: var(--muted); }
+.td-date { font-variant-numeric: tabular-nums; }
 
-/* Edit isi DRAFT */
-.ttd-edit-wrap { display: flex; flex-direction: column; gap: 0.5rem; height: 100%; }
-.ttd-edit-hint {
-  margin: 0; font-size: 12px; color: var(--wt); background: var(--wb);
-  border: 1px solid var(--wbd); border-radius: 6px; padding: 6px 10px;
+.patient { display: flex; flex-direction: column; gap: 1px; }
+.p-name { font-weight: 500; }
+.rm { font-size: 11.5px; color: var(--faint); }
+
+.st { font-size: 12px; }
+.st-pending { color: var(--ink); }
+.st-draft { color: var(--faint); }
+.st-default { color: var(--muted); }
+
+.cell-state { text-align: center; padding: 3rem 1rem; color: var(--faint); }
+.err { color: var(--danger); }
+
+/* ── FOOTER / PAGER ──────────────────────────────────────────────── */
+.foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; }
+.foot-info { font-size: 12.5px; color: var(--faint); }
+.pager { display: flex; align-items: center; gap: 0.25rem; }
+.page-btn, .page-num {
+  min-width: 30px; height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px;
+  background: none; cursor: pointer; font-size: 13px; color: var(--ink);
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.ttd-edit-area {
-  width: 100%; min-height: 360px; flex: 1; resize: vertical;
-  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5;
-  padding: 0.75rem; border: 1px solid var(--gb); border-radius: 8px; color: var(--td);
+.page-btn:hover:not(:disabled), .page-num:hover { background: #f1f2f4; }
+.page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.page-num.on { background: var(--accent); color: #fff; }
+
+/* ── MODAL (preview) ─────────────────────────────────────────────── */
+.pv-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center; z-index: 1200; padding: 1rem;
 }
-.ttd-edit-area:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,0.18); }
+.pv-modal { width: min(820px, 96vw); max-height: 90vh; background: #fff; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.pv-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 1.4rem; border-bottom: 1px solid var(--line); }
+.pv-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.pv-sub { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+.pv-close { width: 28px; height: 28px; border-radius: 6px; border: 0; background: none; cursor: pointer; color: var(--faint); font-size: 22px; line-height: 1; }
+.pv-close:hover { background: #f1f2f4; color: var(--ink); }
+.pv-body { padding: 1.5rem 2rem; overflow-y: auto; flex: 1; }
+.pv-foot { padding: 0.9rem 1.4rem; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; align-items: center; gap: 1rem; }
+
+.edit-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
+.edit-hint { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* ── PIN MODAL ───────────────────────────────────────────────────── */
+.pin-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center; z-index: 1300; padding: 1rem;
+}
+.pin-modal { width: min(340px, 94vw); background: #fff; border-radius: 12px; padding: 1.6rem; text-align: center; }
+.pin-title { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+.pin-sub { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+.pin-hint { margin: 0 0 16px; font-size: 12.5px; color: var(--muted); }
+.pin-input {
+  width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 22px; letter-spacing: 8px; text-align: center; box-sizing: border-box; color: var(--ink);
+}
+.pin-input:focus { outline: none; border-color: var(--accent); }
+.pin-err { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
+.pin-actions { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1.2rem; }
 </style>

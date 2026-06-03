@@ -17,6 +17,7 @@ const tabs = [
   { key: 'peserta',    label: 'Cek Peserta' },
   { key: 'rujukan',    label: 'Cek Rujukan' },
   { key: 'monitoring', label: 'Monitoring' },
+  { key: 'syncicd',    label: 'Sinkron ICD' },
 ]
 
 // ── Util: jalankan call + ekstrak hasil/pesan secara seragam ────────────────
@@ -77,6 +78,23 @@ function cekMonitoring() {
 
 function pretty(v) {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+// ── Sinkron ICD dari referensi VClaim (cakupan oftalmologi) ──────────────────
+// Referensi VClaim = master nasional BPJS yang SAMA dengan grouper INA-CBG.
+// Cakupan dibatasi blok mata di backend (ICD10_EYE_KEYWORDS / ICD9_EYE_KEYWORDS).
+const sync = reactive({ type: 'icd10', loading: false, error: '', result: null })
+async function runSyncIcd() {
+  sync.loading = true; sync.error = ''; sync.result = null
+  try {
+    const res = await integrasiApi.syncIcd(sync.type) // keywords default = blok mata di backend
+    sync.result = res.data?.data ?? null
+  } catch (e) {
+    const s = e.response?.status
+    sync.error = (s === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal sinkron ICD.')
+  } finally {
+    sync.loading = false
+  }
 }
 
 // ── Monitoring → tabel ──────────────────────────────────────────────────────
@@ -279,6 +297,39 @@ function exportMonCsv() {
         <!-- Fallback: bentuk data tak dikenali → JSON mentah -->
         <pre v-else class="json">{{ pretty(mon.data) }}</pre>
       </template>
+    </section>
+
+    <!-- SINKRON ICD -->
+    <section v-else-if="tab === 'syncicd'" class="panel">
+      <p class="hint">
+        Tarik kode <b>ICD-10 (diagnosa)</b> &amp; <b>ICD-9-CM (prosedur)</b> dari referensi resmi VClaim BPJS
+        ke master lokal. Referensi VClaim = master nasional yang <b>sama</b> dengan yang dipakai grouper INA-CBG,
+        jadi kode hasil sinkron dijamin diterima saat koding klaim. <b>Cakupan dibatasi oftalmologi</b>
+        (blok mata H00–H59 untuk ICD-10; prosedur mata untuk ICD-9). Kode yang sudah ada akan diperbarui;
+        deskripsi yang sudah Anda kurasi manual tidak ditimpa. Aman dijalankan berulang.
+      </p>
+      <div class="form-row">
+        <select v-model="sync.type" class="inp">
+          <option value="icd10">ICD-10 (Diagnosa)</option>
+          <option value="icd9">ICD-9-CM (Prosedur)</option>
+        </select>
+        <button class="btn primary" :disabled="sync.loading" @click="runSyncIcd">
+          {{ sync.loading ? 'Menyinkron…' : 'Sinkron dari BPJS' }}
+        </button>
+      </div>
+
+      <p v-if="sync.error" class="banner err">{{ sync.error }}</p>
+      <div v-else-if="sync.result" class="result">
+        <div class="kv-grid">
+          <div><span>Tipe</span><b>{{ sync.result.type === 'icd9' ? 'ICD-9-CM' : 'ICD-10' }}</b></div>
+          <div><span>Kode Baru</span><b class="ok">{{ sync.result.inserted }}</b></div>
+          <div><span>Diperbarui</span><b>{{ sync.result.updated }}</b></div>
+          <div><span>Total Tersinkron</span><b>{{ sync.result.total }}</b></div>
+        </div>
+        <p v-if="sync.result.failed_keywords?.length" class="banner err" style="margin-top:.7rem">
+          {{ sync.result.failed_keywords.length }} kata kunci gagal ditarik (lihat log VClaim).
+        </p>
+      </div>
     </section>
 
   </div>
