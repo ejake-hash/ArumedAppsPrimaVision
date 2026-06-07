@@ -915,7 +915,7 @@ function daftarkanDariProfil() {
 /* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
 const profileEdit = reactive({
   open: false, loading: false, errors: null,
-  name: '', gender: 'L', date_of_birth: '', phone: '', email: '',
+  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', email: '',
   address: '', province: '', nama_kab_kota: '', nama_kecamatan: '', blood_type: '',
   // Snapshot wilayah asal (data lama). Dipakai untuk: (1) tampilkan info nilai
   // lama, (2) jangan timpa dgn kosong kalau petugas tak menyentuh WilayahPicker
@@ -938,6 +938,7 @@ function startProfileEdit() {
   Object.assign(profileEdit, {
     open: true, loading: false, errors: null,
     name:          p.name ?? '',
+    nik:           p.nik ?? '',
     gender:        p.gender ?? 'L',
     date_of_birth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
     phone:         p.phone ?? '',
@@ -969,6 +970,11 @@ async function saveProfileEdit() {
       email:         profileEdit.email.trim() || null,
       address:       profileEdit.address.trim() || null,
       blood_type:    profileEdit.blood_type || null,
+    }
+    // NIK hanya boleh diperbaiki selama pasien BELUM punya IHS Satu Sehat.
+    // Begitu IHS terbit, NIK = identitas terkunci (kirim ulang akan ditolak).
+    if (!p.satusehat_ihs) {
+      payload.nik = profileEdit.nik.trim() || null
     }
     // Wilayah: hanya timpa kalau petugas benar-benar memilih ulang dari dropdown.
     // Kalau tidak disentuh (mis. data migrasi tak cocok master → dropdown kosong),
@@ -1976,7 +1982,11 @@ onUnmounted(() => {
               >
                 <PatientAvatar :name="pt.name" :src="pt.photo_url" :size="32" :zoomable="false" radius="50%" />
                 <div class="combo-info">
-                  <div class="combo-name">{{ pt.name }}</div>
+                  <div class="combo-name">
+                    {{ pt.name }}
+                    <span v-if="pt.satusehat_ihs" class="ihs-chip ihs-ok" title="Sudah punya IHS Satu Sehat">IHS ✓</span>
+                    <span v-else class="ihs-chip ihs-none" title="Belum punya IHS — akan resolve saat sync">Belum IHS</span>
+                  </div>
                   <div class="combo-meta">
                     <span class="combo-rm">RM {{ pt.no_rm }}</span>
                     <span v-if="pt.nik">· NIK {{ pt.nik }}</span>
@@ -2615,6 +2625,8 @@ onUnmounted(() => {
                           <div class="combo-info">
                             <div class="combo-name">
                               {{ pt.name }}
+                              <span v-if="pt.satusehat_ihs" class="ihs-chip ihs-ok" title="Sudah punya IHS Satu Sehat">IHS ✓</span>
+                              <span v-else class="ihs-chip ihs-none" title="Belum punya IHS — akan resolve saat sync">Belum IHS</span>
                               <span v-if="pt.active_visit" class="combo-av-badge" title="Pasien masih punya kunjungan aktif">● kunjungan aktif</span>
                             </div>
                             <div class="combo-meta">
@@ -3595,7 +3607,20 @@ onUnmounted(() => {
               <template v-if="!profileEdit.open">
                 <div class="detail-grid">
                   <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ profilePatient.no_rm ?? '—' }}</span></div>
-                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik ?? '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik || '—' }}</span></div>
+                  <div class="cf full">
+                    <span class="cf-k">IHS Satu Sehat</span>
+                    <span class="cf-v">
+                      <span v-if="profilePatient.satusehat_ihs" class="ihs-badge ihs-ok" title="Pasien sudah punya IHS Satu Sehat">
+                        <svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+                        Sudah punya IHS · {{ profilePatient.satusehat_ihs }}
+                      </span>
+                      <span v-else class="ihs-badge ihs-none" title="Belum punya IHS — akan di-resolve otomatis saat sync ke Satu Sehat">
+                        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                        Belum punya IHS — akan resolve saat sync
+                      </span>
+                    </span>
+                  </div>
                   <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
                   <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
                   <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone || '—' }}</span></div>
@@ -3644,7 +3669,18 @@ onUnmounted(() => {
               <template v-else>
                 <div class="detail-edit-grid">
                   <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v locked">{{ profilePatient.no_rm ?? '—' }}</span></div>
-                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v locked">{{ profilePatient.nik ?? '—' }}</span></div>
+
+                  <!-- NIK terkunci begitu IHS terbit; selama belum punya IHS, boleh diperbaiki
+                       supaya bisa di-resolve saat sync Satu Sehat. -->
+                  <div v-if="profilePatient.satusehat_ihs" class="cf">
+                    <span class="cf-k">NIK</span>
+                    <span class="cf-v locked">{{ profilePatient.nik || '—' }} <span class="ihs-lock-note">· terkunci (sudah punya IHS)</span></span>
+                  </div>
+                  <div v-else class="fg-sm">
+                    <label>NIK <span class="lbl-note">(perbaiki bila salah — agar IHS bisa resolve saat sync)</span></label>
+                    <input v-model="profileEdit.nik" class="form-input" inputmode="numeric" maxlength="16" placeholder="16 digit NIK KTP" />
+                    <div v-if="profileEdit.errors?.nik" class="fld-err">{{ profileEdit.errors.nik[0] }}</div>
+                  </div>
 
                   <div class="fg-sm fg-wide">
                     <label>Nama Lengkap <span class="req">*</span></label>
@@ -4311,6 +4347,16 @@ onUnmounted(() => {
 .active-visit-banner .avb-note { font-size: 11.5px; color: #7f1d1d; }
 /* badge kecil di dropdown hasil cari */
 .combo-av-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600; color: #b91c1c; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 999px; padding: 1px 7px; vertical-align: middle; }
+
+/* Status IHS Satu Sehat — chip kecil di hasil cari + badge di profil */
+.ihs-chip { display: inline-block; margin-left: 4px; font-size: 9.5px; font-weight: 700; border-radius: 999px; padding: 1px 7px; vertical-align: middle; }
+.ihs-chip.ihs-ok   { color: #047857; background: #d1fae5; border: 1px solid #6ee7b7; }
+.ihs-chip.ihs-none { color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; }
+.ihs-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; border-radius: 6px; padding: 3px 9px; }
+.ihs-badge svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.ihs-badge.ihs-ok   { color: #047857; background: #d1fae5; border: 1px solid #6ee7b7; }
+.ihs-badge.ihs-none { color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; }
+.ihs-lock-note { font-size: 10px; font-weight: 500; color: var(--tu); }
 
 /* Banner Preop Bedah — hijau (hari ini) / kuning (hari lain) */
 .preop-banner { display: flex; flex-direction: column; gap: 8px; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; border: 1.5px solid; }

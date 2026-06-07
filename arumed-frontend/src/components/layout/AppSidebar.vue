@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdmisiStore } from '@/stores/admisiStore'
@@ -106,6 +106,26 @@ async function resetToDefault() {
   }
 }
 
+// ─── Visibilitas header grup ─────────────────────────────────────────────────
+// Header "Klinis/Operasional/Sistem" hanyalah label pemisah (bukan menu/permission).
+// Sembunyikan bila role TAK punya satu pun item di grup itu, supaya tak ada
+// judul grup "menggantung" tanpa isi. Daftar di sini = OR semua v-if item di grup.
+const showKlinis = computed(() =>
+  auth.can('rekam_medis.read') || auth.can('perawat.read') || auth.can('refraksionis.read') ||
+  auth.can('rme_dokter.read') || auth.can('ttd_dokumen.read') || auth.can('penunjang.read') ||
+  auth.can('bedah.read') || auth.can('ruang_tindakan.read') || auth.can('rawat_inap.read') ||
+  auth.can('igd.read'),
+)
+const showOperasional = computed(() =>
+  auth.can('farmasi.read') || auth.can('inventori_farmasi.read') || auth.can('kasir.read') ||
+  auth.can('bpjs.read') || auth.can('asuransi.read') || auth.can('marketing.read'),
+)
+const showSistem = computed(() =>
+  auth.can('jadwal_dokter.write') || auth.can('master_data.read') || auth.can('rawat_inap.read') ||
+  auth.can('tarif_paket.read') || auth.can('role_akses.read') || auth.can('antrian_tv.read') ||
+  auth.can('integrasi.read') || auth.isSuperadmin,
+)
+
 // ─── Badge antrian TTD dokter ────────────────────────────────────────────────
 const ttdCount = ref(0)
 onMounted(async () => {
@@ -150,7 +170,7 @@ onMounted(async () => {
         <span class="sb-badge">{{ admisi.antrianCount }}</span>
       </RouterLink>
 
-      <div class="sb-section">Klinis</div>
+      <div v-if="showKlinis" class="sb-section">Klinis</div>
       <RouterLink v-if="auth.can('rekam_medis.read')" to="/rekam-medis" class="sb-item" title="Rekam Medis">
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         <span>Rekam Medis</span>
@@ -198,7 +218,7 @@ onMounted(async () => {
         <span>IGD (Darurat)</span>
       </RouterLink>
 
-      <div class="sb-section">Operasional</div>
+      <div v-if="showOperasional" class="sb-section">Operasional</div>
       <RouterLink v-if="auth.can('farmasi.read')" to="/farmasi" class="sb-item" title="Farmasi">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
         <span>Farmasi</span>
@@ -224,7 +244,7 @@ onMounted(async () => {
         <span>Laporan Marketing</span>
       </RouterLink>
 
-      <div class="sb-section">Sistem</div>
+      <div v-if="showSistem" class="sb-section">Sistem</div>
       <RouterLink v-if="auth.can('jadwal_dokter.write') || auth.isSuperadmin" to="/jadwal-dokter" class="sb-item" title="Jadwal Dokter">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/></svg>
         <span>Jadwal Dokter</span>
