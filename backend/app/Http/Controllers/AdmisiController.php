@@ -3,13 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Models\DoctorSchedule;
+use App\Models\Patient;
 use App\Services\AdmisiService;
+use App\Services\SatusehatService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class AdmisiController extends Controller
 {
-    public function __construct(private readonly AdmisiService $service) {}
+    public function __construct(
+        private readonly AdmisiService $service,
+        private readonly SatusehatService $satusehat,
+    ) {}
 
     // =========================================================================
     // DASHBOARD
@@ -197,6 +202,30 @@ class AdmisiController extends Controller
         ]);
 
         return $this->ok($this->service->updatePasien($id, $validated), 'Data pasien diperbarui');
+    }
+
+    /**
+     * POST /admisi/pasien/{id}/resolve-ihs
+     * Cek NIK pasien ke Satu Sehat (Kemenkes) dan simpan IHS bila ketemu —
+     * untuk memverifikasi NIK satu-per-satu sebelum backfill massal.
+     */
+    public function resolveIhsPasien(string $id): JsonResponse
+    {
+        $patient = Patient::findOrFail($id);
+
+        try {
+            $result = $this->satusehat->checkPatientIhs($patient);
+        } catch (\Throwable $e) {
+            $code = (int) $e->getCode();
+            $http = ($code >= 400 && $code <= 599) ? $code : 502;
+            return $this->error($e->getMessage() ?: 'Gagal menghubungi Satu Sehat.', $http);
+        }
+
+        $msg = $result['resolved']
+            ? 'IHS ditemukan & disimpan: ' . $result['ihs']
+            : 'NIK tidak ditemukan di Satu Sehat — periksa kembali NIK pasien.';
+
+        return $this->ok($result, $msg);
     }
 
     // =========================================================================

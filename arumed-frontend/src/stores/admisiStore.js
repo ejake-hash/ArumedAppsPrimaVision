@@ -283,6 +283,26 @@ export const useAdmisiStore = defineStore('admisi', () => {
     }
   }
 
+  // Cek/resolve IHS satu pasien ke Satu Sehat (verifikasi NIK sebelum backfill).
+  // Mengembalikan { ihs, resolved, patient }; merambatkan IHS baru ke list lokal.
+  async function resolveIhs(patientId) {
+    try {
+      const { data } = await admisiApi.resolveIhs(patientId)
+      const res = data.data ?? {}
+      const ihs = res.ihs ?? null
+      for (const q of antrian.value) {
+        if (q.visit?.patient?.id === patientId) q.visit.patient.satusehat_ihs = ihs
+      }
+      for (const v of visits.value) {
+        if (v.patient?.id === patientId) v.patient.satusehat_ihs = ihs
+      }
+      return { ...res, message: data.message ?? null }
+    } catch (err) {
+      const msg = err.response?.data?.message ?? 'Gagal menghubungi Satu Sehat'
+      throw new Error(msg)
+    }
+  }
+
   async function daftarKunjungan(formData) {
     try {
       const { data } = await admisiApi.daftar(formData)
@@ -453,7 +473,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
 
     // patient
     cariPasien, fetchPasienDetail, fetchKunjunganPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,
-    fetchJadwalBedahAktif,
+    resolveIhs, fetchJadwalBedahAktif,
 
     // rekam medis
     fetchRekamMedis,

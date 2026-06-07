@@ -956,6 +956,26 @@ function startProfileEdit() {
   wilayahTouched.value = false    // reset; jadi true saat petugas pilih dropdown
 }
 function cancelProfileEdit() { profileEdit.open = false; profileEdit.errors = null }
+
+/* Resolve IHS satu pasien (cek NIK ke Satu Sehat) — verifikasi sebelum backfill.
+   Tombol di baris "IHS Satu Sehat" tab Detail. */
+const resolvingIhs = ref(false)
+async function resolveIhsPasien() {
+  const p = profilePatient.value
+  if (!p?.id) return
+  if (!p.nik) { toast('w', 'Pasien belum punya NIK — lengkapi NIK dulu (tombol Edit).'); return }
+  resolvingIhs.value = true
+  try {
+    const res = await admisiStore.resolveIhs(p.id)
+    profilePatient.value = { ...p, satusehat_ihs: res.ihs ?? null }
+    toast(res.resolved ? 's' : 'w', res.message || (res.resolved ? `IHS ditemukan: ${res.ihs}` : 'NIK tidak ditemukan di Satu Sehat'))
+  } catch (e) {
+    toast('e', e.message || 'Gagal menghubungi Satu Sehat')
+  } finally {
+    resolvingIhs.value = false
+  }
+}
+
 async function saveProfileEdit() {
   const p = profilePatient.value
   if (!p?.id) return
@@ -3607,18 +3627,36 @@ onUnmounted(() => {
               <template v-if="!profileEdit.open">
                 <div class="detail-grid">
                   <div class="cf"><span class="cf-k">No. Rekam Medis</span><span class="cf-v">{{ profilePatient.no_rm ?? '—' }}</span></div>
-                  <div class="cf"><span class="cf-k">NIK</span><span class="cf-v">{{ profilePatient.nik || '—' }}</span></div>
+                  <!-- NIK + status IHS Satu Sehat + tombol Resolve = 1 kesatuan.
+                       IHS di-resolve PURELY dari NIK (GET Patient?identifier=nik) —
+                       provinsi/alamat tidak berpengaruh; gagal resolve = NIK salah/
+                       belum terdaftar di Kemenkes. -->
                   <div class="cf full">
-                    <span class="cf-k">IHS Satu Sehat</span>
-                    <span class="cf-v">
+                    <span class="cf-k">NIK &amp; IHS Satu Sehat</span>
+                    <span class="cf-v ihs-cf-v">
+                      <span class="ihs-nik">{{ profilePatient.nik || 'NIK belum diisi' }}</span>
                       <span v-if="profilePatient.satusehat_ihs" class="ihs-badge ihs-ok" title="Pasien sudah punya IHS Satu Sehat">
                         <svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
-                        Sudah punya IHS · {{ profilePatient.satusehat_ihs }}
+                        IHS · {{ profilePatient.satusehat_ihs }}
                       </span>
-                      <span v-else class="ihs-badge ihs-none" title="Belum punya IHS — akan di-resolve otomatis saat sync ke Satu Sehat">
+                      <span v-else class="ihs-badge ihs-none" title="Belum punya IHS — di-resolve dari NIK saat sync/backfill">
                         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                        Belum punya IHS — akan resolve saat sync
+                        Belum punya IHS
                       </span>
+                      <button
+                        v-if="!profilePatient.satusehat_ihs"
+                        class="btn btn-secondary btn-sm ihs-resolve-btn"
+                        :disabled="resolvingIhs || !profilePatient.nik"
+                        :title="profilePatient.nik ? 'Cek NIK ke Satu Sehat sekarang (verifikasi sebelum backfill)' : 'Lengkapi NIK dulu (tombol Edit)'"
+                        @click="resolveIhsPasien"
+                      >
+                        <span v-if="resolvingIhs" class="spin-xs"></span>
+                        <svg v-else viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+                        {{ resolvingIhs ? 'Mengecek…' : 'Resolve IHS' }}
+                      </button>
+                    </span>
+                    <span v-if="!profilePatient.satusehat_ihs" class="ihs-help">
+                      IHS dicari dari NIK ke Satu Sehat. Bila gagal, periksa kembali NIK (provinsi tidak memengaruhi) — perbaiki via tombol Edit.
                     </span>
                   </div>
                   <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
@@ -4357,6 +4395,11 @@ onUnmounted(() => {
 .ihs-badge.ihs-ok   { color: #047857; background: #d1fae5; border: 1px solid #6ee7b7; }
 .ihs-badge.ihs-none { color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; }
 .ihs-lock-note { font-size: 10px; font-weight: 500; color: var(--tu); }
+.ihs-cf-v { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ihs-resolve-btn { white-space: nowrap; }
+.ihs-resolve-btn svg { width: 13px; height: 13px; }
+.ihs-nik { font-size: 13px; font-weight: 600; color: var(--td); letter-spacing: 0.02em; }
+.ihs-help { font-size: 10.5px; font-weight: 500; color: var(--tu); margin-top: 4px; line-height: 1.4; }
 
 /* Banner Preop Bedah — hijau (hari ini) / kuning (hari lain) */
 .preop-banner { display: flex; flex-direction: column; gap: 8px; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; border: 1.5px solid; }

@@ -719,6 +719,30 @@ class SatusehatService
     }
 
     /**
+     * Cek/resolve IHS satu pasien secara manual (tombol "Resolve IHS" di Admisi),
+     * untuk memastikan NIK valid SEBELUM backfill massal. Memaksa hit ke Kemenkes
+     * walau cache kosong; lempar 503 bila integrasi belum aktif.
+     *
+     * @return array{ihs: ?string, resolved: bool, patient: \App\Models\Patient}
+     */
+    public function checkPatientIhs(\App\Models\Patient $patient): array
+    {
+        $this->assertEnabled();
+
+        if (trim((string) $patient->nik) === '') {
+            throw new \Exception('Pasien belum punya NIK — lengkapi NIK dulu sebelum resolve IHS.', 422);
+        }
+
+        $ihs = $this->resolvePatientIhs($patient);
+
+        return [
+            'ihs'      => $ihs,
+            'resolved' => $ihs !== null,
+            'patient'  => $patient->fresh(),
+        ];
+    }
+
+    /**
      * Resolve IHS dokter dari NIK. Cek cache kolom dulu; kalau kosong → GET ke
      * Kemenkes → simpan → return. Null bila NIK kosong / tidak ditemukan.
      */

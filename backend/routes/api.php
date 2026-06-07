@@ -217,6 +217,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien/{id}/jadwal-bedah-aktif', [AdmisiController::class, 'jadwalBedahAktif']);
             Route::get('/pasien/{id}/kontrol-gratis', [AdmisiController::class, 'kontrolGratis']);
             Route::put('/pasien/{id}',            [AdmisiController::class, 'updatePasien']);
+            // Resolve IHS Satu Sehat satu pasien (cek NIK ke Kemenkes sebelum backfill massal).
+            Route::post('/pasien/{id}/resolve-ihs', [AdmisiController::class, 'resolveIhsPasien'])
+                ->middleware('permission:admisi.write');
 
             // Berkas identitas pasien (KTP — foto/PDF), per-pasien, disk privat ber-auth.
             Route::get   ('/pasien/{id}/identity-documents',                [App\Http\Controllers\PatientIdentityDocumentController::class, 'index']);

@@ -763,6 +763,7 @@ export const admisiApi = {
   jadwalBedahAktif: (id)        => api.get(`/admisi/pasien/${id}/jadwal-bedah-aktif`),
   kontrolGratis: (id)           => api.get(`/admisi/pasien/${id}/kontrol-gratis`),
   updatePasien:  (id, data)     => api.put(`/admisi/pasien/${id}`, data),
+  resolveIhs:    (id)           => api.post(`/admisi/pasien/${id}/resolve-ihs`),
   daftar:        (data)         => api.post('/admisi/daftar', data),
   daftarkanWalkIn: (visitId, data) => api.put(`/admisi/kunjungan/${visitId}/daftarkan-walkin`, data),
   previewConsent: (data)        => api.post('/admisi/consent/preview', data),
