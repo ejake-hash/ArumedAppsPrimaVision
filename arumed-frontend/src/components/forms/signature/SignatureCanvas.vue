@@ -89,9 +89,14 @@ onBeforeUnmount(() => {
 function resizeCanvas() {
   if (!canvasRef.value) return
   const ratio = Math.max(window.devicePixelRatio || 1, 1)
+  // Lebar RENDER aktual (responsif): canvas mengisi kontainer (≤ props.width).
+  // Di HP sempit kanvas menyusut otomatis, di desktop tetap props.width. Backing
+  // store disesuaikan ke lebar nyata × DPR supaya goresan tidak melar/geser.
+  const cssW = canvasRef.value.offsetWidth || props.width
+  const cssH = props.height
   const data = pad?.toData()
-  canvasRef.value.width  = props.width  * ratio
-  canvasRef.value.height = props.height * ratio
+  canvasRef.value.width  = cssW * ratio
+  canvasRef.value.height = cssH * ratio
   canvasRef.value.getContext('2d').scale(ratio, ratio)
   if (data) pad?.fromData(data)
 }
@@ -142,12 +147,12 @@ defineExpose({ clear, isEmpty, capture })
 </script>
 
 <template>
-  <div class="sc-wrap" :class="{ disabled }">
+  <div class="sc-wrap" :class="{ disabled }" :style="{ maxWidth: width + 'px' }">
     <div v-if="signerLabel" class="sc-label">{{ signerLabel }}</div>
     <div class="sc-canvas-frame">
       <canvas
         ref="canvasRef"
-        :style="{ width: width + 'px', height: height + 'px' }"
+        :style="{ width: '100%', height: height + 'px' }"
         class="sc-canvas"
       />
       <div class="sc-baseline"></div>
@@ -160,7 +165,9 @@ defineExpose({ clear, isEmpty, capture })
 </template>
 
 <style scoped>
-.sc-wrap { display: inline-flex; flex-direction: column; gap: 0.4rem; }
+/* width:100% + max-width(prop) → kanvas mengisi kontainer di HP, mentok props.width
+   di desktop. (dulu inline-flex/inline-block bikin lebar terpaku → meluber di HP.) */
+.sc-wrap { display: flex; flex-direction: column; gap: 0.4rem; width: 100%; }
 .sc-wrap.disabled { opacity: 0.5; pointer-events: none; }
 
 .sc-label { font-size: 12.5px; font-weight: 600; color: var(--td); }
@@ -169,7 +176,7 @@ defineExpose({ clear, isEmpty, capture })
   position: relative;
   border: 1px solid var(--gb); border-radius: 6px;
   background: white;
-  display: inline-block;
+  display: block;
 }
 .sc-canvas {
   display: block;

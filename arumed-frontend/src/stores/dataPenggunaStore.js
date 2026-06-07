@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { userApi, roleApi, permissionApi } from '@/services/api'
+import { userApi, roleApi, permissionApi, auditLogApi } from '@/services/api'
 
 export const useDataPenggunaStore = defineStore('dataPengguna', () => {
   // ─── State ──────────────────────────────────────────────────────────────
@@ -15,6 +15,13 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
 
   // Filter Users
   const userFilter = ref({ search: '', role_id: '', is_active: '' })
+
+  // Audit Log (read-only system_logs)
+  const auditLogs    = ref([])
+  const auditMeta    = ref({ current_page: 1, last_page: 1, total: 0, per_page: 25 })
+  const auditActions = ref([])      // facet daftar action utk dropdown filter
+  const auditLoading = ref(false)
+  const auditFilter  = ref({ search: '', action: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 25 })
 
   // ─── Computed ───────────────────────────────────────────────────────────
   const roleById = computed(() => {
@@ -210,6 +217,44 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     return data?.data ?? data    // { created, updated, skipped, errors }
   }
 
+  // ─── Audit Log ────────────────────────────────────────────────────────────
+  async function fetchAuditLogs() {
+    auditLoading.value = true
+    error.value = null
+    try {
+      const f = auditFilter.value
+      const params = { page: f.page, per_page: f.per_page }
+      if (f.search)    params.search    = f.search
+      if (f.action)    params.action    = f.action
+      if (f.user_id)   params.user_id   = f.user_id
+      if (f.date_from) params.date_from = f.date_from
+      if (f.date_to)   params.date_to   = f.date_to
+
+      const { data } = await auditLogApi.list(params)
+      const payload = data.data ?? {}
+      const logs    = payload.logs ?? {}
+      auditLogs.value    = logs.data ?? []
+      auditMeta.value    = {
+        current_page: logs.current_page ?? 1,
+        last_page:    logs.last_page ?? 1,
+        total:        logs.total ?? 0,
+        per_page:     logs.per_page ?? f.per_page,
+      }
+      // Facet action hanya perlu di-set sekali (stabil); jangan timpa dgn kosong.
+      const facets = payload.facets?.actions ?? []
+      if (facets.length) auditActions.value = facets
+    } catch (e) {
+      error.value = e.response?.data?.message ?? 'Gagal memuat audit log'
+    } finally {
+      auditLoading.value = false
+    }
+  }
+
+  function setAuditPage(page) {
+    auditFilter.value.page = page
+    return fetchAuditLogs()
+  }
+
   // ─── Initial load (load semua untuk halaman manajemen) ──────────────────
   async function loadAll() {
     await Promise.allSettled([fetchPermissions(), fetchRoles(), fetchUsers()])
@@ -221,6 +266,7 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     usersLoading, rolesLoading, permissionsLoading,
     error,
     userFilter,
+    auditLogs, auditMeta, auditActions, auditLoading, auditFilter,
 
     // computed
     roleById, permissionFlat,
@@ -231,6 +277,7 @@ export const useDataPenggunaStore = defineStore('dataPengguna', () => {
     fetchUsers, createUser, updateUser, deleteUser, toggleUserAktif, resetUserPassword, resetUserPin,
     downloadUserTemplate, exportUsersCsv, importUsersCsv,
     downloadRoleTemplate, exportRolesCsv, importRolesCsv,
+    fetchAuditLogs, setAuditPage,
     loadAll,
   }
 })

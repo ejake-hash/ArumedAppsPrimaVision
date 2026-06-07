@@ -20,13 +20,15 @@ class TvMediaSetting extends Model
         'external_video_url',
         'slides',
         'slide_interval',
+        'ticker_messages',
     ];
 
     protected $casts = [
-        'video_autoplay' => 'boolean',
-        'video_loop'     => 'boolean',
-        'slides'         => 'array',
-        'slide_interval' => 'integer',
+        'video_autoplay'  => 'boolean',
+        'video_loop'      => 'boolean',
+        'slides'          => 'array',
+        'slide_interval'  => 'integer',
+        'ticker_messages' => 'array',
     ];
 
     public static function singleton(): self
@@ -45,6 +47,21 @@ class TvMediaSetting extends Model
             'external_video_url' => null,
             'slides'             => [],
             'slide_interval'     => 8,
+            'ticker_messages'    => static::defaultTickerMessages(),
+        ];
+    }
+
+    /**
+     * Pesan running text bawaan — dipakai saat singleton baru dibuat dan sebagai
+     * fallback saat kolom masih null (baris lama sebelum migrasi ticker).
+     */
+    public static function defaultTickerMessages(): array
+    {
+        return [
+            'Pendaftaran dibuka pukul 07.00 WIB',
+            'Harap siapkan kartu BPJS, KTP, dan rujukan asli',
+            'Layanan Bedah Phaco buka Senin–Sabtu',
+            'Untuk pertanyaan hubungi loket informasi',
         ];
     }
 }

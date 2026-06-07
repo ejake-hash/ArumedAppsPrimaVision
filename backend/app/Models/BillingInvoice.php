@@ -33,6 +33,11 @@ class BillingInvoice extends Model
         'covered_at',
         'cashier_id',
         'notes',
+        // Status pengiriman kwitansi ke email pasien (alternatif cetak).
+        'receipt_email',
+        'receipt_email_status',   // QUEUED | SENT | FAILED | null
+        'receipt_email_at',
+        'receipt_email_error',
     ];
 
     protected $casts = [
@@ -46,6 +51,7 @@ class BillingInvoice extends Model
         'covered_amount'   => 'decimal:2',
         'paid_at'          => 'datetime',
         'covered_at'       => 'datetime',
+        'receipt_email_at' => 'datetime',
     ];
 
     public function visit(): BelongsTo
@@ -61,5 +67,11 @@ class BillingInvoice extends Model
     public function items(): HasMany
     {
         return $this->hasMany(BillingItem::class);
+    }
+
+    /** Porsi tanggungan per penjamin (COB). Kosong untuk invoice non-COB. */
+    public function coverages(): HasMany
+    {
+        return $this->hasMany(BillingInvoiceCoverage::class)->orderBy('sequence');
     }
 }

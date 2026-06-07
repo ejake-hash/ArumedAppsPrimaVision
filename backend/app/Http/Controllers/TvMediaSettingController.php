@@ -42,6 +42,9 @@ class TvMediaSettingController extends Controller
             'slides'             => 'nullable|array',
             'slides.*.url'       => 'required_with:slides|string|max:1000',
             'slide_interval'     => 'sometimes|integer|min:3|max:60',
+            // Running text bawah layar — array of string (boleh kosong = hapus semua).
+            'ticker_messages'    => 'sometimes|array|max:30',
+            'ticker_messages.*'  => 'string|max:200',
         ]);
 
         $row = TvMediaSetting::singleton();
@@ -143,6 +146,9 @@ class TvMediaSettingController extends Controller
             'has_uploaded_file'  => (bool) $row->local_video_path,
             'slides'             => $row->slides ?? [],
             'slide_interval'     => (int) $row->slide_interval,
+            // Null (baris lama sebelum migrasi) → fallback ke pesan bawaan supaya
+            // ticker tidak kosong sampai operator menyimpan untuk pertama kali.
+            'ticker_messages'    => $row->ticker_messages ?? TvMediaSetting::defaultTickerMessages(),
         ];
     }
 }

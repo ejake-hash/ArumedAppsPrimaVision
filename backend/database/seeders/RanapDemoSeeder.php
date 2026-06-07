@@ -75,12 +75,13 @@ class RanapDemoSeeder extends Seeder
         // ── Tarif kamar per kelas (UMUM + BPJS) ──────────────────────────────
         $tarif = ['VIP' => 800000, '1' => 500000, '2' => 350000, '3' => 200000];
         foreach ($tarif as $kelas => $harga) {
+            // insurer-only — kolom `classification` sudah di-drop dari room_tariffs.
             RoomTariff::updateOrCreate(
-                ['room_class' => $kelas, 'insurer_id' => $umumId, 'classification' => 'UMUM'],
+                ['room_class' => $kelas, 'insurer_id' => $umumId],
                 ['price' => $harga, 'is_active' => true]
             );
             RoomTariff::updateOrCreate(
-                ['room_class' => $kelas, 'insurer_id' => $bpjsId, 'classification' => 'BPJS'],
+                ['room_class' => $kelas, 'insurer_id' => $bpjsId],
                 ['price' => $harga * 0.9, 'is_active' => true]
             );
         }

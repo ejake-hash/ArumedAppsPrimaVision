@@ -61,7 +61,9 @@ class BedahDemoSeeder extends Seeder
             // Pasien di stasiun hilir (idempoten via NIK + station+today).
             $this->seedFarmasiPatientToday($meds);
             $this->seedKasirPatientToday($proc, $meds);
-            $this->seedTtdDoctorQueue();
+            // DINONAKTIFKAN (7 Jun 2026): seedTtdDoctorQueue() membuat template demo
+            // 'DEMO_TTD_DOKTER' — dikecualikan saat pembersihan Form Registry.
+            // $this->seedTtdDoctorQueue();
         });
 
         $this->command?->info('BedahDemoSeeder selesai — master + stok + tarif + paket + pasien BEDAH/FARMASI/KASIR/TTD hari ini.');
@@ -257,10 +259,11 @@ class BedahDemoSeeder extends Seeder
             $package->update(['total_base_price' => $base]);
         }
 
-        // Tarif jual per-penjamin (UMUM + BPJS). classification = guarantor classification.
+        // Tarif jual per-penjamin (UMUM + BPJS). insurer-only — kolom `classification`
+        // sudah di-drop dari surgery_package_tariffs (unique: surgery_package_id, insurer_id).
         foreach ($insurers as $key => $ins) {
             SurgeryPackageTariff::firstOrCreate(
-                ['surgery_package_id' => $package->id, 'insurer_id' => $ins?->id, 'classification' => 'Pre-Op'],
+                ['surgery_package_id' => $package->id, 'insurer_id' => $ins?->id],
                 ['sell_price' => $key === 'BPJS' ? 7800000 : $package->price, 'is_active' => true]
             );
         }

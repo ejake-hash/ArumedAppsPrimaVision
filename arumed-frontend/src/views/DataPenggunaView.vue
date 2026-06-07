@@ -48,6 +48,26 @@ function permsToIds(perms) {
   return ids
 }
 
+// Permission di luar pola R/W/D (mis. `bedah.checklist` aksi 'C') TIDAK tampil di
+// matriks. Karena backend pakai sync() (replace penuh), id-nya WAJIB dikirim ulang
+// saat menyimpan — kalau tidak, permission ini ter-strip diam-diam dan tak bisa
+// dipulihkan lewat UI. Kembalikan id permission existing yang bukan read/write/delete.
+const RWD_ACTIONS = new Set(['read', 'write', 'delete'])
+function specialPermIds(keys = []) {
+  const ids = []
+  for (const k of keys) {
+    if (k === '*') continue
+    if (RWD_ACTIONS.has(k.split('.')[1])) continue
+    const found = store.permissionFlat.find((p) => p.key === k)
+    if (found) ids.push(found.id)
+  }
+  return ids
+}
+// Gabungkan id matriks R/W/D + id permission khusus (dedup).
+function mergePermIds(perms, existingKeys) {
+  return [...new Set([...permsToIds(perms), ...specialPermIds(existingKeys)])]
+}
+
 // ─── Tab navigation ──────────────────────────────────────────────────────────
 const pgTab = ref('roles')
 
@@ -75,15 +95,20 @@ const srUser     = ref('')
 const filterRole = ref('')
 const filterAktif = ref('')
 
-// PIN tanda tangan relevan untuk akun dokter, dan superadmin (agar bisa menguji
-// alur tanda tangan tanpa harus punya akun dokter terpisah).
+// Role dokter — disetarakan dgn backend AuthService::DOCTOR_ROLES. dokter_umum =
+// dokter jaga IGD/triase, dokter_anestesi = DPJP anestesi. Keduanya menandatangani
+// dokumen RM via PIN & resolve IHS Practitioner (Satu Sehat) seperti dokter biasa.
+const DOCTOR_ROLES = ['dokter', 'dokter_umum', 'dokter_anestesi']
+
+// PIN tanda tangan relevan untuk semua role dokter, dan superadmin (agar bisa
+// menguji alur tanda tangan tanpa harus punya akun dokter terpisah).
 const canHavePin = computed(() => {
-  const r = store.roleById[editUser.value.role_id]
-  return r?.name === 'dokter' || r?.name === 'superadmin'
+  const n = store.roleById[editUser.value.role_id]?.name
+  return DOCTOR_ROLES.includes(n) || n === 'superadmin'
 })
 
 // Field NIK (Satu Sehat) tampil hanya saat role dokter DAN user punya employee.
-const isDokter = computed(() => store.roleById[editUser.value.role_id]?.name === 'dokter')
+const isDokter = computed(() => DOCTOR_ROLES.includes(store.roleById[editUser.value.role_id]?.name))
 const canSetNik = computed(() => isDokter.value && !!editUser.value.employee_id)
 
 // Profil nakes (NIP/SIP/STR) hanya relevan untuk tenaga kesehatan klinis: dokter,
@@ -107,10 +132,49 @@ const filtUsers = computed(() => {
   return list
 })
 
+// ─── Keterangan modul (bahasa awam: modul = fitur/halaman apa) ───────────────
+// Peta statis sisi frontend — pengetahuan "modul → halaman/menu" memang hidup di
+// router/sidebar (FE). Dipakai sebagai keterangan di modal Edit Role, panel detail
+// role, dan tooltip matriks. Modul tanpa entri → tampil label saja (aman).
+const MODULE_META = {
+  admisi:            'Pendaftaran pasien & kelola antrean (halaman Admisi).',
+  perawat:           'Triase & asesmen perawat (halaman Triase/Perawat).',
+  refraksionis:      'Pemeriksaan refraksi mata (halaman Refraksionis).',
+  penunjang:         'Pemeriksaan penunjang/lab (halaman Penunjang).',
+  rme_dokter:        'Pemeriksaan dokter — SOAP, diagnosis, resep (halaman Pemeriksaan Dokter).',
+  rekam_medis:       'Rekam medis pasien & tanda tangan dokumen (Rekam Medis + TTD Dokumen).',
+  bedah:             'Unit bedah — jadwal & laporan operasi (halaman Bedah).',
+  ruang_tindakan:    'Tindakan laser/PRP (halaman Ruang Tindakan).',
+  rawat_inap:        'Pasien rawat inap & kelola kamar (halaman Rawat Inap).',
+  igd:               'Instalasi Gawat Darurat (halaman IGD).',
+  farmasi:           'Pelayanan & penyerahan obat (halaman Farmasi).',
+  kasir:             'Pembayaran, kwitansi & klaim asuransi TPA (Kasir + Asuransi).',
+  bpjs:              'Verifikasi & kirim klaim BPJS (halaman Klaim BPJS).',
+  marketing:         'Laporan data pasien untuk marketing (halaman Laporan Marketing).',
+  laporan:           'Laporan & analitik lintas modul.',
+  tarif_paket:       'Master tarif tindakan & paket bedah (halaman Tarif & Paket).',
+  inventori_farmasi: 'Stok obat/BHP/IOL & stock opname (Inventori Farmasi).',
+  supplier:          'Master supplier (Inventori Farmasi).',
+  pembelian:         'Pembelian / Purchase Order (Inventori Farmasi).',
+  penerimaan:        'Penerimaan barang / GRN (Inventori Farmasi).',
+  request_unit:      'Permintaan & retur stok antar unit (Inventori Farmasi).',
+  master_obat:       'Master data obat (Master Data).',
+  master_bhp:        'Master data BHP (Master Data).',
+  master_iol:        'Master data IOL/lensa (Master Data).',
+  master_icd:        'Master kode ICD-10 & ICD-9 (Master Data).',
+  antrian_tv:        'Tampilan antrean di layar TV ruang tunggu.',
+  role_akses:        'Kelola role & hak akses pengguna (halaman ini).',
+  audit:             'Catatan audit aktivitas sistem (tab Audit Log).',
+  pengaturan:        'Pengaturan sistem & profil klinik (Pengaturan / Master Data).',
+  form_template:     'Form rekam medis kustom (Master Data → Form RM).',
+  integrasi:         'Bridging BPJS / Satu Sehat (halaman Bridging).',
+}
+const moduleDesc = (id) => MODULE_META[id] || ''
+
 // ─── Modules untuk matrix (dari permissionGroups, urut abjad) ────────────────
 const modules = computed(() =>
   store.permissionGroups
-    .map((g) => ({ id: g.module, nama: g.label, sub: '' }))
+    .map((g) => ({ id: g.module, nama: g.label, desc: moduleDesc(g.module), sub: '' }))
     .sort((a, b) => a.nama.localeCompare(b.nama, 'id')),
 )
 
@@ -144,6 +208,7 @@ function openNewRole() {
   editRole.value = {
     id: null, name: '', display_name: '', description: '',
     is_active: true, is_system: false, perms: initPerms(),
+    permission_keys: [],
   }
   modal.value = 'role'
 }
@@ -156,6 +221,8 @@ function openEditRole(r) {
     is_active: r.is_active,
     is_system: r.is_system,
     perms: keysToPerms(r.permission_keys),
+    // Simpan key asli untuk mempertahankan permission khusus (non-R/W/D) saat sync.
+    permission_keys: r.permission_keys ?? [],
   }
   modal.value = 'role'
 }
@@ -176,7 +243,7 @@ async function saveRole() {
     display_name: d.display_name.trim(),
     description: d.description?.trim() || null,
     is_active: !!d.is_active,
-    permission_ids: permsToIds(d.perms),
+    permission_ids: mergePermIds(d.perms, d.permission_keys),
   }
 
   try {
@@ -220,7 +287,9 @@ async function toggleMatrixPerm(role, modId, code) {
   else perms[modId].push(code)
 
   try {
-    await store.syncRolePermissions(role.id, permsToIds(perms))
+    // Pertahankan permission khusus (non-R/W/D, mis. bedah.checklist) — backend sync()
+    // replace penuh, jadi harus dikirim ulang bersama id matriks.
+    await store.syncRolePermissions(role.id, mergePermIds(perms, role.permission_keys))
   } catch (e) {
     toast('e', errMsg(e, 'Gagal update permission'))
   }
@@ -270,7 +339,7 @@ function openNewUser() {
     role_id: defaultRoleId, employee_id: null,
     password: '', pin: '', has_pin: false, is_active: true,
     employee_nik: '', employee_nik_saved: '', employee_ihs: null,
-    nip: '', sip: '', str: '',
+    profession: '', doctor_type: '', nip: '', sip: '', str: '',
   }
   modal.value = 'user'
 }
@@ -282,6 +351,8 @@ function openEditUser(u) {
     employee_nik: u.employee?.nik ?? '',
     employee_nik_saved: u.employee?.nik ?? '',
     employee_ihs: u.employee?.satusehat_ihs ?? null,
+    profession: u.employee?.profession ?? '',
+    doctor_type: u.employee?.doctor_type ?? '',
     nip: u.employee?.nip ?? '',
     sip: u.employee?.sip ?? '',
     str: u.employee?.str ?? '',
@@ -320,9 +391,13 @@ async function saveUser() {
   // Profil nakes — kirim NIP/SIP/STR hanya untuk role nakes klinis. Backend
   // menulisnya ke pegawai tertaut (akun non-nakes/non-employee mengabaikannya).
   if (isNakes.value) {
+    payload.profession = d.profession?.trim() || null
     payload.nip = d.nip?.trim() || null
     payload.sip = d.sip?.trim() || null
     payload.str = d.str?.trim() || null
+  }
+  if (isDokter.value) {
+    payload.doctor_type = d.doctor_type || null
   }
 
   try {
@@ -517,6 +592,44 @@ function lastLoginText(u) {
     hour: '2-digit', minute: '2-digit',
   })
 }
+
+// ─── Audit Log ────────────────────────────────────────────────────────────
+// Lazy-load: baru ambil saat tab Audit Log pertama kali dibuka.
+let auditLoaded = false
+function ensureAuditLoaded() {
+  if (auditLoaded) return
+  auditLoaded = true
+  store.fetchAuditLogs()
+}
+function applyAuditFilter() {
+  store.auditFilter.page = 1
+  store.fetchAuditLogs()
+}
+function resetAuditFilter() {
+  Object.assign(store.auditFilter, { search: '', action: '', user_id: '', date_from: '', date_to: '', page: 1 })
+  store.fetchAuditLogs()
+}
+function auditDate(s) {
+  if (! s) return '—'
+  return new Date(s).toLocaleString('id-ID', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+// Kelas warna pill action (kosmetik, berdasar kata kunci).
+function auditActionClass(a) {
+  const s = (a || '').toUpperCase()
+  if (/(DELETE|HAPUS|CANCEL|REJECT|DITOLAK)/.test(s)) return 'al-del'
+  if (/(LOGIN|LOGOUT|AUTH)/.test(s)) return 'al-auth'
+  if (/^(CREATE|STORE|DAFTAR|ADD|GENERATE|ANJUNGAN)/.test(s)) return 'al-create'
+  if (/(UPDATE|UPSERT|EDIT|FINALIZE|REVIEW|PROCESS|ADVANCE|READY)/.test(s)) return 'al-update'
+  return 'al-other'
+}
+// Ringkas FQCN model: "App\Models\User" → "User".
+function shortModel(m) {
+  if (! m) return null
+  const parts = String(m).split('\\')
+  return parts[parts.length - 1]
+}
 </script>
 
 <template>
@@ -542,17 +655,26 @@ function lastLoginText(u) {
           <div v-if="editRole.name === 'superadmin'" class="info-msg">
             Superadmin bypass — permission tidak perlu di-set, otomatis penuh.
           </div>
-          <div v-else class="g2">
-            <div v-for="mod in modules" :key="mod.id" class="perm-row">
-              <div class="perm-mod">{{ mod.nama }}</div>
-              <div style="display:flex;gap:4px;flex-shrink:0">
-                <div v-for="p in ['R','W','D']" :key="p"
-                     :class="['perm-toggle', editRole.perms[mod.id]&&editRole.perms[mod.id].includes(p)?'on':'off']"
-                     @click="togglePerm(mod.id,p)"
-                     :title="p==='R'?'Baca':p==='W'?'Tulis':'Hapus'">{{ p }}</div>
+          <template v-else>
+            <div class="perm-guide">
+              Centang akses sesuai tugas role. <b>R</b> = Lihat (buka &amp; baca) · <b>W</b> = Tambah/Ubah (input &amp; edit) · <b>D</b> = Hapus.
+              Kosongkan semua = role tak bisa membuka modul itu.
+            </div>
+            <div class="g2">
+              <div v-for="mod in modules" :key="mod.id" class="perm-row">
+                <div style="min-width:0">
+                  <div class="perm-mod">{{ mod.nama }}</div>
+                  <div v-if="mod.desc" class="perm-desc">{{ mod.desc }}</div>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0">
+                  <div v-for="p in ['R','W','D']" :key="p"
+                       :class="['perm-toggle', editRole.perms[mod.id]&&editRole.perms[mod.id].includes(p)?'on':'off']"
+                       @click="togglePerm(mod.id,p)"
+                       :title="p==='R'?'Baca':p==='W'?'Tulis':'Hapus'">{{ p }}</div>
+                </div>
               </div>
             </div>
-          </div>
+          </template>
           <div style="display:flex;gap:.4rem;margin-top:.75rem">
             <button class="btn btn-ga btn-lg btn-full" @click="saveRole"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/></svg>Simpan Role</button>
             <button v-if="editRole.id && !editRole.is_system" class="btn btn-e" @click="deleteRole"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>Hapus</button>
@@ -589,6 +711,38 @@ function lastLoginText(u) {
           </div>
           <div v-if="isNakes" class="nakes-box" style="margin-bottom:.4rem">
             <div class="nakes-hd">Profil Tenaga Kesehatan</div>
+            <div class="g2" style="margin-bottom:.4rem">
+              <div class="fg"><label class="fl">Jenis / Profesi</label>
+                <input v-model="editUser.profession" class="fi" list="professionOpts" maxlength="100"
+                       placeholder="contoh: Dokter Umum, Dokter Anestesi…"/>
+                <datalist id="professionOpts">
+                  <option value="Dokter Spesialis Mata"></option>
+                  <option value="Dokter Umum"></option>
+                  <option value="Dokter Anestesi"></option>
+                  <option value="Dokter Spesialis Anak"></option>
+                  <option value="Dokter Spesialis Penyakit Dalam"></option>
+                  <option value="Perawat"></option>
+                  <option value="Refraksionis"></option>
+                  <option value="Penunjang"></option>
+                </datalist>
+              </div>
+              <div class="fg" style="justify-content:flex-end">
+                <span style="font-size:9.5px;color:var(--tu);line-height:1.4">Keterangan jenis tenaga kesehatan (mis. Dokter Umum / Anestesi). Hanya data referensi — tidak mengubah hak akses akun.</span>
+              </div>
+            </div>
+            <div v-if="isDokter" class="g2" style="margin-bottom:.4rem">
+              <div class="fg"><label class="fl">Tipe Dokter</label>
+                <select v-model="editUser.doctor_type" class="fs">
+                  <option value="">— pilih —</option>
+                  <option value="SPESIALIS_MATA">Dokter Spesialis Mata (punya jadwal poliklinik)</option>
+                  <option value="UMUM">Dokter Umum / IGD (tanpa jadwal)</option>
+                  <option value="ANESTESI">Dokter Anestesi (tanpa jadwal, dipilih di Bedah)</option>
+                </select>
+              </div>
+              <div class="fg" style="justify-content:flex-end">
+                <span style="font-size:9.5px;color:var(--tu);line-height:1.4">Menentukan dokter muncul di Jadwal Dokter (hanya Spesialis Mata) &amp; picker anestesi Bedah.</span>
+              </div>
+            </div>
             <div class="g2" style="margin-bottom:.4rem">
               <div class="fg"><label class="fl">NIP</label>
                 <input v-model="editUser.nip" class="fi" maxlength="20" placeholder="No. Induk Pegawai (opsional)"/>
@@ -670,6 +824,20 @@ function lastLoginText(u) {
             </div>
             <span :class="['pill', selUser.is_active ? 'p-ok' : 'p-off']" style="margin-left:auto;align-self:flex-start">{{ selUser.is_active ? 'Aktif' : 'Non-aktif' }}</span>
           </div>
+          <template v-if="selUser.employee">
+            <div class="sec"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>Profil Tenaga Kesehatan</div>
+            <div class="g2" style="margin-bottom:.6rem">
+              <div class="perm-view-row"><span class="perm-mod">Jenis / Profesi</span><span class="dv-val">{{ selUser.employee.profession || '—' }}</span></div>
+              <div class="perm-view-row"><span class="perm-mod">NIP</span><span class="dv-val">{{ selUser.employee.nip || '—' }}</span></div>
+              <div class="perm-view-row"><span class="perm-mod">SIP</span><span class="dv-val">{{ selUser.employee.sip || '—' }}</span></div>
+              <div class="perm-view-row"><span class="perm-mod">STR</span><span class="dv-val">{{ selUser.employee.str || '—' }}</span></div>
+              <div v-if="selUser.employee.nik || selUser.employee.satusehat_ihs" class="perm-view-row">
+                <span class="perm-mod">NIK (Satu Sehat)</span>
+                <span class="dv-val">{{ selUser.employee.nik || '—' }}<span v-if="selUser.employee.satusehat_ihs" style="color:var(--st)"> · IHS {{ selUser.employee.satusehat_ihs }}</span></span>
+              </div>
+              <div class="perm-view-row"><span class="perm-mod">PIN Tanda Tangan</span><span class="dv-val">{{ selUser.has_pin ? 'Sudah diatur' : 'Belum diatur' }}</span></div>
+            </div>
+          </template>
           <div class="sec"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Hak Akses dari Role: {{ selUser.role?.display_name || selUser.role?.name }}</div>
           <div class="g2" style="margin-bottom:.6rem">
             <div v-for="mod in modules" :key="mod.id" class="perm-view-row">
@@ -843,7 +1011,7 @@ function lastLoginText(u) {
         <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
         Pengguna
       </button>
-      <button :class="['nt', pgTab === 'audit' ? 'a' : '']" @click="pgTab = 'audit'">
+      <button :class="['nt', pgTab === 'audit' ? 'a' : '']" @click="pgTab = 'audit'; ensureAuditLoaded()">
         <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Audit Log
       </button>
@@ -912,6 +1080,7 @@ function lastLoginText(u) {
             <div class="g4-mod">
               <div v-for="mod in modules" :key="mod.id" class="mod-detail-card">
                 <div class="mod-detail-name">{{ mod.nama }}</div>
+                <div v-if="mod.desc" class="mod-detail-desc">{{ mod.desc }}</div>
                 <div style="display:flex;gap:3px;margin-top:.3rem">
                   <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
                         :style="{ background: hasPerm(selRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
@@ -937,7 +1106,7 @@ function lastLoginText(u) {
     <!-- ─── TAB: MATRIKS HAK AKSES ─── -->
     <div v-if="pgTab === 'matrix'" class="pg">
       <div class="matrix-info">
-        <span><b>R</b> = Baca · <b>W</b> = Tulis · <b>D</b> = Hapus. Klik kotak untuk toggle (langsung tersimpan). Klik nama modul untuk ubah label tampilan. Superadmin bypass — tidak perlu di-set.</span>
+        <span><b>R</b> = Lihat · <b>W</b> = Tambah/Ubah · <b>D</b> = Hapus. Klik kotak untuk toggle (langsung tersimpan). Arahkan kursor ke nama modul untuk keterangan fitur; klik nama modul untuk ubah label tampilan. Superadmin bypass — tidak perlu di-set.</span>
         <input v-model="srMod" class="fi" style="width:200px;height:28px;flex-shrink:0" placeholder="Cari modul..."/>
       </div>
       <div v-if="store.rolesLoading || store.permissionsLoading" class="loading-state">Memuat matriks...</div>
@@ -974,7 +1143,7 @@ function lastLoginText(u) {
                       <button class="mod-edit-btn" @click="resetModLabel(mod)" title="Kembalikan ke default">↺</button>
                       <button class="mod-edit-btn" @click="editingMod = null" title="Batal">✕</button>
                     </div>
-                    <div v-else class="mod-name-cell" @click="startEditMod(mod)" title="Klik untuk ubah nama tampilan">
+                    <div v-else class="mod-name-cell" @click="startEditMod(mod)" :title="(mod.desc ? mod.desc + ' — ' : '') + 'Klik untuk ubah nama tampilan'">
                       <span>{{ mod.nama }}</span>
                       <svg class="mod-edit-ic" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </div>
@@ -1072,15 +1241,65 @@ function lastLoginText(u) {
       </div>
     </div>
 
-    <!-- ─── TAB: AUDIT LOG (placeholder) ─── -->
+    <!-- ─── TAB: AUDIT LOG ─── -->
     <div v-if="pgTab === 'audit'" class="pg">
+      <div class="tb-row">
+        <input v-model="store.auditFilter.search" class="fi" style="width:210px" placeholder="Cari deskripsi / objek..." @keyup.enter="applyAuditFilter"/>
+        <select v-model="store.auditFilter.action" class="fs" style="width:185px" @change="applyAuditFilter">
+          <option value="">Semua Aksi</option>
+          <option v-for="a in store.auditActions" :key="a" :value="a">{{ a }}</option>
+        </select>
+        <select v-model="store.auditFilter.user_id" class="fs" style="width:165px" @change="applyAuditFilter">
+          <option value="">Semua Pengguna</option>
+          <option v-for="u in store.users" :key="u.id" :value="u.id">{{ u.name }}</option>
+        </select>
+        <input type="date" v-model="store.auditFilter.date_from" class="fi" style="width:140px" title="Dari tanggal" @change="applyAuditFilter"/>
+        <input type="date" v-model="store.auditFilter.date_to" class="fi" style="width:140px" title="Sampai tanggal" @change="applyAuditFilter"/>
+        <button class="btn btn-o btn-sm" @click="applyAuditFilter"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Cari</button>
+        <button class="btn btn-o btn-sm" @click="resetAuditFilter">Reset</button>
+      </div>
       <div class="card">
-        <div class="cb empty-state" style="padding:2rem 1rem">
-          <div style="font-size:13px;font-weight:600;color:var(--td);margin-bottom:.3rem">Audit Log</div>
-          <div style="font-size:11.5px;color:var(--tu)">
-            Audit log immutable (PMK No. 24/2022) akan terhubung ke <code>system_logs</code> backend pada tahap berikutnya.
-          </div>
+        <div v-if="store.auditLoading" class="loading-state">Memuat audit log...</div>
+        <div v-else-if="!store.auditLogs.length" class="empty-state">Tidak ada catatan audit sesuai filter.</div>
+        <div v-else style="overflow-x:auto">
+          <table class="tbl">
+            <thead><tr><th>Waktu</th><th>Pengguna</th><th>Aksi</th><th>Objek</th><th>Deskripsi</th><th>IP</th></tr></thead>
+            <tbody>
+              <tr v-for="l in store.auditLogs" :key="l.id">
+                <td style="white-space:nowrap;font-size:10px;color:var(--tu);font-variant-numeric:tabular-nums">{{ auditDate(l.created_at) }}</td>
+                <td>
+                  <template v-if="l.user">
+                    <div style="font-weight:500;font-size:11.5px">{{ l.user.name }}</div>
+                    <div style="font-size:9px;color:var(--tu)">{{ l.user.username }}</div>
+                  </template>
+                  <span v-else style="font-size:10.5px;color:var(--tu)">Sistem</span>
+                </td>
+                <td><span :class="['al-pill', auditActionClass(l.action)]">{{ l.action }}</span></td>
+                <td style="font-size:10.5px;color:var(--tu)">
+                  <template v-if="l.model">
+                    <span>{{ shortModel(l.model) }}</span>
+                    <span v-if="l.model_id" class="mono-cell" style="display:block;font-size:8.5px">{{ l.model_id }}</span>
+                  </template>
+                  <span v-else>—</span>
+                </td>
+                <td style="font-size:11px;max-width:380px">{{ l.description || '—' }}</td>
+                <td class="mono-cell" style="font-size:9.5px">{{ l.ip_address || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+      </div>
+      <!-- Pagination -->
+      <div v-if="store.auditMeta.total > 0" class="al-pager">
+        <span class="al-pginfo">Halaman {{ store.auditMeta.current_page }} dari {{ store.auditMeta.last_page }} · {{ store.auditMeta.total }} catatan</span>
+        <div style="display:flex;gap:.35rem">
+          <button class="btn btn-o btn-sm" :disabled="store.auditMeta.current_page <= 1" @click="store.setAuditPage(store.auditMeta.current_page - 1)">‹ Sebelumnya</button>
+          <button class="btn btn-o btn-sm" :disabled="store.auditMeta.current_page >= store.auditMeta.last_page" @click="store.setAuditPage(store.auditMeta.current_page + 1)">Berikutnya ›</button>
+        </div>
+      </div>
+      <div class="al-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Audit log bersifat <b>read-only &amp; immutable</b> (PMK No. 24/2022). Dicatat otomatis oleh sistem dari aktivitas login, transaksi, dan perubahan master data.</span>
       </div>
     </div>
 
@@ -1204,6 +1423,19 @@ function lastLoginText(u) {
 .log-msg { font-size: 11px; color: var(--td); }
 .log-who { font-size: 9.5px; color: var(--tu); }
 
+/* Audit log — pill action, pager, catatan */
+.al-pill { display: inline-block; font-family: monospace; font-size: 9px; font-weight: 700; letter-spacing: .02em; padding: 2px 6px; border-radius: 6px; border: 1px solid; white-space: nowrap; }
+.al-create { background: var(--sb); color: var(--st); border-color: var(--sbd); }
+.al-update { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+.al-del    { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.al-auth   { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.al-other  { background: var(--bs); color: var(--tm); border-color: var(--gb); }
+.al-pager { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .15rem .1rem; flex-wrap: wrap; }
+.al-pginfo { font-size: 10.5px; color: var(--tu); }
+.al-note { display: flex; align-items: flex-start; gap: .45rem; margin-top: .3rem; padding: .5rem .7rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; font-size: 10.5px; color: var(--tu); line-height: 1.5; }
+.al-note svg { width: 13px; height: 13px; fill: none; stroke: var(--tm); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
+.al-note b { color: var(--tm); }
+
 /* ─── MODAL ─── */
 .ov { position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 400; display: flex; align-items: center; justify-content: center; }
 .mbx { background: var(--bc); border-radius: 13px; box-shadow: 0 8px 32px rgba(0,0,0,.16); width: 560px; max-width: 92vw; max-height: 88vh; overflow: hidden; display: flex; flex-direction: column; animation: fadeUp .22s ease; }
@@ -1238,6 +1470,11 @@ function lastLoginText(u) {
 .perm-row { display: flex; align-items: center; justify-content: space-between; padding: .35rem .55rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; }
 .perm-view-row { display: flex; align-items: center; justify-content: space-between; padding: .3rem .55rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; }
 .perm-mod { font-size: 11px; font-weight: 500; color: var(--td); }
+.dv-val { font-size: 11.5px; font-weight: 600; color: var(--th); text-align: right; max-width: 60%; overflow-wrap: anywhere; }
+.perm-desc { font-size: 9.5px; color: var(--tu); line-height: 1.35; margin-top: 1px; }
+.perm-guide { font-size: 10.5px; color: var(--it); background: var(--ib); border: 1px solid var(--ibd); border-radius: 7px; padding: .45rem .65rem; margin-bottom: .5rem; line-height: 1.5; }
+.perm-guide b { color: var(--td); }
+.mod-detail-desc { font-size: 9px; color: var(--tu); line-height: 1.35; margin-bottom: 2px; }
 
 /* User detail modal */
 .user-profile-hdr { display: flex; align-items: center; gap: .75rem; padding: .65rem; background: linear-gradient(135deg, var(--gm), var(--gd)); border-radius: 10px; margin-bottom: .65rem; }

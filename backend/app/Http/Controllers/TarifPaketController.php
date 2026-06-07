@@ -24,7 +24,7 @@ class TarifPaketController extends Controller
         $request->validate(['insurer_id' => 'required|uuid|exists:insurers,id']);
         return $this->ok($this->service->indexTarif(
             $type,
-            $request->only(['insurer_id', 'per_page'])
+            $request->only(['insurer_id', 'per_page', 'include_unpriced'])
         ));
     }
 
@@ -157,12 +157,18 @@ class TarifPaketController extends Controller
             'code'               => 'nullable|string|max:50|unique:surgery_packages,code',
             'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'category'           => 'nullable|string|max:100',
+            'surgery_type'       => 'nullable|in:KATARAK,VITREORETINA,GLAUKOMA,LAINNYA',
             'description'        => 'nullable|string|max:1000',
             'keterangan'         => 'nullable|string|max:500',
             'estimated_duration' => 'nullable|integer|min:0',
             'price'              => 'nullable|numeric|min:0',
             'is_active'          => 'nullable|boolean',
         ]);
+        // Auto-saran: bila admin tak memilih Jenis Bedah, tebak dari nama paket
+        // (kolom eksplisit tetap sumber kebenaran — admin dapat ubah via edit).
+        if (empty($validated['surgery_type'])) {
+            $validated['surgery_type'] = \App\Models\SurgeryPackage::suggestSurgeryType($validated['name'] ?? null);
+        }
         return $this->ok($this->service->storePaket($validated), 'Paket bedah dibuat', 201);
     }
 
@@ -172,11 +178,16 @@ class TarifPaketController extends Controller
             'name'               => 'sometimes|string|max:255',
             'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
             'category'           => 'nullable|string|max:100',
+            'surgery_type'       => 'nullable|in:KATARAK,VITREORETINA,GLAUKOMA,LAINNYA',
             'description'        => 'nullable|string|max:1000',
             'keterangan'         => 'nullable|string|max:500',
             'estimated_duration' => 'nullable|integer|min:0',
             'price'              => 'nullable|numeric|min:0',
             'is_active'          => 'nullable|boolean',
+            // Manfaat "kontrol gratis pasca-bedah" (Opsi B). followup_procedure_id NULL = hapus manfaat.
+            'followup_procedure_id' => 'sometimes|nullable|uuid|exists:procedures,id',
+            'followup_count'        => 'sometimes|nullable|integer|min:0|max:20',
+            'followup_valid_days'   => 'sometimes|nullable|integer|min:0|max:3650',
         ]);
         return $this->ok($this->service->updatePaket($id, $validated), 'Paket bedah diperbarui');
     }
@@ -278,9 +289,12 @@ class TarifPaketController extends Controller
     public function upsertTariff(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'insurer_id'     => 'nullable|uuid|exists:insurers,id',
-            'sell_price'     => 'required|numeric|min:0',
-            'is_active'      => 'nullable|boolean',
+            'insurer_id'       => 'nullable|uuid|exists:insurers,id',
+            'display_name'     => 'nullable|string|max:150',
+            'price_mode'       => 'nullable|in:NOMINAL,PERSEN',
+            'sell_price'       => 'required_if:price_mode,NOMINAL|nullable|numeric|min:0',
+            'discount_percent' => 'required_if:price_mode,PERSEN|nullable|numeric|min:0|max:100',
+            'is_active'        => 'nullable|boolean',
         ]);
         return $this->ok($this->service->upsertTariff($id, $validated), 'Tarif paket disimpan');
     }

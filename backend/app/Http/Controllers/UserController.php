@@ -58,6 +58,8 @@ class UserController extends Controller
             'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'nullable|boolean',
             // Profil nakes (ditulis ke pegawai tertaut bila ada). NIP unik lintas pegawai.
+            'profession'  => 'nullable|string|max:100',
+            'doctor_type' => 'nullable|in:SPESIALIS_MATA,UMUM,ANESTESI',
             'nip'         => 'nullable|string|max:20|unique:employees,nip',
             'sip'         => 'nullable|string|max:50',
             'str'         => 'nullable|string|max:50',
@@ -89,6 +91,8 @@ class UserController extends Controller
             'pin'         => 'nullable|digits_between:4,6',
             'is_active'   => 'sometimes|boolean',
             // Profil nakes (ditulis ke pegawai tertaut bila ada).
+            'profession'  => 'nullable|string|max:100',
+            'doctor_type' => 'nullable|in:SPESIALIS_MATA,UMUM,ANESTESI',
             'nip'         => $nipRule,
             'sip'         => 'nullable|string|max:50',
             'str'         => 'nullable|string|max:50',

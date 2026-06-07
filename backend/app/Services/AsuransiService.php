@@ -3,12 +3,14 @@
 namespace App\Services;
 
 use App\Models\BillingInvoice;
+use App\Models\BillingInvoiceCoverage;
 use App\Models\InsuranceClaim;
 use App\Models\InsuranceClaimLog;
 use App\Models\InsuranceVerification;
 use App\Models\InsurerDocumentRequirement;
 use App\Models\Notification;
 use App\Models\Visit;
+use App\Models\VisitCob;
 use Carbon\Carbon;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
@@ -47,6 +49,21 @@ class AsuransiService
             ->where('visit_id', $visitId)
             ->latest()
             ->first();
+    }
+
+    /**
+     * Semua verifikasi untuk satu visit, 1 baris terbaru PER insurer (untuk COB:
+     * penjamin-1 & penjamin-2 punya verifikasi sendiri). Diurutkan terbaru dulu.
+     */
+    public function getVerifikasiAll(string $visitId): array
+    {
+        return InsuranceVerification::with(['insurer', 'verifiedBy'])
+            ->where('visit_id', $visitId)
+            ->latest()
+            ->get()
+            ->unique('insurer_id')
+            ->values()
+            ->all();
     }
 
     /**
@@ -650,6 +667,30 @@ class AsuransiService
             return; // Tidak ada invoice atau sudah final — jangan ubah.
         }
 
+        // === COB: nominal cover dimuat ke baris coverage penjamin terkait, lalu
+        // billing_invoices.covered_amount = Σ coverages (agregat). Tidak menimpa
+        // cover penjamin lain. Baris coverage dibuat saat consolidate (persistCoverages).
+        $cob = VisitCob::where('visit_id', $verif->visit_id)->where('is_active', true)->first();
+        if ($cob) {
+            $cov = BillingInvoiceCoverage::where('billing_invoice_id', $invoice->id)
+                ->where('insurer_id', $verif->insurer_id)
+                ->first();
+            if ($cov) {
+                $cov->update([
+                    'covered_amount'  => (float) $verif->covered_amount,
+                    'verification_id' => $verif->id,
+                ]);
+                $sum = (float) BillingInvoiceCoverage::where('billing_invoice_id', $invoice->id)->sum('covered_amount');
+                $invoice->update([
+                    'covered_amount' => min($sum, (float) $invoice->total),
+                    'covered_by'     => auth('api')->id(),
+                    'covered_at'     => now(),
+                ]);
+            }
+            return;
+        }
+
+        // === Non-COB (perilaku lama): cover tunggal langsung ke invoice.
         // Cover tidak boleh melebihi total tagihan.
         $covered = min((float) $verif->covered_amount, (float) $invoice->total);
 

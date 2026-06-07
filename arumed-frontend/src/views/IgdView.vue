@@ -269,7 +269,7 @@ async function cekPesertaBpjs() {
   bpjsChecking.value = true
   try {
     // Endpoint terima { nik } ATAU { bpjs_number } → respons VClaim mentah.
-    const { data } = await admisiApi.cekPeserta(payload)
+    const { data } = await admisiApi.bpjs.cekPeserta(payload)
     // Struktur VClaim: response.peserta.{nama, noKartu, hakKelas, statusPeserta}.
     const root = data.data?.response ?? data.data ?? {}
     const p = root.peserta ?? root
@@ -285,7 +285,7 @@ async function cekPesertaBpjs() {
       if (!f.nik && p.nik) f.nik = p.nik
       notify('Peserta BPJS aktif: ' + nama)
     } else {
-      bpjsCheck.value = { ok: false, status: data.message || 'Peserta tidak ditemukan' }
+      bpjsCheck.value = { ok: false, status: 'Peserta tidak ditemukan / tidak aktif' }
       notify('Peserta BPJS tidak ditemukan / tidak aktif', false)
     }
   } catch (e) {
@@ -727,6 +727,7 @@ onMounted(loadBoard)
                 <input v-model.number="cpptForm.td_sistol" type="number" placeholder="TD Sis" />
                 <input v-model.number="cpptForm.td_diastol" type="number" placeholder="TD Dia" />
                 <input v-model.number="cpptForm.nadi" type="number" placeholder="Nadi" />
+                <input v-model.number="cpptForm.respirasi" type="number" placeholder="RR" />
                 <input v-model.number="cpptForm.suhu" type="number" step="0.1" placeholder="Suhu" />
                 <input v-model.number="cpptForm.spo2" type="number" placeholder="SpO₂" />
               </div>
@@ -1134,7 +1135,7 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--g
 /* CPPT */
 .cppt-form { background: var(--gl); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
 .cppt-soap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.cppt-vital-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 5px; }
+.cppt-vital-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 5px; }
 .cppt-item { border: 1px solid var(--gb); border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; }
 .cppt-item-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--td); margin-bottom: 4px; flex-wrap: wrap; }
 .cppt-item-soap { font-size: 11.5px; line-height: 1.5; color: var(--td); }
@@ -1162,5 +1163,8 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--g
 .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--st, #16a34a); color: #fff; padding: .75rem 1.25rem; border-radius: 9px; z-index: 9200; font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
 .toast.err { background: var(--et, #dc2626); }
 
-@media (max-width: 900px) { .igd-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .igd-grid { grid-template-columns: 1fr; }
+  .page-head { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+}
 </style>

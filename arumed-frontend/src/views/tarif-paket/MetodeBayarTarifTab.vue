@@ -22,6 +22,9 @@ const props = defineProps({
   insurerId:   { type: String, required: true },
   readOnly:    { type: Boolean, default: false },
   insurerCode: { type: String, default: '' },
+  // Mode Buku Tarif: tampilkan SEMUA item master (yg belum bertarif diberi badge
+  // "harga belum ditentukan"). Dipakai di halaman Buku Tarif (insurer UMUM).
+  bukuTarif:   { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['changed'])
@@ -115,6 +118,7 @@ async function refresh(page = 1) {
   error.value = null
   try {
     const params = { page, per_page: pageMeta.value.per_page, insurer_id: props.insurerId }
+    if (props.bukuTarif) params.include_unpriced = 1
     const res = await tarifPaketApi.tarif.list(props.type, params)
     const payload = res.data?.data
     if (payload && Array.isArray(payload.data)) {
@@ -151,6 +155,23 @@ function onPageChange(p) { refresh(p) }
 // ─── CRUD modal ───────────────────────────────────────────────────────────
 function openCreate() {
   modal.value = { open: true, mode: 'create', payload: emptyForm(), errors: null, submitting: false, editingId: null }
+}
+
+// Buku Tarif: item belum bertarif → buka modal create dgn item terkunci (set harga).
+function openSetPrice(row) {
+  const item = row.procedure || row.medication || row.bhp_item || row.bhpItem || row.iol_item || row.iolItem || {}
+  modal.value = {
+    open: true,
+    mode: 'create',
+    payload: {
+      ...emptyForm(),
+      item_id:    row[fkKey.value],
+      _itemLabel: `${item[meta.value.itemCodeKey] ?? ''} · ${item[meta.value.itemNameKey] ?? ''}`,
+    },
+    errors: null,
+    submitting: false,
+    editingId: null,
+  }
 }
 
 function openEdit(row) {
@@ -199,9 +220,13 @@ const modalFields = computed(() => {
     : []
 
   if (modal.value.mode === 'create') {
+    // Item terkunci bila dibuka via "Set Harga" (item sudah ditentukan); else dropdown.
+    const itemField = modal.value.payload._itemLabel
+      ? { key: '_itemLabel', label: meta.value.itemLabel, type: 'text', disabled: true, cols: 2 }
+      : { key: 'item_id', label: meta.value.itemLabel, type: 'select', options: itemOpts, required: true, cols: 2,
+          hint: 'Setelah pilih, harga master ter-isi otomatis. Anda bisa override.' }
     return [
-      { key: 'item_id',   label: meta.value.itemLabel,    type: 'select',   options: itemOpts, required: true, cols: 2,
-        hint: 'Setelah pilih, harga master ter-isi otomatis. Anda bisa override.' },
+      itemField,
       { key: 'price',     label: 'Harga (Rp)',  type: 'number',   required: true, min: 0, cols: 1 },
       { key: 'is_active', label: 'Aktif',       type: 'checkbox', cols: 1 },
       ...posField,
@@ -385,7 +410,7 @@ watch(() => props.insurerId, () => refresh())
       :columns="columns" :rows="rows"
       :loading="loading" :error="error" :meta="pageMeta"
       :show-search="false"
-      empty-text="Belum ada tarif untuk insurer ini. Klik Tambah atau Import CSV."
+      :empty-text="bukuTarif ? 'Belum ada item master aktif.' : 'Belum ada tarif untuk insurer ini. Klik Tambah atau Import CSV.'"
       @page-change="onPageChange"
       @refresh="() => refresh(pageMeta.current_page)"
     >
@@ -411,7 +436,11 @@ watch(() => props.insurerId, () => refresh())
       </template>
 
       <template #cell-price="{ row, value }">
-        <span class="tt-price" :class="{ 'tt-price-diff': Number(value) !== Number(row.master_price) }">
+        <div v-if="row._unpriced" class="tt-price-unset">
+          <span class="tt-price tt-price-zero">{{ formatRp(0) }}</span>
+          <span class="tt-badge-unset" title="Harga jual belum diisi di Buku Tarif — item akan ditagih Rp 0">harga belum ditentukan buku tarif</span>
+        </div>
+        <span v-else class="tt-price" :class="{ 'tt-price-diff': Number(value) !== Number(row.master_price) }">
           {{ formatRp(value) }}
         </span>
       </template>
@@ -421,13 +450,21 @@ watch(() => props.insurerId, () => refresh())
       </template>
 
       <template #actions="{ row }">
-        <button v-if="!readOnly" class="tt-icon-btn" title="Edit" @click="openEdit(row)">
-          <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+        <template v-if="readOnly">
+          <span class="tt-readonly-dot" title="Read-only (inherit dari parent)">—</span>
+        </template>
+        <!-- Buku Tarif: item belum bertarif → tombol Set Harga (buat tarif baru) -->
+        <button v-else-if="row._unpriced" class="tt-btn-setprice" title="Set harga jual untuk item ini" @click="openSetPrice(row)">
+          Set Harga
         </button>
-        <button v-if="!readOnly" class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete(row)">
-          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        </button>
-        <span v-else class="tt-readonly-dot" title="Read-only (inherit dari parent)">—</span>
+        <template v-else>
+          <button class="tt-icon-btn" title="Edit" @click="openEdit(row)">
+            <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+          </button>
+          <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete(row)">
+            <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </template>
       </template>
     </MasterTable>
 
@@ -500,6 +537,11 @@ watch(() => props.insurerId, () => refresh())
 .tt-master-price { color: var(--tm); font-variant-numeric: tabular-nums; }
 .tt-price { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }
 .tt-price-diff { color: var(--ga); }
+.tt-price-unset { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.tt-price-zero { color: var(--tu); font-weight: 500; }
+.tt-badge-unset { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.3; background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); white-space: nowrap; }
+.tt-btn-setprice { padding: 5px 12px; border-radius: 8px; border: 1px solid var(--ga); background: var(--gl); color: var(--ga); font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+.tt-btn-setprice:hover { background: var(--ga); color: #fff; }
 .tt-status { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }
 .tt-status.on { background: var(--sb); color: var(--st); }
 .tt-status.off { background: var(--eb); color: var(--et); }

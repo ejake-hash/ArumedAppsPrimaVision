@@ -58,7 +58,7 @@ class RefraksionisDemoSeeder extends Seeder
             [
                 'nik' => '3275077701000001', 'rm' => 'RM-REF-001', 'name' => 'Hendra Wijaya',
                 'gender' => 'L', 'dob' => '1990-03-18', 'guarantor' => 'BPJS', 'insurer' => $bpjs,
-                'bpjs' => '0002233445566', 'class' => 'Baru', 'queue_status' => 'WAITING',
+                'bpjs' => '0002277001001', 'class' => 'Baru', 'queue_status' => 'WAITING',
                 'record' => null,
             ],
 

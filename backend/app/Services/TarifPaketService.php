@@ -123,9 +123,21 @@ class TarifPaketService
         // Enrich tariffs dengan diskon yang dihitung
         $pkg->packageTariffs->each(function (SurgeryPackageTariff $t) use ($pkg) {
             $t->setRelation('package', $pkg);
+            // Tangkap %-diskon INPUT (mode PERSEN) + mode SEBELUM discount_percent di-clobber
+            // oleh nilai computed di bawah (computed = diskon thd base, utk tampilan).
+            $t->setAttribute('input_discount_pct', $t->discount_percent);
+            $t->setAttribute('price_mode', $t->discount_percent !== null ? 'PERSEN' : 'NOMINAL');
             $t->setAttribute('discount_amount', $t->discountAmount());
             $t->setAttribute('discount_percent', $t->discountPercent());
         });
+
+        // Manfaat "kontrol gratis pasca-bedah" (Opsi B): nama prosedur konsultasi untuk kartu UI.
+        if ($pkg->followup_procedure_id) {
+            $pkg->setAttribute(
+                'followup_procedure_name',
+                \App\Models\Procedure::find($pkg->followup_procedure_id)?->name
+            );
+        }
 
         return $pkg;
     }
@@ -140,6 +152,19 @@ class TarifPaketService
     public function updatePaket(string $id, array $data): SurgeryPackage
     {
         $pkg = SurgeryPackage::findOrFail($id);
+
+        // Normalisasi kartu "Manfaat Kontrol Pasca-Bedah" (Opsi B): tanpa prosedur =
+        // tanpa manfaat (count 0, valid null); dengan prosedur = minimal 1 jatah.
+        if (array_key_exists('followup_procedure_id', $data)) {
+            if (empty($data['followup_procedure_id'])) {
+                $data['followup_procedure_id'] = null;
+                $data['followup_count']        = 0;
+                $data['followup_valid_days']   = null;
+            } else {
+                $data['followup_count'] = max(1, (int) ($data['followup_count'] ?? 1));
+            }
+        }
+
         $pkg->update($data);
         $this->log(auth('api')->id(), 'UPDATE_PAKET_BEDAH', SurgeryPackage::class, $id);
         return $pkg->fresh();
@@ -182,11 +207,11 @@ class TarifPaketService
     {
         $pkg = SurgeryPackage::findOrFail($packageId);
 
-        // Paket PEMERIKSAAN (poliklinik) hanya boleh komponen PROCEDURE — tindakan/
-        // konsultasi/penunjang. BHP/IOL/obat tak relevan untuk paket pemeriksaan.
+        // Paket PEMERIKSAAN (poliklinik) boleh komponen TINDAKAN (PROCEDURE) + OBAT
+        // (MEDICATION) — bundel pemeriksaan umum tindakan+obat. BHP/IOL tak relevan.
         if ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN
-            && $data['item_type'] !== SurgeryPackageItem::TYPE_PROCEDURE) {
-            throw new \Exception('Paket pemeriksaan hanya boleh berisi komponen Tindakan (PROCEDURE).', 422);
+            && ! in_array($data['item_type'], [SurgeryPackageItem::TYPE_PROCEDURE, SurgeryPackageItem::TYPE_MEDICATION], true)) {
+            throw new \Exception('Paket pemeriksaan hanya boleh berisi Tindakan atau Obat.', 422);
         }
 
         $defaultPrice = $data['default_price'] ?? $this->resolveMasterPrice($data['item_type'], $data['item_id']);
@@ -246,9 +271,19 @@ class TarifPaketService
     /**
      * Lihat harga master "live" untuk satu item (PROCEDURE/MEDICATION/BHP/IOL).
      * Dipakai sebagai default ketika admin belum override default_price.
+     *
+     * Sumber harga utama PASCA-refactor "Buku Tarif": harga jual penjamin sistem UMUM
+     * (mis. procedures.base_price kini 0 — harga jual pindah ke procedure_tariffs). Bila
+     * item belum punya baris Buku Tarif (mis. sebagian obat), fallback ke kolom harga
+     * master lama agar snapshot paket tetap masuk akal (tidak 0).
      */
     private function resolveMasterPrice(string $type, string $itemId): float
     {
+        $bukuTarif = $this->resolveBukuTarifUmumPrice($type, $itemId);
+        if ($bukuTarif > 0) {
+            return $bukuTarif;
+        }
+
         return match ($type) {
             SurgeryPackageItem::TYPE_PROCEDURE  => (float) (Procedure::find($itemId)?->base_price  ?? 0),
             SurgeryPackageItem::TYPE_MEDICATION => (float) (Medication::find($itemId)?->price      ?? 0),
@@ -256,6 +291,37 @@ class TarifPaketService
             SurgeryPackageItem::TYPE_IOL        => (float) (IolItem::find($itemId)?->price         ?? 0),
             default                             => 0,
         };
+    }
+
+    /**
+     * Harga jual penjamin sistem UMUM dari Buku Tarif (procedure/medication/bhp/iol_tariffs).
+     * Sejalan dengan KasirService::getPrice (level fallback UMUM). 0 bila tak ada baris tarif.
+     */
+    private function resolveBukuTarifUmumPrice(string $type, string $itemId): float
+    {
+        [$table, $fk] = match ($type) {
+            SurgeryPackageItem::TYPE_PROCEDURE  => ['procedure_tariffs',  'procedure_id'],
+            SurgeryPackageItem::TYPE_MEDICATION => ['medication_tariffs', 'medication_id'],
+            SurgeryPackageItem::TYPE_BHP        => ['bhp_tariffs',        'bhp_item_id'],
+            SurgeryPackageItem::TYPE_IOL        => ['iol_tariffs',        'iol_item_id'],
+            default                             => [null, null],
+        };
+        if (! $table) {
+            return 0;
+        }
+
+        $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        if (! $umumId) {
+            return 0;
+        }
+
+        $price = DB::table($table)
+            ->where($fk, $itemId)
+            ->where('insurer_id', $umumId)
+            ->where('is_active', true)
+            ->value('price');
+
+        return $price !== null ? (float) $price : 0.0;
     }
 
     // =========================================================================
@@ -268,15 +334,18 @@ class TarifPaketService
         return $pkg->packageTariffs()->with('insurer')->get()->map(function (SurgeryPackageTariff $t) use ($pkg) {
             $t->setRelation('package', $pkg);
             return [
-                'id'               => $t->id,
-                'insurer_id'       => $t->insurer_id,
-                'insurer_name'     => $t->insurer?->name ?? 'SEMUA',
-                'classification'   => $t->classification,
-                'sell_price'       => $t->sell_price,
-                'base_price'       => $pkg->total_base_price,
-                'discount_amount'  => $t->discountAmount(),
-                'discount_percent' => $t->discountPercent(),
-                'is_active'        => $t->is_active,
+                'id'                => $t->id,
+                'insurer_id'        => $t->insurer_id,
+                'insurer_name'      => $t->insurer?->name ?? 'SEMUA',
+                'display_name'      => $t->display_name,
+                'price_mode'        => $t->discount_percent !== null ? 'PERSEN' : 'NOMINAL',
+                'sell_price'        => $t->sell_price,
+                'base_price'        => $pkg->total_base_price,
+                'discount_amount'   => $t->discountAmount(),
+                'discount_percent'  => $t->discountPercent(),
+                // %-diskon yang DIINPUT admin (mode PERSEN); beda dari discount_percent terhitung.
+                'input_discount_pct' => $t->discount_percent,
+                'is_active'         => $t->is_active,
             ];
         })->toArray();
     }
@@ -295,7 +364,20 @@ class TarifPaketService
             ->where('insurer_id', $insurerId)   // null-safe: Eloquent emit "is null"
             ->first();
 
-        $values = ['sell_price' => $data['sell_price'], 'is_active' => $data['is_active'] ?? true];
+        // Harga: mode PERSEN → sell_price dihitung dari total_base_price paket; NOMINAL →
+        // sell_price langsung. sell_price selalu jadi sumber tunggal billing.
+        $mode = $data['price_mode'] ?? 'NOMINAL';
+        if ($mode === 'PERSEN') {
+            $pct    = (float) ($data['discount_percent'] ?? 0);
+            $values = [
+                'discount_percent' => $pct,
+                'sell_price'       => round((float) $pkg->total_base_price * (1 - $pct / 100), 2),
+            ];
+        } else {
+            $values = ['sell_price' => (float) $data['sell_price'], 'discount_percent' => null];
+        }
+        $values['display_name'] = $data['display_name'] ?? null;
+        $values['is_active']    = $data['is_active'] ?? true;
 
         if ($existing) {
             if ($existing->trashed()) {
@@ -325,7 +407,7 @@ class TarifPaketService
     // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
     // =========================================================================
 
-    private const CSV_HEADERS = ['nama_paket', 'kategori', 'deskripsi', 'aktif', 'item_tipe', 'item_nama', 'qty', 'catatan'];
+    private const CSV_HEADERS = ['nama_paket', 'kategori', 'tipe_paket', 'deskripsi', 'aktif', 'item_tipe', 'item_nama', 'qty', 'catatan'];
 
     public function templatePaketCsv(): string
     {
@@ -387,6 +469,7 @@ class TarifPaketService
             $headerRow = [
                 $pkg->name,
                 $pkg->category ?? '',
+                $pkg->package_type ?? SurgeryPackage::TYPE_BEDAH,
                 $pkg->description ?? '',
                 $pkg->is_active ? '1' : '0',
             ];
@@ -428,7 +511,8 @@ class TarifPaketService
         return [
             'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
             'Format LONG: 1 baris = 1 item. Paket multi-item → ulang baris dgn nama_paket sama.',
-            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/deskripsi/aktif/catatan opsional)',
+            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/catatan opsional)',
+            'tipe_paket: BEDAH (boleh PROCEDURE/MEDICATION/BHP/IOL) atau PEMERIKSAAN (hanya PROCEDURE). Kosong → BEDAH (paket baru) / dipertahankan (paket lama).',
             'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . '.',
             'item_nama dicocokkan ke master (case-insensitive). IOL: tulis "Brand Model PowerD" mis. "Alcon AcrySof IQ 21D".',
             'qty = angka >= 1 (kosong/0 → dianggap 1). aktif: 1 = aktif, 0 = nonaktif.',
@@ -444,12 +528,12 @@ class TarifPaketService
      */
     public function importPaketCsv(string $csvContent): array
     {
-        $lines = $this->csvDataLines($csvContent);
-        if (empty($lines)) {
+        $records = \App\Support\SpreadsheetHelper::parseCsvRecords($csvContent);
+        if (empty($records)) {
             throw new \Exception('File CSV kosong.', 422);
         }
 
-        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        $headers = array_map(fn ($h) => strtolower(trim((string) $h)), array_shift($records));
         foreach (['nama_paket', 'item_tipe', 'item_nama', 'qty'] as $required) {
             if (! in_array($required, $headers, true)) {
                 throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
@@ -459,11 +543,8 @@ class TarifPaketService
         // Group baris by nama_paket
         $grouped = [];
         $errors  = [];
-        foreach ($lines as $idx => $line) {
+        foreach ($records as $idx => $values) {
             $lineNum = $idx + 2;
-            if (trim($line) === '') continue;
-
-            $values = str_getcsv($line, ',', '"', '\\');
             if (count($values) !== count($headers)) {
                 $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
                 continue;
@@ -475,15 +556,23 @@ class TarifPaketService
                 continue;
             }
 
+            // tipe_paket opsional: BEDAH | PEMERIKSAAN. Null = pertahankan (existing) / BEDAH (baru).
+            $tipePaket = strtoupper(trim((string) ($row['tipe_paket'] ?? '')));
+            if ($tipePaket !== '' && ! in_array($tipePaket, [SurgeryPackage::TYPE_BEDAH, SurgeryPackage::TYPE_PEMERIKSAAN], true)) {
+                $errors[] = "Baris {$lineNum}: tipe_paket '{$tipePaket}' tidak valid (BEDAH/PEMERIKSAAN), diabaikan";
+                $tipePaket = '';
+            }
+
             $key = mb_strtolower($namaPaket);
             if (! isset($grouped[$key])) {
                 $grouped[$key] = [
-                    'name'        => $namaPaket,
-                    'category'    => trim((string) ($row['kategori'] ?? '')) ?: null,
-                    'description' => trim((string) ($row['deskripsi'] ?? '')) ?: null,
-                    'is_active'   => $this->parseBool($row['aktif'] ?? '1'),
-                    'items'       => [],
-                    '_lines'      => [],
+                    'name'         => $namaPaket,
+                    'category'     => trim((string) ($row['kategori'] ?? '')) ?: null,
+                    'package_type' => $tipePaket ?: null,
+                    'description'  => trim((string) ($row['deskripsi'] ?? '')) ?: null,
+                    'is_active'    => $this->parseBool($row['aktif'] ?? '1'),
+                    'items'        => [],
+                    '_lines'       => [],
                 ];
             }
             $grouped[$key]['_lines'][] = $lineNum;
@@ -527,9 +616,11 @@ class TarifPaketService
             DB::transaction(function () use ($group, $existing, &$created, &$updated, &$itemsInserted, &$itemsLookupFail, &$errors) {
                 if ($existing) {
                     $existing->update([
-                        'category'    => $group['category'] ?? $existing->category,
-                        'description' => $group['description'] ?? $existing->description,
-                        'is_active'   => $group['is_active'],
+                        'category'     => $group['category'] ?? $existing->category,
+                        // package_type hanya disentuh bila CSV menyebut tipe (jaga tipe existing).
+                        'package_type' => $group['package_type'] ?? $existing->package_type,
+                        'description'  => $group['description'] ?? $existing->description,
+                        'is_active'    => $group['is_active'],
                     ]);
                     // Replace items
                     $existing->items()->delete();
@@ -539,6 +630,8 @@ class TarifPaketService
                     $pkg = SurgeryPackage::create([
                         'name'             => $group['name'],
                         'category'         => $group['category'],
+                        // Paket baru tanpa tipe → default BEDAH (boleh semua komponen).
+                        'package_type'     => $group['package_type'] ?? SurgeryPackage::TYPE_BEDAH,
                         'description'      => $group['description'],
                         'is_active'        => $group['is_active'],
                         'total_base_price' => 0,
@@ -547,6 +640,13 @@ class TarifPaketService
                 }
 
                 foreach ($group['items'] as $itemRow) {
+                    // Paket PEMERIKSAAN boleh PROCEDURE + MEDICATION (samakan dgn guard addItem).
+                    if ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN
+                        && ! in_array($itemRow['item_type'], [SurgeryPackageItem::TYPE_PROCEDURE, SurgeryPackageItem::TYPE_MEDICATION], true)) {
+                        $errors[] = "Baris {$itemRow['_line']}: paket PEMERIKSAAN hanya boleh Tindakan/Obat, item {$itemRow['item_type']} '{$itemRow['item_name']}' dilewati";
+                        continue;
+                    }
+
                     $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name']);
                     if (! $itemId) {
                         $itemsLookupFail++;

@@ -5,11 +5,22 @@
  * Layout pattern mirror MasterDataLayout — vertical tabs nav kiri + RouterView kanan.
  * 3 section: Tarif Tindakan (master procedures), Metode Bayar (master insurers),
  * dan Paket Bedah.
+ *
+ * Sub-nav kiri BISA DISEMBUNYIKAN (tombol di header) supaya tabel tarif yang
+ * lebar dapat memakai lebar penuh. Pilihan disimpan di localStorage agar
+ * konsisten antar-halaman & saat reload.
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 const route = useRoute()
+
+const NAV_KEY = 'tarifpaket.navHidden'
+const navHidden = ref(localStorage.getItem(NAV_KEY) === '1')
+function toggleNav() {
+  navHidden.value = !navHidden.value
+  localStorage.setItem(NAV_KEY, navHidden.value ? '1' : '0')
+}
 
 const tabs = [
   {
@@ -28,12 +39,6 @@ const tabs = [
     section: 'Paket Bedah',
     items: [
       { to: '/tarif-paket/paket-bedah', label: 'Daftar Paket', icon: 'package' },
-    ],
-  },
-  {
-    section: 'Tarif Kamar',
-    items: [
-      { to: '/tarif-paket/tarif-kamar', label: 'Tarif Kamar Inap', icon: 'bed' },
     ],
   },
   {
@@ -60,10 +65,19 @@ const currentTabLabel = computed(() => {
         <h1>Tarif &amp; Paket Bedah</h1>
         <p class="tpl-sub">Master tarif tindakan, metode bayar (penjamin), dan paket bedah — {{ currentTabLabel }}</p>
       </div>
+      <button
+        class="tpl-nav-toggle"
+        :class="{ active: navHidden }"
+        @click="toggleNav"
+        :title="navHidden ? 'Tampilkan menu samping' : 'Sembunyikan menu samping (tabel lebih lebar)'"
+      >
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        <span>{{ navHidden ? 'Tampilkan Menu' : 'Sembunyikan Menu' }}</span>
+      </button>
     </header>
 
-    <div class="tpl-grid">
-      <aside class="tpl-nav">
+    <div class="tpl-grid" :class="{ 'nav-hidden': navHidden }">
+      <aside v-show="!navHidden" class="tpl-nav">
         <template v-for="sec in tabs" :key="sec.section">
           <div class="tpl-nav-section">{{ sec.section }}</div>
           <RouterLink
@@ -93,11 +107,19 @@ const currentTabLabel = computed(() => {
 <style scoped>
 .tpl-wrap { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 1600px; }
 
+.tpl-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .tpl-header h1 { font-family: 'Space Grotesk', serif; font-size: 26px; color: var(--td); margin: 0; line-height: 1.2; }
 .tpl-sub { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
+/* Tombol sembunyi/tampil sub-nav */
+.tpl-nav-toggle { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 8px 12px; border: 1px solid var(--gb); border-radius: 9px; background: var(--bc); color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.tpl-nav-toggle svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tpl-nav-toggle:hover { background: var(--bs); color: var(--td); border-color: var(--ga); }
+.tpl-nav-toggle.active { background: var(--gl); color: var(--td); border-color: var(--ga); }
+.tpl-nav-toggle.active svg { stroke: var(--ga); }
+
 .tpl-grid { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
-@media (max-width: 900px) { .tpl-grid { grid-template-columns: 1fr; } }
+.tpl-grid.nav-hidden { grid-template-columns: 1fr; }
 
 .tpl-nav { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 0.6rem 0.5rem; position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: 1px; }
 .tpl-nav-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--tu); padding: 0.6rem 0.7rem 0.3rem; margin-top: 0.3rem; }

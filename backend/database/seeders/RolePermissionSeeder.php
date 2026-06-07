@@ -26,8 +26,13 @@ class RolePermissionSeeder extends Seeder
                 'rme_dokter'    => ['R','W'],
                 'rekam_medis'   => ['R','W'],
                 'bedah'         => ['R','W','C'],
+                // Anestesi: dokter (DPJP / anestesiolog login sbg dokter) isi Laporan Anestesi RM 5.2/8.1.
+                'anestesi'      => ['R','W'],
                 'ruang_tindakan' => ['R','W'],
                 'rawat_inap'    => ['R','W'],
+                // IGD = stasiun gabung (dokter jaga). Butuh ICD search utk SEP gawat darurat.
+                'igd'           => ['R','W'],
+                'master_icd'    => ['R'],
                 'farmasi'       => ['R'],
                 // Unit Bedah minta/retur BHP-IOL ke gudang (BedahTerjadwalView, station=BEDAH).
                 'request_unit'  => ['R','W'],
@@ -42,11 +47,21 @@ class RolePermissionSeeder extends Seeder
                 'refraksionis' => ['R'],
                 'rme_dokter'   => ['R'],
                 'rekam_medis'  => ['R'],
-                'bedah'        => ['R','C'],
+                // Perawat bedah: checklist WHO + tulis (catat IOL/BHP terpakai & skor
+                // Aldrete PACU). 'bedah.write' tak granular → secara teknis juga membuka
+                // laporan/finalisasi; pembagian dgn dokter diatur via SOP. TTD tetap
+                // terkunci ke akun dokter+PIN (signDocument cek peran DOCTOR), perawat
+                // tak bisa menandatangani.
+                'bedah'        => ['R','W','C'],
+                // Anestesi: perawat bedah hanya LIHAT panel/monitoring (write = dokter anestesi).
+                'anestesi'     => ['R'],
                 'ruang_tindakan' => ['R','W'],
                 'rawat_inap'   => ['R','W'],
                 'farmasi'      => ['R'],
                 'bpjs'         => ['R'],
+                // IGD triase (perawat) + ICD search utk SEP.
+                'igd'          => ['R','W'],
+                'master_icd'   => ['R'],
             ],
             'refraksionis' => [
                 'admisi'       => ['R'],
@@ -127,6 +142,7 @@ class RolePermissionSeeder extends Seeder
                 'rme_dokter'        => ['R'],
                 'rekam_medis'       => ['R'],
                 'bedah'             => ['R'],
+                'anestesi'          => ['R'],
                 'ruang_tindakan'    => ['R'],
                 'farmasi'           => ['R'],
                 'kasir'             => ['R'],

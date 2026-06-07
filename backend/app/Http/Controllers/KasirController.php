@@ -85,6 +85,21 @@ class KasirController extends Controller
     }
 
     /**
+     * GET /kasir/invoice/{id}/coverages
+     * Split COB invoice: porsi tanggungan tiap penjamin + sisa pasien.
+     * Non-COB → is_cob=false, patient_amount=total.
+     */
+    public function invoiceCoverages(string $id): JsonResponse
+    {
+        try {
+            $invoice = \App\Models\BillingInvoice::with('coverages.insurer')->findOrFail($id);
+        } catch (\Throwable $e) {
+            return $this->error('Invoice tidak ditemukan.', 404);
+        }
+        return $this->ok($this->service->calculateCOB($invoice));
+    }
+
+    /**
      * POST /kasir/invoice/{visitId}/generate
      * Consolidate semua tindakan + obat + IOL → buat invoice baru.
      */
@@ -378,6 +393,28 @@ class KasirController extends Controller
     }
 
     /**
+     * POST /kasir/invoice/{id}/email
+     * Kirim kwitansi PDF ke email pasien (alternatif cetak fisik). Email
+     * disimpan ke record pasien & pengiriman di-queue.
+     */
+    public function emailReceipt(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(['email' => 'required|email|max:255']);
+
+        try {
+            $result = $this->service->emailReceipt($id, $validated['email']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        $msg = $result['status'] === 'SENT'
+            ? "Kwitansi terkirim ke {$validated['email']}"
+            : "Kwitansi diantrekan untuk dikirim ke {$validated['email']}";
+
+        return $this->ok($result, $msg);
+    }
+
+    /**
      * GET /kasir/tarif-tindakan?visit_id=…
      * Daftar tindakan + harga per-penjamin (untuk Edit Tagihan kasir).
      */
@@ -386,6 +423,26 @@ class KasirController extends Controller
         $request->validate(['visit_id' => 'required|uuid|exists:visits,id']);
 
         return $this->ok($this->service->getTarifTindakan($request->query('visit_id')));
+    }
+
+    /**
+     * GET /kasir/tarif-buku
+     * Pencarian buku tarif lintas kategori (tindakan/obat/BHP/IOL/alkes) untuk
+     * Edit Tagihan. Query: visit_id, q (teks), type (ALL|TINDAKAN|OBAT|BHP|IOL|MEDICAL_EQUIPMENT)
+     */
+    public function tarifBuku(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+            'q'        => 'required|string|max:100',
+            'type'     => 'nullable|in:ALL,TINDAKAN,OBAT,BHP,IOL,MEDICAL_EQUIPMENT',
+        ]);
+
+        return $this->ok($this->service->searchTarifBuku(
+            $validated['visit_id'],
+            $validated['q'],
+            $validated['type'] ?? 'ALL',
+        ));
     }
 
     /**

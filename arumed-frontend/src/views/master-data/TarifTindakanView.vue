@@ -21,6 +21,7 @@ import MasterTable from '@/components/master-data/MasterTable.vue'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
 import CsvActionBar from '@/components/master-data/CsvActionBar.vue'
 import MetodeBayarTarifTab from '@/views/tarif-paket/MetodeBayarTarifTab.vue'
+import RoomTarifPanel from '@/components/tarif-paket/RoomTarifPanel.vue'
 
 const store = useMasterDataStore()
 const KEY = 'tindakan'
@@ -34,6 +35,7 @@ const TABS = [
   { key: 'obat',     label: 'Obat' },
   { key: 'bhp',      label: 'BHP' },
   { key: 'iol',      label: 'IOL' },
+  { key: 'kamar',    label: 'Tarif Kamar' },
 ]
 const activeTab = ref('tindakan')
 const umumId = ref('')        // id insurer sistem UMUM (untuk tab obat/bhp/iol)
@@ -494,7 +496,7 @@ function onImported(result) {
     </template>
 
     <!-- ══ Tab OBAT / BHP / IOL — harga jual tunggal (insurer UMUM) ══ -->
-    <template v-else>
+    <template v-else-if="['obat', 'bhp', 'iol'].includes(activeTab)">
       <div v-if="!umumId" class="tt-jenis-warn">
         Penjamin UMUM belum tersedia. Pastikan data penjamin sistem sudah ter-seed.
       </div>
@@ -504,7 +506,13 @@ function onImported(result) {
         :type="activeTab"
         :insurer-id="umumId"
         :read-only="false"
+        :buku-tarif="true"
       />
+    </template>
+
+    <!-- ══ Tab TARIF KAMAR — sewa kamar inap per kelas × penjamin ══ -->
+    <template v-else-if="activeTab === 'kamar'">
+      <RoomTarifPanel />
     </template>
 
     <!-- Modal CRUD -->

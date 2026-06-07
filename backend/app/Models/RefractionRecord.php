@@ -75,6 +75,7 @@ class RefractionRecord extends Model
         'raw_data',
         // Finalisasi
         'is_finalized',
+        'is_skipped',
         'finalized_at',
         'finalized_by_id',
         'digital_signature',
@@ -116,6 +117,7 @@ class RefractionRecord extends Model
         'raw_data'                    => 'array',
         // Finalisasi
         'is_finalized'                => 'boolean',
+        'is_skipped'                  => 'boolean',
         'finalized_at'                => 'datetime',
         'signature_timestamp'         => 'datetime',
     ];

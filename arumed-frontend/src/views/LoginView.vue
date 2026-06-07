@@ -12,6 +12,7 @@ const form = ref({ username: '', password: '', remember: false })
 const errors = ref({ username: '', password: '' })
 const alert = ref({ show: false, type: 'e', message: '' })
 const successPopup = ref(false)   // popup "Login Berhasil, Selamat Melayani!"
+const forgotPopup  = ref(false)   // popup "Lupa password → hubungi Admin IT"
 
 const alertIcons = {
   e: '<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".6" fill="currentColor"/>',
@@ -72,7 +73,23 @@ async function login() {
             </svg>
           </div>
           <h3 class="success-title">Login Berhasil</h3>
-          <p class="success-sub">Selamat Melayani!</p>
+          <p class="success-sub">Selamat Melayani{{ auth.employeeName ? ` ${auth.employeeName}` : '!' }}</p>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- POPUP LUPA PASSWORD -->
+    <Transition name="pop">
+      <div v-if="forgotPopup" class="success-overlay" @click.self="forgotPopup = false">
+        <div class="success-box">
+          <div class="success-icon forgot-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+          </div>
+          <h3 class="success-title">Reset Password</h3>
+          <p class="success-sub">Hubungi Admin IT untuk reset password.</p>
+          <button class="bs forgot-ok" @click="forgotPopup = false">Mengerti</button>
         </div>
       </div>
     </Transition>
@@ -146,7 +163,7 @@ async function login() {
             <input v-model="form.remember" type="checkbox" />
             <span>Ingat saya</span>
           </label>
-          <a href="#" class="fg2">Lupa password?</a>
+          <a href="#" class="fg2" @click.prevent="forgotPopup = true">Lupa password?</a>
         </div>
 
         <button class="bs" :disabled="auth.loading" @click="login">
@@ -171,7 +188,7 @@ async function login() {
           </span>
         </div>
 
-        <p class="ver">Arumed Apps v1.0.0 &nbsp;·&nbsp; © 2026 RS MATA PRIMA VISION MEDAN</p>
+        <p class="ver">PT. Karya Sistem Nusantara &nbsp;·&nbsp; © 2026 RS MATA PRIMA VISION MEDAN</p>
       </div>
     </div>
   </div>
@@ -501,8 +518,19 @@ async function login() {
   60%  { transform: scale(1.12); }
   100% { transform: scale(1); opacity: 1; }
 }
+/* Popup lupa password — ikon kunci biru + tombol konfirmasi */
+.forgot-icon { background: var(--lb, #e6f0fa); color: var(--ld, #0E3A66); }
+.forgot-ok { margin-top: 1.25rem; }
 /* Transition Vue untuk overlay */
 .pop-enter-active { transition: opacity 0.25s ease; }
 .pop-leave-active { transition: opacity 0.2s ease; }
 .pop-enter-from, .pop-leave-to { opacity: 0; }
+
+/* HP sempit (iPhone standar / Galaxy Fold): kecilkan padding agar isi kartu tidak
+   terjepit di lebar ~280–390px. Kartu tetap fluid (max-width 420). */
+@media (max-width: 480px) {
+  .login-shell { padding: 1.5rem 0.85rem; }
+  .card { padding: 1.5rem 1.25rem; }
+  .card-logo { max-width: 200px; }
+}
 </style>

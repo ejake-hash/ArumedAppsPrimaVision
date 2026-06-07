@@ -36,6 +36,7 @@ const visitActive = computed(() =>
 const form = ref(emptyForm())
 const newAllergy = ref('')
 const pendingCallIds = ref([])
+const pendingBumpIds = ref([])
 
 function emptyForm() {
   return {
@@ -225,6 +226,23 @@ async function skipPt(q, e) {
   }
 }
 
+// Dahulukan: naikkan pasien ke atas antrean TR (mis. jadwal dokternya hampir habis).
+async function prioritizePt(q, e) {
+  e.stopPropagation()
+  if (pendingBumpIds.value.includes(q.id)) return
+  const why = q.schedule_risk?.at_risk ? `\n\nAlasan: jadwal ${q.doctor ?? 'dokter'} ${q.schedule_risk.reason}.` : ''
+  if (!confirm(`Dahulukan ${q.patient?.name ?? 'pasien'} (${q.queue_number}) ke atas antrean triase?${why}`)) return
+  pendingBumpIds.value.push(q.id)
+  try {
+    await store.dahulukanAntrian(q.id)
+    toast('s', `${q.patient?.name} (${q.queue_number}) didahulukan ke atas antrean`)
+  } catch (err) {
+    toast('e', err.message)
+  } finally {
+    pendingBumpIds.value = pendingBumpIds.value.filter((id) => id !== q.id)
+  }
+}
+
 // ─── Allergy helpers ──────────────────────────────────────────────────────────
 function addAllergy() {
   const t = newAllergy.value.trim()
@@ -235,13 +253,10 @@ function addAllergy() {
 function removeAllergy(i) { form.value.allergies.splice(i, 1) }
 
 // ─── Save assessment ──────────────────────────────────────────────────────────
-// Wajib: TD (sistolik + diastolik) + KGD. Sisa field optional.
+// Wajib: TD (sistolik + diastolik) + Keluhan Utama. KGD & sisa field optional.
 async function saveAssessment() {
   if (!form.value.td_s || !form.value.td_d) {
     toast('w', 'Tekanan Darah (Sistolik & Diastolik) wajib diisi'); return
-  }
-  if (!form.value.kgd) {
-    toast('w', 'KGD wajib diisi'); return
   }
   if (!form.value.keluhan) {
     toast('w', 'Keluhan utama wajib diisi'); return
@@ -249,12 +264,12 @@ async function saveAssessment() {
 
   try {
     await store.saveAsesmen({
-      td_sistol:        Number(form.value.td_s),
-      td_diastol:       Number(form.value.td_d),
-      kgd:              Number(form.value.kgd),
-      nadi:             form.value.nadi      ? Number(form.value.nadi)      : null,
+      td_sistol:        Math.round(Number(form.value.td_s)),
+      td_diastol:       Math.round(Number(form.value.td_d)),
+      kgd:              form.value.kgd ? Number(form.value.kgd) : null,
+      nadi:             form.value.nadi      ? Math.round(Number(form.value.nadi))      : null,
       suhu:             form.value.suhu      ? Number(form.value.suhu)      : null,
-      respirasi:        form.value.respirasi ? Number(form.value.respirasi) : null,
+      respirasi:        form.value.respirasi ? Math.round(Number(form.value.respirasi)) : null,
       spo2:             form.value.spo2      ? Number(form.value.spo2)      : null,
       pain_scale:       form.value.pain,
       berat_badan:      form.value.bb        ? Number(form.value.bb)        : null,
@@ -268,6 +283,20 @@ async function saveAssessment() {
     toast('s', 'Asesmen tersimpan')
   } catch (err) {
     toast('w', err.message)
+  }
+}
+
+// Lewati Triase: pasien tidak perlu triase. Asesmen ditandai "dilewati" (tanpa
+// data klinis) & antrean tetap maju (gate paralel ke Dokter / Kirim ke Bedah).
+async function onSkipTriase() {
+  if (!store.selectedQueue?.id) { toast('w', 'Pilih pasien dulu'); return }
+  if (!confirm('Lewati triase untuk pasien ini? Asesmen ditandai "tidak diperlukan" dan pasien lanjut ke antrean berikutnya.')) return
+  try {
+    await store.skipTriase()
+    toast('s', 'Triase dilewati — pasien lanjut ke antrean berikutnya')
+    store.clearSelected()
+  } catch (err) {
+    toast('e', err.message || 'Gagal melewati triase')
   }
 }
 
@@ -398,11 +427,11 @@ async function saveCppt() {
     toast('w', 'Catatan CPPT wajib diisi'); return
   }
   const payload = {
-    td_sistol:  form.value.td_s      ? Number(form.value.td_s)      : null,
-    td_diastol: form.value.td_d      ? Number(form.value.td_d)      : null,
-    nadi:       form.value.nadi      ? Number(form.value.nadi)      : null,
+    td_sistol:  form.value.td_s      ? Math.round(Number(form.value.td_s))      : null,
+    td_diastol: form.value.td_d      ? Math.round(Number(form.value.td_d))      : null,
+    nadi:       form.value.nadi      ? Math.round(Number(form.value.nadi))      : null,
     suhu:       form.value.suhu      ? Number(form.value.suhu)      : null,
-    respirasi:  form.value.respirasi ? Number(form.value.respirasi) : null,
+    respirasi:  form.value.respirasi ? Math.round(Number(form.value.respirasi)) : null,
     spo2:       form.value.spo2      ? Number(form.value.spo2)      : null,
     kgd:        form.value.kgd       ? Number(form.value.kgd)       : null,
     pain_scale: form.value.pain,
@@ -627,6 +656,10 @@ onUnmounted(() => {
                     · {{ q.patient?.gender === 'L' ? 'L' : 'P' }}
                     · {{ q.visit?.classification ?? '—' }}
                   </div>
+                  <div v-if="q.doctor" class="q-dpjp" :title="`DPJP tujuan: ${q.doctor}`">
+                    <svg viewBox="0 0 24 24" class="q-dpjp-ic" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+                    DPJP: {{ q.doctor }}<span v-if="q.schedule_end"> · s/d {{ q.schedule_end }}</span>
+                  </div>
                   <div class="q-tags">
                     <span :class="['pill', q.visit?.guarantor_type === 'BPJS' ? 'pill-bpjs' : 'pill-umum']">
                       {{ q.visit?.guarantor_type === 'BPJS' ? 'BPJS' : q.visit?.guarantor_type ?? 'Umum' }}
@@ -637,6 +670,14 @@ onUnmounted(() => {
                     <span v-if="q.visit?.assessment_finalized" class="pill pill-done">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                       TTV
+                    </span>
+                    <span
+                      v-if="q.schedule_risk?.at_risk"
+                      class="pill pill-risk"
+                      :title="`Jadwal ${q.doctor ?? 'dokter'} hampir habis — ${q.schedule_risk.reason}`"
+                    >
+                      <svg viewBox="0 0 24 24" class="pill-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                      {{ q.schedule_risk.reason }}
                     </span>
                   </div>
                   <div v-if="q.status !== 'COMPLETED'" class="q-actions" @click.stop>
@@ -652,6 +693,15 @@ onUnmounted(() => {
                     <button class="q-act-btn skip" @click="skipPt(q, $event)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
                       Lewati
+                    </button>
+                    <button
+                      :class="['q-act-btn', 'bump', q.schedule_risk?.at_risk ? 'bump-risk' : '']"
+                      :disabled="pendingBumpIds.includes(q.id)"
+                      title="Dahulukan: naikkan ke atas antrean triase"
+                      @click="prioritizePt(q, $event)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
+                      Dahulukan
                     </button>
                   </div>
                 </div>
@@ -688,6 +738,11 @@ onUnmounted(() => {
                 RM: {{ store.selectedQueue.patient?.no_rm ?? '—' }}
                 · {{ store.selectedQueue.patient?.age ?? '—' }} th
                 · {{ store.selectedQueue.patient?.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}
+              </div>
+              <div v-if="store.selectedQueue.doctor" class="pt-dpjp" :title="`DPJP tujuan: ${store.selectedQueue.doctor}`">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+                DPJP: <strong>{{ store.selectedQueue.doctor }}</strong>
+                <span v-if="store.selectedQueue.schedule_end"> · s/d {{ store.selectedQueue.schedule_end }}</span>
               </div>
               <div v-if="store.selectedQueue.patient?.address" class="pt-address">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -846,7 +901,7 @@ onUnmounted(() => {
               <div class="sec-title">Metabolik</div>
               <div class="form-grid g4">
                 <div class="fg">
-                  <label class="fl" for="inp-kgd">KGD <span class="req">*</span> <span class="hint">70–200 mg/dL</span></label>
+                  <label class="fl" for="inp-kgd">KGD <span class="hint">opsional · 70–200 mg/dL</span></label>
                   <input id="inp-kgd" v-model="form.kgd" type="number" :class="['form-input', `vital-${kgdStatus}`]" placeholder="120" :disabled="formLocked" />
                 </div>
                 <div class="fg" style="grid-column:span 3">
@@ -945,6 +1000,18 @@ onUnmounted(() => {
                   {{ store.saving ? 'Menyimpan…' : 'Simpan Asesmen' }}
                 </button>
 
+                <!-- Lewati Triase: pasien tidak perlu triase → antrean tetap lanjut -->
+                <button
+                  v-if="!isCpptMode && !store.isFinalized"
+                  class="btn btn-secondary btn-lg"
+                  :disabled="store.saving || store.skipping"
+                  title="Pasien tidak perlu triase — antrean tetap lanjut ke stasiun berikutnya"
+                  @click="onSkipTriase"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+                  {{ store.skipping ? 'Melewati…' : 'Tidak Perlu Triase' }}
+                </button>
+
                 <!-- Mode idle setelah finalized: Update Asesmen (tambah CPPT) -->
                 <button
                   v-if="!isCpptMode && store.isFinalized"
@@ -1024,7 +1091,7 @@ onUnmounted(() => {
                 </div>
                 <div class="send-card-sub">
                   <template v-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu.</template>
-                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + KGD + keluhan terisi).</template>
+                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + keluhan terisi).</template>
                   <template v-else-if="!parallelRefraksiDone">Asesmen triase dikunci ✓. Menunggu <strong>Refraksionis</strong> menyelesaikan pemeriksaan visus/IOP.</template>
                   <template v-else>Triase &amp; Refraksi selesai ✓. Klik <strong>Kirim ke Bedah</strong> untuk masukkan pasien ke antrean operasi.</template>
                 </div>
@@ -1057,7 +1124,7 @@ onUnmounted(() => {
                 </div>
                 <div class="send-card-sub">
                   <template v-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu.</template>
-                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + KGD + keluhan terisi).</template>
+                  <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + keluhan terisi).</template>
                   <template v-else-if="!parallelRefraksiDone">Asesmen triase dikunci ✓. Menunggu <strong>Refraksionis</strong> menyelesaikan pemeriksaan visus/IOP.</template>
                   <template v-else>Triase &amp; Refraksi selesai ✓. Klik <strong>Kirim ke Rawat Inap</strong> — pasien masuk papan <strong>Menunggu Kamar</strong> untuk persiapan pre-op.</template>
                 </div>
@@ -1426,6 +1493,8 @@ onUnmounted(() => {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-dpjp { font-size: 10px; color: #0e3a66; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-dpjp-ic { width: 10px; height: 10px; flex-shrink: 0; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 .qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }
 
@@ -1438,6 +1507,11 @@ onUnmounted(() => {
 .q-act-btn.call.recall:hover { background: #f59e0b; color: #fff; border-color: #f59e0b; }
 .q-act-btn.skip { color: var(--tu); border-color: var(--gb); }
 .q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.q-act-btn.bump { color: var(--ga); border-color: var(--gb); }
+.q-act-btn.bump:hover { background: var(--ga); color: #fff; border-color: var(--ga); }
+.q-act-btn.bump.bump-risk { color: #b45309; border-color: #fbbf24; background: #fef3c7; }
+.q-act-btn.bump.bump-risk:hover { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+.q-act-btn:disabled { opacity: .5; cursor: not-allowed; }
 .q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
 .q-act-btn.call:active:not(:disabled) { background: var(--gd); color: #fff; border-color: var(--gd); }
 .q-act-btn.call.recall:active:not(:disabled) { background: #b45309; color: #fff; border-color: #b45309; }
@@ -1454,6 +1528,7 @@ onUnmounted(() => {
 .pill-bpjs  { background: #dbeafe; color: #1e40af; }
 .pill-umum  { background: var(--gl); color: var(--ga); }
 .pill-done  { background: var(--sb); color: var(--st); }
+.pill-risk  { background: #fef3c7; color: #b45309; border: 1px solid #fbbf24; }
 
 /* ── Classification colors ───────────────────────────────────────────────── */
 .cls-baru    { background: #dbeafe; color: #1e40af; }
@@ -1475,6 +1550,8 @@ onUnmounted(() => {
 .pt-meta { font-size: 11px; color: var(--tu); margin-top: 3px; }
 .pt-address { font-size: 10.5px; color: var(--tu); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
 .pt-address svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+.pt-dpjp { font-size: 11px; color: #0e3a66; font-weight: 600; margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+.pt-dpjp svg { width: 11px; height: 11px; flex-shrink: 0; }
 .pt-badges { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
 .ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
 .ptg-b { background: #dbeafe; color: #1e40af; }

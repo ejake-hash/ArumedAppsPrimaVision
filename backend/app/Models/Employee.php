@@ -19,6 +19,12 @@ class Employee extends Model
     public const PPA_FISIOTERAPIS = 'FISIOTERAPIS';
     public const PPA_LAINNYA = 'LAINNYA';
 
+    // Jenis dokter (filter Jadwal Dokter & picker anestesi Bedah). NULL = non-dokter.
+    public const DT_SPESIALIS_MATA = 'SPESIALIS_MATA'; // poliklinik — PUNYA jadwal
+    public const DT_UMUM           = 'UMUM';           // umum / IGD — tanpa jadwal
+    public const DT_ANESTESI       = 'ANESTESI';       // anestesi — tanpa jadwal, dipilih di Bedah
+    public const DOCTOR_TYPES      = [self::DT_SPESIALIS_MATA, self::DT_UMUM, self::DT_ANESTESI];
+
     protected $keyType = 'string';
     public $incrementing = false;
 
@@ -27,6 +33,7 @@ class Employee extends Model
         'name',
         'nip',
         'profession',
+        'doctor_type',
         'sip',
         'str',
         'bpjs_dpjp_code',
@@ -101,5 +108,28 @@ class Employee extends Model
         }
 
         return self::PPA_LAINNYA;
+    }
+
+    /**
+     * Derive jenis dokter dari teks bebas profession (dipakai backfill migrasi & importer).
+     * anestesi -> ANESTESI; umum/igd -> UMUM; spesialis -> SPESIALIS_MATA; selain itu -> null.
+     */
+    public static function resolveDoctorType(?string $profession): ?string
+    {
+        $p = strtolower(trim((string) $profession));
+        if ($p === '') {
+            return null;
+        }
+        if (str_contains($p, 'anestesi')) {
+            return self::DT_ANESTESI;
+        }
+        if (str_contains($p, 'umum') || str_contains($p, 'igd')) {
+            return self::DT_UMUM;
+        }
+        if (str_contains($p, 'spesialis')) {
+            return self::DT_SPESIALIS_MATA;
+        }
+
+        return null;
     }
 }

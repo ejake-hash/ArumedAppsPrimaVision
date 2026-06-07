@@ -83,6 +83,8 @@ const pg          = ref('tagihan')
 const selQ        = ref(null)    // queue item dipilih
 const selInv      = ref(null)    // full BillingInvoice + items
 const selInvLoading = ref(false)
+// Split COB (2 penjamin) — diisi dari /kasir/invoice/{id}/coverages bila visit COB.
+const cobSplit    = ref(null)
 
 // Warning verifikasi asuransi (Sprint 4 modul Asuransi/TPA)
 const insuranceWarning = ref({ show: false })
@@ -132,6 +134,8 @@ async function pickP(q) {
   mixedAmounts.value = { 1: 0, 2: 0, 3: 0, 4: 0 }   // bersihkan agar nilai pasien lama tak bocor
   editTagihan.value  = false
   insuranceWarning.value = { show: false }
+  cobSplit.value     = null
+  emailTujuan.value  = q.visit?.patient?.email ?? ''   // prefill email pasien
   if (!q.visit?.id) return
 
   // Fetch warning asuransi (non-blocking, error → silent)
@@ -152,6 +156,12 @@ async function pickP(q) {
     }
     selInv.value = data.data
     syncGlobalDiscountFields()
+    // Split COB (non-blocking) — tampil bila visit dijamin 2 penjamin.
+    if (selInv.value?.id) {
+      kasirApi.invoiceCoverages(selInv.value.id)
+        .then(({ data: cd }) => { const s = cd.data ?? cd; cobSplit.value = s?.is_cob ? s : null })
+        .catch(() => { cobSplit.value = null })
+    }
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat tagihan')
   } finally {
@@ -253,76 +263,89 @@ function toggleMixed() {
 
 // ─── Edit tagihan ───────────────────────────────────────────────────────────
 const editTagihan = ref(false)
-const newItem = ref({ description: '', item_type: 'TINDAKAN', category: '', quantity: 1, unit_price: 0, discount_percent: 0, discount_amount: 0 })
-const itemTypes = ['REGISTRASI', 'TINDAKAN', 'OBAT', 'PENUNJANG', 'BHP', 'IOL', 'MEDICAL_EQUIPMENT', 'LAINNYA']
 
 // ─── Tarif tindakan per-penjamin (untuk Edit Tagihan) ────────────────────────
 // Saat menambah TINDAKAN, kasir pilih dari master tarif yang harganya sudah
 // di-resolve sesuai penjamin visit (bukan ketik manual). Harga ikut master.
-const tarifList = ref([])
-const tarifLoading = ref(false)
-
-async function fetchTarifTindakan() {
-  if (!selQ.value?.visit?.id) return
-  tarifLoading.value = true
-  try {
-    const { data } = await kasirApi.tarifTindakan(selQ.value.visit.id)
-    tarifList.value = Array.isArray(data.data) ? data.data : []
-  } catch (err) {
-    tarifList.value = []
-    toast('w', err.response?.data?.message ?? 'Gagal memuat tarif tindakan')
-  } finally {
-    tarifLoading.value = false
-  }
-}
-
-// Saat masuk mode edit (atau ganti pasien saat sedang edit), muat tarif sekali.
-watch(editTagihan, (on) => { if (on) fetchTarifTindakan() })
-
-// ── Search-driven picker tindakan (konsep sama Tab Tindakan DokterView) ──────
+// ── Search-driven picker buku tarif (semua kategori) ─────────────────────────
+// Pencarian dilakukan SERVER-SIDE lintas kategori (tindakan/obat/BHP/IOL/alkes)
+// supaya non-tindakan pun bisa ditambah dengan harga master per-penjamin —
+// bukan ketik harga manual. Filter kategori opsional via chip.
+const TARIF_TYPES = [
+  { key: 'ALL',               label: 'Semua' },
+  { key: 'TINDAKAN',          label: 'Tindakan' },
+  { key: 'OBAT',              label: 'Obat' },
+  { key: 'BHP',               label: 'BHP' },
+  { key: 'IOL',               label: 'IOL' },
+  { key: 'MEDICAL_EQUIPMENT', label: 'Alat Medis' },
+]
 const tindakanSearch      = ref('')
 const tindakanSearchFocus = ref(false)
 const tindakanSearchRef   = ref(null)
-const addingTindakanIds   = ref([])   // guard double-add saat POST berjalan
+const tarifTypeFilter     = ref('ALL')
+const tarifResults        = ref([])
+const tarifLoading        = ref(false)
+const addingTindakanIds   = ref([])   // guard double-add saat POST berjalan (key = source:id)
+const tarifSearchDebounce = ref(null)
+let   tarifSearchSeq      = 0          // anti race: abaikan respons usang
 
 function fmtRp(v) { return 'Rp ' + Number(v ?? 0).toLocaleString('id-ID') }
 
-// Hasil pencarian: tampil hanya saat ada query. Filter by nama / kode.
-const filteredTarif = computed(() => {
-  const s = tindakanSearch.value.trim().toLowerCase()
-  if (!s) return []
-  return tarifList.value
-    .filter((t) => (t.name ?? '').toLowerCase().includes(s) || (t.code ?? '').toLowerCase().includes(s))
-    .slice(0, 50)
-})
+function rowKey(t) { return `${t.source ?? t.item_type}:${t.id}` }
 
-// Tindakan yang sudah ada di invoice (untuk tanda ✓ "sudah ditambahkan").
+// Debounced server-side search; re-jalan saat query / filter kategori berubah.
+function runTarifSearch() {
+  if (tarifSearchDebounce.value) clearTimeout(tarifSearchDebounce.value)
+  const q = tindakanSearch.value.trim()
+  if (!q || !selQ.value?.visit?.id) { tarifResults.value = []; tarifLoading.value = false; return }
+  tarifLoading.value = true
+  const seq = ++tarifSearchSeq
+  tarifSearchDebounce.value = setTimeout(async () => {
+    try {
+      const { data } = await kasirApi.tarifBuku(selQ.value.visit.id, q, tarifTypeFilter.value)
+      if (seq !== tarifSearchSeq) return            // respons usang → buang
+      tarifResults.value = Array.isArray(data.data) ? data.data : []
+    } catch (err) {
+      if (seq !== tarifSearchSeq) return
+      tarifResults.value = []
+      toast('w', err.response?.data?.message ?? 'Gagal mencari buku tarif')
+    } finally {
+      if (seq === tarifSearchSeq) tarifLoading.value = false
+    }
+  }, 350)
+}
+watch([tindakanSearch, tarifTypeFilter], runTarifSearch)
+// Keluar mode edit → bersihkan pencarian agar tak menyisakan hasil basi.
+watch(editTagihan, (on) => { if (!on) { tindakanSearch.value = ''; tarifResults.value = [] } })
+
+// Item buku tarif yang sudah ada di invoice (tanda ✓) — cocokkan via reference_id.
 function tarifInInvoice(t) {
   return (selInv.value?.items ?? []).some(
-    (it) => it.item_type === 'TINDAKAN' && it.description === t.name,
+    (it) => it.reference_id && it.reference_id === t.id,
   )
 }
 
-// Klik hasil → langsung POST item ke invoice dengan harga master per-penjamin.
+// Klik hasil → POST item ke invoice dengan item_type & harga master per-penjamin.
 async function addTindakanFromTarif(t) {
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
-  if (addingTindakanIds.value.includes(t.id)) return
-  addingTindakanIds.value.push(t.id)
+  const key = rowKey(t)
+  if (addingTindakanIds.value.includes(key)) return
+  addingTindakanIds.value.push(key)
   try {
     await kasirApi.storeItem(selInv.value.id, {
-      item_type:   'TINDAKAN',
-      category:    t.category || 'Tindakan',
-      description: t.name,
-      quantity:    1,
-      unit_price:  Number(t.price) || 0,
+      item_type:    t.item_type || 'TINDAKAN',
+      category:     t.category || 'Lainnya',
+      description:  t.name,
+      quantity:     1,
+      unit_price:   Number(t.price) || 0,
       reference_id: t.id,
     })
     await refreshInvoice()
     toast('s', `${t.name} ditambahkan`)
   } catch (err) {
-    toast('w', err.response?.data?.message ?? 'Gagal menambahkan tindakan')
+    toast('w', err.response?.data?.message ?? 'Gagal menambahkan item')
   } finally {
-    addingTindakanIds.value = addingTindakanIds.value.filter((id) => id !== t.id)
+    addingTindakanIds.value = addingTindakanIds.value.filter((k) => k !== key)
   }
 }
 
@@ -350,33 +373,6 @@ async function removeItem(item) {
     toast('s', 'Item dihapus')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menghapus item')
-  } finally {
-    itemMutating.value = false
-  }
-}
-
-async function addItem() {
-  if (!selInv.value?.id || itemMutating.value) return
-  if (!newItem.value.description.trim()) { toast('w', 'Keterangan item wajib diisi'); return }
-  itemMutating.value = true
-  try {
-    const qty   = Number(newItem.value.quantity) || 1
-    const price = Number(newItem.value.unit_price) || 0
-    const payload = {
-      item_type:        newItem.value.item_type,
-      category:         newItem.value.category || null,
-      description:      newItem.value.description,
-      quantity:         qty,
-      unit_price:       price,
-      discount_amount:  Math.max(0, Math.min(Number(newItem.value.discount_amount) || 0, price * qty)),
-      discount_percent: Math.max(0, Math.min(100, Number(newItem.value.discount_percent) || 0)),
-    }
-    await kasirApi.storeItem(selInv.value.id, payload)
-    await refreshInvoice()
-    newItem.value = { description: '', item_type: 'TINDAKAN', category: '', quantity: 1, unit_price: 0, discount_percent: 0, discount_amount: 0 }
-    toast('s', 'Item ditambahkan')
-  } catch (err) {
-    toast('w', err.response?.data?.message ?? 'Gagal menambahkan item')
   } finally {
     itemMutating.value = false
   }
@@ -541,6 +537,36 @@ async function prosesKonfirmasiBpjs() {
 // ─── Cetak Rincian Biaya (A4) ────────────────────────────────────────────────
 const printData = ref(null)
 const printing  = ref(false)
+
+// ─── Kirim kwitansi ke email pasien (alternatif cetak fisik) ─────────────────
+const emailTujuan = ref('')      // prefill dari patient.email saat pilih pasien
+const emailing    = ref(false)
+
+async function kirimEmail() {
+  if (emailing.value) return
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  const email = (emailTujuan.value || '').trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('w', 'Format email tidak valid'); return }
+  emailing.value = true
+  try {
+    const { data } = await kasirApi.emailInvoice(selInv.value.id, email)
+    const res = data.data ?? {}
+    // Catat status kirim di invoice lokal agar badge langsung tampil.
+    if (selInv.value) {
+      selInv.value.receipt_email        = res.email ?? email
+      selInv.value.receipt_email_status = res.status ?? 'QUEUED'
+      selInv.value.receipt_email_at     = res.at ?? null
+    }
+    // Sinkronkan email ke pasien lokal agar prefill konsisten kunjungan ini.
+    if (selQ.value?.visit?.patient) selQ.value.visit.patient.email = email
+    toast(res.status === 'SENT' ? 's' : 'i',
+      res.status === 'SENT' ? `Kwitansi terkirim ke ${email}` : `Kwitansi diantrekan untuk dikirim ke ${email}`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengirim kwitansi ke email')
+  } finally {
+    emailing.value = false
+  }
+}
 
 // ─── Setting cetak (toggle elemen kwitansi) ──────────────────────────────────
 const showPrintSettings = ref(false)   // popover terbuka/tidak
@@ -768,8 +794,6 @@ const groupedItems = computed(() => groupItemsByCategory(selInv.value?.items ?? 
 const groupedPrintItems = computed(() =>
   groupItemsByCategory(printData.value?.items ?? [], printData.value?.categories ?? billingCategories.value),
 )
-// Daftar nama kategori untuk datalist autocomplete di form add-item.
-const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 </script>
 
 <template>
@@ -1084,19 +1108,28 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                         <input
                           v-model="tindakanSearch"
                           class="tindakan-search-input"
-                          placeholder="Ketik untuk cari & tambah tindakan (nama / kode)…"
+                          placeholder="Cari & tambah dari Buku Tarif: tindakan / obat / BHP / IOL / alat medis (nama / kode)…"
                           @focus="tindakanSearchFocus = true"
                         />
                         <button v-if="tindakanSearch" class="tindakan-search-clear" @click="tindakanSearch = ''" title="Hapus pencarian">
                           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button>
                       </div>
+                      <!-- Filter kategori buku tarif -->
+                      <div class="tarif-type-chips">
+                        <button
+                          v-for="tt in TARIF_TYPES" :key="tt.key"
+                          :class="['tarif-type-chip', tarifTypeFilter === tt.key ? 'a' : '']"
+                          @click="tarifTypeFilter = tt.key"
+                        >{{ tt.label }}</button>
+                      </div>
                       <div v-if="tindakanSearchFocus && tindakanSearch.trim()" class="tindakan-search-drop">
                         <div
-                          v-for="t in filteredTarif" :key="t.id"
-                          :class="['tarif-list-item', tarifInInvoice(t) ? 'in-list' : '', addingTindakanIds.includes(t.id) ? 'is-adding' : '']"
+                          v-for="t in tarifResults" :key="rowKey(t)"
+                          :class="['tarif-list-item', tarifInInvoice(t) ? 'in-list' : '', addingTindakanIds.includes(rowKey(t)) ? 'is-adding' : '']"
                           @mousedown.prevent="addTindakanFromTarif(t)"
                         >
+                          <span :class="['tarif-type-badge', `tt-${(t.item_type || 'lainnya').toLowerCase()}`]">{{ t.item_type }}</span>
                           <span v-if="t.code" class="tarif-kode">{{ t.code }}</span>
                           <span v-if="t.category" class="tarif-kat td">{{ t.category }}</span>
                           <span class="tarif-list-name">{{ t.name }}</span>
@@ -1104,11 +1137,10 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                           <svg v-if="tarifInInvoice(t)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                           <svg v-else class="tarif-list-icon add" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </div>
-                        <div v-if="!filteredTarif.length" class="tarif-empty">
-                          {{ tarifList.length ? 'Tidak ditemukan' : (tarifLoading ? 'Memuat tarif…' : 'Belum ada master tarif tindakan') }}
-                        </div>
-                        <div v-else-if="filteredTarif.length >= 50" class="tindakan-search-hint">
-                          Menampilkan 50 teratas — sempitkan pencarian untuk hasil lebih spesifik
+                        <div v-if="tarifLoading" class="tarif-empty">Mencari…</div>
+                        <div v-else-if="!tarifResults.length" class="tarif-empty">Tidak ditemukan di buku tarif</div>
+                        <div v-else-if="tarifResults.length >= 40" class="tindakan-search-hint">
+                          Menampilkan 40 teratas — sempitkan pencarian / pilih kategori
                         </div>
                       </div>
                     </div>
@@ -1184,31 +1216,6 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                       </tr>
                     </tbody>
                     <tbody>
-                      <tr v-if="editTagihan" class="add-item-row">
-                        <td>
-                          <div class="add-item-label">Item manual lain</div>
-                          <input v-model="newItem.description" class="fi tbl-fi" placeholder="Keterangan item…" />
-                        </td>
-                        <td>
-                          <select v-model="newItem.item_type" class="fi tbl-fi tbl-select" style="margin-bottom:3px">
-                            <option v-for="t in itemTypes" :key="t">{{ t }}</option>
-                          </select>
-                          <input v-model="newItem.category" class="fi tbl-fi" placeholder="Kategori (autocomplete)" list="kasir-cat-list" />
-                          <datalist id="kasir-cat-list">
-                            <option v-for="name in categoryNames" :key="name" :value="name" />
-                          </datalist>
-                        </td>
-                        <td class="num"><input v-model.number="newItem.quantity" type="number" min="1" class="fi tbl-fi tbl-num" /></td>
-                        <td class="num"><input v-model.number="newItem.unit_price" type="number" min="0" class="fi tbl-fi tbl-num" /></td>
-                        <td class="num"><input v-model.number="newItem.discount_percent" type="number" min="0" max="100" class="fi tbl-fi tbl-num" /></td>
-                        <td class="num"><input v-model.number="newItem.discount_amount" type="number" min="0" class="fi tbl-fi tbl-num" /></td>
-                        <td class="num">Rp {{ Math.max(0, ((newItem.quantity||0) * (newItem.unit_price||0)) - (Number(newItem.discount_amount)||0)).toLocaleString('id-ID') }}</td>
-                        <td>
-                          <button class="add-item-btn" @click="addItem" :disabled="itemMutating">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                          </button>
-                        </td>
-                      </tr>
                       <tr v-if="!(selInv.items ?? []).length"><td :colspan="editTagihan ? 8 : 5" class="empty-row">Belum ada item</td></tr>
                     </tbody>
                   </table>
@@ -1231,7 +1238,14 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 
                       <div v-if="taxAmount" class="row"><span>Pajak</span><span class="num">Rp {{ taxAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row"><span>Total Tagihan</span><span class="num">Rp {{ totalTagihan.toLocaleString('id-ID') }}</span></div>
-                      <div v-if="coveredAmount" class="row green"><span>Ditanggung Asuransi</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
+                      <!-- COB: rincian tanggungan per penjamin (BPJS INA-CBG + selisih penjamin-2) -->
+                      <template v-if="cobSplit && cobSplit.is_cob">
+                        <div v-for="p in cobSplit.penjamin" :key="p.sequence" class="row green">
+                          <span>Ditanggung Penjamin {{ p.sequence }} ({{ p.guarantor_type }})</span>
+                          <span class="num">−Rp {{ Number(p.covered_amount).toLocaleString('id-ID') }}</span>
+                        </div>
+                      </template>
+                      <div v-else-if="coveredAmount" class="row green"><span>Ditanggung Asuransi</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
                       <div v-if="paidAmount" class="row blue"><span>Sudah Dibayar</span><span class="num">−Rp {{ paidAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row grand"><span>{{ coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar' }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
                     </div>
@@ -1340,6 +1354,41 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
                       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                       {{ isBpjsSelected ? 'Cetak Rincian' : 'Cetak Kwitansi' }} {{ selInv.invoice_number }}
                     </button>
+
+                    <!-- Kirim kwitansi ke email (alternatif cetak fisik). Disembunyikan
+                         untuk BPJS — ditagih via klaim, bukan ke pasien. -->
+                    <div v-if="!isBpjsSelected" class="email-send">
+                      <div class="email-send-lbl">
+                        <svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                        Kirim kwitansi ke email
+                      </div>
+                      <div class="email-send-row">
+                        <input v-model="emailTujuan" type="email" class="fi email-send-input" placeholder="nama@email.com" @keydown.enter="kirimEmail" />
+                        <button class="btn btn-primary btn-sm email-send-btn" :disabled="emailing || !emailTujuan.trim()" @click="kirimEmail">
+                          <div v-if="emailing" class="sp"></div>
+                          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                          {{ emailing ? 'Mengirim…' : (selInv.receipt_email_status === 'FAILED' ? 'Kirim Ulang' : 'Kirim') }}
+                        </button>
+                      </div>
+
+                      <!-- Status pengiriman per-invoice (jujur: ANTRE / TERKIRIM / GAGAL) -->
+                      <div v-if="selInv.receipt_email_status" :class="['email-status', `es-${selInv.receipt_email_status.toLowerCase()}`]">
+                        <template v-if="selInv.receipt_email_status === 'SENT'">
+                          <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                          Terkirim ke {{ selInv.receipt_email }}<span v-if="selInv.receipt_email_at"> · {{ formatTime(selInv.receipt_email_at) }}</span>
+                        </template>
+                        <template v-else-if="selInv.receipt_email_status === 'QUEUED'">
+                          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+                          Antre dikirim ke {{ selInv.receipt_email }} — menunggu proses pengiriman
+                        </template>
+                        <template v-else>
+                          <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                          Gagal kirim ke {{ selInv.receipt_email }}<span v-if="selInv.receipt_email_error"> — {{ selInv.receipt_email_error }}</span>. Klik “Kirim Ulang”.
+                        </template>
+                      </div>
+
+                      <div class="email-send-hint">PDF kwitansi dikirim ke email pasien. Email tersimpan otomatis ke data pasien.</div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1446,7 +1495,9 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
       <div v-if="printData" class="rincian-print">
         <div v-if="printData.clinic?.watermark_type" class="rp-watermark">{{ printData.clinic.watermark_type }}</div>
 
-        <header class="rp-kop">
+        <!-- Kop kanonik (sumber tunggal) — identik dgn pratinjau Profil Institusi -->
+        <div v-if="printData.clinic?.letterhead_html" class="rp-kop-canon" v-html="printData.clinic.letterhead_html"></div>
+        <header v-else class="rp-kop">
           <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
           <div class="rp-kop-text">
             <div class="rp-clinic">{{ printData.clinic?.name ?? 'Rumah Sakit' }}</div>
@@ -1692,6 +1743,20 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .layout { display: grid; grid-template-columns: 1fr 340px; gap: 0.85rem; }
 .col-right { display: flex; flex-direction: column; gap: 0.7rem; }
 
+/* Kirim kwitansi ke email */
+.email-send { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--gb); }
+.email-send-lbl { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--tm); margin-bottom: 6px; }
+.email-send-lbl svg { width: 13px; height: 13px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.email-send-row { display: flex; gap: 6px; }
+.email-send-input { flex: 1; min-width: 0; }
+.email-send-btn { flex-shrink: 0; white-space: nowrap; }
+.email-send-hint { font-size: 9.5px; color: var(--th); margin-top: 5px; line-height: 1.4; }
+.email-status { display: flex; align-items: flex-start; gap: 5px; font-size: 10.5px; font-weight: 500; margin-top: 7px; padding: 5px 8px; border-radius: 6px; line-height: 1.4; }
+.email-status svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.email-status.es-sent { background: var(--sb); color: var(--st); }
+.email-status.es-queued { background: var(--ib); color: var(--it); }
+.email-status.es-failed { background: var(--eb); color: var(--et); }
+
 .note-warning { display: flex; gap: 8px; align-items: flex-start; padding: 9px 13px; background: var(--wb); border: 1px solid var(--wbd); border-radius: 9px; color: var(--wt); font-size: 11.5px; margin-bottom: 0.7rem; }
 .note-warning svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; margin-top: 1px; }
 
@@ -1777,11 +1842,6 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }
 .del-btn:disabled { opacity: .35; cursor: not-allowed; }
 .del-btn svg { width: 12px; height: 12px; }
-.add-item-row td { background: var(--bs); border-top: 1px dashed var(--ga) !important; vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
-.add-item-label { font-size: 9px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
-.add-item-btn { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--ga); background: var(--ga); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .12s; }
-.add-item-btn:hover { background: var(--gd); }
-.add-item-btn svg { width: 13px; height: 13px; }
 
 /* ── Tambah tindakan: search-driven picker (konsep sama DokterView Tab 3) ──── */
 .add-tindakan-bar { padding: 0.75rem 1rem 0.25rem; }
@@ -1834,6 +1894,26 @@ const categoryNames = computed(() => billingCategories.value.map((c) => c.name))
 .tarif-kat { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.03em; white-space: nowrap; }
 .tarif-kat.td { background: var(--gl); color: var(--td); border: 1px solid rgba(31,125,74,0.2); }
 .tarif-empty { text-align: center; padding: 1rem; font-size: 11px; color: var(--th); }
+
+/* Filter kategori buku tarif (chips) */
+.tarif-type-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.tarif-type-chip {
+  font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: 20px;
+  border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; transition: all .12s;
+}
+.tarif-type-chip:hover { border-color: var(--ga); color: var(--td); }
+.tarif-type-chip.a { background: var(--ga); border-color: var(--ga); color: #fff; }
+
+/* Badge tipe item di hasil pencarian */
+.tarif-type-badge {
+  font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+  letter-spacing: 0.03em; white-space: nowrap; flex-shrink: 0; background: var(--bs); color: var(--tm);
+}
+.tarif-type-badge.tt-tindakan { background: var(--gl); color: var(--ga); }
+.tarif-type-badge.tt-obat { background: var(--ib); color: var(--it); }
+.tarif-type-badge.tt-bhp { background: var(--wb); color: var(--wt); }
+.tarif-type-badge.tt-iol { background: var(--pb); color: var(--pt); }
+.tarif-type-badge.tt-medical_equipment { background: var(--sb); color: var(--st); }
 
 .tbl-foot { padding: 0.75rem 1.1rem; border-top: 2px solid var(--gb); background: var(--bi); }
 .fg { display: flex; flex-direction: column; gap: 4px; }

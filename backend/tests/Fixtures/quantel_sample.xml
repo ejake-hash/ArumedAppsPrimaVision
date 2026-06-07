@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-16"?>
+<C_Exam xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:type="C_ExamBioIol">
+  <Eyechanged>false</Eyechanged>
+  <Saved>true</Saved>
+  <Version />
+  <LastEditDate>2020-06-30T11:51:51.7382382+02:00</LastEditDate>
+  <ExamComment />
+  <ProbeName />
+  <ExamDate>2020-06-30T11:51:41.2806401+02:00</ExamDate>
+  <ExamKey>7a41bd83-3bd7-4c19-b45a-bbe91be93801</ExamKey>
+  <ExamKeyOld>00000000-0000-0000-0000-000000000000</ExamKeyOld>
+  <Patient>
+    <PatientKey>00196c32-c515-460f-b6e4-fabf53f1a42a</PatientKey>
+    <PatientGender />
+    <PatientGenderStr />
+    <PatientLastName>Dolly</PatientLastName>
+    <PatientFirstName />
+    <PatientIdNumber>018307</PatientIdNumber>
+    <PatientAddress />
+    <PatientZip />
+    <PatientCity />
+    <PatientPhone />
+    <PatientBirthDate>1949-06-12T00:00:00</PatientBirthDate>
+  </Patient>
+  <Physician>
+    <PhysicianKey>79555e90-9126-4250-b514-3df1b4900745</PhysicianKey>
+    <PhysicianMail />
+    <PhysicianClinic />
+    <PhysicianLastName>Rumondang</PhysicianLastName>
+    <PhysicianFirstName />
+  </Physician>
+  <Operator>
+    <IsEdit>true</IsEdit>
+    <OperatorKey>11111111-1111-1111-1111-111111111111</OperatorKey>
+    <OperatorName>&lt;NONE&gt;</OperatorName>
+    <OperatorFirstName />
+  </Operator>
+  <ExamBio>
+    <ProbeName>Bio</ProbeName>
+    <ExamDate>2020-06-30T11:45:56.7739354+02:00</ExamDate>
+    <ExamBioOd>
+      <ModeAcqui>AutoSave</ModeAcqui>
+      <TechniqueAcqui>Immersion</TechniqueAcqui>
+      <MesuresList>
+        <S_Mesure>
+          <MesureName>Avg</MesureName>
+          <MesureAc>2.83</MesureAc>
+          <MesureL>5.09</MesureL>
+          <MesureV>15.03</MesureV>
+          <MesureTl>22.95</MesureTl>
+          <Selected>true</Selected>
+        </S_Mesure>
+      </MesuresList>
+      <Speed>
+        <LDesign>Phakic</LDesign>
+        <VDesign>Normal Eye</VDesign>
+        <SpeedAc>1532</SpeedAc>
+        <SpeedL>1641</SpeedL>
+        <SpeedV>1532</SpeedV>
+      </Speed>
+      <Image xsi:type="C_ImageBio">
+        <ImageJpegFileName>a2b69256-c4cc-4cf7-a4f5-68d6ab3f6b45.JPG</ImageJpegFileName>
+      </Image>
+    </ExamBioOd>
+  </ExamBio>
+  <ExamIol>
+    <ExamDate>2020-06-30T11:51:41.2806401+02:00</ExamDate>
+    <ExamIolOd>
+      <LenghtDesignation>Avg</LenghtDesignation>
+      <Kerato>
+        <LengthAc>2.83</LengthAc>
+        <Method>IolMethodNone</Method>
+        <KCor>43.625</KCor>
+        <LenghtLt>22.95</LenghtLt>
+        <KPost>43.625</KPost>
+        <K1Post>43.25</K1Post>
+        <K2Post>44</K2Post>
+      </Kerato>
+      <LengthAc>2.83</LengthAc>
+      <LenghtLt>22.95</LenghtLt>
+      <LenghtL>5.09</LenghtL>
+      <LenghtV>15.03</LenghtV>
+      <ExamIolCalOeilTab>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 118.000</StringCste>
+          <IolAme>21.626815496261163</IolAme>
+          <Emme>21.626815496261163</Emme>
+          <DesiredAme>0</DesiredAme>
+          <TabResult>
+            <S_IolResult>
+              <Ame>19.5</Ame>
+              <Ref>1.499908716452081</Ref>
+              <MedianLine>false</MedianLine>
+            </S_IolResult>
+            <S_IolResult>
+              <Ame>21.5</Ame>
+              <Ref>0.091512618321958714</Ref>
+              <MedianLine>true</MedianLine>
+            </S_IolResult>
+            <S_IolResult>
+              <Ame>22</Ame>
+              <Ref>-0.27087060153116138</Ref>
+              <MedianLine>false</MedianLine>
+            </S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant>
+            <ImplantKey>9afc093c-1dbf-4bb8-ab34-d2a62cc64f6f</ImplantKey>
+            <ImplantDesignation>Alcon</ImplantDesignation>
+            <A>118</A>
+            <TypeImplant>Post</TypeImplant>
+          </Implant>
+        </C_ExamIolCalcOeil>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 119.100</StringCste>
+          <IolAme>23.062173858841795</IolAme>
+          <Emme>23.062173858841795</Emme>
+          <TabResult>
+            <S_IolResult>
+              <Ame>23</Ame>
+              <Ref>0.042591808830157091</Ref>
+              <MedianLine>true</MedianLine>
+            </S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant>
+            <ImplantKey>6a886f26-aec8-48bc-9dbd-b9b281eae11e</ImplantKey>
+            <ImplantDesignation>IOL  119.10 A</ImplantDesignation>
+            <A>119.1</A>
+            <TypeImplant>Ant</TypeImplant>
+          </Implant>
+        </C_ExamIolCalcOeil>
+      </ExamIolCalOeilTab>
+    </ExamIolOd>
+  </ExamIol>
+</C_Exam>

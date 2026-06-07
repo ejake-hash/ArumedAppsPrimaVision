@@ -465,6 +465,9 @@ class BedahController extends Controller
             'items.*.route'          => 'nullable|string|max:100',
             'items.*.duration_days'  => 'nullable|integer|min:1',
             'items.*.notes'          => 'nullable|string|max:255',
+            // Penanda obat dari "paket obat" → kandidat terserap ke harga paket
+            // (is_bedah di-set bersyarat di service bila pasien berpaket).
+            'items.*.bundled'        => 'nullable|boolean',
             'pharmacy_note'          => 'nullable|string|max:500',
         ]);
 
@@ -484,6 +487,70 @@ class BedahController extends Controller
         }
 
         return $this->ok($resep, 'Resep pasca-bedah dikirim ke Farmasi', 201);
+    }
+
+    // =========================================================================
+    // PAKET OBAT PASCA-BEDAH (template resep rutin)
+    // =========================================================================
+
+    /** GET /bedah/paket-obat */
+    public function indexPaketObat(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->listPrescriptionTemplates($request->query('search')));
+    }
+
+    /** POST /bedah/paket-obat */
+    public function storePaketObat(Request $request): JsonResponse
+    {
+        $validated = $this->validatePaketObat($request);
+
+        return $this->ok($this->service->storePrescriptionTemplate($validated), 'Paket obat dibuat', 201);
+    }
+
+    /** PUT /bedah/paket-obat/{id} */
+    public function updatePaketObat(Request $request, string $id): JsonResponse
+    {
+        $validated = $this->validatePaketObat($request, true);
+
+        try {
+            $tpl = $this->service->updatePrescriptionTemplate($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($tpl, 'Paket obat diperbarui');
+    }
+
+    /** DELETE /bedah/paket-obat/{id} */
+    public function destroyPaketObat(string $id): JsonResponse
+    {
+        try {
+            $this->service->deletePrescriptionTemplate($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Paket obat dihapus');
+    }
+
+    /** Validasi payload paket obat (store/update). */
+    private function validatePaketObat(Request $request, bool $partial = false): array
+    {
+        $req = $partial ? 'sometimes' : 'required';
+
+        return $request->validate([
+            'name'                  => "{$req}|string|max:255",
+            'category'              => 'nullable|string|max:100',
+            'description'           => 'nullable|string|max:1000',
+            'is_active'             => 'nullable|boolean',
+            'items'                 => "{$req}|array|min:1",
+            'items.*.medication_id' => 'required|uuid|exists:medications,id',
+            'items.*.quantity'      => 'nullable|integer|min:1',
+            'items.*.dose'          => 'nullable|string|max:100',
+            'items.*.frequency'     => 'nullable|string|max:100',
+            'items.*.route'         => 'nullable|string|max:100',
+            'items.*.duration_days' => 'nullable|integer|min:1',
+        ]);
     }
 
     // =========================================================================

@@ -74,13 +74,40 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     return data.data
   }
 
+  // Lewati Refraksi (pasien tidak perlu refraksi) — antrean tetap jalan ke Dokter.
+  const skipping = ref(false)
+  async function skipRefraksi(queueId) {
+    skipping.value = true
+    try {
+      const { data } = await refraksiApi.skipRefraksi(queueId)
+      await fetchAntrian()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal melewati refraksi')
+    } finally {
+      skipping.value = false
+    }
+  }
+
   // ─── Patient Selection ──────────────────────────────────────────────────────
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
     doctorTicket.value  = null   // reset tiket dari pasien sebelumnya
 
     if (queueItem.status === 'CALLED') {
-      try { await mulaiAntrian(queueItem.id) } catch { /* ignore */ }
+      try {
+        // mulaiAntrian hanya menyetel ulang baris LIST (_updateQueueItem) — sinkronkan
+        // juga selectedQueue supaya status pasien terpilih tidak basi ('CALLED' →
+        // 'IN_PROGRESS'), agar tombol aksi/badge konsisten dengan backend.
+        const updated = await mulaiAntrian(queueItem.id)
+        if (updated && selectedQueue.value?.id === queueItem.id) {
+          selectedQueue.value = { ...selectedQueue.value, ...updated }
+        }
+      } catch {
+        // Auto-mulai gagal (status sudah berubah di server / dipanggil user lain) →
+        // resync papan supaya status lokal tidak menggantung di 'CALLED'.
+        await fetchAntrian().catch(() => {})
+      }
     }
 
     pemeriksaanLoading.value = true
@@ -203,7 +230,12 @@ export const useRefraksiStore = defineStore('refraksi', () => {
           // refraksi store hanya peduli rows station REFRAKSIONIS
           if (queue.station !== 'REFRAKSIONIS') return
           if (action === 'added') {
-            antrian.value.push(queue)
+            // Payload broadcast TIPIS (tanpa relasi visit lengkap: id/nurse_assessment/
+            // doctor_schedule). Kalau di-push langsung, baris baru tak punya visit.id →
+            // pasien tak bisa dipilih/diproses (selectedVisitId null → save 422) & data
+            // triase/DPJP tak tampil. Re-fetch daftar penuh agar baris lengkap.
+            // De-dup: WS bisa pancar 'added' >1x (retry/race) → fetch hanya bila baru.
+            if (! antrian.value.some((q) => q.id === queue.id)) fetchAntrian()
           } else {
             _updateQueueItem(queue)
           }
@@ -240,10 +272,25 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   function _updateQueueItem(updatedQueue) {
     const idx = antrian.value.findIndex((q) => q.id === updatedQueue.id)
     if (idx !== -1) {
-      antrian.value[idx] = { ...antrian.value[idx], ...updatedQueue }
+      antrian.value[idx] = _mergeQueueItem(antrian.value[idx], updatedQueue)
     }
     if (selectedQueue.value?.id === updatedQueue.id) {
-      selectedQueue.value = { ...selectedQueue.value, ...updatedQueue }
+      selectedQueue.value = _mergeQueueItem(selectedQueue.value, updatedQueue)
+    }
+  }
+
+  // Merge baris antrean TANPA menimpa relasi bersarang dengan versi tipis.
+  // Respons panggil/mulai (QueueService::panggil/mulai) hanya memuat visit.patient,
+  // jadi nurse_assessment/doctor_schedule/guarantor_type ikut HILANG kalau `visit`
+  // ditimpa mentah → badge ⚠Alergi & Triase✓, label BPJS, dan baris DPJP lenyap dari
+  // kartu sampai fetch berikutnya. Gabungkan `visit` & `patient` secara dangkal per-objek.
+  function _mergeQueueItem(existing, incoming) {
+    if (!existing) return incoming
+    return {
+      ...existing,
+      ...incoming,
+      visit:   incoming.visit   ? { ...existing.visit, ...incoming.visit }     : existing.visit,
+      patient: incoming.patient ? { ...existing.patient, ...incoming.patient } : existing.patient,
     }
   }
 
@@ -252,14 +299,14 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     antrian, queueLoading, queueError,
     selectedQueue, pemeriksaan, prescription, pemeriksaanLoading,
     doctorTicket,
-    saving, finalizing,
+    saving, finalizing, skipping,
 
     // getters
     belumDipanggilCount, selesaiCount, totalCount,
     selectedVisitId, selectedPatientId, isFinalized,
 
     // actions
-    fetchAntrian, panggilAntrian, mulaiAntrian, lewatiAntrian,
+    fetchAntrian, panggilAntrian, mulaiAntrian, lewatiAntrian, skipRefraksi,
     pickPatient, clearSelected,
     savePemeriksaan, saveResep, finalizePemeriksaan,
 

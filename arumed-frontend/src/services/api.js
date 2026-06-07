@@ -28,7 +28,16 @@ api.interceptors.request.use(
 // ─── Response interceptor ───────────────────────────────────────────────────
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    // Request dgn responseType:'blob' (export/template CSV) → body error pun Blob, bukan JSON.
+    // Urai dulu jadi JSON agar error.response.data.message terbaca handler & pesan tampil.
+    const data = error.response?.data
+    if (data instanceof Blob && /json/i.test(data.type || '')) {
+      try {
+        error.response.data = JSON.parse(await data.text())
+      } catch { /* biarkan apa adanya bila bukan JSON valid */ }
+    }
+
     const status  = error.response?.status
     const message = error.response?.data?.message ?? 'Terjadi kesalahan.'
 
@@ -115,6 +124,8 @@ export const perawatApi = {
   mulai:           (id)               => api.put(`/perawat/antrian/${id}/mulai`),
   selesai:         (id)               => api.put(`/perawat/antrian/${id}/selesai`),
   lewati:          (id)               => api.put(`/perawat/antrian/${id}/lewati`),
+  dahulukan:       (id)               => api.put(`/perawat/antrian/${id}/dahulukan`),
+  skipTriase:      (id)               => api.put(`/perawat/antrian/${id}/skip`),
   kirimKeBedah:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-bedah`),
   kirimKeRanap:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-ranap`),
 
@@ -155,6 +166,8 @@ export const dokterApi = {
   riwayatKunjungan: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/kunjungan`),
   // Riwayat hasil penunjang lintas-kunjungan (RME aggregator) untuk kartu sidebar.
   riwayatPenunjang: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/penunjang`),
+  // CPPT lintas-episode (RAJAL/IGD/RANAP + SOAP poli) — 1 timeline kronologis.
+  riwayatCppt:      (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/cppt`),
 
   tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
   daftarObat:       (search)              => api.get('/dokter/obat', { params: { search } }),
@@ -190,9 +203,12 @@ export const dokterApi = {
 
   indexOrderPenunjang:  (visitId)         => api.get(`/dokter/kunjungan/${visitId}/order-penunjang`),
   indexHasilPenunjang: (visitId)          => api.get(`/dokter/kunjungan/${visitId}/hasil-penunjang`),
-  penunjangBilling:    (visitId)          => api.get(`/dokter/kunjungan/${visitId}/penunjang-billing`),
   storeOrderPenunjang: (data)             => api.post('/dokter/order-penunjang', data),
   cancelOrderPenunjang: (id)              => api.delete(`/dokter/order-penunjang/${id}`),
+
+  // Keputusan IOL dari biometri (Quantel): biometri+tabel IOL+master+keputusan, lalu simpan.
+  biometriIol:      (visitId)             => api.get(`/dokter/kunjungan/${visitId}/biometri-iol`),
+  decideIol:        (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/keputusan-iol`, data),
 }
 
 /** Refraksionis */
@@ -202,6 +218,7 @@ export const refraksiApi = {
   panggil:            (id)               => api.put(`/refraksi/antrian/${id}/panggil`),
   mulai:              (id)               => api.put(`/refraksi/antrian/${id}/mulai`),
   lewati:             (id)               => api.put(`/refraksi/antrian/${id}/lewati`),
+  skipRefraksi:       (id)               => api.put(`/refraksi/antrian/${id}/skip`),
   selesai:            (id)               => api.put(`/refraksi/antrian/${id}/selesai`),
 
   showPemeriksaan:    (visitId)          => api.get(`/refraksi/pemeriksaan/${visitId}`),
@@ -230,7 +247,10 @@ export const dashboardApi = {
   bpjsExpired:     ()       => api.get('/dashboard/bpjs-expired'),
   satusehatStatus: ()       => api.get('/dashboard/satusehat-status'),
   kunjunganChart:  ()       => api.get('/dashboard/kunjungan-chart'),
+  pendapatanChart: ()       => api.get('/dashboard/pendapatan-chart'),
   diagnosisStats:  ()       => api.get('/dashboard/diagnosis-stats'),
+  distribusiPenjamin: (range) => api.get('/dashboard/distribusi-penjamin', { params: range ? { range } : {} }),
+  jamTersibuk:     (days)   => api.get('/dashboard/jam-tersibuk', { params: days ? { days } : {} }),
 }
 
 /** Master Data */
@@ -474,6 +494,7 @@ export const formTemplateApi = {
   // ─── Runtime (station Vue) ─────────────────────────────────────────────
   forms:       (params) => api.get('/rekam-medis/forms', { params }),
   renderForm:  (code, visitId) => api.get(`/rekam-medis/form/${code}/render`, { params: { visit_id: visitId } }),
+  prefillForm: (code, visitId) => api.get(`/rekam-medis/form/${code}/prefill`, { params: { visit_id: visitId } }),
   submitForm:  (code, visitId, data) => api.post(`/rekam-medis/form/${code}/submit`, { visit_id: visitId, data }),
   markRendered:(docId) => api.post(`/rekam-medis/document/${docId}/mark-rendered`),
   finalize:    (docId, signatureIds = []) => api.post(`/rekam-medis/document/${docId}/finalize`, { signature_ids: signatureIds }),
@@ -486,6 +507,7 @@ export const formTemplateApi = {
   verifySignature:     (sigId) => api.get(`/rekam-medis/signature/${sigId}/verify`),
   auditSignature:      (sigId) => api.get(`/rekam-medis/signature/${sigId}/audit`),
   ttdQueue:            (params) => api.get('/rekam-medis/ttd-queue', { params }),
+  ttdSignedToday:      (params) => api.get('/rekam-medis/ttd-signed-today', { params }),
   ttdCount:            () => api.get('/rekam-medis/ttd-count'),
   bulkSign:            (ids, pin) => api.post('/rekam-medis/ttd-bulk-sign', { document_ids: ids, signature_pin: pin }),
   createAddendum:      (docId, payload) => api.post(`/rekam-medis/document/${docId}/addendum`, payload),
@@ -604,6 +626,7 @@ export const ranapApi = {
   transfer:      (visitId, payload)  => api.post(`/rawat-inap/${visitId}/transfer`, payload),
   discharge:     (visitId, payload)  => api.post(`/rawat-inap/${visitId}/discharge`, payload),
   kirimBedah:    (visitId, payload)  => api.post(`/rawat-inap/${visitId}/kirim-bedah`, payload),
+  markBedAvailable: (bedId)          => api.post(`/rawat-inap/bed/${bedId}/available`),
 
   // Fase 8C — dokumen/hasil eksternal (lab/radiologi pihak ke-3 pre-op).
   documents:      (visitId)           => api.get(`/rawat-inap/${visitId}/dokumen`),
@@ -738,10 +761,18 @@ export const admisiApi = {
   showPasien:    (id)           => api.get(`/admisi/pasien/${id}`),
   kunjunganPasien: (id, params) => api.get(`/admisi/pasien/${id}/kunjungan`, { params }),
   jadwalBedahAktif: (id)        => api.get(`/admisi/pasien/${id}/jadwal-bedah-aktif`),
+  kontrolGratis: (id)           => api.get(`/admisi/pasien/${id}/kontrol-gratis`),
   updatePasien:  (id, data)     => api.put(`/admisi/pasien/${id}`, data),
   daftar:        (data)         => api.post('/admisi/daftar', data),
   daftarkanWalkIn: (visitId, data) => api.put(`/admisi/kunjungan/${visitId}/daftarkan-walkin`, data),
   previewConsent: (data)        => api.post('/admisi/consent/preview', data),
+
+  // Berkas identitas pasien (KTP — foto/PDF), disk privat ber-auth.
+  identityDocs:      (id)               => api.get(`/admisi/pasien/${id}/identity-documents`),
+  uploadIdentityDoc: (id, formData, onUploadProgress) =>
+    api.post(`/admisi/pasien/${id}/identity-documents`, formData, { onUploadProgress }),
+  identityDocFile:   (id, docId)        => api.get(`/admisi/pasien/${id}/identity-documents/${docId}/file`, { responseType: 'blob' }),
+  deleteIdentityDoc: (id, docId)        => api.delete(`/admisi/pasien/${id}/identity-documents/${docId}`),
 
   // BPJS (VClaim/Antrean) — cek peserta/rujukan + terbitkan/batal SEP
   bpjs: {
@@ -934,6 +965,14 @@ export const bedahApi = {
   // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
   storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
 
+  // Paket Obat Pasca-Bedah (template resep rutin) — read bedah.read, tulis bedah.write
+  paketObat: {
+    list:   (search)   => api.get('/bedah/paket-obat', { params: { search } }),
+    create: (data)     => api.post('/bedah/paket-obat', data),
+    update: (id, data) => api.put(`/bedah/paket-obat/${id}`, data),
+    remove: (id)       => api.delete(`/bedah/paket-obat/${id}`),
+  },
+
   // Perioperatif (PAB/WHO): checklist keselamatan (bedah.checklist) + laporan + Aldrete
   saveSafetyChecklist:    (id, phase, data, bypass_reason = null) =>
     api.put(`/bedah/record/${id}/safety-checklist`, { phase, data, bypass_reason }),
@@ -958,7 +997,9 @@ export const ruangTindakanApi = {
   selesai:        (scheduleId, data) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/selesai`, data),
   showRecord:     (scheduleId) => api.get(`/ruang-tindakan/record/${scheduleId}`),
   saveLaporan:    (recordId, laporan) => api.put(`/ruang-tindakan/record/${recordId}/laporan`, { laporan }),
-  procedures:     (search)   => api.get('/ruang-tindakan/procedures', { params: { search } }),
+  jadwal:         (dateFrom, dateTo) => api.get('/ruang-tindakan/jadwal', { params: { date_from: dateFrom, date_to: dateTo } }),
+  daftarObat:     (search)   => api.get('/ruang-tindakan/daftar-obat', { params: { search } }),
+  resep:          (scheduleId, data) => api.post(`/ruang-tindakan/jadwal/${scheduleId}/resep`, data),
 }
 
 /** Penunjang — antrian, order, hasil pemeriksaan */
@@ -988,6 +1029,12 @@ export const penunjangApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+
+  // Inbox hasil tak-tertaut (ingest alat gagal cocok otomatis → tautkan manual)
+  inbox:              (params)        => api.get('/penunjang/inbox', { params }),
+  inboxAssignable:    (params)        => api.get('/penunjang/inbox/assignable', { params }),
+  assignInbox:        (id, orderId)   => api.post(`/penunjang/inbox/${id}/assign`, { order_id: orderId }),
+  discardInbox:       (id)            => api.post(`/penunjang/inbox/${id}/discard`),
 }
 
 /** Kasir — antrian, invoice, pembayaran, laporan */
@@ -1002,6 +1049,7 @@ export const kasirApi = {
   invoiceList:       (params)             => api.get('/kasir/invoice', { params }),
   showInvoice:       (visitId)            => api.get(`/kasir/invoice/${visitId}`),
   insuranceWarning:  (visitId)            => api.get(`/kasir/insurance-warning/${visitId}`),
+  invoiceCoverages:  (id)                 => api.get(`/kasir/invoice/${id}/coverages`),
   generateInvoice:   (visitId)            => api.post(`/kasir/invoice/${visitId}/generate`),
   updateInvoice:     (id, data)           => api.put(`/kasir/invoice/${id}`, data),
   finalizeInvoice:   (id)                 => api.post(`/kasir/invoice/${id}/finalize`),
@@ -1010,6 +1058,8 @@ export const kasirApi = {
   confirmBpjs:       (id, data)           => api.post(`/kasir/invoice/${id}/confirm-bpjs`, data ?? {}),
   cancelInvoice:     (id)                 => api.post(`/kasir/invoice/${id}/cancel`),
   cetakInvoice:      (id)                 => api.get(`/kasir/invoice/${id}/cetak`),
+  // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik)
+  emailInvoice:      (id, email)          => api.post(`/kasir/invoice/${id}/email`, { email }),
 
   // Billing items (override saat edit tagihan)
   storeItem:         (invoiceId, data)    => api.post(`/kasir/invoice/${invoiceId}/item`, data),
@@ -1018,6 +1068,8 @@ export const kasirApi = {
 
   // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master)
   tarifTindakan:     (visitId)            => api.get('/kasir/tarif-tindakan', { params: { visit_id: visitId } }),
+  // Pencarian buku tarif lintas kategori (tindakan/obat/BHP/IOL/alkes) — Edit Tagihan
+  tarifBuku:         (visitId, q, type)   => api.get('/kasir/tarif-buku', { params: { visit_id: visitId, q, type: type || 'ALL' } }),
 
   // Setting cetak kwitansi/rincian (toggle logo/stempel/e-sign/footer/watermark)
   getPrintSettings:  ()                   => api.get('/kasir/print-settings'),
@@ -1075,12 +1127,19 @@ export const permissionApi = {
   resetModuleLabel:  (module)        => api.post(`/rbac/permissions/module-label/${module}/reset`),
 }
 
+/** Audit Log (read-only system_logs) — tab Audit Log di DataPenggunaView */
+export const auditLogApi = {
+  list: (params) => api.get('/rbac/audit-logs', { params }),
+}
+
 /** Asuransi/TPA Non-BPJS — verifikasi eligibility + workflow klaim */
 export const asuransiApi = {
   // Verifikasi eligibility (input manual hasil cek portal TPA)
   pendingVerifications: (params)    => api.get('/asuransi/verifikasi/pending', { params }),
   inServiceVerifications: (params)  => api.get('/asuransi/verifikasi/in-service', { params }),
   getVerifikasi:        (visitId)   => api.get(`/asuransi/verifikasi/${visitId}`),
+  getVerifikasiAll:     (visitId)   => api.get(`/asuransi/verifikasi-all/${visitId}`),
+  cobBasis:             (visitId)   => api.get(`/asuransi/cob-basis/${visitId}`),
   getBilling:           (visitId)   => api.get(`/asuransi/billing/${visitId}`),
   createVerifikasi:     (data)      => api.post('/asuransi/verifikasi', data),
   updateVerifikasi:     (id, data)  => api.put(`/asuransi/verifikasi/${id}`, data),

@@ -19,6 +19,7 @@ class DiagnosticOrder extends Model
         'visit_id',
         'ordered_by_id',
         'test_type',
+        'accession_number',
         'eye_side',
         'notes',
         'status',

@@ -21,6 +21,12 @@ export const usePenunjangStore = defineStore('penunjang', () => {
   const resultsByOrderId = ref({})
   const hasilSaving      = ref(new Set())
 
+  // ─── Inbox hasil tak-tertaut (ingest alat gagal cocok otomatis) ─────────────
+  const inbox        = ref([])
+  const inboxLoading = ref(false)
+  const assignable   = ref([])
+  const inboxCount   = computed(() => inbox.value.length)
+
   // ─── Polling fallback (PENUNJANG belum punya event Reverb dedicated) ────────
   let _pollInterval = null
 
@@ -212,6 +218,47 @@ export const usePenunjangStore = defineStore('penunjang', () => {
     }
   }
 
+  // ─── Inbox Actions ──────────────────────────────────────────────────────────
+  async function fetchInbox(source = null) {
+    inboxLoading.value = true
+    try {
+      const { data } = await penunjangApi.inbox(source ? { source } : {})
+      inbox.value = data.data ?? []
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal memuat inbox')
+    } finally {
+      inboxLoading.value = false
+    }
+  }
+
+  async function fetchAssignable(params = {}) {
+    try {
+      const { data } = await penunjangApi.inboxAssignable(params)
+      assignable.value = data.data ?? []
+      return assignable.value
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal memuat kandidat order')
+    }
+  }
+
+  async function assignInboxItem(id, orderId) {
+    try {
+      await penunjangApi.assignInbox(id, orderId)
+      inbox.value = inbox.value.filter((i) => i.id !== id)
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal menautkan hasil')
+    }
+  }
+
+  async function discardInboxItem(id) {
+    try {
+      await penunjangApi.discardInbox(id)
+      inbox.value = inbox.value.filter((i) => i.id !== id)
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal membuang item')
+    }
+  }
+
   // ─── Polling ────────────────────────────────────────────────────────────────
   function startPolling(intervalMs = 8_000) {
     stopPolling()
@@ -266,11 +313,13 @@ export const usePenunjangStore = defineStore('penunjang', () => {
     antrian, queueLoading, queueError,
     selectedQueue, finalizing,
     resultsByOrderId, hasilSaving,
+    inbox, inboxLoading, assignable,
 
     // getters
     belumDipanggilCount, selesaiCount, totalCount,
     selectedVisitId, selectedPatientId,
     selectedOrders, pendingOrdersCount, canFinalizeQueue,
+    inboxCount,
 
     // actions — queue
     fetchAntrian, panggilAntrian, lewatiAntrian, selesaiAntrian,
@@ -282,5 +331,8 @@ export const usePenunjangStore = defineStore('penunjang', () => {
 
     // actions — hasil
     uploadAttachment, saveHasil, finalizeHasil,
+
+    // actions — inbox
+    fetchInbox, fetchAssignable, assignInboxItem, discardInboxItem,
   }
 })

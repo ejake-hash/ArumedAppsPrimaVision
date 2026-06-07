@@ -16,8 +16,12 @@ const store = useMasterDataStore()
 
 const form = reactive({
   clinic_name:       '',
+  subtitle:          '',
+  tagline:           '',
+  unit_line:         '',
   address:           '',
   phone:             '',
+  emergency_hotline: '',
   email:             '',
   director_name:     '',
   director_sip:      '',
@@ -88,6 +92,28 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+// ── Print Preview (kop surat) ──────────────────────────────────────────
+const showPreview = ref(false)
+
+async function openPreview() {
+  // Pratinjau pakai KOP KANONIK dari backend (letterhead_html) supaya identik
+  // dengan dokumen lain. Ambil data TERSIMPAN terbaru dulu.
+  try { await store.fetchProfilKlinik() } catch (_) { /* tetap tampilkan apa adanya */ }
+  showPreview.value = true
+}
+function closePreview() {
+  showPreview.value = false
+}
+function printPreview() {
+  document.body.classList.add('pk-printing')
+  const cleanup = () => {
+    document.body.classList.remove('pk-printing')
+    window.removeEventListener('afterprint', cleanup)
+  }
+  window.addEventListener('afterprint', cleanup)
+  setTimeout(() => window.print(), 60)
 }
 
 function appendWilayahToAddress() {
@@ -166,8 +192,14 @@ onMounted(load)
 <template>
   <div class="pk-wrap">
     <div class="pk-head">
-      <h2>Profil Institusi</h2>
-      <p>Data institusi akan tercetak di header dokumen, invoice, dan rekam medis.</p>
+      <div class="pk-head-text">
+        <h2>Profil Institusi</h2>
+        <p>Data institusi akan tercetak di header dokumen, invoice, dan rekam medis.</p>
+      </div>
+      <button type="button" class="pk-btn-secondary pk-btn-preview" @click="openPreview">
+        <svg viewBox="0 0 24 24"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        Lihat Print Preview
+      </button>
     </div>
 
     <div v-if="store.profilLoading" class="pk-loading">
@@ -229,24 +261,42 @@ onMounted(load)
         <header><h3>Identitas Institusi</h3></header>
         <div class="pk-grid">
           <div class="pk-field pk-col-2">
+            <label>Subjudul (di atas nama)</label>
+            <input type="text" v-model="form.subtitle" placeholder="Rumah Sakit Khusus Mata" :class="{ 'has-error': fieldErr('subtitle') }" />
+            <p class="pk-hint">Baris kecil di atas nama institusi pada kop surat.</p>
+          </div>
+          <div class="pk-field pk-col-2">
             <label>Nama Institusi <span class="pk-req">*</span></label>
-            <input type="text" v-model="form.clinic_name" :class="{ 'has-error': fieldErr('clinic_name') }" />
+            <input type="text" v-model="form.clinic_name" placeholder="Prima Vision" :class="{ 'has-error': fieldErr('clinic_name') }" />
             <p v-if="fieldErr('clinic_name')" class="pk-err">{{ fieldErr('clinic_name') }}</p>
           </div>
           <div class="pk-field pk-col-1">
-            <label>Telepon</label>
-            <input type="text" v-model="form.phone" placeholder="(0274) 1234567" :class="{ 'has-error': fieldErr('phone') }" />
-            <p v-if="fieldErr('phone')" class="pk-err">{{ fieldErr('phone') }}</p>
+            <label>Tagline / Slogan</label>
+            <input type="text" v-model="form.tagline" placeholder="Vision for the Nation" :class="{ 'has-error': fieldErr('tagline') }" />
           </div>
           <div class="pk-field pk-col-1">
-            <label>Email</label>
-            <input type="email" v-model="form.email" placeholder="info@rumahsakit.id" :class="{ 'has-error': fieldErr('email') }" />
-            <p v-if="fieldErr('email')" class="pk-err">{{ fieldErr('email') }}</p>
+            <label>Baris Unit / Layanan</label>
+            <input type="text" v-model="form.unit_line" placeholder="Prima Vision Eye Hospital - 24 Hours Emergency Unit" :class="{ 'has-error': fieldErr('unit_line') }" />
           </div>
           <div class="pk-field pk-col-2">
             <label>Alamat</label>
-            <textarea v-model="form.address" rows="3" :class="{ 'has-error': fieldErr('address') }"></textarea>
+            <textarea v-model="form.address" rows="2" placeholder="Jalan Pabrik Tenun No. 51-53, Medan Petisah, 20118, Sumatera Utara, Indonesia" :class="{ 'has-error': fieldErr('address') }"></textarea>
             <p v-if="fieldErr('address')" class="pk-err">{{ fieldErr('address') }}</p>
+          </div>
+          <div class="pk-field pk-col-1">
+            <label>Hotline RS</label>
+            <input type="text" v-model="form.phone" placeholder="(+6261) 805 14 888" :class="{ 'has-error': fieldErr('phone') }" />
+            <p v-if="fieldErr('phone')" class="pk-err">{{ fieldErr('phone') }}</p>
+          </div>
+          <div class="pk-field pk-col-1">
+            <label>Hotline Darurat (24 Jam)</label>
+            <input type="text" v-model="form.emergency_hotline" placeholder="0822 7755 5151" :class="{ 'has-error': fieldErr('emergency_hotline') }" />
+            <p v-if="fieldErr('emergency_hotline')" class="pk-err">{{ fieldErr('emergency_hotline') }}</p>
+          </div>
+          <div class="pk-field pk-col-2">
+            <label>Email</label>
+            <input type="email" v-model="form.email" placeholder="rsprimavision@gmail.com" :class="{ 'has-error': fieldErr('email') }" />
+            <p v-if="fieldErr('email')" class="pk-err">{{ fieldErr('email') }}</p>
           </div>
         </div>
       </section>
@@ -331,6 +381,52 @@ onMounted(load)
         </button>
       </div>
     </form>
+
+    <!-- Print Preview kop surat -->
+    <Teleport to="body">
+      <div v-if="showPreview" class="pk-preview-overlay" @click.self="closePreview">
+        <div class="pk-preview-modal">
+          <div class="pk-preview-bar">
+            <span class="pk-preview-title">Pratinjau Kop Surat (A4) <em class="pk-preview-note">— menampilkan data tersimpan; Simpan dulu bila ada perubahan</em></span>
+            <div class="pk-preview-bar-actions">
+              <button type="button" class="pk-btn-primary" @click="printPreview">
+                <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Cetak
+              </button>
+              <button type="button" class="pk-btn-secondary" @click="closePreview">Tutup</button>
+            </div>
+          </div>
+
+          <div class="pk-preview-scroll">
+            <!-- Wrapper mereservasi tinggi/lebar lembar setelah di-scale,
+                 supaya tidak ada ruang kosong dari transform: scale(). -->
+            <div class="pk-sheet-wrap">
+            <!-- Lembar A4 -->
+            <div id="pk-kop-sheet" class="pk-sheet">
+              <!-- KOP KANONIK dari backend (letterhead_html) — sumber tunggal,
+                   identik dengan yang dipakai Kwitansi, PO, dll. -->
+              <div class="pk-kop-canon" v-html="store.profilKlinik?.letterhead_html || ''"></div>
+
+              <!-- Contoh isi dokumen -->
+              <div class="pk-doc-sample">
+                <div class="pk-doc-title">CONTOH DOKUMEN</div>
+                <p>Ini adalah pratinjau bagaimana kop surat institusi akan tampil di header dokumen, invoice, dan rekam medis.</p>
+                <p class="pk-doc-placeholder">— isi dokumen —</p>
+
+                <div class="pk-doc-sign">
+                  <div class="pk-doc-sign-place">Mengetahui,</div>
+                  <div class="pk-doc-sign-name">{{ form.director_name || 'Nama Direktur' }}</div>
+                  <div v-if="form.director_sip" class="pk-doc-sign-sip">SIP: {{ form.director_sip }}</div>
+                </div>
+              </div>
+
+              <div v-if="form.watermark_enabled" class="pk-watermark">{{ form.watermark_type }}</div>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Toast -->
     <Teleport to="body">
@@ -456,4 +552,116 @@ onMounted(load)
   background: #fff; color: #c83b3b !important; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 .pk-btn-danger:hover:not(:disabled) { background: #ffe5e5; }
+
+/* ── Head with preview button ── */
+.pk-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.pk-head-text { min-width: 0; }
+.pk-btn-preview { padding: 8px 14px; font-size: 12.5px; white-space: nowrap; }
+.pk-btn-preview svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+
+<!-- Print Preview styles: NOT scoped, so @media print can isolate the sheet
+     teleported to <body>. Prefixed `.pk-` to avoid collisions. -->
+<style>
+.pk-preview-overlay {
+  position: fixed; inset: 0; z-index: 9990;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem;
+}
+.pk-preview-modal {
+  background: #f1f5f9; border-radius: 12px; overflow: hidden;
+  width: 100%; max-width: 720px; max-height: 92vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+}
+.pk-preview-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.75rem 1rem; background: #fff; border-bottom: 1px solid #e2e8f0;
+}
+.pk-preview-title { font-size: 14px; font-weight: 600; color: #0f172a; }
+.pk-preview-note { font-style: normal; font-size: 11px; font-weight: 400; color: #94a3b8; }
+@media (max-width: 640px) { .pk-preview-note { display: none; } }
+.pk-preview-bar-actions { display: flex; gap: 0.5rem; }
+.pk-preview-bar-actions button { padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid; display: inline-flex; align-items: center; gap: 6px; }
+.pk-preview-bar-actions .pk-btn-primary { background: #1763d4; color: #fff !important; border-color: #1763d4; box-shadow: none; }
+.pk-preview-bar-actions .pk-btn-secondary { background: #fff; color: #475569; border-color: #cbd5e1; }
+.pk-preview-bar-actions .pk-btn-secondary:hover { background: #f8fafc; }
+
+/* Scale lembar A4 agar pas di modal. --pk-scale dibaca wrap & sheet. */
+.pk-preview-scroll {
+  --pk-scale: 0.74;
+  overflow: auto; padding: 1.4rem; display: flex; justify-content: center;
+  background: #e2e8f0;
+}
+@media (max-width: 640px) { .pk-preview-scroll { --pk-scale: 0.46; } }
+
+.pk-sheet-wrap {
+  width: calc(210mm * var(--pk-scale));
+  height: calc(297mm * var(--pk-scale));
+  flex-shrink: 0;
+}
+
+/* A4 sebenarnya (210×297mm), divisualkan dengan transform: scale */
+.pk-sheet {
+  position: relative;
+  width: 210mm; min-height: 297mm;
+  background: #fff; padding: 9mm 11mm;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  box-sizing: border-box;
+  font-family: 'Times New Roman', Georgia, serif;
+  color: #111;
+  transform: scale(var(--pk-scale));
+  transform-origin: top left;
+}
+.pk-kop { display: flex; align-items: center; gap: 6mm; }
+.pk-kop-logo { width: 36mm; height: 36mm; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.pk-kop-logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.pk-kop-logo-empty { width: 100%; height: 100%; border: 1px dashed #bbb; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #bbb; font-size: 12px; font-family: sans-serif; }
+.pk-kop-body { flex: 1; min-width: 0; text-align: left; line-height: 1.12; }
+
+.pk-kop-subtitle { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #111; }
+.pk-kop-name { font-size: 30px; font-weight: 800; letter-spacing: 0.01em; text-transform: uppercase; color: #1b3a6b; line-height: 1.02; margin: 1px 0 2px; }
+.pk-kop-tagline { font-size: 14px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #111; }
+.pk-kop-unit { font-size: 11px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; text-decoration: underline; color: #111; margin-top: 5px; }
+.pk-kop-address { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #111; margin-top: 1px; }
+
+.pk-kop-contact { border-collapse: collapse; margin-top: 3px; }
+.pk-kop-contact td { font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: #111; padding: 0; vertical-align: top; line-height: 1.5; }
+.pk-kop-clabel { white-space: nowrap; padding-right: 4px; }
+.pk-kop-csep { padding-right: 6px; }
+.pk-kop-cval { text-transform: none; }
+
+.pk-kop-rule { border-bottom: 2.5px solid #111; margin: 6px 0 0; }
+
+.pk-doc-sample { margin-top: 16mm; font-size: 13px; line-height: 1.7; }
+.pk-doc-title { text-align: center; font-weight: 700; text-decoration: underline; margin-bottom: 14px; letter-spacing: 0.05em; }
+.pk-doc-placeholder { color: #94a3b8; font-style: italic; }
+.pk-doc-sign { margin-top: 24mm; width: 240px; margin-left: auto; text-align: center; }
+.pk-doc-sign-place { margin-bottom: 22mm; }
+.pk-doc-sign-name { font-weight: 700; text-decoration: underline; }
+.pk-doc-sign-sip { font-size: 12px; margin-top: 2px; }
+
+.pk-watermark {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 120px; font-weight: 800; color: rgba(0,0,0,0.06);
+  transform: rotate(-30deg); pointer-events: none; letter-spacing: 0.1em;
+  font-family: sans-serif;
+}
+
+/* ── Print: show ONLY the kop sheet ── */
+@media print {
+  body.pk-printing > *:not(.pk-preview-overlay) { display: none !important; }
+  body.pk-printing .pk-preview-overlay {
+    position: static; background: none; padding: 0; display: block;
+  }
+  body.pk-printing .pk-preview-modal {
+    box-shadow: none; max-width: none; max-height: none; background: #fff; border-radius: 0;
+  }
+  body.pk-printing .pk-preview-bar { display: none !important; }
+  body.pk-printing .pk-preview-scroll { overflow: visible; padding: 0; display: block; background: #fff; }
+  body.pk-printing .pk-sheet-wrap { width: auto; height: auto; }
+  body.pk-printing .pk-sheet { box-shadow: none; margin: 0; width: auto; min-height: auto; transform: none; }
+  @page { size: A4; margin: 0; }
+}
 </style>

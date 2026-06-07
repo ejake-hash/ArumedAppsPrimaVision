@@ -291,9 +291,52 @@ async function finalizeOrder(order) {
   }
 }
 
+// ─── Inbox hasil tak-tertaut ─────────────────────────────────────────────────
+const assignTargetId = ref(null)
+const assignSearch    = ref('')
+let   _assignTimer    = null
+
+async function refreshInbox() {
+  try { await store.fetchInbox() } catch (e) { toast('w', e.message) }
+}
+
+function startAssign(it) {
+  assignTargetId.value = assignTargetId.value === it.id ? null : it.id
+  assignSearch.value = ''
+  if (assignTargetId.value) searchAssignable()
+}
+
+function searchAssignable() {
+  clearTimeout(_assignTimer)
+  _assignTimer = setTimeout(async () => {
+    try {
+      await store.fetchAssignable(assignSearch.value ? { search: assignSearch.value } : {})
+    } catch (e) { toast('w', e.message) }
+  }, 300)
+}
+
+async function doAssign(it, order) {
+  try {
+    await store.assignInboxItem(it.id, order.id)
+    assignTargetId.value = null
+    toast('s', `Hasil ditautkan ke ${order.visit?.patient?.name ?? 'order'}`)
+  } catch (e) { toast('w', e.message) }
+}
+
+async function doDiscard(it) {
+  if (!confirm('Buang berkas hasil ini? Tindakan tak bisa dibatalkan.')) return
+  try {
+    await store.discardInboxItem(it.id)
+    toast('i', 'Berkas dibuang')
+  } catch (e) { toast('w', e.message) }
+}
+
+watch(() => mainTab.value, (v) => { if (v === 'inbox') refreshInbox() })
+
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 onMounted(async () => {
   await store.fetchAntrian()
+  store.fetchInbox().catch(() => {})   // populasi badge Inbox
   store.startPolling()
 })
 
@@ -315,6 +358,11 @@ onUnmounted(() => {
       <button :class="['pj-maintab', mainTab === 'jenis' ? 'a' : '']" @click="mainTab = 'jenis'">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4"/></svg>
         Jenis Penunjang
+      </button>
+      <button :class="['pj-maintab', mainTab === 'inbox' ? 'a' : '']" @click="mainTab = 'inbox'">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg>
+        Inbox Hasil
+        <span v-if="store.inboxCount" class="pj-maintab-badge">{{ store.inboxCount }}</span>
       </button>
     </div>
 
@@ -699,6 +747,66 @@ onUnmounted(() => {
     <!-- ══════════════════ MASTER: JENIS PENUNJANG ══════════════════ -->
     <JenisPenunjangView v-else-if="mainTab === 'jenis'" />
 
+    <!-- ══════════════════ INBOX HASIL TAK-TERTAUT ══════════════════ -->
+    <section v-else-if="mainTab === 'inbox'" class="inbox-wrap">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-head-title">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg>
+              Inbox Hasil Tak-Tertaut
+            </div>
+            <div class="card-head-sub">Hasil dari alat yang belum bisa dicocokkan otomatis — tautkan ke order yang benar.</div>
+          </div>
+          <button class="oa-btn oa-view" @click="refreshInbox">Muat ulang</button>
+        </div>
+        <div class="card-body">
+          <template v-if="store.inboxLoading">
+            <div v-for="n in 3" :key="n" class="q-skeleton"></div>
+          </template>
+          <div v-else-if="!store.inbox.length" class="empty-section" style="margin:0">
+            Tidak ada berkas menunggu — semua hasil sudah tertaut otomatis.
+          </div>
+          <div v-else class="inbox-list">
+            <div v-for="it in store.inbox" :key="it.id" class="inbox-item">
+              <div class="inbox-row">
+                <div class="inbox-info">
+                  <div class="inbox-name">{{ it.original_filename || it.attachment_path }}</div>
+                  <div class="inbox-meta">
+                    <span :class="['pill', it.source === 'OCT' ? 'pill-order' : 'pill-umum']">{{ it.source }}</span>
+                    <span v-if="it.accession_number">Acc: {{ it.accession_number }}</span>
+                    <span v-if="it.claimed_no_rm">RM(file): {{ it.claimed_no_rm }}</span>
+                    <a v-if="it.attachment_url" :href="it.attachment_url" target="_blank" rel="noopener" class="inbox-link">Lihat berkas</a>
+                  </div>
+                </div>
+                <div class="inbox-actions">
+                  <button class="oa-btn oa-input" @click="startAssign(it)">{{ assignTargetId === it.id ? 'Tutup' : 'Tautkan' }}</button>
+                  <button class="oa-btn oa-cancel" @click="doDiscard(it)">Buang</button>
+                </div>
+              </div>
+
+              <!-- Picker order -->
+              <div v-if="assignTargetId === it.id" class="assign-panel">
+                <input v-model="assignSearch" @input="searchAssignable" class="q-search"
+                       placeholder="Cari nama / No. RM (order penunjang terbuka hari ini)…" />
+                <div v-if="!store.assignable.length" class="empty-section" style="margin:6px 0 0">
+                  Tidak ada order terbuka cocok. Coba kata kunci lain.
+                </div>
+                <div v-else class="assign-list">
+                  <button v-for="o in store.assignable" :key="o.id" class="assign-row" @click="doAssign(it, o)">
+                    <b>{{ o.visit?.patient?.name ?? '—' }}</b>
+                    <span class="assign-sub">
+                      RM {{ o.visit?.patient?.no_rm ?? '—' }} · {{ o.test_type }}<template v-if="o.eye_side"> ({{ o.eye_side }})</template> · {{ o.accession_number }}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ══════════════════ TOAST ══════════════════ -->
     <div class="toast-wrap" aria-live="polite" role="status">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
@@ -934,4 +1042,23 @@ onUnmounted(() => {
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+
+/* ── Inbox hasil tak-tertaut ─────────────────────────────────────────────── */
+.pj-maintab-badge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: #fef3c7; color: #92400e; margin-left: 2px; }
+.pj-maintab.a .pj-maintab-badge { background: rgba(255,255,255,.28); color: #fff; }
+.inbox-wrap { max-width: 880px; }
+.inbox-list { display: flex; flex-direction: column; gap: 8px; }
+.inbox-item { border: 1.5px solid var(--gb); border-radius: 9px; background: var(--bs); overflow: hidden; }
+.inbox-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; }
+.inbox-info { flex: 1; min-width: 0; }
+.inbox-name { font-size: 12.5px; font-weight: 600; color: var(--td); word-break: break-all; }
+.inbox-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10.5px; color: var(--tu); margin-top: 4px; }
+.inbox-link { color: var(--ga); text-decoration: underline; }
+.inbox-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.assign-panel { border-top: 1px dashed var(--gb); padding: 10px 12px; background: var(--bc); }
+.assign-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; max-height: 280px; overflow-y: auto; }
+.assign-row { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .12s; }
+.assign-row:hover { border-color: var(--ga); background: var(--gl); }
+.assign-row b { font-size: 12px; color: var(--td); }
+.assign-sub { font-size: 10.5px; color: var(--tu); }
 </style>

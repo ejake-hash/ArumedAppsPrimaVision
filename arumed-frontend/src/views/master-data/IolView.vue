@@ -28,7 +28,7 @@ const config = {
   defaults: {
     brand: '', manufacturer: '', model: '',
     iol_type: 'MONOFOCAL', material: '',
-    power: 0, cylinder: '', axis: '',
+    power: 0, a_constant: '', cylinder: '', axis: '',
     gtin: '', gs1_barcode: '',
     expiry_date: '', is_active: true,
   },
@@ -51,6 +51,7 @@ const config = {
     { key: 'iol_type',      label: 'Tipe IOL',      type: 'select', required: true, cols: 1, options: IOL_TYPES },
     { key: 'material',      label: 'Material',      type: 'select', cols: 1, options: [{ value: '', label: '—' }, ...MATERIALS] },
     { key: 'power',         label: 'Power (D)',     type: 'number', required: true, min: -20, max: 40, step: 0.25, cols: 1, hint: 'Bisa minus untuk myopia/aphakia' },
+    { key: 'a_constant',    label: 'A-constant (SRK/T)', type: 'number', min: 90, max: 130, step: 0.01, cols: 1, hint: 'Untuk memetakan tabel hitung biometri Quantel ke lensa ini' },
     { key: 'cylinder',      label: 'Cylinder (D) — TORIC', type: 'number', min: 0, max: 10, step: 0.25, cols: 1, hint: 'Wajib jika tipe = TORIC' },
     { key: 'axis',          label: 'Axis (°) — TORIC',     type: 'number', min: 0, max: 180, step: 1, cols: 1, hint: 'Wajib jika tipe = TORIC (0–180)' },
     { key: 'gtin',          label: 'GTIN (UDI)',    type: 'text',   cols: 1, hint: 'Untuk pencocokan saat scan barcode (14 digit)' },

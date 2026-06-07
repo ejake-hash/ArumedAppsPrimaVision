@@ -192,7 +192,8 @@ class JadwalDokterController extends Controller
     private function csvOrXlsx(Request $request, string $csv, string $baseName, string $sheetTitle): Response
     {
         if (strtolower((string) $request->query('format')) === 'xlsx') {
-            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle);
+            // keepComments: blok petunjuk (#) di template ikut tertulis ke Excel.
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, $sheetTitle, true);
 
             return response($xlsx, 200, [
                 'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

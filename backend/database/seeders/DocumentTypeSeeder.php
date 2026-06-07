@@ -265,7 +265,77 @@ class DocumentTypeSeeder extends Seeder
                 'show_in_rme'         => true,
                 'sort_order'          => 24,
             ],
+
+            // RM-2.0 — Checklist Kesiapan Bedah (form resmi RS: RM 2.0/CKB/22).
+            // Diisi perawat kamar bedah pra-op. Slot RM-2.0 sebelumnya kosong (tak
+            // bentrok). Template: CHECKLIST_KESIAPAN_BEDAH (FormTemplateSeeder).
+            // Signer perawat (opsional — fase transisi belum ada tablet, lihat
+            // Docs/KATALOG-FORMULIR-RM.md). Bukan TTD dokter → tak masuk antrean TtdView.
+            [
+                'code'                => 'RM-2.0',
+                'name'                => 'Checklist Kesiapan Bedah',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 10,
+            ],
+
+            // RM-10.1 — Laporan Operasi Vitreo Retina (form resmi RS: RM 10.1/LOVR/22).
+            // Diisi tim bedah saat operasi VITREORETINA (pemicu surgery_packages.surgery_type
+            // = VITREORETINA). Template: LAPORAN_OPERASI_VITREO_RETINA (FormTemplateSeeder).
+            // Signer DPJP Bedah (DOKTER) opsional — fase transisi belum ada tablet.
+            [
+                'code'                => 'RM-10.1',
+                'name'                => 'Laporan Operasi Vitreo Retina',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 30,
+            ],
+
+            // RM-2.3-COK — Catatan Operasi (form resmi RS: RM 2.3/COK/22). Catatan
+            // operasi terstruktur KHAS KATARAK/FAKO (capsulotomy/IOL/komplikasi PCR-ECCE).
+            // Kode 'RM-2.3' asli = "Pemeriksaan Dokter Mata" → pakai suffix -COK (nomor
+            // resmi RM 2.3/COK/22 dicetak di layout). Slug: CATATAN_OPERASI_KATARAK.
+            // Diisi tim bedah saat operasi KATARAK; TTD DPJP (DOKTER) opsional.
+            [
+                'code'                => 'RM-2.3-COK',
+                'name'                => 'Catatan Operasi (Katarak)',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 11,
+            ],
+
+            // RM-2.2-LP — Laporan Pembedahan (form resmi RS: RM 2.2/LP/22). Laporan
+            // operasi GENERIK nasional (Permenkes) — berlaku SEMUA jenis operasi.
+            // Kode 'RM-2.2' asli = "Rekam Refraksi" → pakai suffix -LP. Slug:
+            // LAPORAN_PEMBEDAHAN. Menggantikan RM-5.3/RM_BEDAH_LAPORAN yg dimatikan
+            // (auto-publish lama → kini FormDocsBrowser). TTD DPJP (DOKTER) opsional.
+            [
+                'code'                => 'RM-2.2-LP',
+                'name'                => 'Laporan Pembedahan',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 12,
+            ],
         ];
+
+        // PEMBERSIHAN 7 Jun 2026 (atas permintaan): katalog jenis dokumen dibangun
+        // ulang dari form RESMI. Hanya RM-6.1 (Resume Medis Rawat Jalan — terkait
+        // template RESUME_MEDIS) yang di-seed. Definisi 24 jenis lain DIPERTAHANKAN
+        // di array $types sebagai referensi; tambahkan kembali code-nya ke filter
+        // ini saat jenisnya dibangun dari PDF resmi.
+        $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, ['RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP'], true)));
 
         foreach ($types as $type) {
             DocumentType::updateOrCreate(

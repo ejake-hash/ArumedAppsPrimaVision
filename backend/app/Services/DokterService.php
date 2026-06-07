@@ -17,6 +17,7 @@ use App\Models\Icd9Code;
 use App\Models\Icd10Code;
 use App\Models\InventoryStock;
 use App\Models\Medication;
+use App\Models\IolItem;
 use App\Models\IolRecommendation;
 use App\Models\MedicalResume;
 use App\Models\Notification;
@@ -639,9 +640,11 @@ class DokterService
             return; // paket tak ditemukan — jangan gagalkan planning
         }
 
-        $sellPrice = $this->kasirService->resolvePackageSellPrice(
+        // Resolve baris tarif penjamin pasien: harga + nama tampil khusus (mis. promo UMUM).
+        $tariff    = $this->kasirService->resolvePackageTariff(
             $pkg->id, $visit->guarantor_type, $visit->insurer_id
         );
+        $sellPrice = (float) ($tariff?->sell_price ?? 0);
 
         // Header per-(visit, source_package): withTrashed → restore/update (anti unique
         // vsp_visit_source_unique 23505) bila paket sama, atau create bila paket baru.
@@ -656,6 +659,8 @@ class DokterService
             'package_name'              => $pkg->name,
             'package_code'              => $pkg->code,
             'sell_price'                => $sellPrice,
+            // Nama tampil per-penjamin → effectiveLabel() (kwitansi & papan bedah). Null = pakai nama master.
+            'label'                     => $tariff?->display_name ?: null,
             'is_active'                 => true,
         ];
         if ($snap) {
@@ -667,18 +672,22 @@ class DokterService
             $snap = VisitSurgeryPackage::create(['visit_id' => $visit->id] + $headerData);
         }
 
-        // Replace items: copy komponen paket (SKIP MEDICATION), resolve harga Buku Tarif.
+        // Replace items: copy komponen paket, resolve harga Buku Tarif.
+        $isPemeriksaan = ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN);
         $snap->items()->delete();
         foreach ($pkg->items as $pi) {
-            // Obat tak masuk paket pasien — ditagih lewat resep / obat pulang.
-            if ($pi->item_type === 'MEDICATION') {
+            // Obat: hanya disnapshot untuk paket PEMERIKSAAN (daftar "ekspektasi" untuk
+            // absorpsi diskon — obat tetap ditagih lewat resep, bukan dari snapshot).
+            // Paket BEDAH: obat lewat resep/obat pulang, tak masuk snapshot.
+            if ($pi->item_type === 'MEDICATION' && ! $isPemeriksaan) {
                 continue;
             }
             $getPriceType = match ($pi->item_type) {
-                'PROCEDURE' => 'procedure',
-                'BHP'       => 'bhp',
-                'IOL'       => 'iol',
-                default     => null,
+                'PROCEDURE'  => 'procedure',
+                'BHP'        => 'bhp',
+                'IOL'        => 'iol',
+                'MEDICATION' => 'medication',
+                default      => null,
             };
             if (! $getPriceType) {
                 continue;
@@ -764,16 +773,29 @@ class DokterService
                 ->where('visit_id', $visit->id)
                 ->where('source_surgery_package_id', $pkg->id)
                 ->first();
+            // Obat "ekspektasi" paket (hint utk dokter — TIDAK auto-resep; obat terserap ke
+            // diskon saat dokter benar-benar meresepkannya).
+            $medHint = $pkg->items->where('item_type', 'MEDICATION')->map(function ($pi) {
+                $med = \App\Models\Medication::find($pi->item_id);
+                return [
+                    'medication_id' => $pi->item_id,
+                    'name'          => $med?->name ?? 'Obat',
+                    'quantity'      => (int) ($pi->quantity ?? 1),
+                ];
+            })->values()->all();
+
             return [
                 'visit_services' => $this->getVisitServices($visit->id),
                 'snapshot'       => $snap ? [
                     'id'               => $snap->id,
                     'package_name'     => $snap->package_name,
                     'package_type'     => $snap->package_type,
+                    'label'            => $snap->label,
                     'sell_price'       => (float) $snap->sell_price,
                     'total_base_price' => (float) $snap->total_base_price,
                     'discount_amount'  => $snap->discountAmount(),
                 ] : null,
+                'package_medications' => $medHint,
             ];
         });
     }
@@ -1119,12 +1141,14 @@ class DokterService
 
         $user  = auth('api')->user();
         $order = DiagnosticOrder::create([
-            'visit_id'      => $data['visit_id'],
-            'ordered_by_id' => $user->employee_id,
-            'test_type'     => $data['test_type'],
-            'eye_side'      => $data['eye_side'] ?? null,
-            'notes'         => $data['notes'] ?? null,
-            'status'        => 'REQUESTED',
+            'visit_id'         => $data['visit_id'],
+            'ordered_by_id'    => $user->employee_id,
+            'test_type'        => $data['test_type'],
+            // Accession DICOM (kunci pencocokan worklist/ingest alat). Lihat AccessionService.
+            'accession_number' => app(AccessionService::class)->next(),
+            'eye_side'         => $data['eye_side'] ?? null,
+            'notes'            => $data['notes'] ?? null,
+            'status'           => 'REQUESTED',
         ]);
 
         // Route visit to PENUNJANG station (but keep in DOKTER until comes back)
@@ -1173,63 +1197,104 @@ class DokterService
     {
         $this->authorizeVisitOwnership($visitId);
 
-        return IolRecommendation::with('approvedBy')
+        return IolRecommendation::with(['approvedBy', 'decidedBy', 'iolItem'])
             ->where('visit_id', $visitId)
             ->get();
     }
 
     /**
-     * Preview tagihan penunjang yang sudah COMPLETED untuk satu kunjungan.
-     *
-     * Dipakai Tab 3 dokter agar melihat penunjang + harga (sesuai penjamin)
-     * SEBELUM kirim ke kasir. Penunjang = procedure kategori "Penunjang":
-     * diagnostic_orders.test_type menyimpan KODE procedure, harga di-resolve
-     * via procedure_tariffs (getPrice 'procedure') — mirror persis dengan
-     * KasirService::buildPenunjangLines supaya preview == invoice. Order
-     * "Lainnya" (kode tak terdaftar di procedures) dilewati.
-     *
-     * @return array<int, array{id:string, code:string, name:string, category:?string, eye_side:?string, price:float}>
+     * Data lengkap layar keputusan IOL untuk satu kunjungan:
+     *  - biometry: nilai ukur + tabel hitung IOL (per A-constant/formula) hasil
+     *    parse alat Quantel dari expertise_data.biometry (mata OD/OS).
+     *  - iol_masters: lensa master aktif (brand/model/power/a_constant + stok)
+     *    → FE memetakan A-constant baris tabel ke lensa yang ada stoknya.
+     *  - decisions: keputusan IOL dokter yang sudah tersimpan (per mata).
      */
-    public function getPenunjangBilling(string $visitId): array
+    public function getBiometriIol(string $visitId): array
     {
-        $visit  = $this->authorizeVisitOwnership($visitId);
-        $orders = DiagnosticOrder::where('visit_id', $visitId)
-            ->where('status', 'COMPLETED')
-            ->get();
+        $this->authorizeVisitOwnership($visitId);
 
-        if ($orders->isEmpty()) {
-            return [];
-        }
+        // Ambil hasil Biometri terbaru yang punya blok biometry terstruktur.
+        $order = DiagnosticOrder::with('results')
+            ->where('visit_id', $visitId)
+            ->where('test_type', DiagnosticTestType::BIOMETRI_CODE)
+            ->whereIn('status', ['COMPLETED', 'IN_PROGRESS'])
+            ->latest('created_at')
+            ->get()
+            ->first(fn ($o) => ! empty(optional($o->results->first())->expertise_data['biometry'] ?? null));
 
-        $codes   = $orders->pluck('test_type')->unique()->filter()->values()->all();
-        $procMap = Procedure::whereIn('code', $codes)
-            ->get(['id', 'code', 'name', 'category'])
-            ->keyBy('code');
+        $biometry = $order
+            ? (optional($order->results->first())->expertise_data['biometry'] ?? null)
+            : null;
 
-        $rows = [];
-        foreach ($orders as $order) {
-            $proc = $procMap->get($order->test_type);
-            if (! $proc) {
-                continue; // kode tak terdaftar di procedures (mis. "Lainnya") — tidak ditarifkan
-            }
-            $price = $this->kasirService->getPrice(
-                'procedure',
-                $proc->id,
-                $visit->guarantor_type,
-                $visit->insurer_id,
-            );
-            $rows[] = [
-                'id'       => $order->id,
-                'code'     => $proc->code,
-                'name'     => $proc->name,
-                'category' => $proc->category,
-                'eye_side' => $order->eye_side,
-                'price'    => (float) $price,
-            ];
-        }
+        $iolMasters = IolItem::active()->withOnHand()
+            ->orderBy('brand')->orderBy('power')
+            ->get(['id', 'brand', 'model', 'iol_type', 'power', 'a_constant'])
+            ->map(fn ($i) => [
+                'id'         => $i->id,
+                'brand'      => $i->brand,
+                'model'      => $i->model,
+                'iol_type'   => $i->iol_type,
+                'power'      => $i->power !== null ? (float) $i->power : null,
+                'a_constant' => $i->a_constant !== null ? (float) $i->a_constant : null,
+                'on_hand'    => (float) ($i->on_hand ?? 0),
+                'label'      => trim(($i->brand ?? '') . ' ' . ($i->model ?? '')),
+            ]);
 
-        return $rows;
+        $decisions = IolRecommendation::with('iolItem')
+            ->where('visit_id', $visitId)
+            ->get()
+            ->keyBy('eye_side');
+
+        return [
+            'visit_id'      => $visitId,
+            'result_id'     => $order ? optional($order->results->first())->id : null,
+            'biometry'      => $biometry,   // {exam_key,exam_date,eyes:{OD:{biometry,iol_calc},OS:...}}
+            'iol_masters'   => $iolMasters,
+            'decisions'     => $decisions,
+        ];
     }
+
+    /**
+     * Simpan KEPUTUSAN IOL dokter untuk satu mata (updateOrCreate per visit+eye).
+     * Keputusan final inilah yang dibaca Bedah (buildRequestPreviewFromSchedule)
+     * untuk request IOL/BHP ke gudang.
+     */
+    public function decideIol(string $visitId, array $data): IolRecommendation
+    {
+        $this->authorizeVisitOwnership($visitId);
+
+        $iol = ! empty($data['iol_item_id']) ? IolItem::find($data['iol_item_id']) : null;
+
+        $rec = IolRecommendation::updateOrCreate(
+            ['visit_id' => $visitId, 'eye_side' => $data['eye_side']],
+            [
+                'diagnostic_result_id' => $data['diagnostic_result_id'] ?? null,
+                'iol_item_id'          => $iol?->id,
+                'recommended_power'    => $data['recommended_power'] ?? null,
+                'formula'              => $data['formula'] ?? null,
+                'a_constant'           => $data['a_constant'] ?? ($iol?->a_constant),
+                'target_refraction'    => $data['target_refraction'] ?? null,
+                'predicted_refraction' => $data['predicted_refraction'] ?? null,
+                'iol_type'             => $data['iol_type'] ?? $iol?->iol_type,
+                'brand'                => $data['brand'] ?? $iol?->brand,
+                'notes'                => $data['notes'] ?? null,
+                'is_final'             => true,
+                'decided_by_id'        => auth('api')->user()?->employee_id,
+                'decided_at'           => now(),
+            ]
+        );
+
+        $this->log(auth('api')->id(), 'DECIDE_IOL', IolRecommendation::class, $rec->id,
+            "Keputusan IOL {$data['eye_side']} kunjungan {$visitId}");
+
+        return $rec->fresh('iolItem');
+    }
+
+    // CATATAN: getPenunjangBilling() DIHAPUS. Penunjang tidak lagi ditagih dari
+    // diagnostic_orders. Sejak alur terbaru, dokter menambahkan pemeriksaan penunjang
+    // sebagai TINDAKAN lewat Tab 3 ("Tambah Tindakan") → tertarif via Buku Tarif di
+    // getTarifTindakan/buildTindakanLines. Order penunjang murni operasional.
 
     // =========================================================================
     // MEDICAL RESUME

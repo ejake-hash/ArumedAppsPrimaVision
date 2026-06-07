@@ -9,6 +9,7 @@ import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
 import FormSection from '@/components/forms/FormSection.vue'
 import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
 import { admisiApi, integrasiApi } from '@/services/api'
+import { compressImageToUnder } from '@/utils/imageCompress'
 
 const admisiStore   = useAdmisiStore()
 const jadwalStore   = useJadwalDokterStore()
@@ -91,6 +92,7 @@ function mapQueueItem(q) {
     nik:        p.nik                  ?? '—',
     address:    p.address              ?? '—',
     phone:      p.phone                ?? '—',
+    email:      p.email                ?? '—',
     birthDate:  p.date_of_birth        ?? null,
     age:        walkIn ? null          : calcAge(p.date_of_birth),
     sex:        p.gender               ?? '—',
@@ -239,6 +241,7 @@ function mapVisitRow(v) {
     nik:        p.nik ?? '—',
     address:    p.address ?? '—',
     phone:      p.phone ?? '—',
+    email:      p.email ?? '—',
     birthDate:  p.date_of_birth ?? null,
     age:        walkIn ? null : calcAge(p.date_of_birth),
     sex:        p.gender ?? '—',
@@ -401,7 +404,7 @@ const editOpen      = ref(false)
 const editSaving    = ref(false)
 const editPatientId = ref(null)
 const editForm      = reactive({
-  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', address: '',
+  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', email: '', address: '',
 })
 
 function openEditPasien(p) {
@@ -414,6 +417,7 @@ function openEditPasien(p) {
     gender:        p.sex         ?? 'L',
     date_of_birth: p.birthDate   ?? '',
     phone:         p.phone === '—' ? '' : (p.phone ?? ''),
+    email:         p.email === '—' ? '' : (p.email ?? ''),
     address:       p.address === '—' ? '' : (p.address ?? ''),
   })
   editOpen.value = true
@@ -430,6 +434,7 @@ async function submitEditPasien() {
       gender:        editForm.gender,
       date_of_birth: editForm.date_of_birth || null,
       phone:         editForm.phone || null,
+      email:         editForm.email || null,
       address:       editForm.address || null,
     }
     await admisiStore.updatePasien(editPatientId.value, payload)
@@ -508,20 +513,20 @@ function setGuarantor(g) {
   form.memberName        = ''
   form.memberCardNumber  = ''
   insuranceSearch.value  = ''
-  // COB hanya untuk ASURANSI / PERUSAHAAN → reset bila pindah ke tipe lain
-  if (!['ASURANSI','PERUSAHAAN'].includes(g)) resetCob()
+  // COB untuk BPJS (INA-CBG + selisih) / ASURANSI / PERUSAHAAN → reset bila pindah ke tipe lain
+  if (!['BPJS','ASURANSI','PERUSAHAAN'].includes(g)) resetCob()
 }
 
 /* ─── COB (penjamin kedua) — selalu insurer tipe ASURANSI ─── */
 const cobSearch         = ref('')
 const cobDropdownOpen   = ref(false)
 
-// Daftar insurer ASURANSI untuk penjamin kedua, kecuali yang sudah dipilih
+// Daftar insurer penjamin kedua (Asuransi/Perusahaan), kecuali yang sudah dipilih
 // sebagai penjamin utama (tidak boleh sama).
 const cobInsurers = computed(() => {
   const q = cobSearch.value.trim().toLowerCase()
   return (admisiStore.insurers ?? [])
-    .filter(i => i.type === 'ASURANSI')
+    .filter(i => ['ASURANSI','PERUSAHAAN'].includes(i.type))
     .filter(i => i.id !== form.insurer_id)
     .filter(i => !q || i.name.toLowerCase().includes(q))
 })
@@ -556,15 +561,25 @@ function onCobToggle(e) {
    DOCTOR LIST — jadwal aktif hari ini (dari /jadwal-dokter/aktif-hari-ini)
    ============================================================ */
 const doctorList = computed(() =>
-  jadwalStore.aktifHariIni.map(s => ({
-    id:           s.id,
-    name:         s.nama_dokter,
-    poliklinik:   s.poliklinik || '—',
-    room:         s.room,
-    queuePrefix:  s.queue_prefix,
-    jam:          s.start_time && s.end_time ? `${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}` : '',
-    label:        `${s.nama_dokter} · ${s.poliklinik || 'Poliklinik'} · ${s.queue_prefix}${s.start_time ? ` · ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}` : ''}`,
-  })),
+  jadwalStore.aktifHariIni.map(s => {
+    const sisaVals = [s.sisa_jkn, s.sisa_nonjkn].filter(v => v != null)
+    const sisaMin  = sisaVals.length ? Math.min(...sisaVals) : null
+    const base = `${s.nama_dokter} · ${s.poliklinik || 'Poliklinik'} · ${s.queue_prefix}${s.start_time ? ` · ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}` : ''}`
+    return {
+      id:           s.id,
+      name:         s.nama_dokter,
+      poliklinik:   s.poliklinik || '—',
+      room:         s.room,
+      queuePrefix:  s.queue_prefix,
+      jam:          s.start_time && s.end_time ? `${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}` : '',
+      hampirPenuh:  !!s.hampir_penuh,
+      sisaJkn:      s.sisa_jkn,
+      sisaNonJkn:   s.sisa_nonjkn,
+      sisaMin,
+      // Peringatan inline di dropdown agar petugas tahu sejak memilih jadwal.
+      label:        base + (s.hampir_penuh ? ` — ⚠ Hampir penuh (sisa ${sisaMin ?? '?'})` : ''),
+    }
+  }),
 )
 const selectedSchedule = computed(() =>
   doctorList.value.find(d => d.id === form.doctor_schedule_id) ?? null,
@@ -618,6 +633,7 @@ function selectPatient(pt) {
     birthDate:     pt.date_of_birth,
     age:           calcAge(pt.date_of_birth),
     phone:         pt.phone        ?? '',
+    email:         pt.email        ?? '',
     province:      pt.province         ?? '',
     regency:       pt.nama_kab_kota    ?? '',
     district:      pt.nama_kecamatan   ?? '',
@@ -644,6 +660,7 @@ function selectPatient(pt) {
     toast('s', `Data pasien ${pt.name} ditemukan`)
   }
   loadJadwalBedah(pt.id)
+  loadFollowupEntitlements(pt.id)
 }
 
 function onSearchBlur() { setTimeout(() => { showSearchDrop.value = false }, 200) }
@@ -750,16 +767,139 @@ async function openProfile(pt) {
   profileVisits.value = []
   riwayatDate.value   = ''
   riwayatMeta.value   = { total: 0, current_page: 1, last_page: 1 }
+  // reset dokumen identitas
+  identityDocs.value = []
+  revokeIdentityUrls()
   try {
     profilePatient.value = await admisiStore.fetchPasienDetail(pt.id)
     loadRiwayat(1)   // muat riwayat (juga untuk angka badge tab)
+    loadIdentityDocs(pt.id)   // muat dokumen identitas (KTP)
   } catch (e) {
     toast('e', e.message)
   } finally {
     profileLoading.value = false
   }
 }
-function closeProfile() { profileOpen.value = false; profileEdit.open = false }
+function closeProfile() { profileOpen.value = false; profileEdit.open = false; revokeIdentityUrls() }
+
+/* ─── Dokumen Identitas (KTP) — per-pasien, berkas privat ber-auth ────────── */
+const identityDocs      = ref([])        // metadata dari backend
+const identityUrls      = reactive({})   // { docId: objectURL } untuk preview/unduh
+const identityLoading   = ref(false)
+const identityUploading = ref(false)
+const identityUploadPct = ref(0)
+const identityFileInput = ref(null)
+const IDENTITY_MAX_BYTES = 2 * 1024 * 1024  // 2 MB
+
+function revokeIdentityUrls() {
+  for (const k of Object.keys(identityUrls)) {
+    URL.revokeObjectURL(identityUrls[k])
+    delete identityUrls[k]
+  }
+}
+
+function fmtFileSize(n) {
+  if (!n && n !== 0) return ''
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
+}
+
+async function loadIdentityDocs(patientId) {
+  revokeIdentityUrls()
+  identityDocs.value = []
+  if (!patientId) return
+  identityLoading.value = true
+  try {
+    const { data } = await admisiApi.identityDocs(patientId)
+    identityDocs.value = data.data ?? []
+    // Lazy-fetch berkas (blob) tiap dokumen → object URL untuk preview/unduh.
+    for (const doc of identityDocs.value) {
+      try {
+        const res = await admisiApi.identityDocFile(patientId, doc.id)
+        identityUrls[doc.id] = URL.createObjectURL(res.data)
+      } catch { /* lewati berkas yg gagal dimuat */ }
+    }
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? e.message ?? 'Gagal memuat dokumen identitas')
+  } finally {
+    identityLoading.value = false
+  }
+}
+
+function pickIdentityFile() { identityFileInput.value?.click() }
+
+async function onIdentityFileSelected(e) {
+  const raw = e.target.files?.[0]
+  e.target.value = ''   // reset agar file sama bisa dipilih ulang
+  const patientId = profilePatient.value?.id
+  if (!raw || !patientId) return
+
+  let file = raw
+  if (raw.type?.startsWith('image/')) {
+    // Gambar besar dikompres otomatis di browser sampai ≤ 2 MB.
+    try {
+      file = await compressImageToUnder(raw, { maxBytes: IDENTITY_MAX_BYTES, maxDim: 1600 })
+    } catch { toast('e', 'Gagal memproses gambar'); return }
+    if (file.size > IDENTITY_MAX_BYTES) {
+      toast('w', 'Gambar masih > 2 MB setelah kompres — gunakan file lebih kecil')
+      return
+    }
+  } else if (raw.type === 'application/pdf') {
+    // PDF tidak dikompres di browser — tolak bila > 2 MB.
+    if (raw.size > IDENTITY_MAX_BYTES) { toast('w', 'PDF maksimal 2 MB — mohon kompres dulu'); return }
+  } else {
+    toast('w', 'Format harus gambar (JPG/PNG/WebP) atau PDF')
+    return
+  }
+
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('doc_type', 'KTP')
+  identityUploading.value = true
+  identityUploadPct.value = 0
+  try {
+    await admisiApi.uploadIdentityDoc(patientId, fd, (ev) => {
+      if (ev.total) identityUploadPct.value = Math.round((ev.loaded / ev.total) * 100)
+    })
+    toast('s', 'Dokumen KTP tersimpan')
+    await loadIdentityDocs(patientId)
+  } catch (err) {
+    const firstErr = err.response?.data?.errors ? Object.values(err.response.data.errors)[0]?.[0] : null
+    toast('e', firstErr ?? err.response?.data?.message ?? 'Gagal mengunggah dokumen')
+  } finally {
+    identityUploading.value = false
+    identityUploadPct.value = 0
+  }
+}
+
+function viewIdentityDoc(doc) {
+  const url = identityUrls[doc.id]
+  if (!url) { toast('w', 'Berkas belum siap — muat ulang profil'); return }
+  window.open(url, '_blank')
+}
+
+function downloadIdentityDoc(doc) {
+  const url = identityUrls[doc.id]
+  if (!url) { toast('w', 'Berkas belum siap — muat ulang profil'); return }
+  const a = document.createElement('a')
+  a.href = url
+  a.download = doc.file_name || 'ktp'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+async function confirmDeleteIdentityDoc(doc) {
+  const patientId = profilePatient.value?.id
+  if (!patientId) return
+  if (!window.confirm(`Hapus dokumen "${doc.file_name}"? Tindakan ini tidak bisa dibatalkan.`)) return
+  try {
+    await admisiApi.deleteIdentityDoc(patientId, doc.id)
+    toast('s', 'Dokumen identitas dihapus')
+    await loadIdentityDocs(patientId)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menghapus dokumen')
+  }
+}
 
 /* Daftarkan kunjungan baru langsung dari modal Profil Pasien (hasil pencarian).
    Buka wizard mode "existing" ter-prefill pasien ini, lalu tutup modal profil. */
@@ -775,7 +915,7 @@ function daftarkanDariProfil() {
 /* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
 const profileEdit = reactive({
   open: false, loading: false, errors: null,
-  name: '', gender: 'L', date_of_birth: '', phone: '',
+  name: '', gender: 'L', date_of_birth: '', phone: '', email: '',
   address: '', province: '', nama_kab_kota: '', nama_kecamatan: '', blood_type: '',
   // Snapshot wilayah asal (data lama). Dipakai untuk: (1) tampilkan info nilai
   // lama, (2) jangan timpa dgn kosong kalau petugas tak menyentuh WilayahPicker
@@ -801,6 +941,7 @@ function startProfileEdit() {
     gender:        p.gender ?? 'L',
     date_of_birth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
     phone:         p.phone ?? '',
+    email:         p.email ?? '',
     address:       p.address ?? '',
     province:      p.province ?? '',
     nama_kab_kota:  p.nama_kab_kota ?? '',
@@ -825,6 +966,7 @@ async function saveProfileEdit() {
       gender:        profileEdit.gender,
       date_of_birth: profileEdit.date_of_birth || null,
       phone:         profileEdit.phone.trim() || null,
+      email:         profileEdit.email.trim() || null,
       address:       profileEdit.address.trim() || null,
       blood_type:    profileEdit.blood_type || null,
     }
@@ -863,6 +1005,9 @@ const preopSchedules        = ref([])     // jadwal bedah aktif pasien (hari ini
 const preopChoice           = ref(null)   // null | 'PREOP' | 'REGULAR'
 const selectedPreopSchedule = ref(null)   // schedule yg dipilih saat pilih PREOP
 
+// Hak "konsultasi kontrol gratis pasca-bedah" milik pasien (badge info saat Kontrol).
+const followupEntitlements  = ref([])
+
 const todayPreopSchedule = computed(() => preopSchedules.value.find(s => s.is_today) ?? null)
 const upcomingPreopSchedule = computed(() => preopSchedules.value.find(s => !s.is_today) ?? null)
 const preopBannerType = computed(() => {
@@ -887,6 +1032,7 @@ function resetPreopState() {
   preopSchedules.value = []
   preopChoice.value = null
   selectedPreopSchedule.value = null
+  followupEntitlements.value = []
 }
 
 async function loadJadwalBedah(patientId) {
@@ -897,6 +1043,18 @@ async function loadJadwalBedah(patientId) {
   } catch (e) {
     // Silent fail — banner hanya hilang, tidak block form
     preopSchedules.value = []
+  }
+}
+
+// Hak konsultasi kontrol gratis pasca-bedah (badge info). Silent fail — informatif saja.
+async function loadFollowupEntitlements(patientId) {
+  followupEntitlements.value = []
+  if (!patientId) return
+  try {
+    const { data } = await admisiApi.kontrolGratis(patientId)
+    followupEntitlements.value = data?.data ?? data ?? []
+  } catch (e) {
+    followupEntitlements.value = []
   }
 }
 
@@ -935,6 +1093,7 @@ const blankForm = () => ({
   birthDate:     '',
   age:           '',
   phone:         '',
+  email:         '',
   // Wilayah (3 level, simpan nama via WilayahPicker)
   province:      '',
   regency:       '',
@@ -1020,6 +1179,15 @@ async function cekRujukanBpjs() {
     const b = res.data?.data ?? {}
     if (b.is_success && b.response?.rujukan) {
       rujukanCheck.data = b.response.rujukan
+      // VClaim /Rujukan/{no} mengembalikan data peserta lengkap di dalam rujukan
+      // (peserta.noKartu, hakKelas, statusPeserta, cob). Auto-isi No. Kartu BPJS
+      // + tampilkan status kepesertaan tanpa perlu Cek Peserta terpisah.
+      const ps = rujukanCheck.data.peserta
+      if (ps?.noKartu) {
+        form.bpjsNo = ps.noKartu
+        bpjsCheck.peserta = ps
+        bpjsCheck.error = ''
+      }
     } else {
       rujukanCheck.error = b.metaData?.message || 'Rujukan tidak ditemukan'
     }
@@ -1429,13 +1597,14 @@ async function submitRegistration() {
       payload.member_card_number = form.memberCardNumber || null
     }
 
-    // COB — penjamin kedua (selalu Asuransi). Backend simpan ke visit_cob.
-    // Hanya untuk ASURANSI / PERUSAHAAN. penjamin1 = penjamin utama form.
-    if (['ASURANSI','PERUSAHAAN'].includes(form.guarantor) && form.cobEnabled && form.cobInsurerId) {
+    // COB — penjamin kedua menanggung selisih. Backend simpan ke visit_cob.
+    // penjamin1 = penjamin utama (BPJS/Asuransi/Perusahaan); penjamin2 = Asuransi/Perusahaan.
+    if (['BPJS','ASURANSI','PERUSAHAAN'].includes(form.guarantor) && form.cobEnabled && form.cobInsurerId) {
+      const cobIns = (admisiStore.insurers ?? []).find(i => i.id === form.cobInsurerId)
       payload.cob = {
         penjamin1_type:       form.guarantor,
         penjamin1_insurer_id: form.insurer_id || null,
-        penjamin2_type:       'ASURANSI',
+        penjamin2_type:       cobIns?.type ?? 'ASURANSI',
         penjamin2_insurer_id: form.cobInsurerId,
         notes:                form.cobInsuranceNo ? `Polis penjamin 2: ${form.cobInsuranceNo}` : null,
       }
@@ -1464,6 +1633,7 @@ async function submitRegistration() {
         gender:        form.sex,
         date_of_birth: form.birthDate,
         phone:         form.phone    || null,
+        email:         form.email    || null,
         address:       addressParts.join(', ') || null,
         province:      form.province || null,
         bpjs_number:   form.bpjsNo   || null,
@@ -1508,6 +1678,17 @@ async function submitRegistration() {
       room:        selectedSchedule.value?.room ?? '',
     }
 
+    // Capture data label pasien (No. RM dari pasien hasil daftar — untuk pasien
+    // baru No. RM digenerate backend) sebelum closeWizard mereset form.
+    const lp = visit?.patient ?? {}
+    const labelData = {
+      name:      lp.name ?? form.name,
+      noRm:      lp.no_rm ?? form.noRm ?? '-',
+      birthDate: fmtDate(lp.date_of_birth ?? form.birthDate),
+      sex:       lp.gender ?? form.sex,
+      queueNo,
+    }
+
     const action = walkInVisitId.value ? 'didaftarkan dari Anjungan' : 'terdaftar'
     const msgs = {
       BPJS:     `SEP dalam proses · ${form.name} ${action} · Antrean ${queueNo}`,
@@ -1516,8 +1697,12 @@ async function submitRegistration() {
     toast('s', msgs[form.guarantor] ?? `${form.name} ${action} · Antrean ${queueNo}`)
     closeWizard()
 
-    // Cetak tiket antrean ke thermal printer
-    nextTick(() => printAdmisiTicket(ticketData))
+    // Cetak tiket antrean (80mm) + label pasien (58×40mm) sekaligus — dua job cetak
+    // terpisah (umumnya printer/media berbeda). Keduanya butuh izin popup browser.
+    nextTick(() => {
+      printAdmisiTicket(ticketData)
+      printLabel(labelData)
+    })
 
     // Refresh antrian + kunjungan setelah pendaftaran
     await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchDashboard()])
@@ -1570,9 +1755,12 @@ function printAdmisiTicket({ queueNo, patientName }) {
   w.document.write(ticketHtml)
   w.document.close()
   w.focus()
-  w.onload = () => { try { w.print() } catch {} }
-  // Fallback kalau onload tidak fire
-  setTimeout(() => { try { w.print() } catch {} }, 400)
+  // Cetak sekali saja: onload (kalau fire) ATAU fallback timeout — jangan dua-duanya,
+  // kalau tidak printer thermal mencetak tiket dobel.
+  let printed = false
+  const doPrint = () => { if (printed) return; printed = true; try { w.print() } catch {} }
+  w.onload = doPrint
+  setTimeout(doPrint, 400)
 }
 
 function onBirthChange() { form.age = calcAge(form.birthDate) }
@@ -1592,6 +1780,11 @@ function onBirthTextInput(e) {
 
 // Sinkronkan teks saat birthDate di-set dari luar (prefill pasien lama / reset form).
 watch(() => form.birthDate, (iso) => {
+  // Hanya sinkronkan bila perubahan datang dari LUAR (prefill/reset), bukan dari
+  // user yang sedang mengetik. Kalau teks saat ini sudah mem-parse ke iso yang
+  // sama (mis. user backspace tanggal lengkap jadi tak lengkap → iso ''), jangan
+  // timpa — kalau ditimpa, seluruh isian teks terhapus, bukan cuma 1 karakter.
+  if (dmyToIso(birthDateText.value) === iso) return
   const asText = isoToDmy(iso)
   if (asText !== birthDateText.value) birthDateText.value = asText
 }, { immediate: true })
@@ -1738,6 +1931,7 @@ onUnmounted(() => {
   clearTimeout(_visitSearchTimer)
   window.removeEventListener('keydown', onKeydown)
   admisiStore.disconnectWs()
+  revokeIdentityUrls()
 })
 </script>
 
@@ -2581,6 +2775,10 @@ onUnmounted(() => {
                 <label class="field-lbl">No. Telepon Pasien</label>
                 <input v-model="form.phone" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="08xx-xxxx-xxxx" />
               </div>
+              <div class="field full">
+                <label class="field-lbl">Email Pasien <span class="field-opt">(opsional — untuk kirim kwitansi)</span></label>
+                <input v-model="form.email" type="email" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="nama@email.com" />
+              </div>
 
               <div v-if="form.patientMode === 'new'" class="field full">
                 <label class="field-lbl">Foto Pasien</label>
@@ -2638,6 +2836,15 @@ onUnmounted(() => {
                   >{{ c }}</button>
                 </div>
                 <div class="hint">Pilih sesuai tujuan kunjungan pasien saat ini</div>
+                <!-- Hak konsultasi kontrol gratis pasca-bedah (info; tebusan otomatis di Kasir utk UMUM) -->
+                <div v-if="followupEntitlements.length" class="followup-badge">
+                  🎁 Pasien punya
+                  <strong>{{ followupEntitlements.reduce((s, e) => s + (e.remaining || 0), 0) }}× kontrol gratis</strong>
+                  <span v-for="e in followupEntitlements" :key="e.id" class="followup-chip">
+                    {{ e.procedure_name }}<template v-if="e.package_name"> · {{ e.package_name }}</template><template v-if="e.valid_until"> · s/d {{ e.valid_until }}</template>
+                  </span>
+                  <div class="hint">Diskon otomatis muncul di Kasir saat menagih konsultasi (penjamin Umum).</div>
+                </div>
               </div>
             </div>
 
@@ -2668,24 +2875,6 @@ onUnmounted(() => {
 
               <!-- BPJS -->
               <template v-if="form.guarantor === 'BPJS'">
-                <div class="field full">
-                  <label class="field-lbl">No. Kartu BPJS</label>
-                  <div class="inline-check">
-                    <input v-model="form.bpjsNo" class="form-input" placeholder="13 digit nomor kartu" />
-                    <button type="button" class="btn-check" :disabled="bpjsCheck.loading" @click="cekPesertaBpjs">
-                      {{ bpjsCheck.loading ? 'Mengecek…' : 'Cek Peserta' }}
-                    </button>
-                  </div>
-                  <div v-if="bpjsCheck.error" class="check-msg err">{{ bpjsCheck.error }}</div>
-                  <div v-else-if="bpjsCheck.peserta" class="check-msg ok">
-                    <b>{{ bpjsCheck.peserta.nama }}</b> ·
-                    {{ bpjsCheck.peserta.hakKelas?.keterangan ?? '—' }} ·
-                    <span :class="bpjsCheck.peserta.statusPeserta?.kode === '0' ? 'st-ok' : 'st-warn'">
-                      {{ bpjsCheck.peserta.statusPeserta?.keterangan ?? '—' }}
-                    </span>
-                    <template v-if="bpjsCheck.peserta.cob?.nmAsuransi"> · COB: {{ bpjsCheck.peserta.cob.nmAsuransi }}</template>
-                  </div>
-                </div>
                 <div class="seg-toggle full sub">
                   <button :class="['seg', form.sepType === 'rujukan' ? 'seg-on' : '']" @click="form.sepType = 'rujukan'">
                     Rujukan FKTP
@@ -2721,6 +2910,25 @@ onUnmounted(() => {
                   <label class="field-lbl">Kode Booking JKN Mobile</label>
                   <input v-model="form.bookingCode" class="form-input" placeholder="Kode booking dari aplikasi JKN Mobile" />
                   <div class="hint">Kode dari aplikasi Mobile JKN BPJS Kesehatan (Antrean Online)</div>
+                </div>
+                <div class="field full">
+                  <label class="field-lbl">No. Kartu BPJS</label>
+                  <div class="inline-check">
+                    <input v-model="form.bpjsNo" class="form-input" placeholder="13 digit nomor kartu" />
+                    <button type="button" class="btn-check" :disabled="bpjsCheck.loading" @click="cekPesertaBpjs">
+                      {{ bpjsCheck.loading ? 'Mengecek…' : 'Cek Peserta' }}
+                    </button>
+                  </div>
+                  <div class="hint">Terisi otomatis setelah <strong>Cek Rujukan</strong> bila peserta ditemukan</div>
+                  <div v-if="bpjsCheck.error" class="check-msg err">{{ bpjsCheck.error }}</div>
+                  <div v-else-if="bpjsCheck.peserta" class="check-msg ok">
+                    <b>{{ bpjsCheck.peserta.nama }}</b> ·
+                    {{ bpjsCheck.peserta.hakKelas?.keterangan ?? '—' }} ·
+                    <span :class="bpjsCheck.peserta.statusPeserta?.kode === '0' ? 'st-ok' : 'st-warn'">
+                      {{ bpjsCheck.peserta.statusPeserta?.keterangan ?? '—' }}
+                    </span>
+                    <template v-if="bpjsCheck.peserta.cob?.nmAsuransi"> · COB: {{ bpjsCheck.peserta.cob.nmAsuransi }}</template>
+                  </div>
                 </div>
                 <div class="info-box full">
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
@@ -2843,15 +3051,15 @@ onUnmounted(() => {
                 </div>
               </template>
 
-              <!-- COB — penjamin kedua (selalu Asuransi). Hanya untuk ASURANSI / PERUSAHAAN. -->
-              <template v-if="['ASURANSI','PERUSAHAAN'].includes(form.guarantor)">
+              <!-- COB — penjamin kedua. Untuk BPJS (INA-CBG + selisih) / ASURANSI / PERUSAHAAN. -->
+              <template v-if="['BPJS','ASURANSI','PERUSAHAAN'].includes(form.guarantor)">
                 <div class="divider full"></div>
                 <div class="field full">
                   <label class="cob-toggle-row">
                     <input type="checkbox" class="cob-check" :checked="form.cobEnabled" @change="onCobToggle" />
                     <span class="field-lbl" style="margin:0">Tambahkan Penjamin Kedua (COB)</span>
                   </label>
-                  <div class="hint">Coordination of Benefits — penjamin utama bayar dulu, sisanya ditanggung asuransi kedua.</div>
+                  <div class="hint">Coordination of Benefits — penjamin utama menanggung sesuai haknya (BPJS: INA-CBG), sisa/selisih ditanggung penjamin kedua.</div>
                 </div>
 
                 <template v-if="form.cobEnabled">
@@ -2906,6 +3114,9 @@ onUnmounted(() => {
                 </select>
                 <div v-if="selectedSchedule" class="field-hint">
                   Antrian: <strong>{{ selectedSchedule.queuePrefix }}-XXX</strong> · Poli {{ selectedSchedule.poliklinik }}<span v-if="selectedSchedule.room"> · Ruang {{ selectedSchedule.room }}</span>
+                </div>
+                <div v-if="selectedSchedule?.hampirPenuh" class="field-hint" style="color:#b45309;font-weight:600">
+                  ⚠ Jadwal hampir penuh — sisa BPJS {{ selectedSchedule.sisaJkn ?? '?' }} · Umum {{ selectedSchedule.sisaNonJkn ?? '?' }}. Pertimbangkan dahulukan triase pasien ini.
                 </div>
               </div>
               <!-- Diagnosis Awal BPJS — Segera Hadir (tunggu bridging VClaim) -->
@@ -3113,6 +3324,10 @@ onUnmounted(() => {
               <div class="field">
                 <label class="field-lbl">No. Telepon</label>
                 <input v-model="editForm.phone" class="form-input" placeholder="08xx..." maxlength="20" />
+              </div>
+              <div class="field">
+                <label class="field-lbl">Email</label>
+                <input v-model="editForm.email" type="email" class="form-input" placeholder="nama@email.com" maxlength="255" />
               </div>
               <div class="field full">
                 <label class="field-lbl">Alamat</label>
@@ -3390,6 +3605,39 @@ onUnmounted(() => {
                   <div class="cf"><span class="cf-k">Kecamatan</span><span class="cf-v">{{ profilePatient.nama_kecamatan || '—' }}</span></div>
                   <div class="cf full"><span class="cf-k">Alamat</span><span class="cf-v">{{ profilePatient.address || '—' }}</span></div>
                 </div>
+
+                <!-- Dokumen Identitas (KTP) — per-pasien, berkas privat -->
+                <div class="id-docs">
+                  <div class="id-docs-head">
+                    <span class="id-docs-title">
+                      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M14 10h4M14 14h2"/></svg>
+                      Dokumen Identitas (KTP)
+                    </span>
+                    <button class="btn btn-sm btn-secondary" :disabled="identityUploading" @click="pickIdentityFile">
+                      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                      {{ identityUploading ? `Mengunggah… ${identityUploadPct}%` : 'Unggah' }}
+                    </button>
+                    <input ref="identityFileInput" type="file" accept="image/*,application/pdf" class="id-hidden-file" @change="onIdentityFileSelected" />
+                  </div>
+
+                  <div v-if="identityLoading" class="profile-loading"><span class="spin-xs"></span> Memuat dokumen…</div>
+                  <div v-else-if="!identityDocs.length" class="id-docs-empty">
+                    Belum ada dokumen identitas. Unggah foto/scan KTP (gambar atau PDF, maks 2 MB — gambar besar dikompres otomatis).
+                  </div>
+                  <div v-else class="id-docs-list">
+                    <div v-for="doc in identityDocs" :key="doc.id" class="id-doc">
+                      <img v-if="!doc.is_pdf && identityUrls[doc.id]" :src="identityUrls[doc.id]" alt="KTP" class="id-doc-thumb" @click="viewIdentityDoc(doc)" />
+                      <div v-else class="id-doc-pdf">PDF</div>
+                      <div class="id-doc-meta">
+                        <div class="id-doc-name">{{ doc.file_name }}</div>
+                        <div class="id-doc-sub">{{ doc.doc_type }} · {{ fmtFileSize(doc.file_size) }}</div>
+                      </div>
+                      <button class="id-act" title="Lihat" @click="viewIdentityDoc(doc)"><svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+                      <button class="id-act" title="Unduh" @click="downloadIdentityDoc(doc)"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+                      <button class="id-act danger" title="Hapus" @click="confirmDeleteIdentityDoc(doc)"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
+                    </div>
+                  </div>
+                </div>
               </template>
 
               <!-- MODE EDIT -->
@@ -3421,6 +3669,11 @@ onUnmounted(() => {
                     <label>No. Telepon</label>
                     <input v-model="profileEdit.phone" class="form-input" placeholder="08xx-xxxx-xxxx" />
                     <div v-if="profileEdit.errors?.phone" class="fld-err">{{ profileEdit.errors.phone[0] }}</div>
+                  </div>
+                  <div class="fg-sm">
+                    <label>Email</label>
+                    <input v-model="profileEdit.email" type="email" class="form-input" placeholder="nama@email.com" />
+                    <div v-if="profileEdit.errors?.email" class="fld-err">{{ profileEdit.errors.email[0] }}</div>
                   </div>
                   <div class="fg-sm">
                     <label>Golongan Darah</label>
@@ -3966,6 +4219,7 @@ onUnmounted(() => {
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field.full, .full { grid-column: 1 / -1; }
 .field-lbl { font-size: 11.5px; font-weight: 600; color: var(--tm); }
+.field-opt { font-weight: 400; color: var(--th); font-size: 10px; }
 
 /* Foto pasien — field di wizard Step 1 */
 .photo-field { display: flex; align-items: center; gap: 14px; }
@@ -4224,6 +4478,11 @@ onUnmounted(() => {
 .classif-on { background: var(--gl); border-color: var(--ga); color: var(--td); }
 .classif-on-sm { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; background: var(--gl); border: 1px solid var(--ga); color: var(--td); }
 
+/* Badge hak konsultasi kontrol gratis pasca-bedah */
+.followup-badge { margin-top: 8px; padding: 8px 12px; border-radius: 10px; background: var(--gl); border: 1px solid var(--ga); font-size: 12px; color: var(--td); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.followup-chip { display: inline-block; padding: 2px 8px; border-radius: 12px; background: var(--bs); border: 1px solid var(--gb); font-size: 11px; color: var(--tu); }
+.followup-badge .hint { flex-basis: 100%; margin-top: 0; }
+
 /* COB TOGGLE */
 .cob-toggle-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .cob-check { width: 15px; height: 15px; accent-color: var(--ga); cursor: pointer; flex-shrink: 0; }
@@ -4314,4 +4573,26 @@ onUnmounted(() => {
   border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer;
 }
 .gc-done-btn:hover { filter: brightness(1.08); }
+</style>
+
+<style scoped>
+/* ─── Dokumen Identitas (KTP) di modal Profil Pasien ─── */
+.id-docs { margin-top: 1rem; border-top: 1px solid #e5e7eb; padding-top: .85rem; }
+.id-docs-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .6rem; }
+.id-docs-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--td); }
+.id-docs-title svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.id-hidden-file { display: none; }
+.id-docs-empty { font-size: 11.5px; color: var(--tu); padding: .4rem 0; line-height: 1.5; }
+.id-docs-list { display: flex; flex-direction: column; gap: .5rem; }
+.id-doc { display: flex; align-items: center; gap: .6rem; padding: .45rem .55rem; border: 1px solid #e5e7eb; border-radius: 10px; }
+.id-doc-thumb { width: 46px; height: 32px; object-fit: cover; border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+.id-doc-pdf { width: 46px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center; background: rgba(220,38,38,.08); color: #dc2626; font-size: 9px; font-weight: 700; flex-shrink: 0; }
+.id-doc-meta { flex: 1; min-width: 0; }
+.id-doc-name { font-size: 11.5px; font-weight: 600; color: var(--td); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-doc-sub { font-size: 10px; color: var(--tu); }
+.id-act { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #e5e7eb; background: #fff; border-radius: 7px; cursor: pointer; color: var(--td); flex-shrink: 0; }
+.id-act:hover { background: #f3f4f6; }
+.id-act svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.id-act.danger { color: #dc2626; }
+.id-act.danger:hover { background: rgba(220,38,38,.08); }
 </style>

@@ -27,6 +27,11 @@ function num(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
 }
+// Axis & keratometri axis = kolom INTEGER (0–180) → bulatkan; desimal ⇒ 422.
+function numInt(v) {
+  const n = num(v)
+  return n === null ? null : Math.round(n)
+}
 function str(v) {
   return v === '' || v === null || v === undefined ? null : v
 }
@@ -49,7 +54,11 @@ function mapQueueRow(q) {
   const visit   = q.visit ?? {}
   const patient = visit.patient ?? q.patient ?? {}
   const nurse   = visit.nurse_assessment ?? null
+  const sched   = visit.doctor_schedule ?? null
   return {
+    dpjp:         sched?.employee?.name ?? null,
+    poliklinik:   sched?.poliklinik ?? null,
+    room:         sched?.room ?? null,
     id:           q.id,
     qNum:         q.queue_number,
     name:         patient.name ?? '—',
@@ -274,35 +283,35 @@ function buildPemeriksaanPayload() {
     // Autoref
     autoref_od_sph:  num(autoref.value.od_s),
     autoref_od_cyl:  num(autoref.value.od_c),
-    autoref_od_axis: num(autoref.value.od_ax),
+    autoref_od_axis: numInt(autoref.value.od_ax),
     autoref_os_sph:  num(autoref.value.os_s),
     autoref_os_cyl:  num(autoref.value.os_c),
-    autoref_os_axis: num(autoref.value.os_ax),
+    autoref_os_axis: numInt(autoref.value.os_ax),
     // Keratometri (k_add_* di UI dipakai sebagai axis sesuai schema keratometri_axis_*)
     keratometri1_od:     num(autoref.value.k_od_1),
     keratometri2_od:     num(autoref.value.k_od_2),
-    keratometri_axis_od: num(autoref.value.k_add_od),
+    keratometri_axis_od: numInt(autoref.value.k_add_od),
     keratometri1_os:     num(autoref.value.k_os_1),
     keratometri2_os:     num(autoref.value.k_os_2),
-    keratometri_axis_os: num(autoref.value.k_add_os),
+    keratometri_axis_os: numInt(autoref.value.k_add_os),
     // Refraksi Subjektif
     refraksi_subjektif_od_sph:  num(refine.value.od_s),
     refraksi_subjektif_od_cyl:  num(refine.value.od_c),
-    refraksi_subjektif_od_axis: num(refine.value.od_ax),
+    refraksi_subjektif_od_axis: numInt(refine.value.od_ax),
     refraksi_subjektif_os_sph:  num(refine.value.os_s),
     refraksi_subjektif_os_cyl:  num(refine.value.os_c),
-    refraksi_subjektif_os_axis: num(refine.value.os_ax),
+    refraksi_subjektif_os_axis: numInt(refine.value.os_ax),
     // ADD presbyopia (di tab Refine)
     add_power_od: num(refine.value.add_od),
     add_power_os: num(refine.value.add_os),
     // Kacamata lama
     old_glasses_od_sph:  num(oldGlasses.value.od_s),
     old_glasses_od_cyl:  num(oldGlasses.value.od_c),
-    old_glasses_od_axis: num(oldGlasses.value.od_ax),
+    old_glasses_od_axis: numInt(oldGlasses.value.od_ax),
     old_glasses_add_od:  num(oldGlasses.value.od_add),
     old_glasses_os_sph:  num(oldGlasses.value.os_s),
     old_glasses_os_cyl:  num(oldGlasses.value.os_c),
-    old_glasses_os_axis: num(oldGlasses.value.os_ax),
+    old_glasses_os_axis: numInt(oldGlasses.value.os_ax),
     old_glasses_add_os:  num(oldGlasses.value.os_add),
     // IOP
     iop_od:     num(iop.value.od),
@@ -325,11 +334,11 @@ function buildResepPayload() {
   return {
     rx_od_sph:  num(refine.value.od_s),
     rx_od_cyl:  num(refine.value.od_c),
-    rx_od_axis: num(refine.value.od_ax),
+    rx_od_axis: numInt(refine.value.od_ax),
     rx_od_add:  num(rxFinal.value.od_add),
     rx_os_sph:  num(refine.value.os_s),
     rx_os_cyl:  num(refine.value.os_c),
-    rx_os_axis: num(refine.value.os_ax),
+    rx_os_axis: numInt(refine.value.os_ax),
     rx_os_add:  num(rxFinal.value.os_add),
     glasses_type:  str(rxFinal.value.jenis),
     lens_material: str(rxFinal.value.lensa),
@@ -377,6 +386,21 @@ async function openRxModal() {
 function fillFromAutoref() {
   refine.value = { ...refine.value, od_s: autoref.value.od_s, od_c: autoref.value.od_c, od_ax: autoref.value.od_ax, os_s: autoref.value.os_s, os_c: autoref.value.os_c, os_ax: autoref.value.os_ax }
   toast('i', 'Refraksi diisi dari hasil autoref')
+}
+
+// Lewati Refraksi: pasien tidak perlu refraksi. Record ditandai "dilewati"
+// (tanpa data klinis) & antrean tetap maju (gate paralel ke Dokter / Kirim ke Bedah).
+async function onSkipRefraksi() {
+  if (!store.selectedQueue?.id) { toast('w', 'Pilih pasien dulu'); return }
+  if (!confirm('Lewati refraksi untuk pasien ini? Pemeriksaan ditandai "tidak diperlukan" dan pasien lanjut ke antrean berikutnya.')) return
+  try {
+    await store.skipRefraksi(store.selectedQueue.id)
+    toast('s', 'Refraksi dilewati — pasien lanjut ke antrean berikutnya')
+    qFilter.value = 'done'
+    store.clearSelected()
+  } catch (err) {
+    toast('e', err.message || 'Gagal melewati refraksi')
+  }
 }
 
 async function sendToDoctor() {
@@ -566,7 +590,7 @@ function toast(type, msg) {
 
             <!-- Primary filter -->
             <div class="primary-filter" role="group" aria-label="Filter utama antrean">
-              <button :class="['pf-btn', qFilter !== 'done' ? 'a' : '']" @click="qFilter = 'waiting'">
+              <button :class="['pf-btn', qFilter === 'waiting' ? 'a' : '']" @click="qFilter = 'waiting'">
                 Belum Selesai
                 <span v-if="cWait" class="pf-ct">{{ cWait }}</span>
               </button>
@@ -613,6 +637,10 @@ function toast(type, msg) {
                 <div class="q-info">
                   <div class="q-name">{{ p.name }}</div>
                   <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.poli }}</div>
+                  <div v-if="p.dpjp" class="q-dpjp" :title="`DPJP tujuan: ${p.dpjp}`">
+                    <svg viewBox="0 0 24 24" class="q-dpjp-ic" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+                    DPJP: {{ p.dpjp }}
+                  </div>
                   <div class="q-tags">
                     <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : p.ptype === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ p.ptype === 'bpjs' ? 'BPJS' : p.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
@@ -671,6 +699,12 @@ function toast(type, msg) {
             <div class="b-info">
               <div class="b-name">{{ selP.name }}</div>
               <div class="b-meta">RM: {{ selP.rm }} · {{ selP.age }} th · {{ selP.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</div>
+              <div v-if="selP.dpjp" class="b-dpjp" :title="`DPJP tujuan: ${selP.dpjp}`">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+                DPJP: <strong>{{ selP.dpjp }}</strong>
+                <span v-if="selP.poliklinik"> · {{ selP.poliklinik }}</span>
+                <span v-if="selP.room"> · {{ selP.room }}</span>
+              </div>
               <div v-if="selP.address" class="b-address">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
                 {{ selP.address }}
@@ -831,7 +865,7 @@ function toast(type, msg) {
                   <input id="iop-os" v-model="iop.os" type="number" class="form-input" placeholder="16" />
                 </div>
               </div>
-              <div v-if="iop.od && (Number(iop.od) >= 22 || Number(iop.os) >= 22)"
+              <div v-if="(iop.od && Number(iop.od) >= 22) || (iop.os && Number(iop.os) >= 22)"
                    class="alert-warn" role="alert">
                 ⚠ IOP meningkat — pertimbangkan rujuk dokter SpM untuk pemeriksaan glaukoma.
               </div>
@@ -1052,6 +1086,17 @@ function toast(type, msg) {
                   </template>
                 </button>
                 <button
+                  v-if="!store.isFinalized"
+                  type="button"
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="store.skipping || store.finalizing || store.pemeriksaanLoading"
+                  title="Pasien tidak perlu refraksi — antrean tetap lanjut ke dokter"
+                  @click="onSkipRefraksi"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+                  {{ store.skipping ? 'Melewati…' : 'Tidak Perlu Refraksi' }}
+                </button>
+                <button
                   v-if="store.isFinalized"
                   type="button"
                   class="btn btn-secondary btn-lg send-btn"
@@ -1213,6 +1258,8 @@ function toast(type, msg) {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-dpjp { font-size: 10px; color: #0e3a66; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-dpjp-ic { width: 10px; height: 10px; flex-shrink: 0; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 
 /* Pills */
@@ -1271,6 +1318,8 @@ function toast(type, msg) {
 .b-meta { font-size: 11px; color: var(--tu); margin-top: 3px; }
 .b-address { font-size: 10.5px; color: var(--tu); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
 .b-address svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+.b-dpjp { font-size: 11px; color: #0e3a66; font-weight: 600; margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+.b-dpjp svg { width: 11px; height: 11px; flex-shrink: 0; }
 .b-tags { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
 .ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
 .ptg-b { background: #dbeafe; color: #1e40af; }

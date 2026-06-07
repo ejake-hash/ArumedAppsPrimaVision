@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <meta name="viewport" content="width=1280" />
+    <!-- Viewport dikelola PER-RUTE oleh router (src/router/index.js): rute
+         `login` & `ttd-dokumen` = `width=device-width` (responsif HP/tablet),
+         sisanya `width=1280` (desktop penuh). Nilai di bawah hanya default
+         sebelum JS jalan. Catatan: browser desktop MENGABAIKAN meta ini —
+         "lantai" desktop 1280 ditegakkan di CSS (base.css body min-width). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>his-primavision</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

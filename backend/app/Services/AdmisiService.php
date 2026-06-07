@@ -417,6 +417,7 @@ class AdmisiService
             'gender'        => $data['gender'],
             'date_of_birth' => $data['date_of_birth'],
             'phone'         => $data['phone'] ?? null,
+            'email'         => $data['email'] ?? null,
             'address'       => $data['address'] ?? null,
             'province'      => $data['province'] ?? null,
             'bpjs_number'   => $data['bpjs_number'] ?? null,
@@ -525,6 +526,28 @@ class AdmisiService
             // alur INAP (datang H-1 → Menunggu Kamar) vs bedah rawat jalan (hari-H).
             'requires_inpatient' => (bool) $s->requires_inpatient,
         ])->all();
+    }
+
+    /**
+     * Hak "konsultasi kontrol gratis pasca-bedah" yang masih aktif untuk pasien —
+     * dipakai badge Admisi saat daftar kunjungan Kontrol (manfaat: 1x per operasi,
+     * penjamin UMUM). Lihat PackageFollowupService / KasirService::buildFollowupConsultLines.
+     */
+    public function getFollowupEntitlements(string $patientId): array
+    {
+        return \App\Models\PackageFollowupEntitlement::redeemableForPatient($patientId)
+            ->whereNull('redeemed_visit_id')
+            ->with(['procedure:id,name', 'sourcePackage:id,name'])
+            ->orderBy('created_at')
+            ->get()
+            ->map(fn ($e) => [
+                'id'             => $e->id,
+                'procedure_name' => $e->procedure?->name ?? 'Konsultasi',
+                'package_name'   => $e->sourcePackage?->name,
+                'remaining'      => max(0, (int) $e->total_count - (int) $e->used_count),
+                'valid_until'    => $e->valid_until?->toDateString(),
+            ])
+            ->all();
     }
 
     public function updatePasien(string $id, array $data): Patient
@@ -1053,6 +1076,7 @@ class AdmisiService
                     'gender'        => $data['gender'],
                     'date_of_birth' => $data['date_of_birth'],
                     'phone'         => $data['phone']         ?? null,
+                    'email'         => $data['email']         ?? null,
                     'address'       => $data['address']       ?? null,
                     'province'      => $data['province']      ?? null,
                     'bpjs_number'   => $data['bpjs_number']   ?? null,
@@ -1766,8 +1790,8 @@ class AdmisiService
 
     /**
      * Simpan penjamin kedua (COB) untuk visit. No-op kalau $cob null/kosong.
-     * penjamin2 selalu tipe ASURANSI (divalidasi di controller). Idempoten via
-     * updateOrCreate (visit_id unique).
+     * Penjamin-1 boleh BPJS (menanggung INA-CBG) atau Asuransi/Perusahaan; penjamin-2
+     * Asuransi/Perusahaan (menanggung selisih). Idempoten via updateOrCreate (visit_id unique).
      */
     private function saveCob(string $visitId, ?array $cob): void
     {
@@ -1775,11 +1799,20 @@ class AdmisiService
             return;
         }
 
+        // Penjamin-1 BPJS biasanya tak menyertakan insurer_id eksplisit → pakai insurer
+        // sistem BPJS agar resolusi tarif/klaim downstream konsisten (pola systemInsurerId).
+        $penjamin1InsurerId = $cob['penjamin1_insurer_id'] ?? null;
+        if (! $penjamin1InsurerId && ($cob['penjamin1_type'] ?? null) === 'BPJS') {
+            $penjamin1InsurerId = \App\Models\Insurer::where('is_system', true)
+                ->where('type', 'BPJS')
+                ->value('id');
+        }
+
         VisitCob::updateOrCreate(
             ['visit_id' => $visitId],
             [
                 'penjamin1_type'       => $cob['penjamin1_type'],
-                'penjamin1_insurer_id' => $cob['penjamin1_insurer_id'] ?? null,
+                'penjamin1_insurer_id' => $penjamin1InsurerId,
                 'penjamin2_type'       => $cob['penjamin2_type'] ?? 'ASURANSI',
                 'penjamin2_insurer_id' => $cob['penjamin2_insurer_id'],
                 'is_active'            => true,

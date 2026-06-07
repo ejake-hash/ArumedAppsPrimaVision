@@ -17,25 +17,68 @@ class SurgeryPackage extends Model
     public const TYPE_BEDAH = 'BEDAH';
     public const TYPE_PEMERIKSAAN = 'PEMERIKSAAN';
 
+    /**
+     * Tipe operasi (klasifikasi klinis) — PENENTU form resmi mana yang terbit
+     * (VITREORETINA → RM 10.1, KATARAK → RM 2.3, dst). Berbeda dari `category`
+     * yang free-text untuk label/filter tarif.
+     */
+    public const SURGERY_TYPES = ['KATARAK', 'VITREORETINA', 'GLAUKOMA', 'LAINNYA'];
+
     protected $fillable = [
         'legacy_uuid',
         'name',
         'code',
         'package_type',
         'category',
+        'surgery_type',
         'description',
         'keterangan',
         'estimated_duration',
         'price',
         'total_base_price',
+        'followup_procedure_id',
+        'followup_count',
+        'followup_valid_days',
         'is_active',
     ];
 
     protected $casts = [
-        'price'            => 'decimal:2',
-        'total_base_price' => 'decimal:2',
-        'is_active'        => 'boolean',
+        'price'               => 'decimal:2',
+        'total_base_price'    => 'decimal:2',
+        'followup_count'       => 'integer',
+        'followup_valid_days'  => 'integer',
+        'is_active'           => 'boolean',
     ];
+
+    /** Paket memberi manfaat "konsultasi kontrol gratis pasca-bedah"? (kartu Opsi B) */
+    public function grantsFollowup(): bool
+    {
+        return $this->followup_procedure_id !== null && (int) $this->followup_count > 0;
+    }
+
+    /**
+     * Tebak surgery_type dari nama paket (AUTO-SARAN). Sumber kebenaran tetap
+     * kolom eksplisit; ini hanya default saat admin belum memilih. VITREORETINA
+     * diperiksa DULU agar kasus gabungan (phaco+vitrektomi) jatuh ke retina.
+     * Selaras dgn deteksi nama di BedahView (VITREK_RE / IOL_RE).
+     */
+    public static function suggestSurgeryType(?string $name): ?string
+    {
+        $n = trim((string) $name);
+        if ($n === '') {
+            return null;
+        }
+        if (preg_match('/vitrek|vitrec|vitreous|ppv|pars plana|vitreoretina|retina|buckle|bakel/i', $n)) {
+            return 'VITREORETINA';
+        }
+        if (preg_match('/phaco|fako|katarak|cataract|\biol\b|sics|lensa intraokular/i', $n)) {
+            return 'KATARAK';
+        }
+        if (preg_match('/glaukoma|glaucoma|trabekulekto|trabeculecto|trabekulo|iridekto|iridecto|ahmed|baerveldt/i', $n)) {
+            return 'GLAUKOMA';
+        }
+        return null;
+    }
 
     public function scopeActive($query)
     {
@@ -73,6 +116,13 @@ class SurgeryPackage extends Model
             ->value('total');
 
         $this->update(['total_base_price' => $total]);
+
+        // Tarif berbasis %-diskon mengikuti base (sell_price = base × (1 − pct/100)).
+        // Tarif nominal SENGAJA tidak diubah (harga kepastian per surat edaran).
+        $this->packageTariffs()->whereNotNull('discount_percent')->get()->each(function ($t) use ($total) {
+            $t->update(['sell_price' => round($total * (1 - (float) $t->discount_percent / 100), 2)]);
+        });
+
         return $total;
     }
 }

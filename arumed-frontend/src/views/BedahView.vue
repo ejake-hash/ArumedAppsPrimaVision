@@ -2,9 +2,10 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { useAuthStore } from '@/stores/authStore'
-import { bedahApi, alatMedisApi, masterApi, dokterApi, tarifPaketApi } from '@/services/api'
+import { bedahApi, masterApi, dokterApi, tarifPaketApi } from '@/services/api'
 import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
 import AnesthesiaReportWizard from '@/components/bedah/AnesthesiaReportWizard.vue'
+import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 
 const masterStore = useMasterDataStore()
 const auth = useAuthStore()
@@ -83,6 +84,13 @@ function transformQueueItem(q) {
     diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter
     diagnosaPasca:  '',
     isPhaco:        isIol,          // auto-deteksi IOL; petugas dpt override via checkbox Pra-Bedah
+    // Pemicu RM 10.1 (Laporan Operasi Vitreo Retina): surgery_type paket = sumber
+    // kebenaran; bila belum diset, fallback deteksi nama (VITREK_RE). Override manual
+    // via checkbox di tab Laporan (selaras pola isPhaco). Terjaga dari reset polling.
+    surgeryType:    pkg?.surgery_type ?? null,
+    isVitreoretina: (pkg?.surgery_type === 'VITREORETINA') || (!pkg?.surgery_type && VITREK_RE.test(pkg?.name ?? prosedur)),
+    // Pemicu RM 2.3 Catatan Operasi (katarak): surgery_type=KATARAK atau fallback IOL_RE.
+    isKatarak:      (pkg?.surgery_type === 'KATARAK') || (!pkg?.surgery_type && IOL_RE.test(pkg?.name ?? prosedur)),
     recordId:       null,           // surgery_records.id (diisi saat mulai/timeout/pick)
     timIn:          null,
     timOut:         null,
@@ -120,7 +128,11 @@ function transformQueueItem(q) {
     instruksi:      Array(6).fill(false),
     obatPasca:      [],
     resepSent:      false,
-    laporanFinalized: q.status === 'COMPLETED',
+    // operationDone = operasi selesai & pasien diteruskan (sembunyikan tombol Selesai).
+    // laporanFinalized = laporan TERKUNCI read-only (hanya dari finalized_at/legacy);
+    // "Selesai Operasi" TIDAK mengunci — laporan tetap editable, dikunci saat TTD dokumen.
+    operationDone:    q.status === 'COMPLETED',
+    laporanFinalized: false,
   }
 }
 
@@ -132,6 +144,10 @@ function transformQueueItem(q) {
 function syncAuthoritativeFields(s, q) {
   const sched = q.surgery_schedule
   s.queueStatus = q.status                       // WAITING/CALLED/IN_PROGRESS/COMPLETED
+  // Sekali COMPLETED tetap done (one-way) → sembunyikan tombol "Selesai Operasi"
+  // walau penyelesaian dilakukan aktor lain. Tak menyentuh laporanFinalized (lock
+  // dari finalized_at saja; alur bedah baru sengaja tak pernah mengunci di sini).
+  if (q.status === 'COMPLETED') s.operationDone = true
   // jenis_pelayanan = server-authoritative (bisa berubah saat admit RANAP) → sinkron.
   if (q.visit?.jenis_pelayanan) s.jenisPelayanan = q.visit.jenis_pelayanan
   // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
@@ -221,6 +237,7 @@ const selP = ref(null)
 const tab = ref('prabedah')
 const showMulaiModal = ref(false)
 const showFinalModal = ref(false)
+const showRmDocsModal = ref(false)  // dokumen RM (Checklist / Laporan) — dibuka dari tombol pojok tab
 const busyOp = ref(false)          // lock tombol lifecycle (mulai/timeout/finalisasi)
 const mulaiStep = ref(1)
 const timDropdownOpen = ref({ operator: false, asisten1: false, asisten2: false, scrubNurse: false, circNurse: false, anestesi: false })
@@ -266,22 +283,20 @@ watch(selP, (p) => {
   // Auto-load surgery requests untuk visit ini (jika ada)
   if (p?.visitId) {
     loadSurgeryRequests(p.visitId)
-    loadEquipmentUsages(p.visitId)
     loadVisitPackage(p.visitId)
     loadVpPickerOptions(p.visitId)
   } else {
     surgeryReqs.value = []
-    equipmentUsages.value = []
     visitPackages.value = []
     vpAddPkgId.value = ''
   }
 })
 
-// Load master sekali di mount (dropdown pilihan: alat medis, IOL, obat pasca-bedah)
+// Load master sekali di mount (dropdown pilihan: IOL, obat pasca-bedah)
 onMounted(() => {
-  loadEquipmentMaster()
   loadIolMaster()
   loadObatMaster()
+  loadPaketObat()
 })
 
 // ── Surgery Requests (BHP/IOL dari Farmasi) — used_qty per item ───────────────
@@ -332,69 +347,7 @@ const receivedSurgeryReqs = computed(() =>
   surgeryReqs.value.filter((r) => r.status === 'RECEIVED' && (r.bhp_items?.length ?? 0) > 0)
 )
 
-// ── Medical Equipment Usage (Fase 3) ──────────────────────────────────────
-const equipmentList = ref([])  // master alat aktif (sumber pilihan)
-const equipmentUsages = ref([])  // log usage utk visit ini
-const equipmentLoading = ref(false)
-const newEquipmentId = ref('')
-const addingEquip = ref(false)   // guard cegah double-submit pemakaian alat
-
-async function loadEquipmentMaster() {
-  try {
-    const res = await alatMedisApi.list({ active: 1, per_page: 100 })
-    const list = res.data?.data?.data ?? res.data?.data ?? []
-    equipmentList.value = Array.isArray(list) ? list : []
-  } catch (e) {
-    equipmentList.value = []
-  }
-}
-
-async function loadEquipmentUsages(visitId) {
-  if (!visitId) { equipmentUsages.value = []; return }
-  equipmentLoading.value = true
-  try {
-    const res = await alatMedisApi.usagesByVisit(visitId)
-    equipmentUsages.value = Array.isArray(res.data?.data) ? res.data.data : []
-  } catch (e) {
-    equipmentUsages.value = []
-  } finally {
-    equipmentLoading.value = false
-  }
-}
-
-async function addEquipmentUsage() {
-  if (addingEquip.value) return
-  if (!newEquipmentId.value || !selP.value?.visitId) {
-    toast('w', 'Pilih alat dulu')
-    return
-  }
-  addingEquip.value = true
-  try {
-    await alatMedisApi.recordUsage({
-      medical_equipment_id: newEquipmentId.value,
-      visit_id: selP.value.visitId,
-      surgery_schedule_id: selP.value.scheduleId ?? null,
-    })
-    toast('s', 'Pemakaian alat dicatat')
-    newEquipmentId.value = ''
-    await loadEquipmentUsages(selP.value.visitId)
-  } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal mencatat')
-  } finally {
-    addingEquip.value = false
-  }
-}
-
-async function removeEquipmentUsage(usage) {
-  if (!confirm(`Hapus catatan pemakaian ${usage.equipment?.name}?`)) return
-  try {
-    await alatMedisApi.deleteUsage(usage.id)
-    toast('s', 'Catatan dihapus')
-    if (selP.value?.visitId) await loadEquipmentUsages(selP.value.visitId)
-  } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal menghapus')
-  }
-}
+// (Pemakaian Alat Medis dihapus — tarif tidak ditagih dari log pemakaian.)
 
 // ── IOL Master (untuk pilih lensa terpasang dari katalog) ─────────────────────
 const iolMaster = ref([])         // master IOL aktif & tersedia
@@ -629,11 +582,12 @@ const hasAnesthesia = computed(() => {
   return selP.value.anestesi === 'Umum' || !!(selP.value.tim?.anestesi || '').trim()
 })
 
-// Prosedur vitrektomi → section retina di laporan (tanpa IOL).
-const isVitrek = computed(() => {
-  if (!selP.value) return false
-  return VITREK_RE.test(selP.value.prosedur || '')
-})
+// Prosedur vitrektomi → section "Detail Vitrektomi" + simpan vitrectomy_details.
+// Pakai SUMBER KEBENARAN yang sama dengan pemicu RM 10.1 (selP.isVitreoretina =
+// surgery_type paket, fallback nama). Sebelumnya hanya regex `prosedur` → bila paket
+// di-set VITREORETINA tapi namanya tak match regex, form RM 10.1 muncul tapi kolom
+// vitrektomi tak tampil & vitrectomy_details dikirim null (detail hilang dari laporan).
+const isVitrek = computed(() => !!selP.value?.isVitreoretina)
 
 // Pasien yang SUDAH rawat inap (bedah = sub-aktivitas) → disposisi kembali ke kamar
 // (LANJUT_RANAP/HCU), BUKAN Pulang/Rawat-Inap-baru. Dipakai utk dropdown adaptif.
@@ -747,12 +701,17 @@ function skipPt(p, e) {
   const arr = patients.value
   const idx = arr.findIndex(x => x.id === p.id)
   if (idx === -1) return
-  if (idx >= arr.length - 1) {
+  // Tetangga berikutnya = baris TERLIHAT (filtQ) di bawahnya, bukan arr[idx+1] di array
+  // penuh — saat filter/pencarian aktif, idx+1 bisa baris tersembunyi (swap tak terlihat).
+  const vis = filtQ.value
+  const vIdx = vis.findIndex(x => x.id === p.id)
+  if (vIdx === -1 || vIdx >= vis.length - 1) {
     toast('w', `${p.name} sudah di posisi paling bawah`)
     return
   }
-  const next = arr[idx + 1]
-  arr.splice(idx, 2, next, p)
+  const nIdx = arr.findIndex(x => x.id === vis[vIdx + 1].id)
+  if (nIdx === -1) return
+  const tmp = arr[idx]; arr[idx] = arr[nIdx]; arr[nIdx] = tmp
   toast('w', `${p.name} (${p.qNum}) diturunkan 1 posisi`)
 }
 
@@ -781,8 +740,11 @@ async function doMulaiOperasi() {
     showMulaiModal.value = false
     startTimerInterval()
     toast('s', 'Operasi dimulai — Timer Time In berjalan')
-    // Record kini ada → simpan Sign In (WHO gerbang 1) + muat IOL terpasang.
+    // Record kini ada → persist Tim Bedah pra-bedah (operator/asisten/anestesi) yang
+    // sudah diisi (tombol "Simpan Tim Bedah" disabled selama recordId null; hint janjikan
+    // tersimpan saat Mulai Operasi) + simpan Sign In (WHO gerbang 1) + muat IOL terpasang.
     if (selP.value.recordId) {
+      await saveOperationReport(true)
       if (signInComplete.value && canEditChecklist.value) await saveChecklistPhase('sign_in')
       await loadIolUsages()
     }
@@ -844,6 +806,11 @@ async function doTimeOut() {
     return
   }
   if (busyOp.value) return
+  // Guard: komplikasi dicentang tapi detail kosong → backend 422 (required_if).
+  if (selP.value.komplikasi && !selP.value.komplikasiNote && !selP.value.komplikasiTipe) {
+    toast('w', 'Isi tipe atau catatan komplikasi dulu (di tab Laporan) sebelum Time Out')
+    return
+  }
   busyOp.value = true
   try {
     // Backend: schedule IN_PROGRESS→DONE + isi laporan. TIDAK meneruskan pasien
@@ -1183,6 +1150,9 @@ async function kirimResep() {
       route:         o.rute || null,
       duration_days: parseDurDays(o.dur),
       notes:         null,
+      // Obat dari paket → kandidat terserap ke harga paket (backend set is_bedah
+      // bersyarat bila pasien berpaket). Obat manual → bundled=false → tetap ditagih.
+      bundled:       !!o.fromPaket,
     }))
   if (!items.length) { toast('w', 'Obat harus dipilih dari master'); return }
   sendingResep.value = true
@@ -1194,6 +1164,152 @@ async function kirimResep() {
     toast('e', e.response?.data?.message ?? 'Gagal mengirim resep pasca-bedah')
   } finally {
     sendingResep.value = false
+  }
+}
+
+// ── Paket Obat Pasca-Bedah (template resep rutin) ───────────────────────────
+const paketObatList = ref([])          // [{id, name, category, items:[{medication_id, quantity, dose, frequency, route, duration_days, medication}]}]
+const paketPickId   = ref('')           // paket dipilih utk "Terapkan"
+const showPaketModal = ref(false)
+const paketBusy = ref(false)
+// Form modal kelola: id null = paket baru.
+const paketForm = reactive({ id: null, name: '', category: '', items: [] })
+const paketNewItem = reactive({ medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
+const paketMedSearch = ref('')          // autocomplete obat di modal (terpisah dari obatSearchPasca)
+
+// Pasien punya paket bedah aktif → obat paket terserap (tak ditagih terpisah).
+const hasVisitPaket = computed(() => (visitPackages.value?.length ?? 0) > 0)
+
+// Filter master obat utk autocomplete di modal kelola paket (+ tampilkan stok).
+const paketMedFiltered = computed(() => {
+  const q = paketMedSearch.value.trim().toLowerCase()
+  if (!q) return obatMaster.value.slice(0, 30)
+  return obatMaster.value.filter((o) =>
+    `${o.name ?? ''} ${o.code ?? ''} ${o.golongan ?? ''}`.toLowerCase().includes(q)
+  ).slice(0, 30)
+})
+
+async function loadPaketObat() {
+  try {
+    const res = await bedahApi.paketObat.list('')
+    paketObatList.value = res.data?.data ?? []
+  } catch { paketObatList.value = [] }
+}
+
+// duration_days → label dropdown (kebalikan parseDurDays). 30→'1 bulan', else 'N hari'.
+function formatDur(days) {
+  const n = Number(days)
+  if (!n) return '7 hari'
+  if (n % 30 === 0) return `${n / 30} bulan`
+  if (n % 7 === 0 && n >= 21) return `${n / 7} minggu`
+  return `${n} hari`
+}
+
+// Terapkan paket → auto-isi obatPasca (append + dedupe by medication_id), tandai fromPaket.
+function applyPaketObat() {
+  if (!selP.value) return
+  const pkg = paketObatList.value.find((p) => p.id === paketPickId.value)
+  if (!pkg) { toast('w', 'Pilih paket obat dulu'); return }
+  if (selP.value.resepSent) return
+  const existing = new Set(selP.value.obatPasca.map((o) => o.medication_id))
+  let added = 0
+  for (const it of (pkg.items ?? [])) {
+    if (!it.medication_id || existing.has(it.medication_id)) continue
+    selP.value.obatPasca.push({
+      medication_id: it.medication_id,
+      nama:    it.medication?.name ?? '—',
+      jumlah:  it.quantity ?? 1,
+      dosis:   it.dose ?? '',
+      freq:    it.frequency ?? '',
+      dur:     formatDur(it.duration_days),
+      rute:    it.route ?? '',
+      fromPaket: true,
+    })
+    existing.add(it.medication_id)
+    added++
+  }
+  toast(added ? 's' : 'i', added ? `${added} obat dari paket "${pkg.name}" ditambahkan` : 'Semua obat paket sudah ada di daftar')
+  paketPickId.value = ''
+}
+
+// ── Modal kelola paket ──
+function openPaketModal() {
+  resetPaketForm()
+  showPaketModal.value = true
+}
+function resetPaketForm() {
+  paketForm.id = null; paketForm.name = ''; paketForm.category = ''; paketForm.items = []
+  paketMedSearch.value = ''
+  Object.assign(paketNewItem, { medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
+}
+function editPaket(pkg) {
+  paketForm.id = pkg.id
+  paketForm.name = pkg.name
+  paketForm.category = pkg.category ?? ''
+  paketForm.items = (pkg.items ?? []).map((it) => ({
+    medication_id: it.medication_id,
+    nama:   it.medication?.name ?? '—',
+    jumlah: it.quantity ?? 1,
+    dosis:  it.dose ?? '',
+    freq:   it.frequency ?? '',
+    dur:    formatDur(it.duration_days),
+    rute:   it.route ?? '',
+  }))
+}
+function pickPaketMed(o) {
+  paketNewItem.medication_id = o.id
+  paketNewItem.nama = o.name
+  paketMedSearch.value = ''
+}
+function addPaketItem() {
+  if (!paketNewItem.medication_id) { toast('w', 'Pilih obat dari master dulu'); return }
+  paketForm.items.push({ ...paketNewItem })
+  Object.assign(paketNewItem, { medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
+}
+function removePaketItem(i) { paketForm.items.splice(i, 1) }
+
+async function savePaket() {
+  if (paketBusy.value) return
+  if (!paketForm.name.trim()) { toast('w', 'Nama paket wajib diisi'); return }
+  if (!paketForm.items.length) { toast('w', 'Tambahkan minimal 1 obat'); return }
+  const payload = {
+    name: paketForm.name.trim(),
+    category: paketForm.category?.trim() || null,
+    items: paketForm.items.map((o) => ({
+      medication_id: o.medication_id,
+      quantity:      Math.max(1, Number(o.jumlah) || 1),
+      dose:          o.dosis || null,
+      frequency:     o.freq || null,
+      route:         o.rute || null,
+      duration_days: parseDurDays(o.dur),
+    })),
+  }
+  paketBusy.value = true
+  try {
+    if (paketForm.id) await bedahApi.paketObat.update(paketForm.id, payload)
+    else await bedahApi.paketObat.create(payload)
+    toast('s', paketForm.id ? 'Paket obat diperbarui' : 'Paket obat dibuat')
+    await loadPaketObat()
+    resetPaketForm()
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyimpan paket obat')
+  } finally {
+    paketBusy.value = false
+  }
+}
+
+async function deletePaket(pkg) {
+  if (!confirm(`Hapus paket obat "${pkg.name}"?`)) return
+  paketBusy.value = true
+  try {
+    await bedahApi.paketObat.remove(pkg.id)
+    toast('s', 'Paket obat dihapus')
+    if (paketForm.id === pkg.id) resetPaketForm()
+    await loadPaketObat()
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menghapus paket obat')
+  } finally {
+    paketBusy.value = false
   }
 }
 
@@ -1238,12 +1354,14 @@ async function doFinalisasi() {
     }
     // Backend: kunci laporan (finalized_at) + advance antrean ke Farmasi/Kasir.
     await bedahApi.finalizeRecord(recordId)
-    selP.value.laporanFinalized = true
+    // Selesai ≠ kunci: pasien diteruskan, tapi laporan TETAP editable (tidak set
+    // laporanFinalized). Penguncian final saat dokter TTD dokumen RM di TTD Dokumen.
+    selP.value.operationDone = true
     selP.value.status = 'SELESAI'
     selP.value.timOut = selP.value.timOut || new Date()
     stopTimerInterval()
     showFinalModal.value = false
-    toast('s', 'Laporan dikunci — pasien diteruskan ke Farmasi/Kasir')
+    toast('s', 'Operasi selesai — pasien diteruskan. Laporan masih bisa diperbaiki & ditinjau di TTD Dokumen.')
     await loadQueue()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memfinalisasi laporan')
@@ -1495,6 +1613,18 @@ function mulaiBack() { mulaiStep.value = 1 }
             :class="['bd-tab', tab === t.key && 'bd-tab-a']"
             @click="tab = t.key"
           >{{ t.label }}</button>
+
+          <!-- Pemicu Dokumen RM (pojok kanan tab) — kontekstual per tab.
+               Pra-Bedah → Checklist Kesiapan; Laporan → 3 form laporan operasi. -->
+          <button
+            v-if="selP?.visitId && (tab === 'prabedah' || tab === 'laporan')"
+            class="bd-tab-docbtn"
+            @click="showRmDocsModal = true"
+            :title="tab === 'prabedah' ? 'Checklist Kesiapan Bedah' : 'Dokumen Laporan Operasi (RM)'"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            {{ tab === 'prabedah' ? 'Checklist Kesiapan' : 'Dokumen RM' }}
+          </button>
         </div>
 
         <div class="bd-tabcont">
@@ -1601,6 +1731,12 @@ function mulaiBack() { mulaiStep.value = 1 }
                     </div>
                   </div>
                 </div>
+                <div class="bd-tab-save">
+                  <span v-if="!selP.recordId" class="bd-rolehint">Tim tersimpan saat menekan "Mulai Operasi".</span>
+                  <button class="bd-btn-add" :disabled="selP.laporanFinalized || !selP.recordId" @click="saveOperationReport(false)">
+                    Simpan Tim Bedah
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1647,6 +1783,9 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
+            <!-- Checklist Kesiapan Bedah (RM 2.0) dipindah ke modal via tombol pojok tab
+                 ("Checklist Kesiapan") agar tidak memakan ruang panel pra-bedah. -->
+
             <!-- Mulai Operasi Button (gating lunak: Sign In lengkap) -->
             <div v-if="selP.status === 'MENUNGGU'" class="bd-mulai-wrap">
               <button
@@ -1665,7 +1804,7 @@ function mulaiBack() { mulaiStep.value = 1 }
             </div>
             <div v-else class="bd-status-info bd-status-done">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-              Operasi selesai — Laporan difinalisasi
+              Operasi selesai — pasien diteruskan
             </div>
           </div>
 
@@ -1751,7 +1890,8 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <!-- Satu kartu per paket (mis. Phaco + TIVA) -->
                   <div v-for="snap in visitPackages" :key="snap.id" class="bd-vp-pkg">
                     <div class="bd-vp-pkg-hd">
-                      <span class="bd-paket-source-pill">{{ snap.package_name }}</span>
+                      <span class="bd-paket-source-pill" :title="snap.label && snap.label !== snap.package_name ? `Paket: ${snap.package_name}` : null">{{ snap.label || snap.package_name }}</span>
+                      <span v-if="snap.label && snap.label !== snap.package_name" class="bd-vp-type-tag" :title="`Nama paket master: ${snap.package_name}`">{{ snap.package_name }}</span>
                       <span v-if="snap.package_type" class="bd-vp-type-tag">{{ snap.package_type }}</span>
                       <button v-if="!selP.laporanFinalized" class="bd-vp-pkg-del" @click="vpRemovePackage(snap)" :disabled="vpBusy" title="Hapus paket ini dari pasien">Hapus paket</button>
                     </div>
@@ -2009,49 +2149,8 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
-            <!-- Pemakaian Alat Medis (microscope, Phaco, dll) -->
-            <div class="bd-card bd-card-full">
-              <div class="bd-card-hd">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="9" cy="10" r="2"/><line x1="13" y1="9" x2="19" y2="9"/><line x1="13" y1="13" x2="17" y2="13"/></svg>
-                Pemakaian Alat Medis
-                <span class="bd-paket-source-pill">Tarif flat per pemakaian</span>
-              </div>
-              <div class="bd-card-bd">
-                <table class="bd-tbl" v-if="equipmentUsages.length">
-                  <thead><tr><th>Alat</th><th>Kategori</th><th>Lokasi</th><th>Waktu</th><th></th></tr></thead>
-                  <tbody>
-                    <tr v-for="u in equipmentUsages" :key="u.id">
-                      <td><strong>{{ u.equipment?.name ?? '—' }}</strong> <span v-if="u.equipment?.brand" class="bd-tbl-muted">({{ u.equipment.brand }})</span></td>
-                      <td><span v-if="u.equipment?.category" class="bd-cat-pill" :data-cat="u.equipment.category">{{ u.equipment.category }}</span></td>
-                      <td>{{ u.equipment?.location ?? '—' }}</td>
-                      <td>{{ u.used_at ? new Date(u.used_at).toLocaleString('id-ID') : '—' }}</td>
-                      <td>
-                        <button class="bd-del" @click="removeEquipmentUsage(u)" :disabled="selP.laporanFinalized" aria-label="Hapus pemakaian alat" title="Hapus pemakaian alat">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-else-if="equipmentLoading" class="bd-tbl-empty">Memuat…</div>
-                <div v-else class="bd-tbl-empty">Belum ada alat dicatat</div>
-
-                <div v-if="!selP.laporanFinalized" class="bd-bhp-add" style="margin-top:10px">
-                  <select class="bd-select bd-select-sm" v-model="newEquipmentId" style="min-width:280px">
-                    <option value="">-- Pilih Alat Medis --</option>
-                    <option
-                      v-for="eq in equipmentList"
-                      :key="eq.id"
-                      :value="eq.id"
-                      :disabled="equipmentUsages.some((u) => u.medical_equipment_id === eq.id)"
-                    >
-                      {{ eq.code }} · {{ eq.name }}{{ eq.location ? ` (${eq.location})` : '' }}
-                    </option>
-                  </select>
-                  <button class="bd-btn-add" :disabled="addingEquip" @click="addEquipmentUsage">{{ addingEquip ? 'Menyimpan…' : '+ Catat Pemakaian' }}</button>
-                </div>
-              </div>
-            </div>
+            <!-- Kartu "Pemakaian Alat Medis" dihapus: tarif tidak ditagih dari sini
+                 (billing alat via Buku Tarif / paket, bukan log pemakaian). -->
 
             <!-- Catatan Intraoperatif -->
             <div class="bd-card bd-card-full">
@@ -2067,6 +2166,12 @@ function mulaiBack() { mulaiStep.value = 1 }
                   placeholder="Catatan jalannya operasi, teknik khusus, temuan…"
                   :disabled="selP.laporanFinalized"
                 ></textarea>
+                <div class="bd-tab-save">
+                  <span v-if="!selP.recordId" class="bd-rolehint">Catatan tersimpan setelah operasi dimulai.</span>
+                  <button class="bd-btn-add" :disabled="selP.laporanFinalized || !selP.recordId" @click="saveOperationReport(false)">
+                    Simpan Catatan
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2075,8 +2180,15 @@ function mulaiBack() { mulaiStep.value = 1 }
           <div v-else-if="tab === 'laporan'" class="bd-laporan">
             <div v-if="selP.laporanFinalized" class="bd-finalized-banner">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-              Laporan difinalisasi — data dikunci (read-only)
+              Laporan terkunci (read-only)
             </div>
+            <div v-else-if="selP.operationDone" class="bd-status-info bd-status-done" style="margin-bottom:14px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              Operasi selesai — pasien diteruskan. Laporan masih bisa diperbaiki; ditinjau &amp; dikunci dokter di TTD Dokumen.
+            </div>
+
+            <!-- Form Laporan Operasi RM (10.1 / 2.3 / 2.2) dipindah ke modal via tombol
+                 pojok tab ("Dokumen RM") agar panel laporan tetap ringkas. -->
 
             <div class="bd-2col">
               <div class="bd-card">
@@ -2204,7 +2316,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <tr v-for="u in iolUsages" :key="u.id">
                       <td>{{ u.eye_side }}</td>
                       <td>{{ u.brand }} {{ u.model }}</td>
-                      <td class="num">{{ u.power }} D</td>
+                      <td class="num">{{ u.power != null ? u.power + ' D' : '—' }}</td>
                       <td>{{ u.lot_number || '—' }}</td>
                       <td>{{ u.serial_number || '—' }}</td>
                     </tr>
@@ -2214,10 +2326,8 @@ function mulaiBack() { mulaiStep.value = 1 }
             </div>
 
             <div class="bd-laporan-actions">
-              <button class="bd-btn-print" @click="toast('i', 'Mencetak laporan operasi…')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></svg>
-                Cetak Laporan
-              </button>
+              <!-- "Cetak Laporan" (stub toast) dihapus — cetak resmi via Dokumen RM
+                   (RM 2.2/10.1/2.3 → tab Preview/Cetak) dengan layout berkop. -->
               <button
                 v-if="!selP.laporanFinalized"
                 class="bd-btn-add"
@@ -2227,16 +2337,16 @@ function mulaiBack() { mulaiStep.value = 1 }
                 Simpan Laporan
               </button>
               <button
-                v-if="!selP.laporanFinalized"
+                v-if="!selP.operationDone && !selP.laporanFinalized"
                 class="bd-btn-finalisasi"
                 :disabled="!selP.timOut || busyOp || !canEditReport"
                 :title="!selP.timOut ? 'Lakukan Time Out dulu di tab Intraoperatif' : ''"
                 @click="showFinalModal = true"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                Finalisasi Laporan
+                Selesai Operasi
               </button>
-              <span v-else class="bd-finalized-tag">Difinalisasi</span>
+              <span v-if="selP.operationDone || selP.laporanFinalized" class="bd-finalized-tag">Operasi Selesai</span>
             </div>
           </div>
 
@@ -2330,11 +2440,27 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <span v-if="selP.resepSent" class="bd-sent-badge">Terkirim ke Farmasi</span>
                 </div>
                 <div class="bd-card-bd">
+                  <!-- Paket Obat: terapkan template + kelola (gate bedah.write) -->
+                  <div v-if="!selP.resepSent && canEditReport" class="bd-paketobat-bar">
+                    <select class="bd-select bd-select-sm" v-model="paketPickId" style="flex:1;min-width:160px">
+                      <option value="">— Pilih paket obat —</option>
+                      <option v-for="p in paketObatList" :key="p.id" :value="p.id">
+                        {{ p.name }}{{ p.category ? ` (${p.category})` : '' }} · {{ (p.items?.length ?? 0) }} obat
+                      </option>
+                    </select>
+                    <button class="bd-btn-add" :disabled="!paketPickId" @click="applyPaketObat">Terapkan Paket</button>
+                    <button class="bd-btn-bypass" @click="openPaketModal">Kelola Paket</button>
+                  </div>
+                  <p v-if="!selP.resepSent" class="bd-disp-hint" :class="hasVisitPaket ? 'bd-hint-ok' : ''">
+                    <template v-if="hasVisitPaket">Pasien <b>berpaket</b> → obat paket tetap <b>muncul di kwitansi</b> namun <b>dinetralkan diskon paket</b> (tidak menambah total). Obat manual tetap ditagih.</template>
+                    <template v-else>Pasien <b>tanpa paket</b> → semua obat ditagih sebagai <b>obat pulang</b> di kwitansi.</template>
+                  </p>
+
                   <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length">
                     <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Frek.</th><th>Durasi</th><th>Rute</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="(o, i) in selP.obatPasca" :key="`${o.medication_id}-${i}`">
-                        <td>{{ o.nama }}</td><td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                        <td>{{ o.nama }} <span v-if="o.fromPaket && hasVisitPaket" class="bd-eye-pill" title="Termasuk harga paket">paket</span></td><td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
                         <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button></td>
@@ -2389,6 +2515,46 @@ function mulaiBack() { mulaiStep.value = 1 }
         </div>
       </template>
       </section>
+    </div>
+
+    <!-- ── MODAL: Dokumen RM (Checklist / Laporan Operasi) ───────── -->
+    <div v-if="showRmDocsModal && selP" class="bd-overlay" @click.self="showRmDocsModal = false">
+      <div class="bd-modal bd-modal-wide bd-modal-docs">
+        <div class="bd-docs-hd">
+          <h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            {{ tab === 'prabedah' ? 'Checklist Kesiapan Bedah' : 'Dokumen Laporan Operasi' }}
+          </h3>
+          <button class="bd-docs-close" @click="showRmDocsModal = false" aria-label="Tutup">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="bd-docs-body">
+          <!-- Pra-Bedah → Checklist Kesiapan Bedah (RM 2.0) -->
+          <FormDocsBrowser
+            v-if="tab === 'prabedah'"
+            :visit-id="selP.visitId"
+            station="bedah"
+            :sections="[{ key: 'checklist_kesiapan', label: 'Checklist Kesiapan Bedah' }]"
+          />
+
+          <!-- Laporan → daftar ringkas; user tinggal pilih dokumen yang dipakai.
+               Teknik/temuan/identitas operasi terisi otomatis dari data BedahView. -->
+          <template v-else>
+            <p class="bd-rolehint" style="margin:0 0 10px">Pilih dokumen laporan yang akan diisi. Identitas operasi, teknik &amp; temuan terisi otomatis dari data BedahView.</p>
+            <FormDocsBrowser
+              :visit-id="selP.visitId"
+              station="bedah"
+              :show-toolbar="false"
+              :sections="[
+                { key: 'laporan_pembedahan',   label: 'Laporan Pembedahan (RM 2.2) — semua operasi' },
+                { key: 'laporan_vitreoretina', label: 'Laporan Operasi Vitreo Retina (RM 10.1)' },
+                { key: 'catatan_operasi',      label: 'Catatan Operasi Katarak (RM 2.3)' },
+              ]"
+            />
+          </template>
+        </div>
+      </div>
     </div>
 
     <!-- ── MODAL: Mulai Operasi ──────────────────────────────────── -->
@@ -2446,11 +2612,100 @@ function mulaiBack() { mulaiStep.value = 1 }
         <div class="bd-modal-icon bd-modal-icon-green">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         </div>
-        <h3>Finalisasi Laporan Operasi?</h3>
-        <p>Laporan akan dikunci dan tidak dapat diubah. Pasien diteruskan ke <strong>Farmasi/Kasir</strong>.</p>
+        <h3>Selesaikan Operasi?</h3>
+        <p>Pasien diteruskan ke <strong>Farmasi/Kasir</strong> sesuai disposisi (setelah obat pasca-bedah). Laporan <strong>tidak dikunci</strong> — masih bisa diperbaiki, lalu ditinjau &amp; ditandatangani dokter di <strong>TTD Dokumen</strong>.</p>
         <div class="bd-modal-actions">
           <button class="bd-btn-sec" :disabled="busyOp" @click="showFinalModal = false">Batal</button>
-          <button class="bd-btn-finalisasi-confirm" :disabled="busyOp" @click="doFinalisasi">{{ busyOp ? 'Memproses…' : 'Finalisasi' }}</button>
+          <button class="bd-btn-finalisasi-confirm" :disabled="busyOp" @click="doFinalisasi">{{ busyOp ? 'Memproses…' : 'Selesai Operasi' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MODAL: Kelola Paket Obat Pasca-Bedah ──────────────────────── -->
+    <div v-if="showPaketModal" class="bd-overlay" @click.self="showPaketModal = false">
+      <div class="bd-modal bd-modal-wide" style="text-align:left;max-width:760px">
+        <h3 style="text-align:left">Kelola Paket Obat Pasca-Bedah</h3>
+        <p class="bd-rolehint" style="margin-top:-6px">Template resep rutin lintas operasi. Saat diterapkan ke pasien berpaket, obatnya terserap ke harga paket.</p>
+
+        <div class="bd-paket-modal-grid">
+          <!-- Daftar paket tersimpan -->
+          <div class="bd-paket-list">
+            <div class="bd-paket-list-hd">
+              <strong>Daftar Paket</strong>
+              <button class="bd-btn-add" @click="resetPaketForm">+ Paket Baru</button>
+            </div>
+            <div v-if="!paketObatList.length" class="bd-tbl-empty">Belum ada paket</div>
+            <button
+              v-for="p in paketObatList" :key="p.id"
+              class="bd-paket-list-item" :class="{ active: paketForm.id === p.id }"
+              @click="editPaket(p)"
+            >
+              <div>
+                <div class="bd-paket-list-name">{{ p.name }}</div>
+                <div class="bd-paket-list-sub">{{ p.category || 'Umum' }} · {{ (p.items?.length ?? 0) }} obat</div>
+              </div>
+              <span class="bd-del" @click.stop="deletePaket(p)" title="Hapus paket">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <!-- Editor paket -->
+          <div class="bd-paket-editor">
+            <div class="bd-iol-grid">
+              <div class="bd-iol-field"><label class="bd-label">Nama Paket</label><input class="bd-input" v-model="paketForm.name" placeholder="mis. Pasca Phaco" /></div>
+              <div class="bd-iol-field"><label class="bd-label">Kategori (jenis operasi)</label><input class="bd-input" v-model="paketForm.category" placeholder="mis. Katarak (opsional)" /></div>
+            </div>
+
+            <table class="bd-tbl bd-tbl-sm" v-if="paketForm.items.length" style="margin-top:10px">
+              <thead><tr><th>Obat</th><th>Jml</th><th>Dosis</th><th>Frek.</th><th>Durasi</th><th>Rute</th><th></th></tr></thead>
+              <tbody>
+                <tr v-for="(o, i) in paketForm.items" :key="`${o.medication_id}-${i}`">
+                  <td>{{ o.nama }}</td><td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                  <td><button class="bd-del" @click="removePaketItem(i)" title="Hapus">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button></td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="bd-tbl-empty">Belum ada obat di paket ini</div>
+
+            <!-- Tambah obat ke paket (autocomplete master + stok Farmasi) -->
+            <div class="bd-obat-form" style="margin-top:8px">
+              <div class="bd-combo-wrap" style="flex:2;min-width:200px">
+                <input
+                  class="bd-input bd-combo-input"
+                  :value="paketNewItem.medication_id ? paketNewItem.nama : paketMedSearch"
+                  placeholder="Cari obat dari master…"
+                  @input="e => { paketMedSearch = e.target.value; paketNewItem.medication_id = ''; paketNewItem.nama = '' }"
+                />
+                <div v-if="paketMedSearch.trim() && !paketNewItem.medication_id" class="bd-combo-dropdown">
+                  <div v-for="o in paketMedFiltered" :key="o.id" class="bd-combo-option" @mousedown.prevent="pickPaketMed(o)">
+                    <span class="bd-combo-name">{{ o.name }}</span>
+                    <span class="bd-combo-role">{{ o.form_sediaan || o.golongan || '' }} · stok {{ o.stock ?? 0 }}{{ o.unit ? ` ${o.unit}` : '' }}</span>
+                  </div>
+                  <div v-if="!paketMedFiltered.length" class="bd-combo-empty">Tidak ada hasil</div>
+                </div>
+              </div>
+              <input class="bd-input bd-input-sm" v-model="paketNewItem.dosis" placeholder="Dosis" style="flex:1" />
+              <input type="number" class="bd-input bd-input-sm" v-model.number="paketNewItem.jumlah" min="1" title="Jumlah" placeholder="Jml" style="width:60px" />
+              <select class="bd-select bd-select-sm" v-model="paketNewItem.freq">
+                <option>1×/hari</option><option>2×/hari</option><option>3×/hari</option><option>4×/hari</option><option>6×/hari</option>
+              </select>
+              <select class="bd-select bd-select-sm" v-model="paketNewItem.dur">
+                <option>3 hari</option><option>5 hari</option><option>7 hari</option><option>10 hari</option><option>14 hari</option><option>1 bulan</option>
+              </select>
+              <input class="bd-input bd-input-sm" v-model="paketNewItem.rute" placeholder="Rute" />
+              <button class="bd-btn-add" @click="addPaketItem">+ Tambah</button>
+            </div>
+
+            <div class="bd-modal-actions" style="justify-content:flex-end;margin-top:16px">
+              <button class="bd-btn-sec" @click="showPaketModal = false">Tutup</button>
+              <button class="bd-btn-finalisasi-confirm" :disabled="paketBusy" @click="savePaket">
+                {{ paketBusy ? 'Menyimpan…' : (paketForm.id ? 'Simpan Perubahan' : 'Buat Paket') }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2608,6 +2863,26 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-tab { padding: 10px 14px; font-size: 12px; font-weight: 600; color: var(--tu); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all .15s; white-space: nowrap; }
 .bd-tab:hover { color: var(--td); }
 .bd-tab-a { color: var(--td); border-bottom-color: var(--ga); }
+/* Tombol Dokumen RM di pojok kanan tab strip */
+.bd-tab-docbtn { margin-left: auto; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; font-weight: 700; color: var(--ga); background: color-mix(in srgb, var(--ga) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ga) 35%, transparent); border-radius: 8px; cursor: pointer; transition: all .15s; white-space: nowrap; }
+.bd-tab-docbtn:hover { background: color-mix(in srgb, var(--ga) 18%, transparent); border-color: var(--ga); }
+.bd-tab-docbtn svg { width: 14px; height: 14px; }
+/* Baris simpan per-kartu (anti data-loss): tombol kanan + hint kiri */
+.bd-tab-save { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.bd-tab-save .bd-rolehint { margin: 0; margin-right: auto; }
+
+/* Modal Dokumen RM */
+.bd-modal-docs { max-width: 860px; width: 94%; text-align: left; padding: 0; max-height: 88vh; display: flex; flex-direction: column; }
+.bd-docs-hd { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--gb); flex-shrink: 0; }
+.bd-docs-hd h3 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 16px; font-weight: 800; color: var(--td); }
+.bd-docs-hd h3 svg { width: 18px; height: 18px; color: var(--ga); }
+.bd-docs-close { display: inline-flex; padding: 6px; color: var(--tu); background: none; border: none; border-radius: 8px; cursor: pointer; transition: all .15s; }
+.bd-docs-close:hover { color: var(--td); background: var(--bg); }
+.bd-docs-close svg { width: 18px; height: 18px; }
+.bd-docs-body { padding: 18px 22px; overflow-y: auto; }
+.bd-docs-sec { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px dashed var(--gb); }
+.bd-docs-sec:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: none; }
+.bd-docs-sec-hd { font-size: 13px; font-weight: 800; color: var(--td); margin-bottom: 8px; }
 
 /* padding-bottom besar: beri ruang dropdown combobox di card terakhir (Tim Bedah) agar tak terpotong */
 .bd-tabcont { max-height: calc(100vh - 260px); overflow-y: auto; padding: 20px 20px 220px; }
@@ -2801,6 +3076,20 @@ function mulaiBack() { mulaiStep.value = 1 }
 
 .bd-sent-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: var(--sb); color: var(--st); margin-left: auto; }
 .bd-sent-badge-no { background: var(--wb); color: var(--wt); }
+
+/* Paket Obat Pasca-Bedah */
+.bd-paketobat-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.bd-hint-ok { color: var(--st) !important; }
+.bd-paket-modal-grid { display: grid; grid-template-columns: 240px 1fr; gap: 16px; margin-top: 12px; align-items: start; }
+@media (max-width: 760px) { .bd-paket-modal-grid { grid-template-columns: 1fr; } }
+.bd-paket-list { border: 1px solid var(--gb); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; max-height: 420px; overflow-y: auto; }
+.bd-paket-list-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bd-paket-list-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bs); cursor: pointer; font-family: 'Inter', sans-serif; }
+.bd-paket-list-item:hover { background: var(--bc); }
+.bd-paket-list-item.active { border-color: var(--ga); background: var(--gl); }
+.bd-paket-list-name { font-size: 13px; font-weight: 600; color: var(--td); }
+.bd-paket-list-sub { font-size: 11px; color: var(--tm); margin-top: 2px; }
+.bd-paket-editor { min-width: 0; }
 
 /* Laporan */
 .bd-finalized-banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--sb); border: 1px solid var(--sbd); border-radius: 10px; color: var(--st); font-size: 13px; font-weight: 600; margin-bottom: 16px; }

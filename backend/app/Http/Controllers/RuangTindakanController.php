@@ -45,8 +45,6 @@ class RuangTindakanController extends Controller
     {
         $validated = $request->validate([
             'laporan'              => 'nullable|array',
-            'procedure_ids'        => 'nullable|array',
-            'procedure_ids.*'      => 'uuid|exists:procedures,id',
             'post_op_disposition'  => 'nullable|in:PULANG,RAWAT_INAP,LANJUT_RANAP,HCU',
             'followup_date'        => 'nullable|date',
             'complication'         => 'nullable|string|max:1000',
@@ -84,6 +82,46 @@ class RuangTindakanController extends Controller
     public function procedures(Request $request): JsonResponse
     {
         return $this->ok($this->service->getProcedureOptions($request->query('search')));
+    }
+
+    // GET /ruang-tindakan/jadwal?date_from=&date_to=  (tab "Tindakan Terjadwal", per minggu)
+    public function jadwal(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getScheduledTindakan(
+            $request->only(['date_from', 'date_to'])
+        ));
+    }
+
+    // GET /ruang-tindakan/daftar-obat?search=  (picker resep obat pulang)
+    public function daftarObat(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getDaftarObat($request->query('search')));
+    }
+
+    // POST /ruang-tindakan/jadwal/{id}/resep  (resep obat pulang → Farmasi setelah Kasir)
+    public function storeResep(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'items'                  => 'required|array|min:1',
+            'items.*.medication_id'  => 'required|uuid|exists:medications,id',
+            'items.*.quantity'       => 'required|integer|min:1',
+            'items.*.dose'           => 'nullable|string|max:100',
+            'items.*.frequency'      => 'nullable|string|max:100',
+            'items.*.route'          => 'nullable|string|max:100',
+            'items.*.duration_days'  => 'nullable|integer|min:1',
+            'items.*.notes'          => 'nullable|string|max:255',
+            'pharmacy_note'          => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $resep = $this->service->storeResep($id, $validated['items'], [
+                'notes'         => 'Obat pulang pasca-laser',
+                'pharmacy_note' => $validated['pharmacy_note'] ?? null,
+            ]);
+            return $this->ok($resep, 'Resep tersimpan → akan muncul di Farmasi setelah Kasir');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
     }
 
     // -------------------------------------------------------------------------

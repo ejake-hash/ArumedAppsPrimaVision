@@ -14,7 +14,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTarifPaketStore } from '@/stores/tarifPaketStore'
-import { masterApi } from '@/services/api'
+import { masterApi, tarifPaketApi } from '@/services/api'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
 
 const route = useRoute()
@@ -38,7 +38,7 @@ async function loadDropdowns() {
       masterApi.obat.list({ per_page: 500, active: 1 }),
       masterApi.bhp.list({ per_page: 500, active: 1 }),
       masterApi.iol.list({ per_page: 500, available_only: 1 }),
-      masterApi.penjamin(),
+      masterApi.penjamin({ per_page: 200 }),
     ])
     procedures.value  = p.data?.data?.data ?? p.data?.data ?? []
     medications.value = m.data?.data?.data ?? m.data?.data ?? []
@@ -94,12 +94,31 @@ const itemOptionsForType = computed(() => {
   }
 })
 
-// Saat user pilih item, auto-suggest default_price kalau masih kosong
-watch(() => itemModal.value.payload.item_id, (newId) => {
+// Map tipe item paket → tipe Buku Tarif (endpoint master-price).
+const TARIF_TYPE_MAP = { PROCEDURE: 'tindakan', MEDICATION: 'obat', BHP: 'bhp', IOL: 'iol' }
+
+// Saat user pilih item, auto-suggest default_price kalau masih kosong. Sumber harga =
+// Buku Tarif penjamin UMUM (endpoint master-price), BUKAN base_price master yang pasca-
+// refactor bisa 0 untuk tindakan. Fallback ke suggestedPrice list bila endpoint gagal.
+watch(() => itemModal.value.payload.item_id, async (newId) => {
   if (!newId || itemModal.value.mode !== 'create') return
-  const opt = itemOptionsForType.value.find((o) => o.value === newId)
-  if (opt && (itemModal.value.payload.default_price === '' || itemModal.value.payload.default_price === 0)) {
-    itemModal.value.payload.default_price = opt.suggestedPrice ?? 0
+  const isEmpty = () => itemModal.value.payload.default_price === '' || itemModal.value.payload.default_price === 0
+  if (!isEmpty()) return
+
+  const type = TARIF_TYPE_MAP[itemModal.value.payload.item_type]
+  try {
+    const { data } = await tarifPaketApi.masterPrice(type, newId)
+    // Race guard: pastikan item belum berganti & field masih kosong.
+    if (itemModal.value.payload.item_id === newId && isEmpty()) {
+      const price = Number(data?.data?.price ?? 0)
+      const opt = itemOptionsForType.value.find((o) => o.value === newId)
+      itemModal.value.payload.default_price = price > 0 ? price : (opt?.suggestedPrice ?? 0)
+    }
+  } catch {
+    const opt = itemOptionsForType.value.find((o) => o.value === newId)
+    if (itemModal.value.payload.item_id === newId && isEmpty()) {
+      itemModal.value.payload.default_price = opt?.suggestedPrice ?? 0
+    }
   }
 })
 
@@ -113,7 +132,7 @@ const itemFields = computed(() => {
   if (itemModal.value.mode === 'edit') {
     // Edit: tipe & item terkunci (unique constraint)
     return [
-      { key: 'item_type',     label: 'Tipe',             type: 'select',   disabled: true, cols: 1, options: ITEM_TYPE_OPTIONS },
+      { key: 'item_type',     label: 'Tipe',             type: 'select',   disabled: true, cols: 1, options: itemTypeOptions.value },
       { key: 'item_id',       label: 'Item',             type: 'select',   disabled: true, cols: 1, options: itemOptionsForType.value },
       { key: 'quantity',      label: 'Jumlah',           type: 'number',   required: true, min: 1, cols: 1 },
       { key: 'default_price', label: 'Harga Snapshot (Rp)', type: 'number', required: true, min: 0, cols: 1, hint: 'Bisa override harga master saat ini' },
@@ -121,7 +140,7 @@ const itemFields = computed(() => {
     ]
   }
   return [
-    { key: 'item_type',     label: 'Tipe',             type: 'select',   required: true, cols: 1, options: ITEM_TYPE_OPTIONS },
+    { key: 'item_type',     label: 'Tipe',             type: 'select',   required: true, cols: 1, options: itemTypeOptions.value },
     { key: 'item_id',       label: 'Item',             type: 'select',   required: true, cols: 1, options: itemOptionsForType.value },
     { key: 'quantity',      label: 'Jumlah',           type: 'number',   required: true, min: 1, cols: 1 },
     { key: 'default_price', label: 'Harga Snapshot (Rp)', type: 'number', required: true, min: 0, cols: 1, hint: 'Auto-isi dari master saat pilih item' },
@@ -135,6 +154,13 @@ const ITEM_TYPE_OPTIONS = [
   { value: 'BHP',        label: 'BHP' },
   { value: 'IOL',        label: 'IOL' },
 ]
+
+// Paket PEMERIKSAAN: hanya Tindakan + Obat (bundel pemeriksaan umum). BEDAH: semua tipe.
+const itemTypeOptions = computed(() =>
+  paket.value?.package_type === 'PEMERIKSAAN'
+    ? ITEM_TYPE_OPTIONS.filter((o) => ['PROCEDURE', 'MEDICATION'].includes(o.value))
+    : ITEM_TYPE_OPTIONS,
+)
 
 async function onSubmitItem(payload) {
   itemModal.value.submitting = true
@@ -173,14 +199,20 @@ async function removeItem(item) {
 // ─── Modal Tariff ────────────────────────────────────────────────────────
 const tariffModal = ref({
   open: false,
-  payload: { insurer_id: '', sell_price: 0, is_active: true },
+  payload: { insurer_id: '', display_name: '', price_mode: 'NOMINAL', sell_price: 0, discount_percent: null, is_active: true },
   errors: null, submitting: false, editingId: null,
 })
+
+// Penjamin UMUM (sistem) — default saat tambah tarif karena edaran diskon khusus
+// umumnya berlaku untuk pasien umum.
+const umumInsurerId = computed(() =>
+  insurers.value.find((i) => i.is_system && i.type === 'UMUM')?.id ?? '',
+)
 
 function openAddTariff() {
   tariffModal.value = {
     open: true,
-    payload: { insurer_id: '', sell_price: paket.value?.total_base_price ?? 0, is_active: true },
+    payload: { insurer_id: umumInsurerId.value, display_name: '', price_mode: 'NOMINAL', sell_price: paket.value?.total_base_price ?? 0, discount_percent: null, is_active: true },
     errors: null, submitting: false, editingId: null,
   }
 }
@@ -190,7 +222,10 @@ function openEditTariff(t) {
     open: true,
     payload: {
       insurer_id: t.insurer_id ?? '',
+      display_name: t.display_name ?? '',
+      price_mode: t.price_mode ?? 'NOMINAL',
       sell_price: t.sell_price,
+      discount_percent: t.input_discount_pct ?? null,
       is_active: t.is_active,
     },
     errors: null, submitting: false, editingId: t.id,
@@ -198,11 +233,31 @@ function openEditTariff(t) {
 }
 
 const tariffFields = computed(() => {
-  const insurerOpts = [{ value: '', label: 'SEMUA (default)' }, ...insurers.value.map((i) => ({ value: i.id, label: i.name }))]
+  // UMUM paling atas (default umum dipakai untuk diskon khusus pasien umum), lalu SEMUA, lalu sisanya.
+  const umum = insurers.value.find((i) => i.is_system && i.type === 'UMUM')
+  const others = insurers.value.filter((i) => !(i.is_system && i.type === 'UMUM'))
+  const insurerOpts = [
+    ...(umum ? [{ value: umum.id, label: `${umum.name} (default)` }] : []),
+    { value: '', label: 'SEMUA penjamin' },
+    ...others.map((i) => ({ value: i.id, label: i.name })),
+  ]
+  const base = Number(paket.value?.total_base_price ?? 0)
+  const isPersen = tariffModal.value.payload.price_mode === 'PERSEN'
+  const pct = Number(tariffModal.value.payload.discount_percent ?? 0)
+  const hargaField = isPersen
+    ? { key: 'discount_percent', label: '% Diskon dari base', type: 'number', required: true, min: 0, max: 100, cols: 2,
+        hint: `Harga jual = Rp ${Math.round(base * (1 - pct / 100)).toLocaleString('id-ID')} (base Rp ${base.toLocaleString('id-ID')} − ${pct || 0}%)` }
+    : { key: 'sell_price', label: 'Harga Jual (Rp)', type: 'number', required: true, min: 0, cols: 2,
+        hint: `Base total paket: Rp ${base.toLocaleString('id-ID')} — selisih jadi diskon` }
   return [
-    { key: 'insurer_id',     label: 'Penjamin',    type: 'select',   options: insurerOpts, cols: 2, hint: 'Kosongkan = berlaku untuk semua penjamin' },
-    { key: 'sell_price',     label: 'Harga Jual (Rp)', type: 'number', required: true, min: 0, cols: 2, hint: `Base total paket: Rp ${Number(paket.value?.total_base_price ?? 0).toLocaleString('id-ID')} — selisih jadi diskon` },
-    { key: 'is_active',      label: 'Aktif',       type: 'checkbox', cols: 1 },
+    { key: 'insurer_id', label: 'Penjamin', type: 'select', options: insurerOpts, cols: 2,
+      hint: 'Kosongkan = default semua penjamin. Pilih UMUM untuk harga/nama khusus pasien umum (surat edaran).' },
+    { key: 'display_name', label: 'Nama Tampil (opsional)', type: 'text', cols: 2,
+      hint: 'mis. "Promo Operasi Katarak" — muncul di kwitansi, pemilihan dokter & papan bedah. Kosong = pakai nama paket.' },
+    { key: 'price_mode', label: 'Cara Set Harga', type: 'select', cols: 2,
+      options: [{ value: 'NOMINAL', label: 'Harga Nominal' }, { value: 'PERSEN', label: '% Diskon dari base' }] },
+    hargaField,
+    { key: 'is_active', label: 'Aktif', type: 'checkbox', cols: 1 },
   ]
 })
 
@@ -210,7 +265,7 @@ async function onSubmitTariff(payload) {
   tariffModal.value.submitting = true
   tariffModal.value.errors = null
   try {
-    const data = { ...payload, insurer_id: payload.insurer_id || null }
+    const data = { ...payload, insurer_id: payload.insurer_id || null, display_name: payload.display_name?.trim() || null }
     await store.upsertTariff(paketId.value, data)
     showToast('s', 'Tarif paket disimpan')
     tariffModal.value.open = false
@@ -310,6 +365,48 @@ async function onImportFile(e) {
   } finally { csvBusy.value = false }
 }
 
+// ─── Manfaat Kontrol Pasca-Bedah (Opsi B) ─────────────────────────────────
+// Paket bisa memberi KONSULTASI GRATIS saat pasien kontrol pasca-operasi. Diisi =
+// paket dapat manfaat; dikosongkan = tidak. Tersimpan di kolom followup_* paket.
+const followup = ref({ procedure_id: '', count: 1, valid_days: '' })
+const followupSaving = ref(false)
+
+watch(paket, (p) => {
+  if (!p) return
+  followup.value = {
+    procedure_id: p.followup_procedure_id ?? '',
+    count: p.followup_count || 1,
+    valid_days: p.followup_valid_days ?? '',
+  }
+}, { immediate: true })
+
+const followupDirty = computed(() => {
+  const p = paket.value
+  if (!p) return false
+  const curId = p.followup_procedure_id ?? ''
+  const curCount = p.followup_count || (curId ? 1 : 1)
+  const curDays = p.followup_valid_days ?? ''
+  return followup.value.procedure_id !== curId
+    || (!!followup.value.procedure_id && Number(followup.value.count) !== Number(curCount))
+    || String(followup.value.valid_days ?? '') !== String(curDays)
+})
+
+async function saveFollowup() {
+  followupSaving.value = true
+  try {
+    await store.updatePaket(paketId.value, {
+      followup_procedure_id: followup.value.procedure_id || null,
+      followup_count: followup.value.procedure_id ? Math.max(1, Number(followup.value.count) || 1) : 0,
+      followup_valid_days: followup.value.valid_days === '' || followup.value.valid_days === null
+        ? null : Math.max(0, Number(followup.value.valid_days)),
+    })
+    await store.fetchPaketDetail(paketId.value)
+    showToast('s', 'Manfaat kontrol pasca-bedah disimpan')
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal menyimpan manfaat')
+  } finally { followupSaving.value = false }
+}
+
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
   await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns()])
@@ -352,6 +449,44 @@ watch(paketId, async (id) => {
           </div>
         </div>
       </header>
+
+      <!-- MANFAAT KONTROL PASCA-BEDAH (Opsi B) — hanya paket BEDAH -->
+      <section v-if="paket.package_type !== 'PEMERIKSAAN'" class="pd-panel pd-followup">
+        <div class="pd-panel-head">
+          <div>
+            <h3>🎁 Manfaat Kontrol Pasca-Bedah</h3>
+            <p>Konsultasi gratis saat pasien <strong>kontrol</strong> setelah operasi. Tebusan otomatis di Kasir (penjamin UMUM). Kosongkan prosedur = paket ini tanpa manfaat.</p>
+          </div>
+        </div>
+        <div class="pd-fu-row">
+          <label class="pd-fu-field pd-fu-grow">
+            <span>Konsultasi gratis</span>
+            <select v-model="followup.procedure_id" class="pd-fu-input">
+              <option value="">— Tidak ada (paket tanpa manfaat) —</option>
+              <option v-for="p in procedures" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </label>
+          <label class="pd-fu-field">
+            <span>Jumlah / operasi</span>
+            <input v-model.number="followup.count" type="number" min="1" max="20"
+                   class="pd-fu-input" :disabled="!followup.procedure_id" />
+          </label>
+          <label class="pd-fu-field">
+            <span>Masa berlaku (hari)</span>
+            <input v-model="followup.valid_days" type="number" min="0" placeholder="tanpa batas"
+                   class="pd-fu-input" :disabled="!followup.procedure_id" />
+          </label>
+          <button class="pd-btn-primary pd-fu-save" :disabled="followupSaving || !followupDirty" @click="saveFollowup">
+            {{ followupSaving ? 'Menyimpan…' : 'Simpan' }}
+          </button>
+        </div>
+        <p v-if="paket.followup_procedure_id" class="pd-fu-active">
+          Aktif: <strong>{{ paket.followup_procedure_name || 'Konsultasi' }}</strong>
+          gratis {{ paket.followup_count }}× per operasi
+          <template v-if="paket.followup_valid_days">· berlaku {{ paket.followup_valid_days }} hari</template>
+          <template v-else>· tanpa batas waktu</template>
+        </p>
+      </section>
 
       <div class="pd-grid">
         <!-- ITEMS PANEL -->
@@ -443,14 +578,21 @@ watch(paketId, async (id) => {
 
           <table v-if="tariffsRaw.length" class="pd-table">
             <thead>
-              <tr><th>Penjamin</th><th class="r">Harga Jual</th><th class="r">Diskon</th><th>Status</th><th></th></tr>
+              <tr><th>Penjamin</th><th>Nama Tampil</th><th class="r">Harga Jual</th><th class="r">Diskon</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="t in tariffsRaw" :key="t.id">
                 <td>
                   <span class="pd-insurer-pill" :class="{ all: !t.insurer_id }">{{ t.insurer?.name ?? 'SEMUA' }}</span>
                 </td>
-                <td class="r"><strong>{{ formatRp(t.sell_price) }}</strong></td>
+                <td>
+                  <span v-if="t.display_name" class="pd-name-alt">{{ t.display_name }}</span>
+                  <span v-else class="pd-no-disc">— nama paket —</span>
+                </td>
+                <td class="r">
+                  <strong>{{ formatRp(t.sell_price) }}</strong>
+                  <span v-if="t.price_mode === 'PERSEN'" class="pd-mode-pill" :title="`Diskon ${t.input_discount_pct}% dari base`">−{{ Number(t.input_discount_pct) }}%</span>
+                </td>
                 <td class="r">
                   <div v-if="t.discount_amount > 0" class="pd-disc">
                     <span class="pd-disc-amt">−{{ formatRp(t.discount_amount) }}</span>
@@ -536,6 +678,18 @@ watch(paketId, async (id) => {
 @media (max-width: 1100px) { .pd-grid { grid-template-columns: 1fr; } }
 
 .pd-panel { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.8rem; }
+
+/* Manfaat Kontrol Pasca-Bedah (Opsi B) */
+.pd-followup { margin-bottom: 1rem; border-left: 3px solid var(--ga); }
+.pd-fu-row { display: flex; align-items: flex-end; gap: 0.8rem; flex-wrap: wrap; }
+.pd-fu-field { display: flex; flex-direction: column; gap: 4px; }
+.pd-fu-field > span { font-size: 11px; color: var(--tm); font-weight: 500; }
+.pd-fu-grow { flex: 1 1 240px; min-width: 200px; }
+.pd-fu-input { padding: 7px 10px; border: 1px solid var(--gb); border-radius: 8px; font-size: 13px; background: var(--bc); color: var(--td); width: 100%; }
+.pd-fu-field:not(.pd-fu-grow) .pd-fu-input { width: 120px; }
+.pd-fu-input:disabled { opacity: 0.5; background: var(--gb); }
+.pd-fu-save { height: 36px; }
+.pd-fu-active { font-size: 12px; color: var(--ga); margin: 0; background: color-mix(in srgb, var(--ga) 8%, transparent); padding: 6px 10px; border-radius: 8px; }
 .pd-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .pd-panel-head h3 { font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); margin: 0; }
 .pd-panel-head p { font-size: 12px; color: var(--tm); margin: 2px 0 0; }
@@ -583,7 +737,9 @@ watch(paketId, async (id) => {
 .pd-disc { display: flex; flex-direction: column; gap: 1px; }
 .pd-disc-amt { font-weight: 600; color: var(--et); font-variant-numeric: tabular-nums; }
 .pd-disc-pct { font-size: 10.5px; color: var(--tu); }
-.pd-no-disc { color: var(--tu); }
+.pd-no-disc { color: var(--tu); font-size: 12px; font-style: italic; }
+.pd-name-alt { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 500; background: var(--gl); color: var(--ga); border: 1px solid var(--gb); }
+.pd-mode-pill { margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); vertical-align: middle; }
 
 .pd-status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; }
 .pd-status.on { background: var(--sb); color: var(--st); }

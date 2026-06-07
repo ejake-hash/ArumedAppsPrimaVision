@@ -4,12 +4,14 @@ import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdmisiStore } from '@/stores/admisiStore'
 import { authApi, formTemplateApi } from '@/services/api'
+import { useUiShell } from '@/composables/useUiShell'
 import logoPv from '@/assets/images/logo-pv.png'
 
 const auth    = useAuthStore()
 const admisi  = useAdmisiStore()
 const router  = useRouter()
 const collapsed = ref(false)
+const { mobileNavOpen, closeMobileNav } = useUiShell()
 
 async function handleLogout() {
   await auth.logout()
@@ -116,13 +118,13 @@ onMounted(async () => {
 </script>
 
 <template>
-  <aside :class="['sidebar', { collapsed }]">
+  <aside :class="['sidebar', { collapsed, 'mobile-open': mobileNavOpen }]">
 
     <div class="sb-logo">
       <img :src="logoPv" alt="Prima Vision" class="sb-logo-img" />
       <div class="sb-brand">
-        <div class="sb-brand-name">ARUMED<br />APPS</div>
-        <div class="sb-brand-sub">RS Mata<br />Prima Vision</div>
+        <div class="sb-brand-name">PT. Karya Sistem<br />Nusantara</div>
+        <div class="sb-brand-sub">RS Mata Prima Vision</div>
       </div>
       <button
         class="sb-toggle-top"
@@ -268,6 +270,7 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span>Keluar</span>
       </button>
+      <div class="sb-copyright">© 2026 PT. Karya Sistem Nusantara</div>
     </div>
 
     <!-- Modal Ganti Password (inline agar CSS scoped berlaku) -->
@@ -387,6 +390,37 @@ onMounted(async () => {
 }
 .sidebar.collapsed { width: 60px; }
 
+/* ─── Mode drawer (≤1024px, HANYA rute `app-fluid`: TTD Dokumen) ──────────────
+   Sidebar keluar dari aliran flex (position:fixed) lalu di-slide dari kiri.
+   Mode "collapsed" desktop diabaikan di sini — drawer selalu lebar penuh.
+   Buka/tutup dikendalikan kelas .mobile-open dari useUiShell. Di rute desktop
+   biasa (tanpa `app-fluid`) sidebar tetap kolom tetap walau jendela sempit. */
+@media (max-width: 1024px) {
+  html.app-fluid .sidebar,
+  html.app-fluid .sidebar.collapsed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 70;
+    width: var(--sidebar);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  html.app-fluid .sidebar.mobile-open {
+    transform: translateX(0);
+    box-shadow: 8px 0 32px rgba(15, 30, 50, 0.22);
+  }
+  /* Chevron collapse adalah fitur desktop — di drawer pakai scrim untuk menutup */
+  html.app-fluid .sb-toggle-top { display: none; }
+  /* Paksa isi tampil penuh walau state collapsed tertinggal dari desktop */
+  html.app-fluid .collapsed .sb-brand,
+  html.app-fluid .collapsed .sb-section,
+  html.app-fluid .collapsed .sb-item > span,
+  html.app-fluid .collapsed .sb-user-info,
+  html.app-fluid .collapsed .sb-logout span { display: revert; }
+  html.app-fluid .collapsed .sb-item { justify-content: flex-start; padding: 8px 10px; gap: 9px; }
+}
+
 /* ─── LOGO / HEADER ─── */
 .sb-logo {
   padding: 0.65rem 1rem;
@@ -398,19 +432,30 @@ onMounted(async () => {
   position: relative;
 }
 .collapsed .sb-brand { display: none; }
+/* Saat collapsed (60px), logo + tombol chevron tak muat sebaris → ter-clip
+   (overflow:hidden) sehingga tombol BUKA KEMBALI hilang. Tumpuk vertikal:
+   logo di atas, chevron di bawah — keduanya pasti terlihat & bisa diklik. */
+.collapsed .sb-logo {
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 0;
+  padding-right: 0;
+}
 .sb-logo-img {
   height: 34px; width: auto; max-width: 40px;
   object-fit: contain; flex-shrink: 0;
 }
-.collapsed .sb-logo-img { margin: 0 auto; }
+.collapsed .sb-logo-img { margin: 0 auto; height: 28px; }
 .sb-brand { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .sb-brand-name {
   font-family: 'Space Grotesk', sans-serif;
-  font-size: 16px; color: var(--td); line-height: 1.1; font-weight: 700; letter-spacing: 0.04em;
+  font-size: 10.5px; color: var(--td); line-height: 1.1; font-weight: 700; letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 .sb-brand-sub {
-  font-size: 8.5px; color: var(--ga); line-height: 1.25;
-  letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; font-weight: 600;
+  font-size: 7.5px; color: var(--ga); line-height: 1.2;
+  letter-spacing: 0.04em; text-transform: uppercase; margin-top: 2px; font-weight: 600;
+  white-space: nowrap;
 }
 
 /* ─── COLLAPSE TOGGLE (top-right of header) ─── */
@@ -527,6 +572,16 @@ onMounted(async () => {
 .sb-logout span { font-size: 12.5px; color: var(--tm); font-weight: 500; transition: color 0.15s; }
 .collapsed .sb-logout { justify-content: center; padding: 7px; gap: 0; }
 .collapsed .sb-logout span { display: none; }
+
+/* ─── COPYRIGHT (footer sidebar) ─── */
+.sb-copyright {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--tu);
+}
+.collapsed .sb-copyright { display: none; }
 
 /* Ikon kecil Ganti Password — di samping nama akun */
 .sb-pwd-icon {

@@ -1,8 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useVisitStore } from '@/stores/visitStore'
-
-const visitStore = useVisitStore()
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { dashboardApi } from '@/services/api'
 
 // ─── CLOCK ───────────────────────────────────────────────────────────────────
 const lastUpdated = ref('')
@@ -23,59 +21,75 @@ const dateStr = computed(() => {
   return `${days[n.getDay()]}, ${n.getDate()} ${months[n.getMonth()]} ${n.getFullYear()}`
 })
 
-// ─── VISIT COUNTS (for KPI + Distribusi) ─────────────────────────────────────
-const allVisits     = computed(() => visitStore.visits ?? [])
-const totalToday    = computed(() => allVisits.value.length    || 47)
-const totalBpjs     = computed(() => allVisits.value.filter(v => v.guarantor_type === 'BPJS').length  || 31)
-const totalUmum     = computed(() => allVisits.value.filter(v => v.guarantor_type === 'UMUM').length  || 12)
-const totalAsuransi = computed(() => allVisits.value.filter(v => !['BPJS','UMUM'].includes(v.guarantor_type)).length || 4)
-
-// ─── DISTRIBUSI PENJAMIN ─────────────────────────────────────────────────────
+// ─── DISTRIBUSI PENJAMIN (real — GET /dashboard/distribusi-penjamin) ─────────
 const distribusiFilter = ref('hari')
-const distribusiRaw = {
-  hari:   { bpjs: null, umum: null, asn: null },
-  minggu: { bpjs: 187,  umum: 73,   asn: 21   },
-  bulan:  { bpjs: 812,  umum: 318,  asn: 94   },
-  tahun:  { bpjs: 9840, umum: 3920, asn: 1180 },
+const distData         = ref({ bpjs: 0, umum: 0, lain: 0, total: 0 })
+const distLoading      = ref(false)
+
+async function fetchDistribusi() {
+  distLoading.value = true
+  try {
+    const { data } = await dashboardApi.distribusiPenjamin(distribusiFilter.value)
+    const d = data.data ?? {}
+    distData.value = { bpjs: d.bpjs ?? 0, umum: d.umum ?? 0, lain: d.lain ?? 0, total: d.total ?? 0 }
+  } catch {
+    distData.value = { bpjs: 0, umum: 0, lain: 0, total: 0 }
+  } finally {
+    distLoading.value = false
+  }
 }
-const distBpjs    = computed(() => distribusiFilter.value === 'hari' ? totalBpjs.value     : distribusiRaw[distribusiFilter.value].bpjs)
-const distUmum    = computed(() => distribusiFilter.value === 'hari' ? totalUmum.value     : distribusiRaw[distribusiFilter.value].umum)
-const distAsn     = computed(() => distribusiFilter.value === 'hari' ? totalAsuransi.value : distribusiRaw[distribusiFilter.value].asn)
-const distTotal   = computed(() => distBpjs.value + distUmum.value + distAsn.value || 1)
+watch(distribusiFilter, fetchDistribusi)
+
+const distBpjs    = computed(() => distData.value.bpjs)
+const distUmum    = computed(() => distData.value.umum)
+const distAsn     = computed(() => distData.value.lain)
+const distTotal   = computed(() => distData.value.total || 1)   // pembagi pct (min 1)
 const distBpjsPct = computed(() => Math.round((distBpjs.value / distTotal.value) * 100))
 const distUmumPct = computed(() => Math.round((distUmum.value / distTotal.value) * 100))
-const distAsnPct  = computed(() => 100 - distBpjsPct.value - distUmumPct.value)
+const distAsnPct  = computed(() => Math.max(0, 100 - distBpjsPct.value - distUmumPct.value))
 const distDonut   = computed(() => {
   const b = distBpjsPct.value, u = distUmumPct.value
-  return `conic-gradient(var(--ga) 0% ${b}%, var(--lm) ${b}% ${b+u}%, var(--pt) ${b+u}% 100%)`
+  // Navy (BPJS) → Cyan (Umum) → Slate (Asuransi/Lain) — selaras palet.
+  return `conic-gradient(var(--gd) 0% ${b}%, var(--ga) ${b}% ${b+u}%, #94a3b8 ${b+u}% 100%)`
 })
 
 // ─── FORMAT HELPERS ───────────────────────────────────────────────────────────
-function fmtRp(v)    { return v >= 1000000 ? 'Rp ' + (v/1000000).toFixed(2) + ' jt' : 'Rp ' + v.toLocaleString('id-ID') }
-function fmtRpShort(v) { return (v/1000000).toFixed(1) + 'jt' }
 function fmtRpBig(v) {
   if (v >= 1000000000) return 'Rp ' + (v/1000000000).toFixed(2) + ' M'
   if (v >= 1000000)    return 'Rp ' + (v/1000000).toFixed(2) + ' jt'
   return 'Rp ' + v.toLocaleString('id-ID')
 }
 
-// ─── KPI (static estimates) ───────────────────────────────────────────────────
-const totalRevenue = ref(5120000)
-const farmasiStats = ref({ totalRx: 18, waiting: 3, prepared: 4, done: 11 })
+// ─── 7-DAY TREND (real — kunjungan total & pendapatan kas) ───────────────────
+const visitTrend   = ref([])   // [{ day, total }]
+const revenueTrend = ref([])   // [{ day, amount }]
+const dayAbbr      = ['Min','Sen','Sel','Rab','Kam','Jum','Sab']
 
-// ─── 7-DAY TREND ─────────────────────────────────────────────────────────────
-const visitTrend = ref([
-  { day:'Sen', total:42 }, { day:'Sel', total:38 }, { day:'Rab', total:51 },
-  { day:'Kam', total:45 }, { day:'Jum', total:39 }, { day:'Sab', total:33 },
-  { day:'Hari ini', total:47 },
-])
-const revenueTrend = ref([
-  { day:'Sen', amount:4850000 }, { day:'Sel', amount:4120000 }, { day:'Rab', amount:5680000 },
-  { day:'Kam', amount:4950000 }, { day:'Jum', amount:4230000 }, { day:'Sab', amount:3540000 },
-  { day:'Hari ini', amount:5120000 },
-])
-const maxVisit   = computed(() => Math.max(...visitTrend.value.map(d => d.total)))
-const maxRevenue = computed(() => Math.max(...revenueTrend.value.map(d => d.amount)))
+// Label hari: entri terakhir = "Hari ini", lainnya = singkatan hari dari tanggal.
+function trendDayLabel(dateStr, isLast) {
+  if (isLast) return 'Hari ini'
+  const d = new Date(dateStr)
+  return isNaN(d) ? '' : dayAbbr[d.getDay()]
+}
+
+async function fetchVisitTrend() {
+  try {
+    const { data } = await dashboardApi.kunjunganChart()
+    const arr = data.data ?? []
+    visitTrend.value = arr.map((d, i) => ({ day: trendDayLabel(d.date, i === arr.length - 1), total: Number(d.total) || 0 }))
+  } catch { visitTrend.value = [] }
+}
+async function fetchRevenueTrend() {
+  try {
+    const { data } = await dashboardApi.pendapatanChart()
+    const arr = data.data ?? []
+    revenueTrend.value = arr.map((d, i) => ({ day: trendDayLabel(d.date, i === arr.length - 1), amount: Number(d.amount) || 0 }))
+  } catch { revenueTrend.value = [] }
+}
+
+const maxVisit   = computed(() => Math.max(1, ...visitTrend.value.map(d => d.total)))
+const maxRevenue = computed(() => Math.max(1, ...revenueTrend.value.map(d => d.amount)))
+const lastIdx    = computed(() => visitTrend.value.length - 1)
 function barX(i)          { return i * 44 + 7 }
 function visitBarH(total)  { return (total / maxVisit.value) * 68 }
 function visitBarY(total)  { return 78 - visitBarH(total) }
@@ -84,23 +98,10 @@ function revBarY(amount)   { return 78 - revBarH(amount) }
 const visitLinePoints = computed(() => visitTrend.value.map((d,i) => `${barX(i)+15},${visitBarY(d.total)}`).join(' '))
 const revLinePoints   = computed(() => revenueTrend.value.map((d,i) => `${barX(i)+15},${revBarY(d.amount)}`).join(' '))
 
-// ─── TOP DIAGNOSES ────────────────────────────────────────────────────────────
-const diagnoses = ref([
-  { code:'H25.9', name:'Katarak',        count:14, color:'var(--ga)' },
-  { code:'H40.1', name:'Glaukoma',       count:11, color:'#dc2626' },
-  { code:'H52.1', name:'Miopia',         count:9,  color:'#15803d' },
-  { code:'H11.0', name:'Pterigium',      count:7,  color:'#b45309' },
-  { code:'H04.1', name:'Dry Eye',        count:5,  color:'#7e22ce' },
-  { code:'H10.0', name:'Konjungtivitis', count:3,  color:'#0891b2' },
-])
-const maxDx = computed(() => diagnoses.value[0].count)
-
-// ─── PENUNJANG ────────────────────────────────────────────────────────────────
-const penunjang = ref([
-  { type:'OCT',      icon:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 100 6 3 3 0 000-6z', color:'var(--ga)', bg:'var(--ib)', req:2, prg:1, done:4 },
-  { type:'USG',      icon:'M22 12h-4l-3 9L9 3l-3 9H2',                                                    color:'#7e22ce', bg:'var(--pb)', req:1, prg:1, done:2 },
-  { type:'Biometri', icon:'M12 2a10 10 0 100 20A10 10 0 0012 2zM2 12h20M12 2a15.3 15.3 0 010 20',         color:'#b45309', bg:'var(--wb)', req:1, prg:0, done:3 },
-])
+// Ringkasan footer chart — dihitung dari data riil.
+const visitPeak  = computed(() => visitTrend.value.reduce((a, b) => b.total > a.total ? b : a, { day: '—', total: 0 }))
+const visitAvg   = computed(() => visitTrend.value.length ? Math.round(visitTrend.value.reduce((a, b) => a + b.total, 0) / visitTrend.value.length) : 0)
+const revenueTotal = computed(() => revenueTrend.value.reduce((a, b) => a + b.amount, 0))
 
 // ─── FARMASI STOK ─────────────────────────────────────────────────────────────
 const criticalStock = ref([
@@ -111,10 +112,23 @@ const criticalStock = ref([
   { name:'Tropikamid 1% ED',     stok:12, min:8,  max:25, unit:'btl',  status:'ok'       },
 ])
 
-// ─── JAM TERSIBUK ─────────────────────────────────────────────────────────────
-const hourBusy   = [1, 2, 4, 8, 15, 22, 18, 14, 10, 7, 5, 8]
-const hourLabels = ['08','09','10','11','12','13','14','15','16','17','18','19']
-const maxHour    = 22
+// ─── JAM TERSIBUK (real — GET /dashboard/jam-tersibuk, rata-rata N hari) ─────
+const BUSIEST_DAYS  = 30
+const busiestHours  = ref([])   // [{ hour, label, avg }] jam 08..19
+const busiestDays   = ref(0)    // jumlah hari operasional (pembagi rata-rata)
+const maxHour       = computed(() => Math.max(1, ...busiestHours.value.map(h => h.avg)))
+
+async function fetchJamTersibuk() {
+  try {
+    const { data } = await dashboardApi.jamTersibuk(BUSIEST_DAYS)
+    const d = data.data ?? {}
+    busiestHours.value = d.hours ?? []
+    busiestDays.value  = d.operating_days ?? 0
+  } catch {
+    busiestHours.value = []
+    busiestDays.value  = 0
+  }
+}
 
 // ─── LAPORAN KEUANGAN ─────────────────────────────────────────────────────────
 const keuanganFilter = ref('hari')
@@ -138,26 +152,29 @@ const keuanganData = {
 }
 const activeKeu = computed(() => keuanganData[keuanganFilter.value])
 
-// ─── BPJS STATUS ──────────────────────────────────────────────────────────────
-const bpjsServices = ref([
-  { name:'VClaim',            status:'online',      resp:'142ms' },
-  { name:'Antrean Online',    status:'online',      resp:'210ms' },
-  { name:'LUPIS',             status:'online',      resp:'389ms' },
-  { name:'Satu Sehat (FHIR)', status:'maintenance', resp:'—'     },
-])
-const todaySep     = computed(() => totalBpjs.value + 28)
-const bpjsCacheAge = ref('2m lalu')
-
 // ─── LIFECYCLE ────────────────────────────────────────────────────────────────
 onMounted(() => {
   liveTimer = setInterval(tick, 5000)
   setTimeout(() => { animReady.value = true }, 100)
+  fetchDistribusi()
+  fetchJamTersibuk()
+  fetchVisitTrend()
+  fetchRevenueTrend()
 })
 onUnmounted(() => clearInterval(liveTimer))
 </script>
 
 <template>
   <div class="dashboard">
+
+    <!-- Definisi gradien SVG bersama (dipakai kedua chart tren, selalu ada
+         walau salah satu chart kosong) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <linearGradient id="bgV" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--ga)"/><stop offset="100%" stop-color="var(--gl)"/></linearGradient>
+        <linearGradient id="bgN" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--gd)"/><stop offset="100%" stop-color="var(--gm)"/></linearGradient>
+      </defs>
+    </svg>
 
     <!-- ─── WELCOME BAR ─── -->
     <div class="welcome-bar">
@@ -168,60 +185,6 @@ onUnmounted(() => clearInterval(liveTimer))
       <div class="wb-right">
         <div class="live-pill"><span class="live-dot"></span>LIVE</div>
         <div class="wb-updated">Diperbarui pukul {{ lastUpdated }}</div>
-      </div>
-    </div>
-
-    <!-- ─── KPI ROW ─── -->
-    <div class="kpi-row">
-      <div class="kpi-card" style="border-top-color:var(--ga)">
-        <div class="kpi-icon" style="background:#ecfdf5">
-          <svg viewBox="0 0 24 24" stroke="#15803d"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-        </div>
-        <div class="kpi-body">
-          <div class="kpi-val">{{ totalToday }}</div>
-          <div class="kpi-lbl">Total Kunjungan</div>
-          <div class="kpi-sub">Hari ini · {{ dateStr.split(',')[0] }}</div>
-        </div>
-      </div>
-      <div class="kpi-card" style="border-top-color:var(--ga)">
-        <div class="kpi-icon" style="background:#eff6ff">
-          <svg viewBox="0 0 24 24" stroke="var(--gd)"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        </div>
-        <div class="kpi-body">
-          <div class="kpi-val" style="color:var(--gd)">{{ totalBpjs }}</div>
-          <div class="kpi-lbl">Pasien BPJS</div>
-          <div class="kpi-sub">{{ Math.round(totalBpjs / (totalToday||1) * 100) }}% dari hari ini</div>
-        </div>
-      </div>
-      <div class="kpi-card" style="border-top-color:var(--lm)">
-        <div class="kpi-icon" style="background:#f7fde8">
-          <svg viewBox="0 0 24 24" stroke="var(--ld)"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-        </div>
-        <div class="kpi-body">
-          <div class="kpi-val" style="color:var(--ld)">{{ totalUmum }}</div>
-          <div class="kpi-lbl">Pasien Umum</div>
-          <div class="kpi-sub">{{ Math.round(totalUmum / (totalToday||1) * 100) }}% dari hari ini</div>
-        </div>
-      </div>
-      <div class="kpi-card" style="border-top-color:var(--pt)">
-        <div class="kpi-icon" style="background:#fdf4ff">
-          <svg viewBox="0 0 24 24" stroke="#7e22ce"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
-        </div>
-        <div class="kpi-body">
-          <div class="kpi-val" style="color:var(--pt)">{{ totalAsuransi }}</div>
-          <div class="kpi-lbl">Asuransi / Lain</div>
-          <div class="kpi-sub">Perusahaan, Sosial, dll</div>
-        </div>
-      </div>
-      <div class="kpi-card" style="border-top-color:var(--wt)">
-        <div class="kpi-icon" style="background:#fffbeb">
-          <svg viewBox="0 0 24 24" stroke="#b45309"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-        </div>
-        <div class="kpi-body">
-          <div class="kpi-val" style="color:var(--wt)">{{ fmtRp(totalRevenue) }}</div>
-          <div class="kpi-lbl">Pendapatan Hari Ini</div>
-          <div class="kpi-sub trend-up">↑ Est. {{ fmtRpShort(totalRevenue) }} hingga {{ lastUpdated.slice(0,5) }}</div>
-        </div>
       </div>
     </div>
 
@@ -240,24 +203,28 @@ onUnmounted(() => clearInterval(liveTimer))
           <div class="donut-wrap">
             <div class="donut" :style="{ background: distDonut }">
               <div class="donut-hole">
-                <div class="donut-center-val">{{ distTotal }}</div>
-                <div class="donut-center-lbl">pasien</div>
+                <div class="donut-center-val">{{ distData.total }}</div>
+                <div class="donut-center-lbl">kunjungan</div>
               </div>
             </div>
           </div>
           <div class="donut-legend">
-            <div class="dl-row"><span class="dl-dot" style="background:var(--ga)"></span><span class="dl-name">BPJS/JKN</span><span class="dl-val">{{ distBpjs }} ({{ distBpjsPct }}%)</span></div>
-            <div class="dl-row"><span class="dl-dot" style="background:var(--lm)"></span><span class="dl-name">Umum</span><span class="dl-val">{{ distUmum }} ({{ distUmumPct }}%)</span></div>
-            <div class="dl-row"><span class="dl-dot" style="background:var(--pt)"></span><span class="dl-name">Asuransi/Lain</span><span class="dl-val">{{ distAsn }} ({{ distAsnPct }}%)</span></div>
+            <div class="dl-row"><span class="dl-dot" style="background:var(--gd)"></span><span class="dl-name">BPJS/JKN</span><span class="dl-val">{{ distBpjs }} ({{ distBpjsPct }}%)</span></div>
+            <div class="dl-row"><span class="dl-dot" style="background:var(--ga)"></span><span class="dl-name">Umum</span><span class="dl-val">{{ distUmum }} ({{ distUmumPct }}%)</span></div>
+            <div class="dl-row"><span class="dl-dot" style="background:#94a3b8"></span><span class="dl-name">Asuransi/Lain</span><span class="dl-val">{{ distAsn }} ({{ distAsnPct }}%)</span></div>
           </div>
         </div>
         <div class="divider-light"></div>
         <div class="cb">
-          <div class="section-label">Jam Tersibuk (08.00–19.00)</div>
-          <div class="sparkline">
-            <div v-for="(h, i) in hourBusy" :key="i" class="spark-col">
-              <div class="spark-bar" :class="h===maxHour ? 'peak' : h>=14 ? 'hi' : ''" :style="{ height: Math.max(4, (h/maxHour)*44)+'px' }"></div>
-              <div class="spark-lbl">{{ hourLabels[i] }}</div>
+          <div class="section-label">Jam Tersibuk · rata-rata {{ busiestDays }} hari (08.00–19.00)</div>
+          <div v-if="!busiestHours.length" class="sparkline-empty">Belum ada data kunjungan</div>
+          <div v-else class="sparkline">
+            <div v-for="h in busiestHours" :key="h.hour" class="spark-col">
+              <div class="spark-bar"
+                   :class="h.avg === maxHour ? 'peak' : h.avg >= maxHour * 0.6 ? 'hi' : ''"
+                   :style="{ height: Math.max(4, (h.avg / maxHour) * 44) + 'px' }"
+                   :title="`${h.label}.00 — rata-rata ${h.avg} kunjungan/hari`"></div>
+              <div class="spark-lbl">{{ h.label }}</div>
             </div>
           </div>
         </div>
@@ -309,44 +276,8 @@ onUnmounted(() => clearInterval(liveTimer))
       </div>
     </div>
 
-    <!-- ─── ROW: DIAGNOSIS + PENUNJANG + FARMASI ─── -->
-    <div class="row-3col">
-      <div class="card">
-        <div class="ch"><div class="cht"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Top Diagnosis Hari Ini</div></div>
-        <div class="cb">
-          <div v-for="dx in diagnoses" :key="dx.code" class="dx-row">
-            <div class="dx-head">
-              <span class="dx-code" :style="{ color: dx.color }">{{ dx.code }}</span>
-              <span class="dx-name">{{ dx.name }}</span>
-              <span class="dx-count">{{ dx.count }}</span>
-            </div>
-            <div class="dx-bar-track"><div class="dx-bar-fill" :style="{ width: animReady ? (dx.count/maxDx*100)+'%' : '0%', background: dx.color }"></div></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="ch"><div class="cht"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>Status Pemeriksaan Penunjang</div></div>
-        <div class="cb">
-          <div v-for="p in penunjang" :key="p.type" class="pj-card">
-            <div class="pj-header">
-              <div class="pj-icon" :style="{ background: p.bg }"><svg viewBox="0 0 24 24" :stroke="p.color"><path :d="p.icon"/></svg></div>
-              <div class="pj-type">{{ p.type }}</div>
-              <div class="pj-total" :style="{ color: p.color }">{{ p.req+p.prg+p.done }}</div>
-            </div>
-            <div class="pj-seg-track">
-              <div class="pj-seg req" :style="{ width: ((p.req/(p.req+p.prg+p.done||1))*100)+'%' }"></div>
-              <div class="pj-seg prg" :style="{ width: ((p.prg/(p.req+p.prg+p.done||1))*100)+'%' }"></div>
-              <div class="pj-seg done" :style="{ width: ((p.done/(p.req+p.prg+p.done||1))*100)+'%' }"></div>
-            </div>
-            <div class="pj-legend">
-              <span class="pjl req">{{ p.req }} menunggu</span>
-              <span class="pjl prg">{{ p.prg }} proses</span>
-              <span class="pjl done">{{ p.done }} selesai</span>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- ─── ROW: STOK FARMASI ─── -->
+    <div class="row-full">
 
       <div class="card">
         <div class="ch">
@@ -379,72 +310,35 @@ onUnmounted(() => clearInterval(liveTimer))
       <div class="card">
         <div class="ch"><div class="cht"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Tren Kunjungan 7 Hari</div></div>
         <div class="cb chart-area">
-          <svg viewBox="0 0 308 100" class="trend-svg">
-            <defs>
-              <linearGradient id="bgV" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--ga)" stop-opacity="1"/><stop offset="100%" stop-color="var(--gl)" stop-opacity=".4"/></linearGradient>
-              <linearGradient id="bgH" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--lm)" stop-opacity="1"/><stop offset="100%" stop-color="var(--gl)" stop-opacity=".3"/></linearGradient>
-            </defs>
+          <div v-if="!visitTrend.length" class="chart-empty">Belum ada data kunjungan</div>
+          <svg v-else viewBox="0 0 308 100" class="trend-svg">
             <g v-for="(d,i) in visitTrend" :key="d.day">
               <rect :x="barX(i)" :y="visitBarY(d.total)" :width="30" :height="visitBarH(d.total)" rx="3"
-                :fill="i===6?'url(#bgV)':i===2?'url(#bgH)':'var(--gb)'"/>
+                :fill="i===lastIdx ? 'url(#bgV)' : 'url(#bgN)'"/>
               <text :x="barX(i)+15" y="93" text-anchor="middle" class="svgt-lbl">{{ d.day==='Hari ini'?'●':d.day }}</text>
               <text :x="barX(i)+15" :y="visitBarY(d.total)-3" text-anchor="middle" class="svgt-val">{{ d.total }}</text>
             </g>
             <polyline :points="visitLinePoints" class="trend-line"/>
             <circle v-for="(d,i) in visitTrend" :key="'c'+i" :cx="barX(i)+15" :cy="visitBarY(d.total)"
-              r="2.5" :fill="i===6?'var(--ga)':'var(--gb)'" :stroke="i===6?'var(--gd)':'var(--gb)'" stroke-width="1"/>
+              r="2.5" :fill="i===lastIdx?'var(--ga)':'#fff'" :stroke="i===lastIdx?'var(--gd)':'var(--gm)'" stroke-width="1.5"/>
           </svg>
-          <div class="chart-footer"><span>Puncak Rab (51) · Rata-rata: {{ Math.round(visitTrend.reduce((a,b)=>a+b.total,0)/visitTrend.length) }}/hari</span></div>
+          <div class="chart-footer"><span>Puncak {{ visitPeak.day }} ({{ visitPeak.total }}) · Rata-rata {{ visitAvg }}/hari</span></div>
         </div>
       </div>
       <div class="card">
         <div class="ch"><div class="cht"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>Tren Pendapatan 7 Hari</div></div>
         <div class="cb chart-area">
-          <svg viewBox="0 0 308 100" class="trend-svg">
-            <defs>
-              <linearGradient id="bgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--wt)" stop-opacity="1"/><stop offset="100%" stop-color="var(--wb)" stop-opacity=".4"/></linearGradient>
-            </defs>
+          <div v-if="!revenueTrend.length" class="chart-empty">Belum ada data pendapatan</div>
+          <svg v-else viewBox="0 0 308 100" class="trend-svg">
             <g v-for="(d,i) in revenueTrend" :key="d.day">
               <rect :x="barX(i)" :y="revBarY(d.amount)" :width="30" :height="revBarH(d.amount)" rx="3"
-                :fill="i===6?'url(#bgR)':'var(--gb)'"/>
+                :fill="i===lastIdx ? 'url(#bgV)' : 'url(#bgN)'"/>
               <text :x="barX(i)+15" y="93" text-anchor="middle" class="svgt-lbl">{{ d.day==='Hari ini'?'●':d.day }}</text>
               <text :x="barX(i)+15" :y="revBarY(d.amount)-3" text-anchor="middle" class="svgt-val">{{ (d.amount/1000000).toFixed(1) }}jt</text>
             </g>
             <polyline :points="revLinePoints" class="trend-line rev"/>
           </svg>
-          <div class="chart-footer"><span>Total 7 hari: Rp {{ (revenueTrend.reduce((a,b)=>a+b.amount,0)/1000000).toFixed(2) }} jt</span></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ─── ROW: BPJS STATUS ─── -->
-    <div class="row-full">
-      <div class="card">
-        <div class="ch"><div class="cht"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Integrasi BPJS &amp; Sistem</div></div>
-        <div class="cb">
-          <div v-for="s in bpjsServices" :key="s.name" class="svc-row">
-            <span class="svc-name">{{ s.name }}</span>
-            <div class="svc-right">
-              <span class="svc-resp">{{ s.resp }}</span>
-              <span :class="['svc-dot', s.status==='online'?'online':'maint']"></span>
-              <span :class="['svc-label', s.status==='online'?'online':'maint']">{{ s.status==='online'?'Online':'Maintenance' }}</span>
-            </div>
-          </div>
-          <div class="divider-light"></div>
-          <div class="kv-grid">
-            <div class="kv-row"><span class="kv-k">SEP Terbit Hari Ini</span><span class="kv-v success">{{ todaySep }}</span></div>
-            <div class="kv-row"><span class="kv-k">Cache VClaim</span><span class="kv-v">{{ bpjsCacheAge }}</span></div>
-            <div class="kv-row"><span class="kv-k">Pasien BPJS Aktif</span><span class="kv-v">{{ totalBpjs }}</span></div>
-            <div class="kv-row"><span class="kv-k">Klaim Pending</span><span class="kv-v warn">2 verifikasi</span></div>
-          </div>
-          <div class="divider-light"></div>
-          <div class="section-label">Statistik Pasien Hari Ini</div>
-          <div class="mini-stat-row">
-            <div class="mini-stat"><div class="ms-val">{{ farmasiStats.done }}<span>/{{ farmasiStats.totalRx }}</span></div><div class="ms-lbl">Resep Selesai</div></div>
-            <div class="mini-stat"><div class="ms-val">{{ farmasiStats.waiting+farmasiStats.prepared }}<span></span></div><div class="ms-lbl">Resep Aktif</div></div>
-            <div class="mini-stat"><div class="ms-val">{{ totalBpjs }}<span></span></div><div class="ms-lbl">Pasien BPJS</div></div>
-            <div class="mini-stat"><div class="ms-val">{{ totalToday }}<span></span></div><div class="ms-lbl">Total Kunjungan</div></div>
-          </div>
+          <div class="chart-footer"><span>Total 7 hari: {{ fmtRpBig(revenueTotal) }}</span></div>
         </div>
       </div>
     </div>
@@ -457,38 +351,35 @@ onUnmounted(() => clearInterval(liveTimer))
 .dashboard { display: flex; flex-direction: column; gap: 1rem; }
 
 /* ─── WELCOME BAR ─── */
-.welcome-bar { display:flex; align-items:center; justify-content:space-between; background:linear-gradient(135deg,var(--gd),var(--gm)); border-radius:12px; padding:.85rem 1.25rem; gap:1rem; }
-.wb-title { font-family:'Space Grotesk',serif; font-size:18px; color:#fff; line-height:1.1; }
-.wb-date  { font-size:11px; color:rgba(255,255,255,.55); margin-top:3px; }
-.wb-right { display:flex; align-items:center; gap:.75rem; }
-.wb-updated { font-size:11px; color:rgba(255,255,255,.5); font-variant-numeric:tabular-nums; }
-.live-pill { display:inline-flex; align-items:center; gap:5px; background:rgba(56,189,248,.2); border:1px solid rgba(56,189,248,.4); color:var(--lm); font-size:9px; font-weight:700; padding:3px 9px; border-radius:20px; letter-spacing:.08em; }
-.live-dot  { width:6px; height:6px; border-radius:50%; background:var(--lm); animation:blink 1.5s infinite; flex-shrink:0; }
+.welcome-bar { display:flex; align-items:center; justify-content:space-between; gap:1rem;
+  background:linear-gradient(120deg,var(--gd) 0%, var(--gm) 60%, #226aa6 100%);
+  border-radius:14px; padding:1.1rem 1.5rem; position:relative; overflow:hidden;
+  box-shadow:0 6px 22px rgba(14,58,102,.18); }
+/* aksen lingkaran sky di sudut kanan, halus */
+.welcome-bar::after { content:''; position:absolute; right:-40px; top:-60px; width:180px; height:180px;
+  border-radius:50%; background:radial-gradient(circle, rgba(31,170,224,.35), transparent 70%); pointer-events:none; }
+.wb-title { font-family:'Space Grotesk',sans-serif; font-size:20px; font-weight:700; color:#fff; line-height:1.15; letter-spacing:.01em; position:relative; }
+.wb-date  { font-size:11.5px; color:rgba(255,255,255,.6); margin-top:4px; position:relative; }
+.wb-right { display:flex; align-items:center; gap:.75rem; position:relative; }
+.wb-updated { font-size:11px; color:rgba(255,255,255,.55); font-variant-numeric:tabular-nums; }
+.live-pill { display:inline-flex; align-items:center; gap:5px; background:rgba(31,170,224,.22); border:1px solid rgba(31,170,224,.5); color:#7fd6f5; font-size:9px; font-weight:700; padding:4px 10px; border-radius:20px; letter-spacing:.08em; }
+.live-dot  { width:6px; height:6px; border-radius:50%; background:var(--ga); animation:blink 1.5s infinite; flex-shrink:0; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
-
-/* ─── KPI ROW ─── */
-.kpi-row { display:grid; grid-template-columns:repeat(5,1fr); gap:.75rem; }
-.kpi-card { background:var(--bc); border:1px solid var(--gb); border-radius:12px; padding:.9rem 1rem; display:flex; align-items:center; gap:10px; border-top-width:3px; border-top-style:solid; }
-.kpi-icon { width:40px; height:40px; border-radius:11px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-.kpi-icon svg { width:20px; height:20px; fill:none; stroke-width:2; stroke-linecap:round; }
-.kpi-body { min-width:0; flex:1; }
-.kpi-val  { font-size:22px; font-weight:700; color:var(--td); line-height:1; }
-.kpi-lbl  { font-size:10px; color:var(--tu); margin-top:2px; }
-.kpi-sub  { font-size:10px; color:var(--th); margin-top:2px; }
-.trend-up { color:var(--st) !important; }
 
 /* ─── GRID ROWS ─── */
 .row-2col  { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
-.row-3col  { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; }
 .row-keu   { display:grid; grid-template-columns:2fr 3fr; gap:1rem; }
 .row-full  { width:100%; }
 
 /* ─── CARD BASE ─── */
-.card { background:var(--bc); border:1px solid var(--gb); border-radius:12px; overflow:hidden; border-top:3px solid transparent; }
-.ch { padding:.6rem .9rem; border-bottom:1px solid var(--gb); display:flex; align-items:center; justify-content:space-between; gap:.4rem; }
-.cht { font-size:12px; font-weight:600; color:var(--td); display:flex; align-items:center; gap:5px; }
-.cht svg { width:12px; height:12px; fill:none; stroke:var(--ga); stroke-width:2; stroke-linecap:round; }
-.cb { padding:.75rem .9rem; }
+.card { background:var(--bc); border:1px solid var(--gb); border-radius:14px; overflow:hidden;
+  box-shadow:0 1px 2px rgba(14,58,102,.04), 0 4px 16px rgba(14,58,102,.05);
+  transition:box-shadow .2s ease, transform .2s ease; }
+.card:hover { box-shadow:0 2px 8px rgba(14,58,102,.08), 0 10px 30px rgba(14,58,102,.09); transform:translateY(-1px); }
+.ch { padding:.7rem 1rem; border-bottom:1px solid var(--gb); display:flex; align-items:center; justify-content:space-between; gap:.4rem; }
+.cht { font-size:12.5px; font-weight:700; color:var(--td); display:flex; align-items:center; gap:6px; }
+.cht svg { width:14px; height:14px; fill:none; stroke:var(--ga); stroke-width:2; stroke-linecap:round; }
+.cb { padding:.85rem 1rem; }
 .ch-badge { font-size:9px; font-weight:700; padding:2px 8px; border-radius:20px; }
 .ch-badge.warn { background:var(--eb); color:var(--et); border:1px solid var(--ebd); }
 .divider-light { height:1px; background:var(--gb); margin:.5rem .9rem; }
@@ -501,51 +392,24 @@ onUnmounted(() => clearInterval(liveTimer))
 /* ─── DONUT ─── */
 .donut-section { display:flex; align-items:center; gap:1.25rem; }
 .donut-wrap { flex-shrink:0; }
-.donut { width:110px; height:110px; border-radius:50%; position:relative; }
-.donut-hole { position:absolute; inset:22px; border-radius:50%; background:var(--bc); display:flex; flex-direction:column; align-items:center; justify-content:center; }
-.donut-center-val { font-size:20px; font-weight:700; color:var(--td); line-height:1; }
-.donut-center-lbl { font-size:9px; color:var(--tu); }
-.donut-legend { flex:1; display:flex; flex-direction:column; gap:.4rem; }
-.dl-row { display:flex; align-items:center; gap:.4rem; font-size:11.5px; }
-.dl-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.donut { width:128px; height:128px; border-radius:50%; position:relative; box-shadow:0 4px 14px rgba(14,58,102,.12); }
+.donut-hole { position:absolute; inset:26px; border-radius:50%; background:var(--bc); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:inset 0 1px 3px rgba(14,58,102,.06); }
+.donut-center-val { font-size:24px; font-weight:800; color:var(--gd); line-height:1; }
+.donut-center-lbl { font-size:9px; color:var(--tu); margin-top:1px; }
+.donut-legend { flex:1; display:flex; flex-direction:column; gap:.55rem; }
+.dl-row { display:flex; align-items:center; gap:.5rem; font-size:12px; }
+.dl-dot { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
 .dl-name { flex:1; color:var(--tm); }
 .dl-val { font-weight:600; color:var(--td); font-variant-numeric:tabular-nums; }
 
 /* ─── SPARKLINE ─── */
+.sparkline-empty { height:52px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--tu); }
 .sparkline { display:grid; grid-template-columns:repeat(12,1fr); gap:2px; align-items:flex-end; height:52px; }
 .spark-col { display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:2px; }
-.spark-bar { width:100%; background:var(--gb); border-radius:2px 2px 0 0; min-height:4px; transition:height .4s ease; }
-.spark-bar.hi   { background:var(--lm); }
-.spark-bar.peak { background:var(--et); }
+.spark-bar { width:100%; background:#dbe6f0; border-radius:3px 3px 0 0; min-height:4px; transition:height .4s ease; }
+.spark-bar.hi   { background:var(--gd); }
+.spark-bar.peak { background:var(--ga); }
 .spark-lbl { font-size:7.5px; color:var(--th); }
-
-/* ─── DIAGNOSIS ─── */
-.dx-row { margin-bottom:.45rem; }
-.dx-head { display:flex; align-items:center; gap:.4rem; margin-bottom:3px; }
-.dx-code  { font-size:9.5px; font-weight:700; min-width:42px; }
-.dx-name  { font-size:12px; color:var(--td); flex:1; }
-.dx-count { font-size:11.5px; font-weight:700; color:var(--td); font-variant-numeric:tabular-nums; }
-.dx-bar-track { height:6px; background:var(--bs); border-radius:3px; overflow:hidden; }
-.dx-bar-fill  { height:100%; border-radius:3px; transition:width .7s cubic-bezier(.22,1,.36,1); }
-
-/* ─── PENUNJANG ─── */
-.pj-card { background:var(--bs); border:1px solid var(--gb); border-radius:9px; padding:.55rem .7rem; margin-bottom:.45rem; }
-.pj-card:last-child { margin-bottom:0; }
-.pj-header { display:flex; align-items:center; gap:.5rem; margin-bottom:.4rem; }
-.pj-icon { width:28px; height:28px; border-radius:7px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-.pj-icon svg { width:14px; height:14px; fill:none; stroke-width:2; stroke-linecap:round; }
-.pj-type  { flex:1; font-size:12.5px; font-weight:600; color:var(--td); }
-.pj-total { font-size:16px; font-weight:700; }
-.pj-seg-track { height:8px; background:var(--gb); border-radius:4px; overflow:hidden; display:flex; margin-bottom:4px; }
-.pj-seg { height:100%; transition:width .6s ease; }
-.pj-seg.req  { background:var(--wt); }
-.pj-seg.prg  { background:var(--it); }
-.pj-seg.done { background:var(--st); }
-.pj-legend { display:flex; gap:.5rem; }
-.pjl { font-size:9px; font-weight:600; }
-.pjl.req  { color:var(--wt); }
-.pjl.prg  { color:var(--it); }
-.pjl.done { color:var(--st); }
 
 /* ─── STOCK ─── */
 .stk-row { margin-bottom:.55rem; }
@@ -570,11 +434,12 @@ onUnmounted(() => clearInterval(liveTimer))
 
 /* ─── CHARTS ─── */
 .chart-area { padding:.65rem .9rem .4rem; }
+.chart-empty { height:100px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--tu); }
 .trend-svg  { width:100%; overflow:visible; }
 .svgt-lbl   { font-size:7.5px; fill:var(--tu); font-family:'Inter',sans-serif; }
 .svgt-val   { font-size:7px; fill:var(--td); font-family:'Inter',sans-serif; font-weight:600; }
-.trend-line { fill:none; stroke:var(--ga); stroke-width:1.5; opacity:.5; }
-.trend-line.rev { stroke:var(--wt); }
+.trend-line { fill:none; stroke:var(--ga); stroke-width:1.5; opacity:.55; }
+.trend-line.rev { stroke:var(--gd); }
 .chart-footer { font-size:10px; color:var(--tu); margin-top:.35rem; }
 
 /* ─── LAPORAN KEUANGAN ─── */
@@ -617,29 +482,5 @@ onUnmounted(() => clearInterval(liveTimer))
 .keu-cat-bar { width:100%; background:linear-gradient(to top,var(--ga),var(--lm)); border-radius:4px; transition:height .6s ease; }
 .keu-cat-lbl { font-size:9.5px; font-weight:600; color:var(--tu); text-align:center; }
 .keu-cat-val { font-size:9px; color:var(--th); text-align:center; }
-
-/* ─── BPJS STATUS ─── */
-.svc-row   { display:flex; align-items:center; justify-content:space-between; padding:.35rem 0; border-bottom:1px solid rgba(0,0,0,.04); }
-.svc-row:last-child { border-bottom:none; }
-.svc-name  { font-size:12px; color:var(--tm); }
-.svc-right { display:flex; align-items:center; gap:.4rem; }
-.svc-resp  { font-size:9.5px; color:var(--th); font-variant-numeric:tabular-nums; }
-.svc-dot   { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
-.svc-dot.online { background:var(--st); animation:blink 2s infinite; }
-.svc-dot.maint  { background:var(--wt); }
-.svc-label { font-size:10.5px; font-weight:600; }
-.svc-label.online { color:var(--st); }
-.svc-label.maint  { color:var(--wt); }
-.kv-grid { display:flex; flex-direction:column; gap:.35rem; margin-bottom:.1rem; }
-.kv-row  { display:flex; align-items:center; justify-content:space-between; font-size:11.5px; }
-.kv-k    { color:var(--tu); }
-.kv-v    { font-weight:600; color:var(--td); }
-.kv-v.success { color:var(--st); }
-.kv-v.warn    { color:var(--wt); }
-.mini-stat-row { display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; }
-.mini-stat { background:var(--bs); border:1px solid var(--gb); border-radius:8px; padding:.5rem; text-align:center; }
-.ms-val { font-size:16px; font-weight:700; color:var(--td); line-height:1; }
-.ms-val span { font-size:10px; font-weight:500; color:var(--tu); }
-.ms-lbl { font-size:9px; color:var(--tu); margin-top:2px; }
 
 </style>

@@ -59,6 +59,13 @@ class MigrateFromPrimaVision extends Command
     private array $visitByLegacy = [];     // legacy_uuid => id
     private array $nikSeen = [];           // nik => true (first-wins, sumber punya 335 NIK duplikat)
 
+    // Resolusi dokter BY-NAMA (employees arumed tak punya legacy_uuid runningprima → employeeByLegacy kosong).
+    private array $employeeByNameExact = []; // lower(trim(name)) => id
+    private array $employeeByNameNorm = [];  // normName(name) => id (fallback fuzzy)
+    private array $doctorAlias = [];         // lower(nama sumber) => lower(nama arumed kanonik)
+    private array $unresolvedDoctor = [];    // nama sumber tak ter-resolve => count (laporan)
+    private int $doctorByName = 0;           // jumlah doctor_id ter-resolve by-nama
+
     public function handle(): int
     {
         // CSV ada di root repo (Docs/migrasi data/csv), satu level di atas backend/.
@@ -133,6 +140,15 @@ class MigrateFromPrimaVision extends Command
         foreach (Visit::query()->whereNotNull('legacy_uuid')->get(['id', 'legacy_uuid']) as $v) {
             $this->visitByLegacy[$v->legacy_uuid] = $v->id;
         }
+        // Resolusi dokter by-nama: peta nama pegawai arumed (exact + ternormalisasi) + alias terkurasi.
+        foreach (Employee::query()->get(['id', 'name']) as $e) {
+            $this->employeeByNameExact[mb_strtolower(trim((string) $e->name))] = $e->id;
+            $nn = $this->normName($e->name);
+            if ($nn !== '' && ! isset($this->employeeByNameNorm[$nn])) {
+                $this->employeeByNameNorm[$nn] = $e->id;
+            }
+        }
+        $this->loadDoctorAlias();
     }
 
     // ─────────────────────────────────────────────────────────── insurers
@@ -560,7 +576,7 @@ class MigrateFromPrimaVision extends Command
 
             $data = [
                 'visit_id'           => $visitId,
-                'doctor_id'          => $this->employeeByLegacy[$r['pengguna_uuid']] ?? null,
+                'doctor_id'          => $this->employeeByLegacy[$r['pengguna_uuid']] ?? $this->resolveDoctorByName($r['nama_dokter'] ?? null),
                 'anamnese'           => $this->clean($r['anamnese'] ?? null),
                 'soap_objective'     => $objektifByReg[$r['registrasi_uuid']] ?? null,
                 'soap_assessment'    => $namaDiagnosa,
@@ -580,6 +596,14 @@ class MigrateFromPrimaVision extends Command
         $bar->finish();
         $this->newLine();
         $this->line("  dibuat/diupdate: {$created} · dilewati (visit orphan): {$skipped}");
+        $unmatched = array_sum($this->unresolvedDoctor);
+        $this->line("  doctor_id by-nama: {$this->doctorByName} · tak ter-resolve: {$unmatched} (" . count($this->unresolvedDoctor) . ' nama unik)');
+        if ($this->unresolvedDoctor) {
+            arsort($this->unresolvedDoctor);
+            foreach ($this->unresolvedDoctor as $nm => $c) {
+                $this->line("    (dokter tak cocok) {$nm}: {$c}");
+            }
+        }
     }
 
     /**
@@ -725,6 +749,62 @@ class MigrateFromPrimaVision extends Command
             $line .= $next;
         }
         return str_getcsv(rtrim($line, "\r\n"), ',', '"', '\\');
+    }
+
+    /** Muat peta alias dokter (pipe-delimited: sumber|arumed) dari Docs/migrasi data/dokter-alias.csv. */
+    private function loadDoctorAlias(): void
+    {
+        $path = dirname($this->csvDir) . '/dokter-alias.csv';
+        if (! is_file($path)) {
+            $this->warn("  (dokter-alias.csv tak ditemukan di {$path} — resolusi by-nama hanya andalkan normalisasi)");
+            return;
+        }
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        foreach ($lines as $i => $line) {
+            if ($i === 0 && stripos($line, 'sumber') === 0) continue; // header
+            $parts = explode('|', $line, 2);
+            if (count($parts) !== 2) continue;
+            $src = mb_strtolower(trim($parts[0]));
+            $dst = mb_strtolower(trim($parts[1]));
+            if ($src !== '' && $dst !== '') $this->doctorAlias[$src] = $dst;
+        }
+    }
+
+    /**
+     * Normalisasi nama dokter untuk pencocokan fuzzy: lowercase, potong setelah koma
+     * pertama (buang gelar belakang), titik/kurung → spasi, buang token gelar depan.
+     */
+    private function normName(?string $s): string
+    {
+        $s = mb_strtolower(trim((string) $s));
+        if ($s === '' || $s === '-') return '';
+        $s = explode(',', $s)[0];
+        $s = preg_replace('/[.()]/', ' ', $s);
+        $s = preg_replace('/\s+/', ' ', trim((string) $s));
+        $titles = ['dr', 'drg', 'prof', 'h', 'hj', 'ny', 'tn'];
+        $parts = array_values(array_filter(explode(' ', $s), fn ($p) => $p !== '' && ! in_array($p, $titles, true)));
+        return implode(' ', $parts);
+    }
+
+    /**
+     * Resolusi employee id dari nama dokter sumber: alias eksklit → exact → fuzzy(norm).
+     * Hitung yang ter-resolve & yang tidak (untuk laporan). Null bila kosong/tak cocok.
+     */
+    private function resolveDoctorByName(?string $src): ?string
+    {
+        $k = mb_strtolower(trim((string) $src));
+        if ($k === '' || $k === '-') return null;
+        $canon = $this->doctorAlias[$k] ?? null;
+        $id = $canon !== null
+            ? ($this->employeeByNameExact[$canon] ?? null)
+            : ($this->employeeByNameExact[$k] ?? ($this->employeeByNameNorm[$this->normName($src)] ?? null));
+        if ($id !== null) {
+            $this->doctorByName++;
+        } else {
+            $nm = trim((string) $src);
+            $this->unresolvedDoctor[$nm] = ($this->unresolvedDoctor[$nm] ?? 0) + 1;
+        }
+        return $id;
     }
 
     /** '-' / '' / NULL → null; else trim. */

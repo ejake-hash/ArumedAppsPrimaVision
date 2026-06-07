@@ -4,22 +4,26 @@ import CrudResourceView from './_CrudResourceView.vue'
 const config = {
   resourceKey: 'diagnosticTestType',
   title: 'Jenis Pemeriksaan Penunjang',
-  description: 'Daftar jenis pemeriksaan penunjang (turunan dari tindakan kategori "Penunjang"). Hanya tampilan — untuk menambah/ubah/atur harga, kelola di Tarif & Paket → Tarif Tindakan (kategori Penunjang). Dokter memilih dari daftar ini saat order.',
-  searchPlaceholder: 'Cari kode / nama / kategori…',
+  description: 'Master jenis pemeriksaan penunjang. Kode dibuat otomatis (PNJ-xxx). Setiap jenis tersinkron sebagai tindakan kategori "Penunjang" — dokter memilihnya saat order. Tarif TIDAK diatur di sini; semua harga berasal dari Buku Tarif (Tarif & Paket → Tarif Tindakan, kategori Penunjang).',
+  searchPlaceholder: 'Cari kode / nama…',
   extraSearchParam: 'search',
   csvShowTemplate: false,
-  readOnly: true,
-  defaults: { code: '', name: '', category: '', is_active: true },
+  defaults: { name: '', is_active: true },
   columns: [
     { key: '_no',        label: 'No.',              width: '52px',  align: 'center' },
     { key: 'code',       label: 'Kode',             width: '110px' },
     { key: 'name',       label: 'Nama Pemeriksaan' },
-    { key: 'category',   label: 'Kategori',         width: '150px' },
     { key: 'is_active',  label: 'Aktif?',           width: '80px',  align: 'center' },
   ],
-  // read-only → fields/editFields tidak dipakai (tidak ada modal create/edit)
-  fields: [],
-  editFields: [],
+  // Kode tidak diinput admin (auto PNJ-xxx) & immutable saat edit. Tarif via Buku Tarif.
+  fields: [
+    { key: 'name',       label: 'Nama Pemeriksaan', type: 'text',     required: true, cols: 2, placeholder: 'mis. OCT Macula' },
+    { key: 'is_active',  label: 'Aktif',            type: 'checkbox', cols: 2 },
+  ],
+  editFields: [
+    { key: 'name',       label: 'Nama Pemeriksaan', type: 'text',     required: true, cols: 2 },
+    { key: 'is_active',  label: 'Aktif',            type: 'checkbox', cols: 2 },
+  ],
   deleteLabel: (r) => `${r?.code} · ${r?.name}`,
 }
 </script>

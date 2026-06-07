@@ -37,8 +37,79 @@ final class AggregateResolver
             'doctorExamination.icd10_diagnoses'   => $this->resolveIcd10Diagnoses($visit, $format),
             'visitServices'                       => $this->resolveVisitServices($visit, $format),
             'diagnosticResults.summary'           => $this->resolveDiagnosticResults($visit, $format),
+            'surgery_iol_usage'                   => $this->resolveIolUsage($visit, $format),
+            'surgery_operation_summary'           => $this->resolveOperationSummary($visit, $format),
+            'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
+            'planning_instruction'                => $this->resolvePlanningInstruction($visit),
             default                               => null,
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // planning_instruction — "Instruksi/Anjuran" Resume Medis dari rencana
+    // tatalaksana dokter (doctorExamination.planning). Binding `db` lama hanya
+    // mengeluarkan enum mentah ("BEDAH"/"PULANG_BEROBAT_JALAN"); di sini diubah
+    // jadi kalimat siap-pakai, mis. "Kontrol kembali tanggal 7 Juni 2026" atau
+    // "Rencana operasi Phaco + IOL tanggal 10 Juni 2026". Tetap EDITABLE — dokter
+    // boleh sunting di FormRMRenderer.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolvePlanningInstruction(Visit $visit): string
+    {
+        $exam = $visit->doctorExamination;
+        if ($exam === null) {
+            return '';
+        }
+
+        return match ((string) ($exam->planning ?? '')) {
+            'PULANG_BEROBAT_JALAN', 'PULANG' => $this->planningPulang($visit),
+            'BEDAH'                          => $this->planningBedah($exam),
+            'RAWAT_INAP'                     => 'Rawat inap untuk observasi/tatalaksana lebih lanjut.',
+            'RUJUK'                          => $this->planningRujuk($exam),
+            default                          => '',
+        };
+    }
+
+    private function planningPulang(Visit $visit): string
+    {
+        if ($visit->follow_up_date) {
+            $line = 'Kontrol kembali tanggal ' . $this->idDate($visit->follow_up_date);
+            $reason = trim((string) ($visit->follow_up_reason ?? ''));
+            return $line . ($reason !== '' ? " ({$reason})" : '') . '.';
+        }
+        return 'Pulang, berobat jalan. Kontrol kembali bila ada keluhan.';
+    }
+
+    private function planningBedah(\App\Models\DoctorExamination $exam): string
+    {
+        $sched = $exam->surgerySchedule;
+        $pkg   = $exam->surgeryPackage;
+
+        $verb = ($sched && $sched->location_type === 'RUANG_TINDAKAN') ? 'Rencana tindakan' : 'Rencana operasi';
+        $name = $pkg?->name ? ' ' . trim((string) $pkg->name) : '';
+        $date = $sched?->scheduled_date ? ' tanggal ' . $this->idDate($sched->scheduled_date) : '';
+        $time = $sched?->scheduled_time ? ' pukul ' . substr((string) $sched->scheduled_time, 0, 5) : '';
+
+        return trim($verb . $name . $date . $time) . '.';
+    }
+
+    private function planningRujuk(\App\Models\DoctorExamination $exam): string
+    {
+        $fac    = trim((string) ($exam->external_referral_facility ?? ''));
+        $reason = trim((string) ($exam->external_referral_reason ?? ''));
+        $line   = $fac !== '' ? "Rujuk ke {$fac}" : 'Rujuk untuk penanganan lebih lanjut';
+        return $line . ($reason !== '' ? " — {$reason}" : '') . '.';
+    }
+
+    /** Format tanggal Indonesia ("7 Juni 2026") tanpa bergantung locale Carbon global. */
+    private function idDate(mixed $d): string
+    {
+        if (! $d) {
+            return '';
+        }
+        $c = \Illuminate\Support\Carbon::parse($d);
+        $months = [1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+        return $c->day . ' ' . ($months[$c->month] ?? '') . ' ' . $c->year;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -219,6 +290,144 @@ final class AggregateResolver
             $lines[] = "{$type}: " . implode(' / ', $entries);
         }
         return implode("\n", $lines);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // surgery_iol_usage — "Stiker Implant" RM 10.1 (hasil scan UDI)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Daftar IOL/implan terpasang pada operasi visit ini — menggantikan stiker
+     * fisik di laporan. Sumber = surgery_iol_usage (hasil scan barcode UDI:
+     * brand/power dari master + serial/lot/gtin/expiry dari label). 1 baris per
+     * lensa. Kosong bila operasi tanpa IOL (mis. vitrektomi murni) → operator
+     * dapat isi manual (field editable).
+     */
+    private function resolveIolUsage(Visit $visit, ?string $format): string
+    {
+        $records = \App\Models\SurgeryRecord::query()
+            ->where('visit_id', $visit->id)
+            ->with(['iolUsages.iolItem'])
+            ->get();
+
+        $lines = [];
+        foreach ($records as $rec) {
+            foreach ($rec->iolUsages as $u) {
+                $item  = $u->iolItem;
+                $brand = trim(((string) ($item->brand ?? '')) . ' ' . ((string) ($item->model ?? '')));
+                $power = $item->power ?? null;
+                $head  = trim(
+                    ($u->eye_side ? $u->eye_side . ' — ' : '')
+                    . ($brand !== '' ? $brand : '(IOL)')
+                    . ($power !== null && $power !== '' ? " {$power} D" : '')
+                );
+                $meta = [];
+                if (!empty($u->serial_number)) $meta[] = 'SN: ' . $u->serial_number;
+                if (!empty($u->lot_number))    $meta[] = 'Lot: ' . $u->lot_number;
+                if (!empty($u->gtin))          $meta[] = 'GTIN: ' . $u->gtin;
+                if (!empty($u->expiry_date)) {
+                    $meta[] = 'Exp: ' . ($u->expiry_date instanceof \Carbon\CarbonInterface
+                        ? $u->expiry_date->toDateString()
+                        : (string) $u->expiry_date);
+                }
+                $lines[] = $head . (empty($meta) ? '' : ' | ' . implode(' | ', $meta));
+            }
+        }
+        return implode("\n", $lines);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // surgery_operation_summary — narasi "Teknik Operasi & Temuan" RM 2.2
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Ringkasan operasi (teknik/temuan/komplikasi/vitrektomi) dari operation_report
+     * JSONB surgery_records — "auto-generate" narasi RM 2.2 dari data yang sudah
+     * diisi dokter di tab Laporan BedahView. Kosong bila belum ada record/laporan.
+     */
+    private function resolveOperationSummary(Visit $visit, ?string $format): string
+    {
+        $rec = \App\Models\SurgeryRecord::query()
+            ->where('visit_id', $visit->id)
+            ->latest('created_at')
+            ->first();
+        if (! $rec) {
+            return '';
+        }
+        $r = is_array($rec->operation_report) ? $rec->operation_report : [];
+
+        $lines = [];
+        if (! empty($r['technique'])) {
+            $lines[] = "[Teknik Operasi]\n" . trim((string) $r['technique']);
+        }
+        if (! empty($r['findings'])) {
+            $lines[] = "[Temuan Intraoperatif]\n" . trim((string) $r['findings']);
+        }
+        $compl = $r['complication'] ?? [];
+        if (is_array($compl) && (! empty($compl['ada']) || ! empty($compl['type']))) {
+            $lines[] = '[Komplikasi] ' . trim(((string) ($compl['type'] ?? '')) . ' ' . ((string) ($compl['management'] ?? '')));
+        }
+        $vit = $r['vitrectomy_details'] ?? null;
+        if (is_array($vit) && ! empty($vit['tamponade'])) {
+            $lines[] = '[Vitrektomi] Tamponade: ' . $vit['tamponade']
+                . (! empty($vit['endolaser']) ? ' · Endolaser' : '')
+                . (! empty($vit['membrane_peeling']) ? ' · Membrane peeling' : '');
+        }
+        return implode("\n", $lines);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // surgery_identity — identitas operasi (operator/asisten/jam/durasi/anestesi)
+    // dipakai prefill form RM (RM 10.1/2.2/2.3) agar TIDAK diketik ulang — sumber
+    // tunggal = BedahView (surgery_records). format = field yg diminta.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolveSurgeryIdentity(Visit $visit, ?string $format): string
+    {
+        $rec = \App\Models\SurgeryRecord::query()
+            ->where('visit_id', $visit->id)
+            ->latest('created_at')
+            ->first();
+        if (! $rec) {
+            return '';
+        }
+        $r = is_array($rec->operation_report) ? $rec->operation_report : [];
+
+        // Jam mulai/selesai = kolom time_in/time_out; durasi dihitung darinya.
+        $timeStr = fn ($v) => $v ? \Illuminate\Support\Carbon::parse($v)->format('H:i') : '';
+
+        return match ($format) {
+            'operator'         => trim((string) ($r['operator'] ?? '')),
+            'asisten'          => is_array($r['asisten'] ?? null)
+                                    ? implode(', ', array_filter($r['asisten']))
+                                    : trim((string) ($r['asisten'] ?? '')),
+            'asisten1'         => trim((string) ((is_array($r['asisten'] ?? null) ? ($r['asisten'][0] ?? '') : ''))),
+            'asisten2'         => trim((string) ((is_array($r['asisten'] ?? null) ? ($r['asisten'][1] ?? '') : ''))),
+            'anesthesiologist' => trim((string) ($r['anesthesiologist'] ?? '')),
+            'anesthesia_type'  => trim((string) ($r['anesthesia_type'] ?? '')),
+            'procedure'        => trim((string) ($r['procedure_name'] ?? '')),
+            'diagnosis_post'   => trim((string) ($r['diagnosis_post'] ?? '')),
+            'time_in'          => $timeStr($rec->time_in),
+            'time_out'         => $timeStr($rec->time_out),
+            'duration'         => $this->formatDuration($rec->time_in, $rec->time_out),
+            default            => '',
+        };
+    }
+
+    private function formatDuration($timeIn, $timeOut): string
+    {
+        if (! $timeIn || ! $timeOut) {
+            return '';
+        }
+        $in  = \Illuminate\Support\Carbon::parse($timeIn);
+        $out = \Illuminate\Support\Carbon::parse($timeOut);
+        // diffInMinutes (Carbon ≥2.x) mengembalikan float — bulatkan ke int menit.
+        $mins = (int) round(abs($in->diffInMinutes($out)));
+        if ($mins <= 0) {
+            return '';
+        }
+        $h = intdiv($mins, 60);
+        $m = $mins % 60;
+        return $h > 0 ? "{$h} jam {$m} menit" : "{$m} menit";
     }
 
     /** @param list<string> $codes */

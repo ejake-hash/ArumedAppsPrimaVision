@@ -76,6 +76,18 @@ final class DocumentRenderer
                 continue;
             }
 
+            // multi_checkbox (array): render tiap item tercentang sebagai "☑ item"
+            // satu per baris (pakai white-space:pre-line di layout). Hindari join
+            // koma yang rancu karena teks item bisa mengandung koma sendiri.
+            // Hanya untuk nilai ARRAY — checkbox legacy (skalar) tetap via stringify.
+            if ($type === 'multi_checkbox' && array_key_exists($key, $documentPayload) && is_array($documentPayload[$key])) {
+                $values[$key] = implode("\n", array_map(
+                    fn ($x) => '☑ ' . (is_scalar($x) ? (string) $x : json_encode($x)),
+                    $documentPayload[$key]
+                ));
+                continue;
+            }
+
             // Static dengan documentPayload override (jawaban user, signature, dst).
             if (is_array($binding) && ($binding['kind'] ?? null) === 'static' && array_key_exists($key, $documentPayload)) {
                 $values[$key] = $this->stringify($documentPayload[$key]);

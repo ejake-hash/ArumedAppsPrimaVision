@@ -54,6 +54,7 @@ const config = {
     { key: 'composition',  label: 'Komposisi / Kandungan', type: 'textarea', cols: 2, rows: 2, placeholder: 'mis. Tobramycin 0.3% + Dexamethasone 0.1%' },
     { key: 'formularium',  label: 'Formularium',         type: 'select',   required: true, cols: 1, options: [
       { value: 'FORNAS',              label: 'FORNAS' },
+      { value: 'NON-FORNAS',          label: 'NON-FORNAS' },
       { value: 'FORMULARIUM GENERIK', label: 'FORMULARIUM GENERIK' },
       { value: 'BRANDED',             label: 'BRANDED' },
     ]},

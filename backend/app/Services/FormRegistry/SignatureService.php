@@ -327,6 +327,77 @@ final class SignatureService
     }
 
     /**
+     * Dokumen yang sudah DITANDATANGANI dokter ini HARI INI (zona Asia/Jakarta).
+     * Sumber kebenaran = baris DocumentSignature milik dokter (append-only, created_at
+     * = waktu tanda tangan server). Paginated + search opsional (pasien/No.RM/jenis dok).
+     *
+     * @param array{page?: int, per_page?: int, search?: ?string} $opts
+     */
+    public function signedTodayForDoctor(string $userId, array $opts = [], string $signerType = 'doctor'): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    {
+        $perPage = max(1, min(100, (int) ($opts['per_page'] ?? 10)));
+        $names   = $this->doctorSignatureTemplates($signerType)['names'];
+        $search  = trim((string) ($opts['search'] ?? ''));
+
+        // Batas hari WIB di-konversi ke rentang waktu pada zona DB (default UTC) agar
+        // perbandingan created_at tepat lintas-zona.
+        $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc();
+        $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc();
+
+        $paginator = DocumentSignature::query()
+            ->where('signer_type', $signerType)
+            ->where('signer_user_id', $userId)
+            ->whereBetween('created_at', [$startOfDay, $endOfDay])
+            ->whereHas('patientDocument', function ($dq) use ($search) {
+                if ($search !== '') {
+                    $dq->where(function ($w) use ($search) {
+                        $w->where('template_code', 'ILIKE', "%{$search}%")
+                          ->orWhereHas('patient', function ($p) use ($search) {
+                              $p->where('name', 'ILIKE', "%{$search}%")
+                                ->orWhere('no_rm', 'ILIKE', "%{$search}%");
+                          });
+                    });
+                }
+            })
+            ->with(['patientDocument.patient', 'patientDocument.visit'])
+            ->orderByDesc('created_at')
+            ->paginate($perPage);
+
+        return $paginator->through(function (DocumentSignature $sig) use ($names) {
+            $d = $sig->patientDocument;
+            return [
+                'id'            => $d?->id,
+                'signature_id'  => $sig->id,
+                'template_code' => $d?->template_code,
+                'template_name' => $names[$d?->template_code] ?? null,
+                'status'        => $d?->status,
+                'signed_at'     => $sig->created_at,
+                'visit_id'      => $d?->visit_id,
+                'visit_date'    => $d?->visit?->visit_date,
+                'patient'       => [
+                    'id'     => $d?->patient_id,
+                    'no_rm'  => $d?->patient?->no_rm,
+                    'name'   => $d?->patient?->name,
+                    'gender' => $d?->patient?->gender,
+                ],
+            ];
+        });
+    }
+
+    /** Jumlah dokumen yang ditandatangani dokter ini hari ini (WIB) — untuk kartu statistik. */
+    public function signedTodayCountForDoctor(string $userId, string $signerType = 'doctor'): int
+    {
+        $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc();
+        $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc();
+
+        return DocumentSignature::query()
+            ->where('signer_type', $signerType)
+            ->where('signer_user_id', $userId)
+            ->whereBetween('created_at', [$startOfDay, $endOfDay])
+            ->count();
+    }
+
+    /**
      * Tandatangani banyak dokumen sekaligus sebagai dokter (PIN diverifikasi SEKALI).
      * Best-effort per-dokumen: 1 dokumen gagal tak memblok lainnya (capture & finalize
      * masing-masing dalam transaction sendiri).

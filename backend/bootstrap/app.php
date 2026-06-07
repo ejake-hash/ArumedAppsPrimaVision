@@ -26,6 +26,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission'          => \App\Http\Middleware\PermissionMiddleware::class,
             // Antrol (Antrean Online BPJS, Sisi B): validasi header x-token Mobile JKN.
             'verify-antrol-token' => \App\Http\Middleware\VerifyAntrolToken::class,
+            // Token mesin untuk bridge/watcher alat penunjang (integrasi DICOM).
+            'service-token'       => \App\Http\Middleware\VerifyServiceToken::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

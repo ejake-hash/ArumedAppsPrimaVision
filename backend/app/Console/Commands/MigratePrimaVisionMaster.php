@@ -73,6 +73,14 @@ class MigratePrimaVisionMaster extends Command
     /** Fallback DPJP (prescriptions.prescribed_by_id NOT NULL) bila dokter sumber tak ter-resolve. */
     private ?string $fallbackDpjp = null;
 
+    // Resolusi dokter BY-NAMA (employees arumed tak punya legacy_uuid runningprima).
+    private array $employeeByNameExact = []; // lower(trim(name)) => id
+    private array $employeeByNameNorm = [];  // normName(name) => id (fallback fuzzy)
+    private array $doctorAlias = [];         // lower(nama sumber) => lower(nama arumed kanonik)
+    private array $unresolvedDoctor = [];    // nama sumber tak cocok → fallback => count (laporan)
+    private int $doctorByName = 0;           // jumlah prescribed_by ter-resolve by-nama
+    private int $rxFallback = 0;             // jumlah resep jatuh ke fallback DPJP
+
     /** Alias penjamin sumber → nama insurer Arumed (lihat plan: 3 alias manual). */
     private array $insurerAlias = [
         'bpjs ketenagakerjaan'             => 'bpjs tenaga kerja',
@@ -166,10 +174,19 @@ class MigratePrimaVisionMaster extends Command
                 $this->employeeByLegacy[$e->legacy_uuid] = $e->id;
             }
         }
-        // Fallback DPJP utk prescriptions.prescribed_by_id (NOT NULL): dokter pertama, lalu employee mana pun.
+        // Resolusi dokter by-nama: peta nama pegawai arumed (exact + ternormalisasi) + alias terkurasi.
+        foreach (DB::table('employees')->get(['id', 'name']) as $e) {
+            $this->employeeByNameExact[mb_strtolower(trim((string) $e->name))] = $e->id;
+            $nn = $this->normName($e->name);
+            if ($nn !== '' && ! isset($this->employeeByNameNorm[$nn])) {
+                $this->employeeByNameNorm[$nn] = $e->id;
+            }
+        }
+        $this->loadDoctorAlias();
+        // Fallback DPJP utk prescriptions.prescribed_by_id (NOT NULL): dokter pertama (DETERMINISTIK via orderBy), lalu employee mana pun.
         $this->fallbackDpjp = DB::table('employees')
-                ->where('profession', 'like', '%okter%')->value('id')
-            ?? DB::table('employees')->value('id');
+                ->where('profession', 'like', '%okter%')->orderBy('name')->orderBy('id')->value('id')
+            ?? DB::table('employees')->orderBy('name')->orderBy('id')->value('id');
     }
 
     /** Peringatkan bila Gel-1 belum jalan (insurer cuma sistem / visit kosong). */
@@ -579,10 +596,11 @@ class MigratePrimaVisionMaster extends Command
             $gk = ($r['registrasi_uuid'] ?? '') . '|' . ($r['tanggal'] ?? '') . '|' . ($r['dokter_uuid'] ?? '');
             if (! isset($headers[$gk])) {
                 $headers[$gk] = [
-                    'visit_id' => $visitId,
-                    'dokter'   => $r['dokter_uuid'] ?? null,
-                    'tanggal'  => $r['tanggal'] ?? null,
-                    'items'    => [],
+                    'visit_id'    => $visitId,
+                    'dokter'      => $r['dokter_uuid'] ?? null,
+                    'nama_dokter' => $r['nama_dokter'] ?? null,
+                    'tanggal'     => $r['tanggal'] ?? null,
+                    'items'       => [],
                 ];
             }
             [$freq, $route, $note] = $this->parseSigna($r['signa'] ?? null, $r['posisimata'] ?? null);
@@ -614,8 +632,12 @@ class MigratePrimaVisionMaster extends Command
         $createdH = 0; $createdI = 0;
         $bar = $this->output->createProgressBar(count($headers));
         foreach ($headers as $h) {
-            // prescribed_by_id NOT NULL → fallback DPJP bila dokter sumber tak ter-resolve.
-            $prescribedBy = $this->employeeByLegacy[$h['dokter']] ?? $this->fallbackDpjp;
+            // prescribed_by_id NOT NULL → by-nama dulu (alias terkurasi), fallback DPJP bila tak cocok.
+            $byName = $this->employeeByLegacy[$h['dokter']] ?? $this->resolveDoctorByName($h['nama_dokter'] ?? null);
+            $prescribedBy = $byName ?? $this->fallbackDpjp;
+            if ($byName === null) {
+                $this->rxFallback++;
+            }
             // legacy_uuid header = gabungan stabil (registrasi+tgl+dokter) via item pertama.
             $headerLegacy = 'rx-' . substr(md5($h['visit_id'] . '|' . $h['tanggal'] . '|' . $h['dokter']), 0, 40);
 
@@ -652,6 +674,13 @@ class MigratePrimaVisionMaster extends Command
         $bar->finish();
         $this->newLine();
         $this->line("  prescriptions: {$createdH} · items: {$createdI}");
+        $this->line("  prescribed_by by-nama: {$this->doctorByName} · ke fallback DPJP: {$this->rxFallback}");
+        if ($this->unresolvedDoctor) {
+            arsort($this->unresolvedDoctor);
+            foreach ($this->unresolvedDoctor as $nm => $c) {
+                $this->line("    (dokter tak cocok→fallback) {$nm}: {$c}");
+            }
+        }
     }
 
     /**
@@ -795,6 +824,62 @@ class MigratePrimaVisionMaster extends Command
             $line .= $next;
         }
         return str_getcsv(rtrim($line, "\r\n"), ',', '"', '\\');
+    }
+
+    /** Muat peta alias dokter (pipe-delimited: sumber|arumed) dari Docs/migrasi data/dokter-alias.csv. */
+    private function loadDoctorAlias(): void
+    {
+        $path = dirname($this->csvDir) . '/dokter-alias.csv';
+        if (! is_file($path)) {
+            $this->warn("  (dokter-alias.csv tak ditemukan di {$path} — resolusi by-nama hanya andalkan normalisasi)");
+            return;
+        }
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        foreach ($lines as $i => $line) {
+            if ($i === 0 && stripos($line, 'sumber') === 0) continue; // header
+            $parts = explode('|', $line, 2);
+            if (count($parts) !== 2) continue;
+            $src = mb_strtolower(trim($parts[0]));
+            $dst = mb_strtolower(trim($parts[1]));
+            if ($src !== '' && $dst !== '') $this->doctorAlias[$src] = $dst;
+        }
+    }
+
+    /**
+     * Normalisasi nama dokter untuk pencocokan fuzzy: lowercase, potong setelah koma
+     * pertama, titik/kurung → spasi, buang token gelar depan.
+     */
+    private function normName(?string $s): string
+    {
+        $s = mb_strtolower(trim((string) $s));
+        if ($s === '' || $s === '-') return '';
+        $s = explode(',', $s)[0];
+        $s = preg_replace('/[.()]/', ' ', $s);
+        $s = preg_replace('/\s+/', ' ', trim((string) $s));
+        $titles = ['dr', 'drg', 'prof', 'h', 'hj', 'ny', 'tn'];
+        $parts = array_values(array_filter(explode(' ', $s), fn ($p) => $p !== '' && ! in_array($p, $titles, true)));
+        return implode(' ', $parts);
+    }
+
+    /**
+     * Resolusi employee id dari nama dokter resep: alias eksplisit → exact → fuzzy(norm).
+     * Hitung yang ter-resolve & yang tidak (laporan). Null bila kosong/tak cocok.
+     */
+    private function resolveDoctorByName(?string $src): ?string
+    {
+        $k = mb_strtolower(trim((string) $src));
+        if ($k === '' || $k === '-') return null;
+        $canon = $this->doctorAlias[$k] ?? null;
+        $id = $canon !== null
+            ? ($this->employeeByNameExact[$canon] ?? null)
+            : ($this->employeeByNameExact[$k] ?? ($this->employeeByNameNorm[$this->normName($src)] ?? null));
+        if ($id !== null) {
+            $this->doctorByName++;
+        } else {
+            $nm = trim((string) $src);
+            $this->unresolvedDoctor[$nm] = ($this->unresolvedDoctor[$nm] ?? 0) + 1;
+        }
+        return $id;
     }
 
     private function clean(?string $v): ?string

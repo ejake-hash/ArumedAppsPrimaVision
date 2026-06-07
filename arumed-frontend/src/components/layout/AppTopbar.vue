@@ -2,9 +2,11 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useUiShell } from '@/composables/useUiShell'
 
 const route = useRoute()
 const auth = useAuthStore()
+const { toggleMobileNav } = useUiShell()
 const now = ref(new Date())
 let timer = null
 
@@ -38,6 +40,9 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
 
 <template>
   <header class="topbar">
+    <button class="topbar-burger" @click="toggleMobileNav" aria-label="Buka menu" title="Menu">
+      <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <h1 class="topbar-title">{{ title }}</h1>
     <div class="topbar-breadcrumb">
       <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
@@ -67,6 +72,25 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
   padding: 0 1.5rem;
   gap: 1rem;
   flex-shrink: 0;
+}
+/* Hamburger — hanya tampil di mode drawer (≤1024px) */
+.topbar-burger {
+  display: none;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--gb);
+  background: var(--bg);
+  border-radius: 9px;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.topbar-burger:hover { background: var(--gl); border-color: var(--ga); }
+.topbar-burger svg {
+  width: 18px; height: 18px; fill: none; stroke: var(--tm);
+  stroke-width: 2; stroke-linecap: round;
 }
 .topbar-title {
   font-family: 'Space Grotesk', serif;
@@ -129,5 +153,21 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
   border-radius: 50%;
   background: var(--st);
   animation: blink 1.5s infinite;
+}
+
+/* ─── Mode fluid (≤1024px, HANYA rute `app-fluid`: TTD Dokumen) ───────────────
+   Tampilkan hamburger, sembunyikan breadcrumb & label realtime (sisakan titik),
+   rapatkan padding agar muat di lebar sempit. Di rute desktop biasa hamburger
+   tetap tersembunyi (sidebar selalu tampak). */
+@media (max-width: 1024px) {
+  html.app-fluid .topbar { padding: 0 1rem; gap: 0.6rem; }
+  html.app-fluid .topbar-burger { display: flex; }
+  html.app-fluid .topbar-breadcrumb { display: none; }
+  html.app-fluid .topbar-title { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+@media (max-width: 640px) {
+  html.app-fluid .ws-indicator { padding: 3px; border-radius: 50%; }
+  html.app-fluid .ws-indicator span:not(.ws-dot) { display: none; }
+  html.app-fluid .topbar-doctor-sip { display: none; }
 }
 </style>

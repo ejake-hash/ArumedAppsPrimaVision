@@ -15,10 +15,11 @@ import { integrasiApi, masterApi } from '@/services/api'
 
 const props = defineProps({
   weekStart: { type: String, default: null },
+  initialTab: { type: String, default: 'poli' }, // tab dibuka pertama ('poli' | 'dpjp' | ...)
 })
 const emit = defineEmits(['close'])
 
-const tab = ref('poli') // poli | dpjp | sync
+const tab = ref(props.initialTab || 'poli') // poli | dpjp | sync
 
 const loading = ref(true)
 const toast = reactive({ show: false, ok: true, msg: '' })

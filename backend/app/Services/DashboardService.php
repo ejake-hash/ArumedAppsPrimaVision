@@ -165,6 +165,123 @@ class DashboardService
         return $days->toArray();
     }
 
+    /**
+     * Pendapatan (kas) 7 hari terakhir — sum paid_amount invoice PAID/PARTIALLY_PAID
+     * per hari, dijamin 7 entri (hari tanpa transaksi = 0) supaya chart tak bolong.
+     * Return: [{ date, label, amount }]
+     */
+    public function getWeeklyRevenue(): array
+    {
+        $days = collect();
+
+        for ($i = 6; $i >= 0; $i--) {
+            $date   = today()->subDays($i);
+            $amount = BillingInvoice::whereDate('created_at', $date)
+                ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
+                ->sum('paid_amount');
+
+            $days->push([
+                'date'   => $date->toDateString(),
+                'label'  => $date->format('D d/m'),
+                'amount' => (float) $amount,
+            ]);
+        }
+
+        return $days->toArray();
+    }
+
+    // =========================================================================
+    // DISTRIBUSI PENJAMIN — jumlah kunjungan per penjamin dalam satu rentang
+    // =========================================================================
+
+    /**
+     * Distribusi KUNJUNGAN per penjamin untuk rentang waktu tertentu.
+     * $range: 'hari'   = hari ini
+     *         'minggu' = 7 hari terakhir (termasuk hari ini)
+     *         'bulan'  = sejak awal bulan berjalan s/d hari ini
+     *         'tahun'  = sejak awal tahun berjalan s/d hari ini
+     * Return: { range, bpjs, umum, lain, total } — semua hitungan riil.
+     */
+    public function getGuarantorDistribution(string $range = 'hari'): array
+    {
+        $today = today();
+        [$from, $to] = match ($range) {
+            'minggu' => [$today->copy()->subDays(6), $today],
+            'bulan'  => [$today->copy()->startOfMonth(), $today],
+            'tahun'  => [$today->copy()->startOfYear(), $today],
+            default  => [$today, $today],   // 'hari'
+        };
+
+        $base = Visit::whereBetween(
+            DB::raw('DATE(visit_date)'),
+            [$from->toDateString(), $to->toDateString()],
+        );
+
+        $total = (clone $base)->count();
+        $bpjs  = (clone $base)->where('guarantor_type', 'BPJS')->count();
+        $umum  = (clone $base)->where('guarantor_type', 'UMUM')->count();
+
+        return [
+            'range' => $range,
+            'bpjs'  => $bpjs,
+            'umum'  => $umum,
+            'lain'  => max(0, $total - $bpjs - $umum),
+            'total' => $total,
+        ];
+    }
+
+    // =========================================================================
+    // JAM TERSIBUK — rata-rata kunjungan per jam (08–19) selama N hari
+    // =========================================================================
+
+    /**
+     * Rata-rata jumlah kunjungan per jam-of-day (08:00–19:00) selama
+     * $days hari terakhir. "Rata-rata" = total kunjungan pada jam itu dibagi
+     * jumlah hari OPERASIONAL (hari yang punya kunjungan) dalam rentang —
+     * supaya hari libur (0 kunjungan, mis. Minggu) tidak menurunkan rata-rata.
+     * Sumber: visits.created_at (waktu pendaftaran/ambil antrean); app TZ
+     * Asia/Jakarta sehingga EXTRACT(HOUR) sudah jam lokal.
+     * Return: { days, operating_days, hours: [{ hour, label, avg }] } jam 8..19.
+     */
+    public function getBusiestHours(int $days = 30): array
+    {
+        $days = max(1, min(365, $days));
+        $from = today()->copy()->subDays($days - 1);
+
+        $base = Visit::whereBetween(
+            DB::raw('DATE(created_at)'),
+            [$from->toDateString(), today()->toDateString()],
+        );
+
+        // Total kunjungan per jam-of-day { 8 => 40, 9 => 55, ... }
+        $perHour = (clone $base)
+            ->selectRaw('EXTRACT(HOUR FROM created_at)::int AS jam, COUNT(*) AS total')
+            ->groupBy('jam')
+            ->pluck('total', 'jam');
+
+        // Pembagi rata-rata = jumlah hari yang benar-benar ada kunjungan.
+        $operatingDays = (int) (clone $base)
+            ->selectRaw('COUNT(DISTINCT DATE(created_at)) AS d')
+            ->value('d');
+        $divisor = max(1, $operatingDays);
+
+        $hours = [];
+        for ($h = 8; $h <= 19; $h++) {
+            $total = (int) ($perHour[$h] ?? 0);
+            $hours[] = [
+                'hour'  => $h,
+                'label' => str_pad((string) $h, 2, '0', STR_PAD_LEFT),
+                'avg'   => round($total / $divisor, 1),
+            ];
+        }
+
+        return [
+            'days'           => $days,
+            'operating_days' => $divisor,
+            'hours'          => $hours,
+        ];
+    }
+
     // =========================================================================
     // TOP DIAGNOSES — ICD-10 terbanyak bulan berjalan
     // =========================================================================

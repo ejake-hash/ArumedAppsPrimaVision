@@ -319,6 +319,50 @@ class PenunjangController extends Controller
     }
 
     // =========================================================================
+    // INBOX HASIL TAK-TERTAUT (ingest gagal cocok otomatis → tautkan manual)
+    // =========================================================================
+
+    /** GET /penunjang/inbox?source=OCT|USG_WATCHER */
+    public function indexInbox(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getInbox($request->query('source')));
+    }
+
+    /** GET /penunjang/inbox/assignable?search=&date= — kandidat order penautan */
+    public function assignableOrders(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->searchAssignableOrders($request->only(['search', 'date'])));
+    }
+
+    /** POST /penunjang/inbox/{id}/assign  body: { order_id } */
+    public function assignInbox(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'order_id' => 'required|uuid|exists:diagnostic_orders,id',
+        ]);
+
+        try {
+            $inbox = $this->service->assignInbox($id, $validated['order_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($inbox, 'Hasil ditautkan ke order');
+    }
+
+    /** POST /penunjang/inbox/{id}/discard */
+    public function discardInbox(string $id): JsonResponse
+    {
+        try {
+            $this->service->discardInbox($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Item inbox dibuang');
+    }
+
+    // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================
 

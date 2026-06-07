@@ -281,6 +281,22 @@ class RanapService
     }
 
     /**
+     * Tandai bed selesai dibersihkan (CLEANING → AVAILABLE). Dipakai dari papan
+     * RANAP oleh perawat ward — tidak boleh memaksa bed OCCUPIED jadi available.
+     */
+    public function markBedAvailable(string $bedId): array
+    {
+        return DB::transaction(function () use ($bedId) {
+            $bed = Bed::lockForUpdate()->findOrFail($bedId);
+            if ($bed->status === Bed::STATUS_OCCUPIED) {
+                throw new \Exception("Bed {$bed->label} sedang ditempati — tidak bisa ditandai siap.", 422);
+            }
+            $bed->update(['status' => Bed::STATUS_AVAILABLE]);
+            return ['id' => $bed->id, 'label' => $bed->label, 'status' => $bed->status];
+        });
+    }
+
+    /**
      * Guard kebijakan gender room. Room dengan gender_policy 'L'/'P' hanya boleh
      * menampung pasien dengan gender sesuai. Room 'MIX'/null (bebas) atau pasien
      * tanpa data gender → selalu lolos (tidak memblokir admit darurat).
@@ -1162,6 +1178,7 @@ class RanapService
                 'room'           => $v->room?->name,
                 'guarantor_type' => $v->guarantor_type,
                 'no_sep'         => $v->no_sep,
+                'kelas_rawat_hak' => $v->kelas_rawat_hak,
                 'admission_at'   => $v->admission_at,
                 'discharge_at'   => $v->discharge_at,
                 'discharge_type' => $v->discharge_type,

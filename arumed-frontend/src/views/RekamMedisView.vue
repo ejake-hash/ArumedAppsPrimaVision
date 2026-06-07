@@ -29,6 +29,16 @@ function guarantorCls(g) {
   return ({ BPJS:'bpjs', UMUM:'umum', ASURANSI:'asn', PERUSAHAAN:'asn', SOSIAL:'asn' })[g] ?? 'umum'
 }
 function val(v) { return (v === null || v === undefined || v === '') ? '–' : v }
+// CPPT lintas-episode: label badge episode + format tanggal-jam.
+function epLabel(e) {
+  return ({ RAJAL:'Rawat Jalan', IGD:'IGD', RANAP:'Rawat Inap', POLI:'Poli' })[e] ?? (e ?? '–')
+}
+function fmtDateTime(dt) {
+  if (!dt) return '–'
+  const d = new Date(String(dt).replace(' ', 'T'))
+  if (isNaN(d)) return dt
+  return d.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -97,6 +107,7 @@ function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 20
 const MENUS = [
   { key: 'ringkasan', label: 'Ringkasan' },
   { key: 'kunjungan', label: 'Kunjungan' },
+  { key: 'cppt',      label: 'CPPT' },
   { key: 'refraksi',  label: 'Refraksi' },
   { key: 'penunjang', label: 'Penunjang' },
   { key: 'obat',      label: 'Obat' },
@@ -115,6 +126,7 @@ const expanded = ref(null) // visit_id / order_id baris yang sedang dibuka
 const ENDPOINT = {
   ringkasan: (id) => `/rekam-medis/pasien/${id}/ringkasan`,
   kunjungan: (id) => `/rekam-medis/pasien/${id}/kunjungan`,
+  cppt:      (id) => `/rekam-medis/pasien/${id}/cppt`,
   refraksi:  (id) => `/rekam-medis/pasien/${id}/refraksi`,
   penunjang: (id) => `/rekam-medis/pasien/${id}/penunjang`,
   obat:      (id) => `/rekam-medis/pasien/${id}/obat`,
@@ -611,6 +623,41 @@ function cetakLaporanOperasi(b) {
                   </template>
                 </tbody>
               </table>
+            </div>
+
+            <!-- ════ CPPT LINTAS-EPISODE ════ -->
+            <div v-else-if="activeMenu==='cppt'" class="tbl-wrap">
+              <div v-if="!cur.length" class="empty-mini">Belum ada CPPT</div>
+              <div v-else class="cppt-tl">
+                <div v-for="(c, i) in cur" :key="i" class="cppt-item">
+                  <div class="cppt-head">
+                    <span class="ep-badge" :class="'ep-'+c.episode">{{ epLabel(c.episode) }}</span>
+                    <span class="cppt-kind">{{ c.kind === 'SOAP' ? 'SOAP Dokter' : 'CPPT' }}</span>
+                    <span class="cppt-when">{{ fmtDateTime(c.datetime) }}</span>
+                    <span class="cppt-by">{{ val(c.author) }}<small v-if="c.ppa_role"> · {{ c.ppa_role }}</small></span>
+                    <span v-if="c.verified_by" class="cppt-verif" title="Terverifikasi DPJP">✓ {{ c.verified_by }}</span>
+                  </div>
+                  <div v-if="c.vitals && Object.keys(c.vitals).length" class="cppt-vt">
+                    <span v-if="c.vitals.td">TD {{ c.vitals.td }}</span>
+                    <span v-if="c.vitals.nadi">Nadi {{ c.vitals.nadi }}</span>
+                    <span v-if="c.vitals.suhu">Suhu {{ c.vitals.suhu }}°</span>
+                    <span v-if="c.vitals.spo2">SpO₂ {{ c.vitals.spo2 }}%</span>
+                    <span v-if="c.vitals.respirasi">RR {{ c.vitals.respirasi }}</span>
+                    <span v-if="c.vitals.visus_od">VOD {{ c.vitals.visus_od }}</span>
+                    <span v-if="c.vitals.visus_os">VOS {{ c.vitals.visus_os }}</span>
+                    <span v-if="c.vitals.iop_od">TIO OD {{ c.vitals.iop_od }}</span>
+                    <span v-if="c.vitals.iop_os">TIO OS {{ c.vitals.iop_os }}</span>
+                  </div>
+                  <div class="cppt-soap">
+                    <div v-if="c.soap?.s" class="soap-mini"><b>S</b> {{ c.soap.s }}</div>
+                    <div v-if="c.soap?.o" class="soap-mini"><b>O</b> {{ c.soap.o }}</div>
+                    <div v-if="c.soap?.a" class="soap-mini"><b>A</b> {{ c.soap.a }}</div>
+                    <div v-if="c.soap?.p" class="soap-mini"><b>P</b> {{ c.soap.p }}</div>
+                  </div>
+                  <div v-if="c.diagnosis" class="cppt-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
+                  <div v-if="c.instruksi" class="cppt-instr"><b>Instruksi:</b> {{ c.instruksi }}</div>
+                </div>
+              </div>
             </div>
 
             <!-- ════ REFRAKSI ════ -->
@@ -1294,4 +1341,24 @@ function cetakLaporanOperasi(b) {
   .op-sign-space { height: 56px; }
   .op-sign-name { border-top: 1px solid #000; padding-top: 3px; }
 }
+
+/* ─── CPPT lintas-episode (timeline) ─── */
+.cppt-tl { display: flex; flex-direction: column; gap: 10px; }
+.cppt-item { border: 1px solid var(--gb); border-left: 3px solid var(--ga); border-radius: 8px; padding: 9px 12px; background: var(--bc); }
+.cppt-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.cppt-kind { font-size: 11px; font-weight: 700; color: var(--td); }
+.cppt-when { font-size: 11px; color: var(--tu); }
+.cppt-by { font-size: 11px; color: var(--tm); }
+.cppt-by small { color: var(--tu); }
+.cppt-verif { font-size: 10px; color: #15803d; font-weight: 600; margin-left: auto; }
+.ep-badge { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 20px; text-transform: uppercase; }
+.ep-RANAP { background: #fef3c7; color: #b45309; }
+.ep-IGD   { background: #fee2e2; color: #b91c1c; }
+.ep-RAJAL { background: #dbeafe; color: #1d4ed8; }
+.ep-POLI  { background: #e0f2fe; color: #0369a1; }
+.cppt-vt { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--tm); margin-bottom: 5px; }
+.cppt-vt span { white-space: nowrap; }
+.cppt-soap { font-size: 12px; color: var(--td); }
+.cppt-dx, .cppt-instr { font-size: 11.5px; color: var(--tm); margin-top: 4px; }
+.cppt-dx b, .cppt-instr b { color: var(--td); }
 </style>

@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRawatInapStore } from '@/stores/rawatInapStore'
 import { useAuthStore } from '@/stores/authStore'
-import { roomApi, ranapApi, tarifPaketApi } from '@/services/api'
+import { ranapApi, tarifPaketApi } from '@/services/api'
 
 const store = useRawatInapStore()
 const auth = useAuthStore()
@@ -267,7 +267,7 @@ async function confirmKirimBedah () {
 async function markBedAvailable(bed) {
   if (!confirm(`Tandai bed ${bed.label} selesai dibersihkan (siap dipakai)?`)) return
   try {
-    await roomApi.updateBed(bed.id, { status: 'AVAILABLE' })
+    await ranapApi.markBedAvailable(bed.id)
     notify(`Bed ${bed.label} siap dipakai`)
     await store.fetchBedBoard()
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal update bed', false) }
@@ -351,6 +351,10 @@ async function openDetail(visitId) {
   detailVisitId.value = visitId
   detailTab.value = 'cppt'
   showDetail.value = true
+  // Bersihkan list pasien sebelumnya agar tak bocor bila fetch gagal.
+  tindakanList.value = []
+  obatList.value = []
+  cpptList.value = []
   await store.fetchDetail(visitId)
   try {
     const [t, o, c] = await Promise.all([
@@ -1157,6 +1161,7 @@ const statusPill = (s) => ({
 .ttv-sep { color: var(--tu); }
 .cppt-form textarea { width: 100%; border: 1px solid var(--gb); border-radius: 5px; padding: .4rem; color: var(--td); }
 .soap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-bottom: .5rem; }
+
 .soap-cell { display: flex; gap: .4rem; align-items: flex-start; margin: 0; }
 /* Label S/O/A/P: huruf polos hitam, tanpa kotak/background. */
 .soap-tag { flex: 0 0 24px; height: 24px; line-height: 24px; text-align: center; font-weight: 700; color: var(--td); background: none; font-size: .9rem; }

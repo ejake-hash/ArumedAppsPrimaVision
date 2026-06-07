@@ -16,14 +16,17 @@ import FormRMRenderer from './FormRMRenderer.vue'
 const props = defineProps({
   visitId:   { type: String, required: true },
   patientId: { type: String, default: null },
+  // Station + seksi dibuat parametrik agar komponen reusable lintas stasiun.
+  // Default: Dokter dgn 3 seksi (perilaku lama, backward-compatible).
+  station:   { type: String, default: 'dokter' },
+  // Sembunyikan toolbar cari + filter status (utk daftar ringkas, mis. modal Bedah).
+  showToolbar: { type: Boolean, default: true },
+  sections:  { type: Array, default: () => ([
+    { key: 'resume_output', label: 'Resume Medis' },
+    { key: 'surat',         label: 'Surat-Surat' },
+    { key: 'consent',       label: 'Consent & Persetujuan' },
+  ]) },
 })
-
-// Urutan & label kategori (dipertahankan untuk grouping).
-const SECTIONS = [
-  { key: 'resume_output', label: 'Resume Medis' },
-  { key: 'surat',         label: 'Surat-Surat' },
-  { key: 'consent',       label: 'Consent & Persetujuan' },
-]
 
 const allForms = ref([])
 const loading  = ref(false)
@@ -45,9 +48,9 @@ async function load() {
   error.value = ''
   try {
     const results = await Promise.all(
-      SECTIONS.map((s) =>
+      props.sections.map((s) =>
         formTemplateApi
-          .forms({ station: 'dokter', section: s.key, visit_id: props.visitId })
+          .forms({ station: props.station, section: s.key, visit_id: props.visitId })
           .then((res) => (res.data?.data ?? []).map((f) => ({
             ...f,
             _section: s.key,
@@ -89,7 +92,7 @@ const groupedForms = computed(() => {
     return true
   }
 
-  return SECTIONS
+  return props.sections
     .map((s) => ({
       key: s.key,
       label: s.label,
@@ -111,7 +114,7 @@ function resetFilters() {
 <template>
   <div class="fdb">
     <!-- Sticky toolbar: search + filter status -->
-    <div class="fdb-toolbar">
+    <div v-if="showToolbar" class="fdb-toolbar">
       <div class="fdb-search">
         <svg class="fdb-search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input
@@ -152,7 +155,7 @@ function resetFilters() {
       <svg class="fdb-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       <div>
         <div class="fdb-empty-title">Belum ada template aktif</div>
-        <div class="fdb-empty-hint">Tambahkan template di <em>Master Form RM</em> untuk station Dokter.</div>
+        <div class="fdb-empty-hint">Tambahkan template di <em>Master Form RM</em> untuk station ini.</div>
       </div>
     </div>
 

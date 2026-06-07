@@ -2,12 +2,15 @@
 
 namespace App\Services;
 
+use App\Jobs\SendReceiptEmail;
 use App\Models\BhpItem;
 use App\Models\BillingInvoice;
+use App\Models\BillingInvoiceCoverage;
 use App\Models\BillingItem;
 use App\Models\ClinicProfile;
 use App\Models\Insurer;
 use App\Models\InpatientCharge;
+use App\Models\InsuranceVerification;
 use App\Models\IolItem;
 use App\Models\Medication;
 use App\Models\MedicationTariff;
@@ -132,6 +135,107 @@ class KasirService
             ->all();
     }
 
+    /**
+     * Pencarian buku tarif LINTAS KATEGORI (tindakan / obat / BHP / IOL / alkes)
+     * untuk "Edit Tagihan" kasir — supaya item non-tindakan pun ditambah dengan
+     * harga master per-penjamin (bukan ketik manual). Hasil dibatasi & berbasis
+     * query teks agar tidak menarik ribuan obat sekaligus.
+     *
+     * @param  string  $type  Filter sumber: ALL|TINDAKAN|OBAT|BHP|IOL|MEDICAL_EQUIPMENT
+     * @return array<array{source:string,item_type:string,id:string,code:?string,name:string,category:?string,price:float}>
+     */
+    public function searchTarifBuku(string $visitId, string $q, string $type = 'ALL', int $limit = 40): array
+    {
+        $visit = Visit::findOrFail($visitId);
+        $q     = trim($q);
+        if ($q === '') {
+            return [];
+        }
+
+        $g  = $visit->guarantor_type;
+        $ix = $visit->insurer_id;
+        $perType = max(5, (int) ceil($limit / ($type === 'ALL' ? 5 : 1)));
+        $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $q) . '%';
+        $out  = [];
+
+        $wants = fn (string $t) => $type === 'ALL' || $type === $t;
+
+        // ── TINDAKAN (procedure) ──────────────────────────────────────────────
+        if ($wants('TINDAKAN')) {
+            foreach (\App\Models\Procedure::where('is_active', true)
+                ->where(fn ($w) => $w->where('name', 'ilike', $like)->orWhere('code', 'ilike', $like))
+                ->orderBy('name')->limit($perType)->get(['id', 'code', 'name', 'category']) as $p) {
+                $out[] = [
+                    'source' => 'procedure', 'item_type' => 'TINDAKAN',
+                    'id' => $p->id, 'code' => $p->code, 'name' => $p->name,
+                    'category' => $p->category ?: 'Tindakan',
+                    'price' => $this->getPrice('procedure', $p->id, $g, $ix),
+                ];
+            }
+        }
+
+        // ── OBAT (medication) ─────────────────────────────────────────────────
+        if ($wants('OBAT')) {
+            foreach (Medication::where('is_active', true)
+                ->where(fn ($w) => $w->where('name', 'ilike', $like)->orWhere('code', 'ilike', $like)->orWhere('generic_name', 'ilike', $like))
+                ->orderBy('name')->limit($perType)->get(['id', 'code', 'name', 'unit']) as $m) {
+                $out[] = [
+                    'source' => 'medication', 'item_type' => 'OBAT',
+                    'id' => $m->id, 'code' => $m->code,
+                    'name' => $m->name . ($m->unit ? " ({$m->unit})" : ''),
+                    'category' => 'Obat',
+                    'price' => $this->getPrice('medication', $m->id, $g, $ix),
+                ];
+            }
+        }
+
+        // ── BHP ───────────────────────────────────────────────────────────────
+        if ($wants('BHP')) {
+            foreach (BhpItem::where('is_active', true)
+                ->where(fn ($w) => $w->where('name', 'ilike', $like)->orWhere('code', 'ilike', $like))
+                ->orderBy('name')->limit($perType)->get(['id', 'code', 'name', 'category']) as $b) {
+                $out[] = [
+                    'source' => 'bhp', 'item_type' => 'BHP',
+                    'id' => $b->id, 'code' => $b->code, 'name' => $b->name,
+                    'category' => $b->category ?: 'BHP',
+                    'price' => $this->getPrice('bhp', $b->id, $g, $ix),
+                ];
+            }
+        }
+
+        // ── IOL (tak punya kolom name/code → komposisi brand + model + power) ──
+        if ($wants('IOL')) {
+            foreach (IolItem::where('is_active', true)
+                ->where(fn ($w) => $w->where('brand', 'ilike', $like)->orWhere('model', 'ilike', $like)->orWhere('iol_type', 'ilike', $like))
+                ->orderBy('brand')->limit($perType)->get(['id', 'brand', 'model', 'iol_type', 'power']) as $i) {
+                $name = trim(implode(' ', array_filter([$i->brand, $i->model, $i->power ? "+{$i->power}D" : null])));
+                $out[] = [
+                    'source' => 'iol', 'item_type' => 'IOL',
+                    'id' => $i->id, 'code' => null,
+                    'name' => $name !== '' ? $name : 'IOL',
+                    'category' => $i->iol_type ?: 'IOL',
+                    'price' => $this->getPrice('iol', $i->id, $g, $ix),
+                ];
+            }
+        }
+
+        // ── ALAT MEDIS (equipment) ─────────────────────────────────────────────
+        if ($wants('MEDICAL_EQUIPMENT')) {
+            foreach (\App\Models\MedicalEquipment::where('is_active', true)
+                ->where(fn ($w) => $w->where('name', 'ilike', $like)->orWhere('code', 'ilike', $like)->orWhere('brand', 'ilike', $like))
+                ->orderBy('name')->limit($perType)->get(['id', 'code', 'name', 'category']) as $e) {
+                $out[] = [
+                    'source' => 'equipment', 'item_type' => 'MEDICAL_EQUIPMENT',
+                    'id' => $e->id, 'code' => $e->code, 'name' => $e->name,
+                    'category' => $e->category ?: 'Alat Medis',
+                    'price' => $this->getPrice('equipment', $e->id, $g, $ix),
+                ];
+            }
+        }
+
+        return array_slice($out, 0, $limit);
+    }
+
     // =========================================================================
     // CONSOLIDATE BILLING (generate invoice dari semua sumber)
     // =========================================================================
@@ -147,7 +251,6 @@ class KasirService
             'patient',
             'visitServices.procedure',
             'prescriptions.items.medication',
-            'diagnosticOrders',
             'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
             // FIX B1: pasien pre-op Admisi & RANAP→Bedah (Fase 8C) set visits.surgery_schedule_id
             // LANGSUNG tanpa doctorExamination → eager-load jalur visit langsung agar IOL tak hilang & tanpa N+1.
@@ -165,24 +268,17 @@ class KasirService
         }
 
         return DB::transaction(function () use ($visit) {
-            // Builder pipeline — tiap source berdiri sendiri, return array baris BillingItem.
-            // Tambah source baru = tambah satu method + tambah ke array_merge.
-            $lines = array_merge(
-                $this->buildRegistrasiLines($visit),
-                $this->buildTindakanLines($visit),
-                $this->buildObatLines($visit),
-                $this->buildPenunjangLines($visit),
-                $this->buildBhpLines($visit),
-                $this->buildPaketRoomBhpLines($visit),
-                $this->buildIolLines($visit),
-                $this->buildEquipmentLines($visit),
-                $this->buildInpatientChargeLines($visit),
-                $this->buildPaketDiscountLines($visit),
-            );
+            // Insurer yang dipakai untuk MEMBANGUN baris tagihan. Untuk COB, tagihan
+            // pasien & penjamin-2 berhitung di harga penjamin-2 (keputusan bisnis:
+            // "hitung ulang di harga penjamin-2"); penjamin-1 (mis. BPJS INA-CBG)
+            // menanggung lump via coverage. Non-COB → harga penjamin utama (zero-diff).
+            [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+
+            $lines = $this->buildLines($visit, $billInsurerId, $billGuarantor);
 
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
 
-            // COB → global discount
+            // COB → global discount (placeholder, 0 — split COB lewat coverages, bukan discount)
             $discount = $this->calculateCOBDiscount($subtotal, $visit->visitCob);
             $total    = max(0, $subtotal - $discount);
 
@@ -202,6 +298,12 @@ class KasirService
                 BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
             }
 
+            // COB: rekam porsi tanggungan per penjamin (seq 1 & 2). Idempoten +
+            // soft-delete aware → aman saat konsolidasi ulang.
+            if ($visit->visitCob && $visit->visitCob->is_active) {
+                $this->persistCoverages($invoice, $visit);
+            }
+
             // RANAP/IGD: tandai inpatient_charges yang baru ditagih agar tak dobel saat
             // (mis.) invoice di-cancel lalu konsolidasi ulang.
             if ($this->usesInpatientCharges($visit)) {
@@ -214,6 +316,62 @@ class KasirService
 
             return $invoice->load(['items', 'visit.patient']);
         });
+    }
+
+    /**
+     * Pipeline builder — gabung semua sumber jadi baris BillingItem.
+     * $insurerId/$guarantorType opsional: bila null pakai penjamin utama visit
+     * (perilaku lama). Override dipakai untuk membangun tagihan COB di harga
+     * penjamin-2 dan untuk recomputeTotalForInsurer (preview cob-basis).
+     */
+    private function buildLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
+
+        return array_merge(
+            $this->buildRegistrasiLines($visit),
+            // Tindakan + Penunjang kini SATU sumber: visit_services. Dokter menambahkan
+            // pemeriksaan penunjang sebagai tindakan lewat Tab 3 DokterView ("Tambah
+            // Tindakan") → tertarif via Buku Tarif (procedure_tariffs) di buildTindakanLines.
+            // Order penunjang (diagnostic_orders) kini MURNI operasional (kirim ke stasiun
+            // penunjang, hasil, rekomendasi IOL) dan TIDAK lagi jadi sumber tagihan —
+            // menghindari dobel tagih dengan baris tindakan Tab 3.
+            $this->buildTindakanLines($visit, $insurerId, $guarantorType),
+            $this->buildObatLines($visit, $insurerId, $guarantorType),
+            $this->buildBhpLines($visit, $insurerId, $guarantorType),
+            $this->buildPaketRoomBhpLines($visit, $insurerId, $guarantorType),
+            $this->buildIolLines($visit, $insurerId, $guarantorType),
+            $this->buildEquipmentLines($visit, $insurerId, $guarantorType),
+            $this->buildInpatientChargeLines($visit),
+            $this->buildPaketDiscountLines($visit, $insurerId, $guarantorType),
+            $this->buildFollowupConsultLines($visit, $insurerId, $guarantorType),
+        );
+    }
+
+    /**
+     * Total tagihan bila seluruh item dihitung di harga insurer tertentu.
+     * Dipakai untuk basis selisih COB penjamin-2 ("hitung ulang di harga penjamin-2")
+     * dan preview cob-basis sebelum invoice dibuat.
+     */
+    public function recomputeTotalForInsurer(Visit $visit, ?string $insurerId, string $guarantorType): float
+    {
+        $lines = $this->buildLines($visit, $insurerId, $guarantorType);
+        return array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
+    }
+
+    /**
+     * Insurer + guarantor untuk MEMBANGUN baris tagihan.
+     * COB aktif → penjamin-2 (tagihan pasien & penjamin-2 di harga penjamin-2).
+     * Non-COB → penjamin utama visit.
+     */
+    private function billingInsurerFor(Visit $visit): array
+    {
+        $cob = $visit->visitCob;
+        if ($cob && $cob->is_active && $cob->penjamin2_insurer_id) {
+            return [$cob->penjamin2_insurer_id, $cob->penjamin2_type ?? $visit->guarantor_type];
+        }
+        return [$visit->insurer_id, $visit->guarantor_type];
     }
 
     // =========================================================================
@@ -249,11 +407,13 @@ class KasirService
         ]];
     }
 
-    private function buildTindakanLines(Visit $visit): array
+    private function buildTindakanLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         $lines = [];
         foreach ($visit->visitServices as $vs) {
-            $price = $this->getPrice('procedure', $vs->procedure_id, $visit->guarantor_type, $visit->insurer_id);
+            $price = $this->getPrice('procedure', $vs->procedure_id, $guarantorType, $insurerId);
             $total = $price * $vs->quantity;
             $lines[] = [
                 'item_type'    => 'TINDAKAN',
@@ -269,8 +429,10 @@ class KasirService
         return $lines;
     }
 
-    private function buildObatLines(Visit $visit): array
+    private function buildObatLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         // RANAP/IGD: obat (termasuk obat pulang) ditagih lewat inpatient_charges type OBAT
         // (buildInpatientChargeLines) — resep di sini hanya untuk antrean Farmasi & potong
         // stok, BUKAN sumber tagihan. Skip agar tidak dobel-tagih.
@@ -289,9 +451,15 @@ class KasirService
         // dibaca dari baris UMUM (harga tunggal acuan → 1 obat = 1 pos lintas penjamin).
         // Pre-load map medication_id → pos dalam 1 query (hindari N+1). Item tanpa tarif
         // UMUM → default OBAT_PULANG (lihat MedicationTariff::posLabel).
+        // Obat "terserap paket" (is_bedah=true) HANYA disurfacekan bila pasien memang
+        // punya paket — biar ada baris diskon penyeimbang. Tanpa paket → tetap di-skip
+        // (perilaku lama: obat is_bedah tak ditagih). Bila berpaket, posMap perlu
+        // mencakup obat is_bedah juga (untuk label pos kwitansi).
+        $hasPaket = $visit->surgeryPackageSnapshots->isNotEmpty();
+
         $medIds = $visit->prescriptions
             ->where('status', '!=', 'CANCELLED')
-            ->flatMap(fn ($p) => $p->items->where('is_bedah', false)->pluck('medication_id'))
+            ->flatMap(fn ($p) => ($hasPaket ? $p->items : $p->items->where('is_bedah', false))->pluck('medication_id'))
             ->filter()->unique()->values()->all();
 
         $posMap = [];
@@ -306,79 +474,67 @@ class KasirService
         }
 
         $lines = [];
+        $bundledTotal = 0.0;   // Σ obat terserap paket (is_bedah) → dinetralkan via diskon.
         foreach ($visit->prescriptions as $prescription) {
             if ($prescription->status === 'CANCELLED') {
                 continue;
             }
             foreach ($prescription->items as $item) {
-                // Obat operasi yang sudah tercakup paket bedah (is_bedah) ditagih lewat
-                // builder paket — jangan dobel-tagih di sini.
-                if ($item->is_bedah) {
+                // Obat terserap paket (is_bedah) pada pasien TANPA paket → skip (tak ditagih,
+                // perilaku lama). Pada pasien BERPAKET → tetap dimunculkan sebagai baris
+                // (transparansi) lalu dinetralkan oleh baris diskon paket di bawah.
+                $isBundled = $item->is_bedah && $hasPaket;
+                if ($item->is_bedah && ! $hasPaket) {
                     continue;
                 }
-                $price = $this->getPrice('medication', $item->medication_id, $visit->guarantor_type, $visit->insurer_id);
+                $price = $this->getPrice('medication', $item->medication_id, $guarantorType, $insurerId);
                 $total = $price * $item->quantity;
                 $lines[] = [
                     'item_type'    => 'OBAT',
                     'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
                     'reference_id' => $item->id,
-                    'description'  => $item->medication?->name ?? 'Obat',
+                    'description'  => ($item->medication?->name ?? 'Obat') . ($isBundled ? ' (termasuk paket)' : ''),
                     'quantity'     => $item->quantity,
                     'unit_price'   => $price,
                     'total_price'  => $total,
                     'net_price'    => $total,
                     'notes'        => $item->dosage,
                 ];
+                if ($isBundled) {
+                    $bundledTotal += $total;
+                }
             }
         }
-        return $lines;
-    }
 
-    /**
-     * Penunjang: visit.diagnosticOrders status COMPLETED → tarif via procedure_tariffs.
-     * Penunjang = procedure kategori "Penunjang": `diagnostic_orders.test_type` menyimpan
-     * KODE procedure (mis. "PNJ-001") → lookup ke procedures.code untuk dapat id, lalu
-     * getPrice('procedure', ...). Label tetap item_type PENUNJANG.
-     */
-    private function buildPenunjangLines(Visit $visit): array
-    {
-        $lines = [];
-        $orders = $visit->diagnosticOrders->where('status', 'COMPLETED');
-        if ($orders->isEmpty()) {
-            return $lines;
-        }
-
-        $codes = $orders->pluck('test_type')->unique()->filter()->values()->all();
-        // Penunjang = procedure kategori "Penunjang": test_type menyimpan KODE procedure.
-        // Map kode → procedure (id, name, category) supaya hemat query.
-        $procMap = \App\Models\Procedure::whereIn('code', $codes)
-            ->get(['id', 'code', 'name', 'category'])
-            ->keyBy('code');
-
-        foreach ($orders as $order) {
-            $proc = $procMap->get($order->test_type);
-            if (! $proc) {
-                continue; // kode tidak terdaftar di procedures — skip (mis. order "Lainnya")
-            }
-            $price = $this->getPrice('procedure', $proc->id, $visit->guarantor_type, $visit->insurer_id);
-            $label = $proc->name ?? $order->test_type;
-            $desc  = $order->eye_side ? "{$label} ({$order->eye_side})" : $label;
+        // Obat terserap paket muncul di kwitansi tapi TIDAK menambah total: satu baris
+        // diskon paket (negatif) menyeimbangkan jumlahnya. Harga paket diasumsikan sudah
+        // mencakup obat ini. DISKON_PAKET tak diperlakukan khusus di COB → aman.
+        if ($bundledTotal > 0) {
             $lines[] = [
-                'item_type'    => 'PENUNJANG',
-                'category'     => $proc->category ?: 'Penunjang',
-                'reference_id' => $order->id,
-                'description'  => $desc,
+                'item_type'    => 'DISKON_PAKET',
+                'category'     => 'Diskon',
+                'reference_id' => null,
+                'description'  => 'Obat termasuk paket bedah',
                 'quantity'     => 1,
-                'unit_price'   => $price,
-                'total_price'  => $price,
-                'net_price'    => $price,
+                'unit_price'   => -$bundledTotal,
+                'total_price'  => -$bundledTotal,
+                'net_price'    => -$bundledTotal,
+                'notes'        => null,
             ];
         }
         return $lines;
     }
 
-    private function buildBhpLines(Visit $visit): array
+    // CATATAN: buildPenunjangLines() DIHAPUS. Penunjang tidak lagi ditagih dari
+    // diagnostic_orders COMPLETED. Sejak alur terbaru, dokter menambahkan pemeriksaan
+    // penunjang sebagai TINDAKAN lewat Tab 3 DokterView ("Tambah Tindakan") → masuk
+    // visit_services dan tertarif via Buku Tarif di buildTindakanLines(). diagnostic_orders
+    // kini murni operasional (antrean stasiun penunjang, hasil, rekomendasi IOL).
+
+    private function buildBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         $lines = [];
         // Hanya request berstatus RECEIVED dan baris dengan used_qty > 0.
         foreach ($visit->surgeryRequests as $surgeryReq) {
@@ -390,7 +546,7 @@ class KasirService
                 if ($usedQty <= 0) {
                     continue;
                 }
-                $price = $this->getPrice('bhp', $bhp->bhp_item_id, $visit->guarantor_type, $visit->insurer_id);
+                $price = $this->getPrice('bhp', $bhp->bhp_item_id, $guarantorType, $insurerId);
                 $total = $price * $usedQty;
                 $label = $bhp->bhpItem?->name ?? 'BHP';
                 $cat   = $bhp->bhpItem?->category;
@@ -421,8 +577,10 @@ class KasirService
      * (lihat buildPaketDiscountLines). Fallback ke package master bila snapshot
      * belum ada (pasien lama / alur tanpa snapshot).
      */
-    private function buildPaketRoomBhpLines(Visit $visit): array
+    private function buildPaketRoomBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         // Multi-paket: kumpulkan komponen BHP dari SEMUA snapshot paket pasien.
         // Fallback ke package master bila belum ada snapshot (pasien lama).
         $snaps = $visit->surgeryPackageSnapshots;
@@ -464,7 +622,7 @@ class KasirService
             $qty = (int) ($pi->quantity ?? 1);
             // Harga SELALU live (getPrice) — baik dari snapshot maupun master — agar
             // tagihan room-BHP = basis diskon (buildPaketDiscountLines juga pakai getPrice).
-            $price = $this->getPrice('bhp', $bhp->id, $visit->guarantor_type, $visit->insurer_id);
+            $price = $this->getPrice('bhp', $bhp->id, $guarantorType, $insurerId);
             $total = $price * $qty;
             $cat   = $bhp->category;
             $lines[] = [
@@ -481,8 +639,10 @@ class KasirService
         return $lines;
     }
 
-    private function buildIolLines(Visit $visit): array
+    private function buildIolLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         $lines = [];
         // FIX B1 (KRITIS): prefer surgery_schedule_id pada visit (pasien pre-op Admisi &
         // RANAP→Bedah Fase 8C yang set visits.surgery_schedule_id LANGSUNG tanpa doctorExamination),
@@ -492,7 +652,7 @@ class KasirService
             return $lines;
         }
         foreach ($record->iolUsages as $iolUsage) {
-            $price = $this->getPrice('iol', $iolUsage->iol_item_id, $visit->guarantor_type, $visit->insurer_id);
+            $price = $this->getPrice('iol', $iolUsage->iol_item_id, $guarantorType, $insurerId);
             $lines[] = [
                 'item_type'    => 'IOL',
                 'category'     => 'IOL',
@@ -507,12 +667,14 @@ class KasirService
         return $lines;
     }
 
-    private function buildEquipmentLines(Visit $visit): array
+    private function buildEquipmentLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
         $lines = [];
         // Flat fee per pemakaian. Tarif Rp 0 → skip (mis. BPJS yg sudah include di INA-CBGs).
         foreach ($visit->equipmentUsages as $usage) {
-            $price = $this->getPrice('equipment', $usage->medical_equipment_id, $visit->guarantor_type, $visit->insurer_id);
+            $price = $this->getPrice('equipment', $usage->medical_equipment_id, $guarantorType, $insurerId);
             if ($price <= 0) {
                 continue;
             }
@@ -593,14 +755,53 @@ class KasirService
      * pasien bayar = sell_price + komponen di luar paket. Anti dobel-tagih: tidak
      * menambah/menghapus baris komponen, hanya 1 baris diskon.
      */
-    private function buildPaketDiscountLines(Visit $visit): array
+    private function buildPaketDiscountLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
+
+        // Bila membangun di insurer override (COB penjamin-2), harga jual paket pun
+        // harus di-resolve ulang di penjamin tsb (sell_price snapshot di-set utk penjamin
+        // utama saat planning). Non-override → pakai sell_price snapshot (zero-diff).
+        $overrideInsurer = $insurerId !== $visit->insurer_id;
+
+        // Sisa qty obat diresepkan (non-cancelled, non-bedah) — untuk "absorpsi" obat ke
+        // paket PEMERIKSAAN. Greedy: dikurangi tiap kali terserap (cegah serap-ganda antar paket).
+        $rxRemaining = [];
+        foreach ($visit->prescriptions as $rx) {
+            if ($rx->status === 'CANCELLED') {
+                continue;
+            }
+            foreach ($rx->items as $rxIt) {
+                if ($rxIt->is_bedah) {
+                    continue;
+                }
+                $rxRemaining[$rxIt->medication_id] = ($rxRemaining[$rxIt->medication_id] ?? 0) + (int) $rxIt->quantity;
+            }
+        }
+
         // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah).
         $lines = [];
         foreach ($visit->surgeryPackageSnapshots as $snap) {
+            $isPemeriksaan = ($snap->package_type === \App\Models\VisitSurgeryPackage::TYPE_PEMERIKSAAN);
             // Basis = Σ harga Buku Tarif komponen snapshot (yang sudah disesuaikan operator).
             $basis = 0.0;
             foreach ($snap->items as $it) {
+                // OBAT (paket PEMERIKSAAN): hanya terserap sebatas yang BENAR-BENAR diresepkan
+                // pasien. Obat ditagih penuh di buildObatLines; diskon menyerap selisihnya.
+                if ($it->item_type === 'MEDICATION') {
+                    if (! $isPemeriksaan) {
+                        continue;
+                    }
+                    $avail = $rxRemaining[$it->item_id] ?? 0;
+                    if ($avail <= 0) {
+                        continue;
+                    }
+                    $matched = min((int) $it->quantity, $avail);
+                    $rxRemaining[$it->item_id] = $avail - $matched;
+                    $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * $matched;
+                    continue;
+                }
                 $type = match ($it->item_type) {
                     'PROCEDURE' => 'procedure',
                     'BHP'       => 'bhp',
@@ -610,11 +811,15 @@ class KasirService
                 if (! $type) {
                     continue;
                 }
-                $price = $this->getPrice($type, $it->item_id, $visit->guarantor_type, $visit->insurer_id);
+                $price = $this->getPrice($type, $it->item_id, $guarantorType, $insurerId);
                 $basis += $price * (int) $it->quantity;
             }
 
-            $sell     = (float) $snap->sell_price;
+            // COB penjamin-2: resolve ulang harga DAN nama tampil di insurer override.
+            $overrideTariff = ($overrideInsurer && $snap->source_surgery_package_id)
+                ? $this->resolvePackageTariff($snap->source_surgery_package_id, $guarantorType, $insurerId)
+                : null;
+            $sell = $overrideTariff ? (float) $overrideTariff->sell_price : (float) $snap->sell_price;
             $discount = round($basis - $sell, 2);
             if ($discount <= 0) {
                 continue; // paket ini tidak lebih murah → tak ada diskon
@@ -624,12 +829,100 @@ class KasirService
                 'item_type'    => 'DISKON_PAKET',
                 'category'     => 'Diskon',
                 'reference_id' => $snap->id,
-                'description'  => $snap->effectiveLabel(),
+                'description'  => ($overrideTariff?->display_name) ?: $snap->effectiveLabel(),
                 'quantity'     => 1,
                 'unit_price'   => -$discount,
                 'total_price'  => -$discount,
                 'net_price'    => -$discount,
             ];
+        }
+        return $lines;
+    }
+
+    /**
+     * Diskon "konsultasi kontrol gratis pasca-bedah" (Opsi B) — baris negatif yang
+     * menetralkan tagihan konsultasi saat pasien KONTROL, bila ia punya hak aktif
+     * (package_followup_entitlements) dari operasi sebelumnya.
+     *
+     * Aturan (keputusan user):
+     *   - HANYA penjamin UMUM (tunai). BPJS/asuransi: konsultasi tercakup penjamin.
+     *   - Hak ditebus di visit BERBEDA dari visit asal operasi (tak di visit operasi itu sendiri).
+     *   - 1 hak = 1 unit konsultasi gratis; dicocokkan ke tindakan (visit_services) by procedure.
+     *
+     * Baris ini hanya "diusulkan"; kasir bisa MENGHAPUSnya (override) lewat Edit Tagihan.
+     * Hak baru benar-benar terpakai saat invoice LUNAS (PackageFollowupService::redeemPaidInvoice),
+     * jadi override sebelum bayar = hak tidak hangus. reference_id = id hak (untuk tebus).
+     */
+    private function buildFollowupConsultLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    {
+        // Manfaat hanya untuk pasien UMUM.
+        if (($visit->guarantor_type ?? null) !== 'UMUM' || ! $visit->patient_id) {
+            return [];
+        }
+
+        $ents = \App\Models\PackageFollowupEntitlement::redeemableForPatient($visit->patient_id)
+            ->whereNull('redeemed_visit_id')
+            ->where(fn ($q) => $q->whereNull('source_visit_id')->orWhere('source_visit_id', '!=', $visit->id))
+            ->get();
+        if ($ents->isEmpty()) {
+            return [];
+        }
+
+        // Anti dobel-pakai: hak yang sudah "diklaim" baris diskon di invoice LAIN (belum
+        // dibatalkan, beda visit) disingkirkan — cegah satu hak menggratiskan dua visit
+        // kontrol yang invoice-nya sama-sama masih terbuka. (Konsumsi final tetap saat bayar.)
+        $claimed = DB::table('billing_items')
+            ->join('billing_invoices', 'billing_invoices.id', '=', 'billing_items.billing_invoice_id')
+            ->where('billing_items.item_type', 'DISKON_KONTROL')
+            ->whereIn('billing_items.reference_id', $ents->pluck('id')->all())
+            ->whereNull('billing_items.deleted_at')
+            ->whereNull('billing_invoices.deleted_at')
+            ->where('billing_invoices.status', '!=', 'CANCELLED')
+            ->where('billing_invoices.visit_id', '!=', $visit->id)
+            ->pluck('billing_items.reference_id')->unique()->all();
+        if ($claimed) {
+            $ents = $ents->reject(fn ($e) => in_array($e->id, $claimed, true))->values();
+            if ($ents->isEmpty()) {
+                return [];
+            }
+        }
+
+        // Antrean hak per prosedur konsultasi (greedy: 1 hak menggratiskan 1 unit).
+        $queue = [];
+        foreach ($ents as $e) {
+            $queue[$e->procedure_id][] = $e;
+        }
+
+        $guarantorType ??= $visit->guarantor_type;
+        $insurerId     ??= $visit->insurer_id;
+
+        $lines = [];
+        foreach ($visit->visitServices as $vs) {
+            $pid = $vs->procedure_id;
+            if (empty($queue[$pid])) {
+                continue;
+            }
+            $qty = max(1, (int) $vs->quantity);
+            for ($n = 0; $n < $qty; $n++) {
+                $ent = array_shift($queue[$pid]);
+                if (! $ent) {
+                    break;
+                }
+                $price = $this->getPrice('procedure', $pid, $guarantorType, $insurerId);
+                if ($price <= 0) {
+                    continue;
+                }
+                $lines[] = [
+                    'item_type'    => 'DISKON_KONTROL',
+                    'category'     => 'Diskon',
+                    'reference_id' => $ent->id,
+                    'description'  => 'Konsultasi termasuk paket (kontrol pasca-bedah)',
+                    'quantity'     => 1,
+                    'unit_price'   => -$price,
+                    'total_price'  => -$price,
+                    'net_price'    => -$price,
+                ];
+            }
         }
         return $lines;
     }
@@ -720,6 +1013,17 @@ class KasirService
      */
     public function resolvePackageSellPrice(string $packageId, string $guarantorType, ?string $insurerId): float
     {
+        return (float) ($this->resolvePackageTariff($packageId, $guarantorType, $insurerId)?->sell_price ?? 0.0);
+    }
+
+    /**
+     * Resolve BARIS tarif paket (sell_price + display_name) untuk penjamin pasien.
+     * Urutan: insurer terpilih (resolve TPA parent) → baris insurer_id NULL ("SEMUA")
+     * → null. display_name = nama tampil khusus per-penjamin (mis. promo UMUM); null =
+     * pakai nama paket master. Dipakai DokterService (snapshot label+harga) & kwitansi.
+     */
+    public function resolvePackageTariff(string $packageId, string $guarantorType, ?string $insurerId): ?object
+    {
         $resolvedInsurerId = $this->resolveTariffInsurerId($insurerId, $guarantorType);
 
         $base = DB::table('surgery_package_tariffs')
@@ -728,51 +1032,215 @@ class KasirService
             ->whereNull('deleted_at');
 
         if ($resolvedInsurerId) {
-            $price = (clone $base)->where('insurer_id', $resolvedInsurerId)->value('sell_price');
-            if ($price !== null) {
-                return (float) $price;
+            $row = (clone $base)->where('insurer_id', $resolvedInsurerId)
+                ->first(['sell_price', 'display_name', 'discount_percent']);
+            if ($row) {
+                return $row;
             }
         }
 
         // Fallback: tarif "SEMUA" (insurer_id NULL).
-        $price = (clone $base)->whereNull('insurer_id')->value('sell_price');
-        return $price !== null ? (float) $price : 0.0;
+        return (clone $base)->whereNull('insurer_id')
+            ->first(['sell_price', 'display_name', 'discount_percent']);
     }
 
     /**
-     * COB: Penjamin 1 bayar dulu, Penjamin 2 cover selisih.
-     * Returns discount amount = apa yang ditanggung penjamin (tidak dibayar pasien).
+     * COB diskon global — TIDAK dipakai untuk split COB (split lewat coverages,
+     * bukan discount). Dipertahankan return 0 agar consolidateBilling non-COB
+     * tak berubah perilaku. Lihat persistCoverages/calculateCOB/coverages.
      */
     public function calculateCOBDiscount(float $subtotal, ?VisitCob $cob): float
     {
-        if (! $cob || ! $cob->is_active) {
-            return 0;
-        }
-
-        // Jika ada penjamin 2 → asumsikan penjamin 1 cover sebagian, sisanya ke penjamin 2
-        // Untuk klinik kecil: implementasi sederhana — semua ditanggung penjamin (diskon = subtotal)
-        // Bisa dikembangkan dengan plafon per penjamin jika dibutuhkan
-
-        return 0; // Diisi saat COB logic lebih detail diimplementasikan
+        return 0;
     }
 
-    public function calculateCOB(float $totalAmount, ?VisitCob $cob): array
+    /**
+     * Hitung split COB sebuah invoice: berapa ditanggung penjamin-1, penjamin-2,
+     * dan sisa pasien. Sumber nominal = covered_amount tiap baris coverage (diisi
+     * dari VERIFIKASI per penjamin — keputusan bisnis "manual per penjamin").
+     * Tagihan dibangun di harga penjamin-2, jadi invoice.total = total@penjamin-2.
+     */
+    public function calculateCOB(BillingInvoice $invoice): array
     {
-        if (! $cob || ! $cob->is_active) {
+        $total = (float) $invoice->total;
+        $coverages = $invoice->relationLoaded('coverages')
+            ? $invoice->coverages
+            : $invoice->coverages()->get();
+
+        if ($coverages->isEmpty()) {
             return [
-                'penjamin1_amount' => 0,
-                'penjamin2_amount' => 0,
-                'patient_amount'   => $totalAmount,
+                'is_cob'        => false,
+                'total'         => $total,
+                'covered_total' => 0.0,
+                'patient_amount' => $total,
+                'penjamin'      => [],
             ];
         }
 
-        // Placeholder — implementasi plafon per penjamin saat policy COB tersedia
+        $coveredTotal = 0.0;
+        $rows = [];
+        foreach ($coverages as $cov) {
+            $coveredTotal += (float) $cov->covered_amount;
+            $rows[] = [
+                'sequence'       => (int) $cov->sequence,
+                'insurer_id'     => $cov->insurer_id,
+                'guarantor_type' => $cov->guarantor_type,
+                'covered_amount' => (float) $cov->covered_amount,
+                'basis_amount'   => $cov->basis_amount !== null ? (float) $cov->basis_amount : null,
+            ];
+        }
+        $coveredTotal = min($coveredTotal, $total);
+
         return [
-            'penjamin1_type'   => $cob->penjamin1_type,
-            'penjamin1_amount' => 0,
-            'penjamin2_type'   => $cob->penjamin2_type,
-            'penjamin2_amount' => 0,
-            'patient_amount'   => $totalAmount,
+            'is_cob'         => true,
+            'total'          => $total,
+            'covered_total'  => $coveredTotal,
+            'patient_amount' => max(0.0, $total - $coveredTotal),
+            'penjamin'       => $rows,
+        ];
+    }
+
+    /**
+     * Buat/segarkan baris coverage per penjamin untuk invoice COB (seq 1 & 2).
+     * covered_amount diambil dari verifikasi asuransi masing-masing penjamin
+     * (0 bila verifikasi belum ada — akan diperbarui saat verifikasi diinput).
+     * Soft-delete aware: konsolidasi ulang me-restore baris, bukan menggandakan.
+     */
+    public function persistCoverages(BillingInvoice $invoice, Visit $visit): void
+    {
+        $cob = $visit->visitCob;
+        if (! $cob || ! $cob->is_active) {
+            return;
+        }
+
+        $total = (float) $invoice->total;
+
+        $defs = [
+            1 => ['insurer_id' => $cob->penjamin1_insurer_id, 'guarantor_type' => $cob->penjamin1_type, 'basis' => null],
+            // Penjamin-2 = basis tagihan (invoice dibangun di harganya).
+            2 => ['insurer_id' => $cob->penjamin2_insurer_id, 'guarantor_type' => $cob->penjamin2_type, 'basis' => $total],
+        ];
+
+        foreach ($defs as $seq => $def) {
+            if (! $def['insurer_id']) {
+                continue;
+            }
+            $verif   = $this->getVerifikasiForInsurer($visit->id, $def['insurer_id']);
+            $covered = $verif && $verif->covered_amount !== null ? (float) $verif->covered_amount : 0.0;
+
+            // Soft-delete aware upsert keyed (billing_invoice_id, sequence).
+            $existing = BillingInvoiceCoverage::withTrashed()
+                ->where('billing_invoice_id', $invoice->id)
+                ->where('sequence', $seq)
+                ->first();
+
+            $values = [
+                'insurer_id'      => $def['insurer_id'],
+                'guarantor_type'  => $def['guarantor_type'],
+                'covered_amount'  => $covered,
+                'basis_amount'    => $def['basis'],
+                'verification_id' => $verif?->id,
+            ];
+
+            if ($existing) {
+                if ($existing->trashed()) {
+                    $existing->restore();
+                }
+                $existing->update($values);
+            } else {
+                BillingInvoiceCoverage::create($values + [
+                    'billing_invoice_id' => $invoice->id,
+                    'sequence'           => $seq,
+                ]);
+            }
+        }
+
+        $this->recalcInvoiceCovered($invoice);
+    }
+
+    /**
+     * Set billing_invoices.covered_amount = Σ coverages (clamp ≤ total) — agregat
+     * yang dipakai jalur pembayaran/kwitansi existing (backward-compat).
+     */
+    public function recalcInvoiceCovered(BillingInvoice $invoice): void
+    {
+        $sum = (float) BillingInvoiceCoverage::where('billing_invoice_id', $invoice->id)->sum('covered_amount');
+        $covered = min($sum, (float) $invoice->total);
+        $invoice->update(['covered_amount' => $covered]);
+    }
+
+    /** Verifikasi asuransi terbaru untuk satu (visit, insurer). Null bila belum ada. */
+    public function getVerifikasiForInsurer(string $visitId, ?string $insurerId): ?InsuranceVerification
+    {
+        if (! $insurerId) {
+            return null;
+        }
+        return InsuranceVerification::where('visit_id', $visitId)
+            ->where('insurer_id', $insurerId)
+            ->latest()
+            ->first();
+    }
+
+    /**
+     * Basis COB untuk panduan verifikator/kasir (boleh sebelum invoice dibuat):
+     * total@harga-penjamin-2, cover penjamin-1 (mis. BPJS INA-CBG dari verifikasi),
+     * selisih, saran cover penjamin-2 (clamp plafon), dan estimasi sisa pasien.
+     */
+    public function getCobBasis(string $visitId): array
+    {
+        $visit = Visit::with([
+            'visitServices.procedure',
+            'prescriptions.items.medication',
+            'surgerySchedule.surgeryRecord.iolUsages.iolItem',
+            'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
+            'doctorExamination.surgeryPackage.items',
+            'surgeryRequests.bhpItems.bhpItem',
+            'equipmentUsages.equipment',
+            'surgeryPackageSnapshots.items',
+            'visitCob',
+        ])->findOrFail($visitId);
+
+        $cob = $visit->visitCob;
+        if (! $cob || ! $cob->is_active) {
+            return ['is_cob' => false];
+        }
+
+        $totalP2 = $this->recomputeTotalForInsurer(
+            $visit,
+            $cob->penjamin2_insurer_id,
+            $cob->penjamin2_type ?? $visit->guarantor_type
+        );
+
+        $verif1 = $this->getVerifikasiForInsurer($visitId, $cob->penjamin1_insurer_id);
+        $verif2 = $this->getVerifikasiForInsurer($visitId, $cob->penjamin2_insurer_id);
+
+        $p1Covered = $verif1 && $verif1->covered_amount !== null ? (float) $verif1->covered_amount : 0.0;
+        $plafon2   = $verif2 && $verif2->plafon_amount !== null ? (float) $verif2->plafon_amount : null;
+        $p2Covered = $verif2 && $verif2->covered_amount !== null ? (float) $verif2->covered_amount : null;
+
+        $selisih      = max(0.0, $totalP2 - $p1Covered);
+        $suggestedP2  = $plafon2 !== null ? min($plafon2, $selisih) : $selisih;
+        $effectiveP2  = $p2Covered ?? $suggestedP2;
+
+        return [
+            'is_cob'           => true,
+            'total_penjamin2'  => $totalP2,
+            'selisih'          => $selisih,
+            'penjamin1'        => [
+                'type'       => $cob->penjamin1_type,
+                'insurer_id' => $cob->penjamin1_insurer_id,
+                'covered'    => $p1Covered,
+                'verified'   => (bool) $verif1,
+            ],
+            'penjamin2'        => [
+                'type'              => $cob->penjamin2_type,
+                'insurer_id'        => $cob->penjamin2_insurer_id,
+                'plafon'            => $plafon2,
+                'covered'           => $p2Covered,
+                'suggested_covered' => $suggestedP2,
+                'verified'          => (bool) $verif2,
+            ],
+            'patient_estimate' => max(0.0, $totalP2 - $p1Covered - $effectiveP2),
         ];
     }
 
@@ -914,6 +1382,10 @@ class KasirService
                     // Tidak ada queue KASIR aktif (pasien dibayar dari non-queue flow) — set manual.
                     $invoice->visit->update(['current_station' => 'SELESAI']);
                 }
+
+                // Konsultasi kontrol gratis pasca-bedah (Opsi B): tandai hak terpakai untuk
+                // tiap baris DISKON_KONTROL yang masih ada (kasir tak meng-override). Idempoten.
+                app(\App\Services\PackageFollowupService::class)->redeemPaidInvoice($invoice);
 
                 // Auto-draft klaim TPA non-BPJS jika visit guarantor ASURANSI/PERUSAHAAN
                 // dan sudah VERIFIED.
@@ -1058,6 +1530,8 @@ class KasirService
             }
 
             $this->maybeCreateInsuranceClaimDraft($invoice);
+            // COB BPJS+asuransi: penjamin-1 BPJS juga perlu draft klaim INA-CBG (self-guarded).
+            $this->maybeCreateBpjsClaimDraft($invoice);
 
             $this->log(
                 $user->id,
@@ -1091,6 +1565,12 @@ class KasirService
         $guarantor = strtoupper((string) ($invoice->visit?->guarantor_type ?? ''));
         if ($guarantor !== 'BPJS') {
             throw new \Exception('Konfirmasi BPJS hanya untuk kunjungan dengan penjamin BPJS.', 422);
+        }
+
+        // COB: BPJS hanya menanggung INA-CBG; sisa (selisih) ditanggung penjamin-2/pasien.
+        // Jangan tandai lunas sepihak — pakai konfirmasi coverage + pembayaran biasa.
+        if ($invoice->visit?->visitCob?->is_active) {
+            throw new \Exception('Kunjungan COB: konfirmasi coverage penjamin-2 & sisa pasien lewat pembayaran biasa, bukan konfirmasi BPJS.', 422);
         }
 
         $user = auth('api')->user();
@@ -1371,6 +1851,8 @@ class KasirService
                 'director_sip'   => $clinic?->director_sip,
                 'logo_path'      => $print['show_logo'] ? $clinic?->logo_path : null,
                 'logo_url'       => $print['show_logo'] ? $this->resolveAssetUrl($clinic?->logo_path) : null,
+                // Kop kanonik (sumber tunggal) — identik dgn pratinjau Profil.
+                'letterhead_html' => $clinic ? $clinic->renderLetterheadHtml((bool) $print['show_logo']) : '',
                 'stamp_path'     => $print['show_stamp'] ? $clinic?->stamp_path : null,
                 'stamp_url'      => $print['show_stamp'] ? $this->resolveAssetUrl($clinic?->stamp_path) : null,
                 'watermark_type' => ($print['show_watermark'] && $clinic?->watermark_enabled) ? $clinic?->watermark_type : null,
@@ -1416,6 +1898,64 @@ class KasirService
             'cashier' => $invoice->cashier?->name
                 ?? auth('api')->user()?->employee?->name
                 ?? auth('api')->user()?->name,
+        ];
+    }
+
+    /**
+     * Kirim kwitansi PDF ke email pasien (alternatif cetak fisik). Data kwitansi
+     * dirakit di sini (konteks request → nama kasir & auth benar), lalu email
+     * di-QUEUE; PDF dirender di worker (lihat ReceiptMail). Email juga disimpan
+     * ke record pasien agar bisa dipakai ulang kunjungan berikutnya.
+     *
+     * Parity BPJS: pasien BPJS ditagih via klaim INA-CBG, bukan ke pasien —
+     * kwitansi tidak dikirim (sama dgn aturan cetak kwitansi history).
+     *
+     * Status pengiriman dicatat di invoice (QUEUED → SENT/FAILED via
+     * App\Jobs\SendReceiptEmail) agar kasir tahu hasilnya, bukan asal "dikirim".
+     *
+     * @return array{status:string,email:string,at:?string}
+     */
+    public function emailReceipt(string $invoiceId, string $email): array
+    {
+        $invoice = BillingInvoice::with('visit.patient')->findOrFail($invoiceId);
+
+        // Visit pakai SoftDeletes → relasi bisa null bila kunjungan sudah dibatalkan.
+        // Tanpa guard, akses $invoice->visit-> di bawah (dan generateReceipt) memicu
+        // "read property on null" → 500. Beri error 422 yang jelas.
+        if (! $invoice->visit) {
+            throw new \Exception('Kunjungan untuk invoice ini tidak ditemukan / sudah dibatalkan.', 422);
+        }
+
+        if (strtoupper($invoice->visit->guarantor_type ?? '') === 'BPJS') {
+            throw new \Exception('Pasien BPJS ditagih via klaim BPJS — kwitansi tidak dikirim ke pasien.', 422);
+        }
+
+        // Rakit data di request (auth ada → nama kasir benar), lalu di-queue.
+        $data = $this->generateReceipt($invoiceId);
+
+        // Simpan email ke pasien bila baru/berubah (dipakai ulang & prefill berikutnya).
+        $patient = $invoice->visit->patient;
+        if ($patient && $patient->email !== $email) {
+            $patient->update(['email' => $email]);
+        }
+
+        // Tandai ANTRE dulu; job akan update SENT/FAILED (sync → langsung SENT).
+        $invoice->update([
+            'receipt_email'        => $email,
+            'receipt_email_status' => 'QUEUED',
+            'receipt_email_at'     => now(),
+            'receipt_email_error'  => null,
+        ]);
+
+        SendReceiptEmail::dispatch($invoiceId, $email, $data, $data['invoice']['number'] ?? null);
+
+        // Re-read: pada queue sync, job sudah jalan → status mungkin sudah SENT.
+        $invoice->refresh();
+
+        return [
+            'status' => $invoice->receipt_email_status,
+            'email'  => $invoice->receipt_email,
+            'at'     => $invoice->receipt_email_at?->toIso8601String(),
         ];
     }
 
@@ -1661,6 +2201,37 @@ class KasirService
             $visit = $invoice->visit;
             if (! $visit) return;
 
+            $cob = $visit->visitCob;
+
+            // === COB: klaim asuransi/TPA untuk PENJAMIN-2 (menanggung selisih) ===
+            if ($cob && $cob->is_active) {
+                $insurerId = $cob->penjamin2_insurer_id;
+                if (! $insurerId) return;
+
+                // Dedup per (invoice, insurer) — penjamin-2 boleh berdampingan dgn klaim BPJS.
+                $exists = \App\Models\InsuranceClaim::where('billing_invoice_id', $invoice->id)
+                    ->where('insurer_id', $insurerId)->exists();
+                if ($exists) return;
+
+                // Cover penjamin-2 dari baris coverage seq 2 (diisi verifikasi penjamin-2).
+                $cov = $invoice->coverages()->where('sequence', 2)->first();
+                $claimAmount = $cov ? (float) $cov->covered_amount : 0.0;
+                if ($claimAmount <= 0) return; // belum ada cover → jangan buat klaim kosong
+
+                $patientResp = max(0, (float) $invoice->total - (float) $invoice->covered_amount);
+
+                $this->asuransiService->createDraftKlaim([
+                    'visit_id'               => $visit->id,
+                    'insurer_id'             => $insurerId,
+                    'billing_invoice_id'     => $invoice->id,
+                    'claim_amount'           => $claimAmount,
+                    'patient_responsibility' => $patientResp,
+                    'source'                 => 'auto_cob_penjamin2',
+                ]);
+                return;
+            }
+
+            // === Non-COB (perilaku lama): klaim ke penjamin utama ===
             if (! in_array($visit->guarantor_type, ['ASURANSI', 'PERUSAHAAN'], true)) return;
             if ($visit->insurance_verification_status !== 'VERIFIED') return;
             if (! $visit->insurer_id) return;
@@ -1716,7 +2287,11 @@ class KasirService
             $visit = $invoice->visit;
             if (! $visit) return;
 
-            if ($visit->guarantor_type !== 'BPJS') return;
+            // BPJS primer ATAU penjamin-1 COB = BPJS (COB BPJS + asuransi).
+            $cob = $visit->visitCob;
+            $isBpjs = $visit->guarantor_type === 'BPJS'
+                || ($cob && $cob->is_active && $cob->penjamin1_type === 'BPJS');
+            if (! $isBpjs) return;
             if (empty($visit->no_sep)) return; // tanpa SEP, belum bisa diklaim
 
             // Diagnosis dokter (bila ada) dipakai untuk pra-isi; bila kosong,

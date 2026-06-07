@@ -1,6 +1,6 @@
 <script setup>
 /**
- * AnesthesiaReportWizard — Laporan Anestesi lengkap (RM 5.2), wizard 3 halaman.
+ * AnesthesiaReportWizard — Laporan Anestesi lengkap (RM 8.1/LARSKMPV/22), wizard 3 halaman.
  *
  *   Hal 1: Pra-anestesi (identitas tim, teknik, alat khusus, monitoring, ASA,
  *          checklist persiapan, penilaian pra-induksi)
@@ -237,7 +237,7 @@ async function cetak() {
     <div class="arw-head">
       <div class="arw-title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        Laporan Anestesi (RM 5.2)
+        Laporan Anestesi (RM 8.1)
       </div>
       <div class="arw-head-right">
         <span v-if="savedAt" class="arw-saved">Tersimpan</span>
@@ -505,7 +505,7 @@ async function cetak() {
             <div class="ap-clinic">{{ masterStore.profilKlinik?.clinic_name ?? 'Klinik' }}</div>
             <div v-if="masterStore.profilKlinik?.address" class="ap-line">{{ masterStore.profilKlinik.address }}</div>
           </div>
-          <div class="ap-formno">RM 5.2</div>
+          <div class="ap-formno">RM 8.1/LARSKMPV/22</div>
         </div>
         <div class="ap-title">LAPORAN ANESTESI</div>
 

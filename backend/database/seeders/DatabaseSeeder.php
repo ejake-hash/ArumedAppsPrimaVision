@@ -31,6 +31,7 @@ class DatabaseSeeder extends Seeder
             // BedahRiwayatSeeder::class, // demo only — run manually: php artisan db:seed --class=BedahRiwayatSeeder (butuh master dari BedahDemoSeeder)
             // PenunjangDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=PenunjangDemoSeeder
             // BedahQueueDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=BedahQueueDemoSeeder (butuh SurgeryPackage dari BedahDemoSeeder)
+            // RuangTindakanDemoSeeder::class, // demo only — run manually: php artisan db:seed --class=RuangTindakanDemoSeeder (mandiri: buat sendiri procedure laser + tarif)
             // FarmasiDemoSeeder::class,  // demo only — run manually: php artisan db:seed --class=FarmasiDemoSeeder (butuh master Medication + Employee)
         ]);
     }

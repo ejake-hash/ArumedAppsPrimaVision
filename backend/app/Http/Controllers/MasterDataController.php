@@ -29,15 +29,23 @@ class MasterDataController extends Controller
 
     public function showProfilKlinik(): JsonResponse
     {
-        return $this->ok($this->service->getProfilKlinik());
+        $clinic = $this->service->getProfilKlinik();
+        $data = $clinic->toArray();
+        // Kop kanonik (sumber tunggal) — dipakai pratinjau & dokumen lain.
+        $data['letterhead_html'] = $clinic->renderLetterheadHtml();
+        return $this->ok($data);
     }
 
     public function updateProfilKlinik(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'clinic_name'       => 'sometimes|string|max:255',
+            'subtitle'          => 'nullable|string|max:255',
+            'tagline'           => 'nullable|string|max:255',
+            'unit_line'         => 'nullable|string|max:500',
             'address'           => 'nullable|string|max:500',
-            'phone'             => 'nullable|string|max:20',
+            'phone'             => 'nullable|string|max:30',
+            'emergency_hotline' => 'nullable|string|max:50',
             'email'             => 'nullable|email|max:255',
             'director_name'     => 'nullable|string|max:255',
             'director_sip'      => 'nullable|string|max:100',
@@ -589,10 +597,10 @@ class MasterDataController extends Controller
     public function storeDiagnosticTestType(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'code'       => 'required|string|max:30|unique:diagnostic_test_types,code',
+            // Kode opsional — backend auto-generate dari kategori Penunjang (prefix PNJ).
+            // Master sebenarnya = procedure; cermin diagnostic_test_types ikut kode sama.
+            'code'       => 'nullable|string|max:30|unique:diagnostic_test_types,code|unique:procedures,code',
             'name'       => 'required|string|max:150',
-            'category'   => 'nullable|string|max:50',
-            'base_price' => 'nullable|numeric|min:0',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);
@@ -602,12 +610,10 @@ class MasterDataController extends Controller
 
     public function updateDiagnosticTestType(Request $request, string $id): JsonResponse
     {
-        // `code` dipakai relasi tarif — boleh diubah tapi tetap unik (abaikan diri sendiri).
+        // `code` IMMUTABLE — kunci penghubung ke procedure pasangan & order lama.
+        // Harga TIDAK diatur di sini — semua tarif berasal dari Buku Tarif (Tarif Tindakan).
         $validated = $request->validate([
-            'code'       => "sometimes|string|max:30|unique:diagnostic_test_types,code,{$id}",
             'name'       => 'sometimes|string|max:150',
-            'category'   => 'nullable|string|max:50',
-            'base_price' => 'nullable|numeric|min:0',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);
@@ -642,7 +648,7 @@ class MasterDataController extends Controller
             'generic_name' => 'nullable|string|max:255',
             'composition'  => 'nullable|string|max:500',
             'manufacturer' => 'nullable|string|max:255',
-            'formularium'  => 'required|in:FORNAS,FORMULARIUM GENERIK,BRANDED',
+            'formularium'  => 'required|in:FORNAS,NON-FORNAS,FORMULARIUM GENERIK,BRANDED',
             'form_sediaan' => 'nullable|in:TABLET,KAPSUL,SIRUP,TETES_MATA,SALEP_MATA,INJEKSI,LAIN',
             'golongan'     => 'nullable|in:BEBAS,BEBAS_TERBATAS,KERAS,NARKOTIKA,PSIKOTROPIKA',
             'unit'         => 'nullable|string|max:50',
@@ -669,7 +675,7 @@ class MasterDataController extends Controller
             'generic_name' => 'nullable|string|max:255',
             'composition'  => 'nullable|string|max:500',
             'manufacturer' => 'nullable|string|max:255',
-            'formularium'  => 'sometimes|in:FORNAS,FORMULARIUM GENERIK,BRANDED',
+            'formularium'  => 'sometimes|in:FORNAS,NON-FORNAS,FORMULARIUM GENERIK,BRANDED',
             'form_sediaan' => 'nullable|in:TABLET,KAPSUL,SIRUP,TETES_MATA,SALEP_MATA,INJEKSI,LAIN',
             'golongan'     => 'nullable|in:BEBAS,BEBAS_TERBATAS,KERAS,NARKOTIKA,PSIKOTROPIKA',
             'unit'         => 'sometimes|nullable|string|max:50',
@@ -818,6 +824,7 @@ class MasterDataController extends Controller
             'iol_type'      => 'required|in:MONOFOCAL,MULTIFOCAL,TORIC,TRIFOCAL,EDOF,PHAKIC',
             'material'      => 'nullable|in:Acrylic,Silicone,PMMA',
             'power'         => 'required|numeric|between:-20,40',
+            'a_constant'    => 'nullable|numeric|between:90,130',
             'cylinder'      => 'nullable|required_if:iol_type,TORIC|numeric|between:0,10',
             'axis'          => 'nullable|required_if:iol_type,TORIC|integer|between:0,180',
             // Per-tipe: serial/lot adalah data operasi-time, BUKAN identitas master →
@@ -844,6 +851,7 @@ class MasterDataController extends Controller
             'iol_type'      => 'sometimes|in:MONOFOCAL,MULTIFOCAL,TORIC,TRIFOCAL,EDOF,PHAKIC',
             'material'      => 'nullable|in:Acrylic,Silicone,PMMA',
             'power'         => 'sometimes|numeric|between:-20,40',
+            'a_constant'    => 'nullable|numeric|between:90,130',
             'cylinder'      => 'nullable|required_if:iol_type,TORIC|numeric|between:0,10',
             'axis'          => 'nullable|required_if:iol_type,TORIC|integer|between:0,180',
             'lot_number'    => 'nullable|string|max:100',
@@ -872,7 +880,16 @@ class MasterDataController extends Controller
 
     public function indexPaketBedah(Request $request): JsonResponse
     {
-        return $this->ok($this->service->indexPaketBedah($request->only(['search', 'active', 'per_page', 'package_type'])));
+        $filters = $request->only(['search', 'active', 'per_page', 'package_type']);
+        // Opsional: visit_id → resolve penjamin pasien agar nama+harga paket tampil per-penjamin.
+        if ($vid = $request->query('visit_id')) {
+            $visit = \App\Models\Visit::find($vid);
+            if ($visit) {
+                $filters['guarantor_type'] = $visit->guarantor_type;
+                $filters['insurer_id']     = $visit->insurer_id;
+            }
+        }
+        return $this->ok($this->service->indexPaketBedah($filters));
     }
 
     public function storePaketBedah(Request $request): JsonResponse
@@ -881,11 +898,16 @@ class MasterDataController extends Controller
             'name'               => 'required|string|max:255',
             'code'               => 'required|string|max:50|unique:surgery_packages,code',
             'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
+            'surgery_type'       => 'nullable|in:KATARAK,VITREORETINA,GLAUKOMA,LAINNYA',
             'description'        => 'nullable|string|max:1000',
             'estimated_duration' => 'nullable|integer|min:1',
             'price'              => 'nullable|numeric|min:0',
             'is_active'          => 'nullable|boolean',
         ]);
+
+        if (empty($validated['surgery_type'])) {
+            $validated['surgery_type'] = \App\Models\SurgeryPackage::suggestSurgeryType($validated['name'] ?? null);
+        }
 
         return $this->ok($this->service->storePaketBedah($validated), 'Paket bedah dibuat', 201);
     }
@@ -895,6 +917,7 @@ class MasterDataController extends Controller
         $validated = $request->validate([
             'name'               => 'sometimes|string|max:255',
             'package_type'       => 'nullable|in:BEDAH,PEMERIKSAAN',
+            'surgery_type'       => 'nullable|in:KATARAK,VITREORETINA,GLAUKOMA,LAINNYA',
             'description'        => 'nullable|string|max:1000',
             'estimated_duration' => 'nullable|integer|min:1',
             'price'              => 'nullable|numeric|min:0',

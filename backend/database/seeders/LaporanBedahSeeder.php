@@ -33,8 +33,14 @@ class LaporanBedahSeeder extends Seeder
 {
     public function run(): void
     {
-        $docType = $this->seedDocType();
-        $this->seedTemplate($docType);
+        // SELURUH seeder ini DIMATIKAN atas permintaan (7 Jun 2026): katalog Form
+        // Registry (jenis dokumen + template) dibangun ulang dari PDF resmi. Dulu
+        // membuat DocumentType RM-5.3 + template RM_BEDAH_LAPORAN. ⚠️ BedahService::
+        // publishLaporanBedahDocument memakai RM_BEDAH_LAPORAN by-code → alur Laporan
+        // Operasi → TTD → RME TIDAK berfungsi sampai dibangun ulang. Aktifkan kembali
+        // dua baris di bawah untuk memulihkan.
+        // $docType = $this->seedDocType();
+        // $this->seedTemplate($docType);
     }
 
     /**

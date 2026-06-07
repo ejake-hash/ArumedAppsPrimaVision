@@ -48,6 +48,13 @@ class TtdDokumenDemoSeeder extends Seeder
 
     public function run(): void
     {
+        // DINONAKTIFKAN (7 Jun 2026): seeder ini membuat template demo
+        // 'SURAT_BEROBAT_TTD' + dokumen demo TTD. Katalog Form Registry sedang
+        // dibersihkan menjadi hanya RESUME_MEDIS. Hapus baris return ini untuk
+        // mengaktifkan kembali data demo antrean TTD.
+        $this->command?->warn('TtdDokumenDemoSeeder dinonaktifkan (pembersihan Form Registry).');
+        return;
+
         $doctor = Employee::where('profession', 'like', '%okter%')
             ->where('is_active', true)
             ->first();

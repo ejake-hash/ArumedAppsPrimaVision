@@ -40,6 +40,7 @@ class UserSeeder extends Seeder
                 'role_name'   => 'dokter',
                 'employee_id' => $dokter1?->id,
                 'password'    => '888888',
+                'pin'         => '123456',   // PIN TTD (plaintext) — per-dokter; prod: tiap dokter ganti sendiri
             ],
             [
                 'username'    => 'dokter2',
@@ -48,6 +49,7 @@ class UserSeeder extends Seeder
                 'role_name'   => 'dokter',
                 'employee_id' => $dokter2?->id,
                 'password'    => '888888',
+                'pin'         => '234567',
             ],
             [
                 'username'    => 'dokter3',
@@ -56,6 +58,7 @@ class UserSeeder extends Seeder
                 'role_name'   => 'dokter',
                 'employee_id' => $dokter3?->id,
                 'password'    => '888888',
+                'pin'         => '345678',
             ],
             [
                 'username'    => 'perawat',
@@ -124,6 +127,7 @@ class UserSeeder extends Seeder
                     'role_id'     => $roles[$data['role_name']]?->id,
                     'employee_id' => $data['employee_id'],
                     'password'    => $data['password'],   // auto-hashed via cast
+                    'pin'         => $data['pin'] ?? null, // TTD PIN (plaintext) — hanya dokter
                     'is_active'   => true,
                 ]
             );

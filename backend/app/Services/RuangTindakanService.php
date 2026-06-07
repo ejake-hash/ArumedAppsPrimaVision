@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Prescription;
 use App\Models\Procedure;
 use App\Models\Queue;
 use App\Models\SurgeryRecord;
@@ -165,7 +166,7 @@ class RuangTindakanService
      */
     public function selesaiTindakan(string $scheduleId, array $data): SurgeryRecord
     {
-        $schedule = SurgerySchedule::with('surgeryRecord')->findOrFail($scheduleId);
+        $schedule = SurgerySchedule::with(['surgeryRecord', 'surgeryPackage.items'])->findOrFail($scheduleId);
         $this->assertTindakanSchedule($schedule);
 
         if ($schedule->status !== 'IN_PROGRESS') {
@@ -180,7 +181,7 @@ class RuangTindakanService
         $disposition = $data['post_op_disposition'] ?? 'PULANG';
         $hasComplication = ! empty($data['complication']);
 
-        return DB::transaction(function () use ($schedule, $record, $data, $disposition, $hasComplication) {
+        $result = DB::transaction(function () use ($schedule, $record, $data, $disposition, $hasComplication) {
             $record->update([
                 'time_out'             => now(),
                 'operation_notes'      => $data['notes'] ?? null,
@@ -202,10 +203,12 @@ class RuangTindakanService
                 ?? Visit::whereHas('doctorExamination',
                     fn ($q) => $q->where('surgery_schedule_id', $schedule->id))->first();
 
-            // Catat tindakan laser sebagai visit_services agar tertagih di Kasir
+            // Catat tindakan laser ke visit_services agar tertagih di Kasir
             // (KasirService::buildTindakanLines → procedure_tariffs per penjamin).
-            if ($visit && ! empty($data['procedure_ids'])) {
-                $this->recordVisitServices($visit, $data['procedure_ids']);
+            // Sumber tindakan = PAKET yang dipilih dokter di planning (DokterView),
+            // bukan dipilih ulang manual di stasiun ini.
+            if ($visit) {
+                $this->recordPackageProcedures($visit, $schedule);
             }
 
             // Routing pasca-tindakan (pola sama BedahService::finalizeRecord):
@@ -236,6 +239,12 @@ class RuangTindakanService
 
             return $record->fresh(['surgerySchedule']);
         });
+
+        // Manfaat "konsultasi kontrol gratis pasca-bedah" (Opsi B): bila paket tindakan
+        // mengaktifkannya, terbitkan hak per operasi. Non-blok (gagal hanya di-log).
+        app(\App\Services\PackageFollowupService::class)->issueForOperation($schedule->id);
+
+        return $result;
     }
 
     /** Simpan/perbarui laporan laser tanpa menyelesaikan (autosave saat tindakan berjalan). */
@@ -257,6 +266,37 @@ class RuangTindakanService
     public function getRecord(string $scheduleId): ?SurgeryRecord
     {
         return SurgeryRecord::where('surgery_schedule_id', $scheduleId)->first();
+    }
+
+    /**
+     * Resep obat pulang pasca-laser → Prescription SUBMITTED (reuse BedahService).
+     * Otomatis muncul di Farmasi SETELAH Kasir (QueueService::nextAfterKasir cek resep).
+     */
+    public function storeResep(string $scheduleId, array $items, array $opts = []): ?Prescription
+    {
+        $schedule = SurgerySchedule::findOrFail($scheduleId);
+        $this->assertTindakanSchedule($schedule);
+
+        $visit = $this->resolveVisitForSchedule($schedule);
+        if (! $visit) {
+            throw new \Exception('Kunjungan untuk jadwal ini tidak ditemukan.', 422);
+        }
+
+        return $this->bedahService->storePostOpPrescription($visit->id, $items, $opts);
+    }
+
+    /** Daftar obat untuk picker resep (passthrough BedahService → DokterService). */
+    public function getDaftarObat(?string $search): array
+    {
+        return $this->bedahService->getDaftarObat($search);
+    }
+
+    /** Resolve visit dari jadwal: prefer visits.surgery_schedule_id, fallback examination. */
+    private function resolveVisitForSchedule(SurgerySchedule $schedule): ?Visit
+    {
+        return Visit::where('surgery_schedule_id', $schedule->id)->first()
+            ?? Visit::whereHas('doctorExamination',
+                fn ($q) => $q->where('surgery_schedule_id', $schedule->id))->first();
     }
 
     /**
@@ -296,11 +336,26 @@ class RuangTindakanService
         return $visit?->surgerySchedule ?? $visit?->doctorExamination?->surgerySchedule ?? null;
     }
 
-    private function recordVisitServices(Visit $visit, array $procedureIds): void
+    /**
+     * Auto-rekam tindakan (PROCEDURE) dari paket yang dipilih dokter di planning ke
+     * visit_services → tertagih di Kasir (buildTindakanLines) + baris diskon paket.
+     * Laser tanpa paket → tak ada tindakan auto (operator atur via paket di planning).
+     */
+    private function recordPackageProcedures(Visit $visit, SurgerySchedule $schedule): void
     {
+        $package = $schedule->surgeryPackage ?? $visit->doctorExamination?->surgeryPackage;
+        if (! $package) {
+            return;
+        }
+
         $performedBy = auth('api')->user()?->employee_id;
 
-        foreach (array_unique($procedureIds) as $procedureId) {
+        foreach ($package->items->where('item_type', 'PROCEDURE') as $item) {
+            $procedureId = $item->item_id;
+            if (! $procedureId) {
+                continue;
+            }
+
             // Anti-dobel: jangan catat procedure sama dua kali untuk visit ini.
             $exists = VisitService::where('visit_id', $visit->id)
                 ->where('procedure_id', $procedureId)
@@ -319,11 +374,69 @@ class RuangTindakanService
                 'visit_id'        => $visit->id,
                 'procedure_id'    => $procedureId,
                 'performed_by_id' => $performedBy,
-                'quantity'        => 1,
+                'quantity'        => max(1, (int) $item->quantity),
                 'price'           => $price,
-                'notes'           => 'Ruang Tindakan (laser)',
+                'notes'           => 'Ruang Tindakan (laser) — dari paket ' . $package->name,
             ]);
         }
+    }
+
+    // =========================================================================
+    // JADWAL TINDAKAN TERJADWAL (per minggu) — hanya RUANG_TINDAKAN
+    // =========================================================================
+
+    /**
+     * Daftar pasien terjadwal Ruang Tindakan. Tanpa rentang → mendatang (>= hari ini);
+     * dengan date_from/date_to (weekpicker) → semua jadwal laser dalam minggu itu.
+     */
+    public function getScheduledTindakan(array $filters = []): array
+    {
+        $query = SurgerySchedule::with([
+            'surgeryPackage',
+            'leadSurgeon',
+            'surgeryRecord',
+            'visit.patient',
+            'visit.insurer',
+            'visit.doctorExamination.doctor',
+        ])->where('location_type', self::LOCATION);
+
+        if (! empty($filters['date_from']) || ! empty($filters['date_to'])) {
+            if (! empty($filters['date_from'])) {
+                $query->whereDate('scheduled_date', '>=', $filters['date_from']);
+            }
+            if (! empty($filters['date_to'])) {
+                $query->whereDate('scheduled_date', '<=', $filters['date_to']);
+            }
+        } else {
+            $query->whereDate('scheduled_date', '>=', today());
+        }
+
+        return $query->orderBy('scheduled_date')->orderBy('scheduled_time')->get()
+            ->map(function (SurgerySchedule $s) {
+                $visit   = $s->visit;
+                $patient = $visit?->patient;
+                $exam    = $visit?->doctorExamination;
+                $dob     = $patient?->date_of_birth;
+
+                return [
+                    'schedule_id'    => $s->id,
+                    'scheduled_date' => $s->scheduled_date?->toDateString(),
+                    'scheduled_time' => $s->scheduled_time,
+                    'room'           => $s->operation_room,
+                    'status'         => $s->status,
+                    'package'        => $s->surgeryPackage?->name,
+                    'operator'       => $s->leadSurgeon?->name ?? $exam?->doctor?->name,
+                    'diagnosa'       => $exam?->diagnosis_utama,
+                    'patient'        => $patient ? [
+                        'id'     => $patient->id,
+                        'no_rm'  => $patient->no_rm,
+                        'name'   => $patient->name,
+                        'gender' => $patient->gender,
+                        'age'    => $dob ? $dob->age : null,
+                    ] : null,
+                    'guarantor'      => $visit?->insurer?->name ?? $visit?->guarantor_type,
+                ];
+            })->all();
     }
 
     /** Pastikan queue ini benar-benar milik pasien RUANG_TINDAKAN. */

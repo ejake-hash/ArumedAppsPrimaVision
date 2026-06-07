@@ -533,11 +533,11 @@ class MasterDataService
      */
     public function importPenjaminCsv(string $csvContent): array
     {
-        $lines = $this->csvDataLines($csvContent);
-        if (empty($lines)) {
+        $records = \App\Support\SpreadsheetHelper::parseCsvRecords($csvContent);
+        if (empty($records)) {
             throw new \Exception('File kosong.', 422);
         }
-        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        $headers = array_map(fn ($h) => strtolower(trim((string) $h)), array_shift($records));
         foreach (['nama', 'tipe'] as $req) {
             if (! in_array($req, $headers, true)) {
                 throw new \Exception("Header CSV harus mengandung kolom '{$req}'.", 422);
@@ -547,11 +547,8 @@ class MasterDataService
         $validTypes = ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL'];
         $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
 
-        foreach ($lines as $idx => $line) {
+        foreach ($records as $idx => $values) {
             $lineNum = $idx + 2;
-            if (trim($line) === '') continue;
-
-            $values = str_getcsv($line, ',', '"', '\\');
             if (count($values) !== count($headers)) {
                 $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
                 $skipped++;
@@ -684,9 +681,18 @@ class MasterDataService
         if (empty($data['code'])) {
             $data['code'] = $this->generateProcedureCode($data['category'] ?? '');
         }
-        $proc = Procedure::create($data);
-        $this->log(auth('api')->id(), 'CREATE_TINDAKAN', Procedure::class, $proc->id);
-        return $proc;
+
+        return DB::transaction(function () use ($data) {
+            $proc = Procedure::create($data);
+            // Buku Tarif = baris tarif penjamin UMUM. "Harga (Rp)" yg diisi admin di sini
+            // (procedures.base_price) TIDAK dibaca kasir → sinkronkan ke baris UMUM agar
+            // harganya benar-benar jadi Buku Tarif (dipakai billing & tampil di Metode Bayar).
+            if (array_key_exists('base_price', $data)) {
+                $this->syncUmumProcedureTariff($proc->id, (float) $data['base_price']);
+            }
+            $this->log(auth('api')->id(), 'CREATE_TINDAKAN', Procedure::class, $proc->id);
+            return $proc;
+        });
     }
 
     public function updateTindakan(string $id, array $data): Procedure
@@ -694,9 +700,36 @@ class MasterDataService
         $proc = Procedure::findOrFail($id);
         // Code tidak boleh diubah via update (immutable identifier)
         unset($data['code']);
-        $proc->update($data);
-        $this->log(auth('api')->id(), 'UPDATE_TINDAKAN', Procedure::class, $id);
-        return $proc->fresh();
+
+        return DB::transaction(function () use ($proc, $id, $data) {
+            $proc->update($data);
+            // Jaga sinkron Buku Tarif UMUM saat harga diubah (lihat storeTindakan).
+            if (array_key_exists('base_price', $data)) {
+                $this->syncUmumProcedureTariff($proc->id, (float) $data['base_price']);
+            }
+            $this->log(auth('api')->id(), 'UPDATE_TINDAKAN', Procedure::class, $id);
+            return $proc->fresh();
+        });
+    }
+
+    /**
+     * Sinkronkan harga Buku Tarif tindakan ke baris tarif penjamin sistem UMUM
+     * (procedure_tariffs). Inilah harga yang dibaca kasir (getPrice) & jadi fallback
+     * untuk penjamin lain. Aman terhadap soft-delete via upsertTarifRow.
+     */
+    private function syncUmumProcedureTariff(string $procedureId, float $price): void
+    {
+        $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        if (! $umumId) {
+            return;
+        }
+        $this->upsertTarifRow(
+            ProcedureTariff::class,
+            'procedure_id',
+            $procedureId,
+            $umumId,
+            ['price' => $price, 'is_active' => true],
+        );
     }
 
     public function deleteTindakan(string $id): void
@@ -1092,29 +1125,86 @@ class MasterDataService
         return $query->orderBy('sort_order')->orderBy('name')->paginate($filters['per_page'] ?? 25);
     }
 
+    /**
+     * Master penunjang = procedure kategori "Penunjang". Tabel diagnostic_test_types
+     * adalah CERMIN (dijaga ProcedureObserver). CRUD di menu "Jenis Penunjang"
+     * diorkestrasi lewat procedure supaya satu sumber: muncul di Buku Tarif (Tarif
+     * Tindakan kategori Penunjang) untuk diatur harganya, bisa di-order dokter (cermin),
+     * DAN ditagih sebagai tindakan Tab 3. TARIF TIDAK di-set di sini — semua harga
+     * berasal dari Buku Tarif. Lihat ProcedureObserver + buildTindakanLines.
+     */
     public function storeDiagnosticTestType(array $data): DiagnosticTestType
     {
-        // Urutan tidak diatur admin — auto-append ke akhir (No. mengikuti urutan ini).
-        if (! isset($data['sort_order'])) {
-            $data['sort_order'] = (int) DiagnosticTestType::max('sort_order') + 1;
-        }
-        $row = DiagnosticTestType::create($data);
-        $this->log(auth('api')->id(), 'CREATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $row->id);
-        return $row;
+        return DB::transaction(function () use ($data) {
+            // Kode dibuat dari kategori "Penunjang" (prefix PNJ) bila admin tak mengisi.
+            $code = ! empty($data['code']) ? $data['code'] : $this->generateProcedureCode('Penunjang');
+
+            // Buat master billing = procedure kategori Penunjang (base_price 0 — harga
+            // diatur terpisah di Buku Tarif). ProcedureObserver otomatis membuat cermin.
+            Procedure::create([
+                'code'       => $code,
+                'name'       => $data['name'],
+                'category'   => 'Penunjang',
+                'base_price' => 0,
+                'is_active'  => $data['is_active'] ?? true,
+            ]);
+
+            // Cermin sudah ada (dibuat observer) → set urutan tampil.
+            $mirror = DiagnosticTestType::where('code', $code)->firstOrFail();
+            $mirror->update([
+                'sort_order' => $data['sort_order'] ?? ((int) DiagnosticTestType::max('sort_order') + 1),
+            ]);
+
+            $this->log(auth('api')->id(), 'CREATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $mirror->id);
+
+            return $mirror->fresh();
+        });
     }
 
     public function updateDiagnosticTestType(string $id, array $data): DiagnosticTestType
     {
-        $row = DiagnosticTestType::findOrFail($id);
-        $row->update($data);
-        $this->log(auth('api')->id(), 'UPDATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
-        return $row->fresh();
+        return DB::transaction(function () use ($id, $data) {
+            $mirror = DiagnosticTestType::findOrFail($id);
+            $proc   = Procedure::where('code', $mirror->code)->first();
+
+            if ($proc) {
+                // Ubah master procedure → ProcedureObserver men-sinkron nama/aktif ke cermin.
+                // Harga TIDAK disentuh di sini (diatur di Buku Tarif).
+                $procUpdate = [];
+                if (array_key_exists('name', $data))      { $procUpdate['name']      = $data['name']; }
+                if (array_key_exists('is_active', $data))  { $procUpdate['is_active'] = $data['is_active']; }
+                if ($procUpdate) {
+                    $proc->update($procUpdate);
+                }
+            } else {
+                // Data lama tanpa procedure pasangan (orphan) → update cermin langsung.
+                $mirror->update(array_intersect_key($data, array_flip(['name', 'is_active'])));
+            }
+
+            // sort_order hanya atribut cermin (bukan procedure).
+            if (array_key_exists('sort_order', $data)) {
+                $mirror->update(['sort_order' => $data['sort_order']]);
+            }
+
+            $this->log(auth('api')->id(), 'UPDATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
+
+            return $mirror->fresh();
+        });
     }
 
     public function deleteDiagnosticTestType(string $id): void
     {
-        DiagnosticTestType::findOrFail($id)->delete();
-        $this->log(auth('api')->id(), 'DELETE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
+        DB::transaction(function () use ($id) {
+            $mirror = DiagnosticTestType::findOrFail($id);
+            $proc   = Procedure::where('code', $mirror->code)->first();
+            if ($proc) {
+                // Hapus master → ProcedureObserver::deleted soft-delete cermin.
+                $proc->delete();
+            } else {
+                $mirror->delete();
+            }
+            $this->log(auth('api')->id(), 'DELETE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);
+        });
     }
 
     // =========================================================================
@@ -1388,7 +1478,22 @@ class MasterDataService
         if (! empty($filters['package_type'])) {
             $query->where('package_type', $filters['package_type']);
         }
-        return $query->orderBy('name')->paginate($filters['per_page'] ?? 20);
+        $page = $query->orderBy('name')->paginate($filters['per_page'] ?? 20);
+
+        // Enrich nama+harga per-penjamin (untuk pemilihan paket oleh dokter): resolved_name
+        // = nama tampil khusus penjamin pasien (fallback nama paket), resolved_sell_price.
+        if (! empty($filters['guarantor_type']) || ! empty($filters['insurer_id'])) {
+            $kasir = app(\App\Services\KasirService::class);
+            $gt    = $filters['guarantor_type'] ?? 'UMUM';
+            $ins   = $filters['insurer_id'] ?? null;
+            $page->getCollection()->each(function (SurgeryPackage $pkg) use ($kasir, $gt, $ins) {
+                $t = $kasir->resolvePackageTariff($pkg->id, $gt, $ins);
+                $pkg->setAttribute('resolved_name', $t?->display_name ?: $pkg->name);
+                $pkg->setAttribute('resolved_sell_price', $t ? (float) $t->sell_price : null);
+            });
+        }
+
+        return $page;
     }
 
     public function storePaketBedah(array $data): SurgeryPackage
@@ -1440,6 +1545,12 @@ class MasterDataService
 
     public function indexTarif(string $type, array $filters = []): LengthAwarePaginator
     {
+        // Mode "Buku Tarif": tampilkan SEMUA item master (bukan hanya yg sudah bertarif),
+        // item tanpa tarif diberi tanda agar FE menampilkan "harga belum ditentukan".
+        if (! empty($filters['include_unpriced']) && ! empty($filters['insurer_id'])) {
+            return $this->indexTarifWithMaster($type, $filters['insurer_id'], $filters);
+        }
+
         $model = $this->tariffModel($type);
 
         $itemRel = match ($type) {
@@ -1456,6 +1567,55 @@ class MasterDataService
         }
 
         return $query->paginate($filters['per_page'] ?? 25);
+    }
+
+    /**
+     * Daftar tarif "mode Buku Tarif": SEMUA item master aktif, di-left-join tarif insurer
+     * ini. Item tanpa baris tarif tetap muncul (id=null, price=null, _unpriced=true) →
+     * FE menandai "harga belum ditentukan buku tarif". Dipakai tab Obat/BHP/IOL di halaman
+     * Buku Tarif (insurer UMUM) agar setiap item master pasti terdaftar.
+     */
+    private function indexTarifWithMaster(string $type, string $insurerId, array $filters): LengthAwarePaginator
+    {
+        [$itemModel, $relKey, $fk, $orderCol] = match ($type) {
+            'tindakan' => [Procedure::class,  'procedure',  'procedure_id',  'name'],
+            'obat'     => [Medication::class, 'medication', 'medication_id', 'name'],
+            'bhp'      => [BhpItem::class,     'bhpItem',    'bhp_item_id',   'name'],
+            'iol'      => [IolItem::class,     'iolItem',    'iol_item_id',   'brand'],
+        };
+        $tariffModel = $this->tariffModel($type);
+
+        $itemsPage = $itemModel::query()
+            ->where('is_active', true)
+            ->orderBy($orderCol)
+            ->paginate($filters['per_page'] ?? 25);
+
+        $ids = collect($itemsPage->items())->pluck('id');
+        $tariffs = $tariffModel::where('insurer_id', $insurerId)
+            ->whereIn($fk, $ids)
+            ->get()
+            ->keyBy($fk);
+
+        $itemsPage->setCollection(
+            collect($itemsPage->items())->map(function ($it) use ($tariffs, $fk, $relKey, $type) {
+                $t = $tariffs->get($it->id);
+                $row = [
+                    'id'         => $t?->id,
+                    $fk          => $it->id,
+                    'insurer_id' => $t?->insurer_id,
+                    'price'      => $t?->price,
+                    'is_active'  => $t?->is_active ?? true,
+                    '_unpriced'  => $t === null,
+                    $relKey      => $it,
+                ];
+                if ($type === 'obat') {
+                    $row['pos_kwitansi'] = $t?->pos_kwitansi;
+                }
+                return $row;
+            })
+        );
+
+        return $itemsPage;
     }
 
     public function storeTarif(string $type, array $data): mixed
@@ -1595,25 +1755,7 @@ class MasterDataService
      */
     public function exportTarifCsvForInsurer(string $type, string $insurerId): string
     {
-        $itemTable    = $this->itemTable($type);
-        $itemNameCol  = $this->itemNameColumn($type);
-        $itemCatCol   = $this->itemKategoriColumn($type);
-        $itemPriceCol = $this->itemMasterPriceColumn($type);
-
-        $rows = DB::table($this->tariffTable($type) . ' as t')
-            ->join("{$itemTable} as item", "t.{$this->tariffFk($type)}", '=', 'item.id')
-            ->where('t.insurer_id', $insurerId)
-            ->whereNull('t.deleted_at')
-            ->whereNull('item.deleted_at')   // jangan ekspor tarif item master yg sudah dihapus
-                                             // (kalau diekspor, import gagal "tidak ditemukan" — export & import inkonsisten)
-            ->select([
-                "item.{$itemNameCol} as nama",
-                "item.{$itemCatCol} as kategori",
-                "item.{$itemPriceCol} as harga_master",
-                't.price as harga_jual',
-            ])
-            ->orderBy("item.{$itemNameCol}")
-            ->get();
+        $rows = $this->buildTarifExportRows($type, $insurerId, false);
 
         $output = fopen('php://temp', 'r+');
         fputcsv($output, ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'], ',', '"', '\\');
@@ -1641,35 +1783,29 @@ class MasterDataService
      */
     public function importTarifCsvForInsurer(string $type, string $insurerId, string $csvContent): array
     {
-        $lines = $this->csvDataLines($csvContent);
-        if (empty($lines)) {
+        $records = \App\Support\SpreadsheetHelper::parseCsvRecords($csvContent);
+        if (empty($records)) {
             throw new \Exception('File CSV kosong.', 422);
         }
 
-        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
+        $headers = array_map(fn ($h) => strtolower(trim((string) $h)), array_shift($records));
 
-        foreach (['nama', 'kategori', 'harga_jual'] as $required) {
+        foreach (['nama', 'harga_jual'] as $required) {
             if (! in_array($required, $headers, true)) {
                 throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
             }
         }
 
-        $model        = $this->tariffModel($type);
-        $fk           = $this->tariffFk($type);
-        $itemTable    = $this->itemTable($type);
-        $itemNameCol  = $this->itemNameColumn($type);
-        $itemCatCol   = $this->itemKategoriColumn($type);
+        $model = $this->tariffModel($type);
+        $fk    = $this->tariffFk($type);
 
         $inserted = 0;
         $updated  = 0;
         $skipped  = 0;
         $errors   = [];
 
-        foreach ($lines as $idx => $line) {
+        foreach ($records as $idx => $values) {
             $lineNum = $idx + 2;
-            if (trim($line) === '') continue;
-
-            $values = str_getcsv($line, ',', '"', '\\');
             if (count($values) !== count($headers)) {
                 $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
                 $skipped++;
@@ -1677,25 +1813,21 @@ class MasterDataService
             }
             $row = array_combine($headers, $values);
 
-            $nama     = trim((string) ($row['nama'] ?? ''));
-            $kategori = trim((string) ($row['kategori'] ?? ''));
-            $hargaJual = $row['harga_jual'] ?? '';
+            $nama      = trim((string) ($row['nama'] ?? ''));
+            $kategori  = trim((string) ($row['kategori'] ?? ''));
+            $hargaJual = trim((string) ($row['harga_jual'] ?? ''));
 
-            if ($nama === '' || $kategori === '' || $hargaJual === '') {
-                $errors[] = "Baris {$lineNum}: 'nama', 'kategori', atau 'harga_jual' kosong";
+            // IOL: identitas = display name di kolom nama; kategori (iol_type) opsional.
+            $kategoriWajib = $type !== 'iol';
+            if ($nama === '' || ($kategoriWajib && $kategori === '') || $hargaJual === '') {
+                $errors[] = "Baris {$lineNum}: 'nama'" . ($kategoriWajib ? ", 'kategori'," : '') . " atau 'harga_jual' kosong";
                 $skipped++;
                 continue;
             }
 
-            // Lookup item by (nama, kategori) — case-insensitive
-            $item = DB::table($itemTable)
-                ->whereRaw("LOWER({$itemNameCol}) = ?", [strtolower($nama)])
-                ->whereRaw("LOWER({$itemCatCol}) = ?", [strtolower($kategori)])
-                ->whereNull('deleted_at')
-                ->first();
-
+            $item = $this->resolveTarifItem($type, $nama, $kategori);
             if (! $item) {
-                $errors[] = "Baris {$lineNum}: item '{$nama}' kategori '{$kategori}' tidak ditemukan di master";
+                $errors[] = "Baris {$lineNum}: item '{$nama}'" . ($kategori !== '' ? " kategori '{$kategori}'" : '') . ' tidak ditemukan / ambigu di master';
                 $skipped++;
                 continue;
             }
@@ -1706,7 +1838,7 @@ class MasterDataService
                 $fk,
                 $item->id,
                 $insurerId,
-                ['price' => (float) $hargaJual, 'is_active' => true]
+                ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true]
             );
             if ($existing) $updated++; else $inserted++;
         }
@@ -1723,26 +1855,7 @@ class MasterDataService
      */
     public function exportTarifCsv(string $type): string
     {
-        $itemTable    = $this->itemTable($type);
-        $itemNameCol  = $this->itemNameColumn($type);
-        $itemCatCol   = $this->itemKategoriColumn($type);
-        $itemPriceCol = $this->itemMasterPriceColumn($type);
-
-        $rows = DB::table($this->tariffTable($type) . ' as t')
-            ->join("{$itemTable} as item", "t.{$this->tariffFk($type)}", '=', 'item.id')
-            ->leftJoin('insurers as ins', 't.insurer_id', '=', 'ins.id')
-            ->whereNull('t.deleted_at')
-            ->whereNull('item.deleted_at')   // jangan ekspor tarif item master yang sudah dihapus
-            ->select([
-                "item.{$itemNameCol} as nama",
-                "item.{$itemCatCol} as kategori",
-                'ins.name as penjamin',
-                "item.{$itemPriceCol} as harga_master",
-                't.price as harga_jual',
-            ])
-            ->orderBy("item.{$itemNameCol}")
-            ->orderBy('ins.name')
-            ->get();
+        $rows = $this->buildTarifExportRows($type, null, true);
 
         $output = fopen('php://temp', 'r+');
         fputcsv($output, ['no', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'], ',', '"', '\\');
@@ -1764,37 +1877,86 @@ class MasterDataService
     }
 
     /**
+     * Bangun baris export tarif (objek nama/kategori/harga_master/harga_jual[/penjamin]).
+     *
+     * IOL: identitas item adalah (brand, model, power) — BUKAN (brand, iol_type). Memakai
+     * brand sbg "nama" + iol_type sbg "kategori" membuat banyak varian power tampak identik
+     * dan import jadi ambigu (semua tertimpa ke satu item). Karena itu IOL diekspor dengan
+     * nama = display "Brand Model PowerD" (unik) — sejalan dgn konvensi import Paket Bedah.
+     */
+    private function buildTarifExportRows(string $type, ?string $insurerId, bool $withPenjamin)
+    {
+        $itemTable    = $this->itemTable($type);
+        $itemPriceCol = $this->itemMasterPriceColumn($type);
+
+        $q = DB::table($this->tariffTable($type) . ' as t')
+            ->join("{$itemTable} as item", "t.{$this->tariffFk($type)}", '=', 'item.id')
+            ->whereNull('t.deleted_at')
+            ->whereNull('item.deleted_at');   // jangan ekspor tarif item master yg sudah dihapus
+                                              // (kalau diekspor, import gagal "tidak ditemukan")
+        if ($insurerId !== null) {
+            $q->where('t.insurer_id', $insurerId);
+        }
+        if ($withPenjamin) {
+            $q->leftJoin('insurers as ins', 't.insurer_id', '=', 'ins.id');
+        }
+
+        if ($type === 'iol') {
+            $select = ['item.brand', 'item.model', 'item.power', 'item.iol_type as kategori',
+                       "item.{$itemPriceCol} as harga_master", 't.price as harga_jual'];
+            if ($withPenjamin) { $select[] = 'ins.name as penjamin'; }
+            $q->select($select)->orderBy('item.brand')->orderBy('item.power');
+            if ($withPenjamin) { $q->orderBy('ins.name'); }
+
+            return $q->get()->map(function ($r) use ($withPenjamin) {
+                $o = (object) [
+                    'nama'         => $this->iolTarifDisplayName($r->brand, $r->model, $r->power),
+                    'kategori'     => $r->kategori,
+                    'harga_master' => $r->harga_master,
+                    'harga_jual'   => $r->harga_jual,
+                ];
+                if ($withPenjamin) { $o->penjamin = $r->penjamin ?? 'SEMUA'; }
+                return $o;
+            });
+        }
+
+        $nameCol = $this->itemNameColumn($type);
+        $catCol  = $this->itemKategoriColumn($type);
+        $select  = ["item.{$nameCol} as nama", "item.{$catCol} as kategori",
+                    "item.{$itemPriceCol} as harga_master", 't.price as harga_jual'];
+        if ($withPenjamin) { $select[] = 'ins.name as penjamin'; }
+        $q->select($select)->orderBy("item.{$nameCol}");
+        if ($withPenjamin) { $q->orderBy('ins.name'); }
+
+        return $q->get();
+    }
+
+    /**
      * Import tarif SEMUA penjamin dari CSV.
      * Header wajib (case-insensitive): nama, kategori, penjamin, harga_jual.
      * Item di-lookup via (nama, kategori); penjamin via name; upsert by (item_id, insurer_id).
      */
     public function importTarifCsv(string $type, string $csvContent): array
     {
-        $lines = $this->csvDataLines($csvContent);
-        if (empty($lines)) {
+        $records = \App\Support\SpreadsheetHelper::parseCsvRecords($csvContent);
+        if (empty($records)) {
             throw new \Exception('File CSV kosong.', 422);
         }
 
-        $headers = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines), ',', '"', '\\'));
-        foreach (['nama', 'kategori', 'penjamin', 'harga_jual'] as $required) {
+        $headers = array_map(fn ($h) => strtolower(trim((string) $h)), array_shift($records));
+        foreach (['nama', 'penjamin', 'harga_jual'] as $required) {
             if (! in_array($required, $headers, true)) {
                 throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
             }
         }
 
-        $model       = $this->tariffModel($type);
-        $fk          = $this->tariffFk($type);
-        $itemTable   = $this->itemTable($type);
-        $itemNameCol = $this->itemNameColumn($type);
-        $itemCatCol  = $this->itemKategoriColumn($type);
+        $model = $this->tariffModel($type);
+        $fk    = $this->tariffFk($type);
 
         $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
 
-        foreach ($lines as $idx => $line) {
+        foreach ($records as $idx => $values) {
             $lineNum = $idx + 2;
-            if (trim($line) === '') continue;
-
-            $values = str_getcsv($line, ',', '"', '\\');
             if (count($values) !== count($headers)) {
                 $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
                 $skipped++;
@@ -1805,21 +1967,19 @@ class MasterDataService
             $nama      = trim((string) ($row['nama'] ?? ''));
             $kategori  = trim((string) ($row['kategori'] ?? ''));
             $penjamin  = trim((string) ($row['penjamin'] ?? ''));
-            $hargaJual = $row['harga_jual'] ?? '';
+            $hargaJual = trim((string) ($row['harga_jual'] ?? ''));
 
-            if ($nama === '' || $kategori === '' || $penjamin === '' || $hargaJual === '') {
-                $errors[] = "Baris {$lineNum}: 'nama', 'kategori', 'penjamin', atau 'harga_jual' kosong";
+            // IOL: identitas = display name di kolom nama; kategori (iol_type) opsional.
+            $kategoriWajib = $type !== 'iol';
+            if ($nama === '' || ($kategoriWajib && $kategori === '') || $penjamin === '' || $hargaJual === '') {
+                $errors[] = "Baris {$lineNum}: 'nama'" . ($kategoriWajib ? ", 'kategori'," : '') . " 'penjamin', atau 'harga_jual' kosong";
                 $skipped++;
                 continue;
             }
 
-            $item = DB::table($itemTable)
-                ->whereRaw("LOWER({$itemNameCol}) = ?", [strtolower($nama)])
-                ->whereRaw("LOWER({$itemCatCol}) = ?", [strtolower($kategori)])
-                ->whereNull('deleted_at')
-                ->first();
+            $item = $this->resolveTarifItem($type, $nama, $kategori);
             if (! $item) {
-                $errors[] = "Baris {$lineNum}: item '{$nama}' kategori '{$kategori}' tidak ditemukan di master";
+                $errors[] = "Baris {$lineNum}: item '{$nama}'" . ($kategori !== '' ? " kategori '{$kategori}'" : '') . ' tidak ditemukan / ambigu di master';
                 $skipped++;
                 continue;
             }
@@ -1834,10 +1994,14 @@ class MasterDataService
                 continue;
             }
 
-            $existing = $model::where($fk, $item->id)->where('insurer_id', $insurer->id)->first();
-            $model::updateOrCreate(
-                [$fk => $item->id, 'insurer_id' => $insurer->id],
-                ['price' => (float) $hargaJual, 'is_active' => true]
+            // Soft-delete aware (tabel pakai SoftDeletes + unique plain (item_id, insurer_id)).
+            $existing = $model::withTrashed()->where($fk, $item->id)->where('insurer_id', $insurer->id)->first();
+            $this->upsertTarifRow(
+                $model,
+                $fk,
+                $item->id,
+                $insurer->id,
+                ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true]
             );
             if ($existing) $updated++; else $inserted++;
         }
@@ -1896,6 +2060,91 @@ class MasterDataService
     private function itemMasterPriceColumn(string $type): string
     {
         return $type === 'tindakan' ? 'base_price' : 'price';
+    }
+
+    /**
+     * Resolve item master untuk CSV tarif berdasar (nama, kategori).
+     * Mengembalikan baris DB (punya ->id) atau null bila tidak ditemukan / ambigu.
+     *
+     * IOL identitasnya (brand, model, power) → "nama" = display "Brand Model PowerD";
+     * kategori (iol_type) diabaikan. Tipe lain: cocok (nama, kategori) case-insensitive.
+     */
+    private function resolveTarifItem(string $type, string $nama, string $kategori): ?object
+    {
+        if ($type === 'iol') {
+            return $this->lookupIolItemByDisplayName($nama);
+        }
+
+        $itemTable = $this->itemTable($type);
+        $nameCol   = $this->itemNameColumn($type);
+        $catCol    = $this->itemKategoriColumn($type);
+
+        return DB::table($itemTable)
+            ->whereRaw("LOWER({$nameCol}) = ?", [mb_strtolower($nama)])
+            ->whereRaw("LOWER({$catCol}) = ?", [mb_strtolower($kategori)])
+            ->whereNull('deleted_at')
+            ->first();
+    }
+
+    /** Display name IOL untuk CSV: "Brand Model PowerD" (mis. "Alcon AcrySof IQ 21D"). */
+    private function iolTarifDisplayName(string $brand, ?string $model, $power): string
+    {
+        $p = $power !== null
+            ? rtrim(rtrim(number_format((float) $power, 2, '.', ''), '0'), '.') . 'D'
+            : '';
+        return trim(trim($brand . ' ' . (string) $model) . ' ' . $p);
+    }
+
+    /**
+     * Lookup IOL by display name "Brand Model PowerD". Return baris DB (punya ->id)
+     * atau null bila tidak ketemu / ambigu. Sejalan dgn TarifPaketService.
+     */
+    private function lookupIolItemByDisplayName(string $display): ?object
+    {
+        $needle = mb_strtolower(trim($display));
+        if (! preg_match('/^(.*?)\s+([\d.]+)d\s*$/i', $needle, $m)) {
+            return null;
+        }
+        $prefix = trim($m[1]);
+        $power  = (float) $m[2];
+
+        $rows = DB::table('iol_items')
+            ->whereRaw("LOWER(TRIM(CONCAT(brand, ' ', COALESCE(model, '')))) = ?", [$prefix])
+            ->whereRaw('ABS(power - ?) < 0.001', [$power])
+            ->whereNull('deleted_at')
+            ->limit(2)
+            ->get();
+
+        return $rows->count() === 1 ? $rows->first() : null;
+    }
+
+    /**
+     * Parse angka rupiah dari CSV yang mungkin diketik dengan format Indonesia.
+     * "1.500.000" → 1500000 ; "1.500.000,50" → 1500000.5 ; "1500,50" → 1500.5 ;
+     * "Rp 1.500.000" → 1500000 ; "1500000" → 1500000 ; "1500.5" → 1500.5 (titik desimal).
+     * Tanpa ini, (float)"1.500.000" = 1.5 → korupsi harga diam-diam.
+     */
+    private function parseDecimalId(string $raw): float
+    {
+        $s = preg_replace('/[\s]|rp/i', '', $raw);
+        if ($s === '' || $s === null) {
+            return 0.0;
+        }
+        $hasComma = str_contains($s, ',');
+        $hasDot   = str_contains($s, '.');
+
+        if ($hasComma && $hasDot) {
+            // ID: titik = ribuan, koma = desimal.
+            $s = str_replace(['.', ','], ['', '.'], $s);
+        } elseif ($hasComma) {
+            // Hanya koma → desimal ID.
+            $s = str_replace(',', '.', $s);
+        } elseif ($hasDot && preg_match('/^\d{1,3}(\.\d{3})+$/', $s)) {
+            // Hanya titik & berpola grup ribuan → buang titik. (single "1500.5" tetap desimal)
+            $s = str_replace('.', '', $s);
+        }
+
+        return is_numeric($s) ? (float) $s : 0.0;
     }
 
     // =========================================================================

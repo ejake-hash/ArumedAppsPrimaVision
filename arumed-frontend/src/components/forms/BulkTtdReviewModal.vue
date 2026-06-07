@@ -285,4 +285,20 @@ onMounted(() => loadPreview(0))
 .pin-input:focus { outline: none; border-color: var(--accent); }
 .pin-err { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
 .pin-actions { display: flex; gap: 1rem; justify-content: center; align-items: center; margin-top: 1.2rem; }
+
+/* ─── HP sempit: master-detail (list 230px | viewer) jadi tumpukan vertikal ─── */
+@media (max-width: 640px) {
+  .bk-modal { width: 96vw; height: 92vh; }
+  .bk-body { flex-direction: column; }
+  /* List jadi strip tab horizontal di atas (geser samping), bukan kolom kiri. */
+  .bk-list {
+    width: 100%; flex-shrink: 0; display: flex; gap: 6px; padding: 6px;
+    overflow-x: auto; overflow-y: hidden;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  .bk-item { min-width: 150px; border-bottom: 0; border-radius: 8px; }
+  .bk-viewer { flex: 1; min-height: 0; }
+  .bk-doc { padding: 1rem; }
+  .bk-foot { flex-wrap: wrap; gap: 0.5rem; }
+}
 </style>

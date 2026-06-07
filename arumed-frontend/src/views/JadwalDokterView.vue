@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/authStore'
-import { jadwalDokterApi } from '@/services/api'
+import { jadwalDokterApi, integrasiApi } from '@/services/api'
 import BpjsMappingModal from '@/components/jadwal-dokter/BpjsMappingModal.vue'
 
 const store = useJadwalDokterStore()
@@ -81,7 +81,7 @@ async function doCopyNextWeek() {
 // ─── Menu format (CSV / Excel) ───────────────────────────────────────────────────
 const openMenu = ref(null) // 'template' | 'export' | null
 function toggleMenu(which) { openMenu.value = openMenu.value === which ? null : which }
-function closeMenu() { openMenu.value = null }
+function closeMenu() { openMenu.value = null; poliComboOpen.value = false }
 
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -208,12 +208,19 @@ async function saveForm() {
 
     if (modalMode.value === 'edit') {
       await store.updateJadwal(form.value.id, payload)
-      toast('s', 'Jadwal berhasil diperbarui')
     } else {
       await store.createJadwal(payload)
-      toast('s', 'Jadwal berhasil ditambahkan')
+    }
+
+    // Peringatan lembut (TIDAK memblokir): jadwal BPJS dgn poli belum dipetakan →
+    // SEP belum bisa terbit. Pasien tetap bisa dijadwal & dilayani.
+    if (payload.service_type === 'BPJS' && payload.poli_code && !poliMappedFor(payload.poli_code)) {
+      toast('w', `Tersimpan. Poli ${payload.poli_code} belum terhubung BPJS — SEP belum bisa terbit sampai dipetakan (Pemetaan BPJS → Pemetaan Poli).`)
+    } else {
+      toast('s', modalMode.value === 'edit' ? 'Jadwal berhasil diperbarui' : 'Jadwal berhasil ditambahkan')
     }
     showModal.value = false
+    loadPoliMap() // poli baru mungkin perlu muncul di daftar/badge
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal menyimpan jadwal')
   } finally {
@@ -274,7 +281,7 @@ const allJadwal = computed(() => {
   const rows = []
   store.daftarDokter.forEach((emp) => {
     emp.jadwal?.forEach((j) => {
-      rows.push({ ...j, nama_dokter: emp.nama_dokter, employee_id: emp.employee_id })
+      rows.push({ ...j, nama_dokter: emp.nama_dokter, employee_id: emp.employee_id, bpjs_dpjp_code: emp.bpjs_dpjp_code })
     })
   })
   return rows.sort((a, b) => a.day_of_week - b.day_of_week || a.nama_dokter.localeCompare(b.nama_dokter))
@@ -291,6 +298,64 @@ const prefixPreview = computed(() => {
   return form.value.room ? `${code}${form.value.room}` : code
 })
 
+// ─── Combobox Kode Poli + status terhubung BPJS ─────────────────────────────────
+// Sumber: integrasiApi.poliMappingStatus() = daftar poli_code (dari jadwal) +
+// status pemetaan ke kode poli BPJS. Dipakai untuk: (a) saran kode (anti typo/
+// duplikat), (b) badge "terhubung BPJS / belum" di samping field.
+const poliMap       = ref([])      // [{ poli_code, poli_name, bpjs_poli_code, mapped }]
+const poliComboOpen = ref(false)
+
+async function loadPoliMap() {
+  try {
+    const { data } = await integrasiApi.poliMappingStatus()
+    poliMap.value = (data?.data ?? data ?? []).filter((p) => p && p.poli_code)
+  } catch { poliMap.value = [] }
+}
+
+// Saran poli (filter by kode/nama yg sedang diketik).
+const poliSuggestions = computed(() => {
+  const q = (form.value.poli_code || '').toUpperCase().trim()
+  if (!q) return poliMap.value
+  return poliMap.value.filter(
+    (p) => p.poli_code.toUpperCase().includes(q) || (p.poli_name || '').toUpperCase().includes(q),
+  )
+})
+
+function poliMappedFor(code) {
+  const c = (code || '').toUpperCase().trim()
+  return !!poliMap.value.find((p) => p.poli_code.toUpperCase() === c)?.mapped
+}
+
+// Status pemetaan BPJS untuk kode poli yang sedang dipilih (null bila kosong).
+const currentPoliStatus = computed(() => {
+  const code = (form.value.poli_code || '').toUpperCase().trim()
+  if (!code) return null
+  const found = poliMap.value.find((p) => p.poli_code.toUpperCase() === code)
+  return { mapped: !!found?.mapped, bpjsCode: found?.bpjs_poli_code ?? null }
+})
+
+function selectPoli(p) {
+  form.value.poli_code = p.poli_code
+  if (p.poli_name) form.value.poliklinik = p.poli_name // jaga pasangan kode ↔ nama konsisten
+  poliComboOpen.value = false
+}
+
+// Tab awal modal Pemetaan BPJS ('poli' | 'dpjp').
+const bpjsTab = ref('poli')
+function openBpjsMapping(tab = 'poli') {
+  poliComboOpen.value = false
+  bpjsTab.value = tab
+  showBpjsMapping.value = true
+}
+function openPoliMapping() { openBpjsMapping('poli') } // "Petakan sekarang" (poli)
+function openDpjpMapping() { openBpjsMapping('dpjp') } // "Atur kode DPJP" (dokter)
+
+// Saat modal pemetaan ditutup → segarkan status poli + jadwal (dpjp dokter) agar badge terbarui.
+async function onMappingClosed() {
+  showBpjsMapping.value = false
+  await Promise.all([loadPoliMap(), store.fetchAll()])
+}
+
 // Label minggu yang sedang aktif (untuk konteks modal)
 const activeWeekLabel = computed(() => {
   const w = store.availableWeeks.find((x) => x.week_start === store.weekStart)
@@ -301,6 +366,7 @@ onMounted(async () => {
   document.addEventListener('click', closeMenu)
   await store.fetchAvailableWeeks() // set weekStart default = minggu ini
   await store.fetchAll()
+  loadPoliMap() // daftar poli + status BPJS untuk combobox (non-blocking)
 })
 onUnmounted(() => document.removeEventListener('click', closeMenu))
 </script>
@@ -422,7 +488,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
       </button>
       <input ref="fileInput" type="file" accept=".csv,.xlsx,.xls,.ods,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden-file" @change="onFileChosen" />
 
-      <button v-if="canBpjsMapping" class="btn-soft" @click="showBpjsMapping = true" title="Pemetaan poli & DPJP ke kode BPJS + sinkron jadwal">
+      <button v-if="canBpjsMapping" class="btn-soft" @click="openBpjsMapping('poli')" title="Pemetaan poli & DPJP ke kode BPJS + sinkron jadwal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
         </svg>
@@ -469,6 +535,12 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
             <tr v-for="emp in store.daftarDokter" :key="emp.employee_id">
               <td class="col-dokter">
                 <div class="emp-name">{{ emp.nama_dokter }}</div>
+                <div v-if="canBpjsMapping" class="dpjp-status">
+                  <span v-if="emp.bpjs_dpjp_code" class="dpjp-ok" title="Kode DPJP BPJS sudah diisi">DPJP&nbsp;✓</span>
+                  <button v-else type="button" class="dpjp-warn"
+                          title="Kode DPJP BPJS belum diisi — SEP belum bisa terbit"
+                          @click="openDpjpMapping">⚠ Atur DPJP</button>
+                </div>
               </td>
               <td v-for="h in HARI" :key="h.val" class="col-cell">
                 <div v-if="getJadwalHari(emp, h.val)" class="cell-filled">
@@ -541,7 +613,12 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
               <td colspan="9" class="list-empty">Belum ada jadwal {{ store.serviceType === 'BPJS' ? 'BPJS' : 'Eksekutif' }} di minggu ini</td>
             </tr>
             <tr v-for="j in allJadwal" :key="j.id">
-              <td class="td-dokter">{{ j.nama_dokter }}</td>
+              <td class="td-dokter">
+                {{ j.nama_dokter }}
+                <button v-if="canBpjsMapping && !j.bpjs_dpjp_code" type="button" class="dpjp-warn dpjp-inline"
+                        title="Kode DPJP BPJS belum diisi — SEP belum bisa terbit"
+                        @click="openDpjpMapping">⚠ DPJP</button>
+              </td>
               <td><span :class="['svc-chip', (j.service_type || 'BPJS').toLowerCase()]">{{ j.service_type === 'EKSEKUTIF' ? 'Eksekutif' : 'BPJS' }}</span></td>
               <td><span class="hari-chip">{{ hariLabel(j.day_of_week) }}</span></td>
               <td class="td-jam">{{ j.start_time }} – {{ j.end_time }}</td>
@@ -656,10 +733,36 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
 
             <!-- Poliklinik (kode + nama) & Ruangan -->
             <div class="field-row-3">
-              <div class="field">
+              <div class="field poli-combo-field">
                 <label>Kode Poli</label>
-                <input v-model="form.poli_code" type="text" class="inp" placeholder="cth: GLA" maxlength="10"
-                       @input="form.poli_code = form.poli_code.toUpperCase()" />
+                <div class="poli-combo" @click.stop>
+                  <input v-model="form.poli_code" type="text" class="inp" placeholder="cth: GLA" maxlength="10"
+                         autocomplete="off"
+                         @focus="poliComboOpen = true"
+                         @input="form.poli_code = form.poli_code.toUpperCase(); poliComboOpen = true" />
+                  <div v-if="poliComboOpen && poliSuggestions.length" class="poli-dropdown">
+                    <button v-for="p in poliSuggestions" :key="p.poli_code" type="button"
+                            class="poli-opt" @click="selectPoli(p)">
+                      <span class="poli-opt-code">{{ p.poli_code }}</span>
+                      <span class="poli-opt-name">{{ p.poli_name || '—' }}</span>
+                      <span :class="['poli-opt-badge', p.mapped ? 'ok' : 'warn']">
+                        {{ p.mapped ? ('BPJS ' + (p.bpjs_poli_code || '✓')) : 'belum dipetakan' }}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+                <!-- Status terhubung BPJS — hanya relevan utk layanan BPJS -->
+                <div v-if="currentPoliStatus && form.service_type === 'BPJS'" class="poli-status">
+                  <span v-if="currentPoliStatus.mapped" class="poli-status-ok">
+                    ✓ Terhubung BPJS → {{ currentPoliStatus.bpjsCode }}
+                  </span>
+                  <span v-else class="poli-status-warn">
+                    ⚠ Belum terhubung BPJS
+                    <button v-if="canBpjsMapping" type="button" class="poli-map-link" @click="openPoliMapping">
+                      Petakan sekarang
+                    </button>
+                  </span>
+                </div>
               </div>
               <div class="field">
                 <label>Nama Poliklinik</label>
@@ -781,7 +884,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
     </Teleport>
 
     <!-- ── PEMETAAN BPJS (poli/DPJP + sinkron jadwal) ─────────────────── -->
-    <BpjsMappingModal v-if="showBpjsMapping" :week-start="store.weekStart" @close="showBpjsMapping = false" />
+    <BpjsMappingModal v-if="showBpjsMapping" :week-start="store.weekStart" :initial-tab="bpjsTab" @close="onMappingClosed" />
 
   </div>
 </template>
@@ -1184,6 +1287,47 @@ select.inp { cursor: pointer; }
 .prefix-note { margin-top: -2px; }
 .prefix-note strong { color: #1763d4; font-weight: 700; }
 .prefix-hint { display: block; color: #9aa; margin-top: 2px; }
+
+/* ─── COMBOBOX KODE POLI + STATUS BPJS ──────────────────────────────────────── */
+.poli-combo-field { position: relative; }
+.poli-combo { position: relative; }
+.poli-dropdown {
+  position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: 60;
+  background: #fff; border: 1px solid #dfe3da; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 220px; overflow-y: auto; padding: 4px;
+}
+.poli-opt {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border: 0; background: transparent; border-radius: 7px;
+  cursor: pointer; text-align: left; font-size: 12.5px;
+}
+.poli-opt:hover { background: #f1f6ec; }
+.poli-opt-code { font-weight: 700; color: #1a2e1a; min-width: 46px; }
+.poli-opt-name { flex: 1; color: #5a6a5a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.poli-opt-badge { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 99px; white-space: nowrap; }
+.poli-opt-badge.ok   { background: #e9f8e3; color: #2d7a1a; }
+.poli-opt-badge.warn { background: #fff3e0; color: #b26a00; }
+.poli-status { margin-top: 4px; font-size: 11.5px; font-weight: 600; }
+.poli-status-ok   { color: #2d7a1a; }
+.poli-status-warn { color: #b26a00; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.poli-map-link {
+  border: 0; background: #1763d4; color: #fff; font-size: 10.5px; font-weight: 700;
+  padding: 2px 9px; border-radius: 99px; cursor: pointer;
+}
+.poli-map-link:hover { background: #1250b0; }
+
+/* ─── BADGE STATUS KODE DPJP per dokter ─────────────────────────────────────── */
+.dpjp-status { margin-top: 3px; }
+.dpjp-ok {
+  display: inline-block; font-size: 10px; font-weight: 700; color: #2d7a1a;
+  background: #e9f8e3; padding: 1px 7px; border-radius: 99px;
+}
+.dpjp-warn {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700;
+  color: #b26a00; background: #fff3e0; border: 0; padding: 2px 8px; border-radius: 99px; cursor: pointer;
+}
+.dpjp-warn:hover { background: #ffe7c2; }
+.dpjp-inline { margin-left: 6px; vertical-align: middle; }
 
 /* ─── MODAL HASIL IMPORT ────────────────────────────────────────────────────*/
 .import-summary { display: flex; gap: .75rem; }

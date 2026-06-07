@@ -6,15 +6,14 @@ import { useAuthStore } from '@/stores/authStore'
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can('ruang_tindakan.write'))
 
+// ─── Tab aktif ──────────────────────────────────────────────────────────────────
+const activeTab = ref('antrean')   // 'antrean' | 'terjadwal'
+
 // ─── State papan ──────────────────────────────────────────────────────────────
 const board = ref([])
 const loading = ref(false)
 const selId = ref(null)
 const sel = computed(() => board.value.find(p => p.id === selId.value) || null)
-
-// ─── Master procedure laser (dropdown) ────────────────────────────────────────
-const procedures = ref([])
-const procSearch = ref('')
 
 // ─── Form laporan laser ───────────────────────────────────────────────────────
 const EYE_OPTS = [
@@ -29,7 +28,6 @@ const DISPOSITIONS = [
 ]
 
 const form = ref(blankForm())
-const selectedProcedures = ref([]) // [{id, code, name}]
 
 function blankForm() {
   return {
@@ -71,20 +69,94 @@ async function loadBoard() {
   }
 }
 
-async function loadProcedures() {
-  try {
-    const res = await ruangTindakanApi.procedures(procSearch.value || undefined)
-    procedures.value = res.data?.data || []
-  } catch { /* non-blok */ }
-}
-
 function selectPatient(p) {
   selId.value = p.id
   // Hydrate form dari laporan tersimpan bila ada.
   const lap = p.record?.laporan
   form.value = lap ? { ...blankForm(), ...lap } : blankForm()
-  selectedProcedures.value = []
+  resepItems.value = []
+  obatSearch.value = ''
+  obatOptions.value = []
 }
+
+// ─── Resep obat pulang (→ Farmasi setelah Kasir) ──────────────────────────────
+const obatSearch = ref('')
+const obatOptions = ref([])
+const resepItems = ref([])   // [{ medication_id, name, quantity, dose, frequency, duration_days }]
+let obatTimer = null
+
+function searchObat() {
+  clearTimeout(obatTimer)
+  obatTimer = setTimeout(async () => {
+    try {
+      const res = await ruangTindakanApi.daftarObat(obatSearch.value || undefined)
+      obatOptions.value = res.data?.data || []
+    } catch { obatOptions.value = [] }
+  }, 300)
+}
+function addResepObat(med) {
+  if (!med) return
+  if (resepItems.value.some(x => x.medication_id === med.id)) { toast('e', 'Obat sudah ada di resep.'); return }
+  resepItems.value.push({ medication_id: med.id, name: med.name, quantity: 1, dose: '', frequency: '', duration_days: null })
+  obatSearch.value = ''
+  obatOptions.value = []
+}
+function removeResepObat(i) { resepItems.value.splice(i, 1) }
+
+// ─── Tab "Tindakan Terjadwal" (weekpicker) ────────────────────────────────────
+const jadwal = ref([])
+const jadwalLoading = ref(false)
+const weekStart = ref(null)   // null → mendatang; else Senin minggu terpilih (YYYY-MM-DD)
+
+function mondayOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  const dow = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - dow)
+  return d.toISOString().slice(0, 10)
+}
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+const weekEnd = computed(() => weekStart.value ? addDays(weekStart.value, 6) : null)
+const weekLabel = computed(() => {
+  if (!weekStart.value) return 'Semua mendatang'
+  const opt = { day: '2-digit', month: 'short' }
+  const a = new Date(weekStart.value + 'T00:00:00').toLocaleDateString('id-ID', opt)
+  const b = new Date(weekEnd.value + 'T00:00:00').toLocaleDateString('id-ID', { ...opt, year: 'numeric' })
+  return `${a} – ${b}`
+})
+function onPickWeek(e) {
+  weekStart.value = e.target.value ? mondayOf(e.target.value) : null
+  loadJadwal()
+}
+function shiftWeek(n) {
+  const base = weekStart.value ?? mondayOf(new Date().toISOString().slice(0, 10))
+  weekStart.value = addDays(base, n * 7)
+  loadJadwal()
+}
+function clearWeek() { weekStart.value = null; loadJadwal() }
+
+async function loadJadwal() {
+  jadwalLoading.value = true
+  try {
+    const res = await ruangTindakanApi.jadwal(weekStart.value || undefined, weekEnd.value || undefined)
+    jadwal.value = res.data?.data || []
+  } catch (e) {
+    toast('e', e?.response?.data?.message || 'Gagal memuat jadwal.')
+  } finally {
+    jadwalLoading.value = false
+  }
+}
+
+function switchTab(tab) {
+  activeTab.value = tab
+  if (tab === 'terjadwal' && !jadwal.value.length) loadJadwal()
+}
+
+const statusLabel = (s) => ({ SCHEDULED: 'Terjadwal', IN_PROGRESS: 'Berlangsung', DONE: 'Selesai', CANCELLED: 'Batal' }[s] || s || '—')
+const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short' }) : '—'
 
 // ─── Status helper ────────────────────────────────────────────────────────────
 function schedStatus(p) { return p.schedule?.status || 'SCHEDULED' }
@@ -104,17 +176,24 @@ async function mulai(p) {
   catch (e) { toast('e', e?.response?.data?.message || 'Gagal memulai.') }
 }
 
-function toggleProc(proc) {
-  const i = selectedProcedures.value.findIndex(x => x.id === proc.id)
-  if (i >= 0) selectedProcedures.value.splice(i, 1)
-  else selectedProcedures.value.push({ id: proc.id, code: proc.code, name: proc.name })
-}
-function isProcSelected(id) { return selectedProcedures.value.some(x => x.id === id) }
-
 async function selesai(p) {
   if (!p.schedule?.id) return
   if (!form.value.laser_type) return toast('e', 'Pilih jenis laser dulu.')
+  if (resepItems.value.some(it => !it.quantity || it.quantity < 1)) return toast('e', 'Jumlah obat resep minimal 1.')
   try {
+    // Simpan resep obat pulang DULU (bila ada) → Prescription SUBMITTED.
+    // Otomatis muncul di Farmasi setelah pasien melewati Kasir.
+    if (resepItems.value.length) {
+      await ruangTindakanApi.resep(p.schedule.id, {
+        items: resepItems.value.map(it => ({
+          medication_id: it.medication_id,
+          quantity: Number(it.quantity) || 1,
+          dose: it.dose || null,
+          frequency: it.frequency || null,
+          duration_days: it.duration_days ? Number(it.duration_days) : null,
+        })),
+      })
+    }
     await ruangTindakanApi.selesai(p.schedule.id, {
       laporan: {
         eye: form.value.eye,
@@ -125,13 +204,14 @@ async function selesai(p) {
         findings: form.value.findings || null,
         notes: form.value.notes || null,
       },
-      procedure_ids: selectedProcedures.value.map(x => x.id),
       post_op_disposition: form.value.post_op_disposition,
       followup_date: form.value.followup_date || null,
       complication: form.value.complication || null,
       notes: form.value.notes || null,
     })
-    toast('s', 'Tindakan selesai → pasien diteruskan ke Kasir.')
+    toast('s', resepItems.value.length
+      ? 'Tindakan selesai → Kasir, lalu resep ke Farmasi.'
+      : 'Tindakan selesai → pasien diteruskan ke Kasir.')
     selId.value = null
     await loadBoard()
   } catch (e) {
@@ -142,8 +222,9 @@ async function selesai(p) {
 // ─── Polling ──────────────────────────────────────────────────────────────────
 let pollTimer = null
 onMounted(() => {
-  loadBoard(); loadProcedures()
-  pollTimer = setInterval(loadBoard, 15000)
+  loadBoard()
+  // Polling hanya untuk papan antrean hari ini (tab terjadwal di-refresh manual).
+  pollTimer = setInterval(() => { if (activeTab.value === 'antrean') loadBoard() }, 15000)
 })
 onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 </script>
@@ -155,12 +236,26 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
         <h1>Ruang Tindakan</h1>
         <p class="sub">Tindakan laser (YAG &amp; Retina/PRP) — pasien terjadwal hari ini.</p>
       </div>
-      <button class="btn-soft" @click="loadBoard" :disabled="loading">
+      <button v-if="activeTab === 'antrean'" class="btn-soft" @click="loadBoard" :disabled="loading">
         {{ loading ? 'Memuat…' : 'Muat ulang' }}
+      </button>
+      <button v-else class="btn-soft" @click="loadJadwal" :disabled="jadwalLoading">
+        {{ jadwalLoading ? 'Memuat…' : 'Muat ulang' }}
       </button>
     </header>
 
-    <div class="rt-body">
+    <!-- Tab -->
+    <div class="rt-tabs">
+      <button class="rt-tab" :class="{ active: activeTab === 'antrean' }" @click="switchTab('antrean')">
+        Antrean Hari Ini <span class="tab-cnt">{{ board.length }}</span>
+      </button>
+      <button class="rt-tab" :class="{ active: activeTab === 'terjadwal' }" @click="switchTab('terjadwal')">
+        Tindakan Terjadwal
+      </button>
+    </div>
+
+    <!-- TAB 1: Antrean hari ini -->
+    <div v-show="activeTab === 'antrean'" class="rt-body">
       <!-- Papan antrean -->
       <aside class="rt-board">
         <div class="board-title">Antrean <span class="cnt">{{ board.length }}</span></div>
@@ -258,22 +353,37 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
               <input v-model="form.complication" class="inp" placeholder="Kosongkan bila tidak ada" />
             </div>
 
-            <!-- Tindakan ditagih (procedure → visit_services) -->
+            <!-- Tindakan tertagih dari PAKET yang dipilih dokter di planning (otomatis). -->
+            <div class="bill-note">
+              Tindakan yang ditagih mengikuti <b>paket</b> yang dipilih dokter saat planning
+              <template v-if="sel.schedule?.package?.name"> — <b>{{ sel.schedule.package.name }}</b></template>.
+              Tagihan diteruskan otomatis ke Kasir saat tindakan selesai.
+            </div>
+
+            <!-- Resep obat pulang → Farmasi (setelah Kasir) -->
             <div class="fg">
-              <label>Tindakan Ditagih (untuk Kasir)</label>
-              <div class="proc-search">
-                <input v-model="procSearch" class="inp" placeholder="Cari tindakan laser…" @input="loadProcedures" />
+              <label>Resep Obat Pulang <span class="opt">(opsional → Farmasi setelah Kasir)</span></label>
+              <div class="obat-search">
+                <input v-model="obatSearch" class="inp" placeholder="Cari obat (nama/kode)…" @input="searchObat" />
+                <div v-if="obatOptions.length" class="obat-drop">
+                  <button v-for="o in obatOptions" :key="o.id" type="button" class="obat-opt" @click="addResepObat(o)">
+                    {{ o.code ? o.code + ' · ' : '' }}{{ o.name }}<span v-if="o.unit" class="u">/{{ o.unit }}</span>
+                  </button>
+                </div>
               </div>
-              <div class="proc-list">
-                <label v-for="pr in procedures" :key="pr.id" class="proc-item">
-                  <input type="checkbox" :checked="isProcSelected(pr.id)" @change="toggleProc(pr)" />
-                  <span>{{ pr.code ? pr.code + ' · ' : '' }}{{ pr.name }}</span>
-                </label>
-                <div v-if="!procedures.length" class="proc-empty">Tidak ada tindakan ditemukan.</div>
-              </div>
-              <div v-if="selectedProcedures.length" class="proc-chips">
-                <span v-for="x in selectedProcedures" :key="x.id" class="chip">{{ x.name }}</span>
-              </div>
+              <table v-if="resepItems.length" class="resep-tbl">
+                <thead><tr><th>Obat</th><th>Jml</th><th>Dosis</th><th>Frekuensi</th><th>Hari</th><th></th></tr></thead>
+                <tbody>
+                  <tr v-for="(it, i) in resepItems" :key="it.medication_id">
+                    <td class="nm">{{ it.name }}</td>
+                    <td><input v-model.number="it.quantity" type="number" min="1" class="inp xs" /></td>
+                    <td><input v-model="it.dose" class="inp xs" placeholder="1 tetes" /></td>
+                    <td><input v-model="it.frequency" class="inp xs" placeholder="3×/hari" /></td>
+                    <td><input v-model.number="it.duration_days" type="number" min="1" class="inp xs" /></td>
+                    <td><button type="button" class="rm-btn" @click="removeResepObat(i)">✕</button></td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
             <div class="g2">
@@ -295,6 +405,51 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
           </div>
         </template>
       </section>
+    </div>
+
+    <!-- TAB 2: Tindakan terjadwal (per minggu) -->
+    <div v-show="activeTab === 'terjadwal'" class="rt-jadwal">
+      <div class="wk-bar">
+        <div class="wk-nav">
+          <button class="btn-soft sm" @click="shiftWeek(-1)">‹ Minggu lalu</button>
+          <span class="wk-label">{{ weekLabel }}</span>
+          <button class="btn-soft sm" @click="shiftWeek(1)">Minggu depan ›</button>
+        </div>
+        <div class="wk-actions">
+          <input type="date" class="inp sm" :value="weekStart || ''" @change="onPickWeek" title="Pilih tanggal → snap ke minggunya" />
+          <button v-if="weekStart" class="btn-soft sm" @click="clearWeek">Semua mendatang</button>
+        </div>
+      </div>
+
+      <div class="jd-wrap">
+        <div v-if="jadwalLoading" class="empty">Memuat jadwal…</div>
+        <div v-else-if="!jadwal.length" class="empty">
+          Tidak ada tindakan terjadwal {{ weekStart ? 'pada minggu ini' : 'mendatang' }}.
+        </div>
+        <table v-else class="jd-table">
+          <thead>
+            <tr>
+              <th>Tanggal</th><th>Jam</th><th>Pasien</th><th>No. RM</th>
+              <th>Diagnosa</th><th>Paket</th><th>Ruang</th><th>Operator</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="j in jadwal" :key="j.schedule_id">
+              <td>{{ fmtDate(j.scheduled_date) }}</td>
+              <td>{{ j.scheduled_time ? String(j.scheduled_time).slice(0,5) : '—' }}</td>
+              <td class="nm">{{ j.patient?.name || '—' }}
+                <span class="sub">{{ j.patient?.gender }}{{ j.patient?.age != null ? ' · ' + j.patient.age + ' th' : '' }}</span>
+              </td>
+              <td>{{ j.patient?.no_rm || '—' }}</td>
+              <td>{{ j.diagnosa || '—' }}</td>
+              <td>{{ j.package || '—' }}</td>
+              <td>{{ j.room || '—' }}</td>
+              <td>{{ j.operator || '—' }}</td>
+              <td><span class="jd-st" :class="'st-' + (j.status || '').toLowerCase()">{{ statusLabel(j.status) }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <transition name="toast">
@@ -360,13 +515,52 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .inp { border: 1px solid #cbd5e1; border-radius: 8px; padding: 7px 10px; font-size: 0.85rem; color: #1e293b; font-family: inherit; }
 .inp:focus { outline: none; border-color: #1FAAE0; box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
 
-.proc-list { border: 1px solid #e2e8f0; border-radius: 8px; max-height: 140px; overflow: auto; }
-.proc-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 0.82rem; color: #334155; cursor: pointer; border-bottom: 1px solid #f8fafc; }
-.proc-item:hover { background: #f8fafc; }
-.proc-item input { accent-color: #1FAAE0; }
-.proc-empty { padding: 10px; color: #94a3b8; font-size: 0.8rem; text-align: center; }
-.proc-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.chip { background: #e0f2fe; color: #0369a1; font-size: 0.74rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+.bill-note { background: #f0f9ff; border: 1px solid #bae6fd; color: #0369a1; border-radius: 9px; padding: 9px 12px; font-size: 0.8rem; margin-bottom: 11px; line-height: 1.45; }
+.opt { font-weight: 400; color: #94a3b8; font-size: 0.74rem; }
+
+/* Resep obat pulang */
+.obat-search { position: relative; }
+.obat-drop { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 2px); background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 200px; overflow: auto; box-shadow: 0 6px 18px rgba(15,23,42,.12); }
+.obat-opt { display: block; width: 100%; text-align: left; border: none; background: none; padding: 7px 11px; font-size: 0.82rem; color: #334155; cursor: pointer; border-bottom: 1px solid #f1f5f9; }
+.obat-opt:hover { background: #f0f9ff; }
+.obat-opt .u { color: #94a3b8; }
+.resep-tbl { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.8rem; }
+.resep-tbl th { text-align: left; padding: 5px 7px; color: #64748b; font-weight: 600; font-size: 0.72rem; border-bottom: 1px solid #e2e8f0; }
+.resep-tbl td { padding: 4px 7px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.resep-tbl .nm { font-weight: 600; color: #1e293b; }
+.inp.xs { padding: 5px 7px; font-size: 0.8rem; width: 100%; box-sizing: border-box; }
+.resep-tbl td:nth-child(2) { width: 64px; }
+.resep-tbl td:nth-child(5) { width: 64px; }
+.rm-btn { border: none; background: none; color: #dc2626; cursor: pointer; font-size: 0.85rem; padding: 2px 6px; }
+.rm-btn:hover { color: #b91c1c; }
+
+/* Tabs */
+.rt-tabs { display: flex; gap: 4px; border-bottom: 1px solid #e2e8f0; margin-bottom: 16px; }
+.rt-tab { border: none; background: none; padding: 9px 16px; font-size: 0.88rem; font-weight: 600; color: #64748b; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; align-items: center; gap: 7px; }
+.rt-tab:hover { color: #0E3A66; }
+.rt-tab.active { color: #0E3A66; border-bottom-color: #1FAAE0; }
+.tab-cnt { background: #1FAAE0; color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 0.7rem; }
+
+/* Weekpicker bar */
+.rt-jadwal { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 18px; background: #fff; }
+.wk-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.wk-nav { display: flex; align-items: center; gap: 10px; }
+.wk-label { font-weight: 700; color: #0E3A66; font-size: 0.9rem; min-width: 150px; text-align: center; }
+.wk-actions { display: flex; align-items: center; gap: 8px; }
+.btn-soft.sm, .inp.sm { padding: 6px 11px; font-size: 0.8rem; }
+
+/* Jadwal table */
+.jd-wrap { overflow-x: auto; }
+.jd-table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+.jd-table th { text-align: left; padding: 8px 10px; color: #64748b; font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: .02em; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+.jd-table td { padding: 9px 10px; border-bottom: 1px solid #f1f5f9; color: #1e293b; vertical-align: top; }
+.jd-table .nm { font-weight: 600; }
+.jd-table .nm .sub { display: block; font-weight: 400; color: #94a3b8; font-size: 0.74rem; margin-top: 1px; }
+.jd-st { font-size: 0.7rem; font-weight: 700; padding: 2px 9px; border-radius: 999px; background: #f1f5f9; color: #475569; white-space: nowrap; }
+.jd-st.st-scheduled { background: #e0f2fe; color: #0369a1; }
+.jd-st.st-in_progress { background: #fef3c7; color: #b45309; }
+.jd-st.st-done { background: #dcfce7; color: #15803d; }
+.jd-st.st-cancelled { background: #fee2e2; color: #b91c1c; }
 
 /* Toast */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 11px 20px; border-radius: 9px; color: #fff; font-size: 0.88rem; font-weight: 600; box-shadow: 0 8px 24px rgba(15,23,42,.2); z-index: 100; }

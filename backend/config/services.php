@@ -35,4 +35,11 @@ return [
         ],
     ],
 
+    // Token statis untuk bridge/watcher alat penunjang (Orthanc/feeder/watcher) yang
+    // memanggil endpoint mesin /integrasi/penunjang/* (worklist + ingest). Bukan login
+    // manusia. Diverifikasi VerifyServiceToken (hash_equals).
+    'penunjang_bridge' => [
+        'token' => env('PENUNJANG_BRIDGE_TOKEN'),
+    ],
+
 ];

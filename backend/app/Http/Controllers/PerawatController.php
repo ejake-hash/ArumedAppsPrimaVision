@@ -70,6 +70,36 @@ class PerawatController extends Controller
     }
 
     /**
+     * PUT /perawat/antrian/{queueId}/dahulukan
+     * Dahulukan pasien (mis. jadwal dokter hampir habis) → naik ke atas antrean TRIASE.
+     */
+    public function dahulukanAntrian(string $id): JsonResponse
+    {
+        try {
+            $queue = $this->service->dahulukanAntrian($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($queue, 'Pasien didahulukan — naik ke atas antrean');
+    }
+
+    /**
+     * PUT /perawat/antrian/{queueId}/skip
+     * Lewati Triase (pasien tidak perlu triase) → asesmen di-skip, antrean lanjut.
+     */
+    public function skipTriase(string $id): JsonResponse
+    {
+        try {
+            $result = $this->service->skipTriase($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Triase dilewati — pasien lanjut ke antrean berikutnya');
+    }
+
+    /**
      * POST /perawat/antrian/{queueId}/kirim-ke-bedah
      * PREOP_BEDAH: setelah TR+REF finalize, kirim pasien ke antrian BEDAH (skip DOKTER).
      */

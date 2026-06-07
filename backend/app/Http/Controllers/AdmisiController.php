@@ -90,6 +90,7 @@ class AdmisiController extends Controller
             'gender'       => 'required|in:L,P',
             'date_of_birth' => 'required|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',
             'bpjs_number'  => 'nullable|string|max:20|unique:patients,bpjs_number',
@@ -169,6 +170,12 @@ class AdmisiController extends Controller
         return $this->ok($this->service->getJadwalBedahAktif($id));
     }
 
+    /** GET /admisi/pasien/{id}/kontrol-gratis — hak konsultasi kontrol gratis pasca-bedah aktif. */
+    public function kontrolGratis(string $id): JsonResponse
+    {
+        return $this->ok($this->service->getFollowupEntitlements($id));
+    }
+
     public function updatePasien(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
@@ -178,6 +185,7 @@ class AdmisiController extends Controller
             'gender'       => 'sometimes|in:L,P',
             'date_of_birth' => 'sometimes|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'      => 'nullable|string|max:100',
             'nama_kab_kota' => 'nullable|string|max:100',
@@ -212,6 +220,7 @@ class AdmisiController extends Controller
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',
             'bpjs_number'  => 'nullable|string|max:20',
@@ -243,11 +252,13 @@ class AdmisiController extends Controller
             'member_name'         => 'nullable|string|max:255',
             'member_card_number'  => 'nullable|string|max:255',
 
-            // COB (Coordination of Benefits) — penjamin kedua, selalu tipe ASURANSI
+            // COB (Coordination of Benefits) — penjamin kedua menanggung selisih.
+            // Kasus utama: penjamin-1 BPJS (INA-CBG) + penjamin-2 Asuransi/Perusahaan (selisih).
+            // Tetap dukung Asuransi/Perusahaan sbg penjamin-1 (COB asuransi murni).
             'cob'                      => 'nullable|array',
-            'cob.penjamin1_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
+            'cob.penjamin1_type'       => 'required_with:cob|in:BPJS,ASURANSI,PERUSAHAAN',
             'cob.penjamin1_insurer_id' => 'nullable|uuid|exists:insurers,id',
-            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI',
+            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
             'cob.penjamin2_insurer_id' => 'required_with:cob|uuid|exists:insurers,id|different:cob.penjamin1_insurer_id',
             'cob.notes'                => 'nullable|string|max:500',
 
@@ -368,6 +379,7 @@ class AdmisiController extends Controller
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',
             'bpjs_number'  => 'nullable|string|max:20',
@@ -401,11 +413,13 @@ class AdmisiController extends Controller
             'member_name'         => 'nullable|string|max:255',
             'member_card_number'  => 'nullable|string|max:255',
 
-            // COB (Coordination of Benefits) — penjamin kedua, selalu tipe ASURANSI
+            // COB (Coordination of Benefits) — penjamin kedua menanggung selisih.
+            // Kasus utama: penjamin-1 BPJS (INA-CBG) + penjamin-2 Asuransi/Perusahaan (selisih).
+            // Tetap dukung Asuransi/Perusahaan sbg penjamin-1 (COB asuransi murni).
             'cob'                      => 'nullable|array',
-            'cob.penjamin1_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
+            'cob.penjamin1_type'       => 'required_with:cob|in:BPJS,ASURANSI,PERUSAHAAN',
             'cob.penjamin1_insurer_id' => 'nullable|uuid|exists:insurers,id',
-            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI',
+            'cob.penjamin2_type'       => 'required_with:cob|in:ASURANSI,PERUSAHAAN',
             'cob.penjamin2_insurer_id' => 'required_with:cob|uuid|exists:insurers,id|different:cob.penjamin1_insurer_id',
             'cob.notes'                => 'nullable|string|max:500',
         ]);

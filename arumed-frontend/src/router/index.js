@@ -134,7 +134,31 @@ import { useAuthStore } from '@/stores/auth'
 // Route yang tidak perlu login (public display screens + login itu sendiri)
 const publicRoutes = ['login', 'antrean-tv', 'anjungan']
 
+// Rute yang tampil "fluid"/responsif (mengalir mengikuti lebar layar). Hanya
+// Login & TTD Dokumen yang perlu jalan nyaman di HP/tablet; halaman kerja lain
+// SELALU desktop penuh (scroll horizontal bila jendela sempit). Lihat base.css
+// (kelas `app-fluid` pada <html>).
+const fluidRoutes = ['login', 'ttd-dokumen']
+
+// Terapkan mode tata letak per-rute: pasang/lepas kelas `app-fluid` di <html>
+// dan setel meta viewport. Browser desktop mengabaikan meta viewport, jadi
+// "desktop penuh" sebenarnya ditegakkan CSS (body min-width 1280); viewport=1280
+// hanya membuat HP menampilkan layout desktop yang di-zoom-out (perilaku lama).
+function applyLayoutMode(routeName) {
+  const fluid = fluidRoutes.includes(routeName)
+  document.documentElement.classList.toggle('app-fluid', fluid)
+  const vp = document.querySelector('meta[name="viewport"]')
+  if (vp) {
+    vp.setAttribute(
+      'content',
+      fluid ? 'width=device-width, initial-scale=1.0' : 'width=1280',
+    )
+  }
+}
+
 router.beforeEach((to) => {
+  applyLayoutMode(to.name)
+
   const auth = useAuthStore()
 
   // 1. Unauthenticated → login

@@ -532,16 +532,42 @@ class DokterController extends Controller
         return $this->ok($this->service->getHasilPenunjang($visitId));
     }
 
-    /** GET /dokter/kunjungan/{visitId}/penunjang-billing — preview tagihan penunjang COMPLETED + harga per penjamin */
-    public function penunjangBilling(string $visitId): JsonResponse
-    {
-        return $this->ok($this->service->getPenunjangBilling($visitId));
-    }
-
     /** GET /dokter/kunjungan/{visitId}/iol-rekomendasi */
     public function showIolRekomendasi(string $visitId): JsonResponse
     {
         return $this->ok($this->service->getIolRekomendasi($visitId));
+    }
+
+    /** GET /dokter/kunjungan/{visitId}/biometri-iol — biometri + tabel IOL + master + keputusan */
+    public function showBiometriIol(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getBiometriIol($visitId));
+    }
+
+    /** POST /dokter/kunjungan/{visitId}/keputusan-iol — simpan keputusan IOL dokter (per mata) */
+    public function decideIol(string $visitId, Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'eye_side'             => 'required|in:OD,OS',
+            'iol_item_id'          => 'nullable|uuid|exists:iol_items,id',
+            'diagnostic_result_id' => 'nullable|uuid',
+            'recommended_power'    => 'nullable|numeric|between:-40,60',
+            'formula'              => 'nullable|string|max:30',
+            'a_constant'           => 'nullable|numeric|between:90,130',
+            'target_refraction'    => 'nullable|numeric|between:-20,20',
+            'predicted_refraction' => 'nullable|numeric|between:-20,20',
+            'iol_type'             => 'nullable|string|max:20',
+            'brand'                => 'nullable|string|max:255',
+            'notes'                => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $rec = $this->service->decideIol($visitId, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($rec, 'Keputusan IOL tersimpan');
     }
 
     // =========================================================================

@@ -27,6 +27,7 @@ class Patient extends Model
         'tempat_lahir',
         'pekerjaan',
         'phone',
+        'email',
         'address',
         'province',
         'nama_kab_kota',
@@ -67,5 +68,11 @@ class Patient extends Model
     public function patientDocuments(): HasMany
     {
         return $this->hasMany(PatientDocument::class);
+    }
+
+    /** Berkas identitas (KTP — foto/PDF) milik pasien, disk privat. */
+    public function identityDocuments(): HasMany
+    {
+        return $this->hasMany(PatientIdentityDocument::class);
     }
 }

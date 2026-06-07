@@ -41,7 +41,7 @@ function showToast(t, msg) {
 
 function emptyForm() {
   return {
-    name: '', package_type: 'BEDAH', category: '',
+    name: '', package_type: 'BEDAH', category: '', surgery_type: '',
     description: '', keterangan: '',
     price: 0,
     is_active: true,
@@ -52,6 +52,7 @@ const columns = [
   { key: 'name',             label: 'Nama Paket' },
   { key: 'package_type',     label: 'Jenis',       width: '110px' },
   { key: 'category',         label: 'Kategori',    width: '140px' },
+  { key: 'surgery_type',     label: 'Jenis Bedah', width: '130px' },
   { key: 'items_count',      label: 'Items',       width: '70px', align: 'right' },
   { key: 'total_base_price', label: 'Base Total',  width: '140px', align: 'right' },
   { key: 'tariffs_count',    label: 'Tarif Jual',  width: '90px', align: 'right' },
@@ -92,6 +93,7 @@ function openEdit(row) {
       name: row.name ?? '',
       package_type: row.package_type ?? 'BEDAH',
       category: row.category ?? '',
+      surgery_type: row.surgery_type ?? '',
       description: row.description ?? '',
       keterangan: row.keterangan ?? '',
       price: row.price ?? 0,
@@ -143,6 +145,13 @@ const fields = [
   { key: 'name',               label: 'Nama Paket',     type: 'text',     required: true, cols: 2, placeholder: 'mis. Paket Phaco + IOL Monofocal' },
   { key: 'package_type',       label: 'Jenis Paket',    type: 'select',   cols: 1, options: [{ value: 'BEDAH', label: 'Bedah' }, { value: 'PEMERIKSAAN', label: 'Pemeriksaan' }], hint: 'Pemeriksaan: poliklinik, komponen tindakan saja' },
   { key: 'category',           label: 'Kategori',       type: 'text',     cols: 1, placeholder: 'mis. SBL / Glaukoma / Refraktif' },
+  { key: 'surgery_type',       label: 'Jenis Bedah',    type: 'select',   cols: 1, options: [
+      { value: '', label: '— pilih / auto dari nama —' },
+      { value: 'KATARAK', label: 'Katarak' },
+      { value: 'VITREORETINA', label: 'Vitreoretina' },
+      { value: 'GLAUKOMA', label: 'Glaukoma' },
+      { value: 'LAINNYA', label: 'Lainnya' },
+    ], hint: 'Penentu form operasi resmi (Vitreoretina → RM 10.1). Kosongkan = auto dari nama paket.' },
   { key: 'price',              label: 'Harga Acuan (Rp)', type: 'number', min: 0, cols: 1, hint: 'Diabaikan jika ada tarif per penjamin' },
   { key: 'description',        label: 'Deskripsi',      type: 'textarea', cols: 2, rows: 2 },
   { key: 'keterangan',         label: 'Keterangan',     type: 'text',     cols: 2 },

@@ -28,14 +28,24 @@ import BulkTtdReviewModal from '@/components/forms/BulkTtdReviewModal.vue'
 const auth = useAuthStore()
 const isAnestesi = computed(() => auth.roleName === 'dokter_anestesi')
 
+// Tab aktif: 'queue' (antrian belum-TTD) | 'signed' (sudah-TTD hari ini).
+const activeTab = ref('queue')
+
 const rows    = ref([])
 const loading = ref(false)
 const error   = ref('')
 
-// Pagination server-side
+// Pagination server-side (tab Antrian)
 const perPage = ref(10)
 const page    = ref(1)
 const meta    = ref({ total: 0, last_page: 1, current_page: 1 })
+
+// Tab "Ditandatangani hari ini" — state terpisah (rows/pagination sendiri).
+const signedRows    = ref([])
+const signedLoading = ref(false)
+const signedError   = ref('')
+const signedPage    = ref(1)
+const signedMeta    = ref({ total: 0, last_page: 1, current_page: 1 })
 
 // Filter server-side
 const search       = ref('')
@@ -64,7 +74,8 @@ const pinBusy      = ref(false)
 
 // Bulk review modal
 const bulkOpen = ref(false)
-const ttdCount = ref(0)
+const ttdCount = ref(0)          // total dokumen menunggu TTD (kartu + badge)
+const signedTodayCount = ref(0)  // total ditandatangani hari ini (kartu)
 
 // RENDERED + PENDING_SIGNATURE → satu label "Menunggu TTD". DRAFT terpisah
 // sebagai sinyal isi belum final.
@@ -82,16 +93,22 @@ function patientName(r) { return r.patient?.name ?? '—' }
 function patientRm(r)   { return r.patient?.no_rm ?? null }
 function patientGender(r) { return r.patient?.gender ?? null }
 
-const totalPages = computed(() => Math.max(1, meta.value.last_page ?? 1))
-const total      = computed(() => meta.value.total ?? 0)
-const rangeStart = computed(() => (total.value === 0 ? 0 : (page.value - 1) * perPage.value + 1))
-const rangeEnd   = computed(() => Math.min(page.value * perPage.value, total.value))
-const hasActiveFilter = computed(() => search.value.trim() || statusFilter.value !== 'ALL')
+// Pagination tab-aware: tab Antrian pakai meta/page, tab Signed pakai signedMeta/signedPage.
+const isSignedTab = computed(() => activeTab.value === 'signed')
+const curMeta = computed(() => (isSignedTab.value ? signedMeta.value : meta.value))
+const curPage = computed(() => (isSignedTab.value ? signedPage.value : page.value))
+const totalPages = computed(() => Math.max(1, curMeta.value.last_page ?? 1))
+const total      = computed(() => curMeta.value.total ?? 0)
+const rangeStart = computed(() => (total.value === 0 ? 0 : (curPage.value - 1) * perPage.value + 1))
+const rangeEnd   = computed(() => Math.min(curPage.value * perPage.value, total.value))
+const hasActiveFilter = computed(() =>
+  search.value.trim() || (!isSignedTab.value && statusFilter.value !== 'ALL'),
+)
 
 // Halaman yang ditampilkan di pager (jendela ringkas di sekitar halaman aktif).
 const pageWindow = computed(() => {
   const last = totalPages.value
-  const cur = page.value
+  const cur = curPage.value
   const span = 2
   let from = Math.max(1, cur - span)
   let to = Math.min(last, cur + span)
@@ -128,17 +145,31 @@ const selectedCount = computed(() => selectedMap.value.size)
 const selectedDocs = computed(() => Array.from(selectedMap.value.values()))
 
 // ── Filter & pagination control ──────────────────────────────────────
-function resetPage() { page.value = 1 }
+// Loader & page-ref aktif menyesuaikan tab — satu set kontrol pager melayani keduanya.
+function loadActive() { return isSignedTab.value ? loadSigned() : load() }
+function setPage(n) { if (isSignedTab.value) signedPage.value = n; else page.value = n }
+function resetPage() { setPage(1) }
 function clearFilters() {
   search.value = ''
   statusFilter.value = 'ALL'
   resetPage()
-  load()
+  loadActive()
 }
-function goPrev() { if (page.value > 1) { page.value--; load() } }
-function goNext() { if (page.value < totalPages.value) { page.value++; load() } }
-function goPage(n) { if (n >= 1 && n <= totalPages.value) { page.value = n; load() } }
-function changePerPage() { resetPage(); load() }
+function goPrev() { if (curPage.value > 1) { setPage(curPage.value - 1); loadActive() } }
+function goNext() { if (curPage.value < totalPages.value) { setPage(curPage.value + 1); loadActive() } }
+function goPage(n) { if (n >= 1 && n <= totalPages.value) { setPage(n); loadActive() } }
+function changePerPage() { resetPage(); loadActive() }
+
+// Pindah tab: reset halaman, muat data tab tujuan jika belum ada.
+function switchTab(tab) {
+  if (activeTab.value === tab) return
+  activeTab.value = tab
+  if (tab === 'signed') {
+    if (signedRows.value.length === 0) { signedPage.value = 1; loadSigned() }
+  } else {
+    load()
+  }
+}
 
 // Map filter UI → param status backend (whitelist 3 status).
 function statusParam() {
@@ -150,7 +181,7 @@ function statusParam() {
 let searchTimer = null
 function onSearchInput() {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => { resetPage(); load() }, 350)
+  searchTimer = setTimeout(() => { resetPage(); loadActive() }, 350)
 }
 function onStatusChange() { resetPage(); load() }
 
@@ -180,16 +211,45 @@ async function load() {
   }
 }
 
+async function loadSigned() {
+  signedLoading.value = true
+  signedError.value = ''
+  try {
+    const { data } = await formTemplateApi.ttdSignedToday({
+      page: signedPage.value,
+      per_page: perPage.value,
+      search: search.value.trim() || undefined,
+    })
+    const p = data.data ?? {}
+    signedRows.value = p.data ?? []
+    signedMeta.value = {
+      total: p.total ?? 0,
+      last_page: p.last_page ?? 1,
+      current_page: p.current_page ?? 1,
+    }
+    if (signedPage.value > (signedMeta.value.last_page ?? 1)) { signedPage.value = 1 }
+  } catch (e) {
+    signedError.value = e.response?.data?.message ?? 'Gagal memuat riwayat tanda tangan.'
+  } finally {
+    signedLoading.value = false
+  }
+}
+
 async function refreshCount() {
   try {
     const { data } = await formTemplateApi.ttdCount()
     ttdCount.value = data.data?.count ?? 0
+    signedTodayCount.value = data.data?.signed_today ?? 0
   } catch (_) { /* abaikan — badge opsional */ }
 }
 
+// Preview read-only (dokumen dibuka dari tab "sudah ditandatangani").
+const previewReadonly = ref(false)
+
 // ── Single-doc modal (preview + edit + sign PIN) ─────────────────────
-async function openTtd(doc) {
+async function openTtd(doc, readonly = false) {
   currentDoc.value = doc
+  previewReadonly.value = readonly
   modalOpen.value = true
   previewHtml.value = ''
   previewLoading.value = true
@@ -210,6 +270,7 @@ async function openTtd(doc) {
 function closeModal() {
   modalOpen.value = false
   currentDoc.value = null
+  previewReadonly.value = false
   previewHtml.value = ''
   editMode.value = false
   editHtml.value = ''
@@ -264,6 +325,7 @@ async function submitPin() {
     }
     pinModalOpen.value = false
     closeModal()
+    signedRows.value = [] // invalidasi tab signed → refetch saat dibuka
     await Promise.all([load(), refreshCount()])
   } catch (e) {
     pinError.value = e.response?.status === 401
@@ -289,6 +351,7 @@ async function onBulkDone(payload) {
     selectedMap.value = m
   }
   bulkOpen.value = false
+  signedRows.value = [] // invalidasi tab signed → refetch saat dibuka
   await Promise.all([load(), refreshCount()])
 }
 
@@ -300,6 +363,13 @@ function formatDate(iso) {
   return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Jakarta' })
 }
 
+function formatTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' })
+}
+
 onMounted(() => { load(); refreshCount() })
 </script>
 
@@ -309,10 +379,54 @@ onMounted(() => { load(); refreshCount() })
     <section class="banner">
       <div class="b-body">
         <h1>{{ isAnestesi ? 'Tanda Tangan Dokumen — Dokter Anestesi' : 'Tanda Tangan Dokumen' }}</h1>
-        <p class="b-sub">{{ ttdCount }} dokumen menunggu tanda tangan{{ isAnestesi ? ' anestesi' : '' }}</p>
+        <p class="b-sub">Telaah, tandatangani, dan pantau dokumen rekam medis Anda.</p>
       </div>
-      <button class="lnk" :disabled="loading" @click="load">{{ loading ? 'Memuat…' : 'Muat ulang' }}</button>
+      <button class="lnk" :disabled="loading || signedLoading" @click="loadActive">
+        {{ (loading || signedLoading) ? 'Memuat…' : 'Muat ulang' }}
+      </button>
     </section>
+
+    <!-- Kartu statistik -->
+    <section class="stats">
+      <div class="stat-card stat-pending" :class="{ active: activeTab === 'queue' }" @click="switchTab('queue')">
+        <div class="stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <div class="stat-body">
+          <span class="stat-num">{{ ttdCount }}</span>
+          <span class="stat-lbl">Menunggu tanda tangan{{ isAnestesi ? ' anestesi' : '' }}</span>
+        </div>
+      </div>
+      <div class="stat-card stat-done" :class="{ active: activeTab === 'signed' }" @click="switchTab('signed')">
+        <div class="stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </div>
+        <div class="stat-body">
+          <span class="stat-num">{{ signedTodayCount }}</span>
+          <span class="stat-lbl">Ditandatangani hari ini</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tabs -->
+    <div class="tabs" role="tablist">
+      <button
+        class="tab" :class="{ on: activeTab === 'queue' }"
+        role="tab" :aria-selected="activeTab === 'queue'"
+        @click="switchTab('queue')"
+      >
+        Antrian
+        <span v-if="ttdCount > 0" class="tab-badge">{{ ttdCount }}</span>
+      </button>
+      <button
+        class="tab" :class="{ on: activeTab === 'signed' }"
+        role="tab" :aria-selected="activeTab === 'signed'"
+        @click="switchTab('signed')"
+      >
+        Ditandatangani hari ini
+        <span v-if="signedTodayCount > 0" class="tab-badge tab-badge-done">{{ signedTodayCount }}</span>
+      </button>
+    </div>
 
     <!-- Toolbar -->
     <div class="toolbar">
@@ -320,10 +434,10 @@ onMounted(() => { load(); refreshCount() })
         v-model="search"
         @input="onSearchInput"
         type="text"
-        placeholder="Cari pasien, No.RM, atau jenis dokumen"
+        :placeholder="isSignedTab ? 'Cari pasien, No.RM, atau jenis dokumen' : 'Cari pasien, No.RM, atau jenis dokumen'"
         class="search-inp"
       />
-      <select v-model="statusFilter" @change="onStatusChange" class="sel">
+      <select v-if="!isSignedTab" v-model="statusFilter" @change="onStatusChange" class="sel">
         <option value="ALL">Semua status</option>
         <option value="PENDING">Menunggu TTD</option>
         <option value="DRAFT">Draf</option>
@@ -331,15 +445,15 @@ onMounted(() => { load(); refreshCount() })
       <button v-if="hasActiveFilter" class="lnk" @click="clearFilters">Reset</button>
     </div>
 
-    <!-- Bar aksi massal -->
-    <div v-if="selectedCount > 0" class="bulkbar">
+    <!-- Bar aksi massal (hanya tab Antrian) -->
+    <div v-if="!isSignedTab && selectedCount > 0" class="bulkbar">
       <span class="bulk-info">{{ selectedCount }} dipilih</span>
       <button class="btn" @click="openBulk">Telaah &amp; tandatangani</button>
       <button class="lnk" @click="clearSelection">Batal</button>
     </div>
 
-    <!-- Tabel -->
-    <div class="tbl-wrap">
+    <!-- Tabel: ANTRIAN -->
+    <div v-if="!isSignedTab" class="tbl-wrap">
       <table class="tbl">
         <thead>
           <tr>
@@ -390,18 +504,60 @@ onMounted(() => { load(); refreshCount() })
       </table>
     </div>
 
+    <!-- Tabel: DITANDATANGANI HARI INI -->
+    <div v-else class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>Pasien</th>
+            <th>Jenis Dokumen</th>
+            <th style="width:120px">Waktu TTD</th>
+            <th style="width:120px">Status</th>
+            <th style="width:60px" class="ta-right"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="signedLoading && signedRows.length === 0">
+            <td colspan="5" class="cell-state">Memuat riwayat…</td>
+          </tr>
+          <tr v-else-if="signedError">
+            <td colspan="5" class="cell-state err">{{ signedError }}</td>
+          </tr>
+          <tr v-else-if="total === 0">
+            <td colspan="5" class="cell-state">
+              {{ hasActiveFilter ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen yang ditandatangani hari ini.' }}
+            </td>
+          </tr>
+          <tr v-for="r in signedRows" :key="r.signature_id">
+            <td>
+              <div class="patient">
+                <span class="p-name">{{ patientName(r) }}</span>
+                <span class="rm">No.RM {{ patientRm(r) ?? '—' }} · {{ patientGender(r) || '—' }}</span>
+              </div>
+            </td>
+            <td>{{ r.template_name ?? r.template_code }}</td>
+            <td class="muted td-date">{{ formatTime(r.signed_at) }} WIB</td>
+            <td><span class="st st-signed">✓ Ditandatangani</span></td>
+            <td class="ta-right">
+              <button class="lnk" @click="openTtd(r, true)">Lihat</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <footer v-if="total > 0" class="foot">
       <span class="foot-info">{{ rangeStart }}–{{ rangeEnd }} dari {{ total }}</span>
       <div class="pager">
-        <button class="page-btn" @click="goPrev" :disabled="page <= 1">‹</button>
+        <button class="page-btn" @click="goPrev" :disabled="curPage <= 1">‹</button>
         <button
           v-for="n in pageWindow"
           :key="n"
           class="page-num"
-          :class="{ on: n === page }"
+          :class="{ on: n === curPage }"
           @click="goPage(n)"
         >{{ n }}</button>
-        <button class="page-btn" @click="goNext" :disabled="page >= totalPages">›</button>
+        <button class="page-btn" @click="goNext" :disabled="curPage >= totalPages">›</button>
       </div>
     </footer>
 
@@ -430,15 +586,19 @@ onMounted(() => { load(); refreshCount() })
             </template>
           </div>
           <footer class="pv-foot">
-            <template v-if="editMode">
+            <template v-if="previewReadonly">
+              <span class="pv-signed">✓ Sudah ditandatangani</span>
+              <button class="btn" @click="closeModal">Tutup</button>
+            </template>
+            <template v-else-if="editMode">
               <button class="lnk" @click="cancelEdit" :disabled="editSaving">Batal</button>
               <button class="btn" @click="saveEdit" :disabled="editSaving">
                 {{ editSaving ? 'Menyimpan…' : 'Simpan' }}
               </button>
             </template>
             <template v-else>
-              <button v-if="isDraft" class="lnk" @click="startEdit">Edit isi</button>
-              <button class="btn" @click="openPin">Tanda tangani</button>
+              <button v-if="isDraft" class="btn btn-ghost" @click="startEdit">Edit isi</button>
+              <button class="btn btn-blue" @click="openPin">Tanda tangani</button>
             </template>
           </footer>
         </div>
@@ -484,18 +644,64 @@ onMounted(() => { load(); refreshCount() })
 </template>
 
 <style scoped>
-/* Minimalis: netral, hairline border, satu aksen navy, tanpa gradien/badge. */
+/* Palet Prima Vision: navy #0E3A66 + cyan #1FAAE0 (lihat reference design tokens). */
 .ttd {
   --ink: #1f2937; --muted: #6b7280; --faint: #9ca3af;
-  --line: #e5e7eb; --accent: #4b5563; --danger: #b42323;
-  display: flex; flex-direction: column; gap: 1.5rem;
+  --line: #e5e7eb; --accent: #0e3a66; --cyan: #1faae0; --danger: #b42323;
+  --done: #0f9d6b;
+  display: flex; flex-direction: column; gap: 1rem;
   color: var(--ink); font-size: 13px;
 }
 
 /* ── HEADER ───────────────────────────────────────────────────────── */
 .banner { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
+
+/* ─── Tablet/HP: header & bulk-bar menumpuk; tabel sudah scroll via .tbl-wrap ── */
+@media (max-width: 768px) {
+  .banner { flex-direction: column; align-items: flex-start; }
+  .bulkbar { flex-wrap: wrap; gap: 0.5rem; }
+  .stats { grid-template-columns: 1fr; }
+}
 .b-body h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .b-sub { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
+/* ── KARTU STATISTIK (ramping) ────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+.stat-card {
+  display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.stat-card:hover { background: #fafbfc; }
+.stat-card.active { border-color: var(--accent); }
+.stat-ico {
+  flex: none; width: 28px; height: 28px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+}
+.stat-ico svg { width: 16px; height: 16px; }
+.stat-pending .stat-ico { background: rgba(31,170,224,.12); color: var(--cyan); }
+.stat-done .stat-ico    { background: rgba(15,157,107,.12); color: var(--done); }
+.stat-body { display: flex; align-items: baseline; gap: 0.4rem; }
+.stat-num { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: var(--accent); }
+.stat-done .stat-num { color: var(--done); }
+.stat-lbl { font-size: 12px; color: var(--muted); }
+
+/* ── TABS ─────────────────────────────────────────────────────────── */
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); }
+.tab {
+  position: relative; border: 0; background: none; cursor: pointer;
+  padding: 0.6rem 0.9rem; font-size: 13px; font-weight: 500; color: var(--muted);
+  display: inline-flex; align-items: center; gap: 0.45rem; border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-badge {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--cyan); color: #fff; font-size: 11px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.tab-badge-done { background: var(--done); }
 
 /* ── BUTTONS / LINKS ──────────────────────────────────────────────── */
 .btn {
@@ -505,6 +711,12 @@ onMounted(() => { load(); refreshCount() })
 }
 .btn:hover:not(:disabled) { opacity: 0.88; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Tombol aksi utama (Tanda tangani): biru cerah, kontras tinggi. */
+.btn-blue { background: var(--cyan); border-color: var(--cyan); color: #fff; }
+.btn-blue:hover:not(:disabled) { background: #1893c2; border-color: #1893c2; opacity: 1; }
+/* Tombol sekunder (Edit isi): outline biru di atas putih — tetap terlihat. */
+.btn-ghost { background: #fff; color: var(--accent); border-color: var(--accent); }
+.btn-ghost:hover:not(:disabled) { background: #f2f6fb; opacity: 1; }
 .lnk {
   border: 0; background: none; padding: 4px 2px; cursor: pointer;
   font-size: 13px; color: var(--accent); font-weight: 500;
@@ -557,6 +769,7 @@ onMounted(() => { load(); refreshCount() })
 .st-pending { color: var(--ink); }
 .st-draft { color: var(--faint); }
 .st-default { color: var(--muted); }
+.st-signed { color: var(--done); font-weight: 500; }
 
 .cell-state { text-align: center; padding: 3rem 1rem; color: var(--faint); }
 .err { color: var(--danger); }
@@ -585,8 +798,11 @@ onMounted(() => { load(); refreshCount() })
 .pv-sub { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
 .pv-close { width: 28px; height: 28px; border-radius: 6px; border: 0; background: none; cursor: pointer; color: var(--faint); font-size: 22px; line-height: 1; }
 .pv-close:hover { background: #f1f2f4; color: var(--ink); }
-.pv-body { padding: 1.5rem 2rem; overflow-y: auto; flex: 1; }
+/* overflow auto (2 sumbu): dokumen RM dirancang lebar A4 → di HP bisa digeser,
+   bukan terpotong. */
+.pv-body { padding: 1.5rem 2rem; overflow: auto; flex: 1; }
 .pv-foot { padding: 0.9rem 1.4rem; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; align-items: center; gap: 1rem; }
+.pv-signed { margin-right: auto; font-size: 12.5px; font-weight: 500; color: var(--done); }
 
 .edit-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
 .edit-hint { margin: 0; font-size: 12px; color: var(--muted); }
@@ -607,4 +823,13 @@ onMounted(() => { load(); refreshCount() })
 .pin-input:focus { outline: none; border-color: var(--accent); }
 .pin-err { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
 .pin-actions { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1.2rem; }
+
+/* ─── HP sempit (iPhone standar / Galaxy Fold): rapikan modal preview + PIN ─── */
+@media (max-width: 480px) {
+  .pv-modal { width: 96vw; max-height: 94vh; }
+  .pv-head { padding: 0.85rem 1rem; }
+  .pv-body { padding: 1rem; }
+  .pv-foot { padding: 0.75rem 1rem; gap: 0.6rem; }
+  .pin-modal { padding: 1.25rem; }
+}
 </style>

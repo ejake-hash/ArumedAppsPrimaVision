@@ -8,6 +8,8 @@ use App\Http\Controllers\RefraksiController;
 use App\Http\Controllers\RefractionOptionController;
 use App\Http\Controllers\DokterController;
 use App\Http\Controllers\PenunjangController;
+use App\Http\Controllers\PenunjangWorklistController;
+use App\Http\Controllers\PenunjangIngestController;
 use App\Http\Controllers\BedahController;
 use App\Http\Controllers\RuangTindakanController;
 use App\Http\Controllers\RanapController;
@@ -34,6 +36,7 @@ use App\Http\Controllers\MarketingReportController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
+use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\TvDisplaySettingController;
 use App\Http\Controllers\TvAudioSettingController;
 use App\Http\Controllers\TvMediaSettingController;
@@ -136,6 +139,16 @@ Route::prefix('v1')->group(function () {
     });
 
     // =========================================================================
+    // 2e. MESIN — Integrasi alat penunjang (bridge/feeder/watcher DICOM).
+    //     BUKAN JWT — auth via service token (middleware service-token, .env
+    //     PENUNJANG_BRIDGE_TOKEN). worklist = feed pasien ke alat; ingest = terima PDF.
+    // =========================================================================
+    Route::prefix('integrasi/penunjang')->middleware('service-token')->group(function () {
+        Route::get('/worklist', [PenunjangWorklistController::class, 'index']);
+        Route::post('/ingest',  [PenunjangIngestController::class, 'store']);
+    });
+
+    // =========================================================================
     // 3. PROTECTED — semua route di bawah wajib auth:api
     // =========================================================================
     Route::middleware('auth:api')->group(function () {
@@ -202,7 +215,14 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien/{id}',            [AdmisiController::class, 'showPasien']);
             Route::get('/pasien/{id}/kunjungan',  [AdmisiController::class, 'indexKunjunganPasien']);
             Route::get('/pasien/{id}/jadwal-bedah-aktif', [AdmisiController::class, 'jadwalBedahAktif']);
+            Route::get('/pasien/{id}/kontrol-gratis', [AdmisiController::class, 'kontrolGratis']);
             Route::put('/pasien/{id}',            [AdmisiController::class, 'updatePasien']);
+
+            // Berkas identitas pasien (KTP — foto/PDF), per-pasien, disk privat ber-auth.
+            Route::get   ('/pasien/{id}/identity-documents',                [App\Http\Controllers\PatientIdentityDocumentController::class, 'index']);
+            Route::post  ('/pasien/{id}/identity-documents',                [App\Http\Controllers\PatientIdentityDocumentController::class, 'store']);
+            Route::get   ('/pasien/{id}/identity-documents/{docId}/file',   [App\Http\Controllers\PatientIdentityDocumentController::class, 'showFile']);
+            Route::delete('/pasien/{id}/identity-documents/{docId}',        [App\Http\Controllers\PatientIdentityDocumentController::class, 'destroy']);
 
             Route::post('/daftar',                [AdmisiController::class, 'daftarKunjungan']);
             Route::post('/consent/preview',       [AdmisiController::class, 'previewConsent']);
@@ -245,6 +265,8 @@ Route::prefix('v1')->group(function () {
             Route::put('/cppt/{id}',                        [PerawatController::class, 'updateCppt']);
 
             Route::put('/antrian/{id}/lewati',                     [PerawatController::class, 'lewatiAntrian']);
+            Route::put('/antrian/{id}/dahulukan',                  [PerawatController::class, 'dahulukanAntrian']);
+            Route::put('/antrian/{id}/skip',                       [PerawatController::class, 'skipTriase']);
             Route::post('/antrian/{id}/kirim-ke-bedah',            [PerawatController::class, 'kirimKeBedah']);
             Route::post('/antrian/{id}/kirim-ke-ranap',            [PerawatController::class, 'kirimKeRanap']);
             Route::get('/kunjungan/{visitId}',                     [PerawatController::class, 'showKunjungan']);
@@ -262,6 +284,7 @@ Route::prefix('v1')->group(function () {
             Route::put('/antrian/{id}/panggil',            [RefraksiController::class, 'panggilAntrian']);
             Route::put('/antrian/{id}/mulai',              [RefraksiController::class, 'mulaiAntrian']);
             Route::put('/antrian/{id}/lewati',             [RefraksiController::class, 'lewatiAntrian']);
+            Route::put('/antrian/{id}/skip',               [RefraksiController::class, 'skipRefraksi']);
             Route::put('/antrian/{id}/selesai',            [RefraksiController::class, 'selesaiAntrian']);
 
             Route::get('/pemeriksaan/{visitId}',           [RefraksiController::class, 'showPemeriksaan']);
@@ -340,8 +363,9 @@ Route::prefix('v1')->group(function () {
             Route::delete('/order-penunjang/{id}',              [DokterController::class, 'cancelOrderPenunjang']);
 
             Route::get('/kunjungan/{visitId}/hasil-penunjang',  [DokterController::class, 'indexHasilPenunjang']);
-            Route::get('/kunjungan/{visitId}/penunjang-billing', [DokterController::class, 'penunjangBilling']);
             Route::get('/kunjungan/{visitId}/iol-rekomendasi',  [DokterController::class, 'showIolRekomendasi']);
+            Route::get('/kunjungan/{visitId}/biometri-iol',     [DokterController::class, 'showBiometriIol']);
+            Route::post('/kunjungan/{visitId}/keputusan-iol',   [DokterController::class, 'decideIol']);
 
             Route::get('/kunjungan/{visitId}/resume-medis',     [DokterController::class, 'showResumeMedis']);
             Route::post('/kunjungan/{visitId}/resume-medis',    [DokterController::class, 'generateResumeMedis']);
@@ -410,6 +434,12 @@ Route::prefix('v1')->group(function () {
             Route::get('/iol-rekomendasi/{visitId}',      [PenunjangController::class, 'showIolRekomendasi']);
             Route::post('/iol-rekomendasi',               [PenunjangController::class, 'storeIolRekomendasi']);
             Route::put('/iol-rekomendasi/{id}',           [PenunjangController::class, 'updateIolRekomendasi']);
+
+            // Inbox hasil tak-tertaut (ingest alat gagal cocok otomatis → tautkan manual).
+            Route::get('/inbox',                          [PenunjangController::class, 'indexInbox']);
+            Route::get('/inbox/assignable',               [PenunjangController::class, 'assignableOrders']);
+            Route::post('/inbox/{id}/assign',             [PenunjangController::class, 'assignInbox'])->middleware('permission:penunjang.write');
+            Route::post('/inbox/{id}/discard',            [PenunjangController::class, 'discardInbox'])->middleware('permission:penunjang.write');
         });
 
         // -----------------------------------------------------------------
@@ -481,6 +511,12 @@ Route::prefix('v1')->group(function () {
             // Master lookup read-only utk form resep & pemilihan IOL pasca-bedah (F1/F2).
             Route::get('/obat',                             [BedahController::class, 'daftarObat']);
             Route::get('/iol',                              [BedahController::class, 'indexIol']);
+
+            // Paket Obat Pasca-Bedah (template resep rutin) — read via group, tulis bedah.write.
+            Route::get('/paket-obat',                       [BedahController::class, 'indexPaketObat']);
+            Route::post('/paket-obat',                      [BedahController::class, 'storePaketObat'])->middleware('permission:bedah.write');
+            Route::put('/paket-obat/{id}',                  [BedahController::class, 'updatePaketObat'])->middleware('permission:bedah.write');
+            Route::delete('/paket-obat/{id}',               [BedahController::class, 'destroyPaketObat'])->middleware('permission:bedah.write');
         });
 
         // -----------------------------------------------------------------
@@ -492,9 +528,12 @@ Route::prefix('v1')->group(function () {
             Route::put('/antrian/{id}/panggil', [RuangTindakanController::class, 'panggilAntrian'])->middleware('permission:ruang_tindakan.write');
             Route::put('/jadwal/{id}/mulai',    [RuangTindakanController::class, 'mulaiTindakan'])->middleware('permission:ruang_tindakan.write');
             Route::put('/jadwal/{id}/selesai',  [RuangTindakanController::class, 'selesaiTindakan'])->middleware('permission:ruang_tindakan.write');
+            Route::post('/jadwal/{id}/resep',   [RuangTindakanController::class, 'storeResep'])->middleware('permission:ruang_tindakan.write');
             Route::get('/record/{scheduleId}',  [RuangTindakanController::class, 'showRecord']);
             Route::put('/record/{id}/laporan',  [RuangTindakanController::class, 'saveLaporan'])->middleware('permission:ruang_tindakan.write');
             Route::get('/procedures',           [RuangTindakanController::class, 'procedures']);
+            Route::get('/jadwal',               [RuangTindakanController::class, 'jadwal']);
+            Route::get('/daftar-obat',          [RuangTindakanController::class, 'daftarObat']);
         });
 
         // -----------------------------------------------------------------
@@ -506,6 +545,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/aktif',                      [RanapController::class, 'activeInpatients'])->middleware('permission:rawat_inap.read');
             // Literal 'history' WAJIB sebelum '/{visitId}' agar tak ditangkap sbg visitId.
             Route::get('/history',                    [RanapController::class, 'dischargedHistory'])->middleware('permission:rawat_inap.read');
+            // Literal 'bed/...' WAJIB sebelum '/{visitId}' agar tak tertangkap sbg visitId.
+            Route::post('/bed/{bedId}/available',     [RanapController::class, 'markBedAvailable'])->middleware('permission:rawat_inap.write');
             Route::get('/{visitId}',                  [RanapController::class, 'detail'])->middleware('permission:rawat_inap.read');
 
             Route::get('/{visitId}/tarif-tindakan',   [RanapController::class, 'tarifTindakan'])->middleware('permission:rawat_inap.read');
@@ -627,6 +668,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/invoice',                         [KasirController::class, 'indexInvoice']);
             Route::get('/invoice/{visitId}',               [KasirController::class, 'showInvoice']);
             Route::get('/insurance-warning/{visitId}',     [KasirController::class, 'insuranceWarning']);
+            Route::get('/invoice/{id}/coverages',          [KasirController::class, 'invoiceCoverages']);
             Route::post('/invoice/{visitId}/generate',     [KasirController::class, 'generateInvoice']);
             Route::put('/invoice/{id}',                    [KasirController::class, 'updateInvoice']);
             Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice']);
@@ -635,6 +677,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);
             Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);
             Route::get('/invoice/{id}/cetak',              [KasirController::class, 'cetakInvoice']);
+            // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik) — di-queue.
+            Route::post('/invoice/{id}/email',             [KasirController::class, 'emailReceipt']);
 
             Route::post('/invoice/{invoiceId}/item',       [KasirController::class, 'storeItemInvoice']);
             Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice']);
@@ -642,6 +686,8 @@ Route::prefix('v1')->group(function () {
 
             // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master, bukan ketik manual).
             Route::get('/tarif-tindakan',                  [KasirController::class, 'tarifTindakan']);
+            // Pencarian buku tarif lintas kategori (tindakan/obat/BHP/IOL/alkes) — Edit Tagihan.
+            Route::get('/tarif-buku',                      [KasirController::class, 'tarifBuku']);
 
             Route::get('/cob/{visitId}',                   [KasirController::class, 'showCob']);
             Route::put('/cob/{visitId}',                   [KasirController::class, 'updateCob']);
@@ -709,6 +755,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien/{patientId}/ringkasan',    [RekamMedisController::class, 'ringkasanPasien']);
             Route::get('/pasien/{patientId}/refraksi',     [RekamMedisController::class, 'refraksiPasien']);
             Route::get('/pasien/{patientId}/penunjang',    [RekamMedisController::class, 'penunjangPasien']);
+            Route::get('/pasien/{patientId}/cppt',         [RekamMedisController::class, 'cpptPasien']);
             Route::get('/pasien/{patientId}/obat',         [RekamMedisController::class, 'obatPasien']);
             Route::get('/pasien/{patientId}/bedah',        [RekamMedisController::class, 'bedahPasien']);
             Route::get('/pasien/{patientId}/diagnosis',    [RekamMedisController::class, 'diagnosisPasien']);
@@ -739,6 +786,7 @@ Route::prefix('v1')->group(function () {
             // -----------------------------------------------------------------
             Route::get('/forms',                           [RekamMedisController::class, 'indexForms']);
             Route::get('/form/{code}/render',              [RekamMedisController::class, 'renderForm']);
+            Route::get('/form/{code}/prefill',             [RekamMedisController::class, 'prefillForm']);
             Route::post('/form/{code}/submit',             [RekamMedisController::class, 'submitForm']);
             Route::post('/document/{id}/mark-rendered',    [RekamMedisController::class, 'markDocumentRendered']);
             Route::post('/document/{id}/finalize',         [RekamMedisController::class, 'finalizeDocument']);
@@ -754,6 +802,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/ttd-queue',                       [RekamMedisController::class, 'ttdQueue']);
             Route::post('/ttd-bulk-sign',                  [RekamMedisController::class, 'ttdBulkSign']);
             Route::get('/ttd-count',                       [RekamMedisController::class, 'ttdCount']);
+            Route::get('/ttd-signed-today',                [RekamMedisController::class, 'ttdSignedToday']);
 
             // Fase 6 — Audit log per dokumen
             Route::get('/document/{id}/audit-log',         [RekamMedisController::class, 'documentAuditLog']);
@@ -768,7 +817,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/antrian-aktif',                    [DashboardController::class, 'antrianAktif']);
             Route::get('/pendapatan',                       [DashboardController::class, 'pendapatan']);
             Route::get('/kunjungan-chart',                  [DashboardController::class, 'getVisitChart']);
+            Route::get('/pendapatan-chart',                 [DashboardController::class, 'getRevenueChart']);
             Route::get('/diagnosis-stats',                  [DashboardController::class, 'getDiagnosisStats']);
+            Route::get('/distribusi-penjamin',              [DashboardController::class, 'distribusiPenjamin']);
+            Route::get('/jam-tersibuk',                     [DashboardController::class, 'jamTersibuk']);
 
             Route::get('/follow-up/hari-ini',               [DashboardController::class, 'followUpHariIni']);
             Route::get('/follow-up/minggu-ini',             [DashboardController::class, 'followUpMingguIni']);
@@ -1013,54 +1065,6 @@ Route::prefix('v1')->group(function () {
         });
 
         // -----------------------------------------------------------------
-        // RAWAT INAP (RANAP) — papan bed, admit/transfer/discharge, CPPT,
-        // tindakan/obat/charge, SEP/SPRI, riwayat. (RanapController)
-        // PENTING urutan: route literal & /spri /cppt WAJIB sebelum /{visitId}
-        // wildcard, agar tak ter-shadow.
-        // -----------------------------------------------------------------
-        Route::prefix('rawat-inap')->group(function () {
-            // --- Papan & daftar (literal, harus sebelum /{visitId}) ---
-            Route::get('/bed-board',                [RanapController::class, 'bedBoard'])->middleware('permission:rawat_inap.read');
-            Route::get('/menunggu-kamar',           [RanapController::class, 'waitingForBed'])->middleware('permission:rawat_inap.read');
-            Route::get('/aktif',                    [RanapController::class, 'activeInpatients'])->middleware('permission:rawat_inap.read');
-            Route::get('/history',                  [RanapController::class, 'dischargedHistory'])->middleware('permission:rawat_inap.read');
-
-            // --- CPPT by id & SPRI by id (literal segmen, sebelum /{visitId}) ---
-            Route::put('/cppt/{id}',                [RanapController::class, 'updateCppt'])->middleware('permission:rawat_inap.write');
-            Route::post('/cppt/{id}/verify',        [RanapController::class, 'verifyCppt'])->middleware('permission:rawat_inap.write');
-            Route::put('/spri/{spriId}',            [RanapController::class, 'updateSpri'])->middleware('permission:rawat_inap.write');
-            Route::delete('/spri/{spriId}',         [RanapController::class, 'deleteSpri'])->middleware('permission:rawat_inap.write');
-
-            // --- Aksi per pasien (visitId di akhir segmen) ---
-            Route::post('/{visitId}/admit',         [RanapController::class, 'admit'])->middleware('permission:rawat_inap.write');
-            Route::post('/{visitId}/transfer',      [RanapController::class, 'transfer'])->middleware('permission:rawat_inap.write');
-            Route::post('/{visitId}/discharge',     [RanapController::class, 'discharge'])->middleware('permission:rawat_inap.write');
-            Route::post('/{visitId}/kirim-bedah',   [RanapController::class, 'sendToBedah'])->middleware('permission:rawat_inap.write');
-
-            // Charge / tindakan / obat
-            Route::get('/{visitId}/tarif-tindakan', [RanapController::class, 'tarifTindakan'])->middleware('permission:rawat_inap.read');
-            Route::get('/{visitId}/daftar-obat',    [RanapController::class, 'daftarObat'])->middleware('permission:rawat_inap.read');
-            Route::post('/{visitId}/charge',        [RanapController::class, 'addCharge'])->middleware('permission:rawat_inap.write');
-            Route::post('/{visitId}/tindakan',      [RanapController::class, 'addTindakan'])->middleware('permission:rawat_inap.write');
-            Route::post('/{visitId}/obat',          [RanapController::class, 'addObat'])->middleware('permission:rawat_inap.write');
-            Route::delete('/{visitId}/charge/{chargeId}', [RanapController::class, 'deleteCharge'])->middleware('permission:rawat_inap.write');
-
-            // CPPT list & tambah (per pasien)
-            Route::get('/{visitId}/cppt',           [RanapController::class, 'indexCppt'])->middleware('permission:rawat_inap.read');
-            Route::post('/{visitId}/cppt',          [RanapController::class, 'addCppt'])->middleware('permission:rawat_inap.write');
-
-            // SEP / SPRI per pasien
-            Route::get('/{visitId}/sep',            [RanapController::class, 'getSep'])->middleware('permission:rawat_inap.read');
-            Route::put('/{visitId}/sep',            [RanapController::class, 'updateSep'])->middleware('permission:rawat_inap.write');
-            Route::put('/{visitId}/sep/tgl-pulang', [RanapController::class, 'updateTglPulang'])->middleware('permission:rawat_inap.write');
-            Route::get('/{visitId}/spri',           [RanapController::class, 'listSpri'])->middleware('permission:rawat_inap.read');
-            Route::post('/{visitId}/spri',          [RanapController::class, 'createSpri'])->middleware('permission:rawat_inap.write');
-
-            // Detail pasien (wildcard paling generic — WAJIB paling akhir)
-            Route::get('/{visitId}',                [RanapController::class, 'detail'])->middleware('permission:rawat_inap.read');
-        });
-
-        // -----------------------------------------------------------------
         // INVENTORI FARMASI — Master Supplier
         // -----------------------------------------------------------------
         Route::prefix('inventori-farmasi/supplier')->group(function () {
@@ -1294,6 +1298,9 @@ Route::prefix('v1')->group(function () {
             // Verifikasi eligibility (input manual hasil cek portal TPA)
             Route::get('/verifikasi/pending',     [AsuransiController::class, 'pendingVerifications'])->middleware('permission:kasir.read');
             Route::get('/verifikasi/in-service',  [AsuransiController::class, 'inServiceVerifications'])->middleware('permission:kasir.read');
+            // COB: daftar verifikasi per insurer + basis selisih penjamin-2 (WAJIB sebelum /verifikasi/{visitId} generik).
+            Route::get('/verifikasi-all/{visitId}', [AsuransiController::class, 'showVerifikasiAll'])->middleware('permission:kasir.read');
+            Route::get('/cob-basis/{visitId}',      [AsuransiController::class, 'cobBasis'])->middleware('permission:kasir.read');
             Route::get('/verifikasi/{visitId}',   [AsuransiController::class, 'showVerifikasi'])->middleware('permission:kasir.read');
             Route::post('/verifikasi',            [AsuransiController::class, 'storeVerifikasi'])->middleware('permission:kasir.write');
             Route::put('/verifikasi/{id}',        [AsuransiController::class, 'updateVerifikasi'])->middleware('permission:kasir.write');
@@ -1331,6 +1338,9 @@ Route::prefix('v1')->group(function () {
             // Override nama tampilan modul (UI-only) untuk matriks
             Route::put('/permissions/module-label/{module}',        [PermissionController::class, 'updateLabel']);
             Route::post('/permissions/module-label/{module}/reset', [PermissionController::class, 'resetLabel']);
+
+            // Audit Log (read-only system_logs) — tab Audit Log di DataPenggunaView
+            Route::get('/audit-logs',           [AuditLogController::class, 'index']);
 
             // Roles
             // CSV/Excel (definisikan sebelum /roles/{id} agar tidak ketangkap wildcard)

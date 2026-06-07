@@ -72,6 +72,15 @@ class RekamMedisController extends Controller
         return $this->ok($this->rme->penunjang($patientId));
     }
 
+    /**
+     * GET /rekam-medis/pasien/{patientId}/cppt
+     * CPPT lintas-episode (RAJAL/IGD/RANAP) + SOAP dokter poli — 1 timeline.
+     */
+    public function cpptPasien(string $patientId): JsonResponse
+    {
+        return $this->ok($this->rme->cppt($patientId));
+    }
+
     /** GET /rekam-medis/pasien/{patientId}/obat */
     public function obatPasien(string $patientId): JsonResponse
     {
@@ -395,6 +404,26 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * GET /rekam-medis/form/{code}/prefill?visit_id=Z
+     * Nilai awal field editable (HYBRID/INPUT) dari data klinis yang sudah ada —
+     * supaya dokter tidak mengisi ulang. Hanya field ber-konfigurasi `prefill`.
+     */
+    public function prefillForm(Request $request, string $code): JsonResponse
+    {
+        $validated = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+        ]);
+
+        try {
+            $result = $this->formRegistry->prefill($code, $validated['visit_id']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 404);
+        }
+
+        return $this->ok($result);
+    }
+
+    /**
      * POST /rekam-medis/form/{code}/submit
      * INPUT mode — submit data → router-by-binding ke tabel klinis +
      * create patient_document DRAFT untuk audit. Status FINALIZED terpisah.
@@ -640,12 +669,32 @@ class RekamMedisController extends Controller
 
     /**
      * GET /rekam-medis/ttd-count
-     * Jumlah dokumen di antrian TTD dokter (untuk badge sidebar).
+     * Jumlah dokumen di antrian TTD dokter (untuk badge sidebar) + jumlah yang
+     * sudah ditandatangani hari ini (untuk kartu statistik di halaman TTD).
      */
     public function ttdCount(): JsonResponse
     {
         $userId = auth('api')->id();
-        return $this->ok(['count' => $this->signatures->ttdCountForDoctor($userId, $this->signerTypeForUser())]);
+        $signerType = $this->signerTypeForUser();
+        return $this->ok([
+            'count'        => $this->signatures->ttdCountForDoctor($userId, $signerType),
+            'signed_today' => $this->signatures->signedTodayCountForDoctor($userId, $signerType),
+        ]);
+    }
+
+    /**
+     * GET /rekam-medis/ttd-signed-today
+     * Dokumen yang sudah ditandatangani dokter yang login HARI INI (paginated).
+     * Query: page, per_page (default 10, maks 100), search.
+     */
+    public function ttdSignedToday(Request $request): JsonResponse
+    {
+        $userId = auth('api')->id();
+        $paginator = $this->signatures->signedTodayForDoctor($userId, [
+            'per_page' => (int) $request->query('per_page', 10),
+            'search'   => $request->query('search'),
+        ], $this->signerTypeForUser());
+        return $this->ok($paginator);
     }
 
     /**

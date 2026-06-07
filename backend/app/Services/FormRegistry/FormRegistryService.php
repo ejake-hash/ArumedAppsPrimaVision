@@ -36,12 +36,105 @@ final class FormRegistryService
     ) {}
 
     /**
-     * OUTPUT mode: render HTML final untuk satu (template_code, visit_id).
+     * OUTPUT/HYBRID preview: render HTML untuk satu (template_code, visit_id).
+     *
+     * Kalau $payload kosong, otomatis muat static_payload dari patient_document
+     * TERBARU (non-final) untuk (visit, code) — supaya preview "Cetak" pada form
+     * HYBRID menampilkan jawaban editable yang baru di-submit (bukan kosong).
+     *
+     * Ini DRY-RUN (tidak persist & tidak menanam stempel TTD). Placeholder
+     * signature/sisa ({{ttd_*}}, {{qr_verifikasi}}, dst) dibersihkan agar preview
+     * rapi; embed bukti TTD + QR hanya terjadi di finalize() pada snapshot final.
      */
-    public function render(string $code, int|string $visitId): string
+    public function render(string $code, int|string $visitId, array $payload = []): string
     {
         $template = $this->findActiveTemplateByCode($code);
-        return $this->renderer->render($template, $visitId);
+
+        if (empty($payload)) {
+            $doc = PatientDocument::query()
+                ->where('visit_id', $visitId)
+                ->where('template_code', $code)
+                ->orderByDesc('created_at')
+                ->first();
+            $stored = $doc?->signatures['static_payload'] ?? null;
+            if (is_array($stored)) {
+                $payload = $stored;
+            }
+        }
+
+        $html = $this->renderer->render($template, $visitId, $payload);
+
+        // Preview only: buang placeholder yang tersisa (signature {{ttd_*}} dan
+        // {{qr_verifikasi}} dibiarkan utuh oleh renderer untuk embed saat finalize).
+        return preg_replace('/\{\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}/', '', $html) ?? $html;
+    }
+
+    /**
+     * HYBRID/INPUT prefill: nilai awal field editable diambil dari data klinis
+     * yang sudah ada (anti "kerja dua kali"). Hanya field yang punya konfigurasi
+     * `prefill` (atau `default`) yang di-resolve; field display-only & signature
+     * diabaikan.
+     *
+     * Bentuk konfigurasi di field_schema:
+     *   'prefill' => ['via' => 'db'|'aggregate'|'clinic'|'static',
+     *                 'source' => 'doctorExamination.anamnese',
+     *                 'format' => 'items_pretty',        // aggregate saja
+     *                 'value'  => 'RS Mata Prima Vision'] // static literal
+     *
+     * Nilai prefill HANYA jadi default UI; saat submit, field editable (binding
+     * kind 'static') tersimpan ke static_payload dokumen — TIDAK menulis balik ke
+     * sumber klinis (lihat keputusan COB/klaim di Docs/PLAN-KATALOG-FORMULIR-RM.md).
+     *
+     * @return array{defaults: array<string,mixed>, sources: array<string,mixed>}
+     */
+    public function prefill(string $code, int|string $visitId): array
+    {
+        $template = $this->findActiveTemplateByCode($code);
+        $visit = Visit::query()->findOrFail($visitId);
+
+        $resolver = new BindingResolver();
+        $defaults = [];
+
+        foreach ($this->flattenSchemaFields($template->field_schema ?? []) as $field) {
+            $key = $field['key'] ?? null;
+            if (!is_string($key) || $key === '') continue;
+
+            $prefill = $field['prefill'] ?? null;
+            if (!is_array($prefill)) continue;
+
+            $via = $prefill['via'] ?? 'db';
+            $resolved = $resolver->resolve($visit, [
+                'kind'   => $via,
+                'source' => (string) ($prefill['source'] ?? ''),
+                'format' => $prefill['format'] ?? null,
+                'value'  => $prefill['value'] ?? null,
+            ]);
+
+            if ($resolved !== null && $resolved !== '') {
+                $defaults[$key] = $resolved;
+            }
+        }
+
+        // sources == defaults (guardrail audit: nilai sumber = nilai prefill awal;
+        // divergensi vs hasil edit dokter dapat direkonstruksi dari kedua sisi).
+        return ['defaults' => $defaults, 'sources' => $defaults];
+    }
+
+    /** Ratakan field_schema (single_page / multi_page) → flat list. */
+    private function flattenSchemaFields(array $schema): array
+    {
+        if (isset($schema['fields']) && is_array($schema['fields'])) {
+            return $schema['fields'];
+        }
+        $all = [];
+        if (isset($schema['pages']) && is_array($schema['pages'])) {
+            foreach ($schema['pages'] as $page) {
+                if (isset($page['fields']) && is_array($page['fields'])) {
+                    array_push($all, ...$page['fields']);
+                }
+            }
+        }
+        return $all;
     }
 
     /**
@@ -110,6 +203,11 @@ final class FormRegistryService
                     'name'            => $t->name,
                     'kind'            => $t->kind,
                     'complexity_kind' => $t->complexity_kind,
+                    // field_schema + custom_component_name WAJIB dikirim: FormRMRenderer
+                    // membangun field input (tab "Isi Data") dari sini. Tanpa ini, form
+                    // HYBRID/INPUT tampil kosong (hanya tombol Simpan) — user tak bisa isi.
+                    'field_schema'          => $t->field_schema,
+                    'custom_component_name' => $t->custom_component_name,
                     'version'         => $t->version,
                     'assignments'     => $t->station_assignments,
                     'existing_document' => $existing ? [

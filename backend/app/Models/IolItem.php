@@ -26,6 +26,7 @@ class IolItem extends Model
         'iol_type',
         'material',
         'power',
+        'a_constant',
         'cylinder',
         'axis',
         'lot_number',
@@ -41,6 +42,7 @@ class IolItem extends Model
 
     protected $casts = [
         'power'       => 'decimal:2',
+        'a_constant'  => 'decimal:3',
         'cylinder'    => 'decimal:2',
         'axis'        => 'integer',
         'price'       => 'decimal:2',

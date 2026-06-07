@@ -34,6 +34,7 @@ class NurseAssessment extends Model
         'pain_scale',
         'assessment_notes',
         'is_finalized',
+        'is_skipped',
         'finalized_at',
         'finalized_by_id',
     ];
@@ -47,6 +48,7 @@ class NurseAssessment extends Model
         'bmi'          => 'decimal:2',
         'has_allergy'  => 'boolean',
         'is_finalized' => 'boolean',
+        'is_skipped'   => 'boolean',
         'finalized_at' => 'datetime',
     ];
 

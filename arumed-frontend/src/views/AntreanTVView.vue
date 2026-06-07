@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { antreanTvApi } from '@/services/api'
+import logoPvPutih from '@/assets/images/logo-pv-putih.png'
 
 const clock = ref('')
 const dateStr = ref('')
@@ -466,6 +467,14 @@ function startPolling(intervalMs = 3_000) {
   // Polling fallback saat WS Reverb tidak tersedia. Interval kecil supaya
   // panggilan dari stasiun lain ter-detect cepat (max 3 detik delay).
   // fetchSnapshot membandingkan called_at lama vs baru untuk trigger flash.
+  //
+  // Lepas binding WS dulu: kalau koneksi WS error lalu jatuh ke polling,
+  // handleQueueEvent (WS) + fetchSnapshot (polling) bisa memproses event yang
+  // sama → flash/TTS ganda. Selain itu, `lastCalledAtById` basi sejak fetch
+  // awal selama sesi WS, jadi reset isInitialFetch supaya fetch pertama hanya
+  // menyinkronkan catatan called_at TANPA mengumumkan ulang panggilan lama.
+  tvChannel?.unbind_all()
+  isInitialFetch = true
   stopPolling()
   pollInterval = setInterval(fetchSnapshot, intervalMs)
 }
@@ -504,10 +513,21 @@ onUnmounted(() => {
   if (doctorPollInterval) clearInterval(doctorPollInterval)
   disconnectWs()
   stopSlideshow()
-  window.speechSynthesis?.cancel()
+  if (slideIntervalDebounce) clearTimeout(slideIntervalDebounce)
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel()
+    // Lepas handler global — kalau tidak, onvoiceschanged tetap merujuk
+    // loadTtsVoices (closure komponen ini) walau sudah unmount → leak +
+    // menumpuk saat navigasi/auto-reload tengah malam.
+    window.speechSynthesis.onvoiceschanged = null
+  }
   if (midnightTimer) clearTimeout(midnightTimer)
   removeUnlockListeners()
-  if (localVideoObjectUrl) URL.revokeObjectURL(localVideoObjectUrl)
+  // Tutup AudioContext + lepas cache <audio> supaya tidak menumpuk saat
+  // navigasi keluar-masuk TV.
+  audioCtx?.close()
+  audioCtx = null
+  audioCache.clear()
 })
 
 // --- TICKER (reactive) ---
@@ -524,7 +544,19 @@ const showPinModal = ref(false)
 const pinDigits = ref(['', '', '', ''])
 const pinError = ref(false)
 const pinShake = ref(false)
-const controlPin = ref('1234')
+// PIN kontrol disimpan per-perangkat di localStorage supaya tetap bertahan
+// setelah reload (termasuk auto-reload tengah malam). Default '1234' bila belum
+// pernah diubah / storage tidak tersedia.
+const PIN_STORAGE_KEY = 'av_tv_control_pin'
+function loadStoredPin() {
+  try {
+    const v = localStorage.getItem(PIN_STORAGE_KEY)
+    return /^\d{4}$/.test(v) ? v : '1234'
+  } catch (_) {
+    return '1234'
+  }
+}
+const controlPin = ref(loadStoredPin())
 const pinRefs = ref([])
 
 function openPinModal() {
@@ -613,6 +645,11 @@ function applyMediaPayload(s) {
   hasUploadedFile.value  = !!s.has_uploaded_file
   if (Array.isArray(s.slides)) slides.value = s.slides
   if (typeof s.slide_interval === 'number') slideDuration.value = s.slide_interval
+  if (Array.isArray(s.ticker_messages)) tickerMessages.value = s.ticker_messages
+
+  // Clamp slideIndex: slides bisa berubah (mis. broadcast dari TV lain) dan
+  // index lama bisa melebihi panjang baru → render slide invalid.
+  if (slideIndex.value >= slides.value.length) slideIndex.value = 0
 
   // Restart slideshow timer kalau mode aktif slideshow
   stopSlideshow()
@@ -1182,22 +1219,37 @@ const tickerDraft = ref('')
 const tickerEditIdx = ref(-1)
 const tickerEditVal = ref('')
 
-function addTickerMsg() {
+// Persist daftar pesan ticker ke backend (singleton media) → broadcast ke
+// semua TV via TvMediaUpdated. Mirror persistSlides. applyMediaPayload yang
+// menyetel ulang tickerMessages.value dari respons supaya satu sumber data.
+async function persistTicker(next) {
+  try {
+    const { data } = await antreanTvApi.updateMedia({ ticker_messages: next })
+    applyMediaPayload(data.data)
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan running text (perlu login)', 'err')
+  }
+}
+
+async function addTickerMsg() {
   const msg = tickerDraft.value.trim()
   if (!msg) return
-  tickerMessages.value.push(msg)
+  const next = [...tickerMessages.value, msg]
   tickerDraft.value = ''
+  await persistTicker(next)
 }
 
-function removeTickerMsg(idx) {
-  tickerMessages.value.splice(idx, 1)
+async function removeTickerMsg(idx) {
+  const next = tickerMessages.value.filter((_, i) => i !== idx)
+  await persistTicker(next)
 }
 
-function moveTickerMsg(idx, dir) {
-  const arr = tickerMessages.value
+async function moveTickerMsg(idx, dir) {
+  const next = [...tickerMessages.value]
   const target = idx + dir
-  if (target < 0 || target >= arr.length) return
-  ;[arr[idx], arr[target]] = [arr[target], arr[idx]]
+  if (target < 0 || target >= next.length) return
+  ;[next[idx], next[target]] = [next[target], next[idx]]
+  await persistTicker(next)
 }
 
 function startEditTicker(idx) {
@@ -1205,9 +1257,13 @@ function startEditTicker(idx) {
   tickerEditVal.value = tickerMessages.value[idx]
 }
 
-function saveEditTicker(idx) {
-  if (tickerEditVal.value.trim()) tickerMessages.value[idx] = tickerEditVal.value.trim()
+async function saveEditTicker(idx) {
+  const val = tickerEditVal.value.trim()
   tickerEditIdx.value = -1
+  if (!val || val === tickerMessages.value[idx]) return
+  const next = [...tickerMessages.value]
+  next[idx] = val
+  await persistTicker(next)
 }
 
 // --- CHANGE PIN ---
@@ -1229,6 +1285,7 @@ function changePin() {
     return
   }
   controlPin.value = newPin.value
+  try { localStorage.setItem(PIN_STORAGE_KEY, newPin.value) } catch (_) { /* storage penuh / private mode */ }
   newPin.value = ''
   newPinConfirm.value = ''
   pinChangeMsg.value = 'PIN berhasil diubah'
@@ -1386,16 +1443,7 @@ async function saveAudioDefaults() {
     <!-- TOP BAR -->
     <div class="tv-topbar">
       <div class="tv-logo">
-        <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo rumah sakit" class="tv-logo-img" />
-        <svg v-else viewBox="0 0 90 90" fill="none">
-          <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.15)" stroke-width="1" />
-          <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.22)" stroke-width="1" />
-          <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.32)" stroke-width="1.5" />
-          <circle cx="45" cy="45" r="14" stroke="var(--lm)" stroke-width="1.5" />
-          <circle cx="45" cy="45" r="6" fill="var(--lm)" opacity="0.9" />
-          <line x1="45" y1="39" x2="45" y2="51" stroke="#fff" stroke-width="1.5" stroke-linecap="round" />
-          <line x1="39" y1="45" x2="51" y2="45" stroke="#fff" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
+        <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="tv-logo-img" />
         <div class="tv-brand">
           <span class="tv-brand-name">{{ branding.clinic_name }}</span>
           <span v-if="branding.clinic_subtitle" class="tv-brand-sub">{{ branding.clinic_subtitle }}</span>
@@ -1424,16 +1472,7 @@ async function saveAudioDefaults() {
       <div class="video-panel">
         <!-- Placeholder -->
         <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
-          <img v-if="branding.logo_data" :src="branding.logo_data" alt="Logo rumah sakit" class="video-logo-img" />
-          <svg v-else viewBox="0 0 90 90" fill="none">
-            <circle cx="45" cy="45" r="43" stroke="rgba(56,189,248,0.08)" stroke-width="1" />
-            <circle cx="45" cy="45" r="34" stroke="rgba(56,189,248,0.12)" stroke-width="1" />
-            <circle cx="45" cy="45" r="24" stroke="rgba(56,189,248,0.18)" stroke-width="1.5" />
-            <circle cx="45" cy="45" r="14" stroke="rgba(56,189,248,0.3)" stroke-width="1.5" />
-            <circle cx="45" cy="45" r="6" fill="rgba(56,189,248,0.2)" />
-            <line x1="45" y1="39" x2="45" y2="51" stroke="rgba(56,189,248,0.4)" stroke-width="1.5" stroke-linecap="round" />
-            <line x1="39" y1="45" x2="51" y2="45" stroke="rgba(56,189,248,0.4)" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
+          <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
           <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
           <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
         </div>
@@ -1532,7 +1571,7 @@ async function saveAudioDefaults() {
           </template>
         </div>
       </div>
-      <div class="tv-bottom-right">Arumed Apps v1.0</div>
+      <div class="tv-bottom-right">PT. Karya Sistem Nusantara</div>
       <!-- PIN trigger button -->
       <button class="ctrl-btn" @click="openPinModal" title="Kontrol Layar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1625,7 +1664,7 @@ async function saveAudioDefaults() {
           </button>
           <button :class="['ctrl-tab', { active: activeTab === 'branding' }]" @click="activeTab = 'branding'; loadBrandingDraft()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="9" y1="13" x2="9" y2="13.01"/></svg>
-            Klinik
+            Rumah Sakit
           </button>
           <button :class="['ctrl-tab', { active: activeTab === 'slideshow' }]" @click="activeTab = 'slideshow'">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -1900,18 +1939,22 @@ async function saveAudioDefaults() {
             <div class="ctrl-sub-section">
               <p class="ctrl-lbl">Pilih Bunyi Notifikasi</p>
               <div class="sound-grid">
-                <button
+                <div
                   v-for="(meta, key) in soundPresets"
                   :key="key"
                   :class="['sound-card', { active: soundPreset === key }]"
+                  role="button"
+                  tabindex="0"
                   @click="soundPreset = key"
+                  @keydown.enter="soundPreset = key"
+                  @keydown.space.prevent="soundPreset = key"
                 >
                   <span class="sound-card-name">{{ meta.label }}</span>
                   <small>{{ meta.desc }}</small>
                   <button class="sound-test-btn" @click.stop="playSound(key)" title="Tes">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>
                   </button>
-                </button>
+                </div>
               </div>
             </div>
 

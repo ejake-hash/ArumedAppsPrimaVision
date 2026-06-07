@@ -47,6 +47,10 @@ class StationMappingSeeder extends Seeder
             ['PENUNJANG', 'RM-3.2', true,  true,  true],
 
             // BEDAH
+            ['BEDAH', 'RM-2.0', true,  true,  true],
+            ['BEDAH', 'RM-10.1', true, true,  true],
+            ['BEDAH', 'RM-2.3-COK', true, true, true],
+            ['BEDAH', 'RM-2.2-LP', true, true, true],
             ['BEDAH', 'RM-5.2', true,  true,  true],
             ['BEDAH', 'RM-5.3', true,  true,  true],
             ['BEDAH', 'RM-5.4', true,  true,  true],

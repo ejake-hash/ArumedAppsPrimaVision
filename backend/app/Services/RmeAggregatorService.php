@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\DiagnosticTestType;
 use App\Models\Icd10Code;
 use App\Models\Icd9Code;
+use App\Models\NurseCpptEntry;
 use App\Models\Patient;
 use App\Models\Procedure;
 use App\Models\SurgeryRecord;
@@ -179,6 +180,96 @@ class RmeAggregatorService
                 ],
             ];
         })->all();
+    }
+
+    // =========================================================================
+    // CPPT LINTAS-EPISODE — satu timeline kronologis
+    // =========================================================================
+
+    /**
+     * CPPT lintas-episode untuk satu pasien — SATU timeline kronologis menggabungkan:
+     *  - nurse_cppt_entries (CPPT perawat/PPA) ber-badge episode (RAJAL/IGD/RANAP),
+     *  - SOAP dokter poli (doctor_examinations) ber-badge POLI.
+     * Diurutkan terbaru dulu. READ-ONLY — dipakai DokterView (rawat jalan) & modul RME
+     * agar DPJP tahu perkembangan dari episode lain (IGD/RANAP) tanpa membuka tiap visit.
+     */
+    public function cppt(string $patientId): array
+    {
+        // 1) Entri CPPT (perawat/PPA) lintas SEMUA visit pasien. Badge episode dari visit.
+        $cppt = NurseCpptEntry::with(['createdBy', 'verifiedBy', 'visit'])
+            ->whereHas('visit', fn ($q) => $q->where('patient_id', $patientId))
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(function (NurseCpptEntry $e) {
+                $v = $e->visit;
+                return [
+                    'kind'        => 'CPPT',
+                    'episode'     => $v?->jenis_pelayanan ?? 'RAJAL',
+                    'visit_id'    => $e->visit_id,
+                    'datetime'    => $e->created_at?->toDateTimeString(),
+                    'date'        => $e->created_at?->toDateString(),
+                    'ppa_role'    => $e->ppa_role,
+                    'author'      => $e->createdBy?->name,
+                    'soap'        => ['s' => $e->soap_s, 'o' => $e->soap_o, 'a' => $e->soap_a, 'p' => $e->soap_p],
+                    'vitals'      => $this->cpptVitals($e),
+                    'instruksi'   => $e->instruksi,
+                    'verified_by' => $e->verifiedBy?->name,
+                    'verified_at' => $e->verified_at?->toDateTimeString(),
+                    'edited_at'   => $e->edited_at?->toDateTimeString(),
+                ];
+            });
+
+        // 2) SOAP dokter poli (doctor_examinations) yang berisi minimal satu komponen SOAP.
+        $soap = Visit::with(['doctorExamination', 'doctorSchedule.employee'])
+            ->whereHas('doctorExamination', fn ($q) => $q->where(function ($w) {
+                $w->whereNotNull('soap_subjective')->orWhereNotNull('soap_objective')
+                  ->orWhereNotNull('soap_assessment')->orWhereNotNull('soap_plan');
+            }))
+            ->where('patient_id', $patientId)
+            ->get()
+            ->map(function (Visit $v) {
+                $de   = $v->doctorExamination;
+                $when = $de->finalized_at ?? $de->updated_at ?? $v->visit_date;
+                return [
+                    'kind'           => 'SOAP',
+                    'episode'        => 'POLI',
+                    'visit_id'       => $v->id,
+                    'datetime'       => $when?->toDateTimeString(),
+                    'date'           => ($de->finalized_at ?? $v->visit_date)?->toDateString(),
+                    'ppa_role'       => 'DOKTER',
+                    'author'         => $this->doctorName($v),
+                    'soap'           => [
+                        's' => $de->soap_subjective, 'o' => $de->soap_objective,
+                        'a' => $de->soap_assessment, 'p' => $de->soap_plan,
+                    ],
+                    'diagnosis'      => $de->diagnosis_utama,
+                    'diagnosis_nama' => $de->diagnosis_utama ? $this->icd10Name($de->diagnosis_utama) : null,
+                    'is_finalized'   => (bool) $de->is_finalized,
+                ];
+            });
+
+        return $cppt->concat($soap)
+            ->sortByDesc('datetime')
+            ->values()
+            ->all();
+    }
+
+    /** Ringkas TTV + visus/IOP satu entri CPPT (buang yang kosong). */
+    private function cpptVitals(NurseCpptEntry $e): array
+    {
+        return array_filter([
+            'td'        => ($e->td_sistol && $e->td_diastol) ? "{$e->td_sistol}/{$e->td_diastol}" : null,
+            'nadi'      => $e->nadi,
+            'suhu'      => $e->suhu,
+            'spo2'      => $e->spo2,
+            'respirasi' => $e->respirasi,
+            'kgd'       => $e->kgd,
+            'pain'      => $e->pain_scale,
+            'visus_od'  => $e->visus_od,
+            'visus_os'  => $e->visus_os,
+            'iop_od'    => $e->iop_od,
+            'iop_os'    => $e->iop_os,
+        ], fn ($v) => $v !== null && $v !== '');
     }
 
     // =========================================================================

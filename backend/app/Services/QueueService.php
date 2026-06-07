@@ -282,6 +282,42 @@ class QueueService
     }
 
     /**
+     * Dahulukan: pindahkan baris ke PALING ATAS band aktif (WAITING/CALLED) station
+     * hari ini — kebalikan lewati(). queue_sequence = min(aktif) - 1 (pola sama
+     * dengan PenunjangService::requeueToDokter). Status di-reset ke WAITING (batalkan
+     * panggilan bila CALLED) agar dipanggil ulang dari atas. No-op aman bila sudah
+     * paling atas. Broadcast TV + channel station.
+     */
+    public function dahulukan(string $queueId): Queue
+    {
+        return DB::transaction(function () use ($queueId) {
+            $queue = Queue::whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+                ->lockForUpdate()
+                ->findOrFail($queueId);
+
+            $minSeq = Queue::byStation($queue->station)
+                ->whereDate('created_at', today())
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+                ->min('queue_sequence');
+
+            // Sudah paling atas → cukup reset status (batalkan panggilan bila CALLED).
+            $newSeq = ($minSeq === null || $queue->queue_sequence <= $minSeq)
+                ? $queue->queue_sequence
+                : $minSeq - 1;
+
+            $queue->update([
+                'queue_sequence' => $newSeq,
+                'status'         => Queue::STATUS_WAITING,
+                'called_at'      => null,
+            ]);
+
+            $this->broadcastQueueUpdate($queue->fresh(['visit.patient']));
+
+            return $queue->fresh(['visit.patient']);
+        });
+    }
+
+    /**
      * Batal: status -> CANCELLED. Tidak buat antrian baru.
      */
     public function batal(string $queueId, ?string $reason = null): Queue

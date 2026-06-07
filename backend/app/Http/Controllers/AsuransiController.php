@@ -23,6 +23,21 @@ class AsuransiController extends Controller
         return $this->ok($this->service->getVerifikasi($visitId));
     }
 
+    /** Semua verifikasi visit (1 per insurer) — untuk COB (penjamin-1 & penjamin-2). */
+    public function showVerifikasiAll(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getVerifikasiAll($visitId));
+    }
+
+    /**
+     * Basis COB (total@harga-penjamin-2, cover penjamin-1, selisih, saran cover
+     * penjamin-2, estimasi sisa pasien) — panduan verifikator saat menentukan cover.
+     */
+    public function cobBasis(string $visitId): JsonResponse
+    {
+        return $this->ok(app(\App\Services\KasirService::class)->getCobBasis($visitId));
+    }
+
     public function pendingVerifications(Request $request): JsonResponse
     {
         $date = $request->query('date');

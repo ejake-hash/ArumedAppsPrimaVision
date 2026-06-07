@@ -370,11 +370,16 @@ onMounted(refresh)
 
 .so-readonly { font-size: 12.5px; color: var(--wt); background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: 8px 12px; }
 
-.so-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; }
+/* overflow-x:auto = jaring pengaman: bila kolom sempit (jendela kecil), tabel bisa
+   digeser, BUKAN terpotong seperti saat overflow:hidden. border-radius dipindah ke
+   wrapper luar agar sudut tetap rapi walau isinya scroll. */
+.so-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow-x: auto; }
 .so-state { padding: 2rem; text-align: center; font-size: 13px; color: var(--tm); }
 .so-err { color: var(--et); }
 
-.so-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* min-width = jumlah lebar kolom: 48+220+150+150+100+110+120 ≈ 900px. Di bawah ini
+   wrapper-nya scroll, kolom tak diremas/terpotong. */
+.so-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 13px; }
 .so-table thead { background: var(--bs); }
 .so-table th { padding: 9px 10px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); border-bottom: 1px solid var(--gb); }
 .so-table th.r, .so-table td.r { text-align: right; }

@@ -24,6 +24,7 @@ class PermissionSeeder extends Seeder
             'rme_dokter'         => 'RME Dokter',
             'rekam_medis'        => 'Rekam Medis & TTD Dokumen',
             'bedah'              => 'Unit Bedah',
+            'anestesi'           => 'Anestesi (Laporan & Monitoring)',
             'ruang_tindakan'     => 'Ruang Tindakan (Laser/PRP)',
             'farmasi'            => 'Farmasi Unit',
             'kasir'              => 'Kasir & Billing',

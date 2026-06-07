@@ -86,10 +86,7 @@ class KasirDemoSeeder extends Seeder
 
     public function run(): void
     {
-        $asuransiInsurer = Insurer::where('type', 'ASURANSI')->where('is_active', true)->first();
-        if (! $asuransiInsurer) {
-            $this->command?->warn('KasirDemoSeeder: belum ada insurer bertipe ASURANSI — pasien asuransi tetap dibuat tanpa insurer_id (verifikasi & full-cover dilewati).');
-        }
+        $asuransiInsurer = $this->ensureAsuransiInsurer();
 
         // Sistem insurer (UMUM/BPJS) supaya getPrice tidak rely on fallback.
         $umumInsurer = Insurer::where('is_system', true)->where('type', 'UMUM')->first();
@@ -185,6 +182,31 @@ class KasirDemoSeeder extends Seeder
         });
 
         $this->command?->info("KasirDemoSeeder selesai — {$created} pasien (UMUM tunai / BPJS konfirmasi / ASURANSI penuh / ASURANSI copay) di antrean Kasir + invoice DRAFT.");
+    }
+
+    /**
+     * Pastikan ada 1 insurer bertipe ASURANSI (non-sistem) untuk skenario
+     * full-cover & copay. Pada DB fresh hanya ada UMUM/BPJS/SOSIAL (sistem),
+     * sehingga panel "Ditanggung Penuh Asuransi" / eligibility copay di KasirView
+     * tak bisa didemokan. firstOrCreate idempoten via code.
+     */
+    private function ensureAsuransiInsurer(): Insurer
+    {
+        $existing = Insurer::where('type', 'ASURANSI')->where('is_active', true)->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        return Insurer::firstOrCreate(
+            ['code' => 'ASR-DEMO'],
+            [
+                'name'      => 'Asuransi Sehat Sentosa (Demo)',
+                'type'      => 'ASURANSI',
+                'is_active' => true,
+                'is_system' => false,
+                'is_tpa'    => false,
+            ]
+        );
     }
 
     /** Enqueue ke antrean KASIR hari ini (idempoten via visit+station). */

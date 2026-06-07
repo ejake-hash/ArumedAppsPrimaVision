@@ -80,6 +80,18 @@ class RanapController extends Controller
         return $this->ok($result, 'Pasien dipindahkan');
     }
 
+    /** POST /rawat-inap/bed/{bedId}/available — tandai bed selesai dibersihkan. */
+    public function markBedAvailable(string $bedId): JsonResponse
+    {
+        try {
+            $result = $this->service->markBedAvailable($bedId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Bed siap dipakai');
+    }
+
     /** POST /rawat-inap/{visitId}/charge */
     public function addCharge(string $visitId, Request $request): JsonResponse
     {

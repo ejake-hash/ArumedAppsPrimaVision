@@ -16,10 +16,18 @@ use Illuminate\Support\Facades\DB;
 
 class PerawatService
 {
+    /** Ambang risiko "jadwal dokter hampir habis" untuk badge antrean Triase. */
+    private const QUOTA_RISK       = 3;   // sisa kuota dokter <= ini → at-risk
+    private const SESSION_RISK_MIN = 30;  // sesi (end_time) tersisa <= menit ini → at-risk
+
     public function __construct(
         private readonly Request $request,
         private readonly QueueService $queueService,
+        private readonly AntreanKuotaService $kuotaService,
     ) {}
+
+    /** Cache sisa-kuota per (doctor_schedule_id|jkn|nonjkn) agar tak N+1 dalam 1 request. */
+    private array $riskCache = [];
 
     // =========================================================================
     // ANTRIAN TRIASE
@@ -31,6 +39,7 @@ class PerawatService
             'visit.patient',
             'visit.nurseAssessment',
             'visit.insurer',
+            'visit.doctorSchedule.employee',
         ])
             ->where('station', 'TRIASE')
             ->whereDate('created_at', today())
@@ -97,6 +106,18 @@ class PerawatService
             throw new \Exception('Asesmen perawat belum di-finalize. Selesaikan asesmen dulu.', 422);
         }
 
+        // finalizeAssessment()/skipTriase() SUDAH menutup queue TRIASE + memajukan antrean
+        // (checkReadyForDoctor). Bila baris sudah COMPLETED, ini no-op idempoten — jangan
+        // lempar "Antrian sudah ditutup" dari advanceFromStation.
+        if ($queue->status === Queue::STATUS_COMPLETED) {
+            return [
+                'queue'        => $queue->fresh(['visit.patient']),
+                'visit'        => $queue->visit?->fresh(['patient', 'queues']),
+                'next_station' => null,
+                'next_queue'   => null,
+            ];
+        }
+
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_TRIASE);
     }
 
@@ -114,6 +135,19 @@ class PerawatService
         Queue::where('station', 'TRIASE')->findOrFail($queueId);
 
         $queue = $this->queueService->lewati($queueId);
+
+        return (array) $this->formatQueueItem($queue);
+    }
+
+    /**
+     * Dahulukan pasien di antrean TRIASE (mis. jadwal dokternya hampir habis) →
+     * naik ke paling atas band aktif. Delegasi ke QueueService::dahulukan.
+     */
+    public function dahulukanAntrian(string $queueId): array
+    {
+        Queue::where('station', 'TRIASE')->findOrFail($queueId);
+
+        $queue = $this->queueService->dahulukan($queueId);
 
         return (array) $this->formatQueueItem($queue);
     }
@@ -226,7 +260,7 @@ class PerawatService
         // Gate finalize: hanya TD (sistol+diastol) + KGD + keluhan utama yang wajib.
         // Nadi/suhu/respirasi/SpO2/BB/TB optional (sesuai konvensi triase mata —
         // perawat fokus ke TD+KGD untuk skrining pre-op).
-        foreach (['td_sistol', 'td_diastol', 'kgd', 'chief_complaint'] as $field) {
+        foreach (['td_sistol', 'td_diastol', 'chief_complaint'] as $field) {
             if (is_null($assessment->{$field})) {
                 throw new \Exception("Field {$field} wajib diisi sebelum mengunci asesmen.", 422);
             }
@@ -253,6 +287,47 @@ class PerawatService
         $this->checkReadyForDoctor($assessment->visit_id);
 
         return $assessment->fresh(['assessedBy', 'finalizedBy']);
+    }
+
+    /**
+     * Lewati Triase (pasien tidak perlu triase) — finalize asesmen TANPA data klinis
+     * dengan is_skipped=true, tutup antrean TRIASE, lalu jalankan gate paralel.
+     * Membuat antrean tetap maju ke DOKTER tanpa fabrikasi data vital.
+     */
+    public function skipTriase(string $queueId): array
+    {
+        return DB::transaction(function () use ($queueId) {
+            $queue = Queue::with('visit')->byStation(Queue::STATION_TRIASE)->lockForUpdate()->findOrFail($queueId);
+            $visit = $queue->visit;
+            $user  = auth('api')->user();
+
+            $assessment = NurseAssessment::firstOrNew(['visit_id' => $visit->id]);
+            if ($assessment->is_finalized && ! $assessment->is_skipped) {
+                throw new \Exception('Asesmen triase sudah difinalisasi — tidak bisa dilewati.', 422);
+            }
+
+            $assessment->fill([
+                'assessed_by_id'  => $assessment->assessed_by_id ?? $user->employee_id,
+                'chief_complaint' => $assessment->chief_complaint ?: 'Triase dilewati — tidak diperlukan.',
+                'is_skipped'      => true,
+                'is_finalized'    => true,
+                'finalized_at'    => now(),
+                'finalized_by_id' => $user->employee_id,
+            ]);
+            $assessment->save();
+
+            Queue::where('visit_id', $visit->id)
+                ->where('station', Queue::STATION_TRIASE)
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->update(['status' => 'COMPLETED', 'completed_at' => now()]);
+
+            $visit->update(['triase_completed_at' => now()]);
+
+            $this->log($user->id, 'SKIP_TRIASE', NurseAssessment::class, $assessment->id, 'Triase dilewati — tidak diperlukan');
+            $this->checkReadyForDoctor($visit->id);
+
+            return ['skipped' => true, 'visit_id' => $visit->id];
+        });
     }
 
     // =========================================================================
@@ -726,7 +801,65 @@ class PerawatService
                 'allergy_notes' => $patient->allergy_notes,
                 'photo_url'    => $patient->photo_url,
             ] : null,
+            // Konteks jadwal dokter terpilih + sinyal "hampir habis" (badge Triase).
+            'doctor'        => $visit?->doctorSchedule?->employee?->name,
+            'schedule_end'  => $visit?->doctorSchedule?->end_time
+                ? substr((string) $visit->doctorSchedule->end_time, 0, 5)
+                : null,
+            'schedule_risk' => $visit ? $this->scheduleRiskFor($visit) : null,
         ];
+    }
+
+    /**
+     * Sinyal "jadwal dokter hampir habis" untuk badge antrean Triase:
+     * at_risk bila sisa kuota dokter <= QUOTA_RISK ATAU sesi (end_time) tersisa
+     * <= SESSION_RISK_MIN menit. Di-cache per (jadwal|penjamin) agar tak N+1.
+     */
+    private function scheduleRiskFor(Visit $visit): ?array
+    {
+        $ds = $visit->doctorSchedule;
+        if (! $ds || ! $ds->poli_code) {
+            return null;
+        }
+
+        $isBpjs = $visit->guarantor_type === 'BPJS';
+        $key    = $ds->id . '|' . ($isBpjs ? 'jkn' : 'nonjkn');
+
+        if (! array_key_exists($key, $this->riskCache)) {
+            $ring  = $this->kuotaService->ringkasanKuota($ds->poli_code, $ds->employee_id, today()->toDateString());
+            $sisa  = (int) ($isBpjs ? $ring['sisakuotajkn'] : $ring['sisakuotanonjkn']);
+            $kuota = (int) ($isBpjs ? $ring['kuotajkn'] : $ring['kuotanonjkn']);
+
+            $endStr = $ds->end_time instanceof \DateTimeInterface
+                ? $ds->end_time->format('H:i:s')
+                : (string) $ds->end_time;
+            $minutesLeft = null;
+            if ($endStr !== '') {
+                $end = today()->setTimeFromTimeString($endStr);
+                $minutesLeft = (int) floor(($end->getTimestamp() - now()->getTimestamp()) / 60);
+            }
+
+            // Hanya tandai risiko kuota bila kuota penjamin ini memang ditetapkan (>0).
+            // Jadwal dengan kuota 0 (mis. dokter tidak melayani JKN) BUKAN "hampir habis":
+            // sisa = max(0, 0 - terpakai) = 0 → tanpa guard ini badge palsu muncul di
+            // SETIAP pasien penjamin tsb. Default kuota (tak terkonfigurasi) = 30, jadi
+            // jadwal normal tetap kena badge saat sisa <= QUOTA_RISK.
+            $quotaRisk   = $kuota > 0 && $sisa <= self::QUOTA_RISK;
+            $sessionRisk = $minutesLeft !== null && $minutesLeft >= 0 && $minutesLeft <= self::SESSION_RISK_MIN;
+
+            $reasons = [];
+            if ($quotaRisk)   { $reasons[] = "sisa {$sisa} slot"; }
+            if ($sessionRisk) { $reasons[] = 'sesi s/d ' . substr($endStr, 0, 5); }
+
+            $this->riskCache[$key] = [
+                'at_risk'      => $quotaRisk || $sessionRisk,
+                'sisa'         => $sisa,
+                'minutes_left' => $minutesLeft,
+                'reason'       => $reasons ? implode(' · ', $reasons) : null,
+            ];
+        }
+
+        return $this->riskCache[$key];
     }
 
     private function calculateBmi(?float $bb, ?float $tb): ?float

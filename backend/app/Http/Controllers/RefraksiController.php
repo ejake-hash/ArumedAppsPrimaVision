@@ -78,6 +78,21 @@ class RefraksiController extends Controller
         return $this->ok($queue, 'Pasien dilewati');
     }
 
+    /**
+     * PUT /refraksi/antrian/{queueId}/skip
+     * Lewati Refraksi (pasien tidak perlu refraksi) → record di-skip, antrean lanjut.
+     */
+    public function skipRefraksi(string $id): JsonResponse
+    {
+        try {
+            $result = $this->service->skipRefraksi($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Refraksi dilewati — pasien lanjut ke antrean berikutnya');
+    }
+
     // =========================================================================
     // REFRACTION RECORD
     // =========================================================================

@@ -37,6 +37,13 @@ export const useDokterStore = defineStore('dokter', () => {
     try {
       const { data } = await dokterApi.antrian()
       antrian.value   = data.data ?? []
+      // Sinkronkan pasien terpilih dengan snapshot terbaru — polling 8s mengganti
+      // seluruh `antrian`, jadi tanpa ini Tab 1 (asesmen perawat/refraksi/SEP yang
+      // baru difinalisasi) tetap basi sampai dokter klik ulang pasien.
+      if (selectedQueue.value) {
+        const fresh = antrian.value.find((q) => q.id === selectedQueue.value.id)
+        if (fresh) selectedQueue.value = fresh
+      }
     } catch (err) {
       queueError.value = err.response?.data?.message ?? 'Gagal memuat antrian dokter'
     } finally {

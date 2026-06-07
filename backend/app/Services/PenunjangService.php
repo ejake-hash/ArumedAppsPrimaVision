@@ -7,6 +7,7 @@ use App\Models\DiagnosticTestType;
 use App\Models\DiagnosticResult;
 use App\Models\IolRecommendation;
 use App\Models\Notification;
+use App\Models\PenunjangIngestInbox;
 use App\Models\Queue;
 use App\Models\SystemLog;
 use App\Models\User;
@@ -66,8 +67,9 @@ class PenunjangService
         DB::transaction(function () use ($queue) {
             // Jujur: order yang BENAR-BENAR punya hasil → COMPLETED; order yang
             // tak pernah diisi hasilnya saat operator menutup antrean → CANCELLED.
-            // Menandai COMPLETED order kosong = tagihan penunjang palsu di kasir
-            // (buildPenunjangLines menagih order COMPLETED) + rekomendasi IOL tak ada.
+            // Status ini kini MURNI operasional (hasil tampil di RME/resume + rekomendasi
+            // IOL hanya digenerate dari order COMPLETED). Billing TIDAK lagi membaca
+            // diagnostic_orders — penunjang ditagih sebagai tindakan Tab 3 (visit_services).
             $orders = DiagnosticOrder::where('visit_id', $queue->visit_id)
                 ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
                 ->withCount('results')
@@ -122,12 +124,14 @@ class PenunjangService
     {
         $user  = auth('api')->user();
         $order = DiagnosticOrder::create([
-            'visit_id'      => $visitId,
-            'ordered_by_id' => $user->employee_id,
-            'test_type'     => $testType,
-            'eye_side'      => $data['eye_side'] ?? null,
-            'notes'         => $data['notes'] ?? null,
-            'status'        => 'REQUESTED',
+            'visit_id'         => $visitId,
+            'ordered_by_id'    => $user->employee_id,
+            'test_type'        => $testType,
+            // Accession DICOM (kunci pencocokan worklist/ingest alat). Lihat AccessionService.
+            'accession_number' => app(AccessionService::class)->next(),
+            'eye_side'         => $data['eye_side'] ?? null,
+            'notes'            => $data['notes'] ?? null,
+            'status'           => 'REQUESTED',
         ]);
 
         // Create PENUNJANG queue for this visit if not already queued today
@@ -233,6 +237,85 @@ class PenunjangService
         );
 
         return $result->load('performedBy');
+    }
+
+    /**
+     * Lampirkan file (PDF/gambar) ke hasil sebuah order — dipakai jalur MESIN
+     * (ingest bridge/watcher) & penautan dari Inbox. BEDA dari storeResult (jalur
+     * manual): TIDAK throw bila hasil sudah ada (pakai firstOrNew), tidak mengisi
+     * expertise_data form, dan TIDAK auto-finalize (manusia tetap review + ketik angka).
+     *
+     * - File pertama → attachment_path; file tambahan (mis. OD lalu OS) → ditumpuk di
+     *   expertise_data['attachments'][] tanpa ubah skema.
+     * - Idempoten via $externalRef (study/SOP UID): bila ref sudah pernah dilampirkan,
+     *   kembalikan hasil apa adanya (tak menambah file dobel saat bridge retry).
+     *
+     * @param ?string $performedById employee_id penaut (null = mesin)
+     */
+    public function attachAttachmentToOrder(
+        DiagnosticOrder $order,
+        string $path,
+        ?string $performedById = null,
+        ?string $externalRef = null,
+        ?array $expertisePatch = null
+    ): DiagnosticResult {
+        return DB::transaction(function () use ($order, $path, $performedById, $externalRef, $expertisePatch) {
+            $result = DiagnosticResult::firstOrNew(['diagnostic_order_id' => $order->id]);
+
+            if (! $result->exists) {
+                $result->performed_by_id = $performedById;
+                $result->expertise_data  = [];
+                $result->result_status   = 'PENDING';
+                $result->uploaded_at     = now();
+            }
+
+            $exp  = $result->expertise_data ?? [];
+            $refs = $exp['ingest_refs'] ?? [];
+
+            // Idempotensi: ref sudah pernah masuk → tak menambah file dobel.
+            if ($externalRef && in_array($externalRef, $refs, true)) {
+                return $result;
+            }
+
+            // Data terstruktur dari parser alat (mis. biometri Quantel) — merge,
+            // tanpa menimpa kunci internal attachments/ingest_refs.
+            if ($expertisePatch) {
+                $exp = array_merge($exp, $expertisePatch);
+            }
+
+            if (empty($result->attachment_path)) {
+                $result->attachment_path = $path;
+            } else {
+                $attachments = $exp['attachments'] ?? [];
+                if ($path !== $result->attachment_path && ! in_array($path, $attachments, true)) {
+                    $attachments[] = $path;
+                }
+                $exp['attachments'] = $attachments;
+            }
+
+            if ($externalRef) {
+                $refs[] = $externalRef;
+                $exp['ingest_refs'] = $refs;
+            }
+
+            $result->expertise_data = $exp;
+            $result->save();
+
+            // Naikkan order ke IN_PROGRESS bila masih terbuka (jangan turunkan COMPLETED).
+            if (in_array($order->status, ['REQUESTED', 'IN_PROGRESS'], true)) {
+                $order->update(['status' => 'IN_PROGRESS']);
+            }
+
+            $this->log(
+                $performedById ? auth('api')->id() : null,
+                'INGEST_ATTACHMENT',
+                DiagnosticResult::class,
+                $result->id,
+                "Lampiran hasil {$order->test_type} ditautkan (kunjungan {$order->visit_id})"
+            );
+
+            return $result;
+        });
     }
 
     public function updateResult(string $id, array $data): DiagnosticResult
@@ -446,6 +529,77 @@ class PenunjangService
         $this->log(auth('api')->id(), 'UPDATE_IOL_REKOMENDASI', IolRecommendation::class, $id);
 
         return $rekomendasi->fresh();
+    }
+
+    // =========================================================================
+    // INBOX HASIL TAK-TERTAUT (ingest yang gagal cocok otomatis → tautkan manual)
+    // =========================================================================
+
+    /** Daftar item inbox UNMATCHED (opsional saring per source: OCT|USG_WATCHER). */
+    public function getInbox(?string $source = null): Collection
+    {
+        return PenunjangIngestInbox::where('status', 'UNMATCHED')
+            ->when($source, fn ($q) => $q->where('source', $source))
+            ->orderBy('created_at')
+            ->get();
+    }
+
+    /** Order penunjang terbuka hari ini sebagai kandidat penautan (picker UI). */
+    public function searchAssignableOrders(array $filters = []): Collection
+    {
+        $query = DiagnosticOrder::with('visit.patient')
+            ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
+            ->whereNotNull('accession_number')
+            ->whereDate('created_at', $filters['date'] ?? today());
+
+        if (! empty($filters['search'])) {
+            $kw = $filters['search'];
+            $query->whereHas('visit.patient', fn ($p) => $p
+                ->where('no_rm', 'ilike', "%{$kw}%")
+                ->orWhere('name', 'ilike', "%{$kw}%"));
+        }
+
+        return $query->orderBy('created_at')->limit(50)->get();
+    }
+
+    /** Tautkan item inbox ke sebuah order (reuse attachAttachmentToOrder). */
+    public function assignInbox(string $inboxId, string $orderId): PenunjangIngestInbox
+    {
+        $inbox = PenunjangIngestInbox::findOrFail($inboxId);
+        if ($inbox->status !== 'UNMATCHED') {
+            throw new \Exception('Item inbox sudah diproses.', 422);
+        }
+
+        $order = DiagnosticOrder::findOrFail($orderId);
+        if (! in_array($order->status, ['REQUESTED', 'IN_PROGRESS'], true)) {
+            throw new \Exception('Order tidak dalam status terbuka.', 422);
+        }
+
+        $user = auth('api')->user();
+
+        return DB::transaction(function () use ($inbox, $order, $user) {
+            $this->attachAttachmentToOrder($order, $inbox->attachment_path, $user->employee_id, $inbox->external_ref);
+            $inbox->update([
+                'status'            => 'ASSIGNED',
+                'assigned_order_id' => $order->id,
+                'assigned_by_id'    => $user->employee_id,
+                'assigned_at'       => now(),
+            ]);
+            $this->log($user->id, 'ASSIGN_INBOX', PenunjangIngestInbox::class, $inbox->id, "Tautkan ke order {$order->id}");
+
+            return $inbox->fresh('assignedOrder');
+        });
+    }
+
+    /** Buang item inbox (mis. file salah/ganda). */
+    public function discardInbox(string $inboxId): void
+    {
+        $inbox = PenunjangIngestInbox::findOrFail($inboxId);
+        if ($inbox->status === 'ASSIGNED') {
+            throw new \Exception('Item sudah tertaut — tidak bisa dibuang.', 422);
+        }
+        $inbox->update(['status' => 'DISCARDED']);
+        $this->log(auth('api')->id(), 'DISCARD_INBOX', PenunjangIngestInbox::class, $inboxId);
     }
 
     // =========================================================================

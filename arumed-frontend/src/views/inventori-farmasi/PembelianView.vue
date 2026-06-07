@@ -790,8 +790,9 @@ const canDelete = computed(() => auth.can('pembelian.delete'))
     <Teleport to="body">
       <div v-if="printPo" id="po-print-root">
         <div class="po-print-sheet">
-          <!-- Kop surat -->
-          <header class="pp-kop">
+          <!-- Kop kanonik (sumber tunggal) — identik dgn pratinjau Profil Institusi -->
+          <div v-if="clinic?.letterhead_html" class="pp-kop-canon" v-html="clinic.letterhead_html"></div>
+          <header v-else class="pp-kop">
             <img v-if="clinicLogoUrl" :src="clinicLogoUrl" alt="Logo" class="pp-logo" />
             <div class="pp-kop-text">
               <div class="pp-clinic">{{ clinic?.clinic_name ?? 'Rumah Sakit' }}</div>

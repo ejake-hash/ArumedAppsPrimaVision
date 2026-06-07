@@ -11,7 +11,7 @@
  */
 import { ref, onMounted, computed, watch } from 'vue'
 import { useAsuransiStore } from '@/stores/asuransiStore'
-import { masterApi } from '@/services/api'
+import { masterApi, asuransiApi } from '@/services/api'
 
 const store = useAsuransiStore()
 const penjaminList = ref([])
@@ -36,35 +36,72 @@ function emptyVerif() {
   }
 }
 
+// COB: basis selisih (total@penjamin-2, cover BPJS, selisih, saran cover p-2) +
+// daftar verifikasi semua penjamin (untuk berpindah antar penjamin di 1 modal).
+const cobBasis = ref(null)
+const verifAll = ref([])
+
 function openVerifForm(row) {
   verifModal.value = { open: true, visitId: row.visit_id, insurerId: row.insurer_id, mode: 'create', id: null }
   verifForm.value = emptyVerif()
+  cobBasis.value = null
+  verifAll.value = []
   // Muat rincian tagihan pasien (read-only) supaya admin tahu total sebelum tentukan cover.
   store.billingDetail = null
   store.fetchBilling(row.visit_id).catch(() => {})
-  // Prefill kalau sudah ada verifikasi awal (status PENDING dari admisi / sudah diverifikasi)
-  store.fetchVerifikasi(row.visit_id).then(() => {
-    const v = store.verifikasi
-    if (v) {
-      verifModal.value.mode = 'update'
-      verifModal.value.id = v.id
-      verifForm.value = {
-        status: v.status === 'PENDING' ? 'VERIFIED' : v.status,
-        policy_number: v.policy_number ?? '',
-        member_name: v.member_name ?? '',
-        member_card_number: v.member_card_number ?? '',
-        // Backend cast decimal:2 → string "100000.00". Konversi ke integer (Rupiah
-        // tidak pakai sen, copay % bulat). Round, bukan floor — jaga-jaga ada koma.
-        plafon_amount: v.plafon_amount != null ? Math.round(Number(v.plafon_amount)) : null,
-        copayment_percent: v.copayment_percent != null ? Math.round(Number(v.copayment_percent)) : 0,
-        copayment_amount:  v.copayment_amount  != null ? Math.round(Number(v.copayment_amount))  : 0,
-        covered_amount:    v.covered_amount    != null ? Math.round(Number(v.covered_amount))    : null,
-        coverage_notes: v.coverage_notes ?? '',
-        exclusion_flags: v.exclusion_flags ?? [],
-        issue_notes: v.issue_notes ?? '',
-      }
+  // COB basis (non-blocking) — null/is_cob=false untuk visit non-COB.
+  asuransiApi.cobBasis(row.visit_id)
+    .then(({ data }) => { const b = data.data ?? data; cobBasis.value = b?.is_cob ? b : null })
+    .catch(() => { cobBasis.value = null })
+  // Semua verifikasi (1 per insurer) → prefill per penjamin.
+  asuransiApi.getVerifikasiAll(row.visit_id)
+    .then(({ data }) => { verifAll.value = data.data ?? data ?? []; applyVerifForInsurer(row.insurer_id) })
+    .catch(() => applyVerifForInsurer(row.insurer_id))
+}
+
+// Pilih penjamin yang sedang diverifikasi (penjamin-1/penjamin-2 pada COB) dan
+// isi form dari verifikasi existing-nya bila ada, atau kosong (mode create).
+function applyVerifForInsurer(insurerId) {
+  verifModal.value.insurerId = insurerId
+  const v = (verifAll.value || []).find(x => x.insurer_id === insurerId)
+  if (v) {
+    verifModal.value.mode = 'update'
+    verifModal.value.id = v.id
+    verifForm.value = {
+      status: v.status === 'PENDING' ? 'VERIFIED' : v.status,
+      policy_number: v.policy_number ?? '',
+      member_name: v.member_name ?? '',
+      member_card_number: v.member_card_number ?? '',
+      plafon_amount: v.plafon_amount != null ? Math.round(Number(v.plafon_amount)) : null,
+      copayment_percent: v.copayment_percent != null ? Math.round(Number(v.copayment_percent)) : 0,
+      copayment_amount:  v.copayment_amount  != null ? Math.round(Number(v.copayment_amount))  : 0,
+      covered_amount:    v.covered_amount    != null ? Math.round(Number(v.covered_amount))    : null,
+      coverage_notes: v.coverage_notes ?? '',
+      exclusion_flags: v.exclusion_flags ?? [],
+      issue_notes: v.issue_notes ?? '',
     }
-  }).catch(() => {})
+  } else {
+    verifModal.value.mode = 'create'
+    verifModal.value.id = null
+    verifForm.value = emptyVerif()
+  }
+}
+
+// Daftar penjamin yang bisa diverifikasi (untuk COB: penjamin-1 & penjamin-2).
+const verifInsurerTabs = computed(() => {
+  if (!cobBasis.value?.is_cob) return []
+  return [
+    { seq: 1, ...cobBasis.value.penjamin1 },
+    { seq: 2, ...cobBasis.value.penjamin2 },
+  ].filter(p => p.insurer_id)
+})
+
+// Isi cover dengan SARAN COB: penjamin-1 = cover BPJS (INA-CBG), penjamin-2 = saran selisih.
+function setCoverSuggested() {
+  if (!cobBasis.value?.is_cob) return
+  const isP2 = verifModal.value.insurerId === cobBasis.value.penjamin2?.insurer_id
+  const val = isP2 ? cobBasis.value.penjamin2?.suggested_covered : cobBasis.value.penjamin1?.covered
+  if (val != null) verifForm.value.covered_amount = Math.round(Number(val))
 }
 
 // Total tagihan riil dari billing detail (untuk panel & hitung selisih cover).
@@ -97,10 +134,25 @@ async function submitVerif() {
     } else {
       await store.updateVerifikasi(verifModal.value.id, payload)
     }
-    verifModal.value.open = false
+    const isCob = !!cobBasis.value?.is_cob
     await store.fetchPendingVerifications()
     await store.fetchInServiceVerifications()
     await store.fetchSummary()
+    if (isCob) {
+      // COB: pertahankan modal terbuka & segarkan kedua penjamin + basis selisih,
+      // supaya verifikator bisa lanjut verifikasi penjamin satunya.
+      const vid = verifModal.value.visitId
+      const [{ data: ad }, { data: bd }] = await Promise.all([
+        asuransiApi.getVerifikasiAll(vid),
+        asuransiApi.cobBasis(vid),
+      ])
+      verifAll.value = ad.data ?? ad ?? []
+      const b = bd.data ?? bd
+      cobBasis.value = b?.is_cob ? b : null
+      applyVerifForInsurer(verifModal.value.insurerId)
+    } else {
+      verifModal.value.open = false
+    }
   } catch (e) {
     // store.error sudah di-set
   }
@@ -613,6 +665,28 @@ watch(tab, (t) => {
         </div>
         <div class="modal-body">
 
+          <!-- ─── COB: penjamin ganda (penjamin-1 BPJS/asuransi + penjamin-2 selisih) ─── -->
+          <div v-if="cobBasis && cobBasis.is_cob" class="cob-panel">
+            <div class="cob-title">Kunjungan COB — verifikasi tiap penjamin</div>
+            <div class="cob-tabs">
+              <button
+                v-for="p in verifInsurerTabs" :key="p.insurer_id"
+                class="cob-tab" :class="{ active: verifModal.insurerId === p.insurer_id }"
+                @click="applyVerifForInsurer(p.insurer_id)">
+                Penjamin {{ p.seq }} · {{ p.type }}
+                <span v-if="p.verified" class="cob-ok">✓</span>
+              </button>
+            </div>
+            <div class="cob-grid">
+              <div><span class="cob-k">Total @harga penjamin-2</span><span class="cob-v">{{ formatRp(cobBasis.total_penjamin2) }}</span></div>
+              <div><span class="cob-k">Ditanggung penjamin-1 (mis. BPJS INA-CBG)</span><span class="cob-v">{{ formatRp(cobBasis.penjamin1.covered) }}</span></div>
+              <div><span class="cob-k">Selisih (ditagih penjamin-2)</span><span class="cob-v">{{ formatRp(cobBasis.selisih) }}</span></div>
+              <div><span class="cob-k">Saran cover penjamin-2 (clamp plafon)</span><span class="cob-v">{{ formatRp(cobBasis.penjamin2.suggested_covered) }}</span></div>
+              <div><span class="cob-k">Estimasi sisa pasien</span><span class="cob-v">{{ formatRp(cobBasis.patient_estimate) }}</span></div>
+            </div>
+            <button type="button" class="btn btn-sm btn-secondary" @click="setCoverSuggested">Pakai saran cover untuk penjamin ini</button>
+          </div>
+
           <!-- INSTRUKSI -->
           <div class="instr-box">
             <strong>Langkah:</strong> buka portal TPA (mis. Admedika, Inhealth, Allianz) →
@@ -1073,6 +1147,19 @@ watch(tab, (t) => {
 
 /* Billing detail panel (modal verifikasi) */
 .billing-box { background: var(--bc); }
+
+/* COB panel di modal verifikasi */
+.cob-panel { border: 1px solid #1FAAE0; background: #f0f9ff; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.cob-title { font-weight: 700; color: #0E3A66; margin-bottom: 8px; font-size: 13px; }
+.cob-tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.cob-tab { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.cob-tab.active { border-color: #1FAAE0; background: #1FAAE0; color: #fff; font-weight: 600; }
+.cob-ok { color: #16a34a; font-weight: 700; margin-left: 4px; }
+.cob-tab.active .cob-ok { color: #fff; }
+.cob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 10px; }
+.cob-grid > div { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+.cob-k { color: #475569; }
+.cob-v { font-weight: 600; color: #0E3A66; }
 .bill-count { font-size: 10px; font-weight: 700; color: var(--tm); background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 1px 7px; margin-left: auto; text-transform: none; letter-spacing: 0; }
 .bill-empty { font-size: 11.5px; color: var(--tu); padding: 6px 2px; }
 /* Area item dengan scroll internal — banyak item tidak mendorong form cover ke bawah */

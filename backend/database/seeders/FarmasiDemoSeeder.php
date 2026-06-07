@@ -70,7 +70,7 @@ class FarmasiDemoSeeder extends Seeder
 
     public function run(): void
     {
-        $asuransiInsurer = Insurer::where('type', 'ASURANSI')->where('is_active', true)->first();
+        $asuransiInsurer = $this->ensureAsuransiInsurer();
         $umumInsurer     = Insurer::where('is_system', true)->where('type', 'UMUM')->first();
         $bpjsInsurer     = Insurer::where('is_system', true)->where('type', 'BPJS')->first();
 
@@ -266,6 +266,30 @@ class FarmasiDemoSeeder extends Seeder
             'new_qty'   => $need + 20,   // buffer demo
             'reason'    => 'Stok awal demo Farmasi (FarmasiDemoSeeder)',
         ]);
+    }
+
+    /**
+     * Pastikan ada 1 insurer bertipe ASURANSI (non-sistem) agar pasien demo
+     * ASURANSI punya penjamin nyata. Pada DB fresh hanya ada UMUM/BPJS/SOSIAL
+     * (sistem). firstOrCreate idempoten via code; selaras dgn KasirDemoSeeder.
+     */
+    private function ensureAsuransiInsurer(): Insurer
+    {
+        $existing = Insurer::where('type', 'ASURANSI')->where('is_active', true)->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        return Insurer::firstOrCreate(
+            ['code' => 'ASR-DEMO'],
+            [
+                'name'      => 'Asuransi Sehat Sentosa (Demo)',
+                'type'      => 'ASURANSI',
+                'is_active' => true,
+                'is_system' => false,
+                'is_tpa'    => false,
+            ]
+        );
     }
 
     /** Enqueue ke antrean FARMASI hari ini (idempoten via visit+station). */

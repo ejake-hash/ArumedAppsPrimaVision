@@ -24,8 +24,13 @@ class RM11ConsentSeeder extends Seeder
 {
     public function run(): void
     {
-        $docType = $this->seedDocType();
-        $this->seedTemplate($docType);
+        // SELURUH seeder ini DIMATIKAN atas permintaan (7 Jun 2026): katalog dibangun
+        // ulang dari PDF resmi. Dulu membuat DocumentType RM-1.1 + template
+        // RM_1_1_GENERAL_CONSENT. ⚠️ AdmisiService memakai GENERAL_CONSENT/
+        // RM_1_1_GENERAL_CONSENT by-code → consent pasien baru tidak berfungsi sampai
+        // dibangun ulang. Aktifkan kembali dua baris di bawah untuk memulihkan.
+        // $docType = $this->seedDocType();
+        // $this->seedTemplate($docType);
     }
 
     private function seedDocType(): DocumentType

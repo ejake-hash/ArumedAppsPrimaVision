@@ -95,6 +95,17 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // Dahulukan: pasien naik ke atas antrean (urutan berubah) → refetch agar urutan
+  // UI sinkron dengan server (bukan sekadar replace 1 item).
+  async function dahulukanAntrian(queueId) {
+    try {
+      await perawatApi.dahulukan(queueId)
+      await fetchAntrian()
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal mendahulukan pasien')
+    }
+  }
+
   // ─── Patient Selection ────────────────────────────────────────────────────────
 
   async function pickPatient(queueItem) {
@@ -255,6 +266,26 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // ─── Lewati Triase (pasien tidak perlu triase) — antrean tetap jalan ───────────
+  const skipping = ref(false)
+  async function skipTriase() {
+    const queueId = selectedQueue.value?.id
+    if (!queueId) throw new Error('Pilih pasien terlebih dahulu')
+    skipping.value = true
+    try {
+      const { data } = await perawatApi.skipTriase(queueId)
+      const idx = antrian.value.findIndex((q) => q.id === queueId)
+      if (idx !== -1) antrian.value[idx] = { ...antrian.value[idx], status: 'COMPLETED' }
+      _syncStats()
+      await fetchAntrian()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal melewati triase')
+    } finally {
+      skipping.value = false
+    }
+  }
+
   // ─── Vital History ────────────────────────────────────────────────────────────
 
   async function loadVitalHistory(patientId) {
@@ -366,12 +397,20 @@ export const usePerawatStore = defineStore('perawat', () => {
 
         _channel = _pusher.subscribe('triase-queue')
         _channel.bind('queue-updated', ({ action, queue }) => {
+          // Channel 'triase-queue' memuat event TRIASE *dan* REFRAKSIONIS (lihat
+          // QueueService::broadcastQueueUpdate). Papan perawat hanya station TRIASE —
+          // tanpa filter ini, baris REFRAKSIONIS bocor masuk ke daftar triase.
+          if (queue.station !== 'TRIASE') return
           if (action === 'added') {
-            antrian.value.push(queue)
+            // Payload broadcast TIPIS (tanpa relasi visit lengkap). Push langsung →
+            // baris baru tak punya visit.id (pasien tak bisa diproses, save 422) & data
+            // pasien minim. Re-fetch daftar penuh agar baris lengkap.
+            // De-dup: WS bisa pancar 'added' >1x (retry/race) → fetch hanya bila baru.
+            if (! antrian.value.some((q) => q.id === queue.id)) fetchAntrian()
           } else {
             _updateQueueItem(queue)
+            _syncStats()
           }
-          _syncStats()
         })
 
         _pusher.connection.bind('error', () => {
@@ -409,10 +448,22 @@ export const usePerawatStore = defineStore('perawat', () => {
   function _updateQueueItem(updatedQueue) {
     const idx = antrian.value.findIndex((q) => q.id === updatedQueue.id)
     if (idx !== -1) {
-      antrian.value[idx] = { ...antrian.value[idx], ...updatedQueue }
+      antrian.value[idx] = _mergeQueueItem(antrian.value[idx], updatedQueue)
     }
     if (selectedQueue.value?.id === updatedQueue.id) {
-      selectedQueue.value = { ...selectedQueue.value, ...updatedQueue }
+      selectedQueue.value = _mergeQueueItem(selectedQueue.value, updatedQueue)
+    }
+  }
+
+  // Merge baris antrean TANPA menimpa relasi bersarang (visit/patient) dengan versi
+  // tipis dari respons panggil/mulai → cegah field visit hilang dari kartu.
+  function _mergeQueueItem(existing, incoming) {
+    if (!existing) return incoming
+    return {
+      ...existing,
+      ...incoming,
+      visit:   incoming.visit   ? { ...existing.visit, ...incoming.visit }     : existing.visit,
+      patient: incoming.patient ? { ...existing.patient, ...incoming.patient } : existing.patient,
     }
   }
 
@@ -429,7 +480,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     antrian, stats, queueLoading, queueError,
     selectedQueue, asesmen, asesmenLoading,
     doctorTicket,
-    saving, finalizing, sendingBedah, sendingRanap,
+    saving, finalizing, sendingBedah, sendingRanap, skipping,
     vitalHistory, vitalHistoryLoading,
     rekamMedis, rekamMedisLoading, rekamMedisError,
     selectedDokumen, dokumenLoading,
@@ -440,7 +491,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     selectedVisitId, selectedPatientId, isFinalized,
 
     // queue actions
-    fetchAntrian, panggilAntrian, lewatiAntrian,
+    fetchAntrian, panggilAntrian, lewatiAntrian, dahulukanAntrian, skipTriase,
 
     // patient selection
     pickPatient, clearSelected,

@@ -7,7 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * Komponen snapshot paket pasien. Hanya PROCEDURE/BHP/IOL (tanpa MEDICATION).
+ * Komponen snapshot paket pasien. PROCEDURE/BHP/IOL (paket bedah) + MEDICATION
+ * (khusus paket PEMERIKSAAN: daftar obat "ekspektasi" untuk absorpsi diskon — obat
+ * tetap ditagih lewat resep, bukan dari snapshot ini).
  */
 class VisitSurgeryPackageItem extends Model
 {
@@ -16,14 +18,15 @@ class VisitSurgeryPackageItem extends Model
     protected $keyType   = 'string';
     public $incrementing = false;
 
-    public const TYPE_PROCEDURE = 'PROCEDURE';
-    public const TYPE_BHP       = 'BHP';
-    public const TYPE_IOL       = 'IOL';
+    public const TYPE_PROCEDURE  = 'PROCEDURE';
+    public const TYPE_BHP        = 'BHP';
+    public const TYPE_IOL        = 'IOL';
+    public const TYPE_MEDICATION = 'MEDICATION';
 
     /** Komponen yang boleh diedit operator di modul Bedah. */
     public const EDITABLE_TYPES = [self::TYPE_PROCEDURE, self::TYPE_BHP];
 
-    /** Komponen yang masuk basis perhitungan diskon. */
+    /** Komponen yang masuk basis perhitungan diskon (obat diserap terpisah via resep). */
     public const BILLABLE_TYPES = [self::TYPE_PROCEDURE, self::TYPE_BHP, self::TYPE_IOL];
 
     protected $fillable = [
@@ -45,14 +48,15 @@ class VisitSurgeryPackageItem extends Model
         return $this->belongsTo(VisitSurgeryPackage::class, 'visit_surgery_package_id');
     }
 
-    /** Resolve item terkait (Procedure/BhpItem/IolItem). */
+    /** Resolve item terkait (Procedure/BhpItem/IolItem/Medication). */
     public function resolveItem(): ?Model
     {
         return match ($this->item_type) {
-            self::TYPE_PROCEDURE => Procedure::find($this->item_id),
-            self::TYPE_BHP       => BhpItem::find($this->item_id),
-            self::TYPE_IOL       => IolItem::find($this->item_id),
-            default              => null,
+            self::TYPE_PROCEDURE  => Procedure::find($this->item_id),
+            self::TYPE_BHP        => BhpItem::find($this->item_id),
+            self::TYPE_IOL        => IolItem::find($this->item_id),
+            self::TYPE_MEDICATION => Medication::find($this->item_id),
+            default               => null,
         };
     }
 

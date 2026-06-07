@@ -18,8 +18,17 @@ body {
 }
 
 body {
+  /* Default = DESKTOP PENUH: lantai 1280px di SEMUA ukuran jendela. Jendela
+     <1280px → muncul scroll horizontal, konten TIDAK diremas/dipadatkan, dan
+     semua perilaku responsif (sidebar drawer, kolom menumpuk) dimatikan. */
   min-width: 1280px;
 }
+
+/* Halaman responsif (Login & TTD Dokumen) — boleh mengalir sampai layar mungil
+   (280px = Galaxy Fold, layar luar) agar nyaman di HP/tablet. Diaktifkan lewat
+   kelas `app-fluid` pada <html> oleh router (src/router/index.js); hanya rute
+   `login` & `ttd-dokumen` yang mendapatkannya. */
+html.app-fluid body { min-width: 280px; }
 
 a {
   color: inherit;

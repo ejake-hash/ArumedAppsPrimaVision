@@ -83,7 +83,9 @@ class UserService
     private function syncEmployeeProfile(User $user, array $data): void
     {
         $payload = [];
-        foreach (['nip', 'sip', 'str'] as $field) {
+        // profession = jenis/spesialisasi nakes (mis. "Dokter Umum", "Dokter Anestesi").
+        // Murni data referensi — tidak mengubah role/permission akun.
+        foreach (['profession', 'doctor_type', 'nip', 'sip', 'str'] as $field) {
             if (array_key_exists($field, $data)) {
                 $value = $data[$field];
                 $payload[$field] = ($value === '' || $value === null) ? null : $value;
@@ -248,7 +250,7 @@ class UserService
     // ─── CSV: Template / Export / Import ──────────────────────────────────────
 
     /** Kolom CSV data pengguna. Password sengaja tidak ada (auto-generate saat import). */
-    private const CSV_COLUMNS = ['name', 'username', 'email', 'role', 'is_active', 'nip', 'sip', 'str'];
+    private const CSV_COLUMNS = ['name', 'username', 'email', 'role', 'is_active', 'profession', 'nip', 'sip', 'str'];
 
     /** Role nakes klinis — hanya untuk role ini sip/str ditulis & employee dibuat dari NIP baru. */
     private const NAKES_ROLE_KEYWORDS = ['dokter', 'perawat', 'refraksionis', 'penunjang'];
@@ -292,6 +294,7 @@ class UserService
             'Kolom WAJIB: name, username, email, role. Username & email harus unik.',
             'Kolom "role" diisi KODE role (bukan nama tampilan). Pilihan: ' . implode(' | ', $roleCodes) . '.',
             'Kolom "is_active": 1 = aktif, 0 = nonaktif (kosong dianggap aktif).',
+            'Kolom "profession" opsional: jenis/spesialisasi nakes (mis. Dokter Umum, Dokter Anestesi) — HANYA untuk role nakes, hanya data.',
             'Kolom "nip" opsional: jika cocok dengan NIP pegawai yang sudah ada, akun ditautkan ke pegawai itu.',
             '  Untuk role NAKES (dokter/perawat/refraksionis/penunjang), NIP baru otomatis membuat data pegawai.',
             '  Untuk role non-nakes (admisi/kasir/dll), NIP yang tidak dikenal akan ditolak (baris gagal).',
@@ -299,15 +302,15 @@ class UserService
             '  Mengisi sip/str pada role non-nakes akan diabaikan (tidak disimpan).',
             'Password TIDAK diisi di sini — sistem membuat password acak per user dan menampilkannya setelah import.',
             'Baris dengan username/email yang sudah terdaftar akan dilewati (dilaporkan di ringkasan).',
-            'Contoh non-nakes : Rina Wulandari,rina,rina@klinik.com,admisi,1,,,',
-            'Contoh nakes     : Siti Rahayu Amd.Kep,siti,siti@klinik.com,perawat,1,PR-001,SIP-123,STR-456',
+            'Contoh non-nakes : Rina Wulandari,rina,rina@klinik.com,admisi,1,,,,',
+            'Contoh nakes     : Siti Rahayu Amd.Kep,siti,siti@klinik.com,perawat,1,Perawat,PR-001,SIP-123,STR-456',
         ];
     }
 
     /** Export seluruh user ke CSV (password tidak diekspor). */
     public function exportCsv(): string
     {
-        $users = User::with(['role:id,name', 'employee:id,nip,sip,str'])->orderBy('name')->get();
+        $users = User::with(['role:id,name', 'employee:id,profession,nip,sip,str'])->orderBy('name')->get();
 
         $output = fopen('php://temp', 'r+');
         fputcsv($output, self::CSV_COLUMNS, ',', '"', '\\');
@@ -319,6 +322,7 @@ class UserService
                 $u->email,
                 $u->role?->name ?? '',
                 $u->is_active ? 1 : 0,
+                $u->employee?->profession ?? '',
                 $u->employee?->nip ?? '',
                 $u->employee?->sip ?? '',
                 $u->employee?->str ?? '',
@@ -370,11 +374,12 @@ class UserService
             $name     = $get('name');
             $username = $get('username');
             $email    = $get('email');
-            $roleName = $get('role');
-            $nip      = $get('nip');
-            $sip      = $get('sip');
-            $str      = $get('str');
-            $isActive = $get('is_active');
+            $roleName   = $get('role');
+            $profession = $get('profession');
+            $nip        = $get('nip');
+            $sip        = $get('sip');
+            $str        = $get('str');
+            $isActive   = $get('is_active');
 
             if ($name === '' || $username === '' || $email === '' || $roleName === '') {
                 $errors[] = ['row' => $rowNo, 'reason' => 'name/username/email/role wajib diisi'];
@@ -410,22 +415,23 @@ class UserService
                 }
             }
 
-            // sip/str hanya relevan untuk nakes; pada non-nakes diabaikan diam-diam.
-            $sipVal = ($isNakes && $sip !== '') ? $sip : null;
-            $strVal = ($isNakes && $str !== '') ? $str : null;
+            // profession/sip/str hanya relevan untuk nakes; pada non-nakes diabaikan diam-diam.
+            $profVal = ($isNakes && $profession !== '') ? $profession : null;
+            $sipVal  = ($isNakes && $sip !== '') ? $sip : null;
+            $strVal  = ($isNakes && $str !== '') ? $str : null;
 
             $password = Str::random(10);
 
             try {
                 DB::transaction(function () use (
                     $name, $username, $email, $role, $isActive, $password,
-                    $employeeId, $createEmployee, $isNakes, $nip, $sipVal, $strVal
+                    $employeeId, $createEmployee, $isNakes, $nip, $profVal, $sipVal, $strVal
                 ) {
                     // Buat pegawai baru bila role nakes & NIP belum ada.
                     if ($createEmployee) {
                         $employeeId = Employee::create([
                             'name'       => $name,
-                            'profession' => $role->display_name ?? 'Nakes',
+                            'profession' => $profVal ?? ($role->display_name ?? 'Nakes'),
                             'nip'        => $nip,
                             'is_active'  => true,
                         ])->id;
@@ -444,11 +450,11 @@ class UserService
                     // Role dokter tanpa pegawai → auto-buat (jalur lama).
                     $this->ensureEmployeeForDoctor($user->fresh(), $role);
 
-                    // Tulis sip/str ke pegawai tertaut (juga buat pegawai bila nakes
-                    // mengisi sip/str tanpa NIP). Hanya nilai non-null yang ditulis.
+                    // Tulis profession/sip/str ke pegawai tertaut (juga buat pegawai bila
+                    // nakes mengisi field ini tanpa NIP). Hanya nilai non-null yang ditulis.
                     if ($isNakes) {
                         $this->syncEmployeeProfile($user->fresh(), array_filter(
-                            ['sip' => $sipVal, 'str' => $strVal],
+                            ['profession' => $profVal, 'sip' => $sipVal, 'str' => $strVal],
                             fn ($v) => $v !== null
                         ));
                     }
@@ -499,6 +505,7 @@ class UserService
                 'sip'           => $u->employee->sip,
                 'str'           => $u->employee->str,
                 'profession'    => $u->employee->profession,
+                'doctor_type'   => $u->employee->doctor_type,
                 'nik'           => $u->employee->nik,
                 'satusehat_ihs' => $u->employee->satusehat_ihs,
             ] : null,

@@ -15,7 +15,7 @@
  * field dengan binding.kind = 'db' dimulai EMPTY string, user/staff isi ulang.
  * Optimization prefill dari snapshot DB → Fase 3 polish atau Fase 4.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { formTemplateApi } from '@/services/api'
 import FormFieldRenderer from './FormFieldRenderer.vue'
 import { useScoring } from './useScoring.js'
@@ -28,7 +28,12 @@ const props = defineProps({
   // supaya backend SignatureService set signer_patient_id otomatis tanpa
   // butuh external_identity manual.
   patientId: { type: String, default: null },
+  // autoOpen: langsung buka modal form saat mount (dipakai DokterView pasca-finalisasi
+  // untuk menampilkan Resume Medis RM 1.7 tanpa klik kartu).
+  autoOpen:  { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['close'])
 
 const open    = ref(false)
 const tab     = ref('input')   // INPUT mode start at 'input'; toggle to 'output' setelah submit
@@ -86,6 +91,9 @@ const inputFields = computed(() => {
 const visibleFields = computed(() => {
   return inputFields.value.filter(f => {
     const kind = f.binding?.kind
+    // display_only: field auto yang HANYA tampil di output cetak (identitas, kop,
+    // meta) — di-resolve renderer, tidak diisi manual di section data.
+    if (f.display_only) return false
     if (kind === 'clinic' || kind === 'aggregate') return false
     if (f.type === 'signature_canvas' || f.type === 'signature_placeholder') return false
     return true
@@ -132,10 +140,27 @@ async function openAndLoad() {
   // Default tab: INPUT kalau template INPUT/HYBRID, OUTPUT kalau pure OUTPUT.
   tab.value = isInput.value ? 'input' : 'output'
 
+  // Prefill field editable dari data klinis yang sudah ada (hanya bila belum
+  // ada dokumen final & tab input dipakai) — supaya dokter tidak isi ulang.
+  if (isInput.value && !isFinalized.value) {
+    await loadPrefill()
+  }
+
   // Auto-fetch HTML kalau perlu (output tab visible).
   if (tab.value === 'output' && !html.value) {
     await loadRender()
   }
+}
+
+// Muat nilai awal field editable dari /form/{code}/prefill. Nilai prefill hanya
+// jadi default UI; kalau user sudah mengisi field (mis. computed), nilai user menang.
+async function loadPrefill() {
+  try {
+    const { data } = await formTemplateApi.prefillForm(props.template.code, props.visitId)
+    const defaults = data.data?.defaults ?? {}
+    // Default di BAWAH nilai yang sudah ada di formData (computed/edit user menang).
+    formData.value = { ...defaults, ...formData.value }
+  } catch (_) { /* prefill best-effort — abaikan kegagalan */ }
 }
 
 async function loadRender() {
@@ -163,7 +188,13 @@ async function switchTab(t) {
 
 function close() {
   open.value = false
+  emit('close')
 }
+
+// autoOpen → buka modal langsung saat mount (mis. Resume Medis pasca-finalisasi).
+onMounted(() => {
+  if (props.autoOpen) openAndLoad()
+})
 
 function printIt() {
   if (!html.value) return

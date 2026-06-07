@@ -196,4 +196,16 @@ function close() {
 }
 .scm-btn-primary:hover:not(:disabled) { background: var(--ld); border-color: var(--ld); }
 .scm-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* HP sempit (iPhone standar / Galaxy Fold): identitas menumpuk, padding mengecil,
+   tombol footer melebar penuh agar mudah ditekan jempol. */
+@media (max-width: 480px) {
+  .scm-modal { width: 96vw; max-height: 96vh; }
+  .scm-body { padding: 1rem; }
+  .scm-identity { grid-template-columns: 1fr; gap: 0.6rem; }
+  .scm-head { padding: 0.85rem 1rem; }
+  .scm-head h3 { font-size: 16px; }
+  .scm-foot { padding: 0.75rem 1rem; flex-direction: column-reverse; }
+  .scm-btn-ghost, .scm-btn-primary { width: 100%; }
+}
 </style>

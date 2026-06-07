@@ -14,6 +14,9 @@ class JadwalDokterService
         'hari', 'jam_mulai', 'jam_selesai', 'ruang',
     ];
 
+    /** Ambang "hampir penuh" — sisa kuota (JKN/non-JKN) <= ini → peringatan di Admisi. */
+    private const QUOTA_RISK = 3;
+
     // =========================================================================
     // LIST
     // =========================================================================
@@ -30,6 +33,7 @@ class JadwalDokterService
         $weekStart = $weekStart ? DoctorSchedule::weekStartFor($weekStart) : DoctorSchedule::currentWeekStart();
 
         $employees = Employee::whereHas('user.role', fn ($q) => $q->where('name', 'dokter'))
+            ->where('doctor_type', Employee::DT_SPESIALIS_MATA) // hanya Dokter Spesialis Mata yang dijadwalkan
             ->with(['doctorSchedules' => function ($q) use ($weekStart, $serviceType) {
                 $q->where('week_start', $weekStart)->orderBy('day_of_week');
                 if ($serviceType) {
@@ -49,21 +53,46 @@ class JadwalDokterService
     public function getAktifHariIni(): array
     {
         $schedules = DoctorSchedule::with('employee')
+            ->whereHas('employee', fn ($q) => $q->where('doctor_type', Employee::DT_SPESIALIS_MATA))
             ->aktifHariIni()
             ->orderBy('room')
             ->get();
 
-        return $schedules->map(fn ($s) => [
-            'id'           => $s->id,
-            'employee_id'  => $s->employee_id,
-            'nama_dokter'  => $s->employee?->name ?? '—',
-            'poliklinik'   => $s->poliklinik,
-            'room'         => $s->room,
-            'service_type' => $s->service_type,
-            'queue_prefix' => $s->queuePrefix(),
-            'start_time'   => $s->start_time,
-            'end_time'     => $s->end_time,
-        ])->values()->toArray();
+        $kuotaService = app(AntreanKuotaService::class);
+        $today        = today()->toDateString();
+
+        return $schedules->map(function ($s) use ($kuotaService, $today) {
+            // Sisa kuota (peringatan "hampir penuh" saat petugas Admisi pilih dokter).
+            $sisaJkn = $sisaNonJkn = null;
+            $hampirPenuh = false;
+            if ($s->poli_code) {
+                $ring        = $kuotaService->ringkasanKuota($s->poli_code, $s->employee_id, $today);
+                $sisaJkn     = (int) $ring['sisakuotajkn'];
+                $sisaNonJkn  = (int) $ring['sisakuotanonjkn'];
+                // "Hampir penuh" hanya bila kuota penjamin itu memang ditetapkan (>0).
+                // Jadwal dengan kuota 0 (mis. dokter tak melayani JKN) → sisa = 0, TAPI
+                // itu bukan "hampir penuh" — tanpa guard ini dropdown Admisi/TV memunculkan
+                // "⚠ Hampir penuh (sisa 0)" palsu. (Selaras scheduleRiskFor di Triase.)
+                $jknRisk     = (int) $ring['kuotajkn'] > 0 && $sisaJkn <= self::QUOTA_RISK;
+                $nonjknRisk  = (int) $ring['kuotanonjkn'] > 0 && $sisaNonJkn <= self::QUOTA_RISK;
+                $hampirPenuh = $jknRisk || $nonjknRisk;
+            }
+
+            return [
+                'id'           => $s->id,
+                'employee_id'  => $s->employee_id,
+                'nama_dokter'  => $s->employee?->name ?? '—',
+                'poliklinik'   => $s->poliklinik,
+                'room'         => $s->room,
+                'service_type' => $s->service_type,
+                'queue_prefix' => $s->queuePrefix(),
+                'start_time'   => $s->start_time,
+                'end_time'     => $s->end_time,
+                'sisa_jkn'     => $sisaJkn,
+                'sisa_nonjkn'  => $sisaNonJkn,
+                'hampir_penuh' => $hampirPenuh,
+            ];
+        })->values()->toArray();
     }
 
     /**
@@ -246,17 +275,44 @@ class JadwalDokterService
     // CSV TEMPLATE & IMPORT
     // =========================================================================
 
-    /** Isi file template CSV (header + 2 baris contoh). */
+    /** Petunjuk pengisian template (baris "#" — diabaikan saat impor, ikut ke CSV & Excel). */
+    private const TEMPLATE_RULES = [
+        '# ====================== PETUNJUK PENGISIAN JADWAL DOKTER ======================',
+        '# Baris berawalan "#" hanya petunjuk dan DIABAIKAN saat impor (boleh dihapus).',
+        '# Kolom WAJIB  : nama_dokter, jenis, hari, jam_mulai, jam_selesai',
+        '# Kolom OPSIONAL: kode_poli, nama_poli, ruang',
+        '# -----------------------------------------------------------------------------',
+        '# nama_dokter  : harus PERSIS sama dengan dokter terdaftar (besar/kecil & spasi diabaikan).',
+        '# jenis        : BPJS atau EKSEKUTIF (sinonim EKS / NON-BPJS dianggap EKSEKUTIF).',
+        '# hari         : Senin..Minggu (boleh nama Inggris atau angka 1-7; 1=Senin, 7=Minggu).',
+        '# jam_mulai    : format 24 jam HH:MM (mis. 08:00).',
+        '# jam_selesai  : format HH:MM dan HARUS lebih besar dari jam_mulai.',
+        '# kode_poli    : kode singkat poli untuk NOMOR ANTREAN (mis. GLA). Prefix antrean = kode_poli + ruang (GLA1).',
+        '#                Untuk pasien BPJS, kode ini WAJIB dipetakan ke kode poli BPJS di',
+        '#                menu Pemetaan BPJS -> Pemetaan Poli. INI BUKAN kode dokter/DPJP.',
+        '# nama_poli    : nama poliklinik yang tampil ke pasien (mis. Poliklinik Glaukoma).',
+        '# ruang        : nomor/identitas ruang (mis. 1).',
+        '# CATATAN BPJS : kode DPJP dokter diatur TERPISAH (Pemetaan BPJS -> Kode DPJP), bukan lewat file ini.',
+        '# Duplikat (dokter + hari + jenis pada minggu yang sama) otomatis dilewati saat impor.',
+        '# =============================================================================',
+    ];
+
+    /** Isi file template CSV: blok petunjuk (#) + header + 2 baris contoh. */
     public function getCsvTemplate(): string
     {
-        $rows = [
+        $examples = [
             self::CSV_HEADER,
             ['dr. Contoh Aulia', 'BPJS',      'GLA', 'Poliklinik Glaukoma',  'Senin', '08:00', '12:00', '1'],
             ['dr. Contoh Aulia', 'EKSEKUTIF', 'EKS', 'Poliklinik Eksekutif', 'Senin', '13:00', '16:00', '1'],
         ];
 
         $fh = fopen('php://temp', 'r+');
-        foreach ($rows as $r) {
+        // Petunjuk ditulis sebagai teks mentah (BUKAN fputcsv) agar tetap diawali "#"
+        // dan terdeteksi sebagai komentar (fputcsv akan membungkus tanda kutip).
+        foreach (self::TEMPLATE_RULES as $line) {
+            fwrite($fh, $line . "\n");
+        }
+        foreach ($examples as $r) {
             fputcsv($fh, $r, ',', '"', '\\');
         }
         rewind($fh);
@@ -292,8 +348,8 @@ class JadwalDokterService
                 $s->poli_code ?? '',
                 $s->poliklinik ?? '',
                 DoctorSchedule::DAY_LABELS[$s->day_of_week] ?? '',
-                $s->start_time,
-                $s->end_time,
+                $this->hhmm($s->start_time),   // kolom TIME → 'HH:MM:SS'; potong ke 'HH:MM' agar identik template + bisa di-import balik.
+                $this->hhmm($s->end_time),
                 $s->room ?? '',
             ], ',', '"', '\\');
         }
@@ -320,11 +376,19 @@ class JadwalDokterService
             throw new \Exception('Gagal membaca file CSV.', 422);
         }
 
-        // Header → index kolom (toleran urutan & spasi).
-        $header = fgetcsv($fh, 0, ',', '"', '\\');
+        // Header → index kolom (toleran urutan & spasi). Lewati dulu baris petunjuk
+        // (#) & baris kosong di atas header — template menyertakan blok petunjuk.
+        $header = false;
+        while (($row = fgetcsv($fh, 0, ',', '"', '\\')) !== false) {
+            if ($this->isBlankRow($row) || str_starts_with(ltrim((string) ($row[0] ?? '')), '#')) {
+                continue;
+            }
+            $header = $row;
+            break;
+        }
         if ($header === false) {
             fclose($fh);
-            throw new \Exception('File CSV kosong.', 422);
+            throw new \Exception('File CSV kosong / tidak ada baris header.', 422);
         }
         $header = array_map(fn ($h) => strtolower(trim((string) $h)), $header);
         $idx = array_flip($header);
@@ -386,8 +450,11 @@ class JadwalDokterService
                     continue;
                 }
 
-                // Validasi jam.
-                if (! $this->isTime($jamMulai) || ! $this->isTime($jamSelesai)) {
+                // Validasi + normalisasi jam ke 'HH:MM' (terima 'H:MM' / 'HH:MM' / 'HH:MM:SS'
+                // dari export kolom TIME maupun Excel/LibreOffice).
+                $jamMulai   = $this->normalizeTime($jamMulai);
+                $jamSelesai = $this->normalizeTime($jamSelesai);
+                if ($jamMulai === '' || $jamSelesai === '') {
                     $errors[] = "Baris {$line}: format jam harus HH:MM (mis. 08:00).";
                     $skipped++;
                     continue;
@@ -517,9 +584,29 @@ class JadwalDokterService
         return $map[$v] ?? null;
     }
 
-    private function isTime(string $v): bool
+    /**
+     * Normalisasi string jam ke 'HH:MM'. Menerima 'H:MM', 'HH:MM', 'HH:MM:SS'
+     * (kolom TIME di-export sbg 'HH:MM:SS', Excel kerap menambah detik).
+     * Return '' bila tidak valid.
+     */
+    private function normalizeTime(string $v): string
     {
-        return (bool) preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v);
+        $v = trim($v);
+        if (! preg_match('/^(\d{1,2}):([0-5]\d)(?::[0-5]\d)?$/', $v, $m)) {
+            return '';
+        }
+        $h = (int) $m[1];
+        if ($h > 23) {
+            return '';
+        }
+
+        return str_pad((string) $h, 2, '0', STR_PAD_LEFT) . ':' . $m[2];
+    }
+
+    /** Potong nilai TIME ('HH:MM:SS') → 'HH:MM' untuk output CSV/Excel. */
+    private function hhmm(?string $t): string
+    {
+        return $t ? substr($t, 0, 5) : '';
     }
 
     private function normalizeName(string $name): string
@@ -540,9 +627,10 @@ class JadwalDokterService
     private function formatEmployee(Employee $emp): array
     {
         return [
-            'employee_id'   => $emp->id,
-            'nama_dokter'   => $emp->name,
-            'jadwal'        => $emp->doctorSchedules->map(fn ($s) => [
+            'employee_id'    => $emp->id,
+            'nama_dokter'    => $emp->name,
+            'bpjs_dpjp_code' => $emp->bpjs_dpjp_code, // status kode DPJP BPJS (utk badge di FE)
+            'jadwal'         => $emp->doctorSchedules->map(fn ($s) => [
                 'id'           => $s->id,
                 'day_of_week'  => $s->day_of_week,
                 'hari'         => DoctorSchedule::DAY_LABELS[$s->day_of_week] ?? '?',

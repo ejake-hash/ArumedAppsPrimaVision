@@ -43,6 +43,7 @@ final class FieldRegistry
                 'follow_up_reason'       => ['label' => 'Alasan Kontrol',           'type' => 'longtext'],
                 // Relasi nested — diresolve via dot-notation di BindingResolver
                 'doctorExamination.doctor.name' => ['label' => 'Dokter yang Merawat', 'type' => 'text'],
+                'doctorSchedule.poliklinik'     => ['label' => 'Ruang Poli',          'type' => 'text'],
                 'insurer.name'           => ['label' => 'Nama Penjamin',            'type' => 'text'],
             ],
 
@@ -116,6 +117,22 @@ final class FieldRegistry
             'diagnosticResults.summary' => [
                 'label'   => 'Ringkasan Hasil Penunjang',
                 'formats' => ['summary_per_jenis'],
+            ],
+            'surgery_iol_usage' => [
+                'label'   => 'IOL/Implan Terpasang (scan UDI) — Stiker Implant',
+                'formats' => ['implant_lines'],
+            ],
+            'surgery_operation_summary' => [
+                'label'   => 'Ringkasan Operasi (teknik/temuan/komplikasi) — narasi RM 2.2',
+                'formats' => ['narrative'],
+            ],
+            'surgery_identity' => [
+                'label'   => 'Identitas Operasi (operator/asisten/jam/durasi/anestesi) — dari BedahView',
+                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration'],
+            ],
+            'planning_instruction' => [
+                'label'   => 'Instruksi/Anjuran dari Rencana Tatalaksana (planning) — kalimat siap-pakai',
+                'formats' => ['text'],
             ],
         ];
     }

@@ -30,7 +30,7 @@ class RefraksiService
         // nurseAssessment WAJIB di-load: frontend mapQueueRow baca
         // visit.nurse_assessment.allergy_detail untuk badge "⚠ Alergi" + bar vital
         // triase. Tanpa ini badge/data triase tak pernah tampil di Refraksionis.
-        return Queue::with(['visit.patient', 'visit.refractionRecord', 'visit.nurseAssessment'])
+        return Queue::with(['visit.patient', 'visit.refractionRecord', 'visit.nurseAssessment', 'visit.doctorSchedule.employee'])
             ->where('station', 'REFRAKSIONIS')
             ->whereDate('created_at', today())
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
@@ -73,6 +73,18 @@ class RefraksiService
             throw new \Exception('Pemeriksaan refraksi belum di-finalize. Selesaikan dulu.', 422);
         }
 
+        // finalizeRefraction()/skipRefraksi() SUDAH menutup queue REFRAKSIONIS + memajukan
+        // antrean (checkReadyForDoctor). Bila baris sudah COMPLETED, ini no-op idempoten —
+        // jangan lempar "Antrian sudah ditutup" dari advanceFromStation.
+        if ($queue->status === Queue::STATUS_COMPLETED) {
+            return [
+                'queue'        => $queue->fresh(['visit.patient']),
+                'visit'        => $queue->visit?->fresh(['patient', 'queues']),
+                'next_station' => null,
+                'next_queue'   => null,
+            ];
+        }
+
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_REFRAKSIONIS);
     }
 
@@ -95,7 +107,8 @@ class RefraksiService
     }
 
     /**
-     * Lewati antrian REFRAKSIONIS — pindah ke akhir antrean (reset queue_sequence ke MAX+1).
+     * Lewati antrian REFRAKSIONIS — turunkan SATU posisi (tukar queue_sequence dengan
+     * pasien aktif berikutnya). Lihat QueueService::lewati.
      */
     public function lewatiAntrian(string $queueId): Queue
     {
@@ -277,6 +290,47 @@ class RefraksiService
         $this->checkReadyForDoctor($record->visit_id);
 
         return $record->fresh(['examinedBy', 'finalizedBy', 'prescription']);
+    }
+
+    /**
+     * Lewati Refraksi (pasien tidak perlu refraksi) — finalize record TANPA data
+     * klinis dengan is_skipped=true, tutup antrean REFRAKSIONIS, jalankan gate
+     * paralel. Antrean tetap maju ke DOKTER tanpa fabrikasi data refraksi.
+     */
+    public function skipRefraksi(string $queueId): array
+    {
+        return DB::transaction(function () use ($queueId) {
+            $queue = Queue::with('visit')->byStation(Queue::STATION_REFRAKSIONIS)->lockForUpdate()->findOrFail($queueId);
+            $visit = $queue->visit;
+            $user  = auth('api')->user();
+
+            $record = RefractionRecord::firstOrNew(['visit_id' => $visit->id]);
+            if ($record->is_finalized && ! $record->is_skipped) {
+                throw new \Exception('Refraksi sudah difinalisasi — tidak bisa dilewati.', 422);
+            }
+
+            $record->fill([
+                'examined_by_id'  => $record->examined_by_id ?? $user->employee_id,
+                'clinical_notes'  => $record->clinical_notes ?: 'Refraksi dilewati — tidak diperlukan.',
+                'is_skipped'      => true,
+                'is_finalized'    => true,
+                'finalized_at'    => now(),
+                'finalized_by_id' => $user->employee_id,
+            ]);
+            $record->save();
+
+            Queue::where('visit_id', $visit->id)
+                ->where('station', Queue::STATION_REFRAKSIONIS)
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->update(['status' => 'COMPLETED', 'completed_at' => now()]);
+
+            $visit->update(['refraksi_completed_at' => now()]);
+
+            $this->log($user->id, 'SKIP_REFRAKSI', RefractionRecord::class, $record->id, 'Refraksi dilewati — tidak diperlukan');
+            $this->checkReadyForDoctor($visit->id);
+
+            return ['skipped' => true, 'visit_id' => $visit->id];
+        });
     }
 
     // =========================================================================

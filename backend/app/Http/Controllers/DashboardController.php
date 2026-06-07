@@ -82,6 +82,43 @@ class DashboardController extends Controller
     }
 
     /**
+     * GET /dashboard/pendapatan-chart
+     * Tren pendapatan (kas) 7 hari terakhir — sum paid_amount per hari.
+     */
+    public function getRevenueChart(): JsonResponse
+    {
+        return $this->ok($this->service->getWeeklyRevenue());
+    }
+
+    /**
+     * GET /dashboard/distribusi-penjamin
+     * Query: range = hari | minggu | bulan | tahun (default hari)
+     * Jumlah kunjungan per penjamin untuk rentang terpilih (donut Distribusi).
+     */
+    public function distribusiPenjamin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'range' => 'nullable|in:hari,minggu,bulan,tahun',
+        ]);
+
+        return $this->ok($this->service->getGuarantorDistribution($validated['range'] ?? 'hari'));
+    }
+
+    /**
+     * GET /dashboard/jam-tersibuk
+     * Query: days = 1..365 (default 30)
+     * Rata-rata kunjungan per jam (08–19) selama N hari terakhir.
+     */
+    public function jamTersibuk(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'days' => 'nullable|integer|min:1|max:365',
+        ]);
+
+        return $this->ok($this->service->getBusiestHours((int) ($validated['days'] ?? 30)));
+    }
+
+    /**
      * GET /dashboard/laporan/kunjungan
      * Query: from, to
      */

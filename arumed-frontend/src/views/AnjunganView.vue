@@ -24,14 +24,17 @@ async function pingBackend() {
   // /up adalah Laravel health probe (root, di luar /api/v1). Fetch langsung.
   const baseUrl = (import.meta.env.VITE_API_URL ?? '/api/v1').replace(/\/api\/v1\/?$/, '')
   const url = `${baseUrl}/up`
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 4000)
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 4000)
     const res = await fetch(url, { method: 'GET', signal: ctrl.signal, cache: 'no-store' })
-    clearTimeout(t)
     backendStatus.value = res.ok ? 'online' : 'offline'
   } catch {
     backendStatus.value = 'offline'
+  } finally {
+    // Selalu bersihkan timer abort — di jalur error/abort dulu tak ter-clear
+    // sehingga timer menggantung (dan bisa hidup melewati unmount).
+    clearTimeout(t)
   }
 }
 
@@ -87,12 +90,14 @@ async function goUmum() {
       poli: 'Loket Admisi',
     }
     screen.value = 'ticket'
-    // Auto-print dulu (window.print() blocking di sebagian browser). Countdown
-    // 15s baru mulai setelah dialog print ditutup, supaya timer tidak berjalan
-    // di balik dialog dan layar tidak ke-reset saat dialog masih terbuka.
+    // Jadwalkan auto-reset DULU, baru cetak. window.print() bisa blocking di
+    // browser non-kiosk; bila dialog tak pernah ditutup, countdown yang
+    // dijadwalkan setelahnya tak akan pernah mulai → kiosk terjebak di layar
+    // tiket. setInterval ter-suspend selama dialog blocking terbuka, jadi
+    // menjadwalkan lebih dulu aman dan menjamin layar selalu kembali ke home.
     nextTick(() => {
-      triggerPrint()
       startCountdown()
+      triggerPrint()
     })
   } catch (err) {
     umumError.value = err?.response?.data?.message
@@ -118,8 +123,10 @@ function triggerPrint() {
 // dialog print yang blocking bisa membuat countdown lama keburu habis → user
 // ketendang ke home tepat setelah menutup dialog cetak.
 function reprintTicket() {
-  triggerPrint()
+  // Restart countdown dulu (alasan sama dgn goUmum: jamin auto-reset terjadwal
+  // walau dialog cetak blocking).
   startCountdown()
+  triggerPrint()
 }
 
 // ─── Countdown auto-reset ───────────────────────────────────────────────────

@@ -9,8 +9,8 @@
  *
  * - Hero card: avatar + nama + tipe + status + relasi TPA
  * - Badge "Bagian dari {TPA}" kalau anggota TPA + banner read-only
- * - Panel "Anggota TPA" (kalau TPA induk): tambah/keluarkan anggota
- * - Tabel tarif Tindakan langsung di bawah (tanpa tab switcher)
+ * - TPA induk: 2 tab — "Anggota / Child" (tambah/keluarkan anggota) &
+ *   "Tarif Tindakan (PKS)". Penjamin biasa: tarif tampil langsung tanpa tab.
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -33,6 +33,10 @@ const targetInsurerId = computed(() => detail.value?.tariff_insurer_id ?? insure
 // ─── Anggota TPA ────────────────────────────────────────────────────────────
 const canManageMembers = computed(() => !!detail.value?.can_manage_members)
 const members = computed(() => insurer.value?.children ?? [])
+
+// Tab switcher — hanya relevan untuk TPA induk (punya Anggota + Tarif). Penjamin
+// biasa langsung tampil tarif tanpa tab. Default ke tab Anggota (tab 1).
+const activeTab = ref('anggota')
 
 const addModal = ref({ open: false, candidates: [], selectedId: '', newName: '', loading: false, busy: false })
 const confirmRemove = ref({ open: false, member: null, busy: false })
@@ -191,11 +195,32 @@ onMounted(loadDetail)
         </div>
       </div>
 
-      <!-- Anggota TPA (kelola dari sisi TPA induk) -->
-      <section v-if="canManageMembers" class="mbd-section">
+      <!-- Tab switcher — hanya TPA induk (punya Anggota). Penjamin biasa langsung tarif. -->
+      <div v-if="canManageMembers" class="mbd-tabs" role="tablist">
+        <button
+          class="mbd-tab"
+          :class="{ active: activeTab === 'anggota' }"
+          role="tab"
+          @click="activeTab = 'anggota'"
+        >
+          Anggota / Child
+          <span v-if="members.length" class="mbd-tab-count">{{ members.length }}</span>
+        </button>
+        <button
+          class="mbd-tab"
+          :class="{ active: activeTab === 'tarif' }"
+          role="tab"
+          @click="activeTab = 'tarif'"
+        >
+          Tarif Tindakan (PKS)
+        </button>
+      </div>
+
+      <!-- Tab 1: Anggota / Child (kelola dari sisi TPA induk) -->
+      <section v-if="canManageMembers" v-show="activeTab === 'anggota'" class="mbd-section">
         <div class="mbd-section-head mbd-members-head">
           <div>
-            <h2>Anggota TPA</h2>
+            <h2>Anggota / Child</h2>
             <p>Penjamin yang mengikuti tarif TPA ini 100%. Anggota tidak tampil di Daftar Penjamin & tarifnya otomatis ikut TPA.</p>
           </div>
           <button class="mbd-btn-primary" @click="openAddMember">
@@ -218,12 +243,12 @@ onMounted(loadDetail)
         </ul>
       </section>
 
-      <!-- Tarif Tindakan (single section, langsung tanpa tab) -->
-      <section class="mbd-section">
+      <!-- Tab 2: Tarif Tindakan (PKS) — untuk penjamin biasa tampil langsung tanpa tab -->
+      <section v-show="!canManageMembers || activeTab === 'tarif'" class="mbd-section">
         <div class="mbd-section-head">
           <div>
-            <h2>Tarif Tindakan</h2>
-            <p>Override harga tindakan untuk penjamin ini. Harga obat / BHP / IOL ambil dari master masing-masing.</p>
+            <h2>Tarif Tindakan (PKS)</h2>
+            <p>Override harga tindakan untuk penjamin ini sesuai perjanjian kerja sama. Tindakan tanpa override otomatis ikut Buku Tarif. Harga obat / BHP / IOL ambil dari master masing-masing.</p>
           </div>
         </div>
         <MetodeBayarTarifTab
@@ -397,6 +422,24 @@ onMounted(loadDetail)
 .mbd-meta { display: inline-flex; align-items: center; gap: 5px; }
 .mbd-meta svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.7; }
 .mbd-meta-addr { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ─── Tab switcher ─── */
+.mbd-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--gb); padding: 0 2px; }
+.mbd-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 11px 18px; border: none; background: transparent;
+  color: var(--tm); font-size: 13.5px; font-weight: 500; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.mbd-tab:hover { color: var(--td); }
+.mbd-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
+.mbd-tab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--bs); color: var(--tm); font-size: 11px; font-weight: 600;
+}
+.mbd-tab.active .mbd-tab-count { background: var(--gl); color: var(--ga); }
 
 /* ─── Section (kartu utama: Tarif Tindakan) ─── */
 .mbd-section {

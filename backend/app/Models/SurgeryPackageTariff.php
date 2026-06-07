@@ -14,20 +14,20 @@ class SurgeryPackageTariff extends Model
     protected $keyType   = 'string';
     public $incrementing = false;
 
-    public const CLASSIFICATIONS = ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL'];
-
     protected $fillable = [
         'legacy_uuid',
         'surgery_package_id',
         'insurer_id',
-        'classification',
+        'display_name',      // nama tampil khusus per-penjamin (mis. promo UMUM); null = pakai nama paket master
         'sell_price',
+        'discount_percent',  // metadata: bila diisi, sell_price = base × (1 − pct/100). Billing tetap baca sell_price.
         'is_active',
     ];
 
     protected $casts = [
-        'sell_price' => 'decimal:2',
-        'is_active'  => 'boolean',
+        'sell_price'       => 'decimal:2',
+        'discount_percent' => 'decimal:2',
+        'is_active'        => 'boolean',
     ];
 
     public function package(): BelongsTo
