@@ -961,7 +961,7 @@ export const bedahApi = {
   storeIolUsage:  (data)   => api.post('/bedah/iol-usage', data),
   updateIolUsage: (id, data) => api.put(`/bedah/iol-usage/${id}`, data),
   deleteIolUsage: (id)     => api.delete(`/bedah/iol-usage/${id}`),
-  scanIol:        (code)   => masterApi.iol.scan(code), // delegasi parse UDI (master_iol.read)
+  scanIol:        (code)   => masterApi.iol.scan(code), // delegasi parse UDI (inventori_farmasi.read|bedah.read)
   // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
   storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
 

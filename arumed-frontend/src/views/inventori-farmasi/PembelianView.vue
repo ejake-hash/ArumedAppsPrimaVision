@@ -454,8 +454,8 @@ onMounted(() => {
 
 watch(() => itemPicker.value.type, searchItems)
 
-const canWrite = computed(() => auth.can('pembelian.write'))
-const canDelete = computed(() => auth.can('pembelian.delete'))
+const canWrite = computed(() => auth.can('inventori_farmasi.write'))
+const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 </script>
 
 <template>

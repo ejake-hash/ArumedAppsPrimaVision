@@ -25,20 +25,26 @@ class RolePermissionSeeder extends Seeder
                 'penunjang'     => ['R','W'],
                 'rme_dokter'    => ['R','W'],
                 'rekam_medis'   => ['R','W'],
+                // TTD Dokumen (antrean tanda tangan dokter): dipisah dari rekam_medis
+                // agar hanya dokter yang lihat menu. Endpoint ttd-queue/bulk-sign
+                // butuh rekam_medis.read (grup) + ttd_dokumen (route).
+                'ttd_dokumen'   => ['R','W'],
                 'bedah'         => ['R','W','C'],
                 // Anestesi: dokter (DPJP / anestesiolog login sbg dokter) isi Laporan Anestesi RM 5.2/8.1.
                 'anestesi'      => ['R','W'],
                 'ruang_tindakan' => ['R','W'],
                 'rawat_inap'    => ['R','W'],
-                // IGD = stasiun gabung (dokter jaga). Butuh ICD search utk SEP gawat darurat.
+                // IGD = stasiun gabung (dokter jaga). ICD search utk SEP via carve-out
+                // GET /master/icd* (gate OR rme_dokter.read|...), bukan master_data.
                 'igd'           => ['R','W'],
-                'master_icd'    => ['R'],
                 'farmasi'       => ['R'],
                 // Unit Bedah minta/retur BHP-IOL ke gudang (BedahTerjadwalView, station=BEDAH).
+                // request_unit TETAP terpisah supaya dokter tak perlu izin tulis gudang.
                 'request_unit'  => ['R','W'],
                 'bpjs'          => ['R'],
                 'laporan'       => ['R'],
-                'form_template' => ['R','W'],
+                // form_template DIHAPUS — dokter tidak lagi mengedit layout template
+                // (kelola di master_data); dokter tetap MENGISI form via rekam_medis.
             ],
             'perawat' => [
                 'admisi'       => ['R'],
@@ -59,9 +65,8 @@ class RolePermissionSeeder extends Seeder
                 'rawat_inap'   => ['R','W'],
                 'farmasi'      => ['R'],
                 'bpjs'         => ['R'],
-                // IGD triase (perawat) + ICD search utk SEP.
+                // IGD triase (perawat) + ICD search via carve-out (gate perawat.read).
                 'igd'          => ['R','W'],
-                'master_icd'   => ['R'],
             ],
             'refraksionis' => [
                 'admisi'       => ['R'],
@@ -78,10 +83,8 @@ class RolePermissionSeeder extends Seeder
                 'bedah'             => ['R'],
                 'farmasi'           => ['R','W'],
                 'rawat_inap'        => ['R','W'],
+                // inventori_farmasi kini 1 key (serap supplier/pembelian/penerimaan).
                 'inventori_farmasi' => ['R','W','D'],
-                'supplier'          => ['R','W','D'],
-                'pembelian'         => ['R','W','D'],
-                'penerimaan'        => ['R','W','D'],
                 'request_unit'      => ['R','W','D'],
                 'kasir'             => ['R'],
                 'bpjs'              => ['R'],
@@ -94,6 +97,8 @@ class RolePermissionSeeder extends Seeder
                 'rekam_medis'  => ['R'],
                 'farmasi'      => ['R'],
                 'kasir'        => ['R','W'],
+                // Asuransi/TPA dipisah dari kasir tapi default tetap diberikan ke kasir.
+                'asuransi'     => ['R','W'],
                 'rawat_inap'   => ['R'],
                 'bpjs'         => ['R','W'],
                 'integrasi'    => ['R','W'],
@@ -101,6 +106,8 @@ class RolePermissionSeeder extends Seeder
             ],
             'admisi' => [
                 'admisi'       => ['R','W'],
+                // Jadwal Dokter dipisah dari admisi tapi default tetap admisi (preserve).
+                'jadwal_dokter' => ['R','W'],
                 'antrian_tv'   => ['R'],
                 'perawat'      => ['R'],
                 'refraksionis' => ['R'],
@@ -135,6 +142,7 @@ class RolePermissionSeeder extends Seeder
             // Manajemen — oversight read-only lintas modul + laporan penuh + audit.
             'manajemen' => [
                 'admisi'            => ['R'],
+                'jadwal_dokter'     => ['R'],
                 'antrian_tv'        => ['R'],
                 'perawat'           => ['R'],
                 'refraksionis'      => ['R'],
@@ -146,32 +154,25 @@ class RolePermissionSeeder extends Seeder
                 'ruang_tindakan'    => ['R'],
                 'farmasi'           => ['R'],
                 'kasir'             => ['R'],
+                'asuransi'          => ['R'],
                 'rawat_inap'        => ['R'],
                 'bpjs'              => ['R'],
                 'inventori_farmasi' => ['R'],
-                'supplier'          => ['R'],
-                'pembelian'         => ['R'],
-                'penerimaan'        => ['R'],
                 'request_unit'      => ['R'],
                 'tarif_paket'       => ['R'],
+                'master_data'       => ['R'],
                 'integrasi'         => ['R'],
                 'laporan'           => ['R','W'],
                 'marketing'         => ['R'],
                 'audit'             => ['R'],
-                'form_template'     => ['R'],
             ],
-            // Inventori — rantai gudang/inventori farmasi penuh + master terkait.
+            // Inventori — rantai gudang/inventori farmasi penuh (1 key) + buku tarif.
             'inventori' => [
                 'farmasi'           => ['R'],
                 'inventori_farmasi' => ['R','W','D'],
-                'supplier'          => ['R','W','D'],
-                'pembelian'         => ['R','W','D'],
-                'penerimaan'        => ['R','W','D'],
                 'request_unit'      => ['R','W','D'],
-                'master_obat'       => ['R','W','D'],
-                'master_bhp'        => ['R','W','D'],
-                'master_iol'        => ['R','W','D'],
-                'tarif_paket'       => ['R','W'],
+                // tarif_paket termasuk delete (rapikan izin .delete yatim) + kategori tagihan.
+                'tarif_paket'       => ['R','W','D'],
                 'laporan'           => ['R'],
             ],
         ];

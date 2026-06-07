@@ -370,6 +370,9 @@ async function onImportFile(e) {
 // paket dapat manfaat; dikosongkan = tidak. Tersimpan di kolom followup_* paket.
 const followup = ref({ procedure_id: '', count: 1, valid_days: '' })
 const followupSaving = ref(false)
+// Combobox cari prosedur konsultasi (296 prosedur → dropdown polos tak praktis).
+const followupSearch = ref('')
+const followupOpen = ref(false)
 
 watch(paket, (p) => {
   if (!p) return
@@ -378,6 +381,7 @@ watch(paket, (p) => {
     count: p.followup_count || 1,
     valid_days: p.followup_valid_days ?? '',
   }
+  syncFollowupSearch()
 }, { immediate: true })
 
 const followupDirty = computed(() => {
@@ -406,6 +410,36 @@ async function saveFollowup() {
     showToast('e', e.response?.data?.message ?? 'Gagal menyimpan manfaat')
   } finally { followupSaving.value = false }
 }
+
+// ─── Combobox prosedur konsultasi: search + pilih ─────────────────────────
+function selectedFollowupName() {
+  return procedures.value.find((p) => p.id === followup.value.procedure_id)?.name ?? ''
+}
+function syncFollowupSearch() { followupSearch.value = selectedFollowupName() }
+
+const followupFiltered = computed(() => {
+  const q = followupSearch.value.trim().toLowerCase()
+  const list = q
+    ? procedures.value.filter((p) => `${p.name} ${p.category ?? ''}`.toLowerCase().includes(q))
+    : procedures.value
+  return list.slice(0, 50)
+})
+
+function pickFollowup(p) {
+  followup.value.procedure_id = p ? p.id : ''
+  followupSearch.value = p ? p.name : ''
+  followupOpen.value = false
+}
+function onFollowupBlur() {
+  // jeda agar klik item (mousedown) sempat diproses, lalu samakan teks dgn pilihan.
+  setTimeout(() => {
+    followupOpen.value = false
+    if (followupSearch.value !== selectedFollowupName()) syncFollowupSearch()
+  }, 150)
+}
+
+// Saat daftar prosedur termuat (loadDropdowns), tampilkan nama prosedur terpilih.
+watch(procedures, () => { if (!followupOpen.value) syncFollowupSearch() })
 
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
@@ -461,10 +495,29 @@ watch(paketId, async (id) => {
         <div class="pd-fu-row">
           <label class="pd-fu-field pd-fu-grow">
             <span>Konsultasi gratis</span>
-            <select v-model="followup.procedure_id" class="pd-fu-input">
-              <option value="">— Tidak ada (paket tanpa manfaat) —</option>
-              <option v-for="p in procedures" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
+            <div class="pd-fu-combo">
+              <input
+                v-model="followupSearch"
+                type="text"
+                class="pd-fu-input"
+                placeholder="Cari prosedur… (kosongkan = tanpa manfaat)"
+                autocomplete="off"
+                @focus="followupOpen = true"
+                @input="followupOpen = true"
+                @blur="onFollowupBlur"
+              />
+              <button v-if="followup.procedure_id" type="button" class="pd-fu-clear"
+                      title="Hapus pilihan" @mousedown.prevent="pickFollowup(null)">×</button>
+              <ul v-if="followupOpen" class="pd-fu-drop">
+                <li v-if="!followupFiltered.length" class="pd-fu-empty">Tidak ada prosedur cocok</li>
+                <li v-for="p in followupFiltered" :key="p.id"
+                    :class="{ sel: p.id === followup.procedure_id }"
+                    @mousedown.prevent="pickFollowup(p)">
+                  <span>{{ p.name }}</span>
+                  <small v-if="p.category">{{ p.category }}</small>
+                </li>
+              </ul>
+            </div>
           </label>
           <label class="pd-fu-field">
             <span>Jumlah / operasi</span>
@@ -688,6 +741,18 @@ watch(paketId, async (id) => {
 .pd-fu-input { padding: 7px 10px; border: 1px solid var(--gb); border-radius: 8px; font-size: 13px; background: var(--bc); color: var(--td); width: 100%; }
 .pd-fu-field:not(.pd-fu-grow) .pd-fu-input { width: 120px; }
 .pd-fu-input:disabled { opacity: 0.5; background: var(--gb); }
+/* Combobox cari prosedur konsultasi */
+.pd-fu-combo { position: relative; width: 100%; }
+.pd-fu-combo .pd-fu-input { padding-right: 28px; }
+.pd-fu-clear { position: absolute; top: 7px; right: 8px; width: 18px; height: 18px; border: none; background: var(--gb); color: var(--td); border-radius: 50%; font-size: 13px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.pd-fu-clear:hover { background: var(--ga); color: #fff; }
+.pd-fu-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60; max-height: 248px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.14); }
+.pd-fu-drop li { padding: 6px 10px; border-radius: 6px; font-size: 12.5px; color: var(--td); cursor: pointer; }
+.pd-fu-drop li:hover { background: var(--gl); color: var(--ga); }
+.pd-fu-drop li.sel { background: color-mix(in srgb, var(--ga) 12%, transparent); color: var(--ga); font-weight: 500; }
+.pd-fu-drop li small { display: block; font-size: 10.5px; color: var(--tm); }
+.pd-fu-drop li:hover small, .pd-fu-drop li.sel small { color: var(--ga); }
+.pd-fu-empty, .pd-fu-empty:hover { color: var(--tm); cursor: default; background: transparent; }
 .pd-fu-save { height: 36px; }
 .pd-fu-active { font-size: 12px; color: var(--ga); margin: 0; background: color-mix(in srgb, var(--ga) 8%, transparent); padding: 6px 10px; border-radius: 8px; }
 .pd-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }

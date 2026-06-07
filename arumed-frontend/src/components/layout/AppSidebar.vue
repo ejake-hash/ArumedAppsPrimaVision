@@ -167,7 +167,7 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         <span>Pemeriksaan Dokter</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('rekam_medis.read')" to="/ttd-dokumen" class="sb-item" title="Tanda Tangan Dokumen">
+      <RouterLink v-if="auth.can('ttd_dokumen.read')" to="/ttd-dokumen" class="sb-item" title="Tanda Tangan Dokumen">
         <svg viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><path d="M3 21l8-8"/></svg>
         <span>Tanda Tangan Dokumen</span>
         <span v-if="ttdCount > 0" class="sb-badge">{{ ttdCount }}</span>
@@ -215,7 +215,7 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span>Klaim BPJS</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('kasir.read')" to="/asuransi" class="sb-item" title="Asuransi & Klaim TPA">
+      <RouterLink v-if="auth.can('asuransi.read')" to="/asuransi" class="sb-item" title="Asuransi & Klaim TPA">
         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
         <span>Asuransi & TPA</span>
       </RouterLink>
@@ -225,11 +225,11 @@ onMounted(async () => {
       </RouterLink>
 
       <div class="sb-section">Sistem</div>
-      <RouterLink v-if="auth.can('admisi.write') || auth.isSuperadmin" to="/jadwal-dokter" class="sb-item" title="Jadwal Dokter">
+      <RouterLink v-if="auth.can('jadwal_dokter.write') || auth.isSuperadmin" to="/jadwal-dokter" class="sb-item" title="Jadwal Dokter">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/></svg>
         <span>Jadwal Dokter</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('pengaturan.read')" to="/master-data" class="sb-item" title="Master Data">
+      <RouterLink v-if="auth.can('master_data.read') || auth.can('rawat_inap.read')" to="/master-data" class="sb-item" title="Master Data">
         <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg>
         <span>Master Data</span>
       </RouterLink>
@@ -249,7 +249,7 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         <span>BRIDGING</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('pengaturan.read')" to="/pengaturan" class="sb-item" title="Pengaturan">
+      <RouterLink v-if="auth.can('master_data.read')" to="/pengaturan" class="sb-item" title="Pengaturan">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
         <span>Pengaturan</span>
       </RouterLink>

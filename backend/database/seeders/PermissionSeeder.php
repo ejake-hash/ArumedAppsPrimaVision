@@ -15,38 +15,40 @@ class PermissionSeeder extends Seeder
      */
     public function run(): void
     {
+        // Permission key = 1 modul/stasiun yang dioperasikan satu petugas.
+        // Penggabungan/pemisahan terhadap struktur lama (lihat migrasi
+        // 2026_06_08 RBAC realign): Inventori Farmasi 1 key (serap master_obat/
+        // bhp/iol + supplier + pembelian + penerimaan); Master Data 1 key (serap
+        // pengaturan + form_template + master_icd); Tarif&Paket serap kategori
+        // tagihan. PISAH: jadwal_dokter (eks admisi), ttd_dokumen (eks rekam_medis,
+        // dokter), asuransi (eks kasir). request_unit & farmasi tetap berdiri sendiri.
         $modules = [
             'admisi'             => 'Admisi & Antrean',
+            'jadwal_dokter'      => 'Jadwal Dokter',
             'antrian_tv'         => 'Antrean TV',
             'perawat'            => 'Stasiun Perawat',
             'refraksionis'       => 'Stasiun Refraksionis',
             'penunjang'          => 'Stasiun Penunjang',
             'rme_dokter'         => 'RME Dokter',
-            'rekam_medis'        => 'Rekam Medis & TTD Dokumen',
+            'rekam_medis'        => 'Rekam Medis',
+            'ttd_dokumen'        => 'Tanda Tangan Dokumen (Dokter)',
             'bedah'              => 'Unit Bedah',
             'anestesi'           => 'Anestesi (Laporan & Monitoring)',
             'ruang_tindakan'     => 'Ruang Tindakan (Laser/PRP)',
             'farmasi'            => 'Farmasi Unit',
             'kasir'              => 'Kasir & Billing',
+            'asuransi'           => 'Asuransi & Klaim TPA',
             'rawat_inap'         => 'Rawat Inap (RANAP)',
             'igd'                => 'Instalasi Gawat Darurat (IGD)',
             'bpjs'               => 'BPJS & Klaim',
             'laporan'            => 'Laporan & Analitik',
             'marketing'          => 'Laporan Marketing',
-            'tarif_paket'        => 'Tarif & Paket Bedah',
-            'inventori_farmasi'  => 'Inventori Farmasi (Obat/BHP/IOL)',
-            'supplier'           => 'Master Supplier',
-            'pembelian'          => 'Pembelian (Purchase Order)',
-            'penerimaan'         => 'Penerimaan Barang (GRN)',
+            'tarif_paket'        => 'Tarif, Paket Bedah & Kategori Tagihan',
+            'inventori_farmasi'  => 'Inventori Farmasi (Obat/BHP/IOL/Supplier/PO/GRN)',
             'request_unit'       => 'Request & Retur dari Unit',
-            'master_obat'        => 'Master Obat',
-            'master_bhp'         => 'Master BHP',
-            'master_iol'         => 'Master IOL',
-            'master_icd'         => 'Master ICD (10 & 9)',
+            'master_data'        => 'Master Data (Profil, ICD, Penjamin, Template Form)',
             'role_akses'         => 'Role & Hak Akses',
             'audit'              => 'Audit Log',
-            'pengaturan'         => 'Pengaturan Sistem',
-            'form_template'      => 'Form Template (Rekam Medis)',
             'integrasi'          => 'Bridging BPJS (VClaim/Antrean)',
         ];
 

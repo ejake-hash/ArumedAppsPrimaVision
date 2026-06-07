@@ -7,8 +7,8 @@
  *   - dipakai generator backend (RekamMedisService::generateDocumentNumber)
  *
  * Permission:
- *   - pengaturan.read  → lihat
- *   - pengaturan.write → tambah/edit/hapus
+ *   - master_data.read  → lihat
+ *   - master_data.write → tambah/edit/hapus
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { masterApi } from '@/services/api'
@@ -16,7 +16,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAppearance, FONT_SCALES } from '@/composables/useAppearance'
 
 const auth = useAuthStore()
-const canWrite = computed(() => auth.can?.('pengaturan.write') ?? auth.isSuperadmin)
+const canWrite = computed(() => auth.can?.('master_data.write') ?? auth.isSuperadmin)
 
 // ── Tampilan (ukuran font & kepadatan) — preferensi per-perangkat ────────────
 const appearance = useAppearance()

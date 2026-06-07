@@ -441,8 +441,8 @@ onMounted(() => {
   fetchSuppliers()
 })
 
-const canWrite = computed(() => auth.can('penerimaan.write'))
-const canDelete = computed(() => auth.can('penerimaan.delete'))
+const canWrite = computed(() => auth.can('inventori_farmasi.write'))
+const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 </script>
 
 <template>

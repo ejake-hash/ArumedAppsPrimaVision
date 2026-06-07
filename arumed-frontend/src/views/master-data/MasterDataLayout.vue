@@ -3,7 +3,7 @@
  * MasterDataLayout — shell untuk halaman /master-data/*.
  *
  * Layout: vertical tabs nav kiri (8 link RouterLink) + <RouterView/> kanan.
- * Permission guard di-handle router parent (meta.permission = 'pengaturan.read').
+ * Permission guard di-handle router parent (meta.permission = 'master_data.read').
  */
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
@@ -31,7 +31,7 @@ const tabs = computed(() => {
   ]
 
   // Opsi Klinis — master pilihan dropdown/combobox stasiun klinis (Refraksi).
-  if (auth.can('pengaturan.read')) {
+  if (auth.can('master_data.read')) {
     out.push({
       section: 'Opsi Klinis',
       items: [
@@ -42,7 +42,7 @@ const tabs = computed(() => {
 
   // Fasilitas & Ruang — ruang operasi + ruangan/bed rawat inap + tarif kamar.
   // Tampil untuk RANAP (rawat_inap) ATAU admin pengaturan. Satu blok agar tak dobel.
-  if (auth.can('rawat_inap.read') || auth.can('pengaturan.read')) {
+  if (auth.can('rawat_inap.read') || auth.can('master_data.read')) {
     out.push({
       section: 'Fasilitas & Ruang',
       items: [
@@ -51,8 +51,8 @@ const tabs = computed(() => {
     })
   }
 
-  // Form Registry — hanya tampil untuk role yang granted form_template.read
-  if (auth.can('form_template.read')) {
+  // Form Registry — kelola template & jenis dokumen RM (master_data, admin-only).
+  if (auth.can('master_data.read')) {
     out.push({
       section: 'Form Rekam Medis',
       items: [

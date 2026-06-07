@@ -659,7 +659,10 @@ class SatusehatService
 
         // ── Kesiapan data (kenapa ada yang ke-SKIP) ───────────────────────────
         $readiness = [
-            'doctors_without_nik' => \App\Models\Employee::where('profession', 'like', '%okter%')
+            // Hanya dokter AKTIF yang relevan utk Satu Sehat (dokter lama/inactive — mis. atribusi
+            // historis tanpa akun — tak akan jadi DPJP encounter baru, jadi tak dihitung).
+            'doctors_without_nik' => \App\Models\Employee::where('is_active', true)
+                ->where('profession', 'like', '%okter%')
                 ->where(fn ($q) => $q->whereNull('nik')->orWhere('nik', ''))->count(),
             'medications_without_kfa' => \App\Models\Medication::where(fn ($q) => $q->whereNull('kfa_code')->orWhere('kfa_code', ''))->count(),
             'patients_without_ihs' => \App\Models\Patient::whereNull('satusehat_ihs')->count(),

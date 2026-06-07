@@ -81,14 +81,14 @@ Route::prefix('v1')->group(function () {
     });
 
     // =========================================================================
-    // 2. Modul Rekam Medis Auto-Generate — WAJIB AUTH + permission form_template.
+    // 2. Modul Rekam Medis Auto-Generate — WAJIB AUTH + permission master_data (maintenance template).
     //    (Dulu "PUBLIC SEMENTARA" tanpa token: siapa pun bisa list/buat template &
     //    upload 10MB ke auto-generate = vektor DoS + data liar. Ditutup.)
     // =========================================================================
     Route::prefix('rekam-medis')->middleware(['auth:api'])->group(function () {
-        Route::post('/templates/auto-generate', [App\Http\Controllers\RmTemplateGeneratorController::class, 'autoGenerate'])->middleware('permission:form_template.write');
-        Route::post('/templates/store', [App\Http\Controllers\RmTemplateController::class, 'store'])->middleware('permission:form_template.write');
-        Route::get('/templates', [App\Http\Controllers\RmTemplateController::class, 'index'])->middleware('permission:form_template.read');
+        Route::post('/templates/auto-generate', [App\Http\Controllers\RmTemplateGeneratorController::class, 'autoGenerate'])->middleware('permission:master_data.write');
+        Route::post('/templates/store', [App\Http\Controllers\RmTemplateController::class, 'store'])->middleware('permission:master_data.write');
+        Route::get('/templates', [App\Http\Controllers\RmTemplateController::class, 'index'])->middleware('permission:master_data.read');
     });
 
     // =========================================================================
@@ -395,19 +395,20 @@ Route::prefix('v1')->group(function () {
             // GET  /jadwal-dokter/aktif-hari-ini  ← dropdown lintas-stasiun (admisi/dokter/
             // antrian butuh): biarkan hanya auth:api agar tak memblokir flow non-admisi.
             Route::get('/aktif-hari-ini',      [JadwalDokterController::class, 'aktifHariIni']);
-            // Kelola jadwal = admisi.write; lihat daftar = admisi.read.
+            // Jadwal Dokter = key sendiri (dipisah dari admisi). Default tetap diberikan
+            // ke admisi (preserve), tapi kini bisa dicabut/diberikan terpisah di Data Pengguna.
             // Static routes — WAJIB di atas /{id} agar tidak ditangkap sebagai param.
-            Route::get('/minggu-tersedia',     [JadwalDokterController::class, 'availableWeeks'])->middleware('permission:admisi.read');
-            Route::get('/template-csv',        [JadwalDokterController::class, 'template'])->middleware('permission:admisi.write');
-            Route::get('/export-csv',          [JadwalDokterController::class, 'export'])->middleware('permission:admisi.read');
-            Route::post('/import-csv',         [JadwalDokterController::class, 'import'])->middleware('permission:admisi.write');
-            Route::post('/salin-minggu-depan', [JadwalDokterController::class, 'copyToNextWeek'])->middleware('permission:admisi.write');
-            Route::get('/',                    [JadwalDokterController::class, 'index'])->middleware('permission:admisi.read');
-            Route::post('/',                   [JadwalDokterController::class, 'store'])->middleware('permission:admisi.write');
-            Route::get('/{id}',                [JadwalDokterController::class, 'show'])->middleware('permission:admisi.read');
-            Route::put('/{id}',                [JadwalDokterController::class, 'update'])->middleware('permission:admisi.write');
-            Route::delete('/{id}',             [JadwalDokterController::class, 'destroy'])->middleware('permission:admisi.write');
-            Route::patch('/{id}/toggle',       [JadwalDokterController::class, 'toggle'])->middleware('permission:admisi.write');
+            Route::get('/minggu-tersedia',     [JadwalDokterController::class, 'availableWeeks'])->middleware('permission:jadwal_dokter.read');
+            Route::get('/template-csv',        [JadwalDokterController::class, 'template'])->middleware('permission:jadwal_dokter.write');
+            Route::get('/export-csv',          [JadwalDokterController::class, 'export'])->middleware('permission:jadwal_dokter.read');
+            Route::post('/import-csv',         [JadwalDokterController::class, 'import'])->middleware('permission:jadwal_dokter.write');
+            Route::post('/salin-minggu-depan', [JadwalDokterController::class, 'copyToNextWeek'])->middleware('permission:jadwal_dokter.write');
+            Route::get('/',                    [JadwalDokterController::class, 'index'])->middleware('permission:jadwal_dokter.read');
+            Route::post('/',                   [JadwalDokterController::class, 'store'])->middleware('permission:jadwal_dokter.write');
+            Route::get('/{id}',                [JadwalDokterController::class, 'show'])->middleware('permission:jadwal_dokter.read');
+            Route::put('/{id}',                [JadwalDokterController::class, 'update'])->middleware('permission:jadwal_dokter.write');
+            Route::delete('/{id}',             [JadwalDokterController::class, 'destroy'])->middleware('permission:jadwal_dokter.write');
+            Route::patch('/{id}/toggle',       [JadwalDokterController::class, 'toggle'])->middleware('permission:jadwal_dokter.write');
         });
 
         // -----------------------------------------------------------------
@@ -715,34 +716,36 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/{id}',                           [KlaimController::class, 'show']);
 
-            Route::put('/{id}/diagnosis',                 [KlaimController::class, 'updateDiagnosis']);
-            Route::put('/{id}/assign',                    [KlaimController::class, 'assign']);
+            // Operasi tulis klaim kini butuh bpjs.write (dulu hanya bpjs.read grup →
+            // role read-only bisa menulis). Role bpjs R+W (kasir/admisi/verifikator) tetap jalan.
+            Route::put('/{id}/diagnosis',                 [KlaimController::class, 'updateDiagnosis'])->middleware('permission:bpjs.write');
+            Route::put('/{id}/assign',                    [KlaimController::class, 'assign'])->middleware('permission:bpjs.write');
 
-            Route::post('/{id}/grouping',                 [KlaimController::class, 'runGrouping']);
+            Route::post('/{id}/grouping',                 [KlaimController::class, 'runGrouping'])->middleware('permission:bpjs.write');
 
-            Route::put('/{id}/review',                    [KlaimController::class, 'setReview']);
-            Route::put('/{id}/verifikasi',                [KlaimController::class, 'setVerifikasi']);
-            Route::put('/{id}/reject',                    [KlaimController::class, 'setReject']);
-            Route::post('/{id}/resubmit',                 [KlaimController::class, 'resubmitKlaim']);
+            Route::put('/{id}/review',                    [KlaimController::class, 'setReview'])->middleware('permission:bpjs.write');
+            Route::put('/{id}/verifikasi',                [KlaimController::class, 'setVerifikasi'])->middleware('permission:bpjs.write');
+            Route::put('/{id}/reject',                    [KlaimController::class, 'setReject'])->middleware('permission:bpjs.write');
+            Route::post('/{id}/resubmit',                 [KlaimController::class, 'resubmitKlaim'])->middleware('permission:bpjs.write');
 
-            Route::post('/{id}/submit',                   [KlaimController::class, 'submitKlaim']);
+            Route::post('/{id}/submit',                   [KlaimController::class, 'submitKlaim'])->middleware('permission:bpjs.write');
 
-            Route::post('/{id}/lupis',                    [KlaimController::class, 'generateLupis']);
+            Route::post('/{id}/lupis',                    [KlaimController::class, 'generateLupis'])->middleware('permission:bpjs.write');
 
             // E-Klaim INA-CBG (Web Service ws.php): new -> set-data -> grouper -> final.
-            Route::post('/{id}/eklaim/new',               [KlaimController::class, 'eklaimNewClaim']);
-            Route::post('/{id}/eklaim/set-data',          [KlaimController::class, 'eklaimSetData']);
-            Route::post('/{id}/eklaim/grouper',           [KlaimController::class, 'eklaimGrouper']);
-            Route::post('/{id}/eklaim/final',             [KlaimController::class, 'eklaimFinal']);
+            Route::post('/{id}/eklaim/new',               [KlaimController::class, 'eklaimNewClaim'])->middleware('permission:bpjs.write');
+            Route::post('/{id}/eklaim/set-data',          [KlaimController::class, 'eklaimSetData'])->middleware('permission:bpjs.write');
+            Route::post('/{id}/eklaim/grouper',           [KlaimController::class, 'eklaimGrouper'])->middleware('permission:bpjs.write');
+            Route::post('/{id}/eklaim/final',             [KlaimController::class, 'eklaimFinal'])->middleware('permission:bpjs.write');
             Route::get('/{id}/eklaim/status',             [KlaimController::class, 'eklaimStatus']);
-            Route::post('/{id}/eklaim/reedit',            [KlaimController::class, 'eklaimReedit']);
+            Route::post('/{id}/eklaim/reedit',            [KlaimController::class, 'eklaimReedit'])->middleware('permission:bpjs.write');
 
             Route::get('/{id}/audit-log',                 [KlaimController::class, 'auditLog']);
 
             // Lampiran berkas klaim (upload PDF/gambar: resume RJ, hasil penunjang).
             Route::get('/{id}/lampiran',                  [KlaimController::class, 'attachments']);
-            Route::post('/{id}/lampiran',                 [KlaimController::class, 'uploadAttachment']);
-            Route::delete('/{id}/lampiran/{attId}',       [KlaimController::class, 'deleteAttachment']);
+            Route::post('/{id}/lampiran',                 [KlaimController::class, 'uploadAttachment'])->middleware('permission:bpjs.write');
+            Route::delete('/{id}/lampiran/{attId}',       [KlaimController::class, 'deleteAttachment'])->middleware('permission:bpjs.write');
         });
 
         // -----------------------------------------------------------------
@@ -799,10 +802,13 @@ Route::prefix('v1')->group(function () {
             Route::post('/document/{id}/addendum',         [RekamMedisController::class, 'createAddendum']);
             Route::get('/signature/{signatureId}/verify',  [RekamMedisController::class, 'verifySignature']);
             Route::get('/signature/{signatureId}/audit',   [RekamMedisController::class, 'auditSignature']);
-            Route::get('/ttd-queue',                       [RekamMedisController::class, 'ttdQueue']);
-            Route::post('/ttd-bulk-sign',                  [RekamMedisController::class, 'ttdBulkSign']);
-            Route::get('/ttd-count',                       [RekamMedisController::class, 'ttdCount']);
-            Route::get('/ttd-signed-today',                [RekamMedisController::class, 'ttdSignedToday']);
+            // Antrean TTD dokter dipisah ke key ttd_dokumen (hanya dokter lihat menu).
+            // Cumulative dgn grup rekam_medis.read → butuh KEDUANYA (dokter punya keduanya).
+            // TTD consent pasien/saksi via /document/{id}/sign TETAP di rekam_medis.read.
+            Route::get('/ttd-queue',                       [RekamMedisController::class, 'ttdQueue'])->middleware('permission:ttd_dokumen.read');
+            Route::post('/ttd-bulk-sign',                  [RekamMedisController::class, 'ttdBulkSign'])->middleware('permission:ttd_dokumen.write');
+            Route::get('/ttd-count',                       [RekamMedisController::class, 'ttdCount'])->middleware('permission:ttd_dokumen.read');
+            Route::get('/ttd-signed-today',                [RekamMedisController::class, 'ttdSignedToday'])->middleware('permission:ttd_dokumen.read');
 
             // Fase 6 — Audit log per dokumen
             Route::get('/document/{id}/audit-log',         [RekamMedisController::class, 'documentAuditLog']);
@@ -849,36 +855,36 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('master')->group(function () {
             Route::get('/profil-klinik',                    [MasterDataController::class, 'showProfilKlinik']);
-            Route::put('/profil-klinik',                    [MasterDataController::class, 'updateProfilKlinik'])->middleware('permission:pengaturan.write');
-            Route::post('/profil-klinik/logo',              [MasterDataController::class, 'uploadProfilKlinikLogo'])->middleware('permission:pengaturan.write');
-            Route::delete('/profil-klinik/logo',            [MasterDataController::class, 'deleteProfilKlinikLogo'])->middleware('permission:pengaturan.write');
+            Route::put('/profil-klinik',                    [MasterDataController::class, 'updateProfilKlinik'])->middleware('permission:master_data.write');
+            Route::post('/profil-klinik/logo',              [MasterDataController::class, 'uploadProfilKlinikLogo'])->middleware('permission:master_data.write');
+            Route::delete('/profil-klinik/logo',            [MasterDataController::class, 'deleteProfilKlinikLogo'])->middleware('permission:master_data.write');
 
             // Master Room & Bed — dikelola dari Profil Klinik (Pengaturan) MAUPUN
             // Fasilitas & Ruang (Rawat Inap). Permission OR agar kedua UI bisa akses.
-            Route::get('/room',                             [RoomController::class, 'index'])->middleware('permission:pengaturan.read|rawat_inap.read');
-            Route::post('/room',                            [RoomController::class, 'store'])->middleware('permission:pengaturan.write|rawat_inap.write');
-            Route::put('/room/{id}',                        [RoomController::class, 'update'])->middleware('permission:pengaturan.write|rawat_inap.write');
-            Route::delete('/room/{id}',                     [RoomController::class, 'destroy'])->middleware('permission:pengaturan.write|rawat_inap.write');
-            Route::post('/room/{roomId}/bed',               [RoomController::class, 'storeBed'])->middleware('permission:pengaturan.write|rawat_inap.write');
-            Route::put('/bed/{id}',                         [RoomController::class, 'updateBed'])->middleware('permission:pengaturan.write|rawat_inap.write');
-            Route::delete('/bed/{id}',                      [RoomController::class, 'destroyBed'])->middleware('permission:pengaturan.write|rawat_inap.write');
+            Route::get('/room',                             [RoomController::class, 'index'])->middleware('permission:master_data.read|rawat_inap.read');
+            Route::post('/room',                            [RoomController::class, 'store'])->middleware('permission:master_data.write|rawat_inap.write');
+            Route::put('/room/{id}',                        [RoomController::class, 'update'])->middleware('permission:master_data.write|rawat_inap.write');
+            Route::delete('/room/{id}',                     [RoomController::class, 'destroy'])->middleware('permission:master_data.write|rawat_inap.write');
+            Route::post('/room/{roomId}/bed',               [RoomController::class, 'storeBed'])->middleware('permission:master_data.write|rawat_inap.write');
+            Route::put('/bed/{id}',                         [RoomController::class, 'updateBed'])->middleware('permission:master_data.write|rawat_inap.write');
+            Route::delete('/bed/{id}',                      [RoomController::class, 'destroyBed'])->middleware('permission:master_data.write|rawat_inap.write');
 
             // Master OPSI REFRAKSI (combobox RefraksionisView) — GET utk admin,
-            // write digate pengaturan.write. Read opsi siap-pakai ada di /refraksi/opsi.
-            Route::get('/refraksi-opsi',                    [RefractionOptionController::class, 'index'])->middleware('permission:pengaturan.read');
-            Route::post('/refraksi-opsi',                   [RefractionOptionController::class, 'store'])->middleware('permission:pengaturan.write');
-            Route::put('/refraksi-opsi/{id}',               [RefractionOptionController::class, 'update'])->middleware('permission:pengaturan.write');
-            Route::delete('/refraksi-opsi/{id}',            [RefractionOptionController::class, 'destroy'])->middleware('permission:pengaturan.write');
+            // write digate master_data.write. Read opsi siap-pakai ada di /refraksi/opsi.
+            Route::get('/refraksi-opsi',                    [RefractionOptionController::class, 'index'])->middleware('permission:master_data.read');
+            Route::post('/refraksi-opsi',                   [RefractionOptionController::class, 'store'])->middleware('permission:master_data.write');
+            Route::put('/refraksi-opsi/{id}',               [RefractionOptionController::class, 'update'])->middleware('permission:master_data.write');
+            Route::delete('/refraksi-opsi/{id}',            [RefractionOptionController::class, 'destroy'])->middleware('permission:master_data.write');
 
             // Tarif kamar per kelas per insurer (Rawat Inap).
             Route::get('/room-tariff',                      [RoomController::class, 'indexTariff'])->middleware('permission:tarif_paket.read|rawat_inap.read');
             Route::post('/room-tariff',                     [RoomController::class, 'storeTariff'])->middleware('permission:tarif_paket.write|rawat_inap.write');
             Route::delete('/room-tariff/{id}',              [RoomController::class, 'destroyTariff'])->middleware('permission:tarif_paket.delete|rawat_inap.write');
 
-            Route::get('/nomor-dokumen',                    [MasterDataController::class, 'indexNomorDokumen'])->middleware('permission:pengaturan.read');
-            Route::post('/nomor-dokumen',                   [MasterDataController::class, 'storeNomorDokumen'])->middleware('permission:pengaturan.write');
-            Route::put('/nomor-dokumen/{id}',               [MasterDataController::class, 'updateNomorDokumen'])->middleware('permission:pengaturan.write');
-            Route::delete('/nomor-dokumen/{id}',            [MasterDataController::class, 'destroyNomorDokumen'])->middleware('permission:pengaturan.write');
+            Route::get('/nomor-dokumen',                    [MasterDataController::class, 'indexNomorDokumen'])->middleware('permission:master_data.read');
+            Route::post('/nomor-dokumen',                   [MasterDataController::class, 'storeNomorDokumen'])->middleware('permission:master_data.write');
+            Route::put('/nomor-dokumen/{id}',               [MasterDataController::class, 'updateNomorDokumen'])->middleware('permission:master_data.write');
+            Route::delete('/nomor-dokumen/{id}',            [MasterDataController::class, 'destroyNomorDokumen'])->middleware('permission:master_data.write');
 
             Route::get('/roles',                            [MasterDataController::class, 'indexRoles'])->middleware('permission:role_akses.read');
             Route::post('/roles',                           [MasterDataController::class, 'storeRole'])->middleware('permission:role_akses.write');
@@ -895,22 +901,23 @@ Route::prefix('v1')->group(function () {
             // CSV/Excel penjamin — WAJIB didaftar SEBELUM route generic /penjamin/{id}
             Route::get('/penjamin/template-csv',            [MasterDataController::class, 'templatePenjaminCsv']);
             Route::get('/penjamin/export-csv',              [MasterDataController::class, 'exportPenjaminCsv']);
-            Route::post('/penjamin/import-csv',             [MasterDataController::class, 'importPenjaminCsv'])->middleware('permission:pengaturan.write');
+            Route::post('/penjamin/import-csv',             [MasterDataController::class, 'importPenjaminCsv'])->middleware('permission:master_data.write');
             // TPA membership (kelola anggota dari sisi TPA) — WAJIB sebelum /penjamin/{id} generic
             Route::get('/penjamin/{tpaId}/member-candidates', [MasterDataController::class, 'candidateMembers']);
-            Route::post('/penjamin/{tpaId}/members',          [MasterDataController::class, 'addPenjaminMember'])->middleware('permission:pengaturan.write');
-            Route::delete('/penjamin/{tpaId}/members/{memberId}', [MasterDataController::class, 'removePenjaminMember'])->middleware('permission:pengaturan.write');
+            Route::post('/penjamin/{tpaId}/members',          [MasterDataController::class, 'addPenjaminMember'])->middleware('permission:master_data.write');
+            Route::delete('/penjamin/{tpaId}/members/{memberId}', [MasterDataController::class, 'removePenjaminMember'])->middleware('permission:master_data.write');
             Route::get('/penjamin',                         [MasterDataController::class, 'indexPenjamin']);
-            Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin'])->middleware('permission:pengaturan.write');
-            Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin'])->middleware('permission:pengaturan.write');
-            Route::delete('/penjamin/{id}',                 [MasterDataController::class, 'deletePenjamin'])->middleware('permission:pengaturan.write');
+            Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin'])->middleware('permission:master_data.write');
+            Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin'])->middleware('permission:master_data.write');
+            Route::delete('/penjamin/{id}',                 [MasterDataController::class, 'deletePenjamin'])->middleware('permission:master_data.write');
 
             // Billing Categories — kategori grouping rincian tagihan Kasir
             Route::get('/kategori-tagihan',                 [MasterDataController::class, 'indexBillingCategory']);
-            Route::post('/kategori-tagihan',                [MasterDataController::class, 'storeBillingCategory'])->middleware('permission:kasir.write');
-            Route::put('/kategori-tagihan/reorder',         [MasterDataController::class, 'reorderBillingCategory'])->middleware('permission:kasir.write');
-            Route::put('/kategori-tagihan/{id}',            [MasterDataController::class, 'updateBillingCategory'])->middleware('permission:kasir.write');
-            Route::delete('/kategori-tagihan/{id}',         [MasterDataController::class, 'deleteBillingCategory'])->middleware('permission:kasir.delete');
+            // Kategori Tagihan masuk ke tarif_paket (GET tetap publik utk render kwitansi Kasir).
+            Route::post('/kategori-tagihan',                [MasterDataController::class, 'storeBillingCategory'])->middleware('permission:tarif_paket.write');
+            Route::put('/kategori-tagihan/reorder',         [MasterDataController::class, 'reorderBillingCategory'])->middleware('permission:tarif_paket.write');
+            Route::put('/kategori-tagihan/{id}',            [MasterDataController::class, 'updateBillingCategory'])->middleware('permission:tarif_paket.write');
+            Route::delete('/kategori-tagihan/{id}',         [MasterDataController::class, 'deleteBillingCategory'])->middleware('permission:tarif_paket.delete');
 
             Route::get('/tindakan/template-csv',            [MasterDataController::class, 'templateCsv'])->defaults('type', 'tindakan');
             Route::get('/tindakan/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'tindakan');
@@ -930,21 +937,23 @@ Route::prefix('v1')->group(function () {
             Route::delete('/tindakan/{id}',                 [MasterDataController::class, 'deleteTindakan'])->middleware('permission:tarif_paket.delete');
 
             // CSV (template/export/import) — WAJIB didaftar SEBELUM route /{id}
-            Route::get('/icd10/template-csv',               [MasterDataController::class, 'templateCsv'])->defaults('type', 'icd10')->middleware('permission:master_icd.read');
-            Route::get('/icd10/export-csv',                 [MasterDataController::class, 'exportCsv'])->defaults('type', 'icd10')->middleware('permission:master_icd.read');
-            Route::post('/icd10/import-csv',                [MasterDataController::class, 'importCsv'])->defaults('type', 'icd10')->middleware('permission:master_icd.write');
-            Route::get('/icd10',                            [MasterDataController::class, 'indexIcd10'])->middleware('permission:master_icd.read');
-            Route::post('/icd10',                           [MasterDataController::class, 'storeIcd10'])->middleware('permission:master_icd.write');
-            Route::put('/icd10/{id}',                       [MasterDataController::class, 'updateIcd10'])->middleware('permission:master_icd.write');
-            Route::delete('/icd10/{id}',                    [MasterDataController::class, 'deleteIcd10'])->middleware('permission:master_icd.delete');
+            Route::get('/icd10/template-csv',               [MasterDataController::class, 'templateCsv'])->defaults('type', 'icd10')->middleware('permission:master_data.read');
+            Route::get('/icd10/export-csv',                 [MasterDataController::class, 'exportCsv'])->defaults('type', 'icd10')->middleware('permission:master_data.read');
+            Route::post('/icd10/import-csv',                [MasterDataController::class, 'importCsv'])->defaults('type', 'icd10')->middleware('permission:master_data.write');
+            // Carve-out: pencarian ICD utk diagnosis dipakai stasiun klinis (IGD/dokter/
+            // perawat) → gate OR, BUKAN master_data. Maintenance (write/delete) tetap master_data.
+            Route::get('/icd10',                            [MasterDataController::class, 'indexIcd10'])->middleware('permission:master_data.read|rme_dokter.read|perawat.read|igd.read');
+            Route::post('/icd10',                           [MasterDataController::class, 'storeIcd10'])->middleware('permission:master_data.write');
+            Route::put('/icd10/{id}',                       [MasterDataController::class, 'updateIcd10'])->middleware('permission:master_data.write');
+            Route::delete('/icd10/{id}',                    [MasterDataController::class, 'deleteIcd10'])->middleware('permission:master_data.delete');
 
-            Route::get('/icd9/template-csv',                [MasterDataController::class, 'templateCsv'])->defaults('type', 'icd9')->middleware('permission:master_icd.read');
-            Route::get('/icd9/export-csv',                  [MasterDataController::class, 'exportCsv'])->defaults('type', 'icd9')->middleware('permission:master_icd.read');
-            Route::post('/icd9/import-csv',                 [MasterDataController::class, 'importCsv'])->defaults('type', 'icd9')->middleware('permission:master_icd.write');
-            Route::get('/icd9',                             [MasterDataController::class, 'indexIcd9'])->middleware('permission:master_icd.read');
-            Route::post('/icd9',                            [MasterDataController::class, 'storeIcd9'])->middleware('permission:master_icd.write');
-            Route::put('/icd9/{id}',                        [MasterDataController::class, 'updateIcd9'])->middleware('permission:master_icd.write');
-            Route::delete('/icd9/{id}',                     [MasterDataController::class, 'deleteIcd9'])->middleware('permission:master_icd.delete');
+            Route::get('/icd9/template-csv',                [MasterDataController::class, 'templateCsv'])->defaults('type', 'icd9')->middleware('permission:master_data.read');
+            Route::get('/icd9/export-csv',                  [MasterDataController::class, 'exportCsv'])->defaults('type', 'icd9')->middleware('permission:master_data.read');
+            Route::post('/icd9/import-csv',                 [MasterDataController::class, 'importCsv'])->defaults('type', 'icd9')->middleware('permission:master_data.write');
+            Route::get('/icd9',                             [MasterDataController::class, 'indexIcd9'])->middleware('permission:master_data.read|rme_dokter.read|perawat.read|igd.read');
+            Route::post('/icd9',                            [MasterDataController::class, 'storeIcd9'])->middleware('permission:master_data.write');
+            Route::put('/icd9/{id}',                        [MasterDataController::class, 'updateIcd9'])->middleware('permission:master_data.write');
+            Route::delete('/icd9/{id}',                     [MasterDataController::class, 'deleteIcd9'])->middleware('permission:master_data.delete');
 
             // Jenis Penunjang (diagnostic_test_types) — master dikelola di modul Penunjang
             Route::get('/diagnostic-test-type',             [MasterDataController::class, 'indexDiagnosticTestType']);
@@ -952,30 +961,30 @@ Route::prefix('v1')->group(function () {
             Route::put('/diagnostic-test-type/{id}',        [MasterDataController::class, 'updateDiagnosticTestType'])->middleware('permission:penunjang.write');
             Route::delete('/diagnostic-test-type/{id}',     [MasterDataController::class, 'deleteDiagnosticTestType'])->middleware('permission:penunjang.write');
 
-            Route::get('/obat/template-csv',                [MasterDataController::class, 'templateCsv'])->defaults('type', 'obat')->middleware('permission:master_obat.read');
-            Route::get('/obat/export-csv',                  [MasterDataController::class, 'exportCsv'])->defaults('type', 'obat')->middleware('permission:master_obat.read');
-            Route::post('/obat/import-csv',                 [MasterDataController::class, 'importCsv'])->defaults('type', 'obat')->middleware('permission:master_obat.write');
-            Route::get('/obat',                             [MasterDataController::class, 'indexObat'])->middleware('permission:master_obat.read');
-            Route::post('/obat',                            [MasterDataController::class, 'storeObat'])->middleware('permission:master_obat.write');
-            Route::put('/obat/{id}',                        [MasterDataController::class, 'updateObat'])->middleware('permission:master_obat.write');
-            Route::delete('/obat/{id}',                     [MasterDataController::class, 'deleteObat'])->middleware('permission:master_obat.delete');
+            Route::get('/obat/template-csv',                [MasterDataController::class, 'templateCsv'])->defaults('type', 'obat')->middleware('permission:inventori_farmasi.read');
+            Route::get('/obat/export-csv',                  [MasterDataController::class, 'exportCsv'])->defaults('type', 'obat')->middleware('permission:inventori_farmasi.read');
+            Route::post('/obat/import-csv',                 [MasterDataController::class, 'importCsv'])->defaults('type', 'obat')->middleware('permission:inventori_farmasi.write');
+            Route::get('/obat',                             [MasterDataController::class, 'indexObat'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/obat',                            [MasterDataController::class, 'storeObat'])->middleware('permission:inventori_farmasi.write');
+            Route::put('/obat/{id}',                        [MasterDataController::class, 'updateObat'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/obat/{id}',                     [MasterDataController::class, 'deleteObat'])->middleware('permission:inventori_farmasi.delete');
 
-            Route::get('/bhp/template-csv',                 [MasterDataController::class, 'templateCsv'])->defaults('type', 'bhp')->middleware('permission:master_bhp.read');
-            Route::get('/bhp/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'bhp')->middleware('permission:master_bhp.read');
-            Route::post('/bhp/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'bhp')->middleware('permission:master_bhp.write');
-            Route::get('/bhp',                              [MasterDataController::class, 'indexBhp'])->middleware('permission:master_bhp.read');
-            Route::post('/bhp',                             [MasterDataController::class, 'storeBhp'])->middleware('permission:master_bhp.write');
-            Route::put('/bhp/{id}',                         [MasterDataController::class, 'updateBhp'])->middleware('permission:master_bhp.write');
-            Route::delete('/bhp/{id}',                      [MasterDataController::class, 'deleteBhp'])->middleware('permission:master_bhp.delete');
+            Route::get('/bhp/template-csv',                 [MasterDataController::class, 'templateCsv'])->defaults('type', 'bhp')->middleware('permission:inventori_farmasi.read');
+            Route::get('/bhp/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'bhp')->middleware('permission:inventori_farmasi.read');
+            Route::post('/bhp/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'bhp')->middleware('permission:inventori_farmasi.write');
+            Route::get('/bhp',                              [MasterDataController::class, 'indexBhp'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/bhp',                             [MasterDataController::class, 'storeBhp'])->middleware('permission:inventori_farmasi.write');
+            Route::put('/bhp/{id}',                         [MasterDataController::class, 'updateBhp'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/bhp/{id}',                      [MasterDataController::class, 'deleteBhp'])->middleware('permission:inventori_farmasi.delete');
 
-            Route::get('/iol/template-csv',                 [MasterDataController::class, 'templateCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.read');
-            Route::get('/iol/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.read');
-            Route::post('/iol/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'iol')->middleware('permission:master_iol.write');
-            Route::get('/iol',                              [MasterDataController::class, 'indexIol'])->middleware('permission:master_iol.read');
-            Route::post('/iol/scan',                        [MasterDataController::class, 'scanIol'])->middleware('permission:master_iol.read|bedah.read'); // parse UDI + lookup (dipakai Penerimaan & Bedah)
-            Route::post('/iol',                             [MasterDataController::class, 'storeIol'])->middleware('permission:master_iol.write');
-            Route::put('/iol/{id}',                         [MasterDataController::class, 'updateIol'])->middleware('permission:master_iol.write');
-            Route::delete('/iol/{id}',                      [MasterDataController::class, 'deleteIol'])->middleware('permission:master_iol.delete');
+            Route::get('/iol/template-csv',                 [MasterDataController::class, 'templateCsv'])->defaults('type', 'iol')->middleware('permission:inventori_farmasi.read');
+            Route::get('/iol/export-csv',                   [MasterDataController::class, 'exportCsv'])->defaults('type', 'iol')->middleware('permission:inventori_farmasi.read');
+            Route::post('/iol/import-csv',                  [MasterDataController::class, 'importCsv'])->defaults('type', 'iol')->middleware('permission:inventori_farmasi.write');
+            Route::get('/iol',                              [MasterDataController::class, 'indexIol'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/iol/scan',                        [MasterDataController::class, 'scanIol'])->middleware('permission:inventori_farmasi.read|bedah.read'); // parse UDI + lookup (dipakai Penerimaan & Bedah). master_iol→inventori_farmasi (carve-out OR bedah).
+            Route::post('/iol',                             [MasterDataController::class, 'storeIol'])->middleware('permission:inventori_farmasi.write');
+            Route::put('/iol/{id}',                         [MasterDataController::class, 'updateIol'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/iol/{id}',                      [MasterDataController::class, 'deleteIol'])->middleware('permission:inventori_farmasi.delete');
 
             // Alat Medis CSV (view fisik di /inventori-farmasi/alat-medis, CRUD pakai MedicalEquipmentController;
             // CSV pakai generic MasterDataController karena frontend csv client hit /master/{type}/*-csv)
@@ -985,9 +994,9 @@ Route::prefix('v1')->group(function () {
 
             // Supplier CSV/Excel (view fisik di /inventori-farmasi/supplier, CRUD pakai SupplierController;
             // CSV pakai generic MasterDataController karena frontend csv client hit /master/{type}/*-csv)
-            Route::get('/supplier/template-csv',            [MasterDataController::class, 'templateCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.read');
-            Route::get('/supplier/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.read');
-            Route::post('/supplier/import-csv',             [MasterDataController::class, 'importCsv'])->defaults('type', 'supplier')->middleware('permission:supplier.write');
+            Route::get('/supplier/template-csv',            [MasterDataController::class, 'templateCsv'])->defaults('type', 'supplier')->middleware('permission:inventori_farmasi.read');
+            Route::get('/supplier/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'supplier')->middleware('permission:inventori_farmasi.read');
+            Route::post('/supplier/import-csv',             [MasterDataController::class, 'importCsv'])->defaults('type', 'supplier')->middleware('permission:inventori_farmasi.write');
 
             Route::get('/paket-bedah',                      [MasterDataController::class, 'indexPaketBedah'])->middleware('permission:tarif_paket.read');
             Route::post('/paket-bedah',                     [MasterDataController::class, 'storePaketBedah'])->middleware('permission:tarif_paket.write');
@@ -1038,25 +1047,25 @@ Route::prefix('v1')->group(function () {
 
             // -----------------------------------------------------------------
             // FORM REGISTRY — Master Form Template (Fase 1 + Fase 2)
-            // RBAC: form_template.{read|write|delete}; superadmin auto-bypass.
+            // RBAC: master_data.{read|write}; superadmin auto-bypass. (eks form_template, admin-only)
             // -----------------------------------------------------------------
-            Route::get('/field-registry',                              [MasterDataController::class, 'fieldRegistry'])->middleware('permission:form_template.read');
-            Route::get('/station-sections',                            [MasterDataController::class, 'stationSections'])->middleware('permission:form_template.read');
-            Route::get('/document-types',                              [MasterDataController::class, 'indexDocumentTypes'])->middleware('permission:form_template.read');
-            Route::post('/document-type',                              [MasterDataController::class, 'storeDocumentType'])->middleware('permission:form_template.write');
-            Route::put('/document-type/{id}',                          [MasterDataController::class, 'updateDocumentType'])->middleware('permission:form_template.write');
-            Route::delete('/document-type/{id}',                       [MasterDataController::class, 'destroyDocumentType'])->middleware('permission:form_template.write');
+            Route::get('/field-registry',                              [MasterDataController::class, 'fieldRegistry'])->middleware('permission:master_data.read');
+            Route::get('/station-sections',                            [MasterDataController::class, 'stationSections'])->middleware('permission:master_data.read');
+            Route::get('/document-types',                              [MasterDataController::class, 'indexDocumentTypes'])->middleware('permission:master_data.read');
+            Route::post('/document-type',                              [MasterDataController::class, 'storeDocumentType'])->middleware('permission:master_data.write');
+            Route::put('/document-type/{id}',                          [MasterDataController::class, 'updateDocumentType'])->middleware('permission:master_data.write');
+            Route::delete('/document-type/{id}',                       [MasterDataController::class, 'destroyDocumentType'])->middleware('permission:master_data.write');
 
             // Parser (Fase 2) — WAJIB didaftar SEBELUM /form-template/{id}
-            Route::post('/form-template/upload',                       [MasterDataController::class, 'uploadFormTemplate'])->middleware('permission:form_template.write');
-            Route::get('/form-template/parse-result/{parseId}',        [MasterDataController::class, 'parseResultFormTemplate'])->middleware('permission:form_template.write');
+            Route::post('/form-template/upload',                       [MasterDataController::class, 'uploadFormTemplate'])->middleware('permission:master_data.write');
+            Route::get('/form-template/parse-result/{parseId}',        [MasterDataController::class, 'parseResultFormTemplate'])->middleware('permission:master_data.write');
 
-            Route::get('/form-template',                               [MasterDataController::class, 'indexFormTemplate'])->middleware('permission:form_template.read');
-            Route::post('/form-template',                              [MasterDataController::class, 'storeFormTemplate'])->middleware('permission:form_template.write');
-            Route::get('/form-template/{id}',                          [MasterDataController::class, 'showFormTemplate'])->middleware('permission:form_template.read');
-            Route::put('/form-template/{id}',                          [MasterDataController::class, 'updateFormTemplate'])->middleware('permission:form_template.write');
-            Route::post('/form-template/{id}/activate',                [MasterDataController::class, 'activateFormTemplate'])->middleware('permission:form_template.write');
-            Route::post('/form-template/{id}/deactivate',              [MasterDataController::class, 'deactivateFormTemplate'])->middleware('permission:form_template.write');
+            Route::get('/form-template',                               [MasterDataController::class, 'indexFormTemplate'])->middleware('permission:master_data.read');
+            Route::post('/form-template',                              [MasterDataController::class, 'storeFormTemplate'])->middleware('permission:master_data.write');
+            Route::get('/form-template/{id}',                          [MasterDataController::class, 'showFormTemplate'])->middleware('permission:master_data.read');
+            Route::put('/form-template/{id}',                          [MasterDataController::class, 'updateFormTemplate'])->middleware('permission:master_data.write');
+            Route::post('/form-template/{id}/activate',                [MasterDataController::class, 'activateFormTemplate'])->middleware('permission:master_data.write');
+            Route::post('/form-template/{id}/deactivate',              [MasterDataController::class, 'deactivateFormTemplate'])->middleware('permission:master_data.write');
 
             // CATATAN: Master Room / Bed / Tarif Kamar (Fasilitas & Ruang RANAP)
             // didaftarkan SEKALI di atas (lihat /room & /room-tariff) dengan
@@ -1068,33 +1077,33 @@ Route::prefix('v1')->group(function () {
         // INVENTORI FARMASI — Master Supplier
         // -----------------------------------------------------------------
         Route::prefix('inventori-farmasi/supplier')->group(function () {
-            Route::get('/',         [SupplierController::class, 'index'])->middleware('permission:supplier.read');
-            Route::post('/',        [SupplierController::class, 'store'])->middleware('permission:supplier.write');
-            Route::put('/{id}',     [SupplierController::class, 'update'])->middleware('permission:supplier.write');
-            Route::delete('/{id}',  [SupplierController::class, 'destroy'])->middleware('permission:supplier.delete');
+            Route::get('/',         [SupplierController::class, 'index'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/',        [SupplierController::class, 'store'])->middleware('permission:inventori_farmasi.write');
+            Route::put('/{id}',     [SupplierController::class, 'update'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/{id}',  [SupplierController::class, 'destroy'])->middleware('permission:inventori_farmasi.delete');
         });
 
         // -----------------------------------------------------------------
         // INVENTORI FARMASI — Pembelian (Purchase Order)
         // -----------------------------------------------------------------
         Route::prefix('inventori-farmasi/pembelian')->group(function () {
-            Route::get('/',              [PurchaseOrderController::class, 'index'])->middleware('permission:pembelian.read');
-            Route::post('/',             [PurchaseOrderController::class, 'store'])->middleware('permission:pembelian.write');
-            Route::get('/{id}',          [PurchaseOrderController::class, 'show'])->middleware('permission:pembelian.read');
-            Route::put('/{id}',          [PurchaseOrderController::class, 'update'])->middleware('permission:pembelian.write');
-            Route::delete('/{id}',       [PurchaseOrderController::class, 'destroy'])->middleware('permission:pembelian.delete');
-            Route::post('/{id}/cancel',  [PurchaseOrderController::class, 'cancel'])->middleware('permission:pembelian.write');
+            Route::get('/',              [PurchaseOrderController::class, 'index'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/',             [PurchaseOrderController::class, 'store'])->middleware('permission:inventori_farmasi.write');
+            Route::get('/{id}',          [PurchaseOrderController::class, 'show'])->middleware('permission:inventori_farmasi.read');
+            Route::put('/{id}',          [PurchaseOrderController::class, 'update'])->middleware('permission:inventori_farmasi.write');
+            Route::delete('/{id}',       [PurchaseOrderController::class, 'destroy'])->middleware('permission:inventori_farmasi.delete');
+            Route::post('/{id}/cancel',  [PurchaseOrderController::class, 'cancel'])->middleware('permission:inventori_farmasi.write');
         });
 
         // -----------------------------------------------------------------
         // INVENTORI FARMASI — Penerimaan Barang (Goods Receipt / GRN)
         // -----------------------------------------------------------------
         Route::prefix('inventori-farmasi/penerimaan')->group(function () {
-            Route::get('/from-po/{poId}',  [GoodsReceiptController::class, 'prepareFromPo'])->middleware('permission:penerimaan.write');
-            Route::get('/',                [GoodsReceiptController::class, 'index'])->middleware('permission:penerimaan.read');
-            Route::post('/',               [GoodsReceiptController::class, 'store'])->middleware('permission:penerimaan.write');
-            Route::get('/{id}',            [GoodsReceiptController::class, 'show'])->middleware('permission:penerimaan.read');
-            Route::delete('/{id}',         [GoodsReceiptController::class, 'destroy'])->middleware('permission:penerimaan.delete');
+            Route::get('/from-po/{poId}',  [GoodsReceiptController::class, 'prepareFromPo'])->middleware('permission:inventori_farmasi.write');
+            Route::get('/',                [GoodsReceiptController::class, 'index'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/',               [GoodsReceiptController::class, 'store'])->middleware('permission:inventori_farmasi.write');
+            Route::get('/{id}',            [GoodsReceiptController::class, 'show'])->middleware('permission:inventori_farmasi.read');
+            Route::delete('/{id}',         [GoodsReceiptController::class, 'destroy'])->middleware('permission:inventori_farmasi.delete');
         });
 
         // -----------------------------------------------------------------
@@ -1294,38 +1303,39 @@ Route::prefix('v1')->group(function () {
         // Tidak menyentuh BPJS (KlaimController). Permission: kasir.* (billing).
         // Spec: Docs/ARUMED_INSURANCE_TPA_MODULE.md
         // -----------------------------------------------------------------
+        // Asuransi/TPA = key sendiri (dipisah dari kasir). Default tetap diberikan ke kasir.
         Route::prefix('asuransi')->group(function () {
             // Verifikasi eligibility (input manual hasil cek portal TPA)
-            Route::get('/verifikasi/pending',     [AsuransiController::class, 'pendingVerifications'])->middleware('permission:kasir.read');
-            Route::get('/verifikasi/in-service',  [AsuransiController::class, 'inServiceVerifications'])->middleware('permission:kasir.read');
+            Route::get('/verifikasi/pending',     [AsuransiController::class, 'pendingVerifications'])->middleware('permission:asuransi.read');
+            Route::get('/verifikasi/in-service',  [AsuransiController::class, 'inServiceVerifications'])->middleware('permission:asuransi.read');
             // COB: daftar verifikasi per insurer + basis selisih penjamin-2 (WAJIB sebelum /verifikasi/{visitId} generik).
-            Route::get('/verifikasi-all/{visitId}', [AsuransiController::class, 'showVerifikasiAll'])->middleware('permission:kasir.read');
-            Route::get('/cob-basis/{visitId}',      [AsuransiController::class, 'cobBasis'])->middleware('permission:kasir.read');
-            Route::get('/verifikasi/{visitId}',   [AsuransiController::class, 'showVerifikasi'])->middleware('permission:kasir.read');
-            Route::post('/verifikasi',            [AsuransiController::class, 'storeVerifikasi'])->middleware('permission:kasir.write');
-            Route::put('/verifikasi/{id}',        [AsuransiController::class, 'updateVerifikasi'])->middleware('permission:kasir.write');
-            Route::get('/billing/{visitId}',      [AsuransiController::class, 'showBilling'])->middleware('permission:kasir.read');
+            Route::get('/verifikasi-all/{visitId}', [AsuransiController::class, 'showVerifikasiAll'])->middleware('permission:asuransi.read');
+            Route::get('/cob-basis/{visitId}',      [AsuransiController::class, 'cobBasis'])->middleware('permission:asuransi.read');
+            Route::get('/verifikasi/{visitId}',   [AsuransiController::class, 'showVerifikasi'])->middleware('permission:asuransi.read');
+            Route::post('/verifikasi',            [AsuransiController::class, 'storeVerifikasi'])->middleware('permission:asuransi.write');
+            Route::put('/verifikasi/{id}',        [AsuransiController::class, 'updateVerifikasi'])->middleware('permission:asuransi.write');
+            Route::get('/billing/{visitId}',      [AsuransiController::class, 'showBilling'])->middleware('permission:asuransi.read');
 
             // Klaim
-            Route::get('/klaim',                  [AsuransiController::class, 'indexKlaim'])->middleware('permission:kasir.read');
-            Route::get('/klaim/{id}',             [AsuransiController::class, 'showKlaim'])->middleware('permission:kasir.read');
-            Route::post('/klaim',                 [AsuransiController::class, 'storeKlaim'])->middleware('permission:kasir.write');
-            Route::put('/klaim/{id}',             [AsuransiController::class, 'updateKlaim'])->middleware('permission:kasir.write');
-            Route::post('/klaim/{id}/submit',     [AsuransiController::class, 'submitKlaim'])->middleware('permission:kasir.write');
-            Route::put('/klaim/{id}/status',      [AsuransiController::class, 'updateStatusKlaim'])->middleware('permission:kasir.write');
-            Route::post('/klaim/{id}/resubmit',   [AsuransiController::class, 'resubmitKlaim'])->middleware('permission:kasir.write');
-            Route::get('/klaim/{id}/logs',        [AsuransiController::class, 'logsKlaim'])->middleware('permission:kasir.read');
+            Route::get('/klaim',                  [AsuransiController::class, 'indexKlaim'])->middleware('permission:asuransi.read');
+            Route::get('/klaim/{id}',             [AsuransiController::class, 'showKlaim'])->middleware('permission:asuransi.read');
+            Route::post('/klaim',                 [AsuransiController::class, 'storeKlaim'])->middleware('permission:asuransi.write');
+            Route::put('/klaim/{id}',             [AsuransiController::class, 'updateKlaim'])->middleware('permission:asuransi.write');
+            Route::post('/klaim/{id}/submit',     [AsuransiController::class, 'submitKlaim'])->middleware('permission:asuransi.write');
+            Route::put('/klaim/{id}/status',      [AsuransiController::class, 'updateStatusKlaim'])->middleware('permission:asuransi.write');
+            Route::post('/klaim/{id}/resubmit',   [AsuransiController::class, 'resubmitKlaim'])->middleware('permission:asuransi.write');
+            Route::get('/klaim/{id}/logs',        [AsuransiController::class, 'logsKlaim'])->middleware('permission:asuransi.read');
 
             // Laporan
-            Route::get('/aging',                  [AsuransiController::class, 'agingReport'])->middleware('permission:kasir.read');
-            Route::get('/outstanding',            [AsuransiController::class, 'outstandingReport'])->middleware('permission:kasir.read');
-            Route::get('/summary',                [AsuransiController::class, 'dashboardSummary'])->middleware('permission:kasir.read');
+            Route::get('/aging',                  [AsuransiController::class, 'agingReport'])->middleware('permission:asuransi.read');
+            Route::get('/outstanding',            [AsuransiController::class, 'outstandingReport'])->middleware('permission:asuransi.read');
+            Route::get('/summary',                [AsuransiController::class, 'dashboardSummary'])->middleware('permission:asuransi.read');
 
             // Master — Document Requirements per TPA
-            Route::get('/insurer/{insurerId}/dokumen-requirement',  [AsuransiController::class, 'indexDocRequirement'])->middleware('permission:kasir.read');
-            Route::post('/insurer/{insurerId}/dokumen-requirement', [AsuransiController::class, 'storeDocRequirement'])->middleware('permission:kasir.write');
-            Route::put('/dokumen-requirement/{id}',                 [AsuransiController::class, 'updateDocRequirement'])->middleware('permission:kasir.write');
-            Route::delete('/dokumen-requirement/{id}',              [AsuransiController::class, 'deleteDocRequirement'])->middleware('permission:kasir.delete');
+            Route::get('/insurer/{insurerId}/dokumen-requirement',  [AsuransiController::class, 'indexDocRequirement'])->middleware('permission:asuransi.read');
+            Route::post('/insurer/{insurerId}/dokumen-requirement', [AsuransiController::class, 'storeDocRequirement'])->middleware('permission:asuransi.write');
+            Route::put('/dokumen-requirement/{id}',                 [AsuransiController::class, 'updateDocRequirement'])->middleware('permission:asuransi.write');
+            Route::delete('/dokumen-requirement/{id}',              [AsuransiController::class, 'deleteDocRequirement'])->middleware('permission:asuransi.delete');
         });
 
         // -----------------------------------------------------------------

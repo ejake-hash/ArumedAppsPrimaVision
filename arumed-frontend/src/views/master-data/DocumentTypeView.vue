@@ -9,15 +9,15 @@
  *   - Toggle is_active in-place
  *
  * Permission:
- *   - form_template.read  → list + view
- *   - form_template.write → create/update/delete/toggle
+ *   - master_data.read  → list + view
+ *   - master_data.write → create/update/delete/toggle
  */
 import { computed, onMounted, ref } from 'vue'
 import { formTemplateApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
-const canWrite = computed(() => auth.can('form_template.write'))
+const canWrite = computed(() => auth.can('master_data.write'))
 
 const list = ref([])
 const loading = ref(false)

@@ -35,9 +35,9 @@ const allTabs = [
   { to: '/inventori-farmasi/bhp',        label: 'BHP',               icon: 'box',      section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/iol',        label: 'IOL',               icon: 'lens',     section: 'Master Item',  perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/alat-medis', label: 'Alat Medis',        icon: 'machine',  section: 'Master Item',  perm: 'inventori_farmasi.read' },
-  { to: '/inventori-farmasi/supplier',   label: 'Supplier',          icon: 'truck',    section: 'Pengadaan',    perm: 'supplier.read' },
-  { to: '/inventori-farmasi/pembelian',  label: 'Pembelian (PO)',    icon: 'cart',     section: 'Pengadaan',    perm: 'pembelian.read' },
-  { to: '/inventori-farmasi/penerimaan', label: 'Penerimaan',        icon: 'inbox',    section: 'Pengadaan',    perm: 'penerimaan.read' },
+  { to: '/inventori-farmasi/supplier',   label: 'Supplier',          icon: 'truck',    section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
+  { to: '/inventori-farmasi/pembelian',  label: 'Pembelian (PO)',    icon: 'cart',     section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
+  { to: '/inventori-farmasi/penerimaan', label: 'Penerimaan',        icon: 'inbox',    section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
 ]
 
 const tabs = computed(() => allTabs.filter((t) => auth.can(t.perm)))

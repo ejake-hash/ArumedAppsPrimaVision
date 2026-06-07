@@ -9,15 +9,15 @@
  * RefraksionisView berupa combobox (boleh pilih ATAU ketik), nilai disimpan varchar.
  *
  * Permission:
- *   - pengaturan.read  → list/view
- *   - pengaturan.write → edit
+ *   - master_data.read  → list/view
+ *   - master_data.write → edit
  */
 import { computed, onMounted, ref } from 'vue'
 import { masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
-const canWrite = computed(() => auth.can('pengaturan.write'))
+const canWrite = computed(() => auth.can('master_data.write'))
 
 const list = ref([])
 const loading = ref(false)
