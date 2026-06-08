@@ -241,7 +241,7 @@ class KasirService
     // =========================================================================
 
     /**
-     * Build invoice from all visit sources: tindakan, obat, IOL (bedah), registrasi.
+     * Build invoice from all visit sources: tindakan, obat, BHP, IOL (bedah), paket.
      * Applies tariff lookup with fallback logic.
      * Applies COB if configured.
      */
@@ -330,7 +330,6 @@ class KasirService
         $guarantorType ??= $visit->guarantor_type;
 
         return array_merge(
-            $this->buildRegistrasiLines($visit),
             // Tindakan + Penunjang kini SATU sumber: visit_services. Dokter menambahkan
             // pemeriksaan penunjang sebagai tindakan lewat Tab 3 DokterView ("Tambah
             // Tindakan") → tertarif via Buku Tarif (procedure_tariffs) di buildTindakanLines.
@@ -391,21 +390,11 @@ class KasirService
         return in_array($visit->jenis_pelayanan ?? 'RAJAL', ['RANAP', 'IGD'], true);
     }
 
-    private function buildRegistrasiLines(Visit $visit): array
-    {
-        // Default flat Rp 50.000 — bisa diganti ke tariff lookup kalau master Registrasi dibuat.
-        $price = 50000;
-        return [[
-            'item_type'    => 'REGISTRASI',
-            'category'     => 'Registrasi',
-            'reference_id' => $visit->id,
-            'description'  => 'Biaya Pendaftaran',
-            'quantity'     => 1,
-            'unit_price'   => $price,
-            'total_price'  => $price,
-            'net_price'    => $price,
-        ]];
-    }
+    // CATATAN: buildRegistrasiLines() DIHAPUS (bug lama). Dulu menyuntikkan flat
+    // Rp 50.000 "Biaya Pendaftaran" ke SETIAP invoice — padahal registrasi tidak ada
+    // di Buku Tarif / Tarif Tindakan. Bila suatu saat ada biaya pendaftaran resmi,
+    // daftarkan sebagai item di Buku Tarif lalu tagih lewat builder bertarif (atau
+    // tambah manual lewat Edit Tagihan — item_type REGISTRASI masih diizinkan).
 
     private function buildTindakanLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {

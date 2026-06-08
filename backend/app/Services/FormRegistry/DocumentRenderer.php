@@ -283,7 +283,7 @@ final class DocumentRenderer
     {
         $nama = htmlspecialchars((string) ($sig->signer_name_snapshot ?? '—'), ENT_QUOTES);
         $jabatan = $sig->signer_role_snapshot ?? null;
-        $jabatanHtml = $jabatan ? '<div style="font-size:10px;color:#555;">' . htmlspecialchars((string) $jabatan, ENT_QUOTES) . '</div>' : '';
+        $jabatanHtml = $jabatan ? '<div style="font-size:8px;color:#555;">' . htmlspecialchars((string) $jabatan, ENT_QUOTES) . '</div>' : '';
 
         // Tanggal-jam WIB (Asia/Jakarta) dari captured_at server.
         $waktu = '';
@@ -301,21 +301,21 @@ final class DocumentRenderer
         // QR verifikasi (kalau ada URL). SVG inline, no-GD.
         $qrHtml = '';
         if ($verifyUrl) {
-            $qrHtml = '<div style="flex:0 0 auto;width:64px;height:64px;">'
-                . QrCodeHelper::svg($verifyUrl, 64)
+            $qrHtml = '<div style="flex:0 0 auto;width:44px;height:44px;">'
+                . QrCodeHelper::svg($verifyUrl, 44)
                 . '</div>';
         }
 
         $sigId = htmlspecialchars((string) ($sig->signature_id ?? ''), ENT_QUOTES);
 
         return <<<HTML
-<div style="display:inline-flex;align-items:center;gap:10px;border:1px solid #1FAAE0;border-radius:6px;padding:8px 12px;background:#f5fbfe;max-width:320px;">
-  <div style="flex:1 1 auto;text-align:left;line-height:1.35;">
-    <div style="font-size:10px;font-weight:700;color:#0E3A66;letter-spacing:.3px;">✓ DITANDATANGANI SECARA ELEKTRONIK</div>
-    <div style="font-size:13px;font-weight:700;color:#111;margin-top:2px;">{$nama}</div>
+<div style="display:inline-flex;align-items:center;gap:7px;border:1px solid #1FAAE0;border-radius:5px;padding:5px 8px;background:#f5fbfe;max-width:240px;">
+  <div style="flex:1 1 auto;text-align:left;line-height:1.3;">
+    <div style="font-size:8px;font-weight:700;color:#0E3A66;letter-spacing:.2px;">✓ DITANDATANGANI SECARA ELEKTRONIK</div>
+    <div style="font-size:10.5px;font-weight:700;color:#111;margin-top:1px;">{$nama}</div>
     {$jabatanHtml}
-    <div style="font-size:10px;color:#555;margin-top:2px;">{$waktu}</div>
-    <div style="font-size:8px;color:#999;margin-top:1px;">ID: {$sigId}</div>
+    <div style="font-size:8px;color:#555;margin-top:1px;">{$waktu}</div>
+    <div style="font-size:7px;color:#999;margin-top:1px;">ID: {$sigId}</div>
   </div>
   {$qrHtml}
 </div>

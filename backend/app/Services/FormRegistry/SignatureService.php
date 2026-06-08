@@ -259,6 +259,18 @@ final class SignatureService
             $q->whereJsonContains('pending_signature_roles', 'ANESTESI');
         }
 
+        // Dokter (DPJP) hanya melihat dokumen pada kunjungan yang DOKTER
+        // PEMERIKSANYA = akun ini (doctorExamination.doctor_id = employee akun).
+        // Antrean tidak lagi tergabung antar-dokter. (Anestesi dikecualikan —
+        // bukan DPJP; sudah disaring lewat pending_signature_roles di atas.
+        // Akun tanpa employee_id → fallback tanpa filter agar tak terkunci kosong.)
+        if ($signerType === 'doctor') {
+            $employeeId = User::whereKey($userId)->value('employee_id');
+            if ($employeeId) {
+                $q->whereHas('visit.doctorExamination', fn ($e) => $e->where('doctor_id', $employeeId));
+            }
+        }
+
         $search = trim((string) ($opts['search'] ?? ''));
         if ($search !== '') {
             $q->where(function ($w) use ($search) {

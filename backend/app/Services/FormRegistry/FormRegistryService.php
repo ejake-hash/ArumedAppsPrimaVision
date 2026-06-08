@@ -283,6 +283,12 @@ final class FormRegistryService
             // tanam QR + teks pindai-untuk-verifikasi.
             $html = $this->embedFooterQr($html, $verifyUrl);
 
+            // Penanda revisi: dokumen hasil "generate ulang" diberi banner agar
+            // jelas ini koreksi, bukan versi asli.
+            if ((int) ($doc->revision ?? 0) > 0) {
+                $html = $this->prependRevisionBanner($html, (int) $doc->revision);
+            }
+
             // Hash include signature_ids di table (bukan dari param — supaya idempoten).
             $sigIds = $sigByType->pluck('signature_id')->sort()->values()->all();
             $hash = hash('sha256', $html . '|' . implode(',', $sigIds) . '|' . $doc->id);
@@ -349,6 +355,16 @@ final class FormRegistryService
             'is_valid'            => true,
             'scan_count'          => 0,
         ]);
+    }
+
+    /** Banner kecil "REVISI ke-N · tanggal" di atas dokumen hasil revisi. */
+    private function prependRevisionBanner(string $html, int $revision): string
+    {
+        $date = now()->timezone('Asia/Jakarta')->format('d/m/Y');
+        $banner = '<div style="text-align:right;font-size:10px;font-weight:700;color:#b45309;'
+            . 'padding:2px 18px;border-bottom:1px dashed #f0c98a;background:#fffaf2;">'
+            . 'REVISI ke-' . $revision . ' · ' . $date . '</div>';
+        return $banner . $html;
     }
 
     /**
@@ -532,6 +548,69 @@ final class FormRegistryService
         );
 
         return $doc;
+    }
+
+    /**
+     * Revisi dokumen final (koreksi via "generate ulang + TTD ulang").
+     *
+     * Alih-alih mengubah dokumen yang sudah TTD (immutable), dibuat dokumen
+     * VERSI BARU yang menyalin metadata + jawaban (static_payload) dokumen lama;
+     * status RENDERED → masuk antrian TTD lagi → dokter TTD ulang. Saat finalize,
+     * isi di-render ULANG dari data terkini (mis. diagnosa/koding yang sudah
+     * dikoreksi) + diberi banner "REVISI ke-N". Dokumen lama ditandai SUPERSEDED
+     * tetapi rendered_html + TTD-nya DISIMPAN sebagai riwayat (tak dihapus).
+     */
+    public function reviseDocument(string $patientDocumentId, ?string $reason = null): PatientDocument
+    {
+        return DB::transaction(function () use ($patientDocumentId, $reason) {
+            /** @var PatientDocument $old */
+            $old = PatientDocument::query()->lockForUpdate()->findOrFail($patientDocumentId);
+
+            if (!in_array($old->status, ['FINALIZED', 'FINAL'], true)) {
+                throw new RuntimeException('Hanya dokumen yang sudah final yang bisa direvisi.');
+            }
+
+            // Salin jawaban editable (static_payload) supaya isi manual tak hilang.
+            // field_schema_override tidak relevan untuk versi baru.
+            $sig = is_array($old->signatures) ? $old->signatures : [];
+            unset($sig['field_schema_override']);
+            if ($reason !== null && $reason !== '') {
+                $sig['revision_reason'] = $reason;
+            }
+
+            $new = PatientDocument::create([
+                'patient_id'             => $old->patient_id,
+                'visit_id'               => $old->visit_id,
+                'bpjs_claim_id'          => $old->bpjs_claim_id,
+                'document_type_id'       => $old->document_type_id,
+                'template_code'          => $old->template_code,
+                'template_version'       => $old->template_version,
+                'status'                 => 'RENDERED',
+                'created_by_station'     => 'revisi',
+                'signatures'             => empty($sig) ? null : $sig,
+                'claim_coding_hash'      => $old->claim_coding_hash,
+                'revision'               => (int) ($old->revision ?? 0) + 1,
+                'supersedes_document_id' => $old->id,
+            ]);
+
+            // Lama → SUPERSEDED (rendered_html + signatures DIPERTAHANKAN = riwayat).
+            $old->update(['status' => 'SUPERSEDED']);
+
+            FormRegistryAudit::record(
+                'FORM_DOC_REVISED',
+                model: 'PatientDocument',
+                modelId: $new->id,
+                description: "Revisi ke-{$new->revision} dari dokumen {$old->id}",
+                context: [
+                    'supersedes_document_id' => $old->id,
+                    'revision'               => $new->revision,
+                    'template_code'          => $old->template_code,
+                    'reason'                 => $reason,
+                ],
+            );
+
+            return $new;
+        });
     }
 
     /**

@@ -721,6 +721,7 @@ onBeforeUnmount(() => {
               <div v-if="detailReq.data.notes" class="ru-meta-wide"><label>Catatan</label><div>{{ detailReq.data.notes }}</div></div>
             </div>
 
+            <div class="ru-items-wrap">
             <table class="ru-items">
               <thead>
                 <tr>
@@ -739,6 +740,7 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+            </div>
           </template>
         </div>
         <footer class="ru-modal-foot">
@@ -769,6 +771,7 @@ onBeforeUnmount(() => {
         </header>
         <div class="ru-modal-body">
           <p class="ru-help">Stok di inventori akan berkurang sesuai qty yang dikirim. Batch & expiry diambil otomatis dari inventori (FEFO — batch paling cepat expired).</p>
+          <div class="ru-items-wrap">
           <table class="ru-items">
             <thead>
               <tr>
@@ -785,6 +788,7 @@ onBeforeUnmount(() => {
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
         <footer class="ru-modal-foot">
           <button class="ru-btn" @click="deliverModal.open = false">Batal</button>
@@ -819,6 +823,7 @@ onBeforeUnmount(() => {
               Stok belum bertambah. Stok akan otomatis kembali ke inventori saat Anda klik "Terima".
             </p>
 
+            <div class="ru-items-wrap">
             <table class="ru-items">
               <thead>
                 <tr>
@@ -841,6 +846,7 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+            </div>
           </template>
         </div>
         <footer class="ru-modal-foot">
@@ -859,12 +865,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ru-wrap { display: flex; flex-direction: column; gap: 1rem; position: relative; }
+.ru-wrap { display: flex; flex-direction: column; gap: 1.2rem; position: relative; width: 100%; max-width: 1180px; margin: 0 auto; }
 
 .ru-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
-.ru-sub { font-size: 12.5px; color: var(--tm); margin: 3px 0 0; }
+.ru-sub { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
 
-.ru-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); }
+.ru-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--gb); }
 .ru-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .ru-tab:hover { color: var(--td); }
 .ru-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
@@ -874,12 +880,12 @@ onBeforeUnmount(() => {
 .ru-subtab:hover { color: var(--td); }
 .ru-subtab.active { background: var(--bc); color: var(--ga); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
 
-.ru-panel { display: flex; flex-direction: column; gap: 12px; min-height: 40vh; }
+.ru-panel { display: flex; flex-direction: column; gap: 14px; min-height: 40vh; }
 
-.ru-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ru-inp { padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; font-size: 13px; background: var(--bc); color: var(--td); }
+.ru-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 2px; }
+.ru-inp { height: 35px; padding: 0 11px; border: 1px solid var(--gb); border-radius: 6px; font-size: 13px; background: var(--bc); color: var(--td); flex: 1 1 200px; min-width: 160px; }
 .ru-inp:focus { outline: none; border-color: var(--ga); }
-.ru-inp-sm { padding: 5px 7px; font-size: 12px; width: 100%; }
+.ru-inp-sm { height: 32px; padding: 0 8px; font-size: 12.5px; width: 100%; flex: none; min-width: 0; }
 
 .ru-btn { padding: 7px 14px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bc); color: var(--td); font-size: 13px; cursor: pointer; }
 .ru-btn:hover { background: var(--bs); }
@@ -889,13 +895,13 @@ onBeforeUnmount(() => {
 .ru-btn-danger { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
 .ru-btn-danger:hover { background: #fecaca; }
 
-.ru-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow: auto; }
-.ru-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ru-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow-x: auto; }
+.ru-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 13px; }
 .ru-table thead { background: var(--bs); }
-.ru-table th { padding: 9px 10px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); border-bottom: 1px solid var(--gb); white-space: nowrap; }
+.ru-table th { padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); border-bottom: 1px solid var(--gb); white-space: nowrap; }
 .ru-table th.c, .ru-table td.c { text-align: center; }
 .ru-table th.r, .ru-table td.r { text-align: right; }
-.ru-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
+.ru-table td { padding: 9px 12px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
 .ru-table tr:last-child td { border-bottom: none; }
 .ru-table code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--td); }
 .ru-loading, .ru-empty { padding: 1.5rem !important; text-align: center; color: var(--tm); font-size: 13px; }
@@ -917,24 +923,25 @@ onBeforeUnmount(() => {
 /* Modal */
 .ru-modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.55); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 1rem; }
 .ru-modal { background: var(--bc); border-radius: 12px; width: 100%; max-width: 800px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
-.ru-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--gb); }
+.ru-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 20px; border-bottom: 1px solid var(--gb); }
 .ru-modal-head h3 { margin: 0; font-size: 16px; color: var(--td); }
-.ru-x { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--tm); }
+.ru-x { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer; color: var(--tm); flex: none; }
 .ru-x:hover { color: var(--td); }
-.ru-modal-body { padding: 16px 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
-.ru-modal-foot { padding: 12px 18px; border-top: 1px solid var(--gb); display: flex; justify-content: flex-end; gap: 8px; background: var(--bs); }
+.ru-modal-body { padding: 18px 20px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+.ru-modal-foot { padding: 13px 20px; border-top: 1px solid var(--gb); display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; background: var(--bs); }
 
-.ru-meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.ru-meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .ru-meta-grid > div { display: flex; flex-direction: column; gap: 2px; }
 .ru-meta-grid label { font-size: 10.5px; font-weight: 600; color: var(--tu); text-transform: uppercase; letter-spacing: 0.04em; }
 .ru-meta-grid > div > div { font-size: 13px; color: var(--td); }
 .ru-meta-wide { grid-column: 1 / -1; }
 
-.ru-items { width: 100%; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--gb); border-radius: 8px; }
+.ru-items-wrap { overflow-x: auto; border: 1px solid var(--gb); border-radius: 8px; }
+.ru-items { width: 100%; min-width: 420px; border-collapse: collapse; font-size: 12.5px; }
 .ru-items thead { background: var(--bs); }
-.ru-items th { padding: 6px 8px; text-align: left; font-size: 10.5px; font-weight: 600; text-transform: uppercase; color: var(--tu); border-bottom: 1px solid var(--gb); }
+.ru-items th { padding: 8px 10px; text-align: left; font-size: 10.5px; font-weight: 600; text-transform: uppercase; color: var(--tu); border-bottom: 1px solid var(--gb); white-space: nowrap; }
 .ru-items th.r, .ru-items td.r { text-align: right; }
-.ru-items td { padding: 6px 8px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
+.ru-items td { padding: 8px 10px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
 .ru-items tr:last-child td { border-bottom: none; }
 .ru-unit { color: var(--tm); font-size: 11px; }
 
@@ -943,4 +950,14 @@ onBeforeUnmount(() => {
 .ru-toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; border-radius: 8px; color: white; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); z-index: 200; }
 .ru-toast-s { background: #16a34a; }
 .ru-toast-e { background: #dc2626; }
+
+/* ── Responsive: stack & reflow on narrow content areas ── */
+@media (max-width: 900px) {
+  .ru-meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ru-toolbar .ru-inp { flex: 1 1 100%; min-width: 0; }
+}
+@media (max-width: 560px) {
+  .ru-meta-grid { grid-template-columns: 1fr; }
+  .ru-toast { left: 16px; right: 16px; bottom: 16px; }
+}
 </style>

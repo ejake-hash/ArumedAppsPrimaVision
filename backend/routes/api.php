@@ -208,6 +208,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan',              [AdmisiController::class, 'indexKunjungan']);
             Route::get('/kunjungan/{id}',         [AdmisiController::class, 'showKunjungan']);
             Route::put('/kunjungan/{id}/cancel',  [AdmisiController::class, 'cancelKunjungan']);
+            Route::put('/kunjungan/{id}/penjamin', [AdmisiController::class, 'updateGuarantor']);
             Route::put('/kunjungan/{visitId}/daftarkan-walkin', [AdmisiController::class, 'daftarkanWalkIn']);
 
             Route::get('/pasien',                 [AdmisiController::class, 'cariPasien']);
@@ -264,11 +265,13 @@ Route::prefix('v1')->group(function () {
             Route::post('/asesmen',                         [PerawatController::class, 'storeAsesmen']);
             Route::put('/asesmen/{id}',                     [PerawatController::class, 'updateAsesmen']);
             Route::post('/asesmen/{id}/finalize',           [PerawatController::class, 'finalizeAsesmen']);
+            Route::post('/asesmen/{id}/reopen',             [PerawatController::class, 'reopenAsesmen']);
 
             // CPPT — Catatan Perkembangan Pasien Terintegrasi (timeline append + soft-edit)
             Route::get('/cppt/visit/{visitId}',             [PerawatController::class, 'indexCppt']);
             Route::post('/cppt',                            [PerawatController::class, 'storeCppt']);
             Route::put('/cppt/{id}',                        [PerawatController::class, 'updateCppt']);
+            Route::post('/cppt/{id}/sign',                  [PerawatController::class, 'signCppt']);
 
             Route::put('/antrian/{id}/lewati',                     [PerawatController::class, 'lewatiAntrian']);
             Route::put('/antrian/{id}/dahulukan',                  [PerawatController::class, 'dahulukanAntrian']);
@@ -279,6 +282,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan/{visitId}/status-parallel',     [PerawatController::class, 'statusParallel']);
             Route::get('/pasien/{patientId}/vital-history',        [PerawatController::class, 'vitalHistory']);
             Route::get('/pasien/{patientId}/rekam-medis',          [PerawatController::class, 'rekamMedisPasien']);
+            // CPPT lintas-episode terpadu (read-only) — kartu "SOAP/CPPT" di PerawatView.
+            Route::get('/pasien/{patientId}/cppt',                 [RekamMedisController::class, 'cpptPasien']);
             Route::get('/dokumen/{documentId}',                    [PerawatController::class, 'showDokumen']);
         });
 
@@ -297,6 +302,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/pemeriksaan',                    [RefraksiController::class, 'storePemeriksaan']);
             Route::put('/pemeriksaan/{id}',                [RefraksiController::class, 'updatePemeriksaan']);
             Route::post('/pemeriksaan/{id}/finalize',      [RefraksiController::class, 'finalizePemeriksaan']);
+            Route::post('/pemeriksaan/{id}/reopen',        [RefraksiController::class, 'reopenPemeriksaan']);
 
             Route::get('/resep-kacamata/{refractionId}',  [RefraksiController::class, 'showResepKacamata']);
             Route::post('/resep-kacamata',                 [RefraksiController::class, 'storeResepKacamata']);
@@ -309,6 +315,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan/{visitId}',                     [RefraksiController::class, 'showKunjungan']);
             Route::get('/kunjungan/{visitId}/status-parallel',     [RefraksiController::class, 'statusParallel']);
             Route::get('/pasien/{patientId}/riwayat',              [RefraksiController::class, 'riwayatRefraksi']);
+            // CPPT lintas-episode terpadu (read-only) — kartu "SOAP/CPPT" di RefraksionisView.
+            // Delegasi ke mesin RME yang sama dipakai DokterView.
+            Route::get('/pasien/{patientId}/cppt',                 [RekamMedisController::class, 'cpptPasien']);
 
             // Opsi dropdown/combobox (Autoref/Keratometri/Visus/Refraksi) — read terbuka
             // utk station refraksi; master-nya dikelola di /master/refraksi-opsi.
@@ -346,6 +355,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan/{visitId}/tab4',             [DokterController::class, 'showTab4']);
             Route::post('/kunjungan/{visitId}/tab4',            [DokterController::class, 'storeTab4']);
             Route::put('/kunjungan/{visitId}/tab4',             [DokterController::class, 'updateTab4']);
+            // Komit billing + majukan antrean (RME tetap bisa dilengkapi belakangan).
+            Route::put('/kunjungan/{visitId}/kirim-kasir',      [DokterController::class, 'kirimKeKasir']);
 
             Route::post('/kunjungan/{visitId}/finalize',        [DokterController::class, 'finalizeKunjungan']);
 
@@ -646,6 +657,8 @@ Route::prefix('v1')->group(function () {
 
             // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
             Route::get('/obat/{medicationId}/riwayat-pemberian', [FarmasiController::class, 'riwayatPemberianObat']);
+            // Riwayat GLOBAL obat yang diberikan ke pasien (resep + POS) — tab Riwayat Pemberian.
+            Route::get('/riwayat-pemberian',                     [FarmasiController::class, 'indexRiwayatPemberian']);
 
             Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);
             Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing']);
@@ -763,6 +776,9 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/{id}/audit-log',                 [KlaimController::class, 'auditLog']);
 
+            // Lembar Klaim (Resume Medis versi klaim) → antrian TTD dokter.
+            Route::post('/{id}/lembar-klaim',             [KlaimController::class, 'generateLembarKlaim'])->middleware('permission:bpjs.write');
+
             // Lampiran berkas klaim (upload PDF/gambar: resume RJ, hasil penunjang).
             Route::get('/{id}/lampiran',                  [KlaimController::class, 'attachments']);
             Route::post('/{id}/lampiran',                 [KlaimController::class, 'uploadAttachment'])->middleware('permission:bpjs.write');
@@ -821,6 +837,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/document/{id}/sign',             [RekamMedisController::class, 'signDocument']);
             Route::get('/document/{id}/signatures',        [RekamMedisController::class, 'listDocumentSignatures']);
             Route::post('/document/{id}/addendum',         [RekamMedisController::class, 'createAddendum']);
+            Route::post('/document/{id}/revisi',           [RekamMedisController::class, 'reviseDocument']);
             Route::get('/signature/{signatureId}/verify',  [RekamMedisController::class, 'verifySignature']);
             Route::get('/signature/{signatureId}/audit',   [RekamMedisController::class, 'auditSignature']);
             // Antrean TTD dokter dipisah ke key ttd_dokumen (hanya dokter lihat menu).
@@ -920,17 +937,20 @@ Route::prefix('v1')->group(function () {
             Route::put('/pegawai/{id}/reset-password',      [MasterDataController::class, 'resetPasswordPegawai'])->middleware('permission:role_akses.write');
 
             // CSV/Excel penjamin — WAJIB didaftar SEBELUM route generic /penjamin/{id}
+            // Penjamin = "Metode Bayar", UI-nya di modul Tarif & Paket → tulis digate
+            // tarif_paket.write (BUKAN master_data) agar role keuangan/tarif bisa kelola.
+            // GET dibiarkan auth-only (admisi/kasir baca penjamin saat daftar/tagih).
             Route::get('/penjamin/template-csv',            [MasterDataController::class, 'templatePenjaminCsv']);
             Route::get('/penjamin/export-csv',              [MasterDataController::class, 'exportPenjaminCsv']);
-            Route::post('/penjamin/import-csv',             [MasterDataController::class, 'importPenjaminCsv'])->middleware('permission:master_data.write');
+            Route::post('/penjamin/import-csv',             [MasterDataController::class, 'importPenjaminCsv'])->middleware('permission:tarif_paket.write');
             // TPA membership (kelola anggota dari sisi TPA) — WAJIB sebelum /penjamin/{id} generic
             Route::get('/penjamin/{tpaId}/member-candidates', [MasterDataController::class, 'candidateMembers']);
-            Route::post('/penjamin/{tpaId}/members',          [MasterDataController::class, 'addPenjaminMember'])->middleware('permission:master_data.write');
-            Route::delete('/penjamin/{tpaId}/members/{memberId}', [MasterDataController::class, 'removePenjaminMember'])->middleware('permission:master_data.write');
+            Route::post('/penjamin/{tpaId}/members',          [MasterDataController::class, 'addPenjaminMember'])->middleware('permission:tarif_paket.write');
+            Route::delete('/penjamin/{tpaId}/members/{memberId}', [MasterDataController::class, 'removePenjaminMember'])->middleware('permission:tarif_paket.write');
             Route::get('/penjamin',                         [MasterDataController::class, 'indexPenjamin']);
-            Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin'])->middleware('permission:master_data.write');
-            Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin'])->middleware('permission:master_data.write');
-            Route::delete('/penjamin/{id}',                 [MasterDataController::class, 'deletePenjamin'])->middleware('permission:master_data.write');
+            Route::post('/penjamin',                        [MasterDataController::class, 'storePenjamin'])->middleware('permission:tarif_paket.write');
+            Route::put('/penjamin/{id}',                    [MasterDataController::class, 'updatePenjamin'])->middleware('permission:tarif_paket.write');
+            Route::delete('/penjamin/{id}',                 [MasterDataController::class, 'deletePenjamin'])->middleware('permission:tarif_paket.write');
 
             // Billing Categories — kategori grouping rincian tagihan Kasir
             Route::get('/kategori-tagihan',                 [MasterDataController::class, 'indexBillingCategory']);

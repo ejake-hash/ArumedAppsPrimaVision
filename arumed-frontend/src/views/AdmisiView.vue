@@ -92,6 +92,7 @@ function mapQueueItem(q) {
     nik:        p.nik                  ?? '—',
     address:    p.address              ?? '—',
     phone:      p.phone                ?? '—',
+    familyPhone: p.family_phone        ?? '—',
     email:      p.email                ?? '—',
     birthDate:  p.date_of_birth        ?? null,
     age:        walkIn ? null          : calcAge(p.date_of_birth),
@@ -111,6 +112,7 @@ function mapQueueItem(q) {
     noSep:      q.visit?.no_sep        ?? null,
     controlLetter: q.visit?.bpjs_control_letter_id ?? null,
     insurer:    q.visit?.insurer?.name ?? null,
+    insurerId:  q.visit?.insurer_id    ?? '',
     insuranceVerificationStatus: q.visit?.insurance_verification_status ?? null,
     callQueueId: q.id,
     callStatus:  q.status,
@@ -230,6 +232,12 @@ function mapVisitRow(v) {
   const admisiQ = (v.queues ?? []).find(
     q => q.station === 'ADMISI' && (q.status === 'WAITING' || q.status === 'CALLED'),
   )
+  // Pasien sedang dilayani bila ada antrean CALLED / IN_PROGRESS di stasiun
+  // KLINIS (selain ADMISI — "dipanggil ke loket" bukan pelayanan). Dipakai untuk
+  // mengunci tombol Batalkan (cegah admisi membatalkan pasien yang sedang diproses).
+  const inService = (v.queues ?? []).some(
+    q => q.station !== 'ADMISI' && (q.status === 'CALLED' || q.status === 'IN_PROGRESS'),
+  )
   // status untuk pewarnaan pill — derive dari current_station saja
   // (queue ADMISI mungkin sudah completed, tidak relevan di sini)
   return {
@@ -241,6 +249,7 @@ function mapVisitRow(v) {
     nik:        p.nik ?? '—',
     address:    p.address ?? '—',
     phone:      p.phone ?? '—',
+    familyPhone: p.family_phone ?? '—',
     email:      p.email ?? '—',
     birthDate:  p.date_of_birth ?? null,
     age:        walkIn ? null : calcAge(p.date_of_birth),
@@ -259,9 +268,11 @@ function mapVisitRow(v) {
     noSep:      v.no_sep ?? null,
     controlLetter: v.bpjs_control_letter_id ?? null,
     insurer:    v.insurer?.name ?? null,
+    insurerId:  v.insurer_id ?? '',
     insuranceVerificationStatus: v.insurance_verification_status ?? null,
     callQueueId: admisiQ?.id ?? null,
     callStatus:  admisiQ?.status ?? null,
+    inService,
     gcSigned:   !!v.general_consent_signed,
     walkIn,
   }
@@ -303,14 +314,6 @@ const rowOffset = computed(() =>
   (admisiStore.visitsMeta.current_page - 1) * admisiStore.visitsPerPage,
 )
 
-// Mode "Belum Selesai (semua tgl)" — tampilkan visit aktif lintas-hari.
-const showUnfinished = ref(false)
-function toggleUnfinished() {
-  showUnfinished.value = !showUnfinished.value
-  admisiStore.visitsFilter.unfinished = showUnfinished.value
-  admisiStore.fetchVisits({ page: 1 })
-}
-
 // Pisah Rawat Jalan (RAJAL/IGD) vs Rawat Inap (RANAP). RANAP long-lived → kalau
 // dicampur akan terus menumpuk di list. Default tampil Rawat Jalan.
 const careType = ref('RAJAL')   // 'RAJAL' | 'RANAP'
@@ -318,7 +321,15 @@ function setCareType(t) {
   if (careType.value === t) return
   careType.value = t
   admisiStore.visitsFilter.careType = t
-  admisiStore.fetchVisits({ page: 1 })
+  // Reset filter stasiun saat pindah tab: dropdown stationOptions tak punya entri
+  // RANAP/MENUNGGU_RANAP, jadi filter stasiun lama (mis. DOKTER) akan MENGOSONGKAN
+  // tab Rawat Inap. Kalau berubah, watcher applyVisitFilters yang melakukan fetch;
+  // kalau sudah 'all', fetch langsung.
+  if (filterStation.value !== 'all') {
+    filterStation.value = 'all'
+  } else {
+    admisiStore.fetchVisits({ page: 1 })
+  }
 }
 const careTypeLabel = computed(() => careType.value === 'RANAP' ? 'Rawat Inap' : 'Rawat Jalan')
 
@@ -378,9 +389,26 @@ async function callPatient(p) {
   }
 }
 
+/* Stasiun "resepsi/skrining" tempat pembatalan masih aman: pasien baru daftar &
+   belum benar-benar dilayani. Setelah pindah ke stasiun klinis (Dokter/Farmasi/
+   Kasir/Bedah/Ranap) atau sudah dipanggil/diproses, pembatalan dikunci untuk
+   mencegah admisi tak sengaja menghapus pasien yang sedang dilayani. */
+const RECEPTION_STATIONS = ['ADMISI', 'TRIASE', 'REFRAKSIONIS']
+function canCancelRow(p) {
+  if (!p || p.station === 'SELESAI' || p.ui === 'cancel') return false
+  if (p.walkIn) return true   // placeholder kiosk belum didaftarkan → selalu boleh batal
+  return RECEPTION_STATIONS.includes(p.station) && !p.inService
+}
+function cancelTitle(p) {
+  if (p.station === 'SELESAI' || p.ui === 'cancel') return 'Kunjungan sudah selesai/batal — tidak bisa dibatalkan'
+  if (!canCancelRow(p)) return 'Pasien sudah dalam pelayanan — batalkan dari stasiun terkait'
+  return 'Batalkan kunjungan'
+}
+
 /* Batalkan kunjungan (hapus visit + antrean terkait).
-   Boleh dibatalkan kapan saja sebelum status SELESAI. */
+   Hanya selama pasien masih di fase resepsi/skrining & belum dilayani. */
 async function confirmCancelKunjungan(p) {
+  if (!canCancelRow(p)) { toast('w', 'Pasien sudah dalam pelayanan — pembatalan dikunci. Batalkan dari stasiun terkait.'); return }
   const label = p.walkIn ? `antrean ${p.queueNo}` : `${p.name} (${p.queueNo})`
   const stationWarn = p.station !== 'ADMISI'
     ? `\n\n⚠ Pasien sudah berada di stasiun ${p.station}. Membatalkan akan menghapus seluruh antrean & kunjungan.`
@@ -391,7 +419,7 @@ async function confirmCancelKunjungan(p) {
     toast('s', `Kunjungan ${label} dibatalkan`)
     // Refresh untuk sinkron dengan server state
     await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchDashboard()])
-    admisiStore.fetchVisits({ tanggal: new Date().toISOString().split('T')[0] })
+    admisiStore.fetchVisits()
   } catch (e) {
     toast('e', e.message)
   }
@@ -404,7 +432,7 @@ const editOpen      = ref(false)
 const editSaving    = ref(false)
 const editPatientId = ref(null)
 const editForm      = reactive({
-  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', email: '', address: '',
+  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', family_phone: '', email: '', address: '',
 })
 
 function openEditPasien(p) {
@@ -417,6 +445,7 @@ function openEditPasien(p) {
     gender:        p.sex         ?? 'L',
     date_of_birth: p.birthDate   ?? '',
     phone:         p.phone === '—' ? '' : (p.phone ?? ''),
+    family_phone:  p.familyPhone === '—' ? '' : (p.familyPhone ?? ''),
     email:         p.email === '—' ? '' : (p.email ?? ''),
     address:       p.address === '—' ? '' : (p.address ?? ''),
   })
@@ -434,13 +463,14 @@ async function submitEditPasien() {
       gender:        editForm.gender,
       date_of_birth: editForm.date_of_birth || null,
       phone:         editForm.phone || null,
+      family_phone:  editForm.family_phone || null,
       email:         editForm.email || null,
       address:       editForm.address || null,
     }
     await admisiStore.updatePasien(editPatientId.value, payload)
     toast('s', `Data pasien ${editForm.name} diperbarui`)
     editOpen.value = false
-    await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchVisits({ tanggal: new Date().toISOString().split('T')[0] })])
+    await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchVisits()])
   } catch (e) {
     const firstErr = e.errors ? Object.values(e.errors)[0]?.[0] : null
     toast('e', firstErr ?? e.message ?? 'Gagal memperbarui data')
@@ -558,6 +588,106 @@ function onCobToggle(e) {
 }
 
 /* ============================================================
+   EDIT PENJAMIN / TIPE KUNJUNGAN (ubah pola bayar pasca-daftar)
+   ------------------------------------------------------------
+   Aman selama billing belum dikomit (tarif diresolusi LIVE saat kasir).
+   Backend (AdmisiService::updateGuarantor) menolak bila tagihan sudah ke
+   kasir / invoice final-bayar / SEP BPJS masih aktif.
+   ============================================================ */
+const penjaminOpen    = ref(false)
+const penjaminSaving  = ref(false)
+const penjaminVisitId = ref(null)
+const penjaminForm = reactive({
+  patientName: '', currentLabel: '',
+  guarantor: 'UMUM',
+  insurer_id: '',
+  sepType: 'rujukan', referralNo: '', controlNo: '', bookingCode: '',
+  policyNumber: '', memberName: '', memberCardNumber: '',
+  cobEnabled: false, cobInsurerId: '', cobNo: '',
+})
+// Opsi insurer untuk modal (pakai <select>, bukan typeahead) — difilter per tipe.
+const penjaminInsurerOptions = computed(() => {
+  const wantType = ['ASURANSI', 'PERUSAHAAN', 'SOSIAL'].includes(penjaminForm.guarantor)
+    ? penjaminForm.guarantor : null
+  return (admisiStore.insurers ?? []).filter(i => !wantType || i.type === wantType)
+})
+const penjaminCobOptions = computed(() =>
+  (admisiStore.insurers ?? [])
+    .filter(i => ['ASURANSI', 'PERUSAHAAN'].includes(i.type) && i.id !== penjaminForm.insurer_id),
+)
+function ensureInsurersLoaded() {
+  if (!(admisiStore.insurers ?? []).length) admisiStore.fetchInsurers()
+}
+function openEditPenjamin(p) {
+  if (!p || p.walkIn) { toast('w', 'Pasien walk-in belum terdaftar — daftarkan dulu'); return }
+  if (p.station === 'SELESAI') { toast('w', 'Kunjungan sudah selesai — penjamin tidak bisa diubah'); return }
+  penjaminVisitId.value = p.visitId
+  Object.assign(penjaminForm, {
+    patientName:  p.name,
+    currentLabel: guarantorLabel(p.guarantor),
+    guarantor:    ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL'].includes(p.guarantor) ? p.guarantor : 'UMUM',
+    insurer_id:   p.insurerId ?? '',
+    sepType: 'rujukan', referralNo: '', controlNo: '', bookingCode: '',
+    policyNumber: '', memberName: '', memberCardNumber: '',
+    cobEnabled: false, cobInsurerId: '', cobNo: '',
+  })
+  ensureInsurersLoaded()
+  penjaminOpen.value = true
+}
+function closeEditPenjamin() { penjaminOpen.value = false }
+function setPenjaminType(g) {
+  if (penjaminForm.guarantor === g) return
+  penjaminForm.guarantor  = g
+  penjaminForm.insurer_id = ''
+  if (!['BPJS', 'ASURANSI', 'PERUSAHAAN'].includes(g)) {
+    penjaminForm.cobEnabled = false
+    penjaminForm.cobInsurerId = ''
+    penjaminForm.cobNo = ''
+  }
+}
+async function submitEditPenjamin() {
+  if (!penjaminVisitId.value) return
+  const t = penjaminForm.guarantor
+  if (['ASURANSI', 'PERUSAHAAN', 'SOSIAL'].includes(t) && !penjaminForm.insurer_id) {
+    toast('w', 'Pilih penjamin (insurer) dulu'); return
+  }
+  penjaminSaving.value = true
+  try {
+    const payload = { guarantor_type: t }
+    if (['ASURANSI', 'PERUSAHAAN', 'SOSIAL'].includes(t)) payload.insurer_id = penjaminForm.insurer_id
+    if (t === 'BPJS') {
+      payload.bpjs_booking_code = penjaminForm.sepType === 'jkn'     ? (penjaminForm.bookingCode || null) : null
+      payload.bpjs_referral_no  = penjaminForm.sepType === 'rujukan' ? (penjaminForm.referralNo  || null) : null
+      payload.bpjs_control_no   = penjaminForm.sepType === 'kontrol' ? (penjaminForm.controlNo   || null) : null
+    }
+    if (['ASURANSI', 'PERUSAHAAN'].includes(t)) {
+      payload.policy_number      = penjaminForm.policyNumber     || null
+      payload.member_name        = penjaminForm.memberName       || null
+      payload.member_card_number = penjaminForm.memberCardNumber || null
+    }
+    if (['BPJS', 'ASURANSI', 'PERUSAHAAN'].includes(t) && penjaminForm.cobEnabled && penjaminForm.cobInsurerId) {
+      const cobIns = (admisiStore.insurers ?? []).find(i => i.id === penjaminForm.cobInsurerId)
+      payload.cob = {
+        penjamin1_type:       t,
+        penjamin1_insurer_id: payload.insurer_id || null,
+        penjamin2_type:       cobIns?.type ?? 'ASURANSI',
+        penjamin2_insurer_id: penjaminForm.cobInsurerId,
+        notes:                penjaminForm.cobNo ? `Polis penjamin 2: ${penjaminForm.cobNo}` : null,
+      }
+    }
+    await admisiStore.updatePenjamin(penjaminVisitId.value, payload)
+    toast('s', `Penjamin ${penjaminForm.patientName} diperbarui → ${guarantorLabel(t)}`)
+    penjaminOpen.value = false
+    await Promise.allSettled([admisiStore.fetchVisits(), admisiStore.fetchDashboard()])
+  } catch (e) {
+    const firstErr = e.errors ? Object.values(e.errors)[0]?.[0] : null
+    toast('e', firstErr ?? e.message ?? 'Gagal mengubah penjamin')
+  } finally {
+    penjaminSaving.value = false
+  }
+}
+
+/* ============================================================
    DOCTOR LIST — jadwal aktif hari ini (dari /jadwal-dokter/aktif-hari-ini)
    ============================================================ */
 const doctorList = computed(() =>
@@ -633,6 +763,7 @@ function selectPatient(pt) {
     birthDate:     pt.date_of_birth,
     age:           calcAge(pt.date_of_birth),
     phone:         pt.phone        ?? '',
+    familyPhone:   pt.family_phone ?? '',
     email:         pt.email        ?? '',
     province:      pt.province         ?? '',
     regency:       pt.nama_kab_kota    ?? '',
@@ -920,7 +1051,7 @@ function daftarkanDariProfil() {
 /* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
 const profileEdit = reactive({
   open: false, loading: false, errors: null,
-  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', email: '',
+  name: '', nik: '', gender: 'L', date_of_birth: '', phone: '', family_phone: '', email: '',
   address: '', province: '', nama_kab_kota: '', nama_kecamatan: '', blood_type: '',
   // Snapshot wilayah asal (data lama). Dipakai untuk: (1) tampilkan info nilai
   // lama, (2) jangan timpa dgn kosong kalau petugas tak menyentuh WilayahPicker
@@ -947,6 +1078,7 @@ function startProfileEdit() {
     gender:        p.gender ?? 'L',
     date_of_birth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
     phone:         p.phone ?? '',
+    family_phone:  p.family_phone ?? '',
     email:         p.email ?? '',
     address:       p.address ?? '',
     province:      p.province ?? '',
@@ -992,6 +1124,7 @@ async function saveProfileEdit() {
       gender:        profileEdit.gender,
       date_of_birth: profileEdit.date_of_birth || null,
       phone:         profileEdit.phone.trim() || null,
+      family_phone:  profileEdit.family_phone.trim() || null,
       email:         profileEdit.email.trim() || null,
       address:       profileEdit.address.trim() || null,
       blood_type:    profileEdit.blood_type || null,
@@ -1124,6 +1257,7 @@ const blankForm = () => ({
   birthDate:     '',
   age:           '',
   phone:         '',
+  familyPhone:   '',
   email:         '',
   // Wilayah (3 level, simpan nama via WilayahPicker)
   province:      '',
@@ -1749,8 +1883,9 @@ async function submitRegistration() {
         name:          form.name,
         gender:        form.sex,
         date_of_birth: form.birthDate,
-        phone:         form.phone    || null,
-        email:         form.email    || null,
+        phone:         form.phone       || null,
+        family_phone:  form.familyPhone || null,
+        email:         form.email       || null,
         address:       addressParts.join(', ') || null,
         province:      form.province || null,
         bpjs_number:   form.bpjsNo   || null,
@@ -1823,7 +1958,7 @@ async function submitRegistration() {
 
     // Refresh antrian + kunjungan setelah pendaftaran
     await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchDashboard()])
-    admisiStore.fetchVisits({ tanggal: new Date().toISOString().split('T')[0] })
+    admisiStore.fetchVisits()
   } catch (e) {
     const firstErr = e.errors ? Object.values(e.errors)[0]?.[0] : null
     toast('e', firstErr ?? e.message ?? 'Pendaftaran gagal')
@@ -1948,35 +2083,15 @@ function gotoRekamMedis(p) {
   router.push({ name: 'rekam-medis', query: { patient: p.patientId } })
 }
 
-/* ============================================================
-   GENERAL CONSENT — quick open RM-0.1
-   ============================================================ */
-const gcOpen    = ref(false)
-const gcPatient = ref(null)
-const gcSigning = ref(false)
-
-function openGeneralConsent(p) {
-  if (p.gcSigned) { toast('i', `General Consent sudah ditandatangani oleh ${p.name}`); return }
-  gcPatient.value = p
-  gcOpen.value    = true
-}
-function closeGeneralConsent() { gcOpen.value = false }
-async function signGeneralConsent() {
-  if (!gcPatient.value) return
-  gcSigning.value = true
-  try {
-    // TODO: wire to backend endpoint once available
-    gcPatient.value.gcSigned = true
-    toast('s', `General Consent ditandatangani oleh ${gcPatient.value.name}`)
-    gcOpen.value = false
-  } finally {
-    gcSigning.value = false
-  }
-}
-
 function printLabel(p) {
   const t = p
   if (!t) return
+  // Tgl lahir bisa datang sbg ISO mentah (baris antrean/tabel) atau sudah DD/MM/YYYY.
+  // Normalkan: kalau cocok pola DD/MM/YYYY pakai apa adanya, selain itu fmtDate(ISO).
+  const lahir = /^\d{2}\/\d{2}\/\d{4}$/.test(String(t.birthDate ?? ''))
+    ? t.birthDate
+    : (t.birthDate ? fmtDate(t.birthDate) : null)
+  const lahirText = (lahir && lahir !== '—') ? lahir : (t.age ? `${t.age} th` : '-')
   const labelHtml = `
     <html><head><title>Label ${escHtml(t.name)}</title>
     <style>
@@ -1991,7 +2106,7 @@ function printLabel(p) {
     </style></head><body>
       <div class="nm">${escHtml(t.name)}</div>
       <div class="rw">No. RM : ${escHtml(t.noRm)}</div>
-      <div class="rw">Lahir&nbsp;&nbsp;: ${escHtml(t.birthDate ?? t.age ?? '-')}</div>
+      <div class="rw">Lahir&nbsp;&nbsp;: ${escHtml(lahirText)}</div>
       <div class="rw">JK&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: ${t.sex === 'L' ? 'Laki-laki' : 'Perempuan'}</div>
       <hr/>
       <div class="bc">*${escHtml(t.noRm)}*</div>
@@ -2015,7 +2130,7 @@ function printLabel(p) {
 function onKeydown(e) {
   if (e.key !== 'Escape') return
   if (profileOpen.value)     { profileOpen.value = false;     return }
-  if (gcOpen.value)          { gcOpen.value = false;          return }
+  if (penjaminOpen.value)    { closeEditPenjamin();           return }
   if (editOpen.value)        { closeEditPasien();             return }
   if (visitDetailOpen.value) { visitDetailOpen.value = false; return }
   if (wizardOpen.value)      { closeWizard();                 return }
@@ -2336,16 +2451,6 @@ onUnmounted(() => {
                     Rawat Inap
                   </button>
                 </div>
-                <button
-                  type="button"
-                  class="unfinished-toggle"
-                  :class="{ active: showUnfinished }"
-                  :title="showUnfinished ? 'Tampilkan kunjungan hari ini' : 'Tampilkan semua kunjungan yang belum selesai (lintas tanggal)'"
-                  @click="toggleUnfinished"
-                >
-                  <svg viewBox="0 0 24 24" width="13" height="13"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-                  {{ showUnfinished ? 'Belum Selesai (semua tgl)' : 'Belum Selesai' }}
-                </button>
                 <select v-model="filterGuarantor" class="form-select compact" aria-label="Filter penjamin">
                   <option value="all">Semua Penjamin</option>
                   <option value="BPJS">BPJS</option>
@@ -2423,9 +2528,19 @@ onUnmounted(() => {
                             <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
                           </button>
                           <button
+                            v-if="!p.walkIn"
+                            class="btn btn-sm btn-secondary btn-icon"
+                            :disabled="p.station === 'SELESAI'"
+                            title="Ubah penjamin / pola bayar"
+                            aria-label="Ubah penjamin"
+                            @click="openEditPenjamin(p)"
+                          >
+                            <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                          </button>
+                          <button
                             class="btn btn-sm btn-icon btn-danger"
-                            :disabled="p.station === 'SELESAI' || p.status === 'CANCELLED'"
-                            :title="p.station === 'SELESAI' ? 'Kunjungan sudah selesai — tidak bisa dibatalkan' : 'Batalkan kunjungan'"
+                            :disabled="!canCancelRow(p)"
+                            :title="cancelTitle(p)"
                             aria-label="Batalkan kunjungan"
                             @click="confirmCancelKunjungan(p)"
                           >
@@ -2841,6 +2956,30 @@ onUnmounted(() => {
                 </div>
               </template>
 
+              <div class="section-label full">Informasi Kunjungan</div>
+              <div class="field full">
+                <label class="field-lbl">Klasifikasi Kunjungan</label>
+                <div class="classif-badges">
+                  <button
+                    v-for="c in ['Baru', 'Pre-Op', 'Post-Op', 'Kontrol']"
+                    :key="c"
+                    type="button"
+                    :class="['classif-badge', form.classification === c ? 'classif-on' : '']"
+                    @click="form.classification = c"
+                  >{{ c }}</button>
+                </div>
+                <div class="hint">Pilih sesuai tujuan kunjungan pasien saat ini</div>
+                <!-- Hak konsultasi kontrol gratis pasca-bedah (info; tebusan otomatis di Kasir utk UMUM) -->
+                <div v-if="followupEntitlements.length" class="followup-badge">
+                  🎁 Pasien punya
+                  <strong>{{ followupEntitlements.reduce((s, e) => s + (e.remaining || 0), 0) }}× kontrol gratis</strong>
+                  <span v-for="e in followupEntitlements" :key="e.id" class="followup-chip">
+                    {{ e.procedure_name }}<template v-if="e.package_name"> · {{ e.package_name }}</template><template v-if="e.valid_until"> · s/d {{ e.valid_until }}</template>
+                  </span>
+                  <div class="hint">Diskon otomatis muncul di Kasir saat menagih konsultasi (penjamin Umum).</div>
+                </div>
+              </div>
+
               <div class="section-label full">Identitas</div>
               <div class="field full">
                 <label class="field-lbl">Nama Lengkap</label>
@@ -2899,6 +3038,10 @@ onUnmounted(() => {
                 <input v-model="form.phone" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="08xx-xxxx-xxxx" />
               </div>
               <div class="field full">
+                <label class="field-lbl">No. Telepon Keluarga <span class="field-opt">(kontak darurat / wali — opsional)</span></label>
+                <input v-model="form.familyPhone" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="08xx-xxxx-xxxx" />
+              </div>
+              <div class="field full">
                 <label class="field-lbl">Email Pasien <span class="field-opt">(opsional — untuk kirim kwitansi)</span></label>
                 <input v-model="form.email" type="email" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="nama@email.com" />
               </div>
@@ -2944,30 +3087,6 @@ onUnmounted(() => {
               <div class="field full">
                 <label class="field-lbl">Detail Alamat (Jalan, No., RT/RW)</label>
                 <input v-model="form.addressDetail" class="form-input" :readonly="form.patientMode === 'existing'" placeholder="Jl. ... No. ..., RT 000/RW 000" />
-              </div>
-
-              <div class="section-label full">Informasi Kunjungan</div>
-              <div class="field full">
-                <label class="field-lbl">Klasifikasi Kunjungan</label>
-                <div class="classif-badges">
-                  <button
-                    v-for="c in ['Baru', 'Pre-Op', 'Post-Op', 'Kontrol']"
-                    :key="c"
-                    type="button"
-                    :class="['classif-badge', form.classification === c ? 'classif-on' : '']"
-                    @click="form.classification = c"
-                  >{{ c }}</button>
-                </div>
-                <div class="hint">Pilih sesuai tujuan kunjungan pasien saat ini</div>
-                <!-- Hak konsultasi kontrol gratis pasca-bedah (info; tebusan otomatis di Kasir utk UMUM) -->
-                <div v-if="followupEntitlements.length" class="followup-badge">
-                  🎁 Pasien punya
-                  <strong>{{ followupEntitlements.reduce((s, e) => s + (e.remaining || 0), 0) }}× kontrol gratis</strong>
-                  <span v-for="e in followupEntitlements" :key="e.id" class="followup-chip">
-                    {{ e.procedure_name }}<template v-if="e.package_name"> · {{ e.package_name }}</template><template v-if="e.valid_until"> · s/d {{ e.valid_until }}</template>
-                  </span>
-                  <div class="hint">Diskon otomatis muncul di Kasir saat menagih konsultasi (penjamin Umum).</div>
-                </div>
               </div>
             </div>
 
@@ -3493,6 +3612,10 @@ onUnmounted(() => {
                 <input v-model="editForm.phone" class="form-input" placeholder="08xx..." maxlength="20" />
               </div>
               <div class="field">
+                <label class="field-lbl">No. Telepon Keluarga</label>
+                <input v-model="editForm.family_phone" class="form-input" placeholder="08xx... (wali / darurat)" maxlength="20" />
+              </div>
+              <div class="field">
                 <label class="field-lbl">Email</label>
                 <input v-model="editForm.email" type="email" class="form-input" placeholder="nama@email.com" maxlength="255" />
               </div>
@@ -3508,6 +3631,111 @@ onUnmounted(() => {
               <span v-if="editSaving" class="spin-xs"></span>
               <svg v-else viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
               Simpan Perubahan
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ===================== EDIT PENJAMIN MODAL ===================== -->
+    <transition name="modal-fade">
+      <div v-if="penjaminOpen" class="modal-backdrop" @click.self="closeEditPenjamin">
+        <div class="modal-shell modal-sm">
+          <div class="modal-head">
+            <div>
+              <div class="modal-title">Ubah Penjamin / Pola Bayar</div>
+              <div class="modal-sub">{{ penjaminForm.patientName }} · sekarang: {{ penjaminForm.currentLabel }}</div>
+            </div>
+            <button class="modal-x" aria-label="Tutup" @click="closeEditPenjamin">
+              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="info-box">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
+              <span>Mengubah penjamin akan mengubah pola bayar (tarif diresolusi ulang di Kasir). Tidak bisa diubah bila tagihan sudah dikirim ke kasir atau SEP BPJS masih aktif.</span>
+            </div>
+
+            <div class="field full">
+              <label class="field-lbl">Tipe Penjamin</label>
+              <div class="classif-badges">
+                <button
+                  v-for="g in ['UMUM', 'BPJS', 'ASURANSI', 'PERUSAHAAN', 'SOSIAL']"
+                  :key="g"
+                  type="button"
+                  :class="['classif-badge', penjaminForm.guarantor === g ? 'classif-on' : '']"
+                  @click="setPenjaminType(g)"
+                >{{ guarantorLabel(g) }}</button>
+              </div>
+            </div>
+
+            <!-- Insurer (ASURANSI / PERUSAHAAN / SOSIAL) -->
+            <div v-if="['ASURANSI','PERUSAHAAN','SOSIAL'].includes(penjaminForm.guarantor)" class="field full">
+              <label class="field-lbl">Penjamin ({{ guarantorLabel(penjaminForm.guarantor) }})</label>
+              <select v-model="penjaminForm.insurer_id" class="form-select">
+                <option value="">— Pilih penjamin —</option>
+                <option v-for="ins in penjaminInsurerOptions" :key="ins.id" :value="ins.id">{{ ins.name }}</option>
+              </select>
+            </div>
+
+            <!-- Data kartu TPA (ASURANSI / PERUSAHAAN) -->
+            <template v-if="['ASURANSI','PERUSAHAAN'].includes(penjaminForm.guarantor)">
+              <div class="field full">
+                <label class="field-lbl">No. Polis / Kartu <span class="field-opt">(opsional)</span></label>
+                <input v-model="penjaminForm.policyNumber" class="form-input" placeholder="Nomor polis / kartu peserta" />
+              </div>
+              <div class="field full">
+                <label class="field-lbl">Nama Peserta <span class="field-opt">(opsional)</span></label>
+                <input v-model="penjaminForm.memberName" class="form-input" placeholder="Nama sesuai kartu" />
+              </div>
+            </template>
+
+            <!-- BPJS: dasar SEP -->
+            <template v-if="penjaminForm.guarantor === 'BPJS'">
+              <div class="field full">
+                <label class="field-lbl">Dasar SEP</label>
+                <select v-model="penjaminForm.sepType" class="form-select">
+                  <option value="rujukan">Rujukan</option>
+                  <option value="kontrol">Surat Kontrol</option>
+                  <option value="jkn">Booking (Antrean JKN)</option>
+                </select>
+              </div>
+              <div v-if="penjaminForm.sepType === 'rujukan'" class="field full">
+                <label class="field-lbl">No. Rujukan <span class="field-opt">(opsional)</span></label>
+                <input v-model="penjaminForm.referralNo" class="form-input" placeholder="Nomor rujukan BPJS" />
+              </div>
+              <div v-else-if="penjaminForm.sepType === 'kontrol'" class="field full">
+                <label class="field-lbl">No. Surat Kontrol <span class="field-opt">(opsional)</span></label>
+                <input v-model="penjaminForm.controlNo" class="form-input" placeholder="Nomor surat kontrol" />
+              </div>
+              <div v-else class="field full">
+                <label class="field-lbl">Kode Booking <span class="field-opt">(opsional)</span></label>
+                <input v-model="penjaminForm.bookingCode" class="form-input" placeholder="Kode booking antrean JKN" />
+              </div>
+              <div class="hint">SEP diterbitkan terpisah di panel Detail Kunjungan / BPJS setelah penjamin disetel ke BPJS.</div>
+            </template>
+
+            <!-- COB (penjamin kedua) -->
+            <div v-if="['BPJS','ASURANSI','PERUSAHAAN'].includes(penjaminForm.guarantor)" class="field full">
+              <label class="cob-check">
+                <input type="checkbox" v-model="penjaminForm.cobEnabled" />
+                COB — penjamin kedua menanggung selisih
+              </label>
+              <template v-if="penjaminForm.cobEnabled">
+                <select v-model="penjaminForm.cobInsurerId" class="form-select" style="margin-top:8px">
+                  <option value="">— Pilih penjamin kedua —</option>
+                  <option v-for="ins in penjaminCobOptions" :key="ins.id" :value="ins.id">{{ ins.name }}</option>
+                </select>
+                <input v-model="penjaminForm.cobNo" class="form-input" style="margin-top:8px" placeholder="No. polis penjamin 2 (opsional)" />
+              </template>
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-secondary" :disabled="penjaminSaving" @click="closeEditPenjamin">Batal</button>
+            <button class="btn btn-primary" :disabled="penjaminSaving" @click="submitEditPenjamin">
+              <span v-if="penjaminSaving" class="spin-xs"></span>
+              <svg v-else viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+              Simpan Penjamin
             </button>
           </div>
         </div>
@@ -3797,6 +4025,7 @@ onUnmounted(() => {
                   <div class="cf"><span class="cf-k">Tanggal Lahir</span><span class="cf-v">{{ fmtDate(profilePatient.date_of_birth) }}</span></div>
                   <div class="cf"><span class="cf-k">Jenis Kelamin</span><span class="cf-v">{{ profilePatient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</span></div>
                   <div class="cf"><span class="cf-k">No. Telepon</span><span class="cf-v">{{ profilePatient.phone || '—' }}</span></div>
+                  <div class="cf"><span class="cf-k">No. Telp. Keluarga</span><span class="cf-v">{{ profilePatient.family_phone || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Golongan Darah</span><span class="cf-v">{{ profilePatient.blood_type || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Provinsi</span><span class="cf-v">{{ profilePatient.province || '—' }}</span></div>
                   <div class="cf"><span class="cf-k">Kabupaten / Kota</span><span class="cf-v">{{ profilePatient.nama_kab_kota || '—' }}</span></div>
@@ -3878,6 +4107,11 @@ onUnmounted(() => {
                     <label>No. Telepon</label>
                     <input v-model="profileEdit.phone" class="form-input" placeholder="08xx-xxxx-xxxx" />
                     <div v-if="profileEdit.errors?.phone" class="fld-err">{{ profileEdit.errors.phone[0] }}</div>
+                  </div>
+                  <div class="fg-sm">
+                    <label>No. Telepon Keluarga</label>
+                    <input v-model="profileEdit.family_phone" class="form-input" placeholder="08xx... (wali / darurat)" />
+                    <div v-if="profileEdit.errors?.family_phone" class="fld-err">{{ profileEdit.errors.family_phone[0] }}</div>
                   </div>
                   <div class="fg-sm">
                     <label>Email</label>
@@ -4015,43 +4249,6 @@ onUnmounted(() => {
       </div>
     </transition>
 
-    <!-- ===================== GENERAL CONSENT MODAL ===================== -->
-    <transition name="modal-fade">
-      <div v-if="gcOpen && gcPatient" class="modal-backdrop" @click.self="closeGeneralConsent">
-        <div class="modal-shell modal-sm">
-          <div class="modal-head">
-            <div>
-              <div class="modal-title">General Consent (RM-0.1)</div>
-              <div class="modal-sub">{{ gcPatient.name }} · {{ gcPatient.noRm }}</div>
-            </div>
-            <button class="modal-x" aria-label="Tutup general consent" @click="closeGeneralConsent">
-              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-          <div class="modal-body">
-            <div class="info-box">
-              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
-              <span>Persetujuan umum mencakup persetujuan tindakan medis, pelepasan informasi, dan privasi data pasien.</span>
-            </div>
-            <p class="gc-text">
-              Saya, <strong>{{ gcPatient.name }}</strong> (NIK: {{ gcPatient.nik }}),
-              dengan ini menyetujui pelayanan kesehatan di RUMAH SAKIT MATA PRIMA VISION sesuai standar yang berlaku,
-              termasuk pemeriksaan, pengobatan, dan penggunaan data rekam medis untuk kepentingan pelayanan.
-            </p>
-          </div>
-          <div class="modal-foot">
-            <button class="btn btn-secondary" @click="closeGeneralConsent">Batal</button>
-            <span class="foot-spacer"></span>
-            <button class="btn btn-success" :disabled="gcSigning" @click="signGeneralConsent">
-              <span v-if="gcSigning" class="spin-xs"></span>
-              <svg v-else viewBox="0 0 24 24"><path d="M3 17v3h3l11-11-3-3L3 17z"/></svg>
-              Tandatangani &amp; Simpan
-            </button>
-          </div>
-        </div>
-      </div>
-    </transition>
-
     <!-- ===================== FOTO PASIEN (kamera/upload) ===================== -->
     <PhotoCaptureModal v-model:open="photoModalOpen" :patient-name="form.name" @captured="onPhotoCaptured" />
 
@@ -4134,10 +4331,9 @@ onUnmounted(() => {
 
 /* TABLE TOOLBAR */
 .table-toolbar { display: flex; gap: 0.5rem; align-items: center; padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gb); flex-wrap: wrap; }
-.unfinished-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 8px; border: 1px solid #fca5a5; background: #fff; color: #b91c1c; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.unfinished-toggle svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.unfinished-toggle:hover { background: #fef2f2; }
-.unfinished-toggle.active { background: #dc2626; border-color: #dc2626; color: #fff; }
+/* Checkbox COB di modal Edit Penjamin */
+.cob-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--td); cursor: pointer; }
+.cob-check input { width: 15px; height: 15px; cursor: pointer; }
 /* Toggle Rawat Jalan vs Rawat Inap (segmented) */
 .care-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bi); gap: 2px; }
 .care-seg { padding: 0.32rem 0.75rem; border: none; border-radius: 6px; background: transparent; color: var(--tm); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; white-space: nowrap; }

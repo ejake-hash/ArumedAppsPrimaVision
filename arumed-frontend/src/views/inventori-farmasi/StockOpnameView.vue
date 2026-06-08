@@ -342,49 +342,49 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.so-wrap { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 4rem; }
+.so-wrap { display: flex; flex-direction: column; gap: 1.25rem; padding: 0.25rem 0.25rem 4.5rem; max-width: 1320px; margin: 0 auto; width: 100%; }
 
-.so-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
-.so-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; max-width: 680px; }
+.so-head h2 { font-family: 'Space Grotesk', serif; font-size: 21px; color: var(--td); margin: 0; }
+.so-head p { font-size: 13px; color: var(--tm); margin: 6px 0 0; max-width: 720px; line-height: 1.5; }
 .so-head code { background: var(--bs); border: 1px solid var(--gb); border-radius: 4px; padding: 0 4px; font-size: 11px; color: var(--td); }
 
 .so-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); }
-.so-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.so-tab { padding: 10px 20px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .so-tab:hover { color: var(--td); }
 .so-tab.active { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 
-.so-toolbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.so-loc { display: flex; align-items: center; gap: 8px; }
-.so-loc-lbl { font-size: 11px; font-weight: 600; color: var(--tm); }
-.so-loc-seg { display: flex; gap: 4px; }
-.so-loc-btn { padding: 5px 11px; font-size: 12px; font-weight: 600; color: var(--tm); background: var(--bc); border: 1px solid var(--gb); border-radius: 7px; cursor: pointer; }
+.so-toolbar { display: flex; align-items: center; gap: 1rem 1.25rem; flex-wrap: wrap; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 0.85rem 1.1rem; }
+.so-loc { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.so-loc-lbl { font-size: 11px; font-weight: 600; color: var(--tm); text-transform: uppercase; letter-spacing: 0.04em; }
+.so-loc-seg { display: flex; gap: 5px; flex-wrap: wrap; }
+.so-loc-btn { padding: 6px 13px; font-size: 12px; font-weight: 600; color: var(--tm); background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; cursor: pointer; }
 .so-loc-btn:hover { background: var(--gl); color: var(--td); }
 .so-loc-btn.active { background: var(--ga); color: #fff; border-color: var(--ga); }
 
-.so-search { position: relative; flex: 1; max-width: 340px; }
-.so-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; }
-.so-search input { width: 100%; padding: 8px 10px 8px 32px; border-radius: 8px; border: 1px solid var(--gb); font-size: 13px; }
+.so-search { position: relative; flex: 1 1 240px; min-width: 200px; max-width: 380px; }
+.so-search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; }
+.so-search input { width: 100%; height: 36px; padding: 0 10px 0 34px; border-radius: 9px; border: 1px solid var(--gb); font-size: 13px; }
 .so-search input:focus { outline: none; border-color: var(--ga); }
 
-.so-filter { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--tm); cursor: pointer; user-select: none; }
+.so-filter { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--tm); cursor: pointer; user-select: none; white-space: nowrap; }
 
-.so-readonly { font-size: 12.5px; color: var(--wt); background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: 8px 12px; }
+.so-readonly { font-size: 12.5px; color: var(--wt); background: var(--wb); border: 1px solid var(--wbd); border-radius: 9px; padding: 10px 14px; }
 
 /* overflow-x:auto = jaring pengaman: bila kolom sempit (jendela kecil), tabel bisa
    digeser, BUKAN terpotong seperti saat overflow:hidden. border-radius dipindah ke
    wrapper luar agar sudut tetap rapi walau isinya scroll. */
-.so-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; overflow-x: auto; }
-.so-state { padding: 2rem; text-align: center; font-size: 13px; color: var(--tm); }
+.so-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow-x: auto; }
+.so-state { padding: 2.5rem 2rem; text-align: center; font-size: 13px; color: var(--tm); }
 .so-err { color: var(--et); }
 
 /* min-width = jumlah lebar kolom: 48+220+150+150+100+110+120 ≈ 900px. Di bawah ini
    wrapper-nya scroll, kolom tak diremas/terpotong. */
 .so-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 13px; }
 .so-table thead { background: var(--bs); }
-.so-table th { padding: 9px 10px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); border-bottom: 1px solid var(--gb); }
+.so-table th { padding: 11px 14px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); border-bottom: 1px solid var(--gb); }
 .so-table th.r, .so-table td.r { text-align: right; }
 .so-table th.c, .so-table td.c { text-align: center; }
-.so-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
+.so-table td { padding: 10px 14px; border-bottom: 1px solid var(--gb); vertical-align: middle; }
 .so-table tr:last-child td { border-bottom: none; }
 .so-table tr.changed td { background: rgba(250, 204, 21, 0.07); }
 .so-table tr.saved td { background: rgba(34, 197, 94, 0.06); }
@@ -402,7 +402,7 @@ onMounted(refresh)
 
 .so-sys { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }
 .so-unit { font-size: 10.5px; color: var(--tu); margin-left: 4px; }
-.so-input-num { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--gb); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.so-input-num { width: 128px; height: 34px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--gb); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
 .so-input-num:focus { outline: none; border-color: var(--ga); }
 .so-dim { color: var(--tu); }
 
@@ -422,7 +422,7 @@ onMounted(refresh)
 .so-btn-ghost:hover:not(:disabled) { background: var(--bs); color: var(--td); }
 .so-btn-xs { padding: 4px 10px; font-size: 11.5px; }
 
-.so-savebar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1.1rem; background: var(--bc); border: 1px solid var(--ga); border-radius: 12px; box-shadow: 0 -4px 18px rgba(15,23,42,0.08); }
+.so-savebar { position: sticky; bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.25rem; background: var(--bc); border: 1px solid var(--ga); border-radius: 12px; box-shadow: 0 -4px 18px rgba(15,23,42,0.08); }
 .so-savebar-info { font-size: 13px; color: var(--td); }
 
 .so-toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 9999; }
@@ -431,4 +431,18 @@ onMounted(refresh)
 .so-toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .so-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .so-toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+
+/* ─── Responsif: di bawah 900px, stasiun sempit → toolbar menumpuk 1 kolom,
+   kontrol melebar penuh, dan savebar menyusun info di atas tombol. ───────── */
+@media (max-width: 900px) {
+  .so-wrap { gap: 1rem; padding-bottom: 4rem; }
+  .so-toolbar { flex-direction: column; align-items: stretch; gap: 0.85rem; }
+  .so-loc { justify-content: space-between; }
+  .so-search { max-width: none; }
+  .so-savebar { flex-direction: column; align-items: stretch; }
+  .so-savebar-info { text-align: center; }
+  .so-savebar .so-btn-primary { width: 100%; }
+  .so-toast-wrap { left: 1rem; right: 1rem; }
+  .so-toast { min-width: 0; }
+}
 </style>

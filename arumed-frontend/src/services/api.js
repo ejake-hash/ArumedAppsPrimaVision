@@ -133,14 +133,18 @@ export const perawatApi = {
   storeAsesmen:    (data)             => api.post('/perawat/asesmen', data),
   updateAsesmen:   (id, data)         => api.put(`/perawat/asesmen/${id}`, data),
   finalizeAsesmen: (id)               => api.post(`/perawat/asesmen/${id}/finalize`),
+  reopenAsesmen:   (id)               => api.post(`/perawat/asesmen/${id}/reopen`),
 
-  // CPPT — timeline append + soft-edit
+  // CPPT — timeline append + soft-edit + tanda tangan PIN (paraf PPA)
   cpptList:        (visitId)          => api.get(`/perawat/cppt/visit/${visitId}`),
   cpptCreate:      (data)             => api.post('/perawat/cppt', data),
   cpptUpdate:      (id, data)         => api.put(`/perawat/cppt/${id}`, data),
+  cpptSign:        (id, pin)          => api.post(`/perawat/cppt/${id}/sign`, { pin }),
 
   vitalHistory:    (patientId)        => api.get(`/perawat/pasien/${patientId}/vital-history`),
   rekamMedis:      (patientId)        => api.get(`/perawat/pasien/${patientId}/rekam-medis`),
+  // CPPT lintas-episode terpadu (kartu SOAP/CPPT) — sumber sama dgn DokterView.
+  riwayatCppt:     (patientId)        => api.get(`/perawat/pasien/${patientId}/cppt`),
   dokumen:         (documentId)       => api.get(`/perawat/dokumen/${documentId}`),
   statusParallel:  (visitId)          => api.get(`/perawat/kunjungan/${visitId}/status-parallel`),
 }
@@ -155,7 +159,10 @@ export const dokterApi = {
   kePenunjang:      (id)                  => api.put(`/dokter/antrian/${id}/ke-penunjang`),
 
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
-  finalize:         (visitId)             => api.post(`/dokter/kunjungan/${visitId}/finalize`),
+  // Komit billing + majukan antrean (RME tetap bisa dilengkapi belakangan).
+  kirimKasir:       (visitId, data)       => api.put(`/dokter/kunjungan/${visitId}/kirim-kasir`, data),
+  // Finalisasi mengunci RME — kirim body SOAP (S/O/A/P).
+  finalize:         (visitId, soap = {})  => api.post(`/dokter/kunjungan/${visitId}/finalize`, soap),
 
   // Resume Medis — auto-generate dari data kunjungan, edit, lalu finalisasi (terbit).
   showResumeMedis:     (visitId)          => api.get(`/dokter/kunjungan/${visitId}/resume-medis`),
@@ -224,13 +231,16 @@ export const refraksiApi = {
   showPemeriksaan:    (visitId)          => api.get(`/refraksi/pemeriksaan/${visitId}`),
   storePemeriksaan:   (data)             => api.post('/refraksi/pemeriksaan', data),
   updatePemeriksaan:  (id, data)         => api.put(`/refraksi/pemeriksaan/${id}`, data),
-  finalizePemeriksaan: (id)              => api.post(`/refraksi/pemeriksaan/${id}/finalize`),
+  finalizePemeriksaan: (id, pin)         => api.post(`/refraksi/pemeriksaan/${id}/finalize`, { pin }),
+  reopenPemeriksaan:   (id)              => api.post(`/refraksi/pemeriksaan/${id}/reopen`),
 
   showResep:          (refractionId)     => api.get(`/refraksi/resep-kacamata/${refractionId}`),
   storeResep:         (data)             => api.post('/refraksi/resep-kacamata', data),
   updateResep:        (id, data)         => api.put(`/refraksi/resep-kacamata/${id}`, data),
 
   riwayat:            (patientId)        => api.get(`/refraksi/pasien/${patientId}/riwayat`),
+  // CPPT lintas-episode terpadu (kartu SOAP/CPPT) — sumber sama dgn DokterView.
+  riwayatCppt:        (patientId)        => api.get(`/refraksi/pasien/${patientId}/cppt`),
   statusParallel:     (visitId)          => api.get(`/refraksi/kunjungan/${visitId}/status-parallel`),
 
   // Opsi combobox (kind → daftar nilai siap-pakai). Master di masterApi.refraksiOpsi.
@@ -511,6 +521,7 @@ export const formTemplateApi = {
   ttdCount:            () => api.get('/rekam-medis/ttd-count'),
   bulkSign:            (ids, pin) => api.post('/rekam-medis/ttd-bulk-sign', { document_ids: ids, signature_pin: pin }),
   createAddendum:      (docId, payload) => api.post(`/rekam-medis/document/${docId}/addendum`, payload),
+  reviseDocument:      (docId, payload) => api.post(`/rekam-medis/document/${docId}/revisi`, payload),
   auditLog:            (docId) => api.get(`/rekam-medis/document/${docId}/audit-log`),
 }
 
@@ -761,6 +772,7 @@ export const admisiApi = {
   kunjungan:     (params)       => api.get('/admisi/kunjungan', { params }),
   kunjunganById: (id)           => api.get(`/admisi/kunjungan/${id}`),
   cancelKunjungan: (id)         => api.put(`/admisi/kunjungan/${id}/cancel`),
+  updatePenjamin: (id, data)    => api.put(`/admisi/kunjungan/${id}/penjamin`, data),
   cariPasien:    (keyword)      => api.get('/admisi/pasien', { params: { keyword } }),
   showPasien:    (id)           => api.get(`/admisi/pasien/${id}`),
   kunjunganPasien: (id, params) => api.get(`/admisi/pasien/${id}/kunjungan`, { params }),
@@ -826,6 +838,8 @@ export const farmasiApi = {
 
   // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
   obatRiwayat:       (id, params) => api.get(`/farmasi/obat/${id}/riwayat-pemberian`, { params }),
+  // Riwayat GLOBAL obat yang diberikan ke pasien (resep + POS) — search/date/page.
+  riwayatPemberian:  (params)     => api.get('/farmasi/riwayat-pemberian', { params }),
 
   // Stok
   stokObat:          (params)     => api.get('/farmasi/stok/obat', { params }),

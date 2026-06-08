@@ -106,6 +106,14 @@ final class FieldRegistry
                 'label'   => 'Diagnosa ICD-10 (gabungan utama + sekunder)',
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
             ],
+            'claim.icd10_diagnoses' => [
+                'label'   => 'Diagnosa ICD-10 dari KODING KLAIM (koder) — untuk Lembar Klaim',
+                'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
+            'claim.icd9_procedures' => [
+                'label'   => 'Prosedur ICD-9 dari KODING KLAIM (koder) — untuk Lembar Klaim',
+                'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
             'prescriptions' => [
                 'label'   => 'Daftar Resep Obat',
                 'formats' => ['items_pretty', 'items_table_html'],

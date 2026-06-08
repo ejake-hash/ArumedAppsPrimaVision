@@ -149,13 +149,13 @@ class PerawatController extends Controller
 
     public function storeAsesmen(Request $request): JsonResponse
     {
-        // Wajib: TD (sistolik + diastolik) + KGD + keluhan utama.
-        // Sisanya (nadi, suhu, respirasi, SpO2, BB, TB, RPS, notes, alergi) optional.
+        // Tidak ada field wajib untuk perawat — semua TTV/keluhan/alergi opsional
+        // (hanya batas nilai yang divalidasi bila diisi).
         $validated = $request->validate([
             'visit_id'         => 'required|uuid|exists:visits,id',
-            'td_sistol'        => 'required|integer|between:50,300',
-            'td_diastol'       => 'required|integer|between:30,200',
-            'kgd'              => 'required|numeric|between:20,800',
+            'td_sistol'        => 'nullable|integer|between:50,300',
+            'td_diastol'       => 'nullable|integer|between:30,200',
+            'kgd'              => 'nullable|numeric|between:20,800',
             'nadi'             => 'nullable|integer|between:20,250',
             'suhu'             => 'nullable|numeric|between:30,45',
             'respirasi'        => 'nullable|integer|between:5,60',
@@ -163,9 +163,9 @@ class PerawatController extends Controller
             'pain_scale'       => 'nullable|integer|between:0,10',
             'berat_badan'      => 'nullable|numeric|between:1,300',
             'tinggi_badan'     => 'nullable|numeric|between:30,250',
-            'has_allergy'      => 'required|boolean',
+            'has_allergy'      => 'nullable|boolean',
             'allergy_detail'   => 'required_if:has_allergy,true|nullable|string|max:500',
-            'chief_complaint'  => 'required|string|max:1000',
+            'chief_complaint'  => 'nullable|string|max:1000',
             'rps'              => 'nullable|string|max:2000',
             'assessment_notes' => 'nullable|string|max:1000',
         ]);
@@ -223,6 +223,21 @@ class PerawatController extends Controller
         return $this->ok($assessment, 'Asesmen dikunci. Data tidak bisa diubah.');
     }
 
+    /**
+     * POST /perawat/asesmen/{id}/reopen
+     * Buka kunci asesmen triase (periksa ulang atas permintaan dokter).
+     */
+    public function reopenAsesmen(string $id): JsonResponse
+    {
+        try {
+            $assessment = $this->service->reopenAssessment($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($assessment, 'Asesmen triase dibuka kembali untuk diperiksa ulang.');
+    }
+
     // =========================================================================
     // CPPT — Catatan Perkembangan Pasien Terintegrasi
     // =========================================================================
@@ -240,7 +255,13 @@ class PerawatController extends Controller
             'spo2'       => 'nullable|numeric|between:50,100',
             'kgd'        => 'nullable|numeric|between:20,800',
             'pain_scale' => 'nullable|integer|between:0,10',
-            'notes'      => 'required|string|max:2000',
+            // notes ATAU SOAP harus ada (SOAP opsional bila hari itu hanya TTV+notes).
+            'notes'      => 'nullable|required_without_all:soap_s,soap_a,soap_p|string|max:2000',
+            'soap_s'     => 'nullable|string|max:2000',
+            'soap_o'     => 'nullable|string|max:2000',
+            'soap_a'     => 'nullable|string|max:2000',
+            'soap_p'     => 'nullable|string|max:2000',
+            'instruksi'  => 'nullable|string|max:2000',
         ]);
 
         try {
@@ -264,7 +285,12 @@ class PerawatController extends Controller
             'spo2'       => 'nullable|numeric|between:50,100',
             'kgd'        => 'nullable|numeric|between:20,800',
             'pain_scale' => 'nullable|integer|between:0,10',
-            'notes'      => 'sometimes|required|string|max:2000',
+            'notes'      => 'sometimes|nullable|string|max:2000',
+            'soap_s'     => 'nullable|string|max:2000',
+            'soap_o'     => 'nullable|string|max:2000',
+            'soap_a'     => 'nullable|string|max:2000',
+            'soap_p'     => 'nullable|string|max:2000',
+            'instruksi'  => 'nullable|string|max:2000',
         ]);
 
         try {
@@ -274,6 +300,20 @@ class PerawatController extends Controller
         }
 
         return $this->ok($entry, 'CPPT diperbarui');
+    }
+
+    /** POST /perawat/cppt/{id}/sign — tanda tangan PIN (paraf penulis CPPT) */
+    public function signCppt(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(['pin' => 'required|string']);
+
+        try {
+            $entry = $this->service->signCpptEntry($id, $validated['pin']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($entry, 'CPPT ditandatangani');
     }
 
     /** GET /perawat/cppt/visit/{visitId} — timeline descending */

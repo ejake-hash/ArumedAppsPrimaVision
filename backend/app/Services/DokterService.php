@@ -58,8 +58,10 @@ class DokterService
 
         $query = Queue::with([
             'visit.patient',
-            'visit.nurseAssessment',
-            'visit.refractionRecord',
+            // assessedBy/examinedBy → nama pemeriksa utk label "diperiksa oleh X"
+            // di panel referensi read-only DokterView (TTV Perawat / Visus Refraksionis).
+            'visit.nurseAssessment.assessedBy:id,name',
+            'visit.refractionRecord.examinedBy:id,name',
             'visit.internalReferralFromSchedule:id,poliklinik',
         ])
             ->where('station', 'DOKTER')
@@ -247,16 +249,17 @@ class DokterService
             throw new \Exception('Data pemeriksaan sudah ada. Gunakan update.', 422);
         }
 
-        $user       = auth('api')->user();
-        $segmenEnum = ['Normal', 'Tidak Normal', 'Tidak Dapat Dinilai'];
+        $user = auth('api')->user();
 
         $examination = DoctorExamination::create([
             'visit_id'  => $visitId,
             'doctor_id' => $user->employee_id,
 
             'anamnese'       => $data['anamnese'] ?? null,
-            'slitlamp_notes' => $data['slitlamp_notes'] ?? null,
 
+            // Palpebra (anterior, di atas Kornea)
+            'sa_palpebra_od' => $data['sa_palpebra_od'] ?? null,
+            'sa_palpebra_os' => $data['sa_palpebra_os'] ?? null,
             // Segmen Anterior OD
             'sa_kornea_od' => $data['sa_kornea_od'] ?? null,
             'sa_coa_od'    => $data['sa_coa_od'] ?? null,
@@ -269,6 +272,8 @@ class DokterService
             'sa_iris_os'   => $data['sa_iris_os'] ?? null,
             'sa_pupil_os'  => $data['sa_pupil_os'] ?? null,
             'sa_lensa_os'  => $data['sa_lensa_os'] ?? null,
+            // Catatan bebas segmen anterior
+            'sa_notes'     => $data['sa_notes'] ?? null,
 
             // Segmen Posterior OD
             'sp_papil_od'    => $data['sp_papil_od'] ?? null,
@@ -280,6 +285,15 @@ class DokterService
             'sp_macula_os'   => $data['sp_macula_os'] ?? null,
             'sp_retina_os'   => $data['sp_retina_os'] ?? null,
             'sp_vitreous_os' => $data['sp_vitreous_os'] ?? null,
+            // Catatan bebas segmen posterior
+            'sp_notes'       => $data['sp_notes'] ?? null,
+
+            // Diagnosis (ICD-10 + naratif) + kode ICD-9 tindakan — pindah ke Tab 2.
+            // Nullable saat simpan; diwajibkan hanya saat Finalisasi.
+            'diagnosis_utama'    => $data['diagnosis_utama'] ?? null,
+            'diagnosis_sekunder' => $data['diagnosis_sekunder'] ?? [],
+            'diagnosis_text'     => $data['diagnosis_text'] ?? null,
+            'tindakan_codes'     => $data['tindakan_codes'] ?? [],
 
             'is_finalized' => false,
         ]);
@@ -408,6 +422,8 @@ class DokterService
         // boleh menulis tindakan setelah pemeriksaan dikunci (else tindakan bisa
         // hilang/berubah dari tagihan kasir).
         $this->assertNotFinalized($visitId);
+        // Komit billing (Kirim ke Kasir) mengunci tindakan/resep walau RME belum final.
+        $this->assertBillingNotCommitted($visitId);
 
         return DB::transaction(function () use ($visitId, $services, $user) {
             // Bersihkan tindakan lama lalu tulis ulang dari daftar terkini.
@@ -458,6 +474,7 @@ class DokterService
 
         // Guard race autosave vs finalisasi (lihat storeVisitServices).
         $this->assertNotFinalized($visitId);
+        $this->assertBillingNotCommitted($visitId);
 
         $items = $data['items'] ?? [];
 
@@ -543,27 +560,27 @@ class DokterService
                 throw new \Exception('Pemeriksaan sudah dikunci, tidak bisa diubah.', 422);
             }
 
+            // planning null-guard: payload Tab 3 hanya membawa field planning. Diagnosis
+            // (Tab 2) & SOAP (Finalisasi) TIDAK ada di payload ini → pertahankan nilai
+            // existing agar tak terhapus. planning sendiri di-guard ke nilai lama bila absen,
+            // lalu di-inject balik ke $data agar helper hilir (resolveSurgerySchedule,
+            // applyInpatientReason, handlePlanningFollowUp) memakai nilai yang sama.
+            $planning = $data['planning'] ?? $examination->planning;
+            $data['planning'] = $planning;
+
             // Planning BEDAH: buat/perbarui SurgerySchedule dari paket + tanggal yang dipilih
             // dokter. Routing ke stasiun BEDAH (jika tanggal = hari ini) bergantung pada
             // surgery_schedule_id ini (lihat QueueService::nextAfterDokter).
             $scheduleId = $this->resolveSurgerySchedule($examination, $data);
 
             $examination->update([
-                'soap_subjective'    => $data['soap_subjective'] ?? null,
-                'soap_objective'     => $data['soap_objective'] ?? null,
-                'soap_assessment'    => $data['soap_assessment'] ?? null,
-                'soap_plan'          => $data['soap_plan'] ?? null,
-                'diagnosis_utama'    => $data['diagnosis_utama'],
-                'diagnosis_sekunder' => $data['diagnosis_sekunder'] ?? [],
-                'diagnosis_text'     => $data['diagnosis_text'] ?? null,
-                'tindakan_codes'     => $data['tindakan_codes'] ?? [],
-                'planning'           => $data['planning'],
-                'surgery_package_id' => $data['planning'] === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
+                'planning'           => $planning,
+                'surgery_package_id' => $planning === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
                 'surgery_schedule_id' => $scheduleId,
                 // Rujukan eksternal non-BPJS: simpan hanya saat planning RUJUK, selain
                 // itu bersihkan agar tak ada sisa data bila dokter ganti planning.
-                'external_referral_facility' => $data['planning'] === 'RUJUK' ? ($data['external_referral_facility'] ?? null) : null,
-                'external_referral_reason'   => $data['planning'] === 'RUJUK' ? ($data['external_referral_reason'] ?? null) : null,
+                'external_referral_facility' => $planning === 'RUJUK' ? ($data['external_referral_facility'] ?? null) : null,
+                'external_referral_reason'   => $planning === 'RUJUK' ? ($data['external_referral_reason'] ?? null) : null,
             ]);
 
             // HIGH: propagasi surgery_schedule_id ke VISIT. BedahService::startOperation
@@ -572,14 +589,14 @@ class DokterService
             // tak punya schedule → SurgeryRecord orphan, startOperation gagal update antrean.
             // Planning bukan BEDAH → bersihkan agar tak nyangkut jadwal lama.
             $visit->update([
-                'surgery_schedule_id' => $data['planning'] === 'BEDAH' ? $scheduleId : null,
+                'surgery_schedule_id' => $planning === 'BEDAH' ? $scheduleId : null,
             ]);
 
             // Snapshot paket BEDAH pasien (komponen BHP/IOL/PROCEDURE → dasar diskon
             // paket di kwitansi). Planning bukan BEDAH / tanpa paket → snapshot dibuang.
             $this->syncVisitPackageSnapshot(
                 $visit,
-                $data['planning'] === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
+                $planning === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
                 $scheduleId
             );
 
@@ -592,7 +609,7 @@ class DokterService
             // Handle planning-specific side-effects
             $this->handlePlanningFollowUp($visit, $data, $examination);
 
-            $this->log($user->id, 'STORE_TAB4', DoctorExamination::class, $examination->id, "Planning: {$data['planning']} — kunjungan {$visit->id}");
+            $this->log($user->id, 'STORE_TAB4', DoctorExamination::class, $examination->id, "Planning: {$planning} — kunjungan {$visit->id}");
 
             return [
                 'examination' => $examination->fresh(['doctor', 'surgeryPackage']),
@@ -1083,7 +1100,7 @@ class DokterService
     // FINALIZE KUNJUNGAN
     // =========================================================================
 
-    public function finalizeKunjungan(string $visitId): DoctorExamination
+    public function finalizeKunjungan(string $visitId, array $soap = []): DoctorExamination
     {
         $this->authorizeVisitOwnership($visitId);
 
@@ -1093,8 +1110,19 @@ class DokterService
             throw new \Exception('Pemeriksaan sudah dikunci.', 422);
         }
 
+        // Isi SOAP final (subset fillable) sebelum validasi assessment.
+        $soapFields = array_intersect_key($soap, array_flip([
+            'soap_subjective', 'soap_objective', 'soap_assessment', 'soap_plan',
+        ]));
+        if ($soapFields) {
+            $examination->fill($soapFields);
+        }
+
         if (! $examination->diagnosis_utama || ! $examination->planning) {
             throw new \Exception('Diagnosis utama dan planning wajib diisi sebelum mengunci.', 422);
+        }
+        if (! $examination->soap_assessment) {
+            throw new \Exception('Assessment (SOAP) wajib diisi sebelum mengunci.', 422);
         }
 
         // Tanda tangan digital = identitas akun dokter yang sedang login (otoritatif
@@ -1107,21 +1135,79 @@ class DokterService
             $signer .= " (SIP: {$employee->sip})";
         }
 
-        // Hanya kunci pemeriksaan. Routing & pembuatan baris antrean stasiun
-        // berikutnya adalah tanggung jawab tunggal QueueService::advanceFromStation
-        // (dipanggil via selesaiAntrian). Jangan buat baris antrean di sini agar
-        // pasien tidak ter-enqueue ganda. Lihat [[queue-advance-station-pattern]].
-        $examination->update([
+        $examination->fill([
             'is_finalized'        => true,
             'finalized_at'        => now(),
             'digital_signature'   => $signer,
             'signature_timestamp' => now(),
             'doctor_id'           => $examination->doctor_id ?? $employee?->id,
         ]);
+        $examination->save();
+
+        // Majukan antrean idempoten: bila pasien BELUM pernah "Kirim ke Kasir"
+        // (finalisasi langsung tanpa lewat Tab 3) baris DOKTER masih aktif → maju
+        // sekarang. Bila sudah maju (COMPLETED) → no-op, tidak melempar.
+        $this->advanceDokterQueueIfActive($visitId);
 
         $this->log(auth('api')->id(), 'FINALIZE_KUNJUNGAN', DoctorExamination::class, $examination->id, "Planning: {$examination->planning}");
 
         return $examination->fresh(['doctor', 'surgeryPackage']);
+    }
+
+    /**
+     * Kirim ke Kasir (Tab 3): komit billing & majukan antrean TANPA mengunci RME.
+     * Simpan planning (reuse storePlanning: jadwal bedah + inap + follow-up + snapshot)
+     * lalu advance idempoten. is_finalized tetap false → segmen/diagnosis/SOAP masih
+     * bisa dilengkapi belakangan (buka ulang dari filter "Selesai").
+     */
+    public function kirimKeKasir(string $visitId, array $data): array
+    {
+        $result = $this->storePlanning($visitId, $data);
+        $advance = $this->advanceDokterQueueIfActive($visitId);
+
+        return array_merge($result, ['advance' => $advance]);
+    }
+
+    /**
+     * Majukan baris antrean DOKTER kunjungan ini ke stasiun berikutnya — IDEMPOTEN.
+     * Cari baris DOKTER yang masih aktif (status ∉ {COMPLETED, CANCELLED}); ada →
+     * advanceFromStation; tidak ada → no-op. Kunci agar "Kirim ke Kasir" lalu
+     * "Finalisasi" (atau panggilan ganda) tidak melempar "Antrian sudah ditutup".
+     *
+     * @return array{advanced: bool, next_station?: ?string}
+     */
+    public function advanceDokterQueueIfActive(string $visitId): array
+    {
+        $queue = Queue::where('visit_id', $visitId)
+            ->where('station', Queue::STATION_DOKTER)
+            ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
+            ->latest('created_at')
+            ->first();
+
+        if (! $queue) {
+            return ['advanced' => false];
+        }
+
+        $result = $this->queueService->advanceFromStation($queue->id, Queue::STATION_DOKTER);
+
+        return ['advanced' => true, 'next_station' => $result['next_station'] ?? null];
+    }
+
+    /**
+     * Tolak ubah tindakan/resep bila billing sudah dikomit (baris KASIR aktif untuk
+     * visit ini sudah dibuat lewat "Kirim ke Kasir"). Mengunci billing TANPA mengunci
+     * RME (is_finalized tetap bisa false). Pelengkap assertNotFinalized.
+     */
+    private function assertBillingNotCommitted(string $visitId): void
+    {
+        $hasActiveKasir = Queue::where('visit_id', $visitId)
+            ->where('station', Queue::STATION_KASIR)
+            ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+            ->exists();
+
+        if ($hasActiveKasir) {
+            throw new \Exception('Tagihan sudah dikirim ke kasir — perubahan tindakan/resep ditolak. Batalkan dari kasir bila perlu mengubah.', 422);
+        }
     }
 
     // =========================================================================
@@ -1349,26 +1435,33 @@ class DokterService
             }
         }
 
-        $o = implode('. ', array_merge($tvvParts, $visusParts)) ?: '-';
+        // Objektif RO (refraksionis) ikut O bila ada (soap_o / visus+subjektif+TIO).
+        $roObjektifO = $this->refraksiObjektifResume($refraksi);
+        $oParts = array_merge($tvvParts, $visusParts);
+        if ($roObjektifO !== '') {
+            $oParts[] = str_replace("\n", '. ', $roObjektifO);
+        }
+        $o = implode('. ', $oParts) ?: '-';
 
-        // A — Assessment: ICD-10
+        // A — Assessment: ICD-10 (kode + nama)
         $aParts = [];
         if ($doctor?->diagnosis_utama) {
-            $aParts[] = $doctor->diagnosis_utama;
+            $aParts[] = $this->labelIcd10($doctor->diagnosis_utama);
         }
         foreach ($doctor->diagnosis_sekunder ?? [] as $kode) {
-            $aParts[] = $kode;
+            $aParts[] = $this->labelIcd10($kode);
         }
-        $a = implode(', ', $aParts) ?: '-';
+        $a = implode("\n", array_filter($aParts)) ?: '-';
 
-        // P — Plan: ICD-9 + planning + follow-up
+        // P — Plan: tindakan ICD-9 (kode + nama) + planning + follow-up
         $pParts = [];
         foreach ($doctor->tindakan_codes ?? [] as $kode) {
-            $pParts[] = $kode;
+            $pParts[] = $this->labelIcd9($kode);
         }
         if ($doctor?->planning) {
             $pParts[] = "Planning: {$doctor->planning}";
         }
+        $pParts = array_filter($pParts);
 
         $p = implode('. ', $pParts) ?: '-';
 
@@ -1434,22 +1527,22 @@ class DokterService
      */
     private function buildRmrjData(Visit $visit, $nurse, $refraksi, $doctor): array
     {
-        // --- Pemeriksaan Fisik: tanda vital (triase) + visus/IOP (refraksi) ---
+        // --- Pemeriksaan Fisik: tanda vital (triase) + Objektif RO (refraksionis) ---
         $fisikParts = [];
         if ($nurse) {
-            if ($nurse->td_sistol || $nurse->td_diastol) {
-                $fisikParts[] = "TD: {$nurse->td_sistol}/{$nurse->td_diastol} mmHg";
-            }
-            if ($nurse->nadi)      { $fisikParts[] = "Nadi: {$nurse->nadi} x/mnt"; }
-            if ($nurse->respirasi) { $fisikParts[] = "RR: {$nurse->respirasi} x/mnt"; }
-            if ($nurse->suhu)      { $fisikParts[] = "Suhu: {$nurse->suhu} C"; }
-            if ($nurse->spo2)      { $fisikParts[] = "SpO2: {$nurse->spo2}%"; }
+            $ttv = [];
+            if ($nurse->td_sistol || $nurse->td_diastol) { $ttv[] = "TD {$nurse->td_sistol}/{$nurse->td_diastol} mmHg"; }
+            if ($nurse->nadi)      { $ttv[] = "Nadi {$nurse->nadi} x/mnt"; }
+            if ($nurse->respirasi) { $ttv[] = "RR {$nurse->respirasi} x/mnt"; }
+            if ($nurse->suhu)      { $ttv[] = "Suhu {$nurse->suhu} C"; }
+            if ($nurse->spo2)      { $ttv[] = "SpO2 {$nurse->spo2}%"; }
+            if ($nurse->kgd)       { $ttv[] = "KGD {$nurse->kgd} mg/dL"; }
+            if ($ttv) { $fisikParts[] = 'Tanda Vital (Triase): ' . implode(', ', $ttv); }
         }
-        if ($refraksi) {
-            $fisikParts[] = 'Visus OD: ' . ($refraksi->visus_akhir_od ?? '-') . ', OS: ' . ($refraksi->visus_akhir_os ?? '-');
-            if ($refraksi->iop_od || $refraksi->iop_os) {
-                $fisikParts[] = "TIO OD: {$refraksi->iop_od} mmHg, OS: {$refraksi->iop_os} mmHg";
-            }
+        // Objektif RO: soap_o tersimpan atau rangkaian visus akhir + subjektif + TIO.
+        $roObjektif = $this->refraksiObjektifResume($refraksi);
+        if ($roObjektif !== '') {
+            $fisikParts[] = "Status Oftalmologi (RO):\n" . $roObjektif;
         }
         $pemeriksaanFisik = implode("\n", $fisikParts);
 
@@ -1483,10 +1576,19 @@ class DokterService
         }
         $diagnosa = implode("\n", array_filter($diagParts));
 
+        // --- Tindakan: prosedur ICD-9 (kode + nama) ---
+        $tindakanParts = [];
+        foreach ($doctor->tindakan_codes ?? [] as $kode) {
+            $tindakanParts[] = $this->labelIcd9($kode);
+        }
+        $tindakan = implode("\n", array_filter($tindakanParts));
+
         // --- Terapi: obat resep (nama + dosis/aturan pakai) ---
         $terapiParts = [];
         $prescriptions = Prescription::with('items.medication')
             ->where('visit_id', $visit->id)
+            // Resume rawat jalan → hanya resep RAJAL (jangan campur obat RANAP/ward).
+            ->where(fn ($q) => $q->where('type', 'RAJAL')->orWhereNull('type'))
             ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING', 'DISPENSED'])
             ->get();
         foreach ($prescriptions as $presc) {
@@ -1530,7 +1632,7 @@ class DokterService
             'alergi_obat'          => $alergi,
             'hasil_penunjang'      => $hasilPenunjang,
             'diagnosa'             => $diagnosa,
-            'tindakan'             => '',   // dikosongkan: diisi dokter
+            'tindakan'             => $tindakan,   // prosedur ICD-9 (kode + nama)
             'terapi'               => $terapi,
             'riwayat_inap_operasi' => '',   // diisi dokter
             'instruksi_edukasi'    => '',   // diisi dokter
@@ -1555,6 +1657,58 @@ class DokterService
         $name = $this->icd10NameCache[$code];
 
         return $name ? "{$code} - {$name}" : $code;
+    }
+
+    private array $icd9NameCache = [];
+
+    /** "13.41 - Fakoemulsifikasi + IOL" (nama dari icd9_codes bila ada). */
+    private function labelIcd9(?string $code): ?string
+    {
+        if (! $code) {
+            return null;
+        }
+        if (! array_key_exists($code, $this->icd9NameCache)) {
+            $row = Icd9Code::where('code', $code)->first();
+            $this->icd9NameCache[$code] = $row?->indonesian_description ?: $row?->description;
+        }
+        $name = $this->icd9NameCache[$code];
+
+        return $name ? "{$code} - {$name}" : $code;
+    }
+
+    /** Objektif refraksionis (RO) untuk resume: pakai soap_o tersimpan; bila kosong
+     *  rangkai dari visus akhir + refraksi subjektif + TIO. */
+    private function refraksiObjektifResume($refraksi): string
+    {
+        if (! $refraksi) {
+            return '';
+        }
+        if ($refraksi->soap_o) {
+            return trim($refraksi->soap_o);
+        }
+        $parts = [];
+        if ($refraksi->visus_akhir_od || $refraksi->visus_akhir_os) {
+            $parts[] = 'Visus OD ' . ($refraksi->visus_akhir_od ?? '-') . ' / OS ' . ($refraksi->visus_akhir_os ?? '-');
+        }
+        $rx = function ($sph, $cyl, $axis, $add) {
+            if ($sph === null && $cyl === null && $axis === null && $add === null) {
+                return '';
+            }
+            $s = $sph !== null ? 'S' . ($sph >= 0 ? '+' : '') . $sph : '';
+            $c = $cyl !== null ? ' C' . ($cyl >= 0 ? '+' : '') . $cyl : '';
+            $a = $axis !== null ? " x{$axis}" : '';
+            $d = $add !== null ? " Add {$add}" : '';
+            return trim($s . $c . $a . $d);
+        };
+        $rxOd = $rx($refraksi->refraksi_subjektif_od_sph, $refraksi->refraksi_subjektif_od_cyl, $refraksi->refraksi_subjektif_od_axis, $refraksi->add_power_od);
+        $rxOs = $rx($refraksi->refraksi_subjektif_os_sph, $refraksi->refraksi_subjektif_os_cyl, $refraksi->refraksi_subjektif_os_axis, $refraksi->add_power_os);
+        if ($rxOd || $rxOs) {
+            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '-') . ' | OS ' . ($rxOs ?: '-');
+        }
+        if ($refraksi->iop_od || $refraksi->iop_os) {
+            $parts[] = 'TIO OD ' . ($refraksi->iop_od ?? '-') . ' / OS ' . ($refraksi->iop_os ?? '-') . ' mmHg' . ($refraksi->iop_method ? " ({$refraksi->iop_method})" : '');
+        }
+        return implode("\n", $parts);
     }
 
     public function updateResumeMedis(string $id, array $data): MedicalResume

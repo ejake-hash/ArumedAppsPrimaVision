@@ -210,6 +210,19 @@ export const useAdmisiStore = defineStore('admisi', () => {
     }
   }
 
+  // Ubah penjamin / tipe kunjungan (sekaligus pola bayar). Backend menolak bila
+  // billing sudah dikomit. Return visit terbaru; caller boleh refetch list.
+  async function updatePenjamin(visitId, payload) {
+    try {
+      const { data } = await admisiApi.updatePenjamin(visitId, payload)
+      return data.data
+    } catch (err) {
+      const e = new Error(err.response?.data?.message ?? 'Gagal mengubah penjamin')
+      e.errors = err.response?.data?.errors ?? null
+      throw e
+    }
+  }
+
   // ─── Actions: Patient Search & Registration ────────────────────────────────────
 
   async function cariPasien(keyword) {
@@ -469,7 +482,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
     fetchAntrian, panggilAntrian, selesaiAntrian,
 
     // visits
-    fetchVisits, fetchVisitDetail, cancelKunjungan,
+    fetchVisits, fetchVisitDetail, cancelKunjungan, updatePenjamin,
 
     // patient
     cariPasien, fetchPasienDetail, fetchKunjunganPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,

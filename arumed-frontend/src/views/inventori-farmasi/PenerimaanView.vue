@@ -146,11 +146,39 @@ function blankReceipt() {
     supplier_id: '',
     receipt_date: localDateStr(),
     invoice_number: '',
+    payment_method: 'TUNAI',     // TUNAI | KREDIT
+    payment_term_days: '',        // hari (hanya KREDIT)
+    due_date: null,               // diisi backend / preview lokal
     notes: '',
-    total_amount: 0,
+    total_amount: 0,              // Subtotal = Σ subtotal item
+    discount_amount: 0,           // diskon header (Rp)
+    ppn_percent: 11,              // PPN % (default 11)
     items: [],
   }
 }
+
+// ─── Ringkasan finansial faktur ─────────────────────────────────────────
+// DPP = Subtotal − Diskon; PPN = DPP × ppn%; Grand Total = DPP + PPN.
+const fin = computed(() => {
+  const f = receipt.value.form
+  const subtotal = Number(f.total_amount || 0)
+  const discount = Math.min(Math.max(Number(f.discount_amount || 0), 0), subtotal)
+  const dpp      = Math.max(0, subtotal - discount)
+  const ppn      = Math.round(dpp * (Number(f.ppn_percent || 0) / 100) * 100) / 100
+  return { subtotal, discount, dpp, ppn, grand: Math.round((dpp + ppn) * 100) / 100 }
+})
+
+// Preview jatuh tempo (KREDIT) dari tanggal terima + jangka waktu.
+const dueDatePreview = computed(() => {
+  const f = receipt.value.form
+  if (f.payment_method !== 'KREDIT') return null
+  const days = Number(f.payment_term_days || 0)
+  if (!f.receipt_date || days <= 0) return null
+  const d = new Date(f.receipt_date + 'T00:00:00')
+  if (Number.isNaN(d.getTime())) return null
+  d.setDate(d.getDate() + days)
+  return formatDate(localDateStr(d))
+})
 
 async function startReceiptFromPo(po) {
   closePoPicker()
@@ -207,8 +235,13 @@ async function openReceiptView(row) {
       supplier_id: grn.supplier_id,
       receipt_date: grn.receipt_date,
       invoice_number: grn.invoice_number ?? '',
+      payment_method: grn.payment_method ?? 'TUNAI',
+      payment_term_days: grn.payment_term_days ?? '',
+      due_date: grn.due_date ?? null,
       notes: grn.notes ?? '',
       total_amount: grn.total_amount,
+      discount_amount: grn.discount_amount ?? 0,
+      ppn_percent: grn.ppn_percent ?? 0,
       items: grn.items.map((it) => ({ ...it, _key: crypto.randomUUID() })),
     }
   } catch (e) {
@@ -378,6 +411,10 @@ async function submit() {
     showToast('w', 'Supplier wajib dipilih.')
     return
   }
+  if (receipt.value.form.payment_method === 'KREDIT' && Number(receipt.value.form.payment_term_days || 0) <= 0) {
+    showToast('w', 'Jangka waktu (hari) wajib diisi untuk pembayaran kredit.')
+    return
+  }
   for (const [idx, it] of included.entries()) {
     if (!it.item_id) { showToast('w', `Baris #${idx + 1}: item belum dipilih`); return }
     if (Number(it.qty_received) <= 0) { showToast('w', `Baris #${idx + 1}: qty harus > 0`); return }
@@ -395,6 +432,12 @@ async function submit() {
       supplier_id: receipt.value.form.supplier_id,
       receipt_date: receipt.value.form.receipt_date,
       invoice_number: receipt.value.form.invoice_number || null,
+      payment_method: receipt.value.form.payment_method || 'TUNAI',
+      payment_term_days: receipt.value.form.payment_method === 'KREDIT'
+        ? Number(receipt.value.form.payment_term_days || 0)
+        : null,
+      discount_amount: Number(receipt.value.form.discount_amount || 0),
+      ppn_percent: Number(receipt.value.form.ppn_percent || 0),
       notes: receipt.value.form.notes || null,
       items: included.map((it) => ({
         po_item_id: it.po_item_id || null,
@@ -483,14 +526,15 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
             <th>Supplier</th>
             <th>PO Terkait</th>
             <th>Invoice</th>
-            <th class="r">Total</th>
+            <th>Pembayaran</th>
+            <th class="r">Grand Total</th>
             <th class="c">Aksi</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="8" class="grn-state">Memuat…</td></tr>
-          <tr v-else-if="error"><td colspan="8" class="grn-state grn-state-error">{{ error }}</td></tr>
-          <tr v-else-if="items.length === 0"><td colspan="8" class="grn-state">Belum ada penerimaan.</td></tr>
+          <tr v-if="loading"><td colspan="9" class="grn-state">Memuat…</td></tr>
+          <tr v-else-if="error"><td colspan="9" class="grn-state grn-state-error">{{ error }}</td></tr>
+          <tr v-else-if="items.length === 0"><td colspan="9" class="grn-state">Belum ada penerimaan.</td></tr>
           <tr v-for="(grn, idx) in items" :key="grn.id" v-else>
             <td class="c grn-rownum">{{ (meta.current_page - 1) * meta.per_page + idx + 1 }}</td>
             <td><strong>{{ grn.grn_number }}</strong></td>
@@ -501,7 +545,15 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
               <span v-else class="grn-direct-tag">Direct</span>
             </td>
             <td>{{ grn.invoice_number ?? '—' }}</td>
-            <td class="r">{{ formatRp(grn.total_amount) }}</td>
+            <td>
+              <span class="grn-pay-tag" :class="grn.payment_method === 'KREDIT' ? 'pay-kredit' : 'pay-tunai'">
+                {{ grn.payment_method === 'KREDIT' ? 'Kredit' : 'Tunai' }}
+              </span>
+              <span v-if="grn.payment_method === 'KREDIT' && grn.due_date" class="grn-due-cell">
+                j.t. {{ formatDate(grn.due_date) }}
+              </span>
+            </td>
+            <td class="r">{{ formatRp(grn.grand_total ?? grn.total_amount) }}</td>
             <td class="c grn-actions-cell">
               <button class="grn-icon-btn" title="Lihat detail" @click="openReceiptView(grn)">
                 <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -618,6 +670,21 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
                 <label>PO Terkait</label>
                 <input type="text" :value="receipt.fromPo?.po_number || receipt.form.po_number || '— Direct —'" disabled />
               </div>
+              <div class="grn-field">
+                <label>Jenis Pembayaran</label>
+                <select v-model="receipt.form.payment_method" :disabled="receipt.mode === 'view'">
+                  <option value="TUNAI">Tunai</option>
+                  <option value="KREDIT">Kredit / Tempo</option>
+                </select>
+              </div>
+              <div v-if="receipt.form.payment_method === 'KREDIT'" class="grn-field">
+                <label>Jangka Waktu (hari) <span class="req">*</span></label>
+                <input type="number" min="1" step="1" v-model.number="receipt.form.payment_term_days"
+                       :disabled="receipt.mode === 'view'" placeholder="mis. 30" />
+                <span v-if="dueDatePreview || receipt.form.due_date" class="grn-due-hint">
+                  Jatuh tempo: <strong>{{ dueDatePreview || formatDate(receipt.form.due_date) }}</strong>
+                </span>
+              </div>
               <div class="grn-field grn-field-full">
                 <label>Catatan</label>
                 <textarea v-model="receipt.form.notes" :disabled="receipt.mode === 'view'" rows="2"></textarea>
@@ -722,12 +789,45 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
               </tbody>
               <tfoot>
                 <tr>
-                  <td :colspan="receipt.mode === 'po' ? 8 : 7" class="r"><strong>Total Penerimaan</strong></td>
-                  <td class="r"><strong>{{ formatRp(receipt.form.total_amount) }}</strong></td>
+                  <td :colspan="receipt.mode === 'po' ? 8 : 7" class="r"><strong>Subtotal</strong></td>
+                  <td class="r"><strong>{{ formatRp(fin.subtotal) }}</strong></td>
                   <td v-if="receipt.mode === 'direct'"></td>
                 </tr>
               </tfoot>
             </table>
+
+            <!-- Ringkasan faktur: Diskon / PPN / Grand Total -->
+            <div class="grn-fin">
+              <div class="grn-fin-row">
+                <span class="grn-fin-lbl">Subtotal</span>
+                <span class="grn-fin-val">{{ formatRp(fin.subtotal) }}</span>
+              </div>
+              <div class="grn-fin-row">
+                <span class="grn-fin-lbl">Diskon (Rp)</span>
+                <span class="grn-fin-input">
+                  <input v-if="receipt.mode !== 'view'" type="number" min="0" step="100"
+                         v-model.number="receipt.form.discount_amount" class="grn-fin-field grn-input-r" />
+                  <span v-else>− {{ formatRp(fin.discount) }}</span>
+                </span>
+              </div>
+              <div class="grn-fin-row grn-fin-sub">
+                <span class="grn-fin-lbl">DPP (Dasar Pengenaan Pajak)</span>
+                <span class="grn-fin-val">{{ formatRp(fin.dpp) }}</span>
+              </div>
+              <div class="grn-fin-row">
+                <span class="grn-fin-lbl">
+                  PPN
+                  <input v-if="receipt.mode !== 'view'" type="number" min="0" max="100" step="0.5"
+                         v-model.number="receipt.form.ppn_percent" class="grn-fin-pct grn-input-r" />
+                  <span v-else>{{ receipt.form.ppn_percent }}</span>%
+                </span>
+                <span class="grn-fin-val">+ {{ formatRp(fin.ppn) }}</span>
+              </div>
+              <div class="grn-fin-row grn-fin-grand">
+                <span class="grn-fin-lbl">Grand Total</span>
+                <span class="grn-fin-val">{{ formatRp(fin.grand) }}</span>
+              </div>
+            </div>
           </div>
 
           <div class="grn-modal-foot">
@@ -797,9 +897,9 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 </template>
 
 <style scoped>
-.grn-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
+.grn-wrap { display: flex; flex-direction: column; gap: 1.25rem; width: 100%; max-width: 1280px; margin: 0 auto; }
 
-.grn-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.grn-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .grn-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0; }
 .grn-section-head p { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
 
@@ -821,7 +921,7 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .grn-filter-select { padding: 5px 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); color: var(--td); }
 
 .grn-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; overflow-x: auto; }
-.grn-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.grn-table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: 12.5px; }
 .grn-table th, .grn-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); }
 .grn-table th { background: var(--bs); font-weight: 600; color: var(--tm); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
 .grn-table td.r, .grn-table th.r { text-align: right; }
@@ -905,6 +1005,28 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .grn-input-inline { width: 100%; padding: 4px 6px; border: 1px solid var(--gb); border-radius: 4px; font-size: 12px; background: var(--bc); }
 .grn-input-r { text-align: right; }
 
+/* Jatuh tempo hint pada form */
+.grn-due-hint { font-size: 11px; color: var(--tm); margin-top: 3px; }
+.grn-due-hint strong { color: var(--ga); }
+
+/* Ringkasan faktur (Diskon/PPN/Grand Total) */
+.grn-fin { margin: 14px 0 4px auto; max-width: 360px; display: flex; flex-direction: column; gap: 2px; }
+.grn-fin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 2px; font-size: 13px; color: var(--tm); }
+.grn-fin-lbl { display: flex; align-items: center; gap: 6px; }
+.grn-fin-val { font-variant-numeric: tabular-nums; color: var(--td); }
+.grn-fin-input { display: flex; justify-content: flex-end; }
+.grn-fin-field { width: 130px; padding: 5px 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); color: var(--td); }
+.grn-fin-pct { width: 56px; padding: 3px 6px; border: 1px solid var(--gb); border-radius: 5px; font-size: 12px; background: var(--bc); color: var(--td); }
+.grn-fin-sub { border-top: 1px dashed var(--gb); padding-top: 8px; }
+.grn-fin-grand { border-top: 2px solid var(--gb); margin-top: 4px; padding-top: 9px; font-size: 15px; font-weight: 700; }
+.grn-fin-grand .grn-fin-lbl, .grn-fin-grand .grn-fin-val { color: var(--td); }
+
+/* Tag pembayaran di tabel daftar */
+.grn-pay-tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; }
+.pay-tunai { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
+.pay-kredit { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
+.grn-due-cell { display: block; font-size: 10.5px; color: var(--tu); margin-top: 2px; }
+
 .grn-type-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); }
 .grn-type-tag[data-type="MEDICATION"] { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .grn-type-tag[data-type="BHP"] { background: var(--ib); color: var(--it); border-color: var(--ibd); }
@@ -938,4 +1060,13 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .grn-toast-s { background: var(--st); }
 .grn-toast-e { background: var(--et); }
 .grn-toast-w { background: var(--wt); }
+
+/* Responsif: tabel item bisa scroll horizontal di layar sempit (kolom tetap selaras) */
+.grn-modal-body { overflow-x: auto; }
+.grn-items-table { min-width: 720px; }
+@media (max-width: 760px) {
+  .grn-form-grid { grid-template-columns: 1fr; }
+  .grn-fin { max-width: none; }
+  .grn-pagination { flex-direction: column; gap: 8px; }
+}
 </style>

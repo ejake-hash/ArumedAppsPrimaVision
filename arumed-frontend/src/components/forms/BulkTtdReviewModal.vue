@@ -13,6 +13,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { formTemplateApi } from '@/services/api'
+import LayoutEditor from '@/components/master/form-template/LayoutEditor.vue'
 
 const props = defineProps({
   documents: { type: Array, default: () => [] },
@@ -24,6 +25,14 @@ const previewHtml  = ref('')
 const previewLoading = ref(false)
 const cache        = new Map()       // docId → html
 const reviewed     = ref(new Set())  // docId yang sudah ditelaah
+
+// Edit isi DRAFT inline (tanpa keluar dari alur bulk) — sama seperti modal single.
+// Hanya dokumen DRAFT yang boleh diubah (backend saveDraftContent guard 422).
+const editMode   = ref(false)
+const editHtml   = ref('')
+const editSaving = ref(false)
+const editError  = ref('')
+const isDraft    = computed(() => current.value?.status === 'DRAFT')
 
 // PIN
 const pinMode  = ref(false)
@@ -75,11 +84,43 @@ async function loadPreview(i) {
 
 function goto(i) {
   if (i < 0 || i >= total.value) return
+  // Pindah berkas membatalkan mode edit yang belum disimpan (hindari isi nyasar
+  // ke dokumen lain). Telaah tetap tercatat lewat loadPreview.
+  cancelEdit()
   idx.value = i
   loadPreview(i)
 }
 function prev() { goto(idx.value - 1) }
 function next() { goto(idx.value + 1) }
+
+// ── Edit isi DRAFT inline ─────────────────────────────────────────────
+function startEdit() {
+  editError.value = ''
+  editHtml.value = previewHtml.value
+  editMode.value = true
+}
+function cancelEdit() {
+  editMode.value = false
+  editHtml.value = ''
+  editError.value = ''
+}
+async function saveEdit() {
+  const doc = current.value
+  if (!doc) return
+  editSaving.value = true
+  editError.value = ''
+  try {
+    const { data } = await formTemplateApi.saveDraftContent(doc.id, editHtml.value)
+    const html = data.data?.rendered_html ?? editHtml.value
+    previewHtml.value = html
+    cache.set(doc.id, html)   // sinkron cache supaya Prev/Next tampilkan hasil edit
+    editMode.value = false
+  } catch (e) {
+    editError.value = 'Gagal menyimpan isi: ' + (e.response?.data?.message ?? e.message)
+  } finally {
+    editSaving.value = false
+  }
+}
 
 function openPin() {
   if (!allReviewed.value) return
@@ -148,6 +189,7 @@ onMounted(() => loadPreview(0))
               :key="d.id"
               class="bk-item"
               :class="{ on: i === idx, done: reviewed.has(d.id) }"
+              :disabled="editMode"
               @click="goto(i)"
             >
               <span class="bk-item-name">{{ d.template_name ?? d.template_code }}</span>
@@ -157,12 +199,31 @@ onMounted(() => loadPreview(0))
           </aside>
           <div class="bk-viewer">
             <div class="bk-vnav">
-              <button class="lnk" :disabled="idx <= 0" @click="prev">‹ Sebelumnya</button>
+              <button class="lnk" :disabled="idx <= 0 || editMode" @click="prev">‹ Sebelumnya</button>
               <span class="bk-pos">Berkas {{ idx + 1 }} dari {{ total }}</span>
-              <button class="lnk" :disabled="idx >= total - 1" @click="next">Berikutnya ›</button>
+              <div class="bk-vnav-r">
+                <template v-if="editMode">
+                  <button class="lnk" :disabled="editSaving" @click="cancelEdit">Batal</button>
+                  <button class="btn btn-sm" :disabled="editSaving" @click="saveEdit">
+                    {{ editSaving ? 'Menyimpan…' : 'Simpan' }}
+                  </button>
+                </template>
+                <template v-else>
+                  <button v-if="isDraft" class="lnk" :disabled="previewLoading" @click="startEdit">Edit isi</button>
+                  <button class="lnk" :disabled="idx >= total - 1" @click="next">Berikutnya ›</button>
+                </template>
+              </div>
             </div>
             <div class="bk-doc">
               <div v-if="previewLoading" class="bk-state">Memuat preview…</div>
+              <div v-else-if="editMode" class="bk-edit">
+                <p class="bk-edit-hint">
+                  Edit isi dokumen DRAFT. Perubahan menimpa isi dokumen ini dan lepas
+                  dari data rekam medis.
+                </p>
+                <div v-if="editError" class="bk-edit-err">{{ editError }}</div>
+                <LayoutEditor v-model="editHtml" />
+              </div>
               <div v-else v-html="previewHtml"></div>
             </div>
           </div>
@@ -173,7 +234,7 @@ onMounted(() => loadPreview(0))
             Buka semua berkas dulu untuk mengaktifkan tanda tangan ({{ reviewedCount }}/{{ total }}).
           </span>
           <span class="bk-foot-hint ok" v-else>Semua berkas sudah ditelaah.</span>
-          <button class="btn" :disabled="!allReviewed" @click="openPin">Tandatangani semua</button>
+          <button class="btn" :disabled="!allReviewed || editMode" @click="openPin">Tandatangani semua</button>
         </footer>
       </div>
 
@@ -232,7 +293,8 @@ onMounted(() => loadPreview(0))
   width: 100%; text-align: left; border: 0; border-bottom: 1px solid #f1f2f4; background: transparent;
   padding: 0.65rem 0.9rem; cursor: pointer; position: relative; display: flex; flex-direction: column; gap: 2px;
 }
-.bk-item:hover { background: #fafafa; }
+.bk-item:hover:not(:disabled) { background: #fafafa; }
+.bk-item:disabled { opacity: 0.5; cursor: not-allowed; }
 .bk-item.on { background: #f5f8fb; box-shadow: inset 2px 0 0 var(--accent); }
 .bk-item-name { font-size: 12.5px; font-weight: 500; }
 .bk-item-sub { font-size: 11.5px; color: var(--faint); }
@@ -244,8 +306,14 @@ onMounted(() => loadPreview(0))
   padding: 0.6rem 1.2rem; border-bottom: 1px solid var(--line);
 }
 .bk-pos { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bk-vnav-r { display: flex; align-items: center; gap: 0.9rem; }
 .bk-doc { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
 .bk-state { text-align: center; color: var(--faint); padding: 2rem; }
+
+/* Edit isi DRAFT inline */
+.bk-edit { display: flex; flex-direction: column; gap: 0.75rem; }
+.bk-edit-hint { margin: 0; font-size: 12px; color: var(--muted); }
+.bk-edit-err { font-size: 12.5px; color: var(--danger); }
 
 .bk-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; flex-wrap: wrap;
@@ -269,6 +337,7 @@ onMounted(() => loadPreview(0))
 }
 .btn:hover:not(:disabled) { opacity: 0.88; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-sm { padding: 5px 11px; font-size: 12.5px; }
 .lnk { border: 0; background: none; padding: 4px 2px; cursor: pointer; font-size: 13px; color: var(--accent); font-weight: 500; }
 .lnk:hover:not(:disabled) { text-decoration: underline; }
 .lnk:disabled { opacity: 0.4; cursor: not-allowed; }

@@ -19,9 +19,12 @@ class PatientDocument extends Model
     protected $fillable = [
         'patient_id',
         'visit_id',
+        'bpjs_claim_id',
         'document_type_id',
         'document_number',
         'status',
+        'revision',
+        'supersedes_document_id',
         'created_by_station',
         'pending_signature_roles',
         'signatures',
@@ -35,12 +38,15 @@ class PatientDocument extends Model
         'rendered_html',
         'rendered_html_gz',
         'final_integrity_hash',
+        // Lembar Klaim — tautan ke klaim + sidik koding saat di-generate.
+        'claim_coding_hash',
     ];
 
     protected $casts = [
         'pending_signature_roles' => 'array',
         'signatures'              => 'array',
         'finalized_at'            => 'datetime',
+        'revision'                => 'integer',
     ];
 
     public function patient(): BelongsTo
@@ -56,6 +62,11 @@ class PatientDocument extends Model
     public function documentType(): BelongsTo
     {
         return $this->belongsTo(DocumentType::class);
+    }
+
+    public function bpjsClaim(): BelongsTo
+    {
+        return $this->belongsTo(BpjsClaim::class, 'bpjs_claim_id');
     }
 
     public function verification(): HasOne

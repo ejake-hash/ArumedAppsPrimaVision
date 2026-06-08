@@ -49,6 +49,8 @@ class NurseCpptEntry extends Model
         'edited_by_id',
         'verified_by_id',
         'verified_at',
+        'signed_at',
+        'signed_by_id',
     ];
 
     protected $casts = [
@@ -59,6 +61,7 @@ class NurseCpptEntry extends Model
         'iop_os'      => 'decimal:2',
         'edited_at'   => 'datetime',
         'verified_at' => 'datetime',
+        'signed_at'   => 'datetime',
     ];
 
     public function visit(): BelongsTo
@@ -84,5 +87,10 @@ class NurseCpptEntry extends Model
     public function verifiedBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'verified_by_id');
+    }
+
+    public function signedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'signed_by_id');
     }
 }

@@ -8,6 +8,7 @@ use App\Models\Icd9Code;
 use App\Models\NurseCpptEntry;
 use App\Models\Patient;
 use App\Models\Procedure;
+use App\Models\RefractionRecord;
 use App\Models\SurgeryRecord;
 use App\Models\Visit;
 use Illuminate\Support\Collection;
@@ -216,6 +217,7 @@ class RmeAggregatorService
                     'verified_by' => $e->verifiedBy?->name,
                     'verified_at' => $e->verified_at?->toDateTimeString(),
                     'edited_at'   => $e->edited_at?->toDateTimeString(),
+                    'signed_at'   => $e->signed_at?->toDateTimeString(),
                 ];
             });
 
@@ -248,10 +250,86 @@ class RmeAggregatorService
                 ];
             });
 
-        return $cppt->concat($soap)
-            ->sortByDesc('datetime')
+        // 3) SOAP Refraksionis (refraction_records terfinalisasi) — PPA Refraksionis.
+        //    O di-derive otomatis dari data refraksi (visus/IOP/Rx subjektif).
+        //    Tanda tangan (paraf PIN) = signature_timestamp.
+        $refr = RefractionRecord::with(['examinedBy', 'visit'])
+            ->whereHas('visit', fn ($q) => $q->where('patient_id', $patientId))
+            ->where('is_finalized', true)
+            ->where(function ($q) {
+                $q->whereNotNull('soap_s')->orWhereNotNull('soap_o')->orWhereNotNull('soap_a')->orWhereNotNull('soap_p')
+                  ->orWhereNotNull('visus_akhir_od')->orWhereNotNull('visus_akhir_os');
+            })
+            ->orderByDesc('finalized_at')
+            ->get()
+            ->map(function (RefractionRecord $r) {
+                $v    = $r->visit;
+                $when = $r->finalized_at ?? $r->signature_timestamp ?? $r->examination_date;
+                return [
+                    'kind'        => 'REFRAKSI',
+                    'episode'     => $v?->jenis_pelayanan ?? 'RAJAL',
+                    'visit_id'    => $r->visit_id,
+                    'datetime'    => $when?->toDateTimeString(),
+                    'date'        => ($when ?? $r->created_at)?->toDateString(),
+                    'ppa_role'    => 'REFRAKSIONIS',
+                    'author'      => $r->examinedBy?->name,
+                    'soap'        => [
+                        's' => $r->soap_s,
+                        // O editable tersimpan dipakai apa adanya; bila kosong fallback
+                        // derive dari data refraksi (backward-compat record lama).
+                        'o' => $r->soap_o ?: $this->refraksiObjektif($r),
+                        'a' => $r->soap_a,
+                        'p' => $r->soap_p,
+                    ],
+                    'vitals'      => array_filter([
+                        'visus_od' => $r->visus_akhir_od,
+                        'visus_os' => $r->visus_akhir_os,
+                        'iop_od'   => $r->iop_od,
+                        'iop_os'   => $r->iop_os,
+                    ], fn ($x) => $x !== null && $x !== ''),
+                    'signed_at'   => $r->signature_timestamp?->toDateTimeString(),
+                ];
+            });
+
+        // Urutan: tanggal DESCENDING (hari terbaru dulu). Untuk entri di HARI yang SAMA,
+        // urutan PPA tetap: Dokter → Refraksionis → Perawat (lalu PPA lain). Tie-break
+        // terakhir = datetime desc (entri terbaru dulu) bila PPA sama di hari sama.
+        $ppaRank = ['DOKTER' => 0, 'REFRAKSIONIS' => 1, 'PERAWAT' => 2];
+
+        return $cppt->concat($soap)->concat($refr)
+            ->sort(function ($a, $b) use ($ppaRank) {
+                $da = $a['date'] ?? '';
+                $db = $b['date'] ?? '';
+                if ($da !== $db) {
+                    return $db <=> $da;                       // hari terbaru dulu
+                }
+                $ra = $ppaRank[$a['ppa_role'] ?? ''] ?? 99;
+                $rb = $ppaRank[$b['ppa_role'] ?? ''] ?? 99;
+                if ($ra !== $rb) {
+                    return $ra <=> $rb;                       // Dokter, Refraksionis, Perawat
+                }
+                return ($b['datetime'] ?? '') <=> ($a['datetime'] ?? '');
+            })
             ->values()
             ->all();
+    }
+
+    /** Ringkas Objektif refraksionis (visus akhir + refraksi subjektif + TIO) untuk timeline. */
+    private function refraksiObjektif(RefractionRecord $r): ?string
+    {
+        $parts = [];
+        if ($r->visus_akhir_od || $r->visus_akhir_os) {
+            $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
+        }
+        $rxOd = $this->fmtRx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis, $r->add_power_od);
+        $rxOs = $this->fmtRx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis, $r->add_power_os);
+        if ($rxOd || $rxOs) {
+            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
+        }
+        if ($r->iop_od || $r->iop_os) {
+            $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        }
+        return $parts ? implode("\n", $parts) : null;
     }
 
     /** Ringkas TTV + visus/IOP satu entri CPPT (buang yang kosong). */
@@ -311,8 +389,8 @@ class RmeAggregatorService
                     'autoref_os'      => $this->fmtRx($r->autoref_os_sph, $r->autoref_os_cyl, $r->autoref_os_axis, null),
                     'subjektif_od'    => $this->fmtRx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis, null),
                     'subjektif_os'    => $this->fmtRx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis, null),
-                    'keratometri_od'  => $this->fmtKerato($r->keratometri1_od, $r->keratometri2_od, $r->keratometri_axis_od),
-                    'keratometri_os'  => $this->fmtKerato($r->keratometri1_os, $r->keratometri2_os, $r->keratometri_axis_os),
+                    'keratometri_od'  => $this->fmtKerato($r->keratometri1_od, $r->keratometri2_od, $r->keratometri_axis_od, $r->keratometri_axis2_od),
+                    'keratometri_os'  => $this->fmtKerato($r->keratometri1_os, $r->keratometri2_os, $r->keratometri_axis_os, $r->keratometri_axis2_os),
                     'old_glasses_od'  => $this->fmtRx($r->old_glasses_od_sph, $r->old_glasses_od_cyl, $r->old_glasses_od_axis, $r->old_glasses_add_od),
                     'old_glasses_os'  => $this->fmtRx($r->old_glasses_os_sph, $r->old_glasses_os_cyl, $r->old_glasses_os_axis, $r->old_glasses_add_os),
                     'iop_method'      => $r->iop_method,
@@ -535,12 +613,14 @@ class RmeAggregatorService
         return $s;
     }
 
-    private function fmtKerato($k1, $k2, $axis): ?string
+    private function fmtKerato($k1, $k2, $axis1, $axis2 = null): ?string
     {
         if ($k1 === null && $k2 === null) {
             return null;
         }
-        return trim(($k1 ?? '–') . ' / ' . ($k2 ?? '–') . ($axis !== null ? " @ {$axis}°" : ''));
+        $p1 = ($k1 ?? '–') . ($axis1 !== null ? " @ {$axis1}°" : '');
+        $p2 = ($k2 ?? '–') . ($axis2 !== null ? " @ {$axis2}°" : '');
+        return trim("{$p1} / {$p2}");
     }
 
     private function signed($n): ?string

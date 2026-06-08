@@ -6,6 +6,7 @@ import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/auth'
 import { masterApi, dokterApi, integrasiApi, formTemplateApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 import IolDecisionPanel from '@/components/dokter/IolDecisionPanel.vue'
@@ -62,6 +63,14 @@ const DAY_LABELS = { 1:'Senin', 2:'Selasa', 3:'Rabu', 4:'Kamis', 5:'Jumat', 6:'S
 const qFilter        = ref('waiting')
 const ptypeFilter    = ref('Semua')
 const qSearch        = ref('')
+
+// ─── Panel antrean: ciutkan agar area RME lebih lapang (dinamis, persist) ─────
+const QCKEY = 'dokter.queueCollapsed'
+const queueCollapsed = ref(localStorage.getItem(QCKEY) === '1')
+function toggleQueue() {
+  queueCollapsed.value = !queueCollapsed.value
+  localStorage.setItem(QCKEY, queueCollapsed.value ? '1' : '0')
+}
 const pendingCallIds = ref([])
 const pendingSkipIds = ref([])
 
@@ -100,6 +109,14 @@ function fmtTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
 }
+// Tanggal lahir → DD/MM/YYYY (badge kartu pasien). Null-safe, pad 2 digit.
+function fmtDob(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  if (Number.isNaN(dt.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`
+}
 function fmtRx(sph, cyl, ax) {
   if (sph == null && cyl == null && ax == null) return '—'
   const s = sph != null ? `S${sph >= 0 ? '+' : ''}${sph}` : ''
@@ -113,21 +130,22 @@ function toInt(v) {
   const n = Number(v)
   return Number.isFinite(n) ? Math.round(n) : v
 }
-// Keratometri: "43.50 / 44.00 @ 180°"
-function fmtK(k1, k2, axis) {
+// Keratometri (sinkron RefraksionisView): K1@AxisK1 / K2@AxisK2 → "43.50 @180° / 44.00 @90°"
+function fmtK(k1, k2, ax1, ax2) {
   if (k1 == null && k2 == null) return '—'
-  const ax = axis != null ? ` @ ${axis}°` : ''
-  return `${k1 ?? '—'} / ${k2 ?? '—'}${ax}`
+  const e1 = k1 != null ? `${k1}${ax1 != null ? ` @${ax1}°` : ''}` : '—'
+  const e2 = k2 != null ? `${k2}${ax2 != null ? ` @${ax2}°` : ''}` : '—'
+  return `${e1} / ${e2}`
 }
 // ADD power: "+2.00" atau "—"
 function fmtAdd(v) { return v != null ? `+${v}` : '—' }
-// Kacamata lama: Rx (+ ADD bila ada)
-function fmtGlasses(sph, cyl, ax, add) {
+// Kacamata lama: Rx (+ ADD + Visus presenting bila ada) — sinkron RefraksionisView.
+function fmtGlasses(sph, cyl, ax, add, visus) {
   const base = fmtRx(sph, cyl, ax)
   const a = add != null ? `Add +${add}` : ''
-  if (base === '—' && !a) return '—'
-  if (base === '—') return a
-  return a ? `${base} · ${a}` : base
+  const vis = (visus != null && visus !== '' && visus !== '—') ? `Visus ${visus}` : ''
+  const parts = [base !== '—' ? base : null, a || null, vis || null].filter(Boolean)
+  return parts.length ? parts.join(' · ') : '—'
 }
 
 // Map satu baris queue dari API → bentuk yang dipakai template.
@@ -150,6 +168,7 @@ function mapPatient(q) {
     photo:   p.photo_url ?? null,
     nik:     p.nik ?? '—',
     age:     p.age ?? calcAge(p.date_of_birth) ?? '—',
+    dob:     p.date_of_birth ?? null,
     gender:  p.gender ?? '—',
     address: p.address ?? '',
     classification: v.classification ?? '',
@@ -176,7 +195,15 @@ function mapPatient(q) {
       suhu:    nurse?.suhu       ?? '—',
       pain:    nurse?.pain_scale ?? 0,
       kgd:     nurse?.kgd        ?? '—',
+      // Sinkron form Triase (PerawatView) yang sudah diperluas: respirasi + antropometri.
+      resp:    nurse?.respirasi    ?? '—',
+      bb:      nurse?.berat_badan  ?? '—',
+      tb:      nurse?.tinggi_badan ?? '—',
+      bmi:     nurse?.bmi          ?? '—',
       keluhan: nurse?.chief_complaint ?? '—',
+      rps:     nurse?.rps ?? '',
+      notes:   nurse?.assessment_notes ?? '',
+      examiner: nurse?.assessed_by?.name ?? null,   // pemeriksa triase (Perawat)
     },
     rd: {
       ucva_od: refr?.visus_awal_od  ?? '—',
@@ -187,20 +214,25 @@ function mapPatient(q) {
       bcva_os: refr?.visus_akhir_os ?? '—',
       autoref_od: fmtRx(refr?.autoref_od_sph, refr?.autoref_od_cyl, refr?.autoref_od_axis),
       autoref_os: fmtRx(refr?.autoref_os_sph, refr?.autoref_os_cyl, refr?.autoref_os_axis),
-      kerato_od: fmtK(refr?.keratometri1_od, refr?.keratometri2_od, refr?.keratometri_axis_od),
-      kerato_os: fmtK(refr?.keratometri1_os, refr?.keratometri2_os, refr?.keratometri_axis_os),
+      kerato_od: fmtK(refr?.keratometri1_od, refr?.keratometri2_od, refr?.keratometri_axis_od, refr?.keratometri_axis2_od),
+      kerato_os: fmtK(refr?.keratometri1_os, refr?.keratometri2_os, refr?.keratometri_axis_os, refr?.keratometri_axis2_os),
       rx_od:   fmtRx(refr?.refraksi_subjektif_od_sph, refr?.refraksi_subjektif_od_cyl, refr?.refraksi_subjektif_od_axis),
       rx_os:   fmtRx(refr?.refraksi_subjektif_os_sph, refr?.refraksi_subjektif_os_cyl, refr?.refraksi_subjektif_os_axis),
       add_od:  fmtAdd(refr?.add_power_od),
       add_os:  fmtAdd(refr?.add_power_os),
-      old_od:  fmtGlasses(refr?.old_glasses_od_sph, refr?.old_glasses_od_cyl, refr?.old_glasses_od_axis, refr?.old_glasses_add_od),
-      old_os:  fmtGlasses(refr?.old_glasses_os_sph, refr?.old_glasses_os_cyl, refr?.old_glasses_os_axis, refr?.old_glasses_add_os),
+      old_od:  fmtGlasses(refr?.old_glasses_od_sph, refr?.old_glasses_od_cyl, refr?.old_glasses_od_axis, refr?.old_glasses_add_od, refr?.old_glasses_visus_od),
+      old_os:  fmtGlasses(refr?.old_glasses_os_sph, refr?.old_glasses_os_cyl, refr?.old_glasses_os_axis, refr?.old_glasses_add_os, refr?.old_glasses_visus_os),
       iop_od:  refr?.iop_od ?? '—',
       iop_os:  refr?.iop_os ?? '—',
       iop_method: refr?.iop_method ?? '',
+      // Tonometri berulang (manual, dinamis) — ringkas jadi catatan "ulang OD/OS".
+      iop_extra: Array.isArray(refr?.iop_extra_readings) && refr.iop_extra_readings.length
+        ? 'ulang ' + refr.iop_extra_readings.map((x) => `${x?.od ?? '–'}/${x?.os ?? '–'}`).join(', ')
+        : '',
       pd:      refr?.pd_distance ?? '',
       perception: refr?.perception_type ?? '',
       note:    refr?.clinical_notes ?? '',
+      examiner: refr?.examined_by?.name ?? null,   // pemeriksa refraksi (Refraksionis)
     },
     // List berikut belum di-fetch dari API saat antrian list (perlu separate call ke
     // /dokter/kunjungan/{visitId}). Default kosong supaya template tidak crash.
@@ -220,17 +252,21 @@ const selP     = computed(() => store.selectedQueue ? mapPatient(store.selectedQ
 const roRows = computed(() => {
   const r = selP.value?.rd
   if (!r) return []
+  // Susunan mengikuti formulir RefraksionisView:
+  //   Autoref + Keratometri → Tonometri (IOP) → Visus Awal → Pinhole →
+  //   Refraksi Subjektif → Adisi → Visus Akhir → Kacamata Lama.
+  const iopNote = [r.iop_method || null, r.iop_extra || null].filter(Boolean).join(' · ') || null
   const rows = [
     { label: 'Autoref',            od: r.autoref_od, os: r.autoref_os, always: true },
     { label: 'Keratometri',        od: r.kerato_od,  os: r.kerato_os,  always: true },
-    { label: 'IOP', unit: 'mmHg', note: r.iop_method || null, cls: 'strong',
+    { label: 'IOP', unit: 'mmHg', note: iopNote, cls: 'strong',
       od: toInt(r.iop_od), os: toInt(r.iop_os),
       odWarn: r.iop_od >= 22, osWarn: r.iop_os >= 22, always: true },
     { label: 'Visus Awal (UCVA)',  od: r.ucva_od,    os: r.ucva_os,    cls: 'strong', always: true },
-    { label: 'Visus Akhir (BCVA)', od: r.bcva_od,    os: r.bcva_os,    cls: 'strong success', always: true },
     { label: 'Pinhole',            od: r.pinhole_od, os: r.pinhole_os },
     { label: 'Refraksi Subjektif', od: r.rx_od,      os: r.rx_os,      cls: 'strong', always: true },
     { label: 'Adisi (ADD)',        od: r.add_od,     os: r.add_os },
+    { label: 'Visus Akhir (BCVA)', od: r.bcva_od,    os: r.bcva_os,    cls: 'strong success', always: true },
     { label: 'Kacamata Lama',      od: r.old_od,     os: r.old_os },
   ]
   return rows.filter((row) => row.always || row.od !== '—' || row.os !== '—')
@@ -323,9 +359,9 @@ const currentSoapPage = computed(() => soapPages.value[soapPageIdx.value] ?? soa
 // Label di bawah tanggal: idx 0 (descending) = kunjungan terakhir, sisanya = sebelumnya.
 const soapPageLabel = computed(() => (soapPageIdx.value === 0 ? 'Kunjungan terakhir' : 'Kunjungan sebelumnya'))
 
-// Muat riwayat SOAP/CPPT tiap kali pasien (bukan sekadar kunjungan) berganti.
-watch(() => selP.value?.patientId, loadSoapHistory, { immediate: true })
-watch(() => selP.value?.patientId, loadCpptHistory, { immediate: true })
+// Riwayat SOAP/CPPT lintas-episode kini ditangani komponen <CpptHistoryCard>
+// (fetch sendiri via dokterApi.riwayatCppt) — watcher lama dihapus agar tidak
+// double-fetch. Ref/fungsi loadSoapHistory/loadCpptHistory dibiarkan (tak dipakai).
 
 const tab = ref('data') // 'data' | 'pemeriksaan' | 'tindakan' | 'soap'
 const dw = ref(null)
@@ -371,6 +407,7 @@ function resetFormState() {
   finalized.value = false
   resetExam()
   tab2Exists.value = false
+  examFinalized.value = false
   resetSoap()
   tindakanList.value = []
   tindakanSearch.value = ''
@@ -383,6 +420,8 @@ function resetFormState() {
   tab3Sent.value = false
   showSendKasirModal.value = false
   sendingToKasir.value = false
+  showFinalizeWarn.value = false
+  finalizeMissing.value = []
   diagnosisUtama.value = null
   diagnosisSekunder.value = []
   diagnosisText.value = ''
@@ -464,6 +503,12 @@ async function skipPt(p) {
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(async () => {
+  // Layar sempit (≤1400px): ciutkan otomatis antrean agar RME lapang — kecuali
+  // pengguna sudah pernah memilih sendiri (preferensi di localStorage dihormati).
+  if (localStorage.getItem(QCKEY) === null && typeof window !== 'undefined'
+      && window.matchMedia('(max-width: 1400px)').matches) {
+    queueCollapsed.value = true
+  }
   await store.fetchAntrian()
   store.startPolling()
   // Load jadwal dokter agar "Status Saya Hari Ini" terisi
@@ -476,6 +521,8 @@ onMounted(async () => {
   loadSurgeryPackages()
   // Load master paket pemeriksaan (untuk Tab Tindakan)
   loadExamPackages()
+  // Load favorit ICD-10/ICD-9 dari master (kode mata) untuk tampil instan + cache nama
+  loadIcdFavorites()
   // Tutup dropdown pencarian tindakan saat klik di luar
   document.addEventListener('mousedown', _handleTindakanClickOutside)
 })
@@ -488,9 +535,10 @@ onUnmounted(() => {
 
 // ── TAB 2: PEMERIKSAAN MATA ──────────────────────────────────────────────────
 
-const segmenOpts = ['Normal', 'Tidak Normal', 'Tidak Dapat Dinilai']
-
+// Segmen kini TEXT bebas (dokter ketik temuan sendiri). Palpebra ditambah di
+// indeks 0 segmen anterior (di atas Kornea). +2 catatan bebas (sa_notes/sp_notes).
 const saFields = [
+  { key: 'palpebra', label: 'Palpebra' },
   { key: 'kornea', label: 'Kornea' },
   { key: 'coa', label: 'COA' },
   { key: 'iris', label: 'Iris' },
@@ -507,9 +555,10 @@ const spFields = [
 function makeExam() {
   return {
     anamnese: '',
-    sa: { kornea: { od: '', os: '' }, coa: { od: '', os: '' }, iris: { od: '', os: '' }, pupil: { od: '', os: '' }, lensa: { od: '', os: '' } },
+    sa: { palpebra: { od: '', os: '' }, kornea: { od: '', os: '' }, coa: { od: '', os: '' }, iris: { od: '', os: '' }, pupil: { od: '', os: '' }, lensa: { od: '', os: '' } },
     sp: { papil: { od: '', os: '' }, macula: { od: '', os: '' }, retina: { od: '', os: '' }, vitreous: { od: '', os: '' } },
-    slitlamp_notes: '',
+    sa_notes: '',
+    sp_notes: '',
   }
 }
 
@@ -520,10 +569,25 @@ function resetExam() { exam.value = makeExam() }
 // Menentukan POST (create) vs PUT (update) saat menyimpan Tab 2.
 const tab2Exists = ref(false)
 
-// Flatten state `exam` → kolom backend (sa_kornea_od, sp_papil_os, ...).
-// Segmen kosong dikirim `null` (BUKAN ''), karena rule `in:` menolak string kosong.
+// is_finalized record DoctorExamination → sumber kunci RME (BUKAN status antrean).
+// Edit-belakangan: pasien yang sudah "Kirim ke Kasir" (antrean COMPLETED) tetap
+// editable selama belum finalisasi. Lihat isLocked.
+const examFinalized = ref(false)
+
+// Flatten state `exam` → kolom backend (sa_kornea_od, sp_papil_os, ...). Sejak
+// Tab 2 juga memegang Diagnosis (ICD-10) + Prosedur (ICD-9), payload menyertakan
+// field diagnosis (nullable saat Simpan; wajib hanya di Finalisasi). Segmen kosong
+// dikirim `null` agar tidak menyimpan string kosong.
 function buildTab2Payload() {
-  const out = { anamnese: exam.value.anamnese || null, slitlamp_notes: exam.value.slitlamp_notes || null }
+  const out = {
+    anamnese: exam.value.anamnese || null,
+    sa_notes: exam.value.sa_notes || null,
+    sp_notes: exam.value.sp_notes || null,
+    diagnosis_utama:    diagnosisUtama.value?.code || null,
+    diagnosis_sekunder: diagnosisSekunder.value.map((d) => d.code),
+    diagnosis_text:     diagnosisText.value?.trim() || null,
+    tindakan_codes:     icd9List.value.map((t) => t.code),
+  }
   for (const f of saFields) {
     out[`sa_${f.key}_od`] = exam.value.sa[f.key].od || null
     out[`sa_${f.key}_os`] = exam.value.sa[f.key].os || null
@@ -535,19 +599,19 @@ function buildTab2Payload() {
   return out
 }
 
-// Prefill `exam` dari record backend saat kunjungan dipilih (read-back).
+// Prefill `exam` + diagnosis dari record backend saat kunjungan dipilih (read-back).
 async function loadTab2() {
   const visitId = selP.value?.visitId
-  if (!visitId) { tab2Exists.value = false; return }
+  if (!visitId) { tab2Exists.value = false; examFinalized.value = false; return }
   try {
     const { data } = await dokterApi.showTab2(visitId)
     const e = data.data
-    if (!e) { tab2Exists.value = false; return }
+    if (!e) { tab2Exists.value = false; examFinalized.value = false; return }
     tab2Exists.value = true
+    examFinalized.value = !!e.is_finalized
     exam.value.anamnese = e.anamnese ?? ''
-    exam.value.slitlamp_notes = e.slitlamp_notes ?? ''
-    // Diagnosa naratif (Tab 4) — pulihkan agar tampil saat buka ulang / read-only.
-    if (e.diagnosis_text != null) diagnosisText.value = e.diagnosis_text
+    exam.value.sa_notes = e.sa_notes ?? ''
+    exam.value.sp_notes = e.sp_notes ?? ''
     for (const f of saFields) {
       exam.value.sa[f.key].od = e[`sa_${f.key}_od`] ?? ''
       exam.value.sa[f.key].os = e[`sa_${f.key}_os`] ?? ''
@@ -556,7 +620,65 @@ async function loadTab2() {
       exam.value.sp[f.key].od = e[`sp_${f.key}_od`] ?? ''
       exam.value.sp[f.key].os = e[`sp_${f.key}_os`] ?? ''
     }
-  } catch { tab2Exists.value = false }
+    // Diagnosis (ICD-10) + Prosedur (ICD-9) kini milik Tab 2 → hidrasi dari record.
+    diagnosisText.value = e.diagnosis_text ?? ''
+    diagnosisUtama.value = e.diagnosis_utama ? await resolveIcd10(e.diagnosis_utama) : null
+    diagnosisSekunder.value = Array.isArray(e.diagnosis_sekunder)
+      ? (await Promise.all(e.diagnosis_sekunder.map(resolveIcd10))).filter(Boolean) : []
+    icd9List.value = Array.isArray(e.tindakan_codes)
+      ? (await Promise.all(e.tindakan_codes.map(resolveIcd9))).filter(Boolean) : []
+    // Planning (Tab 3) sudah dikomit saat Kirim ke Kasir → hidrasi agar gate
+    // Finalisasi lolos saat buka ulang (lengkapi RME belakangan). Detail jadwal
+    // bedah (tanggal/jam) tak ikut showTab2 — cukup planning + paket untuk display.
+    planning.value = e.planning ? (PLANNING_ENUM_REV[e.planning] ?? '') : ''
+    if (e.surgery_package_id) surgeryPkg.value = e.surgery_package_id
+  } catch { tab2Exists.value = false; examFinalized.value = false }
+}
+
+// Pulihkan {code,name} dari kode tersimpan. Cek cache lokal dulu; kalau tak ada,
+// query master ICD backend (tabel penuh) supaya NAMA muncul, bukan cuma kode.
+// Fallback name=code hanya bila benar-benar tak ketemu / offline.
+function mapIcd10Row(r) { return { code: r.code, name: r.indonesian_description || r.description || r.code } }
+function mapIcd9Row(r)  { return { code: r.code, name: r.indonesian_description || r.description || r.code } }
+
+// Muat kode mata dari MASTER ICD sebagai favorit/cache instan (dipanggil saat mount).
+// Mengganti daftar hardcoded → semua kode yang dipilih dijamin ada di master.
+async function loadIcdFavorites() {
+  try {
+    const { data } = await masterApi.icd10.list({ eye_related: 1, per_page: 300 })
+    const rows = data.data?.data ?? data.data ?? []
+    if (rows.length) icd10DB = rows.map(mapIcd10Row)
+  } catch { /* offline → cache tetap kosong, search master tetap jalan saat online */ }
+  try {
+    const { data } = await masterApi.icd9.list({ eye_related: 1, per_page: 300 })
+    const rows = data.data?.data ?? data.data ?? []
+    if (rows.length) icd9DB = rows.map(mapIcd9Row)
+  } catch { /* offline */ }
+}
+
+async function resolveIcd10(code) {
+  if (!code) return null
+  const hit = icd10DB.find((d) => d.code === code)
+  if (hit) return { ...hit }
+  try {
+    const { data } = await masterApi.icd10.list({ search: code, per_page: 10 })
+    const rows = data.data?.data ?? data.data ?? []
+    const m = rows.find((r) => r.code === code)
+    if (m) { const obj = mapIcd10Row(m); icd10DB.push(obj); return obj }
+  } catch { /* offline → fallback */ }
+  return { code, name: code }
+}
+async function resolveIcd9(code) {
+  if (!code) return null
+  const hit = icd9DB.find((t) => t.code === code)
+  if (hit) return { ...hit }
+  try {
+    const { data } = await masterApi.icd9.list({ search: code, per_page: 10 })
+    const rows = data.data?.data ?? data.data ?? []
+    const m = rows.find((r) => r.code === code)
+    if (m) { const obj = mapIcd9Row(m); icd9DB.push(obj); return obj }
+  } catch { /* offline → fallback */ }
+  return { code, name: code }
 }
 
 // Simpan Tab 2: PUT bila record sudah ada, POST bila belum. Bila POST gagal
@@ -577,6 +699,22 @@ async function saveTab2() {
       await dokterApi.updateTab2(visitId, payload)
       tab2Exists.value = true
     } else { throw e }
+  }
+}
+
+// Tombol "Simpan Pemeriksaan & Diagnosis" (Tab 2) — wrap saveTab2 dgn loading + toast.
+const savingTab2 = ref(false)
+async function simpanTab2() {
+  if (savingTab2.value) return
+  if (!selP.value?.visitId) { toast('e', 'Kunjungan tidak ditemukan'); return }
+  savingTab2.value = true
+  try {
+    await saveTab2()
+    toast('s', 'Pemeriksaan & diagnosis tersimpan')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menyimpan pemeriksaan')
+  } finally {
+    savingTab2.value = false
   }
 }
 
@@ -795,12 +933,7 @@ watch(() => selP.value?.patientId, loadPenunjangHistory, { immediate: true })
 // `tindakanList` & `rxList`) agar tidak kena temporal dead zone saat
 // `immediate: true` dieksekusi pada setup.
 
-function segClass(val) {
-  if (val === 'Normal') return 'seg-ok'
-  if (val === 'Tidak Normal') return 'seg-warn'
-  if (val === 'Tidak Dapat Dinilai') return 'seg-muted'
-  return ''
-}
+// (segClass dihapus — segmen kini input teks bebas, bukan enum berwarna.)
 
 // ── TAB 3: TINDAKAN (Master Tarif Tindakan) ─────────────────────────────────
 
@@ -998,22 +1131,59 @@ async function saveResep() {
 // Di-skip saat perubahan berasal dari load (prefill), bukan ketikan dokter.
 watch([kasirNote, pharmacyNote], () => { if (!_loadingResep) scheduleSaveResep() })
 
-// Tombol "Simpan & Kirim ke Kasir": flush autosave kedua endpoint lalu lock Tab 3.
-// Data fisik baru masuk ke station Kasir saat doFinalize() menjalankan
-// store.selesaiAntrian (advance queue) — di sini hanya komitmen UI/UX.
+// Bangun payload PLANNING (Tab 3) — dipakai Kirim ke Kasir & sebagai jaring
+// pengaman di Finalisasi. Tanpa diagnosis/SOAP (itu milik Tab 2 / Finalisasi).
+function buildPlanningPayload() {
+  const p = planning.value
+  return {
+    planning:           p ? (PLANNING_ENUM[p] ?? p) : null,
+    surgery_package_id: p === 'BEDAH' ? (surgeryPkg.value || null) : null,
+    location_type:      p === 'BEDAH' ? surgeryLocation.value : null,
+    surgery_date:       p === 'BEDAH' ? (surgeryDate.value || null) : null,
+    surgery_time:       p === 'BEDAH' ? (surgeryTime.value || null) : null,
+    requires_inpatient: p === 'BEDAH' && surgeryLocation.value === 'RUANG_BEDAH' ? requiresInpatient.value : false,
+    external_referral_facility: p === 'RUJUK' && !isBpjsPatient.value ? (rujukFaskes.value || null) : null,
+    external_referral_reason:   p === 'RUJUK' && !isBpjsPatient.value ? (rujukAlasan.value || null) : null,
+    follow_up_date:     p === 'PULANG' && tanggalKontrol.value ? tanggalKontrol.value : null,
+    follow_up_reason:   p === 'PULANG' && tanggalKontrol.value ? (rujukAlasan.value || null) : null,
+  }
+}
+
+// Kirim ke Kasir: simpan tindakan + resep + planning, MAJUKAN antrean (backend),
+// lalu kunci Tab 3. RME (segmen/diagnosis/SOAP) tetap bisa dilengkapi belakangan
+// lewat Finalisasi. Mengganti alur lama yang advance baru terjadi di finalisasi.
 async function konfirmKirimKasir() {
   if (sendingToKasir.value) return
+  // BEDAH: paket (Ruang Bedah) + tanggal wajib di sini — titik pembuatan jadwal bedah.
+  if (planning.value === 'BEDAH') {
+    if (surgeryLocation.value === 'RUANG_BEDAH' && !surgeryPkg.value) {
+      toast('e', 'Pilih paket bedah terlebih dahulu'); return
+    }
+    if (!surgeryDate.value) {
+      toast('e', surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Isi tanggal rencana tindakan' : 'Isi tanggal rencana bedah'); return
+    }
+  }
+  const visitId = selP.value?.visitId
+  if (!visitId) { toast('e', 'Kunjungan tidak ditemukan'); return }
+
   sendingToKasir.value = true
   try {
     clearTimeout(_saveTindakanTimer)
     clearTimeout(_saveResepTimer)
     await saveTindakan()
     await saveResep()
+    // Simpan planning + majukan antrean (DOKTER → KASIR/BEDAH/PENUNJANG — backend).
+    const { data } = await dokterApi.kirimKasir(visitId, buildPlanningPayload())
+    const next = data.data?.advance?.next_station
     tab3Sent.value = true
     showSendKasirModal.value = false
-    toast('s', 'Tindakan & resep tersimpan. Lanjut ke SOAP & finalisasi untuk mengirim ke kasir.')
+    // Antrean DOKTER kini COMPLETED di server → refresh agar pindah ke filter "Selesai".
+    await store.fetchAntrian()
+    toast('s', next
+      ? `Tagihan dikirim — pasien diteruskan ke ${next}. Lengkapi SOAP & finalisasi kapan saja.`
+      : 'Tagihan dikirim ke kasir. Lengkapi SOAP & finalisasi kapan saja.')
   } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal menyimpan data')
+    toast('e', e.response?.data?.message ?? 'Gagal mengirim ke kasir')
   } finally {
     sendingToKasir.value = false
   }
@@ -1031,46 +1201,40 @@ function resetSoap() {
 // Hanya tampilkan item yang punya nilai (bukan null / '—' / string kosong).
 function hasVal(v) { return v != null && v !== '—' && v !== '' }
 
-// Objektif (O) disusun otomatis dari triase/RO + segmen abnormal + catatan slitlamp.
-// Item tanpa nilai tidak dimunculkan (mis. SpO₂/T yang kosong tidak ditampilkan).
+// Objektif (O) DOKTER = HANYA temuan yang dokter periksa sendiri: segmen
+// anterior/posterior + catatan segmen. TTV (Perawat) & Visus/IOP/Rx
+// (Refraksionis) SENGAJA TIDAK dimasukkan — itu milik PPA lain (compliance STARKES:
+// dokter tidak "menampung" data PPA lain ke catatan ber-tanda-tangannya). Data
+// tersebut tetap tampil sebagai panel referensi read-only ("diperiksa oleh X")
+// dan punya entri SOAP ber-paraf sendiri di timeline CPPT terpadu.
 const objectiveText = computed(() => {
   if (!selP.value) return ''
-  const { nd, rd } = selP.value
   const lines = []
 
-  // Tanda vital — hanya yang terisi.
-  const vitals = []
-  if (hasVal(nd.td_s) && hasVal(nd.td_d)) vitals.push(`TD: ${toInt(nd.td_s)}/${toInt(nd.td_d)} mmHg`)
-  if (hasVal(nd.nadi)) vitals.push(`N: ${nd.nadi} bpm`)
-  if (hasVal(nd.spo2)) vitals.push(`SpO₂: ${nd.spo2}%`)
-  if (hasVal(nd.suhu)) vitals.push(`T: ${nd.suhu}°C`)
-  if (hasVal(nd.kgd))  vitals.push(`KGD: ${toInt(nd.kgd)} mg/dL`)
-  if (vitals.length) lines.push(vitals.join(', '))
-
-  // Visus — UCVA/BCVA, hanya baris yang punya nilai pada salah satu mata.
-  const visus = []
-  if (hasVal(rd.ucva_od) || hasVal(rd.ucva_os)) visus.push(`UCVA OD ${rd.ucva_od} / OS ${rd.ucva_os}`)
-  if (hasVal(rd.bcva_od) || hasVal(rd.bcva_os)) visus.push(`BCVA OD ${rd.bcva_od} / OS ${rd.bcva_os}`)
-  if (visus.length) lines.push(`Visus: ${visus.join(' | ')}`)
-
-  // IOP & Rx — tampil hanya bila ada nilai.
-  if (hasVal(rd.iop_od) || hasVal(rd.iop_os)) lines.push(`IOP: OD ${toInt(rd.iop_od)} / OS ${toInt(rd.iop_os)} mmHg`)
-  if (hasVal(rd.rx_od) || hasVal(rd.rx_os)) lines.push(`Rx: OD ${rd.rx_od} | OS ${rd.rx_os}`)
-
-  const segAbn = []
+  // Segmen kini free-text. Hanya tulis MATA yang ada datanya: bila cuma OD terisi
+  // → "Kornea OD edema" (tanpa "/ OS -"); bila keduanya → "Kornea OD x / OS y".
   const collect = (fields, group) => {
+    const parts = []
     for (const f of fields) {
-      const od = group[f.key].od, os = group[f.key].os
-      if ((od && od !== 'Normal') || (os && os !== 'Normal')) {
-        segAbn.push(`${f.label} OD ${od || '-'}/OS ${os || '-'}`)
-      }
+      const od = (group[f.key].od || '').trim(), os = (group[f.key].os || '').trim()
+      const eyes = []
+      if (od) eyes.push(`OD ${od}`)
+      if (os) eyes.push(`OS ${os}`)
+      if (eyes.length) parts.push(`${f.label} ${eyes.join(' / ')}`)
     }
+    return parts
   }
-  collect(saFields, exam.value.sa)
-  collect(spFields, exam.value.sp)
-  if (segAbn.length) lines.push(`Segmen abnormal: ${segAbn.join('; ')}`)
-  const sl = exam.value.slitlamp_notes?.trim()
-  if (sl) lines.push(`Slitlamp: ${sl}`)
+
+  const ant = collect(saFields, exam.value.sa)
+  if (ant.length) lines.push('Segmen anterior: ' + ant.join('; '))
+  const an = exam.value.sa_notes?.trim()
+  if (an) lines.push(`Catatan anterior: ${an}`)
+
+  const post = collect(spFields, exam.value.sp)
+  if (post.length) lines.push('Segmen posterior: ' + post.join('; '))
+  const pn = exam.value.sp_notes?.trim()
+  if (pn) lines.push(`Catatan posterior: ${pn}`)
+
   return lines.join('\n')
 })
 
@@ -1098,27 +1262,38 @@ const diagnosisSekunder = ref([])
 const diagnosisText = ref('')   // diagnosa naratif (teks bebas) saat ragu kode ICD
 const dxSearch = ref('')
 const dxSearchSek = ref('')
-const icd10DB = [
-  { code: 'H52.1', name: 'Miopia' }, { code: 'H52.0', name: 'Hipermetropia' },
-  { code: 'H52.2', name: 'Astigmatisme' }, { code: 'H52.4', name: 'Presbiopia' },
-  { code: 'H25.9', name: 'Katarak senilis' }, { code: 'H26.0', name: 'Katarak juvenil' },
-  { code: 'H40.1', name: 'Glaukoma sudut terbuka primer' }, { code: 'H40.2', name: 'Glaukoma sudut tertutup' },
-  { code: 'H11.0', name: 'Pterigium' }, { code: 'H04.1', name: 'Dry eye syndrome' },
-  { code: 'H10.0', name: 'Konjungtivitis akut' }, { code: 'H10.1', name: 'Konjungtivitis atopik' },
-  { code: 'H53.0', name: 'Ambliopia ex anopsia' }, { code: 'H50.0', name: 'Esotropia konkomitan' },
-  { code: 'H35.3', name: 'Degenerasi makula' }, { code: 'H33.0', name: 'Ablasio retina' },
-  { code: 'H16.0', name: 'Ulkus kornea' }, { code: 'H15.0', name: 'Skleritis' },
-  { code: 'H20.0', name: 'Iridosiklitis akut' }, { code: 'H27.0', name: 'Afakia' },
-]
-const filteredIcd10 = computed(() => {
-  const s = dxSearch.value.toLowerCase()
-  if (!s) return []
+// Favorit/cache ICD-10 untuk tampil INSTAN saat mengetik. Diisi dari MASTER backend
+// (kode mata) saat mount — supaya setiap kode yang bisa dipilih PASTI ada di master
+// (nama resolvable di resume). Array awal kosong; resolveIcd10 juga menambah cache.
+let icd10DB = []
+// Pencarian ICD-10 LIVE ke master backend (tabel penuh), bukan lagi array
+// hardcoded. Favorit lokal (icd10DB) tampil instan dulu lalu ditimpa hasil server.
+function localIcd10(s) {
   return icd10DB.filter((d) => d.name.toLowerCase().includes(s) || d.code.toLowerCase().includes(s))
+}
+async function searchIcd10Master(s) {
+  try {
+    const { data } = await masterApi.icd10.list({ search: s, per_page: 25 })
+    const rows = data.data?.data ?? data.data ?? []
+    return rows.map(mapIcd10Row)
+  } catch { return localIcd10(s) }
+}
+const filteredIcd10    = ref([])
+const filteredIcd10Sek = ref([])
+let dxTimer = null, dxSekTimer = null
+watch(dxSearch, (v) => {
+  const s = (v || '').trim().toLowerCase()
+  clearTimeout(dxTimer)
+  if (!s) { filteredIcd10.value = []; return }
+  filteredIcd10.value = localIcd10(s)            // tampil instan
+  dxTimer = setTimeout(async () => { if ((dxSearch.value || '').trim().toLowerCase() === s) filteredIcd10.value = await searchIcd10Master(s) }, 300)
 })
-const filteredIcd10Sek = computed(() => {
-  const s = dxSearchSek.value.toLowerCase()
-  if (!s) return []
-  return icd10DB.filter((d) => d.name.toLowerCase().includes(s) || d.code.toLowerCase().includes(s))
+watch(dxSearchSek, (v) => {
+  const s = (v || '').trim().toLowerCase()
+  clearTimeout(dxSekTimer)
+  if (!s) { filteredIcd10Sek.value = []; return }
+  filteredIcd10Sek.value = localIcd10(s)
+  dxSekTimer = setTimeout(async () => { if ((dxSearchSek.value || '').trim().toLowerCase() === s) filteredIcd10Sek.value = await searchIcd10Master(s) }, 300)
 })
 function setDxUtama(d) { diagnosisUtama.value = { ...d }; dxSearch.value = ''; toast('s', `Dx utama: ${d.code}`) }
 function addDxSekunder(d) {
@@ -1142,17 +1317,26 @@ const tindakanIdSet      = computed(() => new Set(tindakanList.value.map((x) => 
 const diagnosisSekKodeSet = computed(() => new Set(diagnosisSekunder.value.map((x) => x.code)))
 const icd9KodeSet        = computed(() => new Set(icd9List.value.map((x) => x.code)))
 const penunjangNamaSet   = computed(() => new Set(penunjangOrders.value.map((x) => x.name)))
-const icd9DB = [
-  { code: '11.73', name: 'Eksisi pterigium' }, { code: '13.41', name: 'Fakoemulsifikasi + IOL' },
-  { code: '12.65', name: 'Trabekulektomi' }, { code: '10.31', name: 'Konjungtivoplasti' },
-  { code: '08.86', name: 'Koreksi entropion' }, { code: '14.49', name: 'Vitrektomi' },
-  { code: '16.21', name: 'Enukleasi bola mata' }, { code: '13.19', name: 'Aspirasi katarak' },
-  { code: '11.53', name: 'Keratoplasti penetrating' }, { code: '14.41', name: 'Kriopeksi retina' },
-]
-const filteredIcd9 = computed(() => {
-  const s = icd9Search.value.toLowerCase()
-  if (!s) return []
+// Favorit/cache ICD-9 — diisi dari MASTER backend (kode mata) saat mount.
+let icd9DB = []
+function localIcd9(s) {
   return icd9DB.filter((t) => t.name.toLowerCase().includes(s) || t.code.toLowerCase().includes(s))
+}
+const filteredIcd9 = ref([])
+let icd9Timer = null
+watch(icd9Search, (v) => {
+  const s = (v || '').trim().toLowerCase()
+  clearTimeout(icd9Timer)
+  if (!s) { filteredIcd9.value = []; return }
+  filteredIcd9.value = localIcd9(s)
+  icd9Timer = setTimeout(async () => {
+    if ((icd9Search.value || '').trim().toLowerCase() !== s) return
+    try {
+      const { data } = await masterApi.icd9.list({ search: s, per_page: 25 })
+      const rows = data.data?.data ?? data.data ?? []
+      filteredIcd9.value = rows.map(mapIcd9Row)
+    } catch { /* tetap pakai hasil lokal */ }
+  }, 300)
 })
 function addIcd9(t) {
   if (icd9List.value.find((x) => x.code === t.code)) return
@@ -1369,10 +1553,9 @@ const SURGERY_TIME_SLOTS = (() => {
 // Preview jadwal bedah pada tanggal terpilih: { total, slots: [{time, room, package_name}] }.
 const bedahSlotInfo = ref(null)
 const bedahSlotLoading = ref(false)
-// Set jam yang sudah terisi pada tanggal itu — untuk menandai slot bentrok di dropdown.
-const bookedSurgeryTimes = computed(() =>
-  new Set((bedahSlotInfo.value?.slots ?? []).map((s) => s.time).filter(Boolean))
-)
+// Jam bedah TIDAK diblokir: ruang operasi bisa >1 (ClinicProfile.operating_rooms),
+// jadi beberapa operasi boleh di jam yang sama. FE hanya menampilkan JUMLAH rencana
+// operasi pada tanggal terpilih (bedahSlotInfo.total) sebagai info — lihat preview di bawah.
 async function loadBedahSlot(tanggal) {
   if (!tanggal) { bedahSlotInfo.value = null; return }
   bedahSlotLoading.value = true
@@ -1387,6 +1570,14 @@ async function loadBedahSlot(tanggal) {
     bedahSlotLoading.value = false
   }
 }
+// Label tanggal bedah utk preview ("Jumlah Operasi hari <tgl> : N"); fallback ke YYYY-MM-DD.
+const surgeryDateLabel = computed(() => {
+  if (!surgeryDate.value) return ''
+  const d = new Date(`${surgeryDate.value}T00:00:00`)
+  return Number.isNaN(d.getTime())
+    ? surgeryDate.value
+    : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+})
 // Tanggal berganti → muat preview & reset jam (hindari jam nyangkut dari tanggal lain).
 watch(surgeryDate, (d) => { surgeryTime.value = ''; loadBedahSlot(d) })
 // Ganti lokasi → muat ulang preview (slot Ruang Bedah ≠ slot Ruang Tindakan).
@@ -1559,110 +1750,86 @@ const signerRole = computed(() => {
 // TTD dokter dipindah ke Resume Medis RM 1.7 (terbit pasca-finalisasi). Tak ada
 // lagi gate PIN tanda tangan di tab pemeriksaan.
 
-// Terkunci HANYA setelah finalisasi (status done). TTD dokter pindah ke Resume
-// Medis RM 1.7 (terbit pasca-finalisasi) — tak ada lagi gate PIN di tab pemeriksaan.
-const isLocked = computed(() => selP.value?.status === 'done')
+// Terkunci HANYA setelah FINALISASI (is_finalized record), BUKAN status antrean.
+// Decouple: pasien yang sudah "Kirim ke Kasir" (antrean COMPLETED) tetap editable
+// agar RME (segmen/diagnosis/SOAP) bisa dilengkapi belakangan (buka ulang dari
+// filter "Selesai") selama belum finalisasi. TTD dokter pindah ke Resume Medis RM 1.7.
+const isLocked = computed(() => examFinalized.value)
 
 // Siap difinalisasi: kelengkapan inti (Dx ICD-10 + Assessment + Planning).
-// Cek spesifik bedah (paket/tanggal) tetap di doFinalize (toast).
+// Dipakai HANYA sebagai indikator visual di kartu finalisasi — TIDAK lagi mengunci
+// tombol. Bila belum lengkap, tombol tetap bisa diklik & memunculkan popup.
 const canFinalize = computed(() =>
   !!diagnosisUtama.value && !!soap.value.A && !!planning.value
 )
+
+// Popup "belum bisa difinalisasi" — daftar field wajib yang masih kosong.
+const showFinalizeWarn = ref(false)
+const finalizeMissing  = ref([])
+const TAB_NAMES = { data: 'Data Pasien', pemeriksaan: 'Pemeriksaan', tindakan: 'Tindakan', soap: 'SOAP & Finalisasi' }
+function tabName(t) { return TAB_NAMES[t] ?? t }
+function goToMissingTab(t) { showFinalizeWarn.value = false; tab.value = t }
 
 // ── FINALISASI ───────────────────────────────────────────────────────────────
 
 // Map planning UI (PULANG/BEDAH/RUJUK) → enum backend Tab 4.
 const PLANNING_ENUM = { PULANG: 'PULANG_BEROBAT_JALAN', BEDAH: 'BEDAH', RAWAT_INAP: 'RAWAT_INAP', RUJUK: 'RUJUK' }
+// Kebalikannya — hidrasi planning.value dari record saat buka ulang kunjungan.
+const PLANNING_ENUM_REV = { PULANG_BEROBAT_JALAN: 'PULANG', BEDAH: 'BEDAH', RAWAT_INAP: 'RAWAT_INAP', RUJUK: 'RUJUK' }
 
 async function doFinalize() {
-  if (!diagnosisUtama.value) { toast('e', 'Wajib isi diagnosa utama ICD-10'); return }
-  if (!soap.value.A) { toast('e', 'Wajib isi Assessment pada SOAP'); return }
-  if (!planning.value) { toast('e', 'Wajib pilih planning (Pulang / Bedah / Rujuk)'); return }
-  if (planning.value === 'BEDAH') {
-    // Paket WAJIB hanya untuk operasi (Ruang Bedah). Tindakan laser (Ruang Tindakan)
-    // boleh tanpa paket — ditagih per-tindakan di stasiun Ruang Tindakan.
-    if (surgeryLocation.value === 'RUANG_BEDAH' && !surgeryPkg.value) {
-      toast('e', 'Pilih paket bedah terlebih dahulu'); return
-    }
-    if (!surgeryDate.value) {
-      toast('e', surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Isi tanggal rencana tindakan' : 'Isi tanggal rencana bedah'); return
-    }
+  // Finalisasi = KUNCI RME (S/O/A/P + diagnosis). Billing & antrean SUDAH dikomit
+  // di "Kirim ke Kasir" (Tab 3); di sini advance bersifat idempoten (no-op bila
+  // antrean sudah maju). Validasi inti: diagnosis utama + assessment. Detail bedah
+  // (paket/tanggal) divalidasi di Kirim ke Kasir, bukan di sini.
+  // Kumpulkan SEMUA field wajib yang masih kosong → tampilkan dalam satu popup
+  // (tombol tidak lagi terkunci; dokter tahu persis apa yang harus dilengkapi).
+  const missing = []
+  if (!diagnosisUtama.value) {
+    missing.push({ label: 'Diagnosa utama (ICD-10)', tab: 'pemeriksaan', hint: 'Pilih kode ICD-10 di kartu Diagnosis (sidebar Tab Pemeriksaan).' })
   }
-  if (!store.selectedQueue) { toast('e', 'Tidak ada antrian aktif'); return }
+  if (!soap.value.A) {
+    missing.push({ label: 'Assessment (SOAP — A)', tab: 'soap', hint: 'Isi kolom Assessment pada kartu SOAP.' })
+  }
+  if (!planning.value) {
+    missing.push({ label: 'Planning', tab: 'tindakan', hint: 'Pilih Planning (Pulang / Bedah / Rawat Inap / Rujuk) lalu Kirim ke Kasir.' })
+  }
+  if (missing.length) {
+    finalizeMissing.value = missing
+    showFinalizeWarn.value = true
+    return
+  }
+
   const visitId = selP.value?.visitId
   if (!visitId) { toast('e', 'Kunjungan tidak ditemukan'); return }
 
-  // Planning RUJUK tapi rujukan belum dibuat: rujukan dibuat lewat tombol terpisah
-  // ("Buat Rujukan ke Poli Ini" / "Terbitkan Rujukan BPJS"). Jika dilewati, pasien
-  // langsung di-advance ke KASIR tanpa surat rujukan. Peringatkan — boleh lanjut.
-  if (planning.value === 'RUJUK' && !isRujukMade.value) {
-    const lanjut = window.confirm(
-      'Planning RUJUK tapi rujukan belum dibuat.\n\n' +
-      'Rujukan internal/BPJS dibuat lewat tombol terpisah di panel Rujuk. ' +
-      'Bila dilanjutkan, pasien diteruskan ke kasir TANPA surat rujukan.\n\n' +
-      'Tetap finalisasi?'
-    )
-    if (!lanjut) return
-  }
-
   finalizing.value = true
   try {
-    // 0) Flush autosave Tab 3 (tindakan & resep) yang masih dalam debounce 600ms.
-    //    storeVisitServices = replace (hapus lalu re-create); bila POST telat fire
-    //    SETELAH finalize/advance, backend menolak (assertNotFinalized 422) dan
-    //    tindakan/resep terakhir hilang dari tagihan kasir (under-billing).
-    clearTimeout(_saveTindakanTimer)
-    clearTimeout(_saveResepTimer)
-    await saveTindakan()
-    await saveResep()
-
-    // 1) Simpan Tab 2 (anamnese + segmen anterior/posterior + slitlamp) lebih dulu,
-    //    karena POST tab2 menolak bila record sudah ada (storeTab4 pakai firstOrCreate).
+    // 1) Jaring pengaman: persist segmen + diagnosis (Tab 2) & planning (Tab 3)
+    //    dari state UI terkini sebelum mengunci — bila dokter mengedit di sesi
+    //    buka-ulang tanpa menekan Simpan/Kirim per-tab. Tidak menyentuh tindakan/
+    //    resep (sudah terkunci billing setelah Kirim ke Kasir).
     await saveTab2()
+    await dokterApi.storeTab4(visitId, buildPlanningPayload())
 
-    // 2) Simpan Tab 4 (SOAP + diagnosis + planning + paket/tanggal bedah).
-    //    Backend membuat/memperbarui SurgerySchedule saat planning BEDAH, sehingga
-    //    QueueService dapat merutekan ke BEDAH bila tanggal operasi = hari ini.
-    await dokterApi.storeTab4(visitId, {
-      soap_subjective:    soap.value.S || null,
-      soap_objective:     soap.value.O || null,
-      soap_assessment:    soap.value.A || null,
-      soap_plan:          soap.value.P || null,
-      diagnosis_utama:    diagnosisUtama.value.code,
-      diagnosis_sekunder: diagnosisSekunder.value.map((d) => d.code),
-      diagnosis_text:     diagnosisText.value?.trim() || null,
-      tindakan_codes:     icd9List.value.map((t) => t.code),
-      planning:           PLANNING_ENUM[planning.value] ?? planning.value,
-      surgery_package_id: planning.value === 'BEDAH' ? (surgeryPkg.value || null) : null,
-      // Lokasi pelaksanaan: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
-      location_type:      planning.value === 'BEDAH' ? surgeryLocation.value : null,
-      surgery_date:       planning.value === 'BEDAH' ? surgeryDate.value : null,
-      surgery_time:       planning.value === 'BEDAH' ? (surgeryTime.value || null) : null,
-      // Fase 8: bedah yang butuh inap (pre-op H-1). Hanya relevan saat planning BEDAH di RUANG_BEDAH.
-      requires_inpatient: planning.value === 'BEDAH' && surgeryLocation.value === 'RUANG_BEDAH' ? requiresInpatient.value : false,
-      // Rujukan eksternal non-BPJS (faskes lain). BPJS dirujuk lewat VClaim (submitRujukKeluar),
-      // jadi field ini hanya diisi untuk pasien non-BPJS saat planning RUJUK.
-      external_referral_facility: planning.value === 'RUJUK' && !isBpjsPatient.value ? (rujukFaskes.value || null) : null,
-      external_referral_reason:   planning.value === 'RUJUK' && !isBpjsPatient.value ? (rujukAlasan.value || null) : null,
-      follow_up_date:     planning.value === 'PULANG' && tanggalKontrol.value ? tanggalKontrol.value : null,
+    // 2) Kunci RME: kirim SOAP final → is_finalized=true + advance idempoten (backend).
+    await dokterApi.finalize(visitId, {
+      soap_subjective: soap.value.S || null,
+      soap_objective:  soap.value.O || null,
+      soap_assessment: soap.value.A || null,
+      soap_plan:       soap.value.P || null,
     })
-
-    // 3) Kunci pemeriksaan (is_finalized = true).
-    await dokterApi.finalize(visitId)
-
-    // 4) Advance queue ke station berikutnya (PENUNJANG / BEDAH / KASIR — backend).
-    await store.selesaiAntrian(store.selectedQueue.id)
+    examFinalized.value = true
 
     finalized.value = true
     qFilter.value = 'done'
+    // Antrean mungkin baru maju di sini (bila finalisasi tanpa Kirim ke Kasir) →
+    // refresh agar status terbaru tampil.
+    await store.fetchAntrian()
     toast('s',
       planning.value === 'BEDAH'
-        ? (requiresInpatient.value
-            ? 'RME difinalisasi — jadwal bedah dibuat (pre-op rawat inap, pasien datang H-1)'
-            : 'RME difinalisasi — jadwal bedah dibuat & pasien diteruskan')
-        : planning.value === 'RAWAT_INAP'
-          ? 'RME difinalisasi — pasien masuk papan Menunggu Kamar (rawat inap)'
-          : 'RME difinalisasi — pasien dikirim ke station berikutnya')
+        ? 'RME difinalisasi & dikunci — jadwal bedah tercatat'
+        : 'RME difinalisasi & dikunci')
 
     // Surat Kontrol BPJS: terbit otomatis bila Pulang + tgl kontrol + pasien BPJS.
     // Non-blocking — finalisasi di atas sudah final, ini hanya menyusulkan ke VClaim.
@@ -1720,9 +1887,17 @@ function closeResumeRM() {
 </script>
 
 <template>
-  <div class="dokter">
+  <div :class="['dokter', { 'q-collapsed': queueCollapsed }]">
     <!-- LEFT: QUEUE PANEL -->
     <aside class="qp">
+
+      <!-- Rail tipis saat antrean diciutkan — klik untuk buka kembali -->
+      <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="queue-rail-count">{{ patients.length }}</span>
+        <span class="queue-rail-txt">Antrean</span>
+      </button>
+
 
       <!-- ═══ Status Saya Hari Ini ═══ -->
       <div v-if="myEmployeeId" class="card status-card">
@@ -1800,7 +1975,12 @@ function closeResumeRM() {
           </div>
           <div class="card-head-sub">{{ patients.length }} pasien hari ini</div>
         </div>
-        <span class="pill-live">LIVE</span>
+        <div class="head-actions">
+          <span class="pill-live">LIVE</span>
+          <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+        </div>
       </div>
 
       <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean dokter">
@@ -1946,6 +2126,7 @@ function closeResumeRM() {
               {{ selP.address }}
             </div>
             <div class="ptags">
+              <span v-if="selP.dob" class="ptg ptg-dob" title="Tanggal lahir">🎂 {{ fmtDob(selP.dob) }}</span>
               <span
                 v-if="selP.classification === 'Rujukan Internal'"
                 class="ptg ptg-rujuk"
@@ -1956,34 +2137,9 @@ function closeResumeRM() {
               <span v-if="selP.allergies.length" class="ptg ptg-a">⚠ Alergi: {{ selP.allergies.join(', ') }}</span>
             </div>
           </div>
-          <div class="vit">
-            <div class="vdv"></div>
-            <div class="vi">
-              <div :class="['viv', Number(selP.nd.td_s) >= 140 ? 'w' : '']">{{ toInt(selP.nd.td_s) }}/{{ toInt(selP.nd.td_d) }}</div>
-              <div class="vil">TD</div>
-            </div>
-            <div class="vi">
-              <div :class="['viv', selP.nd.kgd > 200 ? 'w' : selP.nd.kgd < 70 ? 'lo' : '']">{{ toInt(selP.nd.kgd) }}</div>
-              <div class="vil">KGD</div>
-            </div>
-            <div class="vdv"></div>
-            <div class="vi">
-              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
-              <div :class="['viv', selP.rd.iop_od >= 22 || selP.rd.iop_os >= 22 ? 'w' : '']">{{ toInt(selP.rd.iop_od) }}/{{ toInt(selP.rd.iop_os) }}</div>
-              <div class="vil">IOP</div>
-            </div>
-            <div class="vi">
-              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
-              <div class="viv small viv-pair"><span>{{ selP.rd.ucva_od }}</span><span>{{ selP.rd.ucva_os }}</span></div>
-              <div class="vil">UCVA</div>
-            </div>
-            <div class="vi">
-              <div class="vi-eyes"><span>OD</span><span>OS</span></div>
-              <div class="viv small viv-pair"><span>{{ selP.rd.bcva_od }}</span><span>{{ selP.rd.bcva_os }}</span></div>
-              <div class="vil">BCVA</div>
-            </div>
-            <div class="vdv"></div>
-          </div>
+          <!-- Chip vitals TD/KGD/IOP/UCVA/BCVA dihapus dari header (terlalu ramai);
+               vitals lengkap tetap diakses lewat panel ▼Triase / ▼RO di bawah & tabel
+               read-only di Tab Data. -->
           <div class="dbtns">
             <button :class="['db', 'db-n', dw === 'nurse' ? 'act' : '']" @click="dw = dw === 'nurse' ? null : 'nurse'">▼ Triase</button>
             <button :class="['db', 'db-r', dw === 'ro' ? 'act' : '']" @click="dw = dw === 'ro' ? null : 'ro'">▼ RO</button>
@@ -2007,6 +2163,7 @@ function closeResumeRM() {
               <div class="dwt n">
                 <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
                 Triase Perawat
+                <span v-if="selP.nd.examiner" class="dw-examiner">· {{ selP.nd.examiner }}</span>
               </div>
               <div class="dw-grid">
                 <div class="dwr2"><span class="dwl">TD</span><span :class="['dwv', selP.nd.td_s >= 140 ? 'w' : 'ok']">{{ toInt(selP.nd.td_s) }}/{{ toInt(selP.nd.td_d) }} mmHg</span></div>
@@ -2022,6 +2179,7 @@ function closeResumeRM() {
               <div class="dwt r">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
                 Data Refraksionis
+                <span v-if="selP.rd.examiner" class="dw-examiner">· {{ selP.rd.examiner }}</span>
               </div>
               <div class="rog">
                 <div class="roi"><div class="roi-l">UCVA OD</div><div class="roi-v">{{ selP.rd.ucva_od }}</div></div>
@@ -2058,17 +2216,17 @@ function closeResumeRM() {
           </button>
           <button :class="['rmt', tab === 'pemeriksaan' ? 'a' : '']" @click="tab = 'pemeriksaan'">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-            Pemeriksaan Mata
+            Pemeriksaan &amp; Diagnosis
+            <span v-if="!diagnosisUtama" class="rmtd"></span>
           </button>
           <button :class="['rmt', tab === 'tindakan' ? 'a' : '']" @click="tab = 'tindakan'">
             <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
-            Tindakan &amp; Resep
+            Tindakan, Resep &amp; Planning
             <span v-if="tindakanList.length || rxList.length" class="rmt-count">{{ tindakanList.length + rxList.length }}</span>
           </button>
           <button :class="['rmt', tab === 'soap' ? 'a' : '']" @click="tab = 'soap'">
             <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            SOAP &amp; Diagnosis
-            <span v-if="!diagnosisUtama" class="rmtd"></span>
+            SOAP &amp; Finalisasi
           </button>
         </div>
 
@@ -2076,7 +2234,7 @@ function closeResumeRM() {
         <div class="rmc">
 
           <!-- ═══ TAB 1: DATA PASIEN (Read-only) ═══════════════════════════ -->
-          <div v-if="tab === 'data'" class="af">
+          <div v-if="tab === 'data'" class="af af-data-compact">
             <div class="readonly-banner">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
               Data hanya-baca — diisi oleh Perawat &amp; Refraksionis
@@ -2087,6 +2245,7 @@ function closeResumeRM() {
                 <div class="cht">
                   <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
                   Data Triase Perawat
+                  <span v-if="selP.nd.examiner" class="dw-examiner">· {{ selP.nd.examiner }}</span>
                 </div>
                 <span class="ro-badge">Read-only</span>
               </div>
@@ -2096,6 +2255,7 @@ function closeResumeRM() {
                     <tr>
                       <th>TD <small>mmHg</small></th>
                       <th>Nadi <small>bpm</small></th>
+                      <th>RR <small>/mnt</small></th>
                       <th>SpO₂ <small>%</small></th>
                       <th>Suhu <small>°C</small></th>
                       <th>KGD <small>mg/dL</small></th>
@@ -2106,6 +2266,7 @@ function closeResumeRM() {
                     <tr>
                       <td :class="{ warn: selP.nd.td_s >= 140 }">{{ selP.nd.td_s }}/{{ selP.nd.td_d }}</td>
                       <td>{{ selP.nd.nadi }}</td>
+                      <td>{{ selP.nd.resp }}</td>
                       <td :class="{ warn: selP.nd.spo2 < 95 }">{{ selP.nd.spo2 }}</td>
                       <td>{{ selP.nd.suhu }}</td>
                       <td :class="{ warn: selP.nd.kgd > 200 }">{{ toInt(selP.nd.kgd) }}</td>
@@ -2113,7 +2274,15 @@ function closeResumeRM() {
                     </tr>
                   </tbody>
                 </table>
+                <!-- Antropometri (sinkron form Triase) — kompak, hanya bila terisi -->
+                <div v-if="selP.nd.bb !== '—' || selP.nd.tb !== '—' || selP.nd.bmi !== '—'" class="tr-anthro">
+                  <span v-if="selP.nd.bb !== '—'">BB <b>{{ selP.nd.bb }} kg</b></span>
+                  <span v-if="selP.nd.tb !== '—'">TB <b>{{ selP.nd.tb }} cm</b></span>
+                  <span v-if="selP.nd.bmi !== '—'">BMI <b>{{ selP.nd.bmi }}</b></span>
+                </div>
                 <div class="tr-keluhan"><b>Keluhan Utama:</b> {{ selP.nd.keluhan }}</div>
+                <div v-if="selP.nd.rps" class="tr-keluhan"><b>RPS:</b> {{ selP.nd.rps }}</div>
+                <div v-if="selP.nd.notes" class="tr-keluhan"><b>Catatan Perawat:</b> {{ selP.nd.notes }}</div>
               </div>
             </div>
 
@@ -2122,6 +2291,7 @@ function closeResumeRM() {
                 <div class="cht">
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
                   Data Refraksionis
+                  <span v-if="selP.rd.examiner" class="dw-examiner">· {{ selP.rd.examiner }}</span>
                 </div>
                 <span class="ro-badge">Read-only</span>
               </div>
@@ -2150,6 +2320,18 @@ function closeResumeRM() {
                 <div v-if="selP.rd.note" class="ro-note"><b>Catatan RO:</b> {{ selP.rd.note }}</div>
               </div>
             </div>
+
+            <!-- Riwayat CPPT/SOAP lintas-episode terpadu (semua PPA: Dokter/Perawat/
+                 Refraksionis) — komponen bersama dgn pager panah (terbaru dulu). -->
+            <CpptHistoryCard :patient-id="selP.patientId" :fetcher="dokterApi.riwayatCppt">
+              <template #footer>
+                <div class="soap-mini-footer">
+                  <button class="btn btn-sm btn-secondary" style="width:100%;justify-content:center" @click="tab = 'soap'">
+                    Tulis SOAP Kunjungan Ini →
+                  </button>
+                </div>
+              </template>
+            </CpptHistoryCard>
 
             <button class="btn btn-primary" @click="tab = 'pemeriksaan'">
               Lanjut ke Pemeriksaan Mata
@@ -2189,7 +2371,7 @@ function closeResumeRM() {
                     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
                     Segmen Anterior
                   </div>
-                  <span class="card-hint">Normal / Tidak Normal / Tidak Dapat Dinilai</span>
+                  <span class="card-hint">Teks bebas — temuan OD/OS</span>
                 </div>
                 <div class="cb">
                   <div class="seg-table">
@@ -2200,15 +2382,14 @@ function closeResumeRM() {
                     </div>
                     <div v-for="f in saFields" :key="f.key" class="seg-row">
                       <div class="seg-label">{{ f.label }}</div>
-                      <select v-model="exam.sa[f.key].od" :class="['form-select', segClass(exam.sa[f.key].od)]">
-                        <option value="">— Pilih —</option>
-                        <option v-for="o in segmenOpts" :key="o" :value="o">{{ o }}</option>
-                      </select>
-                      <select v-model="exam.sa[f.key].os" :class="['form-select', segClass(exam.sa[f.key].os)]">
-                        <option value="">— Pilih —</option>
-                        <option v-for="o in segmenOpts" :key="o" :value="o">{{ o }}</option>
-                      </select>
+                      <input v-model="exam.sa[f.key].od" class="form-input seg-input" :placeholder="f.label + ' OD'" />
+                      <input v-model="exam.sa[f.key].os" class="form-input seg-input" :placeholder="f.label + ' OS'" />
                     </div>
+                  </div>
+                  <div class="seg-note-row">
+                    <label class="fl seg-note-lbl">Catatan</label>
+                    <input v-model="exam.sa_notes" class="form-input"
+                      placeholder="Catatan segmen anterior (mis. injeksi konjungtiva, sekret)…" />
                   </div>
                 </div>
               </div>
@@ -2220,7 +2401,7 @@ function closeResumeRM() {
                     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 12s1-3 4-3 4 3 4 3-1 3-4 3-4-3-4-3z"/></svg>
                     Segmen Posterior
                   </div>
-                  <span class="card-hint">Normal / Tidak Normal / Tidak Dapat Dinilai</span>
+                  <span class="card-hint">Teks bebas — temuan OD/OS</span>
                 </div>
                 <div class="cb">
                   <div class="seg-table">
@@ -2231,41 +2412,31 @@ function closeResumeRM() {
                     </div>
                     <div v-for="f in spFields" :key="f.key" class="seg-row">
                       <div class="seg-label">{{ f.label }}</div>
-                      <select v-model="exam.sp[f.key].od" :class="['form-select', segClass(exam.sp[f.key].od)]">
-                        <option value="">— Pilih —</option>
-                        <option v-for="o in segmenOpts" :key="o" :value="o">{{ o }}</option>
-                      </select>
-                      <select v-model="exam.sp[f.key].os" :class="['form-select', segClass(exam.sp[f.key].os)]">
-                        <option value="">— Pilih —</option>
-                        <option v-for="o in segmenOpts" :key="o" :value="o">{{ o }}</option>
-                      </select>
+                      <input v-model="exam.sp[f.key].od" class="form-input seg-input" :placeholder="f.label + ' OD'" />
+                      <input v-model="exam.sp[f.key].os" class="form-input seg-input" :placeholder="f.label + ' OS'" />
                     </div>
+                  </div>
+                  <div class="seg-note-row">
+                    <label class="fl seg-note-lbl">Catatan</label>
+                    <input v-model="exam.sp_notes" class="form-input"
+                      placeholder="Catatan segmen posterior (mis. CDR, perdarahan retina)…" />
                   </div>
                 </div>
               </div>
               </div><!-- /seg-2col -->
 
-              <!-- Catatan Slitlamp -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><path d="M12 2v6M12 16v6M4.93 4.93l4.24 4.24M14.83 14.83l4.24 4.24M2 12h6M16 12h6M4.93 19.07l4.24-4.24M14.83 9.17l4.24-4.24"/></svg>
-                    Catatan Slitlamp
-                  </div>
-                </div>
-                <div class="cb">
-                  <div class="fg">
-                    <label class="fl">Temuan Slitlamp</label>
-                    <textarea v-model="exam.slitlamp_notes" class="form-textarea" rows="3"
-                      placeholder="Temuan pemeriksaan slitlamp OD/OS..."></textarea>
-                  </div>
-                </div>
-              </div>
 
-              <button class="btn btn-primary" @click="tab = 'tindakan'">
-                Lanjut ke Tindakan &amp; Resep
-                <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-              </button>
+              <div class="tab2-actions">
+                <button class="btn btn-success" :disabled="savingTab2" @click="simpanTab2">
+                  <span v-if="savingTab2" class="sp"></span>
+                  <svg v-else viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  {{ savingTab2 ? 'Menyimpan…' : 'Simpan Pemeriksaan & Diagnosis' }}
+                </button>
+                <button class="btn btn-primary" @click="tab = 'tindakan'">
+                  Lanjut ke Tindakan &amp; Resep
+                  <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
             </div>
 
             <!-- ── KANAN: SIDEBAR ── -->
@@ -2340,99 +2511,132 @@ function closeResumeRM() {
                 </div>
               </div>
 
-              <!-- SOAP History card -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    SOAP / CPPT
-                  </div>
-                  <span class="card-counter">{{ soapPages.length }} kunjungan</span>
-                </div>
+              <!-- Diagnosis ICD-10 + Prosedur ICD-9 — di sidebar kanan, di bawah Penunjang. -->
+              <div class="dx-grid dx-sidebar-stack">
 
-                <div v-if="soapHistoryLoading" class="penunjang-empty">
-                  Memuat riwayat SOAP…
-                </div>
-
-                <div v-else-if="!soapPages.length" class="penunjang-empty">
-                  Belum ada catatan SOAP/CPPT
-                </div>
-
-                <template v-else-if="currentSoapPage">
-                  <!-- Navigasi per tanggal kunjungan: default kunjungan terakhir (idx 0,
-                       descending). Panah KANAN → kunjungan lebih lama, KIRI → lebih baru. -->
-                  <div class="soap-pager">
-                    <button
-                      class="soap-pager-btn" title="Kunjungan lebih baru"
-                      :disabled="soapPageIdx <= 0"
-                      @click="soapPageIdx--"
-                    >‹</button>
-                    <div class="soap-pager-info">
-                      <div class="soap-pager-date">{{ currentSoapPage.date }}</div>
-                      <div class="soap-pager-count">{{ soapPageLabel }}</div>
-                    </div>
-                    <button
-                      class="soap-pager-btn" title="Kunjungan lebih lama"
-                      :disabled="soapPageIdx >= soapPages.length - 1"
-                      @click="soapPageIdx++"
-                    >›</button>
-                  </div>
-
-                  <div class="soap-history-list">
-                    <div v-for="(h, i) in currentSoapPage.entries" :key="i" class="soap-history-item">
-                      <div v-if="h.role" class="soap-entry-role" :class="h.role === 'Dokter' ? 'r-dok' : 'r-prw'">{{ h.role }}</div>
-                      <div v-if="h.S" class="soap-history-row"><span class="soap-mini-key s">S</span><span class="soap-history-val">{{ h.S }}</span></div>
-                      <div v-if="h.O" class="soap-history-row"><span class="soap-mini-key o">O</span><span class="soap-history-val">{{ h.O }}</span></div>
-                      <div v-if="h.A" class="soap-history-row"><span class="soap-mini-key a">A</span><span class="soap-history-val soap-a">{{ h.A }}</span></div>
-                      <div v-if="h.P" class="soap-history-row"><span class="soap-mini-key p">P</span><span class="soap-history-val">{{ h.P }}</span></div>
+                <!-- ICD-10 -->
+                <div class="card">
+                  <div class="ch">
+                    <div class="cht">
+                      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>
+                      Diagnosis ICD-10
                     </div>
                   </div>
-                </template>
-                <div class="soap-mini-footer">
-                  <button class="btn btn-sm btn-secondary" style="width:100%;justify-content:center" @click="tab = 'soap'">
-                    Tulis SOAP Kunjungan Ini →
-                  </button>
-                </div>
-              </div>
+                  <div class="cb">
+                    <!-- Utama -->
+                    <div class="dx-section">
+                      <div class="dx-section-title">
+                        <span class="dx-type primary">Utama</span> <span class="req">*</span>
+                      </div>
+                      <input v-model="dxSearch" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
+                      <div class="dx-results">
+                        <div
+                          v-for="d in filteredIcd10" :key="d.code"
+                          :class="['dx-result-item', diagnosisUtama?.code === d.code ? 'sel' : '']"
+                          @click="setDxUtama(d)"
+                        >
+                          <span class="dx-code">{{ d.code }}</span>
+                          <span class="dx-result-name">{{ d.name }}</span>
+                          <svg v-if="diagnosisUtama?.code === d.code" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                        </div>
+                      </div>
+                      <div v-if="diagnosisUtama" class="dx-row dx-utama" style="margin-top:0.5rem">
+                        <span class="dx-type primary">Primer</span>
+                        <span class="dx-code">{{ diagnosisUtama.code }}</span>
+                        <span class="dx-name">{{ diagnosisUtama.name }}</span>
+                        <button class="dx-remove" @click="diagnosisUtama = null; dxSearch = ''">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                      <div v-else class="dx-empty-sm">Belum dipilih — wajib finalisasi</div>
+                    </div>
 
-              <!-- Riwayat CPPT lintas-episode (IGD / RANAP / Poli) -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><path d="M9 11H3v10h6V11zM15 3H9v18h6V3zM21 7h-6v14h6V7z"/></svg>
-                    Riwayat CPPT (Lintas-Episode)
-                  </div>
-                  <span class="card-counter">{{ cpptHistory.length }} entri</span>
-                </div>
-                <div v-if="cpptHistoryLoading" class="penunjang-empty">Memuat riwayat CPPT…</div>
-                <div v-else-if="!cpptHistory.length" class="penunjang-empty">Belum ada CPPT lintas-episode</div>
-                <div v-else class="dk-cppt-list">
-                  <div v-for="(c, i) in cpptHistory" :key="i" class="dk-cppt-item">
-                    <div class="dk-cppt-head">
-                      <span class="dk-ep" :class="'ep-'+c.episode">{{ cpptEpLabel(c.episode) }}</span>
-                      <span class="dk-cppt-kind">{{ c.kind === 'SOAP' ? 'SOAP Dokter' : 'CPPT' }}</span>
-                      <span class="dk-cppt-when">{{ fmtCpptDT(c.datetime) }}</span>
-                      <span v-if="c.verified_by" class="dk-cppt-ok" title="Terverifikasi DPJP">✓</span>
+                    <div class="dx-divider"></div>
+
+                    <!-- Sekunder -->
+                    <div class="dx-section">
+                      <div class="dx-section-title">
+                        <span class="dx-type secondary">Sekunder</span> <span style="font-size:10px;color:var(--tu)">opsional</span>
+                      </div>
+                      <input v-model="dxSearchSek" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
+                      <div class="dx-results">
+                        <div
+                          v-for="d in filteredIcd10Sek" :key="d.code"
+                          :class="['dx-result-item', diagnosisSekKodeSet.has(d.code) ? 'sel' : '']"
+                          @click="addDxSekunder(d)"
+                        >
+                          <span class="dx-code">{{ d.code }}</span>
+                          <span class="dx-result-name">{{ d.name }}</span>
+                          <svg v-if="diagnosisSekKodeSet.has(d.code)" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                        </div>
+                      </div>
+                      <div v-if="diagnosisSekunder.length" class="dx-list" style="margin-top:0.5rem">
+                        <div v-for="d in diagnosisSekunder" :key="d.code" class="dx-row">
+                          <span class="dx-type secondary">Sekunder</span>
+                          <span class="dx-code">{{ d.code }}</span>
+                          <span class="dx-name">{{ d.name }}</span>
+                          <button class="dx-remove" @click="removeDxSekunder(d.code)">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <div class="dk-cppt-by">{{ c.author || '–' }}<small v-if="c.ppa_role"> · {{ c.ppa_role }}</small></div>
-                    <div v-if="c.vitals && Object.keys(c.vitals).length" class="dk-cppt-vt">
-                      <span v-if="c.vitals.td">TD {{ c.vitals.td }}</span>
-                      <span v-if="c.vitals.nadi">N {{ c.vitals.nadi }}</span>
-                      <span v-if="c.vitals.spo2">SpO₂ {{ c.vitals.spo2 }}</span>
-                      <span v-if="c.vitals.suhu">S {{ c.vitals.suhu }}°</span>
-                      <span v-if="c.vitals.visus_od">VOD {{ c.vitals.visus_od }}</span>
-                      <span v-if="c.vitals.visus_os">VOS {{ c.vitals.visus_os }}</span>
-                      <span v-if="c.vitals.iop_od">TIO {{ c.vitals.iop_od }}/{{ c.vitals.iop_os }}</span>
+
+                    <div class="dx-divider"></div>
+
+                    <!-- Tulis Diagnosa (teks bebas) — dipakai saat dokter ragu kode ICD. -->
+                    <div class="dx-section">
+                      <div class="dx-section-title">
+                        <span class="dx-type freetext">Tulis Diagnosa</span>
+                        <span style="font-size:10px;color:var(--tu)">bila ragu kode</span>
+                      </div>
+                      <textarea
+                        v-model="diagnosisText"
+                        class="form-textarea"
+                        rows="2"
+                        maxlength="1000"
+                        placeholder="Tulis diagnosa dalam bentuk teks bila belum yakin kode ICD-10 yang sesuai…"
+                      ></textarea>
                     </div>
-                    <div v-if="c.soap?.s" class="dk-soap"><b>S</b> {{ c.soap.s }}</div>
-                    <div v-if="c.soap?.o" class="dk-soap"><b>O</b> {{ c.soap.o }}</div>
-                    <div v-if="c.soap?.a" class="dk-soap"><b>A</b> {{ c.soap.a }}</div>
-                    <div v-if="c.soap?.p" class="dk-soap"><b>P</b> {{ c.soap.p }}</div>
-                    <div v-if="c.diagnosis" class="dk-cppt-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
-                    <div v-if="c.instruksi" class="dk-cppt-dx"><b>Instruksi:</b> {{ c.instruksi }}</div>
                   </div>
                 </div>
-              </div>
+
+                <!-- ICD-9 CM -->
+                <div class="card">
+                  <div class="ch">
+                    <div class="cht">
+                      <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                      ICD-9 CM — Kode Prosedur
+                    </div>
+                    <span class="card-counter">{{ icd9List.length }} kode</span>
+                  </div>
+                  <div class="cb">
+                    <input v-model="icd9Search" class="form-input dx-search" placeholder="Cari kode / nama prosedur..." />
+                    <div class="dx-results">
+                      <div
+                        v-for="t in filteredIcd9" :key="t.code"
+                        :class="['dx-result-item', icd9KodeSet.has(t.code) ? 'sel' : '']"
+                        @click="addIcd9(t)"
+                      >
+                        <span class="dx-code">{{ t.code }}</span>
+                        <span class="dx-result-name">{{ t.name }}</span>
+                        <svg v-if="icd9KodeSet.has(t.code)" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                      </div>
+                    </div>
+                    <div v-if="icd9List.length" class="dx-list" style="margin-top:0.5rem">
+                      <div v-for="t in icd9List" :key="t.code" class="dx-row">
+                        <span class="icd9-badge">ICD-9</span>
+                        <span class="dx-code">{{ t.code }}</span>
+                        <span class="dx-name">{{ t.name }}</span>
+                        <button class="dx-remove" @click="removeIcd9(t.code)">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                    <div v-else class="dx-empty-sm">Opsional — untuk coding klaim</div>
+                  </div>
+                </div>
+              </div><!-- /dx-grid Tab 2 -->
 
             </div>
           </div>
@@ -2695,253 +2899,9 @@ function closeResumeRM() {
 
             </div><!-- /pane-locked wrapper -->
 
-            <!-- Footer card Tab 3 — full-width, rata dengan card di atas.
-                 Kiri: Catatan Kasir (kompak). Kanan: aksi (Kirim ke Kasir + Lanjut ke SOAP). -->
-            <div class="tab3-footer">
-              <!-- Catatan untuk Kasir — kompak, label di atas field -->
-              <div :inert="isLocked || tab3Sent" :class="['kasir-note-inline', (isLocked || tab3Sent) ? 'pane-locked' : '']">
-                <label class="kasir-note-label" for="kasir-note">
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
-                  Catatan Kasir
-                  <span class="kasir-note-opsional">opsional</span>
-                </label>
-                <textarea
-                  id="kasir-note"
-                  v-model="kasirNote"
-                  class="form-textarea kasir-note-field"
-                  rows="2"
-                  maxlength="500"
-                  placeholder="Catatan untuk kasir (diskon, instruksi penagihan, dsb)…"
-                ></textarea>
-                <div class="kasir-note-counter">{{ (kasirNote || '').length }}/500</div>
-              </div>
-
-              <!-- Grup aksi: Kirim ke Kasir + Lanjut ke SOAP, sejajar di kanan -->
-              <div class="tab3-action-group">
-                <button
-                  v-if="!isLocked && !tab3Sent"
-                  class="btn btn-success tab3-btn"
-                  :disabled="!tindakanList.length && !rxList.length"
-                  @click="showSendKasirModal = true"
-                  title="Kunci tindakan & resep — siap dikirim ke kasir setelah finalisasi"
-                >
-                  <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
-                  Kirim ke Kasir
-                </button>
-                <button class="btn btn-primary tab3-btn" @click="tab = 'soap'">
-                  Lanjut ke SOAP &amp; Diagnosis
-                  <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- ═══ TAB 4: SOAP & DIAGNOSIS ════════════════════════════════════ -->
-          <div v-if="tab === 'soap'" class="af">
-
-            <!-- Lock notice -->
-            <div v-if="isLocked" class="lock-notice">
-              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-              Pemeriksaan sudah difinalisasi — data dikunci (read-only).
-            </div>
-
-            <!-- SOAP + ICD + Planning — locked setelah finalisasi -->
-            <div :inert="isLocked" :class="['tab3-stack', isLocked ? 'pane-locked' : '']">
-
-            <!-- 2 kolom: KIRI = SOAP (vertikal), KANAN = ICD-10 + ICD-9 -->
-            <div class="soap-dx-grid">
-
-            <!-- SOAP (kolom kiri) -->
-            <div class="card">
-              <div class="ch">
-                <div class="cht">
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
-                  CPPT (SOAP)
-                </div>
-                <span class="card-counter">tersusun otomatis · boleh diedit</span>
-              </div>
-              <div class="cb">
-                <div class="soap-stack">
-                  <div class="soap-cell">
-                    <label class="fl soap-fl">
-                      <span class="soap-letter s">S</span> Subjektif — keluhan pasien
-                      <span v-if="!soapDirty.S" class="auto-tag">otomatis dari anamnese</span>
-                      <span v-else class="manual-tag">diedit manual
-                        <button type="button" class="resync-btn" @click="resyncSoapS"
-                          title="Susun ulang dari anamnese (Tab Pemeriksaan)">↺ sync</button>
-                      </span>
-                    </label>
-                    <textarea v-model="soap.S" @input="markSoapDirty('S')" class="form-textarea" rows="6"
-                      placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
-                  </div>
-                  <div class="soap-cell">
-                    <label class="fl soap-fl">
-                      <span class="soap-letter o">O</span> Objektif
-                      <span v-if="!soapDirty.O" class="auto-tag">otomatis dari triase, RO, segmen &amp; slitlamp</span>
-                      <span v-else class="manual-tag">diedit manual
-                        <button type="button" class="resync-btn" @click="resyncSoapO"
-                          title="Susun ulang dari data pemeriksaan terbaru">↺ sync</button>
-                      </span>
-                    </label>
-                    <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="8"
-                      placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
-                  </div>
-                  <div class="soap-cell">
-                    <label class="fl soap-fl">
-                      <span class="soap-letter a">A</span> Assessment — kesimpulan klinis
-                      <span class="req">*</span>
-                      <span v-if="!soapDirty.A" class="auto-tag">otomatis dari diagnosis</span>
-                      <span v-else class="manual-tag">diedit manual
-                        <button type="button" class="resync-btn" @click="resyncSoapA"
-                          title="Susun ulang dari Diagnosis (ICD-10 utama/sekunder &amp; teks)">↺ sync</button>
-                      </span>
-                    </label>
-                    <textarea v-model="soap.A" @input="markSoapDirty('A')" class="form-textarea" rows="6"
-                      placeholder="Terisi otomatis dari Diagnosis ICD-10 &amp; teks…"></textarea>
-                  </div>
-                  <div class="soap-cell">
-                    <label class="fl soap-fl">
-                      <span class="soap-letter p">P</span> Planning — rencana tindakan
-                      <span v-if="!soapDirty.P" class="auto-tag">otomatis dari resep, ICD-9 &amp; planning</span>
-                      <span v-else class="manual-tag">diedit manual
-                        <button type="button" class="resync-btn" @click="resyncSoapP"
-                          title="Susun ulang dari Resep, Prosedur ICD-9 &amp; keputusan Planning">↺ sync</button>
-                      </span>
-                    </label>
-                    <textarea v-model="soap.P" @input="markSoapDirty('P')" class="form-textarea" rows="6"
-                      placeholder="Terisi otomatis dari Resep, Prosedur ICD-9 &amp; Planning…"></textarea>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- ICD-10 + ICD-9 (kolom kanan, bertumpuk) -->
-            <div class="dx-grid">
-
-              <!-- ICD-10 -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>
-                    Diagnosis ICD-10
-                  </div>
-                </div>
-                <div class="cb">
-                  <!-- Utama -->
-                  <div class="dx-section">
-                    <div class="dx-section-title">
-                      <span class="dx-type primary">Utama</span> <span class="req">*</span>
-                    </div>
-                    <input v-model="dxSearch" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
-                    <div class="dx-results">
-                      <div
-                        v-for="d in filteredIcd10" :key="d.code"
-                        :class="['dx-result-item', diagnosisUtama?.code === d.code ? 'sel' : '']"
-                        @click="setDxUtama(d)"
-                      >
-                        <span class="dx-code">{{ d.code }}</span>
-                        <span class="dx-result-name">{{ d.name }}</span>
-                        <svg v-if="diagnosisUtama?.code === d.code" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                      </div>
-                    </div>
-                    <div v-if="diagnosisUtama" class="dx-row dx-utama" style="margin-top:0.5rem">
-                      <span class="dx-type primary">Primer</span>
-                      <span class="dx-code">{{ diagnosisUtama.code }}</span>
-                      <span class="dx-name">{{ diagnosisUtama.name }}</span>
-                      <button class="dx-remove" @click="diagnosisUtama = null; dxSearch = ''">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
-                    </div>
-                    <div v-else class="dx-empty-sm">Belum dipilih — wajib finalisasi</div>
-                  </div>
-
-                  <div class="dx-divider"></div>
-
-                  <!-- Sekunder -->
-                  <div class="dx-section">
-                    <div class="dx-section-title">
-                      <span class="dx-type secondary">Sekunder</span> <span style="font-size:10px;color:var(--tu)">opsional</span>
-                    </div>
-                    <input v-model="dxSearchSek" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
-                    <div class="dx-results">
-                      <div
-                        v-for="d in filteredIcd10Sek" :key="d.code"
-                        :class="['dx-result-item', diagnosisSekKodeSet.has(d.code) ? 'sel' : '']"
-                        @click="addDxSekunder(d)"
-                      >
-                        <span class="dx-code">{{ d.code }}</span>
-                        <span class="dx-result-name">{{ d.name }}</span>
-                        <svg v-if="diagnosisSekKodeSet.has(d.code)" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                      </div>
-                    </div>
-                    <div v-if="diagnosisSekunder.length" class="dx-list" style="margin-top:0.5rem">
-                      <div v-for="d in diagnosisSekunder" :key="d.code" class="dx-row">
-                        <span class="dx-type secondary">Sekunder</span>
-                        <span class="dx-code">{{ d.code }}</span>
-                        <span class="dx-name">{{ d.name }}</span>
-                        <button class="dx-remove" @click="removeDxSekunder(d.code)">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="dx-divider"></div>
-
-                  <!-- Tulis Diagnosa (teks bebas) — dipakai saat dokter ragu kode ICD.
-                       Terbaca verifikator di Klaim. -->
-                  <div class="dx-section">
-                    <div class="dx-section-title">
-                      <span class="dx-type freetext">Tulis Diagnosa</span>
-                      <span style="font-size:10px;color:var(--tu)">bila ragu kode</span>
-                    </div>
-                    <textarea
-                      v-model="diagnosisText"
-                      class="form-textarea"
-                      rows="2"
-                      maxlength="1000"
-                      placeholder="Tulis diagnosa dalam bentuk teks bila belum yakin kode ICD-10 yang sesuai…"
-                    ></textarea>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ICD-9 CM -->
-              <div class="card">
-                <div class="ch">
-                  <div class="cht">
-                    <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                    ICD-9 CM — Kode Prosedur
-                  </div>
-                  <span class="card-counter">{{ icd9List.length }} kode</span>
-                </div>
-                <div class="cb">
-                  <input v-model="icd9Search" class="form-input dx-search" placeholder="Cari kode / nama prosedur..." />
-                  <div class="dx-results">
-                    <div
-                      v-for="t in filteredIcd9" :key="t.code"
-                      :class="['dx-result-item', icd9KodeSet.has(t.code) ? 'sel' : '']"
-                      @click="addIcd9(t)"
-                    >
-                      <span class="dx-code">{{ t.code }}</span>
-                      <span class="dx-result-name">{{ t.name }}</span>
-                      <svg v-if="icd9KodeSet.has(t.code)" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                    </div>
-                  </div>
-                  <div v-if="icd9List.length" class="dx-list" style="margin-top:0.5rem">
-                    <div v-for="t in icd9List" :key="t.code" class="dx-row">
-                      <span class="icd9-badge">ICD-9</span>
-                      <span class="dx-code">{{ t.code }}</span>
-                      <span class="dx-name">{{ t.name }}</span>
-                      <button class="dx-remove" @click="removeIcd9(t.code)">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
-                    </div>
-                  </div>
-                  <div v-else class="dx-empty-sm">Opsional — untuk coding klaim</div>
-                </div>
-              </div>
-
+            <!-- Planning (pindah dari Tab SOAP) — di ATAS tombol Kirim ke Kasir.
+                 Terkunci setelah Kirim ke Kasir (tab3Sent) / finalisasi. -->
+            <div :inert="isLocked || tab3Sent" :class="['planning-tab3', (isLocked || tab3Sent) ? 'pane-locked' : '']">
             <!-- Planning (kolom kanan, di bawah ICD — mengisi area kosong) -->
             <div class="card">
               <div class="ch">
@@ -3106,37 +3066,18 @@ function closeResumeRM() {
                       <label class="fl">Jam Bedah <span class="fl-opt">(opsional)</span></label>
                       <select v-model="surgeryTime" class="form-select" :disabled="!surgeryDate">
                         <option value="">{{ surgeryDate ? '— Pilih jam —' : 'Pilih tanggal dulu' }}</option>
-                        <option
-                          v-for="t in SURGERY_TIME_SLOTS" :key="t" :value="t"
-                          :disabled="bookedSurgeryTimes.has(t)"
-                        >
-                          {{ t }}{{ bookedSurgeryTimes.has(t) ? ' · terisi' : '' }}
-                        </option>
+                        <option v-for="t in SURGERY_TIME_SLOTS" :key="t" :value="t">{{ t }}</option>
                       </select>
                     </div>
                   </div>
 
-                  <!-- Preview jumlah pasien bedah pada tanggal terpilih -->
+                  <!-- Jumlah rencana operasi (planning BEDAH) pada tanggal terpilih -->
                   <div v-if="surgeryDate" class="bedah-preview">
                     <div v-if="bedahSlotLoading" class="bedah-preview-loading">Memeriksa jadwal…</div>
-                    <template v-else-if="bedahSlotInfo">
-                      <div class="bedah-preview-head">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                        <span v-if="bedahSlotInfo.total">
-                          <b>{{ bedahSlotInfo.total }}</b> pasien bedah terjadwal pada tanggal ini
-                        </span>
-                        <span v-else>Belum ada pasien bedah terjadwal pada tanggal ini</span>
-                      </div>
-                      <div v-if="bedahSlotInfo.slots?.length" class="bedah-preview-slots">
-                        <span
-                          v-for="(s, i) in bedahSlotInfo.slots" :key="i"
-                          class="bedah-slot-chip"
-                          :title="s.package_name || ''"
-                        >
-                          {{ s.time || '--:--' }}<template v-if="s.room"> · {{ s.room }}</template>
-                        </span>
-                      </div>
-                    </template>
+                    <div v-else-if="bedahSlotInfo" class="bedah-preview-head">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      <span>Jumlah Operasi hari {{ surgeryDateLabel }} : <b>{{ bedahSlotInfo.total || 0 }}</b></span>
+                    </div>
                   </div>
 
                   <!-- Fase 8: pre-op rawat inap (pasien datang H-1) — hanya untuk operasi di Ruang Bedah -->
@@ -3308,9 +3249,126 @@ function closeResumeRM() {
                 </div>
               </div>
             </div><!-- /Planning card -->
+            </div><!-- /planning Tab 3 -->
 
-            </div><!-- /dx-grid (kolom kanan: ICD-10 + ICD-9 + Planning) -->
-            </div><!-- /soap-dx-grid -->
+            <!-- Footer card Tab 3 — full-width, rata dengan card di atas.
+                 Kiri: Catatan Kasir (kompak). Kanan: aksi (Kirim ke Kasir + Lanjut ke SOAP). -->
+            <div class="tab3-footer">
+              <!-- Catatan untuk Kasir — kompak, label di atas field -->
+              <div :inert="isLocked || tab3Sent" :class="['kasir-note-inline', (isLocked || tab3Sent) ? 'pane-locked' : '']">
+                <label class="kasir-note-label" for="kasir-note">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+                  Catatan Kasir
+                  <span class="kasir-note-opsional">opsional</span>
+                </label>
+                <textarea
+                  id="kasir-note"
+                  v-model="kasirNote"
+                  class="form-textarea kasir-note-field"
+                  rows="2"
+                  maxlength="500"
+                  placeholder="Catatan untuk kasir (diskon, instruksi penagihan, dsb)…"
+                ></textarea>
+                <div class="kasir-note-counter">{{ (kasirNote || '').length }}/500</div>
+              </div>
+
+              <!-- Grup aksi: Kirim ke Kasir + Lanjut ke SOAP, sejajar di kanan -->
+              <div class="tab3-action-group">
+                <button
+                  v-if="!isLocked && !tab3Sent"
+                  class="btn btn-success tab3-btn"
+                  :disabled="!planning && !tindakanList.length && !rxList.length"
+                  @click="showSendKasirModal = true"
+                  title="Simpan tindakan + resep + planning & majukan antrean ke kasir/stasiun berikutnya"
+                >
+                  <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+                  Kirim ke Kasir
+                </button>
+                <button class="btn btn-primary tab3-btn" @click="tab = 'soap'">
+                  Lanjut ke SOAP &amp; Finalisasi
+                  <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ═══ TAB 4: SOAP & DIAGNOSIS ════════════════════════════════════ -->
+          <div v-if="tab === 'soap'" class="af">
+
+            <!-- Lock notice -->
+            <div v-if="isLocked" class="lock-notice">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Pemeriksaan sudah difinalisasi — data dikunci (read-only).
+            </div>
+
+            <!-- SOAP + ICD + Planning — locked setelah finalisasi -->
+            <div :inert="isLocked" :class="['tab3-stack', isLocked ? 'pane-locked' : '']">
+
+
+            <!-- SOAP (kolom kiri) -->
+            <div class="card">
+              <div class="ch">
+                <div class="cht">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
+                  CPPT (SOAP)
+                </div>
+                <span class="card-counter">tersusun otomatis · boleh diedit</span>
+              </div>
+              <div class="cb">
+                <div class="soap-stack">
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter s">S</span> Subjektif — keluhan pasien
+                      <span v-if="!soapDirty.S" class="auto-tag">otomatis dari anamnese</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapS"
+                          title="Susun ulang dari anamnese (Tab Pemeriksaan)">↺ sync</button>
+                      </span>
+                    </label>
+                    <textarea v-model="soap.S" @input="markSoapDirty('S')" class="form-textarea" rows="6"
+                      placeholder="Terisi otomatis dari anamnese (Tab Pemeriksaan)…"></textarea>
+                  </div>
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter o">O</span> Objektif
+                      <span v-if="!soapDirty.O" class="auto-tag">otomatis dari segmen &amp; catatan (pemeriksaan dokter)</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapO"
+                          title="Susun ulang dari data pemeriksaan terbaru">↺ sync</button>
+                      </span>
+                    </label>
+                    <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="8"
+                      placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
+                  </div>
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter a">A</span> Assessment — kesimpulan klinis
+                      <span class="req">*</span>
+                      <span v-if="!soapDirty.A" class="auto-tag">otomatis dari diagnosis</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapA"
+                          title="Susun ulang dari Diagnosis (ICD-10 utama/sekunder &amp; teks)">↺ sync</button>
+                      </span>
+                    </label>
+                    <textarea v-model="soap.A" @input="markSoapDirty('A')" class="form-textarea" rows="6"
+                      placeholder="Terisi otomatis dari Diagnosis ICD-10 &amp; teks…"></textarea>
+                  </div>
+                  <div class="soap-cell">
+                    <label class="fl soap-fl">
+                      <span class="soap-letter p">P</span> Planning — rencana tindakan
+                      <span v-if="!soapDirty.P" class="auto-tag">otomatis dari resep, ICD-9 &amp; planning</span>
+                      <span v-else class="manual-tag">diedit manual
+                        <button type="button" class="resync-btn" @click="resyncSoapP"
+                          title="Susun ulang dari Resep, Prosedur ICD-9 &amp; keputusan Planning">↺ sync</button>
+                      </span>
+                    </label>
+                    <textarea v-model="soap.P" @input="markSoapDirty('P')" class="form-textarea" rows="6"
+                      placeholder="Terisi otomatis dari Resep, Prosedur ICD-9 &amp; Planning…"></textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
+
 
             </div><!-- end pane-locked -->
 
@@ -3333,14 +3391,14 @@ function closeResumeRM() {
                     </div>
                     <div class="fin-sub">
                       <template v-if="canFinalize">Klik Finalisasi — resume medis terbit untuk diisi &amp; ditandatangani</template>
-                      <template v-else>Lengkapi Dx · Assessment · Planning</template>
+                      <template v-else>Klik Finalisasi untuk melihat data wajib yang masih perlu dilengkapi</template>
                     </div>
                   </div>
                 </div>
 
                 <div class="finalize-actions">
-                  <!-- Finalisasi (TTD pindah ke Resume Medis RM 1.7 pasca-finalisasi) -->
-                  <button class="btn btn-primary finalize-btn" :disabled="finalizing || !canFinalize" @click="doFinalize">
+                  <!-- Tombol TIDAK dikunci: klik akan memunculkan popup bila ada data wajib kosong. -->
+                  <button class="btn btn-primary finalize-btn" :disabled="finalizing" @click="doFinalize">
                     <div v-if="finalizing" class="sp"></div>
                     <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                     {{ finalizing ? 'Memproses…' : 'Finalisasi' }}
@@ -3475,11 +3533,14 @@ function closeResumeRM() {
           </div>
           <div class="modal-box-body">
             <p class="kasir-confirm-msg">
-              Tindakan dan resep akan dikirim ke <b>kasir</b> dan data tidak bisa diubah lagi.
+              Tindakan, resep &amp; planning dikomit dan <b>pasien diteruskan</b> ke stasiun
+              berikutnya. Tindakan/resep terkunci billing, tetapi <b>RME (segmen, diagnosis,
+              SOAP) masih bisa dilengkapi</b> & difinalisasi belakangan.
             </p>
             <div class="kasir-confirm-summary">
               <div><b>{{ tindakanList.length }}</b> tindakan medis</div>
               <div><b>{{ rxList.length }}</b> obat dalam resep</div>
+              <div v-if="planning"><b>Planning:</b> {{ planningDecisionText || planning }}</div>
               <div v-if="kasirNote && kasirNote.trim()" class="kasir-confirm-note">
                 Catatan: <i>"{{ kasirNote.trim() }}"</i>
               </div>
@@ -3491,6 +3552,37 @@ function closeResumeRM() {
               <span v-if="sendingToKasir" class="sp"></span>
               {{ sendingToKasir ? 'Menyimpan…' : 'YA, Kirim' }}
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ═══ MODAL: PERINGATAN FINALISASI (data wajib belum lengkap) ═══ -->
+    <Teleport to="body">
+      <div v-if="showFinalizeWarn" class="modal-overlay" @click.self="showFinalizeWarn = false">
+        <div class="modal-box modal-box-sm">
+          <div class="modal-box-head">
+            <div class="modal-box-title">
+              <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Belum Bisa Difinalisasi
+            </div>
+            <button class="modal-box-close" @click="showFinalizeWarn = false">×</button>
+          </div>
+          <div class="modal-box-body">
+            <p class="finalize-warn-msg">Lengkapi <b>{{ finalizeMissing.length }}</b> data wajib berikut sebelum finalisasi:</p>
+            <ul class="finalize-warn-list">
+              <li v-for="m in finalizeMissing" :key="m.label" class="fw-item">
+                <div class="fw-row">
+                  <span class="fw-dot"></span>
+                  <span class="fw-label">{{ m.label }}</span>
+                  <button class="fw-goto" @click="goToMissingTab(m.tab)">Ke {{ tabName(m.tab) }} →</button>
+                </div>
+                <div class="fw-hint">{{ m.hint }}</div>
+              </li>
+            </ul>
+          </div>
+          <div class="modal-box-foot">
+            <button class="btn btn-secondary" @click="showFinalizeWarn = false">Mengerti</button>
           </div>
         </div>
       </div>
@@ -3616,9 +3708,31 @@ function closeResumeRM() {
   gap: 0;
 }
 
-/* ── QUEUE PANEL ─────────────────────────────────────────────────────────── */
-.qp { width: 272px; flex-shrink: 0; display: flex; flex-direction: column; padding: 0.75rem 0 0.75rem 0.75rem; overflow: hidden; gap: 0.6rem; }
+/* ── QUEUE PANEL (dinamis: bisa diciutkan jadi rail tipis) ────────────────── */
+.qp { width: 288px; flex-shrink: 0; display: flex; flex-direction: column; padding: 0.85rem 0 0.85rem 0.85rem; overflow: hidden; gap: 0.6rem; transition: width 0.22s ease; }
 .qp-card { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+/* Rail tipis (default tersembunyi; tampil saat antrean diciutkan). */
+.queue-rail { display: none; }
+.dokter.q-collapsed .qp { width: 56px; padding-left: 0.6rem; }
+.dokter.q-collapsed .qp .status-card,
+.dokter.q-collapsed .qp .qp-card { display: none; }
+.dokter.q-collapsed .qp .queue-rail {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: 44px; min-height: 132px; margin-top: 0.15rem; padding: 14px 4px;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 12px;
+  cursor: pointer; color: var(--tm); font-family: 'Inter', sans-serif; transition: all 0.13s;
+}
+.queue-rail:hover { border-color: var(--ga); color: var(--ga); }
+.queue-rail svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.queue-rail-count { font-size: 14px; font-weight: 700; color: var(--ga); font-variant-numeric: tabular-nums; }
+.queue-rail-txt { writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+
+/* Tombol ciutkan di header antrean. */
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.panel-collapse { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all 0.13s; flex-shrink: 0; }
+.panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
+.panel-collapse svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 /* ── STATUS SAYA HARI INI ────────────────────────────────────────────────── */
 .status-card { padding: 0.75rem 0.85rem; flex-shrink: 0; }
@@ -3833,6 +3947,8 @@ function closeResumeRM() {
 .dwt svg { width: 13px; height: 13px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .dwt.n svg { stroke: #5b21b6; }
 .dwt.r svg { stroke: var(--ga); }
+/* Nama pemeriksa di panel referensi read-only ("diperiksa oleh X") */
+.dw-examiner { font-weight: 500; font-size: 10px; color: var(--ga); text-transform: none; letter-spacing: 0; }
 .dw-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 0.4rem 0.85rem; }
 .dwr2 { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
 .dwl { color: var(--tu); }
@@ -3875,7 +3991,25 @@ function closeResumeRM() {
 .tr-table td small { font-size: 9px; color: var(--tu); font-weight: 500; }
 .tr-table td.warn { color: var(--wt); }
 .tr-keluhan { margin-top: 0.55rem; font-size: 11.5px; color: var(--tm); border-top: 1px solid var(--gb); padding-top: 0.5rem; }
+
+/* #1 — Kartu Data Triase & Refraksionis (Tab 1) dipadatkan: header/body lebih
+   rapat, tabel lebih kecil agar kartu ringkas. */
+.af-data-compact .card { margin-bottom: 0; }
+.af-data-compact .ch { padding: 0.45rem 0.7rem; }
+.af-data-compact .cht { font-size: 12px; }
+.af-data-compact .cb { padding: 0.55rem 0.7rem; }
+.af-data-compact .tr-table th { padding: 2px 5px; }
+.af-data-compact .tr-table td { padding: 4px 5px; font-size: 12px; }
+.af-data-compact .tr-keluhan { margin-top: 0.4rem; padding-top: 0.4rem; font-size: 11px; }
+.af-data-compact .ro-table { font-size: 11px; }
+.af-data-compact .ro-table th, .af-data-compact .ro-table td { padding: 2.5px 6px; }
+.af-data-compact .ro-foot { margin-top: 0.4rem; font-size: 10.5px; }
+.af-data-compact .tr-anthro { margin-top: 0.4rem; font-size: 10.5px; }
 .tr-keluhan b { color: var(--td); font-weight: 600; }
+.tr-keluhan + .tr-keluhan { border-top: none; margin-top: 0.3rem; padding-top: 0; }
+/* Antropometri triase (BB/TB/BMI) — baris kompak inline. */
+.tr-anthro { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin-top: 0.5rem; font-size: 11px; color: var(--tm); }
+.tr-anthro b { color: var(--td); font-weight: 600; }
 .histi { padding: 0.45rem 0.55rem; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); margin-bottom: 4px; }
 .hd { font-size: 10.5px; font-weight: 600; color: var(--td); }
 .hdx { font-size: 11px; color: var(--td); margin-top: 2px; }
@@ -3904,9 +4038,11 @@ function closeResumeRM() {
 }
 
 /* ── Pemeriksaan 2-col layout ────────────────────────────────────────────── */
-.pem-grid { display: grid; grid-template-columns: 1fr 248px; gap: 1rem; align-items: start; }
-.pem-main { display: flex; flex-direction: column; gap: 1rem; }
-.pem-sidebar { display: flex; flex-direction: column; gap: 0.75rem; position: sticky; top: 0; }
+.pem-grid { display: grid; grid-template-columns: 1fr 284px; gap: 1.4rem; align-items: start; }
+.pem-main { display: flex; flex-direction: column; gap: 1.15rem; }
+.pem-sidebar { display: flex; flex-direction: column; gap: 0.9rem; position: sticky; top: 0; }
+/* Layar lebih sempit → sidebar turun ke bawah (dinamis). */
+@media (max-width: 1240px) { .pem-grid { grid-template-columns: 1fr; } .pem-sidebar { position: static; } }
 
 /* SOAP History sidebar */
 .soap-history-list { max-height: 340px; overflow-y: auto; }
@@ -4043,7 +4179,11 @@ function closeResumeRM() {
 .hasil-modal-openlink { font-size: 11px; color: var(--ga); text-decoration: underline; align-self: flex-start; }
 
 /* CONTENT */
-.rmc { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; background: var(--bg); }
+.rmc { flex: 1; overflow-y: auto; padding: 1.35rem 1.6rem; background: var(--bg); }
+/* Lapang di layar lebar: konten tab dibatasi lebar nyaman & ditengahkan
+   (kecuali Tab 1 Data yang sengaja kompak boleh ikut). */
+.rmc > .af, .rmc > .pem-grid { max-width: 1340px; margin-inline: auto; width: 100%; }
+@media (max-width: 700px) { .rmc { padding: 0.9rem 0.9rem; } }
 .rmc::-webkit-scrollbar { width: 4px; }
 .rmc::-webkit-scrollbar-thumb { background: var(--gb); border-radius: 2px; }
 .af { display: flex; flex-direction: column; gap: 1rem; }
@@ -4069,7 +4209,7 @@ function closeResumeRM() {
    ke atas card berikutnya supaya dropdown mengambang, bukan terpotong/tertutup. */
 .card-dropdown-host { overflow: visible; position: relative; z-index: 5; }
 .ch {
-  padding: 0.7rem 1rem; border-bottom: 1px solid var(--gb);
+  padding: 0.8rem 1.15rem; border-bottom: 1px solid var(--gb);
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
 }
 .cht {
@@ -4077,7 +4217,7 @@ function closeResumeRM() {
   display: flex; align-items: center; gap: 6px;
 }
 .cht svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
-.cb { padding: 0.9rem 1rem; }
+.cb { padding: 1.1rem 1.15rem; }
 .cb.stack { display: flex; flex-direction: column; gap: 0.65rem; }
 .card-counter { font-size: 11px; font-weight: 500; color: var(--tu); }
 .card-hint { font-size: 10px; color: var(--th); font-style: italic; }
@@ -4154,6 +4294,33 @@ function closeResumeRM() {
 }
 .seg-row:last-child { border-bottom: none; }
 .seg-label { font-size: 11.5px; font-weight: 500; color: var(--td); }
+
+/* Segmen kini input teks bebas (bukan dropdown) — kompak per baris. */
+.seg-input { width: 100%; padding: 0.3rem 0.5rem; font-size: 11.5px; }
+
+/* Catatan segmen anterior/posterior — 1 baris (label inline + input). */
+.seg-note-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.seg-note-lbl { margin: 0; flex-shrink: 0; font-size: 11px; }
+.seg-note-row .form-input { flex: 1; padding: 0.3rem 0.5rem; font-size: 11.5px; }
+
+/* Badge tanggal lahir di kartu pasien. */
+.ptg-dob { background: #f1f5f9; color: #475569; }
+
+/* Diagnosis (ICD-10 + ICD-9) di sidebar kanan Tab Pemeriksaan — kartu menumpuk,
+   ringkas (sesuaikan lebar sidebar yang sempit). */
+.dx-sidebar-stack { gap: 0.75rem; }
+.dx-sidebar-stack .ch { padding: 0.5rem 0.65rem; }
+.dx-sidebar-stack .cht { font-size: 12px; }
+.dx-sidebar-stack .cb { padding: 0.6rem 0.65rem; }
+.dx-sidebar-stack .dx-results { max-height: 130px; }
+.dx-sidebar-stack .dx-search { font-size: 11.5px; }
+
+/* Aksi Tab 2: Simpan + Lanjut sejajar. */
+.tab2-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.tab2-actions .btn { flex: 1 1 auto; justify-content: center; }
+
+/* Planning yang dipindah ke Tab 3 — beri jarak dari blok tindakan/resep. */
+.planning-tab3 { margin-top: 0.25rem; }
 
 /* Segmen 2 kolom + kompak */
 .seg-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
@@ -4334,8 +4501,6 @@ function closeResumeRM() {
 .bedah-preview-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #1a1a1a; }
 .bedah-preview-head svg { width: 14px; height: 14px; flex-shrink: 0; color: #1763d4; }
 .bedah-preview-head b { color: #1763d4; }
-.bedah-preview-slots { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
-.bedah-slot-chip { font-size: 10.5px; font-weight: 600; color: #1763d4; background: #fff; border: 1px solid #c7dbff; border-radius: 6px; padding: 2px 7px; }
 
 /* RUJUK: mode internal / eksternal */
 .rujuk-mode-tabs { display: flex; gap: 6px; margin-bottom: 0.75rem; }
@@ -4864,6 +5029,18 @@ function closeResumeRM() {
 .kasir-confirm-summary b { color: var(--td); font-weight: 700; font-size: 13px; }
 .kasir-confirm-note { color: var(--tu); font-size: 11.5px; padding-top: 4px; border-top: 1px dashed var(--gb); }
 .kasir-confirm-note i { color: var(--td); font-style: italic; }
+
+/* Popup peringatan finalisasi — daftar data wajib yang belum lengkap. */
+.finalize-warn-msg { margin: 0 0 0.85rem 0; font-size: 13px; line-height: 1.55; color: var(--td); }
+.finalize-warn-msg b { color: var(--wt); }
+.finalize-warn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.fw-item { background: var(--bs); border: 1px solid var(--gb); border-left: 3px solid var(--wt); border-radius: 9px; padding: 0.6rem 0.75rem; }
+.fw-row { display: flex; align-items: center; gap: 8px; }
+.fw-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--wt); flex-shrink: 0; }
+.fw-label { font-size: 12.5px; font-weight: 700; color: var(--td); flex: 1; }
+.fw-goto { font-size: 11px; font-weight: 600; color: var(--ga); background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 5px; white-space: nowrap; }
+.fw-goto:hover { background: var(--gl); }
+.fw-hint { font-size: 11px; color: var(--tu); margin-top: 4px; padding-left: 15px; line-height: 1.5; }
 
 /* ── FORM REGISTRY: modal Dokumen RM (isi = FormDocsBrowser) ──────────────── */
 .modal-box-forms { max-width: 760px; }

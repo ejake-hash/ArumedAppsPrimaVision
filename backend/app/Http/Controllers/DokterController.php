@@ -144,19 +144,42 @@ class DokterController extends Controller
     // TAB 2 — ANAMNESE + SEGMEN ANTERIOR/POSTERIOR
     // =========================================================================
 
-    private function segmenRules(string $prefix = 'sometimes'): array
+    /**
+     * Aturan validasi segmen mata. Sejak restrukturisasi Tab 2, segmen anterior
+     * & posterior adalah TEXT bebas (bukan enum) — dokter mengetik temuan sendiri.
+     * +Palpebra (anterior) + 2 catatan bebas (sa_notes/sp_notes).
+     */
+    private function segmenRules(): array
     {
-        $opts   = 'in:Normal,Tidak Normal,Tidak Dapat Dinilai';
-        $fields = ['sa_kornea', 'sa_coa', 'sa_iris', 'sa_pupil', 'sa_lensa',
+        $fields = ['sa_palpebra', 'sa_kornea', 'sa_coa', 'sa_iris', 'sa_pupil', 'sa_lensa',
                    'sp_papil', 'sp_macula', 'sp_retina', 'sp_vitreous'];
         $rules  = [];
 
         foreach ($fields as $f) {
-            $rules["{$f}_od"] = "nullable|{$opts}";
-            $rules["{$f}_os"] = "nullable|{$opts}";
+            $rules["{$f}_od"] = 'nullable|string|max:1000';
+            $rules["{$f}_os"] = 'nullable|string|max:1000';
         }
 
+        $rules['sa_notes'] = 'nullable|string|max:2000';
+        $rules['sp_notes'] = 'nullable|string|max:2000';
+
         return $rules;
+    }
+
+    /**
+     * Diagnosis (ICD-10 utama+sekunder, naratif) + kode ICD-9 tindakan kini disimpan
+     * di Tab 2 (tombol Simpan). Nullable saat simpan; wajib hanya saat Finalisasi.
+     */
+    private function diagnosisRules(): array
+    {
+        return [
+            'diagnosis_utama'      => 'nullable|string|max:20',
+            'diagnosis_sekunder'   => 'nullable|array',
+            'diagnosis_sekunder.*' => 'string|max:20',
+            'diagnosis_text'       => 'nullable|string|max:1000',
+            'tindakan_codes'       => 'nullable|array',
+            'tindakan_codes.*'     => 'string|max:20',
+        ];
     }
 
     /** GET /dokter/kunjungan/{visitId}/tab2 */
@@ -169,9 +192,8 @@ class DokterController extends Controller
     public function storeTab2(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate(array_merge([
-            'anamnese'       => 'nullable|string|max:5000',
-            'slitlamp_notes' => 'nullable|string|max:2000',
-        ], $this->segmenRules()));
+            'anamnese' => 'nullable|string|max:5000',
+        ], $this->segmenRules(), $this->diagnosisRules()));
 
         try {
             $examination = $this->service->storeExamination($visitId, $validated);
@@ -186,9 +208,8 @@ class DokterController extends Controller
     public function updateTab2(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate(array_merge([
-            'anamnese'       => 'nullable|string|max:5000',
-            'slitlamp_notes' => 'nullable|string|max:2000',
-        ], $this->segmenRules()));
+            'anamnese' => 'nullable|string|max:5000',
+        ], $this->segmenRules(), $this->diagnosisRules()));
 
         try {
             $examination = $this->service->updateExamination($visitId, $validated);
@@ -334,10 +355,10 @@ class DokterController extends Controller
         return $this->ok($this->service->getTab4($visitId));
     }
 
-    /** POST /dokter/kunjungan/{visitId}/tab4 */
+    /** POST /dokter/kunjungan/{visitId}/tab4 — autosave PLANNING draft (tanpa advance). */
     public function storeTab4(Request $request, string $visitId): JsonResponse
     {
-        $validated = $this->validateTab4($request);
+        $validated = $this->validatePlanning($request);
 
         try {
             $result = $this->service->storePlanning($visitId, $validated);
@@ -348,10 +369,10 @@ class DokterController extends Controller
         return $this->ok($result, 'Tab 4 disimpan', 201);
     }
 
-    /** PUT /dokter/kunjungan/{visitId}/tab4 */
+    /** PUT /dokter/kunjungan/{visitId}/tab4 — autosave PLANNING draft (tanpa advance). */
     public function updateTab4(Request $request, string $visitId): JsonResponse
     {
-        $validated = $this->validateTab4($request);
+        $validated = $this->validatePlanning($request);
 
         try {
             $result = $this->service->updatePlanning($visitId, $validated);
@@ -360,6 +381,25 @@ class DokterController extends Controller
         }
 
         return $this->ok($result, 'Tab 4 diperbarui');
+    }
+
+    /**
+     * PUT /dokter/kunjungan/{visitId}/kirim-kasir
+     * Komit billing: simpan planning (+ jadwal bedah / inap / follow-up) lalu
+     * MAJUKAN antrean DOKTER ke stasiun berikutnya. TIDAK mengunci RME
+     * (is_finalized tetap false) — segmen/diagnosis/SOAP dapat dilengkapi belakangan.
+     */
+    public function kirimKeKasir(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $this->validatePlanning($request);
+
+        try {
+            $result = $this->service->kirimKeKasir($visitId, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Pasien diteruskan ke stasiun berikutnya.');
     }
 
     /**
@@ -380,21 +420,15 @@ class DokterController extends Controller
         ));
     }
 
-    private function validateTab4(Request $request): array
+    /**
+     * Validasi PLANNING (Tab 3) — rencana tindak lanjut + jadwal bedah/inap/rujuk/
+     * follow-up. TANPA diagnosis (pindah ke Tab 2) & TANPA SOAP (pindah ke Finalisasi).
+     * planning nullable agar autosave draft tidak memaksa pilih sebelum siap.
+     */
+    private function validatePlanning(Request $request): array
     {
         return $request->validate([
-            'soap_subjective'    => 'nullable|string|max:5000',
-            'soap_objective'     => 'nullable|string|max:5000',
-            'soap_assessment'    => 'nullable|string|max:5000',
-            'soap_plan'          => 'nullable|string|max:5000',
-            'diagnosis_utama'    => 'required|string|max:20',
-            'diagnosis_sekunder' => 'nullable|array',
-            'diagnosis_sekunder.*' => 'string|max:20',
-            // Diagnosa naratif (teks bebas) saat dokter ragu kode ICD-10.
-            'diagnosis_text'     => 'nullable|string|max:1000',
-            'tindakan_codes'     => 'nullable|array',
-            'tindakan_codes.*'   => 'string|max:20',
-            'planning'           => 'required|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK,RAWAT_INAP',
+            'planning'           => 'nullable|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK,RAWAT_INAP',
             'surgery_package_id' => 'nullable|uuid|exists:surgery_packages,id',
             'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
             // Lokasi pelaksanaan bedah: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
@@ -415,15 +449,33 @@ class DokterController extends Controller
         ]);
     }
 
+    /** Validasi SOAP (Tab 4 Finalisasi) — komposisi S/O/A/P, semua nullable di sini. */
+    private function validateSoap(Request $request): array
+    {
+        return $request->validate([
+            'soap_subjective' => 'nullable|string|max:5000',
+            'soap_objective'  => 'nullable|string|max:5000',
+            'soap_assessment' => 'nullable|string|max:5000',
+            'soap_plan'       => 'nullable|string|max:5000',
+        ]);
+    }
+
     // =========================================================================
     // FINALIZE
     // =========================================================================
 
-    /** POST /dokter/kunjungan/{visitId}/finalize */
-    public function finalizeKunjungan(string $visitId): JsonResponse
+    /**
+     * POST /dokter/kunjungan/{visitId}/finalize
+     * Kunci RME: simpan SOAP final → set is_finalized + tanda tangan → majukan
+     * antrean idempoten (no-op bila sudah maju via Kirim ke Kasir). Validasi
+     * diagnosis_utama + assessment WAJIB di sini.
+     */
+    public function finalizeKunjungan(Request $request, string $visitId): JsonResponse
     {
+        $soap = $this->validateSoap($request);
+
         try {
-            $examination = $this->service->finalizeKunjungan($visitId);
+            $examination = $this->service->finalizeKunjungan($visitId, $soap);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }

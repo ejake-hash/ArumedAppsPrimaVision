@@ -80,6 +80,9 @@ class KlaimController extends Controller
             'name' => $claim->assignedTo->name,
         ] : null;
 
+        // Lembar Klaim (Resume Medis versi klaim) — status TTD dokter + sinkron koding.
+        $data['lembar_klaim'] = $this->service->claimResumeStatus($id);
+
         // Dokumen pendukung = PatientDocument pada visit klaim (FINAL diutamakan).
         $data['dokumen_pendukung'] = \App\Models\PatientDocument::with('documentType')
             ->where('visit_id', $claim->visit_id)
@@ -466,6 +469,22 @@ class KlaimController extends Controller
         }
 
         return $this->ok(null, 'Lampiran dihapus');
+    }
+
+    /**
+     * POST /klaim/{id}/lembar-klaim — buat/perbarui Lembar Klaim (Resume Medis
+     * versi klaim) → masuk antrian TTD dokter. Bila sudah pernah di-TTD lalu
+     * koding berubah, TTD lama dibatalkan & perlu TTD ulang.
+     */
+    public function generateLembarKlaim(string $id): JsonResponse
+    {
+        try {
+            $lembar = $this->service->generateClaimResume($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($lembar, 'Lembar klaim siap — menunggu tanda tangan dokter.');
     }
 
     // =========================================================================

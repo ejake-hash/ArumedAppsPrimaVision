@@ -716,6 +716,30 @@ class RekamMedisController extends Controller
         return $this->ok($add, 'Addendum dibuat (perlu TTD lanjutan).', 201);
     }
 
+    /**
+     * POST /rekam-medis/document/{id}/revisi
+     * Koreksi dokumen final via "generate ulang + TTD ulang": buat versi baru
+     * (otomatis terkoreksi dari data terkini) → masuk antrian TTD; versi lama
+     * jadi SUPERSEDED (riwayat).
+     */
+    public function reviseDocument(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'alasan' => 'required|string|max:500',
+        ]);
+
+        try {
+            $new = $this->formRegistry->reviseDocument($id, $validated['alasan']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+        return $this->ok([
+            'document_id' => $new->id,
+            'revision'    => $new->revision,
+            'status'      => $new->status,
+        ], 'Dokumen versi baru dibuat — menunggu tanda tangan ulang.', 201);
+    }
+
     // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================
