@@ -361,7 +361,8 @@ class DokterService
             })
             ->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id'))
             ->whereNull('m.deleted_at')
-            ->where('m.is_active', true)
+            // Tampilkan SEMUA obat (selaras sumber Farmasi getStokObat yg TIDAK filter is_active).
+            // Obat nonaktif tetap muncul, ditandai is_active=false agar FE beri badge "nonaktif".
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($w) use ($search) {
                     $w->where('m.name', 'ilike', "%{$search}%")
@@ -371,16 +372,17 @@ class DokterService
             })
             ->orderBy('m.name')
             ->limit(100)
-            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'ip.price as hja', 'fs.qty as farmasi_qty'])
+            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'm.is_active', 'ip.price as hja', 'fs.qty as farmasi_qty'])
             ->map(fn ($r) => [
-                'id'       => $r->id,
-                'code'     => $r->code,
-                'name'     => $r->name,
-                'form'     => $r->form_sediaan,
-                'golongan' => $r->golongan,
-                'unit'     => $r->unit,
-                'stock'    => (float) ($r->farmasi_qty ?? 0),
-                'hja'      => (float) $r->hja,
+                'id'        => $r->id,
+                'code'      => $r->code,
+                'name'      => $r->name,
+                'form'      => $r->form_sediaan,
+                'golongan'  => $r->golongan,
+                'unit'      => $r->unit,
+                'stock'     => (float) ($r->farmasi_qty ?? 0),
+                'hja'       => (float) $r->hja,
+                'is_active' => (bool) $r->is_active,
             ])
             ->all();
     }

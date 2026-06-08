@@ -685,7 +685,7 @@ onMounted(loadBoard)
             <div class="picker-row">
               <select v-model="selObat">
                 <option value="">— pilih obat —</option>
-                <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }} · {{ fmtRp(o.price) }}</option>
+                <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }}{{ o.is_active === false ? ' · (nonaktif)' : '' }} · {{ fmtRp(o.price) }}</option>
               </select>
               <button class="btn btn-primary btn-press btn-sm" @click="addObat">+ Obat</button>
             </div>

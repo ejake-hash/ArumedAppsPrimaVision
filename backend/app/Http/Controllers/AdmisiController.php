@@ -269,6 +269,8 @@ class AdmisiController extends Controller
             'guarantor_type'     => 'required|in:UMUM,BPJS,ASURANSI,PERUSAHAAN,SOSIAL',
             'insurer_id'         => 'nullable|uuid|exists:insurers,id',
             'bpjs_booking_code'  => 'nullable|string|max:50',
+            'bpjs_referral_no'   => 'nullable|string|max:50',
+            'bpjs_control_no'    => 'nullable|string|max:50',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
 
@@ -428,6 +430,8 @@ class AdmisiController extends Controller
             'guarantor_type'     => 'required|in:UMUM,BPJS,ASURANSI,PERUSAHAAN,SOSIAL',
             'insurer_id'         => 'nullable|uuid|exists:insurers,id',
             'bpjs_booking_code'  => 'nullable|string|max:50',
+            'bpjs_referral_no'   => 'nullable|string|max:50',
+            'bpjs_control_no'    => 'nullable|string|max:50',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
 
@@ -654,6 +658,55 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($data, 'Data surat kontrol BPJS');
+    }
+
+    /**
+     * POST /admisi/bpjs/rujukan-by-kartu — tarik daftar rujukan (FKTP+FKRTL) by
+     * No. Kartu (atau NIK → resolve dulu) agar pasien tak perlu bawa no. rujukan.
+     */
+    public function bpjsRujukanByKartu(Request $request): JsonResponse
+    {
+        $request->validate([
+            'nik'         => 'nullable|string|size:16',
+            'bpjs_number' => 'nullable|string|max:20',
+        ]);
+        if (empty($request->nik) && empty($request->bpjs_number)) {
+            return $this->validationError(['nik' => ['NIK atau No. Kartu BPJS wajib diisi.']]);
+        }
+
+        try {
+            $data = $this->service->bpjsListRujukanByKartu($request->only(['nik', 'bpjs_number']));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Daftar rujukan BPJS');
+    }
+
+    /**
+     * POST /admisi/bpjs/surat-kontrol-by-kartu — tarik daftar surat/rencana kontrol
+     * by No. Kartu (atau NIK → resolve dulu).
+     */
+    public function bpjsSuratKontrolByKartu(Request $request): JsonResponse
+    {
+        $request->validate([
+            'nik'         => 'nullable|string|size:16',
+            'bpjs_number' => 'nullable|string|max:20',
+            'bulan'       => 'nullable|string|max:2',
+            'tahun'       => 'nullable|string|max:4',
+            'filter'      => 'nullable|in:1,2',
+        ]);
+        if (empty($request->nik) && empty($request->bpjs_number)) {
+            return $this->validationError(['nik' => ['NIK atau No. Kartu BPJS wajib diisi.']]);
+        }
+
+        try {
+            $data = $this->service->bpjsListSuratKontrolByKartu($request->only(['nik', 'bpjs_number', 'bulan', 'tahun', 'filter']));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Daftar surat kontrol BPJS');
     }
 
     /** GET /admisi/bpjs/surat-kontrol/{visitId} — status SK BPJS visit ini (prefill edit). */

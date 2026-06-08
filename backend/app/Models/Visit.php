@@ -57,6 +57,8 @@ class Visit extends Model
         'refraksi_completed_at',
         'ready_for_doctor',
         'bpjs_booking_code',
+        'no_rujukan',
+        'no_surat_kontrol',
         'bpjs_antrean_number',
         'bpjs_referral_in_id',
         'bpjs_control_letter_id',

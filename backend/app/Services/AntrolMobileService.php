@@ -229,6 +229,11 @@ class AntrolMobileService
         }
 
         DB::transaction(function () use ($booking) {
+            // Bawa nomor referensi dari booking Mobile JKN ke visit agar tak hilang saat
+            // terbit SEP. jeniskunjungan BPJS Antrean: '3'=Kontrol → no_surat_kontrol;
+            // selain itu (rujukan FKTP/antar-RS) → no_rujukan.
+            $isKontrol = (string) $booking->jenis_kunjungan === '3';
+
             $visit = Visit::create([
                 'patient_id'         => $booking->patient_id,
                 'doctor_schedule_id' => $booking->doctor_schedule_id,
@@ -238,6 +243,8 @@ class AntrolMobileService
                 'current_station'    => 'TRIASE',
                 'guarantor_type'     => 'BPJS',
                 'bpjs_booking_code'  => $booking->kodebooking,
+                'no_rujukan'         => $isKontrol ? null : $booking->nomor_referensi,
+                'no_surat_kontrol'   => $isKontrol ? $booking->nomor_referensi : null,
                 'satusehat_sync_status' => 'PENDING',
                 'insurance_verification_status' => 'NONE',
             ]);

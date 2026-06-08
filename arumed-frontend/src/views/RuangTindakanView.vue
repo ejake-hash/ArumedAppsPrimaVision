@@ -367,7 +367,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
                 <input v-model="obatSearch" class="inp" placeholder="Cari obat (nama/kode)…" @input="searchObat" />
                 <div v-if="obatOptions.length" class="obat-drop">
                   <button v-for="o in obatOptions" :key="o.id" type="button" class="obat-opt" @click="addResepObat(o)">
-                    {{ o.code ? o.code + ' · ' : '' }}{{ o.name }}<span v-if="o.unit" class="u">/{{ o.unit }}</span>
+                    {{ o.code ? o.code + ' · ' : '' }}{{ o.name }}<span v-if="o.unit" class="u">/{{ o.unit }}</span><span v-if="o.is_active === false" class="rx-inactive-badge" title="Obat nonaktif">nonaktif</span>
                   </button>
                 </div>
               </div>
@@ -524,6 +524,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .obat-opt { display: block; width: 100%; text-align: left; border: none; background: none; padding: 7px 11px; font-size: 0.82rem; color: #334155; cursor: pointer; border-bottom: 1px solid #f1f5f9; }
 .obat-opt:hover { background: #f0f9ff; }
 .obat-opt .u { color: #94a3b8; }
+.rx-inactive-badge { display: inline-block; margin-left: 5px; font-size: 9px; font-weight: 700; color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; border-radius: 4px; padding: 0 5px; vertical-align: middle; }
 .resep-tbl { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.8rem; }
 .resep-tbl th { text-align: left; padding: 5px 7px; color: #64748b; font-weight: 600; font-size: 0.72rem; border-bottom: 1px solid #e2e8f0; }
 .resep-tbl td { padding: 4px 7px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }

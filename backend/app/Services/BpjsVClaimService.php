@@ -82,16 +82,28 @@ class BpjsVClaimService
         return $result;
     }
 
-    /** GET /Rujukan/RS/Peserta/{noKartu} — rujukan terakhir (1 record). */
+    /** GET /Rujukan/RS/Peserta/{noKartu} — rujukan FKRTL terakhir (1 record). */
     public function getRujukanByKartu(string $noKartu): array
     {
         return $this->client->request('GET', "/Rujukan/RS/Peserta/{$noKartu}");
     }
 
-    /** GET /Rujukan/RS/List/Peserta/{noKartu} — semua rujukan (multi record). */
+    /** GET /Rujukan/RS/List/Peserta/{noKartu} — semua rujukan FKRTL (multi record). */
     public function listRujukanByKartu(string $noKartu): array
     {
         return $this->client->request('GET', "/Rujukan/RS/List/Peserta/{$noKartu}");
+    }
+
+    /** GET /Rujukan/Peserta/{noKartu} — rujukan FKTP (faskes 1) terakhir by kartu. */
+    public function getRujukanFktpByKartu(string $noKartu): array
+    {
+        return $this->client->request('GET', "/Rujukan/Peserta/{$noKartu}");
+    }
+
+    /** GET /Rujukan/List/Peserta/{noKartu} — semua rujukan FKTP (faskes 1) by kartu. */
+    public function listRujukanFktpByKartu(string $noKartu): array
+    {
+        return $this->client->request('GET', "/Rujukan/List/Peserta/{$noKartu}");
     }
 
     /** POST /Rujukan/2.0/insert — buat rujukan keluar. */
@@ -308,7 +320,7 @@ class BpjsVClaimService
         return $result;
     }
 
-    /** GET /RencanaKontrol/nosep/{noSep} — data SEP utk rencana kontrol. */
+    /** GET /RencanaKontrol/noSuratKontrol/{noSuratKontrol} — detail surat kontrol by nomor. */
     public function getSuratKontrol(string $noSuratKontrol, ?string $visitId = null): array
     {
         return $this->client->request('GET', "/RencanaKontrol/noSuratKontrol/{$noSuratKontrol}");

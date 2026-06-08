@@ -47,7 +47,14 @@ class RefractionOptionSeeder extends Seeder
                 'min_value' => 0.00, 'max_value' => 4.00, 'step' => 0.25, 'values' => null,
             ],
             [
-                'kind' => 'visus', 'label' => 'Visus (Snellen)', 'mode' => 'list', 'format' => 'plain',
+                'kind' => 'visus', 'label' => 'Visus Awal (Snellen)', 'mode' => 'list', 'format' => 'plain',
+                'min_value' => null, 'max_value' => null, 'step' => null,
+                'values' => ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF', 'HM', 'LP', 'NLP'],
+            ],
+            // Visus Akhir (BCVA) — daftar TERPISAH dari Visus Awal karena nilai
+            // yang dicapai setelah koreksi berbeda. Admin RO bisa sesuaikan.
+            [
+                'kind' => 'visus_akhir', 'label' => 'Visus Akhir (Snellen)', 'mode' => 'list', 'format' => 'plain',
                 'min_value' => null, 'max_value' => null, 'step' => null,
                 'values' => ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF', 'HM', 'LP', 'NLP'],
             ],
@@ -78,6 +85,12 @@ class RefractionOptionSeeder extends Seeder
             ]);
             $this->command?->info('  → visus default lama di-upgrade ke daftar baru (16 nilai).');
         }
+
+        // Relabel baris lama 'visus' → "Visus Awal (Snellen)" agar tak rancu dengan
+        // 'visus_akhir' di UI master. Hanya sentuh yang masih pakai label generik lama.
+        RefractionOption::where('kind', 'visus')
+            ->where('label', 'Visus (Snellen)')
+            ->update(['label' => 'Visus Awal (Snellen)']);
 
         $this->command?->info('RefractionOptionSeeder: ' . count($defaults) . ' opsi refraksi default siap.');
     }

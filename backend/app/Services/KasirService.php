@@ -1612,6 +1612,77 @@ class KasirService
         });
     }
 
+    /**
+     * Selesaikan tagihan yang sisa bayar pasiennya Rp 0 — mis. diskon/penghapusan
+     * 100% oleh RS atau dokter (pasien UMUM, BUKAN asuransi/BPJS). Tidak ada uang
+     * masuk: invoice ditandai PAID dengan paid_amount = 0 dan payment_method WAIVED.
+     *
+     * BEDA dgn confirmInsuranceCoverage: TIDAK menyentuh covered_amount — ini bukan
+     * tanggungan asuransi, melainkan diskon yang SUDAH tercatat sehingga total = 0.
+     * processPayment menolak nominal 0 (min:0.01), jadi kasus ini perlu jalur sendiri.
+     */
+    public function settleZeroInvoice(string $invoiceId, array $data = []): BillingInvoice
+    {
+        $user = auth('api')->user();
+
+        return DB::transaction(function () use ($invoiceId, $data, $user) {
+            $invoice = BillingInvoice::with('visit')->lockForUpdate()->findOrFail($invoiceId);
+
+            if (in_array($invoice->status, ['PAID', 'CANCELLED'])) {
+                throw new \Exception('Invoice sudah lunas atau dibatalkan.', 422);
+            }
+
+            // Finalize dulu bila masih DRAFT (kasir konfirmasi langsung tanpa step terpisah).
+            if ($invoice->status === 'DRAFT') {
+                $invoice->update(['status' => 'FINALIZED']);
+            }
+            if (! in_array($invoice->status, ['FINALIZED', 'PARTIALLY_PAID'])) {
+                throw new \Exception('Invoice harus dalam status FINALIZED atau PARTIALLY_PAID untuk diselesaikan.', 422);
+            }
+
+            // Wajib benar-benar nol: kalau masih ada sisa, pakai pembayaran biasa.
+            $sisaDue = (float) $invoice->total - (float) $invoice->covered_amount - (float) $invoice->paid_amount;
+            if ($sisaDue > 0.009) {
+                throw new \Exception(
+                    'Masih ada sisa Rp ' . number_format($sisaDue, 0, ',', '.') . ' yang harus dibayar — gunakan proses pembayaran biasa.',
+                    422
+                );
+            }
+
+            $invoice->update([
+                'payment_method' => 'WAIVED',
+                'status'         => 'PAID',
+                'paid_at'        => now(),
+                'cashier_id'     => $user->employee_id,
+                'notes'          => $data['notes'] ?? $invoice->notes,
+            ]);
+
+            // Routing FARMASI vs SELESAI + TV broadcast (sama seperti pembayaran lunas).
+            $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
+                ->where('station', 'KASIR')
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->first();
+            if ($kasirQueue) {
+                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
+            } else {
+                $invoice->visit->update(['current_station' => 'SELESAI']);
+            }
+
+            // Hak konsultasi kontrol gratis pasca-bedah (idempoten; aman utk invoice nol).
+            app(\App\Services\PackageFollowupService::class)->redeemPaidInvoice($invoice);
+
+            $this->log(
+                $user->id,
+                'SETTLE_ZERO_INVOICE',
+                BillingInvoice::class,
+                $invoice->id,
+                'Tagihan Rp 0 (diskon/penghapusan 100%) — status: PAID (WAIVED)'
+            );
+
+            return $invoice->fresh(['items', 'visit.patient', 'cashier']);
+        });
+    }
+
     // =========================================================================
     // BILLING ITEMS
     // =========================================================================

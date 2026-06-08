@@ -214,6 +214,26 @@ class KasirController extends Controller
         return $this->ok($invoice, 'Kunjungan BPJS dikonfirmasi. Kunjungan selesai.');
     }
 
+    /**
+     * POST /kasir/invoice/{id}/settle-zero
+     * Selesaikan tagihan Rp 0 (diskon/penghapusan 100% RS/dokter, pasien UMUM).
+     * Body: { notes? }
+     */
+    public function settleZero(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'notes' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $invoice = $this->service->settleZeroInvoice($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($invoice, 'Tagihan Rp 0 diselesaikan (gratis/diskon 100%). Kunjungan selesai.');
+    }
+
     /** POST /kasir/invoice/{id}/cancel */
     public function cancelInvoice(string $id): JsonResponse
     {

@@ -4,7 +4,7 @@
     $rp = fn ($v) => 'Rp ' . number_format((float) ($v ?? 0), 0, ',', '.');
     $metodeLabel = fn ($c) => [
         'CASH' => 'Tunai', 'CREDIT_CARD' => 'Debit/Kredit', 'TRANSFER' => 'Transfer',
-        'BPJS' => 'BPJS', 'INSURANCE' => 'Ditanggung Asuransi',
+        'BPJS' => 'BPJS', 'INSURANCE' => 'Ditanggung Asuransi', 'WAIVED' => 'Gratis / Diskon 100%',
     ][$c] ?? ($c ?? '—');
     $penjaminLabel = fn ($g) => [
         'BPJS' => 'BPJS Kesehatan', 'ASURANSI' => 'Asuransi', 'PERUSAHAAN' => 'Perusahaan',

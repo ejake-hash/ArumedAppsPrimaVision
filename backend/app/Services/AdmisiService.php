@@ -405,6 +405,20 @@ class AdmisiService
         return $patients;
     }
 
+    /**
+     * Normalisasi No. Kartu BPJS sebelum simpan ke kolom `patients.bpjs_number`
+     * yang ber-UNIQUE constraint. String kosong, '-', atau hanya tanda hubung/
+     * spasi → NULL (Postgres izinkan NULL berulang; '-' literal akan tabrakan
+     * unique saat >1 pasien non-BPJS/nomor belum diketahui). Mencegah
+     * SQLSTATE[23505] patients_bpjs_number_unique.
+     */
+    private function normalizeBpjsNumber(mixed $value): ?string
+    {
+        $v = trim((string) ($value ?? ''));
+
+        return ($v === '' || preg_match('/^[-–—\s]+$/u', $v)) ? null : $v;
+    }
+
     public function storePasien(array $data): Patient
     {
         $noRm = $this->generateNoRM();
@@ -420,7 +434,7 @@ class AdmisiService
             'email'         => $data['email'] ?? null,
             'address'       => $data['address'] ?? null,
             'province'      => $data['province'] ?? null,
-            'bpjs_number'   => $data['bpjs_number'] ?? null,
+            'bpjs_number'   => $this->normalizeBpjsNumber($data['bpjs_number'] ?? null),
             'blood_type'    => $data['blood_type'] ?? null,
             'allergy_notes' => $data['allergy_notes'] ?? null,
             'photo_path'    => $this->savePatientPhoto($data['photo'] ?? null, $data['name']),
@@ -563,6 +577,11 @@ class AdmisiService
             }
         }
         unset($data['photo']); // bukan kolom DB
+
+        // No. Kartu BPJS kosong/'-' → NULL (hindari tabrakan unique constraint).
+        if (array_key_exists('bpjs_number', $data)) {
+            $data['bpjs_number'] = $this->normalizeBpjsNumber($data['bpjs_number']);
+        }
 
         $patient->update($data);
 
@@ -828,6 +847,8 @@ class AdmisiService
                 'current_station'    => 'TRIASE',       // skip ADMISI, langsung ke TR
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
+                'no_rujukan'         => $data['bpjs_referral_no'] ?? null,
+                'no_surat_kontrol'   => $data['bpjs_control_no'] ?? null,
                 'satusehat_sync_status' => 'PENDING',
                 'insurance_verification_status' => $needsTpaVerification ? 'PENDING' : 'NONE',
             ]);
@@ -1079,7 +1100,7 @@ class AdmisiService
                     'email'         => $data['email']         ?? null,
                     'address'       => $data['address']       ?? null,
                     'province'      => $data['province']      ?? null,
-                    'bpjs_number'   => $data['bpjs_number']   ?? null,
+                    'bpjs_number'   => $this->normalizeBpjsNumber($data['bpjs_number'] ?? null),
                     'blood_type'    => $data['blood_type']    ?? null,
                     'allergy_notes' => $data['allergy_notes'] ?? null,
                     'photo_path'    => $photoPath,
@@ -1113,6 +1134,8 @@ class AdmisiService
                 'inpatient_reason'    => $preop['inpatient_reason'],
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
+                'no_rujukan'         => $data['bpjs_referral_no'] ?? null,
+                'no_surat_kontrol'   => $data['bpjs_control_no'] ?? null,
                 'insurance_verification_status' => $needsTpaVerificationWalkin ? 'PENDING' : 'NONE',
             ]);
 
@@ -1504,6 +1527,12 @@ class AdmisiService
         // SEP IGD wajib '2' sesuai regulasi BPJS gawat darurat.
         $asalRujukan = $isIgd ? '2' : '1';
 
+        // No. rujukan & surat kontrol: utamakan dari request (SEP manual yg eksplisit),
+        // fallback ke nilai yang DISIMPAN saat admisi (hasil "Tarik dari BPJS"/input petugas)
+        // supaya tombol "Terbitkan SEP" (cuma kirim visit_id) tetap membawa nomor rujukan.
+        $noRujukan      = $data['no_rujukan']       ?? $visit->no_rujukan       ?? '';
+        $noSuratKontrol = $data['no_surat_kontrol'] ?? $visit->no_surat_kontrol ?? '';
+
         $tSep = [
             'noKartu'      => $data['bpjs_number'],
             'tglSep'       => $isRanap && $visit->admission_at
@@ -1516,7 +1545,7 @@ class AdmisiService
             'rujukan'      => [
                 'asalRujukan' => $asalRujukan, // 1=FKTP, 2=gawat darurat (IGD)
                 'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
-                'noRujukan'   => $data['no_rujukan'] ?? '',
+                'noRujukan'   => $noRujukan,
                 'ppkRujukan'  => $data['ppk_rujukan'] ?? '',
             ],
             'catatan'      => 'SEP dari Arumed',
@@ -1529,7 +1558,7 @@ class AdmisiService
             'flagProcedure' => '',
             'kdPenunjang'  => '',
             'assesmentPel' => '',
-            'skdp'         => ['noSurat' => $data['no_surat_kontrol'] ?? '', 'kodeDPJP' => $kodeDpjp ?? ''],
+            'skdp'         => ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? ''],
             'dpjpLayan'    => $kodeDpjp ?? '',
             'noTelp'       => $visit->patient?->phone ?? '',
             'user'         => auth('api')->user()?->name ?? 'arumed',
@@ -1576,6 +1605,113 @@ class AdmisiService
         $this->assertBpjsEnabled('VCLAIM');
 
         return $this->vclaim->getSuratKontrol($data['no_surat_kontrol']);
+    }
+
+    /**
+     * Resolve No. Kartu BPJS dari payload: pakai bpjs_number bila ada; kalau hanya
+     * ada NIK, tarik dulu via Cek Peserta (NIK → noKartu). Untuk fitur "cukup NIK".
+     */
+    private function resolveNoKartuBpjs(array $data): string
+    {
+        $noKartu = trim((string) ($data['bpjs_number'] ?? ''));
+        if ($noKartu !== '') {
+            return $noKartu;
+        }
+
+        $nik = trim((string) ($data['nik'] ?? ''));
+        if ($nik === '') {
+            throw new \Exception('Isi No. Kartu BPJS atau NIK pasien dulu.', 422);
+        }
+
+        $res     = $this->vclaim->checkPeserta($nik, 'nik');
+        $noKartu = $res['response']['peserta']['noKartu'] ?? null;
+        if (! $noKartu) {
+            throw new \Exception($res['metaData']['message'] ?? 'Peserta BPJS tidak ditemukan dari NIK.', 422);
+        }
+
+        return (string) $noKartu;
+    }
+
+    /**
+     * Tarik daftar rujukan aktif pasien dari BPJS berdasarkan No. Kartu (FKTP + FKRTL),
+     * sehingga pasien kontrol tak perlu membawa nomor rujukan fisik. Cukup NIK/No. Kartu.
+     *
+     * @return array{ no_kartu: string, fktp: array, rs: array }
+     */
+    public function bpjsListRujukanByKartu(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $noKartu = $this->resolveNoKartuBpjs($data);
+
+        $fktp = $this->vclaim->listRujukanFktpByKartu($noKartu);
+        $rs   = $this->vclaim->listRujukanByKartu($noKartu);
+
+        return [
+            'no_kartu' => $noKartu,
+            'fktp'     => $fktp,
+            'rs'       => $rs,
+        ];
+    }
+
+    /**
+     * Tarik daftar Surat/Rencana Kontrol pasien dari BPJS berdasarkan No. Kartu.
+     * Default bulan/tahun = sekarang, filter=2 (by tanggal rencana kontrol) agar
+     * memunculkan kontrol yang dijadwalkan pada periode berjalan.
+     *
+     * @return array{ no_kartu: string, bulan: string, tahun: string, result: array }
+     */
+    public function bpjsListSuratKontrolByKartu(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $noKartu = $this->resolveNoKartuBpjs($data);
+        $filter  = (string) ($data['filter'] ?? '2'); // 1=tgl entri, 2=tgl rencana kontrol
+
+        // Bila petugas tentukan bulan/tahun → query persis itu. Default: bulan berjalan
+        // + bulan depan, sebab kontrol pasca-bedah ("kontrol kembali tgl X") sering jatuh
+        // di bulan berikutnya — kalau cuma bulan ini, surat kontrolnya tak akan muncul.
+        if (! empty($data['bulan'])) {
+            $periods = [[
+                str_pad((string) $data['bulan'], 2, '0', STR_PAD_LEFT),
+                (string) ($data['tahun'] ?? now('Asia/Jakarta')->format('Y')),
+            ]];
+        } else {
+            $now  = now('Asia/Jakarta');
+            $next = $now->copy()->addMonth();
+            $periods = [
+                [$now->format('m'), $now->format('Y')],
+                [$next->format('m'), $next->format('Y')],
+            ];
+        }
+
+        $merged  = [];
+        $seen    = [];
+        $lastRaw = null;
+        foreach ($periods as [$bulan, $tahun]) {
+            $res     = $this->vclaim->listRencanaKontrolByKartu($bulan, $tahun, $noKartu, $filter);
+            $lastRaw = $res;
+            $list    = $res['response']['list'] ?? (is_array($res['response'] ?? null) ? $res['response'] : []);
+            foreach (($list ?: []) as $item) {
+                $key = $item['noSuratKontrol'] ?? json_encode($item);
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                $merged[]   = $item;
+            }
+        }
+
+        return [
+            'no_kartu' => $noKartu,
+            'periods'  => $periods,
+            // Bentuk ulang jadi 1 envelope (response.list gabungan) agar FE memproses seragam.
+            'result'   => [
+                'metaData'   => $lastRaw['metaData'] ?? ['code' => '200', 'message' => 'OK'],
+                'response'   => ['list' => $merged],
+                'is_success' => $lastRaw['is_success'] ?? true,
+            ],
+        ];
     }
 
     /**

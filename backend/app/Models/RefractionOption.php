@@ -17,8 +17,9 @@ class RefractionOption extends Model
     public $incrementing = false;
 
     // Daftar kind yang dikenal (juga whitelist input admin).
-    // 'visus' utk Visus Awal/Akhir; 'pinhole' terpisah (tanpa HM/LP/NLP).
-    public const KINDS = ['sphere', 'cylinder', 'axis', 'keratometri', 'add', 'visus', 'pinhole'];
+    // 'visus' = Visus Awal (UCVA); 'visus_akhir' = Visus Akhir (BCVA) — daftar
+    // terpisah karena nilainya berbeda; 'pinhole' terpisah (tanpa HM/LP/NLP).
+    public const KINDS = ['sphere', 'cylinder', 'axis', 'keratometri', 'add', 'visus', 'visus_akhir', 'pinhole'];
 
     public const MODES = ['range', 'list'];
     public const FORMATS = ['plain', 'signed_diopter'];

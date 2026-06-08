@@ -2480,7 +2480,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                       />
                       <div v-if="obatSearchPasca.trim() && !newObat.medication_id" class="bd-combo-dropdown">
                         <div v-for="o in filteredObatPasca" :key="o.id" class="bd-combo-option" @mousedown.prevent="pickObatMaster(o)">
-                          <span class="bd-combo-name">{{ o.name }}</span>
+                          <span class="bd-combo-name">{{ o.name }}<span v-if="o.is_active === false" class="rx-inactive-badge" title="Obat nonaktif">nonaktif</span></span>
                           <span class="bd-combo-role">{{ o.form_sediaan || o.golongan || '' }}{{ o.unit ? ` · ${o.unit}` : '' }}</span>
                         </div>
                         <div v-if="!filteredObatPasca.length" class="bd-combo-empty">Tidak ada hasil</div>
@@ -2941,6 +2941,7 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-combo-option:hover { background: var(--gl); }
 .bd-combo-name { font-size: 13px; font-weight: 600; color: var(--td); }
 .bd-combo-role { font-size: 10px; color: var(--tu); }
+.rx-inactive-badge { display: inline-block; margin-left: 5px; font-size: 9px; font-weight: 700; color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; border-radius: 4px; padding: 0 5px; vertical-align: middle; }
 .bd-combo-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--th); font-style: italic; }
 
 /* Komponen Paket Pasien (snapshot) */

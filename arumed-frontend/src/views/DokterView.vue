@@ -855,8 +855,10 @@ function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 // ── TAB 3: E-RESEP ──────────────────────────────────────────────────────────
 
 const rxList = ref([])
-const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja}
+const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja, is_active}
 const obatSearch = ref('')
+const obatComboOpen = ref(false)   // true saat input fokus → tampilkan daftar walau belum diketik
+function closeObatComboSoon() { setTimeout(() => { obatComboOpen.value = false }, 150) }
 const kasirNote = ref('')          // catatan dokter untuk kasir (dipersist ke prescriptions.notes)
 const pharmacyNote = ref('')       // catatan dokter untuk farmasi (dipersist ke prescriptions.pharmacy_note)
 const tab3Sent = ref(false)        // sudah klik "Simpan & Kirim ke Kasir" → Tab 3 read-only
@@ -872,10 +874,10 @@ async function loadObat() {
 
 const filteredObat = computed(() => {
   const s = obatSearch.value.trim().toLowerCase()
-  if (!s) return []
-  return obatList.value
-    .filter((d) => d.name.toLowerCase().includes(s) || (d.code ?? '').toLowerCase().includes(s))
-    .slice(0, 50)
+  const base = !s
+    ? obatList.value
+    : obatList.value.filter((d) => d.name.toLowerCase().includes(s) || (d.code ?? '').toLowerCase().includes(s))
+  return base.slice(0, 50)
 })
 
 function pickObat(d) {
@@ -884,6 +886,7 @@ function pickObat(d) {
   newRx.value.form = d.form
   newRx.value.hja  = d.hja
   obatSearch.value = ''
+  obatComboOpen.value = false
 }
 // Opsi durasi pemakaian (satuan hari — selaras dengan _parseDur → duration_days).
 const DURASI_OPTS = ['3 hari', '5 hari', '7 hari', '10 hari', '14 hari', '21 hari', '28 hari', '30 hari', '60 hari', '90 hari']
@@ -2576,10 +2579,17 @@ function closeResumeRM() {
               <div class="cb">
                 <!-- Cari & pilih obat dari inventori (harga = HJA penentuan harga) -->
                 <div class="rx-picker">
-                  <input v-model="obatSearch" class="form-input" placeholder="Cari obat dari inventori (nama / kode)…" />
-                  <div v-if="obatSearch && filteredObat.length" class="rx-drop">
-                    <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @click="pickObat(d)">
-                      <span class="rx-drop-name">{{ d.name }}</span>
+                  <input
+                    v-model="obatSearch" class="form-input"
+                    placeholder="Klik untuk lihat semua, atau ketik nama / kode obat…"
+                    @focus="obatComboOpen = true" @blur="closeObatComboSoon"
+                  />
+                  <div v-if="obatComboOpen && filteredObat.length" class="rx-drop">
+                    <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @mousedown.prevent="pickObat(d)">
+                      <span class="rx-drop-name">
+                        {{ d.name }}
+                        <span v-if="d.is_active === false" class="rx-inactive-badge" title="Obat berstatus nonaktif">nonaktif</span>
+                      </span>
                       <span class="rx-drop-meta">
                         {{ d.form }} ·
                         <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">Farmasi: {{ d.stock }}</span>
@@ -2587,7 +2597,7 @@ function closeResumeRM() {
                       <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
                     </div>
                   </div>
-                  <div v-else-if="obatSearch" class="tarif-empty">Obat tidak ditemukan di inventori</div>
+                  <div v-else-if="obatComboOpen && obatSearch" class="tarif-empty">Obat tidak ditemukan di inventori</div>
                 </div>
 
                 <!-- Form aturan pakai: muncul otomatis saat obat dipilih -->
@@ -4509,6 +4519,7 @@ function closeResumeRM() {
 .rx-drop-item:hover { background: var(--gl); }
 .rx-drop-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rx-drop-meta { font-size: 10px; color: var(--tu); flex-shrink: 0; }
+.rx-inactive-badge { display: inline-block; margin-left: 5px; font-size: 9px; font-weight: 700; color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; border-radius: 4px; padding: 0 5px; vertical-align: middle; }
 .rx-stok { font-weight: 600; }
 .rx-stok.ok { color: #15803d; }
 .rx-stok.zero { color: #b45309; }

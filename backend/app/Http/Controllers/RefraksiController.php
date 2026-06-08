@@ -172,7 +172,7 @@ class RefraksiController extends Controller
             // IOP
             'iop_od'     => 'nullable|numeric|between:0,80',
             'iop_os'     => 'nullable|numeric|between:0,80',
-            'iop_method' => 'nullable|in:NCT,Goldmann,Schiotz',
+            'iop_method' => 'nullable|in:NCT,Goldmann,iCare,Schiotz',
 
             // Shared
             'pd_distance'    => 'nullable|numeric|between:40,80',
@@ -238,7 +238,7 @@ class RefraksiController extends Controller
 
             'iop_od'     => 'nullable|numeric|between:0,80',
             'iop_os'     => 'nullable|numeric|between:0,80',
-            'iop_method' => 'nullable|in:NCT,Goldmann,Schiotz',
+            'iop_method' => 'nullable|in:NCT,Goldmann,iCare,Schiotz',
 
             'pd_distance'    => 'nullable|numeric|between:40,80',
             'clinical_notes' => 'nullable|string|max:2000',

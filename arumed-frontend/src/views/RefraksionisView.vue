@@ -119,15 +119,14 @@ const showRxModal = ref(false)
 const steps = [
   { tab: 'autoref', label: 'Autoref', sub: 'Objektif + Keratometri' },
   { tab: 'iop', label: 'Tonometri', sub: 'NCT' },
-  { tab: 'visus', label: 'Visus', sub: 'UCVA · Pinhole · BCVA' },
-  { tab: 'refine', label: 'Refraksi', sub: 'Kacamata Lama + Subjektif' },
+  { tab: 'visus', label: 'Visus & Refraksi', sub: 'UCVA · Subjektif · BCVA' },
 ]
 
 const oldGlasses = ref({
   od_s: '', od_c: '', od_ax: '', od_add: '',
   os_s: '', os_c: '', os_ax: '', os_add: '',
 })
-const autoref = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_add_od: '', k_os_1: '', k_os_2: '', k_add_os: '' })
+const autoref = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_os_1: '', k_os_2: '', k_ax_os: '' })
 const iop = ref({ od: '', os: '', method: 'NCT' })
 const visus = ref({ ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' })
 const pinhole = ref({ od: '', os: '' })
@@ -140,7 +139,7 @@ function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 
 function resetForm() {
   oldGlasses.value = { od_s: '', od_c: '', od_ax: '', od_add: '', os_s: '', os_c: '', os_ax: '', os_add: '' }
-  autoref.value    = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_add_od: '', k_os_1: '', k_os_2: '', k_add_os: '' }
+  autoref.value    = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_os_1: '', k_os_2: '', k_ax_os: '' }
   iop.value        = { od: '', os: '', method: 'NCT' }
   visus.value      = { ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' }
   pinhole.value    = { od: '', os: '' }
@@ -172,12 +171,12 @@ function fillFormFromRecord(rec, presc) {
     os_s:     v(rec.autoref_os_sph),
     os_c:     v(rec.autoref_os_cyl),
     os_ax:    v(rec.autoref_os_axis),
-    k_od_1:   v(rec.keratometri1_od),
-    k_od_2:   v(rec.keratometri2_od),
-    k_add_od: v(rec.keratometri_axis_od),
-    k_os_1:   v(rec.keratometri1_os),
-    k_os_2:   v(rec.keratometri2_os),
-    k_add_os: v(rec.keratometri_axis_os),
+    k_od_1:  v(rec.keratometri1_od),
+    k_od_2:  v(rec.keratometri2_od),
+    k_ax_od: v(rec.keratometri_axis_od),
+    k_os_1:  v(rec.keratometri1_os),
+    k_os_2:  v(rec.keratometri2_os),
+    k_ax_os: v(rec.keratometri_axis_os),
   }
   iop.value = {
     od:     vnum(rec.iop_od),
@@ -287,13 +286,13 @@ function buildPemeriksaanPayload() {
     autoref_os_sph:  num(autoref.value.os_s),
     autoref_os_cyl:  num(autoref.value.os_c),
     autoref_os_axis: numInt(autoref.value.os_ax),
-    // Keratometri (k_add_* di UI dipakai sebagai axis sesuai schema keratometri_axis_*)
+    // Keratometri K1/K2 + Axis (kolom keratometri_axis_*, integer 0–180)
     keratometri1_od:     num(autoref.value.k_od_1),
     keratometri2_od:     num(autoref.value.k_od_2),
-    keratometri_axis_od: numInt(autoref.value.k_add_od),
+    keratometri_axis_od: numInt(autoref.value.k_ax_od),
     keratometri1_os:     num(autoref.value.k_os_1),
     keratometri2_os:     num(autoref.value.k_os_2),
-    keratometri_axis_os: numInt(autoref.value.k_add_os),
+    keratometri_axis_os: numInt(autoref.value.k_ax_os),
     // Refraksi Subjektif
     refraksi_subjektif_od_sph:  num(refine.value.od_s),
     refraksi_subjektif_od_cyl:  num(refine.value.od_c),
@@ -378,8 +377,8 @@ async function saveStep(curTab, nextTab) {
  * (Dulu Rx Final adalah tab ke-5; kini jadi modal yang muncul dari tab Refraksi.)
  */
 async function openRxModal() {
-  await saveStep('refine', null)
-  if (!doneSteps.value.includes('refine')) return // saveStep gagal → jangan buka modal
+  await saveStep('visus', null)
+  if (!doneSteps.value.includes('visus')) return // saveStep gagal → jangan buka modal
   showRxModal.value = true
 }
 
@@ -493,13 +492,16 @@ function printDoctorTicket() {
 // Fallback default kalau master belum termuat / endpoint gagal (degradasi mulus:
 // input tetap combobox dengan datalist kosong → petugas tetap bisa ketik manual).
 const DEFAULT_VA = ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF', 'HM', 'LP', 'NLP']
+// Visus Akhir (BCVA) — master TERPISAH dari Visus Awal (nilainya berbeda).
+const DEFAULT_VA_AKHIR = ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF', 'HM', 'LP', 'NLP']
 // Pinhole TERPISAH dari Visus (tanpa HM/LP/NLP).
 const DEFAULT_PH = ['6/6', '6/7.5', '6/9', '6/12', '6/15', '6/18', '6/24', '6/36', '6/60', '3/60', '2/60', '1/60', 'CF']
 const refOpts = ref({
-  sphere: [], cylinder: [], axis: [], keratometri: [], add: [], visus: DEFAULT_VA, pinhole: DEFAULT_PH,
+  sphere: [], cylinder: [], axis: [], keratometri: [], add: [], visus: DEFAULT_VA, visus_akhir: DEFAULT_VA_AKHIR, pinhole: DEFAULT_PH,
 })
-// Backward-compat: komponen visus pakai `vaOpts`; pinhole pakai `phOpts`.
+// Backward-compat: komponen visus awal pakai `vaOpts`; visus akhir `vaAkhirOpts`; pinhole `phOpts`.
 const vaOpts = computed(() => refOpts.value.visus?.length ? refOpts.value.visus : DEFAULT_VA)
+const vaAkhirOpts = computed(() => refOpts.value.visus_akhir?.length ? refOpts.value.visus_akhir : DEFAULT_VA_AKHIR)
 const phOpts = computed(() => refOpts.value.pinhole?.length ? refOpts.value.pinhole : DEFAULT_PH)
 
 async function loadRefOpts() {
@@ -513,6 +515,7 @@ async function loadRefOpts() {
       keratometri: m.keratometri ?? [],
       add:         m.add         ?? [],
       visus:       m.visus?.length ? m.visus : DEFAULT_VA,
+      visus_akhir: m.visus_akhir?.length ? m.visus_akhir : DEFAULT_VA_AKHIR,
       pinhole:     m.pinhole?.length ? m.pinhole : DEFAULT_PH,
     }
   } catch {
@@ -551,6 +554,7 @@ function toast(type, msg) {
     <datalist id="dl-keratometri"><option v-for="o in refOpts.keratometri" :key="o" :value="o" /></datalist>
     <datalist id="dl-add"><option v-for="o in refOpts.add" :key="o" :value="o" /></datalist>
     <datalist id="dl-visus"><option v-for="o in vaOpts" :key="o" :value="o" /></datalist>
+    <datalist id="dl-visus-akhir"><option v-for="o in vaAkhirOpts" :key="o" :value="o" /></datalist>
     <datalist id="dl-pinhole"><option v-for="o in phOpts" :key="o" :value="o" /></datalist>
 
     <div class="grid">
@@ -794,8 +798,8 @@ function toast(type, msg) {
                       <input id="akr-k-od-2" v-model="autoref.k_od_2" list="dl-keratometri" class="form-input" placeholder="44.25" />
                     </div>
                     <div class="fg">
-                      <label class="fl" for="akr-k-od-add">Addisi</label>
-                      <input id="akr-k-od-add" v-model="autoref.k_add_od" list="dl-add" class="form-input" placeholder="+1.50" />
+                      <label class="fl" for="akr-k-od-ax">Axis</label>
+                      <input id="akr-k-od-ax" v-model="autoref.k_ax_od" list="dl-axis" class="form-input" placeholder="180" />
                     </div>
                   </div>
                 </div>
@@ -826,8 +830,8 @@ function toast(type, msg) {
                       <input id="akr-k-os-2" v-model="autoref.k_os_2" list="dl-keratometri" class="form-input" placeholder="44.00" />
                     </div>
                     <div class="fg">
-                      <label class="fl" for="akr-k-os-add">Addisi</label>
-                      <input id="akr-k-os-add" v-model="autoref.k_add_os" list="dl-add" class="form-input" placeholder="+1.50" />
+                      <label class="fl" for="akr-k-os-ax">Axis</label>
+                      <input id="akr-k-os-ax" v-model="autoref.k_ax_os" list="dl-axis" class="form-input" placeholder="90" />
                     </div>
                   </div>
                 </div>
@@ -853,7 +857,10 @@ function toast(type, msg) {
                 <div class="fg">
                   <label class="fl" for="iop-method">Metode</label>
                   <select id="iop-method" v-model="iop.method" class="form-input">
-                    <option>NCT</option><option>Goldmann (GAT)</option><option>iCare (Rebound)</option>
+                    <option value="NCT">NCT</option>
+                    <option value="Goldmann">Goldmann (GAT)</option>
+                    <option value="iCare">iCare (Rebound)</option>
+                    <option value="Schiotz">Schiotz</option>
                   </select>
                 </div>
                 <div class="fg">
@@ -878,10 +885,10 @@ function toast(type, msg) {
             </div>
           </div>
 
-          <!-- VISUS + PINHOLE -->
+          <!-- VISUS & REFRAKSI SUBJEKTIF (gabungan: UCVA → Pinhole → Subjektif → BCVA) -->
           <div v-if="activeTab === 'visus'" class="card" role="region" aria-labelledby="card-visus-title">
             <div class="card-head">
-              <div class="card-head-title" id="card-visus-title">Visus &amp; Pinhole Test</div>
+              <div class="card-head-title" id="card-visus-title">Visus &amp; Refraksi Subjektif</div>
             </div>
             <div class="card-body">
               <div class="sec">Visus Awal (UCVA)</div>
@@ -906,49 +913,11 @@ function toast(type, msg) {
                   <input id="ph-os" v-model="pinhole.os" list="dl-pinhole" class="form-input" placeholder="6/6" />
                 </div>
               </div>
-              <div class="sec">Visus Akhir (BCVA)</div>
-              <div class="g2">
-                <div class="fg">
-                  <label class="fl" for="vis-bcva-od">BCVA OD</label>
-                  <input id="vis-bcva-od" v-model="visus.bcva_od" list="dl-visus" class="form-input" placeholder="6/6" />
-                </div>
-                <div class="fg">
-                  <label class="fl" for="vis-bcva-os">BCVA OS</label>
-                  <input id="vis-bcva-os" v-model="visus.bcva_os" list="dl-visus" class="form-input" placeholder="6/6" />
-                </div>
+              <!-- Refraksi Subjektif (koreksi DULU, sebelum ukur Visus Akhir) -->
+              <div class="sec-row">
+                <div class="sec" style="margin:0">Refraksi Subjektif</div>
+                <button type="button" class="btn btn-sm btn-secondary" @click="fillFromAutoref">Isi dari Autoref</button>
               </div>
-
-              <div class="sec">Catatan Refraksionis</div>
-              <div class="fg">
-                <textarea
-                  id="refraksionis-notes"
-                  v-model="clinicalNotes"
-                  class="form-input ta"
-                  rows="3"
-                  aria-label="Catatan refraksionis"
-                  placeholder="Observasi visus, koreksi yang dicoba, kesulitan pasien, rekomendasi pemeriksaan lanjutan…"
-                ></textarea>
-              </div>
-
-              <div class="action-row">
-                <button type="button" class="btn btn-secondary btn-sm" @click="goTab('iop')">← Kembali</button>
-                <button type="button" class="btn btn-primary"
-                  :disabled="store.saving || store.isFinalized"
-                  @click="saveStep('visus', 'refine')">Simpan &amp; Lanjut →</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- REFINE -->
-          <div v-if="activeTab === 'refine'" class="card" role="region" aria-labelledby="card-refine-title">
-            <div class="card-head">
-              <div class="card-head-title" id="card-refine-title">Refraksi Subjektif</div>
-              <button type="button" class="btn btn-sm btn-secondary" @click="fillFromAutoref">Isi dari Autoref</button>
-            </div>
-            <div class="card-body">
-
-              <!-- Refraksi Subjektif -->
-              <div class="sec">Refraksi Subjektif</div>
               <div class="odos">
                 <div class="eyec">
                   <div class="eyeh"><span class="elbl el-od" aria-hidden="true">OD</span></div>
@@ -1000,6 +969,19 @@ function toast(type, msg) {
                 </div>
               </div>
 
+              <!-- Visus Akhir (BCVA) — diukur SETELAH koreksi subjektif di atas -->
+              <div class="sec">Visus Akhir (BCVA) <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— ketajaman terbaik setelah koreksi</span></div>
+              <div class="g2">
+                <div class="fg">
+                  <label class="fl" for="vis-bcva-od">BCVA OD</label>
+                  <input id="vis-bcva-od" v-model="visus.bcva_od" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
+                </div>
+                <div class="fg">
+                  <label class="fl" for="vis-bcva-os">BCVA OS</label>
+                  <input id="vis-bcva-os" v-model="visus.bcva_os" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
+                </div>
+              </div>
+
               <!-- Kacamata Lama -->
               <div class="sec" style="margin-top:1rem">Kacamata Lama <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— kosongkan jika tidak pakai kacamata</span></div>
               <div class="odos">
@@ -1047,8 +1029,24 @@ function toast(type, msg) {
                 </div>
               </div>
 
+              <!-- Catatan Refraksionis -->
+              <div class="sec" style="margin-top:1rem">Catatan Refraksionis</div>
+              <div class="fg">
+                <textarea
+                  id="refraksionis-notes"
+                  v-model="clinicalNotes"
+                  class="form-input ta"
+                  rows="3"
+                  aria-label="Catatan refraksionis"
+                  placeholder="Observasi visus, koreksi yang dicoba, kesulitan pasien, rekomendasi pemeriksaan lanjutan…"
+                ></textarea>
+              </div>
+
               <div class="action-row">
-                <button type="button" class="btn btn-secondary btn-sm" @click="goTab('visus')">← Kembali</button>
+                <button type="button" class="btn btn-secondary btn-sm" @click="goTab('iop')">← Kembali</button>
+                <button type="button" class="btn btn-secondary"
+                  :disabled="store.saving || store.isFinalized"
+                  @click="saveStep('visus', null)">Simpan Draft</button>
                 <button type="button" class="btn btn-primary"
                   :disabled="store.saving"
                   @click="openRxModal">Resep Kacamata →</button>
@@ -1370,6 +1368,7 @@ function toast(type, msg) {
 .el-os { background: var(--pb); color: var(--pt); }
 .esub { font-size: 11px; color: var(--tu); font-weight: 500; }
 .sec { font-size: 10px; font-weight: 600; color: var(--tm); letter-spacing: 0.06em; text-transform: uppercase; margin: 0.75rem 0 0.4rem; }
+.sec-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.75rem 0 0.4rem; }
 
 .g2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
 .g3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }

@@ -2,7 +2,7 @@
 /**
  * OpsiRefraksiView — master OPSI REFRAKSI (combobox RefraksionisView).
  *
- * Setiap "kind" (sphere/cylinder/axis/keratometri/add/visus) punya konfigurasi:
+ * Setiap "kind" (sphere/cylinder/axis/keratometri/add/visus/visus_akhir/pinhole) punya konfigurasi:
  *   - mode RANGE  → opsi di-generate dari min/max/step (mis. Axis 0–180 step 5).
  *   - mode LIST   → daftar nilai literal (mis. Visus 6/6 … NLP).
  * Admin bisa menyesuaikan tanpa mengubah data refraksi lama: input di

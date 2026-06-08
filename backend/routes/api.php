@@ -242,6 +242,9 @@ Route::prefix('v1')->group(function () {
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
+                // Tarik rujukan & surat kontrol by No. Kartu/NIK (pasien kontrol tanpa nomor).
+                Route::post('/rujukan-by-kartu',       [AdmisiController::class, 'bpjsRujukanByKartu']);
+                Route::post('/surat-kontrol-by-kartu', [AdmisiController::class, 'bpjsSuratKontrolByKartu']);
                 Route::get('/surat-kontrol/{visitId}', [AdmisiController::class, 'bpjsGetSuratKontrol']);
                 Route::put('/edit-surat-kontrol',  [AdmisiController::class, 'bpjsEditSuratKontrol']);
                 Route::post('/validasi-booking',   [AdmisiController::class, 'bpjsValidasiBooking']);
@@ -679,6 +682,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
             Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
             Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);
+            Route::post('/invoice/{id}/settle-zero',       [KasirController::class, 'settleZero']);
             Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);
             Route::get('/invoice/{id}/cetak',              [KasirController::class, 'cetakInvoice']);
             // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik) — di-queue.
@@ -1001,7 +1005,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/supplier/export-csv',              [MasterDataController::class, 'exportCsv'])->defaults('type', 'supplier')->middleware('permission:inventori_farmasi.read');
             Route::post('/supplier/import-csv',             [MasterDataController::class, 'importCsv'])->defaults('type', 'supplier')->middleware('permission:inventori_farmasi.write');
 
-            Route::get('/paket-bedah',                      [MasterDataController::class, 'indexPaketBedah'])->middleware('permission:tarif_paket.read');
+            // Carve-out: dokter/perawat pilih paket saat planning bedah & rawat inap (read-only).
+            Route::get('/paket-bedah',                      [MasterDataController::class, 'indexPaketBedah'])->middleware('permission:tarif_paket.read|bedah.read|rme_dokter.read|rawat_inap.read');
             Route::post('/paket-bedah',                     [MasterDataController::class, 'storePaketBedah'])->middleware('permission:tarif_paket.write');
             Route::put('/paket-bedah/{id}',                 [MasterDataController::class, 'updatePaketBedah'])->middleware('permission:tarif_paket.write');
             Route::delete('/paket-bedah/{id}',              [MasterDataController::class, 'deletePaketBedah'])->middleware('permission:tarif_paket.delete');
@@ -1209,7 +1214,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/paket-bedah/import-csv',          [TarifPaketController::class, 'importPaketCsv'])->middleware('permission:tarif_paket.write');
 
             // --- PAKET BEDAH (CRUD utama) ---
-            Route::get('/paket-bedah',                      [TarifPaketController::class, 'indexPaket'])->middleware('permission:tarif_paket.read');
+            // Carve-out read: BedahView "Tambah Paket" & RawatInap "Kirim ke Bedah".
+            Route::get('/paket-bedah',                      [TarifPaketController::class, 'indexPaket'])->middleware('permission:tarif_paket.read|bedah.read|rme_dokter.read|rawat_inap.read');
             Route::post('/paket-bedah',                     [TarifPaketController::class, 'storePaket'])->middleware('permission:tarif_paket.write');
             Route::get('/paket-bedah/{id}',                 [TarifPaketController::class, 'showPaket'])->middleware('permission:tarif_paket.read');
             Route::put('/paket-bedah/{id}',                 [TarifPaketController::class, 'updatePaket'])->middleware('permission:tarif_paket.write');
@@ -1238,7 +1244,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/status',                           [IntegrasiController::class, 'statusSemua']);
             Route::post('/test/{system}',                   [IntegrasiController::class, 'testKoneksi']);
             Route::get('/config',                           [IntegrasiController::class, 'indexConfig']);
-            Route::put('/config/{id}',                      [IntegrasiController::class, 'updateConfig']);
+            // SETUP/CONFIG (ubah konfigurasi & kredensial bridging) → butuh integrasi.write.
+            Route::put('/config/{id}',                      [IntegrasiController::class, 'updateConfig'])->middleware('permission:integrasi.write');
 
             Route::get('/bpjs/vclaim-log',                  [IntegrasiController::class, 'vclaimpLog']);
             Route::get('/bpjs/vclaim-log/{id}',             [IntegrasiController::class, 'showVclaimpLog']);
@@ -1257,19 +1264,22 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/satusehat/dashboard',              [IntegrasiController::class, 'satusehatDashboard']);
             Route::get('/satusehat/kfa-search',             [IntegrasiController::class, 'satusehatKfaSearch']);
-            Route::put('/satusehat/dokter/{employeeId}/nik',[IntegrasiController::class, 'setEmployeeNik']);
+            // SETUP master dokter Satu Sehat (set NIK Practitioner) → integrasi.write.
+            Route::put('/satusehat/dokter/{employeeId}/nik',[IntegrasiController::class, 'setEmployeeNik'])->middleware('permission:integrasi.write');
             Route::get('/satusehat/location',               [IntegrasiController::class, 'satusehatListLocations']);
-            Route::post('/satusehat/location',              [IntegrasiController::class, 'satusehatRegisterLocation']);
-            Route::put('/satusehat/location/{id}/active',   [IntegrasiController::class, 'satusehatSetActiveLocation']);
-            Route::put('/satusehat/location/{id}',          [IntegrasiController::class, 'satusehatUpdateLocation']);
-            Route::delete('/satusehat/location/{id}',       [IntegrasiController::class, 'satusehatDeactivateLocation']);
+            // SETUP lokasi Satu Sehat (daftar/aktif/ubah/hapus) → integrasi.write.
+            Route::post('/satusehat/location',              [IntegrasiController::class, 'satusehatRegisterLocation'])->middleware('permission:integrasi.write');
+            Route::put('/satusehat/location/{id}/active',   [IntegrasiController::class, 'satusehatSetActiveLocation'])->middleware('permission:integrasi.write');
+            Route::put('/satusehat/location/{id}',          [IntegrasiController::class, 'satusehatUpdateLocation'])->middleware('permission:integrasi.write');
+            Route::delete('/satusehat/location/{id}',       [IntegrasiController::class, 'satusehatDeactivateLocation'])->middleware('permission:integrasi.write');
             Route::get('/satusehat/sync-log',               [IntegrasiController::class, 'satusehatSyncLog']);
             Route::get('/satusehat/sync-log/{id}',          [IntegrasiController::class, 'showSatusehatSyncLog']);
             Route::get('/satusehat/resource-log',           [IntegrasiController::class, 'satusehatResourceLog']);
-            Route::post('/satusehat/sync-manual',           [IntegrasiController::class, 'satusehatSyncManual']);
-            Route::post('/satusehat/retry/{logId}',         [IntegrasiController::class, 'satusehatRetry']);
+            // SYNC/BACKFILL push data ke Satu Sehat → integrasi.write (preview tetap read).
+            Route::post('/satusehat/sync-manual',           [IntegrasiController::class, 'satusehatSyncManual'])->middleware('permission:integrasi.write');
+            Route::post('/satusehat/retry/{logId}',         [IntegrasiController::class, 'satusehatRetry'])->middleware('permission:integrasi.write');
             Route::get('/satusehat/backfill/preview',       [IntegrasiController::class, 'satusehatBackfillPreview']);
-            Route::post('/satusehat/backfill',              [IntegrasiController::class, 'satusehatBackfill']);
+            Route::post('/satusehat/backfill',              [IntegrasiController::class, 'satusehatBackfill'])->middleware('permission:integrasi.write');
 
             // ---- VCLAIM live calls ----
             Route::post('/vclaim/cek-peserta',              [IntegrasiController::class, 'vclaimCekPeserta']);

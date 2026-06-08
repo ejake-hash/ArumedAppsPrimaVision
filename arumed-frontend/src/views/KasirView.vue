@@ -218,6 +218,15 @@ const sisaTagihan    = computed(() => Math.max(0, totalTagihan.value - coveredAm
 const isFullCover    = computed(() =>
   coveredAmount.value > 0 && (coveredAmount.value + paidAmount.value) >= totalTagihan.value,
 )
+// Tagihan Rp 0 (diskon/penghapusan 100% RS/dokter) — pasien UMUM, bukan asuransi/BPJS.
+// Tidak ada yang harus dibayar; processPayment menolak nominal 0 → jalur "settle-zero".
+const isZeroDue      = computed(() =>
+  !!selInv.value
+  && !['PAID', 'CANCELLED'].includes(selInv.value.status)
+  && !isBpjsSelected.value
+  && !isFullCover.value
+  && sisaTagihan.value === 0,
+)
 
 function bayar() { return sisaTagihan.value }
 
@@ -516,6 +525,25 @@ async function prosesKonfirmasiCover() {
   }
 }
 
+// Selesaikan tagihan Rp 0 (diskon/penghapusan 100% RS/dokter) — pasien tidak membayar.
+async function prosesSettleNol() {
+  if (paying.value) return
+  if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
+  paying.value = true
+  try {
+    // Backend settle-zero meng-handle DRAFT→FINALIZED→PAID secara atomik.
+    const { data } = await kasirApi.settleZero(selInv.value.id, {})
+    selInv.value = data.data
+    const localQ = queue.value.find((q) => q.id === selQ.value?.id)
+    if (localQ) localQ.status = 'COMPLETED'
+    toast('s', `Tagihan Rp 0 diselesaikan — invoice ${selInv.value.invoice_number}`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan tagihan Rp 0')
+  } finally {
+    paying.value = false
+  }
+}
+
 // Konfirmasi kunjungan BPJS — pasien tidak membayar (ditagih via klaim INA-CBG).
 async function prosesKonfirmasiBpjs() {
   if (paying.value) return
@@ -682,7 +710,7 @@ async function cetakKwitansiHistory(h) {
 }
 
 function metodeLabel(code) {
-  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi' })[code] ?? (code ?? '—')
+  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi', WAIVED: 'Gratis / Diskon 100%' })[code] ?? (code ?? '—')
 }
 function ptypeOfHistory(h) {
   const g = (h.visit?.guarantor_type ?? '').toUpperCase()
@@ -1261,9 +1289,10 @@ const groupedPrintItems = computed(() =>
                       <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
                       {{ (isBpjsSelected && selInv.status !== 'PAID') ? 'Tanggungan BPJS'
                          : (isFullCover && selInv.status !== 'PAID') ? 'Tanggungan Asuransi'
+                         : (isZeroDue) ? 'Tagihan Rp 0'
                          : 'Metode Pembayaran' }}
                     </div>
-                    <button v-if="!(isBpjsSelected && selInv.status !== 'PAID') && !(isFullCover && selInv.status !== 'PAID')" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
+                    <button v-if="!(isBpjsSelected && selInv.status !== 'PAID') && !(isFullCover && selInv.status !== 'PAID') && !isZeroDue" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
                       Campuran
                     </button>
@@ -1300,6 +1329,23 @@ const groupedPrintItems = computed(() =>
                         <div v-if="paying" class="sp"></div>
                         <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                         {{ paying ? 'Memproses...' : 'Konfirmasi Lunas (Ditanggung Asuransi)' }}
+                      </button>
+                    </template>
+
+                    <!-- TAGIHAN Rp 0: diskon/penghapusan 100% RS/dokter — pasien tidak membayar -->
+                    <template v-else-if="isZeroDue">
+                      <div class="cover-confirm-box">
+                        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
+                        <div class="cover-confirm-title">Tagihan Rp 0 — Gratis / Diskon 100%</div>
+                        <div class="cover-confirm-amount">Rp 0</div>
+                        <div class="cover-confirm-sub">Seluruh tagihan didiskon/dihapus RS atau dokter. Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.</div>
+                      </div>
+                      <button class="btn btn-success btn-full btn-lg"
+                        :disabled="paying"
+                        @click="prosesSettleNol">
+                        <div v-if="paying" class="sp"></div>
+                        <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                        {{ paying ? 'Memproses...' : 'Konfirmasi Lunas (Rp 0)' }}
                       </button>
                     </template>
 
@@ -1343,7 +1389,7 @@ const groupedPrintItems = computed(() =>
                       </div>
                     </template>
 
-                    <button v-if="!(isFullCover && selInv.status !== 'PAID') && !(isBpjsSelected && selInv.status !== 'PAID')" class="btn btn-success btn-full btn-lg"
+                    <button v-if="!(isFullCover && selInv.status !== 'PAID') && !(isBpjsSelected && selInv.status !== 'PAID') && !isZeroDue" class="btn btn-success btn-full btn-lg"
                       :disabled="paying || !selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
                       @click="prosesBayar">
                       <div v-if="paying" class="sp"></div>

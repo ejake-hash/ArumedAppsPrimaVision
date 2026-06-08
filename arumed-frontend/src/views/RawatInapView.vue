@@ -243,7 +243,7 @@ async function doKirimBedah(p) {
   // Muat daftar paket bedah untuk opsi auto-jadwal (boleh dikosongkan).
   if (!paketBedahOptions.value.length) {
     try {
-      const res = await tarifPaketApi.paketBedah.list({ active: 1 })
+      const res = await tarifPaketApi.paket.list({ active: 1 })
       paketBedahOptions.value = res.data?.data ?? []
     } catch { paketBedahOptions.value = [] }
   }
@@ -974,7 +974,7 @@ const statusPill = (s) => ({
                 <input v-model="obatSearch" placeholder="cari obat…" @input="searchObat" class="add-search" />
                 <select v-model="pickObat.medication_id">
                   <option value="">— pilih obat —</option>
-                  <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }} — {{ rupiah(o.price) }}</option>
+                  <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }}{{ o.is_active === false ? ' · (nonaktif)' : '' }} — {{ rupiah(o.price) }}</option>
                 </select>
                 <div class="add-row">
                   <input v-model.number="pickObat.quantity" type="number" min="1" style="width:70px" />

@@ -783,6 +783,8 @@ export const admisiApi = {
     cancelSep:       (data) => api.post('/admisi/bpjs/cancel-sep', data),
     cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
     cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
+    rujukanByKartu:      (data) => api.post('/admisi/bpjs/rujukan-by-kartu', data),
+    suratKontrolByKartu: (data) => api.post('/admisi/bpjs/surat-kontrol-by-kartu', data),
     getSuratKontrol: (visitId) => api.get(`/admisi/bpjs/surat-kontrol/${visitId}`),
     editSuratKontrol:(data) => api.put('/admisi/bpjs/edit-surat-kontrol', data),
     validasiBooking: (data) => api.post('/admisi/bpjs/validasi-booking', data),
@@ -1057,6 +1059,7 @@ export const kasirApi = {
   bayarInvoice:      (id, data)           => api.post(`/kasir/invoice/${id}/bayar`, data),
   confirmCoverage:   (id, data)           => api.post(`/kasir/invoice/${id}/confirm-coverage`, data),
   confirmBpjs:       (id, data)           => api.post(`/kasir/invoice/${id}/confirm-bpjs`, data ?? {}),
+  settleZero:        (id, data)           => api.post(`/kasir/invoice/${id}/settle-zero`, data ?? {}),
   cancelInvoice:     (id)                 => api.post(`/kasir/invoice/${id}/cancel`),
   cetakInvoice:      (id)                 => api.get(`/kasir/invoice/${id}/cetak`),
   // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik)

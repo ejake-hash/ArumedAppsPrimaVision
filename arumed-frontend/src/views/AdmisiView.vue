@@ -643,6 +643,10 @@ function selectPatient(pt) {
     addressDetail: pt.address      ?? '',
     guarantor:     pt.bpjs_number  ? 'BPJS' : 'UMUM',
     bpjsNo:        pt.bpjs_number  ?? '',
+    // Reset referensi SEP — jangan bawa nomor rujukan/kontrol pasien sebelumnya.
+    sepType:       'rujukan',
+    referralNo:    '',
+    controlNo:     '',
     insurer_id:    '',
     insuranceName: '',
     insuranceNo:   '',
@@ -650,6 +654,7 @@ function selectPatient(pt) {
   })
   insuranceSearch.value = ''
   showSearchDrop.value  = false
+  resetBpjsPull()   // buang daftar rujukan/surat kontrol pasien sebelumnya
   // Reset status wilayah; WilayahPicker akan emit prefill-status saat load ulang.
   wizPrefilled.value = null
   wizWilayahTouched.value = false
@@ -1224,6 +1229,91 @@ async function cekRujukanBpjs() {
   }
 }
 
+/* ─── Tarik rujukan & surat kontrol pasien dari BPJS by No.Kartu/NIK ───────
+ * Untuk pasien (kontrol) yang tidak membawa nomor rujukan/surat kontrol —
+ * cukup NIK/No.Kartu, sistem ambil dari BPJS lalu petugas pilih. */
+const bpjsPull = reactive({ loading: false, error: '', rujukanError: '', kontrolError: '', rujukan: [], kontrol: [], done: false })
+function _pullErr(e) { return (e?.response?.status === 503 ? '⚠ ' : '') + (e?.response?.data?.message || 'Gagal memuat dari BPJS') }
+
+function _extractRujukan(rawResult, sumber) {
+  const rj = rawResult?.response?.rujukan
+  if (!rj) return []
+  const arr = Array.isArray(rj) ? rj : [rj]
+  return arr.map((r) => ({
+    sumber,
+    no:     r.noKunjungan || r.noRujukan || '',
+    tgl:    r.tglKunjungan || r.tglRujukan || '',
+    poli:   r.poliRujukan?.nmPoli || r.poliRujukan?.nama || r.poliTujuan?.nama || '—',
+    diag:   r.diagnosa?.nmDiag || r.diagnosa?.nama || '—',
+    faskes: r.ppkPelayanan?.nmProvider || r.provPerujuk?.nama || r.faskesPerujuk?.nama || '—',
+  })).filter((x) => x.no)
+}
+
+function _extractKontrol(rawResult) {
+  const list = rawResult?.response?.list ?? rawResult?.response
+  if (!list) return []
+  const arr = Array.isArray(list) ? list : [list]
+  return arr.map((k) => ({
+    no:     k.noSuratKontrol || '',
+    tgl:    k.tglRencanaKontrol || '',
+    poli:   k.namaPoliTujuan || k.poliTujuan?.nama || k.poliTujuan || '—',
+    dokter: k.namaDokter || k.namaDokterAju || k.dokter || '—',
+    jenis:  k.namaJnsKontrol || k.jnsKontrol || '',
+  })).filter((x) => x.no)
+}
+
+async function tarikDataBpjs() {
+  const id = (form.bpjsNo || form.nik || '').trim()
+  if (!id) { bpjsPull.error = 'Isi No. Kartu BPJS atau NIK pasien dulu'; return }
+  const payload = form.bpjsNo ? { bpjs_number: form.bpjsNo.trim() } : { nik: form.nik.trim() }
+  bpjsPull.loading = true
+  bpjsPull.error = ''; bpjsPull.rujukanError = ''; bpjsPull.kontrolError = ''
+  bpjsPull.rujukan = []; bpjsPull.kontrol = []; bpjsPull.done = false
+  try {
+    const [rj, sk] = await Promise.allSettled([
+      admisiApi.bpjs.rujukanByKartu(payload),
+      admisiApi.bpjs.suratKontrolByKartu(payload),
+    ])
+    if (rj.status === 'fulfilled') {
+      const d = rj.value.data?.data ?? {}
+      if (d.no_kartu && !form.bpjsNo) form.bpjsNo = d.no_kartu
+      bpjsPull.rujukan = [..._extractRujukan(d.fktp, 'FKTP'), ..._extractRujukan(d.rs, 'FKRTL')]
+    } else {
+      bpjsPull.rujukanError = _pullErr(rj.reason)
+    }
+    if (sk.status === 'fulfilled') {
+      const d = sk.value.data?.data ?? {}
+      if (d.no_kartu && !form.bpjsNo) form.bpjsNo = d.no_kartu
+      bpjsPull.kontrol = _extractKontrol(d.result)
+    } else {
+      bpjsPull.kontrolError = _pullErr(sk.reason)
+    }
+    // Dua-duanya gagal → tampilkan error utama (mis. integrasi 503 / NIK tak ditemukan).
+    if (rj.status === 'rejected' && sk.status === 'rejected') {
+      bpjsPull.error = _pullErr(rj.reason)
+    }
+    bpjsPull.done = true
+  } finally {
+    bpjsPull.loading = false
+  }
+}
+
+function pilihRujukanPull(item) {
+  form.sepType = 'rujukan'
+  form.referralNo = item.no
+  toast('s', `Rujukan ${item.no} dipilih`)
+}
+function pilihKontrolPull(item) {
+  form.sepType = 'kontrol'
+  form.controlNo = item.no
+  toast('s', `Surat kontrol ${item.no} dipilih`)
+}
+function resetBpjsPull() {
+  bpjsPull.loading = false
+  bpjsPull.error = ''; bpjsPull.rujukanError = ''; bpjsPull.kontrolError = ''
+  bpjsPull.rujukan = []; bpjsPull.kontrol = []; bpjsPull.done = false
+}
+
 /* ─── Aksi Cepat: panel mana yang terbuka ('' | 'rujukan' | 'peserta') ─── */
 const quickPanel = ref('')   // default: semua tertutup (search bar ter-hide)
 function toggleQuickPanel(name) {
@@ -1546,6 +1636,7 @@ function openWizard() {
   wizardOpen.value = true
   resetPreopState()
   resetConsentState()
+  resetBpjsPull()
 }
 function closeWizard() {
   wizardOpen.value = false
@@ -2907,6 +2998,50 @@ onUnmounted(() => {
 
               <!-- BPJS -->
               <template v-if="form.guarantor === 'BPJS'">
+                <!-- Tarik rujukan & surat kontrol dari BPJS (pasien kontrol tanpa nomor) -->
+                <div class="bpjs-pull full">
+                  <div class="bpjs-pull-head">
+                    <span class="bpjs-pull-title">
+                      <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+                      Pasien tidak bawa nomor rujukan / surat kontrol?
+                    </span>
+                    <button type="button" class="btn-check" :disabled="bpjsPull.loading" @click="tarikDataBpjs">
+                      <span v-if="bpjsPull.loading" class="spin-xs"></span>
+                      {{ bpjsPull.loading ? 'Menarik…' : 'Tarik dari BPJS' }}
+                    </button>
+                  </div>
+                  <div class="hint">Ambil rujukan &amp; surat kontrol pasien dari BPJS berdasarkan No. Kartu / NIK — pasien tak perlu membawa nomornya.</div>
+                  <div v-if="bpjsPull.error" class="check-msg err">{{ bpjsPull.error }}</div>
+                  <template v-if="bpjsPull.done && !bpjsPull.error">
+                    <div class="pull-group">
+                      <div class="pull-group-lbl">Rujukan <span class="pull-count">{{ bpjsPull.rujukan.length }}</span></div>
+                      <div v-if="bpjsPull.rujukanError" class="check-msg err">{{ bpjsPull.rujukanError }}</div>
+                      <div v-else-if="!bpjsPull.rujukan.length" class="pull-empty">Tidak ada rujukan aktif di BPJS.</div>
+                      <button
+                        v-for="r in bpjsPull.rujukan" :key="'rj-' + r.sumber + r.no" type="button"
+                        :class="['pull-item', form.sepType === 'rujukan' && form.referralNo === r.no ? 'picked' : '']"
+                        @click="pilihRujukanPull(r)"
+                      >
+                        <span class="pull-item-no">{{ r.no }} <span class="pull-tag">{{ r.sumber }}</span></span>
+                        <span class="pull-item-meta">{{ r.tgl || '—' }} · {{ r.poli }} · {{ r.diag }}</span>
+                      </button>
+                    </div>
+                    <div class="pull-group">
+                      <div class="pull-group-lbl">Surat Kontrol <span class="pull-count">{{ bpjsPull.kontrol.length }}</span></div>
+                      <div v-if="bpjsPull.kontrolError" class="check-msg err">{{ bpjsPull.kontrolError }}</div>
+                      <div v-else-if="!bpjsPull.kontrol.length" class="pull-empty">Tidak ada surat kontrol terjadwal (bulan ini &amp; bulan depan).</div>
+                      <button
+                        v-for="k in bpjsPull.kontrol" :key="'sk-' + k.no" type="button"
+                        :class="['pull-item', form.sepType === 'kontrol' && form.controlNo === k.no ? 'picked' : '']"
+                        @click="pilihKontrolPull(k)"
+                      >
+                        <span class="pull-item-no">{{ k.no }}</span>
+                        <span class="pull-item-meta">{{ k.tgl || '—' }} · {{ k.poli }} · {{ k.dokter }}</span>
+                      </button>
+                    </div>
+                  </template>
+                </div>
+
                 <div class="seg-toggle full sub">
                   <button :class="['seg', form.sepType === 'rujukan' ? 'seg-on' : '']" @click="form.sepType = 'rujukan'">
                     Rujukan FKTP
@@ -4340,6 +4475,22 @@ onUnmounted(() => {
 .check-msg.ok { background: #dcfce7; color: #166534; }
 .check-msg .st-ok { color: #166534; font-weight: 600; }
 .check-msg .st-warn { color: #991b1b; font-weight: 600; }
+
+/* Tarik data BPJS (rujukan + surat kontrol by kartu/NIK) */
+.bpjs-pull { border: 1px dashed #93c5fd; background: #f0f7ff; border-radius: 9px; padding: 10px 12px; margin-bottom: 10px; }
+.bpjs-pull-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bpjs-pull-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: #1763d4; }
+.bpjs-pull-title svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.pull-group { margin-top: 8px; }
+.pull-group-lbl { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--tu); margin-bottom: 4px; }
+.pull-count { display: inline-block; min-width: 16px; text-align: center; background: #1763d4; color: #fff; border-radius: 999px; padding: 0 5px; font-size: 9.5px; }
+.pull-empty { font-size: 11px; color: var(--tu); padding: 4px 2px; }
+.pull-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; border: 1px solid #d6e4f5; background: #fff; border-radius: 7px; padding: 6px 9px; margin-bottom: 5px; cursor: pointer; transition: border-color .12s, background .12s; }
+.pull-item:hover { border-color: #1763d4; background: #f7fbff; }
+.pull-item.picked { border-color: #1763d4; background: #e8f1ff; box-shadow: inset 0 0 0 1px #1763d4; }
+.pull-item-no { font-size: 12.5px; font-weight: 600; color: var(--td); }
+.pull-tag { display: inline-block; margin-left: 4px; font-size: 9px; font-weight: 700; color: #1763d4; background: #dbeafe; border-radius: 4px; padding: 0 5px; vertical-align: middle; }
+.pull-item-meta { font-size: 10.5px; color: var(--tu); }
 
 /* Aksi Cepat — trigger button (search bar default hidden) */
 .qa-trigger { justify-content: flex-start; gap: 8px; }

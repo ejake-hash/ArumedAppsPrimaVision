@@ -115,7 +115,10 @@ class RolePermissionSeeder extends Seeder
                 'rekam_medis'  => ['R'],
                 'rawat_inap'   => ['R','W'],
                 'bpjs'         => ['R','W'],
-                'integrasi'    => ['R','W'],
+                // integrasi R saja: admisi pakai SEMUA fitur bridging operasional (cek
+                // peserta/rujukan, cetak/batal SEP, surat kontrol, monitoring). SETUP/
+                // config/backfill/sync butuh integrasi.write (lihat routes/api.php) → peran admin.
+                'integrasi'    => ['R'],
                 'kasir'        => ['R'],
                 'laporan'      => ['R'],
             ],

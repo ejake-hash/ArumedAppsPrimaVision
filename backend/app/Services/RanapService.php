@@ -381,20 +381,22 @@ class RanapService
     /** Daftar obat + harga ter-resolve untuk penjamin pasien. */
     public function daftarObat(Visit $visit, ?string $search = null): array
     {
-        return Medication::where('is_active', true)
+        // Tampilkan SEMUA obat (selaras sumber Farmasi yg tak filter is_active); nonaktif ditandai.
+        return Medication::query()
             ->when($search, fn ($q) => $q->where(function ($w) use ($search) {
                 $w->where('name', 'ilike', "%{$search}%")
                   ->orWhere('code', 'ilike', "%{$search}%");
             }))
             ->orderBy('name')
             ->limit(100)
-            ->get(['id', 'code', 'name', 'unit'])
+            ->get(['id', 'code', 'name', 'unit', 'is_active'])
             ->map(fn ($m) => [
-                'id'    => $m->id,
-                'code'  => $m->code,
-                'name'  => $m->name,
-                'unit'  => $m->unit ?? null,
-                'price' => $this->kasir->getPrice('medication', $m->id, $visit->guarantor_type, $visit->insurer_id),
+                'id'        => $m->id,
+                'code'      => $m->code,
+                'name'      => $m->name,
+                'unit'      => $m->unit ?? null,
+                'price'     => $this->kasir->getPrice('medication', $m->id, $visit->guarantor_type, $visit->insurer_id),
+                'is_active' => (bool) $m->is_active,
             ])
             ->all();
     }
