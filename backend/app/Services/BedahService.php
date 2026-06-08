@@ -66,7 +66,9 @@ class BedahService
             // agar antrean yang batal/terlupa tak menumpuk tiap hari.
             ->where(function ($q) {
                 $q->whereDate('created_at', today())
-                  ->orWhereIn('status', [Queue::STATUS_IN_PROGRESS, Queue::STATUS_CALLED]);
+                  ->orWhere(fn ($a) => $a
+                      ->whereIn('status', [Queue::STATUS_IN_PROGRESS, Queue::STATUS_CALLED])
+                      ->where('created_at', '>=', today()->subDays(7)));   // batasi ≤7 hari agar operasi terbengkalai lama tak menumpuk
             })
             ->whereHas('visit')   // exclude baris dgn visit soft-deleted (zombie row) — sama spt AdmisiView
             // Papan BEDAH = hanya operasi (RUANG_BEDAH). Pasien tindakan laser

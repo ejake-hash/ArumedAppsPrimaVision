@@ -1113,6 +1113,38 @@ const statusPill = (s) => ({
             </table>
             <p class="total">Total berjalan: <strong>{{ rupiah(store.detail.running_bill?.total) }}</strong></p>
           </div>
+
+          <!-- TAB HASIL EKSTERNAL (dokumen/Fase 8C) -->
+          <div v-show="detailTab === 'dokumen'">
+            <h4>Unggah Hasil Eksternal</h4>
+            <p class="req-hint">Lampirkan hasil lab/radiologi/EKG dari pihak ketiga (PDF/JPG/PNG, maks 10&nbsp;MB).</p>
+            <div class="doc-upload">
+              <select v-model="docForm.category" class="doc-cat">
+                <option value="LAB">Lab</option>
+                <option value="RADIOLOGI">Radiologi</option>
+                <option value="EKG">EKG</option>
+                <option value="LAINNYA">Lainnya</option>
+              </select>
+              <input v-model="docForm.title" class="doc-title" placeholder="Judul (opsional, default = nama berkas)" />
+              <input ref="docFileInput" type="file" class="doc-file" accept=".pdf,.jpg,.jpeg,.png" @change="onDocFile" />
+              <button class="btn-primary btn-press btn-add" :disabled="busy" @click="submitDocument">{{ busy ? '…' : 'Unggah' }}</button>
+            </div>
+
+            <table class="bill">
+              <thead><tr><th>Waktu</th><th>Kategori</th><th>Judul</th><th>Oleh</th><th>Berkas</th><th></th></tr></thead>
+              <tbody>
+                <tr v-for="d in docList" :key="d.id">
+                  <td>{{ fmt(d.at) }}</td>
+                  <td><span class="pill pill-gray">{{ d.category }}</span></td>
+                  <td>{{ d.title }}</td>
+                  <td>{{ d.by || '—' }}</td>
+                  <td><a v-if="d.file_url" :href="d.file_url" target="_blank" rel="noopener">Lihat</a><span v-else class="muted">—</span></td>
+                  <td><button class="del-x" @click="removeDocument(d)" title="Hapus">×</button></td>
+                </tr>
+                <tr v-if="!docList.length"><td colspan="6" class="muted">Belum ada hasil eksternal.</td></tr>
+              </tbody>
+            </table>
+          </div>
         </template>
         <div class="modal-actions"><button @click="showDetail = false">Tutup</button></div>
       </div>

@@ -152,9 +152,10 @@ class QueueService
      */
     public function getDoctorTicket(string $visitId): ?array
     {
+        // Tanpa filter tanggal: tiket DOKTER untuk pasien lintas-hari (antrian dibuat
+        // kemarin) tetap bisa dicetak. Ambil baris DOKTER terbaru milik visit ini.
         $queue = Queue::byStation(Queue::STATION_DOKTER)
             ->where('visit_id', $visitId)
-            ->whereDate('created_at', today())
             ->latest('created_at')
             ->first();
 
@@ -204,10 +205,12 @@ class QueueService
         if ($sibling !== null) {
             DB::transaction(function () use ($queue, $sibling, $newStatus) {
                 Visit::where('id', $queue->visit_id)->lockForUpdate()->first();
+                // Tanpa filter tanggal: pasien lintas-hari (boardVisible) bisa dipanggil
+                // di stasiun pasangan yang baris-nya dibuat kemarin — guard harus tetap
+                // mendeteksinya. Status CALLED/IN_PROGRESS sudah cukup membatasi.
                 $held = Queue::where('visit_id', $queue->visit_id)
                     ->where('station', $sibling)
                     ->whereIn('status', [Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
-                    ->today()
                     ->exists();
                 if ($held) {
                     throw new \Exception(
@@ -773,10 +776,12 @@ class QueueService
             return self::NO_OP;
         }
 
-        // Partner (sub-task lain) sudah trigger transisi ke DOKTER → tutup saja, no-op
+        // Partner (sub-task lain) sudah trigger transisi ke DOKTER → tutup saja, no-op.
+        // Cek baris DOKTER yang masih AKTIF (bukan filter tanggal) supaya pasien
+        // lintas-hari tak dibuatkan baris DOKTER ganda.
         $alreadyQueued = Queue::byStation(Queue::STATION_DOKTER)
             ->where('visit_id', $visit->id)
-            ->today()
+            ->active()
             ->exists();
 
         return $alreadyQueued ? self::NO_OP : Queue::STATION_DOKTER;
@@ -842,9 +847,11 @@ class QueueService
      */
     private function nextAfterPenunjang(Visit $visit): string
     {
+        // Tanpa filter tanggal: baris DOKTER yang di-pause (DI_PENUNJANG) bisa berasal
+        // dari hari sebelumnya untuk visit lintas-hari — harus tetap terdeteksi agar
+        // tak membuat baris DOKTER ganda saat penunjang selesai.
         $hasLiveDokter = Queue::byStation(Queue::STATION_DOKTER)
             ->where('visit_id', $visit->id)
-            ->today()
             ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
             ->exists();
 

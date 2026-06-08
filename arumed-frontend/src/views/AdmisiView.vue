@@ -316,11 +316,20 @@ const rowOffset = computed(() =>
 
 // Pisah Rawat Jalan (RAJAL/IGD) vs Rawat Inap (RANAP). RANAP long-lived → kalau
 // dicampur akan terus menumpuk di list. Default tampil Rawat Jalan.
-const careType = ref('RAJAL')   // 'RAJAL' | 'RANAP'
+const careType = ref('RAJAL')   // 'RAJAL' | 'RANAP' | 'AKTIF'
 function setCareType(t) {
   if (careType.value === t) return
   careType.value = t
-  admisiStore.visitsFilter.careType = t
+  if (t === 'AKTIF') {
+    // Mode "Masih Aktif": semua kunjungan yang belum selesai (current_station != SELESAI)
+    // LINTAS-HARI — pakai cabang `unfinished` backend (tanpa filter tanggal). careType
+    // di-SEMUA-kan supaya param care_type tak dikirim (RAJAL & RANAP sama-sama ikut).
+    admisiStore.visitsFilter.unfinished = true
+    admisiStore.visitsFilter.careType = 'SEMUA'
+  } else {
+    admisiStore.visitsFilter.unfinished = false
+    admisiStore.visitsFilter.careType = t
+  }
   // Reset filter stasiun saat pindah tab: dropdown stationOptions tak punya entri
   // RANAP/MENUNGGU_RANAP, jadi filter stasiun lama (mis. DOKTER) akan MENGOSONGKAN
   // tab Rawat Inap. Kalau berubah, watcher applyVisitFilters yang melakukan fetch;
@@ -331,7 +340,15 @@ function setCareType(t) {
     admisiStore.fetchVisits({ page: 1 })
   }
 }
-const careTypeLabel = computed(() => careType.value === 'RANAP' ? 'Rawat Inap' : 'Rawat Jalan')
+const careTypeLabel = computed(() =>
+  careType.value === 'AKTIF' ? 'Belum Selesai'
+  : careType.value === 'RANAP' ? 'Rawat Inap'
+  : 'Rawat Jalan')
+// Judul tabel: mode "Masih Aktif" lintas-hari → jangan klaim "Hari Ini".
+const visitTableTitle = computed(() =>
+  careType.value === 'AKTIF'
+    ? 'Kunjungan Belum Selesai (semua tanggal)'
+    : `Kunjungan ${careTypeLabel.value} Hari Ini`)
 
 // Terapkan filter/search ke server, selalu balik ke halaman 1.
 function applyVisitFilters() {
@@ -2417,7 +2434,7 @@ onUnmounted(() => {
             <div>
               <div class="card-head-title">
                 <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
-                Kunjungan {{ careTypeLabel }} Hari Ini
+                {{ visitTableTitle }}
               </div>
               <div class="card-head-sub">{{ admisiStore.visitsMeta.total }} kunjungan · klik untuk {{ tableExpanded ? 'sembunyikan' : 'tampilkan' }}</div>
             </div>
@@ -2449,6 +2466,16 @@ onUnmounted(() => {
                     @click="setCareType('RANAP')"
                   >
                     Rawat Inap
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    :class="['care-seg', careType === 'AKTIF' ? 'on' : '']"
+                    :aria-selected="careType === 'AKTIF'"
+                    title="Kunjungan belum selesai (lintas-hari) — ekor visit yang nyangkut"
+                    @click="setCareType('AKTIF')"
+                  >
+                    Masih Aktif
                   </button>
                 </div>
                 <select v-model="filterGuarantor" class="form-select compact" aria-label="Filter penjamin">

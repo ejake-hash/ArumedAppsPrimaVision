@@ -54,7 +54,7 @@ class RuangTindakanService
             'visit.refractionRecord',
         ])
             ->where('station', 'BEDAH')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')
             // Hanya pasien dengan jadwal RUANG_TINDAKAN (via visit.surgery_schedule_id
             // ATAU via doctor_examination.surgery_schedule — sama spt BedahService).

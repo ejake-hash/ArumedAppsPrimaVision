@@ -65,7 +65,7 @@ class DokterService
             'visit.internalReferralFromSchedule:id,poliklinik',
         ])
             ->where('station', 'DOKTER')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit');   // exclude zombie row (visit soft-deleted)
 
         // Superadmin melihat seluruh antrean DOKTER. Dokter biasa hanya melihat

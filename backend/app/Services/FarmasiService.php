@@ -42,7 +42,7 @@ class FarmasiService
             // agar pickActiveRx FE tak salah mengangkatnya saat pasien RANAP discharge.
             ->where('type', '!=', Prescription::TYPE_RANAP)])
             ->where('station', 'FARMASI')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
@@ -584,10 +584,12 @@ class FarmasiService
     {
         $visit = Visit::findOrFail($visitId);
 
-        // Hanya untuk pasien yang ada di antrean FARMASI hari ini.
+        // Hanya untuk pasien yang ada di papan FARMASI (boardVisible = hari ini ATAU
+        // masih aktif lintas-hari ≤7 hari) — selaras dgn getPatientQueue, supaya
+        // pasien lintas-hari yang tampil di papan tak ditolak saat tambah OTC.
         $diFarmasi = Queue::where('visit_id', $visitId)
             ->where('station', Queue::STATION_FARMASI)
-            ->whereDate('created_at', today())
+            ->boardVisible()
             ->exists();
         if (! $diFarmasi) {
             throw new \Exception('Penjualan obat tambahan hanya untuk pasien yang ada di antrean Farmasi.', 422);

@@ -46,7 +46,7 @@ class PerawatService
             'visit.queues' => fn ($q) => $q->whereDate('created_at', today()),
         ])
             ->where('station', 'TRIASE')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get()
@@ -311,11 +311,12 @@ class PerawatService
                 'finalized_by_id' => null,
             ]);
 
-            // Buka kembali antrean TRIASE (baris hari ini yang sudah COMPLETED).
+            // Buka kembali antrean TRIASE yang sudah COMPLETED (tanpa filter tanggal:
+            // visit lintas-hari yang di-finalize kemarin tetap bisa dibuka untuk
+            // periksa ulang; status COMPLETED + visit_id sudah cukup membatasi).
             Queue::where('visit_id', $assessment->visit_id)
                 ->where('station', Queue::STATION_TRIASE)
                 ->where('status', Queue::STATUS_COMPLETED)
-                ->today()
                 ->update([
                     'status'       => Queue::STATUS_WAITING,
                     'completed_at' => null,
@@ -418,14 +419,14 @@ class PerawatService
                 throw new \Exception('Pemeriksaan refraksi belum di-finalize.', 422);
             }
 
-            // Anti-duplikat
+            // Anti-duplikat (tanpa filter tanggal: visit lintas-hari bisa punya baris
+            // Bedah aktif dari kemarin — harus tetap terdeteksi agar tak ganda).
             $alreadyBedah = Queue::byStation(Queue::STATION_BEDAH)
                 ->where('visit_id', $visit->id)
-                ->whereDate('created_at', today())
                 ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
                 ->exists();
             if ($alreadyBedah) {
-                throw new \Exception('Pasien sudah ada di antrian Bedah hari ini.', 422);
+                throw new \Exception('Pasien sudah ada di antrian Bedah.', 422);
             }
 
             // Tutup queue TRIASE & REFRAKSIONIS yg masih aktif untuk visit ini
@@ -625,9 +626,11 @@ class PerawatService
                 'current_station'       => 'DOKTER',
             ]);
 
+            // Cek baris DOKTER yang masih AKTIF (bukan filter tanggal) agar visit
+            // lintas-hari tak dibuatkan baris DOKTER ganda.
             $alreadyQueued = Queue::byStation(Queue::STATION_DOKTER)
                 ->where('visit_id', $locked->id)
-                ->today()
+                ->active()
                 ->exists();
 
             if (! $alreadyQueued) {

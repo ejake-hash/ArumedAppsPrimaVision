@@ -1190,10 +1190,12 @@ class AdmisiService
                 throw new \Exception('Pasien sudah melewati admisi, tidak bisa diubah.', 422);
             }
 
-            // Workflow gate: pasien harus DIPANGGIL dulu sebelum boleh didaftarkan
+            // Workflow gate: pasien harus DIPANGGIL dulu sebelum boleh didaftarkan.
+            // Tanpa filter tanggal: status aktif (WAITING/CALLED/IN_PROGRESS) sudah
+            // membatasi; visit lintas-hari yang antrian admisinya dibuat kemarin tetap
+            // bisa diproses.
             $admisiQueue = Queue::where('visit_id', $visit->id)
                 ->where('station', Queue::STATION_ADMISI)
-                ->whereDate('created_at', today())
                 ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
                 ->orderByDesc('created_at')
                 ->first();
@@ -1481,7 +1483,7 @@ class AdmisiService
             'visit.internalReferralFromSchedule:id,poliklinik',
         ])
             ->where('station', 'ADMISI')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->where('status', '!=', Queue::STATUS_CANCELLED)
             ->whereHas('visit')                       // exclude queue dgn visit soft-deleted (zombie row)
             ->orderBy('queue_sequence')

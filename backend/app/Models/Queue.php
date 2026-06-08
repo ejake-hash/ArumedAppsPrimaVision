@@ -141,6 +141,23 @@ class Queue extends Model
         return $q->whereIn('status', self::ACTIVE_STATUSES);
     }
 
+    /**
+     * Papan stasiun: queue yang dibuat hari ini, ATAU yang masih aktif
+     * (WAITING/CALLED/IN_PROGRESS) dari ≤7 hari terakhir — supaya pasien
+     * yang kunjungannya menembus hari TIDAK hilang dari antrean stasiun
+     * sebelum diselesaikan/dimajukan. Pola meniru BedahService.
+     */
+    public function scopeBoardVisible(Builder $q): Builder
+    {
+        return $q->where(function ($w) {
+            $w->whereDate('created_at', today())
+              ->orWhere(function ($a) {
+                  $a->whereIn('status', self::ACTIVE_STATUSES)
+                    ->where('created_at', '>=', today()->subDays(7));
+              });
+        });
+    }
+
     public function scopeWaiting(Builder $q): Builder
     {
         return $q->where('status', self::STATUS_WAITING);

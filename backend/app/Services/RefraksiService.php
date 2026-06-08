@@ -37,7 +37,7 @@ class RefraksiService
             'visit.queues' => fn ($q) => $q->whereDate('created_at', today()),
         ])
             ->where('station', 'REFRAKSIONIS')
-            ->whereDate('created_at', today())
+            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
@@ -358,11 +358,12 @@ class RefraksiService
                 'signature_timestamp' => null,
             ]);
 
-            // Buka kembali antrean REFRAKSIONIS (baris hari ini yang sudah COMPLETED).
+            // Buka kembali antrean REFRAKSIONIS yang sudah COMPLETED (tanpa filter
+            // tanggal: visit lintas-hari yang di-finalize kemarin tetap bisa dibuka
+            // untuk periksa ulang; status COMPLETED + visit_id sudah cukup membatasi).
             Queue::where('visit_id', $record->visit_id)
                 ->where('station', Queue::STATION_REFRAKSIONIS)
                 ->where('status', Queue::STATUS_COMPLETED)
-                ->today()
                 ->update([
                     'status'       => Queue::STATUS_WAITING,
                     'completed_at' => null,
@@ -632,9 +633,11 @@ class RefraksiService
                 'current_station'       => 'DOKTER',
             ]);
 
+            // Cek baris DOKTER yang masih AKTIF (bukan filter tanggal) agar visit
+            // lintas-hari tak dibuatkan baris DOKTER ganda.
             $alreadyQueued = Queue::byStation(Queue::STATION_DOKTER)
                 ->where('visit_id', $locked->id)
-                ->today()
+                ->active()
                 ->exists();
 
             if (! $alreadyQueued) {
