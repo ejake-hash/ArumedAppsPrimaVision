@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { farmasiApi, unitRequestApi, unitReturnApi } from '@/services/api'
 import RequestObatModal from '@/components/farmasi/RequestObatModal.vue'
 import ReturObatModal from '@/components/farmasi/ReturObatModal.vue'
+import Pager from '@/components/common/Pager.vue'
 
 const pgTab = ref('dispensing')
 
@@ -162,6 +163,33 @@ function isObatOtc(g) {
 }
 const otcMedications = computed(() => stokList.value.filter((m) => isObatOtc(m.golongan)))
 
+// Picker obat tambahan (OTC) — typeahead pencarian (nama/generik/kode), ganti
+// <select> bawaan yang sulit dicari saat daftar obat bebas panjang.
+const addObatSearch     = ref('')
+const addObatPickerOpen = ref(false)
+const addObatResults = computed(() => {
+  const s = addObatSearch.value.toLowerCase().trim()
+  const list = otcMedications.value
+  if (!s) return list.slice(0, 30)
+  return list.filter((m) =>
+    (m.name ?? '').toLowerCase().includes(s)
+    || (m.generic_name ?? '').toLowerCase().includes(s)
+    || (m.code ?? '').toLowerCase().includes(s),
+  ).slice(0, 30)
+})
+const addObatSelected = computed(
+  () => otcMedications.value.find((m) => m.id === addObatForm.value.medication_id) ?? null,
+)
+function pickAddObat(m) {
+  addObatForm.value.medication_id = m.id
+  addObatSearch.value = ''
+  addObatPickerOpen.value = false
+}
+function clearAddObatPick() {
+  addObatForm.value.medication_id = ''
+  addObatSearch.value = ''
+}
+
 // ─── Preview harga obat tambahan ────────────────────────────────────────────
 // Harga = yang DITAGIH KASIR (medication_tariffs per-penjamin), bukan HJA POS —
 // di-resolve backend lewat /farmasi/harga-obat sesuai penjamin visit terpilih.
@@ -204,12 +232,16 @@ function resetAddObat() {
   addObatOpen.value   = false
   addObatSaving.value = false
   addObatForm.value   = { medication_id: '', quantity: 1, dosage: '', instructions: '' }
+  addObatSearch.value = ''
+  addObatPickerOpen.value = false
   hargaPreview.value  = null
   _hargaSeq++   // batalkan request preview yang masih in-flight
 }
 
 function toggleAddObat() {
   addObatOpen.value = !addObatOpen.value
+  addObatSearch.value = ''
+  addObatPickerOpen.value = false
   if (addObatOpen.value && !stokList.value.length) fetchStok()
 }
 
@@ -474,6 +506,20 @@ const stokFiltered = computed(() => {
   return s ? stokList.value.filter((x) => (x.name ?? '').toLowerCase().includes(s)) : stokList.value
 })
 
+// Paginasi tampilan stok (client-side, 100/halaman). Data lengkap tetap dimuat
+// (dibutuhkan dispensing on-hand / OTC / low-stock / laporan / opname); hanya
+// render tabel yang dipotong agar daftar obat besar (≤4000) tidak membebani DOM.
+const STOK_PER_PAGE = 100
+const stokPage = ref(1)
+const stokLastPage = computed(() => Math.max(1, Math.ceil(stokFiltered.value.length / STOK_PER_PAGE)))
+const stokPaged = computed(() => {
+  const start = (stokPage.value - 1) * STOK_PER_PAGE
+  return stokFiltered.value.slice(start, start + STOK_PER_PAGE)
+})
+// Reset ke halaman 1 saat pencarian berubah / data menyusut di bawah halaman aktif.
+watch(stokSearch, () => { stokPage.value = 1 })
+watch(stokLastPage, (lp) => { if (stokPage.value > lp) stokPage.value = lp })
+
 // On-hand RIIL unit FARMASI per medication_id (dari getStokObat: field `stock` =
 // inventory_stocks lokasi FARMASI, BUKAN kolom legacy medications.stock yang ikut
 // di relasi items.medication). Dipakai panel dispensing supaya angka stok = yang
@@ -696,20 +742,48 @@ function loadOpname() {
   }))
 }
 
+// Stok fisik valid? Field kosong/invalid TIDAK dihitung sebagai selisih — mencegah
+// stok ter-nol-kan tak sengaja saat kolom dikosongkan (BUG: dulu Number('')=0 →
+// dianggap fisik 0 → Simpan men-set stok ke 0). Hanya angka ≥ 0 yang dihitung.
+function opnameFisik(r) {
+  if (r.fisik === '' || r.fisik === null || r.fisik === undefined) return null
+  const n = Number(r.fisik)
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+function opnameDiff(r) {
+  const f = opnameFisik(r)
+  return f === null ? 0 : f - r.system
+}
+
 const opnameFiltered = computed(() => {
   const q = opnameSearch.value.toLowerCase()
   return q ? opnameRows.value.filter((r) => (r.name ?? '').toLowerCase().includes(q)) : opnameRows.value
 })
-const opnameChanged = computed(() => opnameRows.value.filter((r) => Number(r.fisik) !== r.system))
+const opnameChanged = computed(() => opnameRows.value.filter((r) => {
+  const f = opnameFisik(r)
+  return f !== null && f !== r.system
+}))
 const opnameStats = computed(() => {
   const changed = opnameChanged.value
   return {
     total:   opnameRows.value.length,
     changed: changed.length,
-    plus:    changed.filter((r) => Number(r.fisik) > r.system).length,
-    minus:   changed.filter((r) => Number(r.fisik) < r.system).length,
+    plus:    changed.filter((r) => opnameDiff(r) > 0).length,
+    minus:   changed.filter((r) => opnameDiff(r) < 0).length,
   }
 })
+
+// Paginasi tampilan opname (client-side, 100/halaman). Statistik & penyimpanan
+// tetap dihitung atas SELURUH baris (opnameRows), bukan hanya halaman aktif.
+const OPNAME_PER_PAGE = 100
+const opnamePage = ref(1)
+const opnameLastPage = computed(() => Math.max(1, Math.ceil(opnameFiltered.value.length / OPNAME_PER_PAGE)))
+const opnamePaged = computed(() => {
+  const start = (opnamePage.value - 1) * OPNAME_PER_PAGE
+  return opnameFiltered.value.slice(start, start + OPNAME_PER_PAGE)
+})
+watch(opnameSearch, () => { opnamePage.value = 1 })
+watch(opnameLastPage, (lp) => { if (opnamePage.value > lp) opnamePage.value = lp })
 
 async function reloadOpname() {
   await fetchStok()
@@ -724,8 +798,10 @@ async function saveOpname() {
   opnameSaving.value = true
   let ok = 0, fail = 0
   for (const r of changed) {
+    const f = opnameFisik(r)
+    if (f === null) continue
     try {
-      await farmasiApi.updateStokObat(r.id, { stock: Number(r.fisik) })
+      await farmasiApi.updateStokObat(r.id, { stock: f })
       ok++
     } catch { fail++ }
   }
@@ -735,8 +811,15 @@ async function saveOpname() {
   loadOpname()
 }
 
-// Muat data opname saat tab dibuka (sekali, kalau belum ada)
-watch(() => pgTab.value, (t) => { if (t === 'opname' && !opnameRows.value.length) loadOpname() })
+// Saat tab opname dibuka: muat bila kosong; bila sudah ada baris TANPA selisih
+// tertunda, segarkan baseline dari stok terbaru (cegah "Stok Sistem" basi setelah
+// dispensing). Bila ada hitungan fisik yang belum disimpan, biarkan agar tak hilang.
+function openOpname() {
+  if (!opnameRows.value.length || !opnameChanged.value.length) loadOpname()
+}
+
+// Muat / segarkan data opname saat tab dibuka.
+watch(() => pgTab.value, (t) => { if (t === 'opname') openOpname() })
 
 // Export lembar kerja stok opname ke Excel (xlsx) — kolom Fisik/Selisih kosong.
 function triggerDownload(blob, filename) {
@@ -813,6 +896,59 @@ async function openRiwayat(med) {
   } finally {
     riwayatLoading.value = false
   }
+}
+
+// ─── Tab Riwayat Pemberian (global, server-side) ─────────────────────────────
+// Daftar SEMUA obat yang diberikan ke pasien (resep ter-dispense + penjualan POS),
+// dengan pencarian (obat/pasien/no.RM), rentang tanggal, dan paginasi 50/halaman.
+const rpRows    = ref([])
+const rpSearch  = ref('')
+const rpFrom    = ref('')
+const rpTo      = ref('')
+const rpLoading = ref(false)
+const rpMeta    = ref({ current_page: 1, last_page: 1, total: 0, per_page: 50 })
+let _rpDebounce = null
+
+async function fetchRiwayatPemberian(page = 1) {
+  rpLoading.value = true
+  try {
+    const { data } = await farmasiApi.riwayatPemberian({
+      search:    rpSearch.value.trim() || undefined,
+      date_from: rpFrom.value || undefined,
+      date_to:   rpTo.value || undefined,
+      per_page:  50,
+      page,
+    })
+    const p = data.data ?? {}
+    rpRows.value = p.data ?? []
+    rpMeta.value = {
+      current_page: p.current_page ?? 1,
+      last_page:    p.last_page ?? 1,
+      total:        p.total ?? 0,
+      per_page:     p.per_page ?? 50,
+    }
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat riwayat pemberian')
+  } finally {
+    rpLoading.value = false
+  }
+}
+function rpSearchInput() {
+  clearTimeout(_rpDebounce)
+  _rpDebounce = setTimeout(() => fetchRiwayatPemberian(1), 350)
+}
+watch([rpFrom, rpTo], () => fetchRiwayatPemberian(1))
+function rpResetFilter() {
+  rpSearch.value = ''
+  rpFrom.value = ''
+  rpTo.value = ''
+  fetchRiwayatPemberian(1)
+}
+function fmtRpDate(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 // ─── Lifecycle / polling + WS notifikasi gudang ──────────────────────────────
@@ -968,7 +1104,11 @@ const posSearchResults = computed(() => {
   const s = posSearch.value.toLowerCase().trim()
   const list = posMedications.value
   if (!s) return list.slice(0, 20)
-  return list.filter((m) => (m.name ?? '').toLowerCase().includes(s)).slice(0, 20)
+  return list.filter((m) =>
+    (m.name ?? '').toLowerCase().includes(s)
+    || (m.generic_name ?? '').toLowerCase().includes(s)
+    || (m.code ?? '').toLowerCase().includes(s),
+  ).slice(0, 20)
 })
 
 const posSubtotal = computed(() =>
@@ -1147,6 +1287,7 @@ watch(() => pgTab.value, (t) => {
     if (!posHistory.value.length) loadPosHistory()
   }
   if (t === 'ranap') fetchRanapQueue()
+  if (t === 'riwayat' && !rpRows.value.length) fetchRiwayatPemberian(1)
 })
 
 // Antrean rawat jalan + permintaan rawat inap di-poll bersama (8s).
@@ -1209,6 +1350,10 @@ function toast(type, msg) {
       <button :class="['nt', pgTab === 'penjualan' ? 'a' : '']" @click="pgTab = 'penjualan'">
         <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
         Penjualan Obat Bebas
+      </button>
+      <button :class="['nt', pgTab === 'riwayat' ? 'a' : '']" @click="pgTab = 'riwayat'">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Riwayat Pemberian
       </button>
       <button :class="['nt', pgTab === 'laporan' ? 'a' : '']" @click="pgTab = 'laporan'">
         <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -1344,10 +1489,21 @@ function toast(type, msg) {
               <div class="otc-fields">
                 <div class="otc-field otc-wide">
                   <label class="otc-label">Obat (bebas/bebas terbatas)</label>
-                  <select v-model="addObatForm.medication_id" class="fi otc-input">
-                    <option value="">— pilih obat —</option>
-                    <option v-for="m in otcMedications" :key="m.id" :value="m.id">{{ m.name }} ({{ m.golongan }})</option>
-                  </select>
+                  <div v-if="addObatSelected" class="otc-picked">
+                    <span><b>{{ addObatSelected.name }}</b> <span class="muted">({{ addObatSelected.golongan }})</span></span>
+                    <button type="button" class="otc-picked-x" title="Ganti obat" @click="clearAddObatPick">✕</button>
+                  </div>
+                  <div v-else class="otc-picker">
+                    <input v-model="addObatSearch" class="fi otc-input" placeholder="Ketik nama / generik / kode obat…"
+                           @focus="addObatPickerOpen = true" @blur="addObatPickerOpen = false" />
+                    <div v-if="addObatPickerOpen" class="otc-picker-drop">
+                      <div v-if="!addObatResults.length" class="otc-pick-empty">Tidak ada obat bebas cocok</div>
+                      <div v-for="m in addObatResults" :key="m.id" class="otc-picker-item" @mousedown.prevent="pickAddObat(m)">
+                        <span class="otc-pi-name">{{ m.name }}</span>
+                        <span class="otc-pi-meta"><span class="kategori-pill">{{ m.golongan }}</span><span>stok {{ m.stock }}</span></span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div class="otc-field otc-narrow">
                   <label class="otc-label">Jumlah</label>
@@ -1449,10 +1605,21 @@ function toast(type, msg) {
                 <div class="otc-fields">
                   <div class="otc-field otc-wide">
                     <label class="otc-label">Obat (bebas/bebas terbatas)</label>
-                    <select v-model="addObatForm.medication_id" class="fi otc-input">
-                      <option value="">— pilih obat —</option>
-                      <option v-for="m in otcMedications" :key="m.id" :value="m.id">{{ m.name }} ({{ m.golongan }})</option>
-                    </select>
+                    <div v-if="addObatSelected" class="otc-picked">
+                      <span><b>{{ addObatSelected.name }}</b> <span class="muted">({{ addObatSelected.golongan }})</span></span>
+                      <button type="button" class="otc-picked-x" title="Ganti obat" @click="clearAddObatPick">✕</button>
+                    </div>
+                    <div v-else class="otc-picker">
+                      <input v-model="addObatSearch" class="fi otc-input" placeholder="Ketik nama / generik / kode obat…"
+                             @focus="addObatPickerOpen = true" @blur="addObatPickerOpen = false" />
+                      <div v-if="addObatPickerOpen" class="otc-picker-drop">
+                        <div v-if="!addObatResults.length" class="otc-pick-empty">Tidak ada obat bebas cocok</div>
+                        <div v-for="m in addObatResults" :key="m.id" class="otc-picker-item" @mousedown.prevent="pickAddObat(m)">
+                          <span class="otc-pi-name">{{ m.name }}</span>
+                          <span class="otc-pi-meta"><span class="kategori-pill">{{ m.golongan }}</span><span>stok {{ m.stock }}</span></span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <div class="otc-field otc-narrow">
                     <label class="otc-label">Jumlah</label>
@@ -1703,8 +1870,8 @@ function toast(type, msg) {
           </thead>
           <tbody>
             <tr v-if="stokLoading && !stokList.length"><td colspan="9" class="po-state">Memuat stok…</td></tr>
-            <tr v-for="(s, i) in stokFiltered" :key="s.id ?? s.name">
-              <td class="c muted">{{ i + 1 }}</td>
+            <tr v-for="(s, i) in stokPaged" :key="s.id ?? s.name">
+              <td class="c muted">{{ (stokPage - 1) * STOK_PER_PAGE + i + 1 }}</td>
               <td><strong>{{ s.name }}</strong></td>
               <td><span class="kategori-pill">{{ s.formularium ?? '—' }}</span></td>
               <td class="r">
@@ -1726,6 +1893,7 @@ function toast(type, msg) {
             <tr v-if="!stokLoading && !stokFiltered.length"><td colspan="9" class="po-state">Tidak ada data stok</td></tr>
           </tbody>
         </table>
+        <Pager v-model:page="stokPage" :last-page="stokLastPage" :total="stokFiltered.length" />
       </div>
     </div>
 
@@ -1774,23 +1942,24 @@ function toast(type, msg) {
           </thead>
           <tbody>
             <tr v-if="!opnameRows.length"><td colspan="7" class="po-state">Belum ada data. Klik "Muat Ulang" untuk memuat stok sistem.</td></tr>
-            <tr v-for="(r, i) in opnameFiltered" :key="r.id"
-              :class="{ 'op-diff': Number(r.fisik) !== r.system }">
-              <td class="c muted">{{ i + 1 }}</td>
+            <tr v-for="(r, i) in opnamePaged" :key="r.id"
+              :class="{ 'op-diff': opnameDiff(r) !== 0 }">
+              <td class="c muted">{{ (opnamePage - 1) * OPNAME_PER_PAGE + i + 1 }}</td>
               <td><strong>{{ r.name }}</strong></td>
               <td><span class="kategori-pill">{{ r.formularium || '—' }}</span></td>
               <td class="muted">{{ r.unit || '—' }}</td>
               <td class="r">{{ r.system }}</td>
-              <td class="r"><input v-model.number="r.fisik" type="number" min="0" class="op-input" /></td>
+              <td class="r"><input v-model="r.fisik" type="number" min="0" class="op-input" /></td>
               <td class="r">
-                <span :class="['op-sel', Number(r.fisik) - r.system > 0 ? 'plus' : Number(r.fisik) - r.system < 0 ? 'minus' : '']">
-                  {{ Number(r.fisik) - r.system > 0 ? '+' : '' }}{{ Number(r.fisik) - r.system }}
+                <span :class="['op-sel', opnameDiff(r) > 0 ? 'plus' : opnameDiff(r) < 0 ? 'minus' : '']">
+                  {{ opnameDiff(r) > 0 ? '+' : '' }}{{ opnameDiff(r) }}
                 </span>
               </td>
             </tr>
             <tr v-if="opnameRows.length && !opnameFiltered.length"><td colspan="7" class="po-state">Tidak ada obat cocok pencarian</td></tr>
           </tbody>
         </table>
+        <Pager v-model:page="opnamePage" :last-page="opnameLastPage" :total="opnameFiltered.length" />
       </div>
     </div>
     <!-- PENJUALAN OBAT BEBAS (POS) -->
@@ -1938,6 +2107,71 @@ function toast(type, msg) {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- RIWAYAT PEMBERIAN OBAT (global: resep + POS) -->
+    <div v-if="pgTab === 'riwayat'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Riwayat <b>obat yang diberikan ke pasien</b> — dari resep yang sudah diserahkan (rawat jalan/inap) dan penjualan obat bebas (POS). Saring dengan pencarian &amp; rentang tanggal.</span>
+      </div>
+
+      <div class="rp-head">
+        <div class="rp-search">
+          <svg viewBox="0 0 24 24" class="stok-search-ico"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input v-model="rpSearch" class="fi stok-search-input" placeholder="Cari obat / pasien / no. RM…" @input="rpSearchInput" />
+        </div>
+        <div class="rp-dates">
+          <label class="rp-date-lbl">Dari
+            <input v-model="rpFrom" type="date" class="fi" />
+          </label>
+          <label class="rp-date-lbl">s/d
+            <input v-model="rpTo" type="date" class="fi" />
+          </label>
+          <button class="btn btn-secondary btn-sm" @click="rpResetFilter">Reset</button>
+          <button class="btn btn-secondary btn-sm" :disabled="rpLoading" @click="fetchRiwayatPemberian(rpMeta.current_page)">
+            <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            Muat Ulang
+          </button>
+        </div>
+      </div>
+
+      <div class="po-table-wrap">
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="width:48px" class="c">No.</th>
+              <th style="width:160px">Tanggal</th>
+              <th>Pasien</th>
+              <th>No. RM</th>
+              <th>Obat</th>
+              <th class="r">Jumlah</th>
+              <th>Sumber</th>
+              <th>Petugas</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="rpLoading"><td colspan="8" class="po-state">Memuat riwayat…</td></tr>
+            <tr v-else-if="!rpRows.length"><td colspan="8" class="po-state">Tidak ada riwayat pemberian pada filter ini.</td></tr>
+            <tr v-for="(r, i) in rpRows" :key="r.id">
+              <td class="c muted">{{ (rpMeta.current_page - 1) * rpMeta.per_page + i + 1 }}</td>
+              <td class="muted">{{ fmtRpDate(r.tanggal) }}</td>
+              <td><strong>{{ r.pasien }}</strong></td>
+              <td class="muted">{{ r.no_rm || '—' }}</td>
+              <td>{{ r.obat }}</td>
+              <td class="r">{{ Number(r.quantity) }}</td>
+              <td><span class="kategori-pill">{{ r.sumber }}</span></td>
+              <td class="muted">{{ r.petugas || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <Pager
+          :page="rpMeta.current_page"
+          :last-page="rpMeta.last_page"
+          :total="rpMeta.total"
+          @change="fetchRiwayatPemberian"
+        />
       </div>
     </div>
 
@@ -2314,6 +2548,18 @@ function toast(type, msg) {
 .otc-field:not(.otc-wide):not(.otc-narrow) { flex: 1; min-width: 110px; }
 .otc-label { font-size: 9px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .03em; }
 .otc-input { height: 28px; font-size: 11px; width: 100%; box-sizing: border-box; }
+/* Picker obat OTC (typeahead) */
+.otc-picker { position: relative; }
+.otc-picker-drop { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 3px); background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; max-height: 220px; overflow-y: auto; box-shadow: 0 8px 22px rgba(0,0,0,.12); }
+.otc-picker-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--gb); }
+.otc-picker-item:last-child { border-bottom: none; }
+.otc-picker-item:hover { background: var(--gl); }
+.otc-pi-name { font-size: 11.5px; font-weight: 600; color: var(--td); }
+.otc-pi-meta { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--tu); white-space: nowrap; }
+.otc-pick-empty { padding: 8px 10px; font-size: 11px; color: var(--tu); }
+.otc-picked { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 28px; padding: 0 6px 0 10px; font-size: 11.5px; background: var(--bs); border: 1px solid var(--ga); border-radius: 6px; box-sizing: border-box; }
+.otc-picked-x { border: none; background: transparent; cursor: pointer; font-size: 13px; line-height: 1; color: var(--tu); padding: 2px 4px; }
+.otc-picked-x:hover { color: var(--et); }
 .otc-form-actions { display: flex; gap: .4rem; }
 .otc-hint { font-size: 10px; color: var(--et); margin-top: .45rem; }
 .otc-harga { margin: .55rem 0; padding: .5rem .6rem; background: var(--ib); border: 1px solid var(--gb); border-radius: 6px; }
@@ -2392,6 +2638,13 @@ function toast(type, msg) {
 .placeholder-card { padding: 3rem 2rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; text-align: center; color: var(--tu); font-size: 13px; }
 
 /* Stok Opname */
+/* Riwayat Pemberian — header filter */
+.rp-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+.rp-search { position: relative; display: flex; align-items: center; }
+.rp-dates { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.rp-date-lbl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--tu); }
+.rp-date-lbl .fi { width: 150px; }
+
 .opname-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .opname-stats { display: flex; gap: 0.5rem; }
 .ostat { background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; padding: 6px 14px; display: flex; flex-direction: column; gap: 1px; min-width: 78px; }

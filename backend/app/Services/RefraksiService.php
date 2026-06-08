@@ -30,7 +30,12 @@ class RefraksiService
         // nurseAssessment WAJIB di-load: frontend mapQueueRow baca
         // visit.nurse_assessment.allergy_detail untuk badge "⚠ Alergi" + bar vital
         // triase. Tanpa ini badge/data triase tak pernah tampil di Refraksionis.
-        return Queue::with(['visit.patient', 'visit.refractionRecord', 'visit.nurseAssessment', 'visit.doctorSchedule.employee'])
+        // visit.queues (today): FE derive status stasiun pasangan (TRIASE) untuk badge
+        // "sedang di Triase" + nonaktifkan tombol Panggil (cegah panggil-ganda paralel).
+        return Queue::with([
+            'visit.patient', 'visit.refractionRecord', 'visit.nurseAssessment', 'visit.doctorSchedule.employee',
+            'visit.queues' => fn ($q) => $q->whereDate('created_at', today()),
+        ])
             ->where('station', 'REFRAKSIONIS')
             ->whereDate('created_at', today())
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
@@ -156,14 +161,16 @@ class RefraksiService
             'autoref_os_cyl'  => $data['autoref_os_cyl'] ?? null,
             'autoref_os_axis' => $data['autoref_os_axis'] ?? null,
 
-            // Keratometri OD
+            // Keratometri OD (axis K1 + axis K2 terpisah)
             'keratometri1_od'    => $data['keratometri1_od'] ?? null,
             'keratometri2_od'    => $data['keratometri2_od'] ?? null,
-            'keratometri_axis_od' => $data['keratometri_axis_od'] ?? null,
+            'keratometri_axis_od'  => $data['keratometri_axis_od'] ?? null,
+            'keratometri_axis2_od' => $data['keratometri_axis2_od'] ?? null,
             // Keratometri OS
             'keratometri1_os'    => $data['keratometri1_os'] ?? null,
             'keratometri2_os'    => $data['keratometri2_os'] ?? null,
-            'keratometri_axis_os' => $data['keratometri_axis_os'] ?? null,
+            'keratometri_axis_os'  => $data['keratometri_axis_os'] ?? null,
+            'keratometri_axis2_os' => $data['keratometri_axis2_os'] ?? null,
 
             // Visus OD
             'visus_awal_od'  => $data['visus_awal_od'] ?? null,
@@ -190,20 +197,29 @@ class RefraksiService
             'old_glasses_od_cyl'  => $data['old_glasses_od_cyl'] ?? null,
             'old_glasses_od_axis' => $data['old_glasses_od_axis'] ?? null,
             'old_glasses_add_od'  => $data['old_glasses_add_od'] ?? null,
+            'old_glasses_visus_od' => $data['old_glasses_visus_od'] ?? null,
             // Kacamata Lama OS
             'old_glasses_os_sph'  => $data['old_glasses_os_sph'] ?? null,
             'old_glasses_os_cyl'  => $data['old_glasses_os_cyl'] ?? null,
             'old_glasses_os_axis' => $data['old_glasses_os_axis'] ?? null,
             'old_glasses_add_os'  => $data['old_glasses_add_os'] ?? null,
+            'old_glasses_visus_os' => $data['old_glasses_visus_os'] ?? null,
 
-            // IOP
+            // IOP (pengukuran #1 + pengukuran berulang manual)
             'iop_od'     => $data['iop_od'] ?? null,
             'iop_os'     => $data['iop_os'] ?? null,
             'iop_method' => $data['iop_method'] ?? null,
+            'iop_extra_readings' => $data['iop_extra_readings'] ?? null,
 
             // Shared
             'pd_distance'    => $data['pd_distance'] ?? null,
             'clinical_notes' => $data['clinical_notes'] ?? null,
+
+            // SOAP refraksionis (PPA). O autofill dari data refraksi tapi editable & tersimpan.
+            'soap_s'         => $data['soap_s'] ?? null,
+            'soap_o'         => $data['soap_o'] ?? null,
+            'soap_a'         => $data['soap_a'] ?? null,
+            'soap_p'         => $data['soap_p'] ?? null,
 
             'is_finalized' => false,
         ]);
@@ -240,8 +256,11 @@ class RefraksiService
 
     /**
      * Lock refraction record → update visit timestamps → trigger parallel check.
+     * Finalisasi = tanda tangan refraksionis (paraf PIN): mengisi digital_signature
+     * + signature_timestamp. PIN diverifikasi sejajar pola DokterController::verifyPin
+     * (users.pin plaintext, hash_equals).
      */
-    public function finalizeRefraction(string $recordId): RefractionRecord
+    public function finalizeRefraction(string $recordId, ?string $pin = null): RefractionRecord
     {
         $record = RefractionRecord::with('visit')->findOrFail($recordId);
 
@@ -262,11 +281,31 @@ class RefraksiService
 
         $user = auth('api')->user();
 
-        DB::transaction(function () use ($record, $user) {
+        // Gate tanda tangan PIN (paraf refraksionis).
+        $expected = $user?->pin;
+        if (! $expected) {
+            throw new \Exception('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
+        }
+        if (! is_string($pin) || ! hash_equals((string) $expected, (string) $pin)) {
+            throw new \Exception('PIN salah.', 422);
+        }
+
+        // Susun tanda tangan tekstual: nama + STR/SIP bila ada.
+        $emp = $user->employee;
+        $signature = $emp?->name ?? $user->name;
+        if ($emp?->str) {
+            $signature .= ' · STR ' . $emp->str;
+        } elseif ($emp?->sip) {
+            $signature .= ' · SIP ' . $emp->sip;
+        }
+
+        DB::transaction(function () use ($record, $user, $signature) {
             $record->update([
-                'is_finalized'    => true,
-                'finalized_at'    => now(),
-                'finalized_by_id' => $user->employee_id,
+                'is_finalized'        => true,
+                'finalized_at'        => now(),
+                'finalized_by_id'     => $user->employee_id,
+                'digital_signature'   => $signature,
+                'signature_timestamp' => now(),
             ]);
 
             // Close REFRAKSIONIS queue
@@ -283,11 +322,62 @@ class RefraksiService
             'FINALIZE_REFRAKSI',
             RefractionRecord::class,
             $recordId,
-            "Rekam refraksi dikunci untuk kunjungan {$record->visit_id}"
+            "Rekam refraksi ditandatangani (PIN) & dikunci untuk kunjungan {$record->visit_id}"
         );
 
         // Fire parallel check — may create DOKTER queue
         $this->checkReadyForDoctor($record->visit_id);
+
+        return $record->fresh(['examinedBy', 'finalizedBy', 'prescription']);
+    }
+
+    /**
+     * Buka kunci pemeriksaan refraksi (periksa ulang atas permintaan dokter).
+     * is_finalized→false + hapus tanda tangan + buka kembali antrean REFRAKSIONIS
+     * (COMPLETED → WAITING) supaya pasien bisa di-Panggil, direvisi, lalu finalisasi ulang.
+     * TIDAK menyentuh ready_for_doctor / antrean DOKTER (slot dokter tetap); saat finalisasi
+     * ulang checkReadyForDoctor no-op + alreadyQueued → tanpa tiket DOKTER dobel.
+     * SOAP/CPPT (kind REFRAKSI) otomatis ikut data terbaru (aggregator baca record live).
+     */
+    public function reopenRefraction(string $recordId): RefractionRecord
+    {
+        $record = RefractionRecord::with('visit')->findOrFail($recordId);
+
+        if (! $record->is_finalized) {
+            throw new \Exception('Rekam refraksi belum dikunci.', 422);
+        }
+
+        $user = auth('api')->user();
+
+        DB::transaction(function () use ($record) {
+            $record->update([
+                'is_finalized'        => false,
+                'finalized_at'        => null,
+                'finalized_by_id'     => null,
+                'digital_signature'   => null,
+                'signature_timestamp' => null,
+            ]);
+
+            // Buka kembali antrean REFRAKSIONIS (baris hari ini yang sudah COMPLETED).
+            Queue::where('visit_id', $record->visit_id)
+                ->where('station', Queue::STATION_REFRAKSIONIS)
+                ->where('status', Queue::STATUS_COMPLETED)
+                ->today()
+                ->update([
+                    'status'       => Queue::STATUS_WAITING,
+                    'completed_at' => null,
+                    'called_at'    => null,
+                    'started_at'   => null,
+                ]);
+        });
+
+        $this->log(
+            $user->id,
+            'REOPEN_REFRAKSI',
+            RefractionRecord::class,
+            $recordId,
+            "Rekam refraksi dibuka kembali (periksa ulang) untuk kunjungan {$record->visit_id}"
+        );
 
         return $record->fresh(['examinedBy', 'finalizedBy', 'prescription']);
     }

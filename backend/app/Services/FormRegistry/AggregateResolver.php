@@ -2,6 +2,8 @@
 
 namespace App\Services\FormRegistry;
 
+use App\Models\BpjsClaim;
+use App\Models\Icd9Code;
 use App\Models\Icd10Code;
 use App\Models\Visit;
 
@@ -30,11 +32,16 @@ final class AggregateResolver
     /** Cache ICD-10 description lookup per request (kode → description). */
     private array $icd10DescCache = [];
 
+    /** Cache ICD-9 description lookup per request (kode → description). */
+    private array $icd9DescCache = [];
+
     public function resolve(Visit $visit, string $source, ?string $format): ?string
     {
         return match ($source) {
             'prescriptions'                       => $this->resolvePrescriptions($visit, $format),
             'doctorExamination.icd10_diagnoses'   => $this->resolveIcd10Diagnoses($visit, $format),
+            'claim.icd10_diagnoses'               => $this->resolveClaimIcd10($visit, $format),
+            'claim.icd9_procedures'               => $this->resolveClaimIcd9($visit, $format),
             'visitServices'                       => $this->resolveVisitServices($visit, $format),
             'diagnosticResults.summary'           => $this->resolveDiagnosticResults($visit, $format),
             'surgery_iol_usage'                   => $this->resolveIolUsage($visit, $format),
@@ -213,6 +220,74 @@ final class AggregateResolver
         return match ($format) {
             'icd_only_join_comma' => implode(', ', $codes),
             default               => $this->joinIcdWithDesc($codes),  // icd_with_desc_join_newline
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // claim.* — diagnosa/prosedur dari KODING KLAIM (bpjs_claims), BUKAN dari
+    // doctorExamination. Dipakai template "Lembar Klaim" (RESUME_KLAIM) agar
+    // dokumen pendukung BPJS selalu = angka grouping yang disetel koder, sementara
+    // Resume Medis dokter tetap utuh. Satu klaim per visit (updateOrCreate by visit).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private function claimForVisit(Visit $visit): ?BpjsClaim
+    {
+        return BpjsClaim::query()
+            ->where('visit_id', $visit->id)
+            ->latest('created_at')
+            ->first();
+    }
+
+    private function resolveClaimIcd10(Visit $visit, ?string $format): string
+    {
+        $claim = $this->claimForVisit($visit);
+        if ($claim === null) {
+            return '';
+        }
+
+        $codes = [];
+        if (!empty($claim->diagnosis_utama)) {
+            $codes[] = $claim->diagnosis_utama;
+        }
+        foreach ((array) ($claim->diagnosis_sekunder ?? []) as $sec) {
+            $code = is_array($sec) ? ($sec['kode'] ?? $sec['code'] ?? null) : $sec;
+            if (is_string($code) && $code !== '') {
+                $codes[] = $code;
+            }
+        }
+        $codes = array_values(array_unique($codes));
+        if (empty($codes)) {
+            return '';
+        }
+
+        return match ($format) {
+            'icd_only_join_comma' => implode(', ', $codes),
+            default               => $this->joinIcdWithDesc($codes),  // icd_with_desc_join_newline
+        };
+    }
+
+    private function resolveClaimIcd9(Visit $visit, ?string $format): string
+    {
+        $claim = $this->claimForVisit($visit);
+        if ($claim === null) {
+            return '';
+        }
+
+        $codes = [];
+        foreach ((array) ($claim->procedure_codes ?? []) as $p) {
+            $code = is_array($p) ? ($p['kode'] ?? $p['code'] ?? null) : $p;
+            if (is_string($code) && $code !== '') {
+                $codes[] = $code;
+            }
+        }
+        $codes = array_values(array_unique($codes));
+        if (empty($codes)) {
+            return '';
+        }
+
+        return match ($format) {
+            'icd_only_join_comma' => implode(', ', $codes),
+            default               => $this->joinIcd9WithDesc($codes),  // icd_with_desc_join_newline
         };
     }
 
@@ -445,6 +520,26 @@ final class AggregateResolver
         $lines = [];
         foreach ($codes as $code) {
             $desc = $this->icd10DescCache[$code] ?? null;
+            $lines[] = $desc ? "{$code} — {$desc}" : $code;
+        }
+        return implode("\n", $lines);
+    }
+
+    /** @param list<string> $codes — ICD-9-CM (prosedur/tindakan), 1 baris per kode. */
+    private function joinIcd9WithDesc(array $codes): string
+    {
+        $missing = array_values(array_diff($codes, array_keys($this->icd9DescCache)));
+        if (!empty($missing)) {
+            $rows = Icd9Code::query()->whereIn('code', $missing)
+                ->pluck('description', 'code')->all();
+            foreach ($missing as $code) {
+                $this->icd9DescCache[$code] = $rows[$code] ?? null;
+            }
+        }
+
+        $lines = [];
+        foreach ($codes as $code) {
+            $desc = $this->icd9DescCache[$code] ?? null;
             $lines[] = $desc ? "{$code} — {$desc}" : $code;
         }
         return implode("\n", $lines);

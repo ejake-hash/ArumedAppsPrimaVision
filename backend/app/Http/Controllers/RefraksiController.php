@@ -174,9 +174,24 @@ class RefraksiController extends Controller
             'iop_os'     => 'nullable|numeric|between:0,80',
             'iop_method' => 'nullable|in:NCT,Goldmann,iCare,Schiotz',
 
+            // ── Field skema optimal refraksionis ──────────────────────────
+            'keratometri_axis2_od'    => 'nullable|integer|between:0,180', // axis K2
+            'keratometri_axis2_os'    => 'nullable|integer|between:0,180',
+            'old_glasses_visus_od'    => 'nullable|string|max:20',
+            'old_glasses_visus_os'    => 'nullable|string|max:20',
+            'iop_extra_readings'      => 'nullable|array',                 // IOP berulang (metode = iop_method)
+            'iop_extra_readings.*.od' => 'nullable|numeric|between:0,80',
+            'iop_extra_readings.*.os' => 'nullable|numeric|between:0,80',
+
             // Shared
             'pd_distance'    => 'nullable|numeric|between:40,80',
             'clinical_notes' => 'nullable|string|max:2000',
+
+            // SOAP refraksionis (PPA) — O autofill dari data refraksi tapi editable & tersimpan
+            'soap_s'         => 'nullable|string|max:2000',
+            'soap_o'         => 'nullable|string|max:2000',
+            'soap_a'         => 'nullable|string|max:2000',
+            'soap_p'         => 'nullable|string|max:2000',
         ]);
 
         try {
@@ -240,8 +255,22 @@ class RefraksiController extends Controller
             'iop_os'     => 'nullable|numeric|between:0,80',
             'iop_method' => 'nullable|in:NCT,Goldmann,iCare,Schiotz',
 
+            // ── Field skema optimal refraksionis ──────────────────────────
+            'keratometri_axis2_od'    => 'nullable|integer|between:0,180', // axis K2
+            'keratometri_axis2_os'    => 'nullable|integer|between:0,180',
+            'old_glasses_visus_od'    => 'nullable|string|max:20',
+            'old_glasses_visus_os'    => 'nullable|string|max:20',
+            'iop_extra_readings'      => 'nullable|array',                 // IOP berulang (metode = iop_method)
+            'iop_extra_readings.*.od' => 'nullable|numeric|between:0,80',
+            'iop_extra_readings.*.os' => 'nullable|numeric|between:0,80',
+
             'pd_distance'    => 'nullable|numeric|between:40,80',
             'clinical_notes' => 'nullable|string|max:2000',
+
+            // SOAP refraksionis (PPA)
+            'soap_s'         => 'nullable|string|max:2000',
+            'soap_a'         => 'nullable|string|max:2000',
+            'soap_p'         => 'nullable|string|max:2000',
         ]);
 
         try {
@@ -257,10 +286,14 @@ class RefraksiController extends Controller
      * POST /refraksi/pemeriksaan/{id}/finalize
      * Kunci data refraksi → trigger parallel check.
      */
-    public function finalizePemeriksaan(string $id): JsonResponse
+    public function finalizePemeriksaan(Request $request, string $id): JsonResponse
     {
+        $validated = $request->validate([
+            'pin' => 'required|string',
+        ]);
+
         try {
-            $record = $this->service->finalizeRefraction($id);
+            $record = $this->service->finalizeRefraction($id, $validated['pin']);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
@@ -270,6 +303,21 @@ class RefraksiController extends Controller
         $record->doctor_ticket = $this->service->doctorTicket($record->visit_id);
 
         return $this->ok($record, 'Data refraksi dikunci. Tidak bisa diubah.');
+    }
+
+    /**
+     * POST /refraksi/pemeriksaan/{id}/reopen
+     * Buka kunci pemeriksaan refraksi (periksa ulang atas permintaan dokter).
+     */
+    public function reopenPemeriksaan(string $id): JsonResponse
+    {
+        try {
+            $record = $this->service->reopenRefraction($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($record, 'Pemeriksaan refraksi dibuka kembali untuk diperiksa ulang.');
     }
 
     // =========================================================================

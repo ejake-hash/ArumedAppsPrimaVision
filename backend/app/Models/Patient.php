@@ -27,6 +27,7 @@ class Patient extends Model
         'tempat_lahir',
         'pekerjaan',
         'phone',
+        'family_phone',
         'email',
         'address',
         'province',

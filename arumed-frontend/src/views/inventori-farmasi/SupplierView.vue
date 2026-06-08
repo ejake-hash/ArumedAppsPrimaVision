@@ -61,6 +61,6 @@ function applyFilter(updateFn, key, value) {
 </template>
 
 <style scoped>
-.cell-email { color: var(--ga); text-decoration: none; font-size: 12.5px; }
+.cell-email { display: inline-block; max-width: 100%; color: var(--ga); text-decoration: none; font-size: 12.5px; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
 .cell-email:hover { text-decoration: underline; }
 </style>

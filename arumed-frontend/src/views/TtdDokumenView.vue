@@ -72,6 +72,14 @@ const pinValue     = ref('')
 const pinError     = ref('')
 const pinBusy      = ref(false)
 
+// Revisi (koreksi post-FINALIZED) — dari modal "Lihat" dokumen yang sudah TTD.
+// Pola: generate dokumen VERSI BARU (otomatis terkoreksi dari data terkini) →
+// TTD ulang; versi lama jadi riwayat (SUPERSEDED). Bukan edit isi / catatan.
+const revisiOpen   = ref(false)
+const revisiAlasan = ref('')
+const revisiBusy   = ref(false)
+const revisiError  = ref('')
+
 // Bulk review modal
 const bulkOpen = ref(false)
 const ttdCount = ref(0)          // total dokumen menunggu TTD (kartu + badge)
@@ -277,6 +285,9 @@ function closeModal() {
   pinModalOpen.value = false
   pinValue.value = ''
   pinError.value = ''
+  revisiOpen.value = false
+  revisiAlasan.value = ''
+  revisiError.value = ''
 }
 
 function startEdit() {
@@ -333,6 +344,34 @@ async function submitPin() {
       : (e.response?.data?.message ?? 'Gagal menandatangani.')
   } finally {
     pinBusy.value = false
+  }
+}
+
+// ── Revisi (koreksi post-FINALIZED via generate ulang + TTD ulang) ────
+// Buat dokumen versi baru (otomatis terkoreksi dari data terkini), versi lama
+// jadi riwayat (SUPERSEDED). Dokumen baru masuk antrian TTD → dokter TTD ulang.
+function openRevisi() {
+  revisiAlasan.value = ''
+  revisiError.value = ''
+  revisiOpen.value = true
+}
+async function submitRevisi() {
+  if (!currentDoc.value) return
+  const alasan = revisiAlasan.value.trim()
+  if (!alasan) { revisiError.value = 'Alasan revisi wajib diisi.'; return }
+  revisiBusy.value = true
+  revisiError.value = ''
+  try {
+    await formTemplateApi.reviseDocument(currentDoc.value.id, { alasan })
+    revisiOpen.value = false
+    closeModal()
+    signedRows.value = [] // invalidasi tab signed (dokumen lama jadi SUPERSEDED)
+    activeTab.value = 'queue'
+    await Promise.all([load(), refreshCount()]) // versi baru muncul di Antrian
+  } catch (e) {
+    revisiError.value = e.response?.data?.message ?? 'Gagal membuat revisi.'
+  } finally {
+    revisiBusy.value = false
   }
 }
 
@@ -588,6 +627,7 @@ onMounted(() => { load(); refreshCount() })
           <footer class="pv-foot">
             <template v-if="previewReadonly">
               <span class="pv-signed">✓ Sudah ditandatangani</span>
+              <button class="btn btn-ghost" @click="openRevisi">Revisi &amp; TTD Ulang</button>
               <button class="btn" @click="closeModal">Tutup</button>
             </template>
             <template v-else-if="editMode">
@@ -627,6 +667,31 @@ onMounted(() => { load(); refreshCount() })
             <button type="button" class="lnk" :disabled="pinBusy" @click="pinModalOpen = false">Batal</button>
             <button type="button" class="btn" :disabled="pinBusy" @click="submitPin()">
               {{ pinBusy ? 'Memproses…' : 'Tanda Tangani' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Revisi (koreksi post-FINALIZED via generate ulang + TTD ulang) -->
+    <Teleport to="body">
+      <div v-if="revisiOpen" class="pin-overlay" @click.self="revisiOpen = false">
+        <div class="add-modal">
+          <h4 class="pin-title">Revisi &amp; Tanda Tangan Ulang</h4>
+          <p class="pin-sub">{{ currentDoc?.template_name ?? currentDoc?.template_code }}</p>
+          <p class="add-hint">
+            Sistem akan membuat <strong>dokumen versi baru</strong> yang otomatis
+            terkoreksi dari data terkini. Tanda tangan lama dibatalkan dan dokumen
+            baru masuk antrian untuk <strong>ditandatangani ulang</strong>. Versi lama
+            tetap disimpan sebagai riwayat.
+          </p>
+          <label class="add-label">Alasan revisi</label>
+          <input v-model="revisiAlasan" type="text" class="add-input" placeholder="mis. koreksi diagnosa / data pemeriksaan" @keyup.enter="submitRevisi" />
+          <div v-if="revisiError" class="pin-err">{{ revisiError }}</div>
+          <div class="pin-actions">
+            <button type="button" class="lnk" :disabled="revisiBusy" @click="revisiOpen = false">Batal</button>
+            <button type="button" class="btn" :disabled="revisiBusy" @click="submitRevisi">
+              {{ revisiBusy ? 'Memproses…' : 'Buat Versi Baru' }}
             </button>
           </div>
         </div>
@@ -789,6 +854,12 @@ onMounted(() => { load(); refreshCount() })
 
 /* ── MODAL (preview) ─────────────────────────────────────────────── */
 .pv-overlay {
+  /* Modal di-Teleport ke <body> (di luar .ttd) → CSS variables tak ikut
+     inherit. Deklarasikan ulang di sini supaya var(--cyan)/var(--accent) pada
+     tombol footer tetap resolve (kalau tidak, tombol jadi putih tak terlihat). */
+  --ink: #1f2937; --muted: #6b7280; --faint: #9ca3af;
+  --line: #e5e7eb; --accent: #0e3a66; --cyan: #1faae0; --danger: #b42323;
+  --done: #0f9d6b;
   position: fixed; inset: 0; background: rgba(0,0,0,.35);
   display: flex; align-items: center; justify-content: center; z-index: 1200; padding: 1rem;
 }
@@ -809,10 +880,21 @@ onMounted(() => { load(); refreshCount() })
 
 /* ── PIN MODAL ───────────────────────────────────────────────────── */
 .pin-overlay {
+  /* Sama seperti .pv-overlay: ter-Teleport ke <body>, perlu var sendiri. */
+  --ink: #1f2937; --muted: #6b7280; --faint: #9ca3af;
+  --line: #e5e7eb; --accent: #0e3a66; --cyan: #1faae0; --danger: #b42323;
+  --done: #0f9d6b;
   position: fixed; inset: 0; background: rgba(0,0,0,.35);
   display: flex; align-items: center; justify-content: center; z-index: 1300; padding: 1rem;
 }
 .pin-modal { width: min(340px, 94vw); background: #fff; border-radius: 12px; padding: 1.6rem; text-align: center; }
+/* Addendum: form kiri-rata (beda dari PIN yang center). */
+.add-modal { width: min(440px, 95vw); background: #fff; border-radius: 12px; padding: 1.5rem; text-align: left; }
+.add-hint { margin: 6px 0 14px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.add-label { display: block; font-size: 12px; font-weight: 600; color: var(--ink); margin: 8px 0 4px; }
+.add-input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; color: var(--ink); box-sizing: border-box; font-family: inherit; }
+.add-input:focus { outline: none; border-color: var(--accent); }
+.add-area { resize: vertical; min-height: 80px; }
 .pin-title { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
 .pin-sub { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
 .pin-hint { margin: 0 0 16px; font-size: 12.5px; color: var(--muted); }

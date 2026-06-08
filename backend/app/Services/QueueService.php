@@ -191,12 +191,36 @@ class QueueService
             throw new \Exception('Antrian sudah selesai atau dibatalkan — tidak bisa dipanggil.', 422);
         }
 
-        $queue->update([
-            'status'    => $queue->status === Queue::STATUS_IN_PROGRESS
-                ? Queue::STATUS_IN_PROGRESS   // pertahankan IN_PROGRESS saat re-call
-                : Queue::STATUS_CALLED,
-            'called_at' => now(),
-        ]);
+        $newStatus = $queue->status === Queue::STATUS_IN_PROGRESS
+            ? Queue::STATUS_IN_PROGRESS   // pertahankan IN_PROGRESS saat re-call
+            : Queue::STATUS_CALLED;
+
+        // Mutual-exclusion stasiun paralel (Triase ↔ Refraksionis): pasien fisik hanya
+        // bisa di SATU stasiun pada satu waktu. Cegah panggil-ganda — tolak bila stasiun
+        // pasangan sedang memegang pasien (CALLED/IN_PROGRESS). Kunci baris visit (TOCTOU,
+        // pola sama dgn checkReadyForDoctor) agar dua panggil nyaris bersamaan tak sama-sama
+        // lolos. Re-call stasiun sendiri tak terpengaruh (cek hanya stasiun pasangan).
+        $sibling = $this->parallelSibling($queue->station);
+        if ($sibling !== null) {
+            DB::transaction(function () use ($queue, $sibling, $newStatus) {
+                Visit::where('id', $queue->visit_id)->lockForUpdate()->first();
+                $held = Queue::where('visit_id', $queue->visit_id)
+                    ->where('station', $sibling)
+                    ->whereIn('status', [Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                    ->today()
+                    ->exists();
+                if ($held) {
+                    throw new \Exception(
+                        'Pasien sedang ditangani di ' . $this->stationLabel($sibling)
+                        . ' — selesaikan atau lewati di sana dulu.',
+                        422
+                    );
+                }
+                $queue->update(['status' => $newStatus, 'called_at' => now()]);
+            });
+        } else {
+            $queue->update(['status' => $newStatus, 'called_at' => now()]);
+        }
 
         $this->broadcastQueueUpdate($queue->fresh(['visit.patient']));
 
@@ -208,6 +232,28 @@ class QueueService
         }
 
         return $queue->fresh(['visit.patient']);
+    }
+
+    /**
+     * Stasiun paralel pasangan: 1 pasien fisik hanya boleh di salah satunya pada satu
+     * waktu (Triase ↔ Refraksionis). null = stasiun bukan bagian pasangan paralel.
+     */
+    private function parallelSibling(string $station): ?string
+    {
+        return match ($station) {
+            Queue::STATION_TRIASE       => Queue::STATION_REFRAKSIONIS,
+            Queue::STATION_REFRAKSIONIS => Queue::STATION_TRIASE,
+            default                     => null,
+        };
+    }
+
+    private function stationLabel(string $station): string
+    {
+        return match ($station) {
+            Queue::STATION_TRIASE       => 'Triase',
+            Queue::STATION_REFRAKSIONIS => 'Refraksionis',
+            default                     => $station,
+        };
     }
 
     /**

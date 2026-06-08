@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRefraksiStore } from '@/stores/refraksiStore'
 import { refraksiApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
 
 const store = useRefraksiStore()
 
@@ -24,7 +25,9 @@ function ptypeOf(visit) {
 // Helper: bersihkan nilai numerik (string → number atau null)
 function num(v) {
   if (v === '' || v === null || v === undefined) return null
-  const n = Number(v)
+  // Toleransi input manual lokal ID: koma desimal "1,50" → "1.50" + rapikan spasi,
+  // supaya nilai yang DIKETIK manual (bukan dipilih dari combobox) tetap tersimpan.
+  const n = Number(typeof v === 'string' ? v.replace(',', '.').trim() : v)
   return Number.isFinite(n) ? n : null
 }
 // Axis & keratometri axis = kolom INTEGER (0–180) → bulatkan; desimal ⇒ 422.
@@ -55,6 +58,9 @@ function mapQueueRow(q) {
   const patient = visit.patient ?? q.patient ?? {}
   const nurse   = visit.nurse_assessment ?? null
   const sched   = visit.doctor_schedule ?? null
+  // Stasiun pasangan (TRIASE) sedang memegang pasien? → cegah panggil-ganda paralel.
+  const sibQ    = (visit.queues ?? []).find((x) => x.station === 'TRIASE')
+  const siblingActive = !!sibQ && ['CALLED', 'IN_PROGRESS'].includes(sibQ.status)
   return {
     dpjp:         sched?.employee?.name ?? null,
     poliklinik:   sched?.poliklinik ?? null,
@@ -81,6 +87,8 @@ function mapQueueRow(q) {
       suhu:     nurse.suhu ?? '—',
       keluhan:  nurse.chief_complaint ?? '—',
     } : null,
+    siblingActive,
+    siblingLabel: 'Triase',
     history:      [],
     _raw:         q,
   }
@@ -116,6 +124,21 @@ const activeTab = ref('autoref')
 const doneSteps = ref([])
 const showRxModal = ref(false)
 
+// ── Layout dinamis: panel collapsible + mode fokus ──────────────────────────
+const RQKEY = 'refraksi.queueCollapsed'
+const RSKEY = 'refraksi.sideCollapsed'
+const queueCollapsed = ref(localStorage.getItem(RQKEY) === '1')
+const sideCollapsed  = ref(localStorage.getItem(RSKEY) === '1')
+function toggleQueue() { queueCollapsed.value = !queueCollapsed.value; localStorage.setItem(RQKEY, queueCollapsed.value ? '1' : '0') }
+function toggleSide()  { sideCollapsed.value = !sideCollapsed.value; localStorage.setItem(RSKEY, sideCollapsed.value ? '1' : '0') }
+// Mode fokus: saat pasien dipilih di layar sedang (≤1500px), ciutkan antrean agar form lega.
+watch(() => store.selectedQueue, (q, prev) => {
+  if (q && !prev && typeof window !== 'undefined' && window.matchMedia('(max-width: 1500px)').matches) {
+    queueCollapsed.value = true
+    localStorage.setItem(RQKEY, '1')
+  }
+})
+
 const steps = [
   { tab: 'autoref', label: 'Autoref', sub: 'Objektif + Keratometri' },
   { tab: 'iop', label: 'Tonometri', sub: 'NCT' },
@@ -123,29 +146,79 @@ const steps = [
 ]
 
 const oldGlasses = ref({
-  od_s: '', od_c: '', od_ax: '', od_add: '',
-  os_s: '', os_c: '', os_ax: '', os_add: '',
+  od_s: '', od_c: '', od_ax: '', od_add: '', od_visus: '',
+  os_s: '', os_c: '', os_ax: '', os_add: '', os_visus: '',
 })
-const autoref = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_os_1: '', k_os_2: '', k_ax_os: '' })
+const autoref = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_ax2_od: '', k_os_1: '', k_os_2: '', k_ax_os: '', k_ax2_os: '' })
 const iop = ref({ od: '', os: '', method: 'NCT' })
+// Tonometri berulang (manual, dinamis) — metode = iop.method bersama. [{od,os},...]
+const iopExtra = ref([])
+function addIopReading() { iopExtra.value.push({ od: '', os: '' }) }
+function removeIopReading(idx) { iopExtra.value.splice(idx, 1) }
+// IOP tinggi (≥22) di pengukuran MANA PUN (#1 atau pengukuran ulang) → peringatan glaukoma.
+const iopHigh = computed(() => {
+  const hi = (v) => v !== '' && v !== null && v !== undefined && Number(v) >= 22
+  if (hi(iop.value.od) || hi(iop.value.os)) return true
+  return iopExtra.value.some((r) => hi(r.od) || hi(r.os))
+})
 const visus = ref({ ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' })
 const pinhole = ref({ od: '', os: '' })
 const refine = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '64' })
 const clinicalNotes = ref('')
 const rxFinal = ref({ perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' })
 
+// SOAP refraksionis (PPA). O autofill dari data refraksi tapi editable & tersimpan
+// (soap_o). S/A/P diketik manual.
+// A & P autofill default (tetap editable; tersimpan menang bila sudah diisi).
+const SOAP_A_DEFAULT = 'Gangguan Pemeriksaan'
+const SOAP_P_DEFAULT = 'Konsultasi ke Dokter'
+const soap = ref({ s: '', o: '', a: SOAP_A_DEFAULT, p: SOAP_P_DEFAULT })
+const soapODirty = ref(false)   // O disentuh manual → hentikan autofill dari data refraksi
+
+// Objektif (O) tersusun dari data refraksi — mirror RmeAggregator::refraksiObjektif:
+// visus akhir (BCVA) + refraksi subjektif + TIO. Editable: begitu diedit, autofill berhenti.
+const oDerived = computed(() => {
+  const parts = []
+  const bod = visus.value.bcva_od, bos = visus.value.bcva_os
+  if (bod || bos) parts.push(`Visus akhir OD ${bod || '–'} / OS ${bos || '–'}`)
+  const fmt = (s, c, a, ad) => {
+    if (![s, c, a, ad].some((x) => x !== '' && x != null)) return ''
+    const fs = s !== '' && s != null ? `S${Number(s) >= 0 ? '+' : ''}${s}` : ''
+    const fc = c !== '' && c != null ? ` C${Number(c) >= 0 ? '+' : ''}${c}` : ''
+    const fa = a !== '' && a != null ? ` ×${a}°` : ''
+    const fad = ad !== '' && ad != null ? ` Add ${ad}` : ''
+    return (fs + fc + fa + fad).trim()
+  }
+  const rxOd = fmt(refine.value.od_s, refine.value.od_c, refine.value.od_ax, refine.value.add_od)
+  const rxOs = fmt(refine.value.os_s, refine.value.os_c, refine.value.os_ax, refine.value.add_os)
+  if (rxOd || rxOs) parts.push(`Refraksi subjektif OD ${rxOd || '–'} | OS ${rxOs || '–'}`)
+  if (iop.value.od || iop.value.os) {
+    parts.push(`TIO OD ${iop.value.od || '–'} / OS ${iop.value.os || '–'} mmHg${iop.value.method ? ` (${iop.value.method})` : ''}`)
+  }
+  return parts.join('\n')
+})
+
+// Autofill O selama belum diedit manual.
+watch(oDerived, (v) => { if (!soapODirty.value) soap.value.o = v })
+
+// Ref ke kartu CPPT (panggil reload sehabis finalisasi agar entri baru tampil).
+const cpptCardRef = ref(null)
+
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 
 function resetForm() {
-  oldGlasses.value = { od_s: '', od_c: '', od_ax: '', od_add: '', os_s: '', os_c: '', os_ax: '', os_add: '' }
-  autoref.value    = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_os_1: '', k_os_2: '', k_ax_os: '' }
+  oldGlasses.value = { od_s: '', od_c: '', od_ax: '', od_add: '', od_visus: '', os_s: '', os_c: '', os_ax: '', os_add: '', os_visus: '' }
+  autoref.value    = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', k_od_1: '', k_od_2: '', k_ax_od: '', k_ax2_od: '', k_os_1: '', k_os_2: '', k_ax_os: '', k_ax2_os: '' }
   iop.value        = { od: '', os: '', method: 'NCT' }
+  iopExtra.value   = []
   visus.value      = { ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' }
   pinhole.value    = { od: '', os: '' }
   refine.value     = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '64' }
   clinicalNotes.value = ''
   rxFinal.value    = { perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' }
+  soap.value       = { s: '', o: '', a: SOAP_A_DEFAULT, p: SOAP_P_DEFAULT }
+  soapODirty.value = false
 }
 
 /**
@@ -173,16 +246,21 @@ function fillFormFromRecord(rec, presc) {
     os_ax:    v(rec.autoref_os_axis),
     k_od_1:  v(rec.keratometri1_od),
     k_od_2:  v(rec.keratometri2_od),
-    k_ax_od: v(rec.keratometri_axis_od),
+    k_ax_od:  v(rec.keratometri_axis_od),
+    k_ax2_od: v(rec.keratometri_axis2_od),
     k_os_1:  v(rec.keratometri1_os),
     k_os_2:  v(rec.keratometri2_os),
-    k_ax_os: v(rec.keratometri_axis_os),
+    k_ax_os:  v(rec.keratometri_axis_os),
+    k_ax2_os: v(rec.keratometri_axis2_os),
   }
   iop.value = {
     od:     vnum(rec.iop_od),
     os:     vnum(rec.iop_os),
     method: rec.iop_method ?? 'NCT',
   }
+  iopExtra.value = Array.isArray(rec.iop_extra_readings)
+    ? rec.iop_extra_readings.map((r) => ({ od: vnum(r?.od), os: vnum(r?.os) }))
+    : []
   visus.value = {
     ucva_od: v(rec.visus_awal_od),
     ucva_os: v(rec.visus_awal_os),
@@ -209,12 +287,24 @@ function fillFormFromRecord(rec, presc) {
     od_c:   v(rec.old_glasses_od_cyl),
     od_ax:  v(rec.old_glasses_od_axis),
     od_add: v(rec.old_glasses_add_od),
+    od_visus: v(rec.old_glasses_visus_od),
     os_s:   v(rec.old_glasses_os_sph),
     os_c:   v(rec.old_glasses_os_cyl),
     os_ax:  v(rec.old_glasses_os_axis),
     os_add: v(rec.old_glasses_add_os),
+    os_visus: v(rec.old_glasses_visus_os),
   }
   clinicalNotes.value = rec.clinical_notes ?? ''
+  // O: pakai nilai tersimpan bila ada (tandai dirty agar tak ditimpa autofill);
+  // bila kosong, autofill dari data refraksi yang baru saja diisi (oDerived).
+  const hasStoredO = rec.soap_o != null && rec.soap_o !== ''
+  soapODirty.value = hasStoredO
+  soap.value = {
+    s: rec.soap_s ?? '',
+    o: hasStoredO ? rec.soap_o : oDerived.value,
+    a: rec.soap_a ?? SOAP_A_DEFAULT,
+    p: rec.soap_p ?? SOAP_P_DEFAULT,
+  }
 
   rxFinal.value = {
     perception_type: rec.perception_type ?? 'JAUH',
@@ -241,6 +331,10 @@ async function pickPt(p) {
 
 async function callPt(p) {
   if (pendingCallIds.value.includes(p.id)) return
+  if (p.siblingActive) {
+    toast('w', `Pasien sedang ditangani di ${p.siblingLabel} — tidak bisa dipanggil dari sini.`)
+    return
+  }
   const isRecall = p._raw?.status !== 'WAITING'
   pendingCallIds.value.push(p.id)
   try {
@@ -286,13 +380,15 @@ function buildPemeriksaanPayload() {
     autoref_os_sph:  num(autoref.value.os_s),
     autoref_os_cyl:  num(autoref.value.os_c),
     autoref_os_axis: numInt(autoref.value.os_ax),
-    // Keratometri K1/K2 + Axis (kolom keratometri_axis_*, integer 0–180)
-    keratometri1_od:     num(autoref.value.k_od_1),
-    keratometri2_od:     num(autoref.value.k_od_2),
-    keratometri_axis_od: numInt(autoref.value.k_ax_od),
-    keratometri1_os:     num(autoref.value.k_os_1),
-    keratometri2_os:     num(autoref.value.k_os_2),
-    keratometri_axis_os: numInt(autoref.value.k_ax_os),
+    // Keratometri K1@axis1 / K2@axis2 (axis integer 0–180)
+    keratometri1_od:      num(autoref.value.k_od_1),
+    keratometri2_od:      num(autoref.value.k_od_2),
+    keratometri_axis_od:  numInt(autoref.value.k_ax_od),
+    keratometri_axis2_od: numInt(autoref.value.k_ax2_od),
+    keratometri1_os:      num(autoref.value.k_os_1),
+    keratometri2_os:      num(autoref.value.k_os_2),
+    keratometri_axis_os:  numInt(autoref.value.k_ax_os),
+    keratometri_axis2_os: numInt(autoref.value.k_ax2_os),
     // Refraksi Subjektif
     refraksi_subjektif_od_sph:  num(refine.value.od_s),
     refraksi_subjektif_od_cyl:  num(refine.value.od_c),
@@ -303,19 +399,24 @@ function buildPemeriksaanPayload() {
     // ADD presbyopia (di tab Refine)
     add_power_od: num(refine.value.add_od),
     add_power_os: num(refine.value.add_os),
-    // Kacamata lama
+    // Kacamata lama (+ visus dengan kacamata lama / presenting VA)
     old_glasses_od_sph:  num(oldGlasses.value.od_s),
     old_glasses_od_cyl:  num(oldGlasses.value.od_c),
     old_glasses_od_axis: numInt(oldGlasses.value.od_ax),
     old_glasses_add_od:  num(oldGlasses.value.od_add),
+    old_glasses_visus_od: str(oldGlasses.value.od_visus),
     old_glasses_os_sph:  num(oldGlasses.value.os_s),
     old_glasses_os_cyl:  num(oldGlasses.value.os_c),
     old_glasses_os_axis: numInt(oldGlasses.value.os_ax),
     old_glasses_add_os:  num(oldGlasses.value.os_add),
-    // IOP
+    old_glasses_visus_os: str(oldGlasses.value.os_visus),
+    // IOP (+ pengukuran berulang; metode = iop.method bersama)
     iop_od:     num(iop.value.od),
     iop_os:     num(iop.value.os),
     iop_method: iop.value.method,
+    iop_extra_readings: iopExtra.value
+      .map((r) => ({ od: num(r.od), os: num(r.os) }))
+      .filter((r) => r.od !== null || r.os !== null),
     // Visus
     visus_awal_od:  str(visus.value.ucva_od),
     visus_akhir_od: str(visus.value.bcva_od),
@@ -326,6 +427,11 @@ function buildPemeriksaanPayload() {
     // Shared
     pd_distance:    num(refine.value.pd),
     clinical_notes: str(clinicalNotes.value),
+    // SOAP refraksionis (PPA) — O di-derive backend dari data refraksi
+    soap_s:         str(soap.value.s),
+    soap_o:         str(soap.value.o),
+    soap_a:         str(soap.value.a),
+    soap_p:         str(soap.value.p),
   }
 }
 
@@ -387,6 +493,17 @@ function fillFromAutoref() {
   toast('i', 'Refraksi diisi dari hasil autoref')
 }
 
+// Acuan autoref (read-only) sbg panduan refraksi subjektif — format "S C ×Axis°".
+function fmtAutorefEye(eye) {
+  const v = (x) => (x === '' || x === null || x === undefined) ? null : x
+  const s = v(autoref.value[`${eye}_s`])
+  const c = v(autoref.value[`${eye}_c`])
+  const ax = v(autoref.value[`${eye}_ax`])
+  if (s === null && c === null && ax === null) return 'belum diisi'
+  const body = `${s ?? '—'} ${c ?? '—'}`
+  return ax !== null ? `${body} ×${ax}°` : body
+}
+
 // Lewati Refraksi: pasien tidak perlu refraksi. Record ditandai "dilewati"
 // (tanpa data klinis) & antrean tetap maju (gate paralel ke Dokter / Kirim ke Bedah).
 async function onSkipRefraksi() {
@@ -402,37 +519,76 @@ async function onSkipRefraksi() {
   }
 }
 
+// ── Tanda tangan PIN (paraf refraksionis sebagai PPA) ───────────────────────
+const pinMode  = ref(false)
+const pinValue = ref('')
+const pinError = ref('')
+const pinBusy  = ref(false)
+
+// Langkah 1: simpan draft (record + resep + SOAP) lalu minta PIN untuk finalisasi.
 async function sendToDoctor() {
   if (!refine.value.od_s && !refine.value.os_s) { toast('w', 'Belum ada hasil refraksi'); return }
   if (!store.selectedQueue) { toast('w', 'Pilih pasien dulu'); return }
 
   try {
-    // 1. Simpan RefractionRecord (semua field: autoref + keratometri + visus
-    //    + pinhole + refraksi subjektif + ADD + kacamata lama + IOP + notes).
+    // 1. Simpan RefractionRecord (semua field + SOAP S/A/P).
     await store.savePemeriksaan(buildPemeriksaanPayload())
 
-    // 2. Simpan RefractionPrescription (jenis lensa, material, coating, ADD Rx,
-    //    catatan). Backend bolehkan create/update sebelum finalize.
+    // 2. Simpan RefractionPrescription (create/update sebelum finalize).
     try {
       await store.saveResep(buildResepPayload())
     } catch (err) {
-      // Gagal resep ≠ blocker hard untuk kirim ke dokter — tetap finalize record
-      // supaya antrean tidak macet, tapi beri tahu user agar lengkapi nanti.
+      // Gagal resep ≠ blocker hard — beri tahu, lanjut minta PIN.
       toast('w', `Resep kacamata belum tersimpan: ${err.message}`)
     }
+  } catch (err) {
+    toast('w', err.message ?? 'Gagal menyimpan draft refraksi')
+    return
+  }
 
-    // 3. Finalize (gate untuk advance ke DOKTER). Backend balikkan doctor_ticket
-    //    (D-NNN) bila Triase JUGA sudah finalize — dipakai tombol "Cetak Tiket Dokter".
-    await store.finalizePemeriksaan()
+  // 3. Minta PIN (tanda tangan) sebelum mengunci & advance ke DOKTER.
+  pinValue.value = ''
+  pinError.value = ''
+  pinMode.value  = true
+}
+
+// Langkah 2: verifikasi PIN → finalize (gate advance ke DOKTER + paraf refraksionis).
+async function confirmFinalizePin() {
+  const pin = pinValue.value.trim()
+  if (!/^\d{4,6}$/.test(pin)) { pinError.value = 'PIN harus 4–6 digit angka.'; return }
+  pinError.value = ''
+  pinBusy.value  = true
+  try {
+    // Backend balikkan doctor_ticket (D-NNN) bila Triase JUGA sudah finalize.
+    await store.finalizePemeriksaan(pin)
+    pinMode.value = false
     qFilter.value = 'done'
+    cpptCardRef.value?.reload()
     if (store.doctorTicket) {
       toast('s', `Pasien lengkap (TR) — antrean dokter ${store.doctorTicket.queue_number} dibuat. Cetak tiket pasien.`)
     } else {
-      toast('s', 'Refraksi dikunci. Menunggu Triase selesai sebelum tiket dokter bisa dicetak.')
+      toast('s', 'Refraksi ditandatangani & dikunci. Menunggu Triase selesai sebelum tiket dokter dicetak.')
     }
-    // Pasien tetap terpilih agar tombol "Cetak Tiket Dokter" tampil di kartu aksi.
+    // Pasien tetap terpilih agar tombol "Cetak Tiket Dokter" tampil.
   } catch (err) {
-    toast('w', err.message ?? 'Gagal menyimpan / mengirim ke dokter')
+    // PIN salah / belum diatur → tampilkan di modal, jangan tutup.
+    pinError.value = err.message ?? 'Gagal mengunci pemeriksaan'
+  } finally {
+    pinBusy.value = false
+  }
+}
+
+// Buka kunci (periksa ulang atas permintaan dokter) — form ter-unlock, antrean kembali aktif.
+async function onReopen() {
+  if (!store.pemeriksaan?.id) return
+  if (!confirm('Buka kunci pemeriksaan refraksi untuk diperiksa ulang?\nTanda tangan dihapus dan pemeriksaan harus difinalisasi (PIN) ulang.')) return
+  try {
+    await store.reopenPemeriksaan()
+    activeTab.value = 'autoref'
+    doneSteps.value = []
+    toast('s', 'Pemeriksaan dibuka kembali — silakan revisi lalu kirim ke dokter lagi.')
+  } catch (err) {
+    toast('w', err.message || 'Gagal membuka kunci')
   }
 }
 
@@ -557,10 +713,15 @@ function toast(type, msg) {
     <datalist id="dl-visus-akhir"><option v-for="o in vaAkhirOpts" :key="o" :value="o" /></datalist>
     <datalist id="dl-pinhole"><option v-for="o in phOpts" :key="o" :value="o" /></datalist>
 
-    <div class="grid">
+    <div :class="['grid', selP ? 'grid-3' : '', { 'q-collapsed': queueCollapsed, 's-collapsed': sideCollapsed && selP }]">
       <!-- QUEUE -->
       <aside class="col-queue">
-        <div class="card">
+        <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="queue-rail-count">{{ mappedQueue.length }}</span>
+          <span class="queue-rail-txt">Antrean</span>
+        </button>
+        <div class="card queue-card">
           <div class="card-head">
             <div>
               <div class="card-head-title">
@@ -569,7 +730,12 @@ function toast(type, msg) {
               </div>
               <div class="card-head-sub">{{ mappedQueue.length }} pasien hari ini</div>
             </div>
-            <span class="pill-live">LIVE</span>
+            <div class="head-actions">
+              <span class="pill-live">LIVE</span>
+              <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean refraksi">
@@ -654,12 +820,14 @@ function toast(type, msg) {
                       Triase
                     </span>
                     <span v-if="p.allergies?.length" class="pill pill-allergy">⚠ Alergi</span>
+                    <span v-if="p.siblingActive" class="pill pill-sibling" :title="`Pasien sedang ditangani di ${p.siblingLabel}`">⏳ Sedang di {{ p.siblingLabel }}</span>
                   </div>
                   <div v-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
                     <button
                       type="button"
                       :class="['q-act-btn', 'call', pendingCallIds.includes(p.id) ? 'is-pressed' : '']"
-                      :disabled="pendingCallIds.includes(p.id)"
+                      :disabled="pendingCallIds.includes(p.id) || p.siblingActive"
+                      :title="p.siblingActive ? `Pasien sedang ditangani di ${p.siblingLabel}` : 'Panggil pasien'"
                       :aria-pressed="pendingCallIds.includes(p.id)"
                       :aria-busy="pendingCallIds.includes(p.id)"
                       @click.stop="callPt(p)"
@@ -720,6 +888,7 @@ function toast(type, msg) {
                 <span v-if="selP.ptype === 'bpjs'" class="ptg ptg-b">BPJS</span>
                 <span v-if="selP.ptype === 'asn'" class="ptg ptg-asn">Asuransi</span>
                 <span v-if="selP.hasNurse" class="ptg ptg-n">Triase ✓</span>
+                <span v-if="store.isFinalized" class="ptg ptg-signed" title="Rekam refraksi telah ditandatangani (PIN)">✓ Ditandatangani</span>
                 <span v-if="selP.allergies && selP.allergies.length" class="ptg ptg-a"
                       role="alert" :aria-label="`Peringatan alergi: ${selP.allergies.join(', ')}`">
                   ⚠ {{ selP.allergies.join(', ') }}
@@ -788,18 +957,22 @@ function toast(type, msg) {
                     </div>
                   </div>
                   <div class="sec" aria-label="Keratometri mata kanan">Keratometri</div>
-                  <div class="g3">
+                  <div class="g4">
                     <div class="fg">
                       <label class="fl" for="akr-k-od-1">K1 <span class="hint">D</span></label>
                       <input id="akr-k-od-1" v-model="autoref.k_od_1" list="dl-keratometri" class="form-input" placeholder="43.50" />
+                    </div>
+                    <div class="fg">
+                      <label class="fl" for="akr-k-od-ax">Axis K1</label>
+                      <input id="akr-k-od-ax" v-model="autoref.k_ax_od" list="dl-axis" class="form-input" placeholder="180" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-od-2">K2 <span class="hint">D</span></label>
                       <input id="akr-k-od-2" v-model="autoref.k_od_2" list="dl-keratometri" class="form-input" placeholder="44.25" />
                     </div>
                     <div class="fg">
-                      <label class="fl" for="akr-k-od-ax">Axis</label>
-                      <input id="akr-k-od-ax" v-model="autoref.k_ax_od" list="dl-axis" class="form-input" placeholder="180" />
+                      <label class="fl" for="akr-k-od-ax2">Axis K2</label>
+                      <input id="akr-k-od-ax2" v-model="autoref.k_ax2_od" list="dl-axis" class="form-input" placeholder="90" />
                     </div>
                   </div>
                 </div>
@@ -820,18 +993,22 @@ function toast(type, msg) {
                     </div>
                   </div>
                   <div class="sec" aria-label="Keratometri mata kiri">Keratometri</div>
-                  <div class="g3">
+                  <div class="g4">
                     <div class="fg">
                       <label class="fl" for="akr-k-os-1">K1 <span class="hint">D</span></label>
                       <input id="akr-k-os-1" v-model="autoref.k_os_1" list="dl-keratometri" class="form-input" placeholder="43.25" />
+                    </div>
+                    <div class="fg">
+                      <label class="fl" for="akr-k-os-ax">Axis K1</label>
+                      <input id="akr-k-os-ax" v-model="autoref.k_ax_os" list="dl-axis" class="form-input" placeholder="90" />
                     </div>
                     <div class="fg">
                       <label class="fl" for="akr-k-os-2">K2 <span class="hint">D</span></label>
                       <input id="akr-k-os-2" v-model="autoref.k_os_2" list="dl-keratometri" class="form-input" placeholder="44.00" />
                     </div>
                     <div class="fg">
-                      <label class="fl" for="akr-k-os-ax">Axis</label>
-                      <input id="akr-k-os-ax" v-model="autoref.k_ax_os" list="dl-axis" class="form-input" placeholder="90" />
+                      <label class="fl" for="akr-k-os-ax2">Axis K2</label>
+                      <input id="akr-k-os-ax2" v-model="autoref.k_ax2_os" list="dl-axis" class="form-input" placeholder="180" />
                     </div>
                   </div>
                 </div>
@@ -872,7 +1049,30 @@ function toast(type, msg) {
                   <input id="iop-os" v-model="iop.os" type="number" class="form-input" placeholder="16" />
                 </div>
               </div>
-              <div v-if="(iop.od && Number(iop.od) >= 22) || (iop.os && Number(iop.os) >= 22)"
+
+              <!-- Tonometri berulang (opsional, dinamis) — metode mengikuti dropdown di atas -->
+              <div v-for="(r, i) in iopExtra" :key="i" class="iop-extra-row">
+                <span class="iop-extra-no" aria-hidden="true">#{{ i + 2 }}</span>
+                <div class="fg">
+                  <label class="fl" :for="`iop2-od-${i}`">IOP OD <span class="hint">mmHg</span></label>
+                  <input :id="`iop2-od-${i}`" v-model="r.od" type="number" class="form-input" placeholder="15" />
+                </div>
+                <div class="fg">
+                  <label class="fl" :for="`iop2-os-${i}`">IOP OS <span class="hint">mmHg</span></label>
+                  <input :id="`iop2-os-${i}`" v-model="r.os" type="number" class="form-input" placeholder="16" />
+                </div>
+                <button type="button" class="iop-extra-del" :disabled="store.isFinalized"
+                        :title="`Hapus pengukuran #${i + 2}`" :aria-label="`Hapus pengukuran #${i + 2}`" @click="removeIopReading(i)">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" style="margin-top:0.6rem"
+                      :disabled="store.isFinalized" @click="addIopReading"
+                      title="Tambah baris pengukuran IOP (metode sama)">
+                + Tambah pengukuran
+              </button>
+
+              <div v-if="iopHigh"
                    class="alert-warn" role="alert">
                 ⚠ IOP meningkat — pertimbangkan rujuk dokter SpM untuk pemeriksaan glaukoma.
               </div>
@@ -921,6 +1121,10 @@ function toast(type, msg) {
               <div class="odos">
                 <div class="eyec">
                   <div class="eyeh"><span class="elbl el-od" aria-hidden="true">OD</span></div>
+                  <div class="autoref-ref" aria-label="Acuan autoref OD (read-only)">
+                    <span class="autoref-ref-lbl">Autoref</span>
+                    <span class="autoref-ref-val">{{ fmtAutorefEye('od') }}</span>
+                  </div>
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="ref-od-s">S</label>
@@ -938,6 +1142,10 @@ function toast(type, msg) {
                 </div>
                 <div class="eyec">
                   <div class="eyeh"><span class="elbl el-os" aria-hidden="true">OS</span></div>
+                  <div class="autoref-ref" aria-label="Acuan autoref OS (read-only)">
+                    <span class="autoref-ref-lbl">Autoref</span>
+                    <span class="autoref-ref-val">{{ fmtAutorefEye('os') }}</span>
+                  </div>
                   <div class="g3">
                     <div class="fg">
                       <label class="fl" for="ref-os-s">S</label>
@@ -954,6 +1162,20 @@ function toast(type, msg) {
                   </div>
                 </div>
               </div>
+              <!-- Visus Akhir (BCVA) — diukur SETELAH koreksi subjektif, SEBELUM ADD/PD -->
+              <div class="sec">Visus Akhir (BCVA) <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— ketajaman terbaik setelah koreksi</span></div>
+              <div class="g2">
+                <div class="fg">
+                  <label class="fl" for="vis-bcva-od">BCVA OD</label>
+                  <input id="vis-bcva-od" v-model="visus.bcva_od" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
+                </div>
+                <div class="fg">
+                  <label class="fl" for="vis-bcva-os">BCVA OS</label>
+                  <input id="vis-bcva-os" v-model="visus.bcva_os" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
+                </div>
+              </div>
+
+              <!-- ADD presbyopia + PD (untuk resep) — setelah Visus Akhir -->
               <div class="g3" style="margin-top: 0.65rem">
                 <div class="fg">
                   <label class="fl" for="ref-add-od">ADD OD <span class="hint">presbyopia</span></label>
@@ -966,19 +1188,6 @@ function toast(type, msg) {
                 <div class="fg">
                   <label class="fl" for="ref-pd">PD <span class="hint">mm</span></label>
                   <input id="ref-pd" v-model="refine.pd" class="form-input" placeholder="64" />
-                </div>
-              </div>
-
-              <!-- Visus Akhir (BCVA) — diukur SETELAH koreksi subjektif di atas -->
-              <div class="sec">Visus Akhir (BCVA) <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— ketajaman terbaik setelah koreksi</span></div>
-              <div class="g2">
-                <div class="fg">
-                  <label class="fl" for="vis-bcva-od">BCVA OD</label>
-                  <input id="vis-bcva-od" v-model="visus.bcva_od" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
-                </div>
-                <div class="fg">
-                  <label class="fl" for="vis-bcva-os">BCVA OS</label>
-                  <input id="vis-bcva-os" v-model="visus.bcva_os" list="dl-visus-akhir" class="form-input" placeholder="6/6" />
                 </div>
               </div>
 
@@ -1026,6 +1235,19 @@ function toast(type, msg) {
                       <input id="og-os-add" v-model="oldGlasses.os_add" list="dl-add" class="form-input" placeholder="+1.50" />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <!-- Visus dengan kacamata lama (presenting VA) -->
+              <div class="sec" style="margin-top:1rem">Visus dengan Kacamata Lama <span class="hint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--tu)">— ketajaman saat memakai kacamata lama</span></div>
+              <div class="g2">
+                <div class="fg">
+                  <label class="fl" for="og-visus-od">Visus OD</label>
+                  <input id="og-visus-od" v-model="oldGlasses.od_visus" list="dl-visus" class="form-input" placeholder="6/9" />
+                </div>
+                <div class="fg">
+                  <label class="fl" for="og-visus-os">Visus OS</label>
+                  <input id="og-visus-os" v-model="oldGlasses.os_visus" list="dl-visus" class="form-input" placeholder="6/9" />
                 </div>
               </div>
 
@@ -1105,12 +1327,74 @@ function toast(type, msg) {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                   Cetak Tiket Dokter
                 </button>
+                <button
+                  v-if="store.isFinalized"
+                  type="button"
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="store.finalizing"
+                  title="Buka kunci untuk pemeriksaan ulang (atas permintaan dokter)"
+                  @click="onReopen"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V7a5 5 0 0 1 9.9-1"/><rect x="3" y="11" width="18" height="11" rx="2"/></svg>
+                  Buka Kunci
+                </button>
               </div>
             </div>
           </div>
 
         </div>
       </section>
+
+      <!-- KOLOM KANAN: Riwayat CPPT/SOAP lintas-episode (semua PPA) -->
+      <aside v-if="selP" class="col-cppt">
+        <button class="side-rail" @click="toggleSide" title="Buka CPPT / SOAP" aria-label="Buka CPPT / SOAP">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          <span class="side-rail-txt">CPPT / SOAP</span>
+        </button>
+        <button class="side-collapse-bar" @click="toggleSide" title="Ciutkan CPPT / SOAP" aria-label="Ciutkan CPPT / SOAP">
+          <span>CPPT / SOAP</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <CpptHistoryCard ref="cpptCardRef" :patient-id="store.selectedPatientId" :fetcher="refraksiApi.riwayatCppt" />
+
+        <!-- SOAP Refraksionis (PPA) — kartu entri sendiri, di bawah riwayat CPPT kunjungan.
+             O di-derive otomatis dari data refraksi (visus/IOP/Rx) yang diisi di formulir kiri. -->
+        <div class="card soap-rfx-card">
+          <div class="card-head">
+            <div class="card-head-title">SOAP Refraksionis · CPPT Terpadu</div>
+          </div>
+          <div class="card-body">
+            <div class="soap-rfx">
+              <div class="fg">
+                <label class="fl" for="rfx-soap-s"><span class="soap-tag s">S</span> Subjektif — keluhan visus</label>
+                <textarea id="rfx-soap-s" v-model="soap.s" class="form-input ta" rows="2"
+                  placeholder="Keluhan penglihatan pasien (mis. kabur melihat jauh, silau, pusing dengan kacamata lama)…"></textarea>
+              </div>
+              <div class="fg">
+                <label class="fl" for="rfx-soap-o">
+                  <span class="soap-tag o">O</span> Objektif
+                  <em v-if="!soapODirty" class="soap-auto">otomatis dari data refraksi</em>
+                  <em v-else class="soap-auto">diedit manual
+                    <button type="button" class="soap-o-resync" @click="soapODirty = false; soap.o = oDerived">↺ sync</button>
+                  </em>
+                </label>
+                <textarea id="rfx-soap-o" v-model="soap.o" @input="soapODirty = true" class="form-input ta" rows="3"
+                  placeholder="Visus akhir, koreksi subjektif & TIO — terisi otomatis dari formulir, boleh diedit…"></textarea>
+              </div>
+              <div class="fg">
+                <label class="fl" for="rfx-soap-a"><span class="soap-tag a">A</span> Assessment — kesimpulan refraksi</label>
+                <textarea id="rfx-soap-a" v-model="soap.a" class="form-input ta" rows="2"
+                  placeholder="Mis. Miopia simpleks ODS; koreksi terbaik tercapai; presbiopia awal…"></textarea>
+              </div>
+              <div class="fg">
+                <label class="fl" for="rfx-soap-p"><span class="soap-tag p">P</span> Planning — rencana</label>
+                <textarea id="rfx-soap-p" v-model="soap.p" class="form-input ta" rows="2"
+                  placeholder="Mis. Resep kacamata baru; rujuk dokter untuk evaluasi katarak; kontrol 6 bulan…"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
 
     <!-- ── MODAL: Resep Kacamata Final (dibuka dari tab Refraksi) ───────────── -->
@@ -1197,6 +1481,31 @@ function toast(type, msg) {
       </div>
     </div>
 
+    <!-- ── MODAL: PIN tanda tangan refraksionis (paraf PPA) ─────────────────── -->
+    <div v-if="pinMode" class="pin-overlay" role="dialog" aria-modal="true" @click.self="pinMode = false">
+      <div class="pin-modal">
+        <h4 class="pin-title">Tanda Tangan Refraksionis</h4>
+        <p class="pin-hint">Masukkan PIN untuk menandatangani &amp; mengunci rekam refraksi <b>{{ selP?.name }}</b>, lalu kirim ke dokter.</p>
+        <input
+          v-model="pinValue"
+          type="password"
+          inputmode="numeric"
+          maxlength="6"
+          class="pin-input"
+          placeholder="••••••"
+          autocomplete="off"
+          @keyup.enter="confirmFinalizePin()"
+        />
+        <div v-if="pinError" class="pin-err">{{ pinError }}</div>
+        <div class="pin-actions">
+          <button type="button" class="btn btn-secondary btn-sm" :disabled="pinBusy" @click="pinMode = false">Batal</button>
+          <button type="button" class="btn btn-success btn-sm" :disabled="pinBusy" @click="confirmFinalizePin()">
+            {{ pinBusy ? 'Memproses…' : 'Tanda Tangani & Kunci' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast-wrap" aria-live="polite" aria-atomic="false">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
     </div>
@@ -1205,7 +1514,46 @@ function toast(type, msg) {
 
 <style scoped>
 .refraksi { padding: 0; }
-.grid { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; }
+.grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 1rem; align-items: start; transition: grid-template-columns .2s ease; }
+.grid.q-collapsed { grid-template-columns: 52px minmax(0, 1fr); }
+/* Saat pasien terpilih: tambah kolom kanan untuk kartu CPPT/SOAP lintas-episode. */
+.grid.grid-3 { grid-template-columns: 320px minmax(0, 1fr) 340px; }
+.grid.grid-3.q-collapsed { grid-template-columns: 52px minmax(0, 1fr) 340px; }
+.grid.grid-3.s-collapsed { grid-template-columns: 320px minmax(0, 1fr) 52px; }
+.grid.grid-3.q-collapsed.s-collapsed { grid-template-columns: 52px minmax(0, 1fr) 52px; }
+.col-cppt { min-width: 0; position: sticky; top: 0.5rem; }
+
+/* Form lega: batasi lebar & pusatkan saat ruang berlebih */
+.pf > * { max-width: 1040px; margin-inline: auto; width: 100%; }
+
+/* Rail (panel diciutkan) + tombol ciutkan */
+.col-queue .queue-rail, .col-cppt .side-rail { display: none; }
+.grid.q-collapsed .col-queue .queue-card { display: none; }
+.grid.q-collapsed .col-queue .queue-rail { display: flex; }
+.grid.s-collapsed .col-cppt > :not(.side-rail) { display: none; }
+.grid.s-collapsed .col-cppt .side-rail { display: flex; }
+.queue-rail, .side-rail { position: sticky; top: 0.5rem; width: 52px; min-height: 128px; flex-direction: column; align-items: center; gap: 9px; padding: 13px 4px; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; cursor: pointer; color: var(--tm); font-family: 'Inter', sans-serif; transition: all .13s; }
+.queue-rail:hover, .side-rail:hover { border-color: var(--ga); color: var(--ga); }
+.queue-rail svg, .side-rail svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.queue-rail-count { font-size: 14px; font-weight: 700; color: var(--ga); font-variant-numeric: tabular-nums; }
+.queue-rail-txt, .side-rail-txt { writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.panel-collapse { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all .13s; flex-shrink: 0; }
+.panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
+.panel-collapse svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.side-collapse-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; padding: 7px 12px; margin-bottom: 0.75rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; }
+.side-collapse-bar:hover { border-color: var(--ga); color: var(--ga); }
+.side-collapse-bar svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+/* Responsif: stack 1 kolom di layar sempit (tanpa scroll horizontal) */
+@media (max-width: 1180px) {
+  .grid, .grid.q-collapsed, .grid.grid-3, .grid.grid-3.q-collapsed, .grid.grid-3.s-collapsed, .grid.grid-3.q-collapsed.s-collapsed { grid-template-columns: 1fr; }
+  .col-cppt { grid-column: 1 / -1; position: static; }
+  .col-queue .queue-rail, .col-cppt .side-rail, .panel-collapse, .side-collapse-bar { display: none !important; }
+  .col-queue .queue-card { display: block !important; }
+  .grid.s-collapsed .col-cppt > :not(.side-rail):not(.side-collapse-bar) { display: block !important; }
+  .pf > * { max-width: none; }
+}
 
 /* ── Queue card ──────────────────────────────────────────────────────────── */
 .card-head-sub { font-size: 11px; color: var(--tu); margin-top: 3px; }
@@ -1271,6 +1619,7 @@ function toast(type, msg) {
 .pill-asn   { background: var(--pb); color: var(--pt); }
 .pill-done  { background: var(--sb); color: var(--st); }
 .pill-allergy { background: var(--eb); color: var(--et); }
+.pill-sibling { background: #fef3c7; color: #92400e; }
 
 /* Queue actions */
 .q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--gb); width: 100%; }
@@ -1324,6 +1673,7 @@ function toast(type, msg) {
 .ptg-asn { background: var(--pb); color: var(--pt); }
 .ptg-n { background: var(--sb); color: var(--st); }
 .ptg-a { background: var(--eb); color: var(--et); }
+.ptg-signed { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .cls-baru    { background: #dbeafe; color: #1e40af; }
 .cls-preop   { background: #fef3c7; color: #92400e; }
 .cls-postop  { background: var(--sb); color: var(--st); }
@@ -1370,15 +1720,32 @@ function toast(type, msg) {
 .sec { font-size: 10px; font-weight: 600; color: var(--tm); letter-spacing: 0.06em; text-transform: uppercase; margin: 0.75rem 0 0.4rem; }
 .sec-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.75rem 0 0.4rem; }
 
+/* Acuan autoref read-only di seksi Refraksi Subjektif (panduan, bukan input) */
+.autoref-ref { display: flex; align-items: baseline; gap: 7px; margin-bottom: 0.5rem; padding: 4px 9px; background: var(--bi); border: 1px dashed var(--gb); border-radius: 6px; }
+.autoref-ref-lbl { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--tu); flex-shrink: 0; }
+.autoref-ref-val { font-size: 11.5px; font-weight: 600; color: var(--tm); font-variant-numeric: tabular-nums; }
+
 .g2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
 .g3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
 .g4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
 .fg { display: flex; flex-direction: column; gap: 4px; }
 .fl { font-size: 10px; font-weight: 600; color: var(--tm); letter-spacing: 0.05em; text-transform: uppercase; display: flex; gap: 5px; align-items: center; cursor: default; }
 .fl .hint { font-size: 9.5px; font-weight: 400; color: var(--tu); text-transform: none; letter-spacing: 0; }
-.form-input { background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 12.5px; padding: 6px 10px; height: 32px; outline: none; color: var(--td); width: 100%; }
+.form-input { background: var(--bs); border: 1.5px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; font-size: 13px; padding: 8px 11px; height: 36px; outline: none; color: var(--td); width: 100%; }
 .form-input.ta { height: auto; resize: vertical; line-height: 1.5; }
 .form-input:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31, 125, 74, 0.09); }
+/* Combobox (input + datalist): beri warna kontras agar beda dari input biasa + caret.
+   TETAP editable — boleh pilih dari daftar ATAU ketik manual; nilai ketik tetap tersimpan. */
+.form-input[list] {
+  background-color: #eef6ff;
+  border-color: #bcd7f5;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231d4ed8' stroke-width='2.5' stroke-linecap='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px;
+  padding-right: 26px;
+}
+.form-input[list]:focus { background-color: #fff; border-color: var(--ga); }
 .form-input:focus-visible { outline: 2px solid var(--ga); outline-offset: 1px; }
 
 .action-row { display: flex; gap: 0.5rem; margin-top: 0.85rem; flex-wrap: wrap; }
@@ -1397,6 +1764,14 @@ function toast(type, msg) {
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .alert-warn { margin-top: 0.65rem; padding: 9px 13px; background: var(--wb); border: 1px solid var(--wbd); color: var(--wt); border-radius: 8px; font-size: 11.5px; }
+
+/* Tonometri berulang — baris pengukuran tambahan (metode tetap satu) */
+.iop-extra-row { display: grid; grid-template-columns: 34px 1fr 1fr 34px; gap: 0.5rem; align-items: end; margin-top: 0.5rem; }
+.iop-extra-no { font-size: 11px; font-weight: 700; color: var(--tu); height: 32px; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.iop-extra-del { height: 32px; width: 34px; display: flex; align-items: center; justify-content: center; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all .13s; }
+.iop-extra-del:hover:not(:disabled) { border-color: var(--wbd); color: var(--wt); background: var(--wb); }
+.iop-extra-del:disabled { opacity: 0.5; cursor: not-allowed; }
+.iop-extra-del svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .rx-summary { background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 0.75rem; margin-bottom: 0.85rem; }
 .rx-row { display: grid; grid-template-columns: 100px 1fr; gap: 0.5rem; padding: 4px 0; font-size: 12.5px; }
@@ -1448,4 +1823,26 @@ function toast(type, msg) {
 .rx-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 .rx-modal-body { padding: 1.1rem; overflow-y: auto; }
 .rx-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.85rem 1.1rem; border-top: 1px solid var(--gb); flex-shrink: 0; }
+
+/* ── SOAP Refraksionis (PPA) ─────────────────────────────────────────────── */
+.soap-rfx-card { margin-top: 0.75rem; }
+.soap-rfx { display: flex; flex-direction: column; gap: 0.6rem; }
+.soap-rfx .fl { display: flex; align-items: center; gap: 6px; }
+.soap-tag { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; font-size: 11px; font-weight: 800; color: #fff; }
+.soap-tag.s { background: #1d4ed8; }
+.soap-tag.o { background: #64748b; }
+.soap-tag.a { background: #7e22ce; }
+.soap-tag.p { background: #b45309; }
+.soap-auto { font-size: 9.5px; font-weight: 500; font-style: italic; color: var(--tu); text-transform: none; letter-spacing: 0; }
+.soap-o-derived { font-size: 11px; color: var(--tm); background: var(--bs); border: 1px dashed var(--gb); border-radius: 8px; padding: 7px 10px; line-height: 1.5; }
+
+/* ── Modal PIN tanda tangan ──────────────────────────────────────────────── */
+.pin-overlay { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); }
+.pin-modal { width: min(360px, 94vw); background: #fff; border-radius: 14px; padding: 1.6rem; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.pin-title { margin: 0 0 8px; font-size: 15px; font-weight: 700; color: var(--td); }
+.pin-hint { margin: 0 0 16px; font-size: 12.5px; color: var(--tm); line-height: 1.5; }
+.pin-input { width: 100%; padding: 12px; border: 1px solid var(--gb); border-radius: 8px; font-size: 22px; letter-spacing: 8px; text-align: center; box-sizing: border-box; color: var(--td); }
+.pin-input:focus { outline: none; border-color: var(--ga); }
+.pin-err { margin: 10px 0 0; font-size: 12.5px; color: var(--et); }
+.pin-actions { display: flex; gap: 0.8rem; justify-content: center; align-items: center; margin-top: 1.2rem; }
 </style>

@@ -19,15 +19,32 @@ class GoodsReceipt extends Model
         'supplier_id',
         'receipt_date',
         'invoice_number',
+        'payment_method',
+        'payment_term_days',
+        'due_date',
         'notes',
         'total_amount',
+        'discount_amount',
+        'ppn_percent',
+        'ppn_amount',
+        'grand_total',
         'received_by',
     ];
 
     protected $casts = [
-        'receipt_date' => 'date',
-        'total_amount' => 'decimal:2',
+        'receipt_date'      => 'date',
+        'due_date'          => 'date',
+        'payment_term_days' => 'integer',
+        'total_amount'      => 'decimal:2',
+        'discount_amount'   => 'decimal:2',
+        'ppn_percent'       => 'decimal:2',
+        'ppn_amount'        => 'decimal:2',
+        'grand_total'       => 'decimal:2',
     ];
+
+    public const PAYMENT_TUNAI  = 'TUNAI';
+    public const PAYMENT_KREDIT = 'KREDIT';
+    public const PAYMENT_METHODS = [self::PAYMENT_TUNAI, self::PAYMENT_KREDIT];
 
     public function purchaseOrder()
     {

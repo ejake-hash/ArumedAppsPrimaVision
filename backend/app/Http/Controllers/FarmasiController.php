@@ -524,6 +524,14 @@ class FarmasiController extends Controller
         ));
     }
 
+    /** GET /farmasi/riwayat-pemberian?search=&date_from=&date_to=&per_page=&page= */
+    public function indexRiwayatPemberian(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getDispenseHistory(
+            $request->only(['search', 'date_from', 'date_to', 'per_page', 'page'])
+        ));
+    }
+
     // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================

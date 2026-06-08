@@ -41,9 +41,10 @@ async function load() {
 
     const peg = pegRes.data?.data
     const list = Array.isArray(peg) ? peg : (peg?.data ?? [])
-    // Hanya dokter (profession mengandung 'dokter') — DPJP itu dokter.
+    // Hanya dokter (profession mengandung 'dokter') yang AKTIF — DPJP itu dokter.
+    // Dokter non-aktif tak perlu dipetakan ke BPJS.
     dokter.value = list
-      .filter((e) => (e.profession ?? '').toLowerCase().includes('dokter'))
+      .filter((e) => (e.profession ?? '').toLowerCase().includes('dokter') && e.is_active !== false)
       .map((e) => ({ id: e.id, name: e.name, sip: e.sip, draft: e.bpjs_dpjp_code ?? '', saved: e.bpjs_dpjp_code ?? '' }))
   } catch (e) {
     flash(false, e.response?.data?.message ?? 'Gagal memuat data pemetaan')
@@ -102,7 +103,10 @@ async function searchRef() {
     const bpjs = res.data?.data ?? {}
     if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
     const d = bpjs.response ?? {}
-    refModal.rows = Array.isArray(d) ? d : (d.list ?? d.poli ?? [])
+    // BPJS membungkus daftar di key berbeda per jenis (poli→response.poli,
+    // dokter→response.dokter/list, dst). Ambil array pertama yg ditemukan
+    // supaya tak bergantung nama key (dulu hanya cek list/poli → dokter kosong).
+    refModal.rows = Array.isArray(d) ? d : (Object.values(d).find((v) => Array.isArray(v)) ?? [])
   } catch (e) {
     flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Referensi gagal'))
   } finally {
@@ -140,7 +144,9 @@ async function searchLookup() {
     const bpjs = res.data?.data ?? {}
     if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
     const d = bpjs.response ?? {}
-    lookup.rows = Array.isArray(d) ? d : (d.list ?? d.diagnosa ?? d.poli ?? d.procedure ?? d.faskes ?? [])
+    // Ambil array pertama dari response — key beda per jenis (dokter, spesialistik,
+    // kelasrawat, dll). Daftar key hardcoded lama melewatkan dokter → "Tidak ada hasil".
+    lookup.rows = Array.isArray(d) ? d : (Object.values(d).find((v) => Array.isArray(v)) ?? [])
   } catch (e) {
     flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Referensi gagal'))
   } finally {

@@ -1817,8 +1817,10 @@ class MasterDataService
             $kategori  = trim((string) ($row['kategori'] ?? ''));
             $hargaJual = trim((string) ($row['harga_jual'] ?? ''));
 
-            // IOL: identitas = display name di kolom nama; kategori (iol_type) opsional.
-            $kategoriWajib = $type !== 'iol';
+            // kategori WAJIB hanya utk tindakan (selalu punya category & nama bisa ambigu
+            // antar-kategori). obat/BHP: kategori=golongan sering kosong → opsional
+            // (resolveTarifItem cocokkan by nama, tolak bila ambigu). IOL: pakai display name.
+            $kategoriWajib = $type === 'tindakan';
             if ($nama === '' || ($kategoriWajib && $kategori === '') || $hargaJual === '') {
                 $errors[] = "Baris {$lineNum}: 'nama'" . ($kategoriWajib ? ", 'kategori'," : '') . " atau 'harga_jual' kosong";
                 $skipped++;
@@ -1969,8 +1971,10 @@ class MasterDataService
             $penjamin  = trim((string) ($row['penjamin'] ?? ''));
             $hargaJual = trim((string) ($row['harga_jual'] ?? ''));
 
-            // IOL: identitas = display name di kolom nama; kategori (iol_type) opsional.
-            $kategoriWajib = $type !== 'iol';
+            // kategori WAJIB hanya utk tindakan (selalu punya category & nama bisa ambigu
+            // antar-kategori). obat/BHP: kategori=golongan sering kosong → opsional
+            // (resolveTarifItem cocokkan by nama, tolak bila ambigu). IOL: pakai display name.
+            $kategoriWajib = $type === 'tindakan';
             if ($nama === '' || ($kategoriWajib && $kategori === '') || $penjamin === '' || $hargaJual === '') {
                 $errors[] = "Baris {$lineNum}: 'nama'" . ($kategoriWajib ? ", 'kategori'," : '') . " 'penjamin', atau 'harga_jual' kosong";
                 $skipped++;
@@ -2079,11 +2083,17 @@ class MasterDataService
         $nameCol   = $this->itemNameColumn($type);
         $catCol    = $this->itemKategoriColumn($type);
 
-        return DB::table($itemTable)
+        $q = DB::table($itemTable)
             ->whereRaw("LOWER({$nameCol}) = ?", [mb_strtolower($nama)])
-            ->whereRaw("LOWER({$catCol}) = ?", [mb_strtolower($kategori)])
-            ->whereNull('deleted_at')
-            ->first();
+            ->whereNull('deleted_at');
+        // kategori OPSIONAL utk obat/BHP (banyak item tanpa golongan/kategori → export
+        // menulis kategori kosong, dulu ditolak saat re-import). Bila kategori diisi →
+        // saring; bila kosong → cocokkan by nama saja, tapi tolak (null) bila AMBIGU.
+        if (trim($kategori) !== '') {
+            $q->whereRaw("LOWER({$catCol}) = ?", [mb_strtolower($kategori)]);
+        }
+        $rows = $q->limit(2)->get();
+        return $rows->count() === 1 ? $rows->first() : null;
     }
 
     /** Display name IOL untuk CSV: "Brand Model PowerD" (mis. "Alcon AcrySof IQ 21D"). */

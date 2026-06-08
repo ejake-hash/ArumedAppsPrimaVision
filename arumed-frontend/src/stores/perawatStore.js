@@ -210,6 +210,25 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // Buka kunci (periksa ulang) — is_finalized=false → form ter-unlock; antrean TRIASE
+  // dibuka kembali (WAITING) sehingga pasien bisa di-Panggil & direvisi lalu finalisasi ulang.
+  async function reopenAsesmen() {
+    if (!asesmen.value?.id) throw new Error('Belum ada asesmen')
+    finalizing.value = true
+    try {
+      const { data } = await perawatApi.reopenAsesmen(asesmen.value.id)
+      asesmen.value      = data.data
+      doctorTicket.value = null
+      await fetchAntrian()
+      _syncStats()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal membuka kunci asesmen')
+    } finally {
+      finalizing.value = false
+    }
+  }
+
   // ─── PREOP_BEDAH — Kirim ke Bedah (manual) ──────────────────────────────────
   const parallelStatus = ref(null) // {triase_done, refraksi_done, ...}
 
@@ -345,6 +364,21 @@ export const usePerawatStore = defineStore('perawat', () => {
     }
   }
 
+  // Tanda tangan CPPT (paraf penulis via PIN). Update entri di timeline lokal.
+  async function signCpptEntry(id, pin) {
+    cpptSaving.value = true
+    try {
+      const { data } = await perawatApi.cpptSign(id, pin)
+      const idx = cpptEntries.value.findIndex((e) => e.id === id)
+      if (idx !== -1) cpptEntries.value[idx] = data.data
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal menandatangani CPPT')
+    } finally {
+      cpptSaving.value = false
+    }
+  }
+
   // ─── Rekam Medis ──────────────────────────────────────────────────────────────
 
   async function loadRekamMedis(patientId) {
@@ -400,6 +434,12 @@ export const usePerawatStore = defineStore('perawat', () => {
           // Channel 'triase-queue' memuat event TRIASE *dan* REFRAKSIONIS (lihat
           // QueueService::broadcastQueueUpdate). Papan perawat hanya station TRIASE —
           // tanpa filter ini, baris REFRAKSIONIS bocor masuk ke daftar triase.
+          // Stasiun pasangan REFRAKSIONIS memanggil/melepas pasien → refresh agar badge
+          // "sedang di Refraksi" + status tombol Panggil sinkron realtime (cegah panggil-ganda).
+          if (queue.station === 'REFRAKSIONIS') {
+            if (antrian.value.some((q) => q.visit?.id === queue.visit_id)) fetchAntrian()
+            return
+          }
           if (queue.station !== 'TRIASE') return
           if (action === 'added') {
             // Payload broadcast TIPIS (tanpa relasi visit lengkap). Push langsung →
@@ -497,13 +537,13 @@ export const usePerawatStore = defineStore('perawat', () => {
     pickPatient, clearSelected,
 
     // assessment
-    saveAsesmen, finalizeAsesmen,
+    saveAsesmen, finalizeAsesmen, reopenAsesmen,
 
     // preop bedah
     kirimKeBedah, kirimKeRanap, parallelStatus, loadParallelStatus,
 
     // cppt
-    loadCpptTimeline, addCpptEntry, updateCpptEntry,
+    loadCpptTimeline, addCpptEntry, updateCpptEntry, signCpptEntry,
 
     // vital history & rekam medis
     loadVitalHistory, loadRekamMedis, loadDokumen,

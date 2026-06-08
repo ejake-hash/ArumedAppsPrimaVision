@@ -444,6 +444,87 @@ class FarmasiService
             ->all();
     }
 
+    /**
+     * Riwayat GLOBAL obat yang diberikan ke pasien (semua obat) — gabungan
+     * resep ter-dispense (rawat jalan/inap) + penjualan bebas POS. Dipakai tab
+     * "Riwayat Pemberian" di Farmasi. Server-side: search (nama obat/pasien/no_rm),
+     * rentang tanggal, dan paginasi (per_page dibatasi 10..100, default 50).
+     *
+     * UNION ALL dua sumber lalu dipaginasi di subquery agar tanggal terurut
+     * benar lintas-sumber tanpa memuat seluruh baris ke memori.
+     */
+    public function getDispenseHistory(array $filters = []): LengthAwarePaginator
+    {
+        $search   = trim((string) ($filters['search'] ?? ''));
+        $dateFrom = $filters['date_from'] ?? null;
+        $dateTo   = $filters['date_to'] ?? null;
+        $perPage  = max(10, min((int) ($filters['per_page'] ?? 50), 100));
+
+        // Sumber 1 — item resep yang sudah diserahkan (DISPENSED).
+        $rx = DB::table('prescription_items as pi')
+            ->join('prescriptions as p', 'p.id', '=', 'pi.prescription_id')
+            ->join('medications as m', 'm.id', '=', 'pi.medication_id')
+            ->leftJoin('visits as v', 'v.id', '=', 'p.visit_id')
+            ->leftJoin('patients as pt', 'pt.id', '=', 'v.patient_id')
+            ->leftJoin('employees as e', 'e.id', '=', 'p.dispensed_by_id')
+            ->whereNull('pi.deleted_at')
+            ->whereNull('p.deleted_at')
+            ->where('p.status', 'DISPENSED')
+            // dispensed_at bisa NULL pada data lama → pakai updated_at sbg fallback
+            // agar tanggal selalu terisi (urut & filter rentang tanggal tetap akurat).
+            ->when($dateFrom, fn ($q) => $q->whereRaw('COALESCE(p.dispensed_at, p.updated_at)::date >= ?', [$dateFrom]))
+            ->when($dateTo, fn ($q) => $q->whereRaw('COALESCE(p.dispensed_at, p.updated_at)::date <= ?', [$dateTo]))
+            ->when($search !== '', function ($q) use ($search) {
+                $t = "%{$search}%";
+                $q->where(fn ($w) => $w
+                    ->where('m.name', 'ilike', $t)
+                    ->orWhere('pt.name', 'ilike', $t)
+                    ->orWhere('pt.no_rm', 'ilike', $t));
+            })
+            ->select([
+                'pi.id as id',
+                DB::raw('COALESCE(p.dispensed_at, p.updated_at) as tanggal'),
+                DB::raw("COALESCE(pt.name, '—') as pasien"),
+                DB::raw('pt.no_rm as no_rm'),
+                'm.name as obat',
+                DB::raw('pi.quantity::numeric as quantity'),
+                DB::raw("CASE WHEN v.visit_type = 'RAWAT_INAP' THEN 'Rawat Inap' WHEN p.type = 'RANAP' THEN 'Rawat Inap (Permintaan)' ELSE 'Rawat Jalan' END as sumber"),
+                DB::raw('e.name as petugas'),
+            ]);
+
+        // Sumber 2 — penjualan obat bebas POS (PAID).
+        $pos = DB::table('pharmacy_sale_items as si')
+            ->join('pharmacy_sales as s', 's.id', '=', 'si.pharmacy_sale_id')
+            ->join('medications as m', 'm.id', '=', 'si.medication_id')
+            ->leftJoin('employees as e', 'e.id', '=', 's.sold_by_id')
+            ->whereNull('s.deleted_at')
+            ->where('s.status', 'PAID')
+            ->when($dateFrom, fn ($q) => $q->whereDate('s.created_at', '>=', $dateFrom))
+            ->when($dateTo, fn ($q) => $q->whereDate('s.created_at', '<=', $dateTo))
+            ->when($search !== '', function ($q) use ($search) {
+                $t = "%{$search}%";
+                $q->where(fn ($w) => $w
+                    ->where('m.name', 'ilike', $t)
+                    ->orWhere('s.buyer_name', 'ilike', $t)
+                    ->orWhere('s.sale_number', 'ilike', $t));
+            })
+            ->select([
+                'si.id as id',
+                DB::raw('s.created_at as tanggal'),
+                DB::raw("COALESCE(NULLIF(s.buyer_name, ''), 'Umum (POS)') as pasien"),
+                DB::raw('NULL::varchar as no_rm'),
+                'm.name as obat',
+                DB::raw('si.quantity::numeric as quantity'),
+                DB::raw("'Penjualan Bebas' as sumber"),
+                DB::raw('e.name as petugas'),
+            ]);
+
+        return DB::query()
+            ->fromSub($rx->unionAll($pos), 't')
+            ->orderByRaw('tanggal DESC NULLS LAST')
+            ->paginate($perPage);
+    }
+
     // -------------------------------------------------------------------------
     // Item dispensing CRUD
 

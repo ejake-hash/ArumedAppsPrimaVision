@@ -68,8 +68,15 @@ class GoodsReceiptService
             'supplier'       => $grn->supplier,
             'receipt_date'   => optional($grn->receipt_date)->toDateString(),
             'invoice_number' => $grn->invoice_number,
+            'payment_method' => $grn->payment_method,
+            'payment_term_days' => $grn->payment_term_days,
+            'due_date'       => optional($grn->due_date)->toDateString(),
             'notes'          => $grn->notes,
             'total_amount'   => (float) $grn->total_amount,
+            'discount_amount' => (float) $grn->discount_amount,
+            'ppn_percent'    => (float) $grn->ppn_percent,
+            'ppn_amount'     => (float) $grn->ppn_amount,
+            'grand_total'    => (float) $grn->grand_total,
             'received_by'    => $grn->received_by,
             'created_at'     => $grn->created_at,
             'items'          => $grn->items->map(fn ($it) => $this->itemRow($it))->toArray(),
@@ -139,15 +146,31 @@ class GoodsReceiptService
         // begitu satu statement gagal, jadi retry harus transaksi baru).
         return $this->createWithRetry(function () use ($data, $items, $po) {
             return DB::transaction(function () use ($data, $items, $po) {
+                $method   = $data['payment_method'] ?? GoodsReceipt::PAYMENT_TUNAI;
+                $termDays = $method === GoodsReceipt::PAYMENT_KREDIT
+                    ? (int) ($data['payment_term_days'] ?? 0)
+                    : null;
+                $receiptDate = $data['receipt_date'] ?? now()->toDateString();
+                $dueDate = ($method === GoodsReceipt::PAYMENT_KREDIT && $termDays > 0)
+                    ? Carbon::parse($receiptDate)->addDays($termDays)->toDateString()
+                    : null;
+
                 $grn = GoodsReceipt::create([
-                    'grn_number'     => $this->generateGrnNumber($data['receipt_date'] ?? null),
-                    'po_id'          => $data['po_id'] ?? null,
-                    'supplier_id'    => $data['supplier_id'],
-                    'receipt_date'   => $data['receipt_date'] ?? now()->toDateString(),
-                    'invoice_number' => $data['invoice_number'] ?? null,
-                    'notes'          => $data['notes'] ?? null,
-                    'total_amount'   => 0,
-                    'received_by'    => auth('api')->id(),
+                    'grn_number'        => $this->generateGrnNumber($data['receipt_date'] ?? null),
+                    'po_id'             => $data['po_id'] ?? null,
+                    'supplier_id'       => $data['supplier_id'],
+                    'receipt_date'      => $receiptDate,
+                    'invoice_number'    => $data['invoice_number'] ?? null,
+                    'payment_method'    => $method,
+                    'payment_term_days' => $termDays,
+                    'due_date'          => $dueDate,
+                    'notes'             => $data['notes'] ?? null,
+                    'total_amount'      => 0,
+                    'discount_amount'   => max(0, (float) ($data['discount_amount'] ?? 0)),
+                    'ppn_percent'       => max(0, (float) ($data['ppn_percent'] ?? 0)),
+                    'ppn_amount'        => 0,
+                    'grand_total'       => 0,
+                    'received_by'       => auth('api')->id(),
                 ]);
 
                 foreach ($items as $row) {
@@ -347,10 +370,27 @@ class GoodsReceiptService
         }
     }
 
+    /**
+     * Hitung ulang Subtotal (Σ subtotal item) lalu turunkan DPP/PPN/Grand Total.
+     *   DPP        = Subtotal − Diskon (tidak pernah negatif)
+     *   PPN        = DPP × ppn_percent%
+     *   GrandTotal = DPP + PPN
+     * total_amount tetap = Subtotal (basis nilai inventori), diskon/ppn dipakai
+     * dari kolom yang sudah tersimpan saat create.
+     */
     private function recalcTotal(GoodsReceipt $grn): void
     {
-        $total = (float) $grn->items()->sum('subtotal');
-        $grn->update(['total_amount' => $total]);
+        $subtotal = (float) $grn->items()->sum('subtotal');
+        $discount = min((float) $grn->discount_amount, $subtotal); // diskon tak melebihi subtotal
+        $dpp      = max(0, $subtotal - $discount);
+        $ppn      = round($dpp * ((float) $grn->ppn_percent) / 100, 2);
+
+        $grn->update([
+            'total_amount'    => $subtotal,
+            'discount_amount' => $discount,
+            'ppn_amount'      => $ppn,
+            'grand_total'     => round($dpp + $ppn, 2),
+        ]);
     }
 
     private function generateGrnNumber(?string $receiptDate): string

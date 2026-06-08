@@ -107,6 +107,7 @@ function mapDetail(c) {
     rejection_reason: c.rejection_reason ?? null,
     assigned_to: c.assigned_to ? { id: c.assigned_to.id, name: c.assigned_to.name } : null,
     dokumen_pendukung: c.dokumen_pendukung ?? [],   // PatientDocument visit klaim
+    lembar_klaim: c.lembar_klaim ?? { exists: false, status: null, signed: false, coding_synced: false, document_id: null, signed_at: null },
     status: c.status,
     bpjs_status: c.bpjs_status,
     verified_by: deriveVerifier(c),
@@ -625,6 +626,35 @@ const ATT_CATEGORIES = [
   { key: 'LAINNYA',   label: 'Lainnya' },
 ]
 const attCanEdit = computed(() => selected.value && !['SUBMITTED', 'SELESAI'].includes(selected.value.status))
+
+// ── Lembar Klaim (Resume Medis versi klaim → antrian TTD dokter) ───────────────
+const lembarBusy = ref(false)
+async function generateLembarKlaim() {
+  if (!selected.value || lembarBusy.value) return
+  const lk = selected.value.lembar_klaim
+  if (lk?.signed && lk?.coding_synced) {
+    if (!confirm('Lembar klaim sudah ditandatangani & sesuai koding. Buat ulang akan MEMBATALKAN tanda tangan dan minta TTD dokter lagi. Lanjut?')) return
+  }
+  const id = selected.value.id
+  lembarBusy.value = true
+  try {
+    const { data } = await api.post(`/klaim/${id}/lembar-klaim`)
+    if (selected.value?.id === id) selected.value.lembar_klaim = data.data
+    toast('s', 'Lembar klaim siap — menunggu TTD dokter di menu Tanda Tangan.')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal membuat lembar klaim')
+  } finally {
+    lembarBusy.value = false
+  }
+}
+// Label & kelas status lembar klaim untuk badge.
+const lembarState = computed(() => {
+  const lk = selected.value?.lembar_klaim
+  if (!lk?.exists) return { cls: 'pend', text: 'Belum dibuat' }
+  if (lk.signed && lk.coding_synced) return { cls: 'ok', text: '✓ Ditandatangani dokter' }
+  if (lk.signed && !lk.coding_synced) return { cls: 'warn', text: 'Koding berubah — perlu TTD ulang' }
+  return { cls: 'pend', text: 'Menunggu TTD dokter' }
+})
 
 async function fetchAttachments() {
   if (!selected.value) { attachments.value = []; return }
@@ -1411,12 +1441,36 @@ function stepIndex(status) {
                           <div v-if="eklaimBusy === 'grouper'" class="sp" aria-hidden="true"></div>
                           <span v-else class="kl-eklaim-step">3</span> Grouper
                         </button>
-                        <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || !selected.inacbgs_kode" :title="!selected.inacbgs_kode ? 'Jalankan grouper dulu' : 'Finalisasi (tidak bisa dibatalkan)'" @click="runEklaim('final', { confirmMsg: 'Finalisasi klaim di E-Klaim? Tindakan ini tidak bisa dibatalkan (hanya bisa dibuka via Re-edit).', successMsg: 'Klaim difinalisasi di E-Klaim' })">
+                        <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || !selected.inacbgs_kode || !(selected.lembar_klaim?.signed && selected.lembar_klaim?.coding_synced)" :title="!selected.inacbgs_kode ? 'Jalankan grouper dulu' : (!(selected.lembar_klaim?.signed && selected.lembar_klaim?.coding_synced) ? 'Lembar klaim harus ditandatangani dokter & sesuai koding' : 'Finalisasi (tidak bisa dibatalkan)')" @click="runEklaim('final', { confirmMsg: 'Finalisasi klaim di E-Klaim? Tindakan ini tidak bisa dibatalkan (hanya bisa dibuka via Re-edit).', successMsg: 'Klaim difinalisasi di E-Klaim' })">
                           <div v-if="eklaimBusy === 'final'" class="sp" aria-hidden="true"></div>
                           <span v-else class="kl-eklaim-step">4</span> Finalisasi
                         </button>
                       </div>
                     </details>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Lembar Klaim (Resume Medis versi klaim → TTD dokter) -->
+              <div class="card kl-dg-lembar">
+                <div class="card-head">
+                  <div class="card-head-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13l2 2 4-4"/></svg>
+                    Lembar Klaim (Resume untuk BPJS)
+                  </div>
+                  <span :class="['doc-status-badge', lembarState.cls]">{{ lembarState.text }}</span>
+                </div>
+                <div class="card-body">
+                  <p class="kl-input-hint" style="margin-top:0">
+                    Lembar resume berisi diagnosa/ICD sesuai <strong>koding klaim</strong> (yang Anda setel), lalu dikirim ke dokter untuk ditandatangani. Resume medis asli dokter tidak berubah. Diagnosa pada lembar ini = diagnosa yang di-grouping.
+                  </p>
+                  <div class="kl-lembar-actions">
+                    <button class="btn btn-secondary btn-sm" :disabled="lembarBusy || ['SUBMITTED','SELESAI'].includes(selected.status)" @click="generateLembarKlaim">
+                      <div v-if="lembarBusy" class="sp" aria-hidden="true"></div>
+                      <span v-else>{{ selected.lembar_klaim?.exists ? 'Perbarui Lembar Klaim' : 'Buat Lembar Klaim' }}</span>
+                    </button>
+                    <span v-if="selected.lembar_klaim?.exists && !selected.lembar_klaim?.signed" class="kl-input-hint" style="margin:0">Menunggu dokter menandatangani di menu <strong>Tanda Tangan Dokumen</strong>.</span>
+                    <span v-else-if="selected.lembar_klaim?.signed && !selected.lembar_klaim?.coding_synced" class="kl-input-hint warn" style="margin:0">Koding berubah sejak TTD — perbarui lalu minta TTD ulang.</span>
                   </div>
                 </div>
               </div>
@@ -2719,6 +2773,9 @@ function stepIndex(status) {
 .doc-status-badge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
 .doc-status-badge.ok { background: var(--sb); color: var(--st); }
 .doc-status-badge.pend { background: var(--wb); color: var(--wt); }
+.doc-status-badge.warn { background: #fde7c8; color: #92400e; }
+.kl-lembar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.kl-input-hint.warn { color: #b45309; }
 .im-upload-area { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 1.25rem; background: var(--bs); border: 2px dashed var(--gb); border-radius: 10px; color: var(--th); font-size: 12px; text-align: center; }
 .im-upload-area svg { width: 32px; height: 32px; }
 .im-tambah-row { display: grid; grid-template-columns: 140px 1fr auto; gap: 6px; align-items: center; }

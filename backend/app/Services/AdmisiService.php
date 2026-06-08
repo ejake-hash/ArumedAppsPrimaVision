@@ -210,8 +210,16 @@ class AdmisiService
         // Mode "Belum Selesai (semua tanggal)": tampilkan SEMUA kunjungan yang
         // masih berjalan (current_station != SELESAI) lintas-hari — untuk melihat
         // & membereskan ekor visit nyangkut. Selain mode ini, filter per-tanggal.
+        $isRanapView = ($filters['care_type'] ?? null) === 'RANAP';
         if (! empty($filters['unfinished'])) {
             $query->where('current_station', '!=', 'SELESAI');
+        } elseif ($isRanapView) {
+            // Rawat inap long-lived (bertahan lintas-hari): JANGAN filter per-tanggal
+            // karena visit_date dibekukan saat registrasi. Tampilkan semua pasien
+            // yang belum dipulangkan (discharge_at NULL) — termasuk yang masuk
+            // hari-hari sebelumnya & yang masih "menunggu kamar". Mengikuti semantik
+            // RanapService::activeInpatients(). RAJAL tetap difilter per hari ini.
+            $query->whereNull('discharge_at');
         } else {
             $query->whereDate('visit_date', $filters['tanggal'] ?? today());
         }
@@ -347,6 +355,24 @@ class AdmisiService
             throw new \Exception('Kunjungan sudah selesai — tidak bisa dibatalkan.', 422);
         }
 
+        // Hanya boleh dibatalkan dari Admisi selama pasien masih di fase
+        // resepsi/skrining (ADMISI/TRIASE/REFRAKSIONIS) dan BELUM dilayani
+        // (tak ada antrean CALLED/IN_PROGRESS). Begitu pasien diproses di stasiun
+        // klinis, pembatalan dikunci untuk cegah penghapusan kunjungan yang
+        // sedang berjalan. (Guard sisi server — mengiringi penguncian tombol di UI.)
+        $receptionStations = ['ADMISI', 'TRIASE', 'REFRAKSIONIS'];
+        $inService = $visit->queues()
+            ->where('station', '!=', 'ADMISI')   // "dipanggil ke loket" ≠ pelayanan klinis
+            ->whereIn('status', ['CALLED', 'IN_PROGRESS'])
+            ->exists();
+        if (! in_array($visit->current_station, $receptionStations, true) || $inService) {
+            throw new \Exception(
+                "Pasien sudah dalam pelayanan (stasiun {$visit->current_station}) — pembatalan dikunci. "
+                . 'Batalkan dari stasiun terkait bila benar-benar perlu.',
+                422
+            );
+        }
+
         DB::transaction(function () use ($visit) {
             // Cancel semua antrean aktif (WAITING/CALLED/IN_PROGRESS) di station mana pun
             $visit->queues()
@@ -362,6 +388,134 @@ class AdmisiService
             $id,
             "Kunjungan dibatalkan (station: {$visit->current_station})"
         );
+    }
+
+    /**
+     * Ubah penjamin / tipe kunjungan (sekaligus "pola bayar") SETELAH registrasi.
+     *
+     * Aman dilakukan selama billing belum dikomit: resolusi tarif membaca
+     * guarantor_type + insurer_id secara LIVE saat penagihan
+     * (KasirService::getPrice), jadi mengganti penjamin sebelum kasir otomatis
+     * mengubah pola bayar tanpa perlu menyentuh charge/WIP.
+     *
+     * Ditolak bila: kunjungan SELESAI, tagihan sudah dikirim ke kasir (antrean
+     * KASIR aktif), invoice sudah FINALIZED/PAID, atau SEP BPJS sudah terbit
+     * (harus dibatalkan dulu).
+     *
+     * Pembersihan artefak penjamin lama:
+     *  - Pindah KELUAR BPJS → buang no_rujukan/no_surat_kontrol/booking + link rujukan/kontrol.
+     *  - Bukan ASURANSI/PERUSAHAAN → status verifikasi NONE + soft-delete verifikasi PENDING basi.
+     *  - COB di-update bila dikirim, selain itu COB lama dinonaktifkan.
+     */
+    public function updateGuarantor(string $visitId, array $data): Visit
+    {
+        return DB::transaction(function () use ($visitId, $data) {
+            $visit = Visit::lockForUpdate()->findOrFail($visitId);
+
+            if ($visit->current_station === 'SELESAI') {
+                throw new \Exception('Kunjungan sudah selesai — penjamin tidak bisa diubah.', 422);
+            }
+
+            // Guard 1: tagihan sudah dikirim ke kasir (antrean KASIR aktif).
+            $hasActiveKasir = $visit->queues()
+                ->where('station', Queue::STATION_KASIR)
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->exists();
+            if ($hasActiveKasir) {
+                throw new \Exception('Tagihan sudah dikirim ke kasir — penjamin tidak bisa diubah. Batalkan dari kasir bila perlu.', 422);
+            }
+
+            // Guard 2: invoice sudah final / lunas.
+            $hasCommittedInvoice = \App\Models\BillingInvoice::where('visit_id', $visit->id)
+                ->whereIn('status', ['FINALIZED', 'PAID'])
+                ->exists();
+            if ($hasCommittedInvoice) {
+                throw new \Exception('Invoice sudah diterbitkan/dibayar — penjamin tidak bisa diubah.', 422);
+            }
+
+            $newType = $data['guarantor_type'];
+
+            // Guard 3: SEP BPJS sudah terbit & pindah keluar BPJS → batalkan SEP dulu.
+            if ($visit->no_sep && $newType !== 'BPJS') {
+                throw new \Exception("SEP BPJS {$visit->no_sep} masih aktif — batalkan SEP dulu sebelum mengubah penjamin.", 422);
+            }
+
+            $oldType = $visit->guarantor_type;
+
+            // Penjamin utama + insurer (insurer hanya relevan utk ASURANSI/PERUSAHAAN/SOSIAL).
+            $visit->guarantor_type = $newType;
+            $visit->insurer_id = in_array($newType, ['ASURANSI', 'PERUSAHAAN', 'SOSIAL'], true)
+                ? ($data['insurer_id'] ?? null)
+                : null;
+
+            // BPJS: set/clear nomor rujukan/kontrol/booking.
+            if ($newType === 'BPJS') {
+                $visit->bpjs_booking_code = $data['bpjs_booking_code'] ?? null;
+                $visit->no_rujukan        = $data['bpjs_referral_no']  ?? null;
+                $visit->no_surat_kontrol  = $data['bpjs_control_no']   ?? null;
+            } else {
+                $visit->bpjs_booking_code      = null;
+                $visit->no_rujukan             = null;
+                $visit->no_surat_kontrol       = null;
+                $visit->bpjs_referral_in_id    = null;
+                $visit->bpjs_control_letter_id = null;
+            }
+
+            // Verifikasi asuransi (TPA): ASURANSI/PERUSAHAAN butuh PENDING; lainnya NONE.
+            $needsTpa = in_array($newType, ['ASURANSI', 'PERUSAHAAN'], true);
+            if ($needsTpa) {
+                $visit->insurance_verification_status = 'PENDING';
+            } else {
+                $visit->insurance_verification_status = 'NONE';
+                $visit->insurance_verified_at = null;
+            }
+
+            $visit->save();
+
+            // Soft-delete verifikasi PENDING yang tak relevan (tipe non-TPA, atau insurer berbeda).
+            $verifQuery = \App\Models\InsuranceVerification::where('visit_id', $visit->id)
+                ->where('status', 'PENDING');
+            if ($needsTpa && $visit->insurer_id) {
+                $verifQuery->where('insurer_id', '!=', $visit->insurer_id);
+            }
+            $verifQuery->delete();
+
+            // Buat verifikasi PENDING baru bila TPA & belum ada untuk insurer ini.
+            if ($needsTpa && $visit->insurer_id) {
+                $exists = \App\Models\InsuranceVerification::where('visit_id', $visit->id)
+                    ->where('insurer_id', $visit->insurer_id)
+                    ->where('status', 'PENDING')
+                    ->exists();
+                if (! $exists) {
+                    \App\Models\InsuranceVerification::create([
+                        'visit_id'           => $visit->id,
+                        'insurer_id'         => $visit->insurer_id,
+                        'verified_by'        => null,
+                        'status'             => 'PENDING',
+                        'policy_number'      => $data['policy_number']      ?? null,
+                        'member_name'        => $data['member_name']        ?? null,
+                        'member_card_number' => $data['member_card_number'] ?? null,
+                    ]);
+                }
+            }
+
+            // COB: update bila dikirim & aktif, selain itu nonaktifkan COB lama.
+            if (! empty($data['cob']) && ! empty($data['cob']['penjamin2_insurer_id'])) {
+                $this->saveCob($visit->id, $data['cob']);
+            } else {
+                VisitCob::where('visit_id', $visit->id)->update(['is_active' => false]);
+            }
+
+            $this->log(
+                auth('api')->id(),
+                'UPDATE_PENJAMIN',
+                Visit::class,
+                $visit->id,
+                "Penjamin diubah {$oldType} → {$newType}" . ($visit->insurer_id ? " (insurer {$visit->insurer_id})" : '')
+            );
+
+            return $visit->fresh(['patient', 'insurer', 'queues']);
+        });
     }
 
     // =========================================================================
@@ -431,6 +585,7 @@ class AdmisiService
             'gender'        => $data['gender'],
             'date_of_birth' => $data['date_of_birth'],
             'phone'         => $data['phone'] ?? null,
+            'family_phone'  => $data['family_phone'] ?? null,
             'email'         => $data['email'] ?? null,
             'address'       => $data['address'] ?? null,
             'province'      => $data['province'] ?? null,
@@ -1097,6 +1252,7 @@ class AdmisiService
                     'gender'        => $data['gender'],
                     'date_of_birth' => $data['date_of_birth'],
                     'phone'         => $data['phone']         ?? null,
+                    'family_phone'  => $data['family_phone']  ?? null,
                     'email'         => $data['email']         ?? null,
                     'address'       => $data['address']       ?? null,
                     'province'      => $data['province']      ?? null,

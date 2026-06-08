@@ -68,6 +68,51 @@ class AdmisiController extends Controller
         return $this->ok(null, 'Kunjungan berhasil dibatalkan');
     }
 
+    /**
+     * PUT /admisi/kunjungan/{id}/penjamin
+     * Ubah penjamin / tipe kunjungan (sekaligus pola bayar). Ditolak bila billing
+     * sudah dikomit (lihat AdmisiService::updateGuarantor).
+     */
+    public function updateGuarantor(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'guarantor_type'     => 'required|in:UMUM,BPJS,ASURANSI,PERUSAHAAN,SOSIAL',
+            'insurer_id'         => 'nullable|uuid|exists:insurers,id',
+            'bpjs_booking_code'  => 'nullable|string|max:50',
+            'bpjs_referral_no'   => 'nullable|string|max:50',
+            'bpjs_control_no'    => 'nullable|string|max:50',
+            'policy_number'      => 'nullable|string|max:100',
+            'member_name'        => 'nullable|string|max:255',
+            'member_card_number' => 'nullable|string|max:100',
+            'cob'                      => 'nullable|array',
+            'cob.penjamin1_type'       => 'nullable|string|max:20',
+            'cob.penjamin1_insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'cob.penjamin2_type'       => 'nullable|string|max:20',
+            'cob.penjamin2_insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'cob.notes'                => 'nullable|string|max:255',
+        ]);
+
+        // insurer_id wajib untuk penjamin berbasis rekanan (selain UMUM & BPJS).
+        if (
+            in_array($validated['guarantor_type'], ['ASURANSI', 'PERUSAHAAN', 'SOSIAL'])
+            && empty($validated['insurer_id'])
+        ) {
+            return $this->validationError(['insurer_id' => ['insurer_id wajib diisi untuk penjamin ini.']]);
+        }
+
+        try {
+            $visit = $this->service->updateGuarantor($id, $validated);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return $this->error('Kunjungan tidak ditemukan.', 404);
+        } catch (\Throwable $e) {
+            $code = (int) $e->getCode();
+            $http = ($code >= 100 && $code <= 599) ? $code : 500;
+            return $this->error($e->getMessage(), $http);
+        }
+
+        return $this->ok($visit, 'Penjamin kunjungan diperbarui');
+    }
+
     // =========================================================================
     // PASIEN
     // =========================================================================
@@ -95,6 +140,7 @@ class AdmisiController extends Controller
             'gender'       => 'required|in:L,P',
             'date_of_birth' => 'required|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'family_phone' => 'nullable|string|max:20',
             'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',
@@ -190,6 +236,7 @@ class AdmisiController extends Controller
             'gender'       => 'sometimes|in:L,P',
             'date_of_birth' => 'sometimes|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'family_phone' => 'nullable|string|max:20',
             'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'      => 'nullable|string|max:100',
@@ -249,6 +296,7 @@ class AdmisiController extends Controller
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'family_phone' => 'nullable|string|max:20',
             'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',
@@ -410,6 +458,7 @@ class AdmisiController extends Controller
             'gender'       => 'required_without:patient_id|in:L,P',
             'date_of_birth' => 'required_without:patient_id|date|before:today',
             'phone'        => 'nullable|string|max:20',
+            'family_phone' => 'nullable|string|max:20',
             'email'        => 'nullable|email|max:255',
             'address'      => 'nullable|string|max:500',
             'province'     => 'nullable|string|max:100',

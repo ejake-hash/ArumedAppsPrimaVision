@@ -200,29 +200,31 @@ function editTarif(t) {
             biaya alat di paket (mis. BPJS INA-CBGs).
           </p>
 
-          <table class="am-tbl">
-            <thead><tr><th>Klasifikasi</th><th class="num">Harga</th><th>Status</th><th></th></tr></thead>
-            <tbody>
-              <tr v-if="tarifLoading"><td colspan="4" class="am-empty">Memuat…</td></tr>
-              <tr v-else-if="!tarifList.length"><td colspan="4" class="am-empty">Belum ada tarif</td></tr>
-              <tr v-for="t in tarifList" :key="t.id">
-                <td>
-                  <code>{{ t.classification }}</code>
-                  <span v-if="t.insurer" class="am-insurer">· {{ t.insurer.name }}</span>
-                </td>
-                <td class="num">Rp {{ Number(t.price).toLocaleString('id-ID') }}</td>
-                <td>
-                  <span :class="['am-stat-pill', t.is_active ? 'on' : 'off']">
-                    {{ t.is_active ? 'Aktif' : 'Nonaktif' }}
-                  </span>
-                </td>
-                <td class="num">
-                  <button class="am-edit" @click="editTarif(t)" title="Edit">✎</button>
-                  <button class="am-del" @click="deleteTarif(t)" title="Hapus">✕</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="am-tbl-wrap">
+            <table class="am-tbl">
+              <thead><tr><th>Klasifikasi</th><th class="num">Harga</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="tarifLoading"><td colspan="4" class="am-empty">Memuat…</td></tr>
+                <tr v-else-if="!tarifList.length"><td colspan="4" class="am-empty">Belum ada tarif</td></tr>
+                <tr v-for="t in tarifList" :key="t.id">
+                  <td>
+                    <code>{{ t.classification }}</code>
+                    <span v-if="t.insurer" class="am-insurer">· {{ t.insurer.name }}</span>
+                  </td>
+                  <td class="num">Rp {{ Number(t.price).toLocaleString('id-ID') }}</td>
+                  <td>
+                    <span :class="['am-stat-pill', t.is_active ? 'on' : 'off']">
+                      {{ t.is_active ? 'Aktif' : 'Nonaktif' }}
+                    </span>
+                  </td>
+                  <td class="num">
+                    <button class="am-edit" @click="editTarif(t)" title="Edit">✎</button>
+                    <button class="am-del" @click="deleteTarif(t)" title="Hapus">✕</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
           <div class="am-form">
             <h4>Tambah / Update Tarif</h4>
@@ -270,20 +272,22 @@ function editTarif(t) {
 /* Modal */
 .am-modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.4); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 1rem; }
 .am-modal { background: var(--bc); border-radius: 14px; max-width: 640px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(15,23,42,.3); overflow: hidden; }
-.am-modal-hd { padding: 14px 18px; border-bottom: 1px solid var(--gb); display: flex; justify-content: space-between; align-items: flex-start; background: var(--bs); }
+.am-modal-hd { padding: 1rem 1.3rem; border-bottom: 1px solid var(--gb); display: flex; flex-wrap: wrap; gap: .6rem; justify-content: space-between; align-items: flex-start; background: var(--bs); }
 .am-modal-hd strong { font-size: 15px; color: var(--td); }
-.am-modal-sub { font-size: 12px; color: var(--tm); margin-top: 2px; }
-.am-modal-close { width: 28px; height: 28px; border-radius: 6px; border: none; background: transparent; color: var(--tm); cursor: pointer; font-size: 14px; }
+.am-modal-sub { font-size: 12px; color: var(--tm); margin-top: 3px; }
+.am-modal-close { width: 28px; height: 28px; border-radius: 6px; border: none; background: transparent; color: var(--tm); cursor: pointer; font-size: 14px; flex: 0 0 auto; }
 .am-modal-close:hover { background: var(--gl); }
-.am-modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
-.am-hint { font-size: 11.5px; color: var(--tu); margin: 0 0 10px; padding: 8px 10px; background: var(--bs); border-radius: 6px; border-left: 3px solid var(--ga); }
+.am-modal-body { padding: 1.3rem; overflow-y: auto; flex: 1; }
+.am-hint { font-size: 11.5px; color: var(--tu); margin: 0 0 1rem; padding: 10px 12px; background: var(--bs); border-radius: 6px; border-left: 3px solid var(--ga); line-height: 1.5; }
 .am-hint code { background: var(--bc); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
 
-.am-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 16px; }
-.am-tbl th, .am-tbl td { padding: 6px 8px; border-bottom: 1px solid var(--gb); text-align: left; }
+.am-tbl-wrap { overflow-x: auto; margin-bottom: 1.2rem; border: 1px solid var(--gb); border-radius: 8px; }
+.am-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 380px; }
+.am-tbl th, .am-tbl td { padding: 8px 10px; border-bottom: 1px solid var(--gb); text-align: left; }
+.am-tbl tbody tr:last-child td { border-bottom: none; }
 .am-tbl th { background: var(--bs); font-size: 11px; color: var(--tm); font-weight: 600; }
-.am-tbl .num { text-align: right; }
-.am-empty { text-align: center; color: var(--tu); padding: 14px 0; }
+.am-tbl .num { text-align: right; white-space: nowrap; }
+.am-empty { text-align: center; color: var(--tu); padding: 16px 0; }
 .am-insurer { font-size: 10.5px; color: var(--tu); margin-left: 4px; }
 .am-stat-pill { padding: 2px 7px; border-radius: 5px; font-size: 10.5px; font-weight: 600; }
 .am-stat-pill.on  { background: #d1fae5; color: #065f46; }
@@ -293,15 +297,20 @@ function editTarif(t) {
 .am-del { color: #b91c1c; margin-left: 4px; }
 .am-del:hover { background: #fee2e2; }
 
-.am-form { background: var(--bs); border-radius: 8px; padding: 12px; }
-.am-form h4 { font-size: 12.5px; color: var(--td); margin: 0 0 8px; }
-.am-form-row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 8px; }
-.am-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--tm); flex: 1; min-width: 120px; }
+.am-form { background: var(--bs); border-radius: 8px; padding: 1.1rem; }
+.am-form h4 { font-size: 12.5px; color: var(--td); margin: 0 0 .8rem; }
+.am-form-row { display: flex; gap: .9rem; align-items: end; flex-wrap: wrap; margin-bottom: .9rem; }
+.am-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--tm); flex: 1; min-width: 130px; }
 .am-form label span { font-weight: 500; }
-.am-form select, .am-form input[type=number] { padding: 5px 8px; font-size: 12.5px; border: 1px solid var(--gb); border-radius: 5px; background: var(--bc); }
-.am-check { flex: 0 0 auto !important; flex-direction: row !important; align-items: center; gap: 6px !important; padding-bottom: 6px; }
-.am-save { padding: 6px 14px; font-size: 12.5px; background: var(--ga); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
+.am-form select, .am-form input[type=number] { height: 34px; padding: 5px 9px; font-size: 12.5px; border: 1px solid var(--gb); border-radius: 5px; background: var(--bc); }
+.am-check { flex: 0 0 auto !important; flex-direction: row !important; align-items: center; gap: 6px !important; padding-bottom: 8px; }
+.am-save { padding: 7px 16px; font-size: 12.5px; background: var(--ga); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
 .am-save:hover { filter: brightness(.95); }
+
+@media (max-width: 900px) {
+  .am-modal-body { padding: 1.1rem; }
+  .am-form label { flex: 1 1 100%; }
+}
 
 .am-toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; border-radius: 8px; font-size: 13px; color: white; box-shadow: 0 6px 20px rgba(15,23,42,.2); z-index: 110; max-width: 320px; }
 .am-toast.t-s { background: #15803d; }

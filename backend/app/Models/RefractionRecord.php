@@ -32,11 +32,13 @@ class RefractionRecord extends Model
         // Keratometri OD
         'keratometri1_od',
         'keratometri2_od',
-        'keratometri_axis_od',
+        'keratometri_axis_od',   // axis K1
+        'keratometri_axis2_od',  // axis K2
         // Keratometri OS
         'keratometri1_os',
         'keratometri2_os',
-        'keratometri_axis_os',
+        'keratometri_axis_os',   // axis K1
+        'keratometri_axis2_os',  // axis K2
         // Visus OD
         'visus_awal_od',
         'visus_akhir_od',
@@ -60,19 +62,27 @@ class RefractionRecord extends Model
         'old_glasses_od_cyl',
         'old_glasses_od_axis',
         'old_glasses_add_od',
+        'old_glasses_visus_od',  // visus dengan kacamata lama (presenting VA)
         // Kacamata Lama OS
         'old_glasses_os_sph',
         'old_glasses_os_cyl',
         'old_glasses_os_axis',
         'old_glasses_add_os',
+        'old_glasses_visus_os',
         // IOP
         'iop_od',
         'iop_os',
         'iop_method',
+        'iop_extra_readings',    // pengukuran IOP berulang [{od,os},...]
         // Shared
         'pd_distance',
         'clinical_notes',
         'raw_data',
+        // SOAP refraksionis (PPA) — O autofill dari data refraksi tapi editable & tersimpan
+        'soap_s',
+        'soap_o',
+        'soap_a',
+        'soap_p',
         // Finalisasi
         'is_finalized',
         'is_skipped',
@@ -112,6 +122,7 @@ class RefractionRecord extends Model
         // IOP
         'iop_od'                      => 'decimal:2',
         'iop_os'                      => 'decimal:2',
+        'iop_extra_readings'          => 'array',
         // Shared
         'pd_distance'                 => 'decimal:2',
         'raw_data'                    => 'array',

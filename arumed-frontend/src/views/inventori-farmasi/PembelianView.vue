@@ -633,6 +633,7 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
               </span>
             </div>
 
+            <div class="po-items-wrap">
             <table class="po-items-table">
               <thead>
                 <tr>
@@ -699,6 +700,7 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
                 </tr>
               </tfoot>
             </table>
+            </div>
           </div>
 
           <div class="po-modal-foot">
@@ -895,9 +897,9 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 </template>
 
 <style scoped>
-.po-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
+.po-wrap { display: flex; flex-direction: column; gap: 1.25rem; max-width: 1280px; margin: 0 auto; width: 100%; }
 
-.po-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.po-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .po-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 22px; color: var(--td); margin: 0; }
 .po-section-head p { font-size: 12.5px; color: var(--tm); margin: 4px 0 0; }
 
@@ -919,13 +921,13 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .po-btn-danger { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; }
 .po-btn-danger:hover { filter: brightness(.95); }
 
-.po-filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; padding: 8px 12px; }
-.po-search { flex: 1 1 240px; min-width: 200px; padding: 6px 10px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); }
+.po-filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--bs); border: 1px solid var(--gb); border-radius: 8px; padding: 10px 14px; }
+.po-search { flex: 1 1 240px; min-width: 200px; height: 34px; padding: 6px 10px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); }
 .po-filter-label { font-size: 11.5px; color: var(--tm); font-weight: 500; }
-.po-filter-select { padding: 5px 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); color: var(--td); }
+.po-filter-select { height: 34px; padding: 5px 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12.5px; background: var(--bc); color: var(--td); }
 
 .po-table-wrap { background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; overflow-x: auto; }
-.po-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.po-table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 720px; }
 .po-table th, .po-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); }
 .po-table th { background: var(--bs); font-weight: 600; color: var(--tm); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
 .po-table td.r, .po-table th.r { text-align: right; }
@@ -966,22 +968,24 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .po-modal-head h3 { margin: 0; font-size: 16px; color: var(--td); }
 .po-close { background: transparent; border: 0; font-size: 22px; color: var(--tu); cursor: pointer; line-height: 1; padding: 0 6px; }
 .po-close:hover { color: var(--td); }
-.po-modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
-.po-modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--gb); }
+.po-modal-body { padding: 20px 22px; overflow-y: auto; flex: 1; }
+.po-modal-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 14px 22px; border-top: 1px solid var(--gb); }
 
-.po-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-bottom: 18px; }
+.po-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; margin-bottom: 20px; }
 .po-field { display: flex; flex-direction: column; gap: 4px; }
 .po-field-full { grid-column: 1 / -1; }
 .po-field label { font-size: 11.5px; font-weight: 500; color: var(--tm); }
 .po-field .req { color: var(--et); }
-.po-field input, .po-field select, .po-field textarea { padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; font-size: 13px; background: var(--bc); color: var(--td); font-family: inherit; }
+.po-field input, .po-field select, .po-field textarea { min-height: 34px; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; font-size: 13px; background: var(--bc); color: var(--td); font-family: inherit; }
+.po-field textarea { min-height: auto; }
 .po-field input:disabled, .po-field select:disabled, .po-field textarea:disabled { background: var(--bs); color: var(--tu); }
 
-.po-items-head { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
+.po-items-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 16px 0 10px; }
 .po-items-head h4 { margin: 0; font-size: 14px; color: var(--td); }
 .po-warn-text { font-size: 11.5px; color: var(--wt); font-style: italic; }
 
-.po-items-table { width: 100%; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--gb); border-radius: 6px; overflow: hidden; }
+.po-items-wrap { overflow-x: auto; border-radius: 6px; }
+.po-items-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--gb); border-radius: 6px; overflow: hidden; }
 .po-items-table th, .po-items-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); text-align: left; }
 .po-items-table th { background: var(--bs); font-weight: 600; color: var(--tm); font-size: 11px; text-transform: uppercase; }
 .po-items-table td.r, .po-items-table th.r { text-align: right; }
@@ -1024,6 +1028,12 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
 .po-toast-s { background: var(--st); }
 .po-toast-e { background: var(--et); }
 .po-toast-w { background: var(--wt); }
+
+/* ── Responsif: reflow saat area konten menyempit ─────────────────────── */
+@media (max-width: 900px) {
+  .po-form-grid { grid-template-columns: 1fr; }
+  .po-pagination { flex-direction: column; gap: 8px; align-items: stretch; text-align: center; }
+}
 </style>
 
 <!--

@@ -4,8 +4,10 @@ namespace App\Services;
 
 use App\Models\BpjsClaim;
 use App\Models\ClaimAuditLog;
+use App\Models\DocumentTemplate;
 use App\Models\InacbgsGroupingLog;
 use App\Models\IntegrationConfig;
+use App\Models\PatientDocument;
 use App\Models\SystemLog;
 use App\Models\Visit;
 use Illuminate\Http\Request;
@@ -215,7 +217,173 @@ class KlaimService
         );
         $this->log($user?->id, 'EDIT_CLAIM_CODING', BpjsClaim::class, $claimId);
 
+        // Koding berubah → lembar klaim (bila sudah dibuat) jadi tidak sah:
+        // batalkan TTD & reset ke RENDERED supaya wajib di-TTD ulang oleh dokter.
+        $this->refreshClaimResumeAfterRecoding($claim);
+
         return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    // =========================================================================
+    // LEMBAR KLAIM — Resume Medis versi klaim (diagnosa/ICD dari koding koder),
+    // di-TTD dokter via TtdDokumenView. Resume Medis dokter ASLI tetap utuh.
+    // Dokumen pendukung BPJS selalu konsisten dengan angka grouping.
+    // =========================================================================
+
+    private const CLAIM_RESUME_CODE = 'RESUME_KLAIM';
+
+    /**
+     * Buat/refresh "Lembar Klaim" untuk klaim → PatientDocument RESUME_KLAIM
+     * berstatus RENDERED, masuk antrian TTD dokter otomatis. Bila lembar sudah
+     * ada (termasuk yang sudah FINALIZED), di-reset (void TTD lama) + di-stamp
+     * ulang dengan sidik koding terkini.
+     */
+    public function generateClaimResume(string $claimId): array
+    {
+        $claim = BpjsClaim::with(['visit.patient'])->findOrFail($claimId);
+
+        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim sudah dikirim ke BPJS — lembar klaim tidak bisa diubah.', 422);
+        }
+        if (empty($claim->diagnosis_utama)) {
+            throw new \Exception('Diagnosis utama klaim belum diisi. Lengkapi koding dulu.', 422);
+        }
+        $visit = $claim->visit;
+        if (! $visit) {
+            throw new \Exception('Klaim tidak tertaut kunjungan.', 422);
+        }
+
+        $tpl = DocumentTemplate::where('code', self::CLAIM_RESUME_CODE)
+            ->where('is_active', true)->whereNull('deprecated_at')->first();
+        if (! $tpl) {
+            throw new \Exception('Template Lembar Klaim (RESUME_KLAIM) belum tersedia — jalankan FormTemplateSeeder.', 500);
+        }
+
+        $hash = $this->claimCodingHash($claim);
+        $user = auth('api')->user();
+
+        $doc = DB::transaction(function () use ($claim, $visit, $tpl, $hash) {
+            $existing = $this->findClaimResumeDoc($claim);
+            if ($existing) {
+                $this->resetClaimResumeDoc($existing, $hash);
+                return $existing->fresh();
+            }
+            return PatientDocument::create([
+                'patient_id'         => $visit->patient_id,
+                'visit_id'           => $visit->id,
+                'bpjs_claim_id'      => $claim->id,
+                'document_type_id'   => $tpl->document_type_id,
+                'template_code'      => $tpl->code,
+                'template_version'   => $tpl->version,
+                'status'             => 'RENDERED',
+                'created_by_station' => 'klaim',
+                'claim_coding_hash'  => $hash,
+            ]);
+        });
+
+        $this->addAuditLog($claim->id, $user?->employee_id, 'LEMBAR_KLAIM',
+            $claim->status, $claim->status, 'Lembar klaim dibuat/diperbarui — menunggu TTD dokter.');
+        $this->log($user?->id, 'GENERATE_CLAIM_RESUME', PatientDocument::class, $doc->id);
+
+        return $this->claimResumeSummary($doc, $claim);
+    }
+
+    /** Status lembar klaim untuk satu klaim (dipakai detail klaim & FE). */
+    public function claimResumeStatus(string $claimId): array
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+        return $this->claimResumeSummary($this->findClaimResumeDoc($claim), $claim);
+    }
+
+    /** Ringkasan status lembar klaim (exists/status/signed/sinkron-koding). */
+    public function claimResumeSummary(?PatientDocument $doc, BpjsClaim $claim): array
+    {
+        if (! $doc) {
+            return [
+                'exists' => false, 'document_id' => null, 'status' => null,
+                'signed' => false, 'signed_at' => null, 'coding_synced' => false,
+            ];
+        }
+        return [
+            'exists'        => true,
+            'document_id'   => $doc->id,
+            'status'        => $doc->status,
+            'signed'        => $doc->status === 'FINALIZED',
+            'signed_at'     => $doc->finalized_at?->toIso8601String(),
+            // Koding klaim terkini masih sama dengan yang tertanam saat lembar dibuat?
+            'coding_synced' => $doc->claim_coding_hash === $this->claimCodingHash($claim),
+        ];
+    }
+
+    private function findClaimResumeDoc(BpjsClaim $claim): ?PatientDocument
+    {
+        return PatientDocument::where('bpjs_claim_id', $claim->id)
+            ->where('template_code', self::CLAIM_RESUME_CODE)
+            ->orderByDesc('created_at')
+            ->first();
+    }
+
+    /**
+     * Sidik koding klaim (Dx utama + sekunder + prosedur, ternormalisasi & terurut).
+     * Beda hash = koding berubah → lembar wajib TTD ulang.
+     */
+    private function claimCodingHash(BpjsClaim $claim): string
+    {
+        $norm = fn ($arr) => collect($arr ?? [])
+            ->map(fn ($x) => is_array($x) ? ($x['kode'] ?? $x['code'] ?? '') : $x)
+            ->map(fn ($x) => trim((string) $x))
+            ->filter()->unique()->sort()->values()->all();
+
+        return hash('sha256', implode('|', [
+            trim((string) $claim->diagnosis_utama),
+            implode(',', $norm($claim->diagnosis_sekunder)),
+            implode(',', $norm($claim->procedure_codes)),
+        ]));
+    }
+
+    /**
+     * Reset lembar klaim ke RENDERED + void TTD lama. DocumentSignature &
+     * DocumentVerification append-only di model → hapus via raw query.
+     */
+    private function resetClaimResumeDoc(PatientDocument $doc, string $hash): void
+    {
+        DB::table('document_signatures')->where('patient_document_id', $doc->id)->delete();
+        DB::table('document_verifications')->where('patient_document_id', $doc->id)->delete();
+        $doc->update([
+            'status'               => 'RENDERED',
+            'rendered_html'        => null,
+            'rendered_html_gz'     => null,
+            'finalized_at'         => null,
+            'final_integrity_hash' => null,
+            'claim_coding_hash'    => $hash,
+        ]);
+    }
+
+    /** Koding berubah → reset lembar klaim yang ADA (jangan auto-buat bila belum ada). */
+    private function refreshClaimResumeAfterRecoding(BpjsClaim $claim): void
+    {
+        $doc = $this->findClaimResumeDoc($claim);
+        if (! $doc) {
+            return;
+        }
+        $this->resetClaimResumeDoc($doc, $this->claimCodingHash($claim));
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'LEMBAR_KLAIM_RESET',
+            $claim->status, $claim->status, 'Koding berubah → TTD lembar klaim dibatalkan; perlu TTD ulang.');
+    }
+
+    /** Guard sebelum finalisasi BPJS: lembar klaim wajib ADA, FINALIZED, & koding sinkron. */
+    private function assertClaimResumeReady(BpjsClaim $claim): void
+    {
+        $doc = $this->findClaimResumeDoc($claim);
+        if (! $doc) {
+            throw new \Exception('Lembar klaim belum dibuat. Buat lembar klaim & minta TTD dokter sebelum finalisasi.', 422);
+        }
+        if ($doc->status !== 'FINALIZED') {
+            throw new \Exception('Lembar klaim belum ditandatangani dokter. Tunggu TTD dokter sebelum finalisasi.', 422);
+        }
+        if ($doc->claim_coding_hash !== $this->claimCodingHash($claim)) {
+            throw new \Exception('Koding klaim berubah setelah lembar di-TTD. Perbarui lembar klaim & minta TTD ulang.', 422);
+        }
     }
 
     // =========================================================================
@@ -339,6 +507,10 @@ class KlaimService
         if (! $claim->inacbgs_kode) {
             throw new \Exception('Grouping E-Klaim belum dilakukan sebelum finalisasi.', 422);
         }
+
+        // Dokumen pendukung wajib sahih: lembar klaim sudah di-TTD dokter & koding
+        // belum berubah sejak TTD (diagnosa grouping = dokumen pendukung).
+        $this->assertClaimResumeReady($claim);
 
         $res = $this->eklaim->claimFinal($claim->no_sep, $claim->id, $claim->visit_id);
 

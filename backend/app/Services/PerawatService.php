@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Employee;
 use App\Models\NurseAssessment;
 use App\Models\NurseCpptEntry;
 use App\Models\PatientDocument;
@@ -40,6 +41,9 @@ class PerawatService
             'visit.nurseAssessment',
             'visit.insurer',
             'visit.doctorSchedule.employee',
+            'visit.refractionRecord',   // nilai Refraksi (visus/IOP) utk tampil di kartu pasien triase
+            // sibling status (REFRAKSIONIS) untuk cegah panggil-ganda paralel
+            'visit.queues' => fn ($q) => $q->whereDate('created_at', today()),
         ])
             ->where('station', 'TRIASE')
             ->whereDate('created_at', today())
@@ -176,8 +180,8 @@ class PerawatService
         $assessment = NurseAssessment::create([
             'visit_id'         => $visitId,
             'assessed_by_id'   => $user->employee_id,
-            'td_sistol'        => $data['td_sistol'],
-            'td_diastol'       => $data['td_diastol'],
+            'td_sistol'        => $data['td_sistol']  ?? null,
+            'td_diastol'       => $data['td_diastol'] ?? null,
             'nadi'             => $data['nadi']      ?? null,
             'suhu'             => $data['suhu']      ?? null,
             'respirasi'        => $data['respirasi'] ?? null,
@@ -189,7 +193,7 @@ class PerawatService
             'bmi'              => $this->calculateBmi($data['berat_badan'] ?? null, $data['tinggi_badan'] ?? null),
             'has_allergy'      => $data['has_allergy'] ?? false,
             'allergy_detail'   => ($data['has_allergy'] ?? false) ? ($data['allergy_detail'] ?? null) : null,
-            'chief_complaint'  => $data['chief_complaint'],
+            'chief_complaint'  => $data['chief_complaint'] ?? null,
             'rps'              => $data['rps'] ?? null,
             'assessment_notes' => $data['assessment_notes'] ?? null,
             'is_finalized'     => false,
@@ -257,14 +261,8 @@ class PerawatService
             throw new \Exception('Asesmen sudah dikunci.', 422);
         }
 
-        // Gate finalize: hanya TD (sistol+diastol) + KGD + keluhan utama yang wajib.
-        // Nadi/suhu/respirasi/SpO2/BB/TB optional (sesuai konvensi triase mata —
-        // perawat fokus ke TD+KGD untuk skrining pre-op).
-        foreach (['td_sistol', 'td_diastol', 'chief_complaint'] as $field) {
-            if (is_null($assessment->{$field})) {
-                throw new \Exception("Field {$field} wajib diisi sebelum mengunci asesmen.", 422);
-            }
-        }
+        // Tidak ada field wajib — perawat boleh mengunci asesmen tanpa TTV/keluhan
+        // (mis. pasien tidak dapat diperiksa / hanya skrining minimal).
 
         $user = auth('api')->user();
 
@@ -285,6 +283,48 @@ class PerawatService
 
         $this->log($user->id, 'FINALIZE_ASESMEN', NurseAssessment::class, $assessmentId);
         $this->checkReadyForDoctor($assessment->visit_id);
+
+        return $assessment->fresh(['assessedBy', 'finalizedBy']);
+    }
+
+    /**
+     * Buka kunci asesmen triase (periksa ulang atas permintaan dokter).
+     * is_finalized→false + hapus penanda finalisasi + buka kembali antrean TRIASE
+     * (COMPLETED → WAITING) supaya pasien bisa di-Panggil, direvisi, lalu finalisasi ulang.
+     * TIDAK menyentuh ready_for_doctor / antrean DOKTER (slot dokter tetap); saat finalisasi
+     * ulang checkReadyForDoctor no-op + alreadyQueued → tanpa tiket DOKTER dobel.
+     */
+    public function reopenAssessment(string $assessmentId): NurseAssessment
+    {
+        $assessment = NurseAssessment::with('visit')->findOrFail($assessmentId);
+
+        if (! $assessment->is_finalized) {
+            throw new \Exception('Asesmen triase belum dikunci.', 422);
+        }
+
+        $user = auth('api')->user();
+
+        DB::transaction(function () use ($assessment) {
+            $assessment->update([
+                'is_finalized'    => false,
+                'finalized_at'    => null,
+                'finalized_by_id' => null,
+            ]);
+
+            // Buka kembali antrean TRIASE (baris hari ini yang sudah COMPLETED).
+            Queue::where('visit_id', $assessment->visit_id)
+                ->where('station', Queue::STATION_TRIASE)
+                ->where('status', Queue::STATUS_COMPLETED)
+                ->today()
+                ->update([
+                    'status'       => Queue::STATUS_WAITING,
+                    'completed_at' => null,
+                    'called_at'    => null,
+                    'started_at'   => null,
+                ]);
+        });
+
+        $this->log($user->id, 'REOPEN_TRIASE', NurseAssessment::class, $assessmentId, "Asesmen triase dibuka kembali (periksa ulang) untuk kunjungan {$assessment->visit_id}");
 
         return $assessment->fresh(['assessedBy', 'finalizedBy']);
     }
@@ -656,11 +696,14 @@ class PerawatService
             throw new \Exception('Asesmen awal triase belum ada. Isi asesmen awal dulu.', 422);
         }
 
-        $user = auth('api')->user();
+        $user     = auth('api')->user();
+        $employee = $user?->employee;
 
         $entry = NurseCpptEntry::create([
             'visit_id'            => $visit->id,
             'nurse_assessment_id' => $visit->nurseAssessment->id,
+            // Peran PPA di-derive otomatis dari profesi employee (Perawat → PERAWAT).
+            'ppa_role'            => $employee?->ppaRole() ?? Employee::PPA_LAINNYA,
             'td_sistol'           => $data['td_sistol']  ?? null,
             'td_diastol'          => $data['td_diastol'] ?? null,
             'nadi'                => $data['nadi']       ?? null,
@@ -669,13 +712,19 @@ class PerawatService
             'spo2'                => $data['spo2']       ?? null,
             'kgd'                 => $data['kgd']        ?? null,
             'pain_scale'          => $data['pain_scale'] ?? null,
-            'notes'               => $data['notes'],
-            'created_by_id'       => $user?->employee_id,
+            'notes'               => $data['notes']      ?? null,
+            // SOAP perawat (opsional bila hari itu hanya TTV). O = TTV terstruktur.
+            'soap_s'              => $data['soap_s']     ?? null,
+            'soap_o'              => $data['soap_o']     ?? null,
+            'soap_a'              => $data['soap_a']     ?? null,
+            'soap_p'              => $data['soap_p']     ?? null,
+            'instruksi'           => $data['instruksi']  ?? null,
+            'created_by_id'       => $employee?->id,
         ]);
 
         $this->log($user?->id, 'CREATE_CPPT', NurseCpptEntry::class, $entry->id);
 
-        return $this->formatCpptEntry($entry->fresh(['createdBy', 'editedBy']));
+        return $this->formatCpptEntry($entry->fresh(['createdBy', 'editedBy', 'signedBy']));
     }
 
     /**
@@ -700,13 +749,51 @@ class PerawatService
             'kgd'          => $data['kgd']        ?? $entry->kgd,
             'pain_scale'   => $data['pain_scale'] ?? $entry->pain_scale,
             'notes'        => $data['notes']      ?? $entry->notes,
+            'soap_s'       => $data['soap_s']     ?? $entry->soap_s,
+            'soap_o'       => $data['soap_o']     ?? $entry->soap_o,
+            'soap_a'       => $data['soap_a']     ?? $entry->soap_a,
+            'soap_p'       => $data['soap_p']     ?? $entry->soap_p,
+            'instruksi'    => $data['instruksi']  ?? $entry->instruksi,
             'edited_at'    => now(),
             'edited_by_id' => $user?->employee_id,
         ])->save();
 
         $this->log($user?->id, 'UPDATE_CPPT', NurseCpptEntry::class, $entry->id);
 
-        return $this->formatCpptEntry($entry->fresh(['createdBy', 'editedBy']));
+        return $this->formatCpptEntry($entry->fresh(['createdBy', 'editedBy', 'signedBy']));
+    }
+
+    /**
+     * Tanda tangan CPPT (paraf penulis via PIN). BEDA dari verifikasi DPJP.
+     * Hanya penulis entri (created_by) yang boleh menandatangani entrinya sendiri.
+     */
+    public function signCpptEntry(string $entryId, ?string $pin = null): array
+    {
+        $entry = NurseCpptEntry::with('visit')->findOrFail($entryId);
+        $this->assertVisitActive($entry->visit);
+
+        $user = auth('api')->user();
+
+        if ($entry->created_by_id && $user?->employee_id && $entry->created_by_id !== $user->employee_id) {
+            throw new \Exception('Hanya penulis entri yang dapat menandatanganinya.', 403);
+        }
+
+        $expected = $user?->pin;
+        if (! $expected) {
+            throw new \Exception('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
+        }
+        if (! is_string($pin) || ! hash_equals((string) $expected, (string) $pin)) {
+            throw new \Exception('PIN salah.', 422);
+        }
+
+        $entry->forceFill([
+            'signed_at'    => now(),
+            'signed_by_id' => $user->employee_id,
+        ])->save();
+
+        $this->log($user->id, 'SIGN_CPPT', NurseCpptEntry::class, $entry->id, "CPPT ditandatangani (PIN)");
+
+        return $this->formatCpptEntry($entry->fresh(['createdBy', 'editedBy', 'signedBy']));
     }
 
     /**
@@ -714,7 +801,7 @@ class PerawatService
      */
     public function getCpptTimeline(string $visitId): array
     {
-        $entries = NurseCpptEntry::with(['createdBy', 'editedBy'])
+        $entries = NurseCpptEntry::with(['createdBy', 'editedBy', 'signedBy'])
             ->where('visit_id', $visitId)
             ->orderByDesc('created_at')
             ->get();
@@ -735,6 +822,7 @@ class PerawatService
             'id'                  => $e->id,
             'visit_id'            => $e->visit_id,
             'nurse_assessment_id' => $e->nurse_assessment_id,
+            'ppa_role'            => $e->ppa_role,
             'td_sistol'           => $e->td_sistol,
             'td_diastol'          => $e->td_diastol,
             'nadi'                => $e->nadi,
@@ -744,6 +832,11 @@ class PerawatService
             'kgd'                 => $e->kgd,
             'pain_scale'          => $e->pain_scale,
             'notes'               => $e->notes,
+            'soap_s'              => $e->soap_s,
+            'soap_o'              => $e->soap_o,
+            'soap_a'              => $e->soap_a,
+            'soap_p'              => $e->soap_p,
+            'instruksi'           => $e->instruksi,
             'created_at'          => $e->created_at?->toIso8601String(),
             'created_by'          => $e->createdBy ? [
                 'id'   => $e->createdBy->id,
@@ -753,6 +846,11 @@ class PerawatService
             'edited_by'           => $e->editedBy ? [
                 'id'   => $e->editedBy->id,
                 'name' => $e->editedBy->name,
+            ] : null,
+            'signed_at'           => $e->signed_at?->toIso8601String(),
+            'signed_by'           => $e->signedBy ? [
+                'id'   => $e->signedBy->id,
+                'name' => $e->signedBy->name,
             ] : null,
         ];
     }
@@ -768,6 +866,24 @@ class PerawatService
         $dob     = $patient?->date_of_birth;
         $age     = $dob ? $dob->age : null;
 
+        // Status stasiun pasangan (REFRAKSIONIS) — badge "sedang di Refraksi" + nonaktifkan
+        // tombol Panggil (cegah panggil-ganda paralel). Derive dari visit.queues today.
+        $siblingActive = $visit && $visit->relationLoaded('queues')
+            ? $visit->queues
+                ->where('station', Queue::STATION_REFRAKSIONIS)
+                ->whereIn('status', [Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->isNotEmpty()
+            : false;
+
+        // Hasil refraksi (visus/IOP) bila refraksionis sudah memeriksa — utk kartu pasien triase.
+        $rfx = $visit?->refractionRecord;
+        $refraksi = ($rfx && ($rfx->visus_akhir_od || $rfx->visus_akhir_os || $rfx->visus_awal_od || $rfx->visus_awal_os || $rfx->iop_od !== null || $rfx->iop_os !== null)) ? [
+            'visus_od' => $rfx->visus_akhir_od ?: $rfx->visus_awal_od,
+            'visus_os' => $rfx->visus_akhir_os ?: $rfx->visus_awal_os,
+            'iop_od'   => $rfx->iop_od !== null ? (float) $rfx->iop_od : null,
+            'iop_os'   => $rfx->iop_os !== null ? (float) $rfx->iop_os : null,
+        ] : null;
+
         return (object) [
             'id'             => $queue->id,
             'queue_number'   => $queue->queue_number,
@@ -777,6 +893,10 @@ class PerawatService
             'started_at'     => $queue->started_at?->toIso8601String(),
             'completed_at'   => $queue->completed_at?->toIso8601String(),
             'created_at'     => $queue->created_at?->toIso8601String(),
+            // Mutual-exclusion stasiun paralel (Triase ↔ Refraksionis)
+            'sibling_active'        => $siblingActive,
+            'sibling_station_label' => 'Refraksionis',
+            'refraksi'              => $refraksi,
             'visit'          => $visit ? [
                 'id'             => $visit->id,
                 'classification' => $visit->classification,

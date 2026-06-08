@@ -189,11 +189,11 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     }
   }
 
-  async function finalizePemeriksaan() {
+  async function finalizePemeriksaan(pin) {
     if (!pemeriksaan.value?.id) throw new Error('Simpan pemeriksaan terlebih dahulu')
     finalizing.value = true
     try {
-      const { data } = await refraksiApi.finalizePemeriksaan(pemeriksaan.value.id)
+      const { data } = await refraksiApi.finalizePemeriksaan(pemeriksaan.value.id, pin)
       pemeriksaan.value  = data.data
       doctorTicket.value = data.data?.doctor_ticket ?? null
 
@@ -204,6 +204,24 @@ export const useRefraksiStore = defineStore('refraksi', () => {
       return data.data
     } catch (err) {
       throw new Error(err.response?.data?.message ?? 'Gagal mengunci pemeriksaan')
+    } finally {
+      finalizing.value = false
+    }
+  }
+
+  // Buka kunci (periksa ulang) — is_finalized=false → form ter-unlock; antrean REFRAKSIONIS
+  // dibuka kembali (WAITING) sehingga pasien bisa di-Panggil & direvisi lalu finalisasi ulang.
+  async function reopenPemeriksaan() {
+    if (!pemeriksaan.value?.id) throw new Error('Belum ada data refraksi')
+    finalizing.value = true
+    try {
+      const { data } = await refraksiApi.reopenPemeriksaan(pemeriksaan.value.id)
+      pemeriksaan.value  = data.data
+      doctorTicket.value = null
+      await fetchAntrian()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal membuka kunci pemeriksaan')
     } finally {
       finalizing.value = false
     }
@@ -227,6 +245,12 @@ export const useRefraksiStore = defineStore('refraksi', () => {
 
         _channel = _pusher.subscribe('triase-queue')
         _channel.bind('queue-updated', ({ action, queue }) => {
+          // Stasiun pasangan TRIASE memanggil/melepas pasien → refresh agar badge
+          // "sedang di Triase" + status tombol Panggil sinkron realtime (cegah panggil-ganda).
+          if (queue.station === 'TRIASE') {
+            if (antrian.value.some((q) => q.visit?.id === queue.visit_id)) fetchAntrian()
+            return
+          }
           // refraksi store hanya peduli rows station REFRAKSIONIS
           if (queue.station !== 'REFRAKSIONIS') return
           if (action === 'added') {
@@ -308,7 +332,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     // actions
     fetchAntrian, panggilAntrian, mulaiAntrian, lewatiAntrian, skipRefraksi,
     pickPatient, clearSelected,
-    savePemeriksaan, saveResep, finalizePemeriksaan,
+    savePemeriksaan, saveResep, finalizePemeriksaan, reopenPemeriksaan,
 
     // websocket
     connectWs, disconnectWs,

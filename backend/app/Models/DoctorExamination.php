@@ -20,6 +20,9 @@ class DoctorExamination extends Model
         'doctor_id',
         // Tab 2 — Anamnese
         'anamnese',
+        // Palpebra (anterior, di atas Kornea pada UI)
+        'sa_palpebra_od',
+        'sa_palpebra_os',
         // Segmen Anterior OD
         'sa_kornea_od',
         'sa_coa_od',
@@ -32,6 +35,8 @@ class DoctorExamination extends Model
         'sa_iris_os',
         'sa_pupil_os',
         'sa_lensa_os',
+        // Catatan bebas segmen anterior (di bawah blok Anterior)
+        'sa_notes',
         // Segmen Posterior OD
         'sp_papil_od',
         'sp_macula_od',
@@ -42,6 +47,8 @@ class DoctorExamination extends Model
         'sp_macula_os',
         'sp_retina_os',
         'sp_vitreous_os',
+        // Catatan bebas segmen posterior (di bawah blok Posterior)
+        'sp_notes',
         'slitlamp_notes',
         // Tab 4 — SOAP & Planning
         'soap_subjective',

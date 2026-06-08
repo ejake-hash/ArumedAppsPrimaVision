@@ -17,6 +17,7 @@ class Employee extends Model
     public const PPA_APOTEKER = 'APOTEKER';
     public const PPA_GIZI = 'GIZI';
     public const PPA_FISIOTERAPIS = 'FISIOTERAPIS';
+    public const PPA_REFRAKSIONIS = 'REFRAKSIONIS';
     public const PPA_LAINNYA = 'LAINNYA';
 
     // Jenis dokter (filter Jadwal Dokter & picker anestesi Bedah). NULL = non-dokter.
@@ -83,7 +84,8 @@ class Employee extends Model
     /**
      * Derive peran PPA dari teks bebas profession via keyword match.
      * dokter -> DOKTER; perawat/bidan -> PERAWAT; apoteker/farmasi -> APOTEKER;
-     * gizi/dietisien -> GIZI; fisio/rehab/terapis -> FISIOTERAPIS; selain itu -> LAINNYA.
+     * gizi/dietisien -> GIZI; fisio/rehab/terapis -> FISIOTERAPIS;
+     * refraksi/optisien/optometris -> REFRAKSIONIS; selain itu -> LAINNYA.
      */
     public static function resolvePpaRole(?string $profession): string
     {
@@ -105,6 +107,9 @@ class Employee extends Model
         }
         if (str_contains($p, 'fisio') || str_contains($p, 'rehab') || str_contains($p, 'terapis')) {
             return self::PPA_FISIOTERAPIS;
+        }
+        if (str_contains($p, 'refraksi') || str_contains($p, 'optisien') || str_contains($p, 'optometris')) {
+            return self::PPA_REFRAKSIONIS;
         }
 
         return self::PPA_LAINNYA;

@@ -1,7 +1,9 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePerawatStore } from '@/stores/perawatStore'
+import { perawatApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
 
 const store = usePerawatStore()
 
@@ -12,6 +14,28 @@ const qSearch          = ref('')
 const historyExpanded  = ref(false)
 const rekamMedisOpen   = ref(false)
 const viewingDokumen   = ref(false)
+
+// ── Layout dinamis: panel collapsible + mode fokus ──────────────────────────
+const QKEY = 'perawat.queueCollapsed'
+const SKEY = 'perawat.sideCollapsed'
+const queueCollapsed = ref(localStorage.getItem(QKEY) === '1')
+const sideCollapsed  = ref(localStorage.getItem(SKEY) === '1')
+function toggleQueue() { queueCollapsed.value = !queueCollapsed.value; localStorage.setItem(QKEY, queueCollapsed.value ? '1' : '0') }
+function toggleSide()  { sideCollapsed.value = !sideCollapsed.value; localStorage.setItem(SKEY, sideCollapsed.value ? '1' : '0') }
+
+// Hasil refraksi (visus/IOP) pasien terpilih — tampil di kartu data pasien bila ada.
+const rfx = computed(() => store.selectedQueue?.refraksi ?? null)
+const hasRefraksi = computed(() => {
+  const r = rfx.value
+  return !!r && (r.visus_od || r.visus_os || r.iop_od != null || r.iop_os != null)
+})
+// Mode fokus: saat pasien dipilih di layar sedang (≤1500px), ciutkan antrean agar form lega.
+watch(() => store.selectedQueue, (q, prev) => {
+  if (q && !prev && typeof window !== 'undefined' && window.matchMedia('(max-width: 1500px)').matches) {
+    queueCollapsed.value = true
+    localStorage.setItem(QKEY, '1')
+  }
+})
 const toasts           = ref([])
 let   _tid             = 0
 
@@ -43,6 +67,8 @@ function emptyForm() {
     td_s: '', td_d: '', nadi: '', spo2: '', suhu: '', respirasi: '',
     bb: '', tb: '', pain: 0, kgd: '',
     keluhan: '', rps: '', assessment_notes: '',
+    // SOAP CPPT lanjutan (perawat) — O = TTV terstruktur di atas.
+    soap_s: '', soap_a: '', soap_p: '',
     allergies: [],
   }
 }
@@ -201,6 +227,10 @@ async function pickPatient(queueItem) {
 async function callPt(q, e) {
   e.stopPropagation()
   if (pendingCallIds.value.includes(q.id)) return
+  if (q.sibling_active) {
+    toast('w', `Pasien sedang ditangani di ${q.sibling_station_label} — tidak bisa dipanggil dari sini.`)
+    return
+  }
   const isRecall = q.status !== 'WAITING'
   pendingCallIds.value.push(q.id)
   try {
@@ -255,17 +285,11 @@ function removeAllergy(i) { form.value.allergies.splice(i, 1) }
 // ─── Save assessment ──────────────────────────────────────────────────────────
 // Wajib: TD (sistolik + diastolik) + Keluhan Utama. KGD & sisa field optional.
 async function saveAssessment() {
-  if (!form.value.td_s || !form.value.td_d) {
-    toast('w', 'Tekanan Darah (Sistolik & Diastolik) wajib diisi'); return
-  }
-  if (!form.value.keluhan) {
-    toast('w', 'Keluhan utama wajib diisi'); return
-  }
-
+  // Tidak ada field wajib untuk perawat — semua TTV/keluhan opsional.
   try {
     await store.saveAsesmen({
-      td_sistol:        Math.round(Number(form.value.td_s)),
-      td_diastol:       Math.round(Number(form.value.td_d)),
+      td_sistol:        form.value.td_s ? Math.round(Number(form.value.td_s)) : null,
+      td_diastol:       form.value.td_d ? Math.round(Number(form.value.td_d)) : null,
       kgd:              form.value.kgd ? Number(form.value.kgd) : null,
       nadi:             form.value.nadi      ? Math.round(Number(form.value.nadi))      : null,
       suhu:             form.value.suhu      ? Number(form.value.suhu)      : null,
@@ -276,13 +300,25 @@ async function saveAssessment() {
       tinggi_badan:     form.value.tb        ? Number(form.value.tb)        : null,
       has_allergy:      form.value.allergies.length > 0,
       allergy_detail:   form.value.allergies.length > 0 ? form.value.allergies.join(', ') : null,
-      chief_complaint:  form.value.keluhan,
+      chief_complaint:  form.value.keluhan || null,
       rps:              form.value.rps              || null,
       assessment_notes: form.value.assessment_notes || null,
     })
     toast('s', 'Asesmen tersimpan')
   } catch (err) {
     toast('w', err.message)
+  }
+}
+
+// Buka kunci (periksa ulang atas permintaan dokter) — form ter-unlock, antrean kembali aktif.
+async function onReopen() {
+  if (!store.asesmen?.id) return
+  if (!confirm('Buka kunci asesmen triase untuk diperiksa ulang?\nAsesmen harus difinalisasi ulang.')) return
+  try {
+    await store.reopenAsesmen()
+    toast('s', 'Asesmen dibuka kembali — silakan revisi lalu finalize lagi.')
+  } catch (err) {
+    toast('w', err.message || 'Gagal membuka kunci')
   }
 }
 
@@ -376,6 +412,9 @@ function startNewCppt() {
   // Keluhan/RPS/Alergi tidak ikut di CPPT (focus pada observasi ulang).
   // TTV tetap pre-fill dari asesmen awal supaya perawat bisa edit nilai yang berubah saja.
   form.value.assessment_notes = '' // notes CPPT diisi ulang
+  form.value.soap_s = ''
+  form.value.soap_a = ''
+  form.value.soap_p = ''
 }
 
 function startEditCppt(entry) {
@@ -393,6 +432,9 @@ function startEditCppt(entry) {
     kgd:              fmtNum(entry.kgd)        ?? '',
     pain:             entry.pain_scale ?? 0,
     assessment_notes: entry.notes      ?? '',
+    soap_s:           entry.soap_s     ?? '',
+    soap_a:           entry.soap_a     ?? '',
+    soap_p:           entry.soap_p     ?? '',
   }
 }
 
@@ -423,8 +465,10 @@ function cancelCpptMode() {
 }
 
 async function saveCppt() {
-  if (!form.value.assessment_notes?.trim()) {
-    toast('w', 'Catatan CPPT wajib diisi'); return
+  const hasNotes = !!form.value.assessment_notes?.trim()
+  const hasSoap  = !!(form.value.soap_s?.trim() || form.value.soap_a?.trim() || form.value.soap_p?.trim())
+  if (!hasNotes && !hasSoap) {
+    toast('w', 'Isi minimal Catatan atau salah satu SOAP (S/A/P)'); return
   }
   const payload = {
     td_sistol:  form.value.td_s      ? Math.round(Number(form.value.td_s))      : null,
@@ -435,7 +479,10 @@ async function saveCppt() {
     spo2:       form.value.spo2      ? Number(form.value.spo2)      : null,
     kgd:        form.value.kgd       ? Number(form.value.kgd)       : null,
     pain_scale: form.value.pain,
-    notes:      form.value.assessment_notes.trim(),
+    notes:      form.value.assessment_notes?.trim() || null,
+    soap_s:     form.value.soap_s?.trim() || null,
+    soap_a:     form.value.soap_a?.trim() || null,
+    soap_p:     form.value.soap_p?.trim() || null,
   }
 
   try {
@@ -447,8 +494,41 @@ async function saveCppt() {
       toast('s', 'CPPT diperbarui')
     }
     cancelCpptMode()
+    cpptCardRef.value?.reload()
   } catch (err) {
     toast('w', err.message)
+  }
+}
+
+// ─── Tanda tangan CPPT (paraf perawat via PIN) ───────────────────────────────
+const cpptCardRef = ref(null)
+const signingEntry = ref(null)   // entry yang sedang ditandatangani
+const pinValue = ref('')
+const pinError = ref('')
+const pinBusy  = ref(false)
+
+function openSignCppt(entry) {
+  if (!visitActive.value) { toast('w', 'Kunjungan sudah selesai'); return }
+  signingEntry.value = entry
+  pinValue.value = ''
+  pinError.value = ''
+}
+
+async function confirmSignPin() {
+  const pin = pinValue.value.trim()
+  if (!/^\d{4,6}$/.test(pin)) { pinError.value = 'PIN harus 4–6 digit angka.'; return }
+  if (!signingEntry.value) return
+  pinError.value = ''
+  pinBusy.value  = true
+  try {
+    await store.signCpptEntry(signingEntry.value.id, pin)
+    signingEntry.value = null
+    toast('s', 'CPPT ditandatangani')
+    cpptCardRef.value?.reload()
+  } catch (err) {
+    pinError.value = err.message ?? 'Gagal menandatangani CPPT'
+  } finally {
+    pinBusy.value = false
   }
 }
 
@@ -540,11 +620,16 @@ onUnmounted(() => {
 
 <template>
   <div class="perawat">
-    <div class="main-grid">
+    <div :class="['main-grid', { 'q-collapsed': queueCollapsed, 's-collapsed': sideCollapsed }]">
 
       <!-- ══════════════════ LEFT: QUEUE ══════════════════ -->
       <aside class="col-queue">
-        <div class="card">
+        <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="queue-rail-count">{{ store.totalCount }}</span>
+          <span class="queue-rail-txt">Antrean</span>
+        </button>
+        <div class="card queue-card">
           <div class="card-head">
             <div>
               <div class="card-head-title">
@@ -555,7 +640,12 @@ onUnmounted(() => {
                 {{ store.totalCount }} pasien hari ini
               </div>
             </div>
-            <span class="pill-live">LIVE</span>
+            <div class="head-actions">
+              <span class="pill-live">LIVE</span>
+              <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean triase">
@@ -679,11 +769,13 @@ onUnmounted(() => {
                       <svg viewBox="0 0 24 24" class="pill-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                       {{ q.schedule_risk.reason }}
                     </span>
+                    <span v-if="q.sibling_active" class="pill pill-sibling" :title="`Pasien sedang ditangani di ${q.sibling_station_label}`">⏳ Sedang di {{ q.sibling_station_label }}</span>
                   </div>
                   <div v-if="q.status !== 'COMPLETED'" class="q-actions" @click.stop>
                     <button
                       :class="['q-act-btn', 'call', q.status !== 'WAITING' ? 'recall' : '']"
-                      :disabled="pendingCallIds.includes(q.id)"
+                      :disabled="pendingCallIds.includes(q.id) || q.sibling_active"
+                      :title="q.sibling_active ? `Pasien sedang ditangani di ${q.sibling_station_label}` : 'Panggil pasien'"
                       @click="callPt(q, $event)"
                     >
                       <svg v-if="q.status === 'WAITING'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
@@ -796,6 +888,13 @@ onUnmounted(() => {
               <div class="pvi">SpO₂ <b>{{ store.asesmen.spo2 ? fmtNum(store.asesmen.spo2) + '%' : '—' }}</b></div>
               <div v-if="store.asesmen.kgd" class="pvi">KGD <b>{{ fmtNum(store.asesmen.kgd) }}</b></div>
             </div>
+
+            <!-- Hasil Refraksi (visus/IOP) bila refraksionis sudah memeriksa pasien ini -->
+            <div v-if="hasRefraksi" class="pt-refraksi" aria-label="Hasil refraksi">
+              <span class="pt-rfx-tag">Refraksi</span>
+              <div v-if="rfx.visus_od || rfx.visus_os" class="pvi">Visus <b>{{ rfx.visus_od || '—' }} / {{ rfx.visus_os || '—' }}</b></div>
+              <div v-if="rfx.iop_od != null || rfx.iop_os != null" class="pvi">TIO <b>{{ rfx.iop_od ?? '—' }} / {{ rfx.iop_os ?? '—' }}</b> <span class="pvi-u">mmHg</span></div>
+            </div>
           </div>
 
           <!-- SOAP / Vital History dropdown -->
@@ -855,7 +954,7 @@ onUnmounted(() => {
               <div class="sec-title">Kardiovaskular</div>
               <div class="form-grid g4">
                 <div class="fg span2">
-                  <label class="fl" for="td-s">Tekanan Darah <span class="req">*</span> <span class="hint">90–139 / 60–89</span></label>
+                  <label class="fl" for="td-s">Tekanan Darah <span class="hint">90–139 / 60–89</span></label>
                   <div class="td-row">
                     <input id="td-s" v-model="form.td_s" type="number" :class="['form-input', `vital-${tdStatus}`]" placeholder="Sistolik" :disabled="formLocked" />
                     <span aria-hidden="true">/</span>
@@ -929,7 +1028,7 @@ onUnmounted(() => {
               <div class="sec-title">Keluhan &amp; Anamnesis</div>
               <div class="stack">
                 <div class="fg">
-                  <label class="fl" for="inp-keluhan">Keluhan Utama <span class="req">*</span></label>
+                  <label class="fl" for="inp-keluhan">Keluhan Utama</label>
                   <textarea id="inp-keluhan" v-model="form.keluhan" class="form-input ta" rows="3" placeholder="Keluhan pasien saat datang…" :disabled="formLocked"></textarea>
                 </div>
                 <div class="fg">
@@ -937,10 +1036,33 @@ onUnmounted(() => {
                   <textarea id="inp-rps" v-model="form.rps" class="form-input ta" rows="3" placeholder="Onset, durasi, faktor pencetus, terapi sebelumnya…" :disabled="formLocked"></textarea>
                 </div>
                 <div class="fg">
-                  <label class="fl" for="inp-notes">Catatan Tambahan Perawat <span v-if="isCpptMode" class="req">*</span></label>
+                  <label class="fl" for="inp-notes">Catatan Tambahan Perawat</label>
                   <textarea id="inp-notes" v-model="form.assessment_notes" class="form-input ta" rows="2" placeholder="Observasi tambahan, kondisi umum pasien…" :disabled="formLocked"></textarea>
                 </div>
               </div>
+
+              <!-- ─── SOAP CPPT (hanya saat mode CPPT lanjutan) ─── -->
+              <template v-if="isCpptMode">
+                <div class="sec-title">SOAP · CPPT Terpadu <span class="soap-opt">opsional bila hanya TTV</span></div>
+                <div class="stack soap-prw">
+                  <div class="fg">
+                    <label class="fl" for="inp-soap-s"><span class="soap-tag s">S</span> Subjektif — keluhan/perkembangan</label>
+                    <textarea id="inp-soap-s" v-model="form.soap_s" class="form-input ta" rows="2" placeholder="Keluhan/perkembangan yang dilaporkan pasien saat observasi ini…"></textarea>
+                  </div>
+                  <div class="fg">
+                    <label class="fl"><span class="soap-tag o">O</span> Objektif <em class="soap-opt">otomatis dari Tanda Vital di atas</em></label>
+                    <div class="soap-o-derived">TTV (TD/Nadi/Suhu/SpO₂/KGD) yang Anda isi otomatis menjadi <b>Objektif</b> di CPPT.</div>
+                  </div>
+                  <div class="fg">
+                    <label class="fl" for="inp-soap-a"><span class="soap-tag a">A</span> Assessment — kesimpulan keperawatan</label>
+                    <textarea id="inp-soap-a" v-model="form.soap_a" class="form-input ta" rows="2" placeholder="Mis. nyeri akut terkontrol; risiko jatuh sedang; hipertensi terkontrol…"></textarea>
+                  </div>
+                  <div class="fg">
+                    <label class="fl" for="inp-soap-p"><span class="soap-tag p">P</span> Planning — rencana/edukasi</label>
+                    <textarea id="inp-soap-p" v-model="form.soap_p" class="form-input ta" rows="2" placeholder="Mis. observasi TTV tiap 4 jam; edukasi diet; kolaborasi DPJP…"></textarea>
+                  </div>
+                </div>
+              </template>
 
               <!-- ─── Skrining Alergi ─── -->
               <div class="sec-title">Skrining Alergi</div>
@@ -1076,6 +1198,17 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                   Cetak Tiket Dokter
                 </button>
+                <button
+                  v-if="store.isFinalized && !isCpptMode"
+                  type="button"
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="store.finalizing"
+                  title="Buka kunci untuk pemeriksaan ulang (atas permintaan dokter)"
+                  @click="onReopen"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V7a5 5 0 0 1 9.9-1"/><rect x="3" y="11" width="18" height="11" rx="2"/></svg>
+                  Buka Kunci
+                </button>
               </div>
             </div>
           </div>
@@ -1151,6 +1284,10 @@ onUnmounted(() => {
 
       <!-- ══════════════════ SOAP SIDEBAR ══════════════════ -->
       <aside class="col-soap">
+        <button class="side-rail" @click="toggleSide" title="Buka CPPT / SOAP" aria-label="Buka CPPT / SOAP">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          <span class="side-rail-txt">CPPT / SOAP</span>
+        </button>
         <div v-if="!store.selectedQueue" class="soap-ghost"></div>
 
         <div v-else class="soap-sticky">
@@ -1160,7 +1297,12 @@ onUnmounted(() => {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 CPPT / SOAP
               </div>
-              <span class="soap-count">{{ (store.cpptEntries ?? []).length }} CPPT</span>
+              <div class="head-actions">
+                <span class="soap-count">{{ (store.cpptEntries ?? []).length }} CPPT</span>
+                <button class="panel-collapse" @click="toggleSide" title="Ciutkan CPPT / SOAP" aria-label="Ciutkan CPPT / SOAP">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
             </div>
 
             <div class="soap-body">
@@ -1239,6 +1381,7 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
                   <span class="cppt-time-stamp">{{ fmtDateTime(entry.created_at) }}</span>
                   <span class="cppt-by" v-if="entry.created_by?.name">· {{ entry.created_by.name }}</span>
+                  <span v-if="entry.signed_at" class="cppt-signed" :title="`Ditandatangani ${fmtDateTime(entry.signed_at)}${entry.signed_by?.name ? ' · ' + entry.signed_by.name : ''}`">✓ Ditandatangani</span>
                   <span v-if="entry.edited_at" class="cppt-edited" :title="`Diedit ${fmtDateTime(entry.edited_at)} oleh ${entry.edited_by?.name ?? '—'}`">Diedit</span>
 
                   <button
@@ -1250,6 +1393,16 @@ onUnmounted(() => {
                   >
                     <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                     Edit
+                  </button>
+                  <button
+                    v-if="visitActive && !entry.signed_at"
+                    class="cppt-sign-btn"
+                    :disabled="isCpptMode"
+                    title="Tanda tangani CPPT ini (PIN)"
+                    @click="openSignCppt(entry)"
+                  >
+                    <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>
+                    TTD
                   </button>
                 </div>
 
@@ -1280,7 +1433,10 @@ onUnmounted(() => {
                       <span class="sv-v">{{ fmtNum(entry.respirasi) }}<em> /mnt</em></span>
                     </div>
                   </div>
-                  <div class="cppt-notes">{{ entry.notes }}</div>
+                  <div v-if="entry.notes" class="cppt-notes">{{ entry.notes }}</div>
+                  <div v-if="entry.soap_s" class="cppt-soap"><b class="s">S</b> {{ entry.soap_s }}</div>
+                  <div v-if="entry.soap_a" class="cppt-soap"><b class="a">A</b> {{ entry.soap_a }}</div>
+                  <div v-if="entry.soap_p" class="cppt-soap"><b class="p">P</b> {{ entry.soap_p }}</div>
                 </div>
               </div>
 
@@ -1291,6 +1447,9 @@ onUnmounted(() => {
 
             </div>
           </div>
+
+          <!-- Riwayat CPPT/SOAP lintas-episode (semua PPA: Perawat/Refraksionis/Dokter) -->
+          <CpptHistoryCard ref="cpptCardRef" :patient-id="store.selectedPatientId" :fetcher="perawatApi.riwayatCppt" style="margin-top:0.75rem" />
         </div>
       </aside>
 
@@ -1420,6 +1579,33 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
+    <!-- ══════════════════ MODAL PIN TANDA TANGAN CPPT ══════════════════ -->
+    <Teleport to="body">
+      <div v-if="signingEntry" class="pin-overlay" role="dialog" aria-modal="true" @click.self="signingEntry = null">
+        <div class="pin-modal">
+          <h4 class="pin-title">Tanda Tangan CPPT</h4>
+          <p class="pin-hint">Masukkan PIN untuk menandatangani entri CPPT ini sebagai <b>{{ store.selectedQueue?.patient?.name }}</b>.</p>
+          <input
+            v-model="pinValue"
+            type="password"
+            inputmode="numeric"
+            maxlength="6"
+            class="pin-input"
+            placeholder="••••••"
+            autocomplete="off"
+            @keyup.enter="confirmSignPin()"
+          />
+          <div v-if="pinError" class="pin-err">{{ pinError }}</div>
+          <div class="pin-actions">
+            <button type="button" class="btn btn-secondary btn-sm" :disabled="pinBusy" @click="signingEntry = null">Batal</button>
+            <button type="button" class="btn btn-primary btn-sm" :disabled="pinBusy" @click="confirmSignPin()">
+              {{ pinBusy ? 'Memproses…' : 'Tanda Tangani' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- ══════════════════ TOAST ══════════════════ -->
     <div class="toast-wrap" aria-live="polite" aria-atomic="false" role="status">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
@@ -1430,7 +1616,39 @@ onUnmounted(() => {
 <style scoped>
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 .perawat { padding: 0; }
-.main-grid { display: grid; grid-template-columns: 340px 1fr 260px; gap: 1rem; align-items: start; }
+.main-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr) 300px; gap: 1rem; align-items: start; transition: grid-template-columns .2s ease; }
+.main-grid.q-collapsed { grid-template-columns: 52px minmax(0, 1fr) 300px; }
+.main-grid.s-collapsed { grid-template-columns: 320px minmax(0, 1fr) 52px; }
+.main-grid.q-collapsed.s-collapsed { grid-template-columns: 52px minmax(0, 1fr) 52px; }
+/* Form lega: batasi lebar & pusatkan saat ruang berlebih */
+.col-form { min-width: 0; }
+.col-form > * { max-width: 1040px; margin-inline: auto; }
+
+/* Rail (panel diciutkan) + tombol ciutkan */
+.col-queue .queue-rail, .col-soap .side-rail { display: none; }
+.main-grid.q-collapsed .col-queue .queue-card { display: none; }
+.main-grid.q-collapsed .col-queue .queue-rail { display: flex; }
+.main-grid.s-collapsed .col-soap .soap-ghost,
+.main-grid.s-collapsed .col-soap .soap-sticky { display: none; }
+.main-grid.s-collapsed .col-soap .side-rail { display: flex; }
+.queue-rail, .side-rail { position: sticky; top: 0.5rem; width: 52px; min-height: 128px; flex-direction: column; align-items: center; gap: 9px; padding: 13px 4px; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; cursor: pointer; color: var(--tm); font-family: 'Inter', sans-serif; transition: all .13s; }
+.queue-rail:hover, .side-rail:hover { border-color: var(--ga); color: var(--ga); }
+.queue-rail svg, .side-rail svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.queue-rail-count { font-size: 14px; font-weight: 700; color: var(--ga); font-variant-numeric: tabular-nums; }
+.queue-rail-txt, .side-rail-txt { writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.panel-collapse { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all .13s; flex-shrink: 0; }
+.panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
+.panel-collapse svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+/* Responsif: stack 1 kolom di layar sempit (tanpa scroll horizontal) */
+@media (max-width: 1180px) {
+  .main-grid, .main-grid.q-collapsed, .main-grid.s-collapsed, .main-grid.q-collapsed.s-collapsed { grid-template-columns: 1fr; }
+  .col-queue .queue-rail, .col-soap .side-rail, .panel-collapse { display: none !important; }
+  .col-queue .queue-card { display: block !important; }
+  .main-grid.s-collapsed .col-soap .soap-ghost, .main-grid.s-collapsed .col-soap .soap-sticky { display: block !important; }
+  .col-form > * { max-width: none; }
+}
 
 /* ── Card ────────────────────────────────────────────────────────────────── */
 .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
@@ -1529,6 +1747,7 @@ onUnmounted(() => {
 .pill-umum  { background: var(--gl); color: var(--ga); }
 .pill-done  { background: var(--sb); color: var(--st); }
 .pill-risk  { background: #fef3c7; color: #b45309; border: 1px solid #fbbf24; }
+.pill-sibling { background: #fef3c7; color: #92400e; }
 
 /* ── Classification colors ───────────────────────────────────────────────── */
 .cls-baru    { background: #dbeafe; color: #1e40af; }
@@ -1564,6 +1783,9 @@ onUnmounted(() => {
 .pt-vitals { display: flex; gap: 0.85rem; width: 100%; padding-top: 0.6rem; border-top: 1px dashed var(--gb); }
 .pvi { font-size: 10.5px; color: var(--tu); }
 .pvi b { display: block; font-size: 14px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+.pt-refraksi { display: flex; align-items: center; gap: 0.85rem; width: 100%; padding-top: 0.6rem; border-top: 1px dashed var(--gb); }
+.pt-rfx-tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ga); background: var(--gl); padding: 3px 8px; border-radius: 5px; align-self: center; }
+.pvi-u { font-size: 9px; font-weight: 600; color: var(--tu); }
 
 .saved-pill { display: inline-flex; align-items: center; gap: 4px; background: var(--sb); color: var(--st); border: 1px solid var(--sbd); font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 20px; }
 .saved-pill.saved-draft { background: var(--ib); color: var(--it); border-color: var(--ibd); }
@@ -1609,7 +1831,7 @@ onUnmounted(() => {
 .fl { font-size: 10.5px; font-weight: 600; color: var(--tm); letter-spacing: 0.04em; text-transform: uppercase; display: flex; gap: 5px; align-items: center; }
 .fl .hint { font-size: 9.5px; font-weight: 400; color: var(--tu); text-transform: none; letter-spacing: 0; }
 .req { color: var(--et); font-size: 11px; }
-.form-input { background: var(--bs); border: 1.5px solid var(--gb); border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12.5px; padding: 7px 10px; height: 34px; outline: none; color: var(--td); transition: border-color 0.15s, box-shadow 0.15s; }
+.form-input { background: var(--bs); border: 1.5px solid var(--gb); border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 13px; padding: 8px 11px; height: 36px; outline: none; color: var(--td); transition: border-color 0.15s, box-shadow 0.15s; }
 .form-input.ta { height: auto; resize: vertical; line-height: 1.5; }
 .form-input.readonly { background: var(--bi); color: var(--tu); }
 .form-input:focus { border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31,125,74,.09); }
@@ -1621,7 +1843,7 @@ onUnmounted(() => {
 .td-row span { color: var(--tu); font-weight: 600; }
 .unit { font-size: 10px; color: var(--tu); }
 .bmi-label { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
-.kgd-info { display: flex; align-items: center; height: 34px; }
+.kgd-info { display: flex; align-items: center; height: 36px; }
 .kgd-hint { font-size: 11px; color: var(--th); font-style: italic; }
 .vital-tag { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px; }
 .vital-tag.low    { background: var(--ib); color: var(--it); }
@@ -1831,4 +2053,36 @@ onUnmounted(() => {
 }
 .cppt-banner svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .cppt-banner strong { font-weight: 700; }
+
+/* ── CPPT: tanda tangan + SOAP display ───────────────────────────────────── */
+.cppt-sign-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; background: transparent; border: 1px solid #a7f3d0; color: #047857; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.cppt-sign-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.cppt-sign-btn:hover:not(:disabled) { background: #ecfdf5; border-color: #047857; }
+.cppt-sign-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.cppt-signed { font-size: 9px; font-weight: 700; padding: 1px 7px; border-radius: 20px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; cursor: help; }
+.cppt-soap { margin-top: 0.4rem; font-size: 11.5px; line-height: 1.5; color: var(--td); white-space: pre-wrap; word-break: break-word; }
+.cppt-soap b { display: inline-block; width: 14px; font-weight: 800; }
+.cppt-soap b.s { color: #1d4ed8; }
+.cppt-soap b.a { color: #7e22ce; }
+.cppt-soap b.p { color: #b45309; }
+
+/* ── SOAP perawat (form CPPT) ────────────────────────────────────────────── */
+.soap-prw .fl { display: flex; align-items: center; gap: 6px; }
+.soap-tag { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; font-size: 11px; font-weight: 800; color: #fff; }
+.soap-tag.s { background: #1d4ed8; }
+.soap-tag.o { background: #64748b; }
+.soap-tag.a { background: #7e22ce; }
+.soap-tag.p { background: #b45309; }
+.soap-opt { font-size: 9.5px; font-weight: 500; font-style: italic; color: var(--tu); text-transform: none; letter-spacing: 0; }
+.soap-o-derived { font-size: 11px; color: var(--tm); background: var(--bs); border: 1px dashed var(--gb); border-radius: 8px; padding: 7px 10px; line-height: 1.5; }
+
+/* ── Modal PIN tanda tangan ──────────────────────────────────────────────── */
+.pin-overlay { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); }
+.pin-modal { width: min(360px, 94vw); background: #fff; border-radius: 14px; padding: 1.6rem; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.pin-title { margin: 0 0 8px; font-size: 15px; font-weight: 700; color: var(--td); }
+.pin-hint { margin: 0 0 16px; font-size: 12.5px; color: var(--tm); line-height: 1.5; }
+.pin-input { width: 100%; padding: 12px; border: 1px solid var(--gb); border-radius: 8px; font-size: 22px; letter-spacing: 8px; text-align: center; box-sizing: border-box; color: var(--td); }
+.pin-input:focus { outline: none; border-color: var(--ga); }
+.pin-err { margin: 10px 0 0; font-size: 12.5px; color: var(--et); }
+.pin-actions { display: flex; gap: 0.8rem; justify-content: center; align-items: center; margin-top: 1.2rem; }
 </style>

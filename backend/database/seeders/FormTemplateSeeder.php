@@ -28,6 +28,9 @@ class FormTemplateSeeder extends Seeder
         // sebagai percontohan. Template prototipe lain DIMATIKAN (atas permintaan,
         // 7 Jun 2026) — tambahkan kembali per form saat dibuat dari PDF resminya.
         $this->seedResumeMedis();
+        // Lembar Klaim — Resume Medis versi klaim (diagnosa/ICD dari koding koder,
+        // di-TTD dokter; Resume Medis asli dokter tetap utuh). Dipakai BPJS klaim.
+        $this->seedResumeKlaim();
         // RM 2.0/CKB/22 — Checklist Kesiapan Bedah (slice pertama batch bedah).
         $this->seedChecklistKesiapanBedah();
         // RM 10.1/LOVR/22 — Laporan Operasi Vitreo Retina (kondisional: surgery_type=VITREORETINA).
@@ -377,6 +380,149 @@ HTML;
             'station_assignments'   => [
                 ['station' => 'dokter', 'section' => 'resume_output', 'mode' => 'HYBRID'],
             ],
+        ]);
+    }
+
+    /**
+     * Lembar Klaim (RESUME_KLAIM) — Resume Medis versi KLAIM untuk dokumen
+     * pendukung BPJS. Identik layout dengan Resume Medis Rawat Jalan TAPI:
+     *   - Diagnosa (ICD-10) & Tindakan (ICD-9) di-bind ke KODING KLAIM
+     *     (bpjs_claims, disetel koder), BUKAN doctorExamination → dokumen selalu
+     *     konsisten dengan angka grouping INA-CBG.
+     *   - Narasi klinis (anamnese/pemeriksaan/penunjang/terapi) tetap dari Resume
+     *     Medis dokter (read-only) sebagai dasar pendukung.
+     *   - Seluruh field AUTO display-only (di-generate KlaimService, bukan diisi di
+     *     stasiun) + TTD dokter wajib → masuk antrian TtdDokumenView otomatis.
+     *   - TANPA station_assignments (tak dapat dipilih manual di form picker
+     *     stasiun; hanya dibuat via "Buat Lembar Klaim" di Klaim).
+     * Resume Medis dokter ASLI tidak disentuh.
+     */
+    private function seedResumeKlaim(): void
+    {
+        // Reuse DocumentType RM-6.1 (Resume Medis) — sifat dokumen sama.
+        $docType = $this->requireDocType('RM-6.1');
+        if (!$docType) return;
+
+        // Field AUTO display-only — resolve di output (render/finalize), tidak ada input.
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'display_only' => true, 'binding' => $binding,
+        ];
+
+        $fields = [
+            // ── Kop klinik ───────────────────────────────────────────────────
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            // ── Identitas pasien ─────────────────────────────────────────────
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            $auto('no_bpjs',       'No. BPJS',     'text', ['kind' => 'db', 'source' => 'patient.bpjs_number']),
+            // ── Meta kunjungan + SEP ─────────────────────────────────────────
+            $auto('tanggal_berobat','Tanggal Berobat','date', ['kind' => 'db', 'source' => 'visit.visit_date']),
+            $auto('dokter_nama',   'Dokter yang Merawat', 'text', ['kind' => 'db', 'source' => 'visit.doctorExamination.doctor.name']),
+            $auto('ruang_poli',    'Ruang Poli',   'text', ['kind' => 'db', 'source' => 'visit.doctorSchedule.poliklinik']),
+            $auto('no_sep',        'No. SEP',      'text', ['kind' => 'db', 'source' => 'visit.no_sep']),
+
+            // ── Isi resume — narasi klinis dari RM dokter (read-only) ─────────
+            $auto('anamnese',         'Anamnese',          'longtext', ['kind' => 'db', 'source' => 'doctorExamination.anamnese']),
+            $auto('pemeriksaan_fisik','Pemeriksaan Fisik', 'longtext', ['kind' => 'db', 'source' => 'doctorExamination.soap_objective']),
+            $auto('alergi',           'Alergi Obat',       'longtext', ['kind' => 'db', 'source' => 'nurseAssessment.allergy_detail']),
+            $auto('penunjang',        'Hasil Penunjang',   'longtext', ['kind' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
+            // ── Diagnosa & Tindakan — dari KODING KLAIM (koder) ──────────────
+            $auto('diagnosa',         'Diagnosa (ICD-10)', 'longtext', ['kind' => 'aggregate', 'source' => 'claim.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $auto('tindakan',         'Tindakan (ICD-9)',  'longtext', ['kind' => 'aggregate', 'source' => 'claim.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
+            $auto('terapi',           'Terapi',            'longtext', ['kind' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            $auto('instruksi',        'Instruksi/Anjuran', 'longtext', ['kind' => 'aggregate', 'source' => 'planning_instruction']),
+
+            // ── Tanda tangan dokter (PIN → stempel elektronik + QR) ──────────
+            ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter', 'type' => 'signature_canvas',
+             'signer_type' => 'doctor', 'required' => true, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  <!-- KOP + IDENTITAS -->
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:60%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:40%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">RM 1.7/RMRJ/22 · Lampiran Klaim</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+          <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. BPJS</td><td style="padding:2px 5px;">: {{no_bpjs}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:6px 0 0;">RESUME MEDIS — LAMPIRAN KLAIM BPJS</div>
+
+  <!-- META -->
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Berobat</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tanggal_berobat}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Dokter yang Merawat</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{dokter_nama}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Ruang Poli</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{ruang_poli}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">No. SEP</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{no_sep}}</td>
+    </tr>
+  </table>
+
+  <!-- ISI RESUME -->
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Anamnese</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{anamnese}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alergi Obat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alergi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Hasil Penunjang Medis</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{penunjang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600; background:#eef5fb;">Diagnosa (Koding Klaim)</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top; background:#eef5fb;">{{diagnosa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600; background:#eef5fb;">Tindakan (Koding Klaim)</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top; background:#eef5fb;">{{tindakan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Instruksi/Anjuran</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{instruksi}}</td></tr>
+  </table>
+
+  <!-- TTD -->
+  <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+    <td style="width:58%; vertical-align:bottom; font-size:9px; color:#888;">Diagnosa &amp; tindakan pada lembar ini mengikuti koding klaim BPJS dan telah disetujui dokter penanggung jawab.</td>
+    <td style="width:42%; text-align:center;">
+      <div>Dokter yang Memeriksa,</div>
+      <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div>
+      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dokter_nama}}</strong></div>
+      <div style="font-size:9px; color:#666;">Nama Jelas dan Tandatangan</div>
+    </td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('RESUME_KLAIM', [
+            'name'                  => 'Resume Medis (Lampiran Klaim BPJS)',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_OUTPUT,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            // TANPA station_assignments — hanya dibuat via KlaimService::generateClaimResume.
+            'station_assignments'   => null,
         ]);
     }
 

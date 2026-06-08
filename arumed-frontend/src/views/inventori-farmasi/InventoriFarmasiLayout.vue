@@ -42,6 +42,15 @@ const allTabs = [
 
 const tabs = computed(() => allTabs.filter((t) => auth.can(t.perm)))
 
+// ─── Panel collapse (lega/dinamis, persist localStorage) ─────────────────
+// Nav kiri → icon-rail (ikon tetap bisa diklik); sidebar stok → rail tipis.
+const NAVKEY = 'invfarmasi.navCollapsed'
+const STKKEY = 'invfarmasi.stockCollapsed'
+const navCollapsed   = ref(localStorage.getItem(NAVKEY) === '1')
+const stockCollapsed = ref(localStorage.getItem(STKKEY) === '1')
+function toggleNav()   { navCollapsed.value   = !navCollapsed.value;   localStorage.setItem(NAVKEY, navCollapsed.value ? '1' : '0') }
+function toggleStock() { stockCollapsed.value = !stockCollapsed.value; localStorage.setItem(STKKEY, stockCollapsed.value ? '1' : '0') }
+
 const currentTabLabel = computed(() => {
   const found = allTabs.find((it) => route.path.startsWith(it.to))
   return found?.label ?? 'Inventori Farmasi'
@@ -181,8 +190,11 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="if-grid" :class="{ 'has-stock': showStockSidebar }">
-      <aside class="if-nav">
+    <div class="if-grid" :class="{ 'has-stock': showStockSidebar, 'nav-collapsed': navCollapsed, 'stock-collapsed': stockCollapsed && showStockSidebar }">
+      <aside class="if-nav" :class="{ 'is-rail': navCollapsed }">
+        <button class="if-nav-toggle" @click="toggleNav" :title="navCollapsed ? 'Lebarkan menu' : 'Ciutkan menu'">
+          <svg viewBox="0 0 24 24"><polyline :points="navCollapsed ? '9 18 15 12 9 6' : '15 18 9 12 15 6'"/></svg>
+        </button>
         <template v-for="(group, gIdx) in groupedTabs" :key="gIdx">
           <div class="if-nav-section">{{ group.section }}</div>
           <RouterLink
@@ -190,6 +202,7 @@ onBeforeUnmount(() => {
             :key="item.to"
             :to="item.to"
             class="if-nav-item"
+            :title="item.label"
           >
             <svg v-if="item.icon === 'pill'" viewBox="0 0 24 24"><path d="M10.5 20.5a6 6 0 1 1 8.485-8.486l-8.485 8.486zM13.515 3.515a6 6 0 0 1 0 8.485l-8.485-8.485"/></svg>
             <svg v-else-if="item.icon === 'box'" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
@@ -211,7 +224,16 @@ onBeforeUnmount(() => {
       </main>
 
       <aside v-if="showStockSidebar" class="if-stock">
-        <InventoriStockSidebar />
+        <button class="if-stock-rail" @click="toggleStock" title="Buka panel stok" aria-label="Buka panel stok">
+          <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/></svg>
+          <span class="if-stock-rail-txt">Data Stock</span>
+        </button>
+        <div class="if-stock-inner">
+          <button class="if-stock-collapse" @click="toggleStock" title="Ciutkan panel stok">
+            <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <InventoriStockSidebar />
+        </div>
       </aside>
     </div>
   </div>
@@ -256,15 +278,23 @@ onBeforeUnmount(() => {
 .if-inbox-all { font-size: 12.5px; color: var(--ga); text-decoration: none; font-weight: 500; }
 .if-inbox-all:hover { text-decoration: underline; }
 
-.if-grid { display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem; align-items: start; }
-.if-grid.has-stock { grid-template-columns: 220px minmax(0, 1fr) 340px; }
-@media (max-width: 1200px) { .if-grid.has-stock { grid-template-columns: 220px minmax(0, 1fr); } .if-grid.has-stock .if-stock { display: none; } }
-@media (max-width: 900px) { .if-grid, .if-grid.has-stock { grid-template-columns: 1fr; } }
+/* Lebar kolom via variabel → 4 kombinasi collapse tertangani satu aturan. */
+.if-grid { --nav-w: 220px; --stk-w: 340px; display: grid; grid-template-columns: var(--nav-w) minmax(0, 1fr); gap: 1.5rem; align-items: start; transition: grid-template-columns .16s ease; }
+.if-grid.has-stock { grid-template-columns: var(--nav-w) minmax(0, 1fr) var(--stk-w); }
+.if-grid.nav-collapsed { --nav-w: 64px; }
+.if-grid.stock-collapsed { --stk-w: 52px; }
+@media (max-width: 1180px) { .if-grid.has-stock { grid-template-columns: var(--nav-w) minmax(0, 1fr); } .if-grid.has-stock .if-stock { display: none; } }
+@media (max-width: 860px) { .if-grid, .if-grid.has-stock { grid-template-columns: 1fr; } .if-nav-toggle, .if-nav.is-rail { display: none; } }
 
 .if-stock { min-width: 0; }
 
 .if-nav { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 0.6rem 0.5rem; position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: 1px; }
 .if-nav-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--tu); padding: 0.6rem 0.7rem 0.3rem; }
+
+/* Toggle ciutkan menu */
+.if-nav-toggle { align-self: flex-end; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: var(--bs); border: 1px solid var(--gb); border-radius: 7px; cursor: pointer; color: var(--tm); margin-bottom: 2px; }
+.if-nav-toggle:hover { color: var(--ga); border-color: var(--ga); }
+.if-nav-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 
 .if-nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--tm); font-size: 13px; transition: background 0.15s, color 0.15s; }
 .if-nav-item svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
@@ -272,5 +302,26 @@ onBeforeUnmount(() => {
 .if-nav-item.router-link-exact-active { background: var(--gl); color: var(--td); font-weight: 500; }
 .if-nav-item.router-link-exact-active svg { stroke: var(--ga); }
 
-.if-content { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1.3rem 1.4rem; min-height: 60vh; }
+/* Mode rail (icon-only) — ikon tetap dapat diklik, label/section disembunyikan */
+.if-nav.is-rail { padding: 0.6rem 0.35rem; align-items: center; }
+.if-nav.is-rail .if-nav-toggle { align-self: center; }
+.if-nav.is-rail .if-nav-section { height: 1px; padding: 0; margin: 6px 6px; width: 60%; background: var(--gb); overflow: hidden; text-indent: -999px; }
+.if-nav.is-rail .if-nav-item { justify-content: center; padding: 9px 0; width: 40px; gap: 0; }
+.if-nav.is-rail .if-nav-item span { display: none; }
+.if-nav.is-rail .if-nav-item svg { width: 17px; height: 17px; }
+
+/* Sidebar stok: rail tipis saat diciutkan + tombol ciutkan saat lebar */
+.if-stock-rail { display: none; position: sticky; top: 1.5rem; width: 52px; min-height: 132px; flex-direction: column; align-items: center; gap: 10px; padding: 14px 4px; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; cursor: pointer; color: var(--tm); transition: all .13s; }
+.if-stock-rail:hover { border-color: var(--ga); color: var(--ga); }
+.if-stock-rail svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.if-stock-rail-txt { writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+.if-stock-inner { position: relative; }
+.if-stock-collapse { position: absolute; top: 6px; right: 6px; z-index: 2; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--bs); border: 1px solid var(--gb); border-radius: 6px; cursor: pointer; color: var(--tm); }
+.if-stock-collapse:hover { color: var(--ga); border-color: var(--ga); }
+.if-stock-collapse svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.if-grid.stock-collapsed .if-stock-inner { display: none; }
+.if-grid.stock-collapsed .if-stock-rail { display: flex; }
+
+.if-content { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1.6rem 1.8rem; min-height: 60vh; }
+@media (max-width: 700px) { .if-content { padding: 1.1rem 1rem; } }
 </style>
