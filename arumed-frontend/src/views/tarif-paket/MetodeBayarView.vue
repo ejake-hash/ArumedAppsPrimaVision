@@ -13,10 +13,16 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { masterApi } from '@/services/api'
+import { useAuthStore } from '@/stores/auth'
 import MasterTable from '@/components/master-data/MasterTable.vue'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
 
 const router = useRouter()
+const auth   = useAuthStore()
+// Penjamin dikelola di modul Tarif & Paket → tulis digate tarif_paket.write
+// (lihat routes/api.php). Sembunyikan kontrol tulis bila tak berwenang agar tak
+// menampilkan tombol yang berujung 403.
+const canWrite = computed(() => auth.can('tarif_paket.write'))
 
 const TYPES = [
   { value: 'UMUM',       label: 'Umum' },
@@ -288,7 +294,7 @@ onUnmounted(() => document.removeEventListener('click', closeCsvMenu))
             <button @click="onTemplate('xlsx')">Excel (.xlsx)</button>
           </div>
         </div>
-        <button class="mb-btn-csv" :disabled="csvBusy" @click="pickImport" title="Import penjamin dari CSV/Excel">
+        <button v-if="canWrite" class="mb-btn-csv" :disabled="csvBusy" @click="pickImport" title="Import penjamin dari CSV/Excel">
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           {{ csvBusy ? 'Mengimport…' : 'Import' }}
         </button>
@@ -305,7 +311,7 @@ onUnmounted(() => document.removeEventListener('click', closeCsvMenu))
         </div>
         <input ref="csvFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onImport" />
 
-        <button class="mb-btn-primary" @click="openCreate">
+        <button v-if="canWrite" class="mb-btn-primary" @click="openCreate">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Tambah Penjamin
         </button>
@@ -365,10 +371,10 @@ onUnmounted(() => document.removeEventListener('click', closeCsvMenu))
         <button class="mb-icon-btn" title="Kelola Tarif" @click="goDetail(row)">
           <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </button>
-        <button class="mb-icon-btn" title="Edit" @click="openEdit(row)">
+        <button v-if="canWrite" class="mb-icon-btn" title="Edit" @click="openEdit(row)">
           <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
         </button>
-        <button v-if="!row.is_system" class="mb-icon-btn mb-icon-danger" title="Hapus" @click="askDelete(row)">
+        <button v-if="canWrite && !row.is_system" class="mb-icon-btn mb-icon-danger" title="Hapus" @click="askDelete(row)">
           <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
       </template>

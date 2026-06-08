@@ -235,6 +235,19 @@ const qSecondaryFilter = ref('semua')      // 'semua' | 'bpjs' | 'umum'
 const qSearch = ref('')
 const selP = ref(null)
 const tab = ref('prabedah')
+
+// ── Panel antrean collapsible (lega & dinamis, pola DokterView/Refraksionis) ──
+const QCKEY = 'bedah.queueCollapsed'
+const queueCollapsed = ref(localStorage.getItem(QCKEY) === '1')
+function toggleQueue() {
+  queueCollapsed.value = !queueCollapsed.value
+  localStorage.setItem(QCKEY, queueCollapsed.value ? '1' : '0')
+}
+// Default ciut di layar sempit bila pengguna belum pernah menyetel preferensi.
+if (localStorage.getItem(QCKEY) === null && typeof window !== 'undefined'
+    && window.matchMedia('(max-width: 1400px)').matches) {
+  queueCollapsed.value = true
+}
 const showMulaiModal = ref(false)
 const showFinalModal = ref(false)
 const showRmDocsModal = ref(false)  // dokumen RM (Checklist / Laporan) — dibuka dari tombol pojok tab
@@ -632,8 +645,15 @@ function toast(type, msg) {
 
 async function pickPt(p) {
   if (selP.value?.id === p.id) return
+  const wasEmpty = !selP.value
   selP.value = p
   tab.value = 'prabedah'
+  // Mode fokus: ciutkan antrean saat PERTAMA memilih pasien di layar sempit —
+  // hanya bila pengguna belum menyetel preferensi sendiri (localStorage kosong).
+  if (wasEmpty && !queueCollapsed.value && localStorage.getItem(QCKEY) === null
+      && typeof window !== 'undefined' && window.matchMedia('(max-width: 1500px)').matches) {
+    queueCollapsed.value = true
+  }
   toast('i', `Membuka data bedah — ${p.name}`)
 
   // Hidrasi laporan dari backend bila operasi sudah dimulai/selesai (mis. setelah
@@ -1434,11 +1454,19 @@ function mulaiBack() { mulaiStep.value = 1 }
 </script>
 
 <template>
-  <div class="bedah">
+  <div :class="['bedah', { 'q-collapsed': queueCollapsed }]">
     <div class="main-grid">
 
       <!-- ══════════════════ LEFT: QUEUE ══════════════════ -->
       <aside class="col-queue">
+
+        <!-- Rail tipis saat antrean diciutkan — klik untuk buka kembali -->
+        <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="queue-rail-count">{{ patients.length }}</span>
+          <span class="queue-rail-txt">Antrean</span>
+        </button>
+
         <div class="card">
           <div class="card-head">
             <div>
@@ -1448,7 +1476,12 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
               <div class="card-head-sub">{{ patients.length }} pasien hari ini</div>
             </div>
-            <span class="pill-live">LIVE</span>
+            <div class="head-actions">
+              <span class="pill-live">LIVE</span>
+              <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean bedah">
@@ -2730,10 +2763,42 @@ function mulaiBack() { mulaiStep.value = 1 }
 <style scoped>
 /* ── Layout (PerawatView style) ─────────────────────────────────── */
 .bedah { padding: 0; }
-.main-grid { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; }
+.main-grid { display: grid; grid-template-columns: 340px 1fr; gap: 1rem; align-items: start; transition: grid-template-columns 0.22s ease; }
 
 .col-queue { min-width: 0; }
 .col-work { min-width: 0; display: flex; flex-direction: column; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
+
+/* ── Panel antrean dinamis: ciut → rail tipis ───────────────────── */
+.bedah.q-collapsed .main-grid { grid-template-columns: 56px 1fr; }
+.queue-rail { display: none; }
+.bedah.q-collapsed .col-queue > .card { display: none; }
+.bedah.q-collapsed .col-queue .queue-rail {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: 44px; min-height: 132px; margin-top: 0.15rem; padding: 14px 4px;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 12px;
+  cursor: pointer; color: var(--tm); transition: all 0.13s;
+}
+.queue-rail:hover { border-color: var(--ga); color: var(--ga); }
+.queue-rail svg { width: 16px; height: 16px; }
+.queue-rail-count { font-size: 14px; font-weight: 700; color: var(--ga); font-variant-numeric: tabular-nums; }
+.queue-rail-txt { writing-mode: vertical-rl; text-orientation: mixed; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+
+/* Tombol ciutkan di header antrean */
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.panel-collapse { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all 0.13s; flex-shrink: 0; }
+.panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
+.panel-collapse svg { width: 14px; height: 14px; }
+
+/* Konten kerja dipusatkan agar lega & tak melebar di layar ultra-wide */
+.bd-prabedah, .bd-intraop, .bd-laporan, .bd-pascabedah { max-width: 1340px; margin-inline: auto; }
+
+/* Responsif: stack 1 kolom di layar sempit (tanpa scroll horizontal) */
+@media (max-width: 1180px) {
+  .main-grid, .bedah.q-collapsed .main-grid { grid-template-columns: 1fr; }
+  .queue-rail, .panel-collapse { display: none !important; }
+  .bedah.q-collapsed .col-queue > .card { display: block; }
+  .queue-scroll { max-height: 440px; }
+}
 
 /* Card wrapper */
 .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
