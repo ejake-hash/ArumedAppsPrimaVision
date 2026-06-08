@@ -257,32 +257,17 @@ class PharmacySaleService
     }
 
     /**
-     * Hanya obat bebas/bebas terbatas/suplemen/jamu yang boleh dijual lepas.
-     * Master `golongan` tidak seragam → cek via kata kunci (mirror guard OTC).
+     * Kebijakan POS: SEMUA golongan obat boleh dijual di Penjualan Obat Bebas
+     * (keputusan owner — RS mata tidak punya stok narkotika/psikotropika; master
+     * `golongan` juga tak seragam sehingga filter kata-kunci dulu menyembunyikan
+     * hampir semua obat). Gate nyata = harga jual (HJA) > 0, dicek di checkout().
+     *
+     * Method dipertahankan sebagai satu titik kebijakan bila kelak perlu dibatasi
+     * lagi (mis. blokir narkotika/psikotropika saat stok semacam itu diadakan).
      */
     private function assertObatBolehDijualBebas(Medication $med): void
     {
-        $g = strtoupper(trim((string) $med->golongan));
-
-        $terlarang = $g === ''
-            || str_contains($g, 'KERAS')
-            || str_contains($g, 'NARKOTIKA')
-            || str_contains($g, 'PSIKOTROPIKA');
-
-        $boleh = ! $terlarang && (
-            str_contains($g, 'BEBAS')
-            || str_contains($g, 'SUPLEMEN')
-            || str_contains($g, 'JAMU')
-        );
-
-        if (! $boleh) {
-            $label = $g === '' ? 'tanpa golongan' : "golongan {$med->golongan}";
-            throw new \Exception(
-                "Obat {$med->name} ({$label}) tidak boleh dijual bebas tanpa resep dokter. " .
-                "Hanya obat bebas/bebas terbatas/suplemen/jamu yang boleh dijual lepas.",
-                422
-            );
-        }
+        // Tidak ada pembatasan golongan — sengaja no-op.
     }
 
     /**

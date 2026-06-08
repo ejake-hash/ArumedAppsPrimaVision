@@ -15,11 +15,16 @@ class Prescription extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
+    // Diskriminator alur resep (lihat migrasi add_type_to_prescriptions).
+    public const TYPE_RAJAL = 'RAJAL';   // rawat jalan + obat pulang (lewat antrean Farmasi)
+    public const TYPE_RANAP = 'RANAP';   // permintaan obat rawat inap (dispensing ke ruangan)
+
     protected $fillable = [
         'legacy_uuid',
         'visit_id',
         'prescribed_by_id',
         'status',
+        'type',
         'dispensed_by_id',
         'dispensed_at',
         'notes',

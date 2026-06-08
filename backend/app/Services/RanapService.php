@@ -449,6 +449,74 @@ class RanapService
     }
 
     // =========================================================================
+    // PERMINTAAN OBAT KE FARMASI (pasien dirawat) — alur dispensing rawat inap.
+    //
+    // Beda dari addObat (catat biaya langsung, tanpa serah/stok): permintaan ini
+    // membuat Prescription type=RANAP status=SUBMITTED yang dilayani Farmasi di
+    // tab "Dispensing Rawat Inap". Tagihan inpatient_charges + potong stok terbit
+    // SAAT SERAH (FarmasiService::serahRanapRequest), bukan saat request → bayar
+    // hanya yang benar-benar diserahkan, dan tak ada charge nyangkut bila dibatalkan.
+    // =========================================================================
+
+    /**
+     * Buat permintaan obat rawat inap → Farmasi.
+     *
+     * @param  array<array{medication_id:string,quantity?:float,dose?:string,
+     *                      frequency?:string,route?:string,instructions?:string}>  $items
+     */
+    public function createMedicationRequest(Visit $visit, array $items, ?string $pharmacyNote = null): \App\Models\Prescription
+    {
+        if ($visit->discharge_at) {
+            throw new \Exception('Pasien sudah dipulangkan — tidak bisa membuat permintaan obat.', 422);
+        }
+
+        $items = array_values(array_filter($items, fn ($it) => ! empty($it['medication_id'])));
+        if (empty($items)) {
+            throw new \Exception('Daftar obat kosong.', 422);
+        }
+
+        $employeeId = auth('api')->user()?->employee_id;
+        if (! $employeeId) {
+            throw new \Exception('Akun tanpa data pegawai tidak bisa membuat permintaan obat.', 422);
+        }
+
+        return DB::transaction(function () use ($visit, $items, $employeeId, $pharmacyNote) {
+            $prescription = \App\Models\Prescription::create([
+                'visit_id'         => $visit->id,
+                'prescribed_by_id' => $employeeId,
+                'status'           => 'SUBMITTED',
+                'type'             => \App\Models\Prescription::TYPE_RANAP,
+                'notes'            => 'Permintaan obat rawat inap',
+                'pharmacy_note'    => $pharmacyNote,
+            ]);
+
+            foreach ($items as $item) {
+                \App\Models\PrescriptionItem::create([
+                    'prescription_id' => $prescription->id,
+                    'medication_id'   => $item['medication_id'],
+                    'quantity'        => (int) ($item['quantity'] ?? 1),
+                    'dose'            => $item['dose'] ?? null,
+                    'frequency'       => $item['frequency'] ?? null,
+                    'route'           => $item['route'] ?? null,
+                    'instructions'    => $item['instructions'] ?? null,
+                ]);
+            }
+
+            return $prescription->fresh(['items.medication']);
+        });
+    }
+
+    /** Daftar permintaan obat rawat inap untuk satu visit (status terbaru di atas). */
+    public function listMedicationRequests(Visit $visit): \Illuminate\Support\Collection
+    {
+        return \App\Models\Prescription::with(['items.medication', 'dispensedBy'])
+            ->where('visit_id', $visit->id)
+            ->where('type', \App\Models\Prescription::TYPE_RANAP)
+            ->orderByDesc('created_at')
+            ->get();
+    }
+
+    // =========================================================================
     // DOKUMEN/HASIL EKSTERNAL (Fase 8C) — lab/radiologi pihak ke-3 pre-op.
     // Hanya tempel HASIL (RS bayar pihak ke-3 di luar alur); tagihan tindakan
     // terkait tetap lewat alur procedures biasa.

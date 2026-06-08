@@ -6,6 +6,7 @@ use App\Models\BhpItem;
 use App\Models\InventoryStock;
 use App\Models\IolItem;
 use App\Models\Medication;
+use App\Models\PharmacySaleItem;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
 use App\Models\Queue;
@@ -35,7 +36,11 @@ class FarmasiService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.prescriptions'])
+        return Queue::with(['visit.patient', 'visit.prescriptions' => fn ($q) => $q
+            // Resep PERMINTAAN rawat inap (type RANAP) di-dispense ke ruangan lewat
+            // tab "Dispensing Rawat Inap", BUKAN antrean loket ini — jangan ikut load
+            // agar pickActiveRx FE tak salah mengangkatnya saat pasien RANAP discharge.
+            ->where('type', '!=', Prescription::TYPE_RANAP)])
             ->where('station', 'FARMASI')
             ->whereDate('created_at', today())
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
@@ -115,6 +120,9 @@ class FarmasiService
     public function getPrescriptions(array $filters = []): LengthAwarePaginator
     {
         $query = Prescription::with(['visit.patient', 'prescribedBy', 'items.medication'])
+            // Daftar resep loket = rawat jalan + obat pulang (type RAJAL). Permintaan
+            // obat rawat inap (type RANAP) punya daftarnya sendiri (getRanapRequests).
+            ->where('type', '!=', Prescription::TYPE_RANAP)
             ->whereDate('created_at', $filters['tanggal'] ?? today());
 
         if (! empty($filters['status'])) {
@@ -177,30 +185,12 @@ class FarmasiService
             throw new \Exception('Resep harus dalam status DISPENSING sebelum diselesaikan.', 422);
         }
 
-        // Cek stok kecukupan sebelum deduct — sumber stok = `inventory_stocks`
-        // (per-batch FEFO) di lokasi UNIT FARMASI (strict). BUKAN kolom legacy
-        // `medications.stock`. Kalau stok unit kurang → minta transfer dari gudang.
-        foreach ($prescription->items as $item) {
-            if (! $item->medication) continue;
-            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id, InventoryStock::LOC_FARMASI);
-            if ($onHand < $item->quantity) {
-                throw new \Exception(
-                    "Stok unit FARMASI untuk {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}. Minta transfer dari gudang dulu.",
-                    422
-                );
-            }
-        }
+        $this->assertStockSufficient($prescription);
 
         $user = auth('api')->user();
 
         DB::transaction(function () use ($prescription, $user) {
-            // Deduct dari inventory_stocks lokasi FARMASI (FEFO, per-batch).
-            // consume() throw 422 bila stok berubah & jadi tak cukup (race).
-            foreach ($prescription->items as $item) {
-                if ($item->medication) {
-                    $this->stockService->consume('MEDICATION', $item->medication_id, (float) $item->quantity, InventoryStock::LOC_FARMASI);
-                }
-            }
+            $this->consumePrescriptionStock($prescription);
 
             $prescription->update([
                 'status'          => 'DISPENSED',
@@ -237,6 +227,221 @@ class FarmasiService
         $this->log(auth('api')->id(), 'CANCEL_RESEP', Prescription::class, $prescriptionId);
 
         return $prescription->fresh();
+    }
+
+    // -------------------------------------------------------------------------
+    // Stok helper (dipakai dispensing rawat jalan & rawat inap)
+
+    /**
+     * Cek kecukupan stok unit FARMASI (per-batch FEFO via inventory_stocks, BUKAN
+     * kolom legacy medications.stock) untuk semua item resep. Pengecekan di luar
+     * transaksi → pesan jelas lebih awal. Lempar 422 bila kurang (minta transfer).
+     */
+    private function assertStockSufficient(Prescription $prescription): void
+    {
+        foreach ($prescription->items as $item) {
+            if (! $item->medication) {
+                continue;
+            }
+            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id, InventoryStock::LOC_FARMASI);
+            if ($onHand < $item->quantity) {
+                throw new \Exception(
+                    "Stok unit FARMASI untuk {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}. Minta transfer dari gudang dulu.",
+                    422
+                );
+            }
+        }
+    }
+
+    /**
+     * Potong stok unit FARMASI per item (FEFO, per-batch). consume() throw 422
+     * bila stok berubah & jadi tak cukup (race). WAJIB dipanggil dalam transaksi.
+     */
+    private function consumePrescriptionStock(Prescription $prescription): void
+    {
+        foreach ($prescription->items as $item) {
+            if ($item->medication) {
+                $this->stockService->consume('MEDICATION', $item->medication_id, (float) $item->quantity, InventoryStock::LOC_FARMASI);
+            }
+        }
+    }
+
+    // =========================================================================
+    // DISPENSING RAWAT INAP — permintaan obat pasien dirawat (type RANAP)
+    //
+    // Alur terpisah dari antrean loket: perawat/dokter di ward membuat permintaan
+    // (RanapService::createMedicationRequest → Prescription type RANAP, status
+    // SUBMITTED), farmasi men-Siapkan lalu Serah ke ruangan. Saat serah: potong
+    // stok unit FARMASI + tagih tiap item ke inpatient_charges (RanapService::
+    // addObat) → ikut invoice discharge. buildObatLines sudah skip RANAP (anti-dobel).
+    // =========================================================================
+
+    /**
+     * Daftar permintaan obat rawat inap yang perlu dilayani farmasi: belum serah
+     * (SUBMITTED/DISPENSING) + yang sudah DISPENSED hari ini (riwayat singkat).
+     */
+    public function getRanapRequests(): Collection
+    {
+        return Prescription::with([
+            'visit.patient',
+            'visit.room',
+            'visit.bed',
+            'prescribedBy',
+            'dispensedBy',
+            'items.medication',
+        ])
+            ->where('type', Prescription::TYPE_RANAP)
+            ->where(function ($q) {
+                $q->whereIn('status', ['SUBMITTED', 'DISPENSING'])
+                    ->orWhere(fn ($w) => $w->where('status', 'DISPENSED')->whereDate('dispensed_at', today()));
+            })
+            ->orderByRaw("CASE status WHEN 'DISPENSING' THEN 0 WHEN 'SUBMITTED' THEN 1 ELSE 2 END")
+            ->orderBy('created_at')
+            ->get();
+    }
+
+    /** SUBMITTED → DISPENSING (mulai siapkan). Tanpa lapor Antrol — tak ada antrean Farmasi. */
+    public function startRanapDispensing(string $prescriptionId): Prescription
+    {
+        $prescription = Prescription::where('type', Prescription::TYPE_RANAP)->findOrFail($prescriptionId);
+
+        if (! in_array($prescription->status, ['SUBMITTED', 'DRAFT'])) {
+            throw new \Exception('Permintaan tidak dalam status yang bisa disiapkan.', 422);
+        }
+
+        $prescription->update(['status' => 'DISPENSING']);
+        $this->log(auth('api')->id(), 'START_RANAP_DISPENSING', Prescription::class, $prescriptionId);
+
+        return $prescription->fresh(['items.medication']);
+    }
+
+    /**
+     * DISPENSING → DISPENSED: potong stok unit FARMASI + tagih ke inpatient_charges
+     * (harga getPrice per penjamin) untuk tiap item sesuai qty AKTUAL yang diserahkan.
+     */
+    public function serahRanapRequest(string $prescriptionId): Prescription
+    {
+        $prescription = Prescription::with(['items.medication', 'visit'])
+            ->where('type', Prescription::TYPE_RANAP)
+            ->findOrFail($prescriptionId);
+
+        if ($prescription->status !== 'DISPENSING') {
+            throw new \Exception('Permintaan harus dalam status "Disiapkan" sebelum diserahkan.', 422);
+        }
+        if (! $prescription->visit) {
+            throw new \Exception('Data kunjungan rawat inap tidak ditemukan.', 422);
+        }
+
+        $this->assertStockSufficient($prescription);
+
+        $user  = auth('api')->user();
+        $ranap = app(RanapService::class);
+
+        DB::transaction(function () use ($prescription, $user, $ranap) {
+            // 1. Potong stok unit FARMASI (FEFO per-batch).
+            $this->consumePrescriptionStock($prescription);
+
+            // 2. Tagih tiap item ke inpatient_charges OBAT (qty aktual = qty item).
+            foreach ($prescription->items as $item) {
+                if ($item->medication) {
+                    $ranap->addObat($prescription->visit, $item->medication_id, (float) $item->quantity);
+                }
+            }
+
+            $prescription->update([
+                'status'          => 'DISPENSED',
+                'dispensed_by_id' => $user->employee_id,
+                'dispensed_at'    => now(),
+            ]);
+        });
+
+        $this->log(
+            $user->id,
+            'SERAH_RANAP_OBAT',
+            Prescription::class,
+            $prescriptionId,
+            "Obat rawat inap diserahkan ke ruangan — {$prescription->items->count()} item"
+        );
+
+        return $prescription->fresh(['items.medication', 'dispensedBy']);
+    }
+
+    /** Tolak/batal permintaan rawat inap (sebelum serah). Tanpa stok/charge. */
+    public function tolakRanapRequest(string $prescriptionId): Prescription
+    {
+        $prescription = Prescription::where('type', Prescription::TYPE_RANAP)->findOrFail($prescriptionId);
+
+        if ($prescription->status === 'DISPENSED') {
+            throw new \Exception('Permintaan yang sudah diserahkan tidak bisa dibatalkan.', 422);
+        }
+
+        $prescription->update(['status' => 'CANCELLED']);
+        $this->log(auth('api')->id(), 'TOLAK_RANAP_OBAT', Prescription::class, $prescriptionId);
+
+        return $prescription->fresh();
+    }
+
+    // =========================================================================
+    // RIWAYAT PEMBERIAN OBAT — "obat ini diberikan ke siapa"
+    // =========================================================================
+
+    /**
+     * Riwayat satu obat diberikan ke pasien/pembeli: gabung resep yang sudah
+     * DISPENSED (rawat jalan / obat pulang / permintaan rawat inap) + penjualan
+     * bebas POS yang PAID. Urut tanggal terbaru. Dipakai tab Laporan Farmasi.
+     *
+     * @return array<array{tanggal:?string,pasien:string,no_rm:?string,quantity:float,sumber:string,petugas:?string}>
+     */
+    public function getMedicationDispenseHistory(string $medicationId, array $filters = []): array
+    {
+        $limit = (int) ($filters['limit'] ?? 200);
+
+        // 1. Dari resep ter-dispense (item per obat).
+        $rxRows = PrescriptionItem::query()
+            ->where('prescription_items.medication_id', $medicationId)
+            ->whereHas('prescription', fn ($q) => $q->where('status', 'DISPENSED'))
+            ->with([
+                'prescription.visit.patient',
+                'prescription.dispensedBy',
+            ])
+            ->get()
+            ->map(function ($item) {
+                $rx    = $item->prescription;
+                $visit = $rx?->visit;
+                $sumber = $visit && $visit->visit_type === 'RAWAT_INAP'
+                    ? 'Rawat Inap'
+                    : ($rx?->type === Prescription::TYPE_RANAP ? 'Rawat Inap (Permintaan)' : 'Rawat Jalan');
+
+                return [
+                    'tanggal'  => optional($rx?->dispensed_at)->toIso8601String(),
+                    'pasien'   => $visit?->patient?->name ?? '—',
+                    'no_rm'    => $visit?->patient?->no_rm,
+                    'quantity' => (float) $item->quantity,
+                    'sumber'   => $sumber,
+                    'petugas'  => $rx?->dispensedBy?->name,
+                ];
+            });
+
+        // 2. Dari penjualan bebas POS (PAID).
+        $posRows = PharmacySaleItem::query()
+            ->where('pharmacy_sale_items.medication_id', $medicationId)
+            ->whereHas('sale', fn ($q) => $q->where('status', 'PAID'))
+            ->with(['sale.soldBy'])
+            ->get()
+            ->map(fn ($item) => [
+                'tanggal'  => optional($item->sale?->created_at)->toIso8601String(),
+                'pasien'   => $item->sale?->buyer_name ?: 'Umum (POS)',
+                'no_rm'    => null,
+                'quantity' => (float) $item->quantity,
+                'sumber'   => 'Penjualan Bebas',
+                'petugas'  => $item->sale?->soldBy?->name,
+            ]);
+
+        return $rxRows->concat($posRows)
+            ->sortByDesc('tanggal')
+            ->values()
+            ->take($limit)
+            ->all();
     }
 
     // -------------------------------------------------------------------------
@@ -568,7 +773,7 @@ class FarmasiService
     // STOK — OBAT
     // =========================================================================
 
-    public function getStokObat(array $filters = []): LengthAwarePaginator
+    public function getStokObat(array $filters = []): LengthAwarePaginator|Collection
     {
         $query = $this->withFarmasiOnHand(Medication::query(), 'MEDICATION');
 
@@ -589,13 +794,22 @@ class FarmasiService
             $query->whereRaw('COALESCE(farmasi_stock.qty, 0) <= medications.min_stock');
         }
 
-        $page = $query->orderBy('medications.name')->paginate($filters['per_page'] ?? 25);
-        $page->getCollection()->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
+        $query->orderBy('medications.name');
+
+        // per_page = 'all' (atau <= 0) → kembalikan SEMUA baris tanpa paginasi. Daftar
+        // stok ini dipakai UTUH di FE Farmasi (on-hand dispensing, daftar OTC, hitung
+        // low-stock), jadi tak boleh terpotong di halaman pertama saat master obat > per_page.
+        $perPage = $filters['per_page'] ?? 25;
+        $unpaginated = $perPage === 'all' || (is_numeric($perPage) && (int) $perPage <= 0);
+        $result = $unpaginated ? $query->get() : $query->paginate((int) $perPage);
+
+        $rows = $unpaginated ? $result : $result->getCollection();
+        $rows->each(fn ($m) => $m->stock = (float) $m->farmasi_qty);
 
         // Lampirkan harga jual obat dari Buku Tarif (medication_tariffs, baris insurer
         // UMUM = harga tunggal) — dipakai POS penjualan obat bebas untuk preview
         // harga/total di UI. Field tetap bernama `hja` agar FE POS tak berubah.
-        $ids = $page->getCollection()->pluck('id')->all();
+        $ids = $rows->pluck('id')->all();
         if (! empty($ids)) {
             $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
             $hjaMap = $umumId
@@ -606,10 +820,10 @@ class FarmasiService
                     ->whereNull('deleted_at')
                     ->pluck('price', 'medication_id')
                 : collect();
-            $page->getCollection()->each(fn ($m) => $m->hja = isset($hjaMap[$m->id]) ? (float) $hjaMap[$m->id] : null);
+            $rows->each(fn ($m) => $m->hja = isset($hjaMap[$m->id]) ? (float) $hjaMap[$m->id] : null);
         }
 
-        return $page;
+        return $result;
     }
 
     public function updateStokObat(string $id, array $data): Medication

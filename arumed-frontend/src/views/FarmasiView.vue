@@ -354,6 +354,103 @@ function refreshQueueForRx(rx) {
   if (idx !== -1) prescriptions[idx] = { ...prescriptions[idx], status: rx.status }
 }
 
+// ─── Dispensing Rawat Inap (permintaan obat pasien dirawat → serah ke ruangan) ─
+const ranapQueue   = ref([])
+const ranapLoading = ref(false)
+const selRanap     = ref(null)   // permintaan terpilih (hydrate _origQty utk diff qty)
+const ranapBusy    = ref(false)
+
+const ranapSteps = ['Disiapkan', 'Serah ke Ruangan']
+const ranapStep = computed(() => {
+  if (!selRanap.value) return 0
+  if (selRanap.value.status === 'DISPENSED') return 2
+  if (selRanap.value.status === 'DISPENSING') return 1
+  return 0
+})
+const ranapWaitingCount = computed(
+  () => ranapQueue.value.filter((p) => ['SUBMITTED', 'DISPENSING'].includes(p.status)).length,
+)
+
+function ranapStatusLabel(s) {
+  return s === 'DISPENSED' ? 'diserahkan' : s === 'DISPENSING' ? 'disiapkan' : 'diminta'
+}
+function ranapRoomLabel(p) {
+  const room = p.visit?.room?.name ?? p.visit?.room?.code ?? ''
+  const bed  = p.visit?.bed?.label ?? p.visit?.bed?.code ?? ''
+  return [room, bed].filter(Boolean).join(' · ') || 'Rawat Inap'
+}
+
+async function fetchRanapQueue() {
+  ranapLoading.value = true
+  try {
+    const { data } = await farmasiApi.ranapList()
+    ranapQueue.value = data.data ?? []
+    // Sinkron status panel terpilih bila berubah dari sisi lain (tanpa hapus edit qty).
+    if (selRanap.value) {
+      const fresh = ranapQueue.value.find((r) => r.id === selRanap.value.id)
+      if (fresh && fresh.status !== selRanap.value.status) selRanap.value = hydrateRx({ ...fresh }, selRanap.value)
+    }
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat permintaan rawat inap')
+  } finally {
+    ranapLoading.value = false
+  }
+}
+
+function pickRanap(p) {
+  selRanap.value = hydrateRx({ ...p }, selRanap.value?.id === p.id ? selRanap.value : null)
+}
+
+async function siapkanRanap() {
+  if (!selRanap.value) return
+  try {
+    const { data } = await farmasiApi.ranapSiapkan(selRanap.value.id)
+    selRanap.value = hydrateRx(data.data, selRanap.value)
+    toast('s', 'Permintaan obat disiapkan, cek kembali sebelum diserahkan')
+    fetchRanapQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyiapkan permintaan')
+  }
+}
+
+async function serahRanap() {
+  if (!selRanap.value || ranapBusy.value) return
+  const items = selRanap.value.items ?? []
+  if (!items.length) { toast('w', 'Permintaan tidak punya item obat'); return }
+  const invalid = items.find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
+  if (invalid) { toast('w', `Jumlah obat ${invalid.medication?.name ?? ''} tidak valid (min. 1)`); return }
+  ranapBusy.value = true
+  try {
+    // Persist qty teredit dulu → backend potong stok + tagih inpatient_charges
+    // sesuai jumlah final yang benar-benar diserahkan ke ruangan.
+    const changed = items.filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
+    for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+
+    const { data } = await farmasiApi.ranapSerah(selRanap.value.id)
+    selRanap.value = hydrateRx(data.data, selRanap.value)
+    toast('s', 'Obat diserahkan ke ruangan, stok & tagihan rawat inap diperbarui')
+    fetchRanapQueue()
+    fetchStok()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyerahkan obat')
+  } finally {
+    ranapBusy.value = false
+  }
+}
+
+async function tolakRanap() {
+  if (!selRanap.value) return
+  if (!confirm('Batalkan permintaan obat ini? Stok & tagihan tidak terpengaruh.')) return
+  try {
+    await farmasiApi.ranapTolak(selRanap.value.id)
+    toast('i', 'Permintaan obat dibatalkan')
+    selRanap.value = null
+    fetchRanapQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membatalkan permintaan')
+  }
+}
+
 // ─── Stok Obat ──────────────────────────────────────────────────────────────
 const stokList     = ref([])
 const stokSearch   = ref('')
@@ -362,7 +459,7 @@ const stokLoading  = ref(false)
 async function fetchStok() {
   stokLoading.value = true
   try {
-    const { data } = await farmasiApi.stokObat({ per_page: 200 })
+    const { data } = await farmasiApi.stokObat({ per_page: 'all' })
     const payload = data.data
     stokList.value = Array.isArray(payload) ? payload : (payload?.data ?? [])
   } catch (err) {
@@ -641,6 +738,31 @@ async function saveOpname() {
 // Muat data opname saat tab dibuka (sekali, kalau belum ada)
 watch(() => pgTab.value, (t) => { if (t === 'opname' && !opnameRows.value.length) loadOpname() })
 
+// Export lembar kerja stok opname ke Excel (xlsx) — kolom Fisik/Selisih kosong.
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+const opnameExporting = ref(false)
+async function exportOpnameExcel() {
+  opnameExporting.value = true
+  try {
+    const res = await farmasiApi.opnameExport({ format: 'xlsx' })
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `stok-opname-${today}.xlsx`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengekspor stok opname')
+  } finally {
+    opnameExporting.value = false
+  }
+}
+
 // ─── Laporan Farmasi (derivasi dari stok) ────────────────────────────────────
 function rp(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
 // Selisih HARI KALENDER lokal (WIB). expiry_date 'YYYY-MM-DD' di-parse new Date() sbg
@@ -670,6 +792,28 @@ const lapExpiring = computed(
     .filter((s) => s._days <= 90)
     .sort((a, b) => a._days - b._days),
 )
+
+// ─── Riwayat pemberian obat ("obat ini diberikan ke siapa") ──────────────────
+const riwayatSearch = ref('')
+const riwayatList = computed(() => {
+  const q = riwayatSearch.value.toLowerCase().trim()
+  const l = q ? stokList.value.filter((s) => (s.name ?? '').toLowerCase().includes(q)) : stokList.value
+  return l.slice(0, 100)
+})
+const riwayatModal   = ref(null)   // { med, rows } | null
+const riwayatLoading = ref(false)
+async function openRiwayat(med) {
+  riwayatModal.value = { med, rows: [] }
+  riwayatLoading.value = true
+  try {
+    const { data } = await farmasiApi.obatRiwayat(med.id, { limit: 200 })
+    if (riwayatModal.value) riwayatModal.value.rows = data.data ?? []
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat riwayat pemberian')
+  } finally {
+    riwayatLoading.value = false
+  }
+}
 
 // ─── Lifecycle / polling + WS notifikasi gudang ──────────────────────────────
 let _poll = null
@@ -734,8 +878,13 @@ function fmtDateId(d) {
 }
 
 function printEtiket() {
-  const rx = selRx.value
-  const pt = selQ.value?.visit?.patient ?? {}
+  printEtiketFor(selRx.value, selQ.value?.visit?.patient ?? {})
+}
+// Etiket untuk permintaan obat rawat inap (pasien dari panel Dispensing Rawat Inap).
+function printRanapEtiket() {
+  printEtiketFor(selRanap.value, selRanap.value?.visit?.patient ?? {})
+}
+function printEtiketFor(rx, pt) {
   const items = (rx?.items ?? [])
   if (!items.length) { toast('w', 'Resep belum punya item obat'); return }
 
@@ -800,9 +949,10 @@ function printEtiket() {
 }
 
 // ─── POS: Penjualan Obat Bebas (walk-in tanpa resep) ────────────────────────
-// Obat yang boleh dijual bebas DAN punya HJA (harga jual apotek) terisi.
+// Kebijakan owner: SEMUA golongan obat boleh dijual di POS (RS mata tak punya
+// narkotika/psikotropika). Gate satu-satunya = HJA (harga jual apotek) terisi.
 const posMedications = computed(() =>
-  stokList.value.filter((m) => isObatOtc(m.golongan) && Number(m.hja ?? 0) > 0),
+  stokList.value.filter((m) => Number(m.hja ?? 0) > 0),
 )
 
 const posSearch  = ref('')
@@ -996,12 +1146,20 @@ watch(() => pgTab.value, (t) => {
     if (!stokList.value.length) fetchStok()
     if (!posHistory.value.length) loadPosHistory()
   }
+  if (t === 'ranap') fetchRanapQueue()
 })
+
+// Antrean rawat jalan + permintaan rawat inap di-poll bersama (8s).
+function pollFarmasi() {
+  fetchQueue()
+  if (pgTab.value === 'ranap') fetchRanapQueue()
+}
 
 onMounted(() => {
   fetchQueue()
   fetchStok()
-  _poll = setInterval(fetchQueue, 8_000)
+  fetchRanapQueue()
+  _poll = setInterval(pollFarmasi, 8_000)
   connectInventoriWs()
   pollNotifs()
   _notifPoll = setInterval(pollNotifs, 10_000)
@@ -1031,8 +1189,13 @@ function toast(type, msg) {
     <div class="nav-tabs">
       <button :class="['nt', pgTab === 'dispensing' ? 'a' : '']" @click="pgTab = 'dispensing'">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
-        Dispensing Resep
+        Dispensing Rawat Jalan
         <span class="ntbg alert">{{ queue.filter((q) => rxStatusOf(q) !== 'done').length }}</span>
+      </button>
+      <button :class="['nt', pgTab === 'ranap' ? 'a' : '']" @click="pgTab = 'ranap'">
+        <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4M9 9v.01M9 12v.01M9 15v.01M9 18v.01"/></svg>
+        Dispensing Rawat Inap
+        <span v-if="ranapWaitingCount" class="ntbg alert">{{ ranapWaitingCount }}</span>
       </button>
       <button :class="['nt', pgTab === 'stok' ? 'a' : '']" @click="pgTab = 'stok'">
         <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
@@ -1135,6 +1298,7 @@ function toast(type, msg) {
                 <div class="rx-meta">{{ q.visit?.patient?.no_rm ?? '—' }}</div>
                 <div class="rx-tags">
                   <span :class="['rxt', guarantorType(q) === 'bpjs' ? 'rxt-b' : 'rxt-u']">{{ guarantorType(q) === 'bpjs' ? 'BPJS' : 'Umum' }}</span>
+                  <span v-if="q.visit?.visit_type === 'RAWAT_INAP'" class="rxt rxt-ranap">Rawat Inap (Pulang)</span>
                   <span :class="['rxt', `rxt-${rxStatusOf(q)}`]">{{ rxStatusOf(q) }}</span>
                 </div>
                 <div class="rx-items">
@@ -1338,6 +1502,125 @@ function toast(type, msg) {
       </div>
     </div>
 
+    <!-- DISPENSING RAWAT INAP -->
+    <div v-if="pgTab === 'ranap'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Permintaan obat pasien <b>rawat inap</b> dari ruangan. Siapkan lalu <b>serah ke ruangan</b> — stok unit Farmasi dipotong &amp; biaya obat masuk tagihan rawat inap saat serah.</span>
+      </div>
+
+      <div class="disp-grid">
+        <!-- Daftar permintaan -->
+        <div class="rx-col">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-head-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg>
+                  Permintaan Obat
+                </div>
+                <div class="card-head-sub">{{ ranapWaitingCount }} menunggu dilayani</div>
+              </div>
+              <span class="pill-live">LIVE</span>
+            </div>
+            <div class="card-body queue-scroll" role="region" aria-label="Daftar permintaan obat rawat inap">
+              <div class="rx-list">
+                <div v-if="ranapLoading && !ranapQueue.length" class="empty-rx">Memuat permintaan…</div>
+                <div v-for="p in ranapQueue" :key="p.id"
+                  :class="['rx-card', selRanap && selRanap.id === p.id ? 'active' : '', p.status === 'DISPENSED' ? 'done' : '']"
+                  @click="pickRanap(p)">
+                  <div :class="['rx-bar', p.status === 'DISPENSED' ? 'bar-done' : p.status === 'DISPENSING' ? 'bar-disiapkan' : 'bar-menunggu']"></div>
+                  <div class="rx-body">
+                    <div class="rx-top">
+                      <div class="rx-num">{{ ranapRoomLabel(p) }}</div>
+                      <div class="rx-time">{{ formatTime(p.created_at) }}</div>
+                    </div>
+                    <div class="rx-name">{{ p.visit?.patient?.name ?? '—' }}</div>
+                    <div class="rx-meta">{{ p.visit?.patient?.no_rm ?? '—' }}</div>
+                    <div class="rx-tags">
+                      <span class="rxt rxt-ranap">Rawat Inap</span>
+                      <span :class="['rxt', p.status === 'DISPENSED' ? 'rxt-done' : p.status === 'DISPENSING' ? 'rxt-disiapkan' : 'rxt-menunggu']">{{ ranapStatusLabel(p.status) }}</span>
+                    </div>
+                    <div class="rx-items">
+                      <div class="rx-item muted">{{ (p.items?.length ?? 0) }} item obat</div>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="!ranapLoading && !ranapQueue.length" class="empty-rx">Tidak ada permintaan obat rawat inap.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detail / serah -->
+        <div class="disp-col">
+          <div v-if="!selRanap" class="disp-empty">
+            <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg>
+            <p>Pilih permintaan obat dari daftar untuk menyiapkan</p>
+          </div>
+          <div v-else class="disp-panel">
+            <div class="disp-head">
+              <div>
+                <div class="disp-title">{{ selRanap.visit?.patient?.name ?? '—' }}</div>
+                <div class="disp-sub">{{ selRanap.visit?.patient?.no_rm ?? '—' }} · {{ ranapRoomLabel(selRanap) }} · {{ selRanap.items?.length ?? 0 }} item</div>
+              </div>
+              <button class="btn btn-etiket btn-sm" :disabled="!(selRanap.items ?? []).length" @click="printRanapEtiket">
+                <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Etiket
+              </button>
+            </div>
+
+            <div class="disp-steps">
+              <div v-for="(s, i) in ranapSteps" :key="s" :class="['ds', ranapStep > i ? 'done' : ranapStep === i ? 'a' : '']">
+                <div class="dsc">
+                  <svg v-if="ranapStep > i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  <span v-else>{{ i + 1 }}</span>
+                </div>
+                <span class="ds-label">{{ s }}</span>
+                <div v-if="i < ranapSteps.length - 1" :class="['ds-line', ranapStep > i ? 'done' : '']"></div>
+              </div>
+            </div>
+
+            <div class="sec-title">Item Obat Diminta</div>
+            <div v-for="(d, i) in selRanap.items" :key="d.id ?? i" class="dd">
+              <div class="dd-info">
+                <div class="dd-name">{{ d.medication?.name ?? '—' }}</div>
+                <div class="dd-dose">{{ d.dose ?? '-' }} · {{ d.frequency ?? '-' }}<span v-if="d.route"> · {{ d.route }}</span></div>
+                <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
+                  Stok Farmasi: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
+                </div>
+                <div v-if="d.instructions" class="dd-dose">Aturan: {{ d.instructions }}</div>
+              </div>
+              <div class="dd-qty-col">
+                <span class="dd-qty-label">Jumlah</span>
+                <input v-model.number="d.quantity" type="number" min="1" class="dd-qty" :disabled="selRanap.status === 'DISPENSED'" />
+                <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+              </div>
+            </div>
+            <div v-if="!selRanap.items?.length" class="empty-rx">Permintaan belum punya item obat.</div>
+
+            <div v-if="selRanap.pharmacy_note" class="doc-note"><b>Catatan untuk Farmasi:</b> {{ selRanap.pharmacy_note }}</div>
+
+            <div class="disp-actions">
+              <button v-if="ranapStep === 0" class="btn btn-warning btn-lg" @click="siapkanRanap">
+                <svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
+                Siapkan Obat
+              </button>
+              <button v-if="ranapStep === 1" class="btn btn-success btn-lg" :disabled="ranapBusy || !(selRanap.items ?? []).length" @click="serahRanap">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                {{ ranapBusy ? 'Memproses…' : 'Serah ke Ruangan' }}
+              </button>
+              <span v-if="ranapStep === 2" class="done-pill">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Obat sudah diserahkan ke ruangan
+              </span>
+              <button v-if="ranapStep < 2" class="btn btn-secondary btn-sm" @click="tolakRanap">Batalkan</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- STOK -->
     <div v-if="pgTab === 'stok'" class="tab-pane">
       <div class="loc-note">
@@ -1464,6 +1747,10 @@ function toast(type, msg) {
           <button class="btn btn-secondary btn-sm" @click="reloadOpname">
             <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
             Muat Ulang
+          </button>
+          <button class="btn btn-secondary btn-sm" :disabled="opnameExporting" @click="exportOpnameExcel">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            {{ opnameExporting ? 'Mengekspor…' : 'Export Excel' }}
           </button>
           <button class="btn btn-primary btn-sm" :disabled="opnameSaving || !opnameStats.changed" @click="saveOpname">
             <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -1742,6 +2029,87 @@ function toast(type, msg) {
           </table>
         </div>
       </div>
+
+      <!-- Riwayat pemberian obat: "obat ini diberikan ke siapa" -->
+      <div>
+        <div class="opname-head">
+          <div class="lap-section" style="margin:0">Riwayat Pemberian Obat</div>
+          <div class="opname-actions">
+            <input v-model="riwayatSearch" class="fi" placeholder="Cari obat untuk lihat riwayat…" style="width:240px" />
+          </div>
+        </div>
+        <div class="po-table-wrap">
+          <table class="po-table">
+            <thead>
+              <tr>
+                <th style="width:48px" class="c">No.</th>
+                <th>Nama Produk</th>
+                <th>Formularium</th>
+                <th class="r">Stok</th>
+                <th class="c" style="width:120px">Diberikan ke</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!riwayatList.length"><td colspan="5" class="po-state">Tidak ada obat cocok pencarian</td></tr>
+              <tr v-for="(s, i) in riwayatList" :key="s.id ?? s.name">
+                <td class="c muted">{{ i + 1 }}</td>
+                <td><strong>{{ s.name }}</strong></td>
+                <td><span class="kategori-pill">{{ s.formularium || '—' }}</span></td>
+                <td class="r">{{ s.stock }}</td>
+                <td class="c">
+                  <button class="btn btn-secondary btn-sm" @click="openRiwayat(s)">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    Lihat
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: riwayat pemberian satu obat -->
+    <div v-if="riwayatModal" class="es-overlay" @click.self="riwayatModal = null">
+      <div class="es-modal" style="max-width:640px">
+        <div class="es-head">
+          <h3>Riwayat Pemberian — {{ riwayatModal.med?.name }}</h3>
+          <button class="es-x" @click="riwayatModal = null" aria-label="Tutup">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="es-body">
+          <div v-if="riwayatLoading" class="po-state">Memuat riwayat…</div>
+          <div v-else-if="!riwayatModal.rows.length" class="po-state">Belum ada riwayat pemberian obat ini.</div>
+          <div v-else class="po-table-wrap" style="max-height:60vh; overflow:auto">
+            <table class="po-table">
+              <thead>
+                <tr>
+                  <th>Tanggal</th>
+                  <th>Pasien / Pembeli</th>
+                  <th>No. RM</th>
+                  <th class="r">Jumlah</th>
+                  <th>Sumber</th>
+                  <th>Petugas</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in riwayatModal.rows" :key="i">
+                  <td class="muted">{{ fmtDateTime(r.tanggal) }}</td>
+                  <td><strong>{{ r.pasien }}</strong></td>
+                  <td class="muted">{{ r.no_rm || '—' }}</td>
+                  <td class="r">{{ r.quantity }}</td>
+                  <td><span class="kategori-pill">{{ r.sumber }}</span></td>
+                  <td class="muted">{{ r.petugas || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="es-foot">
+          <button class="btn btn-secondary btn-sm" @click="riwayatModal = null">Tutup</button>
+        </div>
+      </div>
     </div>
 
     <!-- Modal: Minta Barang / Retur ke gudang -->
@@ -1868,6 +2236,7 @@ function toast(type, msg) {
 .rxt { font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
 .rxt-b { background: #dbeafe; color: #1e40af; }
 .rxt-u { background: var(--gl); color: var(--ga); }
+.rxt-ranap { background: #e0e7ff; color: #3730a3; }
 .rxt-racik { background: var(--wb); color: var(--wt); }
 .rxt-menunggu { background: #fef3c7; color: #92400e; }
 .rxt-verifikasi { background: #dbeafe; color: #1e40af; }

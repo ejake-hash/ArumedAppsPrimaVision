@@ -578,6 +578,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/{visitId}/tindakan',        [RanapController::class, 'addTindakan'])->middleware('permission:rawat_inap.write');
             Route::post('/{visitId}/obat',            [RanapController::class, 'addObat'])->middleware('permission:rawat_inap.write');
             Route::delete('/{visitId}/charge/{chargeId}', [RanapController::class, 'deleteCharge'])->middleware('permission:rawat_inap.write');
+
+            // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
+            Route::get('/{visitId}/permintaan-obat',  [RanapController::class, 'listPermintaanObat'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/permintaan-obat', [RanapController::class, 'createPermintaanObat'])->middleware('permission:rawat_inap.write');
             Route::post('/{visitId}/kirim-bedah',     [RanapController::class, 'sendToBedah'])->middleware('permission:rawat_inap.write');
             Route::post('/{visitId}/discharge',       [RanapController::class, 'discharge'])->middleware('permission:rawat_inap.write');
 
@@ -634,6 +638,15 @@ Route::prefix('v1')->group(function () {
             Route::put('/resep/{id}/selesai',                [FarmasiController::class, 'selesaiDispensing']);
             Route::put('/resep/{id}/cancel',                 [FarmasiController::class, 'cancelResep']);
 
+            // Dispensing rawat inap — permintaan obat pasien dirawat (type RANAP).
+            Route::get('/ranap/permintaan',                  [FarmasiController::class, 'indexRanapRequest']);
+            Route::put('/ranap/permintaan/{id}/siapkan',     [FarmasiController::class, 'siapkanRanapRequest']);
+            Route::put('/ranap/permintaan/{id}/serah',       [FarmasiController::class, 'serahRanapRequest']);
+            Route::put('/ranap/permintaan/{id}/tolak',       [FarmasiController::class, 'tolakRanapRequest']);
+
+            // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
+            Route::get('/obat/{medicationId}/riwayat-pemberian', [FarmasiController::class, 'riwayatPemberianObat']);
+
             Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);
             Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing']);
             Route::delete('/resep-item/{id}',                [FarmasiController::class, 'deleteItemDispensing']);
@@ -652,6 +665,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/surgery-request/{id}/assign-iol',  [FarmasiController::class, 'assignIol']);
 
             Route::get('/stok/obat',                         [FarmasiController::class, 'indexStokObat']);
+            Route::get('/stok/opname/export',                [FarmasiController::class, 'exportOpname']);
             Route::get('/stok/obat/{id}',                    [FarmasiController::class, 'showStokObat']);
             Route::put('/stok/obat/{id}',                    [FarmasiController::class, 'updateStokObat']);
 

@@ -641,6 +641,10 @@ export const ranapApi = {
   addObat:       (visitId, payload)  => api.post(`/rawat-inap/${visitId}/obat`, payload),
   deleteCharge:  (visitId, chargeId) => api.delete(`/rawat-inap/${visitId}/charge/${chargeId}`),
 
+  // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
+  permintaanObatList:   (visitId)          => api.get(`/rawat-inap/${visitId}/permintaan-obat`),
+  createPermintaanObat: (visitId, payload) => api.post(`/rawat-inap/${visitId}/permintaan-obat`, payload),
+
   // CPPT
   cpptList:      (visitId)           => api.get(`/rawat-inap/${visitId}/cppt`),
   addCppt:       (visitId, payload)  => api.post(`/rawat-inap/${visitId}/cppt`, payload),
@@ -814,10 +818,21 @@ export const farmasiApi = {
   // Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi tanpa resep dokter.
   storeOtc:          (visitId, items) => api.post(`/farmasi/kunjungan/${visitId}/resep-otc`, { items }),
 
+  // Dispensing rawat inap — permintaan obat pasien dirawat (serah ke ruangan).
+  ranapList:         ()           => api.get('/farmasi/ranap/permintaan'),
+  ranapSiapkan:      (id)         => api.put(`/farmasi/ranap/permintaan/${id}/siapkan`),
+  ranapSerah:        (id)         => api.put(`/farmasi/ranap/permintaan/${id}/serah`),
+  ranapTolak:        (id)         => api.put(`/farmasi/ranap/permintaan/${id}/tolak`),
+
+  // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
+  obatRiwayat:       (id, params) => api.get(`/farmasi/obat/${id}/riwayat-pemberian`, { params }),
+
   // Stok
   stokObat:          (params)     => api.get('/farmasi/stok/obat', { params }),
   updateStokObat:    (id, data)   => api.put(`/farmasi/stok/obat/${id}`, data),
   stokAlert:         ()           => api.get('/farmasi/stok/alert'),
+  // Export lembar kerja stok opname (xlsx default).
+  opnameExport:      (params)     => api.get('/farmasi/stok/opname/export', { params, responseType: 'blob' }),
 
   // Penjualan obat bebas (POS apotek) — walk-in tanpa resep/kunjungan.
   penjualanList:     (params)     => api.get('/farmasi/penjualan', { params }),

@@ -355,16 +355,20 @@ async function openDetail(visitId) {
   tindakanList.value = []
   obatList.value = []
   cpptList.value = []
+  permintaanList.value = []
+  reqCart.value = []
   await store.fetchDetail(visitId)
   try {
-    const [t, o, c] = await Promise.all([
+    const [t, o, c, p] = await Promise.all([
       ranapApi.tarifTindakan(visitId),
       ranapApi.daftarObat(visitId, ''),
       ranapApi.cpptList(visitId),
+      ranapApi.permintaanObatList(visitId),
     ])
     tindakanList.value = t.data?.data ?? []
     obatList.value = o.data?.data ?? []
     cpptList.value = c.data?.data ?? []
+    permintaanList.value = p.data?.data ?? []
   } catch { /* abaikan */ }
 }
 
@@ -457,6 +461,68 @@ async function removeCharge(c) {
   if (!confirm(`Hapus "${c.description}"?`)) return
   try { await store.deleteCharge(detailVisitId.value, c.id); notify('Biaya dihapus') }
   catch { notify(store.error || 'Gagal hapus', false) }
+}
+
+// ── Permintaan obat ke Farmasi (dispensing rawat inap → serah ke ruangan) ──────
+// Beda dari "+ Obat (biaya langsung)": obat ini benar-benar diminta ke Farmasi,
+// dipotong stok & ditagih saat Farmasi menyerahkan ke ruangan (bukan saat diminta).
+const permintaanList = ref([])
+const reqPick = ref({ medication_id: '', quantity: 1, dose: '', frequency: '', instructions: '' })
+const reqCart = ref([])
+
+async function loadPermintaan() {
+  if (!detailVisitId.value) return
+  try {
+    const r = await ranapApi.permintaanObatList(detailVisitId.value)
+    permintaanList.value = r.data?.data ?? []
+  } catch { permintaanList.value = [] }
+}
+
+function addToReqCart() {
+  const f = reqPick.value
+  if (!f.medication_id) { notify('Pilih obat dulu', false); return }
+  if (!Number.isFinite(Number(f.quantity)) || Number(f.quantity) < 1) { notify('Jumlah minimal 1', false); return }
+  if (reqCart.value.some((x) => x.medication_id === f.medication_id)) { notify('Obat sudah ada di daftar', false); return }
+  const med = obatList.value.find((o) => o.id === f.medication_id)
+  reqCart.value.push({
+    medication_id: f.medication_id,
+    name: med?.name ?? '',
+    unit: med?.unit ?? '',
+    quantity: Number(f.quantity),
+    dose: f.dose || null,
+    frequency: f.frequency || null,
+    instructions: f.instructions || null,
+  })
+  reqPick.value = { medication_id: '', quantity: 1, dose: '', frequency: '', instructions: '' }
+}
+function removeFromReqCart(i) { reqCart.value.splice(i, 1) }
+
+async function submitPermintaan() {
+  if (!reqCart.value.length) { notify('Tambahkan obat ke daftar dulu', false); return }
+  busy.value = true
+  try {
+    await ranapApi.createPermintaanObat(detailVisitId.value, {
+      items: reqCart.value.map((x) => ({
+        medication_id: x.medication_id,
+        quantity:      x.quantity,
+        dose:          x.dose,
+        frequency:     x.frequency,
+        instructions:  x.instructions,
+      })),
+    })
+    notify('Permintaan obat dikirim ke Farmasi')
+    reqCart.value = []
+    await loadPermintaan()
+  } catch (e) {
+    notify(e.response?.data?.message ?? 'Gagal mengirim permintaan', false)
+  } finally { busy.value = false }
+}
+
+function reqStatusLabel(s) {
+  return { SUBMITTED: 'Diminta', DISPENSING: 'Disiapkan', DISPENSED: 'Diserahkan', CANCELLED: 'Dibatalkan' }[s] ?? s
+}
+function reqStatusPill(s) {
+  return { DISPENSED: 'pill-success', DISPENSING: 'pill-info', SUBMITTED: 'pill-warning', CANCELLED: 'pill-danger' }[s] ?? 'pill-gray'
 }
 
 const bedStatusColor = { AVAILABLE: '#16a34a', OCCUPIED: '#1763d4', CLEANING: '#d97706', MAINTENANCE: '#6b7280', RESERVED: '#7c3aed' }
@@ -970,7 +1036,7 @@ const statusPill = (s) => ({
                 </div>
               </div>
               <div class="add-box">
-                <h4>+ Obat</h4>
+                <h4>+ Obat (biaya langsung)</h4>
                 <input v-model="obatSearch" placeholder="cari obat…" @input="searchObat" class="add-search" />
                 <select v-model="pickObat.medication_id">
                   <option value="">— pilih obat —</option>
@@ -981,7 +1047,56 @@ const statusPill = (s) => ({
                   <span class="add-price">{{ rupiah(selectedObatPrice * pickObat.quantity) }}</span>
                   <button class="btn-primary btn-press btn-add" @click="submitObat">+ Tambah</button>
                 </div>
+                <p class="req-hint">Catat biaya obat saja (tanpa serah/potong stok Farmasi) — mis. obat dari stok ruangan.</p>
               </div>
+            </div>
+
+            <!-- Permintaan obat ke Farmasi (dispensing ke ruangan) -->
+            <div class="req-obat">
+              <h4>Permintaan Obat ke Farmasi</h4>
+              <p class="req-hint">Obat diminta ke Farmasi untuk diserahkan ke ruangan. Stok dipotong &amp; biaya tercatat saat Farmasi menyerahkan (bukan saat diminta).</p>
+              <div class="add-box">
+                <input v-model="obatSearch" placeholder="cari obat…" @input="searchObat" class="add-search" />
+                <select v-model="reqPick.medication_id">
+                  <option value="">— pilih obat —</option>
+                  <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }}{{ o.is_active === false ? ' · (nonaktif)' : '' }}</option>
+                </select>
+                <div class="req-fields">
+                  <input v-model.number="reqPick.quantity" type="number" min="1" placeholder="Qty" style="width:64px" />
+                  <input v-model="reqPick.dose" placeholder="dosis" />
+                  <input v-model="reqPick.frequency" placeholder="frekuensi" />
+                  <input v-model="reqPick.instructions" placeholder="aturan/catatan" />
+                  <button class="btn-primary btn-press btn-add" @click="addToReqCart">+ Tambah</button>
+                </div>
+              </div>
+
+              <table v-if="reqCart.length" class="bill">
+                <thead><tr><th>Obat</th><th>Qty</th><th>Dosis</th><th>Frekuensi</th><th>Aturan</th><th></th></tr></thead>
+                <tbody>
+                  <tr v-for="(x, i) in reqCart" :key="x.medication_id">
+                    <td>{{ x.name }}</td><td>{{ x.quantity }} {{ x.unit }}</td>
+                    <td>{{ x.dose || '—' }}</td><td>{{ x.frequency || '—' }}</td><td>{{ x.instructions || '—' }}</td>
+                    <td><button class="del-x" @click="removeFromReqCart(i)" title="Hapus">×</button></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="req-actions">
+                <button class="btn-primary btn-press" :disabled="busy || !reqCart.length" @click="submitPermintaan">Kirim ke Farmasi</button>
+              </div>
+
+              <h4 style="margin-top:1rem">Riwayat Permintaan</h4>
+              <table class="bill">
+                <thead><tr><th>Waktu</th><th>Obat</th><th>Status</th><th>Diserahkan oleh</th></tr></thead>
+                <tbody>
+                  <tr v-for="p in permintaanList" :key="p.id">
+                    <td>{{ fmt(p.created_at) }}</td>
+                    <td>{{ (p.items || []).map(it => `${it.medication?.name ?? '—'} ×${it.quantity}`).join(', ') }}</td>
+                    <td><span class="pill" :class="reqStatusPill(p.status)">{{ reqStatusLabel(p.status) }}</span></td>
+                    <td>{{ p.dispensed_by?.name || '—' }}</td>
+                  </tr>
+                  <tr v-if="!permintaanList.length"><td colspan="4" class="muted">Belum ada permintaan obat</td></tr>
+                </tbody>
+              </table>
             </div>
 
             <h4>Rincian Biaya Berjalan</h4>
@@ -1138,6 +1253,13 @@ const statusPill = (s) => ({
 .add-row { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
 .add-price { flex: 1; font-size: .85rem; color: var(--ga); font-weight: 600; }
 .add-box h4 { color: var(--gd); margin: 0 0 .4rem; font-size: .9rem; }
+.req-obat { border-top: 1px dashed var(--gb); margin-top: .85rem; padding-top: .85rem; }
+.req-obat > h4 { color: var(--gd); margin: 0 0 .3rem; font-size: .92rem; }
+.req-hint { font-size: 11px; color: var(--tu); margin: .2rem 0 .55rem; }
+.req-fields { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: .45rem; }
+.req-fields input { height: 30px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12px; font-family: inherit; color: var(--td); background: var(--bc); flex: 1; min-width: 90px; }
+.req-fields input:focus { outline: none; border-color: var(--ga); }
+.req-actions { margin-top: .5rem; }
 .bill { width: 100%; border-collapse: collapse; margin: .5rem 0; }
 .bill th, .bill td { border-bottom: 1px solid var(--gb); padding: .4rem; font-size: .8rem; color: var(--td); text-align: left; }
 .bill th { background: var(--bs); color: var(--tm); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: .03em; }

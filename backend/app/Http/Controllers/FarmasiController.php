@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Services\FarmasiService;
+use App\Support\SpreadsheetHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 class FarmasiController extends Controller
 {
@@ -419,6 +421,107 @@ class FarmasiController extends Controller
     public function stokAlert(): JsonResponse
     {
         return $this->ok($this->service->getStokAlert());
+    }
+
+    /**
+     * GET /farmasi/stok/opname/export?format=xlsx|csv (default xlsx)
+     * Lembar kerja stok opname unit Farmasi: kolom "Stok Fisik" & "Selisih"
+     * sengaja dikosongkan untuk diisi manual saat hitung fisik di rak.
+     */
+    public function exportOpname(Request $request): Response
+    {
+        $rows = $this->service->getStokObat(['per_page' => 'all']);
+
+        $out = fopen('php://temp', 'r+');
+        fputcsv($out, ['No', 'Nama Produk', 'Formularium', 'Unit', 'Stok Sistem', 'Stok Fisik', 'Selisih'], ',', '"', '\\');
+        $i = 1;
+        foreach ($rows as $m) {
+            fputcsv($out, [
+                $i++,
+                $m->name,
+                $m->formularium ?? '',
+                $m->unit ?? '',
+                (int) ($m->stock ?? 0),
+                '', // Stok Fisik — diisi manual
+                '', // Selisih — diisi manual
+            ], ',', '"', '\\');
+        }
+        rewind($out);
+        $csv = stream_get_contents($out);
+        fclose($out);
+
+        $baseName = 'stok-opname-' . now()->format('Ymd');
+        if (strtolower((string) $request->query('format', 'xlsx')) !== 'csv') {
+            $xlsx = SpreadsheetHelper::csvToXlsx($csv, 'Stok Opname');
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
+            ]);
+        }
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
+        ]);
+    }
+
+    // =========================================================================
+    // DISPENSING RAWAT INAP (permintaan obat pasien dirawat — type RANAP)
+    // =========================================================================
+
+    /** GET /farmasi/ranap/permintaan */
+    public function indexRanapRequest(): JsonResponse
+    {
+        return $this->ok($this->service->getRanapRequests());
+    }
+
+    /** PUT /farmasi/ranap/permintaan/{id}/siapkan */
+    public function siapkanRanapRequest(string $id): JsonResponse
+    {
+        try {
+            $prescription = $this->service->startRanapDispensing($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Permintaan obat mulai disiapkan');
+    }
+
+    /** PUT /farmasi/ranap/permintaan/{id}/serah — potong stok + tagih inpatient_charges */
+    public function serahRanapRequest(string $id): JsonResponse
+    {
+        try {
+            $prescription = $this->service->serahRanapRequest($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Obat diserahkan ke ruangan. Stok dikurangi & biaya tercatat.');
+    }
+
+    /** PUT /farmasi/ranap/permintaan/{id}/tolak */
+    public function tolakRanapRequest(string $id): JsonResponse
+    {
+        try {
+            $prescription = $this->service->tolakRanapRequest($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Permintaan obat dibatalkan');
+    }
+
+    // =========================================================================
+    // RIWAYAT PEMBERIAN OBAT (laporan "diberikan ke siapa")
+    // =========================================================================
+
+    /** GET /farmasi/obat/{medicationId}/riwayat-pemberian?limit= */
+    public function riwayatPemberianObat(Request $request, string $medicationId): JsonResponse
+    {
+        return $this->ok($this->service->getMedicationDispenseHistory(
+            $medicationId,
+            $request->only(['limit'])
+        ));
     }
 
     // =========================================================================

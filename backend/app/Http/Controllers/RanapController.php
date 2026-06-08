@@ -186,6 +186,44 @@ class RanapController extends Controller
         return $this->ok(null, 'Biaya dihapus');
     }
 
+    /** GET /rawat-inap/{visitId}/permintaan-obat — daftar permintaan obat ke Farmasi. */
+    public function listPermintaanObat(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->listMedicationRequests($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /**
+     * POST /rawat-inap/{visitId}/permintaan-obat — minta obat ke Farmasi (dispensing
+     * ke ruangan). Tagihan + potong stok terbit saat Farmasi serah, bukan di sini.
+     */
+    public function createPermintaanObat(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'items'                 => 'required|array|min:1',
+            'items.*.medication_id' => 'required|uuid|exists:medications,id',
+            'items.*.quantity'      => 'required|integer|min:1',
+            'items.*.dose'          => 'nullable|string|max:100',
+            'items.*.frequency'     => 'nullable|string|max:100',
+            'items.*.route'         => 'nullable|string|max:100',
+            'items.*.instructions'  => 'nullable|string|max:255',
+            'pharmacy_note'         => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $visit        = Visit::findOrFail($visitId);
+            $prescription = $this->service->createMedicationRequest($visit, $data['items'], $data['pharmacy_note'] ?? null);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Permintaan obat dikirim ke Farmasi', 201);
+    }
+
     // =========================================================================
     // DOKUMEN/HASIL EKSTERNAL (Fase 8C)
     // =========================================================================
