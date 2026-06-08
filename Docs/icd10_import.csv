@@ -1,0 +1,290 @@
+code,category,description,is_eye_related,is_favorite
+H00.0,H00,"Hordeolum and other deep inflammation of eyelid / ABSES PALPEBRA, meibomitis",t,f
+H00.1,H00,Chalazion,t,f
+H01.0,H01,"Blepharitis, PCZEMTUS, DERMATITIS",t,f
+H01.1,H01,Noninfectious dermatoses of eyelid/ DERMATITIS ALEGI,t,f
+H01.8,H01,GRANULOMA (Other specified inflammation of eyelid) / HEMANGIOMA,t,f
+H01.9,H01,"Inflammation of eyelid, unspecified/ LITHIASIS EYELID",t,f
+H02.0,H02,Entropion and trichiasis of eyelid/ TRICHIASIS/,t,f
+H02.1,H02,Ectropion of eyelid,t,f
+H02.2,H02,Lagophthalmos hip,t,f
+H02.4,H02,Ptosis of eyelid,t,f
+H02.5,H02,TIC (Other disorders affecting eyelid function),t,f
+H02.6,H02,Xanthelasma of eyelid,t,f
+H02.7,H02,Other degenerative disorders of eyelid and periocular area,t,f
+H02.8,H02,"ATEROMA CYSTH, MEIBOMIAN, PALPEBRA EDEMA(Other specified disorders of eyelid)DERMATOCHALASIS/BAGGY EYELID/MILIA/KISTA PALP",t,f
+H02.9,H02,"Disorder of eyelid, unspecified",t,f
+H03.0,H03,Parasitic infestation of eyelid in diseases ec,t,f
+H03.1,H03,Involvement of eyelid in other infectious diseases e,t,f
+H03.8,H03,Involvement of eyelid in other diseases classified elsewhere,t,f
+H04.0,H04,Dacryoadenitis,t,f
+H04.1,H04,"DES, SMK(Other disorders of lacrimal gland)",t,f
+H04.2,H04,Epiphora,t,f
+H04.3,H04,DACRYOCYTITIS(Acute and unspecified inflammation of lacrimal passages)/ CANALICULITIS LACRIMAL,t,f
+H04.4,H04,Chronic inflammation of lacrimal passages,t,f
+H04.5,H04,OBSTRUKSI/ ODNL(Stenosis and insufficiency of lacrimal passages),t,f
+H04.6,H04,Other changes in lacrimal passages,t,f
+H04.8,H04,Other disorders of lacrimal system,t,f
+H04.9,H04,"Disorder of lacrimal system, unspecified",t,f
+H05.0,H05,CELLULITIS OF ORBIT (Acute inflammation of orbit),t,f
+H05.1,H05,Chronic inflammatory disorders of orbit/PSEDO ITA,t,f
+H05.2,H05,"ANOPTHALMIK SOCKET, (Exophthalmic conditions)/ PROPTOSIS (LEBIH SPESIFIK)",t,f
+H05.3,H05,Deformity of orbit,t,f
+H05.4,H05,Enophthalmos,t,f
+H05.5,H05,Retained (old) foreign body folowingpenetratng wound orbit,t,f
+H05.8,H05,"Other disorders of orbit/throid/TAO/ THYROID EYE DISEASE(TED), Apex Orbita Syndrome",t,f
+H05.9,H05,"Disorder of orbit, unspecified",t,f
+H06.0,H06,Disorders of lacrimal system in diseases ec,t,f
+H06.1,H06,Parasitic infestation of orbit in diseases ec,t,f
+H06.2,H06,Dysthyroid exophthalmos,t,f
+H06.3,H06,Other disorders of orbit in diseases classified elsewhere,t,f
+H10.0,H10,Mucopurulent conjunctivitis,t,f
+H10.1,H10,Acute atopic conjunctivitis,t,f
+H10.2,H10,Other acute conjunctivitis,t,f
+H10.3,H10,"Acute conjunctivitis, unspecified",t,f
+H10.4,H10,Chronic conjunctivitis/ VERNAL CONJUNGTIVITIS/hipertropi papil/ CONJ. ALERGI/reaksifolikular,t,f
+H10.5,H10,Blepharoconjunctivitis,t,f
+H10.8,H10,PINGUECULITIS(Other conjunctivitis,t,f
+H10.9,H10,"RED EYE, MATA MERAH (Conjunctivitis, unspecified)",t,f
+H11.0,H11,Pterygium/ RECUREN PTERIGIUM,t,f
+H11.1,H11,PINGUECULA/ LITHIASIS CONJUNGTIVA/ACQUEL MELANOSIS,t,f
+H11.2,H11,Conjunctival scars/GRANULOMA CONJUNGTIVITIS/ SYMBLEPHARON,t,f
+H11.3,H11,"CONJ. BLEEDING,SCH(Conjunctivalhaemorrhage)/AHC",t,f
+H11.4,H11,Conj. Cyst (Other conjunctival vascular disorders and cysts),t,f
+H11.8,H11,(Other specified disorders of conjunctiva)/pseudopterygium,t,f
+H11.9,H11,"Disorder of conjunctiva, unspecified",t,f
+H15.0,H15,SCLERITIS,t,f
+H15.1,H15,EPISCLERITIS,t,f
+H15.8,H15,RUFTUR SKELERA/ STAPHYLOMA,t,f
+H16.0,H16,"Corneal ulcer, ULKUS KORNEA, PERFORASI KORNEA/PUK (Peripheral ulcerative keratitis)",t,f
+H16.1,H16,PUNCTATE EPITELAL KERATITIS (Other superficial keratitis without conjunctivitis)/ KERATITIS NUMULAR/PEE,t,f
+H16.2,H16,Keratoconjunctivitis/ VERNAL KERATOCONJUNCTIVITIS,t,f
+H16.3,H16,ABSES KORNEA(Interstitial and deep keratitis),t,f
+H16.4,H16,Corneal neovascularization,t,f
+H16.8,H16,Other keratitis,t,f
+H16.9,H16,"Keratitis, unspecified/ IRITASI KORNEA",t,f
+H17.0,H17,LEUKOMA KORNEA(Adherentleukoma),t,f
+H17.1,H17,Other central corneal opacity,t,f
+H17.8,H17,"Other corneal scars and opacities (NEBULAR, BURN)",t,f
+H17.9,H17,"Corneal scar and opacity, unspecified/ SIKATRIK KORNEA",t,f
+H18.0,H18,Corneal pigmentatioSns and deposits,t,f
+H18.1,H18,Bullous keratopathy,t,f
+H18.2,H18,KORNEA EDEMA (Other corneal oedema),t,f
+H18.3,H18,Changes in corneal membranes/ RUPTURE KORNEA,t,f
+H18.4,H18,Corneal degeneration,t,f
+H18.5,H18,MAKULA KORNEA (Hereditary corneal dystrophies),t,f
+H18.6,H18,Keratoconus/CORNEAL BULGING,t,f
+H18.7,H18,STHAPYLOMA/ DESCEMETOCELE (Other corneal deformities),t,f
+H18.8,H18,DECOMPEMSATION CORNEA/ EROTION/ HYPOXIA (Other specified disorders of cornea)/LIMBAL DERMOID / LASERASI KORNEA/ LIMBAL STEM CELL DEFICIENCY,t,f
+H18.9,H18,"CORPUS ALIENUM, KERATHOPATY (Disorder of cornea, unspecified)",t,f
+H19.0,H19,Scleritis and episcleritis in diseases classified elsewhere,t,f
+H19.1,H19,Herpesviral keratitis and keratoconjunctivitis(STROMAL),t,f
+H19.2,H19,Keratitis and keratoconjunctivitisothinfec/parasit dis ec,t,f
+H19.3,H19,Keratitis and keratoconjunctivitis in other diseases ec,t,f
+H19.8,H19,Other disorders of sclera and cornea in diseases ec,t,f
+H20.0,H20,Acute and trabacuteiridocyclitis/ HYPOPYON,t,f
+H20.1,H20,Chronic iridocyclitis,t,f
+H20.2,H20,Lens-induced iridocyclitis,t,f
+H20.8,H20,FUCH’S HETEROCROMIC SYNDROME (Other iridocyclitis),t,f
+H20.9,H20,"UVEITIS(Iridocyclitis, unspecified)",t,t
+H21.0,H21,Hyphaema,t,f
+H21.1,H21,Other vascular disorders of iris and ciliary body,t,f
+H21.2,H21,Degeneration of iris and ciliary body/IRIS ATRHOPY,t,f
+H21.3,H21,"Cyst of iris, ciliary body and anterior chamber",t,f
+H21.4,H21,Pupillary membranes/ sclusiopupilae,t,f
+H21.5,H21,"SYNECTIOLISIS, IRIDODIALISIS",t,f
+H21.8,H21,IRIS PROLAPSE NON TRAUMATIC,t,f
+H21.9,H21,"Disorder of iris and ciliary body, unspecified",t,f
+H22.0,H22,Iridocyclitis in infectious and parasitic diseases ec,t,f
+H22.1,H22,Iridocyclitis in other diseases classified elsewhere,t,f
+H22.8,H22,Other disorders of iris and ciliary body in diseases ec,t,f
+H25.0,H25,PSC/ SUB CAPSULAR CATARAK (Senile incipient cataract),t,f
+H25.1,H25,KATARAK IMATURE (Senile nuclear cataract),t,f
+H25.2,H25,"Senile cataract, morgagnian type/KATARAK HIPERMATUR",t,f
+H25.8,H25,Other senile cataract(LENSTIKNESS),t,f
+H25.9,H25,"Senile cataract, unspecified",t,f
+H26.0,H26,"Infantile, juvenile and presenile cataract",t,f
+H26.1,H26,Traumatic cataract,t,f
+H26.2,H26,Complicated cataract,t,f
+H26.3,H26,Drug-induced cataract/STEROID INDUCED CATARAK,t,f
+H26.4,H26,"PCO(After-cataract)/ KORTEKS RETAIN/ EPINUKLEOUS/IOL KLASIFIKASI, RLM",t,f
+H26.8,H26,Other specified cataract,t,f
+H26.9,H26,"Cataract, unspecified",t,f
+H27.0,H27,Aphakia,t,f
+H27.1,H27,"SUBLUKSASI, NUKLEUS DROP, (Dislocation of lens), SO EMULSIFIKASI",t,f
+H27.8,H27,Other specified disorders of lens/ZONULAR DYALISIS,t,f
+H27.9,H27,"Disorder of lens, unspecified",t,f
+H28.0,H28,Diabetic cataract( PAKAI DU E11.3),t,f
+H28.1,H28,"Cataract in other endocrine, nutritional and metabolic dis",t,f
+H28.2,H28,Cataract in other diseases classified elsewhere,t,f
+H28.8,H28,Other disorders of lens in diseases classified elsewhere,t,f
+H30.0,H30,Focal chorioretinal inflammation,t,f
+H30.1,H30,Disseminated chorioretinal inflammation,t,f
+H30.2,H30,Posterior cyclitis,t,f
+H30.8,H30,Other chorioretinal inflammations,t,f
+H30.9,H30,"CHORIORETITIS(Chorioretinal inflammation, unspecified), NEURORETINITIS",t,f
+H31.0,H31,RETINALSCAR(Chorioretinal scars/ Sikatriks Retina/Makula),t,f
+H31.1,H31,Choroidal degeneration/PPCRA/pigmented paravenousretinochoroidal atrophy,t,f
+H31.2,H31,Hereditary choroidal dystrophy/BLETTIS CRYTALINE/ GYRATE ATROPHY,t,f
+H31.3,H31,Choroidalhaemorrhage and rupture,t,f
+H31.4,H31,Choroidal detachment,t,f
+H31.8,H31,Other specified disorders of choroid/TIGROID FUNDUS,t,f
+H31.9,H31,"Disorder of choroid, unspecified",t,f
+H32.0,H32,Chorioretinal inflammation infectious and parasitic dis ec,t,f
+H32.8,H32,Other chorioretinal disorders in diseases ec,t,f
+H33.0,H33,"RRD , ARR ( WITH Break ), Attached Retina",t,f
+H33.1,H33,Retinoschisis and retinal cysts,t,f
+H33.2,H33,"RD, ABLATIO RETINA ( RETINAL DETACHMENT without break )",t,f
+H33.3,H33,"RETINAL HOLE, RETINAL TEAR",t,f
+H33.4,H33,TRACTIONAL DETACHMENT OF RETINA (TRD) (ART),t,f
+H34.1,H34,CRAO ( Central retinal artery occlusion),t,f
+H34.2,H34,BRAO,t,f
+H34.8,H34,CRVO/ BRVO/HRVO (BRANCH RETINAL VASCULAR OCLUTION),t,f
+H35.0,H35,"HIPERTENSI, IPCV/ VASCULITIS (Background retinopathy and retinal vascular changes)/NVE",t,f
+H35.1,H35,ROP ( RETINOPHATY OF PREMATURI),t,f
+H35.2,H35,PDR/NPDR - PROLIVERATIF RETINOPHATY/PVR,t,f
+H35.3,H35,"MACULA PUCKERING, EPIRETINAL MEMBRANE, WET AMD, MAKULA HOLE, ERM, MAKULA DEGENERATION, epiretinal membrane, macula pucker,SIKATRIKS MAKULA/MACULA ATROPI CME(CISTOID MACULA EDEMA)/ SILICONE OIL REMOVAL (SOR), ARMD",t,f
+H35.4,H35,LATICE RETINA,t,f
+H35.5,H35,"STARGARD, RETINITIS PIGMENTOSA,WWOP",t,f
+H35.6,H35,MAKULA HAEMORAGE/subhyloid bleeding,t,f
+H35.7,H35,"CSR, CSCR, PED, CSC",t,f
+H35.8,H35,"MAKULA EDEMA, CSME, MACULAR INFARCTION, RETINAL THINNING",t,f
+H35.9,H35,"PVP, DMR (Retinal disorder, unspecified)",t,f
+H40.0,H40,HTO (Glaucoma suspect)/hipertensi okuli,t,f
+H40.1,H40,"POAG, PEX, NTG (Primary open-angle glaucoma)",t,f
+H40.2,H40,PACG / OCLUDABLE ANGEL (Primary angle-closure glaucoma) / GLAUKOMA AKUT,t,t
+H40.3,H40,Glaucoma secondary to eye trauma,t,f
+H40.4,H40,UVEITIS GLOUCOMA (Glaucoma secondary to eye inflammation),t,f
+H40.5,H40,GLAUCOMA PHACOMORPHIC (Glaucoma secondary to other eye disorders) GLUKOMA SEKUNDER/ PSEUDOFAKIA GLUKOMA/ PHACOLYTIC GLOUCOM/ NEOVASKULAR GLAUCOMA ( NVG ),t,f
+H40.6,H40,Glaucoma secondary to drugs/STEROID INDUCED glukoma,t,f
+H40.8,H40,", G.CHRONIC, APHAKIC GLOUCOMA (Other glaucoma)",t,f
+H40.9,H40,"Glaucoma, unspecified",t,f
+H42.0,H42,"Glaucoma in endocrine, nutritional and metabolic disease",t,f
+H42.8,H42,Glaucoma in other diseases classified elsewhere,t,f
+H43.0,H43,Vitreous prolapsed,t,f
+H43.1,H43,Vitreous haemorrhage,t,f
+H43.2,H43,ASTEROID HYOLISIS(Crystalline deposits in vitreous body),t,f
+H43.3,H43,FLOATER(Other vitreous opacities),t,t
+H43.8,H43,"VITREO MAKULAR, (POSTERIOR VITREOS DETACHMENT)(Other disorders of vitreous body)/ PVD/VITRITIS FIBROSIS VITREOUS",t,f
+H43.9,H43,"Disorder of vitreous body, unspecified",t,f
+H44.0,H44,Purulent endophthalmitis,t,f
+H44.1,H44,PANUVEITIS / ENDOPHTHALMITIS,t,f
+H44.2,H44,Degenerative myopia / MIOPIC CNV,t,f
+H44.3,H44,Other degenerative disorders of globe,t,f
+H44.4,H44,Hypotony of eye,t,f
+H44.5,H44,"GLOUKOMA ABSOLUTE, PHTISIS BULBI (Degenerated conditions of globe)",t,t
+H44.6,H44,"Retained (old) intraocular foreign body, magnetic",t,f
+H44.7,H44,"Retained (old) intraocular foreign body, nonmagnetic",t,f
+H44.8,H44,Other disorders of globe,t,f
+H44.9,H44,"Disorder of globe, unspecified",t,f
+H46,H46,PAPILITIS(Optic neuritis),t,f
+H47.0,H47,"AION, NAION,PION ( Disorders of optic nerve, not elsewhere classified)",t,f
+H47.1,H47,"Papilloedema, unspecified",t,f
+H47.2,H47,PAPIL GLOUKOMATOUS( Optic atrophy)/LARGE PHYSIOLOGIC CUPPING,t,f
+H47.3,H47,Other disorders of optic disc/ DIABETIC PAPILOPATY,t,f
+H47.4,H47,Disorders of optic chiasm,t,f
+H47.5,H47,Disorders of other visual pathways,t,f
+H47.6,H47,"CORTICAL BLINDS (Disorders of visual )/IMPAIRMENT, CVI",t,f
+H47.7,H47,"Disorder of visual pathways, unspecified",t,f
+H49.0,H49,Third [oculomotor] nerve palsy,t,f
+H49.1,H49,Fourth [trochlear] nerve palsy/SO PALSY,t,f
+H49.2,H49,Sixth [abducent] nerve palsy,t,f
+H49.3,H49,Total (external) ophthalmoplegia,t,f
+H49.4,H49,Progressive external ophthalmoplegia/ THS (TOLOSA HUNT SYNDROME),t,f
+H49.8,H49,Other paralytic strabismus,t,f
+H49.9,H49,"Paralytic strabismus, unspecified",t,f
+H50.0,H50,Convergent concomitant strabismus/ESOTROPIA,t,f
+H50.1,H50,Convergent concomitant strabismus/ CONGENITAL EXOTROPIA/ EXOTROPIA,t,f
+H50.2,H50,Vertical strabismus/HIPOTROPIA,t,f
+H50.3,H50,(Intermittent heterotropia),t,f
+H50.4,H50,Other and unspecified heterotropia,t,f
+H50.5,H50,"Heterophoria , ESHOPORIA/ EXOPHORIA",t,f
+H50.6,H50,Mechanical strabismus,t,f
+H50.8,H50,Other specified strabismus,t,f
+H50.9,H50,"Strabismus, unspecified",t,f
+H51.0,H51,Palsy of conjugate gaze,t,f
+H51.1,H51,Convergence insufficiency and excess,t,f
+H51.2,H51,Internuclearophthalmoplegia,t,f
+H51.8,H51,Other specified disorders of binocular movement,t,f
+H51.9,H51,"Disorder of binocular movement, unspecified",t,f
+H52.0,H52,Hypermetropia,t,f
+H52.1,H52,"MAC, Myopia",t,f
+H52.2,H52,Astigmatism,t,f
+H52.3,H52,Anisometropia and aniseikonia,t,f
+H52.4,H52,Presbyopia,t,f
+H52.5,H52,PARESE (Disorders of accommodation),t,f
+H52.6,H52,Other disorders of refraction(EMETROPIA),t,f
+H52.7,H52,"Disorder of refraction, unspecified",t,f
+H53.0,H53,AMBLIYOPIA(Amblyopia ex anopsia),t,f
+H53.1,H53,"ASTHENOPIA, PHOTOPSIA(Subjective visual disturbances)TRANSIENT VISUAL LOSS/computer vision syndrome",t,f
+H53.2,H53,Diplopia,t,f
+H53.3,H53,Other disorders of binocular vision,t,f
+H53.4,H53,Visual field defects/ hemianopsia/ TUNNEL VISION / SCOTOMA,t,f
+H53.5,H53,Colour vision deficiencies/ buta warna parsial,t,f
+H53.6,H53,Night blindness,t,f
+H53.8,H53,Other visual disturbances (emetropia),t,f
+H53.9,H53,"Visual disturbance, unspecified",t,f
+H54.0,H54,"Blindness, both eyes keraqgluko",t,f
+H54.1,H54,"Blindness, one eye, low vision other eye/BLIND EYE",t,f
+H54.2,H54,"Low vision, both eyes",t,f
+H54.3,H54,"Unqualified visual loss, both eyes",t,f
+H54.4,H54,"Blindness, one eye",t,f
+H54.5,H54,"Low vision, one eye",t,f
+H54.6,H54,"Unqualified visual loss, one eye",t,f
+H54.7,H54,VISUAL DECREASE(Unspecified visual loss),t,f
+H55,H55,NYSTAGMUS (Nystagmus and other irregular eye movement),t,f
+H57.0,H57,Anomalies of pupillary function/PPUPIL MYDRIASIS/IRIDOPLEGA,t,f
+H57.1,H57,Ocular pain,t,f
+H57.8,H57,Other specified disorders of eye and adnexa,t,f
+H57.9,H57,"BOWEN’S(Disorder of eye and adnexa, unspecified)",t,f
+H58.0,H58,Anomalies of pupillary function in diseases ec,t,f
+H58.1,H58,Visual disturbances in diseases classified elsewhere,t,f
+H58.8,H58,Other specified disorders of eye and adnexa in diseases ec,t,f
+H59.0,H59,Vitreous syndrome following cataract surgery/ EPINUCLOUS IN BMD/RETAIN CORTEX,t,f
+H59.8,H59,TASS (Other postprocedural disorders of eye and adnexa),t,f
+H59.9,H59,"Postprocedural disorder of eye and adnexa, unspecified",t,f
+I77.0,I77,Carotid Cavernous Fistule,t,f
+D21.0,D21,LIPOMA,t,f
+C69.2,C69,RETINOBLASTOMA,t,f
+G44.2,G44,TENSION HEADACHE,t,f
+C43.1,C43,MELANOMA,t,f
+C44.1,C44,TUMOR CANTRUS MEDIAL,t,f
+D31.5,D31,KISTA PUNCTUM LACRIMAL,t,f
+D31.6,D31,TUMOR ORBITA,t,f
+D31.0,D31,BENIGN NEOPLAS CONJUNCTIVA / TUMOR/LIPOMA/KISTA CARUNCULA,t,f
+D23.1,D23,PAPILOMA EYELID/TUMOR PALPEBRA /VERUCA EYELID /KISTA DERMOID /SUPERIOR(CONJUNGTIVA)/LYMPOMA/BASALIOMA,t,f
+D09.2,D09,BOWEN’S TUMOR,t,f
+D22.1,D22,NEVUS/nevus conjungtiva/NEVUS PALPEBRA’,t,f
+Q12.0,Q12,CONGENITAL KATARAK,t,f
+Q15.0,Q15,BUPHTHALMOS/ glukoma juvenile (Congenital glaucoma),t,f
+Q11.1,Q11,ANOPTHALMIA,t,f
+Q11.2,Q11,MICROPTHITHALMIA,t,f
+Q13.4,Q13,ANOMALY PETERS/MICRO CORNEA,t,f
+Q13.0,Q13,COLOBOMA IRIS,t,f
+Q13.8,Q13,ANTERIOR SEGMENT DYSGENERESIS,t,f
+Q10.0,Q10,PTOSIS CONGINETAL,t,f
+Q14.0,Q14,PHPV / congenital Vitreous Opacity,t,f
+Q14.2,Q14,PUPIL CVI DEVELOPMENTAL,t,f
+Q10.3,Q10,DISTRICHIASIS/EPIBLEFHARON,t,f
+Q15.8,Q15,ocular melanosis,t,f
+Z01.0,Z01,(NORMAL) POST OP,t,t
+Z96.1,Z96,PSEOUDOFAKIA,t,t
+B02.3,B02,HERVES ZOSTER ( Kalauadahasilpemeriksaan LAB ),t,f
+B07,B07,VERUCA VULGARIS ( Kalauadahasilpemeriksaan LAB ),t,f
+S05.0,S05,abrasion corneal/VULNUS LASERATUM PS/VULNUS LASERATM CORNEA,t,f
+T26.0,T26,TRAUMA PANAS (BURN)/ TRAUMA THERMIS(LUKA BAKAR)/TRAUMA TERMAL,t,f
+S00,S00,TRAUMA TUMPUL,t,f
+S05.1,S05,TRAUMA PADA MATA/ hematoma/TRAUMA OCULI NON PERFORASI,t,f
+S05.2,S05,IRIS PROLAPSE TRAUMATIC/LASERASI RUFTUR CONJUNGTIVA/TRAUMA OCULI PERFORASI/TARSUS,t,f
+T26.5,T26,TRAUMA CHEMISS/TRAUMA KIMIA (CORROSIONS),t,f
+T26,T26,VULNUS LASERASI,t,f
+S05.9,S05,CLOSE GLOBE INJURY/ CONJUNGTIVA,t,f
+S01.1,S01,"EYELID LASERASI, /LASERASI PALPEBRA/SUTUR PALPEBRA",t,f
+S04.0,S04,TON ( trauma optic neuropaty),t,f
+S00.2,S00,insect bite ( DigigitSerangga ),t,f
+E05.0,E05,GRAVE’S OPTHALMOPATHY,t,f
+T85.2,T85,IOL GLISTENING(SESUDAH OP),t,f
+T15.0,T15,CORPAL CORNEA ( Foreign Body in Cornea ),t,f
+T15.1,T15,CORPAL CONJUNCTIVA,t,f
+T15.9,T15,CORPAL PALPEBRA/EYELID,t,f
+G24.5,G24,BLEFAROSPASME,t,f
