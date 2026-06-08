@@ -4,13 +4,14 @@
  * Dipakai dari JadwalDokterView. Endpoint via integrasiApi (semua sudah ada di BE).
  *
  *  1. Pemetaan Poli   : poli_code lokal → kode poli BPJS (sumber /referensi/poli)
- *  2. Kode DPJP       : set employees.bpjs_dpjp_code per dokter (sumber /referensi/dokter)
+ *  2. Kode DPJP       : set employees.bpjs_dpjp_code per dokter (sumber referensi DPJP
+ *                       /referensi/dokter/pelayanan/{jns}/tglPelayanan/{tgl}/Spesialis/{kode})
  *  3. Sinkron Jadwal  : kirim jadwal minggu aktif ke BPJS Antrean
  *  4. Referensi BPJS  : lookup kamus kode (dipindah dari Bridging → VClaim)
  *  5. Waktu Tunggu    : dashboard waktu tunggu BPJS (dipindah dari Bridging → Antrean Online)
  *  6. Validasi Booking: cek kode JKN Mobile (dipindah dari Bridging → Antrean Online)
  */
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { integrasiApi, masterApi } from '@/services/api'
 
 const props = defineProps({
@@ -91,15 +92,45 @@ async function saveDpjp(d) {
   }
 }
 
+// ── Spesialistik (untuk lookup DPJP) ──────────────────────────────────────
+// VClaim TAK punya cari-dokter by-nama. Daftar DPJP hanya bisa diambil per
+// spesialis + jenis pelayanan + tanggal (endpoint refDpjp). Maka pencarian
+// kode DPJP butuh dropdown spesialistik dulu, bukan ketik nama.
+const spesialisList = ref([])
+const speKode = (it) => it.kode ?? it.kodeSpesialis ?? it.kdSpesialis ?? ''
+const speNama = (it) => it.nama ?? it.namaSpesialis ?? it.nmSpesialis ?? ''
+async function ensureSpesialis() {
+  if (spesialisList.value.length) return
+  try {
+    const res = await integrasiApi.referensi('spesialistik', {})
+    const bpjs = res.data?.data ?? {}
+    if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Gagal memuat spesialistik'); return }
+    const d = bpjs.response ?? {}
+    spesialisList.value = Array.isArray(d) ? d : (Object.values(d).find((v) => Array.isArray(v)) ?? [])
+  } catch (e) {
+    flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Gagal memuat spesialistik'))
+  }
+}
+
 // ── Referensi helper (cari kode BPJS) ─────────────────────────────────────
-const refModal = reactive({ open: false, jenis: 'poli', q: '', loading: false, rows: [], target: null })
+const refModal = reactive({ open: false, jenis: 'poli', q: '', loading: false, rows: [], target: null, spesialis: '', jnsPelayanan: '2', tgl: todayWib() })
 function openRef(jenis, target) {
   refModal.open = true; refModal.jenis = jenis; refModal.target = target; refModal.q = ''; refModal.rows = []
+  refModal.spesialis = ''; refModal.jnsPelayanan = '2'; refModal.tgl = todayWib()
+  if (jenis === 'dokter') ensureSpesialis()
 }
 async function searchRef() {
   refModal.loading = true; refModal.rows = []
   try {
-    const res = await integrasiApi.referensi(refModal.jenis, { q: refModal.q.trim() })
+    let res
+    if (refModal.jenis === 'dokter') {
+      // Pakai endpoint DPJP resmi (spesialis + jenis pelayanan + tgl), BUKAN
+      // /referensi/dokter/{nama} yang tak ada di VClaim → selalu "data tidak ada".
+      if (!refModal.spesialis) { flash(false, 'Pilih spesialistik dulu'); return }
+      res = await integrasiApi.referensi('dpjp', { jnsPelayanan: refModal.jnsPelayanan, tglPelayanan: refModal.tgl, spesialis: refModal.spesialis })
+    } else {
+      res = await integrasiApi.referensi(refModal.jenis, { q: refModal.q.trim() })
+    }
     const bpjs = res.data?.data ?? {}
     if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
     const d = bpjs.response ?? {}
@@ -113,6 +144,26 @@ async function searchRef() {
     refModal.loading = false
   }
 }
+// Cocokkan nama dokter app ↔ nama DPJP BPJS (sebagai bantuan visual saat memilih).
+// Buang gelar & tanda baca, ambil token nama signifikan (≥3 huruf); dianggap
+// kandidat bila berbagi minimal 1 token. Hanya petunjuk — petugas tetap memutuskan.
+const GELAR = new Set(['dr', 'drg', 'prof', 'sp', 'spm', 'spb', 'm', 'mkes', 'mked', 'kes', 'ph', 'sked', 'dokter', 'hj', 'h'])
+function coreTokens(s) {
+  return String(s || '').toLowerCase().replace(/[.,()]/g, ' ').split(/\s+/)
+    .filter((t) => t.length >= 3 && !GELAR.has(t))
+}
+function isLikelyMatch(it) {
+  if (refModal.jenis !== 'dokter') return false
+  const a = coreTokens(it.nama ?? it.namaDokter ?? '')
+  const b = coreTokens(refModal.target?.name ?? '')
+  return a.length > 0 && b.length > 0 && b.some((t) => a.includes(t))
+}
+// Untuk dokter: kandidat yang cocok diangkat ke atas; jenis lain apa adanya.
+const pickerRows = computed(() => {
+  if (refModal.jenis !== 'dokter') return refModal.rows
+  return [...refModal.rows].sort((x, y) => (isLikelyMatch(y) ? 1 : 0) - (isLikelyMatch(x) ? 1 : 0))
+})
+
 function pickRef(it) {
   const code = it.kode ?? it.kodeDokter ?? it.kodePoli
   const name = it.nama ?? it.namaDokter ?? it.namaPoli
@@ -136,11 +187,22 @@ const REF_JENIS = [
   { v: 'spesialistik', l: 'Spesialistik' },
   { v: 'kelasrawat',   l: 'Kelas Rawat' },
 ]
-const lookup = reactive({ jenis: 'diagnosa', q: '', loading: false, rows: [], searched: false })
+const lookup = reactive({ jenis: 'diagnosa', q: '', loading: false, rows: [], searched: false, spesialis: '', jnsPelayanan: '2', tgl: todayWib() })
+function onLookupJenisChange() {
+  lookup.rows = []; lookup.searched = false
+  if (lookup.jenis === 'dokter') ensureSpesialis()
+}
 async function searchLookup() {
   lookup.loading = true; lookup.rows = []; lookup.searched = true
   try {
-    const res = await integrasiApi.referensi(lookup.jenis, { q: lookup.q.trim() })
+    let res
+    if (lookup.jenis === 'dokter') {
+      // DPJP: endpoint resmi per spesialis, bukan cari-nama (lihat searchRef).
+      if (!lookup.spesialis) { flash(false, 'Pilih spesialistik dulu'); return }
+      res = await integrasiApi.referensi('dpjp', { jnsPelayanan: lookup.jnsPelayanan, tglPelayanan: lookup.tgl, spesialis: lookup.spesialis })
+    } else {
+      res = await integrasiApi.referensi(lookup.jenis, { q: lookup.q.trim() })
+    }
     const bpjs = res.data?.data ?? {}
     if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
     const d = bpjs.response ?? {}
@@ -162,7 +224,9 @@ async function copyCode(code) {
 // ── Antrean Online (Dashboard Waktu Tunggu + Validasi Booking) ────────────────
 // Dipindah dari section Bridging → Antrean Online ke modul Jadwal Dokter.
 // Tanggal lokal (WIB) — bukan toISOString() (UTC bisa mundur 1 hari di pagi WIB).
-const todayWib = () => new Date().toLocaleDateString('sv-SE')
+// Sengaja function declaration (bukan const arrow) agar ter-hoist — dipakai di
+// inisialisasi refModal/lookup yang berada di atas baris ini.
+function todayWib() { return new Date().toLocaleDateString('sv-SE') }
 function makePanel() { return reactive({ loading: false, error: '', data: null }) }
 async function runAntrean(panel, fn) {
   panel.loading = true; panel.error = ''; panel.data = null
@@ -313,13 +377,25 @@ onMounted(load)
           <!-- REFERENSI BPJS (lookup kamus kode — dipindah dari tab VClaim) -->
           <template v-else-if="tab === 'referensi'">
             <p class="hint">Cari kode resmi BPJS (diagnosa, poli, dokter, prosedur, dll). Pakai kode ini untuk mengisi Pemetaan Poli &amp; Kode DPJP di tab sebelah. Klik kode untuk menyalin.</p>
-            <div class="form-row">
-              <select v-model="lookup.jenis" class="inp" style="flex:0 0 auto;width:auto">
+            <div class="form-row" style="flex-wrap:wrap">
+              <select v-model="lookup.jenis" class="inp" style="flex:0 0 auto;width:auto" @change="onLookupJenisChange">
                 <option v-for="r in REF_JENIS" :key="r.v" :value="r.v">{{ r.l }}</option>
               </select>
-              <input v-model="lookup.q" class="inp" placeholder="Kata kunci (kode atau nama)…" @keyup.enter="searchLookup" />
+              <template v-if="lookup.jenis === 'dokter'">
+                <select v-model="lookup.spesialis" class="inp">
+                  <option value="">— Pilih Spesialistik —</option>
+                  <option v-for="(s, i) in spesialisList" :key="i" :value="speKode(s)">{{ speKode(s) }} — {{ speNama(s) }}</option>
+                </select>
+                <select v-model="lookup.jnsPelayanan" class="inp" style="flex:0 0 auto;width:auto">
+                  <option value="2">Rawat Jalan</option>
+                  <option value="1">Rawat Inap</option>
+                </select>
+                <input v-model="lookup.tgl" type="date" class="inp" style="flex:0 0 auto;width:auto" />
+              </template>
+              <input v-else v-model="lookup.q" class="inp" placeholder="Kata kunci (kode atau nama)…" @keyup.enter="searchLookup" />
               <button class="btn primary" :disabled="lookup.loading" @click="searchLookup">{{ lookup.loading ? '…' : 'Cari' }}</button>
             </div>
+            <p v-if="lookup.jenis === 'dokter'" class="hint">DPJP BPJS dicari per spesialistik (bukan ketik nama). Pilih spesialistik lalu klik "Cari".</p>
 
             <table v-if="lookup.rows.length" class="bm-tbl">
               <thead><tr><th>Kode</th><th>Nama</th></tr></thead>
@@ -381,16 +457,38 @@ onMounted(load)
           <button class="bm-close" @click="refModal.open = false">✕</button>
         </div>
         <div class="bm-body">
-          <div class="form-row">
+          <template v-if="refModal.jenis === 'dokter'">
+            <div v-if="refModal.target" class="match-for">
+              Mencocokkan untuk: <strong>{{ refModal.target.name }}</strong>
+              <span v-if="refModal.target.sip" class="sub">{{ refModal.target.sip }}</span>
+            </div>
+            <p class="hint">VClaim tak punya cari dokter by-nama. Pilih spesialistik → daftar DPJP muncul, lalu klik "Pilih". Baris yang namanya mirip ditandai &amp; diangkat ke atas.</p>
+            <div class="form-row" style="flex-wrap:wrap">
+              <select v-model="refModal.spesialis" class="inp">
+                <option value="">— Pilih Spesialistik —</option>
+                <option v-for="(s, i) in spesialisList" :key="i" :value="speKode(s)">{{ speKode(s) }} — {{ speNama(s) }}</option>
+              </select>
+              <select v-model="refModal.jnsPelayanan" class="inp" style="flex:0 0 auto;width:auto">
+                <option value="2">Rawat Jalan</option>
+                <option value="1">Rawat Inap</option>
+              </select>
+              <input v-model="refModal.tgl" type="date" class="inp" style="flex:0 0 auto;width:auto" />
+              <button class="btn primary" :disabled="refModal.loading || !refModal.spesialis" @click="searchRef">{{ refModal.loading ? '…' : 'Cari DPJP' }}</button>
+            </div>
+          </template>
+          <div v-else class="form-row">
             <input v-model="refModal.q" class="inp" placeholder="kata kunci…" @keyup.enter="searchRef" autofocus />
             <button class="btn primary" :disabled="refModal.loading" @click="searchRef">{{ refModal.loading ? '…' : 'Cari' }}</button>
           </div>
           <table v-if="refModal.rows.length" class="bm-tbl">
             <thead><tr><th>Kode</th><th>Nama</th><th></th></tr></thead>
             <tbody>
-              <tr v-for="(it, i) in refModal.rows" :key="i">
+              <tr v-for="(it, i) in pickerRows" :key="i" :class="{ 'row-match': isLikelyMatch(it) }">
                 <td><code>{{ it.kode ?? it.kodeDokter ?? it.kodePoli }}</code></td>
-                <td>{{ it.nama ?? it.namaDokter ?? it.namaPoli }}</td>
+                <td>
+                  {{ it.nama ?? it.namaDokter ?? it.namaPoli }}
+                  <span v-if="isLikelyMatch(it)" class="match-badge" title="Nama mirip dokter yang dipilih">≈ cocok</span>
+                </td>
                 <td><button class="btn ghost" @click="pickRef(it)">Pilih</button></td>
               </tr>
             </tbody>
@@ -439,6 +537,12 @@ onMounted(load)
 .btn.ghost { color: #1763d4; border-color: #1763d4; }
 .btn.lg { padding: 10px 18px; font-size: 13px; }
 .ok-dot { color: #166534; font-weight: 700; }
+
+/* Picker DPJP: banner dokter app + penanda baris BPJS yang namanya mirip */
+.match-for { font-size: 12.5px; color: var(--td); background: #eef4ff; border: 1px solid #cdddff; border-radius: 8px; padding: 7px 11px; margin-bottom: 0.7rem; }
+.match-for .sub { margin-left: 8px; }
+.bm-tbl tr.row-match td { background: #ecfdf3; }
+.match-badge { display: inline-block; margin-left: 6px; font-size: 10.5px; font-weight: 700; color: #166534; background: #d1fae5; border-radius: 999px; padding: 1px 7px; vertical-align: middle; }
 
 .form-row { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
 .form-row .inp { flex: 1; }
