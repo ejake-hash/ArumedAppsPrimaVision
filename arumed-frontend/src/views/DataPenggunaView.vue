@@ -159,6 +159,7 @@ const MODULE_META = {
   asuransi:          'Verifikasi & klaim asuransi/TPA non-BPJS (halaman Asuransi).',
   bpjs:              'Verifikasi & kirim klaim BPJS (halaman Klaim BPJS).',
   marketing:         'Laporan data pasien untuk marketing (halaman Laporan Marketing).',
+  keuangan:          'Rekap honor dokter & jasa medis per periode, aturan honor (PKS/edaran), export Excel (halaman Keuangan).',
   laporan:           'Laporan & analitik lintas modul.',
   tarif_paket:       'Penjamin/metode bayar, master tarif tindakan, paket bedah & kategori tagihan (halaman Tarif & Paket → Metode Bayar).',
   inventori_farmasi: 'Inventori farmasi lengkap: stok obat/BHP/IOL, opname, supplier, pembelian (PO) & penerimaan (GRN).',

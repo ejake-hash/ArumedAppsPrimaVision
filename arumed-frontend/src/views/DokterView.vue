@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import { useDokterStore } from '@/stores/dokterStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import { useAuthStore } from '@/stores/auth'
-import { masterApi, dokterApi, integrasiApi, formTemplateApi } from '@/services/api'
+import { masterApi, dokterApi, formTemplateApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
@@ -119,10 +119,12 @@ function fmtDob(d) {
 }
 function fmtRx(sph, cyl, ax) {
   if (sph == null && cyl == null && ax == null) return '—'
-  const s = sph != null ? `S${sph >= 0 ? '+' : ''}${sph}` : ''
-  const c = cyl != null ? ` C${cyl >= 0 ? '+' : ''}${cyl}` : ''
-  const a = ax  != null ? ` ×${ax}°` : ''
-  return (s + c + a).trim() || '—'
+  // Label S/C/X (Sphere/Cylinder/Axis) agar nilai tunggal tak ambigu.
+  const parts = []
+  if (sph != null) parts.push(`S${sph >= 0 ? '+' : ''}${sph}`)
+  if (cyl != null) parts.push(`C${cyl >= 0 ? '+' : ''}${cyl}`)
+  if (ax  != null) parts.push(`X${ax}°`)
+  return parts.join(' / ') || '—'
 }
 // Bulatkan ke bilangan bulat; biarkan nilai non-numerik ('—', visus '6/6') apa adanya.
 function toInt(v) {
@@ -539,6 +541,7 @@ onUnmounted(() => {
 // indeks 0 segmen anterior (di atas Kornea). +2 catatan bebas (sa_notes/sp_notes).
 const saFields = [
   { key: 'palpebra', label: 'Palpebra' },
+  { key: 'konjungtiva', label: 'Konjungtiva' },
   { key: 'kornea', label: 'Kornea' },
   { key: 'coa', label: 'COA' },
   { key: 'iris', label: 'Iris' },
@@ -555,7 +558,7 @@ const spFields = [
 function makeExam() {
   return {
     anamnese: '',
-    sa: { palpebra: { od: '', os: '' }, kornea: { od: '', os: '' }, coa: { od: '', os: '' }, iris: { od: '', os: '' }, pupil: { od: '', os: '' }, lensa: { od: '', os: '' } },
+    sa: { palpebra: { od: '', os: '' }, konjungtiva: { od: '', os: '' }, kornea: { od: '', os: '' }, coa: { od: '', os: '' }, iris: { od: '', os: '' }, pupil: { od: '', os: '' }, lensa: { od: '', os: '' } },
     sp: { papil: { od: '', os: '' }, macula: { od: '', os: '' }, retina: { od: '', os: '' }, vitreous: { od: '', os: '' } },
     sa_notes: '',
     sp_notes: '',
@@ -1525,7 +1528,8 @@ const rk = reactive({
 })
 const rkSubmitting = ref(false)
 
-// Referensi BPJS pickers (faskes & poli) — cari via integrasiApi.referensi.
+// Referensi BPJS pickers (faskes & poli) — cari via dokterApi.referensi (route
+// /dokter/vclaim/referensi; dokter tak punya akses /integrasi/...).
 const rkFaskesQ = ref(''); const rkFaskesRes = ref([]); const rkFaskesLoading = ref(false)
 const rkPoliQ = ref('');   const rkPoliRes = ref([]);   const rkPoliLoading = ref(false)
 
@@ -1534,7 +1538,7 @@ async function searchFaskes() {
   if (q.length < 3) { toast('e', 'Ketik minimal 3 huruf nama faskes'); return }
   rkFaskesLoading.value = true; rkFaskesRes.value = []
   try {
-    const { data } = await integrasiApi.referensi('faskes', { q, jns: '2' })
+    const { data } = await dokterApi.referensi('faskes', { q, jns: '2' })
     const b = data.data ?? {}
     rkFaskesRes.value = b.response?.faskes ?? b.response?.list ?? []
   } catch (e) {
@@ -1548,7 +1552,7 @@ async function searchPoliRujuk() {
   if (q.length < 2) { toast('e', 'Ketik minimal 2 huruf nama poli'); return }
   rkPoliLoading.value = true; rkPoliRes.value = []
   try {
-    const { data } = await integrasiApi.referensi('poli', { q })
+    const { data } = await dokterApi.referensi('poli', { q })
     const b = data.data ?? {}
     rkPoliRes.value = b.response?.poli ?? b.response?.list ?? []
   } catch (e) {

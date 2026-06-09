@@ -707,6 +707,28 @@ class AdmisiController extends Controller
         return $this->ok($data, 'SEP berhasil dibatalkan');
     }
 
+    /**
+     * Cetak lembar SEP (PDF inline). Data dari snapshot sep_data (disimpan saat
+     * terbit) + data lokal pasien/jadwal — tak memanggil BPJS lagi. Dibuka di
+     * tab baru oleh frontend (responseType blob).
+     */
+    public function bpjsCetakSep(string $visitId)
+    {
+        try {
+            $data = $this->service->buildSepPrintData($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.sep', $data)
+            ->setPaper('a4')
+            ->setOption('isRemoteEnabled', true);
+
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) ($data['sep']['no_sep'] ?? 'SEP')) ?: 'SEP';
+
+        return $pdf->stream("SEP-{$safe}.pdf");
+    }
+
     public function bpjsCekRujukan(Request $request): JsonResponse
     {
         $request->validate(['no_rujukan' => 'required|string|max:50']);

@@ -28,6 +28,8 @@ const DISPOSITIONS = [
 ]
 
 const form = ref(blankForm())
+const submitting = ref(false)   // kunci anti double-submit "Selesai Tindakan"
+const resepSaved = ref(false)   // resep sudah terkirim → jangan dobel saat retry
 
 function blankForm() {
   return {
@@ -71,10 +73,18 @@ async function loadBoard() {
 
 function selectPatient(p) {
   selId.value = p.id
-  // Hydrate form dari laporan tersimpan bila ada.
-  const lap = p.record?.laporan
-  form.value = lap ? { ...blankForm(), ...lap } : blankForm()
+  // Hydrate form dari laporan tersimpan (operation_report) + kolom record
+  // (complication/followup/disposition disimpan terpisah, bukan di operation_report).
+  const rec = p.record
+  form.value = {
+    ...blankForm(),
+    ...(rec?.laporan || {}),
+    complication:        rec?.complication ?? '',
+    followup_date:       rec?.followup_date ?? '',
+    post_op_disposition: rec?.post_op_disposition ?? 'PULANG',
+  }
   resepItems.value = []
+  resepSaved.value = false
   obatSearch.value = ''
   obatOptions.value = []
 }
@@ -160,13 +170,15 @@ const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('id-ID',
 
 // ─── Status helper ────────────────────────────────────────────────────────────
 function schedStatus(p) { return p.schedule?.status || 'SCHEDULED' }
-function isWaiting(p) { return ['WAITING', 'CALLED'].includes(p.status) && schedStatus(p) === 'SCHEDULED' }
 function isRunning(p) { return schedStatus(p) === 'IN_PROGRESS' }
 function isDone(p) { return schedStatus(p) === 'DONE' }
 
 // ─── Aksi lifecycle ───────────────────────────────────────────────────────────
 async function panggil(p) {
-  try { await ruangTindakanApi.panggil(p.id); toast('s', 'Pasien dipanggil.'); await loadBoard() }
+  // Panggil beroperasi pada antrean (queue). Pasien terjadwal yang belum punya
+  // baris antrean belum bisa dipanggil — langsung "Mulai Tindakan" saja.
+  if (!p.queue_id) return toast('e', 'Antrean belum terbentuk — langsung Mulai Tindakan.')
+  try { await ruangTindakanApi.panggil(p.queue_id); toast('s', 'Pasien dipanggil.'); await loadBoard() }
   catch (e) { toast('e', e?.response?.data?.message || 'Gagal memanggil.') }
 }
 
@@ -180,10 +192,13 @@ async function selesai(p) {
   if (!p.schedule?.id) return
   if (!form.value.laser_type) return toast('e', 'Pilih jenis laser dulu.')
   if (resepItems.value.some(it => !it.quantity || it.quantity < 1)) return toast('e', 'Jumlah obat resep minimal 1.')
+  if (submitting.value) return            // kunci anti double-submit (cegah resep/selesai dobel)
+  submitting.value = true
   try {
-    // Simpan resep obat pulang DULU (bila ada) → Prescription SUBMITTED.
-    // Otomatis muncul di Farmasi setelah pasien melewati Kasir.
-    if (resepItems.value.length) {
+    // Resep obat pulang (bila ada) → Prescription SUBMITTED, muncul di Farmasi setelah
+    // Kasir. Hanya kirim SEKALI: bila "selesai" gagal lalu di-retry, jangan buat resep
+    // dobel (storePostOpPrescription tak idempoten).
+    if (resepItems.value.length && !resepSaved.value) {
       await ruangTindakanApi.resep(p.schedule.id, {
         items: resepItems.value.map(it => ({
           medication_id: it.medication_id,
@@ -193,6 +208,7 @@ async function selesai(p) {
           duration_days: it.duration_days ? Number(it.duration_days) : null,
         })),
       })
+      resepSaved.value = true
     }
     await ruangTindakanApi.selesai(p.schedule.id, {
       laporan: {
@@ -209,13 +225,18 @@ async function selesai(p) {
       complication: form.value.complication || null,
       notes: form.value.notes || null,
     })
-    toast('s', resepItems.value.length
-      ? 'Tindakan selesai → Kasir, lalu resep ke Farmasi.'
-      : 'Tindakan selesai → pasien diteruskan ke Kasir.')
+    const toRanap = form.value.post_op_disposition === 'RAWAT_INAP'
+    toast('s', toRanap
+      ? 'Tindakan selesai → pasien diteruskan ke Rawat Inap (Menunggu Kamar).'
+      : (resepItems.value.length
+          ? 'Tindakan selesai → Kasir, lalu resep ke Farmasi.'
+          : 'Tindakan selesai → pasien diteruskan ke Kasir.'))
     selId.value = null
     await loadBoard()
   } catch (e) {
     toast('e', e?.response?.data?.message || 'Gagal menyelesaikan tindakan.')
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -307,7 +328,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 
           <!-- Aksi state: Menunggu → Panggil → Mulai -->
           <div v-if="!isRunning(sel) && !isDone(sel)" class="action-row">
-            <button v-if="sel.status !== 'CALLED'" class="btn-primary" :disabled="!canWrite" @click="panggil(sel)">Panggil Pasien</button>
+            <button v-if="sel.queue_id && sel.status !== 'CALLED'" class="btn-primary" :disabled="!canWrite" @click="panggil(sel)">Panggil Pasien</button>
             <button class="btn-primary accent" :disabled="!canWrite" @click="mulai(sel)">Mulai Tindakan</button>
           </div>
           <div v-else-if="isDone(sel)" class="done-banner">✓ Tindakan selesai — pasien telah diteruskan ke Kasir.</div>
@@ -400,7 +421,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             </div>
 
             <div class="action-row">
-              <button class="btn-primary accent" :disabled="!canWrite" @click="selesai(sel)">Selesai Tindakan</button>
+              <button class="btn-primary accent" :disabled="!canWrite || submitting" @click="selesai(sel)">{{ submitting ? 'Menyimpan…' : 'Selesai Tindakan' }}</button>
             </div>
           </div>
         </template>

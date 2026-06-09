@@ -3,6 +3,8 @@
 namespace Database\Seeders;
 
 use App\Models\BillingInvoice;
+use App\Models\Employee;
+use App\Models\InpatientCharge;
 use App\Models\InsuranceVerification;
 use App\Models\Insurer;
 use App\Models\Patient;
@@ -92,6 +94,11 @@ class KasirDemoSeeder extends Seeder
         $umumInsurer = Insurer::where('is_system', true)->where('type', 'UMUM')->first();
         $bpjsInsurer = Insurer::where('is_system', true)->where('type', 'BPJS')->first();
 
+        // Dokter DPJP (tampil di kwitansi) + kasir (cashier_id utk kwitansi PAID).
+        $dpjpDoctor = Employee::where('name', 'ilike', '%dr.%')->orderBy('name')->first()
+            ?? Employee::orderBy('name')->first();
+        $kasir = Employee::orderBy('name')->first();
+
         // Sampai 2 tindakan untuk dilampirkan ke tiap kunjungan (kalau master ada).
         $procedures = Procedure::query()->where('is_active', true)->orderBy('name')->limit(2)->get();
         if ($procedures->isEmpty()) {
@@ -100,7 +107,7 @@ class KasirDemoSeeder extends Seeder
 
         $created = 0;
 
-        DB::transaction(function () use ($asuransiInsurer, $umumInsurer, $bpjsInsurer, $procedures, &$created) {
+        DB::transaction(function () use ($asuransiInsurer, $umumInsurer, $bpjsInsurer, $procedures, $dpjpDoctor, &$created) {
             $patIndex = 0;
             foreach ($this->profiles as $prof) {
                 $patIndex++;
@@ -150,6 +157,11 @@ class KasirDemoSeeder extends Seeder
                     $visit->save();
                 }
 
+                // DPJP utk kwitansi (idempoten — juga backfill kunjungan demo lama).
+                if ($dpjpDoctor && $visit->dpjp_employee_id !== $dpjpDoctor->id) {
+                    $visit->update(['dpjp_employee_id' => $dpjpDoctor->id]);
+                }
+
                 // Tindakan (VisitService) — supaya invoice punya item selain registrasi.
                 foreach ($procedures as $proc) {
                     VisitService::firstOrCreate(
@@ -181,7 +193,149 @@ class KasirDemoSeeder extends Seeder
             }
         });
 
-        $this->command?->info("KasirDemoSeeder selesai — {$created} pasien (UMUM tunai / BPJS konfirmasi / ASURANSI penuh / ASURANSI copay) di antrean Kasir + invoice DRAFT.");
+        // Riwayat pembayaran (PAID) — 1 Rawat Jalan + 1 Rawat Inap — supaya tab History
+        // & pemisahan RAJAL/RANAP + kwitansi (DPJP, judul per jenis layanan) bisa diuji.
+        $hist = $this->seedPaidHistory($umumInsurer, $dpjpDoctor, $kasir, $procedures);
+
+        $this->command?->info("KasirDemoSeeder selesai — {$created} pasien antrean Kasir (invoice DRAFT) + {$hist} transaksi PAID (history RAJAL & RANAP).");
+    }
+
+    /**
+     * Buat transaksi PAID untuk demo tab "History": 1 Rawat Jalan + 1 Rawat Inap.
+     * RANAP memakai inpatient_charges (kamar/visite/tindakan/obat) → kwitansi RANAP
+     * lengkap (blok inap + DPJP). Idempoten via NIK + cek invoice/charge existing.
+     *
+     * @return int jumlah invoice PAID yang dipastikan ada
+     */
+    private function seedPaidHistory(?Insurer $umumInsurer, ?Employee $dpjp, ?Employee $kasir, $procedures): int
+    {
+        $paid = 0;
+
+        // ── 1) RAWAT JALAN — PAID ────────────────────────────────────────────────
+        $patRj = Patient::firstOrCreate(
+            ['nik' => '3271059900110001'],
+            [
+                'no_rm' => 'KS050001', 'name' => 'Joko Prasetyo (Demo HIST-RAJAL)',
+                'gender' => 'L', 'date_of_birth' => '1980-01-10', 'phone' => '0813-05-9900',
+                'address' => 'Jl. Demo Rawat Jalan No. 5', 'province' => 'Sumatera Utara', 'is_active' => true,
+            ]
+        );
+        $visitRj = Visit::firstOrNew([
+            'patient_id'      => $patRj->id,
+            'visit_date'      => today()->toDateString(),
+            'current_station' => 'SELESAI',
+        ]);
+        if (! $visitRj->exists) {
+            $visitRj->fill([
+                'insurer_id' => $umumInsurer?->id, 'jenis_pelayanan' => 'RAJAL',
+                'classification' => 'Kontrol', 'visit_type' => 'REGULAR', 'guarantor_type' => 'UMUM',
+                'dpjp_employee_id' => $dpjp?->id, 'ready_for_doctor' => true,
+            ]);
+            $visitRj->save();
+        }
+        foreach ($procedures as $proc) {
+            VisitService::firstOrCreate(
+                ['visit_id' => $visitRj->id, 'procedure_id' => $proc->id],
+                ['quantity' => 1, 'notes' => 'Demo history rawat jalan']
+            );
+        }
+        $invRj = $this->generateInvoice($visitRj->id);
+        if ($invRj) {
+            $this->ensurePricedItem($invRj);
+            $invRj->refresh();
+            if ($this->markPaid($invRj, 'CASH', $kasir)) {
+                $paid++;
+            }
+        }
+
+        // ── 2) RAWAT INAP — PAID (kwitansi RANAP) ────────────────────────────────
+        $patRi = Patient::firstOrCreate(
+            ['nik' => '3271069900110001'],
+            [
+                'no_rm' => 'KS060001', 'name' => 'Sri Wahyuni (Demo HIST-RANAP)',
+                'gender' => 'P', 'date_of_birth' => '1970-05-05', 'phone' => '0813-06-9900',
+                'address' => 'Jl. Demo Rawat Inap No. 6', 'province' => 'Sumatera Utara', 'is_active' => true,
+            ]
+        );
+        $visitRi = Visit::firstOrNew([
+            'patient_id'      => $patRi->id,
+            'visit_date'      => today()->toDateString(),
+            'current_station' => 'SELESAI',
+        ]);
+        if (! $visitRi->exists) {
+            $visitRi->fill([
+                'insurer_id' => $umumInsurer?->id, 'jenis_pelayanan' => 'RANAP',
+                'classification' => 'Rawat Inap', 'visit_type' => 'REGULAR', 'guarantor_type' => 'UMUM',
+                'dpjp_employee_id' => $dpjp?->id,
+                'kelas_rawat_hak' => '2', 'kelas_rawat' => '2',
+                'admission_at' => now()->subDays(2), 'discharge_at' => now()->subHours(3),
+                'discharge_type' => 'PULANG_SEHAT',
+            ]);
+            $visitRi->save();
+        }
+        $this->ensureInpatientCharges($visitRi, $kasir);
+        $invRi = $this->generateInvoice($visitRi->id);
+        if ($invRi) {
+            $invRi->refresh();
+            if ($this->markPaid($invRi, 'CASH', $kasir)) {
+                $paid++;
+            }
+        }
+
+        return $paid;
+    }
+
+    /**
+     * Pastikan visit RANAP punya inpatient_charges (sumber tagihan rawat inap).
+     * Idempoten: skip bila sudah ada charge. created_by_id = kasir demo.
+     */
+    private function ensureInpatientCharges(Visit $visit, ?Employee $kasir): void
+    {
+        if (InpatientCharge::where('visit_id', $visit->id)->exists()) {
+            return;
+        }
+        $rows = [
+            [InpatientCharge::TYPE_ROOM,     'Kamar Kelas 2 (2 malam)',      2, 350000],
+            [InpatientCharge::TYPE_VISITE,   'Visite Dokter Spesialis',      2, 150000],
+            [InpatientCharge::TYPE_TINDAKAN, 'Perawatan Luka Operasi',       1, 200000],
+            [InpatientCharge::TYPE_OBAT,     'Obat Rawat Inap (paket)',      5,  20000],
+        ];
+        foreach ($rows as [$type, $desc, $qty, $price]) {
+            InpatientCharge::create([
+                'visit_id'      => $visit->id,
+                'charge_date'   => today()->toDateString(),
+                'charge_type'   => $type,
+                'description'   => $desc,
+                'quantity'      => $qty,
+                'unit_price'    => $price,
+                'total_price'   => $qty * $price,
+                'is_billed'     => false,
+                'created_by_id' => $kasir?->id,
+            ]);
+        }
+    }
+
+    /**
+     * Tandai invoice PAID langsung (seeder tanpa auth → tak bisa KasirService::processPayment
+     * yang butuh auth user). Set paid_amount = total − covered, cashier, metode, paid_at.
+     * Idempoten: skip bila sudah PAID. Return true bila menjadi PAID.
+     */
+    private function markPaid(BillingInvoice $invoice, string $method, ?Employee $kasir): bool
+    {
+        if ($invoice->status === 'PAID') {
+            return false;
+        }
+        $due = max(0.0, (float) $invoice->total - (float) $invoice->covered_amount);
+        $invoice->update([
+            'status'         => 'PAID',
+            'paid_amount'    => $due,
+            'cash_received'  => $method === 'CASH' ? $due : null,
+            'payment_method' => $method,
+            'paid_at'        => now()->subHour(),
+            'cashier_id'     => $kasir?->id,
+        ]);
+
+        return true;
     }
 
     /**
@@ -197,16 +351,27 @@ class KasirDemoSeeder extends Seeder
             return $existing;
         }
 
-        return Insurer::firstOrCreate(
-            ['code' => 'ASR-DEMO'],
-            [
-                'name'      => 'Asuransi Sehat Sentosa (Demo)',
-                'type'      => 'ASURANSI',
-                'is_active' => true,
-                'is_system' => false,
-                'is_tpa'    => false,
-            ]
-        );
+        // Baris ASR-DEMO bisa SOFT-DELETED dari run sebelumnya. Unique `code` mencakup
+        // baris trashed, jadi firstOrCreate (yang abai trashed) akan INSERT → 23505.
+        // Pulihkan & aktifkan kembali baris lama bila ada.
+        $demo = Insurer::withTrashed()->where('code', 'ASR-DEMO')->first();
+        if ($demo) {
+            if ($demo->trashed()) {
+                $demo->restore();
+            }
+            $demo->update(['is_active' => true, 'type' => 'ASURANSI']);
+
+            return $demo;
+        }
+
+        return Insurer::create([
+            'code'      => 'ASR-DEMO',
+            'name'      => 'Asuransi Sehat Sentosa (Demo)',
+            'type'      => 'ASURANSI',
+            'is_active' => true,
+            'is_system' => false,
+            'is_tpa'    => false,
+        ]);
     }
 
     /** Enqueue ke antrean KASIR hari ini (idempoten via visit+station). */

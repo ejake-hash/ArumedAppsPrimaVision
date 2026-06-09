@@ -620,12 +620,19 @@ class AdmisiService
      */
     public function cariPasien(string $keyword): Collection
     {
+        // Deteksi keyword tanggal lahir DD/MM/YYYY (juga DD-MM-YYYY / DD.MM.YYYY).
+        // Bila cocok → cari exact pada kolom date_of_birth (disimpan Y-m-d).
+        $dob = $this->parseDobKeyword($keyword);
+
         $patients = Patient::active()
-            ->where(function ($q) use ($keyword) {
+            ->where(function ($q) use ($keyword, $dob) {
                 $q->where('nik', 'like', "%{$keyword}%")
                     ->orWhere('bpjs_number', 'like', "%{$keyword}%")
                     ->orWhere('no_rm', 'ilike', "%{$keyword}%")
                     ->orWhere('name', 'ilike', "%{$keyword}%");
+                if ($dob !== null) {
+                    $q->orWhereDate('date_of_birth', $dob);
+                }
             })
             ->limit(15)
             ->get();
@@ -650,6 +657,26 @@ class AdmisiService
         });
 
         return $patients;
+    }
+
+    /**
+     * Ubah keyword pencarian tanggal lahir format DD/MM/YYYY (pemisah bisa
+     * / - . atau spasi, mis. "12 05 1990") menjadi string Y-m-d untuk whereDate.
+     * Mengembalikan null bila keyword bukan tanggal valid (mis. NIK / nama)
+     * supaya pencarian lain tetap jalan.
+     */
+    private function parseDobKeyword(string $keyword): ?string
+    {
+        $k = trim($keyword);
+        if (! preg_match('/^(\d{1,2})[\/\-.\s]+(\d{1,2})[\/\-.\s]+(\d{4})$/', $k, $m)) {
+            return null;
+        }
+        [, $d, $mo, $y] = $m;
+        if (! checkdate((int) $mo, (int) $d, (int) $y)) {
+            return null;
+        }
+
+        return sprintf('%04d-%02d-%02d', $y, $mo, $d);
     }
 
     /**
@@ -1848,10 +1875,110 @@ class AdmisiService
 
         $noSep = $result['response']['sep']['noSep'] ?? null;
         if ($noSep) {
-            $visit->update(['no_sep' => $noSep]);
+            // Snapshot untuk cetak SEP: gabung response BPJS (kanonik bila ada)
+            // dengan field yang kita kirim (jadi diagnosa/poli/rujukan tetap
+            // tercatat meski response insert minim). Dipakai pdf.sep.blade.
+            $sepSnapshot = array_merge(
+                (array) ($result['response']['sep'] ?? []),
+                [
+                    'noSep'        => $noSep,
+                    'tglSep'       => $tSep['tglSep'],
+                    'noKartu'      => $tSep['noKartu'],
+                    'jnsPelayanan' => $tSep['jnsPelayanan'],
+                    'klsRawatHak'  => $klsRawatHak,
+                    'diagAwal'     => $tSep['diagAwal'],
+                    'poliTujuan'   => $kodePoli,
+                    'noRujukan'    => $noRujukan,
+                    'catatan'      => $tSep['catatan'],
+                    'namaPeserta'  => $visit->patient?->name,
+                ]
+            );
+            $visit->update(['no_sep' => $noSep, 'sep_data' => $sepSnapshot]);
         }
 
         return $result;
+    }
+
+    /**
+     * Rakit data untuk cetak lembar SEP (pdf.sep.blade). Sumber utama = snapshot
+     * `sep_data` yang disimpan saat penerbitan; field tampil di-fallback ke data
+     * lokal (pasien/jadwal) supaya SEP lama (snapshot null) tetap bisa dicetak.
+     */
+    public function buildSepPrintData(string $visitId): array
+    {
+        $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($visitId);
+
+        if (! $visit->no_sep) {
+            throw new \Exception('Kunjungan ini belum punya SEP — terbitkan SEP dulu.', 422);
+        }
+
+        $sep      = (array) ($visit->sep_data ?? []);
+        $patient  = $visit->patient;
+        $schedule = $visit->doctorSchedule;
+
+        $jenis = $visit->jenis_pelayanan ?? 'RAJAL';
+        $jenisLabel = ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat', 'RAJAL' => 'Rawat Jalan'][$jenis] ?? 'Rawat Jalan';
+
+        $kelasMap = ['1' => 'Kelas 1', '2' => 'Kelas 2', '3' => 'Kelas 3'];
+        $klsHak   = (string) ($sep['klsRawatHak'] ?? $visit->kelas_rawat_hak ?? '');
+
+        // Diagnosa awal: kode ICD-10 → nama (Indonesia bila ada).
+        $diagCode = trim((string) ($sep['diagAwal'] ?? ''));
+        $diagName = null;
+        if ($diagCode !== '') {
+            $row = \App\Models\Icd10Code::where('code', $diagCode)->first();
+            $diagName = $row?->indonesian_description ?: $row?->description;
+        }
+        $diagnosa = $diagCode !== ''
+            ? trim($diagCode . ($diagName ? ' - ' . $diagName : ''))
+            : '—';
+
+        // Poli tujuan: nama poli dari pemetaan BPJS (by poli_code); IGD walk-in
+        // tak punya jadwal → label IGD. Kode BPJS hanya cadangan terakhir.
+        $poliCode = $jenis === 'IGD' ? 'IGD' : $schedule?->poli_code;
+        $poliName = $jenis === 'IGD'
+            ? 'IGD'
+            : (BpjsPoliMapping::where('poli_code', $poliCode)->value('poli_name')
+                ?: ($sep['poliTujuan'] ?? '—'));
+
+        $tglSep = $sep['tglSep'] ?? $visit->visit_date?->toDateString();
+
+        $clinic = ClinicProfile::first();
+        $print  = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
+
+        $genderLabel = ['L' => 'Laki-laki', 'P' => 'Perempuan'][$patient?->gender] ?? ($patient?->gender ?? '—');
+
+        return [
+            'clinic' => [
+                'name'            => $clinic?->clinic_name,
+                'letterhead_html' => $clinic ? $clinic->renderLetterheadHtml((bool) $print['show_logo']) : '',
+                'watermark_type'  => ($print['show_watermark'] && $clinic?->watermark_enabled) ? $clinic?->watermark_type : null,
+            ],
+            'sep' => [
+                'no_sep'        => $visit->no_sep,
+                'tgl_sep'       => $tglSep ? \Illuminate\Support\Carbon::parse($tglSep)->format('d-m-Y') : '—',
+                'jenis_rawat'   => $jenisLabel,
+                'kelas_rawat'   => $kelasMap[$klsHak] ?? ($klsHak !== '' ? $klsHak : '—'),
+                'diagnosa'      => $diagnosa,
+                'poli'          => $poliName,
+                'no_rujukan'    => $sep['noRujukan'] ?? $visit->no_rujukan ?: '—',
+                'catatan'       => $sep['catatan'] ?? '—',
+                'dpjp'          => $schedule?->employee?->name ?? '—',
+                'cob'           => 'Tidak',
+                'penjamin'      => 'BPJS Kesehatan',
+            ],
+            'patient' => [
+                'no_kartu'  => $sep['noKartu'] ?? $patient?->bpjs_number ?? '—',
+                'nama'      => $sep['namaPeserta'] ?? $patient?->name ?? '—',
+                'no_rm'     => $patient?->no_rm ?? '—',
+                'nik'       => $patient?->nik ?? '—',
+                'tgl_lahir' => $patient?->date_of_birth ? \Illuminate\Support\Carbon::parse($patient->date_of_birth)->format('d-m-Y') : '—',
+                'gender'    => $genderLabel,
+                'phone'     => $patient?->phone ?? '—',
+            ],
+            'printed_by' => auth('api')->user()?->name ?? '—',
+            'printed_at' => now('Asia/Jakarta')->format('d-m-Y H:i'),
+        ];
     }
 
     public function bpjsCancelSep(array $data): array
@@ -1861,9 +1988,9 @@ class AdmisiService
         $user   = auth('api')->user()?->name ?? 'arumed';
         $result = $this->vclaim->cancelSep($data['no_sep'], $user);
 
-        // Sukses → kosongkan no_sep di visit terkait.
+        // Sukses → kosongkan no_sep + snapshot SEP di visit terkait.
         if (($result['is_success'] ?? false)) {
-            Visit::where('no_sep', $data['no_sep'])->update(['no_sep' => null]);
+            Visit::where('no_sep', $data['no_sep'])->update(['no_sep' => null, 'sep_data' => null]);
         }
 
         return $result;
@@ -2170,6 +2297,14 @@ class AdmisiService
                 422
             );
         }
+
+        // Sinkronkan snapshot cetak agar reprint memakai nilai terbaru (kelas/
+        // diagnosa/catatan yang baru diubah), bukan data saat penerbitan.
+        $visit->update(['sep_data' => array_merge((array) ($visit->sep_data ?? []), [
+            'klsRawatHak' => $tSep['klsRawat']['klsRawatHak'],
+            'diagAwal'    => $tSep['diagAwal'],
+            'catatan'     => $tSep['catatan'] !== '' ? $tSep['catatan'] : ($visit->sep_data['catatan'] ?? ''),
+        ])]);
 
         return $result;
     }

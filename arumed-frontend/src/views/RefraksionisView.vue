@@ -191,11 +191,13 @@ const oDerived = computed(() => {
   if (bod || bos) parts.push(`Visus akhir OD ${bod || '–'} / OS ${bos || '–'}`)
   const fmt = (s, c, a, ad) => {
     if (![s, c, a, ad].some((x) => x !== '' && x != null)) return ''
-    const fs = s !== '' && s != null ? `S${Number(s) >= 0 ? '+' : ''}${s}` : ''
-    const fc = c !== '' && c != null ? ` C${Number(c) >= 0 ? '+' : ''}${c}` : ''
-    const fa = a !== '' && a != null ? ` ×${a}°` : ''
-    const fad = ad !== '' && ad != null ? ` Add ${ad}` : ''
-    return (fs + fc + fa + fad).trim()
+    // Label S/C/X (Sphere/Cylinder/Axis) agar nilai tunggal tak ambigu di SOAP.
+    const parts = []
+    if (s !== '' && s != null) parts.push(`S${Number(s) >= 0 ? '+' : ''}${s}`)
+    if (c !== '' && c != null) parts.push(`C${Number(c) >= 0 ? '+' : ''}${c}`)
+    if (a !== '' && a != null) parts.push(`X${a}°`)
+    if (ad !== '' && ad != null) parts.push(`Add ${ad}`)
+    return parts.join(' / ')
   }
   const rxOd = fmt(refine.value.od_s, refine.value.od_c, refine.value.od_ax, refine.value.add_od)
   const rxOs = fmt(refine.value.os_s, refine.value.os_c, refine.value.os_ax, refine.value.add_os)

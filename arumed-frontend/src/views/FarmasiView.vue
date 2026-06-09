@@ -109,7 +109,10 @@ const dispStep = computed(() => {
   if (!selRx.value) return 0
   if (selRx.value.status === 'DISPENSED') return 3
   if (selRx.value.status === 'DISPENSING') return 2
-  if (verifiedRxIds.value.has(selRx.value.id)) return 1
+  // Resep yang masuk antrean serah SUDAH diverifikasi & dikunci Farmasi sebelum
+  // bayar (alur D→K→F) → lewati langkah verifikasi UI lama. verifiedRxIds hanya
+  // fallback untuk resep tanpa verified_at (mis. OTC dibuat di apotek).
+  if (selRx.value.verified_at || verifiedRxIds.value.has(selRx.value.id)) return 1
   return 0
 })
 
@@ -337,22 +340,12 @@ async function serahkanRx() {
   if (!items.every((d) => d.checked)) {
     toast('w', 'Cek semua item terlebih dahulu'); return
   }
-  // Validasi quantity terkoreksi (>=1) sebelum kirim.
-  const invalid = items.find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
-  if (invalid) {
-    toast('w', `Jumlah obat ${invalid.medication?.name ?? ''} tidak valid (min. 1)`); return
-  }
   serahkanLoading.value = true
   try {
-    // 1) Persist quantity yang diubah petugas (diff dari _origQty) → backend,
-    //    supaya stok inventori Farmasi dipotong sesuai jumlah final saat serah.
-    const changed = items.filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
-    for (const d of changed) {
-      await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
-    }
-
-    // 2) DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
-    //    lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
+    // Jumlah obat sudah FINAL & terkunci sejak verifikasi (alur D→K→F) — serah
+    // tidak lagi mengubah qty (cegah selisih dgn tagihan yang sudah dibayar).
+    // DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
+    // lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
     const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
     selRx.value = hydrateRx(data.data, selRx.value)
     refreshQueueForRx(data.data)
@@ -384,6 +377,168 @@ function refreshQueueForRx(rx) {
   const prescriptions = selQ.value.visit?.prescriptions ?? []
   const idx = prescriptions.findIndex((p) => p.id === rx.id)
   if (idx !== -1) prescriptions[idx] = { ...prescriptions[idx], status: rx.status }
+}
+
+// ─── VERIFIKASI FARMASI (gate sebelum tagihan Kasir) — alur D→K→F ────────────
+// Resep dokter (SUBMITTED) muncul di sini. Farmasi substitusi/ubah qty/hapus/tambah
+// (wajib alasan) lalu "Verifikasi & Kunci" → Kasir baru bisa membuat tagihan.
+const verQueue   = ref([])
+const verLoading = ref(false)
+const verError   = ref('')
+const verSearch  = ref('')
+const verSel     = ref(null)
+const verBusy    = ref(false)
+
+const VER_REASONS = [
+  { v: 'STOK_HABIS',        t: 'Stok habis' },
+  { v: 'OVER_BUDGET_BPJS',  t: 'Over-budget BPJS / Fornas' },
+  { v: 'PERMINTAAN_PASIEN', t: 'Permintaan pasien' },
+  { v: 'KOREKSI_KLINIS',    t: 'Koreksi klinis' },
+  { v: 'LAINNYA',           t: 'Lainnya' },
+]
+const verReason = ref('STOK_HABIS')
+
+const verPendingCount = computed(() => verQueue.value.filter((rx) => !rx.verified_at).length)
+const filtVerQueue = computed(() => {
+  const s = verSearch.value.toLowerCase().trim()
+  if (!s) return verQueue.value
+  return verQueue.value.filter((rx) =>
+    (rx.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
+    (rx.visit?.patient?.no_rm ?? '').toLowerCase().includes(s))
+})
+const verSelTotal = computed(() =>
+  (verSel.value?.items ?? []).reduce((sum, it) => sum + Number(it.est_total_price ?? 0), 0))
+
+async function fetchVerQueue() {
+  verLoading.value = true; verError.value = ''
+  try {
+    const { data } = await farmasiApi.verifikasiQueue()
+    verQueue.value = data.data ?? []
+    if (verSel.value) verSel.value = verQueue.value.find((r) => r.id === verSel.value.id) ?? null
+  } catch (err) {
+    verError.value = err.response?.data?.message ?? 'Gagal memuat antrean verifikasi'
+  } finally { verLoading.value = false }
+}
+function pickVer(rx) { verSel.value = rx; verSubItem.value = null; verAddOpen.value = false }
+
+// Substitusi obat (pilih obat pengganti dari stok) — pakai picker stok obat penuh.
+const verSubItem   = ref(null)   // item resep yang sedang disubstitusi
+const verSubSearch = ref('')
+const verSubResults = computed(() => {
+  const s = verSubSearch.value.toLowerCase().trim()
+  const list = stokList.value
+  if (!s) return list.slice(0, 30)
+  return list.filter((m) =>
+    (m.name ?? '').toLowerCase().includes(s) ||
+    (m.generic_name ?? '').toLowerCase().includes(s) ||
+    (m.code ?? '').toLowerCase().includes(s)).slice(0, 30)
+})
+function openSubstitute(item) {
+  verSubItem.value = item; verSubSearch.value = ''
+  if (!stokList.value.length) fetchStok()
+}
+
+async function verItemUpdate(item, payload) {
+  if (verBusy.value) return
+  verBusy.value = true
+  try {
+    await farmasiApi.updateItem(item.id, { change_reason: verReason.value, ...payload })
+    await fetchVerQueue()
+    toast('s', 'Item diperbarui')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memperbarui item')
+  } finally { verBusy.value = false }
+}
+function verSetQty(item, qty) {
+  const q = Number(qty)
+  if (!Number.isFinite(q) || q < 1) { toast('w', 'Jumlah minimal 1'); return }
+  if (q === Number(item.quantity)) return
+  verItemUpdate(item, { quantity: q })
+}
+function applySubstitute(m) {
+  if (!verSubItem.value || !m?.id) return
+  if (m.id === verSubItem.value.medication_id) { verSubItem.value = null; return }
+  verItemUpdate(verSubItem.value, { medication_id: m.id })
+  verSubItem.value = null
+}
+async function verRemove(item) {
+  if (verBusy.value) return
+  if (!window.confirm(`Hapus ${item.medication?.name ?? 'item'} dari resep? Alasan: ${verReason.value}`)) return
+  verBusy.value = true
+  try {
+    await farmasiApi.deleteItem(item.id, verReason.value)
+    await fetchVerQueue()
+    toast('s', 'Item dihapus')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menghapus item')
+  } finally { verBusy.value = false }
+}
+
+// Tambah obat (bebas/OTC) saat verifikasi — golongan keras tetap ranah dokter.
+const verAddOpen   = ref(false)
+const verAddForm   = ref({ medication_id: '', quantity: 1, dosage: '', instructions: '' })
+const verAddSearch = ref('')
+const verAddResults = computed(() => {
+  const s = verAddSearch.value.toLowerCase().trim()
+  const list = otcMedications.value
+  if (!s) return list.slice(0, 30)
+  return list.filter((m) =>
+    (m.name ?? '').toLowerCase().includes(s) ||
+    (m.generic_name ?? '').toLowerCase().includes(s) ||
+    (m.code ?? '').toLowerCase().includes(s)).slice(0, 30)
+})
+const verAddSelected = computed(() => otcMedications.value.find((m) => m.id === verAddForm.value.medication_id) ?? null)
+function toggleVerAdd() {
+  verAddOpen.value = !verAddOpen.value
+  verAddSearch.value = ''
+  if (verAddOpen.value && !stokList.value.length) fetchStok()
+}
+async function verAddSubmit() {
+  if (verBusy.value) return
+  const f = verAddForm.value
+  if (!f.medication_id) { toast('w', 'Pilih obat dulu'); return }
+  if (!Number.isFinite(Number(f.quantity)) || Number(f.quantity) < 1) { toast('w', 'Jumlah minimal 1'); return }
+  verBusy.value = true
+  try {
+    await farmasiApi.storeItem(verSel.value.id, [{
+      medication_id: f.medication_id,
+      quantity:      Number(f.quantity),
+      dosage:        f.dosage || null,
+      instructions:  f.instructions || null,
+      source:        'TAMBAHAN',
+      change_reason: verReason.value,
+    }])
+    await fetchVerQueue()
+    verAddForm.value = { medication_id: '', quantity: 1, dosage: '', instructions: '' }
+    verAddOpen.value = false
+    toast('s', 'Obat ditambahkan')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menambah obat')
+  } finally { verBusy.value = false }
+}
+
+async function verLock(rx) {
+  if (verBusy.value) return
+  if (!(rx.items ?? []).length && !window.confirm('Resep tidak punya item obat. Tetap verifikasi & kunci?')) return
+  verBusy.value = true
+  try {
+    await farmasiApi.verifikasiResep(rx.id)
+    await fetchVerQueue()
+    toast('s', 'Resep diverifikasi & dikunci. Kasir dapat membuat tagihan.')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memverifikasi resep')
+  } finally { verBusy.value = false }
+}
+async function verUnlock(rx) {
+  if (verBusy.value) return
+  verBusy.value = true
+  try {
+    await farmasiApi.bukaVerifikasi(rx.id)
+    await fetchVerQueue()
+    toast('s', 'Kunci verifikasi dibuka — silakan koreksi')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membuka kunci verifikasi')
+  } finally { verBusy.value = false }
 }
 
 // ─── Dispensing Rawat Inap (permintaan obat pasien dirawat → serah ke ruangan) ─
@@ -487,6 +642,8 @@ async function tolakRanap() {
 const stokList     = ref([])
 const stokSearch   = ref('')
 const stokLoading  = ref(false)
+// Manajemen Stok melayani OBAT & BHP (BHP dikonsumsi/ditagih mis. rawat inap).
+const stokKind     = ref('obat')   // 'obat' | 'bhp'
 
 async function fetchStok() {
   stokLoading.value = true
@@ -500,6 +657,39 @@ async function fetchStok() {
     stokLoading.value = false
   }
 }
+
+// ── Stok BHP (bahan habis pakai) ──
+const bhpList    = ref([])
+const bhpLoading = ref(false)
+const bhpSearch  = ref('')
+async function fetchStokBhp() {
+  bhpLoading.value = true
+  try {
+    const { data } = await farmasiApi.stokBhp({ per_page: 'all' })
+    const payload = data.data
+    bhpList.value = Array.isArray(payload) ? payload : (payload?.data ?? [])
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat stok BHP')
+  } finally {
+    bhpLoading.value = false
+  }
+}
+const bhpFiltered = computed(() => {
+  const s = bhpSearch.value.toLowerCase()
+  return s ? bhpList.value.filter((x) =>
+    (x.name ?? '').toLowerCase().includes(s) || (x.code ?? '').toLowerCase().includes(s)) : bhpList.value
+})
+const bhpPage = ref(1)
+const bhpLastPage = computed(() => Math.max(1, Math.ceil(bhpFiltered.value.length / STOK_PER_PAGE)))
+const bhpPaged = computed(() => {
+  const start = (bhpPage.value - 1) * STOK_PER_PAGE
+  return bhpFiltered.value.slice(start, start + STOK_PER_PAGE)
+})
+const bhpLowCount = computed(() => bhpList.value.filter((b) => Number(b.stock) <= Number(b.min_stock ?? 0)).length)
+watch(bhpSearch, () => { bhpPage.value = 1 })
+watch(bhpLastPage, (lp) => { if (bhpPage.value > lp) bhpPage.value = lp })
+// Muat BHP saat pertama kali beralih ke mode BHP.
+watch(stokKind, (k) => { if (k === 'bhp' && !bhpList.value.length) fetchStokBhp() })
 
 const stokFiltered = computed(() => {
   const s = stokSearch.value.toLowerCase()
@@ -534,6 +724,19 @@ function itemStok(d) {
   const onHand = id != null ? farmasiOnHand.value.get(id) : undefined
   // Fallback ke legacy hanya bila stok unit belum termuat (stokList kosong).
   return onHand ?? Number(d.medication?.stock ?? 0)
+}
+
+// Aturan pakai 1 baris untuk item resep. Resep DOKTER simpan di
+// dose(jumlah)/frequency(signa)/route(posisi mata)/duration_days(durasi);
+// item TAMBAHAN apotek (OTC) pakai dosage/instructions legacy. Tampilkan
+// keduanya dgn fallback agar tak ada lagi "- · -".
+function rxAturan(d) {
+  const jumlah = d.dose || d.dosage || ''
+  const signa  = d.frequency || d.instructions || ''
+  const mata   = d.route || ''
+  const durasi = d.duration_days ? `${d.duration_days} hari` : ''
+  const parts  = [jumlah, signa, mata, durasi].filter(Boolean)
+  return parts.length ? parts.join(' · ') : '-'
 }
 const lowStockCount = computed(
   () => stokList.value.filter((s) => Number(s.stock) <= Number(s.min_stock ?? 0)).length,
@@ -692,13 +895,15 @@ async function pollNotifs() {
 }
 
 // ─── Edit / koreksi stok (opname manual) ─────────────────────────────────────
-const editStok = ref(null)   // { id, name, stock, min_stock, batch_number, expiry_date }
+const editStok = ref(null)   // { id, name, kind, stock, min_stock, batch_number, expiry_date }
 const savingStok = ref(false)
 
-function openEditStok(s) {
+// kind: 'obat' | 'bhp' — BHP tak punya formularium/batch/expiry (cukup stok/min).
+function openEditStok(s, kind = 'obat') {
   editStok.value = {
     id:           s.id,
     name:         s.name,
+    kind,
     stock:        Number(s.stock ?? 0),
     min_stock:    Number(s.min_stock ?? 0),
     batch_number: s.batch_number ?? '',
@@ -709,16 +914,24 @@ function openEditStok(s) {
 async function saveEditStok() {
   if (!editStok.value) return
   savingStok.value = true
+  const isBhp = editStok.value.kind === 'bhp'
   try {
-    await farmasiApi.updateStokObat(editStok.value.id, {
-      stock:        Number(editStok.value.stock),
-      min_stock:    Number(editStok.value.min_stock),
-      batch_number: editStok.value.batch_number || null,
-      expiry_date:  editStok.value.expiry_date || null,
-    })
+    if (isBhp) {
+      await farmasiApi.updateStokBhp(editStok.value.id, {
+        stock:     Number(editStok.value.stock),
+        min_stock: Number(editStok.value.min_stock),
+      })
+    } else {
+      await farmasiApi.updateStokObat(editStok.value.id, {
+        stock:        Number(editStok.value.stock),
+        min_stock:    Number(editStok.value.min_stock),
+        batch_number: editStok.value.batch_number || null,
+        expiry_date:  editStok.value.expiry_date || null,
+      })
+    }
     toast('s', `Stok ${editStok.value.name} diperbarui`)
     editStok.value = null
-    fetchStok()
+    isBhp ? fetchStokBhp() : fetchStok()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memperbarui stok')
   } finally {
@@ -1043,7 +1256,7 @@ function printEtiketFor(rx, pt) {
           <div class="row"><span class="k">Nama</span><span class="v">${escHtml(pt.name ?? '—')}</span></div>
           <div class="row"><span class="k">No.RM / Lahir</span><span class="v">${escHtml(pt.no_rm ?? '—')} · ${escHtml(fmtDateId(pt.date_of_birth))}</span></div>
           <div class="obat">${escHtml(d.medication?.name ?? '—')} <span class="qty">(${escHtml(d.quantity ?? '-')} ${escHtml(d.medication?.unit ?? '')})</span></div>
-          <div class="aturan">${escHtml(d.dosage ?? '')}${d.dosage && d.instructions ? ' — ' : ''}${escHtml(d.instructions ?? '')}</div>
+          <div class="aturan">${escHtml(rxAturan(d))}</div>
           ${d.notes ? `<div class="note">${escHtml(d.notes)}</div>` : ''}
           ${kocok}
         </div>
@@ -1287,6 +1500,7 @@ watch(() => pgTab.value, (t) => {
     if (!posHistory.value.length) loadPosHistory()
   }
   if (t === 'ranap') fetchRanapQueue()
+  if (t === 'verifikasi') fetchVerQueue()
   if (t === 'riwayat' && !rpRows.value.length) fetchRiwayatPemberian(1)
 })
 
@@ -1294,12 +1508,14 @@ watch(() => pgTab.value, (t) => {
 function pollFarmasi() {
   fetchQueue()
   if (pgTab.value === 'ranap') fetchRanapQueue()
+  if (pgTab.value === 'verifikasi') fetchVerQueue()
 }
 
 onMounted(() => {
   fetchQueue()
   fetchStok()
   fetchRanapQueue()
+  fetchVerQueue()
   _poll = setInterval(pollFarmasi, 8_000)
   connectInventoriWs()
   pollNotifs()
@@ -1328,6 +1544,11 @@ function toast(type, msg) {
   <div class="farmasi">
     <!-- NAV TABS -->
     <div class="nav-tabs">
+      <button :class="['nt', pgTab === 'verifikasi' ? 'a' : '']" @click="pgTab = 'verifikasi'">
+        <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+        Verifikasi Resep
+        <span v-if="verPendingCount" class="ntbg alert">{{ verPendingCount }}</span>
+      </button>
       <button :class="['nt', pgTab === 'dispensing' ? 'a' : '']" @click="pgTab = 'dispensing'">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
         Dispensing Rawat Jalan
@@ -1580,7 +1801,7 @@ function toast(type, msg) {
                   {{ d.medication?.name ?? '—' }}
                   <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">TAMBAHAN APOTEK</span>
                 </div>
-                <div class="dd-dose">{{ d.dosage ?? '-' }} · {{ d.instructions ?? '-' }}</div>
+                <div class="dd-dose">{{ rxAturan(d) }}</div>
                 <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
                   Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
                 </div>
@@ -1588,14 +1809,16 @@ function toast(type, msg) {
               </div>
               <div class="dd-qty-col">
                 <span class="dd-qty-label">Jumlah</span>
-                <input v-model.number="d.quantity" type="number" min="1" class="dd-qty" :disabled="selRx.status === 'DISPENSED'" />
+                <input v-model.number="d.quantity" type="number" min="1" class="dd-qty" :disabled="selRx.status === 'DISPENSED' || !!selRx.verified_at" />
                 <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
               </div>
             </div>
             <div v-if="!selRx.items?.length" class="empty-rx">Resep belum punya item obat.</div>
 
-            <!-- Tambah obat di luar resep dokter (hanya selama belum diserahkan) -->
-            <div v-if="selRx.status !== 'DISPENSED'" class="otc-section">
+            <!-- Tambah obat di luar resep: hanya untuk resep BELUM dikunci (mis. OTC
+                 tanpa resep dokter). Resep terverifikasi sudah ditagih → perubahan
+                 obat dilakukan di tab Verifikasi (sebelum bayar) atau via Penjualan POS. -->
+            <div v-if="selRx.status !== 'DISPENSED' && !selRx.verified_at" class="otc-section">
               <button class="btn btn-secondary btn-sm otc-toggle" @click="toggleAddObat">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 {{ addObatOpen ? 'Tutup' : 'Tambah Obat (di luar resep)' }}
@@ -1663,6 +1886,166 @@ function toast(type, msg) {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                 Obat sudah diserahkan
               </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VERIFIKASI RESEP (gate sebelum tagihan Kasir) -->
+    <div v-if="pgTab === 'verifikasi'" class="tab-pane">
+      <div class="loc-note">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>Verifikasi resep dokter <b>sebelum</b> pasien membayar. Substitusi / ubah jumlah / hapus / tambah obat (mis. <b>over-budget BPJS</b> atau <b>stok habis</b>), lalu <b>Verifikasi &amp; Kunci</b> — Kasir baru bisa membuat tagihan sesuai obat final.</span>
+      </div>
+
+      <div class="disp-grid">
+        <!-- Daftar resep perlu verifikasi -->
+        <div class="rx-col">
+          <div class="rx-filterbar">
+            <input v-model="verSearch" class="fi" placeholder="Cari nama / no. RM…" />
+            <button class="btn btn-secondary btn-sm" :disabled="verLoading" @click="fetchVerQueue">↻</button>
+          </div>
+          <div class="rx-list">
+            <div v-if="verError" class="empty-rx">{{ verError }}</div>
+            <div v-else-if="!filtVerQueue.length" class="empty-rx">Tidak ada resep menunggu verifikasi.</div>
+            <div v-for="rx in filtVerQueue" :key="rx.id"
+                 :class="['rx-card', verSel?.id === rx.id ? 'active' : '', rx.verified_at ? 'done' : '']"
+                 @click="pickVer(rx)">
+              <div class="rx-body">
+                <div class="rx-top">
+                  <div class="rx-name">{{ rx.visit?.patient?.name ?? '—' }}</div>
+                  <span :class="['ver-badge', rx.verified_at ? 'ok' : 'wait']">{{ rx.verified_at ? '🔒 Terkunci' : 'Perlu verifikasi' }}</span>
+                </div>
+                <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-items"><div class="rx-item muted">{{ (rx.items?.length ?? 0) }} item · est {{ rp(rx.est_total) }}</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detail verifikasi -->
+        <div class="disp-col">
+          <div v-if="!verSel" class="disp-empty">
+            <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+            <p>Pilih resep dari daftar untuk diverifikasi.</p>
+          </div>
+          <div v-else>
+            <div class="dd-patient-row">
+              <div>
+                <div class="ddp-name">{{ verSel.visit?.patient?.name ?? '—' }}</div>
+                <div class="rx-meta">RM {{ verSel.visit?.patient?.no_rm ?? '—' }} · {{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+              </div>
+              <span :class="['ver-badge', verSel.verified_at ? 'ok' : 'wait']">{{ verSel.verified_at ? '🔒 Terkunci' : 'Belum diverifikasi' }}</span>
+            </div>
+
+            <!-- Pemilih alasan perubahan (dipakai untuk substitusi/ubah/hapus/tambah) -->
+            <div v-if="!verSel.verified_at" class="ver-reason">
+              <label class="otc-label">Alasan perubahan (untuk substitusi / hapus / tambah)</label>
+              <select v-model="verReason" class="fi">
+                <option v-for="r in VER_REASONS" :key="r.v" :value="r.v">{{ r.t }}</option>
+              </select>
+            </div>
+
+            <div class="sec-title">Item Obat</div>
+            <div v-for="d in verSel.items" :key="d.id" class="dd">
+              <div class="dd-info">
+                <div class="dd-name">
+                  {{ d.medication?.name ?? '—' }}
+                  <span v-if="d.original_medication_id" class="otc-tag">substitusi</span>
+                  <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">tambahan</span>
+                </div>
+                <div class="dd-dose">{{ rxAturan(d) }}</div>
+                <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
+                  Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }} · est {{ rp(d.est_total_price) }}
+                </div>
+                <div v-if="d.change_reason" class="dd-dose">Alasan: {{ d.change_reason }}</div>
+
+                <!-- Picker substitusi -->
+                <div v-if="!verSel.verified_at && verSubItem?.id === d.id" class="otc-picker" style="margin-top:.4rem">
+                  <input v-model="verSubSearch" class="fi otc-input" placeholder="Cari obat pengganti (nama/generik/kode)…" autofocus />
+                  <div class="otc-picker-drop" style="position:static;max-height:180px">
+                    <div v-if="!verSubResults.length" class="otc-pick-empty">Tidak ada obat cocok</div>
+                    <div v-for="m in verSubResults" :key="m.id" class="otc-picker-item" @mousedown.prevent="applySubstitute(m)">
+                      <span class="otc-pi-name">{{ m.name }}</span>
+                      <span class="otc-pi-meta"><span class="kategori-pill">{{ m.golongan }}</span><span>stok {{ m.stock }}</span></span>
+                    </div>
+                  </div>
+                  <button class="btn btn-secondary btn-sm" style="margin-top:.3rem" @click="verSubItem = null">Batal substitusi</button>
+                </div>
+              </div>
+              <div class="dd-qty-col">
+                <span class="dd-qty-label">Jumlah</span>
+                <input :value="d.quantity" type="number" min="1" class="dd-qty" :disabled="!!verSel.verified_at || verBusy"
+                       @change="verSetQty(d, $event.target.value)" />
+                <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+                <div v-if="!verSel.verified_at" class="ver-item-actions">
+                  <button class="ver-lnk" :disabled="verBusy" @click="openSubstitute(d)">Substitusi</button>
+                  <button class="ver-lnk danger" :disabled="verBusy" @click="verRemove(d)">Hapus</button>
+                </div>
+              </div>
+            </div>
+            <div v-if="!verSel.items?.length" class="empty-rx">Resep tidak punya item obat.</div>
+
+            <!-- Tambah obat bebas saat verifikasi -->
+            <div v-if="!verSel.verified_at" class="otc-section">
+              <button class="btn btn-secondary btn-sm otc-toggle" @click="toggleVerAdd">
+                <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                {{ verAddOpen ? 'Tutup' : 'Tambah Obat (bebas)' }}
+              </button>
+              <div v-if="verAddOpen" class="otc-form" style="margin-top:.6rem">
+                <div class="otc-fields">
+                  <div class="otc-field otc-wide">
+                    <label class="otc-label">Obat (bebas/bebas terbatas)</label>
+                    <div v-if="verAddSelected" class="otc-picked">
+                      <span><b>{{ verAddSelected.name }}</b> <span class="muted">({{ verAddSelected.golongan }})</span></span>
+                      <button type="button" class="otc-picked-x" @click="verAddForm.medication_id = ''">✕</button>
+                    </div>
+                    <div v-else class="otc-picker">
+                      <input v-model="verAddSearch" class="fi otc-input" placeholder="Ketik nama / generik / kode obat…" />
+                      <div v-if="verAddSearch" class="otc-picker-drop" style="position:static;max-height:160px">
+                        <div v-if="!verAddResults.length" class="otc-pick-empty">Tidak ada obat bebas cocok</div>
+                        <div v-for="m in verAddResults" :key="m.id" class="otc-picker-item" @mousedown.prevent="verAddForm.medication_id = m.id; verAddSearch = ''">
+                          <span class="otc-pi-name">{{ m.name }}</span>
+                          <span class="otc-pi-meta"><span class="kategori-pill">{{ m.golongan }}</span><span>stok {{ m.stock }}</span></span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="otc-field otc-narrow">
+                    <label class="otc-label">Jumlah</label>
+                    <input v-model.number="verAddForm.quantity" type="number" min="1" class="fi otc-input" />
+                  </div>
+                  <div class="otc-field">
+                    <label class="otc-label">Aturan pakai</label>
+                    <input v-model="verAddForm.instructions" class="fi otc-input" placeholder="mis. 3x/hari" />
+                  </div>
+                </div>
+                <div class="otc-form-actions">
+                  <button class="btn btn-success btn-sm" :disabled="verBusy" @click="verAddSubmit">Tambahkan</button>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="verSel.pharmacy_note" class="doc-note"><b>Catatan untuk Farmasi:</b> {{ verSel.pharmacy_note }}</div>
+
+            <div class="ver-summary">
+              <span>Estimasi total obat ({{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }})</span>
+              <b>{{ rp(verSelTotal) }}</b>
+            </div>
+
+            <div class="disp-actions">
+              <button v-if="!verSel.verified_at" class="btn btn-success btn-lg" :disabled="verBusy" @click="verLock(verSel)">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                Verifikasi &amp; Kunci
+              </button>
+              <template v-else>
+                <span class="done-pill">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  Terverifikasi — menunggu pembayaran di Kasir
+                </span>
+                <button class="btn btn-secondary btn-lg" :disabled="verBusy" @click="verUnlock(verSel)">Buka Kunci (koreksi)</button>
+              </template>
             </div>
           </div>
         </div>
@@ -1794,17 +2177,22 @@ function toast(type, msg) {
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         <span>Stok yang ditampilkan = <b>stok unit Farmasi</b> (yang dipakai saat penyerahan obat), bukan stok gudang. Minta transfer lewat <b>Minta Barang</b> bila kurang.</span>
       </div>
+      <div class="stok-kind-toggle">
+        <button :class="['skt-btn', stokKind === 'obat' ? 'a' : '']" @click="stokKind = 'obat'">Obat</button>
+        <button :class="['skt-btn', stokKind === 'bhp' ? 'a' : '']" @click="stokKind = 'bhp'">BHP (Bahan Habis Pakai)</button>
+      </div>
       <div class="stok-head">
         <div class="stok-actions">
           <div class="stok-search">
             <svg viewBox="0 0 24 24" class="stok-search-ico"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input v-model="stokSearch" class="fi stok-search-input" placeholder="Cari obat..." />
+            <input v-if="stokKind === 'obat'" v-model="stokSearch" class="fi stok-search-input" placeholder="Cari obat..." />
+            <input v-else v-model="bhpSearch" class="fi stok-search-input" placeholder="Cari BHP (nama / kode)..." />
           </div>
-          <button class="btn btn-primary btn-sm" @click="requestOpen = true">
+          <button v-if="stokKind === 'obat'" class="btn btn-primary btn-sm" @click="requestOpen = true">
             <svg viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17M17 13v4a2 2 0 01-2 2H9"/></svg>
             Minta Barang
           </button>
-          <button class="btn btn-secondary btn-sm" @click="returOpen = true">
+          <button v-if="stokKind === 'obat'" class="btn btn-secondary btn-sm" @click="returOpen = true">
             <svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg>
             Retur Obat
           </button>
@@ -1849,11 +2237,17 @@ function toast(type, msg) {
           </div>
         </div>
       </div>
-      <div v-if="lowStockCount" class="low-alert">
+      <div v-if="stokKind === 'obat' && lowStockCount" class="low-alert">
         <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
         {{ lowStockCount }} item stok low/habis: {{ stokList.filter((s) => Number(s.stock) <= Number(s.min_stock ?? 0)).map((s) => s.name).join(', ') }}
       </div>
-      <div class="po-table-wrap">
+      <div v-if="stokKind === 'bhp' && bhpLowCount" class="low-alert">
+        <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+        {{ bhpLowCount }} BHP stok low/habis: {{ bhpList.filter((b) => Number(b.stock) <= Number(b.min_stock ?? 0)).map((b) => b.name).join(', ') }}
+      </div>
+
+      <!-- Tabel stok OBAT -->
+      <div v-if="stokKind === 'obat'" class="po-table-wrap">
         <table class="po-table">
           <thead>
             <tr>
@@ -1894,6 +2288,46 @@ function toast(type, msg) {
           </tbody>
         </table>
         <Pager v-model:page="stokPage" :last-page="stokLastPage" :total="stokFiltered.length" />
+      </div>
+
+      <!-- Tabel stok BHP -->
+      <div v-else class="po-table-wrap">
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="width:48px" class="c">No.</th>
+              <th>Nama BHP</th>
+              <th>Kode</th>
+              <th class="r">Stok</th>
+              <th class="r">Min</th>
+              <th>Unit</th>
+              <th class="c">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="bhpLoading && !bhpList.length"><td colspan="7" class="po-state">Memuat stok BHP…</td></tr>
+            <tr v-for="(b, i) in bhpPaged" :key="b.id ?? b.name">
+              <td class="c muted">{{ (bhpPage - 1) * STOK_PER_PAGE + i + 1 }}</td>
+              <td><strong>{{ b.name }}</strong></td>
+              <td class="muted">{{ b.code ?? '—' }}</td>
+              <td class="r">
+                <div class="stok-cell">
+                  <span :class="{ out: Number(b.stock) === 0, low: Number(b.stock) > 0 && Number(b.stock) <= Number(b.min_stock ?? 0) }">{{ b.stock }}</span>
+                  <div class="bar"><div :class="['bar-fill', Number(b.stock) === 0 ? 'out' : Number(b.stock) <= Number(b.min_stock ?? 0) ? 'low' : 'ok']" :style="{ width: Math.min((Number(b.stock) / Math.max(Number(b.min_stock ?? 0) * 5, 1)) * 100, 100) + '%' }"></div></div>
+                </div>
+              </td>
+              <td class="r muted">{{ b.min_stock ?? '—' }}</td>
+              <td class="muted">{{ b.unit ?? '—' }}</td>
+              <td class="c">
+                <button class="po-icon-btn" title="Koreksi stok BHP" @click="openEditStok(b, 'bhp')">
+                  <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!bhpLoading && !bhpFiltered.length"><td colspan="7" class="po-state">Tidak ada data stok BHP</td></tr>
+          </tbody>
+        </table>
+        <Pager v-model:page="bhpPage" :last-page="bhpLastPage" :total="bhpFiltered.length" />
       </div>
     </div>
 
@@ -2079,17 +2513,18 @@ function toast(type, msg) {
             <thead>
               <tr>
                 <th>No. Transaksi</th><th>Pembeli</th><th class="r">Total</th>
-                <th>Bayar</th><th>Waktu</th><th class="c">Status</th><th class="c">Aksi</th>
+                <th>Bayar</th><th>Waktu</th><th>Petugas</th><th class="c">Status</th><th class="c">Aksi</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="posHistoryLoading && !posHistory.length"><td colspan="7" class="po-state">Memuat…</td></tr>
+              <tr v-if="posHistoryLoading && !posHistory.length"><td colspan="8" class="po-state">Memuat…</td></tr>
               <tr v-for="s in posHistory" :key="s.id" :class="{ 'pos-cancelled': s.status === 'CANCELLED' }">
                 <td><strong>{{ s.sale_number }}</strong></td>
                 <td>{{ s.buyer_name || '—' }}</td>
                 <td class="r"><strong>{{ rp(s.total) }}</strong></td>
                 <td class="muted">{{ s.payment_method }}</td>
                 <td class="muted">{{ fmtDateTime(s.created_at) }}</td>
+                <td class="muted">{{ s.sold_by?.name || '—' }}</td>
                 <td class="c">
                   <span class="lap-badge" :class="s.status === 'CANCELLED' ? 'b-out' : 'b-low'" style="background:var(--sb);color:var(--st)" v-if="s.status !== 'CANCELLED'">PAID</span>
                   <span class="lap-badge b-out" v-else>BATAL</span>
@@ -2103,7 +2538,7 @@ function toast(type, msg) {
                   </button>
                 </td>
               </tr>
-              <tr v-if="!posHistoryLoading && !posHistory.length"><td colspan="7" class="po-state">Belum ada penjualan</td></tr>
+              <tr v-if="!posHistoryLoading && !posHistory.length"><td colspan="8" class="po-state">Belum ada penjualan</td></tr>
             </tbody>
           </table>
         </div>
@@ -2370,11 +2805,11 @@ function toast(type, msg) {
               <label>Min. Stok</label>
               <input v-model.number="editStok.min_stock" type="number" min="0" class="es-input" />
             </div>
-            <div class="es-field">
+            <div v-if="editStok.kind !== 'bhp'" class="es-field">
               <label>Batch</label>
               <input v-model="editStok.batch_number" class="es-input" placeholder="—" />
             </div>
-            <div class="es-field">
+            <div v-if="editStok.kind !== 'bhp'" class="es-field">
               <label>Kadaluarsa</label>
               <input v-model="editStok.expiry_date" type="date" class="es-input" />
             </div>
@@ -2418,6 +2853,24 @@ function toast(type, msg) {
 
 .disp-grid { display: grid; grid-template-columns: 300px 1fr; gap: 0.75rem; }
 .rx-col { display: flex; flex-direction: column; }
+
+/* ── Verifikasi Farmasi ── */
+.rx-filterbar { display: flex; gap: 6px; padding: 0 0 8px; }
+.rx-filterbar .fi { flex: 1; }
+.ver-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+.ver-badge.wait { background: #fef3c7; color: #92400e; }
+.ver-badge.ok { background: #dcfce7; color: #166534; }
+.dd-patient-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid var(--gb); }
+.ddp-name { font-size: 15px; font-weight: 700; color: var(--td); }
+.ver-reason { margin: 8px 0 12px; }
+.ver-reason .fi { width: 100%; }
+.ver-item-actions { display: flex; gap: 8px; margin-top: 6px; justify-content: flex-end; }
+.ver-lnk { background: none; border: none; padding: 2px 4px; font-size: 11.5px; font-weight: 600; color: var(--ga); cursor: pointer; }
+.ver-lnk:hover { text-decoration: underline; }
+.ver-lnk.danger { color: #dc2626; }
+.ver-lnk:disabled { opacity: 0.5; cursor: default; }
+.ver-summary { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; margin: 12px 0; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; font-size: 13px; }
+.ver-summary b { font-size: 15px; color: var(--td); }
 .card-head { padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .card-head-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--td); }
 .card-head-title svg { width: 14px; height: 14px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
@@ -2596,6 +3049,9 @@ function toast(type, msg) {
 .done-pill svg { width: 14px; height: 14px; }
 
 /* STOK */
+.stok-kind-toggle { display: inline-flex; gap: 2px; padding: 3px; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; margin-bottom: 0.75rem; }
+.skt-btn { border: none; background: none; padding: 6px 14px; font-size: 12.5px; font-weight: 600; color: var(--tu); border-radius: 7px; cursor: pointer; }
+.skt-btn.a { background: var(--ga); color: #fff; }
 .stok-head { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
 .stok-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 

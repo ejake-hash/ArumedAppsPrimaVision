@@ -195,6 +195,14 @@ class MasterDataService
     public function indexPenjamin(array $filters = []): LengthAwarePaginator
     {
         $query = Insurer::query()->withCount('children');
+        if (! empty($filters['search'])) {
+            $kw = trim($filters['search']);
+            $query->where(function ($w) use ($kw) {
+                $w->where('name', 'ilike', "%{$kw}%")
+                  ->orWhere('phone', 'ilike', "%{$kw}%")
+                  ->orWhere('code', 'ilike', "%{$kw}%");
+            });
+        }
         if (! empty($filters['type'])) {
             $query->where('type', $filters['type']);
         }

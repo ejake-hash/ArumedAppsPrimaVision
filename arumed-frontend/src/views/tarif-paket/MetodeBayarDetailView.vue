@@ -12,7 +12,7 @@
  * - TPA induk: 2 tab — "Anggota / Child" (tambah/keluarkan anggota) &
  *   "Tarif Tindakan (PKS)". Penjamin biasa: tarif tampil langsung tanpa tab.
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { tarifPaketApi, masterApi } from '@/services/api'
 import MetodeBayarTarifTab from './MetodeBayarTarifTab.vue'
@@ -33,6 +33,36 @@ const targetInsurerId = computed(() => detail.value?.tariff_insurer_id ?? insure
 // ─── Anggota TPA ────────────────────────────────────────────────────────────
 const canManageMembers = computed(() => !!detail.value?.can_manage_members)
 const members = computed(() => insurer.value?.children ?? [])
+
+// Search + pagination anggota (client-side: seluruh anggota sudah dimuat di detail).
+const MEMBERS_PER_PAGE = 10
+const memberSearch = ref('')
+const memberPage = ref(1)
+
+const filteredMembers = computed(() => {
+  const q = memberSearch.value.trim().toLowerCase()
+  if (!q) return members.value
+  return members.value.filter((m) => (m.name ?? '').toLowerCase().includes(q))
+})
+const memberTotalPages = computed(() =>
+  Math.max(1, Math.ceil(filteredMembers.value.length / MEMBERS_PER_PAGE)),
+)
+const pagedMembers = computed(() => {
+  const start = (memberPage.value - 1) * MEMBERS_PER_PAGE
+  return filteredMembers.value.slice(start, start + MEMBERS_PER_PAGE)
+})
+// Reset / clamp halaman saat pencarian berubah atau jumlah anggota berkurang.
+watch([memberSearch, () => filteredMembers.value.length], () => {
+  if (memberPage.value > memberTotalPages.value) memberPage.value = memberTotalPages.value
+})
+
+// Search kandidat di modal "Tambah Anggota" (client-side).
+const candidateSearch = ref('')
+const filteredCandidates = computed(() => {
+  const q = candidateSearch.value.trim().toLowerCase()
+  if (!q) return addModal.value.candidates
+  return addModal.value.candidates.filter((c) => (c.name ?? '').toLowerCase().includes(q))
+})
 
 // Tab switcher — hanya relevan untuk TPA induk (punya Anggota + Tarif). Penjamin
 // biasa langsung tampil tarif tanpa tab. Default ke tab Anggota (tab 1).
@@ -64,6 +94,7 @@ function onChanged() { loadDetail() }
 
 // ─── Tambah anggota ─────────────────────────────────────────────────────────
 async function openAddMember() {
+  candidateSearch.value = ''
   addModal.value = { open: true, candidates: [], selectedId: '', newName: '', loading: true, busy: false }
   try {
     const res = await masterApi.penjamin.memberCandidates(insurerId.value)
@@ -232,15 +263,37 @@ onMounted(loadDetail)
         <div v-if="!members.length" class="mbd-members-empty">
           Belum ada anggota. Klik “Tambah Anggota” untuk memasukkan asuransi/perusahaan ke TPA ini.
         </div>
-        <ul v-else class="mbd-members-list">
-          <li v-for="m in members" :key="m.id" class="mbd-member-row">
-            <div class="mbd-member-info">
-              <span class="mbd-member-name">{{ m.name }}</span>
-              <span class="mbd-type-pill" :data-t="m.type">{{ m.type }}</span>
+        <template v-else>
+          <div class="mbd-member-search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input v-model="memberSearch" type="text" placeholder="Cari anggota berdasarkan nama…" />
+          </div>
+
+          <div v-if="!filteredMembers.length" class="mbd-members-empty">
+            Tidak ada anggota yang cocok dengan pencarian “{{ memberSearch }}”.
+          </div>
+          <ul v-else class="mbd-members-list">
+            <li v-for="m in pagedMembers" :key="m.id" class="mbd-member-row">
+              <div class="mbd-member-info">
+                <span class="mbd-member-name">{{ m.name }}</span>
+                <span class="mbd-type-pill" :data-t="m.type">{{ m.type }}</span>
+              </div>
+              <button class="mbd-btn-danger-ghost" @click="askRemoveMember(m)">Keluarkan dari TPA</button>
+            </li>
+          </ul>
+
+          <div v-if="memberTotalPages > 1" class="mbd-member-pager">
+            <span class="mbd-page-info">
+              {{ filteredMembers.length }} anggota · Halaman {{ memberPage }} / {{ memberTotalPages }}
+            </span>
+            <div class="mbd-page-nav">
+              <button :disabled="memberPage <= 1" @click="memberPage = 1">«</button>
+              <button :disabled="memberPage <= 1" @click="memberPage--">‹</button>
+              <button :disabled="memberPage >= memberTotalPages" @click="memberPage++">›</button>
+              <button :disabled="memberPage >= memberTotalPages" @click="memberPage = memberTotalPages">»</button>
             </div>
-            <button class="mbd-btn-danger-ghost" @click="askRemoveMember(m)">Keluarkan dari TPA</button>
-          </li>
-        </ul>
+          </div>
+        </template>
       </section>
 
       <!-- Tab 2: Tarif Tindakan (PKS) — untuk penjamin biasa tampil langsung tanpa tab -->
@@ -276,9 +329,13 @@ onMounted(loadDetail)
               <!-- List kandidat existing (klik untuk pilih) -->
               <div v-if="addModal.candidates.length" class="mbd-cand-wrap">
                 <label class="mbd-modal-label">Pilih dari penjamin yang ada</label>
-                <ul class="mbd-cand-list">
+                <div class="mbd-member-search mbd-cand-search">
+                  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <input v-model="candidateSearch" type="text" placeholder="Cari kandidat…" />
+                </div>
+                <ul v-if="filteredCandidates.length" class="mbd-cand-list">
                   <li
-                    v-for="c in addModal.candidates"
+                    v-for="c in filteredCandidates"
                     :key="c.id"
                     class="mbd-cand-item"
                     :class="{ 'is-selected': addModal.selectedId === c.id }"
@@ -288,6 +345,9 @@ onMounted(loadDetail)
                     <span class="mbd-type-pill" :data-t="c.type">{{ c.type }}</span>
                   </li>
                 </ul>
+                <div v-else class="mbd-modal-state">
+                  Tidak ada kandidat yang cocok dengan “{{ candidateSearch }}”.
+                </div>
               </div>
               <div v-else class="mbd-modal-state">
                 Tidak ada kandidat existing — kamu masih bisa membuat asuransi baru di bawah.
@@ -480,6 +540,21 @@ onMounted(loadDetail)
 .mbd-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
 
 .mbd-members-empty { padding: 1.3rem; text-align: center; color: var(--tm); font-size: 13px; background: var(--bs); border: 1px dashed var(--gb); border-radius: 10px; }
+
+/* Search box anggota / kandidat */
+.mbd-member-search { position: relative; display: flex; align-items: center; }
+.mbd-member-search svg { position: absolute; left: 11px; width: 15px; height: 15px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+.mbd-member-search input { width: 100%; padding: 9px 12px 9px 34px; border: 1px solid var(--gb); border-radius: 9px; background: var(--bc); font-size: 13px; color: var(--td); box-sizing: border-box; transition: border-color 0.15s; }
+.mbd-member-search input:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 3px rgba(31,125,74,0.12); }
+.mbd-cand-search { margin-bottom: 2px; }
+
+/* Pager anggota */
+.mbd-member-pager { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 0.3rem; }
+.mbd-page-info { font-size: 12px; color: var(--tu); }
+.mbd-page-nav { display: flex; gap: 4px; }
+.mbd-page-nav button { min-width: 32px; height: 32px; padding: 0 8px; border: 1px solid var(--gb); background: var(--bc); border-radius: 7px; cursor: pointer; font-size: 12px; color: var(--td); transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.mbd-page-nav button:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); }
+.mbd-page-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
 .mbd-members-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .mbd-member-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.7rem 1rem; border: 1px solid var(--gb); border-radius: 10px; background: var(--bc); }
 .mbd-member-row:hover { background: var(--bs); }

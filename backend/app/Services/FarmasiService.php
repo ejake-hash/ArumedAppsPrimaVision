@@ -161,6 +161,13 @@ class FarmasiService
             throw new \Exception('Resep tidak dalam status yang bisa diproses.', 422);
         }
 
+        // Defensif: resep RAJAL hanya boleh disiapkan/diserahkan setelah diverifikasi
+        // & dikunci Farmasi (gate utama ada di Kasir; ini lapis kedua agar tak ada
+        // resep belum-verifikasi yang lolos ke dispensing).
+        if ($prescription->type !== Prescription::TYPE_RANAP && is_null($prescription->verified_at)) {
+            throw new \Exception('Resep belum diverifikasi Farmasi — verifikasi & kunci dulu sebelum menyiapkan obat.', 422);
+        }
+
         $prescription->update(['status' => 'DISPENSING']);
 
         $this->log(auth('api')->id(), 'START_DISPENSING', Prescription::class, $prescriptionId);
@@ -227,6 +234,134 @@ class FarmasiService
         $this->log(auth('api')->id(), 'CANCEL_RESEP', Prescription::class, $prescriptionId);
 
         return $prescription->fresh();
+    }
+
+    // -------------------------------------------------------------------------
+    // VERIFIKASI FARMASI (gate sebelum tagihan Kasir) — alur D→K→F
+    //
+    // Resep dokter (SUBMITTED) muncul di worklist "Perlu Verifikasi". Farmasi
+    // menyunting (substitusi/qty/tambah/hapus + alasan) lalu "Verifikasi & Kunci"
+    // (set verified_at). Kasir BARU bisa membuat tagihan setelah resep terverifikasi
+    // (consolidateBilling gate). Tujuan: tagihan = obat yang benar-benar diserahkan.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Worklist verifikasi: resep RAJAL berstatus SUBMITTED (belum & sudah diverifikasi,
+     * dibedakan via verified_at). Tiap item dilampiri estimasi harga sesuai penjamin
+     * (SUMBER SAMA dgn kasir: KasirService::getPrice) supaya farmasi bisa kelola
+     * over-budget BPJS sebelum mengunci.
+     *
+     * Cakupan tanggal:
+     *  - filter `tanggal` eksplisit → hanya resep di tanggal itu.
+     *  - default (tanpa filter) → resep HARI INI + SEMUA resep yang BELUM diverifikasi
+     *    (verified_at NULL) lintas-hari. Sebab resep belum-verified MENGHAMBAT tagihan
+     *    Kasir (gate consolidateBilling) — bila hilang dari worklist keesokan hari,
+     *    tagihan buntu tanpa jalan keluar. (Resep lama sudah di-backfill verified_at
+     *    saat migrasi → tak ikut membanjiri.)
+     */
+    public function getVerificationQueue(array $filters = []): Collection
+    {
+        $rows = Prescription::with(['visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication'])
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->where('status', 'SUBMITTED')
+            ->when(
+                ! empty($filters['tanggal']),
+                fn ($q) => $q->whereDate('created_at', $filters['tanggal']),
+                fn ($q) => $q->where(fn ($w) => $w->whereDate('created_at', today())->orWhereNull('verified_at')),
+            )
+            ->when(! empty($filters['search']), fn ($q) => $q->whereHas('visit.patient', fn ($p) => $p
+                ->where('name', 'ilike', "%{$filters['search']}%")
+                ->orWhere('no_rm', 'ilike', "%{$filters['search']}%")))
+            ->orderByRaw('verified_at IS NOT NULL')   // belum diverifikasi dulu
+            ->orderBy('created_at')
+            ->get();
+
+        $kasir = app(KasirService::class);
+        $rows->each(function ($rx) use ($kasir) {
+            $guarantor = $rx->visit?->guarantor_type ?: 'UMUM';
+            $insurerId = $rx->visit?->insurer_id;
+            $total = 0.0;
+            foreach ($rx->items as $it) {
+                $price = 0.0;
+                try {
+                    $price = (float) $kasir->getPrice('medication', $it->medication_id, $guarantor, $insurerId);
+                } catch (\Throwable $e) {
+                    $price = 0.0;
+                }
+                $it->est_unit_price  = $price;
+                $it->est_total_price = $price * (float) $it->quantity;
+                $total += $it->est_total_price;
+            }
+            $rx->est_total = $total;
+        });
+
+        return $rows;
+    }
+
+    /** SUBMITTED (belum verified) → set verified_at/by. Idempoten (dobel-klik aman). */
+    public function verifyPrescription(string $prescriptionId): Prescription
+    {
+        $prescription = Prescription::findOrFail($prescriptionId);
+
+        if ($prescription->type === Prescription::TYPE_RANAP) {
+            throw new \Exception('Permintaan rawat inap tidak melalui verifikasi loket.', 422);
+        }
+        if ($prescription->status !== 'SUBMITTED') {
+            throw new \Exception('Hanya resep yang sudah dikirim dokter (status "Siap diverifikasi") yang bisa diverifikasi.', 422);
+        }
+        if ($prescription->verified_at) {
+            return $prescription->fresh(['items.medication', 'verifiedBy']);   // sudah terverifikasi
+        }
+
+        $user = auth('api')->user();
+        $prescription->update([
+            'verified_at'    => now(),
+            'verified_by_id' => $user?->employee_id,
+        ]);
+        $this->log($user?->id, 'VERIFY_RESEP', Prescription::class, $prescriptionId, 'Resep diverifikasi & dikunci Farmasi');
+
+        return $prescription->fresh(['items.medication', 'verifiedBy']);
+    }
+
+    /**
+     * Buka kunci verifikasi (untuk koreksi SEBELUM tagihan dibuat). Ditolak bila
+     * invoice sudah dibuat di Kasir — batalkan invoice dulu (cegah desync tagihan).
+     */
+    public function unverifyPrescription(string $prescriptionId): Prescription
+    {
+        $prescription = Prescription::findOrFail($prescriptionId);
+
+        if (is_null($prescription->verified_at)) {
+            return $prescription->fresh(['items.medication']);   // sudah terbuka
+        }
+
+        $adaInvoice = \App\Models\BillingInvoice::where('visit_id', $prescription->visit_id)
+            ->whereNotIn('status', ['CANCELLED'])
+            ->exists();
+        if ($adaInvoice) {
+            throw new \Exception('Tagihan sudah dibuat di Kasir — batalkan invoice dulu sebelum membuka kunci verifikasi.', 422);
+        }
+
+        $user = auth('api')->user();
+        $prescription->update(['verified_at' => null, 'verified_by_id' => null]);
+        $this->log($user?->id, 'UNVERIFY_RESEP', Prescription::class, $prescriptionId, 'Buka kunci verifikasi resep (koreksi sebelum bayar)');
+
+        return $prescription->fresh(['items.medication']);
+    }
+
+    /**
+     * Resep boleh disunting hanya pada FASE VERIFIKASI (belum dikunci) dan belum
+     * diserahkan. Mengunci perubahan obat setelah verifikasi/tagihan — cegah kebocoran
+     * (tambah obat tak tertagih / batal tak di-refund pasca-bayar).
+     */
+    private function assertResepEditable(Prescription $prescription): void
+    {
+        if ($prescription->status === 'DISPENSED') {
+            throw new \Exception('Resep sudah diselesaikan, tidak bisa diubah.', 422);
+        }
+        if ($prescription->verified_at !== null) {
+            throw new \Exception('Resep sudah diverifikasi & dikunci. Buka kunci verifikasi dulu (sebelum tagihan dibuat) untuk mengubah.', 422);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -532,9 +667,9 @@ class FarmasiService
     {
         $prescription = Prescription::findOrFail($prescriptionId);
 
-        if ($prescription->status === 'DISPENSED') {
-            throw new \Exception('Resep sudah diselesaikan, tidak bisa tambah item.', 422);
-        }
+        // Hanya boleh menambah item pada fase verifikasi (belum dikunci) — cegah
+        // penambahan obat tak tertagih setelah verifikasi/tagihan.
+        $this->assertResepEditable($prescription);
 
         $userId     = auth('api')->id();
         $employeeId = auth('api')->user()?->employee_id;
@@ -551,6 +686,7 @@ class FarmasiService
                     $adaTambahan = true;
                 }
 
+                $hasReason = ! empty($item['change_reason']);
                 $created[] = PrescriptionItem::create([
                     'prescription_id' => $prescriptionId,
                     'medication_id'   => $item['medication_id'],
@@ -560,6 +696,10 @@ class FarmasiService
                     'dosage'          => $item['dosage'] ?? null,
                     'instructions'    => $item['instructions'] ?? null,
                     'notes'           => $item['notes'] ?? null,
+                    // Audit penambahan saat verifikasi (alasan terstruktur).
+                    'change_reason'   => $hasReason ? $item['change_reason'] : null,
+                    'changed_by_id'   => $hasReason ? $employeeId : null,
+                    'changed_at'      => $hasReason ? now() : null,
                 ]);
             }
 
@@ -667,31 +807,52 @@ class FarmasiService
     public function updateItemDispensing(string $id, array $data): PrescriptionItem
     {
         $item = PrescriptionItem::with('prescription')->findOrFail($id);
+        $this->assertResepEditable($item->prescription);
 
-        if ($item->prescription->status === 'DISPENSED') {
-            throw new \Exception('Resep sudah diselesaikan, tidak bisa ubah item.', 422);
+        $update = [];
+        foreach (['quantity', 'dosage', 'instructions', 'notes'] as $f) {
+            if (array_key_exists($f, $data) && ! is_null($data[$f])) {
+                $update[$f] = $data[$f];
+            }
         }
 
-        $item->update(array_filter([
-            'quantity'     => $data['quantity'] ?? null,
-            'dosage'       => $data['dosage'] ?? null,
-            'instructions' => $data['instructions'] ?? null,
-            'notes'        => $data['notes'] ?? null,
-        ], fn ($v) => ! is_null($v)));
+        // Substitusi obat (ganti medication_id) → simpan obat asli dokter SEKALI utk audit.
+        if (! empty($data['medication_id']) && $data['medication_id'] !== $item->medication_id) {
+            if (is_null($item->original_medication_id)) {
+                $update['original_medication_id'] = $item->medication_id;
+            }
+            $update['medication_id'] = $data['medication_id'];
+        }
+
+        // Jejak perubahan terstruktur (alasan divalidasi di controller).
+        if (! empty($data['change_reason'])) {
+            $update['change_reason'] = $data['change_reason'];
+            $update['changed_by_id'] = auth('api')->user()?->employee_id;
+            $update['changed_at']    = now();
+        }
+
+        $item->update($update);
+        $this->log(auth('api')->id(), 'UPDATE_ITEM_RESEP', PrescriptionItem::class, $id);
 
         return $item->fresh('medication');
     }
 
-    public function deleteItemDispensing(string $id): void
+    public function deleteItemDispensing(string $id, ?string $reason = null): void
     {
         $item = PrescriptionItem::with('prescription')->findOrFail($id);
+        $this->assertResepEditable($item->prescription);
 
-        if ($item->prescription->status === 'DISPENSED') {
-            throw new \Exception('Resep sudah diselesaikan, tidak bisa hapus item.', 422);
+        // Catat alasan sebelum soft-delete → baris trashed menyimpan jejak audit.
+        if (! empty($reason)) {
+            $item->update([
+                'change_reason' => $reason,
+                'changed_by_id' => auth('api')->user()?->employee_id,
+                'changed_at'    => now(),
+            ]);
         }
 
         $item->delete();
-        $this->log(auth('api')->id(), 'DELETE_ITEM_RESEP', PrescriptionItem::class, $id);
+        $this->log(auth('api')->id(), 'DELETE_ITEM_RESEP', PrescriptionItem::class, $id, $reason ? "Alasan: {$reason}" : null);
     }
 
     // =========================================================================
@@ -941,7 +1102,7 @@ class FarmasiService
     // STOK — BHP
     // =========================================================================
 
-    public function getStokBhp(array $filters = []): LengthAwarePaginator
+    public function getStokBhp(array $filters = []): LengthAwarePaginator|Collection
     {
         $query = $this->withFarmasiOnHand(BhpItem::query(), 'BHP');
 
@@ -957,10 +1118,18 @@ class FarmasiService
             $query->whereRaw('COALESCE(farmasi_stock.qty, 0) <= bhp_items.min_stock');
         }
 
-        $page = $query->orderBy('bhp_items.name')->paginate($filters['per_page'] ?? 25);
-        $page->getCollection()->each(fn ($b) => $b->stock = (float) $b->farmasi_qty);
+        $query->orderBy('bhp_items.name');
 
-        return $page;
+        // per_page = 'all' (atau <= 0) → kembalikan SEMUA baris tanpa paginasi
+        // (selaras getStokObat; dipakai tab Manajemen Stok yang paginasi client-side).
+        $perPage = $filters['per_page'] ?? 25;
+        $unpaginated = $perPage === 'all' || (is_numeric($perPage) && (int) $perPage <= 0);
+        $result = $unpaginated ? $query->get() : $query->paginate((int) $perPage);
+
+        $rows = $unpaginated ? $result : $result->getCollection();
+        $rows->each(fn ($b) => $b->stock = (float) $b->farmasi_qty);
+
+        return $result;
     }
 
     public function updateStokBhp(string $id, array $data): BhpItem

@@ -41,50 +41,58 @@ class RuangTindakanService
 
     public function getPatientQueue(): array
     {
-        $queues = Queue::with([
+        // Papan digerakkan SCHEDULE (bukan queue): SEMUA jadwal laser HARI INI tampil,
+        // walau queue station BEDAH belum terbentuk (mis. dokter simpan planning tapi
+        // belum "Kirim ke Kasir"). Queue station BEDAH hanya pelengkap (tombol Panggil
+        // + nomor antrean). Ini mencegah pasien laser same-day "hilang" dari papan dan
+        // hanya muncul di tab Terjadwal.
+        $schedules = SurgerySchedule::with([
+            'surgeryPackage',
+            'leadSurgeon',
+            'surgeryRecord',
             'visit.patient',
             'visit.insurer',
-            'visit.surgerySchedule.surgeryPackage',
-            'visit.surgerySchedule.leadSurgeon',
-            'visit.surgerySchedule.surgeryRecord',
-            'visit.doctorExamination.surgerySchedule.surgeryPackage',
-            'visit.doctorExamination.surgerySchedule.leadSurgeon',
-            'visit.doctorExamination.surgerySchedule.surgeryRecord',
             'visit.doctorExamination.doctor',
             'visit.refractionRecord',
+            'visit.queues' => fn ($q) => $q->where('station', 'BEDAH')
+                ->orderByDesc('created_at'),
         ])
-            ->where('station', 'BEDAH')
-            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
-            ->whereHas('visit')
-            // Hanya pasien dengan jadwal RUANG_TINDAKAN (via visit.surgery_schedule_id
-            // ATAU via doctor_examination.surgery_schedule — sama spt BedahService).
-            ->where(function ($q) {
-                $q->whereHas('visit.surgerySchedule', fn ($s) => $s->where('location_type', self::LOCATION))
-                  ->orWhereHas('visit.doctorExamination.surgerySchedule', fn ($s) => $s->where('location_type', self::LOCATION));
-            })
-            ->orderBy('queue_sequence')
+            ->where('location_type', self::LOCATION)
+            ->whereDate('scheduled_date', today())
+            ->orderBy('scheduled_time')
+            ->orderBy('created_at')
             ->get();
 
-        return $queues->map(function (Queue $q) {
-            $visit   = $q->visit;
+        $activeStatuses = [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS];
+
+        return $schedules->map(function (SurgerySchedule $s) use ($activeStatuses) {
+            $visit   = $s->visit
+                ?? Visit::with(['patient', 'insurer', 'doctorExamination.doctor', 'refractionRecord', 'queues'])
+                    ->whereHas('doctorExamination', fn ($q) => $q->where('surgery_schedule_id', $s->id))
+                    ->first();
             $patient = $visit?->patient;
             $dob     = $patient?->date_of_birth;
 
-            $schedule = $this->resolveSchedule($visit);
-            $package  = $schedule?->surgeryPackage ?? $visit?->doctorExamination?->surgeryPackage ?? null;
+            $package  = $s->surgeryPackage ?? $visit?->doctorExamination?->surgeryPackage ?? null;
             $exam     = $visit?->doctorExamination;
-            $operator = $schedule?->leadSurgeon?->name ?? $exam?->doctor?->name ?? null;
-            $record   = $schedule?->surgeryRecord;
+            $operator = $s->leadSurgeon?->name ?? $exam?->doctor?->name ?? null;
+            $record   = $s->surgeryRecord;
             $refr     = $visit?->refractionRecord;
 
+            // Queue station BEDAH terkait (opsional): pilih yang masih aktif, else terbaru.
+            $queues = $visit?->queues?->where('station', 'BEDAH') ?? collect();
+            $queue  = $queues->whereIn('status', $activeStatuses)->sortByDesc('created_at')->first()
+                ?? $queues->sortByDesc('created_at')->first();
+
             return [
-                'id'             => $q->id,
-                'queue_number'   => $q->queue_number,
-                'queue_sequence' => $q->queue_sequence,
-                'status'         => $q->status,
-                'called_at'      => $q->called_at?->toIso8601String(),
-                'started_at'     => $q->started_at?->toIso8601String(),
-                'completed_at'   => $q->completed_at?->toIso8601String(),
+                // ID papan = schedule.id (stabil; mulai/selesai memakai ini). Queue terpisah.
+                'id'             => $s->id,
+                'queue_id'       => $queue?->id,                  // null bila queue belum ada (Panggil di-disable)
+                'queue_number'   => $queue?->queue_number,
+                'status'         => $queue?->status,              // status antrean (WAITING/CALLED/…) atau null
+                'called_at'      => $queue?->called_at?->toIso8601String(),
+                'started_at'     => $queue?->started_at?->toIso8601String(),
+                'completed_at'   => $queue?->completed_at?->toIso8601String(),
 
                 'visit' => $visit ? [
                     'id'              => $visit->id,
@@ -104,23 +112,26 @@ class RuangTindakanService
                     'age'    => $dob ? $dob->age : null,
                 ] : null,
 
-                'schedule' => $schedule ? [
-                    'id'             => $schedule->id,
-                    'location_type'  => $schedule->location_type,
-                    'scheduled_date' => $schedule->scheduled_date?->toDateString(),
-                    'scheduled_time' => $schedule->scheduled_time,
-                    'room'           => $schedule->operation_room,
-                    'status'         => $schedule->status,
+                'schedule' => [
+                    'id'             => $s->id,
+                    'location_type'  => $s->location_type,
+                    'scheduled_date' => $s->scheduled_date?->toDateString(),
+                    'scheduled_time' => $s->scheduled_time,
+                    'room'           => $s->operation_room,
+                    'status'         => $s->status,
                     'package'        => $package ? ['id' => $package->id, 'name' => $package->name] : null,
-                ] : null,
+                ],
 
-                // Laporan laser yang sudah tersimpan (untuk hydrate form di FE).
+                // Laporan laser tersimpan (hydrate form FE): operation_report + kolom record.
                 'record' => $record ? [
-                    'id'         => $record->id,
-                    'time_in'    => $record->time_in?->toIso8601String(),
-                    'time_out'   => $record->time_out?->toIso8601String(),
-                    'finalized'  => (bool) $record->finalized_at,
-                    'laporan'    => $record->operation_report,
+                    'id'                  => $record->id,
+                    'time_in'             => $record->time_in?->toIso8601String(),
+                    'time_out'            => $record->time_out?->toIso8601String(),
+                    'finalized'           => (bool) $record->finalized_at,
+                    'laporan'             => $record->operation_report,
+                    'complication'        => $record->complication_detail,
+                    'followup_date'       => $record->followup_date?->toDateString(),
+                    'post_op_disposition' => $record->post_op_disposition,
                 ] : null,
 
                 // Pra-tindakan (visus/IOP) bila pasien lewat refraksi.
@@ -178,6 +189,15 @@ class RuangTindakanService
             throw new \Exception('Catatan tindakan tidak ditemukan. Mulai tindakan terlebih dahulu.', 422);
         }
 
+        // Wajibkan paket: tanpa paket, tak ada tindakan yang tertagih ke Kasir
+        // (recordPackageProcedures no-op) → kebocoran tagihan. Paksa dokter melampirkan
+        // paket di planning sebelum tindakan bisa diselesaikan.
+        $visitForPkg = $this->resolveVisitForSchedule($schedule);
+        $package = $schedule->surgeryPackage ?? $visitForPkg?->doctorExamination?->surgeryPackage;
+        if (! $package) {
+            throw new \Exception('Tindakan tidak dapat diselesaikan: belum ada paket tindakan. Minta dokter melampirkan paket bedah/tindakan di planning terlebih dahulu.', 422);
+        }
+
         $disposition = $data['post_op_disposition'] ?? 'PULANG';
         $hasComplication = ! empty($data['complication']);
 
@@ -216,9 +236,10 @@ class RuangTindakanService
             //   - PULANG (RAJAL→KASIR) / pasien SUDAH RANAP (LANJUT_RANAP/HCU→kembali kamar)
             //     ditangani advanceFromStation via resolveNextStation sesuai jenis_pelayanan.
             if ($visit) {
-                $queue = Queue::where('visit_id', $visit->id)
+                $active = ['WAITING', 'CALLED', 'IN_PROGRESS'];
+                $bedahQueue = Queue::where('visit_id', $visit->id)
                     ->where('station', 'BEDAH')
-                    ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                    ->whereIn('status', $active)
                     ->latest('created_at')
                     ->first();
 
@@ -226,12 +247,30 @@ class RuangTindakanService
                 $toMenungguRanap = $disposition === 'RAWAT_INAP' && ! $isRanapPatient;
 
                 if ($toMenungguRanap) {
-                    if ($queue) {
-                        $queue->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
-                    }
+                    // Tutup SEMUA antrean aktif (BEDAH/DOKTER/dll) → papan Menunggu Kamar.
+                    Queue::where('visit_id', $visit->id)->whereIn('status', $active)
+                        ->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
                     $visit->update(['current_station' => 'MENUNGGU_RANAP']);
-                } elseif ($queue) {
-                    $this->queueService->advanceFromStation($queue->id, Queue::STATION_BEDAH);
+                } elseif ($bedahQueue) {
+                    // Alur normal: pasien sudah di antrean BEDAH → advance ke KASIR.
+                    $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH);
+                } else {
+                    // Papan schedule-driven: tindakan bisa diselesaikan untuk pasien terjadwal
+                    // yang BELUM pernah masuk antrean BEDAH (mis. dokter belum "Kirim ke Kasir").
+                    // Pastikan tetap diteruskan ke KASIR agar tindakan tertagih: tutup antrean
+                    // aktif non-kasir, lalu enqueue KASIR bila belum ada.
+                    $hasActiveKasir = Queue::where('visit_id', $visit->id)
+                        ->where('station', Queue::STATION_KASIR)
+                        ->whereIn('status', $active)
+                        ->exists();
+                    Queue::where('visit_id', $visit->id)
+                        ->whereIn('status', $active)
+                        ->where('station', '!=', Queue::STATION_KASIR)
+                        ->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
+                    if (! $hasActiveKasir) {
+                        $this->queueService->enqueue($visit->id, Queue::STATION_KASIR);
+                    }
+                    $visit->update(['current_station' => Queue::STATION_KASIR]);
                 }
             }
 
@@ -386,8 +425,9 @@ class RuangTindakanService
     // =========================================================================
 
     /**
-     * Daftar pasien terjadwal Ruang Tindakan. Tanpa rentang → mendatang (>= hari ini);
-     * dengan date_from/date_to (weekpicker) → semua jadwal laser dalam minggu itu.
+     * Daftar pasien terjadwal Ruang Tindakan. Tanpa rentang → mendatang (> hari ini;
+     * hari ini ada di papan "Antrean Hari Ini"); dengan date_from/date_to (weekpicker)
+     * → semua jadwal laser dalam minggu itu (boleh termasuk hari ini, krn dipilih eksplisit).
      */
     public function getScheduledTindakan(array $filters = []): array
     {
@@ -408,7 +448,9 @@ class RuangTindakanService
                 $query->whereDate('scheduled_date', '<=', $filters['date_to']);
             }
         } else {
-            $query->whereDate('scheduled_date', '>=', today());
+            // Default "mendatang" = STRICTLY setelah hari ini. Jadwal HARI INI adalah
+            // ranah papan "Antrean Hari Ini" (getPatientQueue) — jangan didobel di sini.
+            $query->whereDate('scheduled_date', '>', today());
         }
 
         return $query->orderBy('scheduled_date')->orderBy('scheduled_time')->get()

@@ -578,6 +578,35 @@ class RekamMedisService
         ];
     }
 
+    /**
+     * Kwitansi kunjungan (untuk dilihat/dicetak dari RME). Merakit data kwitansi via
+     * KasirService::generateReceipt (sumber tunggal) lalu render blade pdf.receipt
+     * menjadi HTML siap-tampil — pola sama dgn resumeMedis & cetak dokumen: FE fetch
+     * via Axios lalu tampil/print di window baru (BUKAN window.open URL API). Read-only.
+     */
+    public function kwitansiKunjungan(string $visitId): array
+    {
+        $visit = Visit::with('billingInvoice')->find($visitId);
+        if (! $visit) {
+            throw new \Exception('Kunjungan tidak ditemukan.', 404);
+        }
+
+        $invoice = $visit->billingInvoice;
+        if (! $invoice) {
+            throw new \Exception('Belum ada kwitansi/tagihan untuk kunjungan ini.', 404);
+        }
+
+        $data = app(\App\Services\KasirService::class)->generateReceipt($invoice->id);
+        $html = view('pdf.receipt', $data)->render();
+
+        return [
+            'rendered_html'  => $html,
+            'invoice_number' => $invoice->invoice_number,
+            'status'         => $invoice->status,
+            'is_paid'        => $invoice->status === 'PAID',
+        ];
+    }
+
     public function storeMedicalRecord(array $data): MedicalRecord
     {
         $user   = auth('api')->user();

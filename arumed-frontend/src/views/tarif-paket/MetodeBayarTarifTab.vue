@@ -55,6 +55,7 @@ const items = ref([])               // tarif rows
 const pageMeta = ref({ current_page: 1, last_page: 1, total: 0, per_page: 25 })
 const loading = ref(false)
 const error = ref(null)
+const search = ref('')              // server-side search (nama/kode item)
 
 const itemDropdown = ref([])        // master items source untuk modal dropdown
 
@@ -119,6 +120,7 @@ async function refresh(page = 1) {
   try {
     const params = { page, per_page: pageMeta.value.per_page, insurer_id: props.insurerId }
     if (props.bukuTarif) params.include_unpriced = 1
+    if (search.value.trim()) params.search = search.value.trim()
     const res = await tarifPaketApi.tarif.list(props.type, params)
     const payload = res.data?.data
     if (payload && Array.isArray(payload.data)) {
@@ -151,6 +153,12 @@ async function loadItemDropdown() {
 }
 
 function onPageChange(p) { refresh(p) }
+
+// Search dari MasterTable (sudah di-debounce 300ms di komponen) → reset ke hal. 1.
+function onSearch(v) {
+  search.value = v ?? ''
+  refresh(1)
+}
 
 // ─── CRUD modal ───────────────────────────────────────────────────────────
 function openCreate() {
@@ -409,8 +417,12 @@ watch(() => props.insurerId, () => refresh())
     <MasterTable
       :columns="columns" :rows="rows"
       :loading="loading" :error="error" :meta="pageMeta"
-      :show-search="false"
-      :empty-text="bukuTarif ? 'Belum ada item master aktif.' : 'Belum ada tarif untuk insurer ini. Klik Tambah atau Import CSV.'"
+      :search-value="search"
+      :search-placeholder="`Cari ${meta.itemLabel.toLowerCase()} (nama / kode)…`"
+      :empty-text="search.trim()
+        ? `Tidak ada ${meta.itemLabel.toLowerCase()} yang cocok dengan pencarian.`
+        : (bukuTarif ? 'Belum ada item master aktif.' : 'Belum ada tarif untuk insurer ini. Klik Tambah atau Import CSV.')"
+      @update:search="onSearch"
       @page-change="onPageChange"
       @refresh="() => refresh(pageMeta.current_page)"
     >

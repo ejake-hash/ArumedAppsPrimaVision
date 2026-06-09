@@ -281,6 +281,19 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * GET /rekam-medis/kunjungan/{visitId}/kwitansi
+     * Kwitansi kunjungan siap-tampil/cetak (HTML) untuk modul RME.
+     */
+    public function kwitansiKunjungan(string $visitId): JsonResponse
+    {
+        try {
+            return $this->ok($this->service->kwitansiKunjungan($visitId));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
+    /**
      * POST /rekam-medis/medical-record
      * Body: { visit_id, patient_id, document_type_id?, form_data }
      */

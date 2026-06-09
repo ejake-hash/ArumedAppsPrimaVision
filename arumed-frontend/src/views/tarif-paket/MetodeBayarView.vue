@@ -119,14 +119,8 @@ const columns = [
 
 const rows = computed(() => {
   const startIdx = ((meta.value.current_page ?? 1) - 1) * (meta.value.per_page ?? 25)
-  const filtered = searchValue.value
-    ? items.value.filter((r) => {
-        const q = searchValue.value.toLowerCase()
-        return (r.name ?? '').toLowerCase().includes(q)
-          || (r.phone ?? '').toLowerCase().includes(q)
-      })
-    : items.value
-  return filtered.map((r, i) => ({
+  // Pencarian dilakukan server-side (lintas-halaman) → tampilkan items apa adanya.
+  return items.value.map((r, i) => ({
     ...r,
     _no: startIdx + i + 1,
     _childrenCount: r.children_count ?? 0,
@@ -143,6 +137,7 @@ async function refresh(page = 1) {
   try {
     const params = { page, per_page: meta.value.per_page, only_tpa_view: 1 }
     if (filterType.value) params.type = filterType.value
+    if (searchValue.value.trim()) params.search = searchValue.value.trim()
     const res = await masterApi.penjamin.list(params)
     const payload = res.data?.data
     if (payload && Array.isArray(payload.data)) {
@@ -170,7 +165,8 @@ async function refresh(page = 1) {
 function onSearchUpdate(v) {
   searchValue.value = v
   if (searchDebounce) clearTimeout(searchDebounce)
-  searchDebounce = setTimeout(() => { /* purely frontend */ }, 100)
+  // Pencarian server-side (lintas-halaman) — debounce 300ms lalu reset ke hal. 1.
+  searchDebounce = setTimeout(() => refresh(1), 300)
 }
 
 function onPageChange(p) { refresh(p) }

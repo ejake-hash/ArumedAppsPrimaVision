@@ -33,6 +33,7 @@ use App\Http\Controllers\IntegrasiController;
 use App\Http\Controllers\QueueController;
 use App\Http\Controllers\JadwalDokterController;
 use App\Http\Controllers\MarketingReportController;
+use App\Http\Controllers\KeuanganController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
@@ -241,6 +242,7 @@ Route::prefix('v1')->group(function () {
                 Route::post('/cek-peserta',        [AdmisiController::class, 'bpjsCekPeserta']);
                 Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep']);
                 Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep']);
+                Route::get('/cetak-sep/{visitId}', [AdmisiController::class, 'bpjsCetakSep']);
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
@@ -393,6 +395,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/resume-medis/{id}/finalize',          [DokterController::class, 'finalizeResumeMedis']);
 
             Route::post('/rujukan-keluar',                      [DokterController::class, 'storeRujukanKeluar']);
+            // Referensi VClaim (faskes/poli/diagnosa) untuk form rujukan keluar — read-only
+            // lookup BPJS. Diekspos di grup DOKTER krn dokter butuh saat rujuk eksternal tapi
+            // TIDAK punya permission integrasi.read (endpoint /integrasi/vclaim/referensi terkunci).
+            Route::get('/vclaim/referensi/{jenis}',             [IntegrasiController::class, 'vclaimReferensi']);
 
             // Surat Kontrol BPJS (planning Pulang) — baca status + terbitkan ke VClaim
             Route::get('/kunjungan/{visitId}/surat-kontrol',        [DokterController::class, 'getSuratKontrol']);
@@ -646,6 +652,11 @@ Route::prefix('v1')->group(function () {
             // Preview harga obat tambahan sesuai penjamin (harga yang ditagih kasir).
             Route::get('/harga-obat',                        [FarmasiController::class, 'previewHargaObat']);
 
+            // Verifikasi Farmasi (gate sebelum tagihan Kasir, alur D→K→F).
+            Route::get('/verifikasi',                        [FarmasiController::class, 'indexVerifikasi']);
+            Route::put('/resep/{id}/verifikasi',             [FarmasiController::class, 'verifikasiResep']);
+            Route::put('/resep/{id}/buka-verifikasi',        [FarmasiController::class, 'bukaVerifikasiResep']);
+
             Route::get('/resep',                             [FarmasiController::class, 'indexResep']);
             Route::get('/resep/{id}',                        [FarmasiController::class, 'showResep']);
             Route::put('/resep/{id}/dispensing',             [FarmasiController::class, 'startDispensing']);
@@ -751,6 +762,14 @@ Route::prefix('v1')->group(function () {
             Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
             Route::get('/icd-search',                     [KlaimController::class, 'icdSearch']);
 
+            // Rekap Kunjungan BPJS (screening pra-klaim) — semua kunjungan BPJS per tgl.
+            // Statis → WAJIB sebelum `/{id}` agar 'rekap' tak diparse jadi UUID.
+            Route::get('/rekap',                          [KlaimController::class, 'rekap']);
+            Route::get('/rekap/export',                   [KlaimController::class, 'rekapExport']);
+            Route::get('/rekap/{visitId}/lampiran',       [KlaimController::class, 'rekapAttachments']);
+            Route::post('/rekap/{visitId}/lampiran',      [KlaimController::class, 'rekapUploadAttachment'])->middleware('permission:bpjs.write');
+            Route::delete('/rekap/{visitId}/lampiran/{attId}', [KlaimController::class, 'rekapDeleteAttachment'])->middleware('permission:bpjs.write');
+
             Route::get('/{id}',                           [KlaimController::class, 'show']);
 
             // Operasi tulis klaim kini butuh bpjs.write (dulu hanya bpjs.read grup →
@@ -804,6 +823,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/pasien/{patientId}/diagnosis',    [RekamMedisController::class, 'diagnosisPasien']);
             Route::get('/pasien/{patientId}/dokumen',      [RekamMedisController::class, 'dokumenPasien']);
             Route::get('/kunjungan/{visitId}/resume-medis', [RekamMedisController::class, 'resumeMedis']);
+            Route::get('/kunjungan/{visitId}/kwitansi',     [RekamMedisController::class, 'kwitansiKunjungan']);
 
             Route::get('/dokumen',                         [RekamMedisController::class, 'indexDokumen']);
             Route::get('/dokumen/{id}',                    [RekamMedisController::class, 'showDokumen']);
@@ -889,6 +909,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/notifications', [MarketingReportController::class, 'notifications']);
             Route::get('/export-csv',    [MarketingReportController::class, 'export']);
             Route::get('/',              [MarketingReportController::class, 'index']);
+        });
+
+        // -----------------------------------------------------------------
+        // KEUANGAN — Rekap honor dokter (jasa medis) + aturan honor
+        // -----------------------------------------------------------------
+        Route::prefix('keuangan')->group(function () {
+            Route::get('/honor-recap',        [KeuanganController::class, 'recap'])->middleware('permission:keuangan.read');
+            Route::get('/honor-recap/export', [KeuanganController::class, 'export'])->middleware('permission:keuangan.read');
+            Route::get('/fee-rules/options',  [KeuanganController::class, 'options'])->middleware('permission:keuangan.read');
+            Route::get('/fee-rules',          [KeuanganController::class, 'indexRules'])->middleware('permission:keuangan.read');
+            Route::post('/fee-rules',         [KeuanganController::class, 'storeRule'])->middleware('permission:keuangan.write');
+            Route::put('/fee-rules/{id}',     [KeuanganController::class, 'updateRule'])->middleware('permission:keuangan.write');
+            Route::delete('/fee-rules/{id}',  [KeuanganController::class, 'destroyRule'])->middleware('permission:keuangan.delete');
         });
 
         // -----------------------------------------------------------------

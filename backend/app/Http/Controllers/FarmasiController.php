@@ -133,6 +133,41 @@ class FarmasiController extends Controller
     }
 
     // -------------------------------------------------------------------------
+    // Verifikasi Farmasi (gate sebelum tagihan Kasir) — alur D→K→F
+
+    /** GET /farmasi/verifikasi — worklist resep yang perlu/siap diverifikasi */
+    public function indexVerifikasi(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getVerificationQueue(
+            $request->only(['tanggal', 'search'])
+        ));
+    }
+
+    /** PUT /farmasi/resep/{id}/verifikasi — kunci resep (Kasir baru bisa menagih) */
+    public function verifikasiResep(string $id): JsonResponse
+    {
+        try {
+            $prescription = $this->service->verifyPrescription($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Resep diverifikasi & dikunci. Kasir dapat membuat tagihan.');
+    }
+
+    /** PUT /farmasi/resep/{id}/buka-verifikasi — buka kunci (koreksi sebelum bayar) */
+    public function bukaVerifikasiResep(string $id): JsonResponse
+    {
+        try {
+            $prescription = $this->service->unverifyPrescription($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($prescription, 'Kunci verifikasi dibuka');
+    }
+
+    // -------------------------------------------------------------------------
     // Item dispensing
 
     /**
@@ -150,6 +185,7 @@ class FarmasiController extends Controller
             'items.*.instructions'     => 'nullable|string|max:255',
             'items.*.notes'            => 'nullable|string|max:255',
             'items.*.source'           => 'nullable|in:RESEP,TAMBAHAN',
+            'items.*.change_reason'    => 'nullable|string|max:120',
         ]);
 
         try {
@@ -190,10 +226,13 @@ class FarmasiController extends Controller
     public function updateItemDispensing(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'quantity'     => 'sometimes|integer|min:1',
-            'dosage'       => 'nullable|string|max:100',
-            'instructions' => 'nullable|string|max:255',
-            'notes'        => 'nullable|string|max:255',
+            'quantity'      => 'sometimes|integer|min:1',
+            'dosage'        => 'nullable|string|max:100',
+            'instructions'  => 'nullable|string|max:255',
+            'notes'         => 'nullable|string|max:255',
+            // Substitusi obat (ganti dgn obat lain) + alasan terstruktur (audit BPJS).
+            'medication_id' => 'sometimes|uuid|exists:medications,id',
+            'change_reason' => 'nullable|string|max:120',
         ]);
 
         try {
@@ -205,11 +244,11 @@ class FarmasiController extends Controller
         return $this->ok($item, 'Item diperbarui');
     }
 
-    /** DELETE /farmasi/resep-item/{id} */
-    public function deleteItemDispensing(string $id): JsonResponse
+    /** DELETE /farmasi/resep-item/{id} — body/query opsional: change_reason (audit) */
+    public function deleteItemDispensing(Request $request, string $id): JsonResponse
     {
         try {
-            $this->service->deleteItemDispensing($id);
+            $this->service->deleteItemDispensing($id, $request->input('change_reason'));
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }

@@ -18,8 +18,15 @@ class PrescriptionItem extends Model
         'legacy_uuid',
         'prescription_id',
         'medication_id',
+        // Obat asli dokter sebelum disubstitusi Farmasi (audit). Lihat migrasi
+        // add_pharmacy_verify_audit.
+        'original_medication_id',
         // Asal item: RESEP | TAMBAHAN (obat tambahan apotek / OTC) + petugas penambah.
         'source',
+        // Audit perubahan saat verifikasi Farmasi (substitusi/ubah qty/hapus).
+        'change_reason',
+        'changed_by_id',
+        'changed_at',
         'added_by_id',
         'quantity',
         'dosage',
@@ -36,7 +43,8 @@ class PrescriptionItem extends Model
     ];
 
     protected $casts = [
-        'is_bedah' => 'boolean',
+        'is_bedah'   => 'boolean',
+        'changed_at' => 'datetime',
     ];
 
     public function prescription(): BelongsTo

@@ -1191,6 +1191,16 @@ class DokterService
         ]);
         $examination->save();
 
+        // Sinkron alur D→K→F: bila finalisasi LANGSUNG (tanpa "Kirim ke Kasir" Tab 3),
+        // resep rawat jalan masih DRAFT. Flip → SUBMITTED (sama spt kirimKeKasir) agar
+        // muncul di worklist verifikasi Farmasi & bisa dikunci. Tanpa ini, gate
+        // consolidateBilling menolak DRAFT-belum-verified sementara Farmasi tak melihat
+        // resep DRAFT → tagihan buntu tanpa jalan keluar.
+        Prescription::where('visit_id', $visitId)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->where('status', 'DRAFT')
+            ->update(['status' => 'SUBMITTED']);
+
         // Majukan antrean idempoten: bila pasien BELUM pernah "Kirim ke Kasir"
         // (finalisasi langsung tanpa lewat Tab 3) baris DOKTER masih aktif → maju
         // sekarang. Bila sudah maju (COMPLETED) → no-op, tidak melempar.
@@ -1210,6 +1220,16 @@ class DokterService
     public function kirimKeKasir(string $visitId, array $data): array
     {
         $result = $this->storePlanning($visitId, $data);
+
+        // Tandai resep rawat jalan (DRAFT) → SUBMITTED: sinyal "dokter selesai, siap
+        // diverifikasi Farmasi". verified_at TETAP null → Kasir terkunci sampai Farmasi
+        // verifikasi & kunci (lihat KasirService::consolidateBilling gate). RANAP & yang
+        // sudah CANCELLED/DISPENSING/DISPENSED tak disentuh.
+        Prescription::where('visit_id', $visitId)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->where('status', 'DRAFT')
+            ->update(['status' => 'SUBMITTED']);
+
         $advance = $this->advanceDokterQueueIfActive($visitId);
 
         return array_merge($result, ['advance' => $advance]);
@@ -1665,9 +1685,19 @@ class DokterService
         $ruangPoli = $visit->doctorSchedule?->poliklinik ?: '-';
         $penjamin  = $visit->insurer?->name ?: ($visit->guarantor_type ?: 'UMUM');
 
+        // Tanggal kontrol resume: follow-up planning DULU; bila tak ada, ambil dari
+        // jadwal bedah/tindakan (planning BEDAH/laser) — tanggal pasien kembali.
         $kontrolTanggal = ($visit->planning_follow_up && $visit->follow_up_date)
             ? $visit->follow_up_date->format('Y-m-d')
             : null;
+        if (! $kontrolTanggal && $doctor?->surgery_schedule_id) {
+            $sched = $doctor->relationLoaded('surgerySchedule')
+                ? $doctor->surgerySchedule
+                : SurgerySchedule::find($doctor->surgery_schedule_id);
+            if ($sched?->scheduled_date) {
+                $kontrolTanggal = $sched->scheduled_date->format('Y-m-d');
+            }
+        }
         $clinicName = ClinicProfile::query()->value('clinic_name');
 
         return [
@@ -1744,11 +1774,13 @@ class DokterService
             if ($sph === null && $cyl === null && $axis === null && $add === null) {
                 return '';
             }
-            $s = $sph !== null ? 'S' . ($sph >= 0 ? '+' : '') . $sph : '';
-            $c = $cyl !== null ? ' C' . ($cyl >= 0 ? '+' : '') . $cyl : '';
-            $a = $axis !== null ? " x{$axis}" : '';
-            $d = $add !== null ? " Add {$add}" : '';
-            return trim($s . $c . $a . $d);
+            // Label S/C/X (Sphere/Cylinder/Axis) agar nilai tunggal tak ambigu.
+            $parts = [];
+            if ($sph !== null)  { $parts[] = 'S ' . ($sph >= 0 ? '+' : '') . $sph; }
+            if ($cyl !== null)  { $parts[] = 'C ' . ($cyl >= 0 ? '+' : '') . $cyl; }
+            if ($axis !== null) { $parts[] = "X {$axis}"; }
+            if ($add !== null)  { $parts[] = 'Add ' . ($add >= 0 ? '+' : '') . $add; }
+            return implode(' / ', $parts);
         };
         $rxOd = $rx($refraksi->refraksi_subjektif_od_sph, $refraksi->refraksi_subjektif_od_cyl, $refraksi->refraksi_subjektif_od_axis, $refraksi->add_power_od);
         $rxOs = $rx($refraksi->refraksi_subjektif_os_sph, $refraksi->refraksi_subjektif_os_cyl, $refraksi->refraksi_subjektif_os_axis, $refraksi->add_power_os);

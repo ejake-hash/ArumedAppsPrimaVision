@@ -2,6 +2,10 @@
 import { ref, computed, watch } from 'vue'
 import api from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+// CPPT timeline pakai komponen bersama yang sama dgn rawat jalan (DokterView/
+// PerawatView/RefraksionisView) & sumber data sama (RmeAggregatorService::cppt),
+// agar tampilan SOAP/CPPT konsisten lintas modul.
+import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const BLN = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des']
@@ -29,16 +33,6 @@ function guarantorCls(g) {
   return ({ BPJS:'bpjs', UMUM:'umum', ASURANSI:'asn', PERUSAHAAN:'asn', SOSIAL:'asn' })[g] ?? 'umum'
 }
 function val(v) { return (v === null || v === undefined || v === '') ? '–' : v }
-// CPPT lintas-episode: label badge episode + format tanggal-jam.
-function epLabel(e) {
-  return ({ RAJAL:'Rawat Jalan', IGD:'IGD', RANAP:'Rawat Inap', POLI:'Poli' })[e] ?? (e ?? '–')
-}
-function fmtDateTime(dt) {
-  if (!dt) return '–'
-  const d = new Date(String(dt).replace(' ', 'T'))
-  if (isNaN(d)) return dt
-  return d.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -157,8 +151,13 @@ async function loadMenu(menu, force = false) {
 function selectMenu(menu) {
   activeMenu.value = menu
   expanded.value = null
-  loadMenu(menu)
+  // CPPT dirender oleh CpptHistoryCard yang memuat datanya sendiri (watch patientId);
+  // tak perlu loadMenu (akan jadi fetch & cache mubazir).
+  if (menu !== 'cppt') loadMenu(menu)
 }
+
+// Fetcher untuk CpptHistoryCard — RBAC route RME (rekam_medis.read) tetap berlaku.
+const cpptFetcher = (patientId) => api.get(`/rekam-medis/pasien/${patientId}/cppt`)
 
 function toggleRow(id) { expanded.value = expanded.value === id ? null : id }
 
@@ -367,6 +366,39 @@ async function cetakResumeMedis(visitId) {
   }
 }
 
+// ─── KWITANSI KUNJUNGAN (lihat & cetak) ───────────────────────────────────────
+// Ambil HTML kwitansi siap-tampil dari server (KasirService::generateReceipt →
+// render blade pdf.receipt), lalu tampilkan di modal (view) atau window cetak (print).
+const kwitansiModal = ref(null)   // { html, invoice_number, status }
+const loadingKwitansi = ref(false)
+
+async function openKwitansi(visitId) {
+  if (loadingKwitansi.value) return
+  loadingKwitansi.value = true
+  try {
+    const { data } = await api.get(`/rekam-medis/kunjungan/${visitId}/kwitansi`)
+    const d = data.data ?? data
+    if (!d?.rendered_html) { toast('w', 'Kwitansi belum tersaji untuk kunjungan ini'); return }
+    kwitansiModal.value = d
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memuat kwitansi')
+  } finally {
+    loadingKwitansi.value = false
+  }
+}
+
+function printKwitansi() {
+  const html = kwitansiModal.value?.rendered_html
+  if (!html) return
+  const w = window.open('', '_blank', 'width=900,height=1200')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak'); return }
+  w.document.open()
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P manual */ } }, 300)
+}
+
 // ─── CETAK LAPORAN OPERASI (A4, dengan IOL traceability) ───────────────────────
 const printOp = ref(null)   // baris bedah yang sedang dicetak
 
@@ -543,8 +575,7 @@ function cetakLaporanOperasi(b) {
                     <div class="rk-last-row"><span>Klasifikasi</span><b :style="{color:classColor(ringkasan.last_visit.classification)}">{{ val(ringkasan.last_visit.classification) }}</b></div>
                     <div class="rk-last-row"><span>Dokter</span><b>{{ val(ringkasan.last_visit.doctor) }}</b></div>
                     <div class="rk-last-row" v-if="ringkasan.last_visit.poli"><span>Poli</span><b>{{ ringkasan.last_visit.poli }}</b></div>
-                    <div class="rk-last-row" v-if="ringkasan.last_visit.planning"><span>Rencana</span><b>{{ ringkasan.last_visit.planning }}</b></div>
-                    <div class="rk-last-row" v-if="ringkasan.last_visit.follow_up_date"><span>Kontrol</span><b>{{ fmtTgl(ringkasan.last_visit.follow_up_date) }}</b></div>
+                    <div class="rk-last-row" v-if="ringkasan.last_visit.planning_text"><span>Rencana</span><b>{{ ringkasan.last_visit.planning_text }}</b></div>
                   </div>
                 </div>
 
@@ -582,6 +613,11 @@ function cetakLaporanOperasi(b) {
                         <span v-if="v.is_finalized" class="b-mini final" title="Terfinalisasi">✓</span>
                         <span v-if="v.penunjang_count" class="b-mini pj">{{ v.penunjang_count }} PJ</span>
                         <span v-if="v.no_sep" class="b-mini sep">SEP</span>
+                        <button v-if="v.invoice" class="kw-row-btn" :disabled="loadingKwitansi"
+                                title="Lihat / Cetak Kwitansi" @click.stop="openKwitansi(v.visit_id)">
+                          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 3 2V2l-3 2-3-2-3 2-3-2-3 2-3-2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                          Kwitansi
+                        </button>
                       </td>
                       <td class="chev">{{ expanded===v.visit_id ? '▲' : '▼' }}</td>
                     </tr>
@@ -605,15 +641,18 @@ function cetakLaporanOperasi(b) {
                             <div class="soap-mini"><b>A</b> {{ val(v.detail.soap.a) }}</div>
                             <div class="soap-mini"><b>P</b> {{ val(v.detail.soap.p) }}</div>
                           </div>
-                          <div class="det-box" v-if="v.detail?.planning || v.detail?.follow_up_date">
+                          <div class="det-box" v-if="v.detail?.planning_text">
                             <div class="det-t">Rencana</div>
-                            <div>{{ val(v.detail.planning) }}</div>
-                            <div v-if="v.detail.follow_up_date"><small>Kontrol: {{ fmtTgl(v.detail.follow_up_date) }}</small></div>
+                            <div>{{ v.detail.planning_text }}</div>
                           </div>
                           <div class="det-box span2 det-actions">
                             <button class="rm17-btn" :disabled="cetakingResume" @click.stop="cetakResumeMedis(v.visit_id)">
                               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                               Cetak Resume Medis (RM 1.7)
+                            </button>
+                            <button v-if="v.invoice" class="rm17-btn kw-btn" :disabled="loadingKwitansi" @click.stop="openKwitansi(v.visit_id)">
+                              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 3 2V2l-3 2-3-2-3 2-3-2-3 2-3-2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                              Lihat / Cetak Kwitansi
                             </button>
                             <small v-if="!v.is_finalized" class="rm17-hint">Belum difinalisasi — isi resume mungkin kosong.</small>
                           </div>
@@ -626,38 +665,10 @@ function cetakLaporanOperasi(b) {
             </div>
 
             <!-- ════ CPPT LINTAS-EPISODE ════ -->
-            <div v-else-if="activeMenu==='cppt'" class="tbl-wrap">
-              <div v-if="!cur.length" class="empty-mini">Belum ada CPPT</div>
-              <div v-else class="cppt-tl">
-                <div v-for="(c, i) in cur" :key="i" class="cppt-item">
-                  <div class="cppt-head">
-                    <span class="ep-badge" :class="'ep-'+c.episode">{{ epLabel(c.episode) }}</span>
-                    <span class="cppt-kind">{{ c.kind === 'SOAP' ? 'SOAP Dokter' : 'CPPT' }}</span>
-                    <span class="cppt-when">{{ fmtDateTime(c.datetime) }}</span>
-                    <span class="cppt-by">{{ val(c.author) }}<small v-if="c.ppa_role"> · {{ c.ppa_role }}</small></span>
-                    <span v-if="c.verified_by" class="cppt-verif" title="Terverifikasi DPJP">✓ {{ c.verified_by }}</span>
-                  </div>
-                  <div v-if="c.vitals && Object.keys(c.vitals).length" class="cppt-vt">
-                    <span v-if="c.vitals.td">TD {{ c.vitals.td }}</span>
-                    <span v-if="c.vitals.nadi">Nadi {{ c.vitals.nadi }}</span>
-                    <span v-if="c.vitals.suhu">Suhu {{ c.vitals.suhu }}°</span>
-                    <span v-if="c.vitals.spo2">SpO₂ {{ c.vitals.spo2 }}%</span>
-                    <span v-if="c.vitals.respirasi">RR {{ c.vitals.respirasi }}</span>
-                    <span v-if="c.vitals.visus_od">VOD {{ c.vitals.visus_od }}</span>
-                    <span v-if="c.vitals.visus_os">VOS {{ c.vitals.visus_os }}</span>
-                    <span v-if="c.vitals.iop_od">TIO OD {{ c.vitals.iop_od }}</span>
-                    <span v-if="c.vitals.iop_os">TIO OS {{ c.vitals.iop_os }}</span>
-                  </div>
-                  <div class="cppt-soap">
-                    <div v-if="c.soap?.s" class="soap-mini"><b>S</b> {{ c.soap.s }}</div>
-                    <div v-if="c.soap?.o" class="soap-mini"><b>O</b> {{ c.soap.o }}</div>
-                    <div v-if="c.soap?.a" class="soap-mini"><b>A</b> {{ c.soap.a }}</div>
-                    <div v-if="c.soap?.p" class="soap-mini"><b>P</b> {{ c.soap.p }}</div>
-                  </div>
-                  <div v-if="c.diagnosis" class="cppt-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
-                  <div v-if="c.instruksi" class="cppt-instr"><b>Instruksi:</b> {{ c.instruksi }}</div>
-                </div>
-              </div>
+            <!-- Komponen bersama (sama dgn rawat jalan & rawat inap) → tampilan SOAP/CPPT
+                 konsisten: pager per-tanggal, badge PPA/episode, vitals, S/O/A/P, dx, instruksi. -->
+            <div v-else-if="activeMenu==='cppt'" class="cppt-wrap">
+              <CpptHistoryCard :patient-id="patient.id" :fetcher="cpptFetcher" title="CPPT / SOAP — Lintas Episode" />
             </div>
 
             <!-- ════ REFRAKSI ════ -->
@@ -842,7 +853,7 @@ function cetakLaporanOperasi(b) {
                       <div v-for="t in (d.tindakan ?? [])" :key="t.kode" class="dx-sub"><b>{{ t.kode }}</b> {{ t.nama }}</div>
                       <span v-if="!(d.tindakan ?? []).length">–</span>
                     </td>
-                    <td>{{ val(d.planning) }}</td>
+                    <td>{{ val(d.planning_text) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -972,6 +983,27 @@ function cetakLaporanOperasi(b) {
               <template v-else>Draft. Isi &amp; submit via stasiun <strong>{{ selDoc.created_by_station }}</strong>.</template>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── KWITANSI MODAL (lihat & cetak) ─── -->
+    <div v-if="kwitansiModal" class="ov" @click.self="kwitansiModal=null">
+      <div class="mbx mbx-lg">
+        <div class="mh">
+          <div>
+            <div class="mht">Kwitansi <span v-if="kwitansiModal.invoice_number">· {{ kwitansiModal.invoice_number }}</span></div>
+            <div class="msub">{{ patient.nama }} · {{ patient.no_rm }} · Status: {{ kwitansiModal.is_paid ? 'Lunas' : kwitansiModal.status }}</div>
+          </div>
+          <div style="display:flex;gap:.4rem">
+            <button class="mbtn" @click="printKwitansi">🖨 Cetak</button>
+            <button class="mcl" @click="kwitansiModal=null">✕</button>
+          </div>
+        </div>
+        <div class="mb">
+          <!-- iframe (srcdoc) mengisolasi <style>/<body> kwitansi agar tak membocorkan
+               CSS-nya ke halaman RME. -->
+          <iframe class="kw-frame" :srcdoc="kwitansiModal.rendered_html" title="Kwitansi"></iframe>
         </div>
       </div>
     </div>
@@ -1342,23 +1374,17 @@ function cetakLaporanOperasi(b) {
   .op-sign-name { border-top: 1px solid #000; padding-top: 3px; }
 }
 
-/* ─── CPPT lintas-episode (timeline) ─── */
-.cppt-tl { display: flex; flex-direction: column; gap: 10px; }
-.cppt-item { border: 1px solid var(--gb); border-left: 3px solid var(--ga); border-radius: 8px; padding: 9px 12px; background: var(--bc); }
-.cppt-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
-.cppt-kind { font-size: 11px; font-weight: 700; color: var(--td); }
-.cppt-when { font-size: 11px; color: var(--tu); }
-.cppt-by { font-size: 11px; color: var(--tm); }
-.cppt-by small { color: var(--tu); }
-.cppt-verif { font-size: 10px; color: #15803d; font-weight: 600; margin-left: auto; }
-.ep-badge { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 20px; text-transform: uppercase; }
-.ep-RANAP { background: #fef3c7; color: #b45309; }
-.ep-IGD   { background: #fee2e2; color: #b91c1c; }
-.ep-RAJAL { background: #dbeafe; color: #1d4ed8; }
-.ep-POLI  { background: #e0f2fe; color: #0369a1; }
-.cppt-vt { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--tm); margin-bottom: 5px; }
-.cppt-vt span { white-space: nowrap; }
-.cppt-soap { font-size: 12px; color: var(--td); }
-.cppt-dx, .cppt-instr { font-size: 11.5px; color: var(--tm); margin-top: 4px; }
-.cppt-dx b, .cppt-instr b { color: var(--td); }
+/* ─── CPPT lintas-episode — komponen bersama (CpptHistoryCard) ─── */
+/* Mengisi lebar panel; isi entri ditata grid responsif di dalam komponen. */
+.cppt-wrap { width: 100%; }
+
+/* ─── Kwitansi (modal lihat & cetak) ─── */
+.kw-btn svg { stroke: currentColor; }
+.kw-frame { width: 100%; height: 70vh; border: 1px solid var(--gb); border-radius: 8px; background: #fff; }
+/* Tombol kwitansi inline pada tiap baris kunjungan (tanpa perlu expand) */
+.kw-row-btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 10.5px; font-weight: 600;
+  color: #0e7490; background: #ecfeff; border: 1px solid #a5f3fc; border-radius: 999px; cursor: pointer; white-space: nowrap; }
+.kw-row-btn:hover:not(:disabled) { background: #cffafe; border-color: #67e8f9; }
+.kw-row-btn:disabled { opacity: .5; cursor: not-allowed; }
+.kw-row-btn svg { stroke: currentColor; }
 </style>

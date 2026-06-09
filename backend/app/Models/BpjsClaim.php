@@ -62,4 +62,9 @@ class BpjsClaim extends Model
     {
         return $this->hasMany(ClaimAuditLog::class);
     }
+
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(ClaimAttachment::class, 'bpjs_claim_id');
+    }
 }

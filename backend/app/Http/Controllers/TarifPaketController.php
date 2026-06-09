@@ -24,7 +24,7 @@ class TarifPaketController extends Controller
         $request->validate(['insurer_id' => 'required|uuid|exists:insurers,id']);
         return $this->ok($this->service->indexTarif(
             $type,
-            $request->only(['insurer_id', 'per_page', 'include_unpriced'])
+            $request->only(['insurer_id', 'per_page', 'include_unpriced', 'search'])
         ));
     }
 

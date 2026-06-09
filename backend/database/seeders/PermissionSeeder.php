@@ -43,6 +43,7 @@ class PermissionSeeder extends Seeder
             'bpjs'               => 'BPJS & Klaim',
             'laporan'            => 'Laporan & Analitik',
             'marketing'          => 'Laporan Marketing',
+            'keuangan'           => 'Keuangan (Rekap Honor Dokter & Jasa Medis)',
             'tarif_paket'        => 'Penjamin/Metode Bayar, Tarif, Paket Bedah & Kategori Tagihan',
             'inventori_farmasi'  => 'Inventori Farmasi (Obat/BHP/IOL/Supplier/PO/GRN)',
             'request_unit'       => 'Request & Retur dari Unit',

@@ -1590,7 +1590,7 @@ async function autoTerbitkanSep({ visitId, name }) {
 }
 
 /* ─── Terbitkan / Batalkan SEP dari panel detail kunjungan ───────────── */
-const sepAction = reactive({ loading: false })
+const sepAction = reactive({ loading: false, printing: false })
 async function terbitkanSep() {
   const row = visitDetailRow.value
   if (!row?.id) return
@@ -1631,6 +1631,24 @@ async function batalkanSep() {
     toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal batalkan SEP'))
   } finally {
     sepAction.loading = false
+  }
+}
+
+async function cetakSep() {
+  const row = visitDetailRow.value
+  if (!row?.id || !row?.noSep) return
+  sepAction.printing = true
+  try {
+    const res = await admisiApi.bpjs.cetakSep(row.id)
+    const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+    window.open(url, '_blank')
+    // Beri waktu tab baru memuat sebelum URL dilepas.
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  } catch (e) {
+    // Error JSON dikirim sebagai blob → interceptor api.js sudah mem-parse-nya.
+    toast('e', e.response?.data?.message || 'Gagal cetak SEP')
+  } finally {
+    sepAction.printing = false
   }
 }
 
@@ -2294,7 +2312,7 @@ onUnmounted(() => {
           <input
             v-model="lookupKey"
             class="lookup-input"
-            placeholder="Cari data pasien (nama / NIK / No. RM)"
+            placeholder="Cari data pasien (nama / NIK / No. RM / Tgl lahir DD MM YYYY)"
             @input="onLookupInput"
             @keyup.enter="runLookup"
             @focus="lookupKey.trim() && (lookupDropOpen = true)"
@@ -2952,7 +2970,7 @@ onUnmounted(() => {
                     <input
                       v-model="form.searchKey"
                       class="form-input"
-                      placeholder="Nama, NIK, atau No. RM pasien"
+                      placeholder="Nama, NIK, No. RM, atau Tgl lahir DD MM YYYY"
                       @keyup.enter="searchPatient"
                       @input="onSearchInput"
                       @blur="onSearchBlur"
@@ -2997,7 +3015,7 @@ onUnmounted(() => {
                       </div>
                     </transition>
                   </div>
-                  <div class="hint">Ketik 1 huruf saja — pencarian otomatis berdasarkan nama, NIK, atau No. RM</div>
+                  <div class="hint">Ketik 1 huruf saja — pencarian otomatis berdasarkan nama, NIK, No. RM, atau tanggal lahir (DD/MM/YYYY atau DD MM YYYY)</div>
                 </div>
 
                 <div v-if="form.found && !selectedActiveVisit" class="found-banner full">
@@ -3970,6 +3988,10 @@ onUnmounted(() => {
                   {{ sepAction.loading ? 'Menerbitkan…' : 'Terbitkan SEP' }}
                 </button>
                 <template v-else>
+                  <button class="btn btn-sm btn-secondary" :disabled="sepAction.printing" @click="cetakSep">
+                    <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
+                    {{ sepAction.printing ? 'Menyiapkan…' : 'Cetak SEP' }}
+                  </button>
                   <button class="btn btn-sm btn-primary" :disabled="sepEdit.loading" @click="startEditSep">
                     <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
                     Edit SEP

@@ -23,6 +23,9 @@ class DoctorExamination extends Model
         // Palpebra (anterior, di atas Kornea pada UI)
         'sa_palpebra_od',
         'sa_palpebra_os',
+        // Konjungtiva (anterior, di bawah Palpebra)
+        'sa_konjungtiva_od',
+        'sa_konjungtiva_os',
         // Segmen Anterior OD
         'sa_kornea_od',
         'sa_coa_od',

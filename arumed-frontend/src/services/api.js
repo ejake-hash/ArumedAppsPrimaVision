@@ -186,6 +186,9 @@ export const dokterApi = {
   gantiDokter:      (visitId, doctorScheduleId) => api.put(`/dokter/kunjungan/${visitId}/ganti-dokter`, { doctor_schedule_id: doctorScheduleId }),
   // Rujukan keluar (faskes lain). Pasien BPJS → terbit ke VClaim.
   rujukanKeluar:    (data)                => api.post('/dokter/rujukan-keluar', data),
+  // Referensi VClaim (faskes/poli/diagnosa) untuk form rujukan — diekspos di grup dokter
+  // (dokter tak punya permission integrasi.read; endpoint /integrasi/... terkunci 403).
+  referensi:        (jenis, p)            => api.get(`/dokter/vclaim/referensi/${jenis}`, { params: p }),
   // Surat Kontrol BPJS (planning Pulang) — status + terbitkan ke VClaim
   getSuratKontrol:  (visitId)             => api.get(`/dokter/kunjungan/${visitId}/surat-kontrol`),
   submitSuratKontrol: (visitId)           => api.post(`/dokter/kunjungan/${visitId}/surat-kontrol/submit`),
@@ -764,6 +767,20 @@ export const marketingApi = {
   }),
 }
 
+/** Keuangan — rekap honor (jasa medis) dokter per periode + aturan honor (PKS/edaran) */
+export const keuanganApi = {
+  recap:      (params)         => api.get('/keuangan/honor-recap', { params }),
+  csvExport:  (params, format) => api.get('/keuangan/honor-recap/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) },
+    responseType: 'blob',
+  }),
+  options:    ()               => api.get('/keuangan/fee-rules/options'),
+  listRules:  (params)         => api.get('/keuangan/fee-rules', { params }),
+  createRule: (body)           => api.post('/keuangan/fee-rules', body),
+  updateRule: (id, body)       => api.put(`/keuangan/fee-rules/${id}`, body),
+  deleteRule: (id)             => api.delete(`/keuangan/fee-rules/${id}`),
+}
+
 /** Admisi — dashboard, antrian, kunjungan, jadwal dokter */
 export const admisiApi = {
   dashboard:     ()             => api.get('/admisi/dashboard'),
@@ -799,6 +816,7 @@ export const admisiApi = {
     generateSep:     (data) => api.post('/admisi/bpjs/generate-sep', data),
     updateSep:       (data) => api.put('/admisi/bpjs/update-sep', data),
     cancelSep:       (data) => api.post('/admisi/bpjs/cancel-sep', data),
+    cetakSep:        (visitId) => api.get(`/admisi/bpjs/cetak-sep/${visitId}`, { responseType: 'blob' }),
     cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
     cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
     rujukanByKartu:      (data) => api.post('/admisi/bpjs/rujukan-by-kartu', data),
@@ -820,6 +838,11 @@ export const farmasiApi = {
   // Preview harga obat tambahan sesuai penjamin pasien (harga ditagih kasir).
   hargaObat:         (params)     => api.get('/farmasi/harga-obat', { params }),
 
+  // Verifikasi Farmasi (gate sebelum tagihan Kasir, alur D→K→F).
+  verifikasiQueue:   (params)     => api.get('/farmasi/verifikasi', { params }),
+  verifikasiResep:   (id)         => api.put(`/farmasi/resep/${id}/verifikasi`),
+  bukaVerifikasi:    (id)         => api.put(`/farmasi/resep/${id}/buka-verifikasi`),
+
   // Resep
   resep:             (params)     => api.get('/farmasi/resep', { params }),
   showResep:         (id)         => api.get(`/farmasi/resep/${id}`),
@@ -828,7 +851,8 @@ export const farmasiApi = {
   cancelResep:       (id)         => api.put(`/farmasi/resep/${id}/cancel`),
   storeItem:         (rid, items) => api.post(`/farmasi/resep/${rid}/item`, { items }),
   updateItem:        (id, data)   => api.put(`/farmasi/resep-item/${id}`, data),
-  deleteItem:        (id)         => api.delete(`/farmasi/resep-item/${id}`),
+  // Hapus item resep (opsional alasan utk audit substitusi/koreksi).
+  deleteItem:        (id, reason) => api.delete(`/farmasi/resep-item/${id}`, { data: reason ? { change_reason: reason } : {} }),
   // Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi tanpa resep dokter.
   storeOtc:          (visitId, items) => api.post(`/farmasi/kunjungan/${visitId}/resep-otc`, { items }),
 
@@ -846,6 +870,9 @@ export const farmasiApi = {
   // Stok
   stokObat:          (params)     => api.get('/farmasi/stok/obat', { params }),
   updateStokObat:    (id, data)   => api.put(`/farmasi/stok/obat/${id}`, data),
+  // Stok BHP (bahan habis pakai) — dikonsumsi & ditagih ke kwitansi (mis. rawat inap).
+  stokBhp:           (params)     => api.get('/farmasi/stok/bhp', { params }),
+  updateStokBhp:     (id, data)   => api.put(`/farmasi/stok/bhp/${id}`, data),
   stokAlert:         ()           => api.get('/farmasi/stok/alert'),
   // Export lembar kerja stok opname (xlsx default).
   opnameExport:      (params)     => api.get('/farmasi/stok/opname/export', { params, responseType: 'blob' }),

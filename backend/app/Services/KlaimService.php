@@ -71,6 +71,133 @@ class KlaimService
     }
 
     // =========================================================================
+    // REKAP KUNJUNGAN BPJS — screening pra-klaim (semua kunjungan BPJS per tgl)
+    // =========================================================================
+
+    /**
+     * Daftar SEMUA kunjungan pasien BPJS (termasuk yang belum punya klaim),
+     * difilter tanggal/rentang + pencarian, untuk layar rekap pra-klaim.
+     */
+    public function getBpjsVisitRecap(array $filters = []): LengthAwarePaginator
+    {
+        $query = Visit::query()
+            ->where('guarantor_type', 'BPJS')
+            ->with([
+                'patient:id,name,no_rm,bpjs_number,nik,date_of_birth,gender',
+                'dpjp:id,name',
+                'doctorExamination:id,visit_id,doctor_id,diagnosis_utama',
+                'doctorExamination.doctor:id,name',
+                'doctorSchedule.employee:id,name',
+                'billingInvoice:id,visit_id,status',
+                'bpjsClaim:id,visit_id,diagnosis_utama',
+                'bpjsClaim.attachments',
+            ]);
+
+        if (! empty($filters['tanggal'])) {
+            $query->whereDate('visit_date', $filters['tanggal']);
+        }
+        if (! empty($filters['tanggal_from'])) {
+            $query->whereDate('visit_date', '>=', $filters['tanggal_from']);
+        }
+        if (! empty($filters['tanggal_to'])) {
+            $query->whereDate('visit_date', '<=', $filters['tanggal_to']);
+        }
+
+        if (! empty($filters['search'])) {
+            $kw = $filters['search'];
+            $query->where(fn ($q) => $q
+                ->where('no_sep', 'like', "%{$kw}%")
+                ->orWhereHas('patient', fn ($p) => $p
+                    ->where('name', 'ilike', "%{$kw}%")
+                    ->orWhere('bpjs_number', 'like', "%{$kw}%"))
+            );
+        }
+
+        $page = $query->orderByDesc('visit_date')->orderBy('id')
+            ->paginate($filters['per_page'] ?? 25);
+
+        // Label ICD-10 (DB hanya simpan kode). Cache per-request (pola show()).
+        $icd10   = \App\Models\Icd10Code::pluck('description', 'code');
+        $icd10Id = \App\Models\Icd10Code::pluck('indonesian_description', 'code');
+
+        $jenisMap  = ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat', 'RAJAL' => 'Rawat Jalan'];
+        $kelasMap  = ['1' => 'Kelas 1', '2' => 'Kelas 2', '3' => 'Kelas 3'];
+        $genderMap = ['L' => 'Laki-laki', 'P' => 'Perempuan'];
+
+        $page->getCollection()->transform(function ($v) use ($icd10, $icd10Id, $jenisMap, $kelasMap, $genderMap) {
+            $v->append('dpjp_name');
+            $sep = (array) ($v->sep_data ?? []);
+
+            $dxCode = $v->doctorExamination?->diagnosis_utama ?? $v->bpjsClaim?->diagnosis_utama;
+            $diagnosa = $dxCode
+                ? trim($dxCode.' — '.(($icd10Id->get($dxCode) ?: $icd10->get($dxCode)) ?? ''))
+                : null;
+            $att = $v->bpjsClaim?->attachments ?? collect();
+
+            // Tgl SEP: dari snapshot sep_data saat terbit, fallback tgl kunjungan.
+            $tglSep = $sep['tglSep'] ?? $v->visit_date?->toDateString();
+            // Kelas rawat (hak): snapshot dahulu, lalu kolom visit.
+            $kls = (string) ($sep['klsRawatHak'] ?? $v->kelas_rawat_hak ?? '');
+            // No rujukan: snapshot dahulu, lalu kolom visit.
+            $noRujukan = $sep['noRujukan'] ?? $v->no_rujukan;
+            $dob = $v->patient?->date_of_birth;
+
+            return [
+                'visit_id'           => $v->id,
+                'nama'               => $v->patient?->name,
+                'no_rm'              => $v->patient?->no_rm,
+                'tgl_lahir'          => $dob ? \Illuminate\Support\Carbon::parse($dob)->format('d-m-Y') : null,
+                'gender'             => $genderMap[$v->patient?->gender] ?? $v->patient?->gender,
+                'no_sep'             => $v->no_sep,
+                'tgl_sep'            => $tglSep ? \Illuminate\Support\Carbon::parse($tglSep)->format('d-m-Y') : null,
+                'jenis'              => $jenisMap[$v->jenis_pelayanan] ?? ($v->jenis_pelayanan ?? '—'),
+                'kelas'              => $kelasMap[$kls] ?? ($kls !== '' ? $kls : null),
+                'no_rujukan'         => $noRujukan ?: null,
+                'bpjs_number'        => $v->patient?->bpjs_number,
+                'dpjp'               => $v->dpjp_name,
+                'diagnosa'           => $diagnosa,
+                'claim_id'           => $v->bpjsClaim?->id,
+                'penunjang_count'    => $att->where('category', 'PENUNJANG')->count(),
+                'dokpendukung_count' => $att->where('category', '!=', 'PENUNJANG')->count(),
+                'has_invoice'        => (bool) $v->billingInvoice,
+                'invoice_status'     => $v->billingInvoice?->status,
+                'is_paid'            => $v->billingInvoice?->status === 'PAID',
+            ];
+        });
+
+        return $page;
+    }
+
+    /**
+     * Pastikan visit punya BpjsClaim (untuk lampiran rekap). Buat DRAFT minimal
+     * bila belum ada. HANYA dipanggil pada jalur tulis (upload/hapus lampiran)
+     * supaya daftar klaim tidak banjir DRAFT phantom dari sekadar melihat.
+     */
+    public function ensureClaimForVisit(string $visitId): BpjsClaim
+    {
+        $visit = Visit::with('patient')->findOrFail($visitId);
+
+        if ($visit->guarantor_type !== 'BPJS') {
+            throw new \Exception('Kunjungan bukan pasien BPJS.', 422);
+        }
+        if (empty($visit->no_sep)) {
+            throw new \Exception('Nomor SEP belum ada — generate SEP di Admisi terlebih dahulu.', 422);
+        }
+
+        $existing = BpjsClaim::where('visit_id', $visit->id)->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        return BpjsClaim::create([
+            'visit_id'    => $visit->id,
+            'no_sep'      => $visit->no_sep,
+            'patient_nik' => $visit->patient?->nik,
+            'status'      => 'DRAFT',
+        ]);
+    }
+
+    // =========================================================================
     // PREPARE — build klaim dari data kunjungan
     // =========================================================================
 

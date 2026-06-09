@@ -488,6 +488,116 @@ class KlaimController extends Controller
     }
 
     // =========================================================================
+    // REKAP KUNJUNGAN BPJS — screening pra-klaim
+    // =========================================================================
+
+    /**
+     * GET /klaim/rekap
+     * Query: tanggal | tanggal_from + tanggal_to, search, per_page, page
+     */
+    public function rekap(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getBpjsVisitRecap(
+            $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'per_page'])
+        ));
+    }
+
+    /** GET /klaim/rekap/export — unduh seluruh hasil (sesuai filter) sebagai .xlsx */
+    public function rekapExport(Request $request): \Symfony\Component\HttpFoundation\Response
+    {
+        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search']);
+        $filters['per_page'] = 100000; // efektif semua baris yang cocok
+        $page = $this->service->getBpjsVisitRecap($filters);
+
+        $out = fopen('php://temp', 'r+');
+        fputcsv($out, ['No', 'Nama', 'No RM', 'Tgl Lahir', 'Jenis Kelamin',
+            'No SEP', 'Tgl SEP', 'Jenis', 'Kelas', 'No Kartu BPJS', 'DPJP',
+            'Diagnosa', 'No Rujukan', 'Dokumen Pendukung', 'Hasil Penunjang', 'Kwitansi'], ',', '"', '\\');
+
+        $i = 1;
+        foreach ($page as $r) {
+            fputcsv($out, [
+                $i++,
+                $r['nama'] ?? '',
+                $r['no_rm'] ?? '',
+                $r['tgl_lahir'] ?? '',
+                $r['gender'] ?? '',
+                $r['no_sep'] ?? '',
+                $r['tgl_sep'] ?? '',
+                $r['jenis'] ?? '',
+                $r['kelas'] ?? '',
+                $r['bpjs_number'] ?? '',
+                $r['dpjp'] ?? '',
+                $r['diagnosa'] ?? '',
+                $r['no_rujukan'] ?? '',
+                $r['dokpendukung_count'].' berkas',
+                $r['penunjang_count'].' berkas',
+                $r['is_paid'] ? 'LUNAS' : ($r['has_invoice'] ? 'BELUM LUNAS' : '-'),
+            ], ',', '"', '\\');
+        }
+        rewind($out);
+        $csv = stream_get_contents($out);
+        fclose($out);
+
+        $base = 'rekap-kunjungan-bpjs-'.now()->format('Ymd');
+        $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, 'Rekap BPJS');
+
+        return response($xlsx, 200, [
+            'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => "attachment; filename=\"{$base}.xlsx\"",
+        ]);
+    }
+
+    /**
+     * GET /klaim/rekap/{visitId}/lampiran — daftar lampiran kunjungan.
+     * TIDAK membuat klaim (read-only): bila visit belum punya klaim → daftar kosong.
+     */
+    public function rekapAttachments(string $visitId): JsonResponse
+    {
+        try {
+            $visit = \App\Models\Visit::with('bpjsClaim')->findOrFail($visitId);
+            if (! $visit->bpjsClaim) {
+                return $this->ok([]);
+            }
+            return $this->ok($this->service->getAttachments($visit->bpjsClaim->id));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+    }
+
+    /** POST /klaim/rekap/{visitId}/lampiran (multipart: file, category, title?) */
+    public function rekapUploadAttachment(Request $request, string $visitId): JsonResponse
+    {
+        $request->validate([
+            'file'     => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240', // 10 MB
+            'category' => 'nullable|string|max:30',
+            'title'    => 'nullable|string|max:200',
+        ]);
+
+        try {
+            $claim = $this->service->ensureClaimForVisit($visitId);
+            $att = $this->service->uploadAttachment($claim->id, $request->only(['category', 'title']), $request->file('file'));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($att, 'Lampiran berhasil diunggah', 201);
+    }
+
+    /** DELETE /klaim/rekap/{visitId}/lampiran/{attId} */
+    public function rekapDeleteAttachment(string $visitId, string $attId): JsonResponse
+    {
+        try {
+            $claim = $this->service->ensureClaimForVisit($visitId);
+            $this->service->deleteAttachment($claim->id, $attId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok(null, 'Lampiran dihapus');
+    }
+
+    // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================
 

@@ -43,6 +43,15 @@ function formatTime(ts) {
   return Number.isNaN(d.getTime()) ? '--:--'
     : d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
+// Tanggal lahir → DD/MM/YYYY (sumber Y-m-d). '' bila kosong/invalid.
+function formatDob(v) {
+  if (!v) return ''
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}/${d.getFullYear()}`
+}
 
 const belumBayarCount = computed(() => queue.value.filter((q) => !isLunas(q)).length)
 const selesaiCount    = computed(() => queue.value.filter((q) =>  isLunas(q)).length)
@@ -80,9 +89,24 @@ async function fetchQueue() {
 
 // ─── Detail invoice terpilih ────────────────────────────────────────────────
 const pg          = ref('tagihan')
+
+// ─── Panel antrean collapsible→rail (pola RefraksionisView/DokterView/BedahView) ──
+const QUEUE_PREF_KEY = 'kasir.queueCollapsed'
+const queueCollapsed = ref(localStorage.getItem(QUEUE_PREF_KEY) === '1')
+// Default ciut di layar sedang bila user belum pernah set preferensi.
+if (localStorage.getItem(QUEUE_PREF_KEY) === null && window.matchMedia('(max-width:1400px)').matches) {
+  queueCollapsed.value = true
+}
+function toggleQueue() {
+  queueCollapsed.value = !queueCollapsed.value
+  localStorage.setItem(QUEUE_PREF_KEY, queueCollapsed.value ? '1' : '0')
+}
+
 const selQ        = ref(null)    // queue item dipilih
 const selInv      = ref(null)    // full BillingInvoice + items
 const selInvLoading = ref(false)
+// Tagihan tertahan karena resep belum diverifikasi Farmasi (alur D→K→F).
+const awaitingVerify = ref(false)
 // Split COB (2 penjamin) — diisi dari /kasir/invoice/{id}/coverages bila visit COB.
 const cobSplit    = ref(null)
 
@@ -126,6 +150,11 @@ const eligPlafonWarn = computed(() => {
 })
 
 async function pickP(q) {
+  const wasEmpty = !selQ.value
+  // Mode fokus: ciutkan antrean saat PERTAMA pilih pasien (layar ≤1500px, pref belum diset).
+  if (wasEmpty && localStorage.getItem(QUEUE_PREF_KEY) === null && window.matchMedia('(max-width:1500px)').matches) {
+    queueCollapsed.value = true
+  }
   selQ.value         = q
   selInv.value       = null
   selPM.value        = null
@@ -134,6 +163,7 @@ async function pickP(q) {
   mixedAmounts.value = { 1: 0, 2: 0, 3: 0, 4: 0 }   // bersihkan agar nilai pasien lama tak bocor
   editTagihan.value  = false
   insuranceWarning.value = { show: false }
+  awaitingVerify.value = false
   cobSplit.value     = null
   emailTujuan.value  = q.visit?.patient?.email ?? ''   // prefill email pasien
   if (!q.visit?.id) return
@@ -150,11 +180,21 @@ async function pickP(q) {
       try {
         ({ data } = await kasirApi.generateInvoice(q.visit.id))
       } catch (err) {
-        toast('w', err.response?.data?.message ?? 'Gagal generate invoice')
+        const msg = err.response?.data?.message ?? 'Gagal generate invoice'
+        // Gate alur D→K→F: tagihan tertahan sampai Farmasi verifikasi & kunci resep.
+        if (err.response?.status === 422 && msg.toLowerCase().includes('diverifikasi')) {
+          awaitingVerify.value = true
+        } else {
+          toast('w', msg)
+        }
         return
       }
     }
     selInv.value = data.data
+    // Backend meng-override harga baris Rp 0 ke Buku Tarif terbaru saat tagihan dibuka.
+    if (data.data?.prices_refreshed > 0) {
+      toast('s', `${data.data.prices_refreshed} harga obat/BHP Rp 0 diperbarui dari Buku Tarif.`)
+    }
     syncGlobalDiscountFields()
     // Split COB (non-blocking) — tampil bila visit dijamin 2 penjamin.
     if (selInv.value?.id) {
@@ -659,6 +699,23 @@ function penjaminLabel(g) {
   if (t === 'PERUSAHAAN') return 'Perusahaan'
   return 'Umum'
 }
+// Penjamin lengkap: tampilkan nama insurer HANYA bila menambah info (mis. "Asuransi —
+// Admedika", "BPJS Kesehatan — COB Kereta Api"). Sembunyikan bila redundan dgn jenis
+// penjamin (mis. Umum — UMUM, BPJS — BPJS).
+function penjaminFull(p) {
+  const base = penjaminLabel(p?.guarantor_type)
+  const ins  = (p?.insurer ?? '').trim()
+  if (!ins) return base
+  const g = (p?.guarantor_type ?? '').toUpperCase()
+  const insU = ins.toUpperCase()
+  if (insU === g || insU === base.toUpperCase()) return base
+  return `${base} — ${ins}`
+}
+// Jenis layanan kunjungan (judul kwitansi + label/badge).
+function svcCode(t)  { return (t ?? 'RAJAL').toUpperCase() }
+function svcTitle(t) { return ({ RANAP: 'KWITANSI RAWAT INAP', IGD: 'KWITANSI GAWAT DARURAT (IGD)', RAJAL: 'KWITANSI RAWAT JALAN' })[svcCode(t)] ?? 'RINCIAN BIAYA PELAYANAN' }
+function svcLabel(t) { return ({ RANAP: 'Rawat Inap', IGD: 'Gawat Darurat (IGD)', RAJAL: 'Rawat Jalan' })[svcCode(t)] ?? 'Rawat Jalan' }
+function svcShort(t) { return ({ RANAP: 'Rawat Inap', IGD: 'IGD', RAJAL: 'Rawat Jalan' })[svcCode(t)] ?? 'Rawat Jalan' }
 
 // ─── History pembayaran ─────────────────────────────────────────────────────
 // Tanggal default = hari ini (format yyyy-mm-dd WIB). Backend getInvoiceList
@@ -674,11 +731,32 @@ const hDate         = ref(todayStr())
 const hSearch       = ref('')
 const hFilterPtype  = ref('')
 const hFilterMetode = ref('')
+const hCareType     = ref('')   // '' = semua | 'RAJAL' | 'RANAP' | 'IGD'
+
+const CARE_TABS = [
+  { key: '',      label: 'Semua' },
+  { key: 'RAJAL', label: 'Rawat Jalan' },
+  { key: 'RANAP', label: 'Rawat Inap' },
+  { key: 'IGD',   label: 'IGD' },
+]
+function setHCareType(t) {
+  if (hCareType.value === t) return
+  hCareType.value = t
+  fetchHistory()
+}
+// Label jenis layanan kunjungan (untuk pill di tabel history).
+function careTypeOf(h)      { return (h.visit?.jenis_pelayanan ?? 'RAJAL').toUpperCase() }
+function careTypeLabelOf(h) { return ({ RANAP: 'Rawat Inap', IGD: 'IGD', RAJAL: 'Rawat Jalan' })[careTypeOf(h)] ?? 'Rawat Jalan' }
 
 async function fetchHistory() {
   historyLoading.value = true
   try {
-    const { data } = await kasirApi.invoiceList({ status: 'PAID', per_page: 50, tanggal: hDate.value || todayStr() })
+    const { data } = await kasirApi.invoiceList({
+      status: 'PAID',
+      per_page: 50,
+      tanggal: hDate.value || todayStr(),
+      jenis_pelayanan: hCareType.value || undefined,
+    })
     const payload  = data.data
     history.value  = Array.isArray(payload) ? payload : (payload?.data ?? [])
   } catch (err) {
@@ -825,10 +903,17 @@ const groupedPrintItems = computed(() =>
 </script>
 
 <template>
-  <div class="kasir">
+  <div :class="['kasir', { 'q-collapsed': queueCollapsed }]">
     <div class="grid">
-      <!-- ══════════════════ LEFT: QUEUE (mengikuti PerawatView) ══════════════════ -->
+      <!-- ══════════════════ LEFT: QUEUE (collapsible→rail, pola RefraksionisView) ══════════════════ -->
       <aside class="col-queue">
+        <!-- Rail vertikal saat panel diciutkan (CSS show-hide agar breakpoint bisa override) -->
+        <button class="queue-rail" type="button" @click="toggleQueue" title="Buka panel antrean kasir" aria-label="Buka panel antrean kasir">
+          <svg viewBox="0 0 24 24" class="qr-chevron" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="qr-count">{{ queue.length }}</span>
+          <span class="qr-label">Antrean Kasir</span>
+        </button>
+
         <div class="card">
           <div class="card-head">
             <div>
@@ -838,7 +923,12 @@ const groupedPrintItems = computed(() =>
               </div>
               <div class="card-head-sub">{{ queue.length }} pasien hari ini</div>
             </div>
-            <span class="pill-live">LIVE</span>
+            <div class="head-actions">
+              <span class="pill-live">LIVE</span>
+              <button class="panel-collapse" type="button" @click="toggleQueue" title="Ciutkan panel antrean" aria-label="Ciutkan panel antrean">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean kasir">
@@ -921,11 +1011,16 @@ const groupedPrintItems = computed(() =>
                     <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
+                    <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
                     <span v-if="isLunas(q)" class="pill pill-done">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                       Lunas
                     </span>
                     <span v-else class="pill pill-belum">Belum Bayar</span>
+                  </div>
+                  <div v-if="q.visit?.dpjp_name" class="q-dpjp" :title="`DPJP: ${q.visit.dpjp_name}`">
+                    <svg viewBox="0 0 24 24" class="pill-icon"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    DPJP: {{ q.visit.dpjp_name }}
                   </div>
                   <div v-if="!isLunas(q)" class="q-actions" @click.stop>
                     <button
@@ -977,6 +1072,11 @@ const groupedPrintItems = computed(() =>
           <div v-else-if="selInvLoading" class="empty-state">
             <p>Memuat tagihan…</p>
           </div>
+          <div v-else-if="awaitingVerify" class="empty-state">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <p><b>Menunggu verifikasi Farmasi.</b><br/>Resep pasien ini belum diverifikasi &amp; dikunci Farmasi, jadi tagihan belum bisa dibuat. Minta Farmasi memverifikasi resep, lalu klik Muat ulang.</p>
+            <button class="btn btn-primary btn-sm" @click="pickP(selQ)">↻ Muat ulang</button>
+          </div>
           <template v-else-if="selInv">
             <!-- Patient header -->
             <div class="pt-banner">
@@ -985,6 +1085,10 @@ const groupedPrintItems = computed(() =>
                 <div class="pt-name">{{ selQ.visit?.patient?.name ?? '—' }}</div>
                 <div class="pt-meta">{{ selQ.visit?.patient?.no_rm ?? '—' }} · {{ selInv.invoice_number ?? 'Invoice' }}</div>
                 <div class="pt-contact">
+                  <span v-if="formatDob(selQ.visit?.patient?.date_of_birth)" class="pt-contact-item">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    {{ formatDob(selQ.visit.patient.date_of_birth) }}
+                  </span>
                   <span v-if="selQ.visit?.patient?.phone" class="pt-contact-item">
                     <svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12a19.79 19.79 0 01-3.07-8.67A2 2 0 013.6 1.27h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.91a16 16 0 006.18 6.18l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
                     {{ selQ.visit.patient.phone }}
@@ -993,14 +1097,16 @@ const groupedPrintItems = computed(() =>
                     <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
                     {{ selQ.visit.patient.address }}<span v-if="selQ.visit.patient.province">, {{ selQ.visit.patient.province }}</span>
                   </span>
-                  <span v-if="!selQ.visit?.patient?.phone && !selQ.visit?.patient?.address" class="pt-contact-item pt-contact-empty">
-                    Alamat & kontak belum diisi
+                  <span v-if="!selQ.visit?.patient?.address" class="pt-contact-item pt-contact-empty">
+                    Alamat belum diisi
                   </span>
                 </div>
                 <div class="pt-tags">
                   <span :class="['ptg', ptypeOf(selQ) === 'bpjs' ? 'ptg-b' : ptypeOf(selQ) === 'asn' ? 'ptg-a' : 'ptg-u']">
                     {{ ptypeOf(selQ) === 'bpjs' ? 'BPJS' : ptypeOf(selQ) === 'asn' ? 'Asuransi' : 'Umum' }}
                   </span>
+                  <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
+                  <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
                   <span v-if="selInv.status === 'PAID'" class="ptg ptg-ok">LUNAS</span>
                   <span v-else-if="selInv.status === 'PARTIALLY_PAID'" class="ptg ptg-ok">Bayar Sebagian</span>
                 </div>
@@ -1472,6 +1578,14 @@ const groupedPrintItems = computed(() =>
                 <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                 Riwayat Pembayaran
               </div>
+              <div class="care-tabs">
+                <button
+                  v-for="t in CARE_TABS"
+                  :key="t.key"
+                  :class="['care-tab', hCareType === t.key ? 'a' : '']"
+                  @click="setHCareType(t.key)"
+                >{{ t.label }}</button>
+              </div>
               <div class="filter-row">
                 <input v-model="hDate" type="date" class="fi" title="Tanggal transaksi" @change="fetchHistory" />
                 <input v-model="hSearch" class="fi" placeholder="Cari pasien/no invoice..." />
@@ -1506,7 +1620,10 @@ const groupedPrintItems = computed(() =>
                   <td class="num muted">{{ i + 1 }}</td>
                   <td class="strong">{{ h.invoice_number }}</td>
                   <td>{{ h.visit?.patient?.name ?? '—' }}<div class="muted">{{ h.visit?.patient?.no_rm ?? '—' }}</div></td>
-                  <td><span :class="['kat-pill', `kat-${ptypeOfHistory(h)}`]">{{ ptypeOfHistory(h).toUpperCase() }}</span></td>
+                  <td>
+                    <span :class="['kat-pill', `kat-${ptypeOfHistory(h)}`]">{{ ptypeOfHistory(h).toUpperCase() }}</span>
+                    <span :class="['care-pill', `care-${careTypeOf(h).toLowerCase()}`]">{{ careTypeLabelOf(h) }}</span>
+                  </td>
                   <td>{{ metodeLabel(h.payment_method) }}</td>
                   <td class="num strong">Rp {{ Number(h.paid_amount ?? h.total).toLocaleString('id-ID') }}</td>
                   <td class="muted">{{ formatTime(h.paid_at ?? h.updated_at) }}</td>
@@ -1555,7 +1672,7 @@ const groupedPrintItems = computed(() =>
           </div>
         </header>
 
-        <h1 class="rp-title">{{ printData.inpatient ? 'KWITANSI RAWAT INAP' : 'RINCIAN BIAYA PELAYANAN' }}</h1>
+        <h1 :class="['rp-title', `rp-svc-${svcCode(printData.service_type).toLowerCase()}`]">{{ svcTitle(printData.service_type) }}</h1>
         <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
 
         <table class="rp-meta">
@@ -1571,7 +1688,11 @@ const groupedPrintItems = computed(() =>
             <tr>
               <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
               <td class="k">Penjamin</td><td class="s">:</td>
-              <td class="v">{{ penjaminLabel(printData.patient?.guarantor_type) }}<span v-if="printData.patient?.insurer"> — {{ printData.patient.insurer }}</span></td>
+              <td class="v">{{ penjaminFull(printData.patient) }}</td>
+            </tr>
+            <tr>
+              <td class="k">Dokter (DPJP)</td><td class="s">:</td><td class="v">{{ printData.patient?.dpjp ?? '—' }}</td>
+              <td class="k">Jenis Layanan</td><td class="s">:</td><td class="v">{{ svcLabel(printData.service_type) }}</td>
             </tr>
           </tbody>
         </table>
@@ -1672,7 +1793,29 @@ const groupedPrintItems = computed(() =>
 
 <style scoped>
 .kasir { padding: 0; }
-.grid { display: grid; grid-template-columns: 290px 1fr; gap: 1rem; align-items: start; }
+/* Konten dipusatkan + lega di layar ultra-wide; antrean bisa diciutkan → kolom kerja luas. */
+.grid { display: grid; grid-template-columns: 290px 1fr; gap: 1rem; align-items: start; max-width: 1680px; margin-inline: auto; transition: grid-template-columns .22s ease; }
+.kasir.q-collapsed .grid { grid-template-columns: 56px 1fr; }
+
+/* ─── Rail antrean (saat diciutkan) ─────────────────────────────────────── */
+.queue-rail { display: none; }
+.kasir.q-collapsed .queue-rail {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: 56px; padding: 12px 0; cursor: pointer;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; color: var(--td);
+  position: sticky; top: 0;
+}
+.kasir.q-collapsed .queue-rail:hover { border-color: var(--ga); color: var(--ga); }
+.queue-rail .qr-chevron { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; }
+.queue-rail .qr-count { font-size: 14px; font-weight: 700; color: var(--ga); font-variant-numeric: tabular-nums; }
+.queue-rail .qr-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--tu); }
+.kasir.q-collapsed .col-queue .card { display: none; }
+
+/* Tombol ciutkan di header antrean */
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.panel-collapse { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 6px; background: var(--bs); color: var(--tu); cursor: pointer; padding: 0; }
+.panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
+.panel-collapse svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; }
 
 /* ─── LEFT QUEUE (meniru PerawatView) ───────────────────────────────────── */
 .col-queue .card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
@@ -1836,6 +1979,19 @@ const groupedPrintItems = computed(() =>
 .elig-plafon-warn { margin-top: 6px; font-size: 11px; padding: 6px 9px; background: var(--wb); border: 1px solid var(--wbd); color: var(--wt); border-radius: 5px; font-weight: 500; }
 .elig-hint { margin-top: 7px; font-size: 10.5px; color: var(--tu); font-style: italic; line-height: 1.45; }
 
+/* Layar sempit: antrean stack di atas konten, rail/collapse disembunyikan
+   (CSS override agar tetap tampil penuh tanpa scroll horizontal). */
+@media (max-width: 1180px) {
+  .grid, .kasir.q-collapsed .grid { grid-template-columns: 1fr; }
+  .queue-rail, .panel-collapse { display: none !important; }
+  .kasir.q-collapsed .col-queue .card { display: block !important; }
+  .queue-scroll { max-height: 440px; }
+}
+/* Layar sedang: konten utama (layout tagihan) stack supaya tak tergencet. */
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 700px) {
   .elig-grid { grid-template-columns: 1fr 1fr; }
 }
@@ -1879,6 +2035,28 @@ const groupedPrintItems = computed(() =>
 .kat-bpjs { background: #dbeafe; color: #1e40af; }
 .kat-umum { background: var(--gl); color: var(--ga); }
 .kat-asn  { background: var(--pb); color: var(--pt); }
+
+/* Pill jenis layanan (Rawat Inap / Jalan / IGD) di history. */
+.care-pill { display: inline-block; margin-left: 5px; font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+.care-rajal { background: #dbeafe; color: #1e3a8a; }
+.care-ranap { background: #dcfce7; color: #14532d; }
+.care-igd   { background: #ffedd5; color: #9a3412; }
+
+/* Segmented tab pemisah history Rawat Inap / Jalan / IGD. */
+.care-tabs { display: inline-flex; gap: 4px; margin-right: 0.6rem; background: var(--gl); padding: 3px; border-radius: 8px; }
+.care-tab { border: none; background: none; cursor: pointer; font-size: 11px; font-weight: 500; color: var(--tu); padding: 4px 10px; border-radius: 6px; font-family: 'Inter', sans-serif; }
+.care-tab:hover { color: var(--td); }
+.care-tab.a { background: var(--bc); color: var(--ga); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+/* Badge jenis layanan (antrean & kartu pasien) — warna seragam dgn kwitansi. */
+.pill-care, .ptg-care { background: #dbeafe; color: #1e3a8a; }
+.pill-care.care-ranap, .ptg-care.care-ranap { background: #dcfce7; color: #14532d; }
+.pill-care.care-igd,   .ptg-care.care-igd   { background: #ffedd5; color: #9a3412; }
+.pill-care.care-rajal, .ptg-care.care-rajal { background: #dbeafe; color: #1e3a8a; }
+/* Badge DPJP di kartu antrean & identitas pasien. */
+.q-dpjp { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; max-width: 100%; font-size: 10px; font-weight: 600; color: #4338ca; background: #eef2ff; padding: 2px 7px; border-radius: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.q-dpjp .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
+.ptg-dpjp { background: #eef2ff; color: #4338ca; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
 .tbl-fi:focus { border-color: var(--ga); outline: none; }
@@ -2119,6 +2297,9 @@ const groupedPrintItems = computed(() =>
   .rincian-print .rp-line { font-size: 10.5px; }
 
   .rincian-print .rp-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: .06em; text-decoration: underline; margin: 12px 0 1px; }
+  .rincian-print .rp-title.rp-svc-ranap { color: #14532d; }
+  .rincian-print .rp-title.rp-svc-igd   { color: #9a3412; }
+  .rincian-print .rp-title.rp-svc-rajal { color: #1e3a8a; }
   .rincian-print .rp-subtitle { text-align: center; font-size: 11px; margin-bottom: 12px; }
 
   .rincian-print .rp-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }

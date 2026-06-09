@@ -123,23 +123,28 @@ function fmtDate(s) {
             <span v-if="c.verified_by" class="cpc-badge vrf" title="Diverifikasi DPJP">✓ Terverifikasi DPJP</span>
           </div>
 
-          <div v-if="c.vitals && Object.keys(c.vitals).length" class="cpc-vt">
-            <span v-if="c.vitals.td">TD {{ c.vitals.td }}</span>
-            <span v-if="c.vitals.nadi">N {{ c.vitals.nadi }}</span>
-            <span v-if="c.vitals.spo2">SpO₂ {{ c.vitals.spo2 }}</span>
-            <span v-if="c.vitals.suhu">S {{ c.vitals.suhu }}°</span>
-            <span v-if="c.vitals.visus_od">VOD {{ c.vitals.visus_od }}</span>
-            <span v-if="c.vitals.visus_os">VOS {{ c.vitals.visus_os }}</span>
-            <span v-if="c.vitals.iop_od || c.vitals.iop_os">TIO {{ c.vitals.iop_od ?? '–' }}/{{ c.vitals.iop_os ?? '–' }}</span>
+          <!-- Body grid: tiap blok (vitals / S / O / A / P / Dx / Instruksi) mengisi
+               kolom secara responsif → di kartu lebar memenuhi 2–3 kolom, di sempit
+               (sidebar Dokter/Perawat/Refraksionis) otomatis menyusut 1 kolom. -->
+          <div class="cpc-body">
+            <div v-if="c.vitals && Object.keys(c.vitals).length" class="cpc-vt span-all">
+              <span v-if="c.vitals.td">TD {{ c.vitals.td }}</span>
+              <span v-if="c.vitals.nadi">N {{ c.vitals.nadi }}</span>
+              <span v-if="c.vitals.spo2">SpO₂ {{ c.vitals.spo2 }}</span>
+              <span v-if="c.vitals.suhu">S {{ c.vitals.suhu }}°</span>
+              <span v-if="c.vitals.visus_od">VOD {{ c.vitals.visus_od }}</span>
+              <span v-if="c.vitals.visus_os">VOS {{ c.vitals.visus_os }}</span>
+              <span v-if="c.vitals.iop_od || c.vitals.iop_os">TIO {{ c.vitals.iop_od ?? '–' }}/{{ c.vitals.iop_os ?? '–' }}</span>
+            </div>
+
+            <div v-if="c.soap?.s" class="cpc-soap"><b class="s">S</b> {{ c.soap.s }}</div>
+            <div v-if="c.soap?.o" class="cpc-soap"><b class="o">O</b> {{ c.soap.o }}</div>
+            <div v-if="c.soap?.a" class="cpc-soap"><b class="a">A</b> {{ c.soap.a }}</div>
+            <div v-if="c.soap?.p" class="cpc-soap"><b class="p">P</b> {{ c.soap.p }}</div>
+
+            <div v-if="c.diagnosis" class="cpc-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
+            <div v-if="c.instruksi" class="cpc-dx"><b>Instruksi:</b> {{ c.instruksi }}</div>
           </div>
-
-          <div v-if="c.soap?.s" class="cpc-soap"><b class="s">S</b> {{ c.soap.s }}</div>
-          <div v-if="c.soap?.o" class="cpc-soap"><b class="o">O</b> {{ c.soap.o }}</div>
-          <div v-if="c.soap?.a" class="cpc-soap"><b class="a">A</b> {{ c.soap.a }}</div>
-          <div v-if="c.soap?.p" class="cpc-soap"><b class="p">P</b> {{ c.soap.p }}</div>
-
-          <div v-if="c.diagnosis" class="cpc-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
-          <div v-if="c.instruksi" class="cpc-dx"><b>Instruksi:</b> {{ c.instruksi }}</div>
         </div>
       </div>
     </template>
@@ -166,7 +171,9 @@ function fmtDate(s) {
 .cpc-pager-sub { font-size: 10.5px; color: #94a3b8; }
 
 /* List */
-.cpc-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; max-height: 560px; overflow-y: auto; }
+/* Tanpa batas tinggi / scroll dalam: entri tampil penuh; bila terlalu panjang
+   penjelajahan via pager per-tanggal kunjungan (panah ‹ ›) di atas. */
+.cpc-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
 .cpc-item { border: 1px solid #eef0f3; border-left: 3px solid #cbd5e1; border-radius: 8px; padding: 0.55rem 0.65rem; background: #fff; }
 .cpc-item.ppa-dokter { border-left-color: #16a34a; }
 .cpc-item.ppa-perawat { border-left-color: #d97706; }
@@ -188,15 +195,20 @@ function fmtDate(s) {
 .cpc-badge.sgn { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .cpc-badge.vrf { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 
-.cpc-vt { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; font-size: 11px; color: #475569; }
+/* Body responsif: blok mengisi kolom (auto-fit). Lebar → 2-3 kolom terisi penuh;
+   sempit (<~580px, mis. sidebar) → 1 kolom (menumpuk seperti semula). */
+.cpc-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 6px 16px; margin-top: 6px; align-items: start; }
+.cpc-body > .span-all { grid-column: 1 / -1; }
+
+.cpc-vt { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; color: #475569; }
 .cpc-vt span { background: #f1f5f9; padding: 1px 6px; border-radius: 4px; }
 
-.cpc-soap { font-size: 11.5px; color: #334155; margin-top: 5px; line-height: 1.45; white-space: pre-wrap; }
+.cpc-soap { font-size: 11.5px; color: #334155; line-height: 1.45; white-space: pre-wrap; }
 .cpc-soap b { display: inline-block; width: 15px; font-weight: 800; }
 .cpc-soap b.s { color: #1d4ed8; }
 .cpc-soap b.o { color: #64748b; }
 .cpc-soap b.a { color: #7e22ce; }
 .cpc-soap b.p { color: #b45309; }
-.cpc-dx { font-size: 11px; color: #475569; margin-top: 5px; }
+.cpc-dx { font-size: 11px; color: #475569; }
 .cpc-dx b { color: #1e293b; }
 </style>

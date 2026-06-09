@@ -113,6 +113,12 @@ class RmeAggregatorService
                 'doctor'         => $this->doctorName($lastVisit),
                 'poli'           => $lastVisit->doctorSchedule?->poliklinik,
                 'planning'       => $lastVisit->doctorExamination?->planning,
+                // Keterangan rencana siap-tampil (label + jadwal kontrol bila ada).
+                'planning_text'  => $this->planningText(
+                    $lastVisit->doctorExamination?->planning,
+                    $lastVisit->follow_up_date,
+                    $lastVisit->follow_up_reason,
+                ),
                 'follow_up_date' => $lastVisit->follow_up_date?->toDateString(),
             ] : null,
             'counts' => [
@@ -135,14 +141,16 @@ class RmeAggregatorService
             'doctorSchedule.employee',
             'diagnosticOrders',
             'patientDocuments',
+            'billingInvoice',
         ])
             ->where('patient_id', $patientId)
             ->orderByDesc('visit_date')
             ->get();
 
         return $visits->map(function ($v) {
-            $de = $v->doctorExamination;
-            $na = $v->nurseAssessment;
+            $de  = $v->doctorExamination;
+            $na  = $v->nurseAssessment;
+            $inv = $v->billingInvoice;
 
             return [
                 'visit_id'        => $v->id,
@@ -158,6 +166,16 @@ class RmeAggregatorService
                 'is_finalized'    => (bool) ($de?->is_finalized),
                 'penunjang_count' => $v->diagnosticOrders->count(),
                 'dokumen_count'   => $v->patientDocuments->count(),
+                // Ringkasan tagihan untuk tombol "Kwitansi" (view/print di RME).
+                // null bila kunjungan belum punya invoice (belum sampai kasir).
+                'invoice' => $inv ? [
+                    'id'      => $inv->id,
+                    'number'  => $inv->invoice_number,
+                    'status'  => $inv->status,
+                    'total'   => (float) $inv->total,
+                    'is_paid' => $inv->status === 'PAID',
+                    'is_bpjs' => $v->guarantor_type === 'BPJS',
+                ] : null,
                 // expand
                 'detail' => [
                     'keluhan' => $na?->chief_complaint ?? $de?->anamnese,
@@ -176,6 +194,7 @@ class RmeAggregatorService
                         'p' => $de->soap_plan,
                     ] : null,
                     'planning'       => $de?->planning,
+                    'planning_text'  => $this->planningText($de?->planning, $v->follow_up_date, $v->follow_up_reason),
                     'follow_up_date' => $v->follow_up_date?->toDateString(),
                     'follow_up_reason' => $v->follow_up_reason,
                 ],
@@ -581,6 +600,7 @@ class RmeAggregatorService
                 'sekunder'   => $sekunder,
                 'tindakan'   => $tindakan,
                 'planning'   => $de->planning,
+                'planning_text' => $this->planningText($de->planning, $v->follow_up_date, $v->follow_up_reason),
             ];
         })->all();
     }
@@ -601,14 +621,19 @@ class RmeAggregatorService
         if ($sph === null && $cyl === null && $axis === null && $add === null) {
             return null;
         }
+        // Beri label S (Sphere) / C (Cylinder) / X (Axis) agar nilai tunggal (mis.
+        // hanya sferis "-7.00") tidak ambigu di SOAP/timeline/resume.
         $parts = [];
-        $parts[] = $this->signed($sph) ?? 'plano';
+        $parts[] = 'S ' . ($this->signed($sph) ?? 'plano');
         if ($cyl !== null) {
-            $parts[] = '/ ' . $this->signed($cyl) . ($axis !== null ? " x {$axis}" : '');
+            $parts[] = 'C ' . $this->signed($cyl);
+            if ($axis !== null) {
+                $parts[] = "X {$axis}";
+            }
         }
-        $s = implode(' ', $parts);
+        $s = implode(' / ', $parts);
         if ($add !== null && (float) $add != 0.0) {
-            $s .= ' Add ' . $this->signed($add);
+            $s .= ' / Add ' . $this->signed($add);
         }
         return $s;
     }
@@ -630,6 +655,48 @@ class RmeAggregatorService
         }
         $f = (float) $n;
         return ($f > 0 ? '+' : '') . number_format($f, 2);
+    }
+
+    /**
+     * Keterangan rencana tindak lanjut yang mudah dibaca, mis.
+     * "Pulang berobat jalan — Kontrol: 20 Jun 2026 (lepas jahitan)".
+     * Menggabungkan enum planning dokter dengan jadwal kontrol (follow_up) bila ada.
+     * Null bila tak ada keduanya.
+     */
+    private function planningText(?string $planning, $followUpDate = null, ?string $followUpReason = null): ?string
+    {
+        $label = $planning ? ([
+            'PULANG_BEROBAT_JALAN' => 'Pulang berobat jalan',
+            'BEDAH'                => 'Bedah',
+            'RAWAT_INAP'           => 'Rawat inap (observasi)',
+            'RUJUK'                => 'Rujuk',
+        ][$planning] ?? ucfirst(strtolower(str_replace('_', ' ', $planning)))) : null;
+
+        $parts = [];
+        if ($label) {
+            $parts[] = $label;
+        }
+        if ($followUpDate) {
+            $kontrol = 'Kontrol: ' . $this->fmtTanggalId($followUpDate);
+            if ($followUpReason) {
+                $kontrol .= " ({$followUpReason})";
+            }
+            $parts[] = $kontrol;
+        }
+
+        return $parts ? implode(' — ', $parts) : null;
+    }
+
+    /** Format tanggal Indonesia singkat: "20 Jun 2026". */
+    private function fmtTanggalId($date): ?string
+    {
+        if (! $date) {
+            return null;
+        }
+        $c   = $date instanceof \Carbon\Carbon ? $date : \Carbon\Carbon::parse($date);
+        $bln = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agt', 'Sep', 'Okt', 'Nov', 'Des'];
+
+        return $c->format('d') . ' ' . $bln[(int) $c->format('n')] . ' ' . $c->format('Y');
     }
 
     /** Ambil ringkasan singkat dari expertise_data (jsonb bebas bentuk). */

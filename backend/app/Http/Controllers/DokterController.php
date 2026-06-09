@@ -171,7 +171,7 @@ class DokterController extends Controller
      */
     private function segmenRules(): array
     {
-        $fields = ['sa_palpebra', 'sa_kornea', 'sa_coa', 'sa_iris', 'sa_pupil', 'sa_lensa',
+        $fields = ['sa_palpebra', 'sa_konjungtiva', 'sa_kornea', 'sa_coa', 'sa_iris', 'sa_pupil', 'sa_lensa',
                    'sp_papil', 'sp_macula', 'sp_retina', 'sp_vitreous'];
         $rules  = [];
 

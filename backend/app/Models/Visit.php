@@ -26,6 +26,7 @@ class Visit extends Model
         'no_antreen',
         'no_registrasi',
         'no_sep',
+        'sep_data',
         'photo_path',
         'visit_date',
         'classification',
@@ -74,6 +75,7 @@ class Visit extends Model
 
     protected $casts = [
         'visit_date'            => 'date',
+        'sep_data'              => 'array',
         'triase_completed_at'   => 'datetime',
         'refraksi_completed_at' => 'datetime',
         'satusehat_synced_at'   => 'datetime',
@@ -296,6 +298,19 @@ class Visit extends Model
     public function dpjp(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'dpjp_employee_id');
+    }
+
+    /**
+     * Nama dokter penanggung jawab (DPJP) terpadu: RANAP pakai kolom dpjp,
+     * RAJAL/IGD pakai dokter pemeriksa (doctorExamination) lalu dokter jadwal.
+     * Tidak di-append global — panggil ->append('dpjp_name') setelah eager-load
+     * relasi (dpjp, doctorExamination.doctor, doctorSchedule.employee) agar bebas N+1.
+     */
+    public function getDpjpNameAttribute(): ?string
+    {
+        return $this->dpjp?->name
+            ?? $this->doctorExamination?->doctor?->name
+            ?? $this->doctorSchedule?->employee?->name;
     }
 
     public function bedAssignments(): HasMany

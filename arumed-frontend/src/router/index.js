@@ -46,10 +46,12 @@ const router = createRouter({
         { path: 'farmasi', name: 'farmasi', component: FarmasiView, meta: { title: 'Farmasi', permission: 'farmasi.read' } },
         { path: 'kasir', name: 'kasir', component: KasirView, meta: { title: 'Kasir & Billing', permission: 'kasir.read' } },
         { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim', permission: 'bpjs.read' } },
+        { path: 'rekap-kunjungan-bpjs', name: 'rekap-kunjungan-bpjs', component: () => import('@/views/RekapKunjunganBpjsView.vue'), meta: { title: 'Rekap Kunjungan BPJS', permission: 'bpjs.read' } },
         { path: 'asuransi', name: 'asuransi', component: () => import('@/views/AsuransiView.vue'), meta: { title: 'Asuransi & Klaim TPA', permission: 'asuransi.read' } },
         { path: 'DataPengguna', name: 'DataPengguna', component: DataPenggunaView, meta: { title: 'Kepegawaian & RBAC', permission: 'role_akses.read' } },
         { path: 'jadwal-dokter', name: 'jadwal-dokter', component: JadwalDokterView, meta: { title: 'Jadwal Dokter', permission: 'jadwal_dokter.write' } },
         { path: 'laporan-marketing', name: 'laporan-marketing', component: () => import('@/views/LaporanMarketingView.vue'), meta: { title: 'Laporan Marketing', permission: 'marketing.read' } },
+        { path: 'keuangan', name: 'keuangan', component: () => import('@/views/KeuanganView.vue'), meta: { title: 'Keuangan — Rekap Honor', permission: 'keuangan.read' } },
         { path: 'ttd-dokumen', name: 'ttd-dokumen', component: () => import('@/views/TtdDokumenView.vue'), meta: { title: 'Tanda Tangan Dokumen', permission: 'ttd_dokumen.read' } },
         { path: 'pengaturan', name: 'pengaturan', component: () => import('@/views/PengaturanView.vue'), meta: { title: 'Pengaturan', permission: 'master_data.read' } },
 

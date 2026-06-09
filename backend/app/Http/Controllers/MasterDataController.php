@@ -231,7 +231,7 @@ class MasterDataController extends Controller
 
     public function indexPenjamin(Request $request): JsonResponse
     {
-        return $this->ok($this->service->indexPenjamin($request->only(['type', 'parent_id', 'is_system', 'only_tpa_view', 'per_page'])));
+        return $this->ok($this->service->indexPenjamin($request->only(['type', 'parent_id', 'is_system', 'only_tpa_view', 'per_page', 'page', 'search'])));
     }
 
     public function storePenjamin(Request $request): JsonResponse

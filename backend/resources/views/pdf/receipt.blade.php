@@ -64,6 +64,10 @@
     .clinic-name { font-size: 16px; font-weight: bold; color: #0E3A66; }
     .clinic-line { font-size: 10px; color: #444; }
     .title { text-align: center; font-size: 14px; font-weight: bold; margin: 4px 0 1px; letter-spacing: 1px; }
+    /* Pembeda jenis layanan: garis bawah berwarna pada judul kwitansi. */
+    .title.svc-ranap { color: #14532d; border-bottom: 2px solid #14532d; display: inline-block; width: 100%; padding-bottom: 2px; }
+    .title.svc-igd   { color: #9a3412; border-bottom: 2px solid #9a3412; display: inline-block; width: 100%; padding-bottom: 2px; }
+    .title.svc-rajal { color: #1e3a8a; border-bottom: 2px solid #1e3a8a; display: inline-block; width: 100%; padding-bottom: 2px; }
     .subtitle { text-align: center; font-size: 10px; color: #555; margin-bottom: 10px; }
     table.meta { width: 100%; font-size: 10.5px; margin-bottom: 8px; border-collapse: collapse; }
     table.meta td { padding: 1px 3px; vertical-align: top; }
@@ -124,7 +128,11 @@
         </table>
     @endif
 
-    <div class="title">{{ ($inpatient ?? null) ? 'KWITANSI RAWAT INAP' : 'RINCIAN BIAYA PELAYANAN' }}</div>
+    @php
+        $svcType = $service_type ?? (($inpatient ?? null) ? 'RANAP' : 'RAJAL');
+        $svcTitle = ['RANAP' => 'KWITANSI RAWAT INAP', 'IGD' => 'KWITANSI GAWAT DARURAT (IGD)', 'RAJAL' => 'KWITANSI RAWAT JALAN'][$svcType] ?? 'RINCIAN BIAYA PELAYANAN';
+    @endphp
+    <div class="title svc-{{ strtolower($svcType) }}">{{ $svcTitle }}</div>
     <div class="subtitle">No. {{ $invoice['number'] ?? '—' }}</div>
 
     <table class="meta">
@@ -139,7 +147,19 @@
         <tr>
             <td class="k">NIK</td><td class="s">:</td><td>{{ $patient['nik'] ?? '—' }}</td>
             <td class="k">Penjamin</td><td class="s">:</td>
-            <td>{{ $penjaminLabel($patient['guarantor_type'] ?? null) }}@if(!empty($patient['insurer'])) — {{ $patient['insurer'] }}@endif</td>
+            @php
+                $pLabel = $penjaminLabel($patient['guarantor_type'] ?? null);
+                $pIns   = trim((string) ($patient['insurer'] ?? ''));
+                $pGt    = strtoupper((string) ($patient['guarantor_type'] ?? ''));
+                // Tampilkan insurer hanya bila menambah info (bukan redundan "Umum — UMUM").
+                $showIns = $pIns !== '' && strtoupper($pIns) !== $pGt && strtoupper($pIns) !== strtoupper($pLabel);
+            @endphp
+            <td>{{ $pLabel }}@if($showIns) — {{ $pIns }}@endif</td>
+        </tr>
+        <tr>
+            <td class="k">Dokter (DPJP)</td><td class="s">:</td><td>{{ $patient['dpjp'] ?? '—' }}</td>
+            <td class="k">Jenis Layanan</td><td class="s">:</td>
+            <td>{{ ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat (IGD)', 'RAJAL' => 'Rawat Jalan'][$svcType] ?? 'Rawat Jalan' }}</td>
         </tr>
     </table>
 

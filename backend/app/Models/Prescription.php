@@ -25,6 +25,10 @@ class Prescription extends Model
         'prescribed_by_id',
         'status',
         'type',
+        // Verifikasi Farmasi (gate sebelum tagihan Kasir). verified_at NULL = belum
+        // diverifikasi → consolidateBilling menolak. Lihat migrasi add_pharmacy_verify_audit.
+        'verified_by_id',
+        'verified_at',
         'dispensed_by_id',
         'dispensed_at',
         'notes',
@@ -33,6 +37,7 @@ class Prescription extends Model
 
     protected $casts = [
         'dispensed_at' => 'datetime',
+        'verified_at'  => 'datetime',
     ];
 
     public function visit(): BelongsTo
@@ -48,6 +53,11 @@ class Prescription extends Model
     public function dispensedBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'dispensed_by_id');
+    }
+
+    public function verifiedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'verified_by_id');
     }
 
     public function items(): HasMany

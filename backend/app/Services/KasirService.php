@@ -44,12 +44,21 @@ class KasirService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.billingInvoice'])
+        $queues = Queue::with([
+                'visit.patient', 'visit.billingInvoice',
+                // Resolusi DPJP utk badge antrean (RANAP dpjp / RAJAL dokter pemeriksa/jadwal).
+                'visit.dpjp', 'visit.doctorExamination.doctor', 'visit.doctorSchedule.employee',
+            ])
             ->where('station', 'KASIR')
             ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
+
+        // Sertakan dpjp_name (terhitung dari relasi yang sudah di-eager-load) di payload visit.
+        $queues->each(fn ($q) => $q->visit?->append('dpjp_name'));
+
+        return $queues;
     }
 
     public function panggilAntrian(string $queueId): Queue
@@ -88,6 +97,12 @@ class KasirService
             $query->where('status', $filters['status']);
         }
 
+        // Pisahkan history Rawat Inap / Rawat Jalan / IGD via jenis_pelayanan visit.
+        if (! empty($filters['jenis_pelayanan'])) {
+            $jp = strtoupper($filters['jenis_pelayanan']);
+            $query->whereHas('visit', fn ($v) => $v->where('jenis_pelayanan', $jp));
+        }
+
         if (! empty($filters['search'])) {
             $keyword = $filters['search'];
             $query->where(fn ($q) => $q
@@ -104,9 +119,21 @@ class KasirService
 
     public function getInvoiceByVisit(string $visitId): ?BillingInvoice
     {
-        return BillingInvoice::with(['visit.patient', 'items', 'cashier'])
+        $invoice = BillingInvoice::with(['visit.patient', 'items', 'cashier'])
             ->where('visit_id', $visitId)
             ->first();
+
+        // Auto-override harga baris Rp 0 ke Buku Tarif terbaru saat kasir membuka
+        // tagihan DRAFT (mis. obat/BHP yang tarifnya baru di-set setelah invoice dibuat).
+        if ($invoice && $invoice->status === 'DRAFT') {
+            $refreshed = $this->refreshZeroPricedItemsFromTarif($invoice);
+            if ($refreshed > 0) {
+                $invoice->load('items');
+                $invoice->setAttribute('prices_refreshed', $refreshed);
+            }
+        }
+
+        return $invoice;
     }
 
     /**
@@ -265,6 +292,18 @@ class KasirService
 
         if (BillingInvoice::where('visit_id', $visitId)->whereNotIn('status', ['CANCELLED'])->exists()) {
             throw new \Exception('Invoice sudah ada untuk kunjungan ini.', 422);
+        }
+
+        // GATE alur D→K→F: tagihan tidak boleh dibuat selama masih ada resep rawat
+        // jalan yang BELUM diverifikasi & dikunci Farmasi (verified_at NULL). Memastikan
+        // tagihan = obat yang benar-benar diserahkan. RANAP/IGD (obat via inpatient_charges)
+        // dikecualikan, & resep CANCELLED diabaikan. Resep lama di-backfill verified_at saat
+        // migrasi → tidak terblok.
+        $adaBelumVerifikasi = $visit->prescriptions->contains(fn ($p) => $p->type !== Prescription::TYPE_RANAP
+            && in_array($p->status, ['DRAFT', 'SUBMITTED'], true)   // resep dokter pra-tagihan
+            && is_null($p->verified_at));
+        if ($adaBelumVerifikasi) {
+            throw new \Exception('Resep belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci resep dulu sebelum membuat tagihan.', 422);
         }
 
         return DB::transaction(function () use ($visit) {
@@ -1790,6 +1829,114 @@ class KasirService
         $this->recalculateInvoice($invoice);
     }
 
+    /**
+     * Auto-override harga baris yang masih Rp 0 ke harga TERBARU dari Buku Tarif.
+     *
+     * Latar: harga obat/BHP/tindakan di kwitansi dibekukan ke billing_items saat
+     * konsolidasi. Bila saat itu item belum punya tarif (Rp 0) lalu tarifnya baru
+     * di-set di Buku Tarif SETELAH invoice dibuat, baris lama tetap Rp 0. Method ini
+     * membangun ulang baris memakai pipeline yang sama (buildLines → getPrice) lalu
+     * MENYALIN harga hasil resolve HANYA ke baris yang masih Rp 0 — baris yang sudah
+     * berharga / hasil edit manual kasir TIDAK disentuh.
+     *
+     * Hanya untuk invoice DRAFT. Idempoten (pemanggilan ulang tak menemukan baris
+     * Rp 0 lagi). Dipanggil otomatis saat kasir membuka tagihan (getInvoiceByVisit).
+     *
+     * @return int jumlah baris yang diperbarui
+     */
+    public function refreshZeroPricedItemsFromTarif(BillingInvoice $invoice): int
+    {
+        if ($invoice->status !== 'DRAFT') {
+            return 0;
+        }
+
+        try {
+            return DB::transaction(function () use ($invoice) {
+                // Eager-load identik dengan consolidateBilling agar buildLines lengkap.
+                $visit = Visit::with([
+                    'patient',
+                    'visitServices.procedure',
+                    'prescriptions.items.medication',
+                    'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
+                    'surgerySchedule.surgeryRecord.iolUsages.iolItem',
+                    'doctorExamination.surgeryPackage.items',
+                    'surgeryRequests.bhpItems.bhpItem',
+                    'equipmentUsages.equipment',
+                    'surgeryPackageSnapshots.items',
+                    'visitCob.penjamin1',
+                    'visitCob.penjamin2',
+                ])->find($invoice->visit_id);
+                if (! $visit) {
+                    return 0;
+                }
+
+                [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+                $fresh = $this->buildLines($visit, $billInsurerId, $billGuarantor);
+
+                // Index harga fresh per baris bertarif (reference_id non-null, harga > 0).
+                $freshPrice = [];
+                foreach ($fresh as $l) {
+                    $ref = $l['reference_id'] ?? null;
+                    if ($ref !== null && (float) ($l['unit_price'] ?? 0) > 0) {
+                        $freshPrice["{$l['item_type']}|{$ref}"] = (float) $l['unit_price'];
+                    }
+                }
+
+                $updated  = 0;
+                $bundledChanged = false;
+                foreach ($invoice->items as $item) {
+                    if ((float) $item->unit_price != 0.0 || $item->reference_id === null) {
+                        continue;
+                    }
+                    $key = "{$item->item_type}|{$item->reference_id}";
+                    if (! isset($freshPrice[$key])) {
+                        continue;
+                    }
+                    $unitPrice  = $freshPrice[$key];
+                    $totalPrice = $unitPrice * $item->quantity;
+                    // Pertahankan persen diskon per-baris yang ada.
+                    [$discAmt, $discPc] = $this->computeItemDiscount($totalPrice, null, (float) $item->discount_percent);
+                    $item->update([
+                        'unit_price'       => $unitPrice,
+                        'total_price'      => $totalPrice,
+                        'discount_amount'  => $discAmt,
+                        'discount_percent' => $discPc,
+                        'net_price'        => max(0, $totalPrice - $discAmt),
+                    ]);
+                    $updated++;
+                    // Obat terserap paket ("termasuk paket") → baris DISKON_PAKET harus ikut tumbuh.
+                    if ($item->item_type === 'OBAT' && str_contains((string) $item->description, 'termasuk paket')) {
+                        $bundledChanged = true;
+                    }
+                }
+
+                if ($updated === 0) {
+                    return 0;
+                }
+
+                // Sinkronkan baris DISKON_PAKET (negatif, reference_id null) dari fresh agar
+                // total pasien tetap netral saat obat-paket yang tadinya Rp 0 jadi berharga.
+                if ($bundledChanged) {
+                    $invoice->items()->where('item_type', 'DISKON_PAKET')->delete();
+                    foreach ($fresh as $l) {
+                        if (($l['item_type'] ?? null) === 'DISKON_PAKET') {
+                            BillingItem::create(array_merge($l, ['billing_invoice_id' => $invoice->id]));
+                        }
+                    }
+                }
+
+                $this->recalculateInvoice($invoice);
+                $this->log(auth('api')->id(), 'REFRESH_TARIF_KWITANSI', BillingInvoice::class, $invoice->id, "{$updated} baris Rp 0 diperbarui dari Buku Tarif");
+
+                return $updated;
+            });
+        } catch (\Throwable $e) {
+            // Refresh tak boleh menggagalkan pemuatan halaman kasir — invoice tampil apa adanya.
+            \Illuminate\Support\Facades\Log::warning('refreshZeroPricedItemsFromTarif gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
+            return 0;
+        }
+    }
+
     // =========================================================================
     // COB
     // =========================================================================
@@ -1882,6 +2029,10 @@ class KasirService
             'visit.insurer',
             'visit.room',
             'visit.bed',
+            // DPJP/dokter penanggung jawab untuk ditampilkan di kwitansi (RANAP & RAJAL).
+            'visit.dpjp',
+            'visit.doctorExamination.doctor',
+            'visit.doctorSchedule.employee',
             'items',
             'cashier',
         ])->findOrFail($invoiceId);
@@ -1932,7 +2083,12 @@ class KasirService
                 'nik'            => $invoice->visit->patient?->nik,
                 'guarantor_type' => $invoice->visit->guarantor_type,
                 'insurer'        => $invoice->visit->insurer?->name,
+                // Dokter penanggung jawab (DPJP) — RANAP pakai dpjp eksplisit, RAJAL/IGD
+                // pakai dokter pemeriksa / dokter jadwal (lihat resolveDpjpName).
+                'dpjp'           => $this->resolveDpjpName($invoice->visit),
             ],
+            // Jenis pelayanan untuk judul & pembeda kwitansi (RAWAT INAP / JALAN / IGD).
+            'service_type' => $invoice->visit->jenis_pelayanan ?? 'RAJAL',
             // Blok inap (null bila bukan RANAP) — kamar/bed/kelas/tgl/LOS untuk kwitansi RI.
             'inpatient'  => $this->receiptInpatientBlock($invoice->visit),
             'items'      => $invoice->items->toArray(),
@@ -2024,6 +2180,17 @@ class KasirService
      * rawat jalan tidak menampilkan blok ini). LOS dihitung konsisten dengan
      * generateRoomCharges: max(1, malam admission_at..discharge_at) per hari kalender.
      */
+    /**
+     * Nama dokter penanggung jawab (DPJP) untuk kwitansi.
+     * RANAP: kolom dpjp_employee_id (Visit::dpjp). RAJAL/IGD: dokter pemeriksa
+     * (doctorExamination.doctor) atau, bila belum diperiksa, dokter dari jadwal
+     * kunjungan (doctorSchedule.employee). Null bila tak ada.
+     */
+    private function resolveDpjpName(?Visit $visit): ?string
+    {
+        return $visit?->dpjp_name;   // accessor Visit::getDpjpNameAttribute (relasi sudah di-eager-load)
+    }
+
     private function receiptInpatientBlock(?Visit $visit): ?array
     {
         if (! $visit || ($visit->jenis_pelayanan ?? 'RAJAL') !== 'RANAP') {

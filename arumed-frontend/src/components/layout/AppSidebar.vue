@@ -118,7 +118,8 @@ const showKlinis = computed(() =>
 )
 const showOperasional = computed(() =>
   auth.can('farmasi.read') || auth.can('inventori_farmasi.read') || auth.can('kasir.read') ||
-  auth.can('bpjs.read') || auth.can('asuransi.read') || auth.can('marketing.read'),
+  auth.can('bpjs.read') || auth.can('asuransi.read') || auth.can('marketing.read') ||
+  auth.can('keuangan.read'),
 )
 const showSistem = computed(() =>
   auth.can('jadwal_dokter.write') || auth.can('master_data.read') || auth.can('rawat_inap.read') ||
@@ -235,6 +236,10 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span>Klaim BPJS</span>
       </RouterLink>
+      <RouterLink v-if="auth.can('bpjs.read')" to="/rekap-kunjungan-bpjs" class="sb-item" title="Rekap Kunjungan BPJS">
+        <svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>
+        <span>Rekap Kunjungan BPJS</span>
+      </RouterLink>
       <RouterLink v-if="auth.can('asuransi.read')" to="/asuransi" class="sb-item" title="Asuransi & Klaim TPA">
         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
         <span>Asuransi & TPA</span>
@@ -242,6 +247,10 @@ onMounted(async () => {
       <RouterLink v-if="auth.can('marketing.read')" to="/laporan-marketing" class="sb-item" title="Laporan Marketing">
         <svg viewBox="0 0 24 24"><path d="M3 11l18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 11-5.8-1.6"/></svg>
         <span>Laporan Marketing</span>
+      </RouterLink>
+      <RouterLink v-if="auth.can('keuangan.read')" to="/keuangan" class="sb-item" title="Keuangan — Rekap Honor">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a2.5 2.5 0 00-2.5-1.5c-1.4 0-2.5.9-2.5 2s1.1 1.6 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 01-2.5-1.5"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
+        <span>Keuangan (Honor)</span>
       </RouterLink>
 
       <div v-if="showSistem" class="sb-section">Sistem</div>
