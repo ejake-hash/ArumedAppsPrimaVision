@@ -1647,16 +1647,45 @@ class AdmisiService
     {
         $this->assertBpjsEnabled('VCLAIM');
 
-        $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($data['visit_id']);
+        // Lock baris visit (anti-race): auto-SEP saat registrasi + klik "Terbitkan SEP"
+        // manual bisa nyaris bersamaan → tanpa lock keduanya lolos guard no_sep lalu
+        // generate SEP DOBEL di BPJS. Serialize per-visit; re-cek no_sep di dalam lock.
+        return DB::transaction(fn () => $this->generateSepLocked($data));
+    }
+
+    /** Inti penerbitan SEP — WAJIB dijalankan dalam DB::transaction + lockForUpdate. */
+    private function generateSepLocked(array $data): array
+    {
+        $visit = Visit::with(['patient', 'doctorSchedule.employee'])
+            ->lockForUpdate()
+            ->findOrFail($data['visit_id']);
 
         if ($visit->no_sep) {
             throw new \Exception("Kunjungan ini sudah punya SEP: {$visit->no_sep}", 422);
         }
 
-        // No. kartu: dari request, fallback ke data pasien.
+        // No. kartu: dari request → data pasien → (fallback) resolve dari NIK via Cek
+        // Peserta. Pasien BPJS sering tersimpan TANPA No. Kartu (petugas isi NIK saja,
+        // atau kartu di-blank saat BPJS offline → normalizeBpjsNumber jadikan NULL).
+        // Daripada menolak SEP, tarik noKartu dari NIK lalu sembuhkan record pasien
+        // supaya penerbitan SEP (dan operasi VClaim lain: SKDP/kontrol/SPRI) lancar.
         $data['bpjs_number'] = $data['bpjs_number'] ?? $visit->patient?->bpjs_number;
         if (empty($data['bpjs_number'])) {
-            throw new \Exception('Nomor kartu BPJS pasien belum ada.', 422);
+            $nik = trim((string) ($visit->patient?->nik ?? ''));
+            if ($nik === '') {
+                throw new \Exception('No. Kartu BPJS & NIK pasien belum ada — lengkapi data pasien (Edit) dulu.', 422);
+            }
+            // Cek Peserta (NIK → noKartu + nama). Melempar 422 bila tak ditemukan di BPJS.
+            $res     = $this->vclaim->checkPeserta($nik, 'nik');
+            $peserta = $res['response']['peserta'] ?? null;
+            $noKartu = $peserta['noKartu'] ?? null;
+            if (! $noKartu) {
+                throw new \Exception($res['metaData']['message'] ?? 'Peserta BPJS tidak ditemukan dari NIK pasien.', 422);
+            }
+            $data['bpjs_number'] = (string) $noKartu;
+            // Heal record pasien — HANYA bila nama peserta BPJS cocok dgn nama pasien
+            // (cegah NIK salah-ketik menulis kartu orang lain ke record). Best-effort.
+            $this->backfillPatientBpjsNumber($visit->patient, $noKartu, $peserta['nama'] ?? null);
         }
 
         $jenisPelayanan = $visit->jenis_pelayanan ?? 'RAJAL';
@@ -1788,6 +1817,59 @@ class AdmisiService
         }
 
         return (string) $noKartu;
+    }
+
+    /**
+     * Simpan No. Kartu BPJS hasil resolve (NIK→noKartu) ke record pasien bila kolomnya
+     * masih kosong — supaya operasi VClaim berikutnya tak perlu resolve ulang. Best-effort:
+     * lewati bila nomor sudah dipakai pasien lain (data ganda) agar tak melanggar UNIQUE
+     * constraint patients_bpjs_number_unique (lihat normalizeBpjsNumber).
+     */
+    private function backfillPatientBpjsNumber(?Patient $patient, ?string $noKartu, ?string $pesertaNama = null): void
+    {
+        if (! $patient) {
+            return;
+        }
+        $normalized = $this->normalizeBpjsNumber($noKartu);
+        if (! $normalized || ! empty($patient->bpjs_number)) {
+            return;
+        }
+        // Identitas: jangan tulis kartu bila nama peserta BPJS tak cocok dgn nama pasien
+        // (NIK salah-ketik bisa resolve ke kartu orang LAIN). Bila ragu → JANGAN simpan;
+        // SEP transaksi ini tetap pakai kartu, hanya record pasien yang tak ikut di-heal.
+        if (! $this->bpjsNameMatches($patient->name, $pesertaNama)) {
+            return;
+        }
+        $taken = Patient::where('bpjs_number', $normalized)
+            ->where('id', '!=', $patient->id)
+            ->exists();
+        if ($taken) {
+            return;
+        }
+        try {
+            // Savepoint (nested transaction): bila race UNIQUE (23505) terjadi antara cek &
+            // update, rollback HANYA bagian ini — transaksi SEP induk tetap sehat (tanpa
+            // savepoint, error Postgres membatalkan SELURUH transaksi → SEP gagal).
+            DB::transaction(fn () => $patient->update(['bpjs_number' => $normalized]));
+        } catch (\Illuminate\Database\QueryException $e) {
+            if (($e->errorInfo[0] ?? null) !== '23505') {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Cocokkan nama pasien vs nama peserta BPJS (ternormalisasi: uppercase + rapikan
+     * spasi). Konservatif — exact match; bila salah satu kosong → dianggap TIDAK cocok
+     * (lebih aman tak meng-heal daripada menulis identitas yang salah).
+     */
+    private function bpjsNameMatches(?string $patientName, ?string $pesertaName): bool
+    {
+        $norm = fn ($s) => preg_replace('/\s+/', ' ', trim(mb_strtoupper((string) ($s ?? ''))));
+        $a = $norm($patientName);
+        $b = $norm($pesertaName);
+
+        return $a !== '' && $b !== '' && $a === $b;
     }
 
     /**

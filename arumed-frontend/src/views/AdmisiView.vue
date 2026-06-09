@@ -1524,6 +1524,28 @@ async function cekPesertaQuick() {
   }
 }
 
+/* Auto-terbit SEP setelah registrasi BPJS (non-blocking). Bila gagal — poli belum
+   dipetakan / rujukan tak ada / BPJS down — registrasi TETAP sukses & petugas tetap
+   bisa menerbitkan SEP manual dari Detail Pasien (tombol Terbitkan SEP). Backend
+   bpjsGenerateSep me-resolve No. Kartu dari NIK bila kolomnya kosong. */
+async function autoTerbitkanSep({ visitId, name }) {
+  if (!visitId) return
+  try {
+    const res = await admisiApi.bpjs.generateSep({ visit_id: visitId })
+    const b = res.data?.data ?? {}
+    const noSep = b.response?.sep?.noSep
+    if (noSep) {
+      toast('s', `SEP terbit: ${noSep}${name ? ` · ${name}` : ''}`)
+      admisiStore.fetchVisits?.()
+    } else {
+      toast('w', `SEP belum terbit${name ? ` untuk ${name}` : ''}: ${b.metaData?.message || 'data BPJS belum lengkap'} — terbitkan manual dari Detail Pasien.`)
+    }
+  } catch (e) {
+    const msg = e.response?.data?.message || 'gagal menghubungi BPJS'
+    toast('w', `SEP belum terbit${name ? ` untuk ${name}` : ''}: ${msg} — terbitkan manual dari Detail Pasien.`)
+  }
+}
+
 /* ─── Terbitkan / Batalkan SEP dari panel detail kunjungan ───────────── */
 const sepAction = reactive({ loading: false })
 async function terbitkanSep() {
@@ -1959,8 +1981,25 @@ async function submitRegistration() {
     }
 
     const action = walkInVisitId.value ? 'didaftarkan dari Anjungan' : 'terdaftar'
+
+    // Konteks auto-SEP ditangkap SEBELUM closeWizard mereset form. SEP diterbitkan
+    // otomatis untuk BPJS (non-blocking) — lihat autoTerbitkanSep di bawah.
+    const sepCtx = {
+      visitId:    visit?.id ?? null,
+      isBpjs:     form.guarantor === 'BPJS',
+      alreadySep: !!visit?.no_sep,
+      name:       form.name,
+    }
+    // PREOP_BEDAH dikecualikan dari auto-SEP: operasinya sering H+1 → SEP harus
+    // bertanggal hari operasi, bukan hari daftar. SEP pre-op diterbitkan manual dari
+    // Detail Pasien saat hari operasi. (jenis_pelayanan PREOP tetap RAJAL → tglSep=now.)
+    const willIssueSep = sepCtx.isBpjs && sepCtx.visitId && !sepCtx.alreadySep
+      && preopChoice.value !== 'PREOP'
+
+    // Toast registrasi TIDAK lagi mengklaim "menerbitkan SEP…" — hasil SEP (terbit /
+    // belum) dimiliki sepenuhnya oleh autoTerbitkanSep agar tak terbaca "gagal".
     const msgs = {
-      BPJS:     `SEP dalam proses · ${form.name} ${action} · Antrean ${queueNo}`,
+      BPJS:     `${form.name} ${action} · Antrean ${queueNo}`,
       ASURANSI: `${form.name} ${action} (${form.insuranceName}) · Antrean ${queueNo}`,
     }
     toast('s', msgs[form.guarantor] ?? `${form.name} ${action} · Antrean ${queueNo}`)
@@ -1972,6 +2011,12 @@ async function submitRegistration() {
       printAdmisiTicket(ticketData)
       printLabel(labelData)
     })
+
+    // Auto-terbit SEP (non-blocking) untuk BPJS. Bila gagal — poli belum dipetakan /
+    // rujukan tak ada / BPJS down — registrasi TETAP sukses & tiket tetap tercetak;
+    // petugas dapat menerbitkan SEP manual dari Detail Pasien. Sengaja TIDAK di-await
+    // agar tak menahan refresh/indikator submit.
+    if (willIssueSep) autoTerbitkanSep(sepCtx)
 
     // Refresh antrian + kunjungan setelah pendaftaran
     await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchDashboard()])
