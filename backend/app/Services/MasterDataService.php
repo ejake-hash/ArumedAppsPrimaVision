@@ -218,6 +218,10 @@ class MasterDataService
     {
         // is_system tidak bisa di-set via API (hanya seeder)
         unset($data['is_system']);
+        // String opsional kosong ('') → null. KRUSIAL utk `code`: kolom unik,
+        // sehingga dua penjamin ber-code-kosong (form tak punya field code) akan
+        // tabrakan unique (23505) → 500. null aman (Postgres izinkan banyak NULL).
+        $data = $this->nullifyBlankPenjaminStrings($data);
         // Guard keanggotaan TPA bila parent_id di-set lewat jalur API/CSV.
         if (! empty($data['parent_id'])) {
             $this->assertValidTpaParent($data['parent_id'], null);
@@ -240,6 +244,9 @@ class MasterDataService
 
         // is_system tidak bisa di-set via API
         unset($data['is_system']);
+
+        // String opsional kosong ('') → null (samakan dgn store; cegah code='' tabrak unique).
+        $data = $this->nullifyBlankPenjaminStrings($data);
 
         // Insurer sistem: hanya boleh ubah address/phone/email/is_active
         if ($insurer->is_system) {
@@ -276,6 +283,23 @@ class MasterDataService
         $insurer->update($data);
         $this->log(auth('api')->id(), 'UPDATE_PENJAMIN', Insurer::class, $id);
         return $insurer->fresh();
+    }
+
+    /**
+     * Normalkan string opsional penjamin yang kosong/whitespace → null.
+     * Mencegah `code=''` tersimpan literal (tabrakan unique insurers_code_unique).
+     * Hanya menyentuh key yang ADA di payload (aman utk update parsial).
+     */
+    private function nullifyBlankPenjaminStrings(array $data): array
+    {
+        $optional = ['code', 'phone', 'email', 'address', 'portal_url',
+                     'pic_name', 'pic_phone', 'pic_email', 'claim_submission_notes'];
+        foreach ($optional as $f) {
+            if (array_key_exists($f, $data) && is_string($data[$f]) && trim($data[$f]) === '') {
+                $data[$f] = null;
+            }
+        }
+        return $data;
     }
 
     /**
@@ -1566,7 +1590,32 @@ class MasterDataService
             $query->where('insurer_id', $filters['insurer_id']);
         }
 
+        // Pencarian: filter by nama/kode item terkait (relasi).
+        if (! empty($filters['search'])) {
+            $kw   = trim($filters['search']);
+            $cols = $this->tarifSearchColumns($type);
+            $query->whereHas($itemRel, function ($q) use ($kw, $cols) {
+                $q->where(function ($w) use ($kw, $cols) {
+                    foreach ($cols as $col) {
+                        $w->orWhere($col, 'ilike', "%{$kw}%");
+                    }
+                });
+            });
+        }
+
         return $query->paginate($filters['per_page'] ?? 25);
+    }
+
+    /** Kolom item master yang bisa dicari per tipe tarif (nama/kode/kategori). */
+    private function tarifSearchColumns(string $type): array
+    {
+        return match ($type) {
+            'tindakan' => ['name', 'code'],
+            'obat'     => ['name', 'code', 'generic_name'],
+            'bhp'      => ['name', 'code'],
+            'iol'      => ['brand', 'serial_number'],
+            default    => ['name'],
+        };
     }
 
     /**
@@ -1587,6 +1636,15 @@ class MasterDataService
 
         $itemsPage = $itemModel::query()
             ->where('is_active', true)
+            ->when(! empty($filters['search']), function ($q) use ($filters, $type) {
+                $kw   = trim($filters['search']);
+                $cols = $this->tarifSearchColumns($type);
+                $q->where(function ($w) use ($kw, $cols) {
+                    foreach ($cols as $col) {
+                        $w->orWhere($col, 'ilike', "%{$kw}%");
+                    }
+                });
+            })
             ->orderBy($orderCol)
             ->paginate($filters['per_page'] ?? 25);
 
