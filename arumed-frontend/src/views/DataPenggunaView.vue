@@ -100,11 +100,15 @@ const filterAktif = ref('')
 // dokumen RM via PIN & resolve IHS Practitioner (Satu Sehat) seperti dokter biasa.
 const DOCTOR_ROLES = ['dokter', 'dokter_umum', 'dokter_anestesi']
 
-// PIN tanda tangan relevan untuk semua role dokter, dan superadmin (agar bisa
-// menguji alur tanda tangan tanpa harus punya akun dokter terpisah).
+// PIN tanda tangan relevan untuk SEMUA PPA yang menandatangani dokumen/entri RM
+// dengan PIN: dokter (finalize RME), refraksionis (finalizeRefraction) & perawat
+// (signCpptEntry) — plus superadmin (agar bisa menguji alur TTD). Backend tidak
+// membatasi PIN per-role (UserController: pin nullable|digits_between:4,6); dulu
+// refraksionis/perawat tak bisa diberi PIN dari UI → finalize gagal "PIN belum diatur".
+const PIN_ROLES = [...DOCTOR_ROLES, 'refraksionis', 'perawat']
 const canHavePin = computed(() => {
   const n = store.roleById[editUser.value.role_id]?.name
-  return DOCTOR_ROLES.includes(n) || n === 'superadmin'
+  return PIN_ROLES.includes(n) || n === 'superadmin'
 })
 
 // Field NIK (Satu Sehat) tampil hanya saat role dokter DAN user punya employee.
@@ -761,14 +765,14 @@ function shortModel(m) {
           </div>
           <div v-if="canHavePin" class="g2" style="margin-bottom:.4rem">
             <div class="fg">
-              <label class="fl">PIN Tanda Tangan (dokter)
+              <label class="fl">PIN Tanda Tangan (PPA)
                 <span v-if="editUser.has_pin" style="color:var(--st);text-transform:none;letter-spacing:0">· sudah diatur</span>
               </label>
               <input v-model="editUser.pin" class="fi" type="password" inputmode="numeric" maxlength="6"
                      :placeholder="editUser.has_pin ? 'Kosongkan jika tidak diubah · isi untuk ganti' : '4–6 digit angka (opsional)'"/>
             </div>
             <div class="fg" style="justify-content:flex-end">
-              <span style="font-size:9.5px;color:var(--tu);line-height:1.4">PIN dipakai untuk menandatangani dokumen RM. Tersedia untuk akun dokter &amp; superadmin (untuk pengujian).</span>
+              <span style="font-size:9.5px;color:var(--tu);line-height:1.4">PIN dipakai untuk menandatangani dokumen/entri RM. Tersedia untuk dokter, refraksionis &amp; perawat (PPA penandatangan) serta superadmin.</span>
             </div>
           </div>
           <div v-if="canSetNik" class="g2" style="margin-bottom:.4rem">
