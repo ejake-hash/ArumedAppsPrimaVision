@@ -23,11 +23,19 @@ function ptypeOf(visit) {
 }
 
 // Helper: bersihkan nilai numerik (string → number atau null)
+// Toleran terhadap input manual combobox (bukan pilih dari datalist): koma desimal
+// "1,50", unicode minus/en-dash "−1.50", dan satuan/simbol yang sering diketik
+// ("90°", "+1.50 D", "43.5 mm") dirapikan dulu supaya nilainya TETAP tersimpan —
+// bukan dibuang diam-diam (yang bikin field kosong di RefractionRecord & DokterView).
 function num(v) {
   if (v === '' || v === null || v === undefined) return null
-  // Toleransi input manual lokal ID: koma desimal "1,50" → "1.50" + rapikan spasi,
-  // supaya nilai yang DIKETIK manual (bukan dipilih dari combobox) tetap tersimpan.
-  const n = Number(typeof v === 'string' ? v.replace(',', '.').trim() : v)
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  const s = String(v).trim()
+    .replace(/[‒–—−]/g, '-') // figure/en/em-dash & minus → hyphen ASCII
+    .replace(',', '.')                            // koma desimal lokal → titik
+    .replace(/[^0-9.+\-]/g, '')                   // buang huruf & satuan (D, mm, °, spasi)
+  if (!/\d/.test(s)) return null                  // tak ada digit tersisa → bukan angka
+  const n = Number(s)
   return Number.isFinite(n) ? n : null
 }
 // Axis & keratometri axis = kolom INTEGER (0–180) → bulatkan; desimal ⇒ 422.

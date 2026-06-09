@@ -2,6 +2,21 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { refraksiApi } from '@/services/api'
 
+// Pesan error API yang informatif: untuk 422 Laravel, `data.message` hanya generik
+// ("The given data was invalid.") → angkat pesan field PERTAMA dari `data.errors`
+// supaya petugas tahu KOLOM mana yang ditolak (mis. nilai combobox di luar rentang),
+// bukan toast kabur tanpa konteks.
+function apiErrMsg(err, fallback) {
+  const d = err.response?.data
+  const errs = d?.errors
+  if (errs && typeof errs === 'object') {
+    const first = Object.values(errs)[0]
+    if (Array.isArray(first) && first.length) return first[0]
+    if (typeof first === 'string') return first
+  }
+  return d?.message ?? err.message ?? fallback
+}
+
 export const useRefraksiStore = defineStore('refraksi', () => {
 
   // ─── Queue state ────────────────────────────────────────────────────────────
@@ -156,7 +171,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
       pemeriksaan.value = result
       return result
     } catch (err) {
-      throw new Error(err.response?.data?.message ?? 'Gagal menyimpan pemeriksaan')
+      throw new Error(apiErrMsg(err, 'Gagal menyimpan pemeriksaan'))
     } finally {
       saving.value = false
     }
@@ -185,7 +200,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
       prescription.value = result
       return result
     } catch (err) {
-      throw new Error(err.response?.data?.message ?? 'Gagal menyimpan resep kacamata')
+      throw new Error(apiErrMsg(err, 'Gagal menyimpan resep kacamata'))
     }
   }
 
