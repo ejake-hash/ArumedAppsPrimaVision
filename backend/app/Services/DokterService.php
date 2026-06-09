@@ -352,18 +352,21 @@ class DokterService
      * perilaku Tarif Tindakan). Harga final tetap di-resolve di kasir (getPrice);
      * hja di sini hanya hint estimasi untuk dokter.
      */
-    public function getDaftarObat(?string $search = null): array
+    /**
+     * Query dasar daftar obat ber-harga (dipakai versi flat & paginated).
+     * Stok = on-hand lokasi FARMASI (inventory_stocks), BUKAN medications.stock
+     * legacy. Harga jual = baris insurer UMUM di medication_tariffs. Menampilkan
+     * SEMUA obat (selaras Farmasi getStokObat yg TIDAK filter is_active); obat
+     * nonaktif tetap muncul, ditandai is_active=false agar FE beri badge "nonaktif".
+     */
+    private function daftarObatQuery(?string $search = null)
     {
-        // Stok yang ditampilkan = on-hand lokasi FARMASI (inventory_stocks),
-        // BUKAN kolom legacy medications.stock (tak lagi otoritatif). Hanya info
-        // ketersediaan di unit Farmasi; dokter tetap bisa resep walau 0.
         $farmasiStock = DB::table('inventory_stocks')
             ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
             ->where('item_type', InventoryStock::TYPE_MEDICATION)
             ->where('location', InventoryStock::LOC_FARMASI)
             ->groupBy('item_id');
 
-        // Harga jual obat = baris insurer UMUM di medication_tariffs (harga tunggal).
         $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
 
         return DB::table('medications as m')
@@ -375,8 +378,6 @@ class DokterService
             })
             ->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id'))
             ->whereNull('m.deleted_at')
-            // Tampilkan SEMUA obat (selaras sumber Farmasi getStokObat yg TIDAK filter is_active).
-            // Obat nonaktif tetap muncul, ditandai is_active=false agar FE beri badge "nonaktif".
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($w) use ($search) {
                     $w->where('m.name', 'ilike', "%{$search}%")
@@ -384,21 +385,64 @@ class DokterService
                       ->orWhere('m.generic_name', 'ilike', "%{$search}%");
                 });
             })
-            ->orderBy('m.name')
+            ->orderBy('m.name');
+    }
+
+    /** Map satu baris query daftar obat → bentuk yang dipakai FE picker resep. */
+    private function mapObatRow($r): array
+    {
+        return [
+            'id'        => $r->id,
+            'code'      => $r->code,
+            'name'      => $r->name,
+            'form'      => $r->form_sediaan,
+            'golongan'  => $r->golongan,
+            'unit'      => $r->unit,
+            'stock'     => (float) ($r->farmasi_qty ?? 0),
+            'hja'       => (float) $r->hja,
+            'is_active' => (bool) $r->is_active,
+        ];
+    }
+
+    private const OBAT_COLS = ['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'm.is_active', 'ip.price as hja', 'fs.qty as farmasi_qty'];
+
+    /**
+     * Versi FLAT (legacy) — dipakai Bedah & RuangTindakan via delegasi. Tetap
+     * dibatasi 100 baris (picker mereka filter sisi-klien). Jangan ubah shape-nya.
+     */
+    public function getDaftarObat(?string $search = null): array
+    {
+        return $this->daftarObatQuery($search)
             ->limit(100)
-            ->get(['m.id', 'm.code', 'm.name', 'm.form_sediaan', 'm.golongan', 'm.unit', 'm.is_active', 'ip.price as hja', 'fs.qty as farmasi_qty'])
-            ->map(fn ($r) => [
-                'id'        => $r->id,
-                'code'      => $r->code,
-                'name'      => $r->name,
-                'form'      => $r->form_sediaan,
-                'golongan'  => $r->golongan,
-                'unit'      => $r->unit,
-                'stock'     => (float) ($r->farmasi_qty ?? 0),
-                'hja'       => (float) $r->hja,
-                'is_active' => (bool) $r->is_active,
-            ])
+            ->get(self::OBAT_COLS)
+            ->map(fn ($r) => $this->mapObatRow($r))
             ->all();
+    }
+
+    /**
+     * Versi PAGINATED + server-side search — dipakai DokterView (resep). Tanpa cap
+     * 100: seluruh master obat (500+) terjangkau lewat halaman / pencarian server.
+     * Return: ['items'=>[], 'total'=>N, 'page'=>p, 'per_page'=>pp, 'last_page'=>lp].
+     */
+    public function getDaftarObatPaged(?string $search = null, int $page = 1, int $perPage = 50): array
+    {
+        $perPage = max(1, min($perPage, 200));   // clamp wajar utk dropdown
+        $page    = max(1, $page);
+
+        $total = (clone $this->daftarObatQuery($search))->count('m.id');
+        $items = $this->daftarObatQuery($search)
+            ->forPage($page, $perPage)
+            ->get(self::OBAT_COLS)
+            ->map(fn ($r) => $this->mapObatRow($r))
+            ->all();
+
+        return [
+            'items'     => $items,
+            'total'     => $total,
+            'page'      => $page,
+            'per_page'  => $perPage,
+            'last_page' => (int) max(1, ceil($total / $perPage)),
+        ];
     }
 
     public function getVisitServices(string $visitId): Collection

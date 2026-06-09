@@ -988,9 +988,17 @@ function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 // ── TAB 3: E-RESEP ──────────────────────────────────────────────────────────
 
 const rxList = ref([])
-const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja, is_active}
+const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja, is_active} — 1 halaman
 const obatSearch = ref('')
 const obatComboOpen = ref(false)   // true saat input fokus → tampilkan daftar walau belum diketik
+// Pencarian & paginasi SISI-SERVER: seluruh master obat (500+) terjangkau, bukan
+// cuma 100 pertama yang dimuat lalu difilter di klien (bug lama "tidak muncul semua").
+const obatPage = ref(1)
+const obatLastPage = ref(1)
+const obatTotal = ref(0)
+const obatLoading = ref(false)
+let _obatDebounce = null
+let _suppressObatWatch = false     // true → abaikan sekali perubahan obatSearch (mis. saat pick)
 function closeObatComboSoon() { setTimeout(() => { obatComboOpen.value = false }, 150) }
 const kasirNote = ref('')          // catatan dokter untuk kasir (dipersist ke prescriptions.notes)
 const pharmacyNote = ref('')       // catatan dokter untuk farmasi (dipersist ke prescriptions.pharmacy_note)
@@ -998,26 +1006,51 @@ const tab3Sent = ref(false)        // sudah klik "Simpan & Kirim ke Kasir" → T
 const showSendKasirModal = ref(false)
 const sendingToKasir = ref(false)
 
-async function loadObat() {
+async function loadObat(page = 1) {
+  obatLoading.value = true
   try {
-    const { data } = await dokterApi.daftarObat()
-    obatList.value = data.data ?? []
-  } catch { obatList.value = [] }
+    const { data } = await dokterApi.daftarObat({
+      search: obatSearch.value.trim() || undefined,
+      page,
+      per_page: 50,
+    })
+    const res = data.data ?? {}
+    obatList.value     = res.items ?? []
+    obatPage.value     = res.page ?? page
+    obatLastPage.value = res.last_page ?? 1
+    obatTotal.value    = res.total ?? obatList.value.length
+  } catch {
+    obatList.value = []
+    obatLastPage.value = 1
+    obatTotal.value = 0
+  } finally {
+    obatLoading.value = false
+  }
 }
 
-const filteredObat = computed(() => {
-  const s = obatSearch.value.trim().toLowerCase()
-  const base = !s
-    ? obatList.value
-    : obatList.value.filter((d) => d.name.toLowerCase().includes(s) || (d.code ?? '').toLowerCase().includes(s))
-  return base.slice(0, 50)
+// Server-side search: ketik → debounce 300ms → muat halaman 1 hasil pencarian.
+watch(obatSearch, () => {
+  if (_suppressObatWatch) { _suppressObatWatch = false; return }
+  if (_obatDebounce) clearTimeout(_obatDebounce)
+  _obatDebounce = setTimeout(() => loadObat(1), 300)
 })
+
+function obatGoPage(p) {
+  const next = Math.min(Math.max(1, p), obatLastPage.value)
+  if (next !== obatPage.value) loadObat(next)
+}
+
+// Daftar yang dirender = item halaman aktif (sudah difilter & dipaginasi server).
+const filteredObat = computed(() => obatList.value)
 
 function pickObat(d) {
   newRx.value.medication_id = d.id
   newRx.value.name = d.name
   newRx.value.form = d.form
   newRx.value.hja  = d.hja
+  // Kosongkan query TANPA memicu reload (watcher) — biar daftar halaman aktif tetap.
+  if (_obatDebounce) clearTimeout(_obatDebounce)
+  if (obatSearch.value !== '') _suppressObatWatch = true
   obatSearch.value = ''
   obatComboOpen.value = false
 }
@@ -2788,20 +2821,30 @@ function closeResumeRM() {
                     placeholder="Klik untuk lihat semua, atau ketik nama / kode obat…"
                     @focus="obatComboOpen = true" @blur="closeObatComboSoon"
                   />
-                  <div v-if="obatComboOpen && filteredObat.length" class="rx-drop">
-                    <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @mousedown.prevent="pickObat(d)">
-                      <span class="rx-drop-name">
-                        {{ d.name }}
-                        <span v-if="d.is_active === false" class="rx-inactive-badge" title="Obat berstatus nonaktif">nonaktif</span>
-                      </span>
-                      <span class="rx-drop-meta">
-                        {{ d.form }} ·
-                        <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">Farmasi: {{ d.stock }}</span>
-                      </span>
-                      <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
-                    </div>
+                  <div v-if="obatComboOpen && (filteredObat.length || obatLoading)" class="rx-drop">
+                    <div v-if="obatLoading" class="rx-drop-loading">Memuat daftar obat…</div>
+                    <template v-else>
+                      <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @mousedown.prevent="pickObat(d)">
+                        <span class="rx-drop-name">
+                          {{ d.name }}
+                          <span v-if="d.is_active === false" class="rx-inactive-badge" title="Obat berstatus nonaktif">nonaktif</span>
+                        </span>
+                        <span class="rx-drop-meta">
+                          {{ d.form }} ·
+                          <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">Farmasi: {{ d.stock }}</span>
+                        </span>
+                        <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
+                      </div>
+                      <!-- Pager: navigasi seluruh master obat tanpa cap. mousedown.prevent
+                           agar klik pager tak mem-blur input (yang akan menutup dropdown). -->
+                      <div v-if="obatLastPage > 1" class="rx-drop-pager" @mousedown.prevent>
+                        <button class="rx-pg-btn" :disabled="obatPage <= 1" @mousedown.prevent="obatGoPage(obatPage - 1)">‹ Sebelumnya</button>
+                        <span class="rx-pg-info">Hal {{ obatPage }}/{{ obatLastPage }} · {{ obatTotal }} obat</span>
+                        <button class="rx-pg-btn" :disabled="obatPage >= obatLastPage" @mousedown.prevent="obatGoPage(obatPage + 1)">Berikutnya ›</button>
+                      </div>
+                    </template>
                   </div>
-                  <div v-else-if="obatComboOpen && obatSearch" class="tarif-empty">Obat tidak ditemukan di inventori</div>
+                  <div v-else-if="obatComboOpen && obatSearch && !obatLoading" class="tarif-empty">Obat tidak ditemukan di inventori</div>
                 </div>
 
                 <!-- Form aturan pakai: muncul otomatis saat obat dipilih -->
@@ -4689,6 +4732,12 @@ function closeResumeRM() {
 .rx-stok.ok { color: #15803d; }
 .rx-stok.zero { color: #b45309; }
 .rx-drop-price { font-size: 11.5px; font-weight: 700; color: var(--ga); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.rx-drop-loading { padding: 10px 11px; font-size: 11.5px; color: var(--tu); text-align: center; }
+.rx-drop-pager { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 10px; background: var(--bc); border-top: 1px solid var(--gb); }
+.rx-pg-info { font-size: 10.5px; color: var(--tu); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rx-pg-btn { font-size: 11px; font-weight: 600; color: var(--td); background: var(--gl); border: 1px solid var(--gb); border-radius: 7px; padding: 4px 9px; cursor: pointer; transition: background .12s; }
+.rx-pg-btn:hover:not(:disabled) { background: var(--sbd); }
+.rx-pg-btn:disabled { opacity: .4; cursor: default; }
 .rx-picked { display: flex; flex-direction: column; justify-content: center; padding: 4px 10px; background: var(--gl); border: 1px solid var(--sbd); border-radius: 8px; }
 .rx-picked-name { font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rx-picked-meta { font-size: 9.5px; color: var(--ga); font-weight: 600; }

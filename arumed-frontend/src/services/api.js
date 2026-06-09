@@ -177,7 +177,7 @@ export const dokterApi = {
   riwayatCppt:      (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/cppt`),
 
   tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
-  daftarObat:       (search)              => api.get('/dokter/obat', { params: { search } }),
+  daftarObat:       (params = {})         => api.get('/dokter/obat', { params }),
   bedahSlot:        (tanggal, locationType) => api.get('/dokter/bedah/slot', { params: { tanggal, location_type: locationType } }),
 
   // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)

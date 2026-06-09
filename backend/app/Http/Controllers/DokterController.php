@@ -232,10 +232,18 @@ class DokterController extends Controller
         return $this->ok($this->service->getTarifTindakan($request->query('visit_id')));
     }
 
-    /** GET /dokter/obat?search=… — daftar obat ber-harga (inventori farmasi) */
+    /**
+     * GET /dokter/obat?search=&page=&per_page= — daftar obat ber-harga (inventori
+     * farmasi), paginated + server-side search (seluruh master obat terjangkau,
+     * tanpa cap 100). Return data: {items, total, page, per_page, last_page}.
+     */
     public function daftarObat(Request $request): JsonResponse
     {
-        return $this->ok($this->service->getDaftarObat($request->query('search')));
+        return $this->ok($this->service->getDaftarObatPaged(
+            $request->query('search'),
+            (int) $request->query('page', 1),
+            (int) $request->query('per_page', 50),
+        ));
     }
 
     /** GET /dokter/kunjungan/{visitId}/tindakan */
