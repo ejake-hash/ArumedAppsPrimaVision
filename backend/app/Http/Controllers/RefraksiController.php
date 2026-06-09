@@ -134,11 +134,11 @@ class RefraksiController extends Controller
             'autoref_os_axis' => 'nullable|integer|between:0,180',
 
             // Keratometri OD/OS
-            'keratometri1_od'     => 'nullable|numeric|between:30,60',
-            'keratometri2_od'     => 'nullable|numeric|between:30,60',
+            'keratometri1_od'     => 'nullable|numeric|between:0,999.99',
+            'keratometri2_od'     => 'nullable|numeric|between:0,999.99',
             'keratometri_axis_od' => 'nullable|integer|between:0,180',
-            'keratometri1_os'     => 'nullable|numeric|between:30,60',
-            'keratometri2_os'     => 'nullable|numeric|between:30,60',
+            'keratometri1_os'     => 'nullable|numeric|between:0,999.99',
+            'keratometri2_os'     => 'nullable|numeric|between:0,999.99',
             'keratometri_axis_os' => 'nullable|integer|between:0,180',
 
             // Visus OD/OS (string: 6/6, 1/60, HM, LP, NLP)
@@ -219,11 +219,11 @@ class RefraksiController extends Controller
             'autoref_os_cyl'  => 'nullable|numeric|between:-15,15',
             'autoref_os_axis' => 'nullable|integer|between:0,180',
 
-            'keratometri1_od'     => 'nullable|numeric|between:30,60',
-            'keratometri2_od'     => 'nullable|numeric|between:30,60',
+            'keratometri1_od'     => 'nullable|numeric|between:0,999.99',
+            'keratometri2_od'     => 'nullable|numeric|between:0,999.99',
             'keratometri_axis_od' => 'nullable|integer|between:0,180',
-            'keratometri1_os'     => 'nullable|numeric|between:30,60',
-            'keratometri2_os'     => 'nullable|numeric|between:30,60',
+            'keratometri1_os'     => 'nullable|numeric|between:0,999.99',
+            'keratometri2_os'     => 'nullable|numeric|between:0,999.99',
             'keratometri_axis_os' => 'nullable|integer|between:0,180',
 
             'visus_awal_od'  => 'nullable|string|max:20',
