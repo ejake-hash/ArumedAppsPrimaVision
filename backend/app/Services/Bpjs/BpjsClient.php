@@ -110,12 +110,15 @@ class BpjsClient
 
     public function headers(string $timestamp): array
     {
+        // Content-Type sengaja TIDAK diset di sini: GET tak butuh, dan POST/PUT/DELETE
+        // menyetelnya sendiri ke application/x-www-form-urlencoded di request() (syarat
+        // WCF BPJS). Menyetel application/json di sini akan tertinggal di GET & membuat
+        // POST mengirim Content-Type ganda.
         return [
             'X-cons-id'    => $this->consId(),
             'X-timestamp'  => $timestamp,
             'X-signature'  => $this->signature($timestamp),
             'user_key'     => $this->userKey(),
-            'Content-Type' => 'application/json; charset=utf-8',
             'Accept'       => 'application/json',
         ];
     }
@@ -152,12 +155,20 @@ class BpjsClient
 
         $method = strtoupper($method);
 
+        // BPJS VClaim/Antrean berjalan di WCF/.NET. Endpoint POST/PUT/DELETE-nya
+        // MENGHARUSKAN Content-Type `application/x-www-form-urlencoded` walau body
+        // berupa string JSON mentah. Mengirim `application/json` membuat WCF gagal
+        // di lapisan deserialisasi dan membalas halaman HTML generik ".NET Request
+        // Error" (BUKAN JSON metaData) — inilah sebab Cek Peserta (GET, tanpa body)
+        // lolos tapi Insert SEP (POST) gagal. Jangan diubah ke application/json.
+        $bodyType = 'application/x-www-form-urlencoded';
+
         try {
             $resp = match ($method) {
                 'GET'    => $http->get($url),
-                'POST'   => $http->withBody(json_encode($body ?? []), 'application/json')->post($url),
-                'PUT'    => $http->withBody(json_encode($body ?? []), 'application/json')->put($url),
-                'DELETE' => $http->withBody(json_encode($body ?? []), 'application/json')->delete($url),
+                'POST'   => $http->withBody(json_encode($body ?? []), $bodyType)->post($url),
+                'PUT'    => $http->withBody(json_encode($body ?? []), $bodyType)->put($url),
+                'DELETE' => $http->withBody(json_encode($body ?? []), $bodyType)->delete($url),
                 default  => throw new \InvalidArgumentException("Method tidak didukung: {$method}"),
             };
         } catch (\Throwable $e) {
