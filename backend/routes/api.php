@@ -209,6 +209,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan/{id}',         [AdmisiController::class, 'showKunjungan']);
             Route::put('/kunjungan/{id}/cancel',  [AdmisiController::class, 'cancelKunjungan']);
             Route::put('/kunjungan/{id}/penjamin', [AdmisiController::class, 'updateGuarantor']);
+            Route::put('/kunjungan/{id}/dokter',   [AdmisiController::class, 'gantiDokter']);
             Route::put('/kunjungan/{visitId}/daftarkan-walkin', [AdmisiController::class, 'daftarkanWalkIn']);
 
             Route::get('/pasien',                 [AdmisiController::class, 'cariPasien']);
@@ -338,6 +339,8 @@ Route::prefix('v1')->group(function () {
             // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
             Route::get('/kunjungan/{visitId}/rujuk-internal/targets', [DokterController::class, 'rujukInternalTargets']);
             Route::post('/kunjungan/{visitId}/rujuk-internal',        [DokterController::class, 'rujukInternal']);
+            // Ganti dokter pemeriksa (tetap 1 visit) — pasien belum dipanggil dokter
+            Route::put('/kunjungan/{visitId}/ganti-dokter',           [DokterController::class, 'gantiDokter']);
 
             // Referensi Tab 3: tarif tindakan per metode bayar + daftar obat ber-harga
             Route::get('/tarif-tindakan',                       [DokterController::class, 'tarifTindakan']);

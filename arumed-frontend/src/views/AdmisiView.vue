@@ -733,6 +733,49 @@ const selectedSchedule = computed(() =>
 )
 
 /* ============================================================
+   GANTI DOKTER — koreksi salah-pilih saat pendaftaran.
+   Aman & ringan: antrean dokter tak menyimpan doctor_id, cukup
+   tukar visits.doctor_schedule_id → pasien re-route otomatis.
+   Backend (AdmisiService::gantiDokterKunjungan) menolak bila dokter
+   sudah memanggil/memeriksa atau billing sudah dikomit.
+   ============================================================ */
+const dokterOpen    = ref(false)
+const dokterSaving   = ref(false)
+const dokterVisitId  = ref(null)
+const dokterForm = reactive({ patientName: '', currentDoctor: '', scheduleId: '' })
+
+function openEditDokter(p) {
+  if (!p || p.walkIn) { toast('w', 'Pasien walk-in belum terdaftar — daftarkan dulu'); return }
+  if (p.station === 'SELESAI') { toast('w', 'Kunjungan sudah selesai — dokter tidak bisa diubah'); return }
+  dokterVisitId.value = p.visitId
+  Object.assign(dokterForm, {
+    patientName:   p.name,
+    currentDoctor: p.doctor ?? '—',
+    scheduleId:    '',
+  })
+  if (!jadwalStore.aktifHariIni.length) jadwalStore.fetchAktifHariIni()
+  dokterOpen.value = true
+}
+function closeEditDokter() { dokterOpen.value = false }
+async function submitEditDokter() {
+  if (!dokterVisitId.value) return
+  if (!dokterForm.scheduleId) { toast('w', 'Pilih dokter tujuan dulu'); return }
+  dokterSaving.value = true
+  try {
+    const picked = doctorList.value.find(d => d.id === dokterForm.scheduleId)
+    await admisiStore.gantiDokter(dokterVisitId.value, dokterForm.scheduleId)
+    toast('s', `Dokter ${dokterForm.patientName} diubah → ${picked?.name ?? 'dokter baru'}`)
+    dokterOpen.value = false
+    await Promise.allSettled([admisiStore.fetchVisits(), admisiStore.fetchDashboard()])
+  } catch (e) {
+    const firstErr = e.errors ? Object.values(e.errors)[0]?.[0] : null
+    toast('e', firstErr ?? e.message ?? 'Gagal mengubah dokter')
+  } finally {
+    dokterSaving.value = false
+  }
+}
+
+/* ============================================================
    PATIENT SEARCH (live, debounced)
    ============================================================ */
 const searchResults  = ref([])
@@ -2193,6 +2236,7 @@ function onKeydown(e) {
   if (e.key !== 'Escape') return
   if (profileOpen.value)     { profileOpen.value = false;     return }
   if (penjaminOpen.value)    { closeEditPenjamin();           return }
+  if (dokterOpen.value)      { closeEditDokter();             return }
   if (editOpen.value)        { closeEditPasien();             return }
   if (visitDetailOpen.value) { visitDetailOpen.value = false; return }
   if (wizardOpen.value)      { closeWizard();                 return }
@@ -2608,6 +2652,16 @@ onUnmounted(() => {
                             @click="openEditPenjamin(p)"
                           >
                             <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                          </button>
+                          <button
+                            v-if="!p.walkIn"
+                            class="btn btn-sm btn-secondary btn-icon"
+                            :disabled="p.station === 'SELESAI'"
+                            title="Ubah dokter pemeriksa (sebelum dipanggil dokter)"
+                            aria-label="Ubah dokter"
+                            @click="openEditDokter(p)"
+                          >
+                            <svg viewBox="0 0 24 24"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
                           </button>
                           <button
                             class="btn btn-sm btn-icon btn-danger"
@@ -3808,6 +3862,45 @@ onUnmounted(() => {
               <span v-if="penjaminSaving" class="spin-xs"></span>
               <svg v-else viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
               Simpan Penjamin
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ===================== GANTI DOKTER MODAL ===================== -->
+    <transition name="modal-fade">
+      <div v-if="dokterOpen" class="modal-backdrop" @click.self="closeEditDokter">
+        <div class="modal-shell modal-sm">
+          <div class="modal-head">
+            <div>
+              <div class="modal-title">Ubah Dokter Pemeriksa</div>
+              <div class="modal-sub">{{ dokterForm.patientName }} · sekarang: {{ dokterForm.currentDoctor }}</div>
+            </div>
+            <button class="modal-x" aria-label="Tutup" @click="closeEditDokter">
+              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="info-box">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
+              <span>Untuk koreksi salah-pilih dokter saat pendaftaran. Pasien otomatis pindah ke antrean dokter baru. Hanya bisa selama dokter belum memanggil/memeriksa pasien.</span>
+            </div>
+
+            <div class="field full">
+              <label class="field-lbl">Dokter Tujuan (jadwal aktif hari ini)</label>
+              <select v-model="dokterForm.scheduleId" class="form-select">
+                <option value="" disabled>{{ doctorList.length ? '— Pilih dokter —' : 'Tidak ada dokter aktif hari ini' }}</option>
+                <option v-for="d in doctorList" :key="d.id" :value="d.id">{{ d.label }}</option>
+              </select>
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-secondary" :disabled="dokterSaving" @click="closeEditDokter">Batal</button>
+            <button class="btn btn-primary" :disabled="dokterSaving || !dokterForm.scheduleId" @click="submitEditDokter">
+              <span v-if="dokterSaving" class="spin-xs"></span>
+              <svg v-else viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+              Simpan Dokter
             </button>
           </div>
         </div>

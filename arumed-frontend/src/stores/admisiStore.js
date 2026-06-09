@@ -223,6 +223,19 @@ export const useAdmisiStore = defineStore('admisi', () => {
     }
   }
 
+  // Ganti dokter pemeriksa (koreksi salah-pilih saat pendaftaran). Backend
+  // menolak bila dokter sudah memanggil/memeriksa atau billing dikomit.
+  async function gantiDokter(visitId, doctorScheduleId) {
+    try {
+      const { data } = await admisiApi.gantiDokter(visitId, doctorScheduleId)
+      return data.data
+    } catch (err) {
+      const e = new Error(err.response?.data?.message ?? 'Gagal mengubah dokter')
+      e.errors = err.response?.data?.errors ?? null
+      throw e
+    }
+  }
+
   // ─── Actions: Patient Search & Registration ────────────────────────────────────
 
   async function cariPasien(keyword) {
@@ -482,7 +495,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
     fetchAntrian, panggilAntrian, selesaiAntrian,
 
     // visits
-    fetchVisits, fetchVisitDetail, cancelKunjungan, updatePenjamin,
+    fetchVisits, fetchVisitDetail, cancelKunjungan, updatePenjamin, gantiDokter,
 
     // patient
     cariPasien, fetchPasienDetail, fetchKunjunganPasien, daftarKunjungan, daftarkanWalkIn, updatePasien,

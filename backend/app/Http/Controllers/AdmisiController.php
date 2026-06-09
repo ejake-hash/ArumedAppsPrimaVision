@@ -113,6 +113,30 @@ class AdmisiController extends Controller
         return $this->ok($visit, 'Penjamin kunjungan diperbarui');
     }
 
+    /**
+     * PUT /admisi/kunjungan/{id}/dokter
+     * Koreksi dokter pemeriksa (salah pilih saat pendaftaran). Hanya boleh
+     * sebelum dokter mulai memeriksa — guard di AdmisiService::gantiDokterKunjungan.
+     */
+    public function gantiDokter(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+        ]);
+
+        try {
+            $visit = $this->service->gantiDokterKunjungan($id, $validated['doctor_schedule_id']);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return $this->error('Kunjungan tidak ditemukan.', 404);
+        } catch (\Throwable $e) {
+            $code = (int) $e->getCode();
+            $http = ($code >= 100 && $code <= 599) ? $code : 500;
+            return $this->error($e->getMessage(), $http);
+        }
+
+        return $this->ok($visit, 'Dokter kunjungan diperbarui');
+    }
+
     // =========================================================================
     // PASIEN
     // =========================================================================

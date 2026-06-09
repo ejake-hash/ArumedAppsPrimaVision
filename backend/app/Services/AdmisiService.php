@@ -518,6 +518,99 @@ class AdmisiService
         });
     }
 
+    /**
+     * Ganti dokter pemeriksa kunjungan (koreksi salah-pilih saat pendaftaran).
+     *
+     * Aman & ringan: antrean DOKTER TIDAK menyimpan doctor_id — pasien muncul di
+     * antrean dokter via relasi visit.doctorSchedule.employee_id. Cukup menukar
+     * visits.doctor_schedule_id → pasien otomatis hilang dari antrean dokter lama
+     * dan muncul di antrean dokter baru tanpa menyentuh tabel queues.
+     *
+     * Hanya boleh SEBELUM dokter mulai memeriksa (antrean DOKTER belum
+     * dipanggil/diproses & RME belum difinalisasi). Untuk pindah dokter setelah
+     * diperiksa, gunakan Rujuk Internal (DokterService::rujukInternal).
+     */
+    public function gantiDokterKunjungan(string $visitId, string $doctorScheduleId): Visit
+    {
+        return DB::transaction(function () use ($visitId, $doctorScheduleId) {
+            $visit = Visit::lockForUpdate()->findOrFail($visitId);
+
+            if ($visit->current_station === 'SELESAI') {
+                throw new \Exception('Kunjungan sudah selesai — dokter tidak bisa diubah.', 422);
+            }
+
+            // No-op bila sama → kembalikan apa adanya (idempoten).
+            if ($visit->doctor_schedule_id === $doctorScheduleId) {
+                return $visit->fresh(['doctorSchedule.employee', 'queues']);
+            }
+
+            // Guard 1: dokter sudah memanggil / sedang / selesai memeriksa.
+            $dokterStarted = $visit->queues()
+                ->where('station', Queue::STATION_DOKTER)
+                ->whereIn('status', [Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS, Queue::STATUS_COMPLETED])
+                ->exists();
+            if ($dokterStarted) {
+                throw new \Exception('Dokter sudah memanggil/memeriksa pasien — ganti dokter dikunci. Gunakan Rujuk Internal bila perlu pindah dokter.', 422);
+            }
+
+            // Guard 2: pemeriksaan dokter sudah difinalisasi (terkunci).
+            $exam = $visit->doctorExamination;
+            if ($exam && $exam->is_finalized) {
+                throw new \Exception('Pemeriksaan dokter sudah difinalisasi — dokter tidak bisa diubah.', 422);
+            }
+
+            // Guard 3: tagihan sudah dikirim ke kasir.
+            $hasActiveKasir = $visit->queues()
+                ->where('station', Queue::STATION_KASIR)
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->exists();
+            if ($hasActiveKasir) {
+                throw new \Exception('Tagihan sudah dikirim ke kasir — dokter tidak bisa diubah.', 422);
+            }
+
+            // Guard 4: invoice sudah final / lunas.
+            $hasCommittedInvoice = \App\Models\BillingInvoice::where('visit_id', $visit->id)
+                ->whereIn('status', ['FINALIZED', 'PAID'])
+                ->exists();
+            if ($hasCommittedInvoice) {
+                throw new \Exception('Invoice sudah diterbitkan/dibayar — dokter tidak bisa diubah.', 422);
+            }
+
+            // Validasi jadwal tujuan: aktif & praktik pada HARI kunjungan.
+            $schedule = DoctorSchedule::with('employee')->findOrFail($doctorScheduleId);
+            if (! $schedule->is_active) {
+                throw new \Exception('Jadwal dokter tujuan tidak aktif.', 422);
+            }
+            $visitDow = (int) $visit->visit_date->format('N'); // 1=Sen..7=Min
+            if ((int) $schedule->day_of_week !== $visitDow) {
+                throw new \Exception('Dokter tujuan tidak praktik pada tanggal kunjungan ini.', 422);
+            }
+
+            $oldName = optional(optional($visit->doctorSchedule)->employee)->name ?? '-';
+            $newName = optional($schedule->employee)->name ?? '-';
+
+            $visit->doctor_schedule_id = $doctorScheduleId;
+            $visit->save();
+
+            // Draf pemeriksaan (belum final, mis. anamnese terlanjur tersimpan)
+            // ikut pindah kepemilikan agar tak menggantung di dokter lama.
+            if ($exam && ! $exam->is_finalized) {
+                $exam->doctor_id = $schedule->employee_id;
+                $exam->save();
+            }
+
+            $this->log(
+                auth('api')->id(),
+                'GANTI_DOKTER',
+                Visit::class,
+                $visit->id,
+                "Dokter diubah {$oldName} → {$newName}"
+            );
+
+            return $visit->fresh(['doctorSchedule.employee', 'queues']);
+        });
+    }
+
     // =========================================================================
     // PASIEN
     // =========================================================================

@@ -183,6 +183,7 @@ export const dokterApi = {
   // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
   rujukInternalTargets: (visitId)         => api.get(`/dokter/kunjungan/${visitId}/rujuk-internal/targets`),
   rujukInternal:    (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/rujuk-internal`, data),
+  gantiDokter:      (visitId, doctorScheduleId) => api.put(`/dokter/kunjungan/${visitId}/ganti-dokter`, { doctor_schedule_id: doctorScheduleId }),
   // Rujukan keluar (faskes lain). Pasien BPJS → terbit ke VClaim.
   rujukanKeluar:    (data)                => api.post('/dokter/rujukan-keluar', data),
   // Surat Kontrol BPJS (planning Pulang) — status + terbitkan ke VClaim
@@ -773,6 +774,7 @@ export const admisiApi = {
   kunjunganById: (id)           => api.get(`/admisi/kunjungan/${id}`),
   cancelKunjungan: (id)         => api.put(`/admisi/kunjungan/${id}/cancel`),
   updatePenjamin: (id, data)    => api.put(`/admisi/kunjungan/${id}/penjamin`, data),
+  gantiDokter:    (id, doctorScheduleId) => api.put(`/admisi/kunjungan/${id}/dokter`, { doctor_schedule_id: doctorScheduleId }),
   cariPasien:    (keyword)      => api.get('/admisi/pasien', { params: { keyword } }),
   showPasien:    (id)           => api.get(`/admisi/pasien/${id}`),
   kunjunganPasien: (id, params) => api.get(`/admisi/pasien/${id}/kunjungan`, { params }),

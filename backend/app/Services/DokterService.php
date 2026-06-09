@@ -1162,8 +1162,11 @@ class DokterService
             $examination->fill($soapFields);
         }
 
-        if (! $examination->diagnosis_utama || ! $examination->planning) {
-            throw new \Exception('Diagnosis utama dan planning wajib diisi sebelum mengunci.', 422);
+        // Diagnosa boleh berupa kode ICD-10 utama ATAU teks bebas (dokter ragu kode).
+        $hasDiagnosis = $examination->diagnosis_utama
+            || trim((string) $examination->diagnosis_text) !== '';
+        if (! $hasDiagnosis || ! $examination->planning) {
+            throw new \Exception('Diagnosis (kode ICD-10 atau teks) dan planning wajib diisi sebelum mengunci.', 422);
         }
         if (! $examination->soap_assessment) {
             throw new \Exception('Assessment (SOAP) wajib diisi sebelum mengunci.', 422);
@@ -1487,13 +1490,16 @@ class DokterService
         }
         $o = implode('. ', $oParts) ?: '-';
 
-        // A — Assessment: ICD-10 (kode + nama)
+        // A — Assessment: ICD-10 (kode + nama) + diagnosa teks bebas bila ada.
         $aParts = [];
         if ($doctor?->diagnosis_utama) {
             $aParts[] = $this->labelIcd10($doctor->diagnosis_utama);
         }
         foreach ($doctor->diagnosis_sekunder ?? [] as $kode) {
             $aParts[] = $this->labelIcd10($kode);
+        }
+        if ($doctor?->diagnosis_text) {
+            $aParts[] = $doctor->diagnosis_text;
         }
         $a = implode("\n", array_filter($aParts)) ?: '-';
 
@@ -2276,6 +2282,22 @@ class DokterService
                 'is_today'     => $isToday,
             ];
         })->values()->all();
+    }
+
+    /**
+     * Ganti dokter pemeriksa pasien yang ada di antrean dokter ini (koreksi
+     * salah-pilih saat pendaftaran), SEBELUM dipanggil/diperiksa. Berbeda dari
+     * rujukInternal — ini TETAP satu visit, sekadar memindah kepemilikan ke
+     * dokter lain. Hanya dokter pemilik antrean (atau superadmin) yang boleh.
+     * Guard alur (belum dipanggil/finalisasi/billing) ada di
+     * AdmisiService::gantiDokterKunjungan.
+     */
+    public function gantiDokter(string $visitId, string $doctorScheduleId): Visit
+    {
+        $this->authorizeVisitOwnership($visitId);
+
+        return app(\App\Services\AdmisiService::class)
+            ->gantiDokterKunjungan($visitId, $doctorScheduleId);
     }
 
     /**

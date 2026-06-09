@@ -105,6 +105,26 @@ class DokterController extends Controller
         return $this->ok($targets);
     }
 
+    /**
+     * PUT /dokter/kunjungan/{visitId}/ganti-dokter
+     * Pindahkan pasien (yang ada di antrean dokter ini, belum dipanggil) ke
+     * dokter lain — koreksi salah-pilih saat pendaftaran. Tetap satu visit.
+     */
+    public function gantiDokter(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+        ]);
+
+        try {
+            $visit = $this->service->gantiDokter($visitId, $validated['doctor_schedule_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($visit, 'Pasien dipindahkan ke dokter lain');
+    }
+
     /** POST /dokter/kunjungan/{visitId}/rujuk-internal */
     public function rujukInternal(Request $request, string $visitId): JsonResponse
     {
