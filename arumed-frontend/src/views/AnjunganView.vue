@@ -111,7 +111,8 @@ async function goUmum() {
 function triggerPrint() {
   // window.print() men-trigger printer default OS. CSS @media print di-style
   // ke 80mm width (standar struk thermal). Kiosk OS perlu set default printer
-  // ke thermal printer.
+  // ke thermal printer (Epson TM-T82X: pilih paper "Roll Paper 80 x 297 mm",
+  // margin 0, skala 100%/"Default" — jangan "Fit to page" agar tak menyusut).
   try {
     window.print()
   } catch {
@@ -742,7 +743,9 @@ onUnmounted(() => {
     width: auto !important;
     min-width: 0 !important;
     height: auto !important;
-    overflow: visible !important;
+    /* overflow:hidden (bukan visible) → cegah 1px overflow memicu halaman
+       kedua kosong yang membuat TM-T82X memotong 2x & boros kertas. */
+    overflow: hidden !important;
     background: #fff !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -757,12 +760,17 @@ onUnmounted(() => {
     width: 80mm;            /* lebar penuh rol 80mm */
     box-sizing: border-box;
     /* padding sisi 6mm → area teks efektif ~68mm, aman di dalam lebar cetak
-       head thermal (≈72mm) sehingga tepi tak terpotong. */
-    padding: 2mm 6mm 4mm;
+       head TM-T82X (≈72mm/576 dot @203dpi) sehingga tepi tak terpotong.
+       padding bawah 8mm → clearance auto-cutter (pisau memotong beberapa mm
+       dari baris terakhir) agar timestamp tak mepet/terpotong saat di-cut. */
+    padding: 2mm 6mm 8mm;
     background: #fff;
     color: #000;
     font-family: 'Inter', Arial, sans-serif;
     text-align: center;
+    /* Jaga tiket utuh dalam 1 potongan — jangan terpecah antar halaman. */
+    page-break-inside: avoid;
+    break-inside: avoid;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
