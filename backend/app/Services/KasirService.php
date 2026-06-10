@@ -457,7 +457,7 @@ class KasirService
             // visit_services → tagih langsung dari snapshot agar tampil di rincian
             // & menyeimbangkan basis diskon paket (lihat buildPaketDiscountLines).
             $this->buildPaketProcedureLines($visit, $insurerId, $guarantorType),
-            $this->buildPaketRoomBhpLines($visit, $insurerId, $guarantorType),
+            $this->buildPaketBhpLines($visit, $insurerId, $guarantorType),
             // IOL TERPASANG (field input BedahView → surgery_iol_usage) TIDAK ditagih di
             // kwitansi — hanya untuk LAPORAN OPERASI (form RM-2.2-LP via AggregateResolver).
             // Nilai IOL sudah tercakup di harga jual paket; IOL juga dikeluarkan dari basis
@@ -690,18 +690,17 @@ class KasirService
     }
 
     /**
-     * BHP "kamar bedah" dari komposisi PAKET — kategori CSSD & INSTRUMENT_SET.
+     * SEMUA BHP dari komposisi PAKET ditagih (aturan user: kwitansi cerminkan isi paket
+     * penuh — bukan cuma BHP kategori room CSSD/INSTRUMENT_SET).
      *
-     * Item ini ada fisik di kamar bedah (TIDAK diminta ke gudang lewat unit-request),
-     * tapi tetap ditagih sesuai paket. Anti dobel-tagih: lewati BHP yang sudah
-     * masuk via buildBhpLines (jalur used_qty surgery_requests).
+     * Anti dobel-tagih: lewati BHP yang sudah masuk via buildBhpLines (jalur used_qty
+     * surgery_requests) — BHP itu sudah ditagih dari pemakaian operasi.
      *
-     * Sumber: SNAPSHOT paket pasien bila ada (komponen yang sudah disesuaikan
-     * operator Bedah) → menjaga himpunan "komponen tertagih" = "basis diskon"
-     * (lihat buildPaketDiscountLines). Fallback ke package master bila snapshot
-     * belum ada (pasien lama / alur tanpa snapshot).
+     * Sumber: SNAPSHOT paket pasien bila ada (komponen yang sudah disesuaikan operator
+     * Bedah) → menjaga himpunan "komponen tertagih" = "basis diskon"
+     * (lihat buildPaketDiscountLines). Fallback ke package master bila snapshot belum ada.
      */
-    private function buildPaketRoomBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    private function buildPaketBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
@@ -720,8 +719,6 @@ class KasirService
         // BHP yang sudah ditagih lewat pemakaian operasi (used_qty) — jangan dobel.
         $alreadyBilled = $this->surgeryBilledBhpIds($visit);
 
-        $roomCategories = [BhpItem::CATEGORY_CSSD, BhpItem::CATEGORY_INSTRUMENT_SET];
-
         $lines = [];
         // Catatan: TIDAK men-dedup lintas paket — tiap paket menagih komponennya
         // sendiri agar tetap konsisten dgn basis diskon per-paket (buildPaketDiscountLines
@@ -731,13 +728,13 @@ class KasirService
             if (isset($alreadyBilled[$pi->item_id])) continue;
 
             $bhp = BhpItem::find($pi->item_id);
-            if (! $bhp || ! in_array($bhp->category, $roomCategories, true)) {
+            if (! $bhp) {
                 continue;
             }
 
             $qty = (int) ($pi->quantity ?? 1);
             // Harga SELALU live (getPrice) — baik dari snapshot maupun master — agar
-            // tagihan room-BHP = basis diskon (buildPaketDiscountLines juga pakai getPrice).
+            // tagihan BHP paket = basis diskon (buildPaketDiscountLines juga pakai getPrice).
             $price = $this->getPrice('bhp', $bhp->id, $guarantorType, $insurerId);
             $total = $price * $qty;
             $cat   = $bhp->category;
@@ -767,7 +764,7 @@ class KasirService
      *
      * Anti dobel-tagih: lewati prosedur yang SUDAH ada di visit_services (tindakan
      * manual dokter / paket PEMERIKSAAN yang ter-merge). TIDAK men-dedup lintas
-     * paket — selaras buildPaketRoomBhpLines & basis diskon per-snapshot.
+     * paket — selaras buildPaketBhpLines & basis diskon per-snapshot.
      */
     private function buildPaketProcedureLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
@@ -816,7 +813,7 @@ class KasirService
     /**
      * Map bhp_item_id => true untuk BHP yang ditagih sebagai baris lewat pemakaian
      * operasi (surgery request RECEIVED, used_qty > 0; lihat buildBhpLines). Dipakai
-     * (a) buildPaketRoomBhpLines agar tidak dobel-tagih, dan (b) buildPaketDiscountLines
+     * (a) buildPaketBhpLines agar tidak dobel-tagih, dan (b) buildPaketDiscountLines
      * agar basis diskon hanya menghitung komponen BHP yang BENAR-BENAR jadi baris tagihan.
      */
     private function surgeryBilledBhpIds(Visit $visit): array
@@ -983,12 +980,6 @@ class KasirService
             }
         }
 
-        // BHP komponen paket yang juga dipakai operasi (used_qty>0) → ditagih via
-        // buildBhpLines. Dipakai gerbang basis di bawah (BHP non-room yg tak terpakai
-        // tidak masuk basis agar diskon tidak "phantom").
-        $billedBhp = $this->surgeryBilledBhpIds($visit);
-        $roomCategories = [BhpItem::CATEGORY_CSSD, BhpItem::CATEGORY_INSTRUMENT_SET];
-
         // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah).
         $lines = [];
         foreach ($visit->surgeryPackageSnapshots as $snap) {
@@ -1022,18 +1013,8 @@ class KasirService
                 if (! $type) {
                     continue;
                 }
-                // BHP: hanya komponen yang BENAR-BENAR jadi baris tagihan yang boleh masuk
-                // basis diskon. BHP paket ditagih bila kategori room (CSSD/INSTRUMENT_SET, via
-                // buildPaketRoomBhpLines) ATAU dipakai saat operasi (used_qty>0, via buildBhpLines).
-                // Tanpa gerbang ini, BHP non-room yang tak terpakai menambah basis tapi tak pernah
-                // ditagih → diskon "phantom" → net turun di bawah harga paket (pasien kurang tagih).
-                if ($it->item_type === 'BHP') {
-                    $bhp    = BhpItem::find($it->item_id);
-                    $isRoom = $bhp && in_array($bhp->category, $roomCategories, true);
-                    if (! $isRoom && empty($billedBhp[$it->item_id])) {
-                        continue;
-                    }
-                }
+                // SEMUA BHP komposisi paket masuk basis (kini semua BHP paket ditagih via
+                // buildPaketBhpLines — bukan cuma kategori room) → basis = baris ditagih → net = sell.
                 $price = $this->getPrice($type, $it->item_id, $guarantorType, $insurerId);
                 $basis += $price * (int) $it->quantity;
             }

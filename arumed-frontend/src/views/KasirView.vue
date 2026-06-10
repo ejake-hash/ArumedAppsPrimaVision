@@ -1425,7 +1425,7 @@ const groupedPrintItems = computed(() =>
                           <span class="num">−Rp {{ Number(p.covered_amount).toLocaleString('id-ID') }}</span>
                         </div>
                       </template>
-                      <div v-else-if="coveredAmount" class="row green"><span>{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS' : 'Ditanggung Asuransi' }}</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
+                      <div v-else-if="coveredAmount" class="row green"><span>{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</span><span class="num">{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? '' : '−Rp ' + coveredAmount.toLocaleString('id-ID') }}</span></div>
                       <div v-if="paidAmount" class="row blue"><span>Sudah Dibayar</span><span class="num">−Rp {{ paidAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row grand"><span>{{ coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar' }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
                     </div>
@@ -1796,7 +1796,7 @@ const groupedPrintItems = computed(() =>
               </tr>
               <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
               <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
-              <tr v-if="Number(printData.summary?.covered_amount)"><td>{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS' : 'Ditanggung Asuransi' }}</td><td class="c-num">− {{ rupiah(printData.summary?.covered_amount) }}</td></tr>
+              <tr v-if="Number(printData.summary?.covered_amount)"><td>{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS Kesehatan (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</td><td class="c-num">{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? '' : '− ' + rupiah(printData.summary?.covered_amount) }}</td></tr>
               <tr><td>Dibayar Pasien</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
               <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
               <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
