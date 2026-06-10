@@ -90,8 +90,13 @@ class IntegrasiService
 
     public function indexConfig(): \Illuminate\Database\Eloquent\Collection
     {
+        // 'configuration' WAJIB dikembalikan: form Integrasi membaca service_name &
+        // kode_faskes dari sini. Tanpa ini field tampil kosong (placeholder
+        // "vclaim-rest-dev") → tampak seperti reset, & setiap Simpan menimpa nilai
+        // asli jadi null. 'credentials' SENGAJA tidak diselect (rahasia, write-only).
         return IntegrationConfig::orderBy('system_name')->get([
-            'id', 'system_name', 'is_enabled', 'base_url', 'last_test_status', 'last_tested_at', 'notes',
+            'id', 'system_name', 'is_enabled', 'base_url', 'configuration',
+            'last_test_status', 'last_tested_at', 'notes',
         ]);
     }
 

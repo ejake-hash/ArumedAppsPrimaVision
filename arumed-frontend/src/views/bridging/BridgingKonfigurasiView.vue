@@ -127,13 +127,15 @@ function buildPayload(sys) {
     return payload
   }
 
+  // Pengaman: field KOSONG tidak pernah dikirim → tak menimpa service_name/
+  // kode_faskes tersimpan jadi null (sebab "reset ke vclaim-rest-dev" saat
+  // configuration belum termuat). Hanya kirim nilai yang benar-benar diisi.
+  const configuration = { ...(sys.configuration ?? {}) }
+  if (d.service_name) configuration.service_name = d.service_name
+  if (d.kode_faskes)  configuration.kode_faskes  = d.kode_faskes
   const payload = {
     base_url: d.base_url || null,
-    configuration: {
-      ...(sys.configuration ?? {}),
-      service_name: d.service_name || null,
-      kode_faskes:  d.kode_faskes || null,
-    },
+    configuration,
     notes: d.notes || null,
   }
   // Credential hanya dikirim jika ada yang diisi (write-only, tidak menimpa dgn kosong).
