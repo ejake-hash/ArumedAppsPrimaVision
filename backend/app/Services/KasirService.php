@@ -131,6 +131,14 @@ class KasirService
                 $invoice->load('items');
                 $invoice->setAttribute('prices_refreshed', $refreshed);
             }
+            // Jaring pengaman: resep yang dibuat SETELAH invoice DRAFT terbentuk (mis.
+            // obat pasca-bedah dikirim belakangan) belum punya baris tagihan → susulkan
+            // agar masuk kwitansi. Hanya obat verified (selaras gate). Idempoten.
+            $obatSynced = $this->syncVerifiedObatLines($invoice);
+            if ($obatSynced > 0) {
+                $invoice->load('items');
+                $invoice->setAttribute('obat_synced', $obatSynced);
+            }
         }
 
         return $invoice;
@@ -1933,6 +1941,106 @@ class KasirService
         } catch (\Throwable $e) {
             // Refresh tak boleh menggagalkan pemuatan halaman kasir — invoice tampil apa adanya.
             \Illuminate\Support\Facades\Log::warning('refreshZeroPricedItemsFromTarif gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
+            return 0;
+        }
+    }
+
+    /**
+     * Jaring pengaman billing: tambahkan baris tagihan OBAT untuk resep yang dibuat
+     * SETELAH invoice DRAFT terbentuk (mis. obat pasca-bedah dikirim belakangan) sehingga
+     * tak pernah ikut consolidateBilling → tak masuk kwitansi (obat keluar tanpa ditagih).
+     *
+     * Cakupan SEMPIT & aman (non-destruktif — hanya MENAMBAH, tak menyentuh baris lain):
+     *   - hanya invoice DRAFT,
+     *   - hanya obat dari resep yang SUDAH diverifikasi Farmasi (selaras gate
+     *     consolidateBilling: tagihan = obat yang dikunci Farmasi),
+     *   - hanya obat yang BENAR-BENAR menambah total (lewati "termasuk paket" yang
+     *     dinetralkan diskon — ketiadaannya tak menimbulkan kebocoran, & menghindari
+     *     kerumitan sinkron baris DISKON_PAKET),
+     *   - dedupe via reference_id (PrescriptionItem.id) → idempoten.
+     *
+     * Dipanggil saat kasir membuka tagihan (getInvoiceByVisit). Sumber harga & aturan
+     * SAMA dengan consolidateBilling (buildObatLines) → 1 sumber kebenaran.
+     *
+     * @return int jumlah baris obat yang ditambahkan
+     */
+    public function syncVerifiedObatLines(BillingInvoice $invoice): int
+    {
+        if ($invoice->status !== 'DRAFT') {
+            return 0;
+        }
+
+        try {
+            return DB::transaction(function () use ($invoice) {
+                $visit = Visit::with([
+                    'patient',
+                    'prescriptions.items.medication',
+                    'surgeryPackageSnapshots.items',
+                    'visitCob.penjamin1',
+                    'visitCob.penjamin2',
+                ])->find($invoice->visit_id);
+                if (! $visit) {
+                    return 0;
+                }
+
+                // RANAP/IGD: obat ditagih lewat inpatient_charges, bukan resep → jangan
+                // susulkan dari resep (cegah dobel-tagih). buildObatLines juga skip ini.
+                if ($this->usesInpatientCharges($visit)) {
+                    return 0;
+                }
+
+                // PrescriptionItem.id yang boleh ditagih = resep verified & tak cancelled.
+                $verifiedItemIds = [];
+                foreach ($visit->prescriptions as $rx) {
+                    if ($rx->status === 'CANCELLED' || is_null($rx->verified_at)) {
+                        continue;
+                    }
+                    foreach ($rx->items as $it) {
+                        $verifiedItemIds[$it->id] = true;
+                    }
+                }
+                if (! $verifiedItemIds) {
+                    return 0;
+                }
+
+                // Baris OBAT yang sudah ada (dedupe by reference_id = PrescriptionItem.id).
+                $existingRefs = $invoice->items()
+                    ->where('item_type', 'OBAT')
+                    ->whereNotNull('reference_id')
+                    ->pluck('reference_id')
+                    ->flip();
+
+                [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+                $fresh = $this->buildObatLines($visit, $billInsurerId, $billGuarantor);
+
+                $added = 0;
+                foreach ($fresh as $line) {
+                    if (($line['item_type'] ?? null) !== 'OBAT') {
+                        continue;   // lewati DISKON_PAKET — bundled tak disinkron (lihat docblock)
+                    }
+                    $ref = $line['reference_id'] ?? null;
+                    if ($ref === null || ! isset($verifiedItemIds[$ref]) || $existingRefs->has($ref)) {
+                        continue;
+                    }
+                    // Obat "termasuk paket" dinetralkan diskon → tak menambah total, lewati.
+                    if (str_contains((string) ($line['description'] ?? ''), 'termasuk paket')) {
+                        continue;
+                    }
+                    BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
+                    $added++;
+                }
+
+                if ($added === 0) {
+                    return 0;
+                }
+
+                $this->recalculateInvoice($invoice);
+                $this->log(auth('api')->id(), 'SYNC_OBAT_KWITANSI', BillingInvoice::class, $invoice->id, "{$added} baris obat menyusul ditambahkan ke tagihan DRAFT");
+
+                return $added;
+            });
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('syncVerifiedObatLines gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
             return 0;
         }
     }

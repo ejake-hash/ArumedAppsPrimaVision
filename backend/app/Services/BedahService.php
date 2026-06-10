@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\BhpItem;
 use App\Models\DocumentTemplate;
+use App\Models\Icd10Code;
 use App\Models\DocumentType;
 use App\Models\Employee;
 use App\Models\IolItem;
@@ -38,6 +39,22 @@ class BedahService
         private readonly Request $request,
         private readonly QueueService $queueService,
     ) {}
+
+    /** Cache resolusi kode ICD-10 → nama (per request) agar antrean tak N+1. */
+    private array $icd10NameCache = [];
+
+    /** Resolusi kode ICD-10 → nama (Indonesia, fallback Inggris). Null bila tak ada. */
+    private function icd10Name(?string $code): ?string
+    {
+        if (! $code) {
+            return null;
+        }
+        if (! array_key_exists($code, $this->icd10NameCache)) {
+            $row = Icd10Code::where('code', $code)->first();
+            $this->icd10NameCache[$code] = $row?->indonesian_description ?: $row?->description;
+        }
+        return $this->icd10NameCache[$code];
+    }
 
     // =========================================================================
     // ANTRIAN
@@ -122,6 +139,7 @@ class BedahService
                     // RANAP → pasien dari kamar (kembali ke RANAP/HCU), else PULANG/RAWAT_INAP.
                     'jenis_pelayanan' => $visit->jenis_pelayanan ?? 'RAJAL',
                     'diagnosa'        => $exam?->diagnosis_utama,
+                    'diagnosa_nama'   => $this->icd10Name($exam?->diagnosis_utama),
                     'dpjp'            => $dpjp,
                 ] : null,
 

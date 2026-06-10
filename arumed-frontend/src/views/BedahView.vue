@@ -49,6 +49,7 @@ function transformQueueItem(q) {
   return {
     // ── Real data ──
     id:             q.id,
+    createdAt:      q.created_at,
     qNum:           q.queue_number,
     queueStatus:    q.status,            // WAITING/CALLED/IN_PROGRESS/COMPLETED
     visitId:        q.visit?.id,
@@ -82,6 +83,7 @@ function transformQueueItem(q) {
     icdProsedur:    '',
     dpjp:           q.visit?.dpjp ?? '',          // operator utama (lead surgeon / dokter pemeriksa)
     diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter
+    diagnosaNama:   q.visit?.diagnosa_nama ?? '', // nama/deskripsi ICD-10 (resolusi backend)
     diagnosaPasca:  '',
     isPhaco:        isIol,          // auto-deteksi IOL; petugas dpt override via checkbox Pra-Bedah
     // Pemicu RM 10.1 (Laporan Operasi Vitreo Retina): surgery_type paket = sumber
@@ -150,6 +152,10 @@ function syncAuthoritativeFields(s, q) {
   if (q.status === 'COMPLETED') s.operationDone = true
   // jenis_pelayanan = server-authoritative (bisa berubah saat admit RANAP) → sinkron.
   if (q.visit?.jenis_pelayanan) s.jenisPelayanan = q.visit.jenis_pelayanan
+  // Diagnosa (kode + nama) = data dokter, server-authoritative (dokter bisa
+  // melengkapi/ubah setelah pasien masuk antrean bedah) → aman disinkron tiap poll.
+  if (q.visit?.diagnosa !== undefined) s.diagnosa = q.visit.diagnosa ?? ''
+  if (q.visit?.diagnosa_nama !== undefined) s.diagnosaNama = q.visit.diagnosa_nama ?? ''
   // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
   if (s.status === 'MENUNGGU') {
     s.status = q.status === 'COMPLETED' ? 'SELESAI'
@@ -554,12 +560,23 @@ const timOutDisplay = computed(() => {
 })
 
 // ── Computed ───────────────────────────────────────────────────────────────────
+// Baris antrean dibuat hari ini? (operasi lintas-hari yang masih nyangkut → "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isTodayP = (p) => isTodayRow(p.createdAt)
+const isDoneP  = (p) => p.status === 'SELESAI'
+
 const filtQ = computed(() => {
   let list = patients.value
-  if (qPrimaryFilter.value === 'waiting') {
-    list = list.filter(p => p.status !== 'SELESAI')
+  if (qPrimaryFilter.value === 'active') {
+    list = list.filter(p => !isTodayP(p))
+  } else if (qPrimaryFilter.value === 'waiting') {
+    list = list.filter(p => isTodayP(p) && !isDoneP(p))
   } else {
-    list = list.filter(p => p.status === 'SELESAI')
+    list = list.filter(p => isTodayP(p) && isDoneP(p))
   }
   if (qSecondaryFilter.value === 'bpjs') {
     list = list.filter(p => p.ptype === 'bpjs')
@@ -575,8 +592,9 @@ const filtQ = computed(() => {
 
 const cMenunggu = computed(() => patients.value.filter(p => p.status === 'MENUNGGU').length)
 const cBerlangsung = computed(() => patients.value.filter(p => p.status === 'BERLANGSUNG').length)
-const cSelesai = computed(() => patients.value.filter(p => p.status === 'SELESAI').length)
-const belumDipanggilCount = computed(() => patients.value.filter(p => p.status !== 'SELESAI').length)
+const cSelesai = computed(() => patients.value.filter(p => isTodayP(p) && isDoneP(p)).length)
+const belumDipanggilCount = computed(() => patients.value.filter(p => isTodayP(p) && !isDoneP(p)).length)
+const cActive = computed(() => patients.value.filter(p => !isTodayP(p)).length)
 
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
@@ -1371,6 +1389,20 @@ async function doFinalisasi() {
         toast('w', 'Instruksi pasca-op gagal disimpan — finalisasi dibatalkan. Coba lagi.')
         return
       }
+      // ANTI-BOCOR BILLING: obat pasca-bedah yang sudah diisi TAPI belum dikirim ke
+      // Farmasi WAJIB terkirim SEBELUM pasien dirutekan ke Kasir. "Selesai Operasi"
+      // mengadvance antrean Bedah→Kasir; bila resep belum ada saat kasir konsolidasi,
+      // obat tak masuk tagihan/kwitansi (bocor). Kirim dulu; abort finalisasi bila gagal.
+      // HANYA disposisi PULANG yang dirutekan ke Kasir — RANAP/HCU/RAWAT_INAP kembali
+      // ke alur rawat inap (ditagih via inpatient_charges saat pulang, bukan resep ini),
+      // jadi jangan paksa kirim resep di jalur itu (hindari ubah alur antar-stasiun).
+      if (selP.value.postOpDisposition === 'PULANG' && selP.value.obatPasca.length && !selP.value.resepSent) {
+        await kirimResep()
+        if (!selP.value.resepSent) {
+          toast('w', 'Obat pasca-bedah belum terkirim ke Farmasi — finalisasi dibatalkan. Periksa & kirim resep dulu.')
+          return
+        }
+      }
     }
     // Backend: kunci laporan (finalized_at) + advance antrean ke Farmasi/Kasir.
     await bedahApi.finalizeRecord(recordId)
@@ -1519,6 +1551,14 @@ function mulaiBack() { mulaiStep.value = 1 }
               >
                 Selesai
                 <span v-if="cSelesai" class="pf-ct">{{ cSelesai }}</span>
+              </button>
+              <button
+                :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']"
+                @click="qPrimaryFilter = 'active'"
+                title="Operasi belum selesai dari hari sebelumnya (lintas-hari)"
+              >
+                Masih Aktif
+                <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
               </button>
             </div>
 
@@ -1688,7 +1728,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </div>
                   <div class="bd-field-row">
                     <label class="bd-label">Diagnosa</label>
-                    <span class="bd-val bd-dx">{{ selP.diagnosa }}</span>
+                    <span class="bd-val bd-dx">{{ selP.diagnosa }}<span v-if="selP.diagnosaNama"> — {{ selP.diagnosaNama }}</span></span>
                   </div>
                 </div>
               </div>
@@ -2248,7 +2288,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div class="bd-card-bd">
                   <div class="bd-iol-field">
                     <label class="bd-label">Diagnosis Pra-Bedah</label>
-                    <div class="bd-dx-chip" :class="!selP.diagnosa && 'bd-dx-chip-empty'">{{ selP.diagnosa || 'Belum ada diagnosis dari dokter' }}</div>
+                    <div class="bd-dx-chip" :class="!selP.diagnosa && 'bd-dx-chip-empty'">{{ selP.diagnosa ? (selP.diagnosa + (selP.diagnosaNama ? ' — ' + selP.diagnosaNama : '')) : 'Belum ada diagnosis dari dokter' }}</div>
                   </div>
                   <div class="bd-iol-field" style="margin-top:12px">
                     <label class="bd-label">Diagnosis Pasca-Bedah</label>
@@ -2311,28 +2351,6 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </div>
                 </div>
 
-                <div class="bd-iol-field" style="margin-top:12px">
-                  <label class="bd-label">Disposisi Pasca-Operasi</label>
-                  <!-- Adaptif: pasien dari RANAP kembali ke kamar (lanjut rawatan/HCU);
-                       pasien rawat jalan/pre-op → Pulang atau Rawat Inap baru. -->
-                  <select v-if="isFromRanap" class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
-                    <option value="LANJUT_RANAP">Kembali ke Rawat Inap (lanjut rawatan di kamar)</option>
-                    <option value="HCU">Pindah ke HCU (perawatan intensif)</option>
-                  </select>
-                  <select v-else class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.laporanFinalized">
-                    <option value="PULANG">Pulang (lanjut ke Kasir)</option>
-                    <option value="RAWAT_INAP">Rawat Inap (ke papan Menunggu Kamar)</option>
-                  </select>
-                  <span v-if="selP.postOpDisposition === 'RAWAT_INAP'" class="bd-disp-hint">
-                    Pasien akan masuk papan "Menunggu Kamar" Rawat Inap setelah laporan dikunci. Petugas ranap memilih bed.
-                  </span>
-                  <span v-else-if="selP.postOpDisposition === 'LANJUT_RANAP'" class="bd-disp-hint">
-                    Pasien kembali ke kamar rawat inap (bed masih ditahan) untuk melanjutkan rawatan.
-                  </span>
-                  <span v-else-if="selP.postOpDisposition === 'HCU'" class="bd-disp-hint">
-                    Pasien kembali ke alur rawat inap & ditandai butuh HCU. Petugas RANAP memindahkan ke bed HCU (transfer bed).
-                  </span>
-                </div>
               </div>
             </div>
 
@@ -2369,16 +2387,9 @@ function mulaiBack() { mulaiStep.value = 1 }
               >
                 Simpan Laporan
               </button>
-              <button
-                v-if="!selP.operationDone && !selP.laporanFinalized"
-                class="bd-btn-finalisasi"
-                :disabled="!selP.timOut || busyOp || !canEditReport"
-                :title="!selP.timOut ? 'Lakukan Time Out dulu di tab Intraoperatif' : ''"
-                @click="showFinalModal = true"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                Selesai Operasi
-              </button>
+              <span v-if="!selP.operationDone && !selP.laporanFinalized" class="bd-disp-hint" style="margin-top:0">
+                Laporan boleh diisi belakangan. Disposisi &amp; tombol <b>Selesai Operasi</b> ada di tab <b>Pasca-Bedah</b>.
+              </span>
               <span v-if="selP.operationDone || selP.laporanFinalized" class="bd-finalized-tag">Operasi Selesai</span>
             </div>
           </div>
@@ -2540,6 +2551,65 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                     {{ sendingResep ? 'Mengirim…' : 'Kirim ke Farmasi' }}
                   </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Disposisi & Selesai Operasi — AKSI TERAKHIR: rutekan pasien SETELAH obat
+                 terisi/terkirim (cegah kasir menagih sebelum resep ada → obat bocor). -->
+            <div class="bd-card bd-card-full">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                Disposisi &amp; Selesai Operasi
+              </div>
+              <div class="bd-card-bd">
+                <div v-if="selP.operationDone || selP.laporanFinalized" class="bd-status-info bd-status-done" style="margin-bottom:12px">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                  Operasi selesai — pasien diteruskan. Laporan masih bisa diperbaiki &amp; dikunci dokter di TTD Dokumen.
+                </div>
+                <div class="bd-iol-field">
+                  <label class="bd-label">Disposisi Pasca-Operasi</label>
+                  <!-- Adaptif: pasien dari RANAP kembali ke kamar (lanjut rawatan/HCU);
+                       pasien rawat jalan/pre-op → Pulang atau Rawat Inap baru. -->
+                  <select v-if="isFromRanap" class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.operationDone || selP.laporanFinalized">
+                    <option value="LANJUT_RANAP">Kembali ke Rawat Inap (lanjut rawatan di kamar)</option>
+                    <option value="HCU">Pindah ke HCU (perawatan intensif)</option>
+                  </select>
+                  <select v-else class="bd-select" v-model="selP.postOpDisposition" :disabled="selP.operationDone || selP.laporanFinalized">
+                    <option value="PULANG">Pulang (lanjut ke Kasir)</option>
+                    <option value="RAWAT_INAP">Rawat Inap (ke papan Menunggu Kamar)</option>
+                  </select>
+                  <span v-if="selP.postOpDisposition === 'RAWAT_INAP'" class="bd-disp-hint">
+                    Pasien akan masuk papan "Menunggu Kamar" Rawat Inap setelah Selesai Operasi. Petugas ranap memilih bed.
+                  </span>
+                  <span v-else-if="selP.postOpDisposition === 'LANJUT_RANAP'" class="bd-disp-hint">
+                    Pasien kembali ke kamar rawat inap (bed masih ditahan) untuk melanjutkan rawatan.
+                  </span>
+                  <span v-else-if="selP.postOpDisposition === 'HCU'" class="bd-disp-hint">
+                    Pasien kembali ke alur rawat inap &amp; ditandai butuh HCU. Petugas RANAP memindahkan ke bed HCU (transfer bed).
+                  </span>
+                </div>
+                <div class="bd-laporan-actions">
+                  <button
+                    v-if="!selP.operationDone && !selP.laporanFinalized"
+                    class="bd-btn-finalisasi"
+                    :disabled="!selP.timOut || busyOp || !canEditReport"
+                    :title="!selP.timOut ? 'Lakukan Time Out dulu di tab Intraoperatif' : ''"
+                    @click="showFinalModal = true"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    Selesai Operasi
+                  </button>
+                  <span v-if="!selP.timOut && !selP.operationDone && !selP.laporanFinalized" class="bd-disp-hint" style="margin-top:0">
+                    Lakukan <b>Time Out</b> dulu di tab Intraoperatif sebelum menyelesaikan operasi.
+                  </span>
+                  <span v-else-if="selP.postOpDisposition === 'PULANG' && selP.obatPasca.length && !selP.resepSent && !selP.operationDone" class="bd-disp-hint" style="margin-top:0">
+                    Obat pasca-bedah akan otomatis dikirim ke Farmasi saat Selesai Operasi.
+                  </span>
+                  <span v-else-if="selP.postOpDisposition !== 'PULANG' && selP.obatPasca.length && !selP.resepSent && !selP.operationDone" class="bd-disp-hint" style="margin-top:0">
+                    Pasien kembali ke rawat inap → obat ditagih saat pulang. Klik "Kirim ke Farmasi" di atas bila ingin obat diserahkan dari loket.
+                  </span>
+                  <span v-if="selP.operationDone || selP.laporanFinalized" class="bd-finalized-tag">Operasi Selesai</span>
                 </div>
               </div>
             </div>
