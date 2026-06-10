@@ -517,30 +517,31 @@ async function simpanIolTerpasang() {
 }
 
 // ── Obat Farmasi (pilih obat pasca-bedah; SUMBER = inventori unit Farmasi) ─────
-// Backend (BedahService::getDaftarObat → farmasiOnly) hanya kirim obat yg terdaftar
-// di inventory_stocks lokasi FARMASI (termasuk stok 0) — bukan seluruh master.
-const obatMaster = ref([])         // obat farmasi (bedah-scoped, RBAC bedah.read)
-const obatSearchPasca = ref('')     // query filter dropdown obat pasca-bedah
+// Cari-SERVER ke /bedah/obat (BedahService::getDaftarObat farmasiOnly) — hanya obat
+// terdaftar di inventory_stocks lokasi FARMASI (termasuk stok 0). Dulu prefetch 1×
+// (cap 100) lalu filter klien → obat ke-101+ tak pernah muncul ("belum tampil semua");
+// kini tiap ketik query dikirim ke server → SELURUH obat farmasi terjangkau.
+const obatSearchPasca = ref('')     // query obat pasca-bedah
 const sendingResep = ref(false)     // guard cegah double kirim resep
 const savingInstruksi = ref(false)  // guard cegah double simpan instruksi pasca-op
 
-async function loadObatMaster() {
+// Helper cari-server obat farmasi (bedah-scoped, RBAC bedah.read). Server cap 100/hasil cari.
+async function searchObatFarmasi(query) {
   try {
-    const res = await bedahApi.daftarObat('')
+    const res = await bedahApi.daftarObat(query || '')
     const list = res.data?.data ?? []
-    obatMaster.value = Array.isArray(list) ? list : []
-  } catch (e) {
-    obatMaster.value = []
-  }
+    return Array.isArray(list) ? list : []
+  } catch { return [] }
 }
 
-const filteredObatPasca = computed(() => {
-  const q = obatSearchPasca.value.trim().toLowerCase()
-  if (!q) return obatMaster.value.slice(0, 30)
-  return obatMaster.value.filter((o) =>
-    `${o.name ?? ''} ${o.code ?? ''} ${o.golongan ?? ''}`.toLowerCase().includes(q)
-  ).slice(0, 30)
+const obatPascaResults = ref([])    // hasil cari-server picker obat pasca
+let obatPascaTimer = null
+async function loadObatMaster() { obatPascaResults.value = await searchObatFarmasi('') }
+watch(obatSearchPasca, (q) => {
+  clearTimeout(obatPascaTimer)
+  obatPascaTimer = setTimeout(async () => { obatPascaResults.value = await searchObatFarmasi(q) }, 300)
 })
+const filteredObatPasca = computed(() => obatPascaResults.value.slice(0, 50))
 
 const timerDisplay = computed(() => {
   if (!selP.value?.timIn) return '--:--:--'
@@ -1236,14 +1237,15 @@ const paketMedSearch = ref('')          // autocomplete obat di modal (terpisah 
 // Pasien punya paket bedah aktif → obat paket terserap (tak ditagih terpisah).
 const hasVisitPaket = computed(() => (visitPackages.value?.length ?? 0) > 0)
 
-// Filter master obat utk autocomplete di modal kelola paket (+ tampilkan stok).
-const paketMedFiltered = computed(() => {
-  const q = paketMedSearch.value.trim().toLowerCase()
-  if (!q) return obatMaster.value.slice(0, 30)
-  return obatMaster.value.filter((o) =>
-    `${o.name ?? ''} ${o.code ?? ''} ${o.golongan ?? ''}`.toLowerCase().includes(q)
-  ).slice(0, 30)
+// Autocomplete obat di modal kelola paket — cari-SERVER (sumber sama: inventori Farmasi).
+// Dulu filter klien atas 100 baris pertama → obat ke-101+ tak ketemu (terlihat "dari master").
+const paketMedResults = ref([])
+let paketMedTimer = null
+watch(paketMedSearch, (q) => {
+  clearTimeout(paketMedTimer)
+  paketMedTimer = setTimeout(async () => { paketMedResults.value = await searchObatFarmasi(q) }, 300)
 })
+const paketMedFiltered = computed(() => paketMedResults.value.slice(0, 50))
 
 async function loadPaketObat() {
   try {
@@ -1292,6 +1294,7 @@ function applyPaketObat() {
 function openPaketModal() {
   resetPaketForm()
   showPaketModal.value = true
+  searchObatFarmasi('').then((r) => { paketMedResults.value = r })   // muat awal obat farmasi
 }
 function resetPaketForm() {
   paketForm.id = null; paketForm.name = ''; paketForm.category = ''; paketForm.items = []
@@ -2806,7 +2809,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div v-if="paketMedSearch.trim() && !paketNewItem.medication_id" class="bd-combo-dropdown">
                   <div v-for="o in paketMedFiltered" :key="o.id" class="bd-combo-option" @mousedown.prevent="pickPaketMed(o)">
                     <span class="bd-combo-name">{{ o.name }}</span>
-                    <span class="bd-combo-role">{{ o.form_sediaan || o.golongan || '' }} · stok {{ o.stock ?? 0 }}{{ o.unit ? ` ${o.unit}` : '' }}</span>
+                    <span class="bd-combo-role">{{ o.form || o.golongan || '' }} · stok {{ o.stock ?? 0 }}{{ o.unit ? ` ${o.unit}` : '' }}</span>
                   </div>
                   <div v-if="!paketMedFiltered.length" class="bd-combo-empty">Tidak ada hasil</div>
                 </div>
