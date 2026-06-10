@@ -776,13 +776,10 @@ async function fetchHistory() {
   }
 }
 
-// Cetak kwitansi dari baris history (reuse Teleport print template + printData).
-// Pasien BPJS dikecualikan (ditagih ke BPJS, tidak dicetak untuk pasien).
+// Cetak kwitansi/rincian dari baris history (reuse Teleport print template + printData).
+// Setiap baris (termasuk BPJS) bisa dicetak: pasien BPJS menghasilkan RINCIAN biaya
+// (bukan kwitansi tagih-ke-pasien), konsisten dgn tombol "Cetak Rincian" di panel.
 async function cetakKwitansiHistory(h) {
-  if (ptypeOfHistory(h) === 'bpjs') {
-    toast('w', 'Pasien BPJS — kwitansi tidak dicetak untuk pasien (ditagihkan ke BPJS).')
-    return
-  }
   if (!h?.id) { toast('w', 'Invoice tidak valid'); return }
   printing.value = true
   try {
@@ -1625,7 +1622,7 @@ const groupedPrintItems = computed(() =>
                   <th>Metode</th>
                   <th class="num">Total</th>
                   <th>Jam</th>
-                  <th style="width:96px">Aksi</th>
+                  <th style="width:104px">Aksi</th>
                 </tr>
               </thead>
               <tbody>
@@ -1643,16 +1640,14 @@ const groupedPrintItems = computed(() =>
                   <td class="muted">{{ formatTime(h.paid_at ?? h.updated_at) }}</td>
                   <td>
                     <button
-                      v-if="ptypeOfHistory(h) !== 'bpjs'"
                       class="hist-print-btn"
                       :disabled="printing"
-                      title="Cetak kwitansi"
+                      :title="ptypeOfHistory(h) === 'bpjs' ? 'Cetak rincian biaya' : 'Cetak kwitansi'"
                       @click="cetakKwitansiHistory(h)"
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                      Cetak
+                      {{ ptypeOfHistory(h) === 'bpjs' ? 'Rincian' : 'Cetak' }}
                     </button>
-                    <span v-else class="muted">—</span>
                   </td>
                 </tr>
                 <tr v-if="!historyLoading && !histFiltered.length"><td colspan="8" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
