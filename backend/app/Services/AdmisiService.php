@@ -1604,7 +1604,10 @@ class AdmisiService
         ])
             ->where('station', 'ADMISI')
             ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
-            ->where('status', '!=', Queue::STATUS_CANCELLED)
+            // HANYA yang benar-benar "siap dipanggil ke loket": WAITING / CALLED.
+            // Begitu didaftarkan & auto-advance ke TRIASE, queue ADMISI jadi COMPLETED
+            // → harus lenyap dari panel "Siap Dipanggil ke Loket Admisi".
+            ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
             ->whereHas('visit')                       // exclude queue dgn visit soft-deleted (zombie row)
             ->orderBy('queue_sequence')
             ->get();

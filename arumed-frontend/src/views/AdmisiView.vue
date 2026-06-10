@@ -216,8 +216,13 @@ const mappedAntrian = computed(() =>
   admisiStore.antrian.filter(q => q.visit != null).map(mapQueueItem),
 )
 
-// Antrean yg masih perlu aksi admin: WAITING (panggil) + CALLED (daftarkan/selesai)
-const callableQueue = computed(() => mappedAntrian.value.filter(p => p.status === 'WAITING' || p.status === 'CALLED'))
+// Antrean yg masih perlu aksi admin: WAITING (panggil) + CALLED (daftarkan/selesai).
+// Wajib MASIH di stasiun ADMISI — begitu didaftarkan & pindah ke TRIASE (current_station
+// != ADMISI), baris harus lenyap dari "Siap Dipanggil ke Loket Admisi" walau status
+// queue lokal sempat basi (mis. update WS lite-payload belum mengganti status).
+const callableQueue = computed(() => mappedAntrian.value.filter(
+  p => (p.status === 'WAITING' || p.status === 'CALLED') && p.station === 'ADMISI',
+))
 
 /* ============================================================
    VISITS (semua kunjungan hari ini — apapun stasiun-nya)
