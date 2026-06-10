@@ -837,6 +837,15 @@ const callQueue = ref([])         // FIFO antrian panggilan
 const isProcessingCall = ref(false)
 const audioEnabled = ref(true)    // bisa di-mute via control panel
 
+// Dedup DURABLE panggilan. Cek flashQueue/callQueue saja rapuh: flashQueue
+// tak pernah di-null-kan & bisa tergeser panggilan berikutnya, lalu duplikat
+// lama lolos → diumumkan 2×. Sumber dobel: (a) double-click "Panggil" operator
+// (2 called_at beda), (b) WS + polling tumpang-tindih saat Reverb sempat error.
+// Map id → { calledAt, at(ms) }. RECALL_COOLDOWN: panggil-ulang id sama < ambang
+// dianggap duplikat/double-click (re-call asli pasien tak hadir jauh lebih lama).
+const announcedCalls = new Map()
+const RECALL_COOLDOWN_MS = 6000
+
 // Sound preset registry. Dua jenis:
 // - oscillator-based: di-generate Web Audio API (no file)
 // - mp3-based:        load file dari /sounds/ via HTMLAudioElement
@@ -878,13 +887,23 @@ function loadTtsVoices() {
 }
 
 function enqueueCall(q) {
-  // Dedup hanya kalau ID + called_at SAMA dengan yang sedang tampil/antri
-  // (mencegah event WS duplikat). Panggil ulang (called_at baru) tetap
-  // diizinkan masuk antrian.
-  const key = `${q.id}:${q.called_at ?? ''}`
+  const calledAt = q.called_at ?? ''
+  const key = `${q.id}:${calledAt}`
+  // 1. Sudah sedang tampil / sudah antri (event WS duplikat berturut-turut).
   const flashKey = flashQueue.value ? `${flashQueue.value.id}:${flashQueue.value.called_at ?? ''}` : null
   if (flashKey === key) return
   if (callQueue.value.some((x) => `${x.id}:${x.called_at ?? ''}` === key)) return
+  // 2. Dedup durable (menutup celah flashQueue tergeser + WS/polling dobel +
+  //    double-click). Panggilan persis sama → lewati; re-call id sama terlalu
+  //    cepat (< RECALL_COOLDOWN) → lewati (double-click), tapi re-call asli
+  //    (jeda lebih lama) tetap diumumkan.
+  const prev = announcedCalls.get(q.id)
+  if (prev) {
+    if (prev.calledAt === calledAt) return
+    if (Date.now() - prev.at < RECALL_COOLDOWN_MS) return
+  }
+  announcedCalls.set(q.id, { calledAt, at: Date.now() })
+  if (announcedCalls.size > 300) announcedCalls.delete(announcedCalls.keys().next().value)
   callQueue.value.push(q)
   if (!isProcessingCall.value) processCallQueue()
 }
@@ -1141,7 +1160,15 @@ function buildAnnouncementText(q) {
   }
   const tmpl = settings.tts_template
             || 'Nomor antrean {nomor}, atas nama {nama}, silakan menuju {poli}.'
-  return renderTemplate(tmpl, speakable)
+  let text = renderTemplate(tmpl, speakable)
+  // Jaminan TUJUAN ikut terucap: kalau template (mis. hasil edit operator saat
+  // tes) tak memuat {poli} sehingga nama poli absen dari hasil, sambungkan di
+  // akhir. Tak menambah bila poli sudah disebut (cegah dobel "menuju ...").
+  const poli = String(q.poly ?? '').trim()
+  if (poli && !text.toLowerCase().includes(poli.toLowerCase())) {
+    text = text.replace(/[.\s]*$/, '') + `, silakan menuju ${poli}.`
+  }
+  return text
 }
 
 // --- SLIDESHOW ---
