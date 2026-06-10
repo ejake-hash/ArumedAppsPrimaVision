@@ -866,6 +866,8 @@ export const farmasiApi = {
   obatRiwayat:       (id, params) => api.get(`/farmasi/obat/${id}/riwayat-pemberian`, { params }),
   // Riwayat GLOBAL obat yang diberikan ke pasien (resep + POS) — search/date/page.
   riwayatPemberian:  (params)     => api.get('/farmasi/riwayat-pemberian', { params }),
+  // Export seluruh riwayat pemberian (sesuai filter) ke Excel (.xlsx).
+  riwayatPemberianExport: (params) => api.get('/farmasi/riwayat-pemberian/export', { params, responseType: 'blob' }),
 
   // Stok
   stokObat:          (params)     => api.get('/farmasi/stok/obat', { params }),
@@ -997,7 +999,7 @@ export const bedahApi = {
   // Komponen paket pasien (snapshot) — edit BHP & Tindakan saat operasi.
   // getVisitPackage kini balikkan ARRAY paket (multi-paket per visit, mis. Phaco + TIVA).
   getVisitPackage:        (visitId)       => api.get(`/bedah/visit-package/${visitId}`),
-  addVisitPackage:        (visitId, packageId) => api.post(`/bedah/visit-package/${visitId}/package`, { package_id: packageId }),
+  addVisitPackage:        (visitId, packageId, tariffId = null) => api.post(`/bedah/visit-package/${visitId}/package`, { package_id: packageId, tariff_id: tariffId || undefined }),
   removeVisitPackage:     (snapshotId)    => api.delete(`/bedah/visit-package/${snapshotId}`),
   addVisitPackageItem:    (visitId, data) => api.post(`/bedah/visit-package/${visitId}/items`, data),
   updateVisitPackageItem: (itemId, data)  => api.put(`/bedah/visit-package-item/${itemId}`, data),

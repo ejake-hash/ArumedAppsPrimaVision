@@ -458,6 +458,8 @@ class DokterController extends Controller
         return $request->validate([
             'planning'           => 'nullable|in:PULANG_BEROBAT_JALAN,BEDAH,RUJUK,RAWAT_INAP',
             'surgery_package_id' => 'nullable|uuid|exists:surgery_packages,id',
+            // Varian tarif paket terpilih (1 penjamin bisa >1 varian harga).
+            'surgery_package_tariff_id' => 'nullable|uuid|exists:surgery_package_tariffs,id',
             'surgery_schedule_id' => 'nullable|uuid|exists:surgery_schedules,id',
             // Lokasi pelaksanaan bedah: RUANG_BEDAH (operasi) | RUANG_TINDAKAN (laser YAG/PRP).
             'location_type'      => 'nullable|in:RUANG_BEDAH,RUANG_TINDAKAN',

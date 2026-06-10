@@ -359,7 +359,7 @@ class DokterService
      * SEMUA obat (selaras Farmasi getStokObat yg TIDAK filter is_active); obat
      * nonaktif tetap muncul, ditandai is_active=false agar FE beri badge "nonaktif".
      */
-    private function daftarObatQuery(?string $search = null)
+    private function daftarObatQuery(?string $search = null, bool $farmasiOnly = false)
     {
         $farmasiStock = DB::table('inventory_stocks')
             ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
@@ -376,7 +376,14 @@ class DokterService
                   ->where('ip.is_active', '=', true)
                   ->whereNull('ip.deleted_at');
             })
-            ->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id'))
+            // $farmasiOnly = true → INNER join: hanya obat yang TERDAFTAR di inventori
+            // unit Farmasi (punya baris inventory_stocks lokasi FARMASI, termasuk stok 0).
+            // Default leftJoin: seluruh master (picker Dokter) — perilaku lama dipertahankan.
+            ->when(
+                $farmasiOnly,
+                fn ($q) => $q->joinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id')),
+                fn ($q) => $q->leftJoinSub($farmasiStock, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'm.id')),
+            )
             ->whereNull('m.deleted_at')
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($w) use ($search) {
@@ -410,9 +417,9 @@ class DokterService
      * Versi FLAT (legacy) — dipakai Bedah & RuangTindakan via delegasi. Tetap
      * dibatasi 100 baris (picker mereka filter sisi-klien). Jangan ubah shape-nya.
      */
-    public function getDaftarObat(?string $search = null): array
+    public function getDaftarObat(?string $search = null, bool $farmasiOnly = false): array
     {
-        return $this->daftarObatQuery($search)
+        return $this->daftarObatQuery($search, $farmasiOnly)
             ->limit(100)
             ->get(self::OBAT_COLS)
             ->map(fn ($r) => $this->mapObatRow($r))
@@ -641,7 +648,9 @@ class DokterService
             $this->syncVisitPackageSnapshot(
                 $visit,
                 $planning === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
-                $scheduleId
+                $scheduleId,
+                VisitSurgeryPackage::TYPE_BEDAH,
+                $planning === 'BEDAH' ? ($data['surgery_package_tariff_id'] ?? null) : null,
             );
 
             // Fase 8 — tandai alasan inap di visit (dibaca admisi & papan RANAP):
@@ -686,7 +695,7 @@ class DokterService
      *        paket bedah saja, jangan ikut hapus paket PEMERIKSAAN / paket lain). null =
      *        hapus SEMUA snapshot visit.
      */
-    public function syncVisitPackageSnapshot(Visit $visit, ?string $packageId, ?string $scheduleId = null, ?string $clearType = VisitSurgeryPackage::TYPE_BEDAH): void
+    public function syncVisitPackageSnapshot(Visit $visit, ?string $packageId, ?string $scheduleId = null, ?string $clearType = VisitSurgeryPackage::TYPE_BEDAH, ?string $selectedTariffId = null): void
     {
         // Tanpa paket → buang snapshot (default: hanya tipe yg di-scope, mis. BEDAH).
         if (! $packageId) {
@@ -704,8 +713,9 @@ class DokterService
         }
 
         // Resolve baris tarif penjamin pasien: harga + nama tampil khusus (mis. promo UMUM).
+        // $selectedTariffId = varian yg dipilih dokter saat planning (1 penjamin bisa >1 varian).
         $tariff    = $this->kasirService->resolvePackageTariff(
-            $pkg->id, $visit->guarantor_type, $visit->insurer_id
+            $pkg->id, $visit->guarantor_type, $visit->insurer_id, $selectedTariffId
         );
         $sellPrice = (float) ($tariff?->sell_price ?? 0);
 
@@ -718,6 +728,8 @@ class DokterService
         $headerData = [
             'surgery_schedule_id'       => $scheduleId,
             'source_surgery_package_id' => $pkg->id,
+            // Varian tarif terpilih (null = default). Sumber id = baris yg benar2 di-resolve.
+            'surgery_package_tariff_id' => $tariff->id ?? null,
             'package_type'              => $pkg->package_type ?? VisitSurgeryPackage::TYPE_BEDAH,
             'package_name'              => $pkg->name,
             'package_code'              => $pkg->code,

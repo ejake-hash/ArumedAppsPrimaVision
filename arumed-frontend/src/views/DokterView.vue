@@ -1186,6 +1186,7 @@ function buildPlanningPayload() {
   return {
     planning:           p ? (PLANNING_ENUM[p] ?? p) : null,
     surgery_package_id: p === 'BEDAH' ? (surgeryPkg.value || null) : null,
+    surgery_package_tariff_id: p === 'BEDAH' ? (surgeryTariffId.value || null) : null,
     location_type:      p === 'BEDAH' ? surgeryLocation.value : null,
     surgery_date:       p === 'BEDAH' ? (surgeryDate.value || null) : null,
     surgery_time:       p === 'BEDAH' ? (surgeryTime.value || null) : null,
@@ -1293,15 +1294,13 @@ const objectiveText = computed(() => {
 const soapDirty = reactive({ S: false, O: false, A: false, P: false })
 function markSoapDirty(field) { soapDirty[field] = true }
 
-// Sinkron live S/O: hanya menimpa bila field belum diedit manual.
-// (A & P disusun di bawah — SETELAH deklarasi sumbernya: diagnosis, ICD-9,
-//  planning & data bedah — agar watcher tidak menyentuh ref yang masih TDZ.)
-watch(objectiveText, (v) => { if (!soapDirty.O) soap.value.O = v })
+// Sinkron live S: hanya menimpa bila field belum diedit manual.
+// (O butuh ICD-9; A & P juga disusun di bawah — SETELAH deklarasi sumbernya:
+//  diagnosis, ICD-9, planning & data bedah — agar watcher tidak menyentuh ref TDZ.)
 watch(() => exam.value.anamnese, (v) => { if (!soapDirty.S) soap.value.S = v })
 
 // Sync ulang per field: tarik nilai terbaru dari sumber & kembalikan ke mode auto.
 function resyncSoapS() { soap.value.S = exam.value.anamnese ?? ''; soapDirty.S = false }
-function resyncSoapO() { soap.value.O = objectiveText.value; soapDirty.O = false }
 
 // ── TAB 4: DIAGNOSIS ICD-10 ─────────────────────────────────────────────────
 
@@ -1401,6 +1400,7 @@ const surgeryLocation = ref('RUANG_BEDAH')  // lokasi pelaksanaan: RUANG_BEDAH (
 const surgeryCategory = ref('')   // kategori paket bedah terpilih
 const surgerySearch = ref('')     // kata kunci pencarian paket (kode/nama) — lintas kategori
 const surgeryPkg = ref('')        // id paket bedah terpilih
+const surgeryTariffId = ref('')   // varian tarif terpilih (1 penjamin bisa >1 varian harga)
 const surgeryDate = ref('')
 const surgeryTime = ref('')       // jam rencana bedah (HH:MM) — opsional
 const requiresInpatient = ref(false)  // Fase 8: bedah perlu rawat inap pre-op (pasien datang H-1)
@@ -1689,9 +1689,26 @@ async function loadSurgeryPackages() {
       id: p.id, code: p.code ?? '', name: p.resolved_name ?? p.name,
       category: p.category || 'Tanpa Kategori',
       price: Number(p.resolved_sell_price ?? p.price ?? p.total_base_price) || 0,
+      // Varian harga per-penjamin (1 penjamin bisa >1) → dropdown pilih varian.
+      variants: Array.isArray(p.resolved_variants) ? p.resolved_variants : [],
     }))
+    // Selaraskan varian terpilih dgn paket aktif (default = varian pertama).
+    syncSurgeryVariant()
   } catch { surgeryPackages.value = [] }
 }
+
+// Varian harga paket terpilih (utk dropdown "Nama Paket Penjamin"). 1 penjamin bisa
+// punya >1 varian (mis. Phaco Mandalika / Osaka) → dokter pilih saat planning.
+const selectedSurgeryVariants = computed(() =>
+  surgeryPackages.value.find((x) => x.id === surgeryPkg.value)?.variants ?? [],
+)
+function syncSurgeryVariant() {
+  const variants = selectedSurgeryVariants.value
+  if (!variants.length) { surgeryTariffId.value = ''; return }
+  const stillValid = variants.some((v) => v.tariff_id === surgeryTariffId.value)
+  if (!stillValid) surgeryTariffId.value = variants[0].tariff_id
+}
+watch(surgeryPkg, () => syncSurgeryVariant())
 
 // ── CPPT: Assessment (A) & Planning (P) tersusun OTOMATIS ────────────────────
 // Ditempatkan di sini (setelah deklarasi diagnosis/ICD-9/planning/bedah) supaya
@@ -1738,8 +1755,22 @@ const planningText = computed(() => {
   return blocks.join('\n')
 })
 
+// Objektif (O) DOKTER = temuan pemeriksaan (segmen ant/post) + prosedur ICD-9
+// yang dikerjakan pada kunjungan ini. Didefinisikan DI SINI (bukan bersama
+// objectiveText di atas) karena butuh icd9List yang dideklarasi belakangan (TDZ).
+const oAutoText = computed(() => {
+  const blocks = []
+  if (objectiveText.value) blocks.push(objectiveText.value)
+  if (icd9List.value.length) {
+    blocks.push('Tindakan/Prosedur (ICD-9): ' + icd9List.value.map((t) => `${t.code} ${t.name}`).join('; '))
+  }
+  return blocks.join('\n')
+})
+
+watch(oAutoText, (v) => { if (!soapDirty.O) soap.value.O = v })
 watch(assessmentText, (v) => { if (!soapDirty.A) soap.value.A = v })
 watch(planningText, (v) => { if (!soapDirty.P) soap.value.P = v })
+function resyncSoapO() { soap.value.O = oAutoText.value; soapDirty.O = false }
 function resyncSoapA() { soap.value.A = assessmentText.value; soapDirty.A = false }
 function resyncSoapP() { soap.value.P = planningText.value; soapDirty.P = false }
 
@@ -3177,6 +3208,16 @@ function closeResumeRM() {
                       </div>
                     </div>
 
+                    <!-- Varian / Nama Paket Penjamin — muncul bila paket punya >1 varian harga -->
+                    <div v-if="selectedSurgeryPackage && selectedSurgeryVariants.length > 1" class="fg" style="margin-top:0.5rem">
+                      <label class="fl">Varian / Nama Paket Penjamin</label>
+                      <select v-model="surgeryTariffId" class="form-select">
+                        <option v-for="v in selectedSurgeryVariants" :key="v.tariff_id" :value="v.tariff_id">
+                          {{ v.display_name || selectedSurgeryPackage.name }} — {{ fmtRp(v.sell_price) }}
+                        </option>
+                      </select>
+                    </div>
+
                     <div v-if="surgeryLocation === 'RUANG_TINDAKAN'" class="surgery-hint" style="margin-top:0.4rem">
                       Tindakan laser ditagih per-tindakan di Ruang Tindakan — paket boleh dikosongkan.
                     </div>
@@ -3456,14 +3497,14 @@ function closeResumeRM() {
                   <div class="soap-cell">
                     <label class="fl soap-fl">
                       <span class="soap-letter o">O</span> Objektif
-                      <span v-if="!soapDirty.O" class="auto-tag">otomatis dari segmen &amp; catatan (pemeriksaan dokter)</span>
+                      <span v-if="!soapDirty.O" class="auto-tag">otomatis dari segmen, catatan &amp; Prosedur ICD-9</span>
                       <span v-else class="manual-tag">diedit manual
                         <button type="button" class="resync-btn" @click="resyncSoapO"
                           title="Susun ulang dari data pemeriksaan terbaru">↺ sync</button>
                       </span>
                     </label>
                     <textarea v-model="soap.O" @input="markSoapDirty('O')" class="form-textarea" rows="8"
-                      placeholder="Terisi otomatis dari pemeriksaan…"></textarea>
+                      placeholder="Terisi otomatis dari pemeriksaan &amp; Prosedur ICD-9…"></textarea>
                   </div>
                   <div class="soap-cell">
                     <label class="fl soap-fl">

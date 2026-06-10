@@ -1522,6 +1522,8 @@ class MasterDataService
                 $t = $kasir->resolvePackageTariff($pkg->id, $gt, $ins);
                 $pkg->setAttribute('resolved_name', $t?->display_name ?: $pkg->name);
                 $pkg->setAttribute('resolved_sell_price', $t ? (float) $t->sell_price : null);
+                // Varian harga per-penjamin (1 penjamin bisa >1) → dropdown pemilihan dokter.
+                $pkg->setAttribute('resolved_variants', $kasir->resolvePackageTariffVariants($pkg->id, $gt, $ins));
             });
         }
 

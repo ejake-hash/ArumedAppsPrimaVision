@@ -31,8 +31,8 @@ const emit = defineEmits(['changed'])
 
 const TYPE_META = {
   tindakan: { itemLabel: 'Tindakan', dropdownApi: 'tindakan', itemNameKey: 'name',  itemCodeKey: 'code',          masterPriceKey: 'base_price', kategoriKey: 'category',  kategoriLabel: 'Kategori' },
-  obat:     { itemLabel: 'Obat',     dropdownApi: 'obat',     itemNameKey: 'name',  itemCodeKey: 'code',          masterPriceKey: 'price',      kategoriKey: 'golongan',  kategoriLabel: 'Golongan' },
-  bhp:      { itemLabel: 'BHP',      dropdownApi: 'bhp',      itemNameKey: 'name',  itemCodeKey: 'code',          masterPriceKey: 'price',      kategoriKey: 'category',  kategoriLabel: 'Kategori' },
+  obat:     { itemLabel: 'Obat',     dropdownApi: 'obat',     itemNameKey: 'name',  itemCodeKey: 'code',          masterPriceKey: 'price',      kategoriKey: 'golongan',  kategoriLabel: 'Golongan', unitKey: 'unit' },
+  bhp:      { itemLabel: 'BHP',      dropdownApi: 'bhp',      itemNameKey: 'name',  itemCodeKey: 'code',          masterPriceKey: 'price',      kategoriKey: 'category',  kategoriLabel: 'Kategori', unitKey: 'unit' },
   iol:      { itemLabel: 'IOL',      dropdownApi: 'iol',      itemNameKey: 'brand', itemCodeKey: 'serial_number', masterPriceKey: 'price',      kategoriKey: 'iol_type',  kategoriLabel: 'Tipe IOL' },
 }
 
@@ -44,6 +44,8 @@ const fkKey = computed(() => ({
 // Pos kwitansi obat (Obat Pulang/Tindakan/Injeksi) — pemisah baris OBAT di kwitansi.
 // Hanya relevan untuk type 'obat'. Enum mirror MedicationTariff::POS_VALUES (backend).
 const isObat = computed(() => props.type === 'obat')
+// Kolom "Satuan" hanya untuk Obat & BHP (unit master item).
+const hasSatuan = computed(() => !!meta.value.unitKey)
 const POS_OPTIONS = [
   { value: 'OBAT_PULANG',   label: 'Obat Pulang' },
   { value: 'OBAT_TINDAKAN', label: 'Obat Tindakan' },
@@ -90,6 +92,8 @@ const columns = computed(() => [
   { key: 'item_code',    label: 'Kode',                     width: '150px' },
   { key: 'item_name',    label: 'Nama Item' },
   { key: 'item_kategori', label: meta.value.kategoriLabel,  width: '140px' },
+  // Satuan hanya untuk Obat & BHP.
+  ...(hasSatuan.value ? [{ key: 'item_satuan', label: 'Satuan', width: '90px', align: 'center' }] : []),
   // Pos kwitansi hanya untuk tab Obat.
   ...(isObat.value ? [{ key: 'pos_kwitansi', label: 'Klasifikasi', width: '130px' }] : []),
   { key: 'master_price', label: 'Harga Master',             width: '140px', align: 'right' },
@@ -107,6 +111,7 @@ const rows = computed(() => {
       item_code:      item[meta.value.itemCodeKey] ?? '—',
       item_name:      item[meta.value.itemNameKey] ?? '—',
       item_kategori:  item[meta.value.kategoriKey] ?? '',
+      item_satuan:    meta.value.unitKey ? (item[meta.value.unitKey] ?? '') : '',
       master_price:   item[meta.value.masterPriceKey] ?? 0,
     }
   })
@@ -439,6 +444,11 @@ watch(() => props.insurerId, () => refresh())
         <span v-else class="tt-dim">—</span>
       </template>
 
+      <template #cell-item_satuan="{ value }">
+        <span v-if="value" class="tt-satuan-pill">{{ value }}</span>
+        <span v-else class="tt-dim">—</span>
+      </template>
+
       <template #cell-pos_kwitansi="{ value }">
         <span class="tt-pos-pill">{{ posLabel(value) }}</span>
       </template>
@@ -545,6 +555,7 @@ watch(() => props.insurerId, () => refresh())
 .tt-name { font-weight: 500; color: var(--td); }
 .tt-kategori-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
 .tt-pos-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--gl); color: var(--ga); border: 1px solid var(--gb); }
+.tt-satuan-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--ib); color: var(--tm); border: 1px solid var(--ibd); }
 .tt-dim { color: var(--tu); font-size: 12px; }
 .tt-master-price { color: var(--tm); font-variant-numeric: tabular-nums; }
 .tt-price { font-weight: 600; color: var(--td); font-variant-numeric: tabular-nums; }

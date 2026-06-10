@@ -313,6 +313,31 @@ class Visit extends Model
             ?? $this->doctorSchedule?->employee?->name;
     }
 
+    /**
+     * Status obat untuk badge Kasir — bedakan kunjungan yang ADA resep obat
+     * (lewat antrean Farmasi) dari yang tidak, sekaligus apakah Farmasi sudah
+     * memverifikasi & mengunci resepnya (gate sebelum tagihan; lihat
+     * KasirService::consolidateBilling). Resep RANAP (ditagih via inpatient_charges)
+     * & CANCELLED diabaikan — selaras logika gate.
+     *
+     * Nilai: null = tidak ada resep obat | 'VERIFIED' = ada & SEMUA terverifikasi
+     * Farmasi | 'PENDING' = ada tapi sebagian/semua belum diverifikasi.
+     *
+     * Tidak di-append global — panggil ->append('obat_status') setelah eager-load
+     * relasi `prescriptions` agar bebas N+1.
+     */
+    public function getObatStatusAttribute(): ?string
+    {
+        $relevan = $this->prescriptions
+            ->filter(fn ($p) => $p->type !== Prescription::TYPE_RANAP && $p->status !== 'CANCELLED');
+
+        if ($relevan->isEmpty()) {
+            return null;
+        }
+
+        return $relevan->every(fn ($p) => ! is_null($p->verified_at)) ? 'VERIFIED' : 'PENDING';
+    }
+
     public function bedAssignments(): HasMany
     {
         return $this->hasMany(BedAssignment::class)->orderBy('assigned_at');

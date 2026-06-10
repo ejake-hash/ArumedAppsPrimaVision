@@ -282,7 +282,7 @@ HTML;
             $editable('alergi',           'Alergi Obat',       ['via' => 'db', 'source' => 'nurseAssessment.allergy_detail']),
             $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
             $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
-            $editable('tindakan',         'Tindakan (ICD-9)',  ['via' => 'db', 'source' => 'doctorExamination.tindakan_codes']),
+            $editable('tindakan',         'Tindakan (ICD-9)',  ['via' => 'aggregate', 'source' => 'doctorExamination.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
             $editable('terapi',           'Terapi',            ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
             // Riwayat: manual (tidak ada sumber otomatis).
             ['key' => 'riwayat', 'label' => 'Riwayat/Rawat Inap/Operasi/Tindakan', 'type' => 'longtext', 'binding' => ['kind' => 'static']],

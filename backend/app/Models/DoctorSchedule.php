@@ -85,8 +85,13 @@ class DoctorSchedule extends Model
      */
     public function queuePrefix(): string
     {
-        $code = $this->poli_code ?: 'D';
-        return $this->room ? $code . $this->room : $code;
+        // HARUS konsisten dengan nomor antrean DOKTER yang dibuat di
+        // QueueService::generateQueueNumber: basis selalu 'D' + room
+        // (mis. room=1 → "D1", tanpa room → "D"). Sebelumnya memakai
+        // poli_code sebagai basis (mis. "MATA1") sehingga tak pernah cocok
+        // dengan queue_number asli "D1-001" → di TV, panggilan dokter jatuh
+        // ke fallback "Pemeriksaan Dokter" tanpa nama poli & ruang.
+        return $this->room ? 'D' . $this->room : 'D';
     }
 
     /**

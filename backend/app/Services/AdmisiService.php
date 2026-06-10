@@ -207,6 +207,13 @@ class AdmisiService
                 ->orderBy('created_at'),
         ]);
 
+        // Walk-in kiosk yang BELUM didaftarkan (placeholder patient.name='Belum
+        // Terdaftar', masih nyangkut di loket ADMISI) TIDAK ditampilkan di tabel
+        // kunjungan — tempatnya khusus di panel "Siap Dipanggil ke Loket Admisi".
+        // Begitu didaftarkan, nama placeholder terisi (pasien baru) atau visit
+        // di-repoint ke pasien asli (pasien lama) → otomatis muncul di tabel ini.
+        $query->whereHas('patient', fn ($q) => $q->where('name', '!=', 'Belum Terdaftar'));
+
         // Mode "Belum Selesai (semua tanggal)": tampilkan SEMUA kunjungan yang
         // masih berjalan (current_station != SELESAI) lintas-hari — untuk melihat
         // & membereskan ekor visit nyangkut. Selain mode ini, filter per-tanggal.

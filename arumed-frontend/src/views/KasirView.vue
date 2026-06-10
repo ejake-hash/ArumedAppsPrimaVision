@@ -1017,12 +1017,32 @@ const groupedPrintItems = computed(() =>
                   <div class="q-name">{{ q.visit?.patient?.name ?? '—' }}</div>
                   <div class="q-meta">
                     RM: {{ q.visit?.patient?.no_rm ?? '—' }}
+                    <span v-if="q.visit?.visit_date" class="q-visit-date" :title="`Tanggal kunjungan: ${formatDob(q.visit.visit_date)}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ formatDob(q.visit.visit_date) }}
+                    </span>
                   </div>
                   <div class="q-tags">
                     <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
                     <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
+                    <span
+                      v-if="q.visit?.obat_status === 'VERIFIED'"
+                      class="pill pill-obat-ok"
+                      title="Ada resep obat — sudah diverifikasi & dikunci Farmasi"
+                    >
+                      <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
+                      Obat ✓ Farmasi
+                    </span>
+                    <span
+                      v-else-if="q.visit?.obat_status === 'PENDING'"
+                      class="pill pill-obat-wait"
+                      title="Ada resep obat — BELUM diverifikasi Farmasi"
+                    >
+                      <svg viewBox="0 0 24 24" class="pill-icon"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      Obat • belum verif
+                    </span>
                     <span v-if="isLunas(q)" class="pill pill-done">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                       Lunas
@@ -1118,6 +1138,8 @@ const groupedPrintItems = computed(() =>
                   </span>
                   <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
                   <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
+                  <span v-if="selQ.visit?.obat_status === 'VERIFIED'" class="ptg ptg-obat-ok" title="Ada resep obat — sudah diverifikasi & dikunci Farmasi">Obat ✓ Farmasi</span>
+                  <span v-else-if="selQ.visit?.obat_status === 'PENDING'" class="ptg ptg-obat-wait" title="Ada resep obat — BELUM diverifikasi Farmasi">Obat • belum verif</span>
                   <span v-if="selInv.status === 'PAID'" class="ptg ptg-ok">LUNAS</span>
                   <span v-else-if="selInv.status === 'PARTIALLY_PAID'" class="ptg ptg-ok">Bayar Sebagian</span>
                 </div>
@@ -1875,6 +1897,8 @@ const groupedPrintItems = computed(() =>
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 .qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }
 
@@ -1905,6 +1929,9 @@ const groupedPrintItems = computed(() =>
 .pill-asn   { background: var(--pb); color: var(--pt); }
 .pill-done  { background: var(--sb); color: var(--st); }
 .pill-belum { background: var(--wb); color: var(--wt); }
+/* Badge status obat (resep) — bedakan kunjungan dgn obat vs tanpa obat di antrean kasir. */
+.pill-obat-ok   { background: #dcfce7; color: #166534; }
+.pill-obat-wait { background: #fef3c7; color: #92400e; }
 
 /* ─── RIGHT ──────────────────────────────────────────────────────────────── */
 .rp { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -2066,6 +2093,8 @@ const groupedPrintItems = computed(() =>
 .q-dpjp { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; max-width: 100%; font-size: 10px; font-weight: 600; color: #4338ca; background: #eef2ff; padding: 2px 7px; border-radius: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .q-dpjp .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .ptg-dpjp { background: #eef2ff; color: #4338ca; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ptg-obat-ok   { background: #dcfce7; color: #166534; }
+.ptg-obat-wait { background: #fef3c7; color: #92400e; }
 
 .tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
 .tbl-fi:focus { border-color: var(--ga); outline: none; }

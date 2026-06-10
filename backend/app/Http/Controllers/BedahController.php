@@ -745,10 +745,11 @@ class BedahController extends Controller
     {
         $data = $request->validate([
             'package_id' => 'required|uuid',
+            'tariff_id'  => 'nullable|uuid|exists:surgery_package_tariffs,id',
         ]);
 
         try {
-            $result = $this->service->addVisitPackage($visitId, $data['package_id']);
+            $result = $this->service->addVisitPackage($visitId, $data['package_id'], $data['tariff_id'] ?? null);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }

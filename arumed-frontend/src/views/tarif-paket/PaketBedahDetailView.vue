@@ -25,135 +25,34 @@ const paketId = computed(() => route.params.id)
 const paket = computed(() => store.paketDetail)
 
 // ─── Dropdown source ─────────────────────────────────────────────────────
+// Item komposisi TIDAK lagi diprefetch (dulu cap per_page:500) — picker kini
+// cari-server + paginasi (lihat searchItems). Hanya prefetch yg perlu daftar penuh:
+//   procedures → combobox follow-up (konsultasi pasca-bedah)
+//   insurers   → modal tarif per penjamin
 const procedures = ref([])
-const medications = ref([])
-const bhpItems = ref([])
-const iolItems = ref([])
 const insurers = ref([])
 
 async function loadDropdowns() {
   try {
-    const [p, m, b, i, ins] = await Promise.all([
+    const [p, ins] = await Promise.all([
       masterApi.tindakan.list({ per_page: 500, active: 1 }),
-      masterApi.obat.list({ per_page: 500, active: 1 }),
-      masterApi.bhp.list({ per_page: 500, active: 1 }),
-      masterApi.iol.list({ per_page: 500, available_only: 1 }),
       masterApi.penjamin({ per_page: 200 }),
     ])
     procedures.value  = p.data?.data?.data ?? p.data?.data ?? []
-    medications.value = m.data?.data?.data ?? m.data?.data ?? []
-    bhpItems.value    = b.data?.data?.data ?? b.data?.data ?? []
-    iolItems.value    = i.data?.data?.data ?? i.data?.data ?? []
     insurers.value    = ins.data?.data?.data ?? ins.data?.data ?? []
   } catch (e) {
     showToast('e', 'Gagal memuat dropdown')
   }
 }
 
-// ─── Modal Item ──────────────────────────────────────────────────────────
-const itemModal = ref({
-  open: false,
-  mode: 'create',
-  payload: { item_type: 'PROCEDURE', item_id: '', quantity: 1, default_price: '', notes: '' },
-  errors: null, submitting: false, editingId: null,
-})
-
-function emptyItemForm() {
-  return { item_type: 'PROCEDURE', item_id: '', quantity: 1, default_price: '', notes: '' }
-}
-
-function openAddItem() {
-  itemModal.value = {
-    open: true, mode: 'create',
-    payload: emptyItemForm(),
-    errors: null, submitting: false, editingId: null,
-  }
-}
-
-function openEditItem(item) {
-  itemModal.value = {
-    open: true, mode: 'edit',
-    payload: {
-      item_type: item.item_type,
-      item_id: item.item_id,
-      quantity: item.quantity,
-      default_price: item.default_price,
-      notes: item.notes ?? '',
-    },
-    errors: null, submitting: false, editingId: item.id,
-  }
-}
-
-const itemOptionsForType = computed(() => {
-  switch (itemModal.value.payload.item_type) {
-    case 'PROCEDURE':  return procedures.value.map((p) => ({ value: p.id, label: p.name, suggestedPrice: p.base_price }))
-    case 'MEDICATION': return medications.value.map((m) => ({ value: m.id, label: m.name, suggestedPrice: m.price }))
-    case 'BHP':        return bhpItems.value.map((b) => ({ value: b.id, label: b.name,    suggestedPrice: b.price }))
-    case 'IOL':        return iolItems.value.map((io) => ({ value: io.id, label: `${io.brand} ${io.model} (${io.power}D)${io.serial_number ? ' SN:' + io.serial_number : ''}`, suggestedPrice: io.price }))
-    default: return []
-  }
-})
-
-// Map tipe item paket → tipe Buku Tarif (endpoint master-price).
-const TARIF_TYPE_MAP = { PROCEDURE: 'tindakan', MEDICATION: 'obat', BHP: 'bhp', IOL: 'iol' }
-
-// Saat user pilih item, auto-suggest default_price kalau masih kosong. Sumber harga =
-// Buku Tarif penjamin UMUM (endpoint master-price), BUKAN base_price master yang pasca-
-// refactor bisa 0 untuk tindakan. Fallback ke suggestedPrice list bila endpoint gagal.
-watch(() => itemModal.value.payload.item_id, async (newId) => {
-  if (!newId || itemModal.value.mode !== 'create') return
-  const isEmpty = () => itemModal.value.payload.default_price === '' || itemModal.value.payload.default_price === 0
-  if (!isEmpty()) return
-
-  const type = TARIF_TYPE_MAP[itemModal.value.payload.item_type]
-  try {
-    const { data } = await tarifPaketApi.masterPrice(type, newId)
-    // Race guard: pastikan item belum berganti & field masih kosong.
-    if (itemModal.value.payload.item_id === newId && isEmpty()) {
-      const price = Number(data?.data?.price ?? 0)
-      const opt = itemOptionsForType.value.find((o) => o.value === newId)
-      itemModal.value.payload.default_price = price > 0 ? price : (opt?.suggestedPrice ?? 0)
-    }
-  } catch {
-    const opt = itemOptionsForType.value.find((o) => o.value === newId)
-    if (itemModal.value.payload.item_id === newId && isEmpty()) {
-      itemModal.value.payload.default_price = opt?.suggestedPrice ?? 0
-    }
-  }
-})
-
-watch(() => itemModal.value.payload.item_type, () => {
-  // Reset item_id saat type berubah
-  itemModal.value.payload.item_id = ''
-  if (itemModal.value.mode === 'create') itemModal.value.payload.default_price = ''
-})
-
-const itemFields = computed(() => {
-  if (itemModal.value.mode === 'edit') {
-    // Edit: tipe & item terkunci (unique constraint)
-    return [
-      { key: 'item_type',     label: 'Tipe',             type: 'select',   disabled: true, cols: 1, options: itemTypeOptions.value },
-      { key: 'item_id',       label: 'Item',             type: 'select',   disabled: true, cols: 1, options: itemOptionsForType.value },
-      { key: 'quantity',      label: 'Jumlah',           type: 'number',   required: true, min: 1, cols: 1 },
-      { key: 'default_price', label: 'Harga Snapshot (Rp)', type: 'number', required: true, min: 0, cols: 1, hint: 'Bisa override harga master saat ini' },
-      { key: 'notes',         label: 'Catatan',          type: 'text',     cols: 2 },
-    ]
-  }
-  return [
-    { key: 'item_type',     label: 'Tipe',             type: 'select',   required: true, cols: 1, options: itemTypeOptions.value },
-    { key: 'item_id',       label: 'Item',             type: 'select',   required: true, cols: 1, options: itemOptionsForType.value },
-    { key: 'quantity',      label: 'Jumlah',           type: 'number',   required: true, min: 1, cols: 1 },
-    { key: 'default_price', label: 'Harga Snapshot (Rp)', type: 'number', required: true, min: 0, cols: 1, hint: 'Auto-isi dari master saat pilih item' },
-    { key: 'notes',         label: 'Catatan',          type: 'text',     cols: 2 },
-  ]
-})
-
+// ─── Konstanta tipe item ─────────────────────────────────────────────────
 const ITEM_TYPE_OPTIONS = [
   { value: 'PROCEDURE',  label: 'Tindakan' },
   { value: 'MEDICATION', label: 'Obat' },
   { value: 'BHP',        label: 'BHP' },
   { value: 'IOL',        label: 'IOL' },
 ]
+const typeLabel = (t) => ITEM_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t
 
 // Paket PEMERIKSAAN: hanya Tindakan + Obat (bundel pemeriksaan umum). BEDAH: semua tipe.
 const itemTypeOptions = computed(() =>
@@ -162,18 +61,156 @@ const itemTypeOptions = computed(() =>
     : ITEM_TYPE_OPTIONS,
 )
 
-async function onSubmitItem(payload) {
+// Map tipe item → tipe Buku Tarif (endpoint master-price) + master list API (cari-server).
+const TARIF_TYPE_MAP  = { PROCEDURE: 'tindakan', MEDICATION: 'obat', BHP: 'bhp', IOL: 'iol' }
+const MASTER_API_MAP  = {
+  PROCEDURE:  (params) => masterApi.tindakan.list(params),
+  MEDICATION: (params) => masterApi.obat.list(params),
+  BHP:        (params) => masterApi.bhp.list(params),
+  IOL:        (params) => masterApi.iol.list(params),
+}
+
+// Normalisasi 1 baris master → opsi picker. Label format Buku Tarif: "Kategori - Nama Item".
+function mapMasterRow(type, r) {
+  if (type === 'IOL') {
+    const nm = `${r.brand ?? ''} ${r.model ?? ''}${r.power != null ? ' ' + r.power + 'D' : ''}`.trim()
+    const nameFull = nm + (r.serial_number ? ` (SN:${r.serial_number})` : '')
+    return { id: r.id, name: nameFull, category: 'IOL', suggestedPrice: r.price }
+  }
+  const cat = type === 'MEDICATION' ? (r.golongan || '') : (r.category || '')
+  return { id: r.id, name: r.name, category: cat, suggestedPrice: r.base_price ?? r.price ?? 0 }
+}
+
+// ─── Modal Item (komposisi) — picker cari-server + halaman ────────────────
+const itemModal = ref({
+  open: false, mode: 'create', submitting: false, errors: null, editingId: null,
+  item_type: 'PROCEDURE', item_id: '', item_label: '',
+  quantity: 1, default_price: '', notes: '',
+})
+// Combobox pilih item: pencarian server + paginasi (TANPA cap "pakai page saja").
+const itemPicker = ref({ search: '', open: false, loading: false, results: [], page: 1, lastPage: 1, total: 0 })
+let itemSearchSeq = 0
+let itemSearchTimer = null
+
+function openAddItem() {
+  itemModal.value = {
+    open: true, mode: 'create', submitting: false, errors: null, editingId: null,
+    item_type: itemTypeOptions.value[0]?.value ?? 'PROCEDURE', item_id: '', item_label: '',
+    quantity: 1, default_price: '', notes: '',
+  }
+  resetItemPicker()
+  searchItems(true)
+}
+
+function openEditItem(item) {
+  itemModal.value = {
+    open: true, mode: 'edit', submitting: false, errors: null, editingId: item.id,
+    item_type: item.item_type, item_id: item.item_id,
+    item_label: `${item.item_category || typeLabel(item.item_type)} - ${item.item_name ?? '—'}`,
+    quantity: item.quantity, default_price: item.default_price, notes: item.notes ?? '',
+  }
+  resetItemPicker()
+}
+
+function resetItemPicker() {
+  itemPicker.value = { search: '', open: false, loading: false, results: [], page: 1, lastPage: 1, total: 0 }
+}
+
+async function searchItems(reset = true) {
+  const type  = itemModal.value.item_type
+  const apiFn = MASTER_API_MAP[type]
+  if (!apiFn) return
+  if (reset) { itemPicker.value.page = 1; itemPicker.value.results = [] }
+  const seq = ++itemSearchSeq
+  itemPicker.value.loading = true
+  try {
+    const params = { search: itemPicker.value.search || undefined, per_page: 25, page: itemPicker.value.page, active: 1 }
+    if (type === 'IOL') { delete params.active; params.available_only = 1 }
+    const { data } = await apiFn(params)
+    if (seq !== itemSearchSeq) return   // hasil basi (user sudah ketik lagi / ganti tipe)
+    const pg   = data?.data ?? {}
+    const rows = pg.data ?? (Array.isArray(pg) ? pg : [])
+    const mapped = rows.map((r) => mapMasterRow(type, r))
+    itemPicker.value.results  = reset ? mapped : [...itemPicker.value.results, ...mapped]
+    itemPicker.value.lastPage = pg.last_page ?? 1
+    itemPicker.value.total    = pg.total ?? itemPicker.value.results.length
+  } catch {
+    if (seq === itemSearchSeq) itemPicker.value.results = []
+  } finally {
+    if (seq === itemSearchSeq) itemPicker.value.loading = false
+  }
+}
+
+function onItemSearchInput(e) {
+  itemModal.value.item_id = ''
+  itemPicker.value.search = e.target.value
+  itemPicker.value.open = true
+  clearTimeout(itemSearchTimer)
+  itemSearchTimer = setTimeout(() => searchItems(true), 300)
+}
+
+function loadMoreItems() {
+  if (itemPicker.value.page >= itemPicker.value.lastPage || itemPicker.value.loading) return
+  itemPicker.value.page += 1
+  searchItems(false)
+}
+
+async function pickItem(opt) {
+  itemModal.value.item_id = opt.id
+  itemModal.value.item_label = `${opt.category || typeLabel(itemModal.value.item_type)} - ${opt.name}`
+  itemPicker.value.open = false
+  // Auto-isi harga snapshot dari Buku Tarif UMUM (fallback harga master).
+  const type = TARIF_TYPE_MAP[itemModal.value.item_type]
+  try {
+    const { data } = await tarifPaketApi.masterPrice(type, opt.id)
+    const price = Number(data?.data?.price ?? 0)
+    itemModal.value.default_price = price > 0 ? price : (Number(opt.suggestedPrice) || 0)
+  } catch {
+    itemModal.value.default_price = Number(opt.suggestedPrice) || 0
+  }
+}
+
+function clearPickedItem() {
+  itemModal.value.item_id = ''
+  itemModal.value.item_label = ''
+  itemModal.value.default_price = ''
+  itemPicker.value.search = ''
+  itemPicker.value.open = true
+  searchItems(true)
+}
+
+function onItemTypeChange() {
+  itemModal.value.item_id = ''
+  itemModal.value.item_label = ''
+  itemModal.value.default_price = ''
+  resetItemPicker()
+  searchItems(true)
+}
+
+function onItemPickerBlur() {
+  // jeda agar klik opsi (mousedown) sempat diproses sebelum dropdown ditutup.
+  setTimeout(() => { itemPicker.value.open = false }, 150)
+}
+
+async function onSubmitItem() {
+  if (itemModal.value.mode === 'create' && !itemModal.value.item_id) {
+    itemModal.value.errors = { item_id: ['Pilih item dari daftar dulu'] }
+    return
+  }
+  const qty   = Math.max(1, Number(itemModal.value.quantity) || 1)
+  const price = Math.max(0, Number(itemModal.value.default_price) || 0)
   itemModal.value.submitting = true
   itemModal.value.errors = null
   try {
     if (itemModal.value.mode === 'create') {
-      await store.addItem(paketId.value, payload)
+      await store.addItem(paketId.value, {
+        item_type: itemModal.value.item_type, item_id: itemModal.value.item_id,
+        quantity: qty, default_price: price, notes: itemModal.value.notes || null,
+      })
       showToast('s', 'Item ditambahkan')
     } else {
       await store.updateItem(paketId.value, itemModal.value.editingId, {
-        quantity: payload.quantity,
-        default_price: payload.default_price,
-        notes: payload.notes,
+        quantity: qty, default_price: price, notes: itemModal.value.notes || null,
       })
       showToast('s', 'Item diperbarui')
     }
@@ -265,7 +302,13 @@ async function onSubmitTariff(payload) {
   tariffModal.value.submitting = true
   tariffModal.value.errors = null
   try {
-    const data = { ...payload, insurer_id: payload.insurer_id || null, display_name: payload.display_name?.trim() || null }
+    // id = varian yg diedit (kini 1 penjamin boleh >1 varian). Tambah baru → tanpa id.
+    const data = {
+      ...payload,
+      id: tariffModal.value.editingId || undefined,
+      insurer_id: payload.insurer_id || null,
+      display_name: payload.display_name?.trim() || null,
+    }
     await store.upsertTariff(paketId.value, data)
     showToast('s', 'Tarif paket disimpan')
     tariffModal.value.open = false
@@ -594,6 +637,7 @@ watch(paketId, async (id) => {
                 <td>
                   <div class="pd-item-cell">
                     <strong>{{ it.item_name || '—' }}</strong>
+                    <small v-if="it.item_category" class="pd-item-cat">{{ it.item_category }}</small>
                   </div>
                 </td>
                 <td class="r">{{ it.quantity }}</td>
@@ -621,7 +665,7 @@ watch(paketId, async (id) => {
           <div class="pd-panel-head">
             <div>
               <h3>Tarif Jual per Penjamin</h3>
-              <p>Sistem otomatis hitung diskon: <em>Base Total − Harga Jual</em>.</p>
+              <p>Diskon otomatis: <em>Base Total − Harga Jual</em>. 1 penjamin boleh <strong>beberapa varian</strong> (beda "Nama Tampil", mis. Phaco Mandalika / Osaka).</p>
             </div>
             <button class="pd-btn-primary" @click="openAddTariff" :disabled="!itemsEnriched.length" :title="!itemsEnriched.length ? 'Isi komposisi item dulu' : ''">
               <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -670,18 +714,77 @@ watch(paketId, async (id) => {
       </div>
     </template>
 
-    <!-- Modals -->
-    <MasterFormModal
-      v-model:open="itemModal.open"
-      v-model="itemModal.payload"
-      :title="itemModal.mode === 'create' ? 'Tambah Item ke Paket' : 'Edit Item Paket'"
-      :fields="itemFields"
-      :submitting="itemModal.submitting"
-      :errors="itemModal.errors"
-      :submit-label="itemModal.mode === 'create' ? 'Tambah' : 'Simpan'"
-      width="580px"
-      @submit="onSubmitItem"
-    />
+    <!-- Modal Item (komposisi) — picker cari-server "Kategori - Nama Item" -->
+    <Teleport to="body">
+      <div v-if="itemModal.open" class="pdm-overlay" @click.self="itemModal.open = false">
+        <div class="pdm-modal">
+          <header class="pdm-head">
+            <h3>{{ itemModal.mode === 'create' ? 'Tambah Item ke Paket' : 'Edit Item Paket' }}</h3>
+            <button class="pdm-x" @click="itemModal.open = false" aria-label="Tutup">×</button>
+          </header>
+          <div class="pdm-body">
+            <label class="pdm-field">
+              <span>Tipe</span>
+              <select v-model="itemModal.item_type" :disabled="itemModal.mode === 'edit'" @change="onItemTypeChange">
+                <option v-for="o in itemTypeOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </label>
+
+            <label class="pdm-field">
+              <span>Item <small class="pdm-hint-inline">(format buku tarif: Kategori - Nama Item)</small></span>
+              <div v-if="itemModal.mode === 'edit'" class="pdm-readonly">{{ itemModal.item_label }}</div>
+              <div v-else class="pdm-combo">
+                <input
+                  type="text"
+                  :value="itemModal.item_id ? itemModal.item_label : itemPicker.search"
+                  :placeholder="itemModal.item_id ? '' : 'Cari item dari buku tarif…'"
+                  autocomplete="off"
+                  @focus="itemPicker.open = true; itemPicker.results.length || searchItems(true)"
+                  @input="onItemSearchInput"
+                  @blur="onItemPickerBlur"
+                />
+                <button v-if="itemModal.item_id" type="button" class="pdm-clear" title="Hapus pilihan" @mousedown.prevent="clearPickedItem">×</button>
+                <ul v-if="itemPicker.open" class="pdm-drop">
+                  <li v-if="itemPicker.loading && !itemPicker.results.length" class="pdm-drop-info">Memuat…</li>
+                  <li v-else-if="!itemPicker.results.length" class="pdm-drop-info">Tidak ada item cocok</li>
+                  <li v-for="opt in itemPicker.results" :key="opt.id" @mousedown.prevent="pickItem(opt)">
+                    <strong>{{ opt.name }}</strong>
+                    <small>{{ opt.category || typeLabel(itemModal.item_type) }}</small>
+                  </li>
+                  <li v-if="itemPicker.page < itemPicker.lastPage" class="pdm-more" @mousedown.prevent="loadMoreItems">
+                    {{ itemPicker.loading ? 'Memuat…' : `Muat lebih banyak (${itemPicker.results.length}/${itemPicker.total})` }}
+                  </li>
+                </ul>
+              </div>
+            </label>
+
+            <div class="pdm-grid2">
+              <label class="pdm-field">
+                <span>Jumlah</span>
+                <input type="number" min="1" v-model.number="itemModal.quantity" />
+              </label>
+              <label class="pdm-field">
+                <span>Harga Snapshot (Rp)</span>
+                <input type="number" min="0" v-model.number="itemModal.default_price" />
+              </label>
+            </div>
+
+            <label class="pdm-field">
+              <span>Catatan</span>
+              <input type="text" v-model="itemModal.notes" placeholder="opsional" />
+            </label>
+
+            <p v-if="itemModal.errors" class="pdm-err">{{ Object.values(itemModal.errors).flat().join(', ') }}</p>
+          </div>
+          <footer class="pdm-foot">
+            <button class="pd-btn-ghost" @click="itemModal.open = false">Batal</button>
+            <button class="pd-btn-primary" :disabled="itemModal.submitting" @click="onSubmitItem">
+              {{ itemModal.submitting ? 'Menyimpan…' : (itemModal.mode === 'create' ? 'Tambah' : 'Simpan') }}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
 
     <MasterFormModal
       v-model:open="tariffModal.open"
@@ -789,6 +892,38 @@ watch(paketId, async (id) => {
 
 .pd-item-cell { display: flex; flex-direction: column; gap: 1px; }
 .pd-item-cell strong { font-weight: 500; color: var(--td); }
+.pd-item-cat { font-size: 10.5px; color: var(--tu); }
+
+/* Modal Item kustom (picker cari-server) */
+.pdm-overlay { position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,0.42); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 1rem; }
+.pdm-modal { width: 560px; max-width: 100%; background: var(--bc); border: 1px solid var(--gb); border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,0.22); display: flex; flex-direction: column; max-height: 88vh; }
+.pdm-head { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.2rem; border-bottom: 1px solid var(--gb); }
+.pdm-head h3 { font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); margin: 0; }
+.pdm-x { width: 30px; height: 30px; border: none; background: transparent; color: var(--tm); font-size: 22px; line-height: 1; cursor: pointer; border-radius: 8px; }
+.pdm-x:hover { background: var(--gl); color: var(--td); }
+.pdm-body { padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.85rem; overflow-y: auto; }
+.pdm-field { display: flex; flex-direction: column; gap: 5px; }
+.pdm-field > span { font-size: 12px; color: var(--tm); font-weight: 500; }
+.pdm-hint-inline { font-weight: 400; color: var(--tu); font-size: 10.5px; }
+.pdm-field select, .pdm-field input, .pdm-readonly { padding: 8px 11px; border: 1px solid var(--gb); border-radius: 9px; font-size: 13px; background: var(--bc); color: var(--td); width: 100%; }
+.pdm-field select:disabled { opacity: 0.6; background: var(--bs); }
+.pdm-readonly { background: var(--bs); color: var(--tm); }
+.pdm-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+.pdm-combo { position: relative; }
+.pdm-combo input { padding-right: 30px; }
+.pdm-clear { position: absolute; top: 8px; right: 9px; width: 18px; height: 18px; border: none; background: var(--gb); color: var(--td); border-radius: 50%; font-size: 13px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.pdm-clear:hover { background: var(--ga); color: #fff; }
+.pdm-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60; max-height: 260px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.16); }
+.pdm-drop li { padding: 7px 10px; border-radius: 7px; font-size: 12.5px; color: var(--td); cursor: pointer; }
+.pdm-drop li:hover { background: var(--gl); color: var(--ga); }
+.pdm-drop li strong { display: block; font-weight: 500; }
+.pdm-drop li small { display: block; font-size: 10.5px; color: var(--tm); }
+.pdm-drop li:hover small { color: var(--ga); }
+.pdm-drop-info, .pdm-drop-info:hover { color: var(--tm); cursor: default; background: transparent; }
+.pdm-more { text-align: center; color: var(--ga); font-weight: 500; font-size: 12px !important; border-top: 1px dashed var(--gb); margin-top: 2px; }
+.pdm-more:hover { background: var(--gl); }
+.pdm-err { color: var(--et); font-size: 12px; margin: 0; background: var(--eb); border: 1px solid var(--ebd); padding: 7px 10px; border-radius: 8px; }
+.pdm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 0.9rem 1.2rem; border-top: 1px solid var(--gb); }
 
 .pd-insurer-pill { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
 .pd-insurer-pill.all { background: var(--bs); color: var(--tm); border-color: var(--gb); }

@@ -26,6 +26,7 @@ class VisitSurgeryPackage extends Model
         'visit_id',
         'surgery_schedule_id',
         'source_surgery_package_id',
+        'surgery_package_tariff_id',
         'package_type',
         'package_name',
         'package_code',

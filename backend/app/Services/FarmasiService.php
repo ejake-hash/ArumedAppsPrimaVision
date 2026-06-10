@@ -559,9 +559,7 @@ class FarmasiService
             ->map(function ($item) {
                 $rx    = $item->prescription;
                 $visit = $rx?->visit;
-                $sumber = $visit && $visit->visit_type === 'RAWAT_INAP'
-                    ? 'Rawat Inap'
-                    : ($rx?->type === Prescription::TYPE_RANAP ? 'Rawat Inap (Permintaan)' : 'Rawat Jalan');
+                $sumber = $this->labelJenisPemberian($visit, $rx);
 
                 return [
                     'tanggal'  => optional($rx?->dispensed_at)->toIso8601String(),
@@ -596,6 +594,28 @@ class FarmasiService
     }
 
     /**
+     * Label jenis pemberian resep: Rawat Jalan / Rawat Inap / Bedah / IGD.
+     * jenis_pelayanan = penanda kanonik (RANAP/IGD/RAJAL); Bedah dikenali dari
+     * surgery_schedule_id / visit_type PREOP_BEDAH (visit_type tak memuat RANAP/IGD).
+     */
+    private function labelJenisPemberian(?Visit $visit, ?Prescription $rx): string
+    {
+        $jenis = $visit?->jenis_pelayanan;
+
+        if ($jenis === 'IGD') {
+            return 'IGD';
+        }
+        if ($rx?->type === Prescription::TYPE_RANAP || $jenis === 'RANAP') {
+            return 'Rawat Inap';
+        }
+        if ($visit?->surgery_schedule_id !== null || $visit?->visit_type === 'PREOP_BEDAH') {
+            return 'Bedah';
+        }
+
+        return 'Rawat Jalan';
+    }
+
+    /**
      * Riwayat GLOBAL obat yang diberikan ke pasien (semua obat) — gabungan
      * resep ter-dispense (rawat jalan/inap) + penjualan bebas POS. Dipakai tab
      * "Riwayat Pemberian" di Farmasi. Server-side: search (nama obat/pasien/no_rm),
@@ -606,10 +626,60 @@ class FarmasiService
      */
     public function getDispenseHistory(array $filters = []): LengthAwarePaginator
     {
+        $perPage = max(10, min((int) ($filters['per_page'] ?? 50), 100));
+
+        return $this->dispenseHistoryQuery($filters)->paginate($perPage);
+    }
+
+    /**
+     * Batas baris export riwayat pemberian.
+     *  - XLSX: PhpSpreadsheet menahan seluruh sheet di RAM (~9KB/baris) → cap rendah.
+     *  - CSV : ditulis streaming (memory-flat) → cap tinggi sbg fallback data besar.
+     */
+    public const DISPENSE_EXPORT_XLSX_MAX = 20000;
+    public const DISPENSE_EXPORT_CSV_MAX  = 200000;
+
+    /**
+     * Versi export: baris riwayat pemberian (sesuai filter) sebagai LazyCollection
+     * streaming — dipakai unduh tab Riwayat Pemberian. Pakai cursor() agar baris tak
+     * dimuat sekaligus ke memori; dibatasi $limit baris (terbaru lebih dulu).
+     *
+     * @return \Illuminate\Support\LazyCollection<int,object>
+     */
+    public function exportDispenseHistory(array $filters = [], int $limit = self::DISPENSE_EXPORT_XLSX_MAX): \Illuminate\Support\LazyCollection
+    {
+        return $this->dispenseHistoryQuery($filters)
+            ->limit(max(1, $limit))
+            ->cursor();
+    }
+
+    /**
+     * Query gabungan (UNION ALL) riwayat pemberian — dipakai bersama oleh paginasi
+     * tab & export. Belum di-paginate/get agar pemanggil menentukan bentuk hasil.
+     */
+    private function dispenseHistoryQuery(array $filters = []): \Illuminate\Database\Query\Builder
+    {
         $search   = trim((string) ($filters['search'] ?? ''));
         $dateFrom = $filters['date_from'] ?? null;
         $dateTo   = $filters['date_to'] ?? null;
-        $perPage  = max(10, min((int) ($filters['per_page'] ?? 50), 100));
+        // Filter jenis pelayanan: RAJAL | RANAP | BEDAH | IGD | POS (kosong = semua).
+        $jenis    = strtoupper(trim((string) ($filters['jenis'] ?? '')));
+
+        // Klasifikasi sumber resep — jenis_pelayanan adalah penanda kanonik
+        // (RANAP/IGD/RAJAL); BEDAH dikenali dari surgery_schedule_id / PREOP_BEDAH.
+        // (visit_type HANYA REGULAR/PREOP_BEDAH, jadi tak bisa dipakai utk RANAP/IGD.)
+        $kodeExpr = "CASE
+                WHEN v.jenis_pelayanan = 'IGD' THEN 'IGD'
+                WHEN p.type = 'RANAP' OR v.jenis_pelayanan = 'RANAP' THEN 'RANAP'
+                WHEN v.surgery_schedule_id IS NOT NULL OR v.visit_type = 'PREOP_BEDAH' THEN 'BEDAH'
+                ELSE 'RAJAL'
+            END";
+        $labelExpr = "CASE
+                WHEN v.jenis_pelayanan = 'IGD' THEN 'IGD'
+                WHEN p.type = 'RANAP' OR v.jenis_pelayanan = 'RANAP' THEN 'Rawat Inap'
+                WHEN v.surgery_schedule_id IS NOT NULL OR v.visit_type = 'PREOP_BEDAH' THEN 'Bedah'
+                ELSE 'Rawat Jalan'
+            END";
 
         // Sumber 1 — item resep yang sudah diserahkan (DISPENSED).
         $rx = DB::table('prescription_items as pi')
@@ -639,7 +709,8 @@ class FarmasiService
                 DB::raw('pt.no_rm as no_rm'),
                 'm.name as obat',
                 DB::raw('pi.quantity::numeric as quantity'),
-                DB::raw("CASE WHEN v.visit_type = 'RAWAT_INAP' THEN 'Rawat Inap' WHEN p.type = 'RANAP' THEN 'Rawat Inap (Permintaan)' ELSE 'Rawat Jalan' END as sumber"),
+                DB::raw("{$kodeExpr} as jenis_kode"),
+                DB::raw("{$labelExpr} as sumber"),
                 DB::raw('e.name as petugas'),
             ]);
 
@@ -666,14 +737,17 @@ class FarmasiService
                 DB::raw('NULL::varchar as no_rm'),
                 'm.name as obat',
                 DB::raw('si.quantity::numeric as quantity'),
+                DB::raw("'POS' as jenis_kode"),
                 DB::raw("'Penjualan Bebas' as sumber"),
                 DB::raw('e.name as petugas'),
             ]);
 
         return DB::query()
             ->fromSub($rx->unionAll($pos), 't')
-            ->orderByRaw('tanggal DESC NULLS LAST')
-            ->paginate($perPage);
+            // Saring jenis pelayanan pada hasil gabungan (RAJAL/RANAP/BEDAH/IGD/POS).
+            ->when(in_array($jenis, ['RAJAL', 'RANAP', 'BEDAH', 'IGD', 'POS'], true),
+                fn ($q) => $q->where('jenis_kode', $jenis))
+            ->orderByRaw('tanggal DESC NULLS LAST');
     }
 
     // -------------------------------------------------------------------------

@@ -563,12 +563,65 @@ class FarmasiController extends Controller
         ));
     }
 
-    /** GET /farmasi/riwayat-pemberian?search=&date_from=&date_to=&per_page=&page= */
+    /** GET /farmasi/riwayat-pemberian?search=&date_from=&date_to=&jenis=&per_page=&page= */
     public function indexRiwayatPemberian(Request $request): JsonResponse
     {
         return $this->ok($this->service->getDispenseHistory(
-            $request->only(['search', 'date_from', 'date_to', 'per_page', 'page'])
+            $request->only(['search', 'date_from', 'date_to', 'jenis', 'per_page', 'page'])
         ));
+    }
+
+    /**
+     * GET /farmasi/riwayat-pemberian/export?format=xlsx|csv — unduh riwayat (sesuai filter).
+     * Default XLSX (dibatasi agar aman RAM); format=csv ditulis streaming utk data besar.
+     */
+    public function exportRiwayatPemberian(Request $request): \Symfony\Component\HttpFoundation\Response
+    {
+        $filters = $request->only(['search', 'date_from', 'date_to', 'jenis']);
+        $asCsv   = strtolower((string) $request->query('format', 'xlsx')) === 'csv';
+        $limit   = $asCsv ? FarmasiService::DISPENSE_EXPORT_CSV_MAX : FarmasiService::DISPENSE_EXPORT_XLSX_MAX;
+        $base    = 'riwayat-pemberian-obat-' . now()->format('Ymd');
+        $header  = ['No', 'Tanggal', 'Pasien', 'No. RM', 'Obat', 'Jumlah', 'Jenis', 'Petugas'];
+
+        $mapRow = function (object $r, int $i): array {
+            $tgl = $r->tanggal ? \Illuminate\Support\Carbon::parse($r->tanggal)->format('d-m-Y H:i') : '';
+
+            return [$i, $tgl, $r->pasien ?? '', $r->no_rm ?? '', $r->obat ?? '',
+                (float) ($r->quantity ?? 0), $r->sumber ?? '', $r->petugas ?? ''];
+        };
+
+        // CSV: tulis langsung ke output stream (memory-flat) untuk dataset besar.
+        if ($asCsv) {
+            $rows = $this->service->exportDispenseHistory($filters, $limit);
+
+            return response()->streamDownload(function () use ($rows, $header, $mapRow) {
+                $out = fopen('php://output', 'w');
+                fputcsv($out, $header, ',', '"', '\\');
+                $i = 1;
+                foreach ($rows as $r) {
+                    fputcsv($out, $mapRow($r, $i++), ',', '"', '\\');
+                }
+                fclose($out);
+            }, "{$base}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);
+        }
+
+        // XLSX: rangkai CSV (cursor → memory-flat) lalu konversi via PhpSpreadsheet.
+        $out = fopen('php://temp', 'r+');
+        fputcsv($out, $header, ',', '"', '\\');
+        $i = 1;
+        foreach ($this->service->exportDispenseHistory($filters, $limit) as $r) {
+            fputcsv($out, $mapRow($r, $i++), ',', '"', '\\');
+        }
+        rewind($out);
+        $csv = stream_get_contents($out);
+        fclose($out);
+
+        $xlsx = SpreadsheetHelper::csvToXlsx($csv, 'Riwayat Pemberian');
+
+        return response($xlsx, 200, [
+            'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => "attachment; filename=\"{$base}.xlsx\"",
+        ]);
     }
 
     // =========================================================================

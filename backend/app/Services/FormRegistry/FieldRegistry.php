@@ -106,6 +106,10 @@ final class FieldRegistry
                 'label'   => 'Diagnosa ICD-10 (gabungan utama + sekunder)',
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
             ],
+            'doctorExamination.icd9_procedures' => [
+                'label'   => 'Tindakan/Prosedur ICD-9 dokter (tindakan_codes) — untuk Resume Medis',
+                'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
             'claim.icd10_diagnoses' => [
                 'label'   => 'Diagnosa ICD-10 dari KODING KLAIM (koder) — untuk Lembar Klaim',
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],

@@ -40,6 +40,7 @@ final class AggregateResolver
         return match ($source) {
             'prescriptions'                       => $this->resolvePrescriptions($visit, $format),
             'doctorExamination.icd10_diagnoses'   => $this->resolveIcd10Diagnoses($visit, $format),
+            'doctorExamination.icd9_procedures'   => $this->resolveIcd9Procedures($visit, $format),
             'claim.icd10_diagnoses'               => $this->resolveClaimIcd10($visit, $format),
             'claim.icd9_procedures'               => $this->resolveClaimIcd9($visit, $format),
             'visitServices'                       => $this->resolveVisitServices($visit, $format),
@@ -224,6 +225,37 @@ final class AggregateResolver
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // doctorExamination.icd9_procedures — Tindakan/Prosedur ICD-9 yang dipilih
+    // dokter (doctorExamination.tindakan_codes). Dipakai Resume Medis Rawat Jalan
+    // agar baris "Tindakan" tampil "kode — nama" (sebelumnya binding `db` hanya
+    // mengeluarkan kode mentah tanpa deskripsi).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private function resolveIcd9Procedures(Visit $visit, ?string $format): string
+    {
+        $exam = $visit->doctorExamination;
+        if ($exam === null) {
+            return '';
+        }
+
+        $codes = [];
+        foreach ((array) ($exam->tindakan_codes ?? []) as $c) {
+            if (is_string($c) && $c !== '') {
+                $codes[] = $c;
+            }
+        }
+        $codes = array_values(array_unique($codes));
+        if (empty($codes)) {
+            return '';
+        }
+
+        return match ($format) {
+            'icd_only_join_comma' => implode(', ', $codes),
+            default               => $this->joinIcd9WithDesc($codes),  // icd_with_desc_join_newline
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // claim.* — diagnosa/prosedur dari KODING KLAIM (bpjs_claims), BUKAN dari
     // doctorExamination. Dipakai template "Lembar Klaim" (RESUME_KLAIM) agar
     // dokumen pendukung BPJS selalu = angka grouping yang disetel koder, sementara
@@ -331,13 +363,29 @@ final class AggregateResolver
             return '';
         }
 
-        // summary_per_jenis (default & satu-satunya format) — group by test_type,
-        // 1 baris per jenis berisi ringkasan hasil (notes + expertise_data inti).
-        $byType = [];
+        // Resolusi nama jenis penunjang (kode → nama) sekali, bulk — agar baris
+        // tampil "Biometri (OD)" bukan kode mentah "BIOM".
+        $typeCodes = $orders->pluck('test_type')->filter()->unique()->values()->all();
+        $typeNames = empty($typeCodes)
+            ? []
+            : \App\Models\DiagnosticTestType::query()->whereIn('code', $typeCodes)
+                ->pluck('name', 'code')->all();
+
+        // summary_per_jenis (default & satu-satunya format) — 1 baris per penunjang
+        // yang SUDAH dikerjakan (COMPLETED atau punya hasil). Bila hasil terstruktur
+        // ada → "Nama (OD): ringkasan"; bila tidak → minimal "Nama (OD)" agar baris
+        // Hasil Penunjang resume tidak kosong selama penunjang memang dilakukan.
+        $lines = [];
         foreach ($orders as $order) {
-            $type = (string) ($order->test_type ?? '?');
+            $isDone = $order->status === 'COMPLETED' || $order->results->isNotEmpty();
+            if (! $isDone) {
+                continue;
+            }
+            $name = $typeNames[$order->test_type] ?? (string) ($order->test_type ?? 'Penunjang');
+            $eye  = $order->eye_side ? ' (' . strtoupper((string) $order->eye_side) . ')' : '';
+
+            $details = [];
             foreach ($order->results as $res) {
-                $byType[$type] ??= [];
                 $parts = [];
                 if (!empty($res->notes)) {
                     $parts[] = trim((string) $res->notes);
@@ -351,20 +399,16 @@ final class AggregateResolver
                     }
                 }
                 if (!empty($parts)) {
-                    $byType[$type][] = implode(' | ', $parts);
+                    $details[] = implode(' | ', $parts);
                 }
             }
+
+            $lines[] = $details
+                ? "{$name}{$eye}: " . implode(' / ', $details)
+                : "{$name}{$eye}";
         }
 
-        if (empty($byType)) {
-            return '';
-        }
-
-        $lines = [];
-        foreach ($byType as $type => $entries) {
-            $lines[] = "{$type}: " . implode(' / ', $entries);
-        }
-        return implode("\n", $lines);
+        return implode("\n", array_values(array_unique($lines)));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -530,10 +574,14 @@ final class AggregateResolver
     {
         $missing = array_values(array_diff($codes, array_keys($this->icd9DescCache)));
         if (!empty($missing)) {
+            // Utamakan deskripsi Indonesia (sama dgn yang dipilih dokter di picker),
+            // fallback ke deskripsi (Inggris) bila kosong.
             $rows = Icd9Code::query()->whereIn('code', $missing)
-                ->pluck('description', 'code')->all();
+                ->get(['code', 'indonesian_description', 'description'])
+                ->keyBy('code');
             foreach ($missing as $code) {
-                $this->icd9DescCache[$code] = $rows[$code] ?? null;
+                $row = $rows->get($code);
+                $this->icd9DescCache[$code] = $row?->indonesian_description ?: $row?->description;
             }
         }
 

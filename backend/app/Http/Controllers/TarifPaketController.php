@@ -289,6 +289,8 @@ class TarifPaketController extends Controller
     public function upsertTariff(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
+            // id diisi saat EDIT varian tertentu (kini boleh >1 tarif per penjamin).
+            'id'               => 'nullable|uuid|exists:surgery_package_tariffs,id',
             'insurer_id'       => 'nullable|uuid|exists:insurers,id',
             'display_name'     => 'nullable|string|max:150',
             'price_mode'       => 'nullable|in:NOMINAL,PERSEN',

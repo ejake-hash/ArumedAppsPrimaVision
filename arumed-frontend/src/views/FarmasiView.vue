@@ -1139,7 +1139,21 @@ const rpRows    = ref([])
 const rpSearch  = ref('')
 const rpFrom    = ref('')
 const rpTo      = ref('')
+const rpJenis   = ref('')   // '' | RAJAL | RANAP | BEDAH | IGD | POS
 const rpLoading = ref(false)
+// Pilihan filter jenis pelayanan (Rawat Jalan/Inap/Bedah/IGD + Penjualan Bebas).
+const RP_JENIS_OPTS = [
+  { val: '',      label: 'Semua Jenis' },
+  { val: 'RAJAL', label: 'Rawat Jalan' },
+  { val: 'RANAP', label: 'Rawat Inap' },
+  { val: 'BEDAH', label: 'Bedah' },
+  { val: 'IGD',   label: 'IGD' },
+  { val: 'POS',   label: 'Penjualan Bebas' },
+]
+// Kelas warna pill per jenis (selaras dengan jenis_kode dari backend).
+function rpPillClass(kode) {
+  return 'jp-pill jp-' + (kode || 'RAJAL').toLowerCase()
+}
 const rpMeta    = ref({ current_page: 1, last_page: 1, total: 0, per_page: 50 })
 let _rpDebounce = null
 
@@ -1150,6 +1164,7 @@ async function fetchRiwayatPemberian(page = 1) {
       search:    rpSearch.value.trim() || undefined,
       date_from: rpFrom.value || undefined,
       date_to:   rpTo.value || undefined,
+      jenis:     rpJenis.value || undefined,
       per_page:  50,
       page,
     })
@@ -1171,12 +1186,38 @@ function rpSearchInput() {
   clearTimeout(_rpDebounce)
   _rpDebounce = setTimeout(() => fetchRiwayatPemberian(1), 350)
 }
-watch([rpFrom, rpTo], () => fetchRiwayatPemberian(1))
+watch([rpFrom, rpTo, rpJenis], () => fetchRiwayatPemberian(1))
 function rpResetFilter() {
   rpSearch.value = ''
   rpFrom.value = ''
   rpTo.value = ''
+  rpJenis.value = ''
   fetchRiwayatPemberian(1)
+}
+// Export seluruh riwayat (mengikuti filter aktif) ke Excel.
+// Excel/PhpSpreadsheet menahan seluruh sheet di RAM → untuk data sangat besar
+// (> RP_XLSX_MAX baris) otomatis ekspor CSV streaming (tetap bisa dibuka di Excel).
+const RP_XLSX_MAX = 20000
+const rpExporting = ref(false)
+async function exportRiwayatPemberian() {
+  rpExporting.value = true
+  try {
+    const asCsv = (rpMeta.value.total || 0) > RP_XLSX_MAX
+    const res = await farmasiApi.riwayatPemberianExport({
+      search: rpSearch.value.trim() || undefined,
+      date_from: rpFrom.value || undefined,
+      date_to:   rpTo.value || undefined,
+      jenis:     rpJenis.value || undefined,
+      format:    asCsv ? 'csv' : 'xlsx',
+    })
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerDownload(res.data, `riwayat-pemberian-obat-${today}.${asCsv ? 'csv' : 'xlsx'}`)
+    if (asCsv) toast('i', `Data >${RP_XLSX_MAX.toLocaleString('id-ID')} baris diekspor sebagai CSV (dapat dibuka di Excel). Persempit filter tanggal untuk file Excel.`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengekspor riwayat pemberian')
+  } finally {
+    rpExporting.value = false
+  }
 }
 function fmtRpDate(ts) {
   if (!ts) return '—'
@@ -2588,7 +2629,7 @@ function toast(type, msg) {
     <div v-if="pgTab === 'riwayat'" class="tab-pane">
       <div class="loc-note">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        <span>Riwayat <b>obat yang diberikan ke pasien</b> — dari resep yang sudah diserahkan (rawat jalan/inap) dan penjualan obat bebas (POS). Saring dengan pencarian &amp; rentang tanggal.</span>
+        <span>Riwayat <b>obat yang diberikan ke pasien</b> — dari resep yang sudah diserahkan (<b>rawat jalan, rawat inap, bedah, IGD</b>) dan penjualan obat bebas (POS). Saring per jenis pelayanan, pencarian &amp; rentang tanggal.</span>
       </div>
 
       <div class="rp-head">
@@ -2597,6 +2638,9 @@ function toast(type, msg) {
           <input v-model="rpSearch" class="fi stok-search-input" placeholder="Cari obat / pasien / no. RM…" @input="rpSearchInput" />
         </div>
         <div class="rp-dates">
+          <select v-model="rpJenis" class="fi" style="width:auto">
+            <option v-for="o in RP_JENIS_OPTS" :key="o.val" :value="o.val">{{ o.label }}</option>
+          </select>
           <label class="rp-date-lbl">Dari
             <input v-model="rpFrom" type="date" class="fi" />
           </label>
@@ -2607,6 +2651,10 @@ function toast(type, msg) {
           <button class="btn btn-secondary btn-sm" :disabled="rpLoading" @click="fetchRiwayatPemberian(rpMeta.current_page)">
             <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
             Muat Ulang
+          </button>
+          <button class="btn btn-primary btn-sm" :disabled="rpExporting || rpLoading || !rpRows.length" @click="exportRiwayatPemberian">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            {{ rpExporting ? 'Mengekspor…' : 'Export Excel' }}
           </button>
         </div>
       </div>
@@ -2635,7 +2683,7 @@ function toast(type, msg) {
               <td class="muted">{{ r.no_rm || '—' }}</td>
               <td>{{ r.obat }}</td>
               <td class="r">{{ Number(r.quantity) }}</td>
-              <td><span class="kategori-pill">{{ r.sumber }}</span></td>
+              <td><span :class="rpPillClass(r.jenis_kode)">{{ r.sumber }}</span></td>
               <td class="muted">{{ r.petugas || '—' }}</td>
             </tr>
           </tbody>
@@ -3141,6 +3189,14 @@ function toast(type, msg) {
 .bar-fill.low { background: var(--wt); }
 .bar-fill.out { background: var(--et); }
 .kategori-pill { font-size: 10px; padding: 2px 7px; background: var(--bs); border: 1px solid var(--gb); border-radius: 4px; color: var(--tm); }
+
+/* Pill jenis pelayanan pada Riwayat Pemberian (warna per jenis_kode). */
+.jp-pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+.jp-rajal { background: rgba(37, 99, 235, 0.12);  color: #1d4ed8; border-color: rgba(37, 99, 235, 0.28); }
+.jp-ranap { background: rgba(124, 58, 237, 0.12); color: #6d28d9; border-color: rgba(124, 58, 237, 0.28); }
+.jp-bedah { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; border-color: rgba(220, 38, 38, 0.28); }
+.jp-igd   { background: rgba(234, 88, 12, 0.14);  color: #c2410c; border-color: rgba(234, 88, 12, 0.30); }
+.jp-pos   { background: rgba(5, 150, 105, 0.12);  color: #047857; border-color: rgba(5, 150, 105, 0.28); }
 
 .placeholder-card { padding: 3rem 2rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; text-align: center; color: var(--tu); font-size: 13px; }
 

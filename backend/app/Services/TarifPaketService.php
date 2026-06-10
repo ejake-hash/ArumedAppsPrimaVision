@@ -117,6 +117,7 @@ class TarifPaketService
             $resolved = $item->resolveItem();
             $item->setAttribute('item_name', $resolved?->name ?? $resolved?->brand ?? '-');
             $item->setAttribute('item_code', $resolved?->code ?? null);
+            $item->setAttribute('item_category', $this->resolveItemCategory($item->item_type, $resolved));
             $item->setAttribute('subtotal', $item->subtotal());
         });
 
@@ -191,6 +192,7 @@ class TarifPaketService
                 'item_id'       => $item->item_id,
                 'item_code'     => $resolved?->code ?? null,
                 'item_name'     => $resolved?->name ?? $resolved?->brand ?? '-',
+                'item_category' => $this->resolveItemCategory($item->item_type, $resolved),
                 'quantity'      => $item->quantity,
                 'default_price' => $item->default_price,
                 'subtotal'      => $item->subtotal(),
@@ -266,6 +268,25 @@ class TarifPaketService
             $pkg->recalcTotalBasePrice();
             $this->log(auth('api')->id(), 'DELETE_PAKET_ITEM', SurgeryPackageItem::class, $item->id);
         });
+    }
+
+    /**
+     * Kategori item utk tampilan format Buku Tarif ("Kategori - Nama Item").
+     * Procedure/BHP punya kolom `category`; Medication pakai `golongan`; IOL → 'IOL'.
+     * Null bila tak ada → FE fallback ke label tipe.
+     */
+    private function resolveItemCategory(string $type, ?\Illuminate\Database\Eloquent\Model $resolved): ?string
+    {
+        if (! $resolved) {
+            return null;
+        }
+        return match ($type) {
+            SurgeryPackageItem::TYPE_PROCEDURE,
+            SurgeryPackageItem::TYPE_BHP        => $resolved->category ?: null,
+            SurgeryPackageItem::TYPE_MEDICATION => $resolved->golongan ?: null,
+            SurgeryPackageItem::TYPE_IOL        => 'IOL',
+            default                             => null,
+        };
     }
 
     /**
@@ -354,15 +375,17 @@ class TarifPaketService
     {
         $pkg = SurgeryPackage::findOrFail($packageId);
 
-        // Insurer-only (post drop_classification 2026_06_09). insurer_id NULL = "SEMUA".
-        // Soft-delete aware: tabel pakai SoftDeletes + unique (surgery_package_id, insurer_id)
-        // plain → updateOrCreate biasa tak lihat baris trashed → bisa kena unique violation
-        // (23505) saat tarif yg pernah dihapus ditambah ulang. Cari withTrashed → restore.
+        // Banyak varian per (paket, penjamin) DIIZINKAN (post 2026_07_12). Identitas baris
+        // = id eksplisit. Edit → muat baris itu (scoped paket, withTrashed→restore). Tambah
+        // → SELALU buat baris baru (tak lagi gabung-per-insurer) agar UMUM bisa punya >1
+        // varian (mis. "Phaco Mandalika" & "Phaco Osaka"). insurer_id NULL = "SEMUA".
         $insurerId = $data['insurer_id'] ?? null;
-        $existing  = SurgeryPackageTariff::withTrashed()
-            ->where('surgery_package_id', $pkg->id)
-            ->where('insurer_id', $insurerId)   // null-safe: Eloquent emit "is null"
-            ->first();
+        $existing  = ! empty($data['id'])
+            ? SurgeryPackageTariff::withTrashed()
+                ->where('surgery_package_id', $pkg->id)
+                ->where('id', $data['id'])
+                ->first()
+            : null;
 
         // Harga: mode PERSEN → sell_price dihitung dari total_base_price paket; NOMINAL →
         // sell_price langsung. sell_price selalu jadi sumber tunggal billing.

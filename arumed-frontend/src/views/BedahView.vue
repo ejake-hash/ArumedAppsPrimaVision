@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { useAuthStore } from '@/stores/authStore'
-import { bedahApi, masterApi, dokterApi, tarifPaketApi } from '@/services/api'
+import { bedahApi, masterApi, dokterApi } from '@/services/api'
 import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
 import AnesthesiaReportWizard from '@/components/bedah/AnesthesiaReportWizard.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
@@ -308,6 +308,7 @@ watch(selP, (p) => {
     surgeryReqs.value = []
     visitPackages.value = []
     vpAddPkgId.value = ''
+    vpAddTariffId.value = ''
   }
 })
 
@@ -515,8 +516,10 @@ async function simpanIolTerpasang() {
   }
 }
 
-// ── Master Obat (untuk pilih obat pasca-bedah dari katalog) ───────────────────
-const obatMaster = ref([])         // master obat (bedah-scoped, RBAC bedah.read)
+// ── Obat Farmasi (pilih obat pasca-bedah; SUMBER = inventori unit Farmasi) ─────
+// Backend (BedahService::getDaftarObat → farmasiOnly) hanya kirim obat yg terdaftar
+// di inventory_stocks lokasi FARMASI (termasuk stok 0) — bukan seluruh master.
+const obatMaster = ref([])         // obat farmasi (bedah-scoped, RBAC bedah.read)
 const obatSearchPasca = ref('')     // query filter dropdown obat pasca-bedah
 const sendingResep = ref(false)     // guard cegah double kirim resep
 const savingInstruksi = ref(false)  // guard cegah double simpan instruksi pasca-op
@@ -1021,8 +1024,18 @@ function vpForm(snapId) {
 // Pilihan paket utk "Tambah Paket" (semua paket aktif; dokter sudah pilih 1 di planning).
 const vpAllPackages = ref([])         // {id, name, code, package_type}
 const vpAddPkgId = ref('')
+const vpAddTariffId = ref('')   // varian harga terpilih (1 penjamin bisa >1 varian)
 
 const fmtRp2 = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
+
+// Varian harga paket yg dipilih di "Tambah Paket" → dropdown Nama Paket Penjamin.
+const vpSelectedVariants = computed(() =>
+  vpAllPackages.value.find((p) => p.id === vpAddPkgId.value)?.variants ?? [],
+)
+watch(vpAddPkgId, () => {
+  const v = vpSelectedVariants.value
+  vpAddTariffId.value = v.length ? v[0].tariff_id : ''
+})
 
 async function loadVisitPackage(visitId) {
   visitPackages.value = []
@@ -1046,10 +1059,14 @@ async function loadVpPickerOptions(visitId) {
     vpBhpOptions.value = rows.map((b) => ({ id: b.id, name: b.name, code: b.code }))
   } catch { vpBhpOptions.value = [] }
   // Daftar paket untuk "Tambah Paket" (mis. paket anestesi TIVA di samping Phaco).
+  // Pakai master paket-bedah dgn visit_id → dapat resolved_variants per-penjamin.
   try {
-    const { data } = await tarifPaketApi.paket.list({ per_page: 500, is_active: 1 })
+    const { data } = await masterApi.paketBedah.list({ per_page: 500, active: 1, visit_id: visitId || undefined })
     const rows = data.data?.data ?? data.data ?? []
-    vpAllPackages.value = rows.map((p) => ({ id: p.id, name: p.name, code: p.code, package_type: p.package_type }))
+    vpAllPackages.value = rows.map((p) => ({
+      id: p.id, name: p.name, code: p.code, package_type: p.package_type,
+      variants: Array.isArray(p.resolved_variants) ? p.resolved_variants : [],
+    }))
   } catch { vpAllPackages.value = [] }
 }
 // Opsi item utk form-tambah satu kartu (berdasar type form kartu itu).
@@ -1111,9 +1128,10 @@ async function vpAddPackage() {
   if (!visitId || !vpAddPkgId.value || vpBusy.value) { toast('w', 'Pilih paket dulu'); return }
   vpBusy.value = true
   try {
-    const { data } = await bedahApi.addVisitPackage(visitId, vpAddPkgId.value)
+    const { data } = await bedahApi.addVisitPackage(visitId, vpAddPkgId.value, vpAddTariffId.value || null)
     if (Array.isArray(data.data)) visitPackages.value = data.data
     vpAddPkgId.value = ''
+    vpAddTariffId.value = ''
     toast('s', 'Paket ditambahkan')
   } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal tambah paket') }
   finally { vpBusy.value = false }
@@ -2022,6 +2040,9 @@ function mulaiBack() { mulaiStep.value = 1 }
                       <option value="">-- Tambah paket ke pasien --</option>
                       <option v-for="p in vpAvailablePackages" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}{{ p.package_type ? ` · ${p.package_type}` : '' }}</option>
                     </select>
+                    <select v-if="vpSelectedVariants.length > 1" class="bd-select bd-select-sm" v-model="vpAddTariffId" style="flex:1" title="Varian / Nama Paket Penjamin">
+                      <option v-for="v in vpSelectedVariants" :key="v.tariff_id" :value="v.tariff_id">{{ v.display_name || 'Varian' }} — {{ fmtRp2(v.sell_price) }}</option>
+                    </select>
                     <button class="bd-btn-add" @click="vpAddPackage" :disabled="vpBusy || !vpAddPkgId">+ Tambah Paket</button>
                   </div>
                 </div>
@@ -2519,13 +2540,13 @@ function mulaiBack() { mulaiStep.value = 1 }
                       <input
                         class="bd-input bd-combo-input"
                         :value="newObat.medication_id ? newObat.nama : obatSearchPasca"
-                        placeholder="Cari obat dari master…"
+                        placeholder="Cari obat dari farmasi…"
                         @input="e => { obatSearchPasca = e.target.value; newObat.medication_id = ''; newObat.nama = '' }"
                       />
                       <div v-if="obatSearchPasca.trim() && !newObat.medication_id" class="bd-combo-dropdown">
                         <div v-for="o in filteredObatPasca" :key="o.id" class="bd-combo-option" @mousedown.prevent="pickObatMaster(o)">
                           <span class="bd-combo-name">{{ o.name }}<span v-if="o.is_active === false" class="rx-inactive-badge" title="Obat nonaktif">nonaktif</span></span>
-                          <span class="bd-combo-role">{{ o.form_sediaan || o.golongan || '' }}{{ o.unit ? ` · ${o.unit}` : '' }}</span>
+                          <span class="bd-combo-role">{{ o.form || o.golongan || '' }}{{ o.unit ? ` · ${o.unit}` : '' }}{{ Number(o.stock) > 0 ? ` · stok ${o.stock}` : ' · stok 0' }}</span>
                         </div>
                         <div v-if="!filteredObatPasca.length" class="bd-combo-empty">Tidak ada hasil</div>
                       </div>

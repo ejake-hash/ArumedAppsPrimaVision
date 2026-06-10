@@ -672,6 +672,7 @@ Route::prefix('v1')->group(function () {
             // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
             Route::get('/obat/{medicationId}/riwayat-pemberian', [FarmasiController::class, 'riwayatPemberianObat']);
             // Riwayat GLOBAL obat yang diberikan ke pasien (resep + POS) — tab Riwayat Pemberian.
+            Route::get('/riwayat-pemberian/export',              [FarmasiController::class, 'exportRiwayatPemberian']);
             Route::get('/riwayat-pemberian',                     [FarmasiController::class, 'indexRiwayatPemberian']);
 
             Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);

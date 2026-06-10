@@ -1701,7 +1701,10 @@ class BedahService
      */
     public function getDaftarObat(?string $search): array
     {
-        return app(\App\Services\DokterService::class)->getDaftarObat($search);
+        // Picker resep pasca-bedah HANYA menampilkan obat yang terdaftar di inventori
+        // unit Farmasi (farmasiOnly=true) — resep harus bisa dilayani Farmasi, bukan
+        // seluruh katalog master. Termasuk obat stok 0 (asal punya baris stok farmasi).
+        return app(\App\Services\DokterService::class)->getDaftarObat($search, true);
     }
 
     // =========================================================================
@@ -1983,7 +1986,7 @@ class BedahService
      * (copy komponen + resolve harga Buku Tarif). Anti-dobel: unique
      * vsp_visit_source_unique → paket master yang sama tak ter-snapshot 2×.
      */
-    public function addVisitPackage(string $visitId, string $packageId): array
+    public function addVisitPackage(string $visitId, string $packageId, ?string $tariffId = null): array
     {
         $visit = Visit::with('surgerySchedule.surgeryRecord')->findOrFail($visitId);
 
@@ -1999,9 +2002,10 @@ class BedahService
             throw new \Exception('Paket ini sudah ditambahkan ke pasien.', 422);
         }
 
-        return DB::transaction(function () use ($visit, $packageId) {
+        return DB::transaction(function () use ($visit, $packageId, $tariffId) {
             // clearType=null: jangan hapus paket lain saat menambah paket baru.
-            app(DokterService::class)->syncVisitPackageSnapshot($visit, $packageId, $visit->surgery_schedule_id, null);
+            // $tariffId = varian harga terpilih (1 penjamin bisa >1 varian).
+            app(DokterService::class)->syncVisitPackageSnapshot($visit, $packageId, $visit->surgery_schedule_id, null, $tariffId);
             $this->log(auth('api')->id(), 'ADD_VISIT_PACKAGE', VisitSurgeryPackage::class, $visit->id, "visit:{$visit->id} pkg:{$packageId}");
 
             return $this->getVisitPackages($visit->id);
