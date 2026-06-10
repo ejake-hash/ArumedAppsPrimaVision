@@ -537,7 +537,8 @@ const pinBusy  = ref(false)
 
 // Langkah 1: simpan draft (record + resep + SOAP) lalu minta PIN untuk finalisasi.
 async function sendToDoctor() {
-  if (!refine.value.od_s && !refine.value.os_s) { toast('w', 'Belum ada hasil refraksi'); return }
+  // Tidak ada field klinis yang wajib — refraksionis boleh kirim ke dokter dengan
+  // data sebagian/kosong (hanya pasien yang harus terpilih sebagai konteks).
   if (!store.selectedQueue) { toast('w', 'Pilih pasien dulu'); return }
 
   try {
@@ -689,14 +690,82 @@ async function loadRefOpts() {
   }
 }
 
+// ─── Notifikasi suara "pasien baru masuk antrean" ───────────────────────────
+// Nada "Hospital Ping" di-generate Web Audio API (tanpa file aset). Mengikuti
+// pola AntreanTVView::playHospitalPing. Toggle mute/unmute persist di localStorage.
+const SNDKEY = 'refraksi.soundEnabled'
+const soundEnabled = ref(localStorage.getItem(SNDKEY) !== '0')
+let audioCtx = null
+
+function ensureCtx() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+  } catch { /* AudioContext diblokir → diam */ }
+  return audioCtx
+}
+
+function playPing() {
+  const ctx = ensureCtx()
+  if (!ctx) return
+  try {
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    const delay = ctx.createDelay()
+    const feedback = ctx.createGain()
+    delay.delayTime.value = 0.22
+    feedback.gain.value = 0.35
+    osc.type = 'sine'
+    osc.frequency.value = 988   // B5
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    gain.connect(delay)
+    delay.connect(feedback)
+    feedback.connect(delay)
+    delay.connect(ctx.destination)
+    const t0 = ctx.currentTime
+    gain.gain.setValueAtTime(0.0001, t0)
+    gain.gain.exponentialRampToValueAtTime(0.5, t0 + 0.04)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5)
+    osc.start(t0)
+    osc.stop(t0 + 0.6)
+  } catch { /* abaikan */ }
+}
+
+function toggleSound() {
+  soundEnabled.value = !soundEnabled.value
+  localStorage.setItem(SNDKEY, soundEnabled.value ? '1' : '0')
+  if (soundEnabled.value) { ensureCtx(); playPing() }   // konfirmasi audible + unlock
+  toast('i', soundEnabled.value ? 'Suara notifikasi dinyalakan' : 'Suara notifikasi dimatikan')
+}
+
+// Unlock autoplay: browser blokir audio sebelum ada gesture. Buka pada interaksi pertama.
+function unlockAudioOnce() {
+  ensureCtx()
+  window.removeEventListener('pointerdown', unlockAudioOnce)
+  window.removeEventListener('keydown', unlockAudioOnce)
+}
+
+// Pasien baru terdeteksi di store → bunyikan (bila tidak di-mute) + toast.
+watch(() => store.newPatientPing, () => {
+  if (soundEnabled.value) playPing()
+  toast('i', 'Pasien baru masuk antrean Refraksi')
+})
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(async () => {
+  window.addEventListener('pointerdown', unlockAudioOnce)
+  window.addEventListener('keydown', unlockAudioOnce)
   loadRefOpts()
   await store.fetchAntrian()
   store.connectWs()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('pointerdown', unlockAudioOnce)
+  window.removeEventListener('keydown', unlockAudioOnce)
+  try { audioCtx?.close() } catch { /* abaikan */ }
+  audioCtx = null
   store.disconnectWs()
   store.clearSelected()
 })
@@ -742,6 +811,20 @@ function toast(type, msg) {
             </div>
             <div class="head-actions">
               <span class="pill-live">LIVE</span>
+              <button
+                :class="['panel-collapse', 'snd-toggle', soundEnabled ? '' : 'is-muted']"
+                @click="toggleSound"
+                :title="soundEnabled ? 'Matikan suara notifikasi' : 'Nyalakan suara notifikasi'"
+                :aria-label="soundEnabled ? 'Matikan suara notifikasi' : 'Nyalakan suara notifikasi'"
+                :aria-pressed="!soundEnabled"
+              >
+                <svg v-if="soundEnabled" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>
+                </svg>
+              </button>
               <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
@@ -1551,6 +1634,8 @@ function toast(type, msg) {
 .panel-collapse { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; transition: all .13s; flex-shrink: 0; }
 .panel-collapse:hover { border-color: var(--ga); color: var(--ga); }
 .panel-collapse svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.snd-toggle.is-muted { color: var(--wt, #b45309); border-color: var(--wbd, #fcd34d); background: var(--wb, #fffbeb); }
+.snd-toggle.is-muted:hover { border-color: var(--wt, #b45309); color: var(--wt, #b45309); }
 .side-collapse-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; padding: 7px 12px; margin-bottom: 0.75rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; }
 .side-collapse-bar:hover { border-color: var(--ga); color: var(--ga); }
 .side-collapse-bar svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }

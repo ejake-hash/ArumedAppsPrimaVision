@@ -36,16 +36,25 @@ class FarmasiService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.prescriptions' => fn ($q) => $q
-            // Resep PERMINTAAN rawat inap (type RANAP) di-dispense ke ruangan lewat
-            // tab "Dispensing Rawat Inap", BUKAN antrean loket ini — jangan ikut load
-            // agar pickActiveRx FE tak salah mengangkatnya saat pasien RANAP discharge.
-            ->where('type', '!=', Prescription::TYPE_RANAP)])
+        return Queue::with([
+            'visit.patient',
+            // Relasi DPJP untuk kartu identitas pasien (badge DPJP) — eager-load
+            // agar accessor dpjp_name bebas N+1 (RANAP=dpjp, RAJAL/IGD=pemeriksa/jadwal).
+            'visit.dpjp',
+            'visit.doctorExamination.doctor',
+            'visit.doctorSchedule.employee',
+            'visit.prescriptions' => fn ($q) => $q
+                // Resep PERMINTAAN rawat inap (type RANAP) di-dispense ke ruangan lewat
+                // tab "Dispensing Rawat Inap", BUKAN antrean loket ini — jangan ikut load
+                // agar pickActiveRx FE tak salah mengangkatnya saat pasien RANAP discharge.
+                ->where('type', '!=', Prescription::TYPE_RANAP),
+        ])
             ->where('station', 'FARMASI')
             ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
-            ->get();
+            ->get()
+            ->each(fn ($q) => $q->visit?->append('dpjp_name'));
     }
 
     public function panggilAntrian(string $queueId): Queue
@@ -142,12 +151,19 @@ class FarmasiService
 
     public function getPrescriptionById(string $id): Prescription
     {
-        return Prescription::with([
+        $rx = Prescription::with([
             'visit.patient',
+            // DPJP untuk kartu identitas pasien (lihat getPatientQueue).
+            'visit.dpjp',
+            'visit.doctorExamination.doctor',
+            'visit.doctorSchedule.employee',
             'prescribedBy',
             'dispensedBy',
             'items.medication',
         ])->findOrFail($id);
+        $rx->visit?->append('dpjp_name');
+
+        return $rx;
     }
 
     /**

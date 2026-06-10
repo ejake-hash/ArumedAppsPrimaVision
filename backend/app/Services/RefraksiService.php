@@ -268,16 +268,9 @@ class RefraksiService
             throw new \Exception('Data refraksi sudah dikunci.', 422);
         }
 
-        // Minimal data: setidaknya perception_type + salah satu visus
-        if (
-            ! $record->perception_type ||
-            (! $record->visus_akhir_od && ! $record->visus_akhir_os)
-        ) {
-            throw new \Exception(
-                'Lengkapi minimal perception_type dan visus akhir (OD atau OS) sebelum mengunci.',
-                422
-            );
-        }
+        // Tidak ada field klinis yang wajib — refraksionis boleh mengunci dengan data
+        // sebagian/kosong (mis. pasien tak perlu pemeriksaan lengkap). PIN tetap jadi
+        // satu-satunya gate (paraf/tanda tangan PPA).
 
         $user = auth('api')->user();
 

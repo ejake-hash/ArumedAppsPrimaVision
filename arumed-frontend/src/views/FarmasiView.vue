@@ -77,7 +77,7 @@ const filtRx = computed(() => {
     const s = rxSearch.value.toLowerCase()
     l = l.filter((q) =>
       (q.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
-      (q.queue_number ?? '').toLowerCase().includes(s) ||
+      String(q.queue_number ?? '').toLowerCase().includes(s) ||
       (q.visit?.patient?.no_rm ?? '').toLowerCase().includes(s),
     )
   }
@@ -340,10 +340,20 @@ async function serahkanRx() {
   if (!items.every((d) => d.checked)) {
     toast('w', 'Cek semua item terlebih dahulu'); return
   }
+  // Resep TERVERIFIKASI: qty terkunci sejak verifikasi (alur D→K→F), field qty
+  // disabled → tak ada perubahan. Resep BELUM-terkunci (OTC/tambahan apotek):
+  // persist qty teredit dulu agar stok terpotong & tagihan sesuai jumlah final
+  // yang benar-benar diserahkan (cegah edit qty diam-diam hilang). Mirror serahRanap.
+  if (!selRx.value.verified_at) {
+    const invalid = items.find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
+    if (invalid) { toast('w', `Jumlah obat ${invalid.medication?.name ?? ''} tidak valid (min. 1)`); return }
+  }
   serahkanLoading.value = true
   try {
-    // Jumlah obat sudah FINAL & terkunci sejak verifikasi (alur D→K→F) — serah
-    // tidak lagi mengubah qty (cegah selisih dgn tagihan yang sudah dibayar).
+    if (!selRx.value.verified_at) {
+      const changed = items.filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
+      for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+    }
     // DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
     // lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
     const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
@@ -1775,6 +1785,20 @@ function toast(type, msg) {
               <div>
                 <div class="disp-title">{{ selQ.visit?.patient?.name ?? '—' }} — {{ selQ.queue_number }}</div>
                 <div class="disp-sub">{{ selQ.visit?.patient?.no_rm ?? '—' }} · dr. {{ selRx.prescribed_by?.name ?? '—' }} · {{ selRx.items?.length ?? 0 }} item</div>
+                <div class="ident-row">
+                  <span v-if="selQ.visit?.dpjp_name" class="ident-dpjp" title="Dokter Penanggung Jawab Pelayanan">
+                    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    DPJP: {{ selQ.visit.dpjp_name }}
+                  </span>
+                  <span class="ident-chip" title="Tanggal lahir">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    {{ fmtDateId(selQ.visit?.patient?.date_of_birth) }}
+                  </span>
+                  <span v-if="selQ.visit?.patient?.address" class="ident-chip ident-addr" :title="selQ.visit.patient.address">
+                    <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <span>{{ selQ.visit.patient.address }}</span>
+                  </span>
+                </div>
               </div>
               <button class="btn btn-etiket btn-sm" :disabled="!(selRx.items ?? []).length" @click="printEtiket">
                 <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
@@ -2952,6 +2976,18 @@ function toast(type, msg) {
 .disp-head { padding: 0.85rem 1.1rem; background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 0.85rem; }
 .disp-title { font-family: 'Space Grotesk', serif; font-size: 16px; line-height: 1.1; }
 .disp-sub { font-size: 11px; color: rgba(255, 255, 255, 0.65); margin-top: 3px; }
+
+/* Kartu identitas pasien: badge DPJP + tanggal lahir + alamat */
+.ident-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
+.ident-row svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; flex-shrink: 0; }
+.ident-dpjp, .ident-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16); color: #fff;
+}
+.ident-dpjp { background: rgba(255, 255, 255, 0.92); color: var(--gd); font-weight: 700; }
+.ident-addr { max-width: 320px; }
+.ident-addr :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .disp-steps { display: flex; align-items: center; padding: 0.85rem 1.1rem; background: var(--bs); border-bottom: 1px solid var(--gb); }
 .ds { display: flex; align-items: center; flex: 1; }

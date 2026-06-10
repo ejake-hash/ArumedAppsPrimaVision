@@ -36,6 +36,14 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   const saving      = ref(false)
   const finalizing  = ref(false)
 
+  // ─── Signal "pasien baru masuk antrean" ─────────────────────────────────────
+  // newPatientPing dinaikkan tiap fetchAntrian menemukan id antrean baru (BUKAN
+  // load pertama) → view mengawasinya untuk membunyikan notifikasi suara.
+  // Dipusatkan di fetchAntrian agar menutup BAIK event WS 'added' MAUPUN polling.
+  const newPatientPing = ref(0)
+  let _seenQueueIds = new Set()
+  let _seenInitialized = false
+
   // ─── WebSocket / polling ────────────────────────────────────────────────────
   let _pusher  = null
   let _channel = null
@@ -61,6 +69,14 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     try {
       const { data } = await refraksiApi.antrian()
       antrian.value   = data.data ?? []
+      // Deteksi pasien baru: id antrean yang belum pernah terlihat. Load pertama
+      // hanya menginisialisasi set (tak membunyikan suara untuk antrean lama).
+      const ids = antrian.value.map((q) => q.id)
+      if (_seenInitialized && ids.some((id) => !_seenQueueIds.has(id))) {
+        newPatientPing.value++
+      }
+      _seenQueueIds = new Set(ids)
+      _seenInitialized = true
     } catch (err) {
       queueError.value = err.response?.data?.message ?? 'Gagal memuat antrean'
     } finally {
@@ -293,6 +309,9 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     _pusher  = null
     _channel = null
     stopPolling()
+    // Bersihkan jejak deteksi agar tidak ada false-ping saat store dipakai ulang.
+    _seenQueueIds = new Set()
+    _seenInitialized = false
   }
 
   function startPolling(intervalMs = 8_000) {
@@ -339,6 +358,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     selectedQueue, pemeriksaan, prescription, pemeriksaanLoading,
     doctorTicket,
     saving, finalizing, skipping,
+    newPatientPing,
 
     // getters
     belumDipanggilCount, selesaiCount, totalCount,
