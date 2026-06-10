@@ -728,7 +728,11 @@ onUnmounted(() => {
 
 @media print {
   @page {
-    size: 72mm auto;   /* area cetak efektif kertas 80mm (margin mekanis ~4mm/sisi) */
+    /* Rol thermal 80×297mm. Lebar penuh 80mm; tinggi `auto` agar tiket
+       PENDEK/compact (hanya sepanjang konten) — bukan 297mm penuh yang boros
+       feed kertas tiap cetak. Jika driver printer dipatok 80×297mm dan memaksa
+       feed panjang, ganti `auto` → `297mm`. */
+    size: 80mm auto;
     margin: 0;
   }
 
@@ -750,9 +754,11 @@ onUnmounted(() => {
 
   #print-ticket {
     display: block !important;
-    width: 72mm;
+    width: 80mm;            /* lebar penuh rol 80mm */
     box-sizing: border-box;
-    padding: 3mm 4mm 5mm;
+    /* padding sisi 6mm → area teks efektif ~68mm, aman di dalam lebar cetak
+       head thermal (≈72mm) sehingga tepi tak terpotong. */
+    padding: 2mm 6mm 4mm;
     background: #fff;
     color: #000;
     font-family: 'Inter', Arial, sans-serif;
