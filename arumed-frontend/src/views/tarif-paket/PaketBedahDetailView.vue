@@ -54,12 +54,44 @@ const ITEM_TYPE_OPTIONS = [
 ]
 const typeLabel = (t) => ITEM_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t
 
-// Paket PEMERIKSAAN: hanya Tindakan + Obat (bundel pemeriksaan umum). BEDAH: semua tipe.
-const itemTypeOptions = computed(() =>
-  paket.value?.package_type === 'PEMERIKSAAN'
-    ? ITEM_TYPE_OPTIONS.filter((o) => ['PROCEDURE', 'MEDICATION'].includes(o.value))
-    : ITEM_TYPE_OPTIONS,
-)
+// ─── Kategori buku tarif (dropdown "Kategori" di picker item) ──────────────
+// Kategori prosedur (master /master/tindakan/kategori-list) = kategori buku tarif
+// untuk Tindakan (Konsultasi Dokter, Laboratorium, Sewa Kamar, dst). Obat/BHP/IOL
+// ikut sebagai entri tipe tersendiri. 1 dropdown gabungan (pilihan user).
+const procedureCategories = ref([])   // [{id, name, code_prefix}]
+async function loadProcedureCategories() {
+  try {
+    const res = await masterApi.tindakan.kategoriList()
+    procedureCategories.value = res.data?.data ?? []
+  } catch { procedureCategories.value = [] }
+}
+
+// Opsi "Kategori": kategori prosedur buku tarif + Obat/BHP/IOL. PEMERIKSAAN = prosedur+Obat.
+const categoryOptions = computed(() => {
+  const isPemeriksaan = paket.value?.package_type === 'PEMERIKSAAN'
+  const procCats = procedureCategories.value.map((c) => ({
+    value: `PROC:${c.name}`, label: c.name, item_type: 'PROCEDURE', category: c.name,
+  }))
+  const typeOpts = [
+    { value: 'TYPE:MEDICATION', label: 'Obat', item_type: 'MEDICATION', category: null },
+    ...(isPemeriksaan ? [] : [
+      { value: 'TYPE:BHP', label: 'BHP', item_type: 'BHP', category: null },
+      { value: 'TYPE:IOL', label: 'IOL', item_type: 'IOL', category: null },
+    ]),
+  ]
+  return [...procCats, ...typeOpts]
+})
+function categoryOptionByValue(v) {
+  return categoryOptions.value.find((o) => o.value === v) ?? null
+}
+// Nilai dropdown kategori dari sebuah item komposisi (utk mode edit).
+function categoryValueForItem(item) {
+  if (item.item_type === 'PROCEDURE' && item.item_category) {
+    const v = `PROC:${item.item_category}`
+    if (categoryOptionByValue(v)) return v
+  }
+  return `TYPE:${item.item_type}`
+}
 
 // Map tipe item → tipe Buku Tarif (endpoint master-price) + master list API (cari-server).
 const TARIF_TYPE_MAP  = { PROCEDURE: 'tindakan', MEDICATION: 'obat', BHP: 'bhp', IOL: 'iol' }
@@ -93,9 +125,13 @@ let itemSearchSeq = 0
 let itemSearchTimer = null
 
 function openAddItem() {
+  const first = categoryOptions.value[0]
   itemModal.value = {
     open: true, mode: 'create', submitting: false, errors: null, editingId: null,
-    item_type: itemTypeOptions.value[0]?.value ?? 'PROCEDURE', item_id: '', item_label: '',
+    category_value: first?.value ?? '',
+    item_type: first?.item_type ?? 'PROCEDURE',
+    category: first?.category ?? null,
+    item_id: '', item_label: '',
     quantity: 1, default_price: '', notes: '',
   }
   resetItemPicker()
@@ -105,7 +141,10 @@ function openAddItem() {
 function openEditItem(item) {
   itemModal.value = {
     open: true, mode: 'edit', submitting: false, errors: null, editingId: item.id,
-    item_type: item.item_type, item_id: item.item_id,
+    category_value: categoryValueForItem(item),
+    item_type: item.item_type,
+    category: item.item_type === 'PROCEDURE' ? (item.item_category || null) : null,
+    item_id: item.item_id,
     item_label: `${item.item_category || typeLabel(item.item_type)} - ${item.item_name ?? '—'}`,
     quantity: item.quantity, default_price: item.default_price, notes: item.notes ?? '',
   }
@@ -126,6 +165,8 @@ async function searchItems(reset = true) {
   try {
     const params = { search: itemPicker.value.search || undefined, per_page: 25, page: itemPicker.value.page, active: 1 }
     if (type === 'IOL') { delete params.active; params.available_only = 1 }
+    // Saring per kategori buku tarif (hanya Tindakan/PROCEDURE yang punya kategori master).
+    if (type === 'PROCEDURE' && itemModal.value.category) params.category = itemModal.value.category
     const { data } = await apiFn(params)
     if (seq !== itemSearchSeq) return   // hasil basi (user sudah ketik lagi / ganti tipe)
     const pg   = data?.data ?? {}
@@ -179,7 +220,10 @@ function clearPickedItem() {
   searchItems(true)
 }
 
-function onItemTypeChange() {
+function onCategoryChange() {
+  const opt = categoryOptionByValue(itemModal.value.category_value)
+  itemModal.value.item_type = opt?.item_type ?? 'PROCEDURE'
+  itemModal.value.category  = opt?.category ?? null
   itemModal.value.item_id = ''
   itemModal.value.item_label = ''
   itemModal.value.default_price = ''
@@ -488,7 +532,7 @@ watch(procedures, () => { if (!followupOpen.value) syncFollowupSearch() })
 
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
-  await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns()])
+  await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns(), loadProcedureCategories()])
 })
 onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 
@@ -726,9 +770,9 @@ watch(paketId, async (id) => {
           </header>
           <div class="pdm-body">
             <label class="pdm-field">
-              <span>Tipe</span>
-              <select v-model="itemModal.item_type" @change="onItemTypeChange">
-                <option v-for="o in itemTypeOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              <span>Kategori <small class="pdm-hint-inline">(sesuai buku tarif)</small></span>
+              <select v-model="itemModal.category_value" @change="onCategoryChange">
+                <option v-for="o in categoryOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
 
