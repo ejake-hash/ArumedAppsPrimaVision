@@ -767,6 +767,9 @@ onUnmounted(() => {
     background: #fff;
     color: #000;
     font-family: 'Inter', Arial, sans-serif;
+    /* Bobot dasar lebih tebal: head thermal 203dpi membuat teks tipis +
+       anti-alias jadi abu/pudar; weight 600 menjaga semua teks tetap pekat. */
+    font-weight: 600;
     text-align: center;
     /* Jaga tiket utuh dalam 1 potongan — jangan terpecah antar halaman. */
     page-break-inside: avoid;
@@ -775,14 +778,16 @@ onUnmounted(() => {
     print-color-adjust: exact;
   }
 
-  #print-ticket .pt-clinic { font-size: 13pt; font-weight: 700; line-height: 1.2; }
-  #print-ticket .pt-sub    { font-size: 8pt; margin-top: 1mm; letter-spacing: 0.04em; }
-  #print-ticket .pt-rule   { border-top: 1px dashed #000; margin: 2.5mm 0; }
-  #print-ticket .pt-label  { font-size: 8pt; letter-spacing: 0.18em; font-weight: 600; }
+  /* Naikkan teks terkecil ke ≥9pt + bobot tebal agar tak hilang saat dicetak
+     thermal (8pt tipis = baris pertama yang pudar/putus). */
+  #print-ticket .pt-clinic { font-size: 13pt; font-weight: 800; line-height: 1.2; }
+  #print-ticket .pt-sub    { font-size: 9pt; font-weight: 600; margin-top: 1mm; letter-spacing: 0.04em; }
+  #print-ticket .pt-rule   { border-top: 1px solid #000; margin: 2.5mm 0; }
+  #print-ticket .pt-label  { font-size: 9pt; letter-spacing: 0.16em; font-weight: 700; }
   #print-ticket .pt-num    { font-size: 52pt; font-weight: 800; line-height: 1; margin: 1mm 0; }
-  #print-ticket .pt-dest   { font-size: 11pt; }
-  #print-ticket .pt-dest strong { font-weight: 700; }
-  #print-ticket .pt-note   { font-size: 9pt; margin-top: 0.5mm; }
-  #print-ticket .pt-time   { font-size: 8pt; margin-top: 3mm; }
+  #print-ticket .pt-dest   { font-size: 11pt; font-weight: 600; }
+  #print-ticket .pt-dest strong { font-weight: 800; }
+  #print-ticket .pt-note   { font-size: 9pt; font-weight: 600; margin-top: 0.5mm; }
+  #print-ticket .pt-time   { font-size: 9pt; font-weight: 600; margin-top: 3mm; }
 }
 </style>
