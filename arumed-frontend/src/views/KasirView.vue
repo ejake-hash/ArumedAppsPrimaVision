@@ -904,8 +904,21 @@ function groupItemsByCategory(items, categories) {
 }
 
 const groupedItems = computed(() => groupItemsByCategory(selInv.value?.items ?? [], billingCategories.value))
+
+// Baris DISKON_PAKET dipisah dari rincian komposisi → ditampilkan di BAWAH total
+// (layout "Bruto → Diskon → Harga Paket"): komponen tampil penuh, Subtotal = bruto,
+// lalu baris Diskon Paket, TOTAL = harga jual paket.
+const PAKET_DISCOUNT_TYPE = 'DISKON_PAKET'
+const paketDiscountPrint = computed(() =>
+  (printData.value?.items ?? [])
+    .filter((it) => it.item_type === PAKET_DISCOUNT_TYPE)
+    .reduce((a, it) => a + Math.abs(Number(it.net_price ?? it.total_price ?? 0)), 0),
+)
 const groupedPrintItems = computed(() =>
-  groupItemsByCategory(printData.value?.items ?? [], printData.value?.categories ?? billingCategories.value),
+  groupItemsByCategory(
+    (printData.value?.items ?? []).filter((it) => it.item_type !== PAKET_DISCOUNT_TYPE),
+    printData.value?.categories ?? billingCategories.value,
+  ),
 )
 </script>
 
@@ -1412,7 +1425,7 @@ const groupedPrintItems = computed(() =>
                           <span class="num">−Rp {{ Number(p.covered_amount).toLocaleString('id-ID') }}</span>
                         </div>
                       </template>
-                      <div v-else-if="coveredAmount" class="row green"><span>Ditanggung Asuransi</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
+                      <div v-else-if="coveredAmount" class="row green"><span>{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS' : 'Ditanggung Asuransi' }}</span><span class="num">−Rp {{ coveredAmount.toLocaleString('id-ID') }}</span></div>
                       <div v-if="paidAmount" class="row blue"><span>Sudah Dibayar</span><span class="num">−Rp {{ paidAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row grand"><span>{{ coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar' }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
                     </div>
@@ -1774,7 +1787,8 @@ const groupedPrintItems = computed(() =>
         <div class="rp-summary">
           <table>
             <tbody>
-              <tr><td>Subtotal</td><td class="c-num">{{ rupiah(printData.summary?.subtotal) }}</td></tr>
+              <tr><td>Subtotal</td><td class="c-num">{{ rupiah(Number(printData.summary?.subtotal || 0) + paketDiscountPrint) }}</td></tr>
+              <tr v-if="paketDiscountPrint" class="rp-disc-paket"><td>Diskon Paket</td><td class="c-num">− {{ rupiah(paketDiscountPrint) }}</td></tr>
               <tr v-if="Number(printData.summary?.item_discount)"><td>Diskon Item</td><td class="c-num">− {{ rupiah(printData.summary?.item_discount) }}</td></tr>
               <tr v-if="Number(printData.summary?.discount)">
                 <td>Diskon Global<span v-if="Number(printData.summary?.discount_percent) > 0"> ({{ Number(printData.summary?.discount_percent) }}%)</span></td>
@@ -1782,7 +1796,7 @@ const groupedPrintItems = computed(() =>
               </tr>
               <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
               <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
-              <tr v-if="Number(printData.summary?.covered_amount)"><td>Ditanggung Asuransi</td><td class="c-num">− {{ rupiah(printData.summary?.covered_amount) }}</td></tr>
+              <tr v-if="Number(printData.summary?.covered_amount)"><td>{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS' : 'Ditanggung Asuransi' }}</td><td class="c-num">− {{ rupiah(printData.summary?.covered_amount) }}</td></tr>
               <tr><td>Dibayar Pasien</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
               <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
               <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
@@ -2366,6 +2380,7 @@ const groupedPrintItems = computed(() =>
   .rincian-print .rp-summary td.c-num { text-align: right; white-space: nowrap; }
   .rincian-print .rp-summary .rp-grand td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 800; font-size: 12.5px; }
   .rincian-print .rp-summary .rp-sisa td { font-weight: 700; }
+  .rincian-print .rp-summary .rp-disc-paket td { color: #b45309; }
 
   .rincian-print .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
   .rincian-print .rp-status.lunas { color: #15803d; border-color: #15803d; }

@@ -458,7 +458,11 @@ class KasirService
             // & menyeimbangkan basis diskon paket (lihat buildPaketDiscountLines).
             $this->buildPaketProcedureLines($visit, $insurerId, $guarantorType),
             $this->buildPaketRoomBhpLines($visit, $insurerId, $guarantorType),
-            $this->buildIolLines($visit, $insurerId, $guarantorType),
+            // IOL TERPASANG (field input BedahView → surgery_iol_usage) TIDAK ditagih di
+            // kwitansi — hanya untuk LAPORAN OPERASI (form RM-2.2-LP via AggregateResolver).
+            // Nilai IOL sudah tercakup di harga jual paket; IOL juga dikeluarkan dari basis
+            // diskon (buildPaketDiscountLines) agar net tetap = harga jual paket. (Aturan user.)
+            // $this->buildIolLines(...) sengaja TIDAK dipanggil.
             $this->buildEquipmentLines($visit, $insurerId, $guarantorType),
             $this->buildInpatientChargeLines($visit),
             $this->buildPaketDiscountLines($visit, $insurerId, $guarantorType),
@@ -1007,11 +1011,13 @@ class KasirService
                     $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * $matched;
                     continue;
                 }
+                // IOL dikeluarkan dari basis diskon: IOL terpasang TIDAK ditagih di kwitansi
+                // (buildIolLines tak dipanggil) → kalau tetap dihitung di basis, net jadi
+                // sell − harga_IOL (kurang tagih). Keluarkan agar basis = baris ditagih → net = sell.
                 $type = match ($it->item_type) {
                     'PROCEDURE' => 'procedure',
                     'BHP'       => 'bhp',
-                    'IOL'       => 'iol',
-                    default     => null,
+                    default     => null,   // IOL & lainnya tak masuk basis
                 };
                 if (! $type) {
                     continue;
@@ -1038,6 +1044,12 @@ class KasirService
                 ? $this->resolvePackageTariffForOverride($snap->source_surgery_package_id, $guarantorType, $insurerId, $snap->label)
                 : null;
             $sell = $overrideTariff ? (float) $overrideTariff->sell_price : (float) $snap->sell_price;
+            // Tanpa harga jual paket (paket belum punya tarif per penjamin / "SEMUA") → JANGAN
+            // beri diskon: tagih komponen PENUH = base total (aturan user: tanpa tarif = base
+            // total). Tanpa gerbang ini, sell=0 bikin diskon = basis → net 0 (undercharge).
+            if ($sell <= 0) {
+                continue;
+            }
             $discount = round($basis - $sell, 2);
             if ($discount <= 0) {
                 continue; // paket ini tidak lebih murah → tak ada diskon

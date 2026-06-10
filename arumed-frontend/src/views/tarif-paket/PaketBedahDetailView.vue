@@ -193,7 +193,7 @@ function onItemPickerBlur() {
 }
 
 async function onSubmitItem() {
-  if (itemModal.value.mode === 'create' && !itemModal.value.item_id) {
+  if (!itemModal.value.item_id) {
     itemModal.value.errors = { item_id: ['Pilih item dari daftar dulu'] }
     return
   }
@@ -209,7 +209,9 @@ async function onSubmitItem() {
       })
       showToast('s', 'Item ditambahkan')
     } else {
+      // Edit boleh GANTI tipe+item (sesuai buku tarif), tak cuma qty/harga.
       await store.updateItem(paketId.value, itemModal.value.editingId, {
+        item_type: itemModal.value.item_type, item_id: itemModal.value.item_id,
         quantity: qty, default_price: price, notes: itemModal.value.notes || null,
       })
       showToast('s', 'Item diperbarui')
@@ -725,15 +727,14 @@ watch(paketId, async (id) => {
           <div class="pdm-body">
             <label class="pdm-field">
               <span>Tipe</span>
-              <select v-model="itemModal.item_type" :disabled="itemModal.mode === 'edit'" @change="onItemTypeChange">
+              <select v-model="itemModal.item_type" @change="onItemTypeChange">
                 <option v-for="o in itemTypeOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
 
             <label class="pdm-field">
               <span>Item <small class="pdm-hint-inline">(format buku tarif: Kategori - Nama Item)</small></span>
-              <div v-if="itemModal.mode === 'edit'" class="pdm-readonly">{{ itemModal.item_label }}</div>
-              <div v-else class="pdm-combo">
+              <div class="pdm-combo">
                 <input
                   type="text"
                   :value="itemModal.item_id ? itemModal.item_label : itemPicker.search"

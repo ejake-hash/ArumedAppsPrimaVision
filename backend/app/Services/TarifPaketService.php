@@ -244,8 +244,28 @@ class TarifPaketService
         $pkg  = SurgeryPackage::findOrFail($packageId);
         $item = $pkg->items()->where('id', $itemId)->firstOrFail();
 
-        return DB::transaction(function () use ($pkg, $item, $data) {
+        // Edit boleh GANTI tipe+item (koreksi salah pilih) — bukan cuma qty/harga.
+        $newType = $data['item_type'] ?? $item->item_type;
+        $newId   = $data['item_id']   ?? $item->item_id;
+        if ($newType !== $item->item_type || $newId !== $item->item_id) {
+            // Paket PEMERIKSAAN hanya Tindakan/Obat (samakan dgn addItem).
+            if ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN
+                && ! in_array($newType, [SurgeryPackageItem::TYPE_PROCEDURE, SurgeryPackageItem::TYPE_MEDICATION], true)) {
+                throw new \Exception('Paket pemeriksaan hanya boleh berisi Tindakan atau Obat.', 422);
+            }
+            // Cegah tabrakan unique (paket, tipe, item) dengan baris lain.
+            $dupe = $pkg->items()
+                ->where('item_type', $newType)->where('item_id', $newId)
+                ->where('id', '!=', $item->id)->exists();
+            if ($dupe) {
+                throw new \Exception('Item tersebut sudah ada di paket.', 422);
+            }
+        }
+
+        return DB::transaction(function () use ($pkg, $item, $data, $newType, $newId) {
             $item->update(array_filter([
+                'item_type'     => $newType,
+                'item_id'       => $newId,
                 'quantity'      => $data['quantity']      ?? null,
                 'default_price' => $data['default_price'] ?? null,
                 'notes'         => $data['notes']         ?? null,
@@ -430,7 +450,7 @@ class TarifPaketService
     // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
     // =========================================================================
 
-    private const CSV_HEADERS = ['nama_paket', 'kategori', 'tipe_paket', 'deskripsi', 'aktif', 'item_tipe', 'item_nama', 'qty', 'catatan'];
+    private const CSV_HEADERS = ['nama_paket', 'kategori', 'tipe_paket', 'deskripsi', 'aktif', 'item_tipe', 'item_kategori', 'item_nama', 'qty', 'catatan'];
 
     public function templatePaketCsv(): string
     {
@@ -509,6 +529,7 @@ class TarifPaketService
                 $exportedItem = true;
                 fputcsv($output, array_merge($headerRow, [
                     $item->item_type,
+                    $this->resolveItemCategory($item->item_type, $resolved) ?? '',   // kategori buku tarif
                     $itemName,
                     (string) $item->quantity,
                     $item->notes ?? '',
@@ -518,7 +539,7 @@ class TarifPaketService
             // Paket tanpa item valid (kosong, atau semua master-nya sudah dihapus) →
             // tetap diekspor 1 baris header (kolom item kosong) supaya paket tak hilang.
             if (! $exportedItem) {
-                fputcsv($output, array_merge($headerRow, ['', '', '', '']), ',', '"', '\\');
+                fputcsv($output, array_merge($headerRow, ['', '', '', '', '']), ',', '"', '\\');
             }
         }
 
@@ -534,9 +555,10 @@ class TarifPaketService
         return [
             'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
             'Format LONG: 1 baris = 1 item. Paket multi-item → ulang baris dgn nama_paket sama.',
-            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/catatan opsional)',
+            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/item_kategori/catatan opsional)',
             'tipe_paket: BEDAH (boleh PROCEDURE/MEDICATION/BHP/IOL) atau PEMERIKSAAN (hanya PROCEDURE). Kosong → BEDAH (paket baru) / dipertahankan (paket lama).',
             'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . '.',
+            'item_kategori = kategori buku tarif item (mis. "Tarif Administrasi", "CSSD") — OPSIONAL, hanya untuk membedakan bila ada nama item kembar di kategori berbeda.',
             'item_nama dicocokkan ke master (case-insensitive). IOL: tulis "Brand Model PowerD" mis. "Alcon AcrySof IQ 21D".',
             'qty = angka >= 1 (kosong/0 → dianggap 1). aktif: 1 = aktif, 0 = nonaktif.',
             'Import nama_paket yang SUDAH ada → komposisi item di-REPLACE (tarif jual per penjamin TIDAK disentuh).',
@@ -601,6 +623,7 @@ class TarifPaketService
             $grouped[$key]['_lines'][] = $lineNum;
 
             $itemTipe = strtoupper(trim((string) ($row['item_tipe'] ?? '')));
+            $itemKat  = trim((string) ($row['item_kategori'] ?? ''));   // opsional: bantu disambiguasi nama
             $itemNama = trim((string) ($row['item_nama'] ?? ''));
             $qty      = (int) ($row['qty'] ?? 0);
 
@@ -620,11 +643,12 @@ class TarifPaketService
             if ($qty < 1) $qty = 1;
 
             $grouped[$key]['items'][] = [
-                'item_type' => $itemTipe,
-                'item_name' => $itemNama,
-                'quantity'  => $qty,
-                'notes'     => trim((string) ($row['catatan'] ?? '')) ?: null,
-                '_line'     => $lineNum,
+                'item_type'     => $itemTipe,
+                'item_category' => $itemKat ?: null,
+                'item_name'     => $itemNama,
+                'quantity'      => $qty,
+                'notes'         => trim((string) ($row['catatan'] ?? '')) ?: null,
+                '_line'         => $lineNum,
             ];
         }
 
@@ -670,7 +694,7 @@ class TarifPaketService
                         continue;
                     }
 
-                    $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name']);
+                    $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name'], $itemRow['item_category'] ?? null);
                     if (! $itemId) {
                         $itemsLookupFail++;
                         $errors[] = "Baris {$itemRow['_line']}: item {$itemRow['item_type']} '{$itemRow['item_name']}' tidak ditemukan di master";
@@ -744,29 +768,39 @@ class TarifPaketService
     }
 
     /** Lookup item ID by nama (case-insensitive). Return null kalau tidak ketemu atau ambigu. */
-    private function lookupItemIdByName(string $type, string $name): ?string
+    private function lookupItemIdByName(string $type, string $name, ?string $category = null): ?string
     {
         $needle = mb_strtolower(trim($name));
+        $cat    = ($category !== null && trim($category) !== '') ? mb_strtolower(trim($category)) : null;
 
         return match ($type) {
-            SurgeryPackageItem::TYPE_PROCEDURE => $this->lookupSingle(
-                Procedure::whereRaw('LOWER(name) = ?', [$needle])
-            ),
-            SurgeryPackageItem::TYPE_MEDICATION => $this->lookupSingle(
-                Medication::whereRaw('LOWER(name) = ?', [$needle])
-            ),
-            SurgeryPackageItem::TYPE_BHP => $this->lookupSingle(
-                BhpItem::whereRaw('LOWER(name) = ?', [$needle])
-            ),
-            SurgeryPackageItem::TYPE_IOL => $this->lookupIolByDisplayName($needle),
-            default => null,
+            SurgeryPackageItem::TYPE_PROCEDURE  => $this->lookupByNameCategory(Procedure::query(), $needle, $cat, 'category'),
+            SurgeryPackageItem::TYPE_MEDICATION => $this->lookupByNameCategory(Medication::query(), $needle, $cat, 'golongan'),
+            SurgeryPackageItem::TYPE_BHP        => $this->lookupByNameCategory(BhpItem::query(), $needle, $cat, 'category'),
+            SurgeryPackageItem::TYPE_IOL        => $this->lookupIolByDisplayName($needle),
+            default                             => null,
         };
     }
 
-    private function lookupSingle(\Illuminate\Database\Eloquent\Builder $query): ?string
+    /**
+     * Cocokkan item by nama (case-insensitive). Bila >1 (ambigu) DAN item_kategori CSV diisi,
+     * persempit pakai kolom kategori ($catCol = category/golongan; hardcoded, aman). Return id
+     * hanya bila tepat 1 hasil. $catCol di-interpolasi tapi nilainya konstanta internal.
+     */
+    private function lookupByNameCategory(\Illuminate\Database\Eloquent\Builder $query, string $needle, ?string $cat, string $catCol): ?string
     {
-        $rows = $query->limit(2)->pluck('id');
-        return $rows->count() === 1 ? (string) $rows->first() : null;
+        $base = (clone $query)->whereRaw('LOWER(name) = ?', [$needle]);
+        $rows = (clone $base)->limit(2)->pluck('id');
+        if ($rows->count() === 1) {
+            return (string) $rows->first();
+        }
+        if ($cat !== null) {
+            $narrow = (clone $base)->whereRaw("LOWER({$catCol}) = ?", [$cat])->limit(2)->pluck('id');
+            if ($narrow->count() === 1) {
+                return (string) $narrow->first();
+            }
+        }
+        return null;
     }
 
     /**

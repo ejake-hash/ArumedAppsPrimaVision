@@ -222,6 +222,9 @@ class TarifPaketController extends Controller
     public function updateItem(Request $request, string $id, string $itemId): JsonResponse
     {
         $validated = $request->validate([
+            // Boleh ganti tipe+item saat edit (koreksi salah pilih), bukan cuma qty/harga.
+            'item_type'     => 'sometimes|in:' . implode(',', SurgeryPackageItem::TYPES),
+            'item_id'       => 'sometimes|uuid',
             'quantity'      => 'sometimes|integer|min:1',
             'default_price' => 'sometimes|numeric|min:0',
             'notes'         => 'nullable|string|max:500',
