@@ -370,12 +370,23 @@ const dw = ref(null)
 const finalized = ref(false)
 const finalizing = ref(false)
 
+// Baris antrean dibuat hari ini? (kunjungan lintas-hari yang masih nyangkut → "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isTodayP = (p) => isTodayRow(p._raw?.created_at)
+const isDoneP  = (p) => p.status === 'done' || p.status === 'skip'
+
 const filtQ = computed(() => {
   let list = patients.value
-  if (qFilter.value === 'done') {
-    list = list.filter((p) => p.status === 'done' || p.status === 'skip')
+  if (qFilter.value === 'active') {
+    list = list.filter((p) => !isTodayP(p))
+  } else if (qFilter.value === 'done') {
+    list = list.filter((p) => isTodayP(p) && isDoneP(p))
   } else {
-    list = list.filter((p) => p.status !== 'done' && p.status !== 'skip')
+    list = list.filter((p) => isTodayP(p) && !isDoneP(p))
   }
   if (ptypeFilter.value === 'BPJS')          list = list.filter((p) => p.ptype === 'bpjs')
   else if (ptypeFilter.value === 'UmumAsn')  list = list.filter((p) => p.ptype === 'umum' || p.ptype === 'asn')
@@ -386,8 +397,9 @@ const filtQ = computed(() => {
   return list
 })
 
-const cWait = computed(() => patients.value.filter((p) => ['waiting', 'progress', 'penunjang', 'penunjang_done'].includes(p.status)).length)
-const cDone = computed(() => patients.value.filter((p) => p.status === 'done').length)
+const cWait   = computed(() => patients.value.filter((p) => isTodayP(p) && !isDoneP(p)).length)
+const cDone   = computed(() => patients.value.filter((p) => isTodayP(p) && isDoneP(p)).length)
+const cActive = computed(() => patients.value.filter((p) => !isTodayP(p)).length)
 const bpjsCount = computed(() => patients.value.filter((p) => p.ptype === 'bpjs' && p.status !== 'done' && p.status !== 'skip').length)
 const umumAsnCount = computed(() => patients.value.filter((p) => (p.ptype === 'umum' || p.ptype === 'asn') && p.status !== 'done' && p.status !== 'skip').length)
 
@@ -2095,13 +2107,17 @@ function closeResumeRM() {
 
         <!-- Primary filter -->
         <div class="primary-filter">
-          <button :class="['pf-btn', qFilter !== 'done' ? 'a' : '']" @click="qFilter = 'waiting'">
+          <button :class="['pf-btn', qFilter === 'waiting' ? 'a' : '']" @click="qFilter = 'waiting'">
             Belum Selesai
             <span v-if="cWait" class="pf-ct">{{ cWait }}</span>
           </button>
           <button :class="['pf-btn', qFilter === 'done' ? 'a' : '']" @click="qFilter = 'done'">
             Selesai
             <span v-if="cDone" class="pf-ct">{{ cDone }}</span>
+          </button>
+          <button :class="['pf-btn', qFilter === 'active' ? 'a' : '']" @click="qFilter = 'active'" title="Kunjungan belum selesai dari hari sebelumnya (lintas-hari)">
+            Masih Aktif
+            <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
           </button>
         </div>
 

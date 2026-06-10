@@ -174,13 +174,27 @@ const suhuStatus = computed(() => vitalStatus(form.value.suhu,   36.0, 37.5))
 const kgdStatus  = computed(() => vitalStatus(form.value.kgd,    70, 200))
 
 // ─── Filtered queue ──────────────────────────────────────────────────────────
+// Baris antrean dibuat hari ini? (kunjungan lintas-hari yang masih nyangkut → "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isDoneQ = (q) => q.status === 'COMPLETED'
+
+const cWait   = computed(() => store.antrian.filter((q) => isTodayRow(q.created_at) && !isDoneQ(q)).length)
+const cDone   = computed(() => store.antrian.filter((q) => isTodayRow(q.created_at) && isDoneQ(q)).length)
+const cActive = computed(() => store.antrian.filter((q) => !isTodayRow(q.created_at)).length)
+
 const filteredQueue = computed(() => {
   let list = store.antrian
 
-  if (qPrimaryFilter.value === 'waiting') {
-    list = list.filter((q) => ['WAITING', 'CALLED', 'IN_PROGRESS'].includes(q.status))
+  if (qPrimaryFilter.value === 'active') {
+    list = list.filter((q) => !isTodayRow(q.created_at))
+  } else if (qPrimaryFilter.value === 'waiting') {
+    list = list.filter((q) => isTodayRow(q.created_at) && !isDoneQ(q))
   } else {
-    list = list.filter((q) => q.status === 'COMPLETED')
+    list = list.filter((q) => isTodayRow(q.created_at) && isDoneQ(q))
   }
 
   if (qSecondaryFilter.value === 'bpjs') {
@@ -675,14 +689,22 @@ onUnmounted(() => {
                 @click="qPrimaryFilter = 'waiting'"
               >
                 Belum Dipanggil
-                <span v-if="store.belumDipanggilCount" class="pf-ct">{{ store.belumDipanggilCount }}</span>
+                <span v-if="cWait" class="pf-ct">{{ cWait }}</span>
               </button>
               <button
                 :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']"
                 @click="qPrimaryFilter = 'done'"
               >
                 Selesai
-                <span v-if="store.selesaiCount" class="pf-ct">{{ store.selesaiCount }}</span>
+                <span v-if="cDone" class="pf-ct">{{ cDone }}</span>
+              </button>
+              <button
+                :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']"
+                @click="qPrimaryFilter = 'active'"
+                title="Kunjungan belum selesai dari hari sebelumnya (lintas-hari)"
+              >
+                Masih Aktif
+                <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
               </button>
             </div>
 

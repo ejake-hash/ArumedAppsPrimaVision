@@ -59,15 +59,26 @@ function formatTime(ts) {
     : d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-const belumCount   = computed(() => queue.value.filter((q) => rxStatusOf(q) !== 'done').length)
-const selesaiCount = computed(() => queue.value.filter((q) => rxStatusOf(q) === 'done').length)
+// Baris antrean dibuat hari ini? (resep lintas-hari yang belum diserahkan → "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isTodayQ = (q) => isTodayRow(q.created_at)
+const isDoneQ  = (q) => rxStatusOf(q) === 'done'
+
+const belumCount   = computed(() => queue.value.filter((q) => isTodayQ(q) && !isDoneQ(q)).length)
+const selesaiCount = computed(() => queue.value.filter((q) => isTodayQ(q) &&  isDoneQ(q)).length)
+const cActive      = computed(() => queue.value.filter((q) => !isTodayQ(q)).length)
 
 const filtRx = computed(() => {
   let l = queue.value
 
-  // Primary: belum diserahkan vs selesai
-  if (rxPrimaryFilter.value === 'waiting') l = l.filter((q) => rxStatusOf(q) !== 'done')
-  else                                     l = l.filter((q) => rxStatusOf(q) === 'done')
+  // Primary: belum diserahkan vs selesai (hari ini) vs masih aktif (lintas-hari)
+  if (rxPrimaryFilter.value === 'active')       l = l.filter((q) => !isTodayQ(q))
+  else if (rxPrimaryFilter.value === 'waiting') l = l.filter((q) => isTodayQ(q) && !isDoneQ(q))
+  else                                          l = l.filter((q) => isTodayQ(q) &&  isDoneQ(q))
 
   // Secondary: jenis penjamin
   if (rxSecondaryFilter.value === 'bpjs')      l = l.filter((q) => guarantorType(q) === 'bpjs')
@@ -1645,6 +1656,10 @@ function toast(type, msg) {
                 <button :class="['pf-btn', rxPrimaryFilter === 'done' ? 'a' : '']" @click="rxPrimaryFilter = 'done'">
                   Selesai
                   <span v-if="selesaiCount" class="pf-ct">{{ selesaiCount }}</span>
+                </button>
+                <button :class="['pf-btn', rxPrimaryFilter === 'active' ? 'a' : '']" @click="rxPrimaryFilter = 'active'" title="Resep belum diserahkan dari hari sebelumnya (lintas-hari)">
+                  Masih Aktif
+                  <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
                 </button>
               </div>
 

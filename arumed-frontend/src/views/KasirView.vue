@@ -53,13 +53,23 @@ function formatDob(v) {
   return `${dd}/${mm}/${d.getFullYear()}`
 }
 
-const belumBayarCount = computed(() => queue.value.filter((q) => !isLunas(q)).length)
-const selesaiCount    = computed(() => queue.value.filter((q) =>  isLunas(q)).length)
+// Baris antrean dibuat hari ini? (tagihan lintas-hari yang belum lunas → "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isTodayQ = (q) => isTodayRow(q.created_at)
+
+const belumBayarCount = computed(() => queue.value.filter((q) => isTodayQ(q) && !isLunas(q)).length)
+const selesaiCount    = computed(() => queue.value.filter((q) => isTodayQ(q) &&  isLunas(q)).length)
+const cActive         = computed(() => queue.value.filter((q) => !isTodayQ(q)).length)
 
 const filtQ = computed(() => {
   let l = queue.value
-  if (qPrimaryFilter.value === 'done')  l = l.filter((q) =>  isLunas(q))
-  else                                  l = l.filter((q) => !isLunas(q))
+  if (qPrimaryFilter.value === 'active')     l = l.filter((q) => !isTodayQ(q))
+  else if (qPrimaryFilter.value === 'done')  l = l.filter((q) => isTodayQ(q) &&  isLunas(q))
+  else                                       l = l.filter((q) => isTodayQ(q) && !isLunas(q))
 
   if (qSecondaryFilter.value === 'bpjs')      l = l.filter((q) => ptypeOf(q) === 'bpjs')
   else if (qSecondaryFilter.value === 'umum') l = l.filter((q) => ptypeOf(q) !== 'bpjs')
@@ -959,6 +969,10 @@ const groupedPrintItems = computed(() =>
               <button :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']" @click="qPrimaryFilter = 'done'">
                 Lunas
                 <span v-if="selesaiCount" class="pf-ct">{{ selesaiCount }}</span>
+              </button>
+              <button :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']" @click="qPrimaryFilter = 'active'" title="Tagihan belum selesai dari hari sebelumnya (lintas-hari)">
+                Masih Aktif
+                <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
               </button>
             </div>
 

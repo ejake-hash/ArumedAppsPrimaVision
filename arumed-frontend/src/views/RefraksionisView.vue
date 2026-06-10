@@ -74,6 +74,7 @@ function mapQueueRow(q) {
     poliklinik:   sched?.poliklinik ?? null,
     room:         sched?.room ?? null,
     id:           q.id,
+    createdAt:    q.created_at,
     qNum:         q.queue_number,
     name:         patient.name ?? '—',
     rm:           patient.no_rm ?? '—',
@@ -104,12 +105,22 @@ function mapQueueRow(q) {
 
 const mappedQueue = computed(() => store.antrian.map(mapQueueRow))
 
+// Baris antrean dibuat hari ini? (kunjungan lintas-hari yang masih nyangkut → segmen "Masih Aktif")
+function isTodayRow(c) {
+  if (!c) return true
+  const d = new Date(c), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
+const isDoneP = (p) => p.status === 'done' || p.status === 'skip'
+
 const filtQ = computed(() => {
   let list = mappedQueue.value
-  if (qFilter.value === 'done') {
-    list = list.filter((p) => p.status === 'done' || p.status === 'skip')
+  if (qFilter.value === 'active') {
+    list = list.filter((p) => !isTodayRow(p.createdAt))
+  } else if (qFilter.value === 'done') {
+    list = list.filter((p) => isTodayRow(p.createdAt) && isDoneP(p))
   } else {
-    list = list.filter((p) => p.status !== 'done' && p.status !== 'skip')
+    list = list.filter((p) => isTodayRow(p.createdAt) && !isDoneP(p))
   }
   if (ptypeFilter.value === 'BPJS')          list = list.filter((p) => p.ptype === 'bpjs')
   else if (ptypeFilter.value === 'UmumAsn')  list = list.filter((p) => p.ptype === 'umum' || p.ptype === 'asn')
@@ -124,8 +135,9 @@ const filtQ = computed(() => {
   return list
 })
 
-const cWait = computed(() => mappedQueue.value.filter((p) => p.status === 'waiting' || p.status === 'progress').length)
-const cDone = computed(() => mappedQueue.value.filter((p) => p.status === 'done').length)
+const cWait   = computed(() => mappedQueue.value.filter((p) => isTodayRow(p.createdAt) && !isDoneP(p)).length)
+const cDone   = computed(() => mappedQueue.value.filter((p) => isTodayRow(p.createdAt) && isDoneP(p)).length)
+const cActive = computed(() => mappedQueue.value.filter((p) => !isTodayRow(p.createdAt)).length)
 
 const selP = computed(() => store.selectedQueue ? mapQueueRow(store.selectedQueue) : null)
 const activeTab = ref('autoref')
@@ -860,6 +872,10 @@ function toast(type, msg) {
               <button :class="['pf-btn', qFilter === 'done' ? 'a' : '']" @click="qFilter = 'done'">
                 Selesai
                 <span v-if="cDone" class="pf-ct">{{ cDone }}</span>
+              </button>
+              <button :class="['pf-btn', qFilter === 'active' ? 'a' : '']" @click="qFilter = 'active'" title="Kunjungan belum selesai dari hari sebelumnya (lintas-hari)">
+                Masih Aktif
+                <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
               </button>
             </div>
 
