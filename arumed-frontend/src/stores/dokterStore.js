@@ -128,12 +128,25 @@ export const useDokterStore = defineStore('dokter', () => {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
   function _updateQueueItem(updatedQueue) {
+    // panggil/lewati/kePenunjang mengembalikan Queue yang hanya memuat `visit.patient`
+    // (QueueService::panggil → fresh(['visit.patient'])). Shallow-merge biasa akan
+    // mengganti SELURUH objek `visit` → relasi kaya yang sudah dimuat di antrian
+    // (nurse_assessment berisi alergi/TTV, refraction_record, dst.) terbuang →
+    // panel ▼Triase/▼RO & pill "⚠ Alergi" mendadak kosong sampai polling berikutnya.
+    // Deep-merge `visit` agar relasi yang sudah ada tetap dipertahankan.
+    const merge = (base) => {
+      const next = { ...base, ...updatedQueue }
+      if (base?.visit || updatedQueue?.visit) {
+        next.visit = { ...(base?.visit ?? {}), ...(updatedQueue?.visit ?? {}) }
+      }
+      return next
+    }
     const idx = antrian.value.findIndex((q) => q.id === updatedQueue.id)
     if (idx !== -1) {
-      antrian.value[idx] = { ...antrian.value[idx], ...updatedQueue }
+      antrian.value[idx] = merge(antrian.value[idx])
     }
     if (selectedQueue.value?.id === updatedQueue.id) {
-      selectedQueue.value = { ...selectedQueue.value, ...updatedQueue }
+      selectedQueue.value = merge(selectedQueue.value)
     }
   }
 

@@ -510,7 +510,24 @@ class DokterService
     {
         $this->authorizeVisitOwnership($visitId);
 
-        return Prescription::with('items.medication')->where('visit_id', $visitId)->get();
+        $prescriptions = Prescription::with('items.medication')->where('visit_id', $visitId)->get();
+
+        // Lampirkan harga per item dari Buku Tarif sesuai penjamin kunjungan (sumber &
+        // logika sama dgn tagihan kasir, KasirService::getPrice) → dokter melihat nominal
+        // yang AKAN ditagihkan (BPJS/UMUM), bukan sekadar HJA inventori. Atribut dinamis
+        // `resolved_price` ikut terserialisasi ke JSON.
+        $visit = Visit::find($visitId);
+        $guarantor = $visit?->guarantor_type ?? 'UMUM';
+        $insurerId = $visit?->insurer_id;
+        foreach ($prescriptions as $rx) {
+            foreach ($rx->items as $item) {
+                $item->resolved_price = $this->kasirService->getPrice(
+                    'medication', $item->medication_id, $guarantor, $insurerId
+                );
+            }
+        }
+
+        return $prescriptions;
     }
 
     /**

@@ -221,7 +221,7 @@ function validateBeforeSubmit() {
   return ok
 }
 
-async function submitInput() {
+async function submitInput({ stayOnInput = false } = {}) {
   if (!validateBeforeSubmit()) {
     error.value = 'Beberapa field wajib belum diisi.'
     return
@@ -235,7 +235,9 @@ async function submitInput() {
     // Re-load output HTML (data klinis baru tersinkron → render terbaru).
     html.value = ''
     await loadRender()
-    tab.value = 'output'
+    // Default: pindah ke preview. Saat alur "Tanda Tangani & Finalisasi", tetap di
+    // tab input agar section Tanda Tangan (+ modal PIN) langsung tampil & terbuka.
+    if (!stayOnInput) tab.value = 'output'
   } catch (e) {
     // Server-side validation errors map per-field (Laravel validate 422)
     const resp = e.response?.data
@@ -250,13 +252,13 @@ async function submitInput() {
   }
 }
 
-async function finalize() {
+async function finalize({ silent = false } = {}) {
   if (!submittedDocId.value) return
-  if (!confirm('Finalisasi dokumen ini? Setelah final, rendered_html ter-snapshot immutable.')) return
+  if (!silent && !confirm('Finalisasi dokumen ini? Setelah final, rendered_html ter-snapshot immutable.')) return
   finalizing.value = true
   try {
     await formTemplateApi.finalize(submittedDocId.value)
-    alert('Dokumen ter-finalisasi (status FINALIZED).')
+    if (!silent) alert('Dokumen ter-finalisasi (status FINALIZED).')
     close()
   } catch (e) {
     error.value = e.response?.data?.message ?? 'Gagal finalize.'
@@ -264,6 +266,42 @@ async function finalize() {
     finalizing.value = false
   }
 }
+
+// ── "Tanda Tangani & Finalisasi" — alur 1-tombol: simpan draft → buka modal PIN
+//    tanda tangan dokter → setelah tertandatangani, auto-finalisasi & kunci. ──────
+const autoFinalizeAfterSign = ref(false)
+const triggerSignKey = ref(null)   // key field TTD yang modal PIN-nya harus dibuka
+
+// Field TTD wajib pertama (dokter). Dipakai untuk auto-buka modal PIN.
+const primarySignKey = computed(() => {
+  const f = signatureFields.value.find(s => s.required) ?? signatureFields.value[0]
+  return f?.key ?? null
+})
+
+async function signAndFinalize() {
+  error.value = ''
+  // 1) Pastikan draft tersimpan (tetap di tab input agar section TTD tampil).
+  if (!submittedDocId.value) {
+    await submitInput({ stayOnInput: true })
+    if (!submittedDocId.value) return   // validasi gagal — pesan sudah tampil
+  }
+  // 2) Sudah lengkap TTD? langsung finalisasi. Belum → buka modal PIN TTD dokter.
+  autoFinalizeAfterSign.value = true
+  if (canFinalize.value) {
+    await finalize({ silent: true })
+    return
+  }
+  if (primarySignKey.value) triggerSignKey.value = primarySignKey.value
+}
+
+// Begitu semua TTD wajib lengkap dalam alur "Tanda Tangani & Finalisasi" → finalisasi otomatis.
+watch(canFinalize, async (ok) => {
+  if (ok && autoFinalizeAfterSign.value && !finalizing.value) {
+    autoFinalizeAfterSign.value = false
+    triggerSignKey.value = null
+    await finalize({ silent: true })
+  }
+})
 
 // Capture signature → POST /document/{id}/sign → simpan ke capturedSignatures map.
 async function onCaptureSignature(field, payload) {
@@ -560,6 +598,7 @@ async function submitAddendum() {
                 @update:model-value="(v) => { /* ignore raw — capture event yang relevan */ }"
                 @capture-signature="(e) => onCaptureSignature(e.field, e.payload)"
                 :readonly="finalizing"
+                :auto-open-sign="triggerSignKey === sf.key"
                 :document-name="template.name"
               />
               <div v-if="signError" class="frr-err">{{ signError }}</div>
@@ -572,15 +611,24 @@ async function submitAddendum() {
             <div v-if="error" class="frr-err">{{ error }}</div>
 
             <div class="frr-footer">
-              <button class="frr-btn-primary" :disabled="submitting" @click="submitInput">
-                {{ submitting ? 'Menyimpan…' : (submittedDocId ? 'Update Draft' : 'Simpan sebagai Draft') }}
+              <button class="frr-btn-ghost" :disabled="submitting || finalizing" @click="submitInput()">
+                {{ submitting ? 'Menyimpan…' : (submittedDocId ? 'Update Draft' : 'Simpan Draft') }}
               </button>
               <button
-                v-if="submittedDocId"
+                v-if="hasSignatureFields"
+                class="frr-btn-primary"
+                :disabled="submitting || finalizing"
+                @click="signAndFinalize"
+                title="Simpan draft, tanda tangani dengan PIN, lalu finalisasi & kunci"
+              >
+                {{ finalizing ? 'Memfinalisasi…' : (submitting ? 'Menyimpan…' : 'Tanda Tangani & Finalisasi') }}
+              </button>
+              <!-- Dokumen tanpa field TTD: finalisasi langsung (jarang utk resume). -->
+              <button
+                v-else-if="submittedDocId"
                 class="frr-btn-danger"
-                :disabled="finalizing || (hasSignatureFields && !canFinalize)"
-                @click="finalize"
-                :title="hasSignatureFields && !canFinalize ? 'Lengkapi semua tanda tangan dulu' : ''"
+                :disabled="finalizing"
+                @click="finalize()"
               >
                 {{ finalizing ? 'Memfinalisasi…' : 'Finalisasi & Lock' }}
               </button>

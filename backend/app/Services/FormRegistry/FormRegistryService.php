@@ -332,6 +332,81 @@ final class FormRegistryService
     }
 
     /**
+     * Override/regenerasi rendered_html dokumen yang SUDAH final dengan template +
+     * resolver/wiring TERKINI, secara IN-PLACE (tanpa membuat versi baru). Jawaban
+     * manual dokter (static_payload) & tanda tangan yang sudah ada DIPERTAHANKAN dan
+     * di-embed ulang. `revision` dinaikkan + banner "REVISI ke-N" agar koreksi
+     * tertelusur. Dipakai untuk memperbaiki dokumen lama yang ter-render dengan
+     * wiring lama/keliru (mis. Resume Medis sebelum FormTemplateSeeder di-update).
+     *
+     * ⚠️ medico-legal: ini menulis ulang snapshot dokumen ber-TTD. Sah HANYA untuk
+     * koreksi BUG render (data klinis tak berubah, hanya tampilannya yang dibetulkan).
+     * Untuk koreksi SUBSTANSI klinis gunakan reviseDocument() (versi baru + TTD ulang).
+     */
+    public function regenerateFinalized(string $patientDocumentId): PatientDocument
+    {
+        return DB::transaction(function () use ($patientDocumentId) {
+            /** @var PatientDocument $doc */
+            $doc = PatientDocument::query()->lockForUpdate()->findOrFail($patientDocumentId);
+
+            if (!in_array($doc->status, ['FINALIZED', 'FINAL'], true)) {
+                throw new RuntimeException('Hanya dokumen final yang bisa diregenerasi in-place.');
+            }
+            if ($doc->template_code === null || $doc->visit_id === null) {
+                throw new RuntimeException('Dokumen tidak ter-link template_code/visit_id.');
+            }
+
+            $template = $this->findActiveTemplateByCode($doc->template_code);
+            $payload  = $doc->signatures['static_payload'] ?? [];
+
+            // Render ulang dari template + data terkini (aggregate/db ter-resolve lagi),
+            // jawaban manual dokter dipertahankan via static_payload.
+            $html = $this->renderer->render($template, $doc->visit_id, $payload);
+
+            // Embed ulang TTD yang sudah ada + QR verifikasi (pertahankan tanda tangan).
+            $verification = $this->ensureVerification($doc->id);
+            $verifyUrl    = $verification->verification_url;
+            $fieldMap = $this->renderer->extractSignatureFieldMap($template->field_schema ?? []);
+            $sigByType = \App\Models\DocumentSignature::query()
+                ->where('patient_document_id', $doc->id)
+                ->get()
+                ->keyBy('signer_type');
+            $html = $this->renderer->embedSignatures($html, $fieldMap, $sigByType->all(), $verifyUrl);
+            $html = $this->embedFooterQr($html, $verifyUrl);
+
+            $newRevision = (int) ($doc->revision ?? 0) + 1;
+            $html = $this->prependRevisionBanner($html, $newRevision);
+
+            $sigIds = $sigByType->pluck('signature_id')->sort()->values()->all();
+            $hash = hash('sha256', $html . '|' . implode(',', $sigIds) . '|' . $doc->id);
+
+            $doc->rendered_html        = $html;
+            $doc->rendered_html_gz     = null;
+            $doc->template_version     = $template->version;
+            $doc->revision             = $newRevision;
+            $doc->final_integrity_hash = $hash;
+            $doc->save();
+
+            $verification->document_hash = $hash;
+            $verification->is_valid      = true;
+            $verification->save();
+
+            FormRegistryAudit::record(
+                'FORM_DOC_REGENERATED',
+                model: 'PatientDocument',
+                modelId: $doc->id,
+                description: "Regenerasi in-place template={$template->code} v{$template->version} (revisi {$newRevision})",
+                context: [
+                    'template_code' => $template->code,
+                    'revision'      => $newRevision,
+                ],
+            );
+
+            return $doc;
+        });
+    }
+
+    /**
      * Buat/ambil DocumentVerification untuk dokumen (idempoten by patient_document_id).
      * Token UUID acak + URL ke endpoint verifikasi publik. Hash diisi/diupdate
      * oleh pemanggil setelah HTML final terbentuk.

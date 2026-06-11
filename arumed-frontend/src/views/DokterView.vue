@@ -1094,6 +1094,12 @@ function addRx() {
 }
 function removeRx(idx) { rxList.value.splice(idx, 1); scheduleSaveResep() }
 
+// Total estimasi resep (Σ harga Buku Tarif × qty). Harga akurat per penjamin tersedia
+// setelah baris dimuat dari server; baris baru pakai estimasi HJA UMUM dari picker.
+const rxTotal = computed(() =>
+  rxList.value.reduce((sum, r) => sum + (Number(r.hja) || 0) * (Number(r.qty) || 0), 0)
+)
+
 // ── Tab 3: muat data tersimpan + autosave (replace) ke DB ───────────────────
 let _loadingResep = false   // true saat loadTindakanResep menulis kasirNote (suppress autosave)
 async function loadTindakanResep() {
@@ -1126,7 +1132,8 @@ async function loadTindakanResep() {
       medication_id: it.medication_id,
       name: it.medication?.name ?? '—',
       form: it.medication?.form_sediaan ?? '',
-      hja: 0,
+      // Harga dari Buku Tarif sesuai penjamin (resolved_price dari backend), bukan 0.
+      hja: Number(it.resolved_price) || 0,
       qty: it.quantity ?? 1,
       jumlah: it.dose ?? '',
       signa: it.frequency ?? '',
@@ -3016,6 +3023,8 @@ function closeResumeRM() {
                     <div>Signa</div>
                     <div>Durasi</div>
                     <div>Mata</div>
+                    <div class="rx-num">Harga</div>
+                    <div class="rx-num">Subtotal</div>
                     <div></div>
                   </div>
                   <div v-for="(r, i) in rxList" :key="`${r.medication_id}-${i}`" class="rx-trow">
@@ -3025,9 +3034,15 @@ function closeResumeRM() {
                     <div class="rx-cell">{{ r.signa || '—' }}</div>
                     <div class="rx-cell">{{ r.dur || '—' }}</div>
                     <div class="rx-cell">{{ r.posisi || '—' }}</div>
+                    <div class="rx-cell rx-num">{{ r.hja ? fmtRp(r.hja) : '—' }}</div>
+                    <div class="rx-cell rx-num rx-sub">{{ r.hja ? fmtRp(r.hja * r.qty) : '—' }}</div>
                     <button class="dx-remove" @click="removeRx(i)">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
+                  </div>
+                  <div class="rx-tfoot">
+                    <span class="rx-tfoot-label">Total estimasi resep</span>
+                    <span class="rx-tfoot-total">{{ fmtRp(rxTotal) }}</span>
                   </div>
                 </div>
                 <div v-else class="dx-empty">Belum ada obat dalam resep</div>
@@ -4622,9 +4637,17 @@ function closeResumeRM() {
 .rx-table { border: 1px solid var(--gb); border-radius: 9px; overflow: hidden; }
 .rx-thead, .rx-trow {
   display: grid;
-  grid-template-columns: 1fr 52px 90px 90px 78px 56px 28px;
+  grid-template-columns: 1fr 48px 84px 84px 70px 52px 82px 92px 28px;
   gap: 0.5rem; align-items: center;
 }
+.rx-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rx-sub { font-weight: 600; color: var(--td); }
+.rx-tfoot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.55rem 0.85rem; background: var(--bs); border-top: 1px solid var(--gb);
+}
+.rx-tfoot-label { font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; }
+.rx-tfoot-total { font-size: 13px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
 .rx-thead {
   padding: 0.45rem 0.85rem; background: var(--bs);
   font-size: 9.5px; font-weight: 700; color: var(--tu);

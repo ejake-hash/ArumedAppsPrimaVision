@@ -14,7 +14,7 @@
  *   - signature_canvas / signature_placeholder → render placeholder visual
  *     ("(akan di-tanda-tangan saat finalize)"), TIDAK kirim ke submit. Fase 4.
  */
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import SignatureCaptureModal from './signature/SignatureCaptureModal.vue'
 
 const props = defineProps({
@@ -22,6 +22,9 @@ const props = defineProps({
   modelValue: { default: null },
   error:      { type: String, default: '' },
   readonly:   { type: Boolean, default: false },
+  // Parent (FormRMRenderer alur "Tanda Tangani & Finalisasi") minta modal PIN TTD
+  // dibuka otomatis untuk field ini, tanpa dokter harus klik tombol dulu.
+  autoOpenSign: { type: Boolean, default: false },
   documentName: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue', 'capture-signature'])
@@ -59,6 +62,15 @@ function submitPin() {
   pinModalOpen.value = false
   pinValue.value = ''
 }
+
+// Auto-buka modal TTD saat parent memintanya (alur 1-tombol). Nakes → modal PIN;
+// pasien/saksi → modal goresan. Hanya untuk field TTD & saat tidak readonly.
+watch(() => props.autoOpenSign, (v) => {
+  if (!v || props.readonly) return
+  if (props.field.type !== 'signature_canvas') return
+  if (isNakesSigner.value) openPinModal()
+  else sigModalOpen.value = true
+}, { immediate: true })
 
 function onMultiCheckChange(opt, checked) {
   const value = typeof opt === 'object' ? opt.value : opt
