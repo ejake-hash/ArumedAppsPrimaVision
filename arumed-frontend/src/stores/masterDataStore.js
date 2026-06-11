@@ -39,7 +39,7 @@ export const REGISTRY = {
   supplier:      { api: masterApi.supplier,      csvType: 'supplier',       label: 'Supplier' },
   alatMedis:     { api: masterApi.alatMedis,     csvType: 'alat-medis',     label: 'Alat Medis' },
   diagnosticTestType: { api: masterApi.diagnosticTestType, csvType: null,    label: 'Jenis Penunjang' },
-  kategoriTagihan:    { api: masterApi.kategoriTagihan,    csvType: null,    label: 'Kategori Tagihan' },
+  kategoriTagihan:    { api: masterApi.kategoriTagihan,    csvType: null,    label: 'Kategori Buku Tarif' },
 }
 
 function blankSlot() {

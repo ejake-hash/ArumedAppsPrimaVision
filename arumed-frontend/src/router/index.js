@@ -88,7 +88,7 @@ const router = createRouter({
             { path: 'paket-bedah',       name: 'paket-bedah-list',          component: () => import('@/views/tarif-paket/PaketBedahListView.vue'),      meta: { title: 'Paket Bedah' } },
             { path: 'paket-bedah/:id',   name: 'paket-bedah-detail',        component: () => import('@/views/tarif-paket/PaketBedahDetailView.vue'),    meta: { title: 'Detail Paket Bedah' } },
             { path: 'tarif-kamar',       name: 'tarif-paket-tarif-kamar',   component: () => import('@/views/tarif-paket/TarifKamarView.vue'),          meta: { title: 'Tarif Kamar' } },
-            { path: 'kategori-tagihan',  name: 'tarif-paket-kategori-tagihan', component: () => import('@/views/tarif-paket/KategoriTagihanView.vue'),  meta: { title: 'Kategori Tagihan' } },
+            { path: 'kategori-tagihan',  name: 'tarif-paket-kategori-tagihan', component: () => import('@/views/tarif-paket/KategoriTagihanView.vue'),  meta: { title: 'Kategori Buku Tarif' } },
           ],
         },
 

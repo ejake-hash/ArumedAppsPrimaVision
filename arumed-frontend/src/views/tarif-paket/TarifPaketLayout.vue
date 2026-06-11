@@ -44,7 +44,7 @@ const tabs = [
   {
     section: 'Pengaturan',
     items: [
-      { to: '/tarif-paket/kategori-tagihan', label: 'Kategori Tagihan', icon: 'tag' },
+      { to: '/tarif-paket/kategori-tagihan', label: 'Kategori Buku Tarif', icon: 'tag' },
     ],
   },
 ]

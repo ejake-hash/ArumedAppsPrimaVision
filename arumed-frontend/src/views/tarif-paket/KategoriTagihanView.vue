@@ -11,8 +11,8 @@ import CrudResourceView from '@/views/master-data/_CrudResourceView.vue'
 
 const config = {
   resourceKey: 'kategoriTagihan',
-  title: 'Kategori Tagihan',
-  description: 'Daftar kategori grouping di Rincian Tagihan Kasir. Urutan tampil di kasir mengikuti kolom Urutan (kecil → besar). Nama kategori harus persis sama dengan yang tersimpan di item invoice (mis. "Konsultasi", "Pemeriksaan").',
+  title: 'Kategori Buku Tarif',
+  description: 'Master tunggal kategori Buku Tarif: mengatur pengelompokan & URUTAN kategori di daftar Buku Tarif maupun di Rincian Tagihan/kwitansi Kasir (kecil → besar). Nama kategori harus persis sama dengan kategori item (mis. "Tindakan Dokter", "OBAT", "BAHAN HABIS PAKAI", "CSSD", "IOL", "Sewa Kamar").',
   searchPlaceholder: 'Cari nama kategori…',
   extraSearchParam: null,
   csvShowTemplate: false,

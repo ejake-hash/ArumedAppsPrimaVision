@@ -270,13 +270,31 @@ const bukuRowsNumbered = computed(() => {
   return buku.value.rows.map((r, i) => ({ ...r, _no: start + i + 1, _key: `${r.tipe}:${r.id}` }))
 })
 
-// Chip kategori untuk filter (nama + prefix bila kategori procedure).
-const bukuChips = computed(() =>
-  kategoriOptions.value.map((name) => {
-    const cat = kategoriList.value.find((k) => k.name === name)
-    return { name, prefix: cat?.code_prefix ?? '' }
-  })
-)
+// Urutan kategori dari master tunggal "Kategori Buku Tarif" (billing_categories).
+// Master ini mengontrol urutan chip di sini SEKALIGUS grup seksi di kwitansi Kasir.
+const billingCatOrder = ref({})  // {nama-lowercase: sort_order}
+
+async function loadBillingCatOrder() {
+  try {
+    const res = await masterApi.kategoriTagihan.list({ active: 1 })
+    const rows = res.data?.data?.data ?? res.data?.data ?? []
+    const map = {}
+    ;(Array.isArray(rows) ? rows : []).forEach((r) => { map[String(r.name).toLowerCase()] = Number(r.sort_order ?? 999) })
+    billingCatOrder.value = map
+  } catch { billingCatOrder.value = {} }
+}
+
+// Chip kategori untuk filter: kategori yang ADA di item, diurutkan per master
+// (prefix kode ditampilkan bila kategori procedure).
+const bukuChips = computed(() => {
+  const ord = billingCatOrder.value
+  return kategoriOptions.value
+    .map((name) => {
+      const cat = kategoriList.value.find((k) => k.name === name)
+      return { name, prefix: cat?.code_prefix ?? '', sort: ord[name.toLowerCase()] ?? 999 }
+    })
+    .sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name))
+})
 
 function setBukuKategori(name) {
   bukuKategori.value = (bukuKategori.value === name) ? '' : name
@@ -474,7 +492,7 @@ const modalFields = computed(() => {
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
   document.addEventListener('click', closeKatMenu)
-  await Promise.all([loadBukuTarif(), loadKategoriList()])
+  await Promise.all([loadBukuTarif(), loadKategoriList(), loadBillingCatOrder()])
 })
 onUnmounted(() => document.removeEventListener('click', closeKatMenu))
 
