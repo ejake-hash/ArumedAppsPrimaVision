@@ -486,6 +486,10 @@ class KasirService
             // tetap HANYA untuk laporan operasi RM-2.2-LP; buildIolLines (basis usage) tak dipakai
             // agar tak dobel dgn baris snapshot.
             $this->buildPaketIolLines($visit, $insurerId, $guarantorType),
+            // OBAT KOMPOSISI PAKET BEDAH (snapshot MEDICATION) ditagih positif + ikut basis
+            // diskon → obat injeksi mahal (Aflibercept/Bevacizumab) tak hilang dari tagihan.
+            // Obat resep yang sama di-skip di buildObatLines (dedup via paketObatMedIds).
+            $this->buildPaketObatLines($visit, $insurerId, $guarantorType),
             $this->buildEquipmentLines($visit, $insurerId, $guarantorType),
             $this->buildInpatientChargeLines($visit),
             $this->buildPaketDiscountLines($visit, $insurerId, $guarantorType),
@@ -625,11 +629,13 @@ class KasirService
         // dibaca dari baris UMUM (harga tunggal acuan → 1 obat = 1 pos lintas penjamin).
         // Pre-load map medication_id → pos dalam 1 query (hindari N+1). Item tanpa tarif
         // UMUM → default OBAT_PULANG (lihat MedicationTariff::posLabel).
-        // Obat "terserap paket" (is_bedah=true) HANYA disurfacekan bila pasien memang
-        // punya paket — biar ada baris diskon penyeimbang. Tanpa paket → tetap di-skip
-        // (perilaku lama: obat is_bedah tak ditagih). Bila berpaket, posMap perlu
-        // mencakup obat is_bedah juga (untuk label pos kwitansi).
-        $hasPaket = $visit->surgeryPackageSnapshots->isNotEmpty();
+
+        // Obat komponen paket BEDAH ditagih dari SNAPSHOT (buildPaketObatLines) → di sini
+        // di-skip agar tak dobel. Dedup pakai medication_id komposisi paket (safety-net):
+        // menutup celah obat paket yang diresepkan tanpa flag is_bedah (mis. lewat jalur
+        // dokter biasa). Konsekuensi: bila pasien butuh qty EKSTRA obat yang sama di luar
+        // paket, harus diresepkan sebagai item terpisah / di luar paket.
+        $paketObatMedIds = $this->paketObatMedIds($visit);
 
         // Hanya resep yang sudah diverifikasi & dikunci Farmasi (verified_at != null) yang
         // ditagih. Resep DRAFT/SUBMITTED belum-verif (mis. revisi dokter pasca "Kirim ke
@@ -638,9 +644,13 @@ class KasirService
         // resep sudah verified saat invoice dibangun → tak ada perubahan perilaku.
         $billable = fn ($p) => $p->status !== 'CANCELLED' && ! is_null($p->verified_at);
 
+        // Obat ditagih di sini = resep verified yang BUKAN komponen paket (is_bedah=false
+        // & medication_id tak ada di komposisi paket BEDAH).
+        $isPaketObat = fn ($item) => $item->is_bedah || isset($paketObatMedIds[$item->medication_id]);
+
         $medIds = $visit->prescriptions
             ->filter($billable)
-            ->flatMap(fn ($p) => ($hasPaket ? $p->items : $p->items->where('is_bedah', false))->pluck('medication_id'))
+            ->flatMap(fn ($p) => $p->items->reject($isPaketObat)->pluck('medication_id'))
             ->filter()->unique()->values()->all();
 
         $posMap = [];
@@ -654,57 +664,95 @@ class KasirService
                 ->all();
         }
 
+        // Item ber-VARIAN KEMASAN (sale_unit_id, di-set Farmasi saat verifikasi):
+        // ditagih per KEMASAN (qty=sale_unit_qty × harga kemasan), bukan per satuan
+        // kecil. Kumpulkan (medication, label) → resolve harga batch (bebas N+1).
+        $kemasanItems = $visit->prescriptions
+            ->filter($billable)
+            ->flatMap(fn ($p) => $p->items->reject($isPaketObat)->whereNotNull('sale_unit_id'));
+        $saleUnitRefs = $kemasanItems->isEmpty()
+            ? collect()
+            : \App\Models\MedicationSaleUnit::withTrashed()
+                ->whereIn('id', $kemasanItems->pluck('sale_unit_id')->unique()->values())
+                ->get()->keyBy('id');
+        $kemasanPrices = $this->resolveSaleUnitPrices(
+            $kemasanItems->map(fn ($it) => [
+                'medication_id'    => $it->medication_id,
+                'label'            => $saleUnitRefs[$it->sale_unit_id]?->label ?? '',
+                'fallback_unit_id' => $it->sale_unit_id,
+            ])->values()->all(),
+            $guarantorType,
+            $insurerId
+        );
+
         $lines = [];
-        $bundledTotal = 0.0;   // Σ obat terserap paket (is_bedah) → dinetralkan via diskon.
         foreach ($visit->prescriptions as $prescription) {
             // CANCELLED atau belum diverifikasi Farmasi → tak ditagih (lihat $billable di atas).
             if (! $billable($prescription)) {
                 continue;
             }
             foreach ($prescription->items as $item) {
-                // Obat terserap paket (is_bedah) pada pasien TANPA paket → skip (tak ditagih,
-                // perilaku lama). Pada pasien BERPAKET → tetap dimunculkan sebagai baris
-                // (transparansi) lalu dinetralkan oleh baris diskon paket di bawah.
-                $isBundled = $item->is_bedah && $hasPaket;
-                if ($item->is_bedah && ! $hasPaket) {
+                // Komponen paket BEDAH → ditagih lewat buildPaketObatLines, skip di sini.
+                if ($isPaketObat($item)) {
                     continue;
                 }
+
+                // ── Varian kemasan: baris per kemasan (Strip/Box), harga independen ──
+                if ($item->sale_unit_id && $item->sale_unit_qty > 0) {
+                    $ref   = $saleUnitRefs[$item->sale_unit_id] ?? null;
+                    $key   = $item->medication_id . '|' . mb_strtolower($ref?->label ?? '');
+                    $price = $kemasanPrices[$key] ?? 0.0;
+                    // isi diturunkan dari item (quantity = sale_unit_qty × isi saat
+                    // dipilih) — jujur terhadap yang diserahkan walau master berubah.
+                    $isi   = (int) ($item->quantity / $item->sale_unit_qty);
+                    $total = $price * $item->sale_unit_qty;
+                    $lines[] = [
+                        'item_type'    => 'OBAT',
+                        'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
+                        'reference_id' => $item->id,
+                        'description'  => ($item->medication?->name ?? 'Obat')
+                            . ' (' . ($ref?->label ?? 'Kemasan') . " isi {$isi} " . ($item->medication?->unit ?? '') . ')',
+                        'quantity'     => $item->sale_unit_qty,
+                        'unit_price'   => $price,
+                        'total_price'  => $total,
+                        'net_price'    => $total,
+                        'notes'        => $item->dosage,
+                    ];
+                    continue;
+                }
+
                 $price = $this->getPrice('medication', $item->medication_id, $guarantorType, $insurerId);
                 $total = $price * $item->quantity;
                 $lines[] = [
                     'item_type'    => 'OBAT',
                     'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
                     'reference_id' => $item->id,
-                    'description'  => ($item->medication?->name ?? 'Obat') . ($isBundled ? ' (termasuk paket)' : ''),
+                    'description'  => $item->medication?->name ?? 'Obat',
                     'quantity'     => $item->quantity,
                     'unit_price'   => $price,
                     'total_price'  => $total,
                     'net_price'    => $total,
                     'notes'        => $item->dosage,
                 ];
-                if ($isBundled) {
-                    $bundledTotal += $total;
-                }
             }
         }
-
-        // Obat terserap paket muncul di kwitansi tapi TIDAK menambah total: satu baris
-        // diskon paket (negatif) menyeimbangkan jumlahnya. Harga paket diasumsikan sudah
-        // mencakup obat ini. DISKON_PAKET tak diperlakukan khusus di COB → aman.
-        if ($bundledTotal > 0) {
-            $lines[] = [
-                'item_type'    => 'DISKON_PAKET',
-                'category'     => 'Diskon',
-                'reference_id' => null,
-                'description'  => 'Obat termasuk paket bedah',
-                'quantity'     => 1,
-                'unit_price'   => -$bundledTotal,
-                'total_price'  => -$bundledTotal,
-                'net_price'    => -$bundledTotal,
-                'notes'        => null,
-            ];
-        }
         return $lines;
+    }
+
+    /**
+     * Set medication_id komponen MEDICATION dari snapshot paket BEDAH visit (key=>true).
+     * Dipakai buildObatLines sebagai dedup safety-net: obat komponen paket ditagih dari
+     * snapshot (buildPaketObatLines), bukan dari resep. Analog surgeryBilledBhpIds().
+     * Public: juga dipakai FarmasiService::setKemasanItem (tolak kemasan utk obat paket).
+     */
+    public function paketObatMedIds(Visit $visit): array
+    {
+        return $visit->surgeryPackageSnapshots
+            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+            ->flatMap(fn ($s) => $s->items->where('item_type', 'MEDICATION')->pluck('item_id'))
+            ->filter()
+            ->mapWithKeys(fn ($id) => [$id => true])
+            ->all();
     }
 
     // CATATAN: buildPenunjangLines() DIHAPUS. Penunjang tidak lagi ditagih dari
@@ -864,6 +912,65 @@ class KasirService
                 'category'     => 'IOL',
                 'reference_id' => $pi->id,
                 'description'  => trim("IOL {$iol->brand} {$iol->model} {$power}"),
+                'quantity'     => $qty,
+                'unit_price'   => $price,
+                'total_price'  => $total,
+                'net_price'    => $total,
+            ];
+        }
+        return $lines;
+    }
+
+    /**
+     * OBAT KOMPOSISI PAKET BEDAH sebagai baris positif di kwitansi (sumber: snapshot
+     * visit_surgery_package_items type MEDICATION pada paket tipe BEDAH). Harga live via
+     * getPrice('medication', ...); kategori = pos kwitansi (Obat Tindakan/Pulang/Injeksi)
+     * dari baris tarif UMUM. Selaras buildPaketBhpLines/buildPaketIolLines (per-snapshot,
+     * tanpa dedup lintas paket). Obat ini JUGA dihitung di basis diskon
+     * (buildPaketDiscountLines) → net = harga jual paket. Obat resep yang sama TIDAK
+     * ditagih ulang (di-skip di buildObatLines via paketObatMedIds). PEMERIKSAAN
+     * DIKECUALIKAN — obatnya tetap ditagih lewat resep (buildObatLines) & diserap greedy.
+     */
+    private function buildPaketObatLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
+
+        $items = $visit->surgeryPackageSnapshots
+            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+            ->flatMap(fn ($s) => $s->items->where('item_type', 'MEDICATION'));
+        if ($items->isEmpty()) {
+            return [];
+        }
+
+        // Pos kwitansi (Obat Tindakan/Pulang/Injeksi) dari baris tarif UMUM — pola sama
+        // buildObatLines. Item tanpa tarif UMUM → default OBAT_PULANG (posLabel).
+        $posMap = [];
+        $umumId = $this->systemInsurerId('UMUM');
+        $medIds = $items->pluck('item_id')->filter()->unique()->values()->all();
+        if ($umumId && $medIds) {
+            $posMap = DB::table('medication_tariffs')
+                ->whereIn('medication_id', $medIds)
+                ->where('insurer_id', $umumId)
+                ->whereNull('deleted_at')
+                ->pluck('pos_kwitansi', 'medication_id')
+                ->all();
+        }
+
+        $lines = [];
+        foreach ($items as $pi) {
+            $med = Medication::find($pi->item_id);
+            if (! $med) {
+                continue;
+            }
+            $qty   = (int) ($pi->quantity ?? 1);
+            $price = $this->getPrice('medication', $med->id, $guarantorType, $insurerId);
+            $total = $price * $qty;
+            $lines[] = [
+                'item_type'    => 'OBAT',
+                'category'     => MedicationTariff::posLabel($posMap[$pi->item_id] ?? null),
+                'reference_id' => $pi->id,
+                'description'  => $med->name,
                 'quantity'     => $qty,
                 'unit_price'   => $price,
                 'total_price'  => $total,
@@ -1097,7 +1204,10 @@ class KasirService
                 continue;
             }
             foreach ($rx->items as $rxIt) {
-                if ($rxIt->is_bedah) {
+                // is_bedah: ditagih snapshot paket. sale_unit: ditagih per KEMASAN
+                // (harga independen) — keluar dari absorpsi agar basis (per satuan
+                // kecil) tak meleset dari baris yang benar-benar ditagih.
+                if ($rxIt->is_bedah || $rxIt->sale_unit_id) {
                     continue;
                 }
                 $rxRemaining[$rxIt->medication_id] = ($rxRemaining[$rxIt->medication_id] ?? 0) + (int) $rxIt->quantity;
@@ -1111,19 +1221,22 @@ class KasirService
             // Basis = Σ harga Buku Tarif komponen snapshot (yang sudah disesuaikan operator).
             $basis = 0.0;
             foreach ($snap->items as $it) {
-                // OBAT (paket PEMERIKSAAN): hanya terserap sebatas yang BENAR-BENAR diresepkan
-                // pasien. Obat ditagih penuh di buildObatLines; diskon menyerap selisihnya.
                 if ($it->item_type === 'MEDICATION') {
-                    if (! $isPemeriksaan) {
+                    if ($isPemeriksaan) {
+                        // Paket PEMERIKSAAN: obat ditagih penuh di buildObatLines (dari resep);
+                        // diskon hanya menyerap sebatas yang BENAR-BENAR diresepkan pasien.
+                        $avail = $rxRemaining[$it->item_id] ?? 0;
+                        if ($avail <= 0) {
+                            continue;
+                        }
+                        $matched = min((int) $it->quantity, $avail);
+                        $rxRemaining[$it->item_id] = $avail - $matched;
+                        $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * $matched;
                         continue;
                     }
-                    $avail = $rxRemaining[$it->item_id] ?? 0;
-                    if ($avail <= 0) {
-                        continue;
-                    }
-                    $matched = min((int) $it->quantity, $avail);
-                    $rxRemaining[$it->item_id] = $avail - $matched;
-                    $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * $matched;
+                    // Paket BEDAH: obat ditagih dari snapshot (buildPaketObatLines) → masuk
+                    // basis penuh (qty snapshot), sama perlakuan PROCEDURE/BHP/IOL → net = sell.
+                    $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * (int) $it->quantity;
                     continue;
                 }
                 // IOL komposisi paket KINI ditagih (buildPaketIolLines) → IKUT basis diskon
@@ -1340,6 +1453,61 @@ class KasirService
             $this->systemInsurerCache[$type] = Insurer::where('is_system', true)->where('type', $type)->value('id');
         }
         return $this->systemInsurerCache[$type];
+    }
+
+    /**
+     * Resolve harga VARIAN KEMASAN JUAL obat (medication_sale_units) — batch, bebas N+1.
+     *
+     * Resolusi BERBASIS LABEL per (medication, label), bukan id baris pick-time —
+     * supaya COB/insurer-override (buildLines dgn $insurerId penjamin-2) me-reprice
+     * kemasan dgn benar. Urutan per pair:
+     *   1. baris insurer pasien persis (TPA-aware via resolveTariffInsurerId), aktif;
+     *   2. baris insurer_id NULL ("semua penjamin"), aktif;
+     *   3. fallback baris rujukan item (withTrashed) + warning — kemasan yang sengaja
+     *      dipilih farmasi JANGAN ditagih 0 hanya karena master diubah belakangan.
+     * TANPA fallback dekomposisi ke harga satuan (harga kemasan = independen).
+     *
+     * @param array<int,array{medication_id:string,label:string,fallback_unit_id:string}> $pairs
+     * @return array<string,float> map "medication_id|LOWER(label)" => harga kemasan
+     */
+    public function resolveSaleUnitPrices(array $pairs, string $guarantorType, ?string $insurerId): array
+    {
+        if (empty($pairs)) {
+            return [];
+        }
+        $resolved = $this->resolveTariffInsurerId($insurerId, $guarantorType);
+
+        $medIds = array_values(array_unique(array_column($pairs, 'medication_id')));
+        $rows = \App\Models\MedicationSaleUnit::query()
+            ->whereIn('medication_id', $medIds)
+            ->where('is_active', true)
+            ->where(fn ($q) => $q->whereNull('insurer_id')->orWhere('insurer_id', $resolved))
+            ->get();
+
+        $byKey = [];
+        foreach ($rows as $r) {
+            $key = $r->medication_id . '|' . mb_strtolower($r->label);
+            $cur = $byKey[$key] ?? null;
+            // insurer persis menang atas baris NULL ("semua penjamin").
+            if (! $cur || ($r->insurer_id === $resolved && $cur->insurer_id !== $resolved)) {
+                $byKey[$key] = $r;
+            }
+        }
+
+        $out = [];
+        foreach ($pairs as $p) {
+            $key = $p['medication_id'] . '|' . mb_strtolower($p['label']);
+            if (isset($byKey[$key])) {
+                $out[$key] = (float) $byKey[$key]->price;
+                continue;
+            }
+            // Fallback: baris rujukan item (boleh trashed/nonaktif) — harga terakhir
+            // yang diketahui, lebih jujur daripada Rp 0 untuk kemasan terpilih.
+            $ref = \App\Models\MedicationSaleUnit::withTrashed()->find($p['fallback_unit_id']);
+            $out[$key] = (float) ($ref?->price ?? 0);
+            \Log::warning("Kemasan jual '{$p['label']}' obat {$p['medication_id']} tak terresolve di penjamin — pakai harga baris rujukan.", ['sale_unit_id' => $p['fallback_unit_id']]);
+        }
+        return $out;
     }
 
     /**

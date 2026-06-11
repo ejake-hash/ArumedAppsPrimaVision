@@ -24,7 +24,7 @@ const GOLONGAN = [
 const config = {
   resourceKey: 'obat',
   title: 'Obat',
-  description: 'Master daftar obat — formularium, golongan BPOM, form sediaan.',
+  description: 'Master daftar obat — formularium, golongan BPOM, form sediaan. Harga & pos kwitansi (Obat Tindakan/Pulang/Injeksi) diatur di Buku Tarif, bukan di sini.',
   searchPlaceholder: 'Cari kode/nama/generic/komposisi/pabrik…',
   extraSearchParam: 'search',
   csvShowTemplate: true,

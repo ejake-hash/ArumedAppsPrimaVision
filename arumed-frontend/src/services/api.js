@@ -561,6 +561,14 @@ export const tarifPaketApi = {
     remove: (type, id)        => api.delete(`/tarif-paket/tarif/${type}/${id}`),
   },
 
+  // --- Kemasan jual obat (varian per Strip/Box, harga independen per kemasan) ---
+  kemasanObat: {
+    list:   (medicationId)       => api.get(`/tarif-paket/obat/${medicationId}/kemasan`),
+    create: (medicationId, data) => api.post(`/tarif-paket/obat/${medicationId}/kemasan`, data),
+    update: (id, data)           => api.put(`/tarif-paket/kemasan-obat/${id}`, data),
+    remove: (id)                 => api.delete(`/tarif-paket/kemasan-obat/${id}`),
+  },
+
   // --- Metode Bayar (detail insurer + CSV per-insurer per-type) ---
   metodeBayar: {
     detail:      (id)              => api.get(`/tarif-paket/metode-bayar/${id}`),
@@ -863,6 +871,8 @@ export const farmasiApi = {
   cancelResep:       (id)         => api.put(`/farmasi/resep/${id}/cancel`),
   storeItem:         (rid, items) => api.post(`/farmasi/resep/${rid}/item`, { items }),
   updateItem:        (id, data)   => api.put(`/farmasi/resep-item/${id}`, data),
+  // Pilih varian kemasan jual (Strip/Box) saat verifikasi; sale_unit_id null = lepas.
+  setKemasan:        (id, data)   => api.put(`/farmasi/resep-item/${id}/kemasan`, data),
   // Hapus item resep (opsional alasan utk audit substitusi/koreksi).
   deleteItem:        (id, reason) => api.delete(`/farmasi/resep-item/${id}`, { data: reason ? { change_reason: reason } : {} }),
   // Penjualan obat tambahan (OTC) untuk pasien antrean Farmasi tanpa resep dokter.

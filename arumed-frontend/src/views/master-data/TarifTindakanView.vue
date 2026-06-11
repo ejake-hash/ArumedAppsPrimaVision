@@ -225,13 +225,22 @@ const formatRupiah = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID', { min
 // Edit inline = set harga jual UMUM (PUT /master/buku-tarif/harga). Tambah/edit
 // nama/kategori/CSV tetap lewat tab per-tipe (Tindakan/Obat/BHP/IOL).
 const TIPE_LABEL = { tindakan: 'Tindakan', obat: 'Obat', bhp: 'BHP', iol: 'IOL' }
+// Pos kwitansi obat (Obat Tindakan/Pulang/Injeksi). kategori baris obat = label pos →
+// dipetakan ke kode saat edit inline (selaras MetodeBayarTarifTab & MedicationTariff).
+const POS_OPTIONS = [
+  { value: 'OBAT_PULANG', label: 'Obat Pulang' },
+  { value: 'OBAT_TINDAKAN', label: 'Obat Tindakan' },
+  { value: 'OBAT_INJEKSI', label: 'Obat Injeksi' },
+]
+const posCodeFromLabel = (label) => POS_OPTIONS.find((o) => o.label === label)?.value || 'OBAT_PULANG'
+const posLabelFromCode = (code) => POS_OPTIONS.find((o) => o.value === code)?.label || 'Obat Pulang'
 const buku = ref({ rows: [], meta: null, loading: false, error: null })
 const bukuSearch = ref('')
 const bukuKategori = ref('')
 const bukuTipe = ref('')
 const kategoriOptions = ref([])
 let bukuSearchDebounce = null
-const bukuEdit = ref({ key: null, value: '' })
+const bukuEdit = ref({ key: null, value: '', pos: null })
 
 async function loadBukuTarif(page = 1) {
   buku.value.loading = true
@@ -315,15 +324,24 @@ async function editTindakanRow(row) {
 }
 
 function startEditHarga(row) {
-  bukuEdit.value = { key: `${row.tipe}:${row.id}`, value: String(Math.round(Number(row.harga ?? 0))) }
+  bukuEdit.value = {
+    key: `${row.tipe}:${row.id}`,
+    value: String(Math.round(Number(row.harga ?? 0))),
+    // Obat: kategori baris = label pos → kode awal untuk dropdown.
+    pos: row.tipe === 'obat' ? posCodeFromLabel(row.kategori) : null,
+  }
 }
-function cancelEditHarga() { bukuEdit.value = { key: null, value: '' } }
+function cancelEditHarga() { bukuEdit.value = { key: null, value: '', pos: null } }
 async function saveEditHarga(row) {
   const price = Number(String(bukuEdit.value.value).replace(/[^\d]/g, ''))
   if (!Number.isFinite(price) || price < 0) { showToast('e', 'Harga tidak valid'); return }
   try {
-    await masterApi.bukuTarif.setHarga({ tipe: row.tipe, item_id: row.id, price })
+    const payload = { tipe: row.tipe, item_id: row.id, price }
+    if (row.tipe === 'obat' && bukuEdit.value.pos) payload.pos_kwitansi = bukuEdit.value.pos
+    await masterApi.bukuTarif.setHarga(payload)
     row.harga = price
+    // Sinkronkan kategori tampil bila pos obat berubah.
+    if (row.tipe === 'obat' && bukuEdit.value.pos) row.kategori = posLabelFromCode(bukuEdit.value.pos)
     showToast('s', 'Harga diperbarui')
     cancelEditHarga()
   } catch (e) {
@@ -589,7 +607,16 @@ function onImported(result) {
                 <strong class="tt-name">{{ row.nama }}</strong>
                 <span class="tt-tipe-pill" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] }}</span>
               </td>
-              <td><span class="tt-cat-pill">{{ row.kategori }}</span></td>
+              <td>
+                <select
+                  v-if="bukuEdit.key === row._key && row.tipe === 'obat'"
+                  class="tt-buku-posinput"
+                  v-model="bukuEdit.pos"
+                >
+                  <option v-for="o in POS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+                <span v-else class="tt-cat-pill">{{ row.kategori }}</span>
+              </td>
               <td>{{ row.satuan || '—' }}</td>
               <td class="ar">
                 <input
@@ -925,6 +952,8 @@ function onImported(result) {
 .tt-tipe-pill[data-t="iol"] { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
 .tt-buku-priceinput { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; text-align: right; }
 .tt-buku-priceinput:focus { outline: none; }
+.tt-buku-posinput { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; }
+.tt-buku-posinput:focus { outline: none; }
 .tt-kamar-ro { font-size: 11px; color: var(--tm); font-style: italic; white-space: nowrap; }
 .tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.9rem; font-size: 12.5px; color: var(--tm); }
 .tt-buku-pager button:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -160,7 +160,58 @@ async function doRemoveMember() {
   }
 }
 
-onMounted(loadDetail)
+// ─── Buku Tarif — Harga Efektif penjamin ini ───────────────────────────────
+// Seluruh katalog Buku Tarif dgn harga yang BERLAKU utk penjamin ini, mengikuti
+// resolusi kasir (KasirService::getPrice): harga PKS penjamin → fallback UMUM → 0.
+// Item yang tidak di-set di Metode Bayar TETAP tampil (fallback UMUM) — read-only.
+const efektif = ref({ rows: [], meta: { current_page: 1, last_page: 1, total: 0, per_page: 25 }, loading: false, error: null })
+const efSearch = ref('')
+const efKategori = ref('')
+const efKategoriOptions = ref([])
+let efDebounce = null
+
+const SUMBER_META = {
+  PENJAMIN: { label: 'Harga PKS',   cls: 'pks' },
+  UMUM:     { label: 'Ikut UMUM',   cls: 'umum' },
+  NONE:     { label: 'Belum ada',   cls: 'none' },
+}
+const TIPE_LABEL = { tindakan: 'Tindakan', obat: 'Obat', bhp: 'BHP', iol: 'IOL', kamar: 'Kamar' }
+const formatRp = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID', { minimumFractionDigits: 0 })
+
+async function loadEfektif(page = 1) {
+  if (!targetInsurerId.value) return
+  efektif.value.loading = true
+  efektif.value.error = null
+  try {
+    const params = { page, per_page: efektif.value.meta.per_page, insurer_id: targetInsurerId.value }
+    if (efSearch.value.trim()) params.search = efSearch.value.trim()
+    if (efKategori.value) params.kategori = efKategori.value
+    const res = await masterApi.bukuTarif.list(params)
+    const payload = res.data?.data ?? {}
+    const pag = payload.tarif ?? {}
+    efektif.value.rows = pag.data ?? []
+    efektif.value.meta = {
+      current_page: pag.current_page ?? 1,
+      last_page:    pag.last_page ?? 1,
+      total:        pag.total ?? 0,
+      per_page:     pag.per_page ?? 25,
+    }
+    if (Array.isArray(payload.kategori_options)) efKategoriOptions.value = payload.kategori_options
+  } catch (e) {
+    efektif.value.error = e.response?.data?.message ?? 'Gagal memuat Buku Tarif efektif'
+  } finally {
+    efektif.value.loading = false
+  }
+}
+function onEfSearch() {
+  clearTimeout(efDebounce)
+  efDebounce = setTimeout(() => loadEfektif(1), 300)
+}
+function onEfKategori() { loadEfektif(1) }
+// targetInsurerId bisa berubah setelah detail termuat (anak TPA → induk).
+watch(targetInsurerId, () => loadEfektif(1))
+
+onMounted(() => { loadDetail(); loadEfektif(1) })
 </script>
 
 <template>
@@ -245,6 +296,14 @@ onMounted(loadDetail)
         >
           Tarif Tindakan (PKS)
         </button>
+        <button
+          class="mbd-tab"
+          :class="{ active: activeTab === 'efektif' }"
+          role="tab"
+          @click="activeTab = 'efektif'"
+        >
+          Buku Tarif (Efektif)
+        </button>
       </div>
 
       <!-- Tab 1: Anggota / Child (kelola dari sisi TPA induk) -->
@@ -311,6 +370,78 @@ onMounted(loadDetail)
           :read-only="isChild"
           @changed="onChanged"
         />
+      </section>
+
+      <!-- Buku Tarif — Harga Efektif: seluruh katalog dgn harga yang berlaku utk penjamin ini -->
+      <section v-show="!canManageMembers || activeTab === 'efektif'" class="mbd-section">
+        <div class="mbd-section-head">
+          <div>
+            <h2>Buku Tarif — Harga Efektif</h2>
+            <p>
+              Seluruh item Buku Tarif dengan harga yang <strong>berlaku untuk penjamin ini</strong>,
+              sesuai perhitungan kasir: harga PKS penjamin → bila tidak di-set, otomatis ikut
+              harga UMUM → bila keduanya belum ada, Rp 0. Hanya-baca; ubah override di tab
+              Tarif Tindakan (PKS) / harga UMUM di Buku Tarif.
+            </p>
+          </div>
+        </div>
+
+        <div class="mbd-ef-controls">
+          <div class="mbd-ef-search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input v-model="efSearch" type="text" placeholder="Cari nama / kode item…" @input="onEfSearch" />
+          </div>
+          <select v-model="efKategori" class="mbd-ef-select" @change="onEfKategori">
+            <option value="">Semua kategori</option>
+            <option v-for="k in efKategoriOptions" :key="k" :value="k">{{ k }}</option>
+          </select>
+          <span class="mbd-ef-total" v-if="!efektif.loading">{{ efektif.meta.total }} item</span>
+        </div>
+
+        <div v-if="efektif.error" class="mbd-error">{{ efektif.error }}</div>
+        <div v-else class="mbd-ef-tablewrap">
+          <table class="mbd-ef-table">
+            <thead>
+              <tr>
+                <th style="width:46px" class="ac">No</th>
+                <th style="width:110px">Kode</th>
+                <th>Nama Item</th>
+                <th style="width:200px">Kategori</th>
+                <th style="width:140px" class="ar">Harga Efektif</th>
+                <th style="width:130px" class="ac">Sumber Harga</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="efektif.loading"><td colspan="6" class="mbd-ef-empty">Memuat…</td></tr>
+              <tr v-else-if="!efektif.rows.length"><td colspan="6" class="mbd-ef-empty">Tidak ada item.</td></tr>
+              <tr v-for="(row, i) in (efektif.loading ? [] : efektif.rows)" :key="`${row.tipe}:${row.id}`">
+                <td class="ac">{{ (efektif.meta.current_page - 1) * efektif.meta.per_page + i + 1 }}</td>
+                <td><span class="mbd-ef-code">{{ row.kode || '—' }}</span></td>
+                <td>
+                  <strong class="mbd-ef-name">{{ row.nama }}</strong>
+                  <span class="mbd-ef-tipe" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] ?? row.tipe }}</span>
+                </td>
+                <td><span class="mbd-ef-cat">{{ row.kategori }}</span></td>
+                <td class="ar"><span class="mbd-ef-price" :class="{ zero: Number(row.harga) <= 0 }">{{ formatRp(row.harga) }}</span></td>
+                <td class="ac">
+                  <span class="mbd-ef-src" :data-s="(SUMBER_META[row.sumber] ?? SUMBER_META.UMUM).cls">
+                    {{ (SUMBER_META[row.sumber] ?? SUMBER_META.UMUM).label }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="efektif.meta.last_page > 1" class="mbd-ef-pager">
+          <span class="mbd-page-info">Halaman {{ efektif.meta.current_page }} / {{ efektif.meta.last_page }} · {{ efektif.meta.total }} item</span>
+          <div class="mbd-page-nav">
+            <button :disabled="efektif.meta.current_page <= 1" @click="loadEfektif(1)">«</button>
+            <button :disabled="efektif.meta.current_page <= 1" @click="loadEfektif(efektif.meta.current_page - 1)">‹</button>
+            <button :disabled="efektif.meta.current_page >= efektif.meta.last_page" @click="loadEfektif(efektif.meta.current_page + 1)">›</button>
+            <button :disabled="efektif.meta.current_page >= efektif.meta.last_page" @click="loadEfektif(efektif.meta.last_page)">»</button>
+          </div>
+        </div>
       </section>
     </template>
 
@@ -615,4 +746,32 @@ onMounted(loadDetail)
 .mbd-toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .mbd-toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .mbd-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+
+/* ─── Buku Tarif — Harga Efektif ─────────────────────────────────────────── */
+.mbd-ef-controls { display: flex; align-items: center; gap: 10px; margin: 0.9rem 0 0.7rem; flex-wrap: wrap; }
+.mbd-ef-search { position: relative; flex: 1 1 240px; max-width: 340px; }
+.mbd-ef-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--tm); stroke-width: 2; }
+.mbd-ef-search input { width: 100%; padding: 7px 10px 7px 30px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; }
+.mbd-ef-search input:focus { outline: none; border-color: var(--ga); }
+.mbd-ef-select { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; max-width: 280px; }
+.mbd-ef-total { font-size: 12px; color: var(--tm); margin-left: auto; }
+.mbd-ef-tablewrap { overflow-x: auto; border: 1px solid var(--gb); border-radius: 10px; }
+.mbd-ef-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mbd-ef-table th { text-align: left; padding: 9px 10px; background: var(--bs); color: var(--tm); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.02em; border-bottom: 1px solid var(--gb); }
+.mbd-ef-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
+.mbd-ef-table tbody tr:last-child td { border-bottom: none; }
+.mbd-ef-table .ac { text-align: center; }
+.mbd-ef-table .ar { text-align: right; }
+.mbd-ef-empty { text-align: center; color: var(--tm); padding: 1.4rem !important; }
+.mbd-ef-code { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--tm); }
+.mbd-ef-name { font-weight: 500; }
+.mbd-ef-tipe { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--bs); color: var(--tm); border: 1px solid var(--gb); vertical-align: 1px; }
+.mbd-ef-cat { font-size: 12px; color: var(--tm); }
+.mbd-ef-price { font-weight: 600; }
+.mbd-ef-price.zero { color: var(--et); }
+.mbd-ef-src { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid; }
+.mbd-ef-src[data-s="pks"]  { background: var(--sb); color: var(--st); border-color: var(--sbd); }
+.mbd-ef-src[data-s="umum"] { background: var(--bs); color: var(--tm); border-color: var(--gb); }
+.mbd-ef-src[data-s="none"] { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.mbd-ef-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 0.8rem; }
 </style>

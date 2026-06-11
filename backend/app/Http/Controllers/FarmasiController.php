@@ -244,6 +244,29 @@ class FarmasiController extends Controller
         return $this->ok($item, 'Item diperbarui');
     }
 
+    /**
+     * PUT /farmasi/resep-item/{id}/kemasan — pilih varian kemasan jual (Strip/Box)
+     * saat VERIFIKASI. sale_unit_id null = lepas kemasan (kembali satuan kecil).
+     * split_remainder: sisa qty dipecah jadi item saudara satuan kecil (PECAH_KEMASAN).
+     */
+    public function setKemasanItem(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'sale_unit_id'    => 'nullable|uuid|exists:medication_sale_units,id',
+            'sale_unit_qty'   => 'required_with:sale_unit_id|integer|min:1',
+            'split_remainder' => 'nullable|boolean',
+            'change_reason'   => 'nullable|string|max:120',
+        ]);
+
+        try {
+            $item = $this->service->setKemasanItem($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($item, 'Kemasan item diperbarui');
+    }
+
     /** DELETE /farmasi/resep-item/{id} — body/query opsional: change_reason (audit) */
     public function deleteItemDispensing(Request $request, string $id): JsonResponse
     {
@@ -469,7 +492,11 @@ class FarmasiController extends Controller
      */
     public function exportOpname(Request $request): Response
     {
-        $rows = $this->service->getStokObat(['per_page' => 'all']);
+        // Opname dipisah per jenis: stok OBAT (default) atau BHP (bahan habis pakai).
+        $kind = strtolower((string) $request->query('kind', 'obat')) === 'bhp' ? 'bhp' : 'obat';
+        $rows = $kind === 'bhp'
+            ? $this->service->getStokBhp(['per_page' => 'all'])
+            : $this->service->getStokObat(['per_page' => 'all']);
 
         $out = fopen('php://temp', 'r+');
         fputcsv($out, ['No', 'Nama Produk', 'Formularium', 'Unit', 'Stok Sistem', 'Stok Fisik', 'Selisih'], ',', '"', '\\');
@@ -489,7 +516,7 @@ class FarmasiController extends Controller
         $csv = stream_get_contents($out);
         fclose($out);
 
-        $baseName = 'stok-opname-' . now()->format('Ymd');
+        $baseName = 'stok-opname-' . $kind . '-' . now()->format('Ymd');
         if (strtolower((string) $request->query('format', 'xlsx')) !== 'csv') {
             $xlsx = SpreadsheetHelper::csvToXlsx($csv, 'Stok Opname');
             return response($xlsx, 200, [

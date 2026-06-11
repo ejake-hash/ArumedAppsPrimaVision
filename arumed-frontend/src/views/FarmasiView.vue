@@ -477,7 +477,13 @@ async function verItemUpdate(item, payload) {
   if (verBusy.value) return
   verBusy.value = true
   try {
-    await farmasiApi.updateItem(item.id, { change_reason: verReason.value, ...payload })
+    // Alasan (mis. STOK_HABIS) hanya untuk SUBSTITUSI obat — itu deviasi nyata dari
+    // resep dokter. Sekadar ubah JUMLAH bukan deviasi, jadi jangan cap alasan supaya
+    // tak muncul "Alasan: STOK_HABIS" menyesatkan pada obat yang stoknya ada.
+    const body = payload.medication_id
+      ? { change_reason: verReason.value, ...payload }
+      : { ...payload }
+    await farmasiApi.updateItem(item.id, body)
     await fetchVerQueue()
     toast('s', 'Item diperbarui')
   } catch (err) {
@@ -489,6 +495,46 @@ function verSetQty(item, qty) {
   if (!Number.isFinite(q) || q < 1) { toast('w', 'Jumlah minimal 1'); return }
   if (q === Number(item.quantity)) return
   verItemUpdate(item, { quantity: q })
+}
+
+// ─── Varian kemasan jual (Strip/Box, harga independen) — dipilih saat verifikasi ──
+// Backend menjaga invarian quantity = sale_unit_qty × isi (stok tetap satuan kecil).
+async function verApplyKemasan(item, payload) {
+  if (verBusy.value) return
+  verBusy.value = true
+  try {
+    await farmasiApi.setKemasan(item.id, payload)
+    await fetchVerQueue()
+    toast('s', 'Kemasan item diperbarui')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengubah kemasan')
+  } finally { verBusy.value = false }
+}
+function verPickKemasan(item, saleUnitId) {
+  if (!saleUnitId) {
+    // Kembali satuan kecil — quantity dipertahankan (tagih per satuan lagi).
+    if (item.sale_unit_id) verApplyKemasan(item, { sale_unit_id: null })
+    return
+  }
+  const u = (item.available_sale_units ?? []).find((x) => x.id === saleUnitId)
+  if (!u) return
+  const qty = Number(item.quantity) || 1
+  const kemasanQty = Math.max(1, Math.floor(qty / u.isi))
+  const sisa = qty - kemasanQty * u.isi
+  let split = false
+  if (sisa > 0) {
+    split = window.confirm(
+      `${qty} ${item.medication?.unit ?? ''} = ${kemasanQty} ${u.label} (isi ${u.isi}) + sisa ${sisa}.\n` +
+      `OK = pecah sisa jadi item satuan terpisah.\nCancel = jadikan ${kemasanQty} ${u.label} saja (total menjadi ${kemasanQty * u.isi} ${item.medication?.unit ?? ''}).`
+    )
+  }
+  verApplyKemasan(item, { sale_unit_id: u.id, sale_unit_qty: kemasanQty, split_remainder: split })
+}
+function verSetKemasanQty(item, qty) {
+  const q = Number(qty)
+  if (!Number.isFinite(q) || q < 1) { toast('w', 'Jumlah kemasan minimal 1'); return }
+  if (q === Number(item.sale_unit_qty)) return
+  verApplyKemasan(item, { sale_unit_id: item.sale_unit_id, sale_unit_qty: q })
 }
 function applySubstitute(m) {
   if (!verSubItem.value || !m?.id) return
@@ -978,9 +1024,12 @@ async function saveEditStok() {
 const opnameRows   = ref([])
 const opnameSearch = ref('')
 const opnameSaving = ref(false)
+// Opname dipisah per jenis: stok unit Farmasi OBAT vs BHP (bahan habis pakai).
+const opnameKind   = ref('obat')   // 'obat' | 'bhp'
+const opnameSource = computed(() => (opnameKind.value === 'bhp' ? bhpList.value : stokList.value))
 
 function loadOpname() {
-  opnameRows.value = stokList.value.map((s) => ({
+  opnameRows.value = opnameSource.value.map((s) => ({
     id:          s.id,
     name:        s.name,
     unit:        s.unit ?? '',
@@ -1033,8 +1082,13 @@ const opnamePaged = computed(() => {
 watch(opnameSearch, () => { opnamePage.value = 1 })
 watch(opnameLastPage, (lp) => { if (opnamePage.value > lp) opnamePage.value = lp })
 
+// Muat ulang stok sistem sesuai jenis opname aktif (Obat / BHP).
+async function fetchOpnameSource() {
+  if (opnameKind.value === 'bhp') await fetchStokBhp()
+  else await fetchStok()
+}
 async function reloadOpname() {
-  await fetchStok()
+  await fetchOpnameSource()
   loadOpname()
   toast('i', 'Data opname dimuat ulang dari sistem')
 }
@@ -1044,30 +1098,41 @@ async function saveOpname() {
   if (!changed.length) { toast('i', 'Tidak ada selisih untuk disimpan'); return }
   if (!confirm(`Terapkan penyesuaian ${changed.length} item? Stok sistem akan disamakan dengan stok fisik.`)) return
   opnameSaving.value = true
+  const isBhp = opnameKind.value === 'bhp'
   let ok = 0, fail = 0
   for (const r of changed) {
     const f = opnameFisik(r)
     if (f === null) continue
     try {
-      await farmasiApi.updateStokObat(r.id, { stock: f })
+      await (isBhp ? farmasiApi.updateStokBhp(r.id, { stock: f }) : farmasiApi.updateStokObat(r.id, { stock: f }))
       ok++
     } catch { fail++ }
   }
   opnameSaving.value = false
   toast(fail ? 'w' : 's', `Penyesuaian selesai: ${ok} berhasil${fail ? `, ${fail} gagal` : ''}`)
-  await fetchStok()
+  await fetchOpnameSource()
   loadOpname()
 }
 
 // Saat tab opname dibuka: muat bila kosong; bila sudah ada baris TANPA selisih
 // tertunda, segarkan baseline dari stok terbaru (cegah "Stok Sistem" basi setelah
 // dispensing). Bila ada hitungan fisik yang belum disimpan, biarkan agar tak hilang.
-function openOpname() {
-  if (!opnameRows.value.length || !opnameChanged.value.length) loadOpname()
+async function openOpname() {
+  if (opnameRows.value.length && opnameChanged.value.length) return
+  // Pastikan sumber stok (Obat/BHP) sudah dimuat sebelum membangun lembar opname.
+  if (!opnameSource.value.length) await fetchOpnameSource()
+  loadOpname()
 }
 
 // Muat / segarkan data opname saat tab dibuka.
 watch(() => pgTab.value, (t) => { if (t === 'opname') openOpname() })
+// Ganti jenis opname (Obat ⇄ BHP): muat ulang lembar dari sumber yang sesuai.
+watch(opnameKind, async () => {
+  opnameSearch.value = ''
+  opnamePage.value = 1
+  if (!opnameSource.value.length) await fetchOpnameSource()
+  loadOpname()
+})
 
 // Export lembar kerja stok opname ke Excel (xlsx) — kolom Fisik/Selisih kosong.
 function triggerDownload(blob, filename) {
@@ -1084,9 +1149,9 @@ const opnameExporting = ref(false)
 async function exportOpnameExcel() {
   opnameExporting.value = true
   try {
-    const res = await farmasiApi.opnameExport({ format: 'xlsx' })
+    const res = await farmasiApi.opnameExport({ format: 'xlsx', kind: opnameKind.value })
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    triggerDownload(res.data, `stok-opname-${today}.xlsx`)
+    triggerDownload(res.data, `stok-opname-${opnameKind.value}-${today}.xlsx`)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal mengekspor stok opname')
   } finally {
@@ -1124,28 +1189,6 @@ const lapExpiring = computed(
     .sort((a, b) => a._days - b._days),
 )
 
-// ─── Riwayat pemberian obat ("obat ini diberikan ke siapa") ──────────────────
-const riwayatSearch = ref('')
-const riwayatList = computed(() => {
-  const q = riwayatSearch.value.toLowerCase().trim()
-  const l = q ? stokList.value.filter((s) => (s.name ?? '').toLowerCase().includes(q)) : stokList.value
-  return l.slice(0, 100)
-})
-const riwayatModal   = ref(null)   // { med, rows } | null
-const riwayatLoading = ref(false)
-async function openRiwayat(med) {
-  riwayatModal.value = { med, rows: [] }
-  riwayatLoading.value = true
-  try {
-    const { data } = await farmasiApi.obatRiwayat(med.id, { limit: 200 })
-    if (riwayatModal.value) riwayatModal.value.rows = data.data ?? []
-  } catch (err) {
-    toast('w', err.response?.data?.message ?? 'Gagal memuat riwayat pemberian')
-  } finally {
-    riwayatLoading.value = false
-  }
-}
-
 // ─── Tab Riwayat Pemberian (global, server-side) ─────────────────────────────
 // Daftar SEMUA obat yang diberikan ke pasien (resep ter-dispense + penjualan POS),
 // dengan pencarian (obat/pasien/no.RM), rentang tanggal, dan paginasi 50/halaman.
@@ -1153,16 +1196,16 @@ const rpRows    = ref([])
 const rpSearch  = ref('')
 const rpFrom    = ref('')
 const rpTo      = ref('')
-const rpJenis   = ref('')   // '' | RAJAL | RANAP | BEDAH | IGD | POS
+const rpJenis   = ref('')   // '' | RAJAL | RANAP | IGD | POS
 const rpLoading = ref(false)
-// Pilihan filter jenis pelayanan (Rawat Jalan/Inap/Bedah/IGD + Penjualan Bebas).
+// Sub-tab jenis pelayanan. Pemberian obat pasca-bedah dilebur ke Rawat Jalan/Inap
+// (lihat klasifikasi backend), jadi tak ada sub-tab "Bedah" tersendiri.
 const RP_JENIS_OPTS = [
-  { val: '',      label: 'Semua Jenis' },
+  { val: '',      label: 'Semua' },
   { val: 'RAJAL', label: 'Rawat Jalan' },
   { val: 'RANAP', label: 'Rawat Inap' },
-  { val: 'BEDAH', label: 'Bedah' },
   { val: 'IGD',   label: 'IGD' },
-  { val: 'POS',   label: 'Penjualan Bebas' },
+  { val: 'POS',   label: 'Obat Bebas' },
 ]
 // Kelas warna pill per jenis (selaras dengan jenis_kode dari backend).
 function rpPillClass(kode) {
@@ -2065,7 +2108,10 @@ function toast(type, msg) {
                 <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
                   Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }} · est {{ rp(d.est_total_price) }}
                 </div>
-                <div v-if="d.change_reason" class="dd-dose">Alasan: {{ d.change_reason }}</div>
+                <!-- Alasan hanya relevan utk obat yang benar disubstitusi/ditambah (deviasi
+                     dari resep dokter). Untuk item biasa, sembunyikan agar cap alasan lama
+                     (mis. STOK_HABIS dari ubah jumlah) tak menyesatkan. -->
+                <div v-if="d.change_reason && (d.original_medication_id || d.source === 'TAMBAHAN')" class="dd-dose">Alasan: {{ d.change_reason }}</div>
 
                 <!-- Picker substitusi -->
                 <div v-if="!verSel.verified_at && verSubItem?.id === d.id" class="otc-picker" style="margin-top:.4rem">
@@ -2081,10 +2127,32 @@ function toast(type, msg) {
                 </div>
               </div>
               <div class="dd-qty-col">
-                <span class="dd-qty-label">Jumlah</span>
-                <input :value="d.quantity" type="number" min="1" class="dd-qty" :disabled="!!verSel.verified_at || verBusy"
-                       @change="verSetQty(d, $event.target.value)" />
-                <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+                <!-- Varian kemasan jual (Strip/Box) — tampil bila obat punya kemasan -->
+                <select
+                  v-if="(d.available_sale_units?.length || d.sale_unit_id) && !d.is_bedah"
+                  class="fi ver-kemasan-sel"
+                  :value="d.sale_unit_id ?? ''"
+                  :disabled="!!verSel.verified_at || verBusy"
+                  @change="verPickKemasan(d, $event.target.value)"
+                >
+                  <option value="">Satuan ({{ d.medication?.unit ?? 'kecil' }})</option>
+                  <option v-for="u in d.available_sale_units ?? []" :key="u.id" :value="u.id">
+                    {{ u.label }} (isi {{ u.isi }}) — {{ rp(u.price) }}
+                  </option>
+                </select>
+
+                <span class="dd-qty-label">{{ d.sale_unit_id ? 'Jml kemasan' : 'Jumlah' }}</span>
+                <template v-if="d.sale_unit_id">
+                  <input :value="d.sale_unit_qty" type="number" min="1" class="dd-qty" :disabled="!!verSel.verified_at || verBusy"
+                         @change="verSetKemasanQty(d, $event.target.value)" />
+                  <span class="dd-unit">{{ d.sale_unit?.label ?? 'kemasan' }}</span>
+                  <span class="ver-kemasan-eq">= {{ d.quantity }} {{ d.medication?.unit ?? '' }}</span>
+                </template>
+                <template v-else>
+                  <input :value="d.quantity" type="number" min="1" class="dd-qty" :disabled="!!verSel.verified_at || verBusy"
+                         @change="verSetQty(d, $event.target.value)" />
+                  <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+                </template>
                 <div v-if="!verSel.verified_at" class="ver-item-actions">
                   <button class="ver-lnk" :disabled="verBusy" @click="openSubstitute(d)">Substitusi</button>
                   <button class="ver-lnk danger" :disabled="verBusy" @click="verRemove(d)">Hapus</button>
@@ -2443,6 +2511,10 @@ function toast(type, msg) {
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         <span>Opname terhadap <b>stok unit Farmasi</b>. Penyesuaian akan menyamakan stok sistem unit Farmasi dengan stok fisik di rak Farmasi (bukan gudang).</span>
       </div>
+      <div class="stok-kind-toggle">
+        <button :class="['skt-btn', opnameKind === 'obat' ? 'a' : '']" @click="opnameKind = 'obat'">Obat</button>
+        <button :class="['skt-btn', opnameKind === 'bhp' ? 'a' : '']" @click="opnameKind = 'bhp'">BHP (Bahan Habis Pakai)</button>
+      </div>
       <div class="opname-head">
         <div class="opname-stats">
           <div class="ostat"><span class="ostat-lbl">Item</span><b>{{ opnameStats.total }}</b></div>
@@ -2451,7 +2523,7 @@ function toast(type, msg) {
           <div class="ostat"><span class="ostat-lbl">Kurang</span><b class="minus">{{ opnameStats.minus }}</b></div>
         </div>
         <div class="opname-actions">
-          <input v-model="opnameSearch" class="fi" placeholder="Cari obat..." style="width: 200px" />
+          <input v-model="opnameSearch" class="fi" :placeholder="opnameKind === 'bhp' ? 'Cari BHP...' : 'Cari obat...'" style="width: 200px" />
           <button class="btn btn-secondary btn-sm" @click="reloadOpname">
             <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
             Muat Ulang
@@ -2658,15 +2730,19 @@ function toast(type, msg) {
         <span>Riwayat <b>obat yang diberikan ke pasien</b> — dari resep yang sudah diserahkan (<b>rawat jalan, rawat inap, bedah, IGD</b>) dan penjualan obat bebas (POS). Saring per jenis pelayanan, pencarian &amp; rentang tanggal.</span>
       </div>
 
+      <!-- Sub-tab jenis pelayanan -->
+      <div class="rp-subtabs">
+        <button v-for="o in RP_JENIS_OPTS" :key="o.val"
+                :class="['rp-subtab', rpJenis === o.val ? 'a' : '']"
+                @click="rpJenis = o.val">{{ o.label }}</button>
+      </div>
+
       <div class="rp-head">
         <div class="rp-search">
           <svg viewBox="0 0 24 24" class="stok-search-ico"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input v-model="rpSearch" class="fi stok-search-input" placeholder="Cari obat / pasien / no. RM…" @input="rpSearchInput" />
         </div>
         <div class="rp-dates">
-          <select v-model="rpJenis" class="fi" style="width:auto">
-            <option v-for="o in RP_JENIS_OPTS" :key="o.val" :value="o.val">{{ o.label }}</option>
-          </select>
           <label class="rp-date-lbl">Dari
             <input v-model="rpFrom" type="date" class="fi" />
           </label>
@@ -2812,86 +2888,8 @@ function toast(type, msg) {
         </div>
       </div>
 
-      <!-- Riwayat pemberian obat: "obat ini diberikan ke siapa" -->
-      <div>
-        <div class="opname-head">
-          <div class="lap-section" style="margin:0">Riwayat Pemberian Obat</div>
-          <div class="opname-actions">
-            <input v-model="riwayatSearch" class="fi" placeholder="Cari obat untuk lihat riwayat…" style="width:240px" />
-          </div>
-        </div>
-        <div class="po-table-wrap">
-          <table class="po-table">
-            <thead>
-              <tr>
-                <th style="width:48px" class="c">No.</th>
-                <th>Nama Produk</th>
-                <th>Formularium</th>
-                <th class="r">Stok</th>
-                <th class="c" style="width:120px">Diberikan ke</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="!riwayatList.length"><td colspan="5" class="po-state">Tidak ada obat cocok pencarian</td></tr>
-              <tr v-for="(s, i) in riwayatList" :key="s.id ?? s.name">
-                <td class="c muted">{{ i + 1 }}</td>
-                <td><strong>{{ s.name }}</strong></td>
-                <td><span class="kategori-pill">{{ s.formularium || '—' }}</span></td>
-                <td class="r">{{ s.stock }}</td>
-                <td class="c">
-                  <button class="btn btn-secondary btn-sm" @click="openRiwayat(s)">
-                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    Lihat
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Modal: riwayat pemberian satu obat -->
-    <div v-if="riwayatModal" class="es-overlay" @click.self="riwayatModal = null">
-      <div class="es-modal" style="max-width:640px">
-        <div class="es-head">
-          <h3>Riwayat Pemberian — {{ riwayatModal.med?.name }}</h3>
-          <button class="es-x" @click="riwayatModal = null" aria-label="Tutup">
-            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <div class="es-body">
-          <div v-if="riwayatLoading" class="po-state">Memuat riwayat…</div>
-          <div v-else-if="!riwayatModal.rows.length" class="po-state">Belum ada riwayat pemberian obat ini.</div>
-          <div v-else class="po-table-wrap" style="max-height:60vh; overflow:auto">
-            <table class="po-table">
-              <thead>
-                <tr>
-                  <th>Tanggal</th>
-                  <th>Pasien / Pembeli</th>
-                  <th>No. RM</th>
-                  <th class="r">Jumlah</th>
-                  <th>Sumber</th>
-                  <th>Petugas</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(r, i) in riwayatModal.rows" :key="i">
-                  <td class="muted">{{ fmtDateTime(r.tanggal) }}</td>
-                  <td><strong>{{ r.pasien }}</strong></td>
-                  <td class="muted">{{ r.no_rm || '—' }}</td>
-                  <td class="r">{{ r.quantity }}</td>
-                  <td><span class="kategori-pill">{{ r.sumber }}</span></td>
-                  <td class="muted">{{ r.petugas || '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div class="es-foot">
-          <button class="btn btn-secondary btn-sm" @click="riwayatModal = null">Tutup</button>
-        </div>
-      </div>
+      <!-- Catatan: riwayat "obat ini diberikan ke siapa" kini dilayani penuh oleh
+           tab "Riwayat Pemberian" (cari per nama obat, tanggal & petugas akurat). -->
     </div>
 
     <!-- Modal: Minta Barang / Retur ke gudang -->
@@ -3112,6 +3110,9 @@ function toast(type, msg) {
 .dd-qty { width: 60px; height: 30px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; text-align: center; font-size: 12px; font-weight: 600; outline: none; font-family: 'Inter', sans-serif; background: var(--bs); }
 .dd-qty:focus { border-color: var(--ga); background: #fff; }
 .dd-unit { font-size: 9px; color: var(--tu); }
+/* Varian kemasan jual (verifikasi) */
+.ver-kemasan-sel { width: 168px; height: 28px; font-size: 11px; padding: 0 6px; margin-bottom: 2px; }
+.ver-kemasan-eq { font-size: 9.5px; color: var(--tm); font-weight: 600; }
 
 .doc-note { margin: 0.65rem 1.1rem; padding: 7px 11px; background: var(--ib); border: 1px solid var(--ibd); color: var(--it); border-radius: 7px; font-size: 11px; }
 
@@ -3178,6 +3179,10 @@ function toast(type, msg) {
 .stok-kind-toggle { display: inline-flex; gap: 2px; padding: 3px; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; margin-bottom: 0.75rem; }
 .skt-btn { border: none; background: none; padding: 6px 14px; font-size: 12.5px; font-weight: 600; color: var(--tu); border-radius: 7px; cursor: pointer; }
 .skt-btn.a { background: var(--ga); color: #fff; }
+/* Sub-tab jenis pelayanan pada Riwayat Pemberian. */
+.rp-subtabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--bc); border: 1px solid var(--gb); border-radius: 9px; margin-bottom: 0.75rem; flex-wrap: wrap; }
+.rp-subtab { border: none; background: none; padding: 6px 14px; font-size: 12.5px; font-weight: 600; color: var(--tu); border-radius: 7px; cursor: pointer; }
+.rp-subtab.a { background: var(--ga); color: #fff; }
 .stok-head { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
 .stok-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -3226,6 +3231,8 @@ function toast(type, msg) {
 .jp-pos   { background: rgba(5, 150, 105, 0.12);  color: #047857; border-color: rgba(5, 150, 105, 0.28); }
 /* Asal resep gabungan: datang rawat jalan + dibedah hari yang sama. */
 .jp-rajal_bedah { background: rgba(190, 24, 93, 0.12); color: #9d174d; border-color: rgba(190, 24, 93, 0.28); }
+/* Instruksi obat pre-operasi dokter jaga (stat-dose Triase) — harus diberikan SEBELUM naik OT. */
+.jp-pre_op { background: rgba(13, 148, 136, 0.12); color: #0f766e; border-color: rgba(13, 148, 136, 0.28); }
 
 /* Badge asal + DPJP pada kartu/header antrean Verifikasi Farmasi. */
 .rx-asal { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 4px; }

@@ -680,6 +680,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/riwayat-pemberian',                     [FarmasiController::class, 'indexRiwayatPemberian']);
 
             Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);
+            Route::put('/resep-item/{id}/kemasan',           [FarmasiController::class, 'setKemasanItem']);
             Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing']);
             Route::delete('/resep-item/{id}',                [FarmasiController::class, 'deleteItemDispensing']);
             Route::post('/kunjungan/{visitId}/resep-otc',    [FarmasiController::class, 'storeOtcPrescription']);
@@ -1284,6 +1285,12 @@ Route::prefix('v1')->group(function () {
             Route::post('/tarif/{type}',                    [TarifPaketController::class, 'storeTarif'])->middleware('permission:tarif_paket.write');
             Route::put('/tarif/{type}/{id}',                [TarifPaketController::class, 'updateTarif'])->middleware('permission:tarif_paket.write');
             Route::delete('/tarif/{type}/{id}',             [TarifPaketController::class, 'deleteTarif'])->middleware('permission:tarif_paket.delete');
+
+            // --- KEMASAN JUAL OBAT (varian per Strip/Box, harga independen) ---
+            Route::get('/obat/{medicationId}/kemasan',      [MasterDataController::class, 'indexKemasanObat'])->middleware('permission:tarif_paket.read');
+            Route::post('/obat/{medicationId}/kemasan',     [MasterDataController::class, 'storeKemasanObat'])->middleware('permission:tarif_paket.write');
+            Route::put('/kemasan-obat/{id}',                [MasterDataController::class, 'updateKemasanObat'])->middleware('permission:tarif_paket.write');
+            Route::delete('/kemasan-obat/{id}',             [MasterDataController::class, 'deleteKemasanObat'])->middleware('permission:tarif_paket.delete');
 
             // --- HELPER: harga master live per item (untuk auto-fill saat tambah tarif) ---
             Route::get('/master-price/{type}/{itemId}',     [TarifPaketController::class, 'masterPrice'])->middleware('permission:tarif_paket.read');

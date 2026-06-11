@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\DocumentTemplate;
+use App\Models\MedicationTariff;
 use App\Services\FormRegistry\FieldRegistry;
 use App\Services\FormRegistry\FormParserService;
 use App\Services\FormRegistry\FormRegistryAudit;
@@ -984,10 +985,14 @@ class MasterDataController extends Controller
         return $this->ok(null, 'Tarif dihapus');
     }
 
-    /** Buku Tarif terpadu: Tindakan+Obat+BHP+IOL satu daftar berkategori. */
+    /**
+     * Buku Tarif terpadu: Tindakan+Obat+BHP+IOL satu daftar berkategori.
+     * Param opsional insurer_id → mode HARGA EFEKTIF penjamin (penjamin→UMUM→0,
+     * + kolom sumber PENJAMIN/UMUM/NONE) — dipakai detail Metode Bayar.
+     */
     public function indexBukuTarif(Request $request): JsonResponse
     {
-        $filters = $request->only(['search', 'kategori', 'tipe', 'aktif', 'per_page']);
+        $filters = $request->only(['search', 'kategori', 'tipe', 'aktif', 'per_page', 'insurer_id']);
         return $this->ok([
             'tarif'            => $this->service->indexBukuTarif($filters),
             'kategori_options' => $this->service->bukuTarifKategoriOptions(),
@@ -998,12 +1003,16 @@ class MasterDataController extends Controller
     public function setBukuTarifPrice(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'tipe'      => 'required|in:tindakan,obat,bhp,iol',
-            'item_id'   => 'required|string',
-            'price'     => 'required|numeric|min:0',
-            'is_active' => 'nullable|boolean',
+            'tipe'         => 'required|in:tindakan,obat,bhp,iol',
+            'item_id'      => 'required|string',
+            'price'        => 'required|numeric|min:0',
+            'is_active'    => 'nullable|boolean',
+            // pos kwitansi hanya relevan untuk obat (Obat Tindakan/Pulang/Injeksi).
+            'pos_kwitansi' => 'nullable|in:' . implode(',', MedicationTariff::POS_VALUES),
         ]);
-        $tariff = $this->service->setBukuTarifPrice($data['tipe'], $data['item_id'], (float) $data['price'], $data['is_active'] ?? true);
+        $tariff = $this->service->setBukuTarifPrice(
+            $data['tipe'], $data['item_id'], (float) $data['price'], $data['is_active'] ?? true, $data['pos_kwitansi'] ?? null
+        );
         return $this->ok($tariff, 'Harga diperbarui');
     }
 
@@ -1026,6 +1035,42 @@ class MasterDataController extends Controller
     {
         $this->service->deleteTarif('obat', $id);
         return $this->ok(null, 'Tarif dihapus');
+    }
+
+    // ─── Kemasan jual obat (varian per Strip/Box, harga independen) ──────────
+
+    public function indexKemasanObat(string $medicationId): JsonResponse
+    {
+        return $this->ok($this->service->indexKemasanObat($medicationId));
+    }
+
+    public function storeKemasanObat(Request $request, string $medicationId): JsonResponse
+    {
+        $data = $request->validate([
+            'label'      => 'required|string|max:50',
+            'isi'        => 'required|integer|min:1',
+            'price'      => 'required|numeric|min:0',
+            'insurer_id' => 'nullable|uuid|exists:insurers,id',
+            'is_active'  => 'nullable|boolean',
+        ]);
+        return $this->ok($this->service->storeKemasanObat($medicationId, $data), 'Kemasan jual disimpan', 201);
+    }
+
+    public function updateKemasanObat(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'label'     => 'sometimes|string|max:50',
+            'isi'       => 'sometimes|integer|min:1',
+            'price'     => 'sometimes|numeric|min:0',
+            'is_active' => 'sometimes|boolean',
+        ]);
+        return $this->ok($this->service->updateKemasanObat($id, $data), 'Kemasan jual diperbarui');
+    }
+
+    public function deleteKemasanObat(string $id): JsonResponse
+    {
+        $this->service->deleteKemasanObat($id);
+        return $this->ok(null, 'Kemasan jual dihapus');
     }
 
     public function indexTarifBhp(Request $request): JsonResponse

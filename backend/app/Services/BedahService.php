@@ -1638,12 +1638,15 @@ class BedahService
      * muncul di antrean Farmasi via QueueService::nextAfterKasir saat pasien selesai
      * KASIR — TIDAK perlu enqueue manual.
      *
-     * CATATAN is_bedah (penyerapan ke harga paket): default FALSE → obat ditagih
-     * sebagai obat pulang (buildObatLines SKIP is_bedah=true, dianggap sudah masuk
-     * harga paket). Item dari "paket obat pasca-bedah" boleh ditandai `bundled`=true;
+     * CATATAN is_bedah (penanda komponen paket): default FALSE → obat ditagih sebagai
+     * obat pulang. Bila TRUE → obat dianggap komponen paket bedah: ditagih dari SNAPSHOT
+     * paket (KasirService::buildPaketObatLines) dan di-SKIP di buildObatLines agar tak
+     * dobel (selain itu buildObatLines juga punya safety-net dedup by medication_id vs
+     * komposisi paket). Item dari "paket obat pasca-bedah" boleh ditandai `bundled`=true;
      * is_bedah HANYA di-set true bila bundled DAN pasien punya paket bedah aktif
      * (VisitSurgeryPackage). Pengaman: pasien tanpa paket → obat tetap ditagih walau
-     * bundled; obat manual (bundled=false) → selalu ditagih.
+     * bundled; obat manual (bundled=false) → selalu ditagih (kecuali medication_id-nya
+     * kebetulan ada di komposisi paket → terdedup oleh safety-net).
      *
      * @param array<int,array{medication_id?:string,quantity?:int,dose?:string,
      *              frequency?:string,route?:string,duration_days?:int,notes?:string,

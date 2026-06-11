@@ -17,6 +17,7 @@ use App\Models\Insurer;
 use App\Models\IolItem;
 use App\Models\IolTariff;
 use App\Models\Medication;
+use App\Models\MedicationSaleUnit;
 use App\Models\MedicationTariff;
 use App\Models\MedicalEquipment;
 use App\Models\Procedure;
@@ -1724,6 +1725,30 @@ class MasterDataService
     }
 
     /**
+     * Normalisasi input pos kwitansi obat dari CSV/UI → kode kanonis (OBAT_*) atau null.
+     * Terima kode (OBAT_TINDAKAN) maupun label ("Obat Tindakan", case-insensitive).
+     * Kosong/tak dikenal → null (pos tak diubah).
+     */
+    private function normalizePosKwitansi(?string $raw): ?string
+    {
+        $v = trim((string) $raw);
+        if ($v === '') {
+            return null;
+        }
+        $upper = strtoupper($v);
+        if (in_array($upper, MedicationTariff::POS_VALUES, true)) {
+            return $upper;
+        }
+        // cocokkan label (POS_LABELS: kode => label)
+        foreach (MedicationTariff::POS_LABELS as $code => $label) {
+            if (strcasecmp($label, $v) === 0) {
+                return $code;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Upsert satu baris tarif (item × insurer) yang AMAN terhadap soft-delete.
      *
      * Tabel tarif pakai SoftDeletes + unique index PLAIN (item_id, insurer_id) tanpa
@@ -1778,42 +1803,200 @@ class MasterDataService
     }
 
     // =========================================================================
+    // KEMASAN JUAL OBAT (medication_sale_units) — varian per Strip/Box dgn harga
+    // independen per kemasan. Kemasan dasar (satuan kecil) = medication_tariffs.
+    // =========================================================================
+
+    public function indexKemasanObat(string $medicationId): \Illuminate\Support\Collection
+    {
+        Medication::findOrFail($medicationId);
+        return MedicationSaleUnit::with('insurer')
+            ->where('medication_id', $medicationId)
+            ->orderBy('label')->orderByRaw('insurer_id NULLS FIRST')
+            ->get();
+    }
+
+    /**
+     * Upsert kemasan jual — soft-delete-aware by (medication, insurer, label),
+     * pola upsertTarifRow (unique partial menahan baris trashed → restore).
+     * Validasi: isi seragam per (obat,label) lintas penjamin (resolusi billing
+     * berbasis label — isi divergen = dasar qty berubah diam-diam); label tidak
+     * boleh sama dgn satuan dasar obat (rancu dgn kemasan dasar satuan kecil).
+     */
+    public function storeKemasanObat(string $medicationId, array $data): MedicationSaleUnit
+    {
+        $med   = Medication::findOrFail($medicationId);
+        $label = trim((string) $data['label']);
+        $isi   = (int) $data['isi'];
+
+        if (strcasecmp($label, (string) $med->unit) === 0) {
+            throw new \Exception("Label kemasan tidak boleh sama dengan satuan dasar obat ('{$med->unit}') — kemasan dasar diatur lewat harga Buku Tarif.", 422);
+        }
+        $this->assertKemasanIsiSeragam($medicationId, $label, $isi, null);
+
+        $existing = MedicationSaleUnit::withTrashed()
+            ->where('medication_id', $medicationId)
+            ->where('insurer_id', $data['insurer_id'] ?? null)
+            ->whereRaw('LOWER(label) = ?', [mb_strtolower($label)])
+            ->first();
+
+        $values = [
+            'label'     => $label,
+            'isi'       => $isi,
+            'price'     => $data['price'],
+            'is_active' => $data['is_active'] ?? true,
+        ];
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+            }
+            $existing->update($values);
+            $unit = $existing;
+        } else {
+            $unit = MedicationSaleUnit::create([
+                'medication_id' => $medicationId,
+                'insurer_id'    => $data['insurer_id'] ?? null,
+            ] + $values);
+        }
+
+        $this->log(auth('api')->id(), 'UPSERT_KEMASAN_OBAT', MedicationSaleUnit::class, $unit->id, "med:{$medicationId} label:{$label}");
+        return $unit->load('insurer');
+    }
+
+    public function updateKemasanObat(string $id, array $data): MedicationSaleUnit
+    {
+        $unit = MedicationSaleUnit::findOrFail($id);
+
+        // isi tidak boleh berubah selagi dirujuk resep berjalan (quantity tersimpan
+        // = sale_unit_qty × isi lama → matematika kemasan miring). label/price/aktif
+        // bebas (harga memang live, filosofi getPrice).
+        if (array_key_exists('isi', $data) && (int) $data['isi'] !== (int) $unit->isi) {
+            if ($this->kemasanDirujukResepBerjalan($id)) {
+                throw new \Exception('Isi kemasan tidak bisa diubah — sedang dipakai resep yang berjalan. Selesaikan/batalkan resep tsb, atau buat kemasan baru dengan label berbeda.', 422);
+            }
+            $this->assertKemasanIsiSeragam($unit->medication_id, $data['label'] ?? $unit->label, (int) $data['isi'], $id);
+        }
+        if (array_key_exists('label', $data)) {
+            $label = trim((string) $data['label']);
+            $med   = $unit->medication;
+            if ($med && strcasecmp($label, (string) $med->unit) === 0) {
+                throw new \Exception("Label kemasan tidak boleh sama dengan satuan dasar obat ('{$med->unit}').", 422);
+            }
+        }
+
+        $unit->update(array_intersect_key($data, array_flip(['label', 'isi', 'price', 'is_active'])));
+        $this->log(auth('api')->id(), 'UPDATE_KEMASAN_OBAT', MedicationSaleUnit::class, $id);
+        return $unit->fresh('insurer');
+    }
+
+    public function deleteKemasanObat(string $id): void
+    {
+        $unit = MedicationSaleUnit::findOrFail($id);
+        if ($this->kemasanDirujukResepBerjalan($id)) {
+            throw new \Exception('Kemasan sedang dipakai resep yang berjalan — tidak bisa dihapus. Nonaktifkan saja, atau selesaikan resep tsb dulu.', 422);
+        }
+        $unit->delete();
+        $this->log(auth('api')->id(), 'DELETE_KEMASAN_OBAT', MedicationSaleUnit::class, $id);
+    }
+
+    /** Kemasan dirujuk prescription_items pada resep in-flight (DRAFT/SUBMITTED/DISPENSING)? */
+    private function kemasanDirujukResepBerjalan(string $saleUnitId): bool
+    {
+        return \App\Models\PrescriptionItem::where('sale_unit_id', $saleUnitId)
+            ->whereHas('prescription', fn ($q) => $q->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING']))
+            ->exists();
+    }
+
+    /**
+     * Invariant: untuk satu (obat, label), SEMUA baris (NULL + per-insurer) wajib
+     * isi sama — resolusi harga billing berbasis label; isi divergen antar baris
+     * membuat dasar qty berubah tergantung penjamin.
+     */
+    private function assertKemasanIsiSeragam(string $medicationId, string $label, int $isi, ?string $exceptId): void
+    {
+        $q = MedicationSaleUnit::where('medication_id', $medicationId)
+            ->whereRaw('LOWER(label) = ?', [mb_strtolower(trim($label))])
+            ->where('isi', '!=', $isi);
+        if ($exceptId) {
+            $q->where('id', '!=', $exceptId);
+        }
+        if ($q->exists()) {
+            throw new \Exception("Isi kemasan '{$label}' harus sama di semua penjamin (sudah ada baris dengan isi berbeda).", 422);
+        }
+    }
+
+    // =========================================================================
     // BUKU TARIF — daftar terpadu (Tindakan + Obat + BHP + IOL) berkategori.
     // Satu sumber harga jual UMUM (baris tarif insurer UMUM; fallback harga master).
     // =========================================================================
 
     /**
-     * UNION ALL 4 tipe item → bentuk seragam {tipe,id,kode,nama,kategori,harga,satuan,aktif}.
-     * Harga = baris tarif UMUM (procedure/medication/bhp/iol_tariffs) bila ada, fallback
-     * kolom harga master. Kategori: tindakan=category, obat='OBAT', bhp=label kategori,
-     * iol='IOL'. Dipakai indexBukuTarif + bukuTarifKategoriOptions.
+     * UNION ALL 4 tipe item → bentuk seragam {tipe,id,kode,nama,kategori,harga,satuan,aktif,sumber}.
+     *
+     * Mode UMUM ($insurerId null — halaman Buku Tarif): harga = baris tarif UMUM bila ada,
+     * fallback kolom harga master (info tampilan). sumber = UMUM | MASTER.
+     *
+     * Mode PENJAMIN ($insurerId terisi — "Buku Tarif Harga Efektif" di detail Metode Bayar):
+     * harga = HARGA EFEKTIF yang benar-benar ditagih kasir, mengikuti resolusi
+     * KasirService::getPrice → baris tarif penjamin → fallback baris UMUM → 0 (TANPA
+     * fallback harga master). sumber = PENJAMIN | UMUM | NONE. $insurerId diasumsikan
+     * SUDAH di-resolve ke induk TPA (Insurer::tariffInsurerId) oleh pemanggil.
+     *
+     * Kategori: tindakan=category, obat=pos kwitansi (dari baris UMUM — kasir baca pos
+     * dari UMUM), bhp=label kategori, iol='IOL'. Dipakai indexBukuTarif + kategoriOptions.
      */
-    private function bukuTarifUnion(): \Illuminate\Database\Query\Builder
+    private function bukuTarifUnion(?string $insurerId = null): \Illuminate\Database\Query\Builder
     {
         $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
-        $joinUmum = function ($join, string $fk) use ($umumId) {
-            $join->on("t.$fk", '=', 'x.id')
-                 ->where('t.insurer_id', $umumId)
-                 ->where('t.is_active', true)
-                 ->whereNull('t.deleted_at');
+        $joinTarif = function (string $alias, string $insId) {
+            return function ($join, string $fk) use ($alias, $insId) {
+                $join->on("$alias.$fk", '=', 'x.id')
+                     ->where("$alias.insurer_id", $insId)
+                     ->where("$alias.is_active", true)
+                     ->whereNull("$alias.deleted_at");
+            };
         };
+        $joinUmum = $joinTarif('t', $umumId);
+        // Penjamin == UMUM → mode UMUM biasa (hindari join ganda baris sama).
+        $perInsurer = $insurerId !== null && $insurerId !== $umumId;
+        $joinIns = $perInsurer ? $joinTarif('ti', $insurerId) : null;
+
+        // Ekspresi harga & sumber per mode (kolom master fallback berbeda per tipe).
+        $harga = fn (string $masterCol) => $perInsurer
+            ? 'COALESCE(ti.price, t.price, 0)::numeric'
+            : "COALESCE(t.price, {$masterCol}, 0)::numeric";
+        $sumber = $perInsurer
+            ? "CASE WHEN ti.price IS NOT NULL THEN 'PENJAMIN' WHEN t.price IS NOT NULL THEN 'UMUM' ELSE 'NONE' END"
+            : "CASE WHEN t.price IS NOT NULL THEN 'UMUM' ELSE 'MASTER' END";
 
         $proc = DB::table('procedures as x')
             ->leftJoin('procedure_tariffs as t', fn ($j) => $joinUmum($j, 'procedure_id'))
+            ->when($perInsurer, fn ($q) => $q->leftJoin('procedure_tariffs as ti', fn ($j) => $joinIns($j, 'procedure_id')))
             ->whereNull('x.deleted_at')
             ->selectRaw("'tindakan' as tipe, x.id::text as id, x.code as kode, x.name as nama,
                 COALESCE(NULLIF(x.category, ''), 'TINDAKAN') as kategori,
-                COALESCE(t.price, x.base_price, 0)::numeric as harga,
-                CAST(NULL AS varchar) as satuan, x.is_active as aktif");
+                {$harga('x.base_price')} as harga,
+                CAST(NULL AS varchar) as satuan, x.is_active as aktif,
+                {$sumber} as sumber");
 
+        // Obat dipecah jadi 3 kategori sesuai pos kwitansi (Buku Tarif 2025: Obat
+        // Tindakan/Pulang/Injeksi). pos dibaca dari baris tarif UMUM (t); obat tanpa tarif
+        // UMUM (t NULL) → 'Obat Pulang' (cocok default MedicationTariff::posLabel & kolom).
         $obat = DB::table('medications as x')
             ->leftJoin('medication_tariffs as t', fn ($j) => $joinUmum($j, 'medication_id'))
+            ->when($perInsurer, fn ($q) => $q->leftJoin('medication_tariffs as ti', fn ($j) => $joinIns($j, 'medication_id')))
             ->whereNull('x.deleted_at')
-            ->selectRaw("'obat', x.id::text, x.code, x.name, 'OBAT',
-                COALESCE(t.price, x.price, 0)::numeric, x.unit, x.is_active");
+            ->selectRaw("'obat', x.id::text, x.code, x.name,
+                CASE t.pos_kwitansi
+                    WHEN 'OBAT_TINDAKAN' THEN 'Obat Tindakan'
+                    WHEN 'OBAT_INJEKSI'  THEN 'Obat Injeksi'
+                    ELSE 'Obat Pulang'
+                END,
+                {$harga('x.price')}, x.unit, x.is_active, {$sumber}");
 
         $bhp = DB::table('bhp_items as x')
             ->leftJoin('bhp_tariffs as t', fn ($j) => $joinUmum($j, 'bhp_item_id'))
+            ->when($perInsurer, fn ($q) => $q->leftJoin('bhp_tariffs as ti', fn ($j) => $joinIns($j, 'bhp_item_id')))
             ->whereNull('x.deleted_at')
             ->selectRaw("'bhp', x.id::text, x.code, x.name,
                 CASE x.category
@@ -1822,38 +2005,61 @@ class MasterDataService
                     WHEN 'INSTRUMENT_SET' THEN 'INSTRUMENT'
                     ELSE COALESCE(NULLIF(x.category, ''), 'BHP')
                 END,
-                COALESCE(t.price, x.price, 0)::numeric, x.unit, x.is_active");
+                {$harga('x.price')}, x.unit, x.is_active, {$sumber}");
 
         $iol = DB::table('iol_items as x')
             ->leftJoin('iol_tariffs as t', fn ($j) => $joinUmum($j, 'iol_item_id'))
+            ->when($perInsurer, fn ($q) => $q->leftJoin('iol_tariffs as ti', fn ($j) => $joinIns($j, 'iol_item_id')))
             ->whereNull('x.deleted_at')
             ->selectRaw("'iol', x.id::text, CAST(NULL AS varchar),
                 TRIM(CONCAT(x.brand, ' ', x.model,
                     CASE WHEN x.power IS NOT NULL THEN ' ' || x.power || 'D' ELSE '' END)),
-                'IOL', COALESCE(t.price, x.price, 0)::numeric, CAST(NULL AS varchar), x.is_active");
+                'IOL', {$harga('x.price')}, CAST(NULL AS varchar), x.is_active, {$sumber}");
 
-        // Tarif Kamar: 1 baris per room_class, harga = baris room_tariffs UMUM. Kategori
-        // 'Sewa Kamar' (selaras kategori procedure & billing_categories). Edit harga TIDAK
-        // di sini (read-only di FE) — diatur di tab Tarif Kamar (matriks kelas×penjamin).
+        // Tarif Kamar: 1 baris per room_class, harga = baris room_tariffs UMUM (atau
+        // efektif penjamin→UMUM→0 di mode penjamin). Kategori 'Sewa Kamar' (selaras
+        // kategori procedure & billing_categories). Edit harga TIDAK di sini (read-only
+        // di FE) — diatur di tab Tarif Kamar (matriks kelas×penjamin).
+        $kamarHarga  = $perInsurer ? 'COALESCE(ti.price, t.price, 0)::numeric' : 'COALESCE(t.price, 0)::numeric';
+        $kamarSumber = $perInsurer
+            ? "CASE WHEN ti.price IS NOT NULL THEN 'PENJAMIN' WHEN t.price IS NOT NULL THEN 'UMUM' ELSE 'NONE' END"
+            : "CASE WHEN t.price IS NOT NULL THEN 'UMUM' ELSE 'NONE' END";
         $kamarClasses = DB::table('room_tariffs')->whereNull('deleted_at')->distinct()->select('room_class');
+        $kamarJoin = function (string $alias, string $insId) {
+            return function ($j) use ($alias, $insId) {
+                $j->on("$alias.room_class", '=', 'rc.room_class')
+                  ->where("$alias.insurer_id", $insId)
+                  ->where("$alias.is_active", true)
+                  ->whereNull("$alias.deleted_at");
+            };
+        };
         $kamar = DB::query()->fromSub($kamarClasses, 'rc')
-            ->leftJoin('room_tariffs as t', function ($j) use ($umumId) {
-                $j->on('t.room_class', '=', 'rc.room_class')
-                  ->where('t.insurer_id', $umumId)
-                  ->where('t.is_active', true)
-                  ->whereNull('t.deleted_at');
-            })
+            ->leftJoin('room_tariffs as t', $kamarJoin('t', $umumId))
+            ->when($perInsurer, fn ($q) => $q->leftJoin('room_tariffs as ti', $kamarJoin('ti', $insurerId)))
             ->selectRaw("'kamar', ('KELAS_' || rc.room_class), CAST(NULL AS varchar),
                 ('Kamar Kelas ' || rc.room_class), 'Sewa Kamar',
-                COALESCE(t.price, 0)::numeric, CAST('per malam' AS varchar), true");
+                {$kamarHarga}, CAST('per malam' AS varchar), true, {$kamarSumber}");
 
         return $proc->unionAll($obat)->unionAll($bhp)->unionAll($iol)->unionAll($kamar);
+    }
+
+    /**
+     * Resolve filter insurer_id → id induk TPA utk mode harga-efektif bukuTarifUnion.
+     * Null/kosong → null (mode UMUM). Anak TPA → induk (samakan resolusi billing).
+     */
+    private function resolveBukuTarifInsurer(array $filters): ?string
+    {
+        if (empty($filters['insurer_id'])) {
+            return null;
+        }
+        $ins = Insurer::find($filters['insurer_id']);
+        return $ins ? $ins->tariffInsurerId() : $filters['insurer_id'];
     }
 
     /** Daftar Buku Tarif terpadu, dengan search (nama/kode), filter kategori/tipe/aktif, paginate. */
     public function indexBukuTarif(array $filters = []): LengthAwarePaginator
     {
-        $q = DB::query()->fromSub($this->bukuTarifUnion(), 'bt');
+        $q = DB::query()->fromSub($this->bukuTarifUnion($this->resolveBukuTarifInsurer($filters)), 'bt');
 
         if (! empty($filters['search'])) {
             $s = '%' . mb_strtolower(trim($filters['search'])) . '%';
@@ -1890,16 +2096,22 @@ class MasterDataService
      * Reuse storeTarif (upsert aman soft-delete + propagasi pos obat). Item dirujuk by
      * id master + tipe → baris tarif UMUM dibuat/diupdate.
      */
-    public function setBukuTarifPrice(string $tipe, string $itemId, float $price, bool $isActive = true): mixed
+    public function setBukuTarifPrice(string $tipe, string $itemId, float $price, bool $isActive = true, ?string $posKwitansi = null): mixed
     {
         $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
         $fk = $this->tariffFk($tipe);
-        return $this->storeTarif($tipe, [
+        $data = [
             $fk          => $itemId,
             'insurer_id' => $umumId,
             'price'      => $price,
             'is_active'  => $isActive,
-        ]);
+        ];
+        // Pos kwitansi obat (Obat Tindakan/Pulang/Injeksi) — hanya tipe obat; storeTarif
+        // mempropagasi ke semua baris tarif obat tsb (invariant 1 obat = 1 pos).
+        if ($tipe === 'obat' && $posKwitansi) {
+            $data['pos_kwitansi'] = $posKwitansi;
+        }
+        return $this->storeTarif($tipe, $data);
     }
 
     /**
@@ -1930,12 +2142,22 @@ class MasterDataService
             'harga_jual = tarif yang ditagih ke penjamin ini (angka >= 0).',
             'Item sama (nama+kategori) yang sudah punya tarif → harga_jual di-update; belum ada → ditambah.',
         ];
+        // Header template HARUS sama dgn export (exportTarifCsvForInsurer) agar hasil export
+        // bisa diedit & di-import balik tanpa mengubah struktur. Obat: +kolom pos_kwitansi.
+        $header = ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'];
+        if ($type === 'obat') {
+            $header[] = 'pos_kwitansi';
+            $notes[] = 'pos_kwitansi (OPSIONAL, khusus obat) = pos baris obat di kwitansi: '
+                . implode(' / ', MedicationTariff::POS_LABELS)
+                . ' (boleh kode ' . implode('/', MedicationTariff::POS_VALUES) . '). '
+                . 'Kosong → pos tidak diubah. 1 obat = 1 pos BERLAKU LINTAS PENJAMIN.';
+        }
 
         $output = fopen('php://temp', 'r+');
         foreach ($notes as $note) {
             fwrite($output, '# ' . $note . "\n");
         }
-        fputcsv($output, ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'], ',', '"', '\\');
+        fputcsv($output, $header, ',', '"', '\\');
         rewind($output);
         $csv = stream_get_contents($output);
         fclose($output);
@@ -1950,17 +2172,18 @@ class MasterDataService
     {
         $rows = $this->buildTarifExportRows($type, $insurerId, false);
 
+        // Obat: ikutkan kolom pos_kwitansi (label) supaya bisa di-set lewat import balik.
+        $isObat = $type === 'obat';
+        $header = ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'];
+        if ($isObat) { $header[] = 'pos_kwitansi'; }
+
         $output = fopen('php://temp', 'r+');
-        fputcsv($output, ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'], ',', '"', '\\');
+        fputcsv($output, $header, ',', '"', '\\');
         $no = 1;
         foreach ($rows as $row) {
-            fputcsv($output, [
-                $no++,
-                $row->nama,
-                $row->kategori,
-                $row->harga_master,
-                $row->harga_jual,
-            ], ',', '"', '\\');
+            $line = [$no++, $row->nama, $row->kategori, $row->harga_master, $row->harga_jual];
+            if ($isObat) { $line[] = MedicationTariff::posLabel($row->pos_kwitansi ?? null); }
+            fputcsv($output, $line, ',', '"', '\\');
         }
         rewind($output);
         $csv = stream_get_contents($output);
@@ -2028,13 +2251,22 @@ class MasterDataService
             }
 
             $existing = $model::withTrashed()->where($fk, $item->id)->where('insurer_id', $insurerId)->first();
-            $this->upsertTarifRow(
-                $model,
-                $fk,
-                $item->id,
-                $insurerId,
-                ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true]
-            );
+            $values = ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true];
+            // Obat: pos_kwitansi opsional (terima label "Obat Tindakan" atau kode OBAT_TINDAKAN).
+            // Kolom tak ada / kosong → pos tak diubah (back-compat). Nilai tak dikenal →
+            // baris tetap diproses (harga masuk), tapi dilaporkan di errors agar tak diam-diam.
+            $pos = null;
+            if ($type === 'obat') {
+                $rawPos = trim((string) ($row['pos_kwitansi'] ?? ''));
+                $pos = $this->normalizePosKwitansi($rawPos);
+                if ($rawPos !== '' && ! $pos) {
+                    $errors[] = "Baris {$lineNum}: pos_kwitansi '{$rawPos}' tidak dikenal (pakai " . implode('/', MedicationTariff::POS_LABELS) . ') — pos tidak diubah';
+                }
+                if ($pos) { $values['pos_kwitansi'] = $pos; }
+            }
+            $this->upsertTarifRow($model, $fk, $item->id, $insurerId, $values);
+            // Invariant 1 obat = 1 pos: propagasi ke semua baris tarif obat tsb.
+            if ($pos) { $this->propagatePosKwitansi($item->id, $pos); }
             if ($existing) $updated++; else $inserted++;
         }
 
@@ -2045,25 +2277,32 @@ class MasterDataService
 
     /**
      * Export tarif SEMUA penjamin (lossless) untuk satu type.
-     * Header: no, nama, kategori, penjamin, harga_master, harga_jual.
+     * Header: no, nama, kategori, penjamin, harga_master, harga_jual (+pos_kwitansi utk obat).
      * Dipakai oleh GET /master/tarif/{type}/export-csv (insurer-less).
      */
     public function exportTarifCsv(string $type): string
     {
         $rows = $this->buildTarifExportRows($type, null, true);
 
+        // Obat: ikutkan pos_kwitansi (selaras exportTarifCsvForInsurer) agar lossless.
+        $isObat = $type === 'obat';
+        $header = ['no', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'];
+        if ($isObat) { $header[] = 'pos_kwitansi'; }
+
         $output = fopen('php://temp', 'r+');
-        fputcsv($output, ['no', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'], ',', '"', '\\');
+        fputcsv($output, $header, ',', '"', '\\');
         $no = 1;
         foreach ($rows as $row) {
-            fputcsv($output, [
+            $line = [
                 $no++,
                 $row->nama,
                 $row->kategori,
                 $row->penjamin ?? 'SEMUA',
                 $row->harga_master,
                 $row->harga_jual,
-            ], ',', '"', '\\');
+            ];
+            if ($isObat) { $line[] = MedicationTariff::posLabel($row->pos_kwitansi ?? null); }
+            fputcsv($output, $line, ',', '"', '\\');
         }
         rewind($output);
         $csv = stream_get_contents($output);
@@ -2119,6 +2358,8 @@ class MasterDataService
         $catCol  = $this->itemKategoriColumn($type);
         $select  = ["item.{$nameCol} as nama", "item.{$catCol} as kategori",
                     "item.{$itemPriceCol} as harga_master", 't.price as harga_jual'];
+        // Obat: pos kwitansi ada di baris tarif (medication_tariffs), bukan master.
+        if ($type === 'obat') { $select[] = 't.pos_kwitansi as pos_kwitansi'; }
         if ($withPenjamin) { $select[] = 'ins.name as penjamin'; }
         $q->select($select)->orderBy("item.{$nameCol}");
         if ($withPenjamin) { $q->orderBy('ins.name'); }
@@ -2193,13 +2434,21 @@ class MasterDataService
 
             // Soft-delete aware (tabel pakai SoftDeletes + unique plain (item_id, insurer_id)).
             $existing = $model::withTrashed()->where($fk, $item->id)->where('insurer_id', $insurer->id)->first();
-            $this->upsertTarifRow(
-                $model,
-                $fk,
-                $item->id,
-                $insurer->id,
-                ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true]
-            );
+            $values = ['price' => $this->parseDecimalId($hargaJual), 'is_active' => true];
+            // Obat: pos_kwitansi opsional (selaras importTarifCsvForInsurer). Nilai tak
+            // dikenal → baris tetap diproses (harga masuk), tapi dilaporkan di errors.
+            $pos = null;
+            if ($type === 'obat') {
+                $rawPos = trim((string) ($row['pos_kwitansi'] ?? ''));
+                $pos = $this->normalizePosKwitansi($rawPos);
+                if ($rawPos !== '' && ! $pos) {
+                    $errors[] = "Baris {$lineNum}: pos_kwitansi '{$rawPos}' tidak dikenal (pakai " . implode('/', MedicationTariff::POS_LABELS) . ') — pos tidak diubah';
+                }
+                if ($pos) { $values['pos_kwitansi'] = $pos; }
+            }
+            $this->upsertTarifRow($model, $fk, $item->id, $insurer->id, $values);
+            // Invariant 1 obat = 1 pos: propagasi ke semua baris tarif obat tsb.
+            if ($pos) { $this->propagatePosKwitansi($item->id, $pos); }
             if ($existing) $updated++; else $inserted++;
         }
 
@@ -2551,6 +2800,7 @@ class MasterDataService
                 'Kolom "code" dibuat otomatis (MED-001, ...) untuk item baru — tidak perlu diisi.',
                 'Kolom "kfa_code" = kode KFA Kemenkes (untuk Satu Sehat), boleh kosong. Isi dari menu Inventori Farmasi (tombol Cari KFA) atau ketik manual.',
                 'Kolom "konversi" = angka bulat. Harga & stok TIDAK di sini: harga di menu Penentuan Harga, stok di Penerimaan/Stock Opname.',
+                'Pos kwitansi (Obat Tindakan/Pulang/Injeksi) juga BUKAN di sini — diatur di Buku Tarif / Metode Bayar (atribut tarif, bukan master).',
             ]),
             'alat-medis' => array_merge($common, [
                 'Kolom "code" dibuat otomatis (MEQ-001, MEQ-002, ...) untuk item baru — tidak perlu diisi.',

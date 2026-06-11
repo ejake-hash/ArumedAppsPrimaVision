@@ -205,6 +205,81 @@ function openEdit(row) {
   }
 }
 
+// ─── Kemasan jual obat (varian Strip/Box, harga independen per kemasan) ──────
+// Berlaku semua penjamin (insurer NULL) — kemasan dasar (satuan kecil) tetap
+// harga jual tarif di tab ini. Saran harga = harga dasar × isi (editable).
+const kemasanModal = ref({ open: false, row: null, units: [], loading: false, busy: false, form: { label: '', isi: 1, price: 0 }, editingId: null })
+
+function openKemasan(row) {
+  kemasanModal.value = {
+    open: true, row, units: [], loading: true, busy: false,
+    form: { label: '', isi: 1, price: 0 }, editingId: null,
+  }
+  loadKemasan()
+}
+async function loadKemasan() {
+  const m = kemasanModal.value
+  if (!m.row) return
+  m.loading = true
+  try {
+    const res = await tarifPaketApi.kemasanObat.list(m.row[fkKey.value])
+    m.units = res.data?.data ?? []
+  } catch (e) {
+    m.units = []
+    showToast('e', e.response?.data?.message ?? 'Gagal memuat kemasan')
+  } finally { m.loading = false }
+}
+// Harga dasar (per satuan kecil) utk saran = harga jual baris tarif, fallback master.
+const kemasanBasePrice = computed(() => Number(kemasanModal.value.row?.price ?? 0) || Number(kemasanModal.value.row?.master_price ?? 0))
+function kemasanSuggest() {
+  const isi = Number(kemasanModal.value.form.isi) || 1
+  kemasanModal.value.form.price = Math.round(kemasanBasePrice.value * isi)
+}
+function editKemasanRow(u) {
+  kemasanModal.value.editingId = u.id
+  kemasanModal.value.form = { label: u.label, isi: Number(u.isi), price: Number(u.price) }
+}
+function cancelKemasanEdit() {
+  kemasanModal.value.editingId = null
+  kemasanModal.value.form = { label: '', isi: 1, price: 0 }
+}
+async function submitKemasan() {
+  const m = kemasanModal.value
+  const f = m.form
+  if (!String(f.label).trim()) { showToast('e', 'Label kemasan wajib diisi (mis. Strip / Box)'); return }
+  if (!(Number(f.isi) >= 1)) { showToast('e', 'Isi kemasan minimal 1'); return }
+  m.busy = true
+  try {
+    if (m.editingId) {
+      await tarifPaketApi.kemasanObat.update(m.editingId, { label: f.label, isi: Number(f.isi), price: Number(f.price) })
+    } else {
+      await tarifPaketApi.kemasanObat.create(m.row[fkKey.value], { label: f.label, isi: Number(f.isi), price: Number(f.price) })
+    }
+    showToast('s', 'Kemasan jual disimpan')
+    cancelKemasanEdit()
+    await loadKemasan()
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal menyimpan kemasan')
+  } finally { m.busy = false }
+}
+async function toggleKemasanActive(u) {
+  try {
+    await tarifPaketApi.kemasanObat.update(u.id, { is_active: !u.is_active })
+    await loadKemasan()
+  } catch (e) { showToast('e', e.response?.data?.message ?? 'Gagal mengubah status') }
+}
+async function removeKemasan(u) {
+  if (!window.confirm(`Hapus kemasan ${u.label} (isi ${u.isi})?`)) return
+  kemasanModal.value.busy = true
+  try {
+    await tarifPaketApi.kemasanObat.remove(u.id)
+    showToast('s', 'Kemasan dihapus')
+    await loadKemasan()
+  } catch (e) {
+    showToast('e', e.response?.data?.message ?? 'Gagal menghapus kemasan')
+  } finally { kemasanModal.value.busy = false }
+}
+
 // Watch item selection for auto-fill master price
 watch(() => modal.value.payload.item_id, async (newId, oldId) => {
   if (modal.value.mode !== 'create') return
@@ -352,7 +427,15 @@ async function onCsvImportSelected(e) {
   try {
     const res = await tarifPaketApi.metodeBayar.csvImport(props.insurerId, props.type, file)
     const result = res.data?.data ?? {}
-    showToast('s', `Import: ${result.inserted ?? 0} baru, ${result.updated ?? 0} update, ${result.skipped ?? 0} dilewati`)
+    const counts = `Import: ${result.inserted ?? 0} baru, ${result.updated ?? 0} update, ${result.skipped ?? 0} dilewati`
+    const errs = Array.isArray(result.errors) ? result.errors : []
+    // Ada baris bermasalah → tampilkan alasan pertama (jangan diam-diam): baris dilewati
+    // umumnya karena nama/kategori tak cocok master, atau pos_kwitansi tak dikenal.
+    if (errs.length) {
+      showToast('e', `${counts}. ${errs[0]}${errs.length > 1 ? ` (+${errs.length - 1} masalah lain)` : ''}`)
+    } else {
+      showToast('s', counts)
+    }
     await refresh(1)
     emit('changed')
   } catch (err) {
@@ -475,16 +558,22 @@ watch(() => props.insurerId, () => refresh())
         <template v-if="readOnly">
           <span class="tt-readonly-dot" title="Read-only (inherit dari parent)">—</span>
         </template>
-        <!-- Buku Tarif: item belum bertarif → tombol Set Harga (buat tarif baru) -->
-        <button v-else-if="row._unpriced" class="tt-btn-setprice" title="Set harga jual untuk item ini" @click="openSetPrice(row)">
-          Set Harga
-        </button>
         <template v-else>
-          <button class="tt-icon-btn" title="Edit" @click="openEdit(row)">
-            <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+          <!-- Buku Tarif: item belum bertarif → tombol Set Harga (buat tarif baru) -->
+          <button v-if="row._unpriced" class="tt-btn-setprice" title="Set harga jual untuk item ini" @click="openSetPrice(row)">
+            Set Harga
           </button>
-          <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete(row)">
-            <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <template v-else>
+            <button class="tt-icon-btn" title="Edit" @click="openEdit(row)">
+              <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            </button>
+            <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete(row)">
+              <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </template>
+          <!-- Kemasan jual obat (varian Strip/Box, harga independen) -->
+          <button v-if="isObat" class="tt-icon-btn" title="Kemasan jual (Strip/Box)" @click="openKemasan(row)">
+            <svg viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
           </button>
         </template>
       </template>
@@ -517,6 +606,78 @@ watch(() => props.insurerId, () => refresh())
             <button class="tt-btn-danger" :disabled="confirmDelete.busy" @click="doDelete">
               {{ confirmDelete.busy ? 'Menghapus…' : 'Hapus' }}
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Modal Kemasan Jual obat (varian Strip/Box, harga independen per kemasan) -->
+    <Teleport to="body">
+      <div v-if="kemasanModal.open" class="tt-confirm-overlay" @click.self="kemasanModal.open = false">
+        <div class="tt-kemasan-modal">
+          <h3 class="tt-kemasan-title">
+            Kemasan Jual — {{ kemasanModal.row?.item_name ?? '' }}
+          </h3>
+          <p class="tt-kemasan-desc">
+            Obat ini tetap dijual per <strong>{{ kemasanModal.row?.item_satuan || 'satuan kecil' }}</strong>
+            dengan harga jual {{ formatRp(kemasanBasePrice) }}. Kemasan di bawah = pilihan jual TAMBAHAN
+            (Strip/Box) dengan harga sendiri — dipilih Farmasi saat verifikasi resep. Berlaku semua penjamin.
+          </p>
+
+          <div v-if="kemasanModal.loading" class="tt-kemasan-empty">Memuat…</div>
+          <table v-else-if="kemasanModal.units.length" class="tt-kemasan-table">
+            <thead>
+              <tr><th>Label</th><th class="ac">Isi / kemasan</th><th class="ar">Harga / kemasan</th><th class="ac">Status</th><th class="ac">Aksi</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in kemasanModal.units" :key="u.id">
+                <td><strong>{{ u.label }}</strong><span v-if="u.insurer" class="tt-kemasan-ins">{{ u.insurer.name }}</span></td>
+                <td class="ac">{{ u.isi }} {{ kemasanModal.row?.item_satuan || '' }}</td>
+                <td class="ar">{{ formatRp(u.price) }}</td>
+                <td class="ac">
+                  <button class="tt-kemasan-status" :class="u.is_active ? 'on' : 'off'" @click="toggleKemasanActive(u)">
+                    {{ u.is_active ? 'Aktif' : 'Nonaktif' }}
+                  </button>
+                </td>
+                <td class="ac">
+                  <button class="tt-icon-btn" title="Edit" @click="editKemasanRow(u)">
+                    <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                  </button>
+                  <button class="tt-icon-btn tt-icon-danger" title="Hapus" :disabled="kemasanModal.busy" @click="removeKemasan(u)">
+                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="tt-kemasan-empty">Belum ada kemasan jual — obat hanya dijual per satuan kecil.</div>
+
+          <div class="tt-kemasan-form">
+            <div class="tt-kemasan-form-title">{{ kemasanModal.editingId ? 'Edit kemasan' : 'Tambah kemasan' }}</div>
+            <div class="tt-kemasan-fields">
+              <label>
+                <span>Label</span>
+                <input v-model="kemasanModal.form.label" type="text" placeholder="Strip / Box / Botol" maxlength="50" />
+              </label>
+              <label>
+                <span>Isi ({{ kemasanModal.row?.item_satuan || 'satuan' }}/kemasan)</span>
+                <input v-model.number="kemasanModal.form.isi" type="number" min="1" />
+              </label>
+              <label>
+                <span>Harga / kemasan</span>
+                <input v-model.number="kemasanModal.form.price" type="number" min="0" />
+              </label>
+              <button class="tt-btn-csv" type="button" :title="`Isi otomatis = ${formatRp(kemasanBasePrice)} × isi (boleh diubah/lebih murah)`" @click="kemasanSuggest">
+                Saran: dasar × isi
+              </button>
+            </div>
+            <div class="tt-kemasan-actions">
+              <button v-if="kemasanModal.editingId" class="tt-btn-secondary" :disabled="kemasanModal.busy" @click="cancelKemasanEdit">Batal edit</button>
+              <button class="tt-btn-primary" :disabled="kemasanModal.busy" @click="submitKemasan">
+                {{ kemasanModal.busy ? 'Menyimpan…' : (kemasanModal.editingId ? 'Simpan Perubahan' : 'Tambah Kemasan') }}
+              </button>
+              <button class="tt-btn-secondary" @click="kemasanModal.open = false">Tutup</button>
+            </div>
           </div>
         </div>
       </div>
@@ -597,4 +758,26 @@ watch(() => props.insurerId, () => refresh())
 .tt-toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .tt-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 @keyframes tt-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ─── Modal Kemasan Jual obat ───────────────────────────────────────────── */
+.tt-kemasan-modal { background: var(--bc); border: 1px solid var(--gb); border-radius: 14px; padding: 1.2rem 1.3rem; width: min(640px, 94vw); max-height: 86vh; overflow-y: auto; box-shadow: 0 18px 50px rgba(0,0,0,0.22); }
+.tt-kemasan-title { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--td); }
+.tt-kemasan-desc { margin: 0 0 12px; font-size: 12px; color: var(--tm); line-height: 1.5; }
+.tt-kemasan-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 12px; }
+.tt-kemasan-table th { text-align: left; padding: 7px 8px; background: var(--bs); color: var(--tm); font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--gb); }
+.tt-kemasan-table td { padding: 7px 8px; border-bottom: 1px solid var(--gb); color: var(--td); }
+.tt-kemasan-table .ac { text-align: center; }
+.tt-kemasan-table .ar { text-align: right; }
+.tt-kemasan-ins { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10px; background: var(--ib); color: var(--it); border: 1px solid var(--ibd); }
+.tt-kemasan-status { padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid; cursor: pointer; background: transparent; }
+.tt-kemasan-status.on  { color: var(--st); border-color: var(--sbd); background: var(--sb); }
+.tt-kemasan-status.off { color: var(--tm); border-color: var(--gb); background: var(--bs); }
+.tt-kemasan-empty { padding: 0.9rem; text-align: center; color: var(--tm); font-size: 12px; border: 1px dashed var(--gb); border-radius: 9px; margin-bottom: 12px; }
+.tt-kemasan-form { border-top: 1px solid var(--gb); padding-top: 12px; }
+.tt-kemasan-form-title { font-size: 12px; font-weight: 600; color: var(--td); margin-bottom: 8px; }
+.tt-kemasan-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px; }
+.tt-kemasan-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--tm); }
+.tt-kemasan-fields input { width: 130px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; }
+.tt-kemasan-fields input:focus { outline: none; border-color: var(--ga); }
+.tt-kemasan-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

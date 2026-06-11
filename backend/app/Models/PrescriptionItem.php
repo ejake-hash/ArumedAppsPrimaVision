@@ -40,11 +40,17 @@ class PrescriptionItem extends Model
         'duration_days',
         // Penanda obat operasi (migrasi Gel-2): tercakup paket bedah, jangan dobel-tagih.
         'is_bedah',
+        // Varian kemasan jual terpilih (di-set Farmasi saat verifikasi). NULL = satuan
+        // kecil. INVARIAN: quantity (satuan kecil, sumber kebenaran stok) =
+        // sale_unit_qty × isi kemasan. Lihat FarmasiService::setKemasanItem.
+        'sale_unit_id',
+        'sale_unit_qty',
     ];
 
     protected $casts = [
-        'is_bedah'   => 'boolean',
-        'changed_at' => 'datetime',
+        'is_bedah'      => 'boolean',
+        'changed_at'    => 'datetime',
+        'sale_unit_qty' => 'integer',
     ];
 
     public function prescription(): BelongsTo
@@ -60,5 +66,10 @@ class PrescriptionItem extends Model
     public function addedBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'added_by_id');
+    }
+
+    public function saleUnit(): BelongsTo
+    {
+        return $this->belongsTo(MedicationSaleUnit::class, 'sale_unit_id');
     }
 }

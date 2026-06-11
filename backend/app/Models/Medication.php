@@ -64,4 +64,10 @@ class Medication extends Model
     {
         return $this->hasMany(PrescriptionItem::class);
     }
+
+    /** Varian kemasan jual (per Strip/Box) — lihat MedicationSaleUnit. */
+    public function saleUnits(): HasMany
+    {
+        return $this->hasMany(MedicationSaleUnit::class);
+    }
 }

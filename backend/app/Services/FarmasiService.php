@@ -6,6 +6,7 @@ use App\Models\BhpItem;
 use App\Models\InventoryStock;
 use App\Models\IolItem;
 use App\Models\Medication;
+use App\Models\MedicationSaleUnit;
 use App\Models\PharmacySaleItem;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
@@ -278,7 +279,7 @@ class FarmasiService
     public function getVerificationQueue(array $filters = []): Collection
     {
         $rows = Prescription::with([
-                'visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication',
+                'visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication', 'items.saleUnit',
                 // Untuk accessor dpjp_name (bebas N+1): RANAP=dpjp, RAJAL/IGD=pemeriksa/jadwal.
                 'visit.dpjp', 'visit.doctorExamination.doctor', 'visit.doctorSchedule.employee',
             ])
@@ -306,20 +307,63 @@ class FarmasiService
                 ->pluck('visit_id')->flip()
             : collect();
 
+        // Varian kemasan jual per obat — utk dropdown FE + estimasi harga kemasan.
+        // 1 query batch (medication unik lintas resep), dipetakan per resep di bawah.
+        $allMedIds = $rows->flatMap(fn ($rx) => $rx->items->pluck('medication_id'))->filter()->unique()->values();
+        $saleUnitsByMed = $allMedIds->isEmpty()
+            ? collect()
+            : MedicationSaleUnit::whereIn('medication_id', $allMedIds)
+                ->where('is_active', true)
+                ->get()
+                ->groupBy('medication_id');
+
         $kasir = app(KasirService::class);
-        $rows->each(function ($rx) use ($kasir, $visitsWithInvoice) {
+        $rows->each(function ($rx) use ($kasir, $visitsWithInvoice, $saleUnitsByMed) {
             $guarantor = $rx->visit?->guarantor_type ?: 'UMUM';
             $insurerId = $rx->visit?->insurer_id;
+
+            // Harga kemasan utk item ber-sale_unit (resolusi penjamin pasien, batch).
+            $kemasanItems = $rx->items->whereNotNull('sale_unit_id')->filter(fn ($it) => $it->saleUnit);
+            $kemasanPrices = $kemasanItems->isEmpty() ? [] : $kasir->resolveSaleUnitPrices(
+                $kemasanItems->map(fn ($it) => [
+                    'medication_id'    => $it->medication_id,
+                    'label'            => $it->saleUnit->label,
+                    'fallback_unit_id' => $it->sale_unit_id,
+                ])->values()->all(),
+                $guarantor,
+                $insurerId
+            );
+
             $total = 0.0;
             foreach ($rx->items as $it) {
-                $price = 0.0;
-                try {
-                    $price = (float) $kasir->getPrice('medication', $it->medication_id, $guarantor, $insurerId);
-                } catch (\Throwable $e) {
+                if ($it->sale_unit_id && $it->saleUnit && $it->sale_unit_qty > 0) {
+                    // Item ber-kemasan: estimasi per KEMASAN (selaras buildObatLines).
+                    $key = $it->medication_id . '|' . mb_strtolower($it->saleUnit->label);
+                    $it->est_unit_price  = $kemasanPrices[$key] ?? 0.0;
+                    $it->est_total_price = $it->est_unit_price * (int) $it->sale_unit_qty;
+                } else {
                     $price = 0.0;
+                    try {
+                        $price = (float) $kasir->getPrice('medication', $it->medication_id, $guarantor, $insurerId);
+                    } catch (\Throwable $e) {
+                        $price = 0.0;
+                    }
+                    $it->est_unit_price  = $price;
+                    $it->est_total_price = $price * (float) $it->quantity;
                 }
-                $it->est_unit_price  = $price;
-                $it->est_total_price = $price * (float) $it->quantity;
+                // Daftar kemasan tersedia utk dropdown FE (label + isi + harga indikatif).
+                // Dedup per label: baris insurer pasien menang atas baris NULL "semua".
+                $byLabel = [];
+                foreach ($saleUnitsByMed->get($it->medication_id, collect()) as $u) {
+                    if ($u->insurer_id !== null && $u->insurer_id !== $insurerId) continue;
+                    $k = mb_strtolower($u->label);
+                    if (! isset($byLabel[$k]) || ($u->insurer_id === $insurerId && $byLabel[$k]->insurer_id === null)) {
+                        $byLabel[$k] = $u;
+                    }
+                }
+                $it->available_sale_units = collect(array_values($byLabel))
+                    ->sortBy('label')->values()
+                    ->map(fn ($u) => ['id' => $u->id, 'label' => $u->label, 'isi' => (int) $u->isi, 'price' => (float) $u->price]);
                 $total += $it->est_total_price;
             }
             $rx->est_total = $total;
@@ -357,12 +401,15 @@ class FarmasiService
         ]);
         $this->log($user?->id, 'VERIFY_RESEP', Prescription::class, $prescriptionId, 'Resep diverifikasi & dikunci Farmasi');
 
-        // Verifikasi ulang pasca revisi dokter: bila tagihan DRAFT (belum bayar) sudah ada,
-        // bangun ulang agar obat yang baru dikunci ini masuk kembali ke kwitansi. No-op bila
-        // belum ada invoice (alur normal: kasir konsolidasi belakangan). Tak melempar.
+        // Verifikasi ulang pasca revisi dokter: bila tagihan belum-bayar sudah ada,
+        // bangun ulang agar obat yang baru dikunci ini masuk kembali ke kwitansi.
+        // FINALIZED ikut (bukan hanya DRAFT): pembayaran ter-unblock pasca re-verify
+        // (gate assertObatVerified) — tanpa rebuild, total invoice basi terhadap
+        // revisi qty/kemasan. reconsolidateInvoice aman utk FINALIZED (rebuild in-place).
+        // No-op bila belum ada invoice (alur normal: kasir konsolidasi belakangan).
         try {
             $invoice = \App\Models\BillingInvoice::where('visit_id', $prescription->visit_id)
-                ->where('status', 'DRAFT')
+                ->whereIn('status', ['DRAFT', 'FINALIZED'])
                 ->first();
             if ($invoice) {
                 app(KasirService::class)->reconsolidateInvoice($invoice->id);
@@ -730,18 +777,18 @@ class FarmasiService
         $jenis    = strtoupper(trim((string) ($filters['jenis'] ?? '')));
 
         // Klasifikasi sumber resep — jenis_pelayanan adalah penanda kanonik
-        // (RANAP/IGD/RAJAL); BEDAH dikenali dari surgery_schedule_id / PREOP_BEDAH.
-        // (visit_type HANYA REGULAR/PREOP_BEDAH, jadi tak bisa dipakai utk RANAP/IGD.)
+        // (RANAP/IGD/RAJAL). Pemberian obat pasca-BEDAH TIDAK jadi kategori sendiri:
+        // dilebur ke Rawat Inap (bedah ranap) atau Rawat Jalan (bedah rajal) mengikuti
+        // jenis pelayanan visit-nya — bedah ranap tertangkap cabang RANAP, bedah rajal
+        // jatuh ke ELSE (RAJAL). (visit_type HANYA REGULAR/PREOP_BEDAH.)
         $kodeExpr = "CASE
                 WHEN v.jenis_pelayanan = 'IGD' THEN 'IGD'
                 WHEN p.type = 'RANAP' OR v.jenis_pelayanan = 'RANAP' THEN 'RANAP'
-                WHEN v.surgery_schedule_id IS NOT NULL OR v.visit_type = 'PREOP_BEDAH' THEN 'BEDAH'
                 ELSE 'RAJAL'
             END";
         $labelExpr = "CASE
                 WHEN v.jenis_pelayanan = 'IGD' THEN 'IGD'
                 WHEN p.type = 'RANAP' OR v.jenis_pelayanan = 'RANAP' THEN 'Rawat Inap'
-                WHEN v.surgery_schedule_id IS NOT NULL OR v.visit_type = 'PREOP_BEDAH' THEN 'Bedah'
                 ELSE 'Rawat Jalan'
             END";
 
@@ -808,8 +855,8 @@ class FarmasiService
 
         return DB::query()
             ->fromSub($rx->unionAll($pos), 't')
-            // Saring jenis pelayanan pada hasil gabungan (RAJAL/RANAP/BEDAH/IGD/POS).
-            ->when(in_array($jenis, ['RAJAL', 'RANAP', 'BEDAH', 'IGD', 'POS'], true),
+            // Saring jenis pelayanan pada hasil gabungan (RAJAL/RANAP/IGD/POS).
+            ->when(in_array($jenis, ['RAJAL', 'RANAP', 'IGD', 'POS'], true),
                 fn ($q) => $q->where('jenis_kode', $jenis))
             ->orderByRaw('tanggal DESC NULLS LAST');
     }
@@ -970,12 +1017,24 @@ class FarmasiService
             }
         }
 
+        // Ubah qty manual pada item ber-kemasan → kemasan DIBATALKAN (kembali satuan
+        // kecil; quantity = sumber kebenaran stok). Menjaga invarian
+        // quantity = sale_unit_qty × isi. FE menampilkan konfirmasi sebelum ini.
+        if (array_key_exists('quantity', $update) && $item->sale_unit_id
+            && (int) $update['quantity'] !== (int) $item->quantity) {
+            $update['sale_unit_id']  = null;
+            $update['sale_unit_qty'] = null;
+        }
+
         // Substitusi obat (ganti medication_id) → simpan obat asli dokter SEKALI utk audit.
         if (! empty($data['medication_id']) && $data['medication_id'] !== $item->medication_id) {
             if (is_null($item->original_medication_id)) {
                 $update['original_medication_id'] = $item->medication_id;
             }
             $update['medication_id'] = $data['medication_id'];
+            // Kemasan milik obat lama tidak berlaku utk obat pengganti → reset.
+            $update['sale_unit_id']  = null;
+            $update['sale_unit_qty'] = null;
         }
 
         // Jejak perubahan terstruktur (alasan divalidasi di controller).
@@ -989,6 +1048,101 @@ class FarmasiService
         $this->log(auth('api')->id(), 'UPDATE_ITEM_RESEP', PrescriptionItem::class, $id);
 
         return $item->fresh('medication');
+    }
+
+    /**
+     * Pilih VARIAN KEMASAN JUAL (per Strip/Box, harga independen) untuk satu item
+     * resep — hanya pada FASE VERIFIKASI (pra-kunci), oleh Farmasi.
+     *
+     * INVARIAN: quantity (satuan kecil, sumber kebenaran STOK) = sale_unit_qty × isi
+     * → dispensing/potong stok tidak berubah; billing (buildObatLines) menagih per
+     * kemasan (qty=sale_unit_qty × harga kemasan).
+     *
+     * split_remainder: bila qty kemasan baru < quantity lama → sisa dipecah jadi
+     * item saudara satuan kecil (PECAH_KEMASAN) — skenario "25 Tab = 2 Strip + 5 Tab"
+     * dalam satu aksi server-side (FE verifikasi tak punya jalur tambah obat keras).
+     *
+     * @param array{sale_unit_id?:?string,sale_unit_qty?:int,split_remainder?:bool,change_reason?:?string} $data
+     */
+    public function setKemasanItem(string $id, array $data): PrescriptionItem
+    {
+        $item = PrescriptionItem::with(['prescription.visit', 'medication'])->findOrFail($id);
+        $rx   = $item->prescription;
+
+        $this->assertResepEditable($rx);
+        if ($rx->type === Prescription::TYPE_RANAP) {
+            throw new \Exception('Kemasan jual hanya untuk resep rawat jalan/bedah (RANAP ditagih per satuan).', 422);
+        }
+        // OTC dibuat langsung DISPENSING (skip verifikasi) → di luar scope kemasan v1.
+        if (! in_array($rx->status, ['DRAFT', 'SUBMITTED'], true)) {
+            throw new \Exception('Kemasan hanya bisa dipilih pada fase verifikasi resep.', 422);
+        }
+        $jenis = $rx->visit?->jenis_pelayanan ?? 'RAJAL';
+        if (in_array($jenis, ['RANAP', 'IGD'], true)) {
+            throw new \Exception('Kemasan jual tidak berlaku untuk pasien RANAP/IGD (obat ditagih per satuan lewat biaya perawatan).', 422);
+        }
+        // Obat komponen paket BEDAH ditagih dari snapshot paket (bukan resep) —
+        // memilih kemasan di sini = no-op billing yang menyesatkan. Tolak.
+        if ($item->is_bedah || ($rx->visit && isset(app(KasirService::class)->paketObatMedIds($rx->visit)[$item->medication_id]))) {
+            throw new \Exception('Obat ini termasuk komponen paket bedah — ditagih lewat harga paket, tidak memakai kemasan jual.', 422);
+        }
+
+        $employeeId = auth('api')->user()?->employee_id;
+
+        return DB::transaction(function () use ($item, $data, $employeeId, $id) {
+            // Lepas kemasan → kembali satuan kecil (quantity tidak diubah).
+            if (empty($data['sale_unit_id'])) {
+                $item->update(['sale_unit_id' => null, 'sale_unit_qty' => null]);
+                $this->log(auth('api')->id(), 'SET_KEMASAN_ITEM', PrescriptionItem::class, $id, 'Kemasan dilepas (kembali satuan kecil)');
+                return $item->fresh(['medication', 'saleUnit']);
+            }
+
+            $unit = MedicationSaleUnit::findOrFail($data['sale_unit_id']);
+            if ($unit->medication_id !== $item->medication_id) {
+                throw new \Exception('Kemasan terpilih bukan milik obat ini.', 422);
+            }
+            if (! $unit->is_active) {
+                throw new \Exception('Kemasan jual ini sedang nonaktif.', 422);
+            }
+
+            $saleQty = max(1, (int) ($data['sale_unit_qty'] ?? 1));
+            $newQty  = $saleQty * (int) $unit->isi;
+            $oldQty  = (int) $item->quantity;
+
+            // Pecah sisa: 25 Tab → 2 Strip (20) + item saudara 5 Tab satuan kecil.
+            if (! empty($data['split_remainder']) && $newQty < $oldQty) {
+                PrescriptionItem::create([
+                    'prescription_id' => $item->prescription_id,
+                    'medication_id'   => $item->medication_id,
+                    'source'          => $item->source ?? 'RESEP',
+                    'quantity'        => $oldQty - $newQty,
+                    'dosage'          => $item->dosage,
+                    'instructions'    => $item->instructions,
+                    'notes'           => $item->notes,
+                    'dose'            => $item->dose,
+                    'frequency'       => $item->frequency,
+                    'route'           => $item->route,
+                    'duration_days'   => $item->duration_days,
+                    'change_reason'   => 'PECAH_KEMASAN',
+                    'changed_by_id'   => $employeeId,
+                    'changed_at'      => now(),
+                ]);
+            }
+
+            $item->update([
+                'sale_unit_id'  => $unit->id,
+                'sale_unit_qty' => $saleQty,
+                'quantity'      => $newQty,
+                'change_reason' => $data['change_reason'] ?? $item->change_reason,
+                'changed_by_id' => $employeeId,
+                'changed_at'    => now(),
+            ]);
+
+            $this->log(auth('api')->id(), 'SET_KEMASAN_ITEM', PrescriptionItem::class, $id,
+                "Kemasan {$unit->label} × {$saleQty} (= {$newQty} satuan)");
+
+            return $item->fresh(['medication', 'saleUnit']);
+        });
     }
 
     public function deleteItemDispensing(string $id, ?string $reason = null): void
