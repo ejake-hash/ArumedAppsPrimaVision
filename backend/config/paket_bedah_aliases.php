@@ -5,9 +5,13 @@
  * Dipakai command `paket:import-excel` SEBELUM lookup exact/normalized.
  *
  * Key   = nama item di Excel (lowercase, trim).
- * Value = [item_type master, nama master persis].
+ * Value = [item_type master, nama master persis ATAU array kandidat nama].
+ *         Kandidat dicoba berurutan — master dev vs live bisa beda nama
+ *         (live banyak berprefix "Alk - "). Semua kandidat tak ketemu →
+ *         command AUTO-CREATE memakai kandidat PERTAMA (nama kanonis).
  *         item_type boleh BEDA dari section Excel (koreksi salah tipe:
  *         mis. IOL/obat yang ditulis di section "Bahan Habis Pakai").
+ *         'code:XXX' = lookup by kode master (nama duplikat/ambigu).
  *
  * Nama yang tidak ada di alias dan tidak ketemu exact/normalized akan
  * DIBUATKAN master baru oleh command (lihat ImportPaketBedahExcel).
@@ -52,13 +56,21 @@ return [
     // (BHPS-0073) duplikat tanpa tarif.
     'bantal retina'                   => ['BHP', 'code:BHP-017'],
 
-    // ── BHP: typo ───────────────────────────────────────────────────────────
-    'micropore dispencer'             => ['BHP', 'Micropore Dispenser'],
-    'cutton swab sterlil'             => ['BHP', 'Cotton Swab Steril'],
+    // ── BHP: typo / beda nama dev vs live (live berprefix "Alk - ") ─────────
+    'micropore dispencer'             => ['BHP', ['Alk - Micropore 1 Inci 3m', 'Micropore Dispenser']],
+    'cutton swab sterlil'             => ['BHP', ['Cotton Swab Steril M', 'Cotton Swab Steril']],
     'cataract surgary set'            => ['BHP', 'Cataract Surgery Set'],
     'trabec surgary set'              => ['BHP', 'Trabec Surgery Set'],
     'nasal oksigen dewasa'            => ['BHP', 'Nasal Oxygen Dewasa'],
     'capsul tension ring'             => ['BHP', 'Capsule Tension Ring'],
+    'alcohol swabs'                   => ['BHP', ['Alkohol Swabs', 'Alcohol Swabs']],
+    'iris care'                       => ['BHP', ['Alk - Iris Care', 'Iris Care']],
+    'needle 23'                       => ['BHP', ['Alk - Needle 23 Onemed', 'Needle 23']],
+    'needle 30'                       => ['BHP', ['Alk - Needle 30G Terumo', 'Needle 30']],
+    'spuit 1 cc'                      => ['BHP', ['Alk - Spuit 1 Cc Onemed', 'Spuit 1 cc']],
+    'spuit 3 cc'                      => ['BHP', ['Alk - Spuit 3 Cc Onemed', 'Spuit 3 cc']],
+    'spuit 5 cc'                      => ['BHP', ['Alk - Spuit 5 Cc Onemed', 'Spuit 5 cc']],
+    'spuit 10 cc'                     => ['BHP', ['Alk - Spuit 10 Cc Onemed', 'Spuit 10 cc']],
 
     // ── TINDAKAN: typo / beda penamaan ──────────────────────────────────────
     'injeksi intravitreal aflibercept' => ['PROCEDURE', 'Injeksi Intravitreal Anti VEGF Aflibercept'],

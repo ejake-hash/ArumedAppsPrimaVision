@@ -239,22 +239,32 @@ class ImportPaketBedahExcel extends Command
         $name = trim($it['name']);
         $type = $it['type'];
 
-        // 1. Alias (boleh override tipe; nama 'code:XXX' = lookup by kode master,
-        //    utk kasus nama duplikat yang ambigu, mis. 'Bantal Retina' 2 baris)
+        // 1. Alias (boleh override tipe). Nama boleh string atau ARRAY kandidat yang
+        //    dicoba berurutan — master dev vs live bisa beda nama (mis. live berprefix
+        //    "Alk - "). 'code:XXX' = lookup by kode master (kasus nama duplikat ambigu).
+        //    Semua kandidat tak ketemu → AUTO-CREATE dengan nama kanonis kandidat
+        //    PERTAMA (bukan typo Excel); IOL tidak pernah di-auto-create.
         $alias = config('paket_bedah_aliases')[mb_strtolower($name)] ?? null;
         if ($alias) {
-            [$aType, $aName] = $alias;
-            if (str_starts_with($aName, 'code:')) {
-                $id = $this->lookupByCode($aType, substr($aName, 5));
-            } else {
-                $id = $aType === 'IOL' ? $this->lookupIolByBrand($aName) : app(TarifPaketService::class)->lookupItemId($aType, $aName);
+            [$aType, $aNames] = $alias;
+            foreach ((array) $aNames as $aName) {
+                if (str_starts_with($aName, 'code:')) {
+                    $id = $this->lookupByCode($aType, substr($aName, 5));
+                } else {
+                    $id = $aType === 'IOL' ? $this->lookupIolByBrand($aName) : app(TarifPaketService::class)->lookupItemId($aType, $aName);
+                }
+                if ($id) {
+                    $stats['alias']++;
+                    return [$aType, $id, $aName];
+                }
             }
-            if ($id) {
-                $stats['alias']++;
-                return [$aType, $id, $aName];
+            if ($aType === 'IOL') {
+                $this->failures[] = "alias '{$name}' → IOL '" . implode("'/'", (array) $aNames) . "' tidak ketemu (IOL tidak di-auto-create)";
+                return null;
             }
-            $this->failures[] = "alias '{$name}' → {$aType} '{$aName}' tidak ketemu di master";
-            return null;
+            $canonical = (array) $aNames;
+            $canonical = str_starts_with($canonical[0], 'code:') ? $name : $canonical[0];
+            return $this->autoCreate($it, $master, $umumId, $stats, $canonical, $aType);
         }
 
         // 2. Exact per tipe section
@@ -279,12 +289,12 @@ class ImportPaketBedahExcel extends Command
         return $this->autoCreate($it, $master, $umumId, $stats);
     }
 
-    private function autoCreate(array $it, MasterDataService $master, string $umumId, array &$stats): ?array
+    private function autoCreate(array $it, MasterDataService $master, string $umumId, array &$stats, ?string $nameOverride = null, ?string $typeOverride = null): ?array
     {
-        $name  = trim($it['name']);
+        $name  = $nameOverride ?? trim($it['name']);
         $harga = (float) ($it['harga'] ?? 0);
 
-        switch ($it['type']) {
+        switch ($typeOverride ?? $it['type']) {
             case 'MEDICATION':
                 $med = $master->storeObat([
                     'name' => $name, 'golongan' => 'KERAS', 'formularium' => 'NON-FORNAS',
