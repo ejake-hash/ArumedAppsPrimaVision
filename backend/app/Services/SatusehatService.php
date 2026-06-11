@@ -1558,6 +1558,12 @@ class SatusehatService
         $entries = [];
 
         foreach ($visit->prescriptions ?? [] as $presc) {
+            // Resep batal jangan dikirim sebagai MedicationRequest "active"
+            // (konsisten dgn skippedNoKfaItems yang juga skip CANCELLED).
+            if ($presc->status === 'CANCELLED') {
+                continue;
+            }
+
             $authoredOn = $this->toWibIso($presc->created_at);
             $doctor     = $presc->prescribedBy;
             $doctorIhs  = $doctor ? $this->resolvePractitionerIhs($doctor) : null;
