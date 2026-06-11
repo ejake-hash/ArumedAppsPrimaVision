@@ -40,6 +40,17 @@ class UnitRequestService
             $q->where('status', $filters['status']);
         }
 
+        // statuses = multi-status (array atau "A,B") — dipakai tab Status modal unit
+        // (APPROVED+DELIVERED sekaligus) tanpa mengubah perilaku `status` tunggal.
+        if (!empty($filters['statuses'])) {
+            $statuses = is_array($filters['statuses'])
+                ? $filters['statuses']
+                : array_filter(array_map('trim', explode(',', (string) $filters['statuses'])));
+            if ($statuses) {
+                $q->whereIn('status', $statuses);
+            }
+        }
+
         if (!empty($filters['date_from'])) {
             $q->whereDate('request_date', '>=', $filters['date_from']);
         }

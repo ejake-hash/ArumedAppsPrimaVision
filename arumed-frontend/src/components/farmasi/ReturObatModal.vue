@@ -6,6 +6,7 @@
  */
 import { ref, watch } from 'vue'
 import { unitReturnApi } from '@/services/api'
+import Pager from '@/components/common/Pager.vue'
 
 const props = defineProps({
   open:        { type: Boolean, default: false },
@@ -28,17 +29,24 @@ const CONDITIONS = [
   { v: 'NEAR_EXPIRY', label: 'Hampir Exp' },
 ]
 
-// ─── Retur Saya ───────────────────────────────────────────────────────────
+// ─── Retur Saya (server-side pagination) ──────────────────────────────────
+const PER_PAGE    = 10
 const list        = ref([])
+const listMeta    = ref({ current_page: 1, last_page: 1, total: 0 })
 const listLoading = ref(false)
 const busyId      = ref(null)
 
-async function fetchList() {
+async function fetchList(page = 1) {
   listLoading.value = true
   try {
-    const res = await unitReturnApi.list({ station: 'FARMASI', per_page: 50 })
+    const res = await unitReturnApi.list({ station: 'FARMASI', per_page: PER_PAGE, page })
     const p = res.data?.data
     list.value = (p && Array.isArray(p.data)) ? p.data : (Array.isArray(p) ? p : [])
+    listMeta.value = {
+      current_page: p?.current_page ?? 1,
+      last_page:    p?.last_page ?? 1,
+      total:        p?.total ?? list.value.length,
+    }
   } catch (e) {
     emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Gagal memuat retur' })
   } finally {
@@ -51,7 +59,7 @@ async function act(row, fn, msg) {
   try {
     await fn()
     emit('changed', { type: 's', message: msg })
-    await fetchList()
+    await fetchList(listMeta.value.current_page)
   } catch (e) {
     emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Aksi gagal' })
   } finally {
@@ -153,7 +161,7 @@ watch(() => props.open, (o) => {
             <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
             <tr v-else-if="!list.length"><td colspan="6" class="ro-state">Belum ada retur. Buka tab "Buat Retur".</td></tr>
             <tr v-for="(r, i) in list" :key="r.id">
-              <td>{{ i + 1 }}</td>
+              <td>{{ (listMeta.current_page - 1) * PER_PAGE + i + 1 }}</td>
               <td><strong>{{ r.return_number }}</strong></td>
               <td class="ro-items">{{ itemsSummary(r) }}</td>
               <td>{{ fmtDate(r.return_date) }}</td>
@@ -170,6 +178,7 @@ watch(() => props.open, (o) => {
             </tr>
           </tbody>
         </table>
+        <Pager :page="listMeta.current_page" :last-page="listMeta.last_page" :total="listMeta.total" @change="fetchList" />
       </div>
 
       <!-- BUAT RETUR -->

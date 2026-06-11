@@ -67,7 +67,7 @@ class UnitRequestController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $filters = $request->only(['search', 'station', 'status', 'date_from', 'date_to', 'per_page']);
+        $filters = $request->only(['search', 'station', 'status', 'statuses', 'date_from', 'date_to', 'per_page']);
         return $this->ok($this->service->index($filters));
     }
 

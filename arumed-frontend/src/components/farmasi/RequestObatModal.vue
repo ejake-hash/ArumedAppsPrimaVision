@@ -5,8 +5,9 @@
  *  - Permintaan Saya : pantau status; DELIVERED → "Terima" (close) → stok unit bertambah.
  * Aksi gudang (approve/kirim/tolak) datang via toast realtime di FarmasiView.
  */
-import { ref, computed, watch } from 'vue'
-import { unitRequestApi } from '@/services/api'
+import { ref, watch } from 'vue'
+import { unitRequestApi, inventoriStockApi } from '@/services/api'
+import Pager from '@/components/common/Pager.vue'
 
 const props = defineProps({
   open:        { type: Boolean, default: false },
@@ -15,6 +16,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'changed'])
 
 const tab = ref('create')   // 'create' | 'status' | 'list'
+const PER_PAGE = 10
 
 const STATUS = {
   DRAFT:     { label: 'Draft',     cls: 's-draft' },
@@ -25,30 +27,61 @@ const STATUS = {
   REJECTED:  { label: 'Ditolak',   cls: 's-err' },
 }
 
-// ─── Permintaan Saya ──────────────────────────────────────────────────────
-const list        = ref([])
-const listLoading = ref(false)
-const busyId      = ref(null)
+// ─── Permintaan Saya (server-side pagination per tab) ─────────────────────
+const emptyMeta = () => ({ current_page: 1, last_page: 1, total: 0 })
 
-async function fetchList() {
-  listLoading.value = true
+const stRows    = ref([])           // tab Status: APPROVED + DELIVERED
+const stMeta    = ref(emptyMeta())
+const stLoading = ref(false)
+
+const histRows    = ref([])         // tab Histori: semua status
+const histMeta    = ref(emptyMeta())
+const histLoading = ref(false)
+
+const busyId = ref(null)
+
+function applyPage(target, meta, res) {
+  const p = res.data?.data
+  target.value = (p && Array.isArray(p.data)) ? p.data : (Array.isArray(p) ? p : [])
+  meta.value = {
+    current_page: p?.current_page ?? 1,
+    last_page:    p?.last_page ?? 1,
+    total:        p?.total ?? target.value.length,
+  }
+}
+
+async function fetchStatus(page = 1) {
+  stLoading.value = true
   try {
-    const res = await unitRequestApi.list({ station: 'FARMASI', per_page: 50 })
-    const p = res.data?.data
-    list.value = (p && Array.isArray(p.data)) ? p.data : (Array.isArray(p) ? p : [])
+    const res = await unitRequestApi.list({ station: 'FARMASI', statuses: 'APPROVED,DELIVERED', per_page: PER_PAGE, page })
+    applyPage(stRows, stMeta, res)
   } catch (e) {
     emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Gagal memuat permintaan' })
   } finally {
-    listLoading.value = false
+    stLoading.value = false
   }
 }
+
+async function fetchHist(page = 1) {
+  histLoading.value = true
+  try {
+    const res = await unitRequestApi.list({ station: 'FARMASI', per_page: PER_PAGE, page })
+    applyPage(histRows, histMeta, res)
+  } catch (e) {
+    emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Gagal memuat permintaan' })
+  } finally {
+    histLoading.value = false
+  }
+}
+
+const refreshLists = () => Promise.all([fetchStatus(stMeta.value.current_page), fetchHist(histMeta.value.current_page)])
 
 async function act(row, fn, msg, refreshStok = false) {
   busyId.value = row.id
   try {
     await fn()
     emit('changed', { type: 's', message: msg, refreshStok })
-    await fetchList()
+    await refreshLists()
   } catch (e) {
     emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Aksi gagal' })
   } finally {
@@ -63,7 +96,38 @@ function hapusReq(row) {
   act(row, () => unitRequestApi.remove(row.id), 'Permintaan dihapus')
 }
 
-const statusList = computed(() => list.value.filter((r) => r.status === 'APPROVED' || r.status === 'DELIVERED'))
+// ─── Stok gudang Inventori (info saat memilih barang) ─────────────────────
+// Map item_id → { qty, unit } dari snapshot stok lokasi INVENTORI. Dimuat sekali
+// saat modal dibuka; item di luar 500 baris pertama di-resolve via search per nama.
+const gudang = ref({})
+async function fetchGudang(search = '') {
+  try {
+    const res = await inventoriStockApi.list('MEDICATION', { location: 'INVENTORI', ...(search ? { search } : {}) })
+    const rows = res.data?.data ?? []
+    const map = { ...gudang.value }
+    rows.forEach((r) => { map[r.id] = { qty: Number(r.total_qty ?? 0), unit: r.unit ?? '' } })
+    gudang.value = map
+  } catch { /* kolom stok gudang bersifat informatif — biarkan kosong bila gagal */ }
+}
+function onPickItem(r) {
+  if (r.item_id && !(r.item_id in gudang.value)) {
+    const name = props.medications.find((m) => m.id === r.item_id)?.name
+    if (name) fetchGudang(name)
+  }
+}
+function gudangLabel(id) {
+  const g = gudang.value[id]
+  if (!g) return '…'
+  if (g.qty <= 0) return 'Kosong'
+  return `${g.qty} ${g.unit}`.trim()
+}
+function gudangCls(r) {
+  const g = gudang.value[r.item_id]
+  if (!g) return ''
+  if (g.qty <= 0) return 'empty'
+  if (Number(r.qty) > g.qty) return 'less'
+  return 'ok'
+}
 
 // ─── Buat Permintaan ──────────────────────────────────────────────────────
 const rows   = ref([emptyRow()])
@@ -88,7 +152,7 @@ async function saveRequest() {
     emit('changed', { type: 's', message: 'Permintaan dikirim ke gudang' })
     rows.value = [emptyRow()]
     tab.value = 'list'
-    await fetchList()
+    await Promise.all([fetchStatus(1), fetchHist(1)])
   } catch (e) {
     emit('changed', { type: 'w', message: e.response?.data?.message ?? 'Gagal membuat permintaan' })
   } finally {
@@ -112,7 +176,13 @@ function itemsSummary(row) {
 }
 
 watch(() => props.open, (o) => {
-  if (o) { tab.value = 'create'; rows.value = [emptyRow()]; fetchList() }
+  if (o) {
+    tab.value = 'create'
+    rows.value = [emptyRow()]
+    fetchStatus(1)
+    fetchHist(1)
+    fetchGudang()
+  }
 })
 </script>
 
@@ -130,7 +200,7 @@ watch(() => props.open, (o) => {
         <button :class="['ro-tab', tab === 'create' ? 'a' : '']" @click="tab = 'create'">Buat Permintaan</button>
         <button :class="['ro-tab', tab === 'status' ? 'a' : '']" @click="tab = 'status'">
           Status
-          <span v-if="statusList.length" class="ro-tabcount">{{ statusList.length }}</span>
+          <span v-if="stMeta.total" class="ro-tabcount">{{ stMeta.total }}</span>
         </button>
         <button :class="['ro-tab', tab === 'list' ? 'a' : '']" @click="tab = 'list'">Histori</button>
       </div>
@@ -149,10 +219,10 @@ watch(() => props.open, (o) => {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
-            <tr v-else-if="!statusList.length"><td colspan="6" class="ro-state">Belum ada permintaan yang disetujui.</td></tr>
-            <tr v-for="(r, i) in statusList" :key="r.id">
-              <td>{{ i + 1 }}</td>
+            <tr v-if="stLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
+            <tr v-else-if="!stRows.length"><td colspan="6" class="ro-state">Belum ada permintaan yang disetujui.</td></tr>
+            <tr v-for="(r, i) in stRows" :key="r.id">
+              <td>{{ (stMeta.current_page - 1) * PER_PAGE + i + 1 }}</td>
               <td><strong>{{ r.request_number }}</strong></td>
               <td class="ro-items">{{ itemsSummary(r) }}</td>
               <td>{{ fmtDate(r.request_date) }}</td>
@@ -168,6 +238,7 @@ watch(() => props.open, (o) => {
             </tr>
           </tbody>
         </table>
+        <Pager :page="stMeta.current_page" :last-page="stMeta.last_page" :total="stMeta.total" @change="fetchStatus" />
       </div>
 
       <!-- HISTORI (semua status, read-only) -->
@@ -184,10 +255,10 @@ watch(() => props.open, (o) => {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="listLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
-            <tr v-else-if="!list.length"><td colspan="6" class="ro-state">Belum ada permintaan. Buka tab "Buat Permintaan".</td></tr>
-            <tr v-for="(r, i) in list" :key="r.id">
-              <td>{{ i + 1 }}</td>
+            <tr v-if="histLoading"><td colspan="6" class="ro-state">Memuat…</td></tr>
+            <tr v-else-if="!histRows.length"><td colspan="6" class="ro-state">Belum ada permintaan. Buka tab "Buat Permintaan".</td></tr>
+            <tr v-for="(r, i) in histRows" :key="r.id">
+              <td>{{ (histMeta.current_page - 1) * PER_PAGE + i + 1 }}</td>
               <td><strong>{{ r.request_number }}</strong></td>
               <td class="ro-items">{{ itemsSummary(r) }}</td>
               <td>{{ fmtDate(r.request_date) }}</td>
@@ -204,6 +275,7 @@ watch(() => props.open, (o) => {
             </tr>
           </tbody>
         </table>
+        <Pager :page="histMeta.current_page" :last-page="histMeta.last_page" :total="histMeta.total" @change="fetchHist" />
       </div>
 
       <!-- BUAT PERMINTAAN -->
@@ -213,6 +285,7 @@ watch(() => props.open, (o) => {
             <tr>
               <th style="width:44px">No.</th>
               <th>Obat</th>
+              <th style="width:110px" class="c">Stok Gudang</th>
               <th style="width:120px" class="c">Qty</th>
               <th style="width:60px">Unit</th>
               <th style="width:44px"></th>
@@ -222,10 +295,14 @@ watch(() => props.open, (o) => {
             <tr v-for="(r, i) in rows" :key="i">
               <td>{{ i + 1 }}</td>
               <td>
-                <select v-model="r.item_id" class="ro-input">
+                <select v-model="r.item_id" class="ro-input" @change="onPickItem(r)">
                   <option value="">— pilih obat —</option>
                   <option v-for="m in medications" :key="m.id" :value="m.id">{{ m.name }}</option>
                 </select>
+              </td>
+              <td class="c">
+                <span v-if="r.item_id" class="ro-gudang" :class="gudangCls(r)">{{ gudangLabel(r.item_id) }}</span>
+                <span v-else class="ro-muted">—</span>
               </td>
               <td class="c"><input v-model.number="r.qty" type="number" min="1" class="ro-input ro-qty" /></td>
               <td class="ro-muted">{{ unitOf(r.item_id) || '—' }}</td>
@@ -290,6 +367,11 @@ watch(() => props.open, (o) => {
 .ro-btn.ghost { background: transparent; }
 
 .ro-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--gb); }
+
+.ro-gudang { display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.ro-gudang.ok    { background: var(--sb); color: var(--st); }
+.ro-gudang.less  { background: #fef3c7; color: #92400e; }
+.ro-gudang.empty { background: var(--eb); color: var(--et); }
 
 .ro-badge { display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 10.5px; font-weight: 700; }
 .s-draft { background: var(--bs); color: var(--tu); }
