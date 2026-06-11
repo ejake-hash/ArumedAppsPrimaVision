@@ -30,13 +30,12 @@ const KEY = 'tindakan'
 // Tindakan = master procedures (per-penjamin diatur di Metode Bayar).
 // Obat/BHP/IOL = harga jual TUNGGAL → disimpan di baris insurer UMUM
 // (komponen MetodeBayarTarifTab di-reuse dengan insurerId = umumId).
+// Tab Tindakan/Obat/BHP/IOL dilebur ke "Buku Tarif" (1 daftar + filter kategori).
+// Tarif Kamar tetap terpisah (matriks kelas×penjamin) — kamarnya tetap MUNCUL di
+// Buku Tarif kategori "Sewa Kamar" (read-only), edit harga di tab ini.
 const TABS = [
-  { key: 'all',      label: 'Buku Tarif' },   // daftar terpadu berkategori (default)
-  { key: 'tindakan', label: 'Tindakan' },
-  { key: 'obat',     label: 'Obat' },
-  { key: 'bhp',      label: 'BHP' },
-  { key: 'iol',      label: 'IOL' },
-  { key: 'kamar',    label: 'Tarif Kamar' },
+  { key: 'all',   label: 'Buku Tarif' },
+  { key: 'kamar', label: 'Tarif Kamar' },
 ]
 const activeTab = ref('all')
 const umumId = ref('')        // id insurer sistem UMUM (untuk tab obat/bhp/iol)
@@ -271,6 +270,32 @@ const bukuRowsNumbered = computed(() => {
   return buku.value.rows.map((r, i) => ({ ...r, _no: start + i + 1, _key: `${r.tipe}:${r.id}` }))
 })
 
+// Chip kategori untuk filter (nama + prefix bila kategori procedure).
+const bukuChips = computed(() =>
+  kategoriOptions.value.map((name) => {
+    const cat = kategoriList.value.find((k) => k.name === name)
+    return { name, prefix: cat?.code_prefix ?? '' }
+  })
+)
+
+function setBukuKategori(name) {
+  bukuKategori.value = (bukuKategori.value === name) ? '' : name
+  loadBukuTarif()
+}
+
+// Edit TINDAKAN (procedure) = modal penuh (nama/kategori/harga/keterangan). Ambil
+// detail lengkap via list (cari by kode) supaya keterangan tak hilang saat simpan.
+async function editTindakanRow(row) {
+  try {
+    const res = await masterApi.tindakan.list({ search: row.kode || row.nama, per_page: 15 })
+    const list = res.data?.data?.data ?? res.data?.data ?? []
+    const proc = (Array.isArray(list) ? list : []).find((p) => p.id === row.id)
+    openEdit(proc ?? { id: row.id, code: row.kode, name: row.nama, category: row.kategori, base_price: row.harga, is_active: row.aktif, keterangan: '' })
+  } catch {
+    openEdit({ id: row.id, code: row.kode, name: row.nama, category: row.kategori, base_price: row.harga, is_active: row.aktif, keterangan: '' })
+  }
+}
+
 function startEditHarga(row) {
   bukuEdit.value = { key: `${row.tipe}:${row.id}`, value: String(Math.round(Number(row.harga ?? 0))) }
 }
@@ -392,7 +417,7 @@ async function onSubmit(payload) {
       showToast('s', 'Tarif diperbarui')
     }
     modal.value.open = false
-    await refresh()
+    await loadBukuTarif(buku.value.meta?.current_page ?? 1)
   } catch (e) {
     if (e.response?.status === 422) {
       modal.value.errors = e.response.data?.errors ?? null
@@ -413,6 +438,7 @@ async function doDelete() {
     await store.remove(KEY, confirmDelete.value.row.id)
     showToast('s', 'Tarif dihapus')
     confirmDelete.value.open = false
+    await loadBukuTarif(buku.value.meta?.current_page ?? 1)
   } catch (e) {
     showToast('e', e.response?.data?.message ?? 'Gagal menghapus')
   } finally {
@@ -448,13 +474,13 @@ const modalFields = computed(() => {
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
   document.addEventListener('click', closeKatMenu)
-  await Promise.all([loadBukuTarif(), refresh(), loadKategoriList(), loadUmumInsurer()])
+  await Promise.all([loadBukuTarif(), loadKategoriList()])
 })
 onUnmounted(() => document.removeEventListener('click', closeKatMenu))
 
 function onImported(result) {
   showToast('s', `Import: ${result.inserted ?? 0} baru, ${result.updated ?? 0} update`)
-  refresh()
+  loadBukuTarif()
   loadKategoriList()
 }
 </script>
@@ -465,9 +491,9 @@ function onImported(result) {
     <div class="tt-section-head">
       <div>
         <h2>Buku Tarif</h2>
-        <p>Sumber tunggal harga jual ke pasien: Tindakan, Obat, BHP, IOL. Tindakan kode auto-generate per kategori; override per penjamin di Metode Bayar. Harga Obat/BHP/IOL = harga jual tunggal (penjamin UMUM).</p>
+        <p>Sumber tunggal harga jual ke pasien dalam satu daftar berkategori: Tindakan, Obat, BHP, IOL, Sewa Kamar. Harga = penjamin UMUM (override per penjamin di Metode Bayar). Tarif kamar diatur di tab “Tarif Kamar”.</p>
       </div>
-      <div v-if="activeTab === 'tindakan'" class="tt-header-actions">
+      <div v-if="activeTab === 'all'" class="tt-header-actions">
         <button class="tt-btn-secondary" @click="openKategoriModal" title="Kelola master kategori + prefix kode">
           <svg viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
           Kelola Kategori
@@ -492,6 +518,22 @@ function onImported(result) {
 
     <!-- ══ Tab BUKU TARIF (terpadu, berkategori) ══ -->
     <template v-if="activeTab === 'all'">
+      <!-- CSV / Excel (tindakan/procedures) -->
+      <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
+
+      <!-- Filter kategori (chip) -->
+      <div v-if="bukuChips.length" class="tt-filters">
+        <span class="tt-filter-label">Filter kategori:</span>
+        <button class="tt-chip" :class="{ active: !bukuKategori }" @click="setBukuKategori('')">Semua</button>
+        <button
+          v-for="c in bukuChips"
+          :key="c.name"
+          class="tt-chip"
+          :class="{ active: bukuKategori === c.name }"
+          @click="setBukuKategori(c.name)"
+        >{{ c.name }}<span v-if="c.prefix" class="tt-chip-prefix">{{ c.prefix }}</span></button>
+      </div>
+
       <div class="tt-buku-toolbar">
         <input
           class="tt-buku-search"
@@ -500,17 +542,6 @@ function onImported(result) {
           placeholder="Cari kode / nama item…"
           @input="onBukuSearch($event.target.value)"
         />
-        <select class="tt-buku-select" v-model="bukuTipe" @change="loadBukuTarif()">
-          <option value="">Semua tipe</option>
-          <option value="tindakan">Tindakan</option>
-          <option value="obat">Obat</option>
-          <option value="bhp">BHP</option>
-          <option value="iol">IOL</option>
-        </select>
-        <select class="tt-buku-select" v-model="bukuKategori" @change="loadBukuTarif()">
-          <option value="">Semua kategori</option>
-          <option v-for="k in kategoriOptions" :key="k" :value="k">{{ k }}</option>
-        </select>
         <span class="tt-buku-count" v-if="buku.meta">{{ buku.meta.total }} item</span>
       </div>
 
@@ -556,6 +587,7 @@ function onImported(result) {
                 <span class="tt-status" :class="row.aktif ? 'on' : 'off'">{{ row.aktif ? 'Aktif' : 'Nonaktif' }}</span>
               </td>
               <td class="ac">
+                <!-- mode simpan/batal harga inline (obat/bhp/iol) -->
                 <template v-if="bukuEdit.key === row._key">
                   <button class="tt-icon-btn" title="Simpan" @click="saveEditHarga(row)">
                     <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
@@ -564,9 +596,21 @@ function onImported(result) {
                     <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </template>
-                <button v-else class="tt-icon-btn" title="Ubah harga jual UMUM" @click="startEditHarga(row)">
+                <!-- TINDAKAN: edit detail (modal) + hapus -->
+                <template v-else-if="row.tipe === 'tindakan'">
+                  <button class="tt-icon-btn" title="Edit tindakan" @click="editTindakanRow(row)">
+                    <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                  </button>
+                  <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete({ id: row.id, name: row.nama })">
+                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </template>
+                <!-- OBAT/BHP/IOL: ubah harga UMUM inline -->
+                <button v-else-if="row.tipe !== 'kamar'" class="tt-icon-btn" title="Ubah harga jual UMUM" @click="startEditHarga(row)">
                   <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
                 </button>
+                <!-- KAMAR: read-only, edit di tab Tarif Kamar -->
+                <span v-else class="tt-kamar-ro" title="Atur di tab Tarif Kamar">Tarif Kamar</span>
               </td>
             </tr>
           </tbody>
@@ -578,94 +622,6 @@ function onImported(result) {
         <span>Hal {{ buku.meta.current_page }} / {{ buku.meta.last_page }}</span>
         <button class="tt-btn-secondary" :disabled="buku.meta.current_page >= buku.meta.last_page" @click="loadBukuTarif(buku.meta.current_page + 1)">Berikutnya ›</button>
       </div>
-    </template>
-
-    <!-- ══ Tab TINDAKAN (procedures) ══ -->
-    <template v-else-if="activeTab === 'tindakan'">
-    <!-- CSV / Excel bar — backend tindakan mendukung ?format=xlsx (csvOrXlsx) -->
-    <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
-
-    <!-- Filter kategori chips -->
-    <div v-if="kategoriList.length" class="tt-filters">
-      <span class="tt-filter-label">Filter kategori:</span>
-      <button
-        class="tt-chip"
-        :class="{ active: !filterKategori }"
-        @click="filterKategori = ''; refresh()"
-      >Semua</button>
-      <button
-        v-for="c in kategoriList"
-        :key="c.id"
-        class="tt-chip"
-        :class="{ active: filterKategori === c.name }"
-        @click="filterKategori = c.name; refresh()"
-      >{{ c.name }} <span class="tt-chip-prefix">{{ c.code_prefix }}</span></button>
-    </div>
-
-    <!-- Main table -->
-    <MasterTable
-      :columns="columns"
-      :rows="rows"
-      :loading="store.byResource[KEY].loading"
-      :error="store.byResource[KEY].error"
-      :meta="store.byResource[KEY].meta"
-      :search-value="searchValue"
-      search-placeholder="Cari kode / nama / kategori / keterangan…"
-      empty-text="Belum ada tarif tindakan. Klik “Tambah Tarif” atau import CSV."
-      @update:search="onSearchUpdate"
-      @page-change="onPageChange"
-      @refresh="refresh"
-    >
-      <template #cell-code="{ value }">
-        <span class="tt-code">{{ value || '—' }}</span>
-      </template>
-
-      <template #cell-name="{ value }">
-        <strong class="tt-name">{{ value }}</strong>
-      </template>
-
-      <template #cell-category="{ value }">
-        <span class="tt-cat-pill">{{ value || '—' }}</span>
-      </template>
-
-      <template #cell-base_price="{ value }">
-        <span class="tt-price">{{ formatRupiah(value) }}</span>
-      </template>
-
-      <template #cell-is_active="{ value }">
-        <span class="tt-status" :class="value ? 'on' : 'off'">
-          {{ value ? 'Aktif' : 'Nonaktif' }}
-        </span>
-      </template>
-
-      <template #cell-keterangan="{ value }">
-        <span class="tt-note">{{ value || '—' }}</span>
-      </template>
-
-      <template #actions="{ row }">
-        <button class="tt-icon-btn" title="Edit" @click="openEdit(row)">
-          <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-        </button>
-        <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete(row)">
-          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        </button>
-      </template>
-    </MasterTable>
-    </template>
-
-    <!-- ══ Tab OBAT / BHP / IOL — harga jual tunggal (insurer UMUM) ══ -->
-    <template v-else-if="['obat', 'bhp', 'iol'].includes(activeTab)">
-      <div v-if="!umumId" class="tt-jenis-warn">
-        Penjamin UMUM belum tersedia. Pastikan data penjamin sistem sudah ter-seed.
-      </div>
-      <MetodeBayarTarifTab
-        v-else
-        :key="activeTab"
-        :type="activeTab"
-        :insurer-id="umumId"
-        :read-only="false"
-        :buku-tarif="true"
-      />
     </template>
 
     <!-- ══ Tab TARIF KAMAR — sewa kamar inap per kelas × penjamin ══ -->
@@ -951,6 +907,7 @@ function onImported(result) {
 .tt-tipe-pill[data-t="iol"] { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
 .tt-buku-priceinput { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; text-align: right; }
 .tt-buku-priceinput:focus { outline: none; }
+.tt-kamar-ro { font-size: 11px; color: var(--tm); font-style: italic; white-space: nowrap; }
 .tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.9rem; font-size: 12.5px; color: var(--tm); }
 .tt-buku-pager button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

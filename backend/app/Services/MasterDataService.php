@@ -1832,7 +1832,22 @@ class MasterDataService
                     CASE WHEN x.power IS NOT NULL THEN ' ' || x.power || 'D' ELSE '' END)),
                 'IOL', COALESCE(t.price, x.price, 0)::numeric, CAST(NULL AS varchar), x.is_active");
 
-        return $proc->unionAll($obat)->unionAll($bhp)->unionAll($iol);
+        // Tarif Kamar: 1 baris per room_class, harga = baris room_tariffs UMUM. Kategori
+        // 'Sewa Kamar' (selaras kategori procedure & billing_categories). Edit harga TIDAK
+        // di sini (read-only di FE) — diatur di tab Tarif Kamar (matriks kelas×penjamin).
+        $kamarClasses = DB::table('room_tariffs')->whereNull('deleted_at')->distinct()->select('room_class');
+        $kamar = DB::query()->fromSub($kamarClasses, 'rc')
+            ->leftJoin('room_tariffs as t', function ($j) use ($umumId) {
+                $j->on('t.room_class', '=', 'rc.room_class')
+                  ->where('t.insurer_id', $umumId)
+                  ->where('t.is_active', true)
+                  ->whereNull('t.deleted_at');
+            })
+            ->selectRaw("'kamar', ('KELAS_' || rc.room_class), CAST(NULL AS varchar),
+                ('Kamar Kelas ' || rc.room_class), 'Sewa Kamar',
+                COALESCE(t.price, 0)::numeric, CAST('per malam' AS varchar), true");
+
+        return $proc->unionAll($obat)->unionAll($bhp)->unionAll($iol)->unionAll($kamar);
     }
 
     /** Daftar Buku Tarif terpadu, dengan search (nama/kode), filter kategori/tipe/aktif, paginate. */
