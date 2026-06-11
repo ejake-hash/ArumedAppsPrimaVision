@@ -336,7 +336,7 @@ class RmeAggregatorService
     /** Ringkas Objektif refraksionis (visus akhir + refraksi subjektif + TIO) untuk timeline. */
     // Objektif refraksi — SUMBER TUNGGAL refraction_records.soap_o (ditulis oleh
     // RefraksionisView oDerived). Ini fallback bila soap_o kosong (record lama/skip).
-    // Urutan SELARAS: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
+    // Urutan SELARAS: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
     private function refraksiObjektif(RefractionRecord $r): ?string
     {
         $parts = [];
@@ -363,6 +363,11 @@ class RmeAggregatorService
         // 5. IOP/TIO
         if ($r->iop_od || $r->iop_os) {
             $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        }
+        // 6. PD (pupillary distance) — paling bawah
+        if ($r->pd_distance !== null && $r->pd_distance !== '') {
+            $pd = rtrim(rtrim((string) $r->pd_distance, '0'), '.');
+            $parts[] = 'PD ' . $pd . ' mm';
         }
         return $parts ? implode("\n", $parts) : null;
     }

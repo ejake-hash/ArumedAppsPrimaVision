@@ -82,7 +82,7 @@ final class AggregateResolver
     /**
      * Bangun teks refraksi objektif dari record (fallback bila soap_o kosong).
      * Urutan SELARAS dgn RefraksionisView::oDerived & RmeAggregator::refraksiObjektif:
-     * Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
+     * Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
      */
     private function buildRefraksiObjektif(\App\Models\RefractionRecord $r): string
     {
@@ -114,6 +114,10 @@ final class AggregateResolver
         }
         if ($r->iop_od || $r->iop_os) {
             $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        }
+        if ($r->pd_distance !== null && $r->pd_distance !== '') {
+            $pd = rtrim(rtrim((string) $r->pd_distance, '0'), '.');
+            $parts[] = 'PD ' . $pd . ' mm';
         }
         return $parts ? implode("\n", $parts) : '';
     }

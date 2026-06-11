@@ -1794,7 +1794,7 @@ class DokterService
         }
         // Sumber tunggal: soap_o (ditulis RefraksionisView oDerived). Fallback di bawah
         // hanya untuk record lama tanpa soap_o. Urutan SELARAS dgn oDerived &
-        // RmeAggregator::refraksiObjektif: Visus awal → Subjektif (S/C/X) → Visus akhir → ADD → IOP.
+        // RmeAggregator::refraksiObjektif: Visus awal → Subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
         if ($refraksi->soap_o) {
             return trim($refraksi->soap_o);
         }
@@ -1833,6 +1833,11 @@ class DokterService
         // 5. IOP/TIO
         if ($refraksi->iop_od || $refraksi->iop_os) {
             $parts[] = 'TIO OD ' . ($refraksi->iop_od ?? '-') . ' / OS ' . ($refraksi->iop_os ?? '-') . ' mmHg' . ($refraksi->iop_method ? " ({$refraksi->iop_method})" : '');
+        }
+        // 6. PD (pupillary distance) — paling bawah
+        if ($refraksi->pd_distance !== null && $refraksi->pd_distance !== '') {
+            $pd = rtrim(rtrim((string) $refraksi->pd_distance, '0'), '.');
+            $parts[] = 'PD ' . $pd . ' mm';
         }
         return implode("\n", $parts);
     }

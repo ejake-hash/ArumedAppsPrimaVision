@@ -197,7 +197,7 @@ const soapODirty = ref(false)   // O disentuh manual → hentikan autofill dari 
 
 // Objektif (O) tersusun dari data refraksi — SUMBER TUNGGAL `soap_o`, mirror
 // RmeAggregator::refraksiObjektif & DokterService::refraksiObjektifResume.
-// Urutan: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
+// Urutan: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
 // Editable: begitu diedit manual, autofill berhenti.
 const oDerived = computed(() => {
   const parts = []
@@ -222,6 +222,8 @@ const oDerived = computed(() => {
   if (has(r.add_od) || has(r.add_os)) parts.push(`Add OD ${has(r.add_od) ? signed(r.add_od) : '–'} / OS ${has(r.add_os) ? signed(r.add_os) : '–'}`)
   // 5. IOP/TIO
   if (has(i.od) || has(i.os)) parts.push(`TIO OD ${i.od || '–'} / OS ${i.os || '–'} mmHg${i.method ? ` (${i.method})` : ''}`)
+  // 6. PD (pupillary distance) — paling bawah
+  if (has(r.pd)) parts.push(`PD ${r.pd} mm`)
   return parts.join('\n')
 })
 
