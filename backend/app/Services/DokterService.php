@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BillingInvoice;
 use App\Models\BpjsControlLetter;
 use App\Models\BpjsPoliMapping;
 use App\Models\BpjsReferralOut;
@@ -476,13 +477,13 @@ class DokterService
         // Komit billing (Kirim ke Kasir) mengunci tindakan/resep walau RME belum final.
         $this->assertBillingNotCommitted($visitId);
 
-        return DB::transaction(function () use ($visitId, $services, $user) {
+        $created = DB::transaction(function () use ($visitId, $services, $user) {
             // Bersihkan tindakan lama lalu tulis ulang dari daftar terkini.
             VisitService::where('visit_id', $visitId)->delete();
 
-            $created = [];
+            $rows = [];
             foreach ($services as $item) {
-                $created[] = VisitService::create([
+                $rows[] = VisitService::create([
                     'visit_id'        => $visitId,
                     'procedure_id'    => $item['procedure_id'],
                     'performed_by_id' => $user->employee_id,
@@ -492,10 +493,16 @@ class DokterService
                 ]);
             }
 
-            $this->log($user->id, 'STORE_TINDAKAN', Visit::class, $visitId, count($created) . ' tindakan disimpan (replace)');
+            $this->log($user->id, 'STORE_TINDAKAN', Visit::class, $visitId, count($rows) . ' tindakan disimpan (replace)');
 
-            return Collection::make($created)->load('procedure');
+            return Collection::make($rows)->load('procedure');
         });
+
+        // Revisi pasca-kirim: bila invoice (belum bayar) sudah ada, bangun ulang kwitansi
+        // agar perubahan tindakan langsung tercermin.
+        $this->reconsolidateAfterDoctorRevision($visitId);
+
+        return $created;
     }
 
     public function deleteVisitService(string $id): void
@@ -554,9 +561,26 @@ class DokterService
             throw new \Exception('Akun Anda tidak terhubung ke data pegawai/dokter, sehingga tidak bisa membuat resep. Silakan login dengan akun dokter.', 422);
         }
 
-        return DB::transaction(function () use ($visitId, $data, $user, $items) {
-            // Bersihkan resep DRAFT lama + itemnya.
-            $drafts = Prescription::where('visit_id', $visitId)->where('status', 'DRAFT')->get();
+        // Revisi pasca "Kirim ke Kasir": resep rawat jalan yang sudah diserahkan Farmasi
+        // (DISPENSING/DISPENSED) tak boleh diubah — obat sudah keluar. Blok dengan jelas.
+        $sudahDispense = Prescription::where('visit_id', $visitId)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->whereIn('status', ['DISPENSING', 'DISPENSED'])
+            ->exists();
+        if ($sudahDispense) {
+            throw new \Exception('Obat sudah diserahkan Farmasi, tidak bisa diubah.', 422);
+        }
+
+        $prescription = DB::transaction(function () use ($visitId, $data, $user, $items) {
+            // Bersihkan resep rawat jalan yang masih bisa direvisi (DRAFT atau SUBMITTED)
+            // + itemnya. SUBMITTED ikut dibersihkan agar revisi dokter pasca "Kirim ke
+            // Kasir" mengganti resep lama (bukan menumpuk). Resep yang sudah diverifikasi
+            // Farmasi otomatis ter-reset (delete+recreate → verified_at baru null) → wajib
+            // verifikasi ulang. RANAP/CANCELLED/DISPENSING/DISPENSED tak disentuh.
+            $drafts = Prescription::where('visit_id', $visitId)
+                ->where('type', '!=', Prescription::TYPE_RANAP)
+                ->whereIn('status', ['DRAFT', 'SUBMITTED'])
+                ->get();
             foreach ($drafts as $d) {
                 PrescriptionItem::where('prescription_id', $d->id)->delete();
                 $d->delete();
@@ -592,6 +616,13 @@ class DokterService
 
             return $prescription->load('items.medication');
         });
+
+        // Revisi pasca-kirim: bila invoice (belum bayar) sudah ada, bangun ulang kwitansi
+        // agar obat lama/baru tercermin. Obat hasil reset (verified_at null) tak ikut
+        // tertagih sampai Farmasi verifikasi ulang (gate KasirService::buildObatLines).
+        $this->reconsolidateAfterDoctorRevision($visitId);
+
+        return $prescription;
     }
 
     // =========================================================================
@@ -1290,19 +1321,74 @@ class DokterService
     }
 
     /**
-     * Tolak ubah tindakan/resep bila billing sudah dikomit (baris KASIR aktif untuk
-     * visit ini sudah dibuat lewat "Kirim ke Kasir"). Mengunci billing TANPA mengunci
-     * RME (is_finalized tetap bisa false). Pelengkap assertNotFinalized.
+     * Tolak ubah tindakan/resep HANYA bila pembayaran sudah dikonfirmasi (invoice
+     * PAID/PARTIALLY_PAID). Selama belum bayar, dokter boleh "Buka Kembali" Tab 3 untuk
+     * revisi obat/tindakan walau pasien sudah dikirim ke kasir — perubahan mengalir ke
+     * verifikasi Farmasi & kwitansi (reconsolidate). Batas kunci = PEMBAYARAN, bukan
+     * "terkirim ke kasir". Mengunci billing TANPA mengunci RME. Pelengkap assertNotFinalized.
      */
     private function assertBillingNotCommitted(string $visitId): void
     {
-        $hasActiveKasir = Queue::where('visit_id', $visitId)
-            ->where('station', Queue::STATION_KASIR)
-            ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+        $paid = BillingInvoice::where('visit_id', $visitId)
+            ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
             ->exists();
 
-        if ($hasActiveKasir) {
-            throw new \Exception('Tagihan sudah dikirim ke kasir — perubahan tindakan/resep ditolak. Batalkan dari kasir bila perlu mengubah.', 422);
+        if ($paid) {
+            throw new \Exception('Pembayaran sudah dikonfirmasi di kasir — perubahan tindakan/resep ditolak. Batalkan/kembalikan dari kasir bila perlu mengubah.', 422);
+        }
+    }
+
+    /**
+     * Status tagihan ringkas untuk dokter — menentukan apakah Tab 3 masih boleh
+     * "Buka Kembali" (revisi tindakan/obat). is_paid true → terkunci pembayaran.
+     */
+    public function getBillingStatus(string $visitId): array
+    {
+        $this->authorizeVisitOwnership($visitId);
+
+        $invoice = BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')
+            ->first();
+
+        return [
+            'has_invoice' => (bool) $invoice,
+            'status'      => $invoice?->status,
+            'is_paid'     => $invoice ? in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true) : false,
+        ];
+    }
+
+    /**
+     * Invoice aktif (belum dibatalkan) untuk visit ini, bila ada. Dipakai pemicu
+     * reconsolidate saat dokter merevisi tindakan/resep pasca "Kirim ke Kasir".
+     */
+    private function existingActiveInvoice(string $visitId): ?BillingInvoice
+    {
+        return BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')
+            ->first();
+    }
+
+    /**
+     * Setelah dokter merevisi tindakan/resep (Tab 3) saat invoice sudah ada tapi belum
+     * dibayar: bangun ulang kwitansi agar mencerminkan perubahan. Invoice FINALIZED
+     * dikembalikan ke DRAFT supaya kasir mengonfirmasi ulang. Obat yang belum (atau baru
+     * di-reset) verified tidak ikut tertagih (lihat KasirService::buildObatLines). Aman
+     * dipanggil tanpa invoice (no-op). Tidak melempar — revisi dokter tak boleh gagal
+     * gara-gara rebuild kwitansi.
+     */
+    private function reconsolidateAfterDoctorRevision(string $visitId): void
+    {
+        $invoice = $this->existingActiveInvoice($visitId);
+        if (! $invoice || in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true)) {
+            return;
+        }
+        try {
+            if ($invoice->status === 'FINALIZED') {
+                $invoice->update(['status' => 'DRAFT']);
+            }
+            $this->kasirService->reconsolidateInvoice($invoice->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('reconsolidateAfterDoctorRevision gagal: ' . $e->getMessage(), ['visit_id' => $visitId]);
         }
     }
 

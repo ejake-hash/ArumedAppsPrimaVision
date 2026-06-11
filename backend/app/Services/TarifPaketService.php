@@ -450,7 +450,7 @@ class TarifPaketService
     // PAKET BEDAH — CSV TEMPLATE / EXPORT / IMPORT
     // =========================================================================
 
-    private const CSV_HEADERS = ['nama_paket', 'kategori', 'tipe_paket', 'deskripsi', 'aktif', 'item_tipe', 'item_kategori', 'item_nama', 'qty', 'catatan'];
+    private const CSV_HEADERS = ['nama_paket', 'kategori', 'tipe_paket', 'deskripsi', 'aktif', 'item_tipe', 'item_kategori', 'item_nama', 'qty', 'harga', 'catatan'];
 
     public function templatePaketCsv(): string
     {
@@ -532,6 +532,7 @@ class TarifPaketService
                     $this->resolveItemCategory($item->item_type, $resolved) ?? '',   // kategori buku tarif
                     $itemName,
                     (string) $item->quantity,
+                    $this->formatPriceForCsv($item->default_price),                   // harga snapshot komposisi
                     $item->notes ?? '',
                 ]), ',', '"', '\\');
             }
@@ -539,7 +540,7 @@ class TarifPaketService
             // Paket tanpa item valid (kosong, atau semua master-nya sudah dihapus) →
             // tetap diekspor 1 baris header (kolom item kosong) supaya paket tak hilang.
             if (! $exportedItem) {
-                fputcsv($output, array_merge($headerRow, ['', '', '', '', '']), ',', '"', '\\');
+                fputcsv($output, array_merge($headerRow, ['', '', '', '', '', '']), ',', '"', '\\');
             }
         }
 
@@ -555,12 +556,13 @@ class TarifPaketService
         return [
             'PETUNJUK PENGISIAN — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
             'Format LONG: 1 baris = 1 item. Paket multi-item → ulang baris dgn nama_paket sama.',
-            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/item_kategori/catatan opsional)',
+            'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/item_kategori/harga/catatan opsional)',
             'tipe_paket: BEDAH (boleh PROCEDURE/MEDICATION/BHP/IOL) atau PEMERIKSAAN (hanya PROCEDURE). Kosong → BEDAH (paket baru) / dipertahankan (paket lama).',
             'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . '.',
             'item_kategori = kategori buku tarif item (mis. "Tarif Administrasi", "CSSD") — OPSIONAL, hanya untuk membedakan bila ada nama item kembar di kategori berbeda.',
             'item_nama dicocokkan ke master (case-insensitive). IOL: tulis "Brand Model PowerD" mis. "Alcon AcrySof IQ 21D".',
             'qty = angka >= 1 (kosong/0 → dianggap 1). aktif: 1 = aktif, 0 = nonaktif.',
+            'harga = harga snapshot komposisi (angka rupiah tanpa desimal, mis. 1500000). KOSONG/0 → otomatis ambil dari Buku Tarif (penjamin UMUM). Isi hanya bila ingin mengunci harga item berbeda dari master.',
             'Import nama_paket yang SUDAH ada → komposisi item di-REPLACE (tarif jual per penjamin TIDAK disentuh).',
         ];
     }
@@ -626,6 +628,7 @@ class TarifPaketService
             $itemKat  = trim((string) ($row['item_kategori'] ?? ''));   // opsional: bantu disambiguasi nama
             $itemNama = trim((string) ($row['item_nama'] ?? ''));
             $qty      = (int) ($row['qty'] ?? 0);
+            $harga    = $this->parseCsvPrice((string) ($row['harga'] ?? ''));   // opsional: null → ambil dari master
 
             // Baris tanpa item (paket kosong) — skip item, header tetap diproses
             if ($itemTipe === '' && $itemNama === '') {
@@ -647,6 +650,7 @@ class TarifPaketService
                 'item_category' => $itemKat ?: null,
                 'item_name'     => $itemNama,
                 'quantity'      => $qty,
+                'default_price' => $harga,   // null → resolve dari master saat insert
                 'notes'         => trim((string) ($row['catatan'] ?? '')) ?: null,
                 '_line'         => $lineNum,
             ];
@@ -701,7 +705,10 @@ class TarifPaketService
                         continue;
                     }
 
-                    $defaultPrice = $this->resolveMasterPrice($itemRow['item_type'], $itemId);
+                    // Harga dari CSV (bila diisi & > 0) menang; kosong → snapshot master Buku Tarif.
+                    $defaultPrice = ($itemRow['default_price'] ?? null) > 0
+                        ? (float) $itemRow['default_price']
+                        : $this->resolveMasterPrice($itemRow['item_type'], $itemId);
 
                     SurgeryPackageItem::updateOrCreate(
                         [
@@ -765,6 +772,23 @@ class TarifPaketService
             return trim("{$brand} {$model} {$power}");
         }
         return (string) ($resolved->name ?? '');
+    }
+
+    /** Format harga snapshot komposisi untuk CSV: rupiah bulat tanpa pemisah/desimal. */
+    private function formatPriceForCsv(mixed $price): string
+    {
+        return (string) (int) round((float) $price);
+    }
+
+    /**
+     * Parse kolom harga CSV → float (rupiah). Toleran "Rp", spasi, dan pemisah ribuan
+     * ("1.500.000" / "1500000"). Kosong / non-angka → null (caller fallback ke master).
+     * Catatan: export menulis bilangan bulat tanpa desimal, jadi buang semua non-digit aman.
+     */
+    private function parseCsvPrice(string $raw): ?float
+    {
+        $digits = preg_replace('/[^\d]/', '', trim($raw));
+        return ($digits === null || $digits === '') ? null : (float) $digits;
     }
 
     /** Lookup item ID by nama (case-insensitive). Return null kalau tidak ketemu atau ambigu. */

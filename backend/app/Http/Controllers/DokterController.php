@@ -431,6 +431,22 @@ class DokterController extends Controller
     }
 
     /**
+     * GET /dokter/kunjungan/{visitId}/billing-status
+     * Status tagihan ringkas → dipakai DokterView memutuskan apakah Tab 3 boleh
+     * "Buka Kembali" (revisi tindakan/obat). is_paid true = terkunci pembayaran.
+     */
+    public function billingStatus(string $visitId): JsonResponse
+    {
+        try {
+            $status = $this->service->getBillingStatus($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($status);
+    }
+
+    /**
      * GET /dokter/bedah/slot?tanggal=YYYY-MM-DD
      * Preview ringkas jadwal bedah pada tanggal tertentu (untuk Tab 4 → Jadwalkan Bedah):
      * total terjadwal + daftar jam yang sudah terisi. Tidak menarik relasi berat.

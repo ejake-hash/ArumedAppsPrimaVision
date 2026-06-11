@@ -1163,6 +1163,17 @@ const groupedPrintItems = computed(() =>
               </div>
             </div>
 
+            <!-- Revisi dokter pasca-tagih: obat menunggu verifikasi ulang Farmasi → tagihan
+                 sedang diperbarui, pembayaran ditahan sampai Farmasi kunci ulang. -->
+            <div v-if="selInv.pending_obat_verification" class="revisi-banner">
+              <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+              <div>
+                <strong>Tagihan diperbarui oleh revisi dokter.</strong>
+                <div class="rb-msg">Ada obat yang menunggu verifikasi ulang Farmasi — obat belum masuk tagihan & pembayaran ditahan sampai Farmasi mengunci resep. Klik Muat ulang setelah Farmasi verifikasi.</div>
+                <button class="btn btn-secondary btn-sm" @click="pickP(selQ)">↻ Muat ulang</button>
+              </div>
+            </div>
+
             <div class="layout">
               <!-- LEFT: detail tagihan -->
               <div class="col-left">
@@ -1723,7 +1734,7 @@ const groupedPrintItems = computed(() =>
           <tbody>
             <tr>
               <td class="k">No. Rekam Medis</td><td class="s">:</td><td class="v">{{ printData.patient?.no_rm ?? '—' }}</td>
-              <td class="k">Tanggal</td><td class="s">:</td><td class="v">{{ printData.invoice?.date ?? '—' }}</td>
+              <td class="k">Tgl Kunjungan</td><td class="s">:</td><td class="v">{{ printData.invoice?.visit_date ?? printData.invoice?.date ?? '—' }}</td>
             </tr>
             <tr>
               <td class="k">Nama Pasien</td><td class="s">:</td><td class="v">{{ printData.patient?.name ?? '—' }}</td>
@@ -1737,6 +1748,10 @@ const groupedPrintItems = computed(() =>
             <tr>
               <td class="k">Dokter (DPJP)</td><td class="s">:</td><td class="v">{{ printData.patient?.dpjp ?? '—' }}</td>
               <td class="k">Jenis Layanan</td><td class="s">:</td><td class="v">{{ svcLabel(printData.service_type) }}</td>
+            </tr>
+            <tr>
+              <td class="k">Tgl Invoice</td><td class="s">:</td><td class="v">{{ printData.invoice?.date ?? '—' }}</td>
+              <td class="k">Tgl Bayar</td><td class="s">:</td><td class="v">{{ printData.invoice?.is_paid ? (printData.invoice?.paid_at ?? '—') : 'Belum dibayar' }}</td>
             </tr>
           </tbody>
         </table>
@@ -2005,6 +2020,9 @@ const groupedPrintItems = computed(() =>
 .insurance-alert.ia-issue { background: var(--eb); border-color: var(--ebd); color: var(--et); }
 .insurance-alert svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; margin-top: 1px; }
 .insurance-alert .ia-msg { font-size: 11px; margin-top: 3px; line-height: 1.4; opacity: 0.95; }
+.revisi-banner { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: 9px; font-size: 12px; margin-bottom: 0.7rem; border: 1px solid #fdba74; background: #fff7ed; color: #9a3412; }
+.revisi-banner svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; margin-top: 1px; }
+.revisi-banner .rb-msg { font-size: 11px; margin: 3px 0 6px; line-height: 1.4; opacity: 0.95; }
 
 /* Panel info eligibility asuransi — readonly referensi, BUKAN auto-calculator */
 .elig-panel { background: var(--bc); border: 1.5px solid var(--ga); border-radius: 10px; padding: 0.75rem 0.85rem; margin-bottom: 0.7rem; }

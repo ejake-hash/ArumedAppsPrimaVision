@@ -292,8 +292,18 @@ class FarmasiService
             ->orderBy('created_at')
             ->get();
 
+        // REVISI pasca-tagih: bila visit sudah punya invoice aktif (DRAFT/FINALIZED, belum
+        // CANCELLED), resep unverified di antrean ini = revisi dokter setelah Kirim ke Kasir
+        // → butuh verifikasi ulang. Cek per-visit dalam 1 query (hindari N+1).
+        $visitIds = $rows->pluck('visit_id')->filter()->unique()->values()->all();
+        $visitsWithInvoice = $visitIds
+            ? \App\Models\BillingInvoice::whereIn('visit_id', $visitIds)
+                ->where('status', '!=', 'CANCELLED')
+                ->pluck('visit_id')->flip()
+            : collect();
+
         $kasir = app(KasirService::class);
-        $rows->each(function ($rx) use ($kasir) {
+        $rows->each(function ($rx) use ($kasir, $visitsWithInvoice) {
             $guarantor = $rx->visit?->guarantor_type ?: 'UMUM';
             $insurerId = $rx->visit?->insurer_id;
             $total = 0.0;
@@ -309,6 +319,8 @@ class FarmasiService
                 $total += $it->est_total_price;
             }
             $rx->est_total = $total;
+            // Tagihan sudah ada tapi resep ini belum diverifikasi → revisi pasca-kirim.
+            $rx->is_revision = is_null($rx->verified_at) && $visitsWithInvoice->has($rx->visit_id);
         });
 
         return $rows;
@@ -335,6 +347,20 @@ class FarmasiService
             'verified_by_id' => $user?->employee_id,
         ]);
         $this->log($user?->id, 'VERIFY_RESEP', Prescription::class, $prescriptionId, 'Resep diverifikasi & dikunci Farmasi');
+
+        // Verifikasi ulang pasca revisi dokter: bila tagihan DRAFT (belum bayar) sudah ada,
+        // bangun ulang agar obat yang baru dikunci ini masuk kembali ke kwitansi. No-op bila
+        // belum ada invoice (alur normal: kasir konsolidasi belakangan). Tak melempar.
+        try {
+            $invoice = \App\Models\BillingInvoice::where('visit_id', $prescription->visit_id)
+                ->where('status', 'DRAFT')
+                ->first();
+            if ($invoice) {
+                app(KasirService::class)->reconsolidateInvoice($invoice->id);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('reconsolidate pasca verifikasi gagal: ' . $e->getMessage(), ['prescription_id' => $prescriptionId]);
+        }
 
         return $prescription->fresh(['items.medication', 'verifiedBy']);
     }

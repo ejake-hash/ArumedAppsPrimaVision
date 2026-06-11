@@ -1995,6 +1995,7 @@ function toast(type, msg) {
               <div class="rx-body">
                 <div class="rx-top">
                   <div class="rx-name">{{ rx.visit?.patient?.name ?? '—' }}</div>
+                  <span v-if="rx.is_revision" class="ver-badge revisi" title="Resep direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi</span>
                   <span :class="['ver-badge', rx.verified_at ? 'ok' : 'wait']">{{ rx.verified_at ? '🔒 Terkunci' : 'Perlu verifikasi' }}</span>
                 </div>
                 <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
@@ -2016,6 +2017,7 @@ function toast(type, msg) {
                 <div class="ddp-name">{{ verSel.visit?.patient?.name ?? '—' }}</div>
                 <div class="rx-meta">RM {{ verSel.visit?.patient?.no_rm ?? '—' }} · {{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
               </div>
+              <span v-if="verSel.is_revision" class="ver-badge revisi" title="Resep direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi pasca-tagih</span>
               <span :class="['ver-badge', verSel.verified_at ? 'ok' : 'wait']">{{ verSel.verified_at ? '🔒 Terkunci' : 'Belum diverifikasi' }}</span>
             </div>
 
@@ -2947,6 +2949,7 @@ function toast(type, msg) {
 .ver-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
 .ver-badge.wait { background: #fef3c7; color: #92400e; }
 .ver-badge.ok { background: #dcfce7; color: #166534; }
+.ver-badge.revisi { background: #ffedd5; color: #9a3412; border: 1px solid #fdba74; margin-right: 4px; }
 .dd-patient-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid var(--gb); }
 .ddp-name { font-size: 15px; font-weight: 700; color: var(--td); }
 .ver-reason { margin: 8px 0 12px; }

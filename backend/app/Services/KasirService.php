@@ -144,6 +144,15 @@ class KasirService
                 $invoice->load('items');
                 $invoice->setAttribute('obat_synced', $obatSynced);
             }
+
+            // Revisi dokter pasca-tagih: bila masih ada resep rawat jalan belum diverifikasi
+            // Farmasi, tagihan ini sedang menunggu verifikasi ulang (obat belum tertagih,
+            // pembayaran diblok assertObatVerified). Flag → banner di KasirView.
+            $invoice->setAttribute('pending_obat_verification', Prescription::where('visit_id', $invoice->visit_id)
+                ->where('type', '!=', Prescription::TYPE_RANAP)
+                ->whereIn('status', ['DRAFT', 'SUBMITTED'])
+                ->whereNull('verified_at')
+                ->exists());
         }
 
         return $invoice;
@@ -281,6 +290,26 @@ class KasirService
     // =========================================================================
 
     /**
+     * GATE alur D→K→F: tolak bila masih ada resep rawat jalan (non-RANAP) berstatus
+     * DRAFT/SUBMITTED yang belum diverifikasi & dikunci Farmasi (verified_at NULL).
+     * Dipakai saat MEMBUAT tagihan (consolidateBilling) dan saat MENGUNCI/menutup
+     * pembayaran (finalizeInvoice & jalur non-tunai) — supaya revisi obat dokter yang
+     * menunggu verifikasi ulang tidak bisa ditutup pembayarannya. RANAP/IGD dikecualikan
+     * (obat via inpatient_charges). Resep CANCELLED/DISPENSING/DISPENSED diabaikan.
+     */
+    private function assertObatVerified(string $visitId): void
+    {
+        $adaBelumVerifikasi = Prescription::where('visit_id', $visitId)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->whereIn('status', ['DRAFT', 'SUBMITTED'])
+            ->whereNull('verified_at')
+            ->exists();
+        if ($adaBelumVerifikasi) {
+            throw new \Exception('Resep belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci resep dulu sebelum membuat/menutup tagihan.', 422);
+        }
+    }
+
+    /**
      * Build invoice from all visit sources: tindakan, obat, BHP, IOL (bedah), paket.
      * Applies tariff lookup with fallback logic.
      * Applies COB if configured.
@@ -308,16 +337,8 @@ class KasirService
         }
 
         // GATE alur D→K→F: tagihan tidak boleh dibuat selama masih ada resep rawat
-        // jalan yang BELUM diverifikasi & dikunci Farmasi (verified_at NULL). Memastikan
-        // tagihan = obat yang benar-benar diserahkan. RANAP/IGD (obat via inpatient_charges)
-        // dikecualikan, & resep CANCELLED diabaikan. Resep lama di-backfill verified_at saat
-        // migrasi → tidak terblok.
-        $adaBelumVerifikasi = $visit->prescriptions->contains(fn ($p) => $p->type !== Prescription::TYPE_RANAP
-            && in_array($p->status, ['DRAFT', 'SUBMITTED'], true)   // resep dokter pra-tagihan
-            && is_null($p->verified_at));
-        if ($adaBelumVerifikasi) {
-            throw new \Exception('Resep belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci resep dulu sebelum membuat tagihan.', 422);
-        }
+        // jalan yang BELUM diverifikasi & dikunci Farmasi (verified_at NULL).
+        $this->assertObatVerified($visitId);
 
         return DB::transaction(function () use ($visit) {
             // Insurer yang dipakai untuk MEMBANGUN baris tagihan. Untuk COB, tagihan
@@ -608,8 +629,15 @@ class KasirService
         // mencakup obat is_bedah juga (untuk label pos kwitansi).
         $hasPaket = $visit->surgeryPackageSnapshots->isNotEmpty();
 
+        // Hanya resep yang sudah diverifikasi & dikunci Farmasi (verified_at != null) yang
+        // ditagih. Resep DRAFT/SUBMITTED belum-verif (mis. revisi dokter pasca "Kirim ke
+        // Kasir" yang menunggu verifikasi ulang) DIKELUARKAN dari tagihan sampai dikunci
+        // ulang. Pada alur normal, gerbang verifikasi (consolidateBilling) menjamin semua
+        // resep sudah verified saat invoice dibangun → tak ada perubahan perilaku.
+        $billable = fn ($p) => $p->status !== 'CANCELLED' && ! is_null($p->verified_at);
+
         $medIds = $visit->prescriptions
-            ->where('status', '!=', 'CANCELLED')
+            ->filter($billable)
             ->flatMap(fn ($p) => ($hasPaket ? $p->items : $p->items->where('is_bedah', false))->pluck('medication_id'))
             ->filter()->unique()->values()->all();
 
@@ -627,7 +655,8 @@ class KasirService
         $lines = [];
         $bundledTotal = 0.0;   // Σ obat terserap paket (is_bedah) → dinetralkan via diskon.
         foreach ($visit->prescriptions as $prescription) {
-            if ($prescription->status === 'CANCELLED') {
+            // CANCELLED atau belum diverifikasi Farmasi → tak ditagih (lihat $billable di atas).
+            if (! $billable($prescription)) {
                 continue;
             }
             foreach ($prescription->items as $item) {
@@ -1598,6 +1627,9 @@ class KasirService
             throw new \Exception('Hanya invoice DRAFT yang bisa di-finalize.', 422);
         }
 
+        // Jangan kunci tagihan bila masih ada revisi resep dokter menunggu verifikasi ulang.
+        $this->assertObatVerified($invoice->visit_id);
+
         $invoice->update(['status' => 'FINALIZED']);
 
         $this->log(auth('api')->id(), 'FINALIZE_INVOICE', BillingInvoice::class, $id);
@@ -1804,6 +1836,9 @@ class KasirService
             throw new \Exception('Invoice harus dalam status FINALIZED atau PARTIALLY_PAID untuk dikonfirmasi.', 422);
         }
 
+        // Jangan tutup tagihan bila masih ada revisi resep dokter menunggu verifikasi ulang.
+        $this->assertObatVerified($invoice->visit_id);
+
         // Sisa yang harus ditanggung pasien setelah cover & pembayaran sebelumnya.
         $patientDue = (float) $invoice->total - (float) $invoice->covered_amount - (float) $invoice->paid_amount;
         if ($patientDue > 0.009) {
@@ -1884,6 +1919,9 @@ class KasirService
             throw new \Exception('Kunjungan COB: konfirmasi coverage penjamin-2 & sisa pasien lewat pembayaran biasa, bukan konfirmasi BPJS.', 422);
         }
 
+        // Jangan tutup tagihan bila masih ada revisi resep dokter menunggu verifikasi ulang.
+        $this->assertObatVerified($invoice->visit_id);
+
         $user = auth('api')->user();
 
         return DB::transaction(function () use ($invoice, $data, $user) {
@@ -1945,6 +1983,9 @@ class KasirService
             if (in_array($invoice->status, ['PAID', 'CANCELLED'])) {
                 throw new \Exception('Invoice sudah lunas atau dibatalkan.', 422);
             }
+
+            // Jangan tutup tagihan bila masih ada revisi resep dokter menunggu verifikasi ulang.
+            $this->assertObatVerified($invoice->visit_id);
 
             // Finalize dulu bila masih DRAFT (kasir konfirmasi langsung tanpa step terpisah).
             if ($invoice->status === 'DRAFT') {
@@ -2402,6 +2443,27 @@ class KasirService
     // =========================================================================
 
     /**
+     * Item kwitansi dengan suffix nama dokter pada baris Konsultasi (DPJP) & Tindakan
+     * Dokter (operator/lead surgeon, fallback DPJP). Diterapkan saat cetak agar invoice
+     * lama yang deskripsinya belum ber-suffix tetap menampilkan nama dokter; idempoten
+     * (lewati bila deskripsi sudah memuat " — ").
+     */
+    private function receiptItemsWithDoctor(Visit $visit, $items): array
+    {
+        $dpjpName     = $visit->dpjp_name;
+        $operatorName = $this->surgeryOperatorName($visit) ?: $dpjpName;
+
+        return $items->map(function ($it) use ($dpjpName, $operatorName) {
+            $arr    = $it->toArray();
+            $suffix = $this->doctorSuffixForCategory($it->category, $dpjpName, $operatorName);
+            if ($suffix !== '' && ! str_contains((string) ($arr['description'] ?? ''), ' — ')) {
+                $arr['description'] = (string) ($arr['description'] ?? '') . $suffix;
+            }
+            return $arr;
+        })->all();
+    }
+
+    /**
      * Generate receipt data for PDF rendering (via Puppeteer on frontend).
      * Returns structured data + clinic profile for PDF template.
      *
@@ -2419,6 +2481,9 @@ class KasirService
             'visit.dpjp',
             'visit.doctorExamination.doctor',
             'visit.doctorSchedule.employee',
+            // Operator/lead surgeon untuk suffix baris "Tindakan Dokter" di kwitansi.
+            'visit.surgerySchedule.leadSurgeon',
+            'visit.doctorExamination.surgerySchedule.leadSurgeon',
             'items',
             'cashier',
         ])->findOrFail($invoiceId);
@@ -2458,6 +2523,8 @@ class KasirService
             'invoice' => [
                 'number'         => $invoice->invoice_number,
                 'date'           => $invoice->created_at?->format('d/m/Y'),
+                // Tgl kunjungan (pelayanan) — beda dari tgl invoice/bayar. Untuk kwitansi.
+                'visit_date'     => $invoice->visit->visit_date?->format('d/m/Y'),
                 'status'         => $invoice->status,
                 'is_paid'        => $invoice->status === 'PAID',
                 'payment_method' => $invoice->payment_method,
@@ -2477,7 +2544,10 @@ class KasirService
             'service_type' => $invoice->visit->jenis_pelayanan ?? 'RAJAL',
             // Blok inap (null bila bukan RANAP) — kamar/bed/kelas/tgl/LOS untuk kwitansi RI.
             'inpatient'  => $this->receiptInpatientBlock($invoice->visit),
-            'items'      => $invoice->items->toArray(),
+            // Item kwitansi + suffix nama dokter (Konsultasi→DPJP, Tindakan Dokter→operator)
+            // dirakit saat cetak agar invoice lama (sebelum suffix tersimpan) tetap menampilkan
+            // nama dokter. Idempoten: lewati bila deskripsi sudah memuat suffix " — ".
+            'items'      => $this->receiptItemsWithDoctor($invoice->visit, $invoice->items),
             'categories' => \App\Models\BillingCategory::where('is_active', true)
                 ->orderBy('sort_order')->orderBy('name')
                 ->get(['id', 'name', 'sort_order'])->toArray(),

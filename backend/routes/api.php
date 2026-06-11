@@ -362,6 +362,8 @@ Route::prefix('v1')->group(function () {
             Route::put('/kunjungan/{visitId}/tab4',             [DokterController::class, 'updateTab4']);
             // Komit billing + majukan antrean (RME tetap bisa dilengkapi belakangan).
             Route::put('/kunjungan/{visitId}/kirim-kasir',      [DokterController::class, 'kirimKeKasir']);
+            // Status tagihan ringkas → gating "Buka Kembali" Tab 3 (revisi pra-bayar).
+            Route::get('/kunjungan/{visitId}/billing-status',   [DokterController::class, 'billingStatus']);
 
             Route::post('/kunjungan/{visitId}/finalize',        [DokterController::class, 'finalizeKunjungan']);
 

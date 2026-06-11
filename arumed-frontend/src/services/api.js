@@ -161,6 +161,8 @@ export const dokterApi = {
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
   // Komit billing + majukan antrean (RME tetap bisa dilengkapi belakangan).
   kirimKasir:       (visitId, data)       => api.put(`/dokter/kunjungan/${visitId}/kirim-kasir`, data),
+  // Status tagihan ringkas → gating "Buka Kembali" Tab 3 (revisi pra-bayar).
+  billingStatus:    (visitId)             => api.get(`/dokter/kunjungan/${visitId}/billing-status`),
   // Finalisasi mengunci RME — kirim body SOAP (S/O/A/P).
   finalize:         (visitId, soap = {})  => api.post(`/dokter/kunjungan/${visitId}/finalize`, soap),
 

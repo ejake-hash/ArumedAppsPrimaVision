@@ -432,6 +432,7 @@ function resetFormState() {
   kasirNote.value = ''
   pharmacyNote.value = ''
   tab3Sent.value = false
+  billingPaid.value = false
   showSendKasirModal.value = false
   sendingToKasir.value = false
   showFinalizeWarn.value = false
@@ -1020,6 +1021,23 @@ const pharmacyNote = ref('')       // catatan dokter untuk farmasi (dipersist ke
 const tab3Sent = ref(false)        // sudah klik "Simpan & Kirim ke Kasir" → Tab 3 read-only
 const showSendKasirModal = ref(false)
 const sendingToKasir = ref(false)
+// Status tagihan kasir: true bila pembayaran sudah dikonfirmasi (PAID/PARTIALLY_PAID).
+// Selama false, dokter boleh "Buka Kembali" Tab 3 untuk revisi tindakan/obat pra-bayar.
+const billingPaid = ref(false)
+async function loadBillingStatus() {
+  const visitId = selP.value?.visitId
+  if (!visitId) { billingPaid.value = false; return }
+  try {
+    const { data } = await dokterApi.billingStatus(visitId)
+    billingPaid.value = !!data.data?.is_paid
+  } catch { billingPaid.value = false }
+}
+// Buka kembali Tab 3 untuk revisi pasca "Kirim ke Kasir" (hanya bila belum dibayar).
+function bukaKembaliTab3() {
+  if (billingPaid.value) { toast('w', 'Pembayaran sudah dikonfirmasi — tidak bisa diubah'); return }
+  tab3Sent.value = false
+  toast('i', 'Tab 3 dibuka — revisi akan butuh verifikasi ulang Farmasi & memperbarui kwitansi')
+}
 
 async function loadObat(page = 1) {
   obatLoading.value = true
@@ -1146,7 +1164,7 @@ async function loadTindakanResep() {
 // Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
 // Ditaruh di sini (bukan di atas dekat watch penunjang) agar `tindakanList` &
 // `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
-watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep() }, { immediate: true })
+watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus() }, { immediate: true })
 
 let _saveTindakanTimer = null
 function scheduleSaveTindakan() { clearTimeout(_saveTindakanTimer); _saveTindakanTimer = setTimeout(saveTindakan, 600) }
@@ -1235,9 +1253,10 @@ async function konfirmKirimKasir() {
     showSendKasirModal.value = false
     // Antrean DOKTER kini COMPLETED di server → refresh agar pindah ke filter "Selesai".
     await store.fetchAntrian()
+    loadBillingStatus()
     toast('s', next
-      ? `Tagihan dikirim — pasien diteruskan ke ${next}. Lengkapi SOAP & finalisasi kapan saja.`
-      : 'Tagihan dikirim ke kasir. Lengkapi SOAP & finalisasi kapan saja.')
+      ? `Tagihan dikirim — pasien diteruskan ke ${next}. Resep perlu diverifikasi Farmasi. Lengkapi SOAP & finalisasi kapan saja.`
+      : 'Tagihan dikirim ke kasir. Resep perlu diverifikasi Farmasi. Lengkapi SOAP & finalisasi kapan saja.')
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal mengirim ke kasir')
   } finally {
@@ -2800,8 +2819,13 @@ function closeResumeRM() {
             <!-- Notice kalau sudah dikirim ke kasir -->
             <div v-if="tab3Sent && !isLocked" class="lock-notice">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-              Tindakan &amp; resep sudah dikunci untuk dikirim ke kasir. Lanjutkan ke SOAP &amp; finalisasi.
-              <button class="lock-notice-undo" @click="tab3Sent = false">Buka Kembali</button>
+              <template v-if="billingPaid">
+                Tagihan sudah <strong>dibayar</strong> di kasir — tindakan &amp; resep tidak bisa diubah lagi.
+              </template>
+              <template v-else>
+                Tindakan &amp; resep sudah dikunci untuk dikirim ke kasir. Lanjutkan ke SOAP &amp; finalisasi, atau buka kembali bila perlu revisi (pasien belum bayar).
+                <button class="lock-notice-undo" @click="bukaKembaliTab3">Buka Kembali</button>
+              </template>
             </div>
 
             <!-- Konten Tindakan + Resep + Catatan Kasir (lockable) -->
