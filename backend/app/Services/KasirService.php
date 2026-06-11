@@ -531,19 +531,46 @@ class KasirService
     // daftarkan sebagai item di Buku Tarif lalu tagih lewat builder bertarif (atau
     // tambah manual lewat Edit Tagihan — item_type REGISTRASI masih diizinkan).
 
+    /** Nama operator/lead surgeon dari jadwal bedah (untuk baris "Tindakan Dokter" di kwitansi). */
+    private function surgeryOperatorName(Visit $visit): ?string
+    {
+        $schedule = $visit->surgerySchedule ?? $visit->doctorExamination?->surgerySchedule;
+        return $schedule?->leadSurgeon?->name;
+    }
+
+    /**
+     * Suffix nama dokter untuk deskripsi baris kwitansi sesuai kategori prosedur:
+     * "Konsultasi Dokter" → DPJP; "Tindakan Dokter" → operator (lead surgeon, fallback DPJP).
+     * Kategori lain → tanpa suffix.
+     */
+    private function doctorSuffixForCategory(?string $category, ?string $dpjpName, ?string $operatorName): string
+    {
+        $cat = mb_strtolower((string) $category);
+        if (str_contains($cat, 'konsultasi')) {
+            return $dpjpName ? " — {$dpjpName}" : '';
+        }
+        if (str_contains($cat, 'tindakan dokter')) {
+            return $operatorName ? " — {$operatorName}" : '';
+        }
+        return '';
+    }
+
     private function buildTindakanLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
+        $dpjpName     = $visit->dpjp_name;
+        $operatorName = $this->surgeryOperatorName($visit) ?: $dpjpName;
         $lines = [];
         foreach ($visit->visitServices as $vs) {
             $price = $this->getPrice('procedure', $vs->procedure_id, $guarantorType, $insurerId);
             $total = $price * $vs->quantity;
+            $cat   = $vs->procedure?->category ?: 'Tindakan';
             $lines[] = [
                 'item_type'    => 'TINDAKAN',
-                'category'     => $vs->procedure?->category ?: 'Tindakan',
+                'category'     => $cat,
                 'reference_id' => $vs->id,
-                'description'  => $vs->procedure?->name ?? 'Tindakan',
+                'description'  => ($vs->procedure?->name ?? 'Tindakan') . $this->doctorSuffixForCategory($cat, $dpjpName, $operatorName),
                 'quantity'     => $vs->quantity,
                 'unit_price'   => $price,
                 'total_price'  => $total,
@@ -673,12 +700,11 @@ class KasirService
                 $price = $this->getPrice('bhp', $bhp->bhp_item_id, $guarantorType, $insurerId);
                 $total = $price * $usedQty;
                 $label = $bhp->bhpItem?->name ?? 'BHP';
-                $cat   = $bhp->bhpItem?->category;
                 $lines[] = [
                     'item_type'    => 'BHP',
-                    'category'     => $cat ?: 'BHP',
+                    'category'     => 'BHP',     // kelompok kwitansi "BHP" (billing category), bukan MEDICAL_BHP/CSSD
                     'reference_id' => $bhp->id,
-                    'description'  => $cat ? "{$label} [{$cat}]" : $label,
+                    'description'  => $label,    // tanpa suffix kategori
                     'quantity'     => $usedQty,
                     'unit_price'   => $price,
                     'total_price'  => $total,
@@ -737,12 +763,11 @@ class KasirService
             // tagihan BHP paket = basis diskon (buildPaketDiscountLines juga pakai getPrice).
             $price = $this->getPrice('bhp', $bhp->id, $guarantorType, $insurerId);
             $total = $price * $qty;
-            $cat   = $bhp->category;
             $lines[] = [
                 'item_type'    => 'BHP',
-                'category'     => $cat,
+                'category'     => 'BHP',          // kelompok kwitansi "BHP" (bukan MEDICAL_BHP/CSSD/Lainnya)
                 'reference_id' => $pi->id,
-                'description'  => "{$bhp->name} [{$cat}]",
+                'description'  => $bhp->name,      // tanpa suffix kategori
                 'quantity'     => $qty,
                 'unit_price'   => $price,
                 'total_price'  => $total,
@@ -778,6 +803,8 @@ class KasirService
 
         // Prosedur yang sudah jadi baris dari visit_services — jangan dobel.
         $billedProcIds = $visit->visitServices->pluck('procedure_id')->filter()->flip();
+        $dpjpName     = $visit->dpjp_name;
+        $operatorName = $this->surgeryOperatorName($visit) ?: $dpjpName;
 
         $lines = [];
         foreach ($snaps as $snap) {
@@ -795,11 +822,12 @@ class KasirService
                 $qty   = (int) ($it->quantity ?? 1);
                 $price = $this->getPrice('procedure', $it->item_id, $guarantorType, $insurerId);
                 $total = $price * $qty;
+                $cat   = $proc?->category ?: 'Tindakan';
                 $lines[] = [
                     'item_type'    => 'TINDAKAN',
-                    'category'     => $proc?->category ?: 'Tindakan',
+                    'category'     => $cat,
                     'reference_id' => $it->id,
-                    'description'  => $proc?->name ?? 'Tindakan',
+                    'description'  => ($proc?->name ?? 'Tindakan') . $this->doctorSuffixForCategory($cat, $dpjpName, $operatorName),
                     'quantity'     => $qty,
                     'unit_price'   => $price,
                     'total_price'  => $total,
