@@ -444,6 +444,15 @@ function pickVer(rx) { verSel.value = rx; verSubItem.value = null; verAddOpen.va
 
 // Badge asal resep di antrean Verifikasi (warna per jenis_kode dari backend).
 function verPillClass(kode) { return 'jp-pill jp-' + (kode || 'RAJAL').toLowerCase() }
+// Tanggal di kartu verifikasi: RANAP → tgl order (resep dibuat), selain itu (RAJAL/
+// Pasca Bedah/IGD) → tgl kunjungan. Label menyesuaikan agar tak ambigu.
+function verTgl(rx) {
+  const ranap = rx?.jenis_kode === 'RANAP'
+  return {
+    label: ranap ? 'Tgl order' : 'Tgl kunjungan',
+    value: fmtDateId(ranap ? rx?.created_at : rx?.visit?.visit_date),
+  }
+}
 
 // Substitusi obat (pilih obat pengganti dari stok) — pakai picker stok obat penuh.
 const verSubItem   = ref(null)   // item resep yang sedang disubstitusi
@@ -2001,7 +2010,8 @@ function toast(type, msg) {
                   <span v-if="rx.is_revision" class="ver-badge revisi" title="Resep direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi</span>
                   <span :class="['ver-badge', rx.verified_at ? 'ok' : 'wait']">{{ rx.verified_at ? '🔒 Terkunci' : 'Perlu verifikasi' }}</span>
                 </div>
-                <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(rx.visit?.patient?.date_of_birth) }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-meta">{{ verTgl(rx).label }}: {{ verTgl(rx).value }}</div>
                 <div class="rx-asal">
                   <span :class="verPillClass(rx.jenis_kode)">{{ rx.sumber ?? 'Rawat Jalan' }}</span>
                   <span v-if="rx.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ rx.visit.dpjp_name }}</span>
@@ -2022,7 +2032,8 @@ function toast(type, msg) {
             <div class="dd-patient-row">
               <div>
                 <div class="ddp-name">{{ verSel.visit?.patient?.name ?? '—' }}</div>
-                <div class="rx-meta">RM {{ verSel.visit?.patient?.no_rm ?? '—' }} · {{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-meta">RM {{ verSel.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(verSel.visit?.patient?.date_of_birth) }} · {{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-meta">{{ verTgl(verSel).label }}: {{ verTgl(verSel).value }}</div>
                 <div class="rx-asal">
                   <span :class="verPillClass(verSel.jenis_kode)">{{ verSel.sumber ?? 'Rawat Jalan' }}</span>
                   <span v-if="verSel.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ verSel.visit.dpjp_name }}</span>
