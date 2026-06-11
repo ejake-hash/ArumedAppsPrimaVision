@@ -561,6 +561,25 @@ class IntegrasiController extends Controller
     }
 
     /**
+     * POST /integrasi/satusehat/resolve-ihs  Body: { limit }
+     * Resolve IHS massal pasien ber-NIK yang belum punya IHS (batch 1–1000).
+     */
+    public function satusehatResolveIhs(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'limit' => ['required', 'integer', 'min:1', 'max:1000'],
+        ]);
+
+        try {
+            $result = $this->service->satusehatResolveIhsBatch((int) $data['limit']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($result, 'Resolve IHS selesai');
+    }
+
+    /**
      * GET /integrasi/satusehat/backfill/preview?from=&to=
      * Cek jumlah kunjungan HISTORIS yang layak di-backfill (sebelum eksekusi).
      */

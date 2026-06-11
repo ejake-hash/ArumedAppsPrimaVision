@@ -304,7 +304,9 @@ class IntegrasiService
 
     public function getSatusehatSyncLog(array $filters = []): LengthAwarePaginator
     {
-        $query = SatusehatSyncLog::orderByDesc('sync_date');
+        // created_at sekunder: beberapa batch bisa se-tanggal (AUTO+retry+manual)
+        // → urutan stabil terbaru-dulu utk paging Riwayat Batch Sync.
+        $query = SatusehatSyncLog::orderByDesc('sync_date')->orderByDesc('created_at');
 
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -391,6 +393,12 @@ class IntegrasiService
     public function satusehatSetActiveLocation(string $id): void
     {
         $this->satusehat->setActiveLocation($id);
+    }
+
+    /** Resolve IHS massal pasien ber-NIK (tombol "Resolve IHS" Kesiapan Data). */
+    public function satusehatResolveIhsBatch(int $limit): array
+    {
+        return $this->satusehat->resolveIhsBatch($limit);
     }
 
     // =========================================================================

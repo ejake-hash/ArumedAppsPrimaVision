@@ -1294,6 +1294,8 @@ export const integrasiApi = {
   satusehatRetry:     (logId)    => api.post(`/integrasi/satusehat/retry/${logId}`, null, { timeout: 10 * 60_000 }),
   satusehatBackfillPreview: (params) => api.get('/integrasi/satusehat/backfill/preview', { params }),
   satusehatBackfill:  (data)     => api.post('/integrasi/satusehat/backfill', data, { timeout: 30 * 60_000 }),
+  // Resolve IHS massal (1 GET Kemenkes per pasien; 500 ≈ menit-an).
+  satusehatResolveIhs:(data)     => api.post('/integrasi/satusehat/resolve-ihs', data, { timeout: 30 * 60_000 }),
   satusehatSyncLog:   (params)   => api.get('/integrasi/satusehat/sync-log', { params }),
   satusehatResourceLog:(params)  => api.get('/integrasi/satusehat/resource-log', { params }),
   satusehatKfaSearch: (params)   => api.get('/integrasi/satusehat/kfa-search', { params }),

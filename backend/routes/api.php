@@ -1360,6 +1360,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/satusehat/retry/{logId}',         [IntegrasiController::class, 'satusehatRetry'])->middleware('permission:integrasi.write');
             Route::get('/satusehat/backfill/preview',       [IntegrasiController::class, 'satusehatBackfillPreview']);
             Route::post('/satusehat/backfill',              [IntegrasiController::class, 'satusehatBackfill'])->middleware('permission:integrasi.write');
+            // Resolve IHS pasien massal (Kesiapan Data → tombol Resolve) → integrasi.write.
+            Route::post('/satusehat/resolve-ihs',           [IntegrasiController::class, 'satusehatResolveIhs'])->middleware('permission:integrasi.write');
 
             // ---- VCLAIM live calls ----
             Route::post('/vclaim/cek-peserta',              [IntegrasiController::class, 'vclaimCekPeserta']);

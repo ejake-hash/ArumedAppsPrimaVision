@@ -688,14 +688,27 @@ class SatusehatService
         }
 
         // ── Kesiapan data (kenapa ada yang ke-SKIP) ───────────────────────────
+        // Selain angka, kirim DAFTAR (cap 50) agar tombol "Atur" di dashboard bisa
+        // langsung menunjukkan item mana yang perlu dibereskan (dulu cuma link ke
+        // halaman generik — bahkan link obat salah sasaran kena redirect permission).
+        $doctorsNoNikQ = \App\Models\Employee::where('is_active', true)
+            ->where('profession', 'like', '%okter%')
+            ->where(fn ($q) => $q->whereNull('nik')->orWhere('nik', ''));
+        $medsNoKfaQ = \App\Models\Medication::where(fn ($q) => $q->whereNull('kfa_code')->orWhere('kfa_code', ''));
+
         $readiness = [
             // Hanya dokter AKTIF yang relevan utk Satu Sehat (dokter lama/inactive — mis. atribusi
             // historis tanpa akun — tak akan jadi DPJP encounter baru, jadi tak dihitung).
-            'doctors_without_nik' => \App\Models\Employee::where('is_active', true)
-                ->where('profession', 'like', '%okter%')
-                ->where(fn ($q) => $q->whereNull('nik')->orWhere('nik', ''))->count(),
-            'medications_without_kfa' => \App\Models\Medication::where(fn ($q) => $q->whereNull('kfa_code')->orWhere('kfa_code', ''))->count(),
+            'doctors_without_nik' => (clone $doctorsNoNikQ)->count(),
+            'doctors_without_nik_list' => (clone $doctorsNoNikQ)->orderBy('name')->limit(50)
+                ->get(['id', 'name', 'profession'])->all(),
+            'medications_without_kfa' => (clone $medsNoKfaQ)->count(),
+            'medications_without_kfa_list' => (clone $medsNoKfaQ)->orderBy('name')->limit(50)
+                ->get(['id', 'name'])->all(),
             'patients_without_ihs' => \App\Models\Patient::whereNull('satusehat_ihs')->count(),
+            // Yang BISA di-resolve massal (punya NIK): target tombol "Resolve IHS".
+            'patients_resolvable_ihs' => \App\Models\Patient::whereNull('satusehat_ihs')
+                ->whereNotNull('nik')->where('nik', '!=', '')->count(),
         ];
 
         // ── Riwayat batch terakhir ────────────────────────────────────────────
@@ -788,6 +801,62 @@ class SatusehatService
         }
 
         return $ihs;
+    }
+
+    /**
+     * Resolve IHS MASSAL untuk pasien ber-NIK yang belum punya IHS (tombol
+     * "Resolve IHS" di dashboard Kesiapan Data). Per pasien = 1 GET ke Kemenkes.
+     *
+     * Antrean tanpa migrasi: orderBy updated_at ASC + touch() pasien yang TIDAK
+     * ketemu — yang gagal pindah ke belakang antrean sehingga batch berikutnya
+     * memproses pasien lain (tidak macet mengulang 100 NIK invalid yang sama).
+     *
+     * @return array{processed:int,resolved:int,not_found:int,error:?string,remaining_resolvable:int,remaining_total:int}
+     */
+    public function resolveIhsBatch(int $limit = 100): array
+    {
+        $this->assertEnabled();
+        @set_time_limit(0); // jalur HTTP; 500 pasien ≈ menit-an
+
+        $limit = max(1, min($limit, 1000));
+
+        $patients = \App\Models\Patient::whereNull('satusehat_ihs')
+            ->whereNotNull('nik')->where('nik', '!=', '')
+            ->orderBy('updated_at')
+            ->limit($limit)
+            ->get();
+
+        $resolved = 0;
+        $notFound = 0;
+        $error    = null;
+
+        foreach ($patients as $p) {
+            try {
+                if ($this->resolvePatientIhs($p)) {
+                    $resolved++;
+                } else {
+                    $notFound++;
+                    $p->touch(); // ke belakang antrean (lihat docblock)
+                }
+            } catch (\Throwable $e) {
+                // Token/jaringan bermasalah → sisa batch pasti gagal juga; berhenti
+                // dan laporkan, jangan menghantam Kemenkes ratusan kali percuma.
+                $error = $e->getMessage();
+                break;
+            }
+        }
+
+        $resolvableQ = \App\Models\Patient::whereNull('satusehat_ihs')
+            ->whereNotNull('nik')->where('nik', '!=', '');
+
+        return [
+            'processed'            => $resolved + $notFound,
+            'resolved'             => $resolved,
+            'not_found'            => $notFound,
+            'error'                => $error,
+            'remaining_resolvable' => $resolvableQ->count(),
+            'remaining_total'      => \App\Models\Patient::whereNull('satusehat_ihs')->count(),
+        ];
     }
 
     /**

@@ -5,6 +5,7 @@
  * Semua angka dari /integrasi/satusehat/dashboard (baca log lokal). Sync Manual & Retry live.
  */
 import { ref, reactive, computed, onMounted } from 'vue'
+import { RouterLink } from 'vue-router'
 import { integrasiApi } from '@/services/api'
 
 const loading = ref(true)
@@ -40,7 +41,7 @@ async function syncManual() {
     // petugas tahu peresepan tak ikut, bukan terlihat "sukses penuh".
     const note = l?.notes ? ` — ${l.notes}` : ''
     flash(true, `Sync selesai: ${l?.status ?? ''} (terkirim ${l?.total_sent ?? 0}, gagal ${l?.total_failed ?? 0})${note}`)
-    await load()
+    await Promise.all([load(), loadBatches(1)])
   } catch (e) {
     flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Sync gagal'))
   } finally {
@@ -54,7 +55,7 @@ async function retry(logId) {
     const res = await integrasiApi.satusehatRetry(logId)
     const l = res.data?.data
     flash(true, `Retry selesai: ${l?.status ?? ''}`)
-    await load()
+    await Promise.all([load(), loadBatches(bt.page)])
   } catch (e) {
     flash(false, e.response?.data?.message ?? 'Retry gagal')
   } finally {
@@ -85,17 +86,91 @@ const cards = computed(() => {
 const visits = computed(() => data.value?.visits ?? {})
 const readiness = computed(() => data.value?.readiness ?? {})
 const trend = computed(() => data.value?.trend ?? [])
-const batches = computed(() => data.value?.batches ?? [])
 const maxTrend = computed(() => Math.max(1, ...trend.value.map((t) => (t.success || 0) + (t.failed || 0))))
 
+// Tiap warning punya `kind` → tombol "Atur" buka modal detail in-place (daftar
+// dokter/obat + aksi), BUKAN link generik (link lama /inventori-farmasi malah
+// redirect ke request-unit yang butuh permission lain → kebuang ke dashboard).
 const readinessWarnings = computed(() => {
   const r = readiness.value
   const w = []
-  if (r.doctors_without_nik) w.push({ txt: `${r.doctors_without_nik} dokter belum punya NIK`, link: '/data-pengguna' })
-  if (r.medications_without_kfa) w.push({ txt: `${r.medications_without_kfa} obat belum punya kode KFA`, link: '/inventori-farmasi' })
-  if (r.patients_without_ihs) w.push({ txt: `${r.patients_without_ihs} pasien belum punya IHS (akan resolve saat sync)`, link: null })
+  if (r.doctors_without_nik) w.push({ txt: `${r.doctors_without_nik} dokter belum punya NIK`, kind: 'dokter', label: 'Atur →' })
+  if (r.medications_without_kfa) w.push({ txt: `${r.medications_without_kfa} obat belum punya kode KFA`, kind: 'obat', label: 'Atur →' })
+  if (r.patients_without_ihs) w.push({
+    txt: `${r.patients_without_ihs.toLocaleString('id-ID')} pasien belum punya IHS`
+      + (r.patients_resolvable_ihs ? ` — ${r.patients_resolvable_ihs.toLocaleString('id-ID')} ber-NIK siap di-resolve` : ''),
+    kind: 'ihs',
+    label: 'Resolve →',
+  })
   return w
 })
+
+// ── Modal "Atur" Kesiapan Data (dokter NIK / obat KFA / resolve IHS massal) ──
+const ready = reactive({
+  open: false,
+  kind: null,        // 'dokter' | 'obat' | 'ihs'
+  nik: {},           // draft NIK per employee id
+  saving: null,      // employee id yang sedang disimpan
+  ihsLimit: 200,
+  ihsRunning: false,
+  ihsResult: null,   // hasil run terakhir { processed, resolved, not_found, ... }
+})
+
+function openReady(kind) {
+  ready.open = true
+  ready.kind = kind
+  ready.ihsResult = null
+}
+
+async function saveNik(emp) {
+  const nik = (ready.nik[emp.id] || '').trim()
+  if (!/^\d{16}$/.test(nik)) { flash(false, 'NIK harus 16 digit angka.'); return }
+  ready.saving = emp.id
+  try {
+    await integrasiApi.setEmployeeNik(emp.id, { nik })
+    flash(true, `NIK ${emp.name} tersimpan`)
+    await load() // daftar dokter-tanpa-NIK menyusut
+  } catch (e) {
+    flash(false, e.response?.data?.message ?? 'Gagal menyimpan NIK')
+  } finally {
+    ready.saving = null
+  }
+}
+
+async function runResolveIhs() {
+  ready.ihsRunning = true
+  try {
+    const res = await integrasiApi.satusehatResolveIhs({ limit: Number(ready.ihsLimit) })
+    const r = res.data?.data ?? null
+    ready.ihsResult = r
+    flash(true, `Resolve IHS: ${r?.resolved ?? 0} berhasil, ${r?.not_found ?? 0} NIK tak ditemukan`
+      + (r?.error ? ` — terhenti: ${r.error}` : ''))
+    await load()
+  } catch (e) {
+    flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Resolve IHS gagal'))
+  } finally {
+    ready.ihsRunning = false
+  }
+}
+
+// ── Riwayat Batch Sync — paginasi server (GET /satusehat/sync-log) ───────────
+const bt = reactive({ rows: [], page: 1, last_page: 1, total: 0, per_page: 10, loading: false })
+
+async function loadBatches(page = 1) {
+  bt.loading = true
+  try {
+    const res = await integrasiApi.satusehatSyncLog({ page, per_page: bt.per_page })
+    const p = res.data?.data
+    bt.rows = p?.data ?? []
+    bt.page = p?.current_page ?? 1
+    bt.last_page = p?.last_page ?? 1
+    bt.total = p?.total ?? bt.rows.length
+  } catch (e) {
+    flash(false, e.response?.data?.message ?? 'Gagal memuat riwayat batch')
+  } finally {
+    bt.loading = false
+  }
+}
 
 const statusClass = (s) => ({ SUCCESS: 's-ok', PARTIAL: 's-warn', FAILED: 's-fail', RUNNING: 's-run' }[s] || 's-idle')
 
@@ -142,7 +217,7 @@ async function runBackfill() {
     const l = res.data?.data
     flash(true, `Backfill ${l?.status ?? ''}: terkirim ${l?.total_sent ?? 0}, gagal ${l?.total_failed ?? 0}. ${l?.notes ?? ''}`)
     await checkBackfill()  // refresh sisa eligible
-    await load()           // refresh kartu & riwayat batch
+    await Promise.all([load(), loadBatches(1)]) // refresh kartu & riwayat batch
   } catch (e) {
     flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Backfill gagal'))
   } finally {
@@ -150,7 +225,7 @@ async function runBackfill() {
   }
 }
 
-onMounted(load)
+onMounted(() => { load(); loadBatches() })
 </script>
 
 <template>
@@ -255,7 +330,7 @@ onMounted(load)
             <li v-for="(w, i) in readinessWarnings" :key="i">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
               <span>{{ w.txt }}</span>
-              <RouterLink v-if="w.link" :to="w.link" class="link">Atur →</RouterLink>
+              <button class="link link-btn" @click="openReady(w.kind)">{{ w.label }}</button>
             </li>
           </ul>
         </section>
@@ -281,19 +356,22 @@ onMounted(load)
         </div>
       </section>
 
-      <!-- Riwayat batch -->
+      <!-- Riwayat batch (paginasi server — tabel tidak memanjang ke bawah) -->
       <section class="panel">
-        <h3>Riwayat Batch Sync</h3>
-        <div v-if="!batches.length" class="empty">
+        <div class="panel-head">
+          <h3>Riwayat Batch Sync</h3>
+          <span v-if="bt.total" class="muted">{{ bt.total.toLocaleString('id-ID') }} batch</span>
+        </div>
+        <div v-if="!bt.rows.length && !bt.loading" class="empty">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9" /><path d="M21 3v6h-6" /></svg>
           <p>Belum ada batch sync. Jalankan <b>Sync Manual</b> untuk mulai.</p>
         </div>
-        <div v-else class="tbl-wrap">
+        <div v-else class="tbl-wrap" :class="{ 'tbl-loading': bt.loading }">
           <table class="tbl">
             <thead><tr><th>Tanggal</th><th>Tipe</th><th>Status</th><th class="num">Terkirim</th><th class="num">Gagal</th><th class="num">Retry</th><th>Catatan</th><th></th></tr></thead>
             <tbody>
-              <tr v-for="b in batches" :key="b.id">
-                <td>{{ b.sync_date }}</td>
+              <tr v-for="b in bt.rows" :key="b.id">
+                <td>{{ (b.sync_date || '').slice(0, 10) }}</td>
                 <td><span class="type-chip">{{ b.sync_type }}</span></td>
                 <td><span class="st" :class="statusClass(b.status)">{{ b.status }}</span></td>
                 <td class="num"><b class="ok">{{ b.total_sent }}</b></td>
@@ -308,6 +386,11 @@ onMounted(load)
               </tr>
             </tbody>
           </table>
+          <div v-if="bt.last_page > 1" class="pager">
+            <button class="btn sm" :disabled="bt.page <= 1 || bt.loading" @click="loadBatches(bt.page - 1)">‹ Sebelumnya</button>
+            <span class="muted">Hal {{ bt.page }} / {{ bt.last_page }}</span>
+            <button class="btn sm" :disabled="bt.page >= bt.last_page || bt.loading" @click="loadBatches(bt.page + 1)">Berikutnya ›</button>
+          </div>
         </div>
       </section>
     </template>
@@ -379,6 +462,99 @@ onMounted(load)
             <button class="btn primary" :disabled="backfill.running || backfill.checking || !backfill.preview?.eligible" @click="runBackfill">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spin: backfill.running }"><path d="M21 12a9 9 0 1 1-9-9" /><path d="M21 3v6h-6" /></svg>
               {{ backfill.running ? 'Memproses…' : `Jalankan ${Math.min(backfill.limit || 0, backfill.preview?.eligible || 0).toLocaleString('id-ID')}` }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Modal Kesiapan Data (Atur dokter NIK / obat KFA / resolve IHS) -->
+    <Teleport to="body">
+      <div v-if="ready.open" class="bf-overlay" @click.self="ready.open = false">
+        <div class="bf-box">
+          <div class="bf-head">
+            <div>
+              <h3 v-if="ready.kind === 'dokter'">Dokter Belum Punya NIK</h3>
+              <h3 v-else-if="ready.kind === 'obat'">Obat Belum Punya Kode KFA</h3>
+              <h3 v-else>Resolve IHS Pasien Massal</h3>
+              <p v-if="ready.kind === 'dokter'">Tanpa NIK, kunjungan dengan dokter ini <b>selalu gagal</b> terkirim ke Satu Sehat.</p>
+              <p v-else-if="ready.kind === 'obat'">Obat tanpa KFA tetap aman — hanya baris resepnya yang tidak ikut terkirim.</p>
+              <p v-else>Cari IHS pasien ber-NIK ke Kemenkes lalu simpan (otomatis ter-cache, juga di-resolve saat sync).</p>
+            </div>
+            <button class="bf-close" @click="ready.open = false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+
+          <div class="bf-body">
+            <!-- DOKTER: daftar + isi NIK langsung -->
+            <template v-if="ready.kind === 'dokter'">
+              <div v-if="!(readiness.doctors_without_nik_list || []).length" class="ready-ok">Semua dokter aktif sudah punya NIK. ✓</div>
+              <ul v-else class="rd-list">
+                <li v-for="emp in readiness.doctors_without_nik_list" :key="emp.id" class="rd-row">
+                  <div class="rd-name">
+                    <b>{{ emp.name }}</b>
+                    <small>{{ emp.profession }}</small>
+                  </div>
+                  <input v-model="ready.nik[emp.id]" type="text" inputmode="numeric" maxlength="16" placeholder="NIK 16 digit" class="rd-input" />
+                  <button class="btn sm primary" :disabled="ready.saving === emp.id" @click="saveNik(emp)">
+                    {{ ready.saving === emp.id ? '…' : 'Simpan' }}
+                  </button>
+                </li>
+              </ul>
+            </template>
+
+            <!-- OBAT: daftar + arahan ke Master Obat (route benar, bukan redirect request-unit) -->
+            <template v-else-if="ready.kind === 'obat'">
+              <div class="bf-note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                <span>Isi kode lewat <RouterLink to="/inventori-farmasi/obat" class="link">Master Obat → tombol "Cari KFA"</RouterLink>, atau jalankan <code>php artisan satusehat:isi-kfa --apply</code> di server untuk isi otomatis massal.</span>
+              </div>
+              <ul class="rd-list rd-plain">
+                <li v-for="m in readiness.medications_without_kfa_list" :key="m.id">{{ m.name }}</li>
+              </ul>
+              <p v-if="(readiness.medications_without_kfa || 0) > (readiness.medications_without_kfa_list || []).length" class="muted">
+                Menampilkan {{ (readiness.medications_without_kfa_list || []).length }} dari {{ readiness.medications_without_kfa }} obat.
+              </p>
+            </template>
+
+            <!-- IHS: pilih jumlah batch lalu jalankan -->
+            <template v-else>
+              <div class="bf-stats">
+                <div class="bf-stat big">
+                  <span class="bf-num">{{ (readiness.patients_resolvable_ihs || 0).toLocaleString('id-ID') }}</span>
+                  <span class="bf-lbl">Ber-NIK, siap di-resolve</span>
+                </div>
+                <div class="bf-stat">
+                  <span class="bf-num muted-num">{{ ((readiness.patients_without_ihs || 0) - (readiness.patients_resolvable_ihs || 0)).toLocaleString('id-ID') }}</span>
+                  <span class="bf-lbl">Tanpa NIK (tak bisa)</span>
+                </div>
+              </div>
+              <div class="bf-limit">
+                <label>Proses sebanyak</label>
+                <input type="number" v-model.number="ready.ihsLimit" min="1" max="1000" />
+                <span class="muted">pasien per jalan (maks 1000). NIK tak ketemu dipindah ke belakang antrean.</span>
+              </div>
+              <div class="bf-quick">
+                <button v-for="n in [100, 200, 500, 1000]" :key="n" class="chip" :class="{ on: ready.ihsLimit === n }" @click="ready.ihsLimit = n">{{ n.toLocaleString('id-ID') }}</button>
+              </div>
+              <div v-if="ready.ihsResult" class="bf-note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                <span>
+                  Diproses <b>{{ ready.ihsResult.processed }}</b> · berhasil <b>{{ ready.ihsResult.resolved }}</b> ·
+                  NIK tak ditemukan <b>{{ ready.ihsResult.not_found }}</b> ·
+                  sisa siap-resolve <b>{{ (ready.ihsResult.remaining_resolvable || 0).toLocaleString('id-ID') }}</b>
+                  <template v-if="ready.ihsResult.error"><br />⚠ Terhenti: {{ ready.ihsResult.error }}</template>
+                </span>
+              </div>
+            </template>
+          </div>
+
+          <div class="bf-foot">
+            <button class="btn ghost" @click="ready.open = false">Tutup</button>
+            <button v-if="ready.kind === 'ihs'" class="btn primary" :disabled="ready.ihsRunning || !(readiness.patients_resolvable_ihs || 0)" @click="runResolveIhs">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spin: ready.ihsRunning }"><path d="M21 12a9 9 0 1 1-9-9" /><path d="M21 3v6h-6" /></svg>
+              {{ ready.ihsRunning ? 'Memproses…' : `Resolve ${Math.min(ready.ihsLimit || 0, readiness.patients_resolvable_ihs || 0).toLocaleString('id-ID')} Pasien` }}
             </button>
           </div>
         </div>
@@ -500,6 +676,22 @@ onMounted(load)
 .warn-list span { flex: 1; }
 .link { color: var(--cyan); font-weight: 700; white-space: nowrap; text-decoration: none; }
 .link:hover { color: var(--navy); }
+.link-btn { background: none; border: none; padding: 0; font-size: inherit; font-family: inherit; cursor: pointer; }
+
+/* ── PAGER (Riwayat Batch Sync) ──────────────────────────────────── */
+.pager { display: flex; align-items: center; justify-content: center; gap: 0.9rem; padding: 0.8rem 0 0.2rem; }
+.tbl-loading { opacity: 0.55; pointer-events: none; }
+
+/* ── MODAL KESIAPAN DATA ─────────────────────────────────────────── */
+.rd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+.rd-row { display: flex; align-items: center; gap: 0.7rem; background: #F6F8FA; border: 1px solid #DEE4EB; border-radius: 10px; padding: 9px 11px; }
+.rd-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.rd-name b { font-size: 13px; color: #081F38; }
+.rd-name small { font-size: 11px; color: #4C5A6B; }
+.rd-input { width: 170px; padding: 7px 10px; border: 1.5px solid #DEE4EB; border-radius: 8px; font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #081F38; }
+.rd-input:focus { outline: none; border-color: #1FAAE0; }
+.rd-plain li { font-size: 12.5px; color: #081F38; padding: 6px 10px; background: #F6F8FA; border: 1px solid #DEE4EB; border-radius: 8px; }
+.bf-note code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #fff; border: 1px solid #DEE4EB; border-radius: 5px; padding: 1px 5px; }
 
 /* ── TREND ───────────────────────────────────────────────────────── */
 .trend { display: flex; gap: 0.6rem; align-items: flex-end; height: 110px; padding-top: 6px; }
