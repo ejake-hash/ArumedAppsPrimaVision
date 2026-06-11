@@ -992,7 +992,7 @@ class MasterDataController extends Controller
      */
     public function indexBukuTarif(Request $request): JsonResponse
     {
-        $filters = $request->only(['search', 'kategori', 'tipe', 'aktif', 'per_page', 'insurer_id']);
+        $filters = $request->only(['search', 'kategori', 'tipe', 'aktif', 'per_page', 'insurer_id', 'harga_nol']);
         return $this->ok([
             'tarif'            => $this->service->indexBukuTarif($filters),
             'kategori_options' => $this->service->bukuTarifKategoriOptions(),

@@ -238,6 +238,7 @@ const buku = ref({ rows: [], meta: null, loading: false, error: null })
 const bukuSearch = ref('')
 const bukuKategori = ref('')
 const bukuTipe = ref('')
+const bukuHargaNol = ref(false)   // hanya item ber-harga efektif Rp 0 (lubang tarif)
 const kategoriOptions = ref([])
 let bukuSearchDebounce = null
 const bukuEdit = ref({ key: null, value: '', pos: null })
@@ -250,6 +251,7 @@ async function loadBukuTarif(page = 1) {
     if (bukuSearch.value) params.search = bukuSearch.value
     if (bukuKategori.value) params.kategori = bukuKategori.value
     if (bukuTipe.value) params.tipe = bukuTipe.value
+    if (bukuHargaNol.value) params.harga_nol = 1
     const res = await masterApi.bukuTarif.list(params)
     const payload = res.data?.data ?? res.data ?? {}
     const pag = payload.tarif ?? {}
@@ -578,6 +580,10 @@ function onImported(result) {
           placeholder="Cari kode / nama item…"
           @input="onBukuSearch($event.target.value)"
         />
+        <label class="tt-buku-zero" title="Tampilkan hanya item yang harga efektifnya Rp 0 — bakal tertagih nol di kasir; isi harganya lewat edit inline">
+          <input type="checkbox" v-model="bukuHargaNol" @change="loadBukuTarif(1)" />
+          Hanya Rp 0
+        </label>
         <span class="tt-buku-count" v-if="buku.meta">{{ buku.meta.total }} item</span>
       </div>
 
@@ -935,6 +941,8 @@ function onImported(result) {
 .tt-buku-search { flex: 1 1 260px; min-width: 200px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
 .tt-buku-select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
 .tt-buku-search:focus, .tt-buku-select:focus { outline: none; border-color: var(--ga); }
+.tt-buku-zero { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--td); cursor: pointer; white-space: nowrap; user-select: none; }
+.tt-buku-zero input { accent-color: var(--ga); cursor: pointer; }
 .tt-buku-count { margin-left: auto; font-size: 12px; color: var(--tm); white-space: nowrap; }
 .tt-buku-tablewrap { border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; }
 .tt-buku-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }

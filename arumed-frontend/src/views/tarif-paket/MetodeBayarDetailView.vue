@@ -4,13 +4,16 @@
  *
  * Route: /tarif-paket/metode-bayar/:id
  *
- * Tarif yang dikelola hanya **Tindakan** (procedures). Harga Obat/BHP/IOL
- * ambil langsung dari master masing-masing — tidak ada override per insurer.
+ * Override per-insurer yang dikelola di sini hanya **Tindakan** (procedures);
+ * obat/BHP/IOL ikut Buku Tarif (baris UMUM) lewat fallback getPrice yang sama.
  *
  * - Hero card: avatar + nama + tipe + status + relasi TPA
  * - Badge "Bagian dari {TPA}" kalau anggota TPA + banner read-only
  * - TPA induk: 2 tab — "Anggota / Child" (tambah/keluarkan anggota) &
  *   "Tarif Tindakan (PKS)". Penjamin biasa: tarif tampil langsung tanpa tab.
+ * - Penjamin sistem UMUM: tab PKS DISEMBUNYIKAN (baris UMUM = Buku Tarif itu
+ *   sendiri, bukan override — kelola di menu Buku Tarif); hanya tampil
+ *   "Buku Tarif — Harga Efektif" + banner penunjuk.
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -29,6 +32,9 @@ const error = ref(null)
 const insurer = computed(() => detail.value?.insurer)
 const isChild = computed(() => !!detail.value?.is_child_tpa)
 const targetInsurerId = computed(() => detail.value?.tariff_insurer_id ?? insurerId.value)
+// Penjamin sistem UMUM: baris tarifnya ADALAH Buku Tarif (fallback semua penjamin),
+// bukan override PKS → tab PKS disembunyikan, kelola harga di menu Buku Tarif.
+const isSystemUmum = computed(() => !!insurer.value?.is_system && insurer.value?.type === 'UMUM')
 
 // ─── Anggota TPA ────────────────────────────────────────────────────────────
 const canManageMembers = computed(() => !!detail.value?.can_manage_members)
@@ -167,6 +173,7 @@ async function doRemoveMember() {
 const efektif = ref({ rows: [], meta: { current_page: 1, last_page: 1, total: 0, per_page: 25 }, loading: false, error: null })
 const efSearch = ref('')
 const efKategori = ref('')
+const efHargaNol = ref(false)   // hanya item ber-harga efektif Rp 0 (lubang tarif)
 const efKategoriOptions = ref([])
 let efDebounce = null
 
@@ -186,6 +193,7 @@ async function loadEfektif(page = 1) {
     const params = { page, per_page: efektif.value.meta.per_page, insurer_id: targetInsurerId.value }
     if (efSearch.value.trim()) params.search = efSearch.value.trim()
     if (efKategori.value) params.kategori = efKategori.value
+    if (efHargaNol.value) params.harga_nol = 1
     const res = await masterApi.bukuTarif.list(params)
     const payload = res.data?.data ?? {}
     const pag = payload.tarif ?? {}
@@ -355,12 +363,27 @@ onMounted(() => { loadDetail(); loadEfektif(1) })
         </template>
       </section>
 
-      <!-- Tab 2: Tarif Tindakan (PKS) — untuk penjamin biasa tampil langsung tanpa tab -->
-      <section v-show="!canManageMembers || activeTab === 'tarif'" class="mbd-section">
+      <!-- Banner UMUM: tidak ada PKS — baris UMUM = Buku Tarif itu sendiri. -->
+      <div v-if="isSystemUmum" class="mbd-banner mbd-banner-info">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <div>
+          <strong>UMUM = harga dasar Buku Tarif</strong>
+          <p>
+            Penjamin sistem UMUM tidak punya PKS — baris tarifnya adalah Buku Tarif itu sendiri
+            (fallback untuk semua penjamin lain). Ubah/isi harga di menu
+            <router-link :to="{ name: 'tarif-paket-tindakan' }">Buku Tarif</router-link>
+            (edit inline, semua kategori). Daftar di bawah hanya-baca.
+          </p>
+        </div>
+      </div>
+
+      <!-- Tab 2: Tarif Tindakan (PKS) — untuk penjamin biasa tampil langsung tanpa tab.
+           Penjamin sistem UMUM: disembunyikan (lihat banner di atas). -->
+      <section v-if="!isSystemUmum" v-show="!canManageMembers || activeTab === 'tarif'" class="mbd-section">
         <div class="mbd-section-head">
           <div>
             <h2>Tarif Tindakan (PKS)</h2>
-            <p>Override harga tindakan untuk penjamin ini sesuai perjanjian kerja sama. Tindakan tanpa override otomatis ikut Buku Tarif. Harga obat / BHP / IOL ambil dari master masing-masing.</p>
+            <p>Override harga tindakan untuk penjamin ini sesuai perjanjian kerja sama. Tindakan tanpa override otomatis ikut Buku Tarif (UMUM). Obat / BHP / IOL ditagih dari Buku Tarif dengan fallback UMUM yang sama — belum ada override per penjamin.</p>
           </div>
         </div>
         <MetodeBayarTarifTab
@@ -377,7 +400,12 @@ onMounted(() => { loadDetail(); loadEfektif(1) })
         <div class="mbd-section-head">
           <div>
             <h2>Buku Tarif — Harga Efektif</h2>
-            <p>
+            <p v-if="isSystemUmum">
+              Seluruh item Buku Tarif dengan harga dasar UMUM — harga yang dipakai kasir untuk
+              pasien umum sekaligus fallback semua penjamin. Item <strong>Rp 0</strong> = lubang
+              tarif (akan tertagih nol); isi harganya lewat edit inline di menu Buku Tarif.
+            </p>
+            <p v-else>
               Seluruh item Buku Tarif dengan harga yang <strong>berlaku untuk penjamin ini</strong>,
               sesuai perhitungan kasir: harga PKS penjamin → bila tidak di-set, otomatis ikut
               harga UMUM → bila keduanya belum ada, Rp 0. Hanya-baca; ubah override di tab
@@ -395,6 +423,10 @@ onMounted(() => { loadDetail(); loadEfektif(1) })
             <option value="">Semua kategori</option>
             <option v-for="k in efKategoriOptions" :key="k" :value="k">{{ k }}</option>
           </select>
+          <label class="mbd-ef-zero" title="Tampilkan hanya item ber-harga efektif Rp 0 (lubang tarif — bakal tertagih nol di kasir)">
+            <input type="checkbox" v-model="efHargaNol" @change="loadEfektif(1)" />
+            Hanya Rp 0
+          </label>
           <span class="mbd-ef-total" v-if="!efektif.loading">{{ efektif.meta.total }} item</span>
         </div>
 
@@ -754,6 +786,9 @@ onMounted(() => { loadDetail(); loadEfektif(1) })
 .mbd-ef-search input { width: 100%; padding: 7px 10px 7px 30px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; }
 .mbd-ef-search input:focus { outline: none; border-color: var(--ga); }
 .mbd-ef-select { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; max-width: 280px; }
+.mbd-ef-zero { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--td); cursor: pointer; white-space: nowrap; user-select: none; }
+.mbd-ef-zero input { accent-color: var(--ga, #0ea5e9); cursor: pointer; }
+.mbd-banner-info p a { color: inherit; font-weight: 700; text-decoration: underline; }
 .mbd-ef-total { font-size: 12px; color: var(--tm); margin-left: auto; }
 .mbd-ef-tablewrap { overflow-x: auto; border: 1px solid var(--gb); border-radius: 10px; }
 .mbd-ef-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }

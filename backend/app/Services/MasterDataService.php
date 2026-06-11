@@ -2086,6 +2086,10 @@ class MasterDataService
         if (isset($filters['aktif']) && $filters['aktif'] !== '' && $filters['aktif'] !== null) {
             $q->where('bt.aktif', filter_var($filters['aktif'], FILTER_VALIDATE_BOOLEAN));
         }
+        // Hanya item ber-harga efektif Rp 0 (lubang tarif → bakal tertagih nol di kasir).
+        if (! empty($filters['harga_nol']) && filter_var($filters['harga_nol'], FILTER_VALIDATE_BOOLEAN)) {
+            $q->whereRaw('COALESCE(bt.harga, 0) <= 0');
+        }
 
         $q->orderBy('bt.kategori')->orderBy('bt.nama');
         $perPage = max(1, min(500, (int) ($filters['per_page'] ?? 50)));
