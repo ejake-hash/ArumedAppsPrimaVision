@@ -17,10 +17,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { masterApi } from '@/services/api'
-import MasterTable from '@/components/master-data/MasterTable.vue'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
 import CsvActionBar from '@/components/master-data/CsvActionBar.vue'
-import MetodeBayarTarifTab from '@/views/tarif-paket/MetodeBayarTarifTab.vue'
 import RoomTarifPanel from '@/components/tarif-paket/RoomTarifPanel.vue'
 
 const store = useMasterDataStore()
@@ -28,8 +26,8 @@ const KEY = 'tindakan'
 
 // ─── Tab Jenis (Buku Tarif) ──────────────────────────────────────────────
 // Tindakan = master procedures (per-penjamin diatur di Metode Bayar).
-// Obat/BHP/IOL = harga jual TUNGGAL → disimpan di baris insurer UMUM
-// (komponen MetodeBayarTarifTab di-reuse dengan insurerId = umumId).
+// Obat/BHP/IOL = harga jual TUNGGAL (tersimpan di baris insurer UMUM),
+// diubah lewat modal "Ubah Harga Jual" di daftar Buku Tarif.
 // Tab Tindakan/Obat/BHP/IOL dilebur ke "Buku Tarif" (1 daftar + filter kategori).
 // Tarif Kamar tetap terpisah (matriks kelas×penjamin) — kamarnya tetap MUNCUL di
 // Buku Tarif kategori "Sewa Kamar" (read-only), edit harga di tab ini.
@@ -38,26 +36,9 @@ const TABS = [
   { key: 'kamar', label: 'Tarif Kamar' },
 ]
 const activeTab = ref('all')
-const umumId = ref('')        // id insurer sistem UMUM (untuk tab obat/bhp/iol)
-
-async function loadUmumInsurer() {
-  try {
-    const res = await masterApi.penjamin({ type: 'UMUM', is_system: 1, per_page: 5 })
-    const list = res.data?.data?.data ?? res.data?.data ?? []
-    umumId.value = (Array.isArray(list) ? list : []).find((i) => i.is_system && i.type === 'UMUM')?.id
-      ?? (Array.isArray(list) ? list[0]?.id : '') ?? ''
-  } catch {
-    umumId.value = ''
-  }
-}
 
 // kategoriList: array of { id, name, code_prefix } dari /master/tindakan/kategori-list
 const kategoriList = ref([])
-const filterKategori = ref('')
-const searchValue = ref('')
-let searchDebounce = null
-
-const kategoriNames = computed(() => kategoriList.value.map((k) => k.name))
 
 const modal = ref({
   open: false,
@@ -226,7 +207,7 @@ const formatRupiah = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID', { min
 // nama/kategori/CSV tetap lewat tab per-tipe (Tindakan/Obat/BHP/IOL).
 const TIPE_LABEL = { tindakan: 'Tindakan', obat: 'Obat', bhp: 'BHP', iol: 'IOL' }
 // Pos kwitansi obat (Obat Tindakan/Pulang/Injeksi). kategori baris obat = label pos →
-// dipetakan ke kode saat edit inline (selaras MetodeBayarTarifTab & MedicationTariff).
+// dipetakan ke kode saat ubah harga (selaras MetodeBayarTarifTab & MedicationTariff).
 const POS_OPTIONS = [
   { value: 'OBAT_PULANG', label: 'Obat Pulang' },
   { value: 'OBAT_TINDAKAN', label: 'Obat Tindakan' },
@@ -241,7 +222,6 @@ const bukuTipe = ref('')
 const bukuHargaNol = ref(false)   // hanya item ber-harga efektif Rp 0 (lubang tarif)
 const kategoriOptions = ref([])
 let bukuSearchDebounce = null
-const bukuEdit = ref({ key: null, value: '', pos: null })
 
 async function loadBukuTarif(page = 1) {
   buku.value.loading = true
@@ -325,68 +305,62 @@ async function editTindakanRow(row) {
   }
 }
 
-function startEditHarga(row) {
-  bukuEdit.value = {
-    key: `${row.tipe}:${row.id}`,
-    value: String(Math.round(Number(row.harga ?? 0))),
-    // Obat: kategori baris = label pos → kode awal untuk dropdown.
-    pos: row.tipe === 'obat' ? posCodeFromLabel(row.kategori) : null,
-  }
-}
-function cancelEditHarga() { bukuEdit.value = { key: null, value: '', pos: null } }
-async function saveEditHarga(row) {
-  const price = Number(String(bukuEdit.value.value).replace(/[^\d]/g, ''))
-  if (!Number.isFinite(price) || price < 0) { showToast('e', 'Harga tidak valid'); return }
-  try {
-    const payload = { tipe: row.tipe, item_id: row.id, price }
-    if (row.tipe === 'obat' && bukuEdit.value.pos) payload.pos_kwitansi = bukuEdit.value.pos
-    await masterApi.bukuTarif.setHarga(payload)
-    row.harga = price
-    // Sinkronkan kategori tampil bila pos obat berubah.
-    if (row.tipe === 'obat' && bukuEdit.value.pos) row.kategori = posLabelFromCode(bukuEdit.value.pos)
-    showToast('s', 'Harga diperbarui')
-    cancelEditHarga()
-  } catch (e) {
-    showToast('e', e?.response?.data?.message || 'Gagal menyimpan harga')
+// Modal "Ubah Harga Jual" (obat/bhp/iol) — segaya modal Edit Tarif Tindakan.
+// Nama/satuan dikelola di Inventori → tampil read-only; yang bisa diubah hanya
+// harga UMUM (+ pos kwitansi untuk obat).
+const hargaModal = ref({ open: false, row: null, payload: {}, errors: null, submitting: false })
+
+function openHargaModal(row) {
+  hargaModal.value = {
+    open: true,
+    row,
+    payload: {
+      kode:   row.kode || '—',
+      nama:   row.nama,
+      satuan: row.satuan || '—',
+      harga:  Math.round(Number(row.harga ?? 0)),
+      // Obat: kategori baris = label pos → kode awal untuk dropdown.
+      pos:    row.tipe === 'obat' ? posCodeFromLabel(row.kategori) : null,
+    },
+    errors: null,
+    submitting: false,
   }
 }
 
-// ─── Table config ──────────────────────────────────────────────────────────
-const columns = [
-  { key: '_no',        label: 'No',          width: '50px',  align: 'center' },
-  { key: 'code',       label: 'Kode Tarif',  width: '140px' },
-  { key: 'name',       label: 'Nama Tarif' },
-  { key: 'category',   label: 'Kategori',    width: '170px' },
-  { key: 'base_price', label: 'Harga',       width: '140px', align: 'right' },
-  { key: 'is_active',  label: 'Status',      width: '100px', align: 'center' },
-  { key: 'keterangan', label: 'Keterangan',  width: '200px' },
-]
-
-const rows = computed(() => {
-  const slot = store.byResource[KEY]
-  const startIdx = ((slot.meta?.current_page ?? 1) - 1) * (slot.meta?.per_page ?? 25)
-  return (slot.items ?? []).map((r, i) => ({
-    ...r,
-    _no: startIdx + i + 1,
-  }))
+const hargaModalFields = computed(() => {
+  const row = hargaModal.value.row
+  const fields = [
+    { key: 'kode',   label: 'Kode',      type: 'text', disabled: true, cols: 1 },
+    { key: 'satuan', label: 'Satuan',    type: 'text', disabled: true, cols: 1 },
+    { key: 'nama',   label: 'Nama Item', type: 'text', disabled: true, cols: 2,
+      hint: 'Nama & satuan dikelola di Inventori' },
+  ]
+  if (row?.tipe === 'obat') {
+    fields.push({ key: 'pos', label: 'Kategori (Pos Kwitansi)', type: 'select', required: true, cols: 1, options: POS_OPTIONS })
+  }
+  fields.push({ key: 'harga', label: 'Harga Jual UMUM (Rp)', type: 'number', required: true, min: 0, cols: 1 })
+  return fields
 })
 
-// ─── Search & filter ──────────────────────────────────────────────────────
-function onSearchUpdate(v) {
-  searchValue.value = v
-  if (searchDebounce) clearTimeout(searchDebounce)
-  searchDebounce = setTimeout(() => refresh(), 300)
-}
-
-function onPageChange(p) {
-  refresh(p)
-}
-
-async function refresh(page = 1) {
-  const params = { page }
-  if (searchValue.value) params.search = searchValue.value
-  if (filterKategori.value) params.category = filterKategori.value
-  await store.fetchList(KEY, params)
+async function onHargaSubmit(payload) {
+  const row = hargaModal.value.row
+  const price = Number(String(payload.harga ?? '').replace(/[^\d]/g, ''))
+  if (!Number.isFinite(price) || price < 0) { showToast('e', 'Harga tidak valid'); return }
+  hargaModal.value.submitting = true
+  try {
+    const body = { tipe: row.tipe, item_id: row.id, price }
+    if (row.tipe === 'obat' && payload.pos) body.pos_kwitansi = payload.pos
+    await masterApi.bukuTarif.setHarga(body)
+    row.harga = price
+    // Sinkronkan kategori tampil bila pos obat berubah.
+    if (row.tipe === 'obat' && payload.pos) row.kategori = posLabelFromCode(payload.pos)
+    showToast('s', 'Harga diperbarui')
+    hargaModal.value.open = false
+  } catch (e) {
+    showToast('e', e?.response?.data?.message || 'Gagal menyimpan harga')
+  } finally {
+    hargaModal.value.submitting = false
+  }
 }
 
 async function loadKategoriList() {
@@ -613,51 +587,24 @@ function onImported(result) {
                 <strong class="tt-name">{{ row.nama }}</strong>
                 <span class="tt-tipe-pill" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] }}</span>
               </td>
-              <td>
-                <select
-                  v-if="bukuEdit.key === row._key && row.tipe === 'obat'"
-                  class="tt-buku-posinput"
-                  v-model="bukuEdit.pos"
-                >
-                  <option v-for="o in POS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-                </select>
-                <span v-else class="tt-cat-pill">{{ row.kategori }}</span>
-              </td>
+              <td><span class="tt-cat-pill">{{ row.kategori }}</span></td>
               <td>{{ row.satuan || '—' }}</td>
-              <td class="ar">
-                <input
-                  v-if="bukuEdit.key === row._key"
-                  class="tt-buku-priceinput"
-                  v-model="bukuEdit.value"
-                  @keyup.enter="saveEditHarga(row)"
-                  @keyup.esc="cancelEditHarga"
-                />
-                <span v-else class="tt-price">{{ formatRupiah(row.harga) }}</span>
-              </td>
+              <td class="ar"><span class="tt-price">{{ formatRupiah(row.harga) }}</span></td>
               <td class="ac">
                 <span class="tt-status" :class="row.aktif ? 'on' : 'off'">{{ row.aktif ? 'Aktif' : 'Nonaktif' }}</span>
               </td>
               <td class="ac">
-                <!-- mode simpan/batal harga inline (obat/bhp/iol) -->
-                <template v-if="bukuEdit.key === row._key">
-                  <button class="tt-icon-btn" title="Simpan" @click="saveEditHarga(row)">
-                    <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                  <button class="tt-icon-btn tt-icon-danger" title="Batal" @click="cancelEditHarga">
-                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
-                </template>
                 <!-- TINDAKAN: edit detail (modal) + hapus -->
-                <template v-else-if="row.tipe === 'tindakan'">
+                <template v-if="row.tipe === 'tindakan'">
                   <button class="tt-icon-btn" title="Edit tindakan" @click="editTindakanRow(row)">
                     <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
                   </button>
-                  <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete({ id: row.id, name: row.nama })">
+                  <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete({ id: row.id, name: row.nama, code: row.kode })">
                     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                   </button>
                 </template>
-                <!-- OBAT/BHP/IOL: ubah harga UMUM inline -->
-                <button v-else-if="row.tipe !== 'kamar'" class="tt-icon-btn" title="Ubah harga jual UMUM" @click="startEditHarga(row)">
+                <!-- OBAT/BHP/IOL: ubah harga UMUM via modal -->
+                <button v-else-if="row.tipe !== 'kamar'" class="tt-icon-btn" title="Ubah harga jual UMUM" @click="openHargaModal(row)">
                   <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
                 </button>
                 <!-- KAMAR: read-only, edit di tab Tarif Kamar -->
@@ -691,6 +638,19 @@ function onImported(result) {
       :submit-label="modal.mode === 'create' ? 'Simpan Tarif' : 'Simpan Perubahan'"
       width="640px"
       @submit="onSubmit"
+    />
+
+    <!-- Modal Ubah Harga Jual (obat/bhp/iol) -->
+    <MasterFormModal
+      v-model:open="hargaModal.open"
+      v-model="hargaModal.payload"
+      :title="`Ubah Harga — ${TIPE_LABEL[hargaModal.row?.tipe] ?? ''}`"
+      :fields="hargaModalFields"
+      :submitting="hargaModal.submitting"
+      :errors="hargaModal.errors"
+      submit-label="Simpan Harga"
+      width="640px"
+      @submit="onHargaSubmit"
     />
 
     <!-- Modal Kelola Kategori (CRUD master kategori) -->
@@ -860,7 +820,6 @@ function onImported(result) {
 .tt-status { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }
 .tt-status.on { background: var(--sb); color: var(--st); }
 .tt-status.off { background: var(--eb); color: var(--et); }
-.tt-note { font-size: 12px; color: var(--tm); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 .tt-icon-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .tt-icon-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -939,8 +898,7 @@ function onImported(result) {
 /* ── Buku Tarif terpadu ── */
 .tt-buku-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
 .tt-buku-search { flex: 1 1 260px; min-width: 200px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
-.tt-buku-select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
-.tt-buku-search:focus, .tt-buku-select:focus { outline: none; border-color: var(--ga); }
+.tt-buku-search:focus { outline: none; border-color: var(--ga); }
 .tt-buku-zero { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--td); cursor: pointer; white-space: nowrap; user-select: none; }
 .tt-buku-zero input { accent-color: var(--ga); cursor: pointer; }
 .tt-buku-count { margin-left: auto; font-size: 12px; color: var(--tm); white-space: nowrap; }
@@ -958,10 +916,6 @@ function onImported(result) {
 .tt-tipe-pill[data-t="obat"] { color: #16a34a; border-color: #bbf7d0; background: #f0fdf4; }
 .tt-tipe-pill[data-t="bhp"] { color: #c2410c; border-color: #fed7aa; background: #fff7ed; }
 .tt-tipe-pill[data-t="iol"] { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
-.tt-buku-priceinput { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; text-align: right; }
-.tt-buku-priceinput:focus { outline: none; }
-.tt-buku-posinput { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; }
-.tt-buku-posinput:focus { outline: none; }
 .tt-kamar-ro { font-size: 11px; color: var(--tm); font-style: italic; white-space: nowrap; }
 .tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.9rem; font-size: 12.5px; color: var(--tm); }
 .tt-buku-pager button:disabled { opacity: 0.5; cursor: not-allowed; }
