@@ -442,6 +442,9 @@ async function fetchVerQueue() {
 }
 function pickVer(rx) { verSel.value = rx; verSubItem.value = null; verAddOpen.value = false }
 
+// Badge asal resep di antrean Verifikasi (warna per jenis_kode dari backend).
+function verPillClass(kode) { return 'jp-pill jp-' + (kode || 'RAJAL').toLowerCase() }
+
 // Substitusi obat (pilih obat pengganti dari stok) — pakai picker stok obat penuh.
 const verSubItem   = ref(null)   // item resep yang sedang disubstitusi
 const verSubSearch = ref('')
@@ -1999,6 +2002,10 @@ function toast(type, msg) {
                   <span :class="['ver-badge', rx.verified_at ? 'ok' : 'wait']">{{ rx.verified_at ? '🔒 Terkunci' : 'Perlu verifikasi' }}</span>
                 </div>
                 <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-asal">
+                  <span :class="verPillClass(rx.jenis_kode)">{{ rx.sumber ?? 'Rawat Jalan' }}</span>
+                  <span v-if="rx.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ rx.visit.dpjp_name }}</span>
+                </div>
                 <div class="rx-items"><div class="rx-item muted">{{ (rx.items?.length ?? 0) }} item · est {{ rp(rx.est_total) }}</div></div>
               </div>
             </div>
@@ -2016,6 +2023,10 @@ function toast(type, msg) {
               <div>
                 <div class="ddp-name">{{ verSel.visit?.patient?.name ?? '—' }}</div>
                 <div class="rx-meta">RM {{ verSel.visit?.patient?.no_rm ?? '—' }} · {{ (verSel.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-asal">
+                  <span :class="verPillClass(verSel.jenis_kode)">{{ verSel.sumber ?? 'Rawat Jalan' }}</span>
+                  <span v-if="verSel.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ verSel.visit.dpjp_name }}</span>
+                </div>
               </div>
               <span v-if="verSel.is_revision" class="ver-badge revisi" title="Resep direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi pasca-tagih</span>
               <span :class="['ver-badge', verSel.verified_at ? 'ok' : 'wait']">{{ verSel.verified_at ? '🔒 Terkunci' : 'Belum diverifikasi' }}</span>
@@ -3200,6 +3211,14 @@ function toast(type, msg) {
 .jp-bedah { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; border-color: rgba(220, 38, 38, 0.28); }
 .jp-igd   { background: rgba(234, 88, 12, 0.14);  color: #c2410c; border-color: rgba(234, 88, 12, 0.30); }
 .jp-pos   { background: rgba(5, 150, 105, 0.12);  color: #047857; border-color: rgba(5, 150, 105, 0.28); }
+/* Asal resep gabungan: datang rawat jalan + dibedah hari yang sama. */
+.jp-rajal_bedah { background: rgba(190, 24, 93, 0.12); color: #9d174d; border-color: rgba(190, 24, 93, 0.28); }
+
+/* Badge asal + DPJP pada kartu/header antrean Verifikasi Farmasi. */
+.rx-asal { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 4px; }
+.rx-dpjp { font-size: 10px; font-weight: 600; color: var(--td); padding: 2px 8px; border-radius: 999px;
+  background: var(--bs); border: 1px solid var(--gb); white-space: nowrap;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
 .placeholder-card { padding: 3rem 2rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; text-align: center; color: var(--tu); font-size: 13px; }
 

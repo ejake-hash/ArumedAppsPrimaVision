@@ -31,13 +31,14 @@ const KEY = 'tindakan'
 // Obat/BHP/IOL = harga jual TUNGGAL → disimpan di baris insurer UMUM
 // (komponen MetodeBayarTarifTab di-reuse dengan insurerId = umumId).
 const TABS = [
+  { key: 'all',      label: 'Buku Tarif' },   // daftar terpadu berkategori (default)
   { key: 'tindakan', label: 'Tindakan' },
   { key: 'obat',     label: 'Obat' },
   { key: 'bhp',      label: 'BHP' },
   { key: 'iol',      label: 'IOL' },
   { key: 'kamar',    label: 'Tarif Kamar' },
 ]
-const activeTab = ref('tindakan')
+const activeTab = ref('all')
 const umumId = ref('')        // id insurer sistem UMUM (untuk tab obat/bhp/iol)
 
 async function loadUmumInsurer() {
@@ -220,6 +221,73 @@ function showToast(type, msg) {
 
 const formatRupiah = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID', { minimumFractionDigits: 0 })
 
+// ─── Buku Tarif terpadu (tab 'all') ─────────────────────────────────────────
+// Satu daftar Tindakan+Obat+BHP+IOL berkategori dari GET /master/buku-tarif.
+// Edit inline = set harga jual UMUM (PUT /master/buku-tarif/harga). Tambah/edit
+// nama/kategori/CSV tetap lewat tab per-tipe (Tindakan/Obat/BHP/IOL).
+const TIPE_LABEL = { tindakan: 'Tindakan', obat: 'Obat', bhp: 'BHP', iol: 'IOL' }
+const buku = ref({ rows: [], meta: null, loading: false, error: null })
+const bukuSearch = ref('')
+const bukuKategori = ref('')
+const bukuTipe = ref('')
+const kategoriOptions = ref([])
+let bukuSearchDebounce = null
+const bukuEdit = ref({ key: null, value: '' })
+
+async function loadBukuTarif(page = 1) {
+  buku.value.loading = true
+  buku.value.error = null
+  try {
+    const params = { page, per_page: 50 }
+    if (bukuSearch.value) params.search = bukuSearch.value
+    if (bukuKategori.value) params.kategori = bukuKategori.value
+    if (bukuTipe.value) params.tipe = bukuTipe.value
+    const res = await masterApi.bukuTarif.list(params)
+    const payload = res.data?.data ?? res.data ?? {}
+    const pag = payload.tarif ?? {}
+    buku.value.rows = pag.data ?? []
+    buku.value.meta = {
+      current_page: pag.current_page ?? 1,
+      last_page: pag.last_page ?? 1,
+      per_page: pag.per_page ?? 50,
+      total: pag.total ?? 0,
+    }
+    if (Array.isArray(payload.kategori_options)) kategoriOptions.value = payload.kategori_options
+  } catch (e) {
+    buku.value.error = e?.response?.data?.message || 'Gagal memuat Buku Tarif'
+  } finally {
+    buku.value.loading = false
+  }
+}
+
+function onBukuSearch(v) {
+  bukuSearch.value = v
+  if (bukuSearchDebounce) clearTimeout(bukuSearchDebounce)
+  bukuSearchDebounce = setTimeout(() => loadBukuTarif(), 300)
+}
+
+const bukuRowsNumbered = computed(() => {
+  const start = ((buku.value.meta?.current_page ?? 1) - 1) * (buku.value.meta?.per_page ?? 50)
+  return buku.value.rows.map((r, i) => ({ ...r, _no: start + i + 1, _key: `${r.tipe}:${r.id}` }))
+})
+
+function startEditHarga(row) {
+  bukuEdit.value = { key: `${row.tipe}:${row.id}`, value: String(Math.round(Number(row.harga ?? 0))) }
+}
+function cancelEditHarga() { bukuEdit.value = { key: null, value: '' } }
+async function saveEditHarga(row) {
+  const price = Number(String(bukuEdit.value.value).replace(/[^\d]/g, ''))
+  if (!Number.isFinite(price) || price < 0) { showToast('e', 'Harga tidak valid'); return }
+  try {
+    await masterApi.bukuTarif.setHarga({ tipe: row.tipe, item_id: row.id, price })
+    row.harga = price
+    showToast('s', 'Harga diperbarui')
+    cancelEditHarga()
+  } catch (e) {
+    showToast('e', e?.response?.data?.message || 'Gagal menyimpan harga')
+  }
+}
+
 // ─── Table config ──────────────────────────────────────────────────────────
 const columns = [
   { key: '_no',        label: 'No',          width: '50px',  align: 'center' },
@@ -380,7 +448,7 @@ const modalFields = computed(() => {
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
   document.addEventListener('click', closeKatMenu)
-  await Promise.all([refresh(), loadKategoriList(), loadUmumInsurer()])
+  await Promise.all([loadBukuTarif(), refresh(), loadKategoriList(), loadUmumInsurer()])
 })
 onUnmounted(() => document.removeEventListener('click', closeKatMenu))
 
@@ -422,8 +490,98 @@ function onImported(result) {
       >{{ t.label }}</button>
     </div>
 
+    <!-- ══ Tab BUKU TARIF (terpadu, berkategori) ══ -->
+    <template v-if="activeTab === 'all'">
+      <div class="tt-buku-toolbar">
+        <input
+          class="tt-buku-search"
+          type="search"
+          :value="bukuSearch"
+          placeholder="Cari kode / nama item…"
+          @input="onBukuSearch($event.target.value)"
+        />
+        <select class="tt-buku-select" v-model="bukuTipe" @change="loadBukuTarif()">
+          <option value="">Semua tipe</option>
+          <option value="tindakan">Tindakan</option>
+          <option value="obat">Obat</option>
+          <option value="bhp">BHP</option>
+          <option value="iol">IOL</option>
+        </select>
+        <select class="tt-buku-select" v-model="bukuKategori" @change="loadBukuTarif()">
+          <option value="">Semua kategori</option>
+          <option v-for="k in kategoriOptions" :key="k" :value="k">{{ k }}</option>
+        </select>
+        <span class="tt-buku-count" v-if="buku.meta">{{ buku.meta.total }} item</span>
+      </div>
+
+      <div v-if="buku.error" class="tt-jenis-warn">{{ buku.error }}</div>
+
+      <div class="tt-buku-tablewrap">
+        <table class="tt-buku-table">
+          <thead>
+            <tr>
+              <th style="width:50px" class="ac">No</th>
+              <th style="width:130px">Kode</th>
+              <th>Nama</th>
+              <th style="width:190px">Kategori</th>
+              <th style="width:90px">Satuan</th>
+              <th style="width:150px" class="ar">Harga (UMUM)</th>
+              <th style="width:90px" class="ac">Status</th>
+              <th style="width:90px" class="ac">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="buku.loading"><td colspan="8" class="tt-buku-empty">Memuat…</td></tr>
+            <tr v-else-if="!bukuRowsNumbered.length"><td colspan="8" class="tt-buku-empty">Tidak ada item.</td></tr>
+            <tr v-for="row in bukuRowsNumbered" :key="row._key">
+              <td class="ac">{{ row._no }}</td>
+              <td><span class="tt-code">{{ row.kode || '—' }}</span></td>
+              <td>
+                <strong class="tt-name">{{ row.nama }}</strong>
+                <span class="tt-tipe-pill" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] }}</span>
+              </td>
+              <td><span class="tt-cat-pill">{{ row.kategori }}</span></td>
+              <td>{{ row.satuan || '—' }}</td>
+              <td class="ar">
+                <input
+                  v-if="bukuEdit.key === row._key"
+                  class="tt-buku-priceinput"
+                  v-model="bukuEdit.value"
+                  @keyup.enter="saveEditHarga(row)"
+                  @keyup.esc="cancelEditHarga"
+                />
+                <span v-else class="tt-price">{{ formatRupiah(row.harga) }}</span>
+              </td>
+              <td class="ac">
+                <span class="tt-status" :class="row.aktif ? 'on' : 'off'">{{ row.aktif ? 'Aktif' : 'Nonaktif' }}</span>
+              </td>
+              <td class="ac">
+                <template v-if="bukuEdit.key === row._key">
+                  <button class="tt-icon-btn" title="Simpan" @click="saveEditHarga(row)">
+                    <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                  <button class="tt-icon-btn tt-icon-danger" title="Batal" @click="cancelEditHarga">
+                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </template>
+                <button v-else class="tt-icon-btn" title="Ubah harga jual UMUM" @click="startEditHarga(row)">
+                  <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tt-buku-pager" v-if="buku.meta && buku.meta.last_page > 1">
+        <button class="tt-btn-secondary" :disabled="buku.meta.current_page <= 1" @click="loadBukuTarif(buku.meta.current_page - 1)">‹ Sebelumnya</button>
+        <span>Hal {{ buku.meta.current_page }} / {{ buku.meta.last_page }}</span>
+        <button class="tt-btn-secondary" :disabled="buku.meta.current_page >= buku.meta.last_page" @click="loadBukuTarif(buku.meta.current_page + 1)">Berikutnya ›</button>
+      </div>
+    </template>
+
     <!-- ══ Tab TINDAKAN (procedures) ══ -->
-    <template v-if="activeTab === 'tindakan'">
+    <template v-else-if="activeTab === 'tindakan'">
     <!-- CSV / Excel bar — backend tindakan mendukung ?format=xlsx (csvOrXlsx) -->
     <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
 
@@ -770,4 +928,29 @@ function onImported(result) {
 .tt-kat-name { font-weight: 500; color: var(--td); }
 .tt-kat-actions { display: flex; gap: 4px; }
 .tt-kat-empty { padding: 1.5rem; text-align: center; color: var(--tm); font-size: 12.5px; }
+
+/* ── Buku Tarif terpadu ── */
+.tt-buku-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
+.tt-buku-search { flex: 1 1 260px; min-width: 200px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
+.tt-buku-select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
+.tt-buku-search:focus, .tt-buku-select:focus { outline: none; border-color: var(--ga); }
+.tt-buku-count { margin-left: auto; font-size: 12px; color: var(--tm); white-space: nowrap; }
+.tt-buku-tablewrap { border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; }
+.tt-buku-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tt-buku-table thead th { background: var(--bs); color: var(--tu); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); }
+.tt-buku-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
+.tt-buku-table tbody tr:last-child td { border-bottom: none; }
+.tt-buku-table tbody tr:hover { background: var(--bs); }
+.tt-buku-table .ar { text-align: right; }
+.tt-buku-table .ac { text-align: center; }
+.tt-buku-empty { padding: 1.6rem; text-align: center; color: var(--tm); }
+.tt-tipe-pill { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; background: var(--bs); color: var(--tu); border: 1px solid var(--gb); }
+.tt-tipe-pill[data-t="tindakan"] { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
+.tt-tipe-pill[data-t="obat"] { color: #16a34a; border-color: #bbf7d0; background: #f0fdf4; }
+.tt-tipe-pill[data-t="bhp"] { color: #c2410c; border-color: #fed7aa; background: #fff7ed; }
+.tt-tipe-pill[data-t="iol"] { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
+.tt-buku-priceinput { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--ga); background: var(--bc); color: var(--td); font-size: 12.5px; text-align: right; }
+.tt-buku-priceinput:focus { outline: none; }
+.tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.9rem; font-size: 12.5px; color: var(--tm); }
+.tt-buku-pager button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

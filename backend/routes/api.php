@@ -1086,6 +1086,10 @@ Route::prefix('v1')->group(function () {
             Route::put('/paket-bedah/{id}',                 [MasterDataController::class, 'updatePaketBedah'])->middleware('permission:tarif_paket.write');
             Route::delete('/paket-bedah/{id}',              [MasterDataController::class, 'deletePaketBedah'])->middleware('permission:tarif_paket.delete');
 
+            // Buku Tarif terpadu (Tindakan+Obat+BHP+IOL satu daftar berkategori).
+            Route::get('/buku-tarif',                       [MasterDataController::class, 'indexBukuTarif']);
+            Route::put('/buku-tarif/harga',                 [MasterDataController::class, 'setBukuTarifPrice']);
+
             Route::get('/tarif/tindakan',                   [MasterDataController::class, 'indexTarifTindakan']);
             Route::post('/tarif/tindakan',                  [MasterDataController::class, 'storeTarifTindakan']);
             Route::put('/tarif/tindakan/{id}',              [MasterDataController::class, 'updateTarifTindakan']);

@@ -667,14 +667,25 @@ class AdmisiService
     }
 
     /**
-     * Ubah keyword pencarian tanggal lahir format DD/MM/YYYY (pemisah bisa
-     * / - . atau spasi, mis. "12 05 1990") menjadi string Y-m-d untuk whereDate.
+     * Ubah keyword pencarian tanggal lahir menjadi string Y-m-d untuk whereDate.
+     * Format yang dikenali:
+     *   - DD/MM/YYYY (pemisah / - . atau spasi, mis. "12 05 1990")
+     *   - DDMMYYYY tanpa pemisah, tepat 8 digit (mis. "12051990")
      * Mengembalikan null bila keyword bukan tanggal valid (mis. NIK / nama)
      * supaya pencarian lain tetap jalan.
      */
     private function parseDobKeyword(string $keyword): ?string
     {
         $k = trim($keyword);
+
+        // DDMMYYYY tanpa pemisah (tepat 8 digit). NIK=16, BPJS=13 digit → tak bentrok.
+        if (preg_match('/^(\d{2})(\d{2})(\d{4})$/', $k, $m)) {
+            [, $d, $mo, $y] = $m;
+            return checkdate((int) $mo, (int) $d, (int) $y)
+                ? sprintf('%04d-%02d-%02d', $y, $mo, $d)
+                : null;
+        }
+
         if (! preg_match('/^(\d{1,2})[\/\-.\s]+(\d{1,2})[\/\-.\s]+(\d{4})$/', $k, $m)) {
             return null;
         }

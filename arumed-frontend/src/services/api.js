@@ -376,6 +376,12 @@ export const masterApi = {
     show:   (id)       => api.get(`/master/pegawai/${id}`),
   },
 
+  // Buku Tarif terpadu (Tindakan+Obat+BHP+IOL satu daftar berkategori)
+  bukuTarif: {
+    list:     (params)  => api.get('/master/buku-tarif', { params }),
+    setHarga: (payload) => api.put('/master/buku-tarif/harga', payload),
+  },
+
   // Tarif Tindakan (procedure_tariffs) — CSV via masterApi.csv('tarif/tindakan', ...)
   tarifTindakan: {
     list:   (params)   => api.get('/master/tarif/tindakan', { params }),

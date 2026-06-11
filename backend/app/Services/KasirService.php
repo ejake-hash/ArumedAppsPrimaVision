@@ -479,11 +479,13 @@ class KasirService
             // & menyeimbangkan basis diskon paket (lihat buildPaketDiscountLines).
             $this->buildPaketProcedureLines($visit, $insurerId, $guarantorType),
             $this->buildPaketBhpLines($visit, $insurerId, $guarantorType),
-            // IOL TERPASANG (field input BedahView → surgery_iol_usage) TIDAK ditagih di
-            // kwitansi — hanya untuk LAPORAN OPERASI (form RM-2.2-LP via AggregateResolver).
-            // Nilai IOL sudah tercakup di harga jual paket; IOL juga dikeluarkan dari basis
-            // diskon (buildPaketDiscountLines) agar net tetap = harga jual paket. (Aturan user.)
-            // $this->buildIolLines(...) sengaja TIDAK dipanggil.
+            // IOL KOMPOSISI PAKET (snapshot visit_surgery_package_items) DITAGIH sebagai baris
+            // positif + IKUT basis diskon (buildPaketDiscountLines) → tampil di kwitansi, net
+            // tetap = harga jual paket. (Aturan user 11 Jun 2026 — ganti perilaku lama "IOL
+            // keluar kwitansi".) Catatan: IOL TERPASANG di surgery_iol_usage (input BedahView)
+            // tetap HANYA untuk laporan operasi RM-2.2-LP; buildIolLines (basis usage) tak dipakai
+            // agar tak dobel dgn baris snapshot.
+            $this->buildPaketIolLines($visit, $insurerId, $guarantorType),
             $this->buildEquipmentLines($visit, $insurerId, $guarantorType),
             $this->buildInpatientChargeLines($visit),
             $this->buildPaketDiscountLines($visit, $insurerId, $guarantorType),
@@ -807,6 +809,52 @@ class KasirService
     }
 
     /**
+     * IOL KOMPOSISI PAKET sebagai baris positif di kwitansi (sumber: snapshot
+     * visit_surgery_package_items type IOL, BUKAN surgery_iol_usage). Harga live via
+     * getPrice('iol', ...). Selaras buildPaketBhpLines (per-snapshot, tanpa dedup lintas
+     * paket). IOL juga dihitung di basis diskon (buildPaketDiscountLines) → net = sell.
+     */
+    private function buildPaketIolLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
+
+        $snaps = $visit->surgeryPackageSnapshots;
+        if ($snaps->isEmpty()) {
+            return [];
+        }
+        $items = $snaps->flatMap(fn ($s) => $s->items->where('item_type', 'IOL'));
+        if ($items->isEmpty()) {
+            return [];
+        }
+
+        $lines = [];
+        foreach ($items as $pi) {
+            $iol = \App\Models\IolItem::find($pi->item_id);
+            if (! $iol) {
+                continue;
+            }
+            $qty   = (int) ($pi->quantity ?? 1);
+            $price = $this->getPrice('iol', $iol->id, $guarantorType, $insurerId);
+            $total = $price * $qty;
+            $power = $iol->power !== null
+                ? rtrim(rtrim(number_format((float) $iol->power, 2, '.', ''), '0'), '.') . 'D'
+                : '';
+            $lines[] = [
+                'item_type'    => 'IOL',
+                'category'     => 'IOL',
+                'reference_id' => $pi->id,
+                'description'  => trim("IOL {$iol->brand} {$iol->model} {$power}"),
+                'quantity'     => $qty,
+                'unit_price'   => $price,
+                'total_price'  => $total,
+                'net_price'    => $total,
+            ];
+        }
+        return $lines;
+    }
+
+    /**
      * Prosedur paket BEDAH (mis. Phacoemulsifikasi) sebagai baris TINDAKAN positif.
      *
      * Alur bedah TIDAK menulis prosedur paket ke visit_services (beda dgn paket
@@ -1059,13 +1107,14 @@ class KasirService
                     $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * $matched;
                     continue;
                 }
-                // IOL dikeluarkan dari basis diskon: IOL terpasang TIDAK ditagih di kwitansi
-                // (buildIolLines tak dipanggil) → kalau tetap dihitung di basis, net jadi
-                // sell − harga_IOL (kurang tagih). Keluarkan agar basis = baris ditagih → net = sell.
+                // IOL komposisi paket KINI ditagih (buildPaketIolLines) → IKUT basis diskon
+                // agar basis = baris ditagih → net = sell. (Sebelumnya IOL dikeluarkan saat
+                // IOL belum tampil di kwitansi.)
                 $type = match ($it->item_type) {
                     'PROCEDURE' => 'procedure',
                     'BHP'       => 'bhp',
-                    default     => null,   // IOL & lainnya tak masuk basis
+                    'IOL'       => 'iol',
+                    default     => null,
                 };
                 if (! $type) {
                     continue;

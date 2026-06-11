@@ -984,6 +984,29 @@ class MasterDataController extends Controller
         return $this->ok(null, 'Tarif dihapus');
     }
 
+    /** Buku Tarif terpadu: Tindakan+Obat+BHP+IOL satu daftar berkategori. */
+    public function indexBukuTarif(Request $request): JsonResponse
+    {
+        $filters = $request->only(['search', 'kategori', 'tipe', 'aktif', 'per_page']);
+        return $this->ok([
+            'tarif'            => $this->service->indexBukuTarif($filters),
+            'kategori_options' => $this->service->bukuTarifKategoriOptions(),
+        ]);
+    }
+
+    /** Set harga jual UMUM satu item Buku Tarif (inline edit dari daftar terpadu). */
+    public function setBukuTarifPrice(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'tipe'      => 'required|in:tindakan,obat,bhp,iol',
+            'item_id'   => 'required|string',
+            'price'     => 'required|numeric|min:0',
+            'is_active' => 'nullable|boolean',
+        ]);
+        $tariff = $this->service->setBukuTarifPrice($data['tipe'], $data['item_id'], (float) $data['price'], $data['is_active'] ?? true);
+        return $this->ok($tariff, 'Harga diperbarui');
+    }
+
     public function indexTarifObat(Request $request): JsonResponse
     {
         return $this->ok($this->service->indexTarif('obat', $request->only(['classification', 'insurer_id', 'per_page'])));

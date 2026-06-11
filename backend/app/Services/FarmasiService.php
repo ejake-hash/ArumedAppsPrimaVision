@@ -277,7 +277,11 @@ class FarmasiService
      */
     public function getVerificationQueue(array $filters = []): Collection
     {
-        $rows = Prescription::with(['visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication'])
+        $rows = Prescription::with([
+                'visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication',
+                // Untuk accessor dpjp_name (bebas N+1): RANAP=dpjp, RAJAL/IGD=pemeriksa/jadwal.
+                'visit.dpjp', 'visit.doctorExamination.doctor', 'visit.doctorSchedule.employee',
+            ])
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'SUBMITTED')
             ->when(
@@ -321,6 +325,11 @@ class FarmasiService
             $rx->est_total = $total;
             // Tagihan sudah ada tapi resep ini belum diverifikasi → revisi pasca-kirim.
             $rx->is_revision = is_null($rx->verified_at) && $visitsWithInvoice->has($rx->visit_id);
+
+            // Badge asal resep (Rawat Jalan / Rawat Inap / Pasca Bedah / RAJAL & Pasca Bedah / IGD)
+            // + DPJP, agar Farmasi tahu konteks pasien saat verifikasi.
+            [$rx->jenis_kode, $rx->sumber] = $this->klasifikasiAsalResep($rx->visit, $rx);
+            $rx->visit?->append('dpjp_name');
         });
 
         return $rows;
@@ -639,6 +648,35 @@ class FarmasiService
         }
 
         return 'Rawat Jalan';
+    }
+
+    /**
+     * Klasifikasi asal resep untuk badge antrean Verifikasi Farmasi → [kode, label].
+     * Berbasis data visit (RANAP/IGD/RAJAL + keterkaitan bedah via surgery_schedule_id
+     * / visit_type PREOP_BEDAH). Pasien yang datang RAWAT JALAN lalu DIBEDAH di hari
+     * yang sama = satu visit RAJAL ber-surgery_schedule_id → badge gabungan
+     * "RAJAL & Pasca Bedah" (dokter sudah meresepkan + ada resep pasca-bedah).
+     */
+    private function klasifikasiAsalResep(?Visit $visit, ?Prescription $rx): array
+    {
+        $jenis = $visit?->jenis_pelayanan;
+
+        if ($jenis === 'IGD') {
+            return ['IGD', 'IGD'];
+        }
+        if ($rx?->type === Prescription::TYPE_RANAP || $jenis === 'RANAP') {
+            return ['RANAP', 'Rawat Inap'];
+        }
+
+        $adaBedah = $visit?->surgery_schedule_id !== null || $visit?->visit_type === 'PREOP_BEDAH';
+        if ($adaBedah) {
+            // Visit rawat-jalan reguler yang juga punya jadwal bedah → datang rajal + dibedah.
+            return ($jenis === 'RAJAL' || $visit?->visit_type === 'REGULAR')
+                ? ['RAJAL_BEDAH', 'RAJAL & Pasca Bedah']
+                : ['BEDAH', 'Pasca Bedah'];
+        }
+
+        return ['RAJAL', 'Rawat Jalan'];
     }
 
     /**

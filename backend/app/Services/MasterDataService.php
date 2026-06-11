@@ -1777,6 +1777,116 @@ class MasterDataService
         $this->log(auth('api')->id(), 'DELETE_TARIF', $model, $id);
     }
 
+    // =========================================================================
+    // BUKU TARIF — daftar terpadu (Tindakan + Obat + BHP + IOL) berkategori.
+    // Satu sumber harga jual UMUM (baris tarif insurer UMUM; fallback harga master).
+    // =========================================================================
+
+    /**
+     * UNION ALL 4 tipe item → bentuk seragam {tipe,id,kode,nama,kategori,harga,satuan,aktif}.
+     * Harga = baris tarif UMUM (procedure/medication/bhp/iol_tariffs) bila ada, fallback
+     * kolom harga master. Kategori: tindakan=category, obat='OBAT', bhp=label kategori,
+     * iol='IOL'. Dipakai indexBukuTarif + bukuTarifKategoriOptions.
+     */
+    private function bukuTarifUnion(): \Illuminate\Database\Query\Builder
+    {
+        $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        $joinUmum = function ($join, string $fk) use ($umumId) {
+            $join->on("t.$fk", '=', 'x.id')
+                 ->where('t.insurer_id', $umumId)
+                 ->where('t.is_active', true)
+                 ->whereNull('t.deleted_at');
+        };
+
+        $proc = DB::table('procedures as x')
+            ->leftJoin('procedure_tariffs as t', fn ($j) => $joinUmum($j, 'procedure_id'))
+            ->whereNull('x.deleted_at')
+            ->selectRaw("'tindakan' as tipe, x.id::text as id, x.code as kode, x.name as nama,
+                COALESCE(NULLIF(x.category, ''), 'TINDAKAN') as kategori,
+                COALESCE(t.price, x.base_price, 0)::numeric as harga,
+                CAST(NULL AS varchar) as satuan, x.is_active as aktif");
+
+        $obat = DB::table('medications as x')
+            ->leftJoin('medication_tariffs as t', fn ($j) => $joinUmum($j, 'medication_id'))
+            ->whereNull('x.deleted_at')
+            ->selectRaw("'obat', x.id::text, x.code, x.name, 'OBAT',
+                COALESCE(t.price, x.price, 0)::numeric, x.unit, x.is_active");
+
+        $bhp = DB::table('bhp_items as x')
+            ->leftJoin('bhp_tariffs as t', fn ($j) => $joinUmum($j, 'bhp_item_id'))
+            ->whereNull('x.deleted_at')
+            ->selectRaw("'bhp', x.id::text, x.code, x.name,
+                CASE x.category
+                    WHEN 'MEDICAL_BHP'    THEN 'BAHAN HABIS PAKAI'
+                    WHEN 'CSSD'           THEN 'CSSD'
+                    WHEN 'INSTRUMENT_SET' THEN 'INSTRUMENT'
+                    ELSE COALESCE(NULLIF(x.category, ''), 'BHP')
+                END,
+                COALESCE(t.price, x.price, 0)::numeric, x.unit, x.is_active");
+
+        $iol = DB::table('iol_items as x')
+            ->leftJoin('iol_tariffs as t', fn ($j) => $joinUmum($j, 'iol_item_id'))
+            ->whereNull('x.deleted_at')
+            ->selectRaw("'iol', x.id::text, CAST(NULL AS varchar),
+                TRIM(CONCAT(x.brand, ' ', x.model,
+                    CASE WHEN x.power IS NOT NULL THEN ' ' || x.power || 'D' ELSE '' END)),
+                'IOL', COALESCE(t.price, x.price, 0)::numeric, CAST(NULL AS varchar), x.is_active");
+
+        return $proc->unionAll($obat)->unionAll($bhp)->unionAll($iol);
+    }
+
+    /** Daftar Buku Tarif terpadu, dengan search (nama/kode), filter kategori/tipe/aktif, paginate. */
+    public function indexBukuTarif(array $filters = []): LengthAwarePaginator
+    {
+        $q = DB::query()->fromSub($this->bukuTarifUnion(), 'bt');
+
+        if (! empty($filters['search'])) {
+            $s = '%' . mb_strtolower(trim($filters['search'])) . '%';
+            $q->where(function ($w) use ($s) {
+                $w->whereRaw('LOWER(bt.nama) LIKE ?', [$s])
+                  ->orWhereRaw("LOWER(COALESCE(bt.kode, '')) LIKE ?", [$s]);
+            });
+        }
+        if (! empty($filters['kategori'])) {
+            $q->where('bt.kategori', $filters['kategori']);
+        }
+        if (! empty($filters['tipe'])) {
+            $q->where('bt.tipe', $filters['tipe']);
+        }
+        if (isset($filters['aktif']) && $filters['aktif'] !== '' && $filters['aktif'] !== null) {
+            $q->where('bt.aktif', filter_var($filters['aktif'], FILTER_VALIDATE_BOOLEAN));
+        }
+
+        $q->orderBy('bt.kategori')->orderBy('bt.nama');
+        $perPage = max(1, min(500, (int) ($filters['per_page'] ?? 50)));
+        return $q->paginate($perPage);
+    }
+
+    /** Daftar kategori unik (untuk dropdown filter Buku Tarif). */
+    public function bukuTarifKategoriOptions(): array
+    {
+        return DB::query()->fromSub($this->bukuTarifUnion(), 'bt')
+            ->select('bt.kategori')->distinct()->orderBy('bt.kategori')
+            ->pluck('kategori')->all();
+    }
+
+    /**
+     * Set harga jual UMUM satu item Buku Tarif (inline edit dari daftar terpadu).
+     * Reuse storeTarif (upsert aman soft-delete + propagasi pos obat). Item dirujuk by
+     * id master + tipe → baris tarif UMUM dibuat/diupdate.
+     */
+    public function setBukuTarifPrice(string $tipe, string $itemId, float $price, bool $isActive = true): mixed
+    {
+        $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        $fk = $this->tariffFk($tipe);
+        return $this->storeTarif($tipe, [
+            $fk          => $itemId,
+            'insurer_id' => $umumId,
+            'price'      => $price,
+            'is_active'  => $isActive,
+        ]);
+    }
+
     /**
      * Generate template CSV (header only) untuk tarif per insurer per type.
      * Format: no, nama, kategori, harga_master, harga_jual (TANPA kode)

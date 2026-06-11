@@ -530,10 +530,13 @@ function daftarkanWalkIn(p) {
   walkInVisitId.value = p.visitId
   walkInQueueNo.value = p.queueNo
   Object.assign(form, blankForm())
+  form.patientMode      = 'existing'   // buka langsung ke mode "Pasien Lama" → cari data dulu
   insuranceSearch.value = ''
   searchResults.value   = []
   wizardStep.value = 1
   wizardOpen.value = true
+  // Fokuskan kolom pencarian supaya petugas langsung mengetik data pasien.
+  nextTick(() => wizSearchInput.value?.focus())
 }
 
 /* Wilayah cascading — pakai komponen WilayahPicker (emsifa external API) */
@@ -806,6 +809,7 @@ async function submitEditDokter() {
 const searchResults  = ref([])
 const searchLoading  = ref(false)
 const showSearchDrop = ref(false)
+const wizSearchInput = ref(null)   // ref input pencarian di wizard (auto-focus walk-in)
 let   _searchTimer   = null
 // Info kunjungan aktif pasien terpilih (current_station != SELESAI). Bila ada,
 // registrasi baru AKAN ditolak guard backend — tampilkan peringatan lebih awal.
@@ -2337,7 +2341,7 @@ onUnmounted(() => {
           <input
             v-model="lookupKey"
             class="lookup-input"
-            placeholder="Cari data pasien (nama / NIK / No. RM / Tgl lahir DD MM YYYY)"
+            placeholder="Cari data pasien (nama / NIK / No. RM / Tgl lahir DD MM YYYY atau DDMMYYYY)"
             @input="onLookupInput"
             @keyup.enter="runLookup"
             @focus="lookupKey.trim() && (lookupDropOpen = true)"
@@ -2365,6 +2369,7 @@ onUnmounted(() => {
                   <div class="combo-meta">
                     <span class="combo-rm">RM {{ pt.no_rm }}</span>
                     <span v-if="pt.nik">· NIK {{ pt.nik }}</span>
+                    <span v-if="pt.date_of_birth" class="combo-dob">· 🎂 {{ fmtDate(pt.date_of_birth) }} ({{ calcAge(pt.date_of_birth) }} th)</span>
                   </div>
                   <div v-if="pt.address" class="combo-addr">
                     <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -2535,11 +2540,11 @@ onUnmounted(() => {
                   v-if="p.walkIn"
                   class="btn btn-secondary"
                   :disabled="p.status !== 'CALLED'"
-                  :title="p.status === 'CALLED' ? 'Daftarkan pasien walk-in' : 'Panggil pasien terlebih dahulu'"
+                  :title="p.status === 'CALLED' ? 'Cari data pasien & daftarkan walk-in' : 'Panggil pasien terlebih dahulu'"
                   @click="daftarkanWalkIn(p)"
                 >
-                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-                  Daftarkan
+                  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  Cari Data Pasien
                 </button>
                 <button
                   class="btn btn-primary call-btn"
@@ -2993,9 +2998,10 @@ onUnmounted(() => {
                   <label class="field-lbl">Cari berdasarkan NIK atau No. RM</label>
                   <div class="search-inline">
                     <input
+                      ref="wizSearchInput"
                       v-model="form.searchKey"
                       class="form-input"
-                      placeholder="Nama, NIK, No. RM, atau Tgl lahir DD MM YYYY"
+                      placeholder="Nama, NIK, No. RM, atau Tgl lahir (DD MM YYYY / DDMMYYYY)"
                       @keyup.enter="searchPatient"
                       @input="onSearchInput"
                       @blur="onSearchBlur"
@@ -3027,6 +3033,7 @@ onUnmounted(() => {
                             <div class="combo-meta">
                               <span class="combo-rm">RM {{ pt.no_rm }}</span>
                               <span class="combo-nik" v-if="pt.nik">· NIK {{ pt.nik }}</span>
+                              <span class="combo-dob" v-if="pt.date_of_birth">· 🎂 {{ fmtDate(pt.date_of_birth) }} ({{ calcAge(pt.date_of_birth) }} th)</span>
                             </div>
                             <div class="combo-addr" v-if="pt.address">
                               <svg viewBox="0 0 24 24" width="10" height="10"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -3040,7 +3047,7 @@ onUnmounted(() => {
                       </div>
                     </transition>
                   </div>
-                  <div class="hint">Ketik 1 huruf saja — pencarian otomatis berdasarkan nama, NIK, No. RM, atau tanggal lahir (DD/MM/YYYY atau DD MM YYYY)</div>
+                  <div class="hint">Ketik 1 huruf saja — pencarian otomatis berdasarkan nama, NIK, No. RM, atau tanggal lahir (DD/MM/YYYY, DD MM YYYY, atau DDMMYYYY)</div>
                 </div>
 
                 <div v-if="form.found && !selectedActiveVisit" class="found-banner full">
