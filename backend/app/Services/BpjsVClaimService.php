@@ -174,45 +174,7 @@ class BpjsVClaimService
         $result = $this->client->request('POST', '/SEP/2.0/insert', ['request' => ['t_sep' => $tSep]]);
         $this->log($visitId, 'GENERATE_SEP', $tSep, $result);
 
-        // Fallback SEP 1.1: server BPJS menolak insert 2.0 dgn "Masa berlaku SIO RS
-        // telah habis" padahal aplikasi lama (endpoint 1.1) masih bisa menerbitkan
-        // SEP — validasi SIO tampaknya hanya dipasang di 2.0. Coba ulang via 1.1
-        // HANYA untuk penolakan SIO; error lain (rujukan/peserta/poli) tetap
-        // dikembalikan apa adanya karena akan gagal sama di 1.1.
-        $msg = (string) ($result['metaData']['message'] ?? '');
-        if (! ($result['is_success'] ?? false) && stripos($msg, 'SIO') !== false) {
-            $tSepV11 = $this->toSepV11($tSep);
-            $result  = $this->client->request('POST', '/SEP/1.1/insert', ['request' => ['t_sep' => $tSepV11]]);
-            $this->log($visitId, 'GENERATE_SEP_V11', $tSepV11, $result);
-        }
-
         return $result;
-    }
-
-    /**
-     * Konversi payload t_sep format 2.0 → 1.1.
-     *   - klsRawat: objek {klsRawatHak,...} → string kelas hak.
-     *   - Field khusus 2.0 (tujuanKunj/flagProcedure/kdPenunjang/assesmentPel/
-     *     dpjpLayan/noLP) dibuang — tidak dikenal skema 1.1.
-     *   - jaminan.penjamin di 1.1 wajib punya key 'penjamin' (kode penjamin KLL).
-     */
-    private function toSepV11(array $tSep): array
-    {
-        $v11 = $tSep;
-
-        if (is_array($v11['klsRawat'] ?? null)) {
-            $v11['klsRawat'] = (string) ($v11['klsRawat']['klsRawatHak'] ?? '3');
-        }
-
-        unset($v11['tujuanKunj'], $v11['flagProcedure'], $v11['kdPenunjang'], $v11['assesmentPel'], $v11['dpjpLayan']);
-
-        if (is_array($v11['jaminan'] ?? null)) {
-            unset($v11['jaminan']['noLP']);
-            $penjamin = $v11['jaminan']['penjamin'] ?? [];
-            $v11['jaminan']['penjamin'] = array_merge(['penjamin' => ''], is_array($penjamin) ? $penjamin : []);
-        }
-
-        return $v11;
     }
 
     /** PUT /SEP/2.0/update */
