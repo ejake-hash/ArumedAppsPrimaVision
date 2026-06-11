@@ -102,6 +102,9 @@ const MASTER_API_MAP  = {
   IOL:        (params) => masterApi.iol.list(params),
 }
 
+// Kategori internal BHP → label kategori tagihan (selaras BhpItem::billingCategoryLabel BE).
+const BHP_BILLING_LABEL = { MEDICAL_BHP: 'BAHAN HABIS PAKAI', CSSD: 'CSSD', INSTRUMENT_SET: 'INSTRUMENT' }
+
 // Normalisasi 1 baris master → opsi picker. Label format Buku Tarif: "Kategori - Nama Item".
 function mapMasterRow(type, r) {
   if (type === 'IOL') {
@@ -109,7 +112,8 @@ function mapMasterRow(type, r) {
     const nameFull = nm + (r.serial_number ? ` (SN:${r.serial_number})` : '')
     return { id: r.id, name: nameFull, category: 'IOL', suggestedPrice: r.price }
   }
-  const cat = type === 'MEDICATION' ? (r.golongan || '') : (r.category || '')
+  // Obat: pos kwitansi per-tarif tak tersedia di master list → label generik 'Obat'.
+  const cat = type === 'MEDICATION' ? 'Obat' : (type === 'BHP' ? (BHP_BILLING_LABEL[r.category] || 'BHP') : (r.category || ''))
   return { id: r.id, name: r.name, category: cat, suggestedPrice: r.base_price ?? r.price ?? 0 }
 }
 
@@ -679,11 +683,11 @@ watch(paketId, async (id) => {
             </thead>
             <tbody>
               <tr v-for="it in itemsEnriched" :key="it.id">
-                <td><span class="pd-type-pill" :data-t="it.item_type">{{ it._type_label }}</span></td>
+                <!-- Pill TIPE = kategori Buku Tarif (sama dgn grouping kwitansi); warna tetap per tipe item. -->
+                <td><span class="pd-type-pill" :data-t="it.item_type">{{ it.item_category || it._type_label }}</span></td>
                 <td>
                   <div class="pd-item-cell">
                     <strong>{{ it.item_name || '—' }}</strong>
-                    <small v-if="it.item_category" class="pd-item-cat">{{ it.item_category }}</small>
                   </div>
                 </td>
                 <td class="r">{{ it.quantity }}</td>

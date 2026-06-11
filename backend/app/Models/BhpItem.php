@@ -26,6 +26,21 @@ class BhpItem extends Model
         self::CATEGORY_INSTRUMENT_SET,
     ];
 
+    /**
+     * Kategori internal → label kategori tagihan (billing_categories) untuk grouping
+     * kwitansi & tampilan komposisi paket. Selaras MasterDataService::bukuTarifUnion
+     * (Buku Tarif) dan seed migrasi 2026_07_14. Tanpa kategori → 'BHP' (tetap tergrup).
+     */
+    public static function billingCategoryLabel(?string $category): string
+    {
+        return match ($category) {
+            self::CATEGORY_MEDICAL_BHP    => 'BAHAN HABIS PAKAI',
+            self::CATEGORY_CSSD           => 'CSSD',
+            self::CATEGORY_INSTRUMENT_SET => 'INSTRUMENT',
+            default                       => 'BHP',
+        };
+    }
+
     protected $fillable = [
         'legacy_uuid',
         'name',

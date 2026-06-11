@@ -112,10 +112,14 @@ class TarifPaketService
     {
         $pkg = SurgeryPackage::with(['items', 'packageTariffs.insurer'])->findOrFail($id);
 
-        // Enrich items dengan info nama/kode item terkait (resolveItem polymorphic)
+        // Enrich items dengan info nama/kode item terkait. withTrashed: master yang
+        // sudah dihapus tetap tampil bernama (suffix "(terhapus)"), bukan "-".
+        $this->preloadMedicationPos(
+            $pkg->items->where('item_type', SurgeryPackageItem::TYPE_MEDICATION)->pluck('item_id')->all()
+        );
         $pkg->items->each(function (SurgeryPackageItem $item) {
-            $resolved = $item->resolveItem();
-            $item->setAttribute('item_name', $resolved?->name ?? $resolved?->brand ?? '-');
+            $resolved = $item->resolveItemWithTrashed();
+            $item->setAttribute('item_name', $this->displayItemName($resolved));
             $item->setAttribute('item_code', $resolved?->code ?? null);
             $item->setAttribute('item_category', $this->resolveItemCategory($item->item_type, $resolved));
             $item->setAttribute('subtotal', $item->subtotal());
@@ -183,15 +187,19 @@ class TarifPaketService
 
     public function listItems(string $packageId): array
     {
-        $pkg = SurgeryPackage::findOrFail($packageId);
-        return $pkg->items()->get()->map(function (SurgeryPackageItem $item) {
-            $resolved = $item->resolveItem();
+        $pkg   = SurgeryPackage::findOrFail($packageId);
+        $items = $pkg->items()->get();
+        $this->preloadMedicationPos(
+            $items->where('item_type', SurgeryPackageItem::TYPE_MEDICATION)->pluck('item_id')->all()
+        );
+        return $items->map(function (SurgeryPackageItem $item) {
+            $resolved = $item->resolveItemWithTrashed();
             return [
                 'id'            => $item->id,
                 'item_type'     => $item->item_type,
                 'item_id'       => $item->item_id,
                 'item_code'     => $resolved?->code ?? null,
-                'item_name'     => $resolved?->name ?? $resolved?->brand ?? '-',
+                'item_name'     => $this->displayItemName($resolved),
                 'item_category' => $this->resolveItemCategory($item->item_type, $resolved),
                 'quantity'      => $item->quantity,
                 'default_price' => $item->default_price,
@@ -291,8 +299,11 @@ class TarifPaketService
     }
 
     /**
-     * Kategori item utk tampilan format Buku Tarif ("Kategori - Nama Item").
-     * Procedure/BHP punya kolom `category`; Medication pakai `golongan`; IOL → 'IOL'.
+     * Kategori item utk tampilan format Buku Tarif ("Kategori - Nama Item") — label
+     * SAMA dengan grouping kwitansi (billing_categories): Procedure pakai `category`
+     * master (sudah = kategori buku tarif); BHP di-map dari enum internal
+     * (MEDICAL_BHP → BAHAN HABIS PAKAI dst); Medication pakai pos kwitansi Buku Tarif
+     * (Obat Tindakan/Pulang/Injeksi, fallback 'Obat'); IOL → 'IOL'.
      * Null bila tak ada → FE fallback ke label tipe.
      */
     private function resolveItemCategory(string $type, ?\Illuminate\Database\Eloquent\Model $resolved): ?string
@@ -301,12 +312,59 @@ class TarifPaketService
             return null;
         }
         return match ($type) {
-            SurgeryPackageItem::TYPE_PROCEDURE,
-            SurgeryPackageItem::TYPE_BHP        => $resolved->category ?: null,
-            SurgeryPackageItem::TYPE_MEDICATION => $resolved->golongan ?: null,
+            SurgeryPackageItem::TYPE_PROCEDURE  => $resolved->category ?: null,
+            SurgeryPackageItem::TYPE_BHP        => BhpItem::billingCategoryLabel($resolved->category),
+            SurgeryPackageItem::TYPE_MEDICATION => $this->medicationPosLabel($resolved->id),
             SurgeryPackageItem::TYPE_IOL        => 'IOL',
             default                             => null,
         };
+    }
+
+    /**
+     * Nama tampilan item master (IOL pakai brand). Master soft-deleted → tetap
+     * bernama + suffix "(terhapus)"; benar-benar tak ada → '-'.
+     */
+    private function displayItemName(?\Illuminate\Database\Eloquent\Model $resolved): string
+    {
+        $name = $resolved?->name ?? $resolved?->brand;
+        if ($name === null) {
+            return '-';
+        }
+        return $resolved->deleted_at ? "{$name} (terhapus)" : $name;
+    }
+
+    /** Cache pos kwitansi per medication_id (per-request) — isi via preload/lazy. */
+    private array $medPosCache = [];
+
+    /**
+     * Label pos kwitansi Buku Tarif (baris tarif UMUM) utk satu obat. Batch dulu via
+     * preloadMedicationPos() di jalur list agar tidak N+1; tanpa baris tarif → 'Obat'.
+     */
+    private function medicationPosLabel(string $medicationId): string
+    {
+        if (! array_key_exists($medicationId, $this->medPosCache)) {
+            $this->preloadMedicationPos([$medicationId]);
+        }
+        $pos = $this->medPosCache[$medicationId];
+        return $pos ? \App\Models\MedicationTariff::posLabel($pos) : 'Obat';
+    }
+
+    /** Ambil pos_kwitansi tarif UMUM banyak obat sekaligus ke cache (1 query). */
+    private function preloadMedicationPos(array $medicationIds): void
+    {
+        $missing = array_values(array_diff(array_unique($medicationIds), array_keys($this->medPosCache)));
+        if (! $missing) {
+            return;
+        }
+        $umumId = \App\Models\Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        $rows = $umumId
+            ? DB::table('medication_tariffs')->whereIn('medication_id', $missing)
+                ->where('insurer_id', $umumId)->where('is_active', true)
+                ->pluck('pos_kwitansi', 'medication_id')->all()
+            : [];
+        foreach ($missing as $id) {
+            $this->medPosCache[$id] = $rows[$id] ?? null;
+        }
     }
 
     /**
@@ -527,9 +585,17 @@ class TarifPaketService
                 }
                 $itemName = $this->formatItemNameForCsv($item->item_type, $resolved);
                 $exportedItem = true;
+                // item_kategori = nilai MENTAH master (category/golongan) — dipakai import
+                // sebagai disambiguator lookupByNameCategory, BUKAN label tampilan kwitansi.
+                $rawCat = match ($item->item_type) {
+                    SurgeryPackageItem::TYPE_PROCEDURE,
+                    SurgeryPackageItem::TYPE_BHP        => $resolved->category ?? '',
+                    SurgeryPackageItem::TYPE_MEDICATION => $resolved->golongan ?? '',
+                    default                             => '',
+                };
                 fputcsv($output, array_merge($headerRow, [
                     $item->item_type,
-                    $this->resolveItemCategory($item->item_type, $resolved) ?? '',   // kategori buku tarif
+                    $rawCat,
                     $itemName,
                     (string) $item->quantity,
                     $this->formatPriceForCsv($item->default_price),                   // harga snapshot komposisi
@@ -740,6 +806,46 @@ class TarifPaketService
             'items_lookup_fail' => $itemsLookupFail,
             'errors'            => $errors,
         ];
+    }
+
+    /** Wrapper publik lookupItemIdByName — dipakai command paket:import-excel. */
+    public function lookupItemId(string $type, string $name, ?string $category = null): ?string
+    {
+        return $this->lookupItemIdByName($type, $name, $category);
+    }
+
+    /**
+     * Replace SELURUH komposisi paket dengan item yang sudah ter-resolve (item_id pasti).
+     * default_price null → snapshot harga Buku Tarif UMUM (resolveMasterPrice).
+     * packageTariffs (harga jual per penjamin) TIDAK disentuh. Dipakai paket:import-excel.
+     *
+     * @param array<int, array{item_type:string,item_id:string,quantity:int,default_price?:float|null,notes?:string|null}> $items
+     */
+    public function replaceKomposisiResolved(SurgeryPackage $pkg, array $items): int
+    {
+        return DB::transaction(function () use ($pkg, $items) {
+            $pkg->items()->delete();
+            $n = 0;
+            foreach ($items as $row) {
+                SurgeryPackageItem::updateOrCreate(
+                    [
+                        'surgery_package_id' => $pkg->id,
+                        'item_type'          => $row['item_type'],
+                        'item_id'            => $row['item_id'],
+                    ],
+                    [
+                        'quantity'      => max(1, (int) $row['quantity']),
+                        'default_price' => ($row['default_price'] ?? null) > 0
+                            ? (float) $row['default_price']
+                            : $this->resolveMasterPrice($row['item_type'], $row['item_id']),
+                        'notes'         => $row['notes'] ?? null,
+                    ]
+                );
+                $n++;
+            }
+            $pkg->recalcTotalBasePrice();
+            return $n;
+        });
     }
 
     private function parseBool(mixed $v): bool

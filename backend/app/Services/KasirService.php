@@ -774,12 +774,7 @@ class KasirService
      */
     private function bhpBillingCategory(?string $category): string
     {
-        return match ($category) {
-            'MEDICAL_BHP'    => 'BAHAN HABIS PAKAI',
-            'CSSD'           => 'CSSD',
-            'INSTRUMENT_SET' => 'INSTRUMENT',
-            default          => 'BHP',
-        };
+        return \App\Models\BhpItem::billingCategoryLabel($category);
     }
 
     private function buildBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array

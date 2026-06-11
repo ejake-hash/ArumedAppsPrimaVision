@@ -59,6 +59,22 @@ class SurgeryPackageItem extends Model
         };
     }
 
+    /**
+     * Seperti resolveItem() tapi ikut master yang sudah soft-deleted — KHUSUS jalur
+     * tampilan/export agar item lama tetap bernama (bukan "-"). Jalur billing/lookup
+     * tetap pakai resolveItem().
+     */
+    public function resolveItemWithTrashed(): ?Model
+    {
+        return match ($this->item_type) {
+            self::TYPE_PROCEDURE  => Procedure::withTrashed()->find($this->item_id),
+            self::TYPE_MEDICATION => Medication::withTrashed()->find($this->item_id),
+            self::TYPE_BHP        => BhpItem::withTrashed()->find($this->item_id),
+            self::TYPE_IOL        => IolItem::withTrashed()->find($this->item_id),
+            default               => null,
+        };
+    }
+
     public function subtotal(): float
     {
         return (float) $this->quantity * (float) $this->default_price;
