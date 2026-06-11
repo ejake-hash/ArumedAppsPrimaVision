@@ -378,13 +378,26 @@ function isTodayRow(c) {
 }
 const isTodayP = (p) => isTodayRow(p._raw?.created_at)
 const isDoneP  = (p) => p.status === 'done' || p.status === 'skip'
+// Pasien sudah "ditutup" kasir = kunjungan SELESAI (invoice lunas + visit SELESAI).
+const isClosedP = (p) => (p._raw?.visit?.current_station ?? null) === 'SELESAI'
+// "Masih Aktif" = belum tutup kasir → BOLEH dibuka ulang (tambah tindakan/resep).
+// Mencakup (a) kunjungan lintas-hari yang masih nyangkut, DAN (b) pasien hari ini
+// yang sudah "Kirim ke Kasir" (antrean COMPLETED) tapi belum dibayar/ditutup.
+// Selaras backend `Queue::boardVisibleOpenBilling` yang ikut menyurfacekan baris ini.
+function isReopenP(p) {
+  if (isClosedP(p)) return false              // sudah lunas & SELESAI → bukan "masih aktif"
+  if (!isTodayP(p)) return true               // lintas-hari belum selesai (perilaku lama)
+  return p.rawStatus === 'COMPLETED'          // hari ini: sudah dikirim ke kasir, belum ditutup
+}
 
 const filtQ = computed(() => {
   let list = patients.value
   if (qFilter.value === 'active') {
-    list = list.filter((p) => !isTodayP(p))
+    list = list.filter((p) => isReopenP(p))
   } else if (qFilter.value === 'done') {
-    list = list.filter((p) => isTodayP(p) && isDoneP(p))
+    // "Selesai" = pasien hari ini yang dokter sudah rampungkan & sudah tutup kasir
+    // (atau di-skip). Yang masih bisa dibuka ulang pindah ke "Masih Aktif".
+    list = list.filter((p) => isTodayP(p) && isDoneP(p) && !isReopenP(p))
   } else {
     list = list.filter((p) => isTodayP(p) && !isDoneP(p))
   }
@@ -398,8 +411,8 @@ const filtQ = computed(() => {
 })
 
 const cWait   = computed(() => patients.value.filter((p) => isTodayP(p) && !isDoneP(p)).length)
-const cDone   = computed(() => patients.value.filter((p) => isTodayP(p) && isDoneP(p)).length)
-const cActive = computed(() => patients.value.filter((p) => !isTodayP(p)).length)
+const cDone   = computed(() => patients.value.filter((p) => isTodayP(p) && isDoneP(p) && !isReopenP(p)).length)
+const cActive = computed(() => patients.value.filter((p) => isReopenP(p)).length)
 // "Pasien hari ini" / Total = HANYA baris hari ini. Pasien lintas-hari yang masih
 // aktif (tab "Masih Aktif") TIDAK ikut dihitung sebagai pasien hari ini.
 const cToday  = computed(() => patients.value.filter((p) => isTodayP(p)).length)
@@ -2078,10 +2091,12 @@ async function doFinalize() {
     examFinalized.value = true
 
     finalized.value = true
-    qFilter.value = 'done'
     // Antrean mungkin baru maju di sini (bila finalisasi tanpa Kirim ke Kasir) →
     // refresh agar status terbaru tampil.
     await store.fetchAntrian()
+    // Pasien yang belum ditutup kasir tetap "Masih Aktif" (bisa dibuka ulang);
+    // hanya yang sudah lunas & SELESAI yang pindah ke "Selesai".
+    qFilter.value = (selP.value && isReopenP(selP.value)) ? 'active' : 'done'
     toast('s',
       planning.value === 'BEDAH'
         ? 'RME difinalisasi & dikunci — jadwal bedah tercatat'
