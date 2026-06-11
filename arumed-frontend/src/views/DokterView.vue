@@ -1776,6 +1776,20 @@ const planningDecisionText = computed(() => {
   return ''
 })
 
+// Redaksi tombol aksi Tab 3: planning BEDAH dgn jadwal HARI INI → pasien diteruskan
+// langsung ke stasiun Bedah/Tindakan (BUKAN kasir), jadi tombol berbunyi "Lanjutkan".
+// Jadwal hari lain / planning lain → tetap "Kirim ke Kasir" (pasien ke kasir dulu).
+// Selaras routing QueueService::nextAfterDokter (BEDAH hanya bila scheduled_date=today).
+const isBedahHariIni = computed(() => {
+  if (planning.value !== 'BEDAH' || !surgeryDate.value) return false
+  const d = new Date(`${surgeryDate.value}T00:00:00`), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+})
+const sendKasirLabel = computed(() => {
+  if (!isBedahHariIni.value) return 'Kirim ke Kasir'
+  return surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Lanjutkan ke Tindakan' : 'Lanjutkan ke Bedah'
+})
+
 const planningText = computed(() => {
   const blocks = []
   if (icd9List.value.length) blocks.push('Prosedur (ICD-9): ' + icd9List.value.map((t) => `${t.code} ${t.name}`).join('; '))
@@ -3495,7 +3509,7 @@ function closeResumeRM() {
                   title="Simpan tindakan + resep + planning & majukan antrean ke kasir/stasiun berikutnya"
                 >
                   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
-                  Kirim ke Kasir
+                  {{ sendKasirLabel }}
                 </button>
                 <button class="btn btn-primary tab3-btn" @click="tab = 'soap'">
                   Lanjut ke SOAP &amp; Finalisasi
@@ -3740,7 +3754,7 @@ function closeResumeRM() {
           <div class="modal-box-head">
             <div class="modal-box-title">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-              Kirim ke Kasir?
+              {{ sendKasirLabel }}?
             </div>
             <button class="modal-box-close" @click="showSendKasirModal = false">×</button>
           </div>
@@ -3763,7 +3777,7 @@ function closeResumeRM() {
             <button class="btn btn-secondary" :disabled="sendingToKasir" @click="showSendKasirModal = false">Batal</button>
             <button class="btn btn-success" :disabled="sendingToKasir" @click="konfirmKirimKasir">
               <span v-if="sendingToKasir" class="sp"></span>
-              {{ sendingToKasir ? 'Menyimpan…' : 'YA, Kirim' }}
+              {{ sendingToKasir ? 'Menyimpan…' : (isBedahHariIni ? 'YA, Lanjutkan' : 'YA, Kirim') }}
             </button>
           </div>
         </div>
