@@ -382,10 +382,11 @@ final class AggregateResolver
         }
         $codes = array_values(array_unique($codes));
         if (empty($codes)) {
-            // Dokter tidak memilih ICD-9 → fallback daftar tindakan Tab 3
-            // (visit_services) agar baris "Tindakan" resume tidak kosong padahal
-            // ada tindakan yang dikerjakan/ditagihkan.
-            return $this->resolveVisitServices($visit, 'list_simple');
+            // KOSONG bila dokter tidak memilih ICD-9 — JANGAN fallback ke
+            // visit_services: itu item TAGIHAN (Admisi/Konsultasi/Visus/NCT dsb.),
+            // bukan tindakan medis. Kolom "Tindakan" resume = murni prosedur ICD-9
+            // (koreksi user 11 Jun 2026 — fallback sempat dipasang lalu dicabut).
+            return '';
         }
 
         return match ($format) {
