@@ -2928,8 +2928,11 @@ function closeResumeRM() {
           <!-- ═══ TAB 3: TINDAKAN & RESEP ════════════════════════════════════ -->
           <div v-if="tab === 'tindakan'" class="af">
 
-            <!-- Notice kalau sudah dikirim ke kasir -->
-            <div v-if="tab3Sent && !isLocked" class="lock-notice">
+            <!-- Notice kalau sudah dikirim ke kasir. Batas kunci tindakan/resep =
+                 PEMBAYARAN (billingPaid), BUKAN finalisasi RME (isLocked): pasien yang
+                 sudah difinalisasi tapi belum bayar tetap boleh "Buka Kembali" utk
+                 revisi obat/tindakan. Karena itu notice ini TIDAK lagi digate `!isLocked`. -->
+            <div v-if="tab3Sent" class="lock-notice">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
               <template v-if="billingPaid">
                 Tagihan sudah <strong>dibayar</strong> di kasir — tindakan &amp; resep tidak bisa diubah lagi.
@@ -2940,8 +2943,10 @@ function closeResumeRM() {
               </template>
             </div>
 
-            <!-- Konten Tindakan + Resep + Catatan Kasir (lockable) -->
-            <div :inert="isLocked || tab3Sent" :class="['tab3-stack', (isLocked || tab3Sent) ? 'pane-locked' : '']">
+            <!-- Konten Tindakan + Resep (lockable). Dikunci HANYA oleh tab3Sent (sudah
+                 kirim ke kasir & belum "Buka Kembali") — bukan oleh isLocked/finalisasi,
+                 supaya revisi pra-bayar pasca-finalisasi tetap bisa setelah dibuka kembali. -->
+            <div :inert="tab3Sent" :class="['tab3-stack', tab3Sent ? 'pane-locked' : '']">
 
             <!-- Tindakan dari Master Tarif -->
             <div class="card card-dropdown-host">
@@ -3572,7 +3577,7 @@ function closeResumeRM() {
                  Kiri: Catatan Kasir (kompak). Kanan: aksi (Kirim ke Kasir + Lanjut ke SOAP). -->
             <div class="tab3-footer">
               <!-- Catatan untuk Kasir — kompak, label di atas field -->
-              <div :inert="isLocked || tab3Sent" :class="['kasir-note-inline', (isLocked || tab3Sent) ? 'pane-locked' : '']">
+              <div :inert="tab3Sent" :class="['kasir-note-inline', tab3Sent ? 'pane-locked' : '']">
                 <label class="kasir-note-label" for="kasir-note">
                   <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
                   Catatan Kasir
