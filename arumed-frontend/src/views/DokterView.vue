@@ -3652,12 +3652,16 @@ function closeResumeRM() {
 
               <!-- Grup aksi: Kirim ke Kasir + Lanjut ke SOAP, sejajar di kanan -->
               <div class="tab3-action-group">
+                <!-- Tampil selama belum terkirim (tab3Sent) — TERMASUK pasca-finalisasi RME
+                     (isLocked): batas kunci tindakan/resep = PEMBAYARAN, revisi "Buka
+                     Kembali" wajib bisa dikirim ulang agar resep masuk antrean verifikasi
+                     Farmasi (DRAFT→SUBMITTED). BE melewati storePlanning bila RME final. -->
                 <button
-                  v-if="!isLocked && !tab3Sent"
+                  v-if="!tab3Sent"
                   class="btn btn-success tab3-btn"
                   :disabled="!planning && !tindakanList.length && !rxList.length"
                   @click="showSendKasirModal = true"
-                  title="Simpan tindakan + resep + planning & majukan antrean ke kasir/stasiun berikutnya"
+                  title="Simpan tindakan + resep & majukan antrean ke kasir/stasiun berikutnya"
                 >
                   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
                   {{ sendKasirLabel }}

@@ -1319,7 +1319,21 @@ class DokterService
      */
     public function kirimKeKasir(string $visitId, array $data): array
     {
-        $result = $this->storePlanning($visitId, $data);
+        // Pasca-finalisasi RME ("Buka Kembali" revisi tindakan/resep): planning milik
+        // RME yang TERKUNCI — storePlanning menolak 422. Batas kunci tindakan/resep =
+        // PEMBAYARAN, jadi kirim ulang tetap harus bisa: lewati storePlanning (planning
+        // tak diubah), cukup flip resep → SUBMITTED + advance idempoten di bawah.
+        $exam = DoctorExamination::where('visit_id', $visitId)->first();
+        if ($exam?->is_finalized) {
+            $visit = $this->authorizeVisitOwnership($visitId);
+            $this->assertBillingNotCommitted($visitId);
+            $result = [
+                'examination' => $exam->fresh(['doctor', 'surgeryPackage']),
+                'visit'       => $visit,
+            ];
+        } else {
+            $result = $this->storePlanning($visitId, $data);
+        }
 
         // Tandai resep rawat jalan (DRAFT) → SUBMITTED: sinyal "dokter selesai, siap
         // diverifikasi Farmasi". verified_at TETAP null → Kasir terkunci sampai Farmasi
