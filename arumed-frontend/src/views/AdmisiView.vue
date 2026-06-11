@@ -525,18 +525,40 @@ async function submitEditPasien() {
    submitRegistration akan call admisiApi.daftarkanWalkIn(visitId) alih-alih daftar baru. */
 const walkInVisitId = ref(null)
 const walkInQueueNo = ref('')
+// Konteks walk-in saat alur "Cari Data Pasien" lewat modal Profil Pasien: tiket kiosk
+// disimpan di sini supaya tetap terbawa ke wizard (existing/baru) setelah lihat detail.
+// Tidak null = sedang mendaftarkan walk-in via lookup. Dibersihkan saat selesai/batal.
+const pendingWalkIn = ref(null)   // { visitId, queueNo } | null
 
 function daftarkanWalkIn(p) {
-  walkInVisitId.value = p.visitId
-  walkInQueueNo.value = p.queueNo
-  Object.assign(form, blankForm())
-  form.patientMode      = 'existing'   // buka langsung ke mode "Pasien Lama" → cari data dulu
-  insuranceSearch.value = ''
-  searchResults.value   = []
-  wizardStep.value = 1
-  wizardOpen.value = true
-  // Fokuskan kolom pencarian supaya petugas langsung mengetik data pasien.
-  nextTick(() => wizSearchInput.value?.focus())
+  // Alur baru: cari & LIHAT detail pasien dulu (modal Profil Pasien). Daftar pasien
+  // BARU hanya bila tak ditemukan di database. Tiket walk-in (visit kiosk) dibawa via
+  // pendingWalkIn sampai registrasi diselesaikan dari modal Profil / wizard.
+  pendingWalkIn.value  = { visitId: p.visitId, queueNo: p.queueNo }
+  lookupKey.value      = ''
+  lookupResults.value  = []
+  lookupDropOpen.value = false
+  nextTick(() => lookupInput.value?.focus())
+  toast('i', `Cari data pasien untuk antrean ${p.queueNo} — pilih untuk lihat detail, atau daftar baru bila tak ada`)
+}
+
+// Batalkan alur walk-in lookup tanpa mendaftarkan apa pun.
+function cancelWalkInLookup() {
+  pendingWalkIn.value  = null
+  lookupKey.value      = ''
+  lookupResults.value  = []
+  lookupDropOpen.value = false
+}
+
+// "Tidak ada di database" → daftar pasien BARU, tetap membawa tiket walk-in.
+function daftarBaruWalkIn() {
+  const wi = pendingWalkIn.value      // baca dulu — openWizard akan meng-clear pendingWalkIn
+  lookupKey.value      = ''
+  lookupResults.value  = []
+  lookupDropOpen.value = false
+  openWizard()                        // reset + buka wizard (juga clear walkInVisitId)
+  if (wi) { walkInVisitId.value = wi.visitId; walkInQueueNo.value = wi.queueNo }
+  form.patientMode = 'new'            // pasien baru
 }
 
 /* Wilayah cascading — pakai komponen WilayahPicker (emsifa external API) */
@@ -899,6 +921,7 @@ const lookupKey      = ref('')
 const lookupResults  = ref([])
 const lookupLoading  = ref(false)
 const lookupDropOpen  = ref(false)
+const lookupInput    = ref(null)   // ref input toolbar (auto-focus saat alur walk-in)
 let   _lookupTimer   = null
 
 async function runLookup() {
@@ -1005,7 +1028,10 @@ async function openProfile(pt) {
     profileLoading.value = false
   }
 }
-function closeProfile() { profileOpen.value = false; profileEdit.open = false; revokeIdentityUrls() }
+// Tutup modal Profil + buang konteks walk-in (alur dibatalkan/dialihkan).
+function closeProfile() { pendingWalkIn.value = null; closeProfileSilent() }
+// Tutup modal Profil TANPA membuang pendingWalkIn — dipakai saat lanjut ke wizard.
+function closeProfileSilent() { profileOpen.value = false; profileEdit.open = false; revokeIdentityUrls() }
 
 /* ─── Dokumen Identitas (KTP) — per-pasien, berkas privat ber-auth ────────── */
 const identityDocs      = ref([])        // metadata dari backend
@@ -1131,10 +1157,12 @@ async function confirmDeleteIdentityDoc(doc) {
 function daftarkanDariProfil() {
   const pt = profilePatient.value
   if (!pt?.id) return
-  openWizard()                 // reset wizard + buka modal
+  const wi = pendingWalkIn.value   // baca dulu — openWizard akan meng-clear pendingWalkIn
+  openWizard()                 // reset wizard + buka modal (juga clear walkInVisitId)
+  if (wi) { walkInVisitId.value = wi.visitId; walkInQueueNo.value = wi.queueNo }
   form.patientMode = 'existing'
   selectPatient(pt)            // prefill form dari data pasien + cek kunjungan aktif
-  closeProfile()
+  closeProfileSilent()         // tutup modal tanpa membuang konteks walk-in
 }
 
 /* ─── Edit/Update data pasien dari tab Detail Pasien ─────────────────── */
@@ -1890,6 +1918,7 @@ function resetWizWilayah() { wizPrefilled.value = null; wizWilayahTouched.value 
 function openWizard() {
   walkInVisitId.value = null
   walkInQueueNo.value = ''
+  pendingWalkIn.value = null
   Object.assign(form, blankForm())
   insuranceSearch.value = ''
   searchResults.value   = []
@@ -1905,6 +1934,7 @@ function closeWizard() {
   wizardOpen.value = false
   walkInVisitId.value = null
   walkInQueueNo.value = ''
+  pendingWalkIn.value = null
   resetPreopState()
   resetConsentState()
 }
@@ -2336,9 +2366,10 @@ onUnmounted(() => {
       </div>
       <div class="toolbar-actions">
         <!-- Searchbar: lihat data pasien yang sudah pernah terdaftar -->
-        <div class="lookup">
+        <div class="lookup" :class="{ 'walkin-mode': pendingWalkIn }">
           <svg class="lookup-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input
+            ref="lookupInput"
             v-model="lookupKey"
             class="lookup-input"
             placeholder="Cari data pasien (nama / NIK / No. RM / Tgl lahir DD MM YYYY atau DDMMYYYY)"
@@ -2378,10 +2409,29 @@ onUnmounted(() => {
                 </div>
               </div>
               <div v-if="!lookupLoading && !lookupResults.length" class="combo-empty">
-                Tidak ada pasien yang cocok
+                <div>Tidak ada pasien yang cocok</div>
+                <button
+                  v-if="pendingWalkIn"
+                  class="btn btn-sm btn-primary"
+                  style="margin-top: 8px"
+                  @mousedown.prevent="daftarBaruWalkIn"
+                >
+                  + Daftar pasien baru
+                </button>
               </div>
             </div>
           </transition>
+
+          <!-- Banner alur walk-in: cari & lihat detail dulu, atau daftar baru -->
+          <div v-if="pendingWalkIn" class="walkin-lookup-hint">
+            <span>
+              Mendaftarkan walk-in <strong>{{ pendingWalkIn.queueNo }}</strong> — pilih pasien untuk lihat detail, atau daftar baru bila tak ada.
+            </span>
+            <span class="wlh-actions">
+              <button class="wlh-link wlh-primary" @click="daftarBaruWalkIn">Daftar Pasien Baru</button>
+              <button class="wlh-link" @click="cancelWalkInLookup">Batal</button>
+            </span>
+          </div>
         </div>
 
         <button class="btn btn-primary btn-lg" @click="openWizard">
@@ -4461,7 +4511,7 @@ onUnmounted(() => {
               @click="daftarkanDariProfil()"
             >
               <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Daftarkan Pasien
+              {{ pendingWalkIn ? `Daftarkan Walk-In ${pendingWalkIn.queueNo}` : 'Daftarkan Pasien' }}
             </button>
           </div>
         </div>
@@ -4507,6 +4557,19 @@ onUnmounted(() => {
 .lookup-spin { position: absolute; right: 11px; }
 .lookup-drop { min-width: 320px; }
 @media (max-width: 720px) { .lookup-input { width: 180px; } }
+/* Alur walk-in lewat lookup: tandai input + banner petunjuk */
+.lookup.walkin-mode .lookup-input { border-color: #c08a1a; box-shadow: 0 0 0 3px #fdf3dd; }
+.walkin-lookup-hint {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  padding: 8px 12px; border-radius: 10px;
+  background: #fdf6e3; border: 1px solid #f0d9a0; color: #8a6310;
+  font-size: 12px; line-height: 1.4; box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+}
+.walkin-lookup-hint .wlh-actions { margin-left: auto; display: flex; gap: 8px; white-space: nowrap; }
+.wlh-link { background: none; border: none; padding: 2px 4px; font-size: 12px; font-weight: 600; color: #8a6310; cursor: pointer; text-decoration: underline; }
+.wlh-link.wlh-primary { color: var(--ga); }
+.wlh-link:hover { opacity: 0.8; }
 .dot-sep { margin: 0 6px; color: var(--th); }
 .clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tm); }
 

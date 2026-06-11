@@ -217,18 +217,30 @@ class AdmisiService
         // Mode "Belum Selesai (semua tanggal)": tampilkan SEMUA kunjungan yang
         // masih berjalan (current_station != SELESAI) lintas-hari — untuk melihat
         // & membereskan ekor visit nyangkut. Selain mode ini, filter per-tanggal.
-        $isRanapView = ($filters['care_type'] ?? null) === 'RANAP';
+        $careType = $filters['care_type'] ?? null;
+        $tanggal  = $filters['tanggal'] ?? today();
         if (! empty($filters['unfinished'])) {
             $query->where('current_station', '!=', 'SELESAI');
-        } elseif ($isRanapView) {
+        } elseif ($careType === 'RANAP') {
             // Rawat inap long-lived (bertahan lintas-hari): JANGAN filter per-tanggal
             // karena visit_date dibekukan saat registrasi. Tampilkan semua pasien
             // yang belum dipulangkan (discharge_at NULL) — termasuk yang masuk
             // hari-hari sebelumnya & yang masih "menunggu kamar". Mengikuti semantik
-            // RanapService::activeInpatients(). RAJAL tetap difilter per hari ini.
+            // RanapService::activeInpatients().
             $query->whereNull('discharge_at');
+        } elseif ($careType === 'RAJAL') {
+            // Rawat jalan: kunjungan HARI INI + kunjungan rajal yang MASIH berjalan
+            // (belum SELESAI) lintas-hari, agar pasien tak hilang dari papan selama
+            // masih dalam kunjungan (mis. terdaftar sebelum tengah malam, dilayani
+            // melewati pergantian hari). Filter care_type=RAJAL di bawah tetap
+            // menyaring agar pasien rawat inap tak ikut terbawa lewat klausa "belum
+            // selesai" ini.
+            $query->where(function ($q) use ($tanggal) {
+                $q->whereDate('visit_date', $tanggal)
+                  ->orWhere('current_station', '!=', 'SELESAI');
+            });
         } else {
-            $query->whereDate('visit_date', $filters['tanggal'] ?? today());
+            $query->whereDate('visit_date', $tanggal);
         }
 
         // Pisah Rawat Jalan vs Rawat Inap. RANAP long-lived (bertahan berhari-hari)
