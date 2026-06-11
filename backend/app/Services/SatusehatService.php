@@ -87,10 +87,20 @@ class SatusehatService
 
             $sent   = 0;
             $failed = 0;
+            $skippedReasons  = []; // reason => jumlah visit dilewati (data tidak lengkap)
             $kfaSkippedNames = [];   // nama obat ter-skip karena tak ber-KFA (unik se-batch)
             $visitsWithSkip  = 0;    // jumlah kunjungan yang punya obat ter-skip
 
             foreach ($visits as $visit) {
+                // Data tidak lengkap = PASTI gagal (NIK/diagnosis adalah syarat
+                // regulasi) — jangan ditembak ke Kemenkes & jangan dihitung
+                // "gagal": angka gagal di Riwayat Batch harus berarti gagal
+                // teknis yang perlu ditindaklanjuti, bukan gap data berulang.
+                if ($reason = $this->precheckSkipReason($visit)) {
+                    $skippedReasons[$reason] = ($skippedReasons[$reason] ?? 0) + 1;
+                    continue;
+                }
+
                 $result = $this->syncVisit($visit, $syncLog->id);
                 $result ? $sent++ : $failed++;
 
@@ -109,11 +119,16 @@ class SatusehatService
                 default                  => 'PARTIAL',
             };
 
+            $notes = trim(implode(' ', array_filter([
+                $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames),
+                $this->buildSkipNote($skippedReasons),
+            ])));
+
             $syncLog->update([
                 'status'       => $status,
                 'total_sent'   => $sent,
                 'total_failed' => $failed,
-                'notes'        => $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames),
+                'notes'        => $notes ?: null,
                 'next_retry_at' => $status !== 'SUCCESS'
                     ? now()->addHours(2)->setTime(1, 0)
                     : null,
@@ -191,11 +206,24 @@ class SatusehatService
                 ->whereHas('doctor', fn ($d) => $d->whereNotNull('nik')->where('nik', '!=', ''));
         })->count();
 
+        // Pecahan $noDiagOrDoctor — operator perlu tahu mana yang BISA diperbaiki
+        // (NIK dokter bisa diisi; diagnosis kosong pada data import lama tidak).
+        $noExam = (clone $base)->whereDoesntHave('doctorExamination')->count();
+        $noDiagnosis = (clone $base)->whereHas('doctorExamination', fn ($e) => $e
+            ->where(fn ($q) => $q->whereNull('diagnosis_utama')->orWhere('diagnosis_utama', '')))->count();
+        $doctorNoNik = (clone $base)->whereHas('doctorExamination', function ($e) {
+            $e->whereNotNull('diagnosis_utama')->where('diagnosis_utama', '!=', '')
+                ->whereDoesntHave('doctor', fn ($d) => $d->whereNotNull('nik')->where('nik', '!=', ''));
+        })->count();
+
         return [
             'eligible'                 => $eligible,
             'pending_total'            => $pendingTotal,
             'skipped_no_patient_nik'   => $noPatientNik,
             'skipped_no_diag_or_doctor'=> $noDiagOrDoctor,
+            'skipped_no_exam'          => $noExam,
+            'skipped_no_diagnosis'     => $noDiagnosis,
+            'skipped_doctor_no_nik'    => $doctorNoNik,
             'range'                    => ['from' => $from, 'to' => $to],
         ];
     }
@@ -279,6 +307,44 @@ class SatusehatService
     // =========================================================================
     // PER-VISIT SYNC
     // =========================================================================
+
+    /**
+     * Alasan visit DILEWATI sebelum kirim (null = layak kirim). Syarat regulasi
+     * Satu Sehat yang murni soal kelengkapan data lokal — tanpa ini Bundle pasti
+     * ditolak, jadi tak perlu menembak Kemenkes / membakar resolve IHS tiap run.
+     * Selaras kriteria {@see backfillEligibleQuery}.
+     */
+    private function precheckSkipReason(Visit $visit): ?string
+    {
+        if (trim((string) $visit->patient?->nik) === '') {
+            return 'tanpa NIK pasien';
+        }
+
+        $exam = $visit->doctorExamination;
+        if (! $exam || trim((string) $exam->diagnosis_utama) === '') {
+            return 'tanpa diagnosis ICD-10';
+        }
+        if (trim((string) $exam->doctor?->nik) === '') {
+            return 'dokter tanpa NIK';
+        }
+
+        return null;
+    }
+
+    /** Kalimat ringkas utk notes sync log dari hasil precheck (null bila kosong). */
+    private function buildSkipNote(array $skippedReasons): ?string
+    {
+        if (! $skippedReasons) {
+            return null;
+        }
+
+        $detail = collect($skippedReasons)
+            ->map(fn ($n, $reason) => "{$n} {$reason}")
+            ->implode(', ');
+
+        return 'Dilewati (data tidak lengkap): ' . array_sum($skippedReasons)
+            . " kunjungan — {$detail}. Lengkapi via Kesiapan Data / modul Dokter.";
+    }
 
     /**
      * Sync satu visit via FHIR transaction Bundle (Encounter+Condition+obat).
@@ -395,8 +461,17 @@ class SatusehatService
 
         $sent   = 0;
         $failed = 0;
+        $skippedReasons = [];
 
         foreach ($failedVisits as $visit) {
+            // Data tidak lengkap → biarkan FAILED apa adanya, jangan ditembak
+            // ulang tiap retry (alasannya sudah tercatat di resource log; akan
+            // terkirim via backfill begitu datanya dilengkapi).
+            if ($reason = $this->precheckSkipReason($visit)) {
+                $skippedReasons[$reason] = ($skippedReasons[$reason] ?? 0) + 1;
+                continue;
+            }
+
             // Reset agar Bundle dikirim ulang (encounter belum tersimpan saat gagal).
             $visit->forceFill(['satusehat_sync_status' => 'PENDING'])->save();
             $result = $this->syncVisit($visit, $syncLogId);
@@ -404,6 +479,12 @@ class SatusehatService
         }
 
         $newStatus = $failed === 0 ? 'SUCCESS' : 'PARTIAL';
+
+        // Timpa kalimat skip lama di notes (kalau ada) agar tidak menumpuk
+        // antar-retry; sisakan catatan lain (mis. warning KFA).
+        $baseNotes = trim((string) preg_replace(
+            '/Dilewati \(data tidak lengkap\):.*$/s', '', (string) $syncLog->notes));
+        $notes = trim(implode(' ', array_filter([$baseNotes, $this->buildSkipNote($skippedReasons)])));
 
         $syncLog->update([
             'status'       => $newStatus,
@@ -413,6 +494,7 @@ class SatusehatService
             // gagal lagi atau jumlah retry ≠ total_failed lama).
             'total_sent'   => $syncLog->total_sent + $sent,
             'total_failed' => $failed,
+            'notes'        => $notes ?: null,
             'next_retry_at' => $newStatus !== 'SUCCESS' ? now()->addHours(2) : null,
         ]);
 
@@ -978,6 +1060,16 @@ class SatusehatService
         $encounter   = $this->buildEncounterPayload($visit);
         $conditions  = $this->buildConditionPayloads($visit, requireEncounter: false);
 
+        // Satu Sehat production MEWAJIBKAN Encounter.diagnosis (RuleNumber 10457)
+        // — tanpa Condition, Bundle pasti ditolak setelah round-trip dengan pesan
+        // kriptik. Gagal-jelas di sini: pesan tercatat ke resource log via syncVisit.
+        if (! $conditions) {
+            throw new \RuntimeException(
+                'Diagnosis (ICD-10) belum diisi pada pemeriksaan dokter — '
+                . 'Encounter.diagnosis wajib di Satu Sehat. Lengkapi diagnosa utama '
+                . 'via modul Dokter sebelum kunjungan bisa dikirim.', 412);
+        }
+
         $entries        = [];
         $diagnosisRefs  = [];
 
@@ -1506,7 +1598,11 @@ class SatusehatService
                         ]],
                         'identifier' => [[
                             'system' => "http://sys-ids.kemkes.go.id/medication/{$orgId}",
-                            'value'  => $item->medication->code ?: $item->id,
+                            // HARUS unik per item resep — dulu pakai kode master
+                            // obat sehingga obat yang sama hanya bisa di-POST
+                            // SEKALI se-organisasi; kunjungan berikutnya ditolak
+                            // duplicate 20002 dan SELURUH Bundle transaksi gagal.
+                            'value'  => $item->id,
                         ]],
                         'code' => [
                             'coding' => [[

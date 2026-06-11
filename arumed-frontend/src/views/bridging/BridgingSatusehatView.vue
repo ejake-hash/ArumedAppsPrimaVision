@@ -439,8 +439,16 @@ onMounted(() => { load(); loadBatches() })
                     <span class="bf-lbl">Tanpa NIK pasien</span>
                   </div>
                   <div class="bf-stat">
-                    <span class="bf-num muted-num">{{ (backfill.preview.skipped_no_diag_or_doctor || 0).toLocaleString('id-ID') }}</span>
-                    <span class="bf-lbl">Tanpa diagnosis / NIK dokter</span>
+                    <span class="bf-num muted-num">{{ (backfill.preview.skipped_no_diagnosis ?? backfill.preview.skipped_no_diag_or_doctor ?? 0).toLocaleString('id-ID') }}</span>
+                    <span class="bf-lbl">Tanpa diagnosis ICD-10 (umumnya data lama)</span>
+                  </div>
+                  <div class="bf-stat" v-if="backfill.preview.skipped_doctor_no_nik">
+                    <span class="bf-num muted-num">{{ backfill.preview.skipped_doctor_no_nik.toLocaleString('id-ID') }}</span>
+                    <span class="bf-lbl">Dokter tanpa NIK (bisa diisi via Kesiapan Data)</span>
+                  </div>
+                  <div class="bf-stat" v-if="backfill.preview.skipped_no_exam">
+                    <span class="bf-num muted-num">{{ backfill.preview.skipped_no_exam.toLocaleString('id-ID') }}</span>
+                    <span class="bf-lbl">Tanpa pemeriksaan dokter</span>
                   </div>
                 </div>
 
