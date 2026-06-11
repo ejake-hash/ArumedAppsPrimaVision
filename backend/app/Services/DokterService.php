@@ -197,19 +197,6 @@ class DokterService
         }
     }
 
-    /**
-     * Tolak penulisan Tab 3 (tindakan/resep) bila pemeriksaan sudah difinalisasi.
-     * Melindungi dari race autosave yang nyangkut menulis setelah finalize —
-     * tanpa guard ini tindakan/resep bisa hilang/berubah dari tagihan kasir.
-     */
-    private function assertNotFinalized(string $visitId): void
-    {
-        $examination = DoctorExamination::where('visit_id', $visitId)->first();
-        if ($examination && $examination->is_finalized) {
-            throw new \Exception('Pemeriksaan sudah dikunci/difinalisasi, perubahan tindakan/resep ditolak.', 422);
-        }
-    }
-
     // =========================================================================
     // TAB 1 — DATA PASIEN (READONLY: triase + refraksi)
     // =========================================================================
@@ -472,11 +459,11 @@ class DokterService
         $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
-        // Guard race autosave vs finalisasi: autosave Tab 3 yang nyangkut tidak
-        // boleh menulis tindakan setelah pemeriksaan dikunci (else tindakan bisa
-        // hilang/berubah dari tagihan kasir).
-        $this->assertNotFinalized($visitId);
-        // Komit billing (Kirim ke Kasir) mengunci tindakan/resep walau RME belum final.
+        // Batas kunci tindakan/resep = PEMBAYARAN, bukan finalisasi RME. Dokter boleh
+        // "Buka Kembali" & revisi pasca-finalisasi selama belum dibayar di kasir (mis.
+        // pasien lintas-hari "Masih Aktif"; FE membuka panel Tab 3 di b3bf90a). Komit
+        // pembayaran (invoice PAID/PARTIALLY_PAID) yang mengunci — autosave nyangkut
+        // tetap diblok setelah lunas.
         $this->assertBillingNotCommitted($visitId);
 
         $created = DB::transaction(function () use ($visitId, $services, $user) {
@@ -549,8 +536,8 @@ class DokterService
         $this->authorizeVisitOwnership($visitId);
         $user = auth('api')->user();
 
-        // Guard race autosave vs finalisasi (lihat storeVisitServices).
-        $this->assertNotFinalized($visitId);
+        // Batas kunci = PEMBAYARAN (lihat storeVisitServices): editable pasca-finalisasi
+        // selama belum dibayar.
         $this->assertBillingNotCommitted($visitId);
 
         $items = $data['items'] ?? [];
@@ -798,15 +785,12 @@ class DokterService
         }
 
         // Replace items: copy komponen paket, resolve harga Buku Tarif.
-        $isPemeriksaan = ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN);
+        // Obat disnapshot untuk SEMUA tipe paket. PEMERIKSAAN: snapshot = "ekspektasi" utk
+        // absorpsi diskon (obat ditagih lewat resep). BEDAH: obat komponen paket ditagih
+        // LANGSUNG dari snapshot (KasirService::buildPaketObatLines) + masuk basis diskon —
+        // konsisten dgn PROCEDURE/BHP/IOL, mencegah obat injeksi mahal hilang dari tagihan.
         $snap->items()->delete();
         foreach ($pkg->items as $pi) {
-            // Obat: hanya disnapshot untuk paket PEMERIKSAAN (daftar "ekspektasi" untuk
-            // absorpsi diskon — obat tetap ditagih lewat resep, bukan dari snapshot).
-            // Paket BEDAH: obat lewat resep/obat pulang, tak masuk snapshot.
-            if ($pi->item_type === 'MEDICATION' && ! $isPemeriksaan) {
-                continue;
-            }
             $getPriceType = match ($pi->item_type) {
                 'PROCEDURE'  => 'procedure',
                 'BHP'        => 'bhp',
@@ -846,7 +830,7 @@ class DokterService
     public function applyExaminationPackage(string $visitId, string $packageId): array
     {
         $this->authorizeVisitOwnership($visitId);
-        $this->assertNotFinalized($visitId);
+        $this->assertBillingNotCommitted($visitId);
         $visit = Visit::findOrFail($visitId);
 
         $pkg = SurgeryPackage::with('items')->findOrFail($packageId);
@@ -930,7 +914,7 @@ class DokterService
     public function removeExaminationPackage(string $visitId): void
     {
         $this->authorizeVisitOwnership($visitId);
-        $this->assertNotFinalized($visitId);
+        $this->assertBillingNotCommitted($visitId);
         VisitSurgeryPackage::where('visit_id', $visitId)
             ->where('package_type', VisitSurgeryPackage::TYPE_PEMERIKSAAN)
             ->delete();
@@ -1327,7 +1311,8 @@ class DokterService
      * PAID/PARTIALLY_PAID). Selama belum bayar, dokter boleh "Buka Kembali" Tab 3 untuk
      * revisi obat/tindakan walau pasien sudah dikirim ke kasir — perubahan mengalir ke
      * verifikasi Farmasi & kwitansi (reconsolidate). Batas kunci = PEMBAYARAN, bukan
-     * "terkirim ke kasir". Mengunci billing TANPA mengunci RME. Pelengkap assertNotFinalized.
+     * "terkirim ke kasir". Mengunci billing TANPA mengunci RME — ini SATU-SATUNYA batas
+     * kunci tindakan/resep (finalisasi RME tidak lagi mengunci Tab 3, selaras FE b3bf90a).
      */
     private function assertBillingNotCommitted(string $visitId): void
     {
