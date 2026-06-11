@@ -713,6 +713,21 @@ class KasirService
     // visit_services dan tertarif via Buku Tarif di buildTindakanLines(). diagnostic_orders
     // kini murni operasional (antrean stasiun penunjang, hasil, rekomendasi IOL).
 
+    /**
+     * Peta kategori internal BhpItem → label kategori tagihan (billing_categories) untuk
+     * grouping kwitansi. Selaras MasterDataService::bukuTarifUnion (Buku Tarif) & migrasi
+     * seed 2026_07_14. Item tanpa kategori → 'BHP' (fallback, masih tergrup).
+     */
+    private function bhpBillingCategory(?string $category): string
+    {
+        return match ($category) {
+            'MEDICAL_BHP'    => 'BAHAN HABIS PAKAI',
+            'CSSD'           => 'CSSD',
+            'INSTRUMENT_SET' => 'INSTRUMENT',
+            default          => 'BHP',
+        };
+    }
+
     private function buildBhpLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
     {
         $insurerId    ??= $visit->insurer_id;
@@ -733,7 +748,9 @@ class KasirService
                 $label = $bhp->bhpItem?->name ?? 'BHP';
                 $lines[] = [
                     'item_type'    => 'BHP',
-                    'category'     => 'BHP',     // kelompok kwitansi "BHP" (billing category), bukan MEDICAL_BHP/CSSD
+                    // Kelompok kwitansi = sub-kategori item (BAHAN HABIS PAKAI/CSSD/INSTRUMENT)
+                    // → konsisten dgn Buku Tarif + billing_categories (seed 2026_07_14).
+                    'category'     => $this->bhpBillingCategory($bhp->bhpItem?->category),
                     'reference_id' => $bhp->id,
                     'description'  => $label,    // tanpa suffix kategori
                     'quantity'     => $usedQty,
@@ -796,7 +813,9 @@ class KasirService
             $total = $price * $qty;
             $lines[] = [
                 'item_type'    => 'BHP',
-                'category'     => 'BHP',          // kelompok kwitansi "BHP" (bukan MEDICAL_BHP/CSSD/Lainnya)
+                // Kelompok kwitansi = sub-kategori item (BAHAN HABIS PAKAI/CSSD/INSTRUMENT)
+                // → konsisten dgn Buku Tarif + billing_categories (seed 2026_07_14).
+                'category'     => $this->bhpBillingCategory($bhp->category),
                 'reference_id' => $pi->id,
                 'description'  => $bhp->name,      // tanpa suffix kategori
                 'quantity'     => $qty,
