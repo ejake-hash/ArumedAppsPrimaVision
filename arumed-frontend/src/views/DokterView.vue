@@ -1164,7 +1164,15 @@ async function loadTindakanResep() {
 // Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
 // Ditaruh di sini (bukan di atas dekat watch penunjang) agar `tindakanList` &
 // `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
-watch(() => selP.value?.visitId, (vid) => { loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus() }, { immediate: true })
+watch(() => selP.value?.visitId, (vid) => {
+  loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus()
+  // Pasien yang SUDAH dikirim ke kasir sebelumnya (antrean COMPLETED) & belum
+  // difinalisasi → tampilkan Tab 3 dalam keadaan terkunci + tombol "Buka Kembali"
+  // saat dibuka ulang, supaya dokter bisa revisi obat/tindakan selama kwitansi belum
+  // dibayar (billingPaid memutuskan boleh/tidak). Pasien baru tetap terbuka normal.
+  // (Saat finalisasi, isLocked menutup notice ini sehingga tak tampil dobel.)
+  tab3Sent.value = selP.value?.rawStatus === 'COMPLETED'
+}, { immediate: true })
 
 let _saveTindakanTimer = null
 function scheduleSaveTindakan() { clearTimeout(_saveTindakanTimer); _saveTindakanTimer = setTimeout(saveTindakan, 600) }
