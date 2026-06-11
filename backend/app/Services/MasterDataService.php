@@ -1277,25 +1277,24 @@ class MasterDataService
 
     public function storeObat(array $data): Medication
     {
+        // Hint pos kwitansi HANYA untuk prefix kode (OBT/OBP/OBI sesuai Buku Tarif) —
+        // bukan kolom medications (pos tersimpan di medication_tariffs).
+        $posHint = $data['pos_kwitansi'] ?? null;
+        unset($data['pos_kwitansi']);
         if (empty($data['code'])) {
-            $data['code'] = $this->generateObatCode();
+            $data['code'] = $this->generateObatCode($posHint);
         }
         $med = Medication::create($data);
         $this->log(auth('api')->id(), 'CREATE_OBAT', Medication::class, $med->id);
         return $med;
     }
 
-    private function generateObatCode(): string
+    private function generateObatCode(?string $posKwitansi = null): string
     {
-        $last = Medication::withTrashed()
-            ->where('code', 'like', 'MED-%')
-            ->orderByDesc('code')
-            ->value('code');
-        $next = 1;
-        if ($last && preg_match('/^MED-(\d+)$/', $last, $m)) {
-            $next = ((int) $m[1]) + 1;
-        }
-        return sprintf('MED-%03d', $next);
+        return $this->nextCodeForPrefix(
+            Medication::withTrashed(),
+            \App\Models\MedicationTariff::posCodePrefix($posKwitansi)
+        );
     }
 
     public function updateObat(string $id, array $data): Medication
@@ -1343,24 +1342,34 @@ class MasterDataService
     public function storeBhp(array $data): BhpItem
     {
         if (empty($data['code'])) {
-            $data['code'] = $this->generateBhpCode();
+            $data['code'] = $this->generateBhpCode($data['category'] ?? null);
         }
         $bhp = BhpItem::create($data);
         $this->log(auth('api')->id(), 'CREATE_BHP', BhpItem::class, $bhp->id);
         return $bhp;
     }
 
-    private function generateBhpCode(): string
+    private function generateBhpCode(?string $category = null): string
     {
-        $last = BhpItem::withTrashed()
-            ->where('code', 'like', 'BHP-%')
-            ->orderByDesc('code')
-            ->value('code');
-        $next = 1;
-        if ($last && preg_match('/^BHP-(\d+)$/', $last, $m)) {
-            $next = ((int) $m[1]) + 1;
-        }
-        return sprintf('BHP-%03d', $next);
+        // Prefix per Buku Tarif: kategori CSSD → CSSD-xxx, selainnya BHP-xxx.
+        $prefix = $category === BhpItem::CATEGORY_CSSD ? 'CSSD' : 'BHP';
+        return $this->nextCodeForPrefix(BhpItem::withTrashed(), $prefix);
+    }
+
+    /**
+     * Nomor kode berikutnya utk satu prefix: max suffix NUMERIK existing + 1
+     * (bukan lexicographic — aman melewati 999). Pola sama generateProcedureCode.
+     */
+    private function nextCodeForPrefix($query, string $prefix): string
+    {
+        $max = $query->where('code', 'like', $prefix . '-%')
+            ->get(['code'])
+            ->map(function ($r) use ($prefix) {
+                $suffix = substr((string) $r->code, strlen($prefix) + 1);
+                return ctype_digit($suffix) ? (int) $suffix : 0;
+            })
+            ->max() ?? 0;
+        return sprintf('%s-%03d', $prefix, $max + 1);
     }
 
     private function generateAlatMedisCode(): string

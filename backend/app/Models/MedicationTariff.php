@@ -48,6 +48,18 @@ class MedicationTariff extends Model
         return self::POS_LABELS[$pos] ?? self::POS_LABELS[self::POS_OBAT_PULANG];
     }
 
+    /** Prefix kode item obat per pos — selaras Buku Tarif (sheet Kategori: OBT/OBP/OBI). */
+    public const POS_CODE_PREFIX = [
+        self::POS_OBAT_TINDAKAN => 'OBT',
+        self::POS_OBAT_PULANG   => 'OBP',
+        self::POS_OBAT_INJEKSI  => 'OBI',
+    ];
+
+    public static function posCodePrefix(?string $pos): string
+    {
+        return self::POS_CODE_PREFIX[$pos] ?? self::POS_CODE_PREFIX[self::POS_OBAT_PULANG];
+    }
+
     public function medication(): BelongsTo { return $this->belongsTo(Medication::class); }
     public function insurer(): BelongsTo    { return $this->belongsTo(Insurer::class); }
 }

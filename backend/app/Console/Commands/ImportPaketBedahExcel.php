@@ -300,6 +300,8 @@ class ImportPaketBedahExcel extends Command
                     'name' => $name, 'golongan' => 'KERAS', 'formularium' => 'NON-FORNAS',
                     'unit' => 'pcs', 'stock' => 0, 'min_stock' => 0,
                     'price' => $harga, 'is_active' => true,
+                    // hint prefix kode OBT- (pos tarifnya memang OBAT_TINDAKAN di bawah)
+                    'pos_kwitansi' => MedicationTariff::POS_OBAT_TINDAKAN,
                 ]);
                 MedicationTariff::create([
                     'medication_id' => $med->id, 'insurer_id' => $umumId, 'price' => $harga,
