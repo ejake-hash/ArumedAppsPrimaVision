@@ -598,11 +598,13 @@ const filtQ = computed(() => {
   return list
 })
 
-const cMenunggu = computed(() => patients.value.filter(p => p.status === 'MENUNGGU').length)
-const cBerlangsung = computed(() => patients.value.filter(p => p.status === 'BERLANGSUNG').length)
+// Stat header = HANYA pasien hari ini (lintas-hari "Masih Aktif" tak dihitung).
+const cMenunggu = computed(() => patients.value.filter(p => isTodayP(p) && p.status === 'MENUNGGU').length)
+const cBerlangsung = computed(() => patients.value.filter(p => isTodayP(p) && p.status === 'BERLANGSUNG').length)
 const cSelesai = computed(() => patients.value.filter(p => isTodayP(p) && isDoneP(p)).length)
 const belumDipanggilCount = computed(() => patients.value.filter(p => isTodayP(p) && !isDoneP(p)).length)
 const cActive = computed(() => patients.value.filter(p => !isTodayP(p)).length)
+const cToday = computed(() => patients.value.filter(p => isTodayP(p)).length)
 
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
@@ -1562,7 +1564,7 @@ function mulaiBack() { mulaiStep.value = 1 }
         <!-- Rail tipis saat antrean diciutkan — klik untuk buka kembali -->
         <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
           <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-          <span class="queue-rail-count">{{ patients.length }}</span>
+          <span class="queue-rail-count">{{ cToday }}</span>
           <span class="queue-rail-txt">Antrean</span>
         </button>
 
@@ -1573,7 +1575,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
                 Antrean Bedah
               </div>
-              <div class="card-head-sub">{{ patients.length }} pasien hari ini</div>
+              <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
             </div>
             <div class="head-actions">
               <span class="pill-live">LIVE</span>

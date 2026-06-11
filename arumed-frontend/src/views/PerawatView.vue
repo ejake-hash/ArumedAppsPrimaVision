@@ -185,6 +185,8 @@ const isDoneQ = (q) => q.status === 'COMPLETED'
 const cWait   = computed(() => store.antrian.filter((q) => isTodayRow(q.created_at) && !isDoneQ(q)).length)
 const cDone   = computed(() => store.antrian.filter((q) => isTodayRow(q.created_at) && isDoneQ(q)).length)
 const cActive = computed(() => store.antrian.filter((q) => !isTodayRow(q.created_at)).length)
+// "Pasien hari ini" / Total = HANYA baris hari ini (lintas-hari "Masih Aktif" tak dihitung).
+const cToday  = computed(() => store.antrian.filter((q) => isTodayRow(q.created_at)).length)
 
 const filteredQueue = computed(() => {
   let list = store.antrian
@@ -640,7 +642,7 @@ onUnmounted(() => {
       <aside class="col-queue">
         <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-          <span class="queue-rail-count">{{ store.totalCount }}</span>
+          <span class="queue-rail-count">{{ cToday }}</span>
           <span class="queue-rail-txt">Antrean</span>
         </button>
         <div class="card queue-card">
@@ -651,7 +653,7 @@ onUnmounted(() => {
                 Antrean Triase
               </div>
               <div class="card-head-sub">
-                {{ store.totalCount }} pasien hari ini
+                {{ cToday }} pasien hari ini
               </div>
             </div>
             <div class="head-actions">
@@ -668,17 +670,17 @@ onUnmounted(() => {
             <div class="stats-bar">
               <div class="stat-item">
                 <span class="stat-label">Belum Dipanggil</span>
-                <b class="stat-num stat-waiting">{{ store.belumDipanggilCount }}</b>
+                <b class="stat-num stat-waiting">{{ cWait }}</b>
               </div>
               <div class="stat-divider"></div>
               <div class="stat-item">
                 <span class="stat-label">Selesai</span>
-                <b class="stat-num stat-done">{{ store.selesaiCount }}</b>
+                <b class="stat-num stat-done">{{ cDone }}</b>
               </div>
               <div class="stat-divider"></div>
               <div class="stat-item">
                 <span class="stat-label">Total</span>
-                <b class="stat-num">{{ store.totalCount }}</b>
+                <b class="stat-num">{{ cToday }}</b>
               </div>
             </div>
 

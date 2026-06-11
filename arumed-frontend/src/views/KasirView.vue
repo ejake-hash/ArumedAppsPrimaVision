@@ -64,6 +64,8 @@ const isTodayQ = (q) => isTodayRow(q.created_at)
 const belumBayarCount = computed(() => queue.value.filter((q) => isTodayQ(q) && !isLunas(q)).length)
 const selesaiCount    = computed(() => queue.value.filter((q) => isTodayQ(q) &&  isLunas(q)).length)
 const cActive         = computed(() => queue.value.filter((q) => !isTodayQ(q)).length)
+// "Pasien hari ini" / Total = HANYA baris hari ini (lintas-hari "Masih Aktif" tak dihitung).
+const cToday          = computed(() => queue.value.filter((q) => isTodayQ(q)).length)
 
 const filtQ = computed(() => {
   let l = queue.value
@@ -930,7 +932,7 @@ const groupedPrintItems = computed(() =>
         <!-- Rail vertikal saat panel diciutkan (CSS show-hide agar breakpoint bisa override) -->
         <button class="queue-rail" type="button" @click="toggleQueue" title="Buka panel antrean kasir" aria-label="Buka panel antrean kasir">
           <svg viewBox="0 0 24 24" class="qr-chevron" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-          <span class="qr-count">{{ queue.length }}</span>
+          <span class="qr-count">{{ cToday }}</span>
           <span class="qr-label">Antrean Kasir</span>
         </button>
 
@@ -941,7 +943,7 @@ const groupedPrintItems = computed(() =>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
                 Antrean Kasir
               </div>
-              <div class="card-head-sub">{{ queue.length }} pasien hari ini</div>
+              <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
             </div>
             <div class="head-actions">
               <span class="pill-live">LIVE</span>
@@ -966,7 +968,7 @@ const groupedPrintItems = computed(() =>
               <div class="stat-divider"></div>
               <div class="stat-item">
                 <span class="stat-label">Total</span>
-                <b class="stat-num">{{ queue.length }}</b>
+                <b class="stat-num">{{ cToday }}</b>
               </div>
             </div>
 

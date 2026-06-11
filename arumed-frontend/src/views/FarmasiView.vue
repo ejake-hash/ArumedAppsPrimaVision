@@ -71,6 +71,8 @@ const isDoneQ  = (q) => rxStatusOf(q) === 'done'
 const belumCount   = computed(() => queue.value.filter((q) => isTodayQ(q) && !isDoneQ(q)).length)
 const selesaiCount = computed(() => queue.value.filter((q) => isTodayQ(q) &&  isDoneQ(q)).length)
 const cActive      = computed(() => queue.value.filter((q) => !isTodayQ(q)).length)
+// "Resep hari ini" / Total = HANYA baris hari ini (lintas-hari "Masih Aktif" tak dihitung).
+const cToday       = computed(() => queue.value.filter((q) => isTodayQ(q)).length)
 
 const filtRx = computed(() => {
   let l = queue.value
@@ -1661,19 +1663,19 @@ function toast(type, msg) {
       <div class="stat-grid">
         <div class="stat-card">
           <div class="stat-icon" style="background: var(--ib)"><svg viewBox="0 0 24 24" stroke="var(--it)"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg></div>
-          <div><div class="stat-val">{{ queue.length }}</div><div class="stat-lbl">Total Resep</div></div>
+          <div><div class="stat-val">{{ cToday }}</div><div class="stat-lbl">Total Resep</div></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon" style="background: var(--wb)"><svg viewBox="0 0 24 24" stroke="var(--wt)"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
-          <div><div class="stat-val" style="color: var(--wt)">{{ queue.filter((q) => rxStatusOf(q) === 'menunggu').length }}</div><div class="stat-lbl">Menunggu</div></div>
+          <div><div class="stat-val" style="color: var(--wt)">{{ queue.filter((q) => isTodayQ(q) && rxStatusOf(q) === 'menunggu').length }}</div><div class="stat-lbl">Menunggu</div></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon" style="background: var(--ib)"><svg viewBox="0 0 24 24" stroke="var(--it)"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg></div>
-          <div><div class="stat-val" style="color: var(--it)">{{ queue.filter((q) => rxStatusOf(q) === 'disiapkan').length }}</div><div class="stat-lbl">Disiapkan</div></div>
+          <div><div class="stat-val" style="color: var(--it)">{{ queue.filter((q) => isTodayQ(q) && rxStatusOf(q) === 'disiapkan').length }}</div><div class="stat-lbl">Disiapkan</div></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon" style="background: var(--sb)"><svg viewBox="0 0 24 24" stroke="var(--st)"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
-          <div><div class="stat-val" style="color: var(--st)">{{ queue.filter((q) => rxStatusOf(q) === 'done').length }}</div><div class="stat-lbl">Selesai</div></div>
+          <div><div class="stat-val" style="color: var(--st)">{{ queue.filter((q) => isTodayQ(q) && rxStatusOf(q) === 'done').length }}</div><div class="stat-lbl">Selesai</div></div>
         </div>
         <div :class="['stat-card', lowStockCount ? 'alert-card' : '']">
           <div class="stat-icon" :style="{ background: lowStockCount ? 'var(--eb)' : 'var(--gl)' }">
@@ -1693,7 +1695,7 @@ function toast(type, msg) {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                   Antrean Resep
                 </div>
-                <div class="card-head-sub">{{ queue.length }} resep hari ini</div>
+                <div class="card-head-sub">{{ cToday }} resep hari ini</div>
               </div>
               <span class="pill-live">LIVE</span>
             </div>

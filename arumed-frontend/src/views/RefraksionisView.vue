@@ -138,6 +138,8 @@ const filtQ = computed(() => {
 const cWait   = computed(() => mappedQueue.value.filter((p) => isTodayRow(p.createdAt) && !isDoneP(p)).length)
 const cDone   = computed(() => mappedQueue.value.filter((p) => isTodayRow(p.createdAt) && isDoneP(p)).length)
 const cActive = computed(() => mappedQueue.value.filter((p) => !isTodayRow(p.createdAt)).length)
+// "Pasien hari ini" / Total = HANYA baris hari ini (lintas-hari "Masih Aktif" tak dihitung).
+const cToday  = computed(() => mappedQueue.value.filter((p) => isTodayRow(p.createdAt)).length)
 
 const selP = computed(() => store.selectedQueue ? mapQueueRow(store.selectedQueue) : null)
 const activeTab = ref('autoref')
@@ -816,7 +818,7 @@ function toast(type, msg) {
       <aside class="col-queue">
         <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-          <span class="queue-rail-count">{{ mappedQueue.length }}</span>
+          <span class="queue-rail-count">{{ cToday }}</span>
           <span class="queue-rail-txt">Antrean</span>
         </button>
         <div class="card queue-card">
@@ -826,7 +828,7 @@ function toast(type, msg) {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 Antrean Refraksi
               </div>
-              <div class="card-head-sub">{{ mappedQueue.length }} pasien hari ini</div>
+              <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
             </div>
             <div class="head-actions">
               <span class="pill-live">LIVE</span>
@@ -866,7 +868,7 @@ function toast(type, msg) {
               <div class="stat-divider"></div>
               <div class="stat-item">
                 <span class="stat-label">Total</span>
-                <b class="stat-num">{{ mappedQueue.length }}</b>
+                <b class="stat-num">{{ cToday }}</b>
               </div>
             </div>
 

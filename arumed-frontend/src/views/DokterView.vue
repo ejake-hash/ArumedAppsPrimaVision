@@ -400,6 +400,9 @@ const filtQ = computed(() => {
 const cWait   = computed(() => patients.value.filter((p) => isTodayP(p) && !isDoneP(p)).length)
 const cDone   = computed(() => patients.value.filter((p) => isTodayP(p) && isDoneP(p)).length)
 const cActive = computed(() => patients.value.filter((p) => !isTodayP(p)).length)
+// "Pasien hari ini" / Total = HANYA baris hari ini. Pasien lintas-hari yang masih
+// aktif (tab "Masih Aktif") TIDAK ikut dihitung sebagai pasien hari ini.
+const cToday  = computed(() => patients.value.filter((p) => isTodayP(p)).length)
 const bpjsCount = computed(() => patients.value.filter((p) => p.ptype === 'bpjs' && p.status !== 'done' && p.status !== 'skip').length)
 const umumAsnCount = computed(() => patients.value.filter((p) => (p.ptype === 'umum' || p.ptype === 'asn') && p.status !== 'done' && p.status !== 'skip').length)
 
@@ -2147,7 +2150,7 @@ function closeResumeRM() {
       <!-- Rail tipis saat antrean diciutkan — klik untuk buka kembali -->
       <button class="queue-rail" @click="toggleQueue" title="Buka daftar antrean" aria-label="Buka daftar antrean">
         <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-        <span class="queue-rail-count">{{ patients.length }}</span>
+        <span class="queue-rail-count">{{ cToday }}</span>
         <span class="queue-rail-txt">Antrean</span>
       </button>
 
@@ -2226,7 +2229,7 @@ function closeResumeRM() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
             Antrean Dokter
           </div>
-          <div class="card-head-sub">{{ patients.length }} pasien hari ini</div>
+          <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
         </div>
         <div class="head-actions">
           <span class="pill-live">LIVE</span>
@@ -2252,7 +2255,7 @@ function closeResumeRM() {
           <div class="stat-divider"></div>
           <div class="stat-item">
             <span class="stat-label">Total</span>
-            <b class="stat-num">{{ patients.length }}</b>
+            <b class="stat-num">{{ cToday }}</b>
           </div>
         </div>
 
