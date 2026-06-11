@@ -228,18 +228,13 @@ class AdmisiService
             // hari-hari sebelumnya & yang masih "menunggu kamar". Mengikuti semantik
             // RanapService::activeInpatients().
             $query->whereNull('discharge_at');
-        } elseif ($careType === 'RAJAL') {
-            // Rawat jalan: kunjungan HARI INI + kunjungan rajal yang MASIH berjalan
-            // (belum SELESAI) lintas-hari, agar pasien tak hilang dari papan selama
-            // masih dalam kunjungan (mis. terdaftar sebelum tengah malam, dilayani
-            // melewati pergantian hari). Filter care_type=RAJAL di bawah tetap
-            // menyaring agar pasien rawat inap tak ikut terbawa lewat klausa "belum
-            // selesai" ini.
-            $query->where(function ($q) use ($tanggal) {
-                $q->whereDate('visit_date', $tanggal)
-                  ->orWhere('current_station', '!=', 'SELESAI');
-            });
         } else {
+            // RAJAL & default: HANYA kunjungan yang diregistrasi pada tanggal ini.
+            // Pasien lintas-hari yang belum selesai dilihat lewat tab "Masih Aktif"
+            // (mode unfinished di atas). Klausa OR "current_station != SELESAI"
+            // tanpa batas tanggal pernah dipasang di sini (c12a693) tapi begitu
+            // aktif malah membanjiri tab Rawat Jalan dengan ratusan visit lama
+            // yang nyangkut → dicabut atas permintaan user (12 Jun 2026).
             $query->whereDate('visit_date', $tanggal);
         }
 

@@ -139,7 +139,6 @@ function mapQueueItem(q) {
 /* ============================================================
    VISIT COUNTS (used by dashboard stats row)
    ============================================================ */
-const vpAll      = computed(() => admisiStore.visits)
 // Stat per penjamin = pasien yang SUDAH BAYAR di kasir (invoice PAID) hari ini.
 // Sumber: AdmisiService::getDashboard().stat_cards.{bpjs,umum,asuransi}_count
 const vpBpjs     = computed(() => admisiStore.stats?.bpjs     ?? 0)
@@ -151,7 +150,10 @@ const vpBedah    = computed(() => admisiStore.stats?.bedah ?? 0)
 // Rawat Inap — pasien yang sedang dirawat inap (belum dipulangkan).
 // Sumber: AdmisiService::getDashboard().stat_cards.ranap_count
 const vpRanap    = computed(() => admisiStore.stats?.ranap ?? 0)
-const vpTotal    = computed(() => admisiStore.visitsMeta.total || vpAll.value.length)
+// Total Kunjungan = registrasi HARI INI (semua jenis layanan), dari dashboard —
+// BUKAN total tabel (visitsMeta.total ikut berubah saat tab/filter diganti,
+// mis. tab Masih Aktif membuat card melonjak ke ratusan visit lama).
+const vpTotal    = computed(() => admisiStore.stats?.total ?? 0)
 
 /* ============================================================
    DATE / CLOCK
