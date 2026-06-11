@@ -127,7 +127,13 @@ export const perawatApi = {
   dahulukan:       (id)               => api.put(`/perawat/antrian/${id}/dahulukan`),
   skipTriase:      (id)               => api.put(`/perawat/antrian/${id}/skip`),
   kirimKeBedah:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-bedah`),
+  kirimKeDokter:   (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-dokter`),
   kirimKeRanap:    (queueId)          => api.post(`/perawat/antrian/${queueId}/kirim-ke-ranap`),
+
+  // Instruksi obat pre-op dokter jaga (stat-dose, visit PREOP_BEDAH)
+  preopResep:      (visitId)          => api.get(`/perawat/kunjungan/${visitId}/preop-resep`),
+  storePreopResep: (visitId, data)    => api.post(`/perawat/kunjungan/${visitId}/preop-resep`, data),
+  daftarObat:      (search)           => api.get('/perawat/obat', { params: { search } }),
 
   showAsesmen:     (visitId)          => api.get(`/perawat/asesmen/${visitId}`),
   storeAsesmen:    (data)             => api.post('/perawat/asesmen', data),

@@ -40,6 +40,9 @@ class PrescriptionItem extends Model
         'duration_days',
         // Penanda obat operasi (migrasi Gel-2): tercakup paket bedah, jangan dobel-tagih.
         'is_bedah',
+        // Item resep pre-op "terserap ke paket": tetap tampil positif di kwitansi,
+        // nilainya ikut basis DISKON_PAKET (net tetap = harga jual paket).
+        'is_preop_absorbed',
         // Varian kemasan jual terpilih (di-set Farmasi saat verifikasi). NULL = satuan
         // kecil. INVARIAN: quantity (satuan kecil, sumber kebenaran stok) =
         // sale_unit_qty × isi kemasan. Lihat FarmasiService::setKemasanItem.
@@ -48,7 +51,8 @@ class PrescriptionItem extends Model
     ];
 
     protected $casts = [
-        'is_bedah'      => 'boolean',
+        'is_bedah'          => 'boolean',
+        'is_preop_absorbed' => 'boolean',
         'changed_at'    => 'datetime',
         'sale_unit_qty' => 'integer',
     ];

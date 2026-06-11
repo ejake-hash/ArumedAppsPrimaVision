@@ -280,9 +280,15 @@ Route::prefix('v1')->group(function () {
             Route::put('/antrian/{id}/dahulukan',                  [PerawatController::class, 'dahulukanAntrian']);
             Route::put('/antrian/{id}/skip',                       [PerawatController::class, 'skipTriase']);
             Route::post('/antrian/{id}/kirim-ke-bedah',            [PerawatController::class, 'kirimKeBedah']);
+            Route::post('/antrian/{id}/kirim-ke-dokter',           [PerawatController::class, 'kirimKeDokter']);
             Route::post('/antrian/{id}/kirim-ke-ranap',            [PerawatController::class, 'kirimKeRanap']);
             Route::get('/kunjungan/{visitId}',                     [PerawatController::class, 'showKunjungan']);
             Route::get('/kunjungan/{visitId}/status-parallel',     [PerawatController::class, 'statusParallel']);
+            // Instruksi obat pre-op dokter jaga (stat-dose, visit PREOP_BEDAH).
+            // Write digate in-service: hanya user ber-employee dokter (DOCTOR_TYPES).
+            Route::get('/kunjungan/{visitId}/preop-resep',         [PerawatController::class, 'showPreopResep']);
+            Route::post('/kunjungan/{visitId}/preop-resep',        [PerawatController::class, 'storePreopResep']);
+            Route::get('/obat',                                    [PerawatController::class, 'daftarObat']);
             Route::get('/pasien/{patientId}/vital-history',        [PerawatController::class, 'vitalHistory']);
             Route::get('/pasien/{patientId}/rekam-medis',          [PerawatController::class, 'rekamMedisPasien']);
             // CPPT lintas-episode terpadu (read-only) — kartu "SOAP/CPPT" di PerawatView.

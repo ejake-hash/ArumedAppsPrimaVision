@@ -64,6 +64,8 @@ class DokterService
             'visit.nurseAssessment.assessedBy:id,name',
             'visit.refractionRecord.examinedBy:id,name',
             'visit.internalReferralFromSchedule:id,poliklinik',
+            // PREOP_BEDAH jalur B: tombol "Lanjutkan ke Bedah" FE butuh jadwal bedah visit.
+            'visit.surgerySchedule:id,scheduled_date,status,lead_surgeon_id',
         ])
             ->where('station', 'DOKTER')
             // hari ini / aktif lintas-hari ≤7 hari, ATAU pasien "belum tutup kasir"
@@ -73,12 +75,17 @@ class DokterService
 
         // Superadmin melihat seluruh antrean DOKTER. Dokter biasa hanya melihat
         // pasien yang memilih dirinya saat admisi
-        // (visits.doctor_schedule_id → doctor_schedules.employee_id).
+        // (visits.doctor_schedule_id → doctor_schedules.employee_id), ATAU pasien
+        // PREOP_BEDAH jalur B yang operatornya dia (visit preop tanpa doctor_schedule —
+        // dikirim dari Triase via "Kirim ke Dokter", pemilik = lead_surgeon jadwal bedah).
         if (! $user?->isSuperadmin()) {
             $employeeId = $user?->employee_id;
-            $query->whereHas('visit.doctorSchedule', function ($q) use ($employeeId) {
+            $query->where(function ($q) use ($employeeId) {
                 // employeeId null (user tanpa employee) → tidak match apa pun → antrean kosong.
-                $q->where('employee_id', $employeeId);
+                $q->whereHas('visit.doctorSchedule', fn ($s) => $s->where('employee_id', $employeeId))
+                  ->orWhereHas('visit', fn ($v) => $v
+                      ->where('visit_type', 'PREOP_BEDAH')
+                      ->whereHas('surgerySchedule', fn ($s) => $s->where('lead_surgeon_id', $employeeId)));
             });
         }
 
@@ -164,7 +171,7 @@ class DokterService
      */
     private function authorizeQueueOwnership(Queue $queue): void
     {
-        $this->assertOwnedByCurrentDoctor($queue->visit?->doctorSchedule?->employee_id);
+        $this->assertOwnedByCurrentDoctor($this->resolveVisitOwnerEmployeeId($queue->visit));
     }
 
     /**
@@ -175,10 +182,25 @@ class DokterService
      */
     private function authorizeVisitOwnership(string $visitId): Visit
     {
-        $visit = Visit::with('doctorSchedule')->findOrFail($visitId);
-        $this->assertOwnedByCurrentDoctor($visit->doctorSchedule?->employee_id);
+        $visit = Visit::with(['doctorSchedule', 'surgerySchedule'])->findOrFail($visitId);
+        $this->assertOwnedByCurrentDoctor($this->resolveVisitOwnerEmployeeId($visit));
 
         return $visit;
+    }
+
+    /**
+     * Dokter "pemilik" kunjungan: normal = doctor_schedule pilihan admisi; visit
+     * PREOP_BEDAH (jalur B "Kirim ke Dokter" dari Triase, doctor_schedule NULL)
+     * jatuh ke operator (surgery_schedules.lead_surgeon_id).
+     */
+    private function resolveVisitOwnerEmployeeId(?Visit $visit): ?string
+    {
+        if (! $visit) {
+            return null;
+        }
+
+        return $visit->doctorSchedule?->employee_id
+            ?? ($visit->visit_type === 'PREOP_BEDAH' ? $visit->surgerySchedule?->lead_surgeon_id : null);
     }
 
     /**
@@ -552,8 +574,13 @@ class DokterService
 
         // Revisi pasca "Kirim ke Kasir": resep rawat jalan yang sudah diserahkan Farmasi
         // (DISPENSING/DISPENSED) tak boleh diubah — obat sudah keluar. Blok dengan jelas.
+        // Resep pre-op (dokter jaga Triase) & pasca-bedah (BedahView) DIKECUALIKAN:
+        // bukan resep Tab 3 — stat-dose pre-op yang sudah di-dispense tidak boleh
+        // memblokir dokter menyimpan resepnya sendiri.
         $sudahDispense = Prescription::where('visit_id', $visitId)
             ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->where('is_pre_op', false)
+            ->where('is_post_op', false)
             ->whereIn('status', ['DISPENSING', 'DISPENSED'])
             ->exists();
         if ($sudahDispense) {
@@ -566,8 +593,12 @@ class DokterService
             // Kasir" mengganti resep lama (bukan menumpuk). Resep yang sudah diverifikasi
             // Farmasi otomatis ter-reset (delete+recreate → verified_at baru null) → wajib
             // verifikasi ulang. RANAP/CANCELLED/DISPENSING/DISPENSED tak disentuh.
+            // Resep pre-op (dokter jaga) & pasca-bedah TIDAK ikut di-replace —
+            // resep Tab 3 hanya mengganti resep Tab 3.
             $drafts = Prescription::where('visit_id', $visitId)
                 ->where('type', '!=', Prescription::TYPE_RANAP)
+                ->where('is_pre_op', false)
+                ->where('is_post_op', false)
                 ->whereIn('status', ['DRAFT', 'SUBMITTED'])
                 ->get();
             foreach ($drafts as $d) {

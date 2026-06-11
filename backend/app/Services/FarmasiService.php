@@ -708,6 +708,13 @@ class FarmasiService
     {
         $jenis = $visit?->jenis_pelayanan;
 
+        // Instruksi obat pre-operasi dokter jaga (stat-dose di Triase, visit
+        // PREOP_BEDAH) — bedakan dari resep dokter/pasca-bedah agar petugas
+        // Farmasi tahu obat ini harus diberikan SEBELUM pasien naik OT.
+        if ($rx?->is_pre_op) {
+            return ['PRE_OP', 'Pre-Op (Dokter Jaga)'];
+        }
+
         if ($jenis === 'IGD') {
             return ['IGD', 'IGD'];
         }

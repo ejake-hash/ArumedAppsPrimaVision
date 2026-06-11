@@ -109,6 +109,13 @@ function fmtTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
 }
+// Tanggal (string date/datetime) jatuh HARI INI? Dipakai penanda jadwal bedah
+// pre-op (mapPatient.preopSurgeryToday) — perbandingan kalender lokal, pola isBedahHariIni.
+function isTodayDateStr(s) {
+  if (!s) return false
+  const d = new Date(String(s).length <= 10 ? `${s}T00:00:00` : s), n = new Date()
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+}
 // Tanggal lahir → DD/MM/YYYY (badge kartu pasien). Null-safe, pad 2 digit.
 function fmtDob(d) {
   if (!d) return ''
@@ -175,6 +182,13 @@ function mapPatient(q) {
     address: p.address ?? '',
     classification: v.classification ?? '',
     internalRefFrom: v.internal_referral_from_schedule?.poliklinik ?? null,
+    // Jalur B pre-op: visit PREOP_BEDAH dikirim Triase → Dokter (periksa ulang
+    // operator). surgery_schedule di-eager-load BE (getPatientQueue) khusus utk ini.
+    visitType: v.visit_type ?? 'REGULAR',
+    preopSurgeryToday: v.visit_type === 'PREOP_BEDAH'
+      && !!v.surgery_schedule
+      && ['SCHEDULED', 'IN_PROGRESS'].includes(v.surgery_schedule.status)
+      && isTodayDateStr(v.surgery_schedule.scheduled_date),
     poli:    ptype === 'bpjs' ? 'Poli BPJS'
            : ptype === 'asn'  ? 'Poli Asuransi'
            : 'Poli Umum',
@@ -1227,7 +1241,10 @@ async function loadTindakanResep() {
   } catch { /* biarkan */ }
   try {
     const { data } = await dokterApi.indexResep(visitId)
-    const list = data.data ?? []
+    // Resep pre-op (dokter jaga Triase) & pasca-bedah BUKAN resep Tab 3 — jangan
+    // dihidrasi ke rxList: autosave akan membuat ulang itemnya sbg resep dokter
+    // (dobel tagih). BE juga mengecualikan keduanya dari REPLACE storePrescription.
+    const list = (data.data ?? []).filter((p) => !p.is_pre_op && !p.is_post_op)
     const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
     // Set kasirNote/pharmacyNote dari hasil load TANPA memicu autosave (watcher di-suppress).
     _loadingResep = true
@@ -1869,6 +1886,10 @@ const planningDecisionText = computed(() => {
 // Jadwal hari lain / planning lain → tetap "Kirim ke Kasir" (pasien ke kasir dulu).
 // Selaras routing QueueService::nextAfterDokter (BEDAH hanya bila scheduled_date=today).
 const isBedahHariIni = computed(() => {
+  // Visit PREOP_BEDAH (jalur B, dikirim Triase utk periksa ulang operator) dgn jadwal
+  // operasi hari ini → selalu "Lanjutkan ke Bedah" tanpa dokter mengisi ulang planning
+  // (routing BE: nextAfterDokter cabang 2d pakai visit.surgery_schedule_id).
+  if (selP.value?.preopSurgeryToday) return true
   if (planning.value !== 'BEDAH' || !surgeryDate.value) return false
   const d = new Date(`${surgeryDate.value}T00:00:00`), n = new Date()
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
@@ -2411,6 +2432,11 @@ function closeResumeRM() {
             </div>
             <div class="ptags">
               <span v-if="selP.dob" class="ptg ptg-dob" title="Tanggal lahir">🎂 {{ fmtDob(selP.dob) }}</span>
+              <span
+                v-if="selP.visitType === 'PREOP_BEDAH'"
+                class="ptg ptg-preop"
+                :title="selP.preopSurgeryToday ? 'Pasien pre-operasi — jadwal bedah HARI INI (dikirim Triase utk periksa ulang)' : 'Pasien pre-operasi (dikirim Triase utk periksa ulang)'"
+              >🔪 PRE-OP{{ selP.preopSurgeryToday ? ' · OPERASI HARI INI' : '' }}</span>
               <span
                 v-if="selP.classification === 'Rujukan Internal'"
                 class="ptg ptg-rujuk"
@@ -4695,6 +4721,8 @@ function closeResumeRM() {
 
 /* Badge tanggal lahir di kartu pasien. */
 .ptg-dob { background: #f1f5f9; color: #475569; }
+/* Pasien pre-operasi jalur B (dikirim Triase utk periksa ulang operator). */
+.ptg-preop { background: #ccfbf1; color: #0f766e; }
 
 /* Diagnosis (ICD-10 + ICD-9) di sidebar kanan Tab Pemeriksaan — kartu menumpuk,
    ringkas (sesuaikan lebar sidebar yang sempit). */

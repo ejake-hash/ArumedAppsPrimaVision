@@ -836,6 +836,26 @@ class QueueService
             // Jadwal hari lain → pasien pulang via KASIR & FARMASI, kembali di hari operasi.
         }
 
+        // 2d. Jalur B PREOP_BEDAH: visit preop membawa surgery_schedule_id sendiri
+        //     (dikirim Triase → Dokter utk periksa ulang operator, TANPA exam planning).
+        //     Operasi HARI INI & masih hidup → lanjut BEDAH tanpa dokter harus mengisi
+        //     ulang planning di Tab 4. Anti-duplikat: baris BEDAH aktif → NO_OP.
+        if ($visit->visit_type === 'PREOP_BEDAH' && $visit->surgery_schedule_id) {
+            $isToday = SurgerySchedule::where('id', $visit->surgery_schedule_id)
+                ->whereDate('scheduled_date', today())
+                ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS'])
+                ->exists();
+
+            if ($isToday) {
+                $alreadyBedah = Queue::byStation(Queue::STATION_BEDAH)
+                    ->where('visit_id', $visit->id)
+                    ->active()
+                    ->exists();
+
+                return $alreadyBedah ? self::NO_OP : Queue::STATION_BEDAH;
+            }
+        }
+
         // 3. Default
         return Queue::STATION_KASIR;
     }

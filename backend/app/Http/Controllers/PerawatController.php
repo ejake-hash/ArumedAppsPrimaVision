@@ -115,6 +115,22 @@ class PerawatController extends Controller
     }
 
     /**
+     * POST /perawat/antrian/{queueId}/kirim-ke-dokter
+     * PREOP_BEDAH jalur B: setelah TR+REF finalize, kirim pasien ke antrian DOKTER
+     * (papan operator) untuk periksa ulang sebelum naik OT.
+     */
+    public function kirimKeDokter(string $id): JsonResponse
+    {
+        try {
+            $result = $this->service->kirimKeDokter($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Pasien dikirim ke antrian Dokter (operator)');
+    }
+
+    /**
      * POST /perawat/antrian/{queueId}/kirim-ke-ranap
      * Pre-op RAWAT INAP (Fase 8B): setelah TR+REF finalize, masuk papan Menunggu Kamar.
      */
@@ -127,6 +143,61 @@ class PerawatController extends Controller
         }
 
         return $this->ok($result, 'Pasien dikirim ke Rawat Inap (Menunggu Kamar)');
+    }
+
+    // =========================================================================
+    // INSTRUKSI OBAT PRE-OP (dokter jaga, visit PREOP_BEDAH)
+    // =========================================================================
+
+    /** GET /perawat/kunjungan/{visitId}/preop-resep */
+    public function showPreopResep(string $visitId): JsonResponse
+    {
+        try {
+            $data = $this->service->getPreopPrescription($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data);
+    }
+
+    /** POST /perawat/kunjungan/{visitId}/preop-resep — simpan/replace (dokter jaga). */
+    public function storePreopResep(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'items'                   => 'present|array',
+            'items.*.medication_id'   => 'required|uuid|exists:medications,id',
+            'items.*.quantity'        => 'nullable|integer|min:1',
+            'items.*.dose'            => 'nullable|string|max:100',
+            'items.*.frequency'       => 'nullable|string|max:100',
+            'items.*.route'           => 'nullable|string|max:100',
+            'items.*.duration_days'   => 'nullable|integer|min:1',
+            'items.*.notes'           => 'nullable|string|max:500',
+            'items.*.absorbed'        => 'nullable|boolean',
+            'notes'                   => 'nullable|string|max:1000',
+            'pharmacy_note'           => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $rx = $this->service->storePreopPrescription(
+                $visitId,
+                $validated['items'],
+                [
+                    'notes'         => $validated['notes'] ?? null,
+                    'pharmacy_note' => $validated['pharmacy_note'] ?? null,
+                ]
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($rx, $rx ? 'Instruksi obat pre-op disimpan & dikirim ke Farmasi' : 'Instruksi obat pre-op dikosongkan');
+    }
+
+    /** GET /perawat/obat — picker obat instruksi pre-op (server-search). */
+    public function daftarObat(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getDaftarObat($request->query('search')));
     }
 
     // =========================================================================

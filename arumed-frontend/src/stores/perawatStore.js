@@ -142,6 +142,13 @@ export const usePerawatStore = defineStore('perawat', () => {
     if (queueItem.visit?.id) {
       loadCpptTimeline(queueItem.visit.id)
     }
+
+    // Instruksi obat pre-op (panel PREOP_BEDAH) — muat hanya utk pasien preop.
+    if (queueItem.visit?.visit_type === 'PREOP_BEDAH' && queueItem.visit?.id) {
+      loadPreopResep(queueItem.visit.id)
+    } else {
+      preopResep.value = null
+    }
   }
 
   // PUT /perawat/antrian/{id}/mulai — silent (kalau gagal karena status sudah
@@ -161,6 +168,7 @@ export const usePerawatStore = defineStore('perawat', () => {
     asesmen.value = null
     vitalHistory.value = []
     cpptEntries.value = []
+    preopResep.value = null
   }
 
   // ─── Assessment Actions ───────────────────────────────────────────────────────
@@ -260,6 +268,59 @@ export const usePerawatStore = defineStore('perawat', () => {
       throw new Error(err.response?.data?.message ?? 'Gagal mengirim pasien ke bedah')
     } finally {
       sendingBedah.value = false
+    }
+  }
+
+  // ─── PREOP_BEDAH jalur B — Kirim ke Dokter (periksa ulang operator sblm OT) ────
+  const sendingDokter = ref(false)
+  async function kirimKeDokter() {
+    const queueId = selectedQueue.value?.id
+    if (!queueId) throw new Error('Pilih pasien terlebih dahulu')
+    sendingDokter.value = true
+    try {
+      const { data } = await perawatApi.kirimKeDokter(queueId)
+      // Tandai queue triase COMPLETED di list lokal (sama seperti kirimKeBedah).
+      const idx = antrian.value.findIndex((q) => q.id === queueId)
+      if (idx !== -1) {
+        antrian.value[idx] = { ...antrian.value[idx], status: 'COMPLETED' }
+      }
+      _syncStats()
+      return data.data
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal mengirim pasien ke dokter')
+    } finally {
+      sendingDokter.value = false
+    }
+  }
+
+  // ─── Instruksi Obat Pre-Op (dokter jaga, stat-dose) ───────────────────────────
+  const preopResep        = ref(null)   // { items, can_absorb, prescriber, sent, dispensing, ... }
+  const preopResepLoading = ref(false)
+  const savingPreopResep  = ref(false)
+  async function loadPreopResep(visitId) {
+    if (!visitId) { preopResep.value = null; return }
+    preopResepLoading.value = true
+    try {
+      const { data } = await perawatApi.preopResep(visitId)
+      preopResep.value = data.data ?? null
+    } catch {
+      preopResep.value = null
+    } finally {
+      preopResepLoading.value = false
+    }
+  }
+  async function savePreopResep(items, opts = {}) {
+    const visitId = selectedQueue.value?.visit?.id
+    if (!visitId) throw new Error('Pilih pasien terlebih dahulu')
+    savingPreopResep.value = true
+    try {
+      await perawatApi.storePreopResep(visitId, { items, ...opts })
+      await loadPreopResep(visitId)
+      return preopResep.value
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal menyimpan instruksi obat pre-op')
+    } finally {
+      savingPreopResep.value = false
     }
   }
 
@@ -520,7 +581,8 @@ export const usePerawatStore = defineStore('perawat', () => {
     antrian, stats, queueLoading, queueError,
     selectedQueue, asesmen, asesmenLoading,
     doctorTicket,
-    saving, finalizing, sendingBedah, sendingRanap, skipping,
+    saving, finalizing, sendingBedah, sendingDokter, sendingRanap, skipping,
+    preopResep, preopResepLoading, savingPreopResep,
     vitalHistory, vitalHistoryLoading,
     rekamMedis, rekamMedisLoading, rekamMedisError,
     selectedDokumen, dokumenLoading,
@@ -540,7 +602,8 @@ export const usePerawatStore = defineStore('perawat', () => {
     saveAsesmen, finalizeAsesmen, reopenAsesmen,
 
     // preop bedah
-    kirimKeBedah, kirimKeRanap, parallelStatus, loadParallelStatus,
+    kirimKeBedah, kirimKeDokter, kirimKeRanap, parallelStatus, loadParallelStatus,
+    loadPreopResep, savePreopResep,
 
     // cppt
     loadCpptTimeline, addCpptEntry, updateCpptEntry, signCpptEntry,

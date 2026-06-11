@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePerawatStore } from '@/stores/perawatStore'
+import { useAuthStore } from '@/stores/authStore'
 import { perawatApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
@@ -136,6 +137,96 @@ async function onKirimKeRanap() {
     await store.kirimKeRanap()
     toast('s', 'Pasien dikirim ke papan Menunggu Kamar (Rawat Inap)')
     await store.fetchAntrian()
+  } catch (e) {
+    toast('w', e.message)
+  }
+}
+
+// ─── Jalur B: Kirim ke Dokter (periksa ulang operator sebelum OT) ────────────
+// Gate sama dgn Kirim ke Bedah — pilihan rute ditentukan kondisi pasien /
+// instruksi dokter, bukan gate berbeda.
+const canKirimKeDokter = computed(() => canKirimKeBedah.value)
+
+async function onKirimKeDokter() {
+  try {
+    await store.kirimKeDokter()
+    toast('s', 'Pasien dikirim ke antrean Dokter (operator)')
+    await store.fetchAntrian()
+  } catch (e) {
+    toast('w', e.message)
+  }
+}
+
+// ─── Instruksi Obat Pre-Op (dokter jaga, stat-dose) ──────────────────────────
+// Panel hanya utk visit PREOP_BEDAH. Mode edit hanya saat user login = dokter
+// (server tetap otoritatif: endpoint menolak non-dokter via doctor_type).
+const auth = useAuthStore()
+const preopItems = ref([])   // editable: {medication_id, nama, jumlah, dosis, route, frequency, absorbed}
+const preopDirty = ref(false)
+watch(() => store.preopResep, (rx) => {
+  preopItems.value = (rx?.items ?? []).map((it) => ({
+    medication_id: it.medication_id,
+    nama:          it.nama,
+    jumlah:        it.jumlah ?? 1,
+    dosis:         it.dosis ?? '',
+    route:         it.route ?? '',
+    frequency:     it.frequency ?? 'stat',
+    absorbed:      !!it.absorbed,
+  }))
+  preopDirty.value = false
+})
+const preopLocked   = computed(() => !!store.preopResep && (store.preopResep.dispensing || store.preopResep.billing_paid))
+const preopEditable = computed(() => auth.isDoctor && !preopLocked.value)
+
+// Picker obat (server-search, debounce 300ms — pola loadObat DokterView).
+const preopObatSearch  = ref('')
+const preopObatResults = ref([])
+const preopObatLoading = ref(false)
+let preopObatTimer = null
+watch(preopObatSearch, (s) => {
+  clearTimeout(preopObatTimer)
+  const q = (s ?? '').trim()
+  if (q.length < 2) { preopObatResults.value = []; return }
+  preopObatTimer = setTimeout(async () => {
+    preopObatLoading.value = true
+    try {
+      const { data } = await perawatApi.daftarObat(q)
+      preopObatResults.value = (data.data ?? []).slice(0, 20)
+    } catch {
+      preopObatResults.value = []
+    } finally {
+      preopObatLoading.value = false
+    }
+  }, 300)
+})
+function addPreopObat(m) {
+  if (preopItems.value.some((it) => it.medication_id === m.id)) {
+    toast('w', 'Obat sudah ada di daftar instruksi')
+    return
+  }
+  preopItems.value.push({
+    medication_id: m.id, nama: m.name, jumlah: 1, dosis: '', route: '', frequency: 'stat', absorbed: false,
+  })
+  preopDirty.value = true
+  preopObatSearch.value = ''
+  preopObatResults.value = []
+}
+function removePreopObat(i) {
+  preopItems.value.splice(i, 1)
+  preopDirty.value = true
+}
+async function savePreopInstr() {
+  try {
+    await store.savePreopResep(preopItems.value.map((it) => ({
+      medication_id: it.medication_id,
+      quantity:      Math.max(1, Math.round(Number(it.jumlah) || 1)),
+      dose:          it.dosis || null,
+      route:         it.route || null,
+      frequency:     it.frequency || 'stat',
+      absorbed:      !!it.absorbed,
+    })))
+    preopDirty.value = false
+    toast('s', 'Instruksi obat pre-op disimpan & dikirim ke Farmasi')
   } catch (e) {
     toast('w', e.message)
   }
@@ -1237,6 +1328,91 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <!-- ── Instruksi Obat Pre-Op (dokter jaga, stat-dose — visit PREOP_BEDAH) ── -->
+          <div v-if="!store.asesmenLoading && isPreopBedah" class="card preop-rx-card">
+            <div class="card-body">
+              <div class="preop-rx-head">
+                <div class="send-card-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 20.5L3.5 13.5a5 5 0 117-7l7 7a5 5 0 11-7 7z"/><line x1="7" y1="10" x2="14" y2="17"/></svg>
+                  Instruksi Obat Pre-Op
+                  <span class="preop-pill">DOKTER JAGA</span>
+                  <span v-if="store.preopResep?.sent" class="preop-rx-status" :class="{ ok: store.preopResep?.verified }">
+                    {{ store.preopResep?.dispensing ? 'Diserahkan Farmasi' : (store.preopResep?.verified ? 'Terverifikasi Farmasi' : 'Menunggu verifikasi Farmasi') }}
+                  </span>
+                </div>
+                <div class="send-card-sub">
+                  <template v-if="preopEditable">
+                    Obat dosis-sekali sebelum operasi (mis. obat tensi/gula). Tagihan masuk kwitansi kunjungan ini —
+                    default <strong>ditagih di atas harga paket</strong>; centang <em>Terserap</em> bila ikut harga paket.
+                  </template>
+                  <template v-else-if="preopLocked">
+                    Instruksi terkunci ({{ store.preopResep?.billing_paid ? 'pembayaran sudah dikonfirmasi' : 'obat sudah diserahkan Farmasi' }}).
+                  </template>
+                  <template v-else>
+                    Hanya <strong>dokter</strong> (login dokter jaga) yang dapat mengubah instruksi.
+                    <template v-if="store.preopResep?.prescriber"> Peresep: <strong>{{ store.preopResep.prescriber }}</strong>.</template>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Picker obat (hanya mode dokter) -->
+              <div v-if="preopEditable" class="preop-rx-picker">
+                <input
+                  v-model="preopObatSearch"
+                  class="form-input"
+                  type="text"
+                  placeholder="Cari obat (min. 2 huruf) — stok Farmasi…"
+                />
+                <div v-if="preopObatLoading" class="preop-rx-hint">Mencari…</div>
+                <ul v-else-if="preopObatResults.length" class="preop-rx-results">
+                  <li v-for="m in preopObatResults" :key="m.id">
+                    <button type="button" @click="addPreopObat(m)">
+                      <strong>{{ m.name }}</strong>
+                      <span>{{ m.form_sediaan ?? '' }} · stok {{ m.farmasi_qty ?? 0 }} {{ m.unit ?? '' }}</span>
+                    </button>
+                  </li>
+                </ul>
+              </div>
+
+              <!-- Daftar item -->
+              <table v-if="preopItems.length" class="preop-rx-table">
+                <thead>
+                  <tr>
+                    <th>Obat</th><th>Qty</th><th>Dosis</th><th>Rute</th>
+                    <th v-if="store.preopResep?.can_absorb" title="Terserap ke harga paket — tetap tampil di kwitansi, total = harga paket">Terserap</th>
+                    <th v-if="preopEditable"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(it, i) in preopItems" :key="it.medication_id">
+                    <td>{{ it.nama }} <span class="preop-rx-stat">stat</span></td>
+                    <td><input v-model="it.jumlah" type="number" min="1" class="form-input preop-rx-qty" :disabled="!preopEditable" @input="preopDirty = true" /></td>
+                    <td><input v-model="it.dosis" type="text" class="form-input" placeholder="mis. 1 tablet" :disabled="!preopEditable" @input="preopDirty = true" /></td>
+                    <td><input v-model="it.route" type="text" class="form-input preop-rx-route" placeholder="oral/IV" :disabled="!preopEditable" @input="preopDirty = true" /></td>
+                    <td v-if="store.preopResep?.can_absorb" class="preop-rx-absorb">
+                      <input v-model="it.absorbed" type="checkbox" :disabled="!preopEditable" @change="preopDirty = true" />
+                    </td>
+                    <td v-if="preopEditable">
+                      <button type="button" class="preop-rx-del" aria-label="Hapus" @click="removePreopObat(i)">×</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-else class="preop-rx-hint">Belum ada instruksi obat pre-op.</div>
+
+              <div v-if="preopEditable" class="preop-rx-actions">
+                <button
+                  class="btn btn-primary"
+                  :disabled="store.savingPreopResep || (!preopDirty && store.preopResep?.sent)"
+                  @click="savePreopInstr"
+                >
+                  <div v-if="store.savingPreopResep" class="sp" role="status" aria-label="Menyimpan…"></div>
+                  <template v-else>Simpan & Kirim ke Farmasi</template>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- ── Kartu aksi: Kirim ke Bedah (visit PREOP_BEDAH, non-inap) ── -->
           <div v-if="!store.asesmenLoading && isPreopBedah && !isPreopRanap" class="card send-card preop-send-card">
             <div class="card-body send-card-body">
@@ -1250,10 +1426,22 @@ onUnmounted(() => {
                   <template v-if="!store.asesmen?.id">Simpan Tanda Vital terlebih dahulu.</template>
                   <template v-else-if="!store.isFinalized">Finalize asesmen triase dulu (klik <strong>Simpan Asesmen</strong> &amp; pastikan TD + keluhan terisi).</template>
                   <template v-else-if="!parallelRefraksiDone">Asesmen triase dikunci ✓. Menunggu <strong>Refraksionis</strong> menyelesaikan pemeriksaan visus/IOP.</template>
-                  <template v-else>Triase &amp; Refraksi selesai ✓. Klik <strong>Kirim ke Bedah</strong> untuk masukkan pasien ke antrean operasi.</template>
+                  <template v-else>Triase &amp; Refraksi selesai ✓. <strong>Kirim ke Bedah</strong> (langsung antre operasi) atau <strong>Kirim ke Dokter</strong> bila operator perlu memeriksa ulang dulu.</template>
                 </div>
               </div>
               <div class="send-actions">
+                <button
+                  class="btn btn-secondary btn-lg send-btn"
+                  :disabled="!canKirimKeDokter || store.sendingDokter"
+                  :title="canKirimKeDokter ? 'Kirim pasien ke antrean Dokter operator (periksa ulang sebelum operasi)' : 'Tunggu Triase + Refraksi selesai'"
+                  @click="onKirimKeDokter"
+                >
+                  <div v-if="store.sendingDokter" class="sp" role="status" aria-label="Mengirim…"></div>
+                  <template v-else>
+                    Kirim ke Dokter
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                  </template>
+                </button>
                 <button
                   class="btn btn-success btn-lg send-btn"
                   :disabled="!canKirimKeBedah || store.sendingBedah"
@@ -1914,6 +2102,28 @@ onUnmounted(() => {
 .preop-send-card .send-card-title { color: #92400e; }
 .preop-send-card .send-card-title svg { stroke: #b45309; }
 .preop-pill { display: inline-block; background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.5px; margin-left: 4px; }
+
+/* ── Instruksi Obat Pre-Op (dokter jaga) ─────────────────────────────────── */
+.preop-rx-card { margin-top: 0.75rem; border-left: 3px solid #0d9488; }
+.preop-rx-head { margin-bottom: 0.6rem; }
+.preop-rx-status { margin-left: 8px; font-size: 10px; font-weight: 600; color: #b45309; background: #fef3c7; border-radius: 999px; padding: 2px 8px; }
+.preop-rx-status.ok { color: #15803d; background: #dcfce7; }
+.preop-rx-picker { position: relative; margin-bottom: 0.6rem; max-width: 420px; }
+.preop-rx-results { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; margin: 2px 0 0; padding: 0; list-style: none; background: #fff; border: 1px solid var(--gb); border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.08); max-height: 260px; overflow-y: auto; }
+.preop-rx-results li button { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; padding: 7px 10px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; }
+.preop-rx-results li button:hover { background: var(--gl); }
+.preop-rx-results li button span { font-size: 11px; color: var(--tm); }
+.preop-rx-hint { font-size: 12px; color: var(--tm); padding: 4px 0; }
+.preop-rx-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.preop-rx-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--tm); padding: 4px 6px; border-bottom: 1px solid var(--gb); }
+.preop-rx-table td { padding: 4px 6px; border-bottom: 1px solid var(--gl); vertical-align: middle; }
+.preop-rx-table .form-input { padding: 4px 6px; font-size: 12.5px; }
+.preop-rx-qty { width: 64px; }
+.preop-rx-route { width: 90px; }
+.preop-rx-stat { font-size: 9.5px; font-weight: 700; color: #0f766e; background: rgba(13,148,136,.1); border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
+.preop-rx-absorb { text-align: center; }
+.preop-rx-del { border: 0; background: transparent; color: #b91c1c; font-size: 16px; cursor: pointer; line-height: 1; }
+.preop-rx-actions { margin-top: 0.6rem; display: flex; justify-content: flex-end; }
 
 /* ── Allergy ─────────────────────────────────────────────────────────────── */
 .allergy-known { display: flex; gap: 6px; align-items: flex-start; background: var(--wb); border: 1px solid var(--wbd); border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--wt); font-weight: 500; margin-bottom: 0.75rem; }

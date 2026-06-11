@@ -2,14 +2,18 @@
 
 namespace App\Services;
 
+use App\Models\BillingInvoice;
 use App\Models\Employee;
 use App\Models\NurseAssessment;
 use App\Models\NurseCpptEntry;
 use App\Models\PatientDocument;
+use App\Models\Prescription;
+use App\Models\PrescriptionItem;
 use App\Models\Queue;
 use App\Models\RefractionRecord;
 use App\Models\SystemLog;
 use App\Models\Visit;
+use App\Models\VisitSurgeryPackage;
 use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
@@ -463,6 +467,106 @@ class PerawatService
     }
 
     /**
+     * Jalur B — Transisi manual TRIASE → DOKTER untuk visit PREOP_BEDAH yang perlu
+     * diperiksa ULANG oleh dokter operator sebelum naik OT (sesuai kondisi pasien /
+     * instruksi dokter). Alternatif dari kirimKeBedah (jalur A: langsung OT).
+     *
+     * Pasien masuk papan DokterView OPERATOR (surgery_schedules.lead_surgeon_id) —
+     * scope papan & guard kepemilikan DokterService punya fallback lead_surgeon utk
+     * visit preop tanpa doctor_schedule. Setelah dokter selesai (Kirim/Lanjutkan),
+     * QueueService::nextAfterDokter cabang 2d merutekan ke BEDAH (jadwal hari ini).
+     *
+     * Gate sama spt kirimKeBedah: NurseAssessment & RefractionRecord finalized.
+     */
+    public function kirimKeDokter(string $queueId): array
+    {
+        return DB::transaction(function () use ($queueId) {
+            $user = auth('api')->user();
+
+            $roleName = $user?->role?->name;
+            if (! in_array($roleName, ['perawat', 'dokter', 'dokter_umum', 'superadmin'], true)) {
+                throw new \Exception('Hanya perawat atau dokter umum yang boleh mengirim pasien ke dokter.', 403);
+            }
+
+            $queue = Queue::with('visit.surgerySchedule')->lockForUpdate()->findOrFail($queueId);
+
+            if ($queue->station !== Queue::STATION_TRIASE) {
+                throw new \Exception("Tombol ini hanya untuk antrian TRIASE (saat ini: {$queue->station}).", 422);
+            }
+
+            $visit = $queue->visit;
+            if ($visit->visit_type !== 'PREOP_BEDAH') {
+                throw new \Exception('Pasien ini bukan PREOP_BEDAH — pasien biasa otomatis ke dokter saat asesmen final.', 422);
+            }
+            if ($visit->inpatient_reason === 'PRE_OP') {
+                throw new \Exception('Pasien pre-op rawat inap — gunakan tombol Kirim ke Rawat Inap.', 422);
+            }
+
+            // Pasien harus muncul di papan dokter OPERATOR — tanpa operator tak ada
+            // papan tujuan (visit preop tidak punya doctor_schedule).
+            if (! $visit->surgerySchedule?->lead_surgeon_id) {
+                throw new \Exception('Jadwal bedah pasien belum punya dokter operator.', 422);
+            }
+
+            // Gate paralel (sama dengan kirimKeBedah).
+            $triaseDone   = NurseAssessment::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            $refraksiDone = RefractionRecord::where('visit_id', $visit->id)->where('is_finalized', true)->exists();
+            if (! $triaseDone) {
+                throw new \Exception('Asesmen triase belum di-finalize.', 422);
+            }
+            if (! $refraksiDone) {
+                throw new \Exception('Pemeriksaan refraksi belum di-finalize.', 422);
+            }
+
+            // Anti-duplikat (tanpa filter tanggal, pola kirimKeBedah).
+            $alreadyDokter = Queue::byStation(Queue::STATION_DOKTER)
+                ->where('visit_id', $visit->id)
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->exists();
+            if ($alreadyDokter) {
+                throw new \Exception('Pasien sudah ada di antrian Dokter.', 422);
+            }
+            $alreadyBedah = Queue::byStation(Queue::STATION_BEDAH)
+                ->where('visit_id', $visit->id)
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->exists();
+            if ($alreadyBedah) {
+                throw new \Exception('Pasien sudah ada di antrian Bedah.', 422);
+            }
+
+            // Tutup queue TRIASE & REFRAKSIONIS yg masih aktif untuk visit ini.
+            Queue::where('visit_id', $visit->id)
+                ->whereIn('station', [Queue::STATION_TRIASE, Queue::STATION_REFRAKSIONIS])
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                ->update(['status' => Queue::STATUS_COMPLETED, 'completed_at' => now()]);
+
+            // Enqueue DOKTER (visit tanpa doctor_schedule → nomor fallback "D-NNN").
+            $dokterQueue = $this->queueService->enqueue($visit->id, Queue::STATION_DOKTER);
+
+            $visit->update([
+                'ready_for_doctor'      => true,  // semantik: gate pre-op selesai
+                'triase_completed_at'   => $visit->triase_completed_at ?? now(),
+                'refraksi_completed_at' => $visit->refraksi_completed_at ?? now(),
+                'current_station'       => Queue::STATION_DOKTER,
+            ]);
+
+            $this->log(
+                $user?->id,
+                'KIRIM_KE_DOKTER_PREOP',
+                Visit::class,
+                $visit->id,
+                "Preop periksa ulang (oleh {$roleName}) → enqueue DOKTER {$dokterQueue->queue_number} (operator)"
+            );
+
+            return [
+                'queue'        => $queue->fresh(['visit.patient']),
+                'dokter_queue' => $dokterQueue->fresh(['visit.patient']),
+                'visit'        => $visit->fresh(['patient', 'queues']),
+            ];
+        });
+    }
+
+    /**
      * Fase 8B — Transisi manual TRIASE → MENUNGGU_RANAP untuk pasien PRE-OP RAWAT INAP.
      *
      * Dipanggil dari tombol "Kirim ke Rawat Inap" di PerawatView setelah asesmen pre-op
@@ -540,6 +644,219 @@ class PerawatService
                 'visit' => $visit->fresh(['patient', 'queues']),
             ];
         });
+    }
+
+    // =========================================================================
+    // INSTRUKSI OBAT PRE-OP (dokter jaga di Triase — stat-dose, visit PREOP_BEDAH)
+    // =========================================================================
+
+    /**
+     * Simpan instruksi obat pre-operasi (stat-dose, mis. obat tensi/gula) yang
+     * diberikan dokter jaga di Triase untuk pasien PREOP_BEDAH. Cermin
+     * BedahService::storePostOpPrescription tapi keyed by VISIT (surgery record
+     * belum ada saat triase) dan ber-flag is_pre_op.
+     *
+     * Peresep = user login: WAJIB dokter (employees.doctor_type terisi) — perawat
+     * mencatat pemberiannya di CPPT, bukan membuat resep. Resep lahir SUBMITTED →
+     * langsung masuk antrean verifikasi Farmasi; billing digate verified_at
+     * (KasirService::buildObatLines) dan assertObatVerified, jadi pelunasan tak
+     * bisa terjadi sebelum Farmasi memverifikasi.
+     *
+     * `absorbed` per item = "terserap ke paket": baris TETAP tampil positif di
+     * kwitansi & tetap lewat Farmasi (stok); nilainya ikut basis DISKON_PAKET
+     * (KasirService::preopAbsorbedBasis) sehingga total bersih = harga jual paket.
+     * Hanya di-set bila pasien punya paket bedah (snapshot BEDAH atau paket pada
+     * jadwal bedahnya) — tanpa paket, item selalu ditagih aditif.
+     *
+     * @param array<int,array{medication_id?:string,quantity?:int,dose?:string,
+     *              frequency?:string,route?:string,duration_days?:int,notes?:string,
+     *              absorbed?:bool}> $items
+     * @param array{notes?:string,pharmacy_note?:string} $opts
+     */
+    public function storePreopPrescription(string $visitId, array $items, array $opts = []): ?Prescription
+    {
+        $user = auth('api')->user();
+
+        // Gate peresep: hanya dokter (jaga/umum/spesialis/anestesi). Sekaligus
+        // menjamin prescribed_by_id NOT NULL terpenuhi.
+        $doctorType = $user?->employee?->doctor_type;
+        if (! $user?->employee_id || ! in_array($doctorType, Employee::DOCTOR_TYPES, true)) {
+            throw new \Exception('Hanya dokter (dokter jaga) yang boleh menyimpan instruksi obat pre-op. Silakan login dengan akun dokter.', 403);
+        }
+
+        $visit = Visit::with('surgerySchedule')->findOrFail($visitId);
+        if ($visit->visit_type !== 'PREOP_BEDAH') {
+            throw new \Exception('Instruksi obat pre-op hanya untuk pasien PREOP_BEDAH.', 422);
+        }
+
+        $this->assertPreopRxEditable($visitId);
+
+        // Penyerapan ke paket valid bila snapshot BEDAH sudah ada ATAU jadwal bedah
+        // pasien membawa paket (snapshot baru dibuat di BedahView — saat triase
+        // biasanya belum ada).
+        $canAbsorb = VisitSurgeryPackage::where('visit_id', $visitId)
+                ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+                ->exists()
+            || (bool) $visit->surgerySchedule?->surgery_package_id;
+
+        $prescription = DB::transaction(function () use ($visitId, $items, $opts, $user, $canAbsorb) {
+            // REPLACE resep pre-op lama yang masih bisa direvisi (DRAFT/SUBMITTED) +
+            // itemnya. Delete+recreate → verified_at null = wajib verifikasi ulang.
+            // Resep dokter Tab 3 / pasca-bedah pada visit ini TIDAK disentuh.
+            $olds = Prescription::where('visit_id', $visitId)
+                ->where('is_pre_op', true)
+                ->whereIn('status', ['DRAFT', 'SUBMITTED'])
+                ->get();
+            foreach ($olds as $old) {
+                PrescriptionItem::where('prescription_id', $old->id)->delete();
+                $old->delete();
+            }
+
+            $valid = array_values(array_filter($items, fn ($it) => ! empty($it['medication_id'])));
+            if (empty($valid)) {
+                $this->log($user->id, 'STORE_PREOP_RESEP', Prescription::class, $visitId, 'Instruksi obat pre-op dikosongkan');
+                return null;
+            }
+
+            $prescription = Prescription::create([
+                'visit_id'         => $visitId,
+                'prescribed_by_id' => $user->employee_id,
+                'status'           => 'SUBMITTED',
+                'is_pre_op'        => true,
+                'notes'            => $opts['notes'] ?? 'Obat pre-operasi (dokter jaga)',
+                'pharmacy_note'    => $opts['pharmacy_note'] ?? null,
+            ]);
+
+            foreach ($valid as $it) {
+                $pi = new PrescriptionItem([
+                    'prescription_id' => $prescription->id,
+                    'medication_id'   => $it['medication_id'],
+                    'quantity'        => $it['quantity'] ?? 1,
+                    'dose'            => $it['dose'] ?? null,
+                    'frequency'       => $it['frequency'] ?? 'stat',
+                    'route'           => $it['route'] ?? null,
+                    'duration_days'   => $it['duration_days'] ?? 1,
+                    'notes'           => $it['notes'] ?? null,
+                ]);
+                // Di-set langsung (bukan mass-assignment) — kolom flag tidak masuk
+                // $fillable PrescriptionItem.
+                $pi->is_preop_absorbed = ($it['absorbed'] ?? false) && $canAbsorb;
+                $pi->save();
+            }
+
+            $this->log(
+                $user->id,
+                'STORE_PREOP_RESEP',
+                Prescription::class,
+                $prescription->id,
+                "Instruksi obat pre-op (replace) untuk kunjungan {$visitId}"
+            );
+
+            return $prescription->load('items.medication');
+        });
+
+        // Bila tagihan aktif (belum bayar) sudah ada — jarang saat triase — bangun
+        // ulang agar kwitansi mengikuti. Tak melempar (pola reconsolidatePostOpRevision).
+        $this->reconsolidatePreopRevision($visitId);
+
+        return $prescription;
+    }
+
+    /**
+     * Muat instruksi obat pre-op aktif + flag gating untuk panel PerawatView
+     * (dokter: editable; perawat: read-only).
+     */
+    public function getPreopPrescription(string $visitId): array
+    {
+        $visit = Visit::with('surgerySchedule')->findOrFail($visitId);
+
+        $rx = Prescription::with(['items.medication', 'prescribedBy:id,name'])
+            ->where('visit_id', $visitId)
+            ->where('is_pre_op', true)
+            ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING', 'DISPENSED'])
+            ->latest('created_at')
+            ->first();
+
+        $invoice = BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')->first();
+
+        $items = [];
+        foreach ($rx?->items ?? [] as $it) {
+            $items[] = [
+                'medication_id' => $it->medication_id,
+                'nama'          => $it->medication?->name ?? '—',
+                'jumlah'        => (int) $it->quantity,
+                'dosis'         => $it->dose,
+                'frequency'     => $it->frequency,
+                'duration_days' => $it->duration_days,
+                'route'         => $it->route,
+                'absorbed'      => (bool) $it->is_preop_absorbed,
+            ];
+        }
+
+        $canAbsorb = VisitSurgeryPackage::where('visit_id', $visitId)
+                ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+                ->exists()
+            || (bool) $visit->surgerySchedule?->surgery_package_id;
+
+        return [
+            'prescription_id' => $rx?->id,
+            'sent'            => (bool) $rx,
+            'dispensing'      => $rx ? in_array($rx->status, ['DISPENSING', 'DISPENSED'], true) : false,
+            'verified'        => (bool) $rx?->verified_at,
+            'prescriber'      => $rx?->prescribedBy?->name,
+            'items'           => $items,
+            'can_absorb'      => $canAbsorb,
+            'has_invoice'     => (bool) $invoice,
+            'billing_paid'    => $invoice ? in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true) : false,
+        ];
+    }
+
+    /**
+     * Tolak revisi instruksi pre-op bila pembayaran sudah dikonfirmasi atau obatnya
+     * sudah diserahkan Farmasi (pola assertPostOpEditable).
+     */
+    private function assertPreopRxEditable(string $visitId): void
+    {
+        $paid = BillingInvoice::where('visit_id', $visitId)
+            ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])->exists();
+        if ($paid) {
+            throw new \Exception('Pembayaran sudah dikonfirmasi di kasir — instruksi obat pre-op tidak bisa diubah.', 422);
+        }
+
+        $dispensed = Prescription::where('visit_id', $visitId)
+            ->where('is_pre_op', true)
+            ->whereIn('status', ['DISPENSING', 'DISPENSED'])->exists();
+        if ($dispensed) {
+            throw new \Exception('Obat pre-op sudah diserahkan Farmasi, tidak bisa diubah.', 422);
+        }
+    }
+
+    /** Rebuild kwitansi non-throwing pasca revisi pre-op (pola reconsolidatePostOpRevision). */
+    private function reconsolidatePreopRevision(string $visitId): void
+    {
+        $invoice = BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')->first();
+        if (! $invoice || in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true)) {
+            return;
+        }
+        try {
+            if ($invoice->status === 'FINALIZED') {
+                $invoice->update(['status' => 'DRAFT']);
+            }
+            app(KasirService::class)->reconsolidateInvoice($invoice->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('reconsolidate pre-op gagal: ' . $e->getMessage(), ['visit_id' => $visitId]);
+        }
+    }
+
+    /**
+     * Passthrough daftar obat untuk picker instruksi pre-op (sumber tunggal
+     * DokterService::getDaftarObat, farmasiOnly — resep harus bisa dilayani Farmasi).
+     */
+    public function getDaftarObat(?string $search): array
+    {
+        return app(DokterService::class)->getDaftarObat($search, true);
     }
 
     // =========================================================================

@@ -28,6 +28,9 @@ class Prescription extends Model
         // Penanda resep PASCA-BEDAH (dibuat di BedahView) → revisi "Buka Kembali"
         // hanya mengganti resep ini, bukan resep dokter pada visit yang sama.
         'is_post_op',
+        // Penanda resep PRE-OPERASI (instruksi obat stat dokter jaga di Triase,
+        // pasien PREOP_BEDAH) — terpisah dari resep dokter Tab 3 & pasca-bedah.
+        'is_pre_op',
         // Verifikasi Farmasi (gate sebelum tagihan Kasir). verified_at NULL = belum
         // diverifikasi → consolidateBilling menolak. Lihat migrasi add_pharmacy_verify_audit.
         'verified_by_id',
@@ -42,6 +45,7 @@ class Prescription extends Model
         'dispensed_at' => 'datetime',
         'verified_at'  => 'datetime',
         'is_post_op'   => 'boolean',
+        'is_pre_op'    => 'boolean',
     ];
 
     public function visit(): BelongsTo
