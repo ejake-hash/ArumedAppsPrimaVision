@@ -489,6 +489,23 @@ class BedahController extends Controller
         return $this->ok($resep, 'Resep pasca-bedah dikirim ke Farmasi', 201);
     }
 
+    /**
+     * GET /bedah/record/{id}/resep-pasca
+     * Muat resep pasca-bedah aktif + status tagihan → BedahView hidrasi daftar obat
+     * saat buka pasien & gating "Buka Kembali" (revisi pra-bayar).
+     */
+    public function getPostOpPrescription(string $id): JsonResponse
+    {
+        $record  = \App\Models\SurgeryRecord::findOrFail($id);
+        $visitId = $record->visit_id;
+
+        if (! $visitId) {
+            return $this->error('Laporan tidak terhubung kunjungan', 422);
+        }
+
+        return $this->ok($this->service->getPostOpPrescription($visitId));
+    }
+
     // =========================================================================
     // PAKET OBAT PASCA-BEDAH (template resep rutin)
     // =========================================================================

@@ -7,6 +7,7 @@ use App\Models\DocumentTemplate;
 use App\Models\Icd10Code;
 use App\Models\DocumentType;
 use App\Models\Employee;
+use App\Models\BillingInvoice;
 use App\Models\IolItem;
 use App\Models\PatientDocument;
 use App\Models\IolRecommendation;
@@ -1647,26 +1648,39 @@ class BedahService
             throw new \Exception('Akun tidak punya data pegawai — tidak bisa membuat resep.', 422);
         }
 
-        if (empty($items)) {
-            return null;
-        }
+        // Revisi "Buka Kembali": tolak bila pembayaran sudah dikonfirmasi atau obat
+        // pasca-bedah sudah diserahkan Farmasi (DISPENSING/DISPENSED).
+        $this->assertPostOpEditable($visitId);
 
         // Penyerapan ke paket hanya logis bila pasien memang punya paket bedah aktif.
         $hasPaket = VisitSurgeryPackage::where('visit_id', $visitId)->exists();
 
-        return DB::transaction(function () use ($visitId, $items, $opts, $user, $hasPaket) {
+        $prescription = DB::transaction(function () use ($visitId, $items, $opts, $user, $hasPaket) {
+            // REPLACE resep pasca-bedah lama yang masih bisa direvisi (DRAFT/SUBMITTED) +
+            // itemnya. Delete+recreate → verified_at baru null = wajib verifikasi ulang
+            // Farmasi. Resep DOKTER (is_post_op=false) pada visit ini TIDAK disentuh.
+            foreach ($this->postOpEditableQuery($visitId)->get() as $old) {
+                PrescriptionItem::where('prescription_id', $old->id)->delete();
+                $old->delete();
+            }
+
+            // Buang item tanpa medication_id; kosong → resep dikosongkan (return null).
+            $valid = array_values(array_filter($items, fn ($it) => ! empty($it['medication_id'])));
+            if (empty($valid)) {
+                $this->log($user->id, 'STORE_POSTOP_RESEP', Prescription::class, $visitId, 'Resep pasca-bedah dikosongkan');
+                return null;
+            }
+
             $prescription = Prescription::create([
                 'visit_id'         => $visitId,
                 'prescribed_by_id' => $user->employee_id,
                 'status'           => 'SUBMITTED',
+                'is_post_op'       => true,
                 'notes'            => $opts['notes'] ?? 'Obat pasca-bedah',
                 'pharmacy_note'    => $opts['pharmacy_note'] ?? null,
             ]);
 
-            foreach ($items as $it) {
-                if (empty($it['medication_id'])) {
-                    continue;
-                }
+            foreach ($valid as $it) {
                 PrescriptionItem::create([
                     'prescription_id' => $prescription->id,
                     'medication_id'   => $it['medication_id'],
@@ -1687,11 +1701,116 @@ class BedahService
                 'STORE_POSTOP_RESEP',
                 Prescription::class,
                 $prescription->id,
-                "Resep pasca-bedah untuk kunjungan {$visitId}"
+                "Resep pasca-bedah (replace) untuk kunjungan {$visitId}"
             );
 
             return $prescription->load('items.medication');
         });
+
+        // Revisi pasca-kirim: bila tagihan (belum bayar) sudah ada, bangun ulang agar
+        // kwitansi mencerminkan obat terbaru. Obat hasil reset (verified_at null) tak
+        // ikut tertagih sampai Farmasi verifikasi ulang (gate buildObatLines).
+        $this->reconsolidatePostOpRevision($visitId);
+
+        return $prescription;
+    }
+
+    /**
+     * Resep pasca-bedah yang MASIH bisa direvisi (DRAFT/SUBMITTED) untuk satu visit.
+     * Cocokkan is_post_op=true ATAU resep lama bertanda catatan default 'Obat
+     * pasca-bedah' (transisi data pra-kolom is_post_op). TIDAK menyentuh resep dokter.
+     */
+    private function postOpEditableQuery(string $visitId)
+    {
+        return Prescription::where('visit_id', $visitId)
+            ->where(fn ($q) => $q->where('is_post_op', true)->orWhere('notes', 'Obat pasca-bedah'))
+            ->whereIn('status', ['DRAFT', 'SUBMITTED']);
+    }
+
+    /**
+     * Tolak revisi resep pasca-bedah bila pembayaran sudah dikonfirmasi (invoice
+     * PAID/PARTIALLY_PAID) atau obat sudah diserahkan Farmasi (DISPENSING/DISPENSED).
+     */
+    private function assertPostOpEditable(string $visitId): void
+    {
+        $paid = BillingInvoice::where('visit_id', $visitId)
+            ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])->exists();
+        if ($paid) {
+            throw new \Exception('Pembayaran sudah dikonfirmasi di kasir — resep pasca-bedah tidak bisa diubah.', 422);
+        }
+
+        $dispensed = Prescription::where('visit_id', $visitId)
+            ->where(fn ($q) => $q->where('is_post_op', true)->orWhere('notes', 'Obat pasca-bedah'))
+            ->whereIn('status', ['DISPENSING', 'DISPENSED'])->exists();
+        if ($dispensed) {
+            throw new \Exception('Obat pasca-bedah sudah diserahkan Farmasi, tidak bisa diubah.', 422);
+        }
+    }
+
+    /**
+     * Setelah revisi resep pasca-bedah: bila tagihan aktif (belum bayar) sudah ada,
+     * bangun ulang agar kwitansi mengikuti obat terbaru. FINALIZED dikembalikan ke
+     * DRAFT supaya kasir konfirmasi ulang. Tak melempar — revisi tak boleh gagal
+     * gara-gara rebuild kwitansi.
+     */
+    private function reconsolidatePostOpRevision(string $visitId): void
+    {
+        $invoice = BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')->first();
+        if (! $invoice || in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true)) {
+            return;
+        }
+        try {
+            if ($invoice->status === 'FINALIZED') {
+                $invoice->update(['status' => 'DRAFT']);
+            }
+            app(KasirService::class)->reconsolidateInvoice($invoice->id);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('reconsolidate pasca-bedah gagal: ' . $e->getMessage(), ['visit_id' => $visitId]);
+        }
+    }
+
+    /**
+     * Muat resep pasca-bedah aktif + status tagihan untuk BedahView (hidrasi saat
+     * buka pasien & gating "Buka Kembali"). items kosong bila belum ada resep.
+     *
+     * @return array{prescription_id:?string,sent:bool,dispensing:bool,
+     *               items:array<int,array<string,mixed>>,has_invoice:bool,billing_paid:bool}
+     */
+    public function getPostOpPrescription(string $visitId): array
+    {
+        $rx = Prescription::with('items.medication')
+            ->where('visit_id', $visitId)
+            ->where(fn ($q) => $q->where('is_post_op', true)->orWhere('notes', 'Obat pasca-bedah'))
+            ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING', 'DISPENSED'])
+            ->latest('created_at')
+            ->first();
+
+        $invoice = BillingInvoice::where('visit_id', $visitId)
+            ->where('status', '!=', 'CANCELLED')->first();
+
+        $items = [];
+        foreach ($rx?->items ?? [] as $it) {
+            $items[] = [
+                'medication_id' => $it->medication_id,
+                'nama'          => $it->medication?->name ?? '—',
+                'jumlah'        => (int) $it->quantity,
+                'dosis'         => $it->dose,
+                'frequency'     => $it->frequency,
+                'duration_days' => $it->duration_days,
+                'route'         => $it->route,
+                'from_paket'    => (bool) $it->is_bedah,
+            ];
+        }
+
+        return [
+            'prescription_id' => $rx?->id,
+            'sent'            => (bool) $rx,
+            'dispensing'      => $rx ? in_array($rx->status, ['DISPENSING', 'DISPENSED'], true) : false,
+            'items'           => $items,
+            'has_invoice'     => (bool) $invoice,
+            'billing_paid'    => $invoice ? in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true) : false,
+        ];
     }
 
     /**

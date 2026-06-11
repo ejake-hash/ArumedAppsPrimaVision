@@ -1029,6 +1029,8 @@ export const bedahApi = {
   scanIol:        (code)   => masterApi.iol.scan(code), // delegasi parse UDI (inventori_farmasi.read|bedah.read)
   // Resep pasca-bedah → Farmasi (Prescription SUBMITTED)
   storeResepPasca: (recordId, data) => api.post(`/bedah/record/${recordId}/resep-pasca`, data),
+  // Muat resep pasca-bedah aktif + status tagihan → hidrasi & gating "Buka Kembali".
+  getResepPasca:   (recordId)       => api.get(`/bedah/record/${recordId}/resep-pasca`),
 
   // Paket Obat Pasca-Bedah (template resep rutin) — read bedah.read, tulis bedah.write
   paketObat: {

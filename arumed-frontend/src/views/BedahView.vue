@@ -130,6 +130,10 @@ function transformQueueItem(q) {
     instruksi:      Array(6).fill(false),
     obatPasca:      [],
     resepSent:      false,
+    // Tagihan pasca-bedah sudah dibayar (PAID/PARTIALLY_PAID)? → kunci revisi resep.
+    billingPaid:    false,
+    // Obat pasca-bedah sudah diserahkan Farmasi (DISPENSING/DISPENSED)? → tak bisa revisi.
+    resepDispensing: false,
     // operationDone = operasi selesai & pasien diteruskan (sembunyikan tombol Selesai).
     // laporanFinalized = laporan TERKUNCI read-only (hanya dari finalized_at/legacy);
     // "Selesai Operasi" TIDAK mengunci — laporan tetap editable, dikunci saat TTD dokumen.
@@ -718,6 +722,9 @@ async function pickPt(p) {
   if (selP.value?.recordId) loadIolUsages()
   else iolUsages.value = []
 
+  // Hidrasi resep pasca-bedah aktif + status tagihan (untuk "Buka Kembali" revisi).
+  if (selP.value?.recordId) loadResepPasca(selP.value.recordId)
+
   if (selP.value?.status === 'BERLANGSUNG' && selP.value?.timIn && !selP.value?.timOut) startTimerInterval()
   else stopTimerInterval()
 }
@@ -1216,12 +1223,51 @@ async function kirimResep() {
   try {
     await bedahApi.storeResepPasca(recordId, { items })
     selP.value.resepSent = true
-    toast('s', 'Resep pasca-bedah terkirim ke Farmasi')
+    toast('s', 'Resep pasca-bedah terkirim ke Farmasi — perlu verifikasi ulang bila revisi')
+    // Segarkan status tagihan (mungkin baru di-reconsolidate) untuk gating "Buka Kembali".
+    loadResepPasca(recordId)
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal mengirim resep pasca-bedah')
   } finally {
     sendingResep.value = false
   }
+}
+
+// Hidrasi resep pasca-bedah aktif + status tagihan dari backend (saat buka pasien /
+// sesudah kirim). Mengisi obatPasca, resepSent, billingPaid, resepDispensing supaya
+// dokter bisa "Buka Kembali" & revisi selama kwitansi belum dibayar.
+async function loadResepPasca(recordId) {
+  if (!recordId || !selP.value) return
+  try {
+    const { data } = await bedahApi.getResepPasca(recordId)
+    const d = data.data ?? {}
+    if (!selP.value) return
+    selP.value.billingPaid = !!d.billing_paid
+    selP.value.resepDispensing = !!d.dispensing
+    if (d.sent && Array.isArray(d.items)) {
+      selP.value.obatPasca = d.items.map((it) => ({
+        medication_id: it.medication_id,
+        nama:    it.nama,
+        jumlah:  it.jumlah ?? 1,
+        dosis:   it.dosis ?? '',
+        freq:    it.frequency ?? '',
+        dur:     formatDur(it.duration_days),
+        rute:    it.route ?? '',
+        fromPaket: !!it.from_paket,
+      }))
+      selP.value.resepSent = true
+    }
+  } catch { /* belum ada resep / record — abaikan */ }
+}
+
+// Buka kembali resep pasca-bedah untuk revisi (hanya bila belum dibayar & belum
+// diserahkan Farmasi). Backend mengganti resep lama + reset verifikasi + update kwitansi.
+function bukaKembaliResep() {
+  if (!selP.value) return
+  if (selP.value.billingPaid) { toast('w', 'Pembayaran sudah dikonfirmasi — tidak bisa diubah'); return }
+  if (selP.value.resepDispensing) { toast('w', 'Obat sudah diserahkan Farmasi — tidak bisa diubah'); return }
+  selP.value.resepSent = false
+  toast('i', 'Resep dibuka — revisi akan diverifikasi ulang Farmasi & memperbarui kwitansi')
 }
 
 // ── Paket Obat Pasca-Bedah (template resep rutin) ───────────────────────────
@@ -2506,6 +2552,13 @@ function mulaiBack() { mulaiStep.value = 1 }
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>
                   Obat Pasca Bedah
                   <span v-if="selP.resepSent" class="bd-sent-badge">Terkirim ke Farmasi</span>
+                  <button
+                    v-if="selP.resepSent && !selP.billingPaid && !selP.resepDispensing && canEditReport"
+                    class="bd-reopen-btn" @click="bukaKembaliResep"
+                    title="Buka kembali untuk revisi (verifikasi ulang Farmasi & kwitansi diperbarui)"
+                  >↺ Buka Kembali</button>
+                  <span v-else-if="selP.resepSent && selP.billingPaid" class="bd-reopen-locked">sudah dibayar — tak bisa diubah</span>
+                  <span v-else-if="selP.resepSent && selP.resepDispensing" class="bd-reopen-locked">obat diserahkan Farmasi</span>
                 </div>
                 <div class="bd-card-bd">
                   <!-- Paket Obat: terapkan template + kelola (gate bedah.write) -->
@@ -3236,6 +3289,9 @@ function mulaiBack() { mulaiStep.value = 1 }
 
 .bd-sent-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: var(--sb); color: var(--st); margin-left: auto; }
 .bd-sent-badge-no { background: var(--wb); color: var(--wt); }
+.bd-reopen-btn { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; cursor: pointer; margin-left: 8px; }
+.bd-reopen-btn:hover { background: #ffedd5; }
+.bd-reopen-locked { font-size: 11px; font-weight: 600; color: #9a3412; margin-left: 8px; }
 
 /* Paket Obat Pasca-Bedah */
 .bd-paketobat-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }

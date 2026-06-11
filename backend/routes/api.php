@@ -515,6 +515,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/record/{id}/finalize',            [BedahController::class, 'finalizeRecord'])->middleware('permission:bedah.write');
             // Resep obat pasca-bedah (F1/F2): SUBMITTED → otomatis masuk antrean Farmasi via QueueService::nextAfterKasir.
             Route::post('/record/{id}/resep-pasca',         [BedahController::class, 'storePostOpPrescription'])->middleware('permission:bedah.write');
+            // Muat resep pasca-bedah aktif + status tagihan → hidrasi & gating "Buka Kembali".
+            Route::get('/record/{id}/resep-pasca',          [BedahController::class, 'getPostOpPrescription'])->middleware('permission:bedah.read');
 
             // Perioperatif (PAB/WHO): checklist keselamatan diisi perawat+dokter (bedah.checklist);
             // laporan operasi & skor pemulihan tetap dokter (bedah.write).
