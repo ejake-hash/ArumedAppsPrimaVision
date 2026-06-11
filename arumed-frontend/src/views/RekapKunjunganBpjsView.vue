@@ -2,18 +2,21 @@
 /**
  * Rekap Kunjungan BPJS — screening pra-klaim.
  * Daftar SEMUA kunjungan pasien BPJS per tanggal (atau rentang), berpaginasi
- * server-side. Tiap baris: Nama · No SEP · No Kartu BPJS · DPJP · Diagnosa ·
- * Dokumen Pendukung · Hasil Penunjang · Kwitansi. Dokumen & Penunjang punya
- * aksi Lihat (modal buka/hapus PDF) + Upload. Bisa diekspor ke Excel.
+ * server-side, diurut No SEP menaik. Tab jenis: Semua / RAJAL / RANAP (bisa
+ * tunggal atau bedah). Tabel ramping: No SEP · No Kartu · MR · Nama · Jenis/Bedah ·
+ * Tgl SEP · Kelengkapan (manual) · KET (free text) · DPJP. Status kelengkapan &
+ * KET diisi inline oleh petugas; aksi berkas (Dokumen/Penunjang/SEP/Kwitansi) +
+ * Diagnosa/No Rujukan ada di panel detail (klik baris). Bisa diekspor ke Excel.
  * Akses: permission bpjs.read/write (role verifikator).
  */
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/services/api'
 import Pager from '@/components/common/Pager.vue'
 
 const today = new Date().toISOString().slice(0, 10)
 
 // ── Filter & data ──────────────────────────────────────────────────────────
+const jenisTab  = ref('')              // '' = Semua | 'RAJAL' | 'RANAP'
 const rekapMode = ref('single')        // 'single' | 'range'
 const rekapDate = ref(today)
 const rekapFrom = ref(today)
@@ -22,23 +25,23 @@ const rekapSearch = ref('')
 
 const rekapRows = ref([])
 const rekapPage = ref(1)
-const rekapPerPage = ref(50)           // baris/halaman (tanpa batas total, paginasi)
+const rekapPerPage = ref(50)
 const rekapLast = ref(1)
 const rekapTotal = ref(0)
 const rekapLoading = ref(false)
 const rekapExporting = ref(false)
+const savingId = ref(null)             // visit_id yang sedang simpan kelengkapan/KET
 
 // ── Upload ───────────────────────────────────────────────────────────────────
-const rekapUploadingId = ref(null)     // visit_id yang sedang upload
+const rekapUploadingId = ref(null)
 const rekapFileInput = ref(null)
 const rekapUploadTarget = ref(null)    // { visitId, category }
 
-// ── Modal daftar berkas ───────────────────────────────────────────────────────
-const docModalOpen = ref(false)
-const docModalRow = ref(null)
-const docModalCat = ref('OTHER')       // 'PENUNJANG' | 'OTHER'
-const docModalList = ref([])
-const docModalLoading = ref(false)
+// ── Panel detail ───────────────────────────────────────────────────────────────
+const detailOpen = ref(false)
+const detailRow = ref(null)
+const detailDocs = ref([])
+const detailLoading = ref(false)
 
 function dateParams() {
   const p = {}
@@ -49,6 +52,7 @@ function dateParams() {
     if (rekapTo.value) p.tanggal_to = rekapTo.value
   }
   if (rekapSearch.value.trim()) p.search = rekapSearch.value.trim()
+  if (jenisTab.value) p.jenis = jenisTab.value
   return p
 }
 
@@ -71,38 +75,75 @@ async function fetchRekap() {
 
 function onRekapFilterChange() { rekapPage.value = 1; fetchRekap() }
 function onRekapPage(n) { rekapPage.value = n; fetchRekap() }
+function setTab(t) { if (jenisTab.value === t) return; jenisTab.value = t; onRekapFilterChange() }
 
-// ── Modal daftar berkas (Lihat) ────────────────────────────────────────────────
-function filterByCat(list, cat) {
-  return (list ?? []).filter((a) =>
-    cat === 'PENUNJANG' ? a.category === 'PENUNJANG' : a.category !== 'PENUNJANG')
-}
-
-async function openDocsModal(row, cat) {
-  docModalRow.value = row
-  docModalCat.value = cat
-  docModalOpen.value = true
-  await loadDocsModal()
-}
-
-async function loadDocsModal() {
-  if (!docModalRow.value) return
-  docModalLoading.value = true
+// ── Kelengkapan & KET (inline, manual) ──────────────────────────────────────────
+// lengkap: true=Lengkap, false=Belum Lengkap, null=Belum dicek.
+async function saveKelengkapan(row, payload) {
+  savingId.value = row.visit_id
   try {
-    const { data } = await api.get(`/klaim/rekap/${docModalRow.value.visit_id}/lampiran`)
-    docModalList.value = filterByCat(data.data, docModalCat.value)
+    const { data } = await api.post(`/klaim/rekap/${row.visit_id}/kelengkapan`, payload)
+    const r = data.data ?? {}
+    row.berkas_lengkap = r.berkas_lengkap
+    row.keterangan = r.keterangan
+    if (detailRow.value?.visit_id === row.visit_id) {
+      detailRow.value.berkas_lengkap = r.berkas_lengkap
+      detailRow.value.keterangan = r.keterangan
+    }
   } catch (e) {
-    toast('w', e.response?.data?.message ?? 'Gagal memuat berkas')
-    docModalList.value = []
+    toast('w', e.response?.data?.message ?? 'Gagal menyimpan status')
+    await fetchRekap()
   } finally {
-    docModalLoading.value = false
+    savingId.value = null
   }
 }
 
-function closeDocsModal() {
-  docModalOpen.value = false
-  docModalRow.value = null
-  docModalList.value = []
+function onKelengkapanChange(row, e) {
+  const v = e.target.value           // '', 'lengkap', 'belum'
+  const lengkap = v === '' ? null : v === 'lengkap'
+  saveKelengkapan(row, { lengkap, keterangan: row.keterangan ?? null })
+}
+
+function onKetChange(row, e) {
+  const ket = e.target.value.trim()
+  if ((row.keterangan ?? '') === ket) return
+  const lengkap = row.berkas_lengkap === null ? null : !!row.berkas_lengkap
+  saveKelengkapan(row, { lengkap, keterangan: ket || null })
+}
+
+function kelengkapanVal(row) {
+  if (row.berkas_lengkap === null || row.berkas_lengkap === undefined) return ''
+  return row.berkas_lengkap ? 'lengkap' : 'belum'
+}
+
+// ── Panel detail ───────────────────────────────────────────────────────────────
+const detailDocsPendukung = computed(() => detailDocs.value.filter((a) => a.category !== 'PENUNJANG'))
+const detailDocsPenunjang = computed(() => detailDocs.value.filter((a) => a.category === 'PENUNJANG'))
+
+async function openDetail(row) {
+  detailRow.value = row
+  detailOpen.value = true
+  await loadDetailDocs()
+}
+
+function closeDetail() {
+  detailOpen.value = false
+  detailRow.value = null
+  detailDocs.value = []
+}
+
+async function loadDetailDocs() {
+  if (!detailRow.value) return
+  detailLoading.value = true
+  try {
+    const { data } = await api.get(`/klaim/rekap/${detailRow.value.visit_id}/lampiran`)
+    detailDocs.value = data.data ?? []
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat berkas')
+    detailDocs.value = []
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 function openFile(att) {
@@ -112,9 +153,9 @@ function openFile(att) {
 async function deleteAtt(att) {
   if (!confirm(`Hapus berkas "${att.file_name}"?`)) return
   try {
-    await api.delete(`/klaim/rekap/${docModalRow.value.visit_id}/lampiran/${att.id}`)
+    await api.delete(`/klaim/rekap/${detailRow.value.visit_id}/lampiran/${att.id}`)
     toast('s', 'Berkas dihapus')
-    await loadDocsModal()
+    await loadDetailDocs()
     await fetchRekap()
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal menghapus berkas')
@@ -144,7 +185,7 @@ async function onRekapFileChange(e) {
     })
     toast('s', 'Berkas berhasil diunggah')
     await fetchRekap()
-    if (docModalOpen.value && docModalRow.value?.visit_id === t.visitId) await loadDocsModal()
+    if (detailOpen.value && detailRow.value?.visit_id === t.visitId) await loadDetailDocs()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal mengunggah berkas')
   } finally {
@@ -154,8 +195,7 @@ async function onRekapFileChange(e) {
 }
 
 // ── Cetak / Lihat SEP ──────────────────────────────────────────────────────────
-// Ambil PDF SEP via Axios (bawa Bearer) lalu buka di tab baru.
-const rekapPrintingSep = ref(null)   // visit_id yang sedang dicetak
+const rekapPrintingSep = ref(null)
 async function printSep(row) {
   if (!row.no_sep) { toast('w', 'Kunjungan ini belum punya SEP'); return }
   rekapPrintingSep.value = row.visit_id
@@ -172,7 +212,6 @@ async function printSep(row) {
 }
 
 // ── Kwitansi ───────────────────────────────────────────────────────────────────
-// Ambil HTML kwitansi via Axios (bawa Bearer) lalu cetak di window baru.
 async function openKwitansi(row) {
   if (!row.has_invoice) { toast('w', 'Belum ada kwitansi/tagihan untuk kunjungan ini'); return }
   try {
@@ -225,6 +264,13 @@ function fmtDateTime(d) {
   return new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+// Badge kolom Jenis/Bedah: bedah → tipe operasi (KATARAK…); selain itu → jenis.
+function badge(r) {
+  if (r.is_bedah) return { cls: 'b-bedah', text: r.bedah_label || 'Bedah' }
+  const map = { RAJAL: { cls: 'b-rajal', text: 'Rawat Jalan' }, RANAP: { cls: 'b-ranap', text: 'Rawat Inap' }, IGD: { cls: 'b-igd', text: 'Gawat Darurat' } }
+  return map[r.jenis_kode] || { cls: 'b-rajal', text: r.jenis || '—' }
+}
+
 // ── Toast ─────────────────────────────────────────────────────────────────────
 const toasts = ref([])
 let tid = 0
@@ -242,9 +288,16 @@ onMounted(fetchRekap)
     <header class="rk-head">
       <div>
         <h1>Rekap Kunjungan BPJS</h1>
-        <p class="rk-sub">Screening data kunjungan pasien BPJS untuk kebutuhan klaim.</p>
+        <p class="rk-sub">Screening kelengkapan berkas kunjungan pasien BPJS sebelum klaim.</p>
       </div>
     </header>
+
+    <!-- Tab jenis pelayanan -->
+    <div class="rk-tabs">
+      <button :class="['rk-tab', jenisTab === '' ? 'a' : '']" @click="setTab('')">Semua</button>
+      <button :class="['rk-tab', jenisTab === 'RAJAL' ? 'a' : '']" @click="setTab('RAJAL')">Rawat Jalan</button>
+      <button :class="['rk-tab', jenisTab === 'RANAP' ? 'a' : '']" @click="setTab('RANAP')">Rawat Inap</button>
+    </div>
 
     <!-- Toolbar -->
     <div class="rk-toolbar">
@@ -292,68 +345,57 @@ onMounted(fetchRekap)
       <table class="rk-table">
         <thead>
           <tr>
-            <th>No.</th>
-            <th>Peserta</th>
-            <th>No SEP</th>
-            <th>Tgl SEP / Jenis / Kelas</th>
+            <th class="c-no">No.</th>
+            <th class="c-sep">No SEP</th>
+            <th class="c-kartu">No Kartu BPJS</th>
+            <th class="c-mr">MR</th>
+            <th>Nama Peserta</th>
+            <th class="c-jenis">Jenis / Bedah</th>
+            <th class="c-tgl">Tgl SEP</th>
+            <th class="c-kel">Kelengkapan</th>
+            <th class="c-ket">Keterangan</th>
             <th>DPJP</th>
-            <th>Diagnosa</th>
-            <th>No Rujukan</th>
-            <th>Dokumen Pendukung</th>
-            <th>Hasil Penunjang</th>
-            <th>Kwitansi</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="rekapLoading"><td colspan="10" class="rk-empty">Memuat…</td></tr>
           <tr v-else-if="!rekapRows.length"><td colspan="10" class="rk-empty">Tidak ada kunjungan BPJS pada periode ini.</td></tr>
-          <tr v-for="(r, i) in rekapRows" :key="r.visit_id">
+          <tr v-for="(r, i) in rekapRows" :key="r.visit_id" class="rk-row" @click="openDetail(r)">
             <td class="rk-no">{{ (rekapPage - 1) * rekapPerPage + i + 1 }}</td>
+            <td class="rk-sep">{{ r.no_sep || '—' }}</td>
+            <td>{{ r.bpjs_number || '—' }}</td>
+            <td>{{ r.no_rm || '—' }}</td>
             <td>
               <div class="rk-nama">{{ r.nama || '-' }}</div>
-              <small class="rk-rm">RM {{ r.no_rm || '-' }}</small>
               <small class="rk-rm">{{ r.tgl_lahir || '—' }} · {{ r.gender || '—' }}</small>
-              <small class="rk-rm">Kartu: {{ r.bpjs_number || '-' }}</small>
             </td>
-            <td>
-              <button v-if="r.no_sep" class="rk-chip rk-chip-sep" :disabled="rekapPrintingSep === r.visit_id" @click="printSep(r)" title="Lihat / cetak SEP">
-                {{ rekapPrintingSep === r.visit_id ? '…' : r.no_sep }}
-              </button>
-              <span v-else class="rk-muted">-</span>
+            <td><span class="rk-badge" :class="badge(r).cls">{{ badge(r).text }}</span></td>
+            <td>{{ r.tgl_sep || '—' }}</td>
+            <td class="c-kel" @click.stop>
+              <select
+                class="rk-kel-sel"
+                :class="kelengkapanVal(r)"
+                :value="kelengkapanVal(r)"
+                :disabled="savingId === r.visit_id"
+                @change="onKelengkapanChange(r, $event)"
+              >
+                <option value="">Belum dicek</option>
+                <option value="lengkap">Lengkap</option>
+                <option value="belum">Belum Lengkap</option>
+              </select>
             </td>
-            <td>
-              <div>{{ r.tgl_sep || '—' }}</div>
-              <small class="rk-rm">{{ r.jenis || '—' }}<span v-if="r.kelas"> · {{ r.kelas }}</span></small>
+            <td class="c-ket" @click.stop>
+              <input
+                class="rk-ket-inp"
+                type="text"
+                :value="r.keterangan || ''"
+                placeholder="—"
+                :disabled="savingId === r.visit_id"
+                @change="onKetChange(r, $event)"
+                @keyup.enter="$event.target.blur()"
+              />
             </td>
             <td>{{ r.dpjp || '-' }}</td>
-            <td class="rk-diag">{{ r.diagnosa || '-' }}</td>
-            <td>{{ r.no_rujukan || '-' }}</td>
-            <td>
-              <div class="rk-doc-cell">
-                <button class="rk-chip" :disabled="!r.dokpendukung_count" @click="openDocsModal(r, 'OTHER')">
-                  Lihat ({{ r.dokpendukung_count }})
-                </button>
-                <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === r.visit_id" @click="pickUpload(r, 'LAINNYA')">
-                  {{ rekapUploadingId === r.visit_id ? '…' : 'Upload' }}
-                </button>
-              </div>
-            </td>
-            <td>
-              <div class="rk-doc-cell">
-                <button class="rk-chip" :disabled="!r.penunjang_count" @click="openDocsModal(r, 'PENUNJANG')">
-                  Lihat ({{ r.penunjang_count }})
-                </button>
-                <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === r.visit_id" @click="pickUpload(r, 'PENUNJANG')">
-                  {{ rekapUploadingId === r.visit_id ? '…' : 'Upload' }}
-                </button>
-              </div>
-            </td>
-            <td>
-              <button v-if="r.has_invoice" class="rk-chip rk-chip-kw" :class="{ unpaid: !r.is_paid }" @click="openKwitansi(r)">
-                {{ r.is_paid ? 'Kwitansi' : 'Belum Lunas' }}
-              </button>
-              <span v-else class="rk-muted">-</span>
-            </td>
           </tr>
         </tbody>
       </table>
@@ -361,38 +403,87 @@ onMounted(fetchRekap)
 
     <Pager v-model:page="rekapPage" :last-page="rekapLast" :total="rekapTotal" @change="onRekapPage" />
 
-    <!-- Modal daftar berkas -->
-    <div v-if="docModalOpen" class="rk-modal-bg" @click.self="closeDocsModal">
-      <div class="rk-modal">
-        <div class="rk-modal-head">
-          <h3>{{ docModalCat === 'PENUNJANG' ? 'Hasil Penunjang' : 'Dokumen Pendukung' }}</h3>
-          <button class="rk-x" @click="closeDocsModal">✕</button>
-        </div>
-        <div class="rk-modal-sub">{{ docModalRow?.nama }} · SEP {{ docModalRow?.no_sep || '-' }}</div>
-
-        <div class="rk-modal-body">
-          <p v-if="docModalLoading" class="rk-empty">Memuat…</p>
-          <p v-else-if="!docModalList.length" class="rk-empty">Belum ada berkas.</p>
-          <ul v-else class="rk-doc-list">
-            <li v-for="a in docModalList" :key="a.id">
-              <div class="rk-doc-info">
-                <span class="rk-doc-name">{{ a.title || a.file_name }}</span>
-                <small>{{ fmtDateTime(a.at) }} · {{ a.by || '—' }}</small>
-              </div>
-              <div class="rk-doc-act">
-                <button class="rk-chip" @click="openFile(a)">Buka</button>
-                <button class="rk-chip rk-chip-del" @click="deleteAtt(a)">Hapus</button>
-              </div>
-            </li>
-          </ul>
+    <!-- Panel detail (berkas, diagnosa, SEP, kwitansi) -->
+    <div v-if="detailOpen" class="rk-panel-bg" @click.self="closeDetail">
+      <aside class="rk-panel">
+        <div class="rk-panel-head">
+          <div>
+            <h3>{{ detailRow?.nama }}</h3>
+            <div class="rk-panel-sub">RM {{ detailRow?.no_rm || '-' }} · SEP {{ detailRow?.no_sep || '-' }}</div>
+          </div>
+          <button class="rk-x" @click="closeDetail">✕</button>
         </div>
 
-        <div class="rk-modal-foot">
-          <button class="rk-btn rk-btn-export" @click="pickUpload(docModalRow, docModalCat === 'PENUNJANG' ? 'PENUNJANG' : 'LAINNYA')">
-            Upload berkas baru
-          </button>
+        <div class="rk-panel-body">
+          <!-- Info klaim -->
+          <div class="rk-info">
+            <div><span class="rk-lbl">Jenis</span><span class="rk-badge" :class="badge(detailRow).cls">{{ badge(detailRow).text }}</span></div>
+            <div><span class="rk-lbl">Tgl SEP</span><span>{{ detailRow?.tgl_sep || '—' }}</span></div>
+            <div><span class="rk-lbl">Kelas</span><span>{{ detailRow?.kelas || '—' }}</span></div>
+            <div><span class="rk-lbl">DPJP</span><span>{{ detailRow?.dpjp || '—' }}</span></div>
+            <div class="rk-info-wide"><span class="rk-lbl">Diagnosa</span><span>{{ detailRow?.diagnosa || '—' }}</span></div>
+            <div class="rk-info-wide"><span class="rk-lbl">No Rujukan</span><span>{{ detailRow?.no_rujukan || '—' }}</span></div>
+          </div>
+
+          <!-- Aksi cetak -->
+          <div class="rk-actions">
+            <button class="rk-btn" :disabled="rekapPrintingSep === detailRow?.visit_id || !detailRow?.no_sep" @click="printSep(detailRow)">
+              {{ rekapPrintingSep === detailRow?.visit_id ? 'Menyiapkan…' : 'Cetak SEP' }}
+            </button>
+            <button class="rk-btn" :disabled="!detailRow?.has_invoice" @click="openKwitansi(detailRow)">
+              {{ detailRow?.has_invoice ? (detailRow?.is_paid ? 'Kwitansi' : 'Kwitansi (Belum Lunas)') : 'Kwitansi (—)' }}
+            </button>
+          </div>
+
+          <!-- Dokumen Pendukung -->
+          <div class="rk-docsec">
+            <div class="rk-docsec-head">
+              <h4>Dokumen Pendukung</h4>
+              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'LAINNYA')">
+                {{ rekapUploadingId === detailRow?.visit_id ? '…' : '+ Upload' }}
+              </button>
+            </div>
+            <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
+            <p v-else-if="!detailDocsPendukung.length" class="rk-empty-sm">Belum ada berkas.</p>
+            <ul v-else class="rk-doc-list">
+              <li v-for="a in detailDocsPendukung" :key="a.id">
+                <div class="rk-doc-info">
+                  <span class="rk-doc-name">{{ a.title || a.file_name }}</span>
+                  <small>{{ fmtDateTime(a.at) }} · {{ a.by || '—' }}</small>
+                </div>
+                <div class="rk-doc-act">
+                  <button class="rk-chip" @click="openFile(a)">Buka</button>
+                  <button class="rk-chip rk-chip-del" @click="deleteAtt(a)">Hapus</button>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Hasil Penunjang -->
+          <div class="rk-docsec">
+            <div class="rk-docsec-head">
+              <h4>Hasil Penunjang</h4>
+              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'PENUNJANG')">
+                {{ rekapUploadingId === detailRow?.visit_id ? '…' : '+ Upload' }}
+              </button>
+            </div>
+            <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
+            <p v-else-if="!detailDocsPenunjang.length" class="rk-empty-sm">Belum ada berkas.</p>
+            <ul v-else class="rk-doc-list">
+              <li v-for="a in detailDocsPenunjang" :key="a.id">
+                <div class="rk-doc-info">
+                  <span class="rk-doc-name">{{ a.title || a.file_name }}</span>
+                  <small>{{ fmtDateTime(a.at) }} · {{ a.by || '—' }}</small>
+                </div>
+                <div class="rk-doc-act">
+                  <button class="rk-chip" @click="openFile(a)">Buka</button>
+                  <button class="rk-chip rk-chip-del" @click="deleteAtt(a)">Hapus</button>
+                </div>
+              </li>
+            </ul>
+          </div>
         </div>
-      </div>
+      </aside>
     </div>
 
     <!-- Toast -->
@@ -404,9 +495,14 @@ onMounted(fetchRekap)
 
 <style scoped>
 .rk-page { padding: 18px 22px; max-width: 1320px; margin: 0 auto; }
-.rk-head { margin-bottom: 14px; }
+.rk-head { margin-bottom: 12px; }
 .rk-head h1 { font-size: 19px; font-weight: 700; color: var(--td); margin: 0; }
 .rk-sub { font-size: 12.5px; color: var(--tu); margin: 4px 0 0; }
+
+/* Tabs */
+.rk-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--gb); }
+.rk-tab { padding: 8px 16px; border: 0; background: none; cursor: pointer; font-size: 13px; color: var(--tu); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.rk-tab.a { color: var(--ga); font-weight: 700; border-bottom-color: var(--ga); }
 
 .rk-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .rk-mode { display: inline-flex; border: 1px solid var(--gb); border-radius: 9px; overflow: hidden; }
@@ -417,32 +513,83 @@ onMounted(fetchRekap)
   height: 36px; padding: 0 10px; border: 1px solid var(--gb); border-radius: 8px;
   background: var(--bc); color: var(--td); font-size: 12.5px;
 }
-.rk-search { min-width: 250px; flex: 0 1 280px; }
+.rk-search { min-width: 230px; flex: 0 1 270px; }
 .rk-btn {
   height: 36px; padding: 0 16px; border: 1px solid var(--gb); border-radius: 8px;
   background: var(--bc); color: var(--td); cursor: pointer; font-size: 12.5px; font-weight: 600;
 }
 .rk-btn:hover:not(:disabled) { background: var(--gl); }
+.rk-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .rk-btn-export { background: var(--ga); color: #fff; border-color: var(--ga); }
 .rk-btn-export:disabled { opacity: 0.6; cursor: not-allowed; }
 .rk-spacer { flex: 1 1 auto; }
 .rk-count { font-size: 12px; color: var(--tu); }
 .rk-pp { height: 36px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bc); color: var(--td); font-size: 12px; cursor: pointer; }
 
-.rk-table-wrap { border: 1px solid var(--gb); border-radius: 12px; overflow-x: auto; background: var(--bc); }
-.rk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.rk-table th, .rk-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); vertical-align: top; white-space: nowrap; }
-.rk-table th { background: var(--gl); color: var(--tu); font-weight: 600; position: sticky; top: 0; }
+.rk-table-wrap { border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; background: var(--bc); }
+.rk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+.rk-table th, .rk-table td { padding: 9px 11px; text-align: left; border-bottom: 1px solid var(--gb); vertical-align: middle; }
+.rk-table th { background: var(--gl); color: var(--tu); font-weight: 600; font-size: 11.5px; }
 .rk-table tr:last-child td { border-bottom: 0; }
+.rk-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-no { width: 40px; }
+.c-sep { width: 152px; }
+.c-kartu { width: 108px; }
+.c-mr { width: 78px; }
+.c-jenis { width: 116px; }
+.c-tgl { width: 92px; }
+.c-kel { width: 130px; }
+.c-ket { width: 150px; }
 .rk-no { color: var(--tu); text-align: center; font-variant-numeric: tabular-nums; }
-.rk-nama { font-weight: 600; color: var(--td); }
+.rk-sep { font-family: ui-monospace, monospace; font-size: 11.5px; }
+.rk-nama { font-weight: 600; color: var(--td); white-space: normal; }
 .rk-rm { color: var(--tu); font-size: 11px; display: block; }
-.rk-chip-sep { color: var(--ga); border-color: var(--ga); font-weight: 600; font-family: inherit; }
-.rk-diag { white-space: normal; max-width: 240px; }
+.rk-row { cursor: pointer; }
+.rk-row:hover td { background: var(--gl); }
 .rk-empty { text-align: center; color: var(--tu); padding: 26px 12px !important; }
-.rk-muted { color: var(--tu); }
 
-.rk-doc-cell { display: flex; gap: 4px; }
+/* Badge jenis/bedah */
+.rk-badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.b-bedah { background: #fce7f3; color: #be185d; }
+.b-rajal { background: #ffedd5; color: #c2410c; }
+.b-ranap { background: #dbeafe; color: #1d4ed8; }
+.b-igd   { background: #fee2e2; color: #b91c1c; }
+
+/* Kelengkapan inline */
+.rk-kel-sel { width: 100%; height: 30px; padding: 0 6px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); color: var(--td); font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.rk-kel-sel.lengkap { background: var(--sb); color: var(--st); border-color: var(--sbd); }
+.rk-kel-sel.belum   { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.rk-ket-inp { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); color: var(--td); font-size: 12px; }
+.rk-ket-inp:focus { outline: none; border-color: var(--ga); }
+
+/* Panel detail (slide-over) */
+.rk-panel-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; justify-content: flex-end; z-index: 1000; }
+.rk-panel { background: var(--bc); width: 100%; max-width: 480px; height: 100%; display: flex; flex-direction: column; box-shadow: -8px 0 30px rgba(0,0,0,0.2); }
+.rk-panel-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--gb); }
+.rk-panel-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--td); }
+.rk-panel-sub { font-size: 12px; color: var(--tu); margin-top: 3px; }
+.rk-x { border: 0; background: none; cursor: pointer; font-size: 16px; color: var(--tu); }
+.rk-panel-body { padding: 16px 18px; overflow-y: auto; flex: 1 1 auto; display: flex; flex-direction: column; gap: 16px; }
+
+.rk-info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.rk-info > div { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--td); }
+.rk-info-wide { grid-column: 1 / -1; }
+.rk-lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--tu); }
+
+.rk-actions { display: flex; gap: 8px; }
+.rk-actions .rk-btn { flex: 1; }
+
+.rk-docsec { border: 1px solid var(--gb); border-radius: 10px; padding: 12px; }
+.rk-docsec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.rk-docsec-head h4 { margin: 0; font-size: 13px; font-weight: 700; color: var(--td); }
+.rk-empty-sm { color: var(--tu); font-size: 12px; margin: 4px 0; }
+.rk-doc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.rk-doc-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--gb); border-radius: 8px; }
+.rk-doc-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rk-doc-name { font-weight: 600; font-size: 12px; color: var(--td); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-doc-info small { color: var(--tu); font-size: 10.5px; }
+.rk-doc-act { display: flex; gap: 5px; flex-shrink: 0; }
+
 .rk-chip {
   padding: 5px 9px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc);
   cursor: pointer; font-size: 11.5px; color: var(--td); white-space: nowrap;
@@ -451,24 +598,6 @@ onMounted(fetchRekap)
 .rk-chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .rk-chip-up { color: var(--ga); border-color: var(--ga); }
 .rk-chip-del { color: var(--et); border-color: var(--ebd); }
-.rk-chip-kw { color: var(--ga); border-color: var(--ga); font-weight: 600; }
-.rk-chip-kw.unpaid { color: var(--wt); border-color: var(--wbd); background: var(--wb); }
-
-/* Modal */
-.rk-modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
-.rk-modal { background: var(--bc); border-radius: 14px; width: 100%; max-width: 540px; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
-.rk-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 6px; }
-.rk-modal-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--td); }
-.rk-x { border: 0; background: none; cursor: pointer; font-size: 16px; color: var(--tu); }
-.rk-modal-sub { padding: 0 18px 10px; font-size: 12px; color: var(--tu); border-bottom: 1px solid var(--gb); }
-.rk-modal-body { padding: 12px 18px; overflow-y: auto; flex: 1 1 auto; }
-.rk-doc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.rk-doc-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 9px; }
-.rk-doc-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.rk-doc-name { font-weight: 600; font-size: 12.5px; color: var(--td); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rk-doc-info small { color: var(--tu); font-size: 11px; }
-.rk-doc-act { display: flex; gap: 5px; flex-shrink: 0; }
-.rk-modal-foot { padding: 10px 18px 16px; border-top: 1px solid var(--gb); }
 
 /* Toast */
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 9999; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }

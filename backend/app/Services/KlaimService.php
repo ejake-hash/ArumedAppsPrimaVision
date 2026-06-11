@@ -91,6 +91,8 @@ class KlaimService
                 'billingInvoice:id,visit_id,status',
                 'bpjsClaim:id,visit_id,diagnosis_utama',
                 'bpjsClaim.attachments',
+                'surgerySchedule:id,surgery_package_id',
+                'surgerySchedule.surgeryPackage:id,name,surgery_type',
             ]);
 
         if (! empty($filters['tanggal'])) {
@@ -101,6 +103,10 @@ class KlaimService
         }
         if (! empty($filters['tanggal_to'])) {
             $query->whereDate('visit_date', '<=', $filters['tanggal_to']);
+        }
+        // Tab jenis pelayanan: RAJAL / RANAP (IGD ikut hanya pada "Semua").
+        if (! empty($filters['jenis'])) {
+            $query->where('jenis_pelayanan', $filters['jenis']);
         }
 
         if (! empty($filters['search'])) {
@@ -113,7 +119,8 @@ class KlaimService
             );
         }
 
-        $page = $query->orderByDesc('visit_date')->orderBy('id')
+        // Urut No SEP menaik (rekap per bulan). Kunjungan tanpa SEP ditaruh paling bawah.
+        $page = $query->orderByRaw('no_sep IS NULL')->orderBy('no_sep')->orderBy('id')
             ->paginate($filters['per_page'] ?? 25);
 
         // Label ICD-10 (DB hanya simpan kode). Cache per-request (pola show()).
@@ -142,6 +149,12 @@ class KlaimService
             $noRujukan = $sep['noRujukan'] ?? $v->no_rujukan;
             $dob = $v->patient?->date_of_birth;
 
+            // Penanda bedah: label dari tipe operasi paket (KATARAK/VITREORETINA/…),
+            // fallback ke nama paket. Tanpa surgery_schedule → kunjungan tunggal.
+            $pkg = $v->surgerySchedule?->surgeryPackage;
+            $isBedah = $v->surgery_schedule_id !== null;
+            $bedahLabel = $isBedah ? ($pkg?->surgery_type ?: $pkg?->name ?: 'Bedah') : null;
+
             return [
                 'visit_id'           => $v->id,
                 'nama'               => $v->patient?->name,
@@ -151,6 +164,9 @@ class KlaimService
                 'no_sep'             => $v->no_sep,
                 'tgl_sep'            => $tglSep ? \Illuminate\Support\Carbon::parse($tglSep)->format('d-m-Y') : null,
                 'jenis'              => $jenisMap[$v->jenis_pelayanan] ?? ($v->jenis_pelayanan ?? '—'),
+                'jenis_kode'         => $v->jenis_pelayanan,
+                'is_bedah'           => $isBedah,
+                'bedah_label'        => $bedahLabel,
                 'kelas'              => $kelasMap[$kls] ?? ($kls !== '' ? $kls : null),
                 'no_rujukan'         => $noRujukan ?: null,
                 'bpjs_number'        => $v->patient?->bpjs_number,
@@ -162,6 +178,9 @@ class KlaimService
                 'has_invoice'        => (bool) $v->billingInvoice,
                 'invoice_status'     => $v->billingInvoice?->status,
                 'is_paid'            => $v->billingInvoice?->status === 'PAID',
+                // Screening pra-klaim (manual): null=belum dicek, true=Lengkap, false=Belum.
+                'berkas_lengkap'     => $v->berkas_lengkap,
+                'keterangan'         => $v->rekap_keterangan,
             ];
         });
 
@@ -195,6 +214,31 @@ class KlaimService
             'patient_nik' => $visit->patient?->nik,
             'status'      => 'DRAFT',
         ]);
+    }
+
+    /**
+     * Screening pra-klaim: petugas menandai kelengkapan berkas + keterangan (KET)
+     * pada kunjungan BPJS. Murni manual, disimpan di kolom `visits`. `$lengkap`
+     * null = belum dicek, true = Lengkap, false = Belum Lengkap.
+     */
+    public function setRekapKelengkapan(string $visitId, ?bool $lengkap, ?string $keterangan, ?string $userId): array
+    {
+        $visit = Visit::findOrFail($visitId);
+        if ($visit->guarantor_type !== 'BPJS') {
+            throw new \Exception('Kunjungan bukan pasien BPJS.', 422);
+        }
+
+        $visit->berkas_lengkap = $lengkap;
+        $visit->rekap_keterangan = $keterangan;
+        $visit->berkas_lengkap_by = $lengkap === null ? null : $userId;
+        $visit->berkas_lengkap_at = $lengkap === null ? null : now();
+        $visit->save();
+
+        return [
+            'visit_id'       => $visit->id,
+            'berkas_lengkap' => $visit->berkas_lengkap,
+            'keterangan'     => $visit->rekap_keterangan,
+        ];
     }
 
     // =========================================================================

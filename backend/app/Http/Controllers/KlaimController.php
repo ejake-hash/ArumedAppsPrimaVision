@@ -498,38 +498,68 @@ class KlaimController extends Controller
     public function rekap(Request $request): JsonResponse
     {
         return $this->ok($this->service->getBpjsVisitRecap(
-            $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'per_page'])
+            $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'jenis', 'per_page'])
         ));
+    }
+
+    /** POST /klaim/rekap/{visitId}/kelengkapan — set status kelengkapan + KET (manual). */
+    public function rekapSetKelengkapan(Request $request, string $visitId): JsonResponse
+    {
+        $request->validate([
+            'lengkap'     => 'nullable|boolean',
+            'keterangan'  => 'nullable|string|max:500',
+        ]);
+
+        // null (atau tak dikirim) = belum dicek; true/false = Lengkap/Belum Lengkap.
+        $raw = $request->input('lengkap');
+        $lengkap = $raw === null ? null : $request->boolean('lengkap');
+
+        try {
+            $res = $this->service->setRekapKelengkapan(
+                $visitId,
+                $lengkap,
+                $request->input('keterangan'),
+                optional($request->user())->id,
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, 'Status kelengkapan disimpan');
     }
 
     /** GET /klaim/rekap/export — unduh seluruh hasil (sesuai filter) sebagai .xlsx */
     public function rekapExport(Request $request): \Symfony\Component\HttpFoundation\Response
     {
-        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search']);
+        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'jenis']);
         $filters['per_page'] = 100000; // efektif semua baris yang cocok
         $page = $this->service->getBpjsVisitRecap($filters);
 
         $out = fopen('php://temp', 'r+');
-        fputcsv($out, ['No', 'Nama', 'No RM', 'Tgl Lahir', 'Jenis Kelamin',
-            'No SEP', 'Tgl SEP', 'Jenis', 'Kelas', 'No Kartu BPJS', 'DPJP',
-            'Diagnosa', 'No Rujukan', 'Dokumen Pendukung', 'Hasil Penunjang', 'Kwitansi'], ',', '"', '\\');
+        fputcsv($out, ['No', 'No SEP', 'No Kartu BPJS', 'No RM', 'Nama', 'Tgl Lahir', 'Jenis Kelamin',
+            'Jenis', 'Bedah', 'Tgl SEP', 'Kelas', 'DPJP', 'Diagnosa', 'No Rujukan',
+            'Kelengkapan', 'Keterangan', 'Dokumen Pendukung', 'Hasil Penunjang', 'Kwitansi'], ',', '"', '\\');
 
         $i = 1;
         foreach ($page as $r) {
+            $kelengkapan = $r['berkas_lengkap'] === null ? 'Belum dicek' : ($r['berkas_lengkap'] ? 'Lengkap' : 'Belum Lengkap');
             fputcsv($out, [
                 $i++,
-                $r['nama'] ?? '',
+                $r['no_sep'] ?? '',
+                $r['bpjs_number'] ?? '',
                 $r['no_rm'] ?? '',
+                $r['nama'] ?? '',
                 $r['tgl_lahir'] ?? '',
                 $r['gender'] ?? '',
-                $r['no_sep'] ?? '',
-                $r['tgl_sep'] ?? '',
                 $r['jenis'] ?? '',
+                $r['is_bedah'] ? ($r['bedah_label'] ?? 'Bedah') : '',
+                $r['tgl_sep'] ?? '',
                 $r['kelas'] ?? '',
-                $r['bpjs_number'] ?? '',
                 $r['dpjp'] ?? '',
                 $r['diagnosa'] ?? '',
                 $r['no_rujukan'] ?? '',
+                $kelengkapan,
+                $r['keterangan'] ?? '',
                 $r['dokpendukung_count'].' berkas',
                 $r['penunjang_count'].' berkas',
                 $r['is_paid'] ? 'LUNAS' : ($r['has_invoice'] ? 'BELUM LUNAS' : '-'),

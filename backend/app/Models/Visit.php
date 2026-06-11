@@ -71,6 +71,11 @@ class Visit extends Model
         'follow_up_reason',
         'insurance_verification_status',
         'insurance_verified_at',
+        // --- Screening pra-klaim (Rekap Kunjungan BPJS) ---
+        'berkas_lengkap',
+        'berkas_lengkap_by',
+        'berkas_lengkap_at',
+        'rekap_keterangan',
     ];
 
     protected $casts = [
@@ -87,6 +92,8 @@ class Visit extends Model
         'admission_at'          => 'datetime',
         'discharge_at'          => 'datetime',
         'igd_arrival_at'        => 'datetime',
+        'berkas_lengkap'        => 'boolean',
+        'berkas_lengkap_at'     => 'datetime',
     ];
 
     /** Foto kunjungan ini ikut diserialisasi (riwayat kunjungan per-tanggal). */

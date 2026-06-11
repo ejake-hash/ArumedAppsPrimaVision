@@ -774,6 +774,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/rekap/{visitId}/lampiran',       [KlaimController::class, 'rekapAttachments']);
             Route::post('/rekap/{visitId}/lampiran',      [KlaimController::class, 'rekapUploadAttachment'])->middleware('permission:bpjs.write');
             Route::delete('/rekap/{visitId}/lampiran/{attId}', [KlaimController::class, 'rekapDeleteAttachment'])->middleware('permission:bpjs.write');
+            Route::post('/rekap/{visitId}/kelengkapan',   [KlaimController::class, 'rekapSetKelengkapan'])->middleware('permission:bpjs.write');
 
             Route::get('/{id}',                           [KlaimController::class, 'show']);
 
