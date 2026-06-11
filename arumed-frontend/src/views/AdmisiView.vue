@@ -44,6 +44,19 @@ function fmtDate(dt) {
   } catch { return '—' }
 }
 
+// True bila `dt` jatuh pada tanggal hari ini (zona waktu lokal). Dipakai untuk
+// "reset harian" tiket walk-in kiosk: setelah ganti hari (lewat 23.59) tiket
+// kemarin yang tak pernah didaftarkan otomatis tidak lagi dianggap hari ini.
+function isTodayDate(dt) {
+  if (!dt) return false
+  const d = new Date(dt)
+  if (isNaN(d.getTime())) return false
+  const n = new Date()
+  return d.getFullYear() === n.getFullYear()
+      && d.getMonth() === n.getMonth()
+      && d.getDate() === n.getDate()
+}
+
 function escHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
 }
@@ -118,6 +131,8 @@ function mapQueueItem(q) {
     callStatus:  q.status,
     gcSigned:   !!q.visit?.general_consent_signed,
     walkIn,
+    // Tiket dibuat hari ini? (pakai tgl kunjungan, fallback created_at queue)
+    isToday:    isTodayDate(q.visit?.visit_date ?? q.created_at),
   }
 }
 
@@ -220,8 +235,13 @@ const mappedAntrian = computed(() =>
 // Wajib MASIH di stasiun ADMISI — begitu didaftarkan & pindah ke TRIASE (current_station
 // != ADMISI), baris harus lenyap dari "Siap Dipanggil ke Loket Admisi" walau status
 // queue lokal sempat basi (mis. update WS lite-payload belum mengganti status).
+// Walk-in kiosk (placeholder "Belum Terdaftar") yang tiketnya BUKAN hari ini
+// disembunyikan: tiket basi yang tak pernah didaftarkan otomatis hilang setelah
+// pergantian hari (reset 23.59). Pasien terdaftar lintas-hari tetap tampil.
 const callableQueue = computed(() => mappedAntrian.value.filter(
-  p => (p.status === 'WAITING' || p.status === 'CALLED') && p.station === 'ADMISI',
+  p => (p.status === 'WAITING' || p.status === 'CALLED')
+    && p.station === 'ADMISI'
+    && (!p.walkIn || p.isToday),
 ))
 
 /* ============================================================
