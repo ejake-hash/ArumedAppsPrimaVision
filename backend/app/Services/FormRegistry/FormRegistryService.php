@@ -407,6 +407,34 @@ final class FormRegistryService
     }
 
     /**
+     * Regenerasi NON-THROWING semua dokumen FINAL sebuah visit untuk satu template
+     * (default Resume Medis) — dipanggil dari titik REVISI dokter ("Buka Kembali"
+     * tambah/ubah resep & tindakan) agar resume yang sudah terbit ikut ter-refresh:
+     * field ber-payload kosong diisi ulang dari data terkini (DocumentRenderer
+     * fallback prefill), isi yang ditulis dokter & TTD dipertahankan, revisi naik.
+     * Tak melempar — revisi dokter tidak boleh gagal karena render dokumen.
+     */
+    public function regeneratePublishedForVisit(string $visitId, string $code = 'RESUME_MEDIS'): void
+    {
+        try {
+            $docIds = PatientDocument::query()
+                ->where('visit_id', $visitId)
+                ->where('template_code', $code)
+                ->whereIn('status', ['FINALIZED', 'FINAL'])
+                ->pluck('id');
+
+            foreach ($docIds as $id) {
+                $this->regenerateFinalized($id);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                'regeneratePublishedForVisit gagal: ' . $e->getMessage(),
+                ['visit_id' => $visitId, 'template_code' => $code]
+            );
+        }
+    }
+
+    /**
      * Buat/ambil DocumentVerification untuk dokumen (idempoten by patient_document_id).
      * Token UUID acak + URL ke endpoint verifikasi publik. Hash diisi/diupdate
      * oleh pemanggil setelah HTML final terbentuk.

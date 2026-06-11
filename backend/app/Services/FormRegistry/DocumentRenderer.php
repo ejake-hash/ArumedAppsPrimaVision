@@ -90,8 +90,31 @@ final class DocumentRenderer
 
             // Static dengan documentPayload override (jawaban user, signature, dst).
             if (is_array($binding) && ($binding['kind'] ?? null) === 'static' && array_key_exists($key, $documentPayload)) {
-                $values[$key] = $this->stringify($documentPayload[$key]);
+                $payloadVal = $this->stringify($documentPayload[$key]);
+                // Payload KOSONG + field punya prefill → resolve ulang dari data
+                // TERKINI. Kunci agar regenerateFinalized/rewire-published bisa
+                // mengisi field resume yang dulu kosong saat TTD (mis. Terapi yang
+                // resepnya baru dibuat pasca "Buka Kembali") — nilai yang DITULIS/
+                // disetujui dokter (non-kosong) tetap menang, tidak pernah ditimpa.
+                if (trim($payloadVal) === '') {
+                    $fresh = $this->resolvePrefill($visit, $field);
+                    if ($fresh !== null && $fresh !== '') {
+                        $values[$key] = $fresh;
+                        continue;
+                    }
+                }
+                $values[$key] = $payloadVal;
                 continue;
+            }
+
+            // Static TANPA payload (kunci tak pernah disubmit — mis. field baru di
+            // template, atau dokumen lama) → coba prefill dari data terkini.
+            if (is_array($binding) && ($binding['kind'] ?? null) === 'static') {
+                $fresh = $this->resolvePrefill($visit, $field);
+                if ($fresh !== null && $fresh !== '') {
+                    $values[$key] = $fresh;
+                    continue;
+                }
             }
 
             // Default: resolve via BindingResolver (db/clinic/aggregate).
@@ -115,6 +138,26 @@ final class DocumentRenderer
         }
 
         return $this->substitute($layout, $values, /* keepUnknown */ true);
+    }
+
+    /**
+     * Resolve konfigurasi `prefill` sebuah field editable (via db/aggregate/static)
+     * terhadap data visit TERKINI — dipakai render() sebagai fallback saat nilai
+     * payload kosong. Null bila field tak punya prefill / sumber tak menghasilkan apa-apa.
+     */
+    private function resolvePrefill(Visit $visit, array $field): ?string
+    {
+        $prefill = $field['prefill'] ?? null;
+        if (! is_array($prefill)) {
+            return null;
+        }
+
+        return $this->resolver->resolve($visit, [
+            'kind'   => (string) ($prefill['via'] ?? 'db'),
+            'source' => (string) ($prefill['source'] ?? ''),
+            'format' => $prefill['format'] ?? null,
+            'value'  => $prefill['value'] ?? null,
+        ]);
     }
 
     private function stringify(mixed $v): string

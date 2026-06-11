@@ -147,7 +147,11 @@ final class FieldRegistry
                 'formats' => ['text'],
             ],
             'physical_exam' => [
-                'label'   => 'Pemeriksaan Fisik = refraksi objektif (RO/soap_o) + segmen mata dokter (soap_objective)',
+                'label'   => 'Pemeriksaan Fisik = TTV triase (fallback) + refraksi objektif (RO/soap_o) + segmen mata dokter (soap_objective)',
+                'formats' => ['text'],
+            ],
+            'allergy' => [
+                'label'   => 'Alergi Obat = detail alergi triase, fallback catatan alergi master pasien',
                 'formats' => ['text'],
             ],
         ];

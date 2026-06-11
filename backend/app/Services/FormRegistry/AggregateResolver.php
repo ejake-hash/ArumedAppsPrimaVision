@@ -50,8 +50,26 @@ final class AggregateResolver
             'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
             'planning_instruction'                => $this->resolvePlanningInstruction($visit),
             'physical_exam'                       => $this->resolvePhysicalExam($visit),
+            'allergy'                             => $this->resolveAllergy($visit),
             default                               => null,
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // allergy — Alergi Obat Resume Medis: detail alergi triase (nurse_assessments
+    // .allergy_detail) dgn fallback catatan alergi master pasien (patients
+    // .allergy_notes). Kosong bila keduanya tak ada (keputusan user: blank,
+    // bukan "Tidak ada"). Sebelumnya binding `db` 1 jalur → fallback mustahil.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolveAllergy(Visit $visit): ?string
+    {
+        $detail = trim((string) ($visit->nurseAssessment?->allergy_detail ?? ''));
+        if ($detail !== '') {
+            return $detail;
+        }
+        $notes = trim((string) ($visit->patient?->allergy_notes ?? ''));
+
+        return $notes !== '' ? $notes : null;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -76,7 +94,40 @@ final class AggregateResolver
         if ($seg !== '') {
             $parts[] = $seg;
         }
+
+        // TTV triase (TD/Nadi/SpO2/Suhu/KGD) — fallback agar Pemeriksaan Fisik tak
+        // kosong saat dokter tidak menyentuh SOAP O & refraksi tak ada (mis. kontrol
+        // cepat). Hanya ditambahkan bila belum ada bagian yang memuat TTV ("TD"/"TD:")
+        // — soap_o/soap_objective lama yang sudah memuat TTV tidak akan dobel.
+        $sudahAdaTtv = (bool) preg_grep('/\bTD\b\s*[:\d]/', $parts);
+        if (! $sudahAdaTtv) {
+            $ttv = $this->buildTtvTriase($visit);
+            if ($ttv !== '') {
+                array_unshift($parts, $ttv);
+            }
+        }
+
         return $parts ? implode("\n", $parts) : null;
+    }
+
+    /** Baris TTV dari asesmen triase — hanya field yang terisi. */
+    private function buildTtvTriase(Visit $visit): string
+    {
+        $na = $visit->nurseAssessment;
+        if ($na === null) {
+            return '';
+        }
+        $p = [];
+        if ($na->td_sistol && $na->td_diastol) {
+            $p[] = "TD: {$na->td_sistol}/{$na->td_diastol} mmHg";
+        }
+        if ($na->nadi)      { $p[] = "Nadi: {$na->nadi} x/mnt"; }
+        if ($na->spo2)      { $p[] = 'SpO2: ' . rtrim(rtrim((string) $na->spo2, '0'), '.') . '%'; }
+        if ($na->suhu)      { $p[] = 'T: ' . rtrim(rtrim((string) $na->suhu, '0'), '.') . '°C'; }
+        if ($na->respirasi) { $p[] = "RR: {$na->respirasi} x/mnt"; }
+        if ($na->kgd)       { $p[] = 'KGD: ' . rtrim(rtrim((string) $na->kgd, '0'), '.') . ' mg/dL'; }
+
+        return implode(', ', $p);
     }
 
     /**
@@ -195,17 +246,33 @@ final class AggregateResolver
 
     private function resolvePrescriptions(Visit $visit, ?string $format): string
     {
-        $prescriptions = $visit->prescriptions()->with(['items.medication'])->get();
+        // Terapi Resume Medis = resep DOKTER Tab 3 saja (keputusan user): tanpa
+        // resep pre-op dokter jaga / pasca-bedah, dan tanpa resep CANCELLED.
+        $prescriptions = $visit->prescriptions()
+            ->where('status', '!=', 'CANCELLED')
+            ->where('is_pre_op', false)
+            ->where('is_post_op', false)
+            ->with(['items.medication'])
+            ->get();
         $items = [];
         foreach ($prescriptions as $rx) {
             foreach ($rx->items as $item) {
+                // Aturan pakai: resep dokter menyimpan field granular dose/frequency/
+                // route/duration_days — dosage/instructions legacy hanya fallback
+                // (item TAMBAHAN Farmasi / data lama). Tanpa ini Terapi tampil
+                // "nama | qty" saja tanpa aturan.
+                $aturan = implode(' ', array_filter([
+                    $item->frequency,
+                    $item->route,
+                    $item->duration_days ? "selama {$item->duration_days} hari" : null,
+                ]));
                 $items[] = [
                     'name'         => $item->medication?->name ?? '(obat tidak ditemukan)',
                     'generic'      => $item->medication?->generic_name ?? '',
                     'qty'          => $item->quantity,
                     'unit'         => $item->medication?->unit ?? '',
-                    'dosage'       => $item->dosage,
-                    'instructions' => $item->instructions,
+                    'dosage'       => $item->dose ?: $item->dosage,
+                    'instructions' => $aturan !== '' ? $aturan : $item->instructions,
                 ];
             }
         }
@@ -315,7 +382,10 @@ final class AggregateResolver
         }
         $codes = array_values(array_unique($codes));
         if (empty($codes)) {
-            return '';
+            // Dokter tidak memilih ICD-9 → fallback daftar tindakan Tab 3
+            // (visit_services) agar baris "Tindakan" resume tidak kosong padahal
+            // ada tindakan yang dikerjakan/ditagihkan.
+            return $this->resolveVisitServices($visit, 'list_simple');
         }
 
         return match ($format) {

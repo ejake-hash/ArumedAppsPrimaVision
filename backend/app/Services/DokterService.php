@@ -1346,6 +1346,13 @@ class DokterService
 
         $advance = $this->advanceDokterQueueIfActive($visitId);
 
+        // Resume Medis yang SUDAH terbit ikut di-refresh di titik KOMIT ini (bukan
+        // per-autosave, agar nomor revisi tak menggelembung): field ber-payload
+        // kosong diisi ulang dari data terkini (resep/tindakan hasil revisi),
+        // tulisan dokter & TTD utuh, revisi naik + banner. Non-throwing.
+        app(\App\Services\FormRegistry\FormRegistryService::class)
+            ->regeneratePublishedForVisit($visitId);
+
         return array_merge($result, ['advance' => $advance]);
     }
 
