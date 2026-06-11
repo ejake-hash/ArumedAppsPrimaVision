@@ -63,6 +63,10 @@ class SatusehatService
     {
         $this->assertEnabled();
 
+        // Via HTTP (sync-manual) run bisa ratusan detik (1 Bundle/visit ke Kemenkes)
+        // — jangan dipotong max_execution_time FPM. No-op di CLI/scheduler.
+        @set_time_limit(0);
+
         $syncLog = SatusehatSyncLog::create([
             'sync_date'    => today(),
             'sync_type'    => $syncType,
@@ -207,6 +211,10 @@ class SatusehatService
     {
         $this->assertEnabled();
 
+        // Dipanggil via HTTP (tombol Backfill) — ratusan visit = menit-an; jangan
+        // dipotong max_execution_time FPM.
+        @set_time_limit(0);
+
         $limit = max(1, min($limit, 5000)); // pagar atas: hindari satu run kelewat besar
 
         $syncLog = SatusehatSyncLog::create([
@@ -283,6 +291,22 @@ class SatusehatService
             $result = $this->syncVisitBundle($visit, $syncLogId);
         } catch (\Throwable $e) {
             $visit->forceFill(['satusehat_sync_status' => 'FAILED'])->save();
+
+            // Catat SEBAB gagal pra-kirim (IHS belum resolve / Location kosong / dst).
+            // Tanpa baris ini visit cuma jadi FAILED tanpa jejak alasan, dan retry()
+            // — yang membaca visit gagal dari resource log — tak menemukan apa pun.
+            try {
+                SatusehatResourceLog::create([
+                    'satusehat_sync_log_id' => $syncLogId,
+                    'visit_id'              => $visit->id,
+                    'resource_type'         => 'Bundle',
+                    'status'                => 'FAILED',
+                    'error_message'         => $e->getMessage(),
+                ]);
+            } catch (\Throwable) {
+                // best-effort: kegagalan menulis log tak boleh mengubah hasil sync
+            }
+
             return false;
         }
 
@@ -350,6 +374,9 @@ class SatusehatService
         // next_retry_at walau mati).
         $this->assertEnabled();
 
+        // Via HTTP (tombol Retry) bisa lama — jangan dipotong max_execution_time FPM.
+        @set_time_limit(0);
+
         $syncLog = SatusehatSyncLog::findOrFail($syncLogId);
 
         if ($syncLog->status === 'SUCCESS') {
@@ -398,8 +425,11 @@ class SatusehatService
      */
     public function retryLatestUnfinished(): ?SatusehatSyncLog
     {
+        // Scheduler retry jalan 01:00 HARI BERIKUTNYA — batch utama 23:59 punya
+        // sync_date kemarin. Dulu whereDate(today()) → tak pernah ketemu, retry
+        // otomatis efektif mati. Cakup kemarin+hari ini.
         $log = SatusehatSyncLog::whereIn('status', ['PARTIAL', 'FAILED'])
-            ->whereDate('sync_date', today())
+            ->whereDate('sync_date', '>=', today()->subDay())
             ->latest()
             ->first();
 
@@ -949,6 +979,22 @@ class SatusehatService
         // Log per-resource hasil Bundle (untuk audit) — hanya bila ada entry response.
         if (! empty($resp['entry'])) {
             $this->logBundleEntries($visit->id, $bundle, $resp, $syncLogId);
+        } elseif (! $isSuccess) {
+            // Bundle ditolak UTUH (OperationOutcome tanpa entry) — wajib dicatat:
+            // insiden "Encounter.location 10120" tak terlihat operator karena alur
+            // ini dulu tak menulis log apa pun, dan retry() jadi tak menemukan
+            // visit gagal (membaca dari resource log).
+            SatusehatResourceLog::create([
+                'satusehat_sync_log_id' => $syncLogId,
+                'visit_id'              => $visit->id,
+                'resource_type'         => 'Bundle',
+                'response_payload'      => $resp,
+                'http_status'           => (int) ($result['http_status'] ?? 0),
+                'status'                => 'FAILED',
+                'error_message'         => collect($resp['issue'] ?? [])
+                    ->map(fn ($i) => $i['details']['text'] ?? $i['diagnostics'] ?? null)
+                    ->filter()->implode('; ') ?: null,
+            ]);
         }
 
         if ($isSuccess && $encounterId) {
@@ -1102,6 +1148,16 @@ class SatusehatService
         $orgId   = $client->organizationId();
         $locId   = $client->locationId();
 
+        // Satu Sehat production MEWAJIBKAN Encounter.location (RuleNumber 10120) —
+        // dulu elemen ini di-skip diam-diam bila location_id kosong ("keputusan
+        // 2026-05-30") sehingga SEMUA Bundle ditolak 400 tanpa jejak. Gagal-jelas
+        // di sini: pesan tercatat ke resource log via syncVisit().
+        if ($locId === '') {
+            throw new \RuntimeException(
+                'Location Satu Sehat belum dikonfigurasi (configuration.location_id kosong). '
+                . 'Set lokasi aktif di Bridging → Satu Sehat → Location.', 412);
+        }
+
         // Class + period conditional by jenis pelayanan:
         //   RANAP → IMP (inpatient), period.start=admission_at, end=discharge_at??now()
         //   IGD   → EMER (emergency)
@@ -1164,12 +1220,10 @@ class SatusehatService
         if ($orgId !== '') {
             $payload['serviceProvider'] = ['reference' => "Organization/{$orgId}"];
         }
-        // Location di-SKIP bila kosong (keputusan user 2026-05-30).
-        if ($locId !== '') {
-            $payload['location'] = [[
-                'location' => ['reference' => "Location/{$locId}"],
-            ]];
-        }
+        // location WAJIB (sudah dijamin non-kosong oleh guard 412 di atas).
+        $payload['location'] = [[
+            'location' => ['reference' => "Location/{$locId}"],
+        ]];
 
         return $payload;
     }

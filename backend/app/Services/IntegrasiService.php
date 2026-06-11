@@ -104,6 +104,17 @@ class IntegrasiService
     {
         $config = IntegrationConfig::findOrFail($id);
 
+        // MERGE configuration (bukan replace): kunci yang tak dikirim / dikirim
+        // kosong TIDAK menimpa nilai tersimpan. Insiden: Simpan form Konfigurasi
+        // dgn field Location kosong menghapus configuration.location_id (di-set
+        // via tab Satu Sehat → Location) → SEMUA Bundle ditolak 400 RuleNumber
+        // 10120 "Element not found: Encounter.location". Konsekuensi: kunci tak
+        // bisa dihapus via endpoint ini — kelola location di tab Location.
+        if (! is_null($data['configuration'] ?? null)) {
+            $incoming = array_filter($data['configuration'], fn ($v) => $v !== '' && $v !== null);
+            $data['configuration'] = array_merge($config->configuration ?? [], $incoming);
+        }
+
         $config->update(array_filter([
             'is_enabled'    => $data['is_enabled'] ?? null,
             'base_url'      => $data['base_url'] ?? null,

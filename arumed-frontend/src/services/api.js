@@ -1287,10 +1287,13 @@ export const integrasiApi = {
 
   // Satu Sehat (dashboard monitoring + sync/log/retry)
   satusehatDashboard: (params)   => api.get('/integrasi/satusehat/dashboard', { params }),
-  satusehatSyncManual:()         => api.post('/integrasi/satusehat/sync-manual'),
-  satusehatRetry:     (logId)    => api.post(`/integrasi/satusehat/retry/${logId}`),
+  // Sync/retry/backfill SINKRON di BE (1 Bundle/visit ke Kemenkes) — default 15s
+  // pasti putus duluan: UI tampil "gagal" padahal server masih jalan (lalu user
+  // klik ulang → run dobel). Beri timeout panjang sesuai volume.
+  satusehatSyncManual:()         => api.post('/integrasi/satusehat/sync-manual', null, { timeout: 10 * 60_000 }),
+  satusehatRetry:     (logId)    => api.post(`/integrasi/satusehat/retry/${logId}`, null, { timeout: 10 * 60_000 }),
   satusehatBackfillPreview: (params) => api.get('/integrasi/satusehat/backfill/preview', { params }),
-  satusehatBackfill:  (data)     => api.post('/integrasi/satusehat/backfill', data),
+  satusehatBackfill:  (data)     => api.post('/integrasi/satusehat/backfill', data, { timeout: 30 * 60_000 }),
   satusehatSyncLog:   (params)   => api.get('/integrasi/satusehat/sync-log', { params }),
   satusehatResourceLog:(params)  => api.get('/integrasi/satusehat/resource-log', { params }),
   satusehatKfaSearch: (params)   => api.get('/integrasi/satusehat/kfa-search', { params }),

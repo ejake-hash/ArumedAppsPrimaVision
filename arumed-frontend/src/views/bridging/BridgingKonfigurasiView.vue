@@ -78,6 +78,12 @@ async function load() {
             notes:       cfg.notes ?? '',
           }
         }
+        // Draft dipertahankan antar-load (jangan timpa ketikan user), TAPI field
+        // yang masih kosong di-refresh dari server — location_id bisa berubah dari
+        // tab Satu Sehat → Location tanpa lewat form ini (cegah draft stale).
+        const dd = drafts[s.system_name]
+        if (!dd.location_id && cfg.configuration?.location_id) dd.location_id = cfg.configuration.location_id
+        if (!dd.organization_id && cfg.configuration?.organization_id) dd.organization_id = cfg.configuration.organization_id
         return { ...s, configuration: cfg.configuration ?? {}, notes: cfg.notes }
       })
   } catch (e) {
@@ -99,8 +105,10 @@ function buildPayload(sys) {
         // Environment dipaksa Production (pilihan dihilangkan dari UI).
         env:             'production',
         // organization_id / location_id non-secret → boleh disimpan di configuration.
-        organization_id: d.organization_id || '',
-        location_id:     d.location_id || '',
+        // HANYA kirim bila diisi: draft kosong/stale pernah MENGHAPUS location_id
+        // (di-set via tab Location) → semua Bundle ditolak 400 RuleNumber 10120.
+        ...(d.organization_id ? { organization_id: d.organization_id } : {}),
+        ...(d.location_id ? { location_id: d.location_id } : {}),
       },
       notes: d.notes || null,
     }
