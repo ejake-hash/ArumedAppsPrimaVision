@@ -457,6 +457,7 @@ function resetFormState() {
   tindakanSearch.value = ''
   showTarifList.value = false
   rxList.value = []
+  rxTambahan.value = []
   obatSearch.value = ''
   newRx.value = makeRx()
   kasirNote.value = ''
@@ -1106,6 +1107,9 @@ function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 // ── TAB 3: E-RESEP ──────────────────────────────────────────────────────────
 
 const rxList = ref([])
+// Item TAMBAHAN Farmasi pada resep visit ini — read-only (dikelola Farmasi, BUKAN
+// bagian rxList dokter; dipertahankan BE saat replace). {name, qty, aturan}
+const rxTambahan = ref([])
 const obatList = ref([])           // {id, code, name, form, golongan, unit, stock, hja, is_active} — 1 halaman
 const obatSearch = ref('')
 const obatComboOpen = ref(false)   // true saat input fokus → tampilkan daftar walau belum diketik
@@ -1227,7 +1231,7 @@ async function loadTindakanResep() {
   // Reset state paket pemeriksaan agar tak bocor antar pasien.
   examPackageSel.value = ''
   examPackageInfo.value = null
-  if (!visitId) { tindakanList.value = []; rxList.value = []; return }
+  if (!visitId) { tindakanList.value = []; rxList.value = []; rxTambahan.value = []; return }
   try {
     const { data } = await dokterApi.indexTindakan(visitId)
     tindakanList.value = (data.data ?? []).map((vs) => ({
@@ -1251,18 +1255,35 @@ async function loadTindakanResep() {
     kasirNote.value = presc?.notes ?? ''
     pharmacyNote.value = presc?.pharmacy_note ?? ''
     nextTick(() => { _loadingResep = false })
-    rxList.value = (presc?.items ?? []).map((it) => ({
-      medication_id: it.medication_id,
-      name: it.medication?.name ?? '—',
-      form: it.medication?.form_sediaan ?? '',
-      // Harga dari Buku Tarif sesuai penjamin (resolved_price dari backend), bukan 0.
-      hja: Number(it.resolved_price) || 0,
-      qty: it.quantity ?? 1,
-      jumlah: it.dose ?? '',
-      signa: it.frequency ?? '',
-      dur: it.duration_days ? `${it.duration_days} hari` : '',
-      posisi: normalizePosisi(it.route),
-    }))
+    const allItems = presc?.items ?? []
+    // Item TAMBAHAN Farmasi (OTC/tambahan apotek) BUKAN milik dokter — JANGAN
+    // dihidrasi ke rxList: autosave akan menulis ulang sbg item dokter dan aturan
+    // pakainya (legacy dosage/instructions) lenyap di verifikasi Farmasi. BE
+    // mempertahankannya saat replace; di sini cukup tampil read-only.
+    rxTambahan.value = allItems
+      .filter((it) => it.source === 'TAMBAHAN')
+      .map((it) => ({
+        name: it.medication?.name ?? '—',
+        qty: it.quantity ?? 1,
+        aturan: [it.dose ?? it.dosage, it.frequency ?? it.instructions].filter(Boolean).join(' · '),
+      }))
+    rxList.value = allItems
+      .filter((it) => it.source !== 'TAMBAHAN')
+      .map((it) => ({
+        medication_id: it.medication_id,
+        name: it.medication?.name ?? '—',
+        form: it.medication?.form_sediaan ?? '',
+        // Harga dari Buku Tarif sesuai penjamin (resolved_price dari backend), bukan 0.
+        hja: Number(it.resolved_price) || 0,
+        qty: it.quantity ?? 1,
+        // Fallback field legacy (dosage/instructions — mis. data lama / input modul lain)
+        // agar aturan pakai tak hilang saat resep disimpan ulang pasca "Buka Kembali".
+        jumlah: it.dose ?? it.dosage ?? '',
+        signa: it.frequency ?? it.instructions ?? '',
+        dur: it.duration_days ? `${it.duration_days} hari` : '',
+        // Rute non-mata (oral/IV dsb.) dipertahankan apa adanya — jangan dipaksa kosong.
+        posisi: normalizePosisi(it.route) || (it.route ?? ''),
+      }))
   } catch { /* biarkan */ }
 }
 
@@ -3212,6 +3233,15 @@ function closeResumeRM() {
                     <span class="rx-tfoot-total">{{ fmtRp(rxTotal) }}</span>
                   </div>
                 </div>
+                <!-- Obat tambahan Farmasi (read-only — dikelola Farmasi, tetap dipertahankan
+                     saat dokter merevisi resep) -->
+                <div v-if="rxTambahan.length" class="rx-tambahan">
+                  <div class="rx-tambahan-title">Obat tambahan Farmasi (read-only)</div>
+                  <div v-for="(t, i) in rxTambahan" :key="i" class="rx-tambahan-row">
+                    <span class="rx-tambahan-name">{{ t.name }}</span>
+                    <span class="rx-tambahan-meta">×{{ t.qty }}<template v-if="t.aturan"> · {{ t.aturan }}</template></span>
+                  </div>
+                </div>
                 <div v-else class="dx-empty">Belum ada obat dalam resep</div>
 
                 <!-- Catatan dokter KHUSUS untuk petugas farmasi (substitusi, racikan,
@@ -4849,6 +4879,12 @@ function closeResumeRM() {
 }
 .rx-tfoot-label { font-size: 10.5px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; }
 .rx-tfoot-total { font-size: 13px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; }
+/* Obat tambahan Farmasi — read-only, dipertahankan saat dokter merevisi resep. */
+.rx-tambahan { margin-top: 8px; padding: 8px 10px; background: #f8fafc; border: 1px dashed var(--gb); border-radius: 8px; }
+.rx-tambahan-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--tm); margin-bottom: 4px; }
+.rx-tambahan-row { display: flex; gap: 8px; font-size: 12.5px; padding: 2px 0; }
+.rx-tambahan-name { font-weight: 600; color: var(--td); }
+.rx-tambahan-meta { color: var(--tm); }
 .rx-thead {
   padding: 0.45rem 0.85rem; background: var(--bs);
   font-size: 9.5px; font-weight: 700; color: var(--tu);

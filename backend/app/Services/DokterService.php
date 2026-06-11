@@ -601,19 +601,36 @@ class DokterService
                 ->where('is_post_op', false)
                 ->whereIn('status', ['DRAFT', 'SUBMITTED'])
                 ->get();
+
+            // SELAMATKAN item TAMBAHAN Farmasi sebelum delete: aturan pakainya tersimpan
+            // di field legacy dosage/instructions + audit source/added_by/change_reason —
+            // tanpa ini, replace dokter mengubahnya jadi item RESEP polos tanpa aturan
+            // (bug: aturan pakai hilang di verifikasi Farmasi pasca "Buka Kembali").
+            // FE Tab 3 tidak menghidrasi item TAMBAHAN (read-only) → tidak dobel.
+            $tambahanCarry = [];
             foreach ($drafts as $d) {
+                foreach ($d->items()->where('source', 'TAMBAHAN')->get() as $t) {
+                    $tambahanCarry[] = $t->only([
+                        'medication_id', 'original_medication_id', 'quantity',
+                        'dosage', 'instructions', 'notes',
+                        'dose', 'frequency', 'route', 'duration_days',
+                        'source', 'change_reason', 'changed_by_id', 'changed_at', 'added_by_id',
+                    ]);
+                }
                 PrescriptionItem::where('prescription_id', $d->id)->delete();
                 $d->delete();
             }
 
-            if (empty($items)) {
+            if (empty($items) && empty($tambahanCarry)) {
                 $this->log($user->id, 'STORE_RESEP', Prescription::class, $visitId, 'Resep dikosongkan');
                 return null;
             }
 
             $prescription = Prescription::create([
                 'visit_id'         => $visitId,
-                'prescribed_by_id' => $user->employee_id,
+                // Fallback peresep lama: kasus resep dikosongkan dokter tapi item TAMBAHAN
+                // Farmasi dipertahankan, sementara user (mis. superadmin) tanpa employee.
+                'prescribed_by_id' => $user->employee_id ?? $drafts->first()?->prescribed_by_id,
                 'status'           => 'DRAFT',
                 'notes'            => $data['notes'] ?? null,
                 'pharmacy_note'    => $data['pharmacy_note'] ?? null,
@@ -630,6 +647,12 @@ class DokterService
                     'duration_days'   => $item['duration_days'] ?? null,
                     'notes'           => $item['notes'] ?? null,
                 ]);
+            }
+
+            // Salin ulang item TAMBAHAN Farmasi (kemasan/sale_unit sengaja TIDAK dibawa —
+            // resep hasil revisi wajib verifikasi ulang, Farmasi memilih kemasan lagi).
+            foreach ($tambahanCarry as $t) {
+                PrescriptionItem::create(['prescription_id' => $prescription->id] + $t);
             }
 
             $this->log($user->id, 'STORE_RESEP', Prescription::class, $prescription->id, "Resep disimpan (replace) untuk kunjungan {$visitId}");

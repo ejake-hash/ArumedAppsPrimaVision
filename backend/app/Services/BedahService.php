@@ -1673,14 +1673,25 @@ class BedahService
             // REPLACE resep pasca-bedah lama yang masih bisa direvisi (DRAFT/SUBMITTED) +
             // itemnya. Delete+recreate → verified_at baru null = wajib verifikasi ulang
             // Farmasi. Resep DOKTER (is_post_op=false) pada visit ini TIDAK disentuh.
+            // Item TAMBAHAN Farmasi diselamatkan dulu (aturan legacy dosage/instructions
+            // + audit) — pola sama dgn DokterService::storePrescription.
+            $tambahanCarry = [];
             foreach ($this->postOpEditableQuery($visitId)->get() as $old) {
+                foreach ($old->items()->where('source', 'TAMBAHAN')->get() as $t) {
+                    $tambahanCarry[] = $t->only([
+                        'medication_id', 'original_medication_id', 'quantity',
+                        'dosage', 'instructions', 'notes',
+                        'dose', 'frequency', 'route', 'duration_days',
+                        'source', 'change_reason', 'changed_by_id', 'changed_at', 'added_by_id',
+                    ]);
+                }
                 PrescriptionItem::where('prescription_id', $old->id)->delete();
                 $old->delete();
             }
 
             // Buang item tanpa medication_id; kosong → resep dikosongkan (return null).
             $valid = array_values(array_filter($items, fn ($it) => ! empty($it['medication_id'])));
-            if (empty($valid)) {
+            if (empty($valid) && empty($tambahanCarry)) {
                 $this->log($user->id, 'STORE_POSTOP_RESEP', Prescription::class, $visitId, 'Resep pasca-bedah dikosongkan');
                 return null;
             }
@@ -1708,6 +1719,11 @@ class BedahService
                     // berpaket. Else ditagih sbg obat pulang (lihat docblock).
                     'is_bedah'        => ($it['bundled'] ?? false) && $hasPaket,
                 ]);
+            }
+
+            // Salin ulang item TAMBAHAN Farmasi (kemasan tidak dibawa — verifikasi ulang).
+            foreach ($tambahanCarry as $t) {
+                PrescriptionItem::create(['prescription_id' => $prescription->id] + $t);
             }
 
             $this->log(
