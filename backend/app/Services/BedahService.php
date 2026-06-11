@@ -86,7 +86,18 @@ class BedahService
                 $q->whereDate('created_at', today())
                   ->orWhere(fn ($a) => $a
                       ->whereIn('status', [Queue::STATUS_IN_PROGRESS, Queue::STATUS_CALLED])
-                      ->where('created_at', '>=', today()->subDays(7)));   // batasi ≤7 hari agar operasi terbengkalai lama tak menumpuk
+                      ->where('created_at', '>=', today()->subDays(7)))   // batasi ≤7 hari agar operasi terbengkalai lama tak menumpuk
+                  // +Pasien "belum tutup kasir": baris ≤7 hari (status apa pun, incl COMPLETED)
+                  // yang visit-nya belum SELESAI & billing belum dikunci → bisa tambah/ubah
+                  // paket bedah & obat pasca-bedah selama belum bayar (tab "Masih Aktif").
+                  ->orWhere(fn ($b) => $b
+                      ->where('created_at', '>=', today()->subDays(7))
+                      ->whereHas('visit', fn ($v) => $v
+                          ->where('current_station', '!=', 'SELESAI')
+                          ->where(fn ($iv) => $iv
+                              ->whereDoesntHave('billingInvoice')
+                              ->orWhereHas('billingInvoice', fn ($bi) => $bi
+                                  ->whereNotIn('status', ['PAID', 'PARTIALLY_PAID', 'CANCELLED'])))));
             })
             ->whereHas('visit')   // exclude baris dgn visit soft-deleted (zombie row) — sama spt AdmisiView
             // Papan BEDAH = hanya operasi (RUANG_BEDAH). Pasien tindakan laser

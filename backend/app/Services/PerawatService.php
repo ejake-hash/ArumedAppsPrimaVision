@@ -46,7 +46,7 @@ class PerawatService
             'visit.queues' => fn ($q) => $q->whereDate('created_at', today()),
         ])
             ->where('station', 'TRIASE')
-            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
+            ->boardVisibleOpenBilling()   // +pasien belum tutup kasir (Masih Aktif)
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get()

@@ -158,6 +158,44 @@ class Queue extends Model
         });
     }
 
+    /**
+     * Seperti boardVisible, TAPI juga memunculkan kembali baris stasiun untuk
+     * kunjungan yang "BELUM TUTUP KASIR" — pasien nyangkut yang masih boleh
+     * diutak-atik (tambah obat/tindakan, revisi SOAP/resume/paket bedah) dari
+     * stasiun manapun via tab "Masih Aktif".
+     *
+     * Klausa ke-3 (tambahan): baris ≤7 hari, STATUS APA PUN (termasuk COMPLETED),
+     * di mana visit-nya:
+     *   - belum SELESAI (current_station != 'SELESAI'), DAN
+     *   - billing belum dikunci: tanpa invoice ATAU invoice DRAFT/FINALIZED
+     *     (BUKAN PAID/PARTIALLY_PAID/CANCELLED) — selaras gate assertBillingNotCommitted.
+     *
+     * Begitu kasir LUNAS/konfirmasi (invoice PAID + visit SELESAI), baris berhenti
+     * disurfacekan ulang. Window 7 hari menjaga papan tidak membanjir data lama.
+     */
+    public function scopeBoardVisibleOpenBilling(Builder $q): Builder
+    {
+        return $q->where(function ($w) {
+            $w->whereDate('created_at', today())
+              ->orWhere(function ($a) {
+                  $a->whereIn('status', self::ACTIVE_STATUSES)
+                    ->where('created_at', '>=', today()->subDays(7));
+              })
+              ->orWhere(function ($b) {
+                  $b->where('created_at', '>=', today()->subDays(7))
+                    ->whereHas('visit', function ($v) {
+                        $v->where('current_station', '!=', 'SELESAI')
+                          ->where(function ($iv) {
+                              $iv->whereDoesntHave('billingInvoice')
+                                 ->orWhereHas('billingInvoice', function ($bi) {
+                                     $bi->whereNotIn('status', ['PAID', 'PARTIALLY_PAID', 'CANCELLED']);
+                                 });
+                          });
+                    });
+              });
+        });
+    }
+
     public function scopeWaiting(Builder $q): Builder
     {
         return $q->where('status', self::STATUS_WAITING);

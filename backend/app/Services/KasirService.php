@@ -55,7 +55,7 @@ class KasirService
                 'visit.prescriptions:id,visit_id,type,status,verified_at',
             ])
             ->where('station', 'KASIR')
-            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
+            ->boardVisibleOpenBilling()   // +pasien belum tutup kasir (Masih Aktif)
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
