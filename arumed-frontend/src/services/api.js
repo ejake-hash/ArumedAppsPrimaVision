@@ -177,6 +177,10 @@ export const dokterApi = {
   riwayatPenunjang: (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/penunjang`),
   // CPPT lintas-episode (RAJAL/IGD/RANAP + SOAP poli) — 1 timeline kronologis.
   riwayatCppt:      (patientId)           => api.get(`/rekam-medis/pasien/${patientId}/cppt`),
+  // Riwayat DOKUMEN RM lintas-kunjungan (PatientDocument) — tab "Riwayat Dokumen" Dokumen RM.
+  riwayatDokumen:   (patientId, params = {}) => api.get(`/rekam-medis/pasien/${patientId}/dokumen`, { params }),
+  // Snapshot HTML dokumen final untuk cetak/lihat (auth-aware via interceptor).
+  renderDokumen:    (docId)               => api.get(`/rekam-medis/document/${docId}/render`),
 
   tarifTindakan:    (visitId)             => api.get('/dokter/tarif-tindakan', { params: { visit_id: visitId } }),
   daftarObat:       (params = {})         => api.get('/dokter/obat', { params }),

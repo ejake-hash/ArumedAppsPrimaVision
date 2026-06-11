@@ -812,6 +812,78 @@ const penunjangPageLabel = computed(() => (penunjangPageIdx.value === 0 ? 'Kunju
 // di Tab SOAP supaya form-form tidak memanjang ke bawah / butuh scroll panjang.
 const showFormDocsModal = ref(false)
 
+// ─── Dokumen RM: 2 tab — "Kunjungan Ini" (FormDocsBrowser) + "Riwayat Dokumen" ──
+// Riwayat = PatientDocument lintas-kunjungan (seperti RekamMedisView tab Dokumen):
+// tabel Tanggal/Dokumen/No./Stasiun/Status + cetak (render HTML → window baru).
+const docTab = ref('current')             // 'current' | 'history'
+const docHistory = ref([])
+const docHistoryLoading = ref(false)
+const docHistoryLoaded = ref(false)
+const printingDoc = ref(false)
+function isDocFinal(s) { return s === 'FINAL' || s === 'FINALIZED' }
+function docStatusLabel(s) {
+  return ({ FINAL: 'Final', FINALIZED: 'Final', WAITING_SIGNATURE: 'Menunggu TTD', PENDING_SIGNATURE: 'Menunggu TTD', RENDERED: 'Tersaji', DRAFT: 'Draft', REJECTED: 'Ditolak', VOID: 'Void' })[s] ?? (s ?? '—')
+}
+function docStatusCls(s) {
+  return ({ FINAL: 'final', FINALIZED: 'final', WAITING_SIGNATURE: 'waiting', PENDING_SIGNATURE: 'waiting', RENDERED: 'waiting', DRAFT: 'draft', REJECTED: 'rejected', VOID: 'void' })[s] ?? 'draft'
+}
+// Tanggal dokumen → "11 Jun 2026" (pakai visit_date bila ada, fallback created_at).
+function fmtDocDate(d) {
+  if (!d) return '—'
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  if (Number.isNaN(dt.getTime())) return d
+  return dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+async function loadDocHistory() {
+  const patientId = selP.value?.patientId
+  if (!patientId) { docHistory.value = []; return }
+  docHistoryLoading.value = true
+  try {
+    const { data } = await dokterApi.riwayatDokumen(patientId)
+    // Endpoint dokumen pakai paginator → data.data.data; fallback array di data.data.
+    const payload = data.data
+    docHistory.value = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload) ? payload : [])
+    docHistoryLoaded.value = true
+  } catch {
+    docHistory.value = []
+  } finally {
+    docHistoryLoading.value = false
+  }
+}
+function openDocModal() {
+  docTab.value = 'current'
+  docHistoryLoaded.value = false
+  docHistory.value = []
+  showFormDocsModal.value = true
+}
+// Pindah tab → muat riwayat saat pertama kali tab Riwayat dibuka.
+watch(docTab, (t) => { if (t === 'history' && !docHistoryLoaded.value) loadDocHistory() })
+// Cetak/lihat dokumen final: ambil snapshot HTML (auth-aware) → window baru.
+// JANGAN window.open(URL API) langsung (tak bawa Bearer → 401). Pola sama RekamMedisView.
+async function printDocHistory(doc) {
+  if (printingDoc.value) return
+  printingDoc.value = true
+  try {
+    const { data } = await dokterApi.renderDokumen(doc.id)
+    const html = data.data?.rendered_html
+    if (!html) { toast('w', 'Dokumen belum punya isi tersaji untuk dicetak'); return }
+    const title = `${doc.document_type?.code ?? 'Dokumen'} — ${selP.value?.name ?? ''}`
+    const w = window.open('', '_blank', 'width=900,height=1200')
+    if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak'); return }
+    w.document.open()
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>@page { size: A4; margin: 1.5cm; } body { font-family: Arial, sans-serif; }</style>
+</head><body>${html}</body></html>`)
+    w.document.close()
+    w.focus()
+    setTimeout(() => w.print(), 200)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memuat dokumen untuk dicetak')
+  } finally {
+    printingDoc.value = false
+  }
+}
+
 // test_type dari backend = KODE master (mis. "OCT"). Resolve display name + kategori
 // dari master; bila kode tak ada di master (order "Lainnya" teks bebas) → pakai apa adanya.
 function _typeByCode(code) {
@@ -2341,8 +2413,8 @@ function closeResumeRM() {
             <button
               v-if="store.selectedVisitId"
               class="db db-doc"
-              title="Resume, surat & consent — isi, cetak, atau tanda tangani"
-              @click="showFormDocsModal = true"
+              title="Resume, surat & consent — isi/cetak/TTD + riwayat dokumen kunjungan sebelumnya"
+              @click="openDocModal"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
               Dokumen RM
@@ -3662,11 +3734,43 @@ function closeResumeRM() {
             </div>
             <button class="modal-box-close" @click="showFormDocsModal = false">×</button>
           </div>
+          <!-- Tab: Kunjungan Ini (isi/cetak/TTD) vs Riwayat Dokumen (kunjungan sebelumnya) -->
+          <div class="docrm-tabs">
+            <button :class="['docrm-tab', docTab === 'current' ? 'act' : '']" @click="docTab = 'current'">Kunjungan Ini</button>
+            <button :class="['docrm-tab', docTab === 'history' ? 'act' : '']" @click="docTab = 'history'">
+              Riwayat Dokumen<span v-if="docHistoryLoaded && docHistory.length" class="docrm-tab-ct">{{ docHistory.length }}</span>
+            </button>
+          </div>
           <div class="modal-box-body">
             <FormDocsBrowser
+              v-show="docTab === 'current'"
               :visit-id="store.selectedVisitId"
               :patient-id="store.selectedPatientId"
             />
+
+            <!-- ── Riwayat Dokumen lintas-kunjungan (PatientDocument) ── -->
+            <div v-if="docTab === 'history'" class="docrm-hist">
+              <div v-if="docHistoryLoading" class="docrm-state">Memuat riwayat dokumen…</div>
+              <div v-else-if="!docHistory.length" class="docrm-state">Belum ada dokumen pada kunjungan sebelumnya.</div>
+              <table v-else class="docrm-table">
+                <thead>
+                  <tr><th>Tanggal</th><th>Dokumen</th><th>No.</th><th>Stasiun</th><th>Status</th><th class="ta-r">Aksi</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="doc in docHistory" :key="doc.id">
+                    <td class="nowrap">{{ fmtDocDate(doc.visit?.visit_date ?? doc.created_at) }}</td>
+                    <td><div class="docrm-c2"><b>{{ doc.document_type?.name ?? '—' }}</b><small>{{ doc.document_type?.code ?? '' }}</small></div></td>
+                    <td class="mono">{{ doc.document_number || '—' }}</td>
+                    <td>{{ doc.created_by_station || '—' }}</td>
+                    <td><span :class="['docrm-pill', docStatusCls(doc.status)]">{{ docStatusLabel(doc.status) }}</span></td>
+                    <td class="ta-r">
+                      <button v-if="isDocFinal(doc.status)" class="docrm-act" :disabled="printingDoc" @click="printDocHistory(doc)">Lihat / Cetak</button>
+                      <span v-else class="docrm-act-na">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -5321,6 +5425,33 @@ function closeResumeRM() {
 
 /* ── FORM REGISTRY: modal Dokumen RM (isi = FormDocsBrowser) ──────────────── */
 .modal-box-forms { max-width: 760px; }
+
+/* ── Dokumen RM: tab Kunjungan Ini / Riwayat Dokumen ── */
+.docrm-tabs { display: flex; gap: 4px; padding: 0 4px; border-bottom: 1px solid var(--gb); margin-bottom: 2px; }
+.docrm-tab { appearance: none; border: 0; background: transparent; cursor: pointer; padding: 9px 14px; font: inherit; font-size: 13px; font-weight: 600; color: var(--tm); border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; }
+.docrm-tab:hover { color: var(--td); }
+.docrm-tab.act { color: #1763d4; border-bottom-color: #1763d4; }
+.docrm-tab-ct { padding: 0 7px; border-radius: 999px; background: var(--bg); color: var(--tm); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.docrm-hist { padding-top: 8px; }
+.docrm-state { padding: 1.6rem 1rem; text-align: center; font-size: 13px; color: var(--tm); }
+.docrm-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.docrm-table th { text-align: left; padding: 7px 10px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--tu); border-bottom: 1px solid var(--gb); }
+.docrm-table td { padding: 8px 10px; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
+.docrm-table .ta-r { text-align: right; }
+.docrm-table .nowrap { white-space: nowrap; }
+.docrm-table .mono { font-variant-numeric: tabular-nums; color: var(--tm); }
+.docrm-c2 { display: flex; flex-direction: column; line-height: 1.25; }
+.docrm-c2 small { color: var(--tu); font-size: 10.5px; }
+.docrm-pill { padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.docrm-pill.final { background: #dcfce7; color: #166534; }
+.docrm-pill.waiting { background: #fef3c7; color: #92400e; }
+.docrm-pill.draft { background: var(--bg); color: var(--tm); }
+.docrm-pill.rejected { background: #fee2e2; color: #991b1b; }
+.docrm-pill.void { background: #e5e7eb; color: #6b7280; }
+.docrm-act { appearance: none; border: 1px solid #1763d4; background: #1763d4; color: #fff; border-radius: 7px; padding: 4px 11px; font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.docrm-act:hover { filter: brightness(1.08); }
+.docrm-act:disabled { opacity: .6; cursor: default; }
+.docrm-act-na { color: var(--tu); }
 
 /* ── Riwayat CPPT lintas-episode (sidebar dokter) ── */
 .dk-cppt-list { display: flex; flex-direction: column; gap: 7px; max-height: 360px; overflow-y: auto; padding: 2px; }
