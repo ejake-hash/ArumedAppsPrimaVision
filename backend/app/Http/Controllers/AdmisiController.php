@@ -31,12 +31,12 @@ class AdmisiController extends Controller
 
     /**
      * GET /admisi/kunjungan
-     * Query params: tanggal, station, guarantor_type, classification, search, per_page
+     * Query params: tanggal, care_type, station, guarantor_type, classification, search, per_page
      */
     public function indexKunjungan(Request $request): JsonResponse
     {
         $data = $this->service->getKunjungan($request->only([
-            'tanggal', 'station', 'guarantor_type', 'classification', 'search', 'per_page', 'page', 'unfinished',
+            'tanggal', 'care_type', 'station', 'guarantor_type', 'classification', 'search', 'per_page', 'page', 'unfinished',
         ]));
 
         return $this->ok($data);

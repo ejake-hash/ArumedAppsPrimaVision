@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAdmisiStore } from '@/stores/admisiStore'
+import { useAdmisiStore, localDateStr } from '@/stores/admisiStore'
 import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
@@ -162,10 +162,23 @@ const days   = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu']
 const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']
 let dateTimer = null
 
+// Pergantian hari (halaman dibiarkan terbuka melewati tengah malam): polling/WS
+// hanya me-refresh antrean + tabel, dashboard tidak — stat card "hari ini" akan
+// terus memegang angka kemarin. Deteksi rollover di tick jam dinding, lalu muat
+// ulang semuanya dengan tanggal baru.
+let lastDayKey = localDateStr()
 function updateDate() {
   const n = new Date()
   dateStr.value  = `${days[n.getDay()]}, ${n.getDate()} ${months[n.getMonth()]} ${n.getFullYear()}`
   clockStr.value = n.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' })
+
+  const key = localDateStr(n)
+  if (key !== lastDayKey) {
+    lastDayKey = key
+    admisiStore.fetchDashboard()
+    admisiStore.fetchAntrian()
+    admisiStore.fetchVisits({ page: 1 })
+  }
 }
 
 /* ============================================================
@@ -952,7 +965,7 @@ function onLookupInput() {
 function onLookupBlur() { setTimeout(() => { lookupDropOpen.value = false }, 200) }
 
 /* Modal Profil Pasien — Tab 1: detail data, Tab 2: riwayat kunjungan (paginated) */
-const todayStr       = computed(() => new Date().toISOString().split('T')[0])
+const todayStr       = computed(() => localDateStr())
 const profileOpen    = ref(false)
 const profileTab     = ref('detail')   // 'detail' | 'history'
 const profilePatient = ref(null)
@@ -2327,11 +2340,10 @@ onMounted(async () => {
   dateTimer = setInterval(updateDate, 1000)
   window.addEventListener('keydown', onKeydown)
 
-  const today = new Date().toISOString().split('T')[0]
   await Promise.allSettled([
     admisiStore.fetchDashboard(),
     admisiStore.fetchAntrian(),
-    admisiStore.fetchVisits({ tanggal: today }),
+    admisiStore.fetchVisits(),   // tanggal lokal diisi fallback store (localDateStr)
     jadwalStore.fetchAktifHariIni(),
     admisiStore.fetchInsurers(),
   ])

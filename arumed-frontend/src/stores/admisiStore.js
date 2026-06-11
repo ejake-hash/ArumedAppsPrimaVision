@@ -2,6 +2,13 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { admisiApi, masterApi, perawatApi } from '@/services/api'
 
+// Tanggal lokal YYYY-MM-DD. JANGAN pakai toISOString() — itu UTC: antara
+// 00:00–07:00 WIB hasilnya masih tanggal KEMARIN, sehingga tabel kunjungan
+// "hari ini" menampilkan data hari sebelumnya lewat tengah malam.
+export function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export const useAdmisiStore = defineStore('admisi', () => {
 
   // ─── Dashboard / Stats ───────────────────────────────────────────────────────
@@ -141,7 +148,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
       if (visitsFilter.value.unfinished) {
         params.unfinished = 1
       } else if (!('tanggal' in params)) {
-        params.tanggal = new Date().toISOString().split('T')[0]
+        params.tanggal = localDateStr()
       }
       if (visitsFilter.value.station && visitsFilter.value.station !== 'SEMUA') {
         params.station = visitsFilter.value.station
