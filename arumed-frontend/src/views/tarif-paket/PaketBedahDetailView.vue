@@ -25,21 +25,15 @@ const paketId = computed(() => route.params.id)
 const paket = computed(() => store.paketDetail)
 
 // ─── Dropdown source ─────────────────────────────────────────────────────
-// Item komposisi TIDAK lagi diprefetch (dulu cap per_page:500) — picker kini
-// cari-server + paginasi (lihat searchItems). Hanya prefetch yg perlu daftar penuh:
-//   procedures → combobox follow-up (konsultasi pasca-bedah)
-//   insurers   → modal tarif per penjamin
-const procedures = ref([])
+// Item komposisi & combobox follow-up TIDAK diprefetch (dulu cap per_page:500
+// → tindakan >500 tak pernah muncul) — keduanya kini cari-server (lihat
+// searchItems & searchFollowup). Prefetch tersisa: insurers (modal tarif).
 const insurers = ref([])
 
 async function loadDropdowns() {
   try {
-    const [p, ins] = await Promise.all([
-      masterApi.tindakan.list({ per_page: 500, active: 1 }),
-      masterApi.penjamin({ per_page: 200 }),
-    ])
-    procedures.value  = p.data?.data?.data ?? p.data?.data ?? []
-    insurers.value    = ins.data?.data?.data ?? ins.data?.data ?? []
+    const ins = await masterApi.penjamin({ per_page: 200 })
+    insurers.value = ins.data?.data?.data ?? ins.data?.data ?? []
   } catch (e) {
     showToast('e', 'Gagal memuat dropdown')
   }
@@ -504,22 +498,41 @@ async function saveFollowup() {
   } finally { followupSaving.value = false }
 }
 
-// ─── Combobox prosedur konsultasi: search + pilih ─────────────────────────
+// ─── Combobox prosedur konsultasi: CARI-SERVER + pilih ─────────────────────
+// (dulu filter client atas prefetch 500 — prosedur >500 tak pernah muncul)
+const followupPicked = ref(null)            // {id, name} pilihan sesi ini
+const followupResults = ref([])
+let followupTimer = null
+
 function selectedFollowupName() {
-  return procedures.value.find((p) => p.id === followup.value.procedure_id)?.name ?? ''
+  if (followupPicked.value && followupPicked.value.id === followup.value.procedure_id) {
+    return followupPicked.value.name
+  }
+  // Nama prosedur terpilih dari BE (showPaket enrich followup_procedure_name).
+  return paket.value?.followup_procedure_name ?? ''
 }
 function syncFollowupSearch() { followupSearch.value = selectedFollowupName() }
 
-const followupFiltered = computed(() => {
-  const q = followupSearch.value.trim().toLowerCase()
-  const list = q
-    ? procedures.value.filter((p) => `${p.name} ${p.category ?? ''}`.toLowerCase().includes(q))
-    : procedures.value
-  return list.slice(0, 50)
-})
+async function searchFollowup() {
+  try {
+    const q = followupSearch.value.trim()
+    const res = await masterApi.tindakan.list({ search: q || undefined, per_page: 50, active: 1 })
+    followupResults.value = res.data?.data?.data ?? res.data?.data ?? []
+  } catch { followupResults.value = [] }
+}
+function onFollowupInput() {
+  followupOpen.value = true
+  clearTimeout(followupTimer)
+  followupTimer = setTimeout(searchFollowup, 300)
+}
+function onFollowupFocus() {
+  followupOpen.value = true
+  if (!followupResults.value.length) searchFollowup()
+}
 
 function pickFollowup(p) {
   followup.value.procedure_id = p ? p.id : ''
+  followupPicked.value = p ? { id: p.id, name: p.name } : null
   followupSearch.value = p ? p.name : ''
   followupOpen.value = false
 }
@@ -530,9 +543,6 @@ function onFollowupBlur() {
     if (followupSearch.value !== selectedFollowupName()) syncFollowupSearch()
   }, 150)
 }
-
-// Saat daftar prosedur termuat (loadDropdowns), tampilkan nama prosedur terpilih.
-watch(procedures, () => { if (!followupOpen.value) syncFollowupSearch() })
 
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
@@ -595,15 +605,15 @@ watch(paketId, async (id) => {
                 class="pd-fu-input"
                 placeholder="Cari prosedur… (kosongkan = tanpa manfaat)"
                 autocomplete="off"
-                @focus="followupOpen = true"
-                @input="followupOpen = true"
+                @focus="onFollowupFocus"
+                @input="onFollowupInput"
                 @blur="onFollowupBlur"
               />
               <button v-if="followup.procedure_id" type="button" class="pd-fu-clear"
                       title="Hapus pilihan" @mousedown.prevent="pickFollowup(null)">×</button>
               <ul v-if="followupOpen" class="pd-fu-drop">
-                <li v-if="!followupFiltered.length" class="pd-fu-empty">Tidak ada prosedur cocok</li>
-                <li v-for="p in followupFiltered" :key="p.id"
+                <li v-if="!followupResults.length" class="pd-fu-empty">Tidak ada prosedur cocok</li>
+                <li v-for="p in followupResults" :key="p.id"
                     :class="{ sel: p.id === followup.procedure_id }"
                     @mousedown.prevent="pickFollowup(p)">
                   <span>{{ p.name }}</span>

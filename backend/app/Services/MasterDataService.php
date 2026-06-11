@@ -2155,9 +2155,10 @@ class MasterDataService
             'harga_jual = tarif yang ditagih ke penjamin ini (angka >= 0).',
             'Item sama (nama+kategori) yang sudah punya tarif → harga_jual di-update; belum ada → ditambah.',
         ];
+        $notes[] = 'kode (OPSIONAL) = kode item master; bila diisi, lookup pakai KODE (menang atas nama) — wajib diandalkan saat ada nama master duplikat.';
         // Header template HARUS sama dgn export (exportTarifCsvForInsurer) agar hasil export
         // bisa diedit & di-import balik tanpa mengubah struktur. Obat: +kolom pos_kwitansi.
-        $header = ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'];
+        $header = ['no', 'kode', 'nama', 'kategori', 'harga_master', 'harga_jual'];
         if ($type === 'obat') {
             $header[] = 'pos_kwitansi';
             $notes[] = 'pos_kwitansi (OPSIONAL, khusus obat) = pos baris obat di kwitansi: '
@@ -2187,14 +2188,14 @@ class MasterDataService
 
         // Obat: ikutkan kolom pos_kwitansi (label) supaya bisa di-set lewat import balik.
         $isObat = $type === 'obat';
-        $header = ['no', 'nama', 'kategori', 'harga_master', 'harga_jual'];
+        $header = ['no', 'kode', 'nama', 'kategori', 'harga_master', 'harga_jual'];
         if ($isObat) { $header[] = 'pos_kwitansi'; }
 
         $output = fopen('php://temp', 'r+');
         fputcsv($output, $header, ',', '"', '\\');
         $no = 1;
         foreach ($rows as $row) {
-            $line = [$no++, $row->nama, $row->kategori, $row->harga_master, $row->harga_jual];
+            $line = [$no++, $row->kode ?? '', $row->nama, $row->kategori, $row->harga_master, $row->harga_jual];
             if ($isObat) { $line[] = MedicationTariff::posLabel($row->pos_kwitansi ?? null); }
             fputcsv($output, $line, ',', '"', '\\');
         }
@@ -2256,7 +2257,10 @@ class MasterDataService
                 continue;
             }
 
-            $item = $this->resolveTarifItem($type, $nama, $kategori);
+            // Kode menang atas nama (identifier unik — nama master bisa duplikat).
+            $kode = trim((string) ($row['kode'] ?? ''));
+            $item = $kode !== '' ? $this->resolveTarifItemByCode($type, $kode) : null;
+            $item = $item ?? $this->resolveTarifItem($type, $nama, $kategori);
             if (! $item) {
                 $errors[] = "Baris {$lineNum}: item '{$nama}'" . ($kategori !== '' ? " kategori '{$kategori}'" : '') . ' tidak ditemukan / ambigu di master';
                 $skipped++;
@@ -2299,7 +2303,7 @@ class MasterDataService
 
         // Obat: ikutkan pos_kwitansi (selaras exportTarifCsvForInsurer) agar lossless.
         $isObat = $type === 'obat';
-        $header = ['no', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'];
+        $header = ['no', 'kode', 'nama', 'kategori', 'penjamin', 'harga_master', 'harga_jual'];
         if ($isObat) { $header[] = 'pos_kwitansi'; }
 
         $output = fopen('php://temp', 'r+');
@@ -2308,6 +2312,7 @@ class MasterDataService
         foreach ($rows as $row) {
             $line = [
                 $no++,
+                $row->kode ?? '',
                 $row->nama,
                 $row->kategori,
                 $row->penjamin ?? 'SEMUA',
@@ -2357,6 +2362,7 @@ class MasterDataService
 
             return $q->get()->map(function ($r) use ($withPenjamin) {
                 $o = (object) [
+                    'kode'         => '',   // iol_items tanpa kolom kode — identitas = display name
                     'nama'         => $this->iolTarifDisplayName($r->brand, $r->model, $r->power),
                     'kategori'     => $r->kategori,
                     'harga_master' => $r->harga_master,
@@ -2369,7 +2375,9 @@ class MasterDataService
 
         $nameCol = $this->itemNameColumn($type);
         $catCol  = $this->itemKategoriColumn($type);
-        $select  = ["item.{$nameCol} as nama", "item.{$catCol} as kategori",
+        // kode ikut diekspor: lookup import pakai kode DULU (menang atas nama) —
+        // satu-satunya identifier yang tetap unik saat ada nama master duplikat.
+        $select  = ['item.code as kode', "item.{$nameCol} as nama", "item.{$catCol} as kategori",
                     "item.{$itemPriceCol} as harga_master", 't.price as harga_jual'];
         // Obat: pos kwitansi ada di baris tarif (medication_tariffs), bukan master.
         if ($type === 'obat') { $select[] = 't.pos_kwitansi as pos_kwitansi'; }
@@ -2428,7 +2436,10 @@ class MasterDataService
                 continue;
             }
 
-            $item = $this->resolveTarifItem($type, $nama, $kategori);
+            // Kode menang atas nama (identifier unik — nama master bisa duplikat).
+            $kode = trim((string) ($row['kode'] ?? ''));
+            $item = $kode !== '' ? $this->resolveTarifItemByCode($type, $kode) : null;
+            $item = $item ?? $this->resolveTarifItem($type, $nama, $kategori);
             if (! $item) {
                 $errors[] = "Baris {$lineNum}: item '{$nama}'" . ($kategori !== '' ? " kategori '{$kategori}'" : '') . ' tidak ditemukan / ambigu di master';
                 $skipped++;
@@ -2528,6 +2539,23 @@ class MasterDataService
      * IOL identitasnya (brand, model, power) → "nama" = display "Brand Model PowerD";
      * kategori (iol_type) diabaikan. Tipe lain: cocok (nama, kategori) case-insensitive.
      */
+    /**
+     * Lookup item master by KODE (unik) — identifier paling kuat saat nama duplikat.
+     * IOL tidak punya kolom code → null (pakai display name).
+     */
+    private function resolveTarifItemByCode(string $type, string $kode): ?object
+    {
+        if ($type === 'iol') {
+            return null;
+        }
+        $rows = DB::table($this->itemTable($type))
+            ->whereRaw('LOWER(code) = ?', [mb_strtolower($kode)])
+            ->whereNull('deleted_at')
+            ->limit(2)
+            ->get();
+        return $rows->count() === 1 ? $rows->first() : null;
+    }
+
     private function resolveTarifItem(string $type, string $nama, string $kategori): ?object
     {
         if ($type === 'iol') {
@@ -2567,6 +2595,19 @@ class MasterDataService
     private function lookupIolItemByDisplayName(string $display): ?object
     {
         $needle = mb_strtolower(trim($display));
+
+        // 1. Nama lengkap TANPA power: data katalog (model/power NULL) diekspor
+        //    sebagai "brand" saja — tanpa fallback ini re-import gagal senyap.
+        $exact = DB::table('iol_items')
+            ->whereRaw("LOWER(TRIM(CONCAT_WS(' ', brand, model))) = ?", [$needle])
+            ->whereNull('deleted_at')
+            ->limit(2)
+            ->get();
+        if ($exact->count() === 1) {
+            return $exact->first();
+        }
+
+        // 2. "brand model powerD" — power di akhir.
         if (! preg_match('/^(.*?)\s+([\d.]+)d\s*$/i', $needle, $m)) {
             return null;
         }

@@ -59,7 +59,13 @@ const loading = ref(false)
 const error = ref(null)
 const search = ref('')              // server-side search (nama/kode item)
 
-const itemDropdown = ref([])        // master items source untuk modal dropdown
+// Picker item (cari-server + paginasi "Muat lebih banyak") — pengganti dropdown
+// prefetch per_page:500 yang MEMOTONG master >500 item (tindakan 600+). Alur:
+// "Tambah Tarif" → pilih item di picker → modal harga dengan item terkunci
+// (jalur _itemLabel, sama seperti tombol "Set Harga" di mode Buku Tarif).
+const picker = ref({ open: false, search: '', results: [], page: 1, lastPage: 1, total: 0, loading: false })
+let pickerSeq = 0
+let pickerTimer = null
 
 const modal = ref({ open: false, mode: 'create', payload: emptyForm(), errors: null, submitting: false, editingId: null })
 const confirmDelete = ref({ open: false, row: null, busy: false })
@@ -146,14 +152,61 @@ async function refresh(page = 1) {
   }
 }
 
-async function loadItemDropdown() {
+async function searchPickerItems(reset = true) {
+  const api = masterApi[meta.value.dropdownApi]
+  if (!api) return
+  if (reset) { picker.value.page = 1; picker.value.results = [] }
+  const seq = ++pickerSeq
+  picker.value.loading = true
   try {
-    const api = masterApi[meta.value.dropdownApi]
-    const res = await api.list({ per_page: 500, active: 1 })
-    const payload = res.data?.data
-    itemDropdown.value = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload) ? payload : [])
+    const params = { search: picker.value.search || undefined, per_page: 25, page: picker.value.page, active: 1 }
+    if (props.type === 'iol') { delete params.active; params.available_only = 1 }
+    const res = await api.list(params)
+    if (seq !== pickerSeq) return   // hasil basi (user sudah ketik lagi)
+    const pg   = res.data?.data ?? {}
+    const rows = pg.data ?? (Array.isArray(pg) ? pg : [])
+    const mapped = rows.map((r) => ({
+      id:    r.id,
+      code:  r[meta.value.itemCodeKey] ?? '',
+      name:  props.type === 'iol'
+        ? `${r.brand ?? ''}${r.model ? ' ' + r.model : ''}${r.power != null ? ' ' + r.power + 'D' : ''}`.trim()
+        : (r[meta.value.itemNameKey] ?? ''),
+      cat:   r[meta.value.kategoriKey] ?? '',
+      price: Number(r[meta.value.masterPriceKey] ?? 0),
+    }))
+    picker.value.results  = reset ? mapped : [...picker.value.results, ...mapped]
+    picker.value.lastPage = pg.last_page ?? 1
+    picker.value.total    = pg.total ?? picker.value.results.length
   } catch (e) {
-    itemDropdown.value = []
+    if (seq === pickerSeq) picker.value.results = []
+  } finally {
+    if (seq === pickerSeq) picker.value.loading = false
+  }
+}
+function onPickerSearchInput(e) {
+  picker.value.search = e.target.value
+  clearTimeout(pickerTimer)
+  pickerTimer = setTimeout(() => searchPickerItems(true), 300)
+}
+function loadMorePicker() {
+  if (picker.value.page >= picker.value.lastPage || picker.value.loading) return
+  picker.value.page += 1
+  searchPickerItems(false)
+}
+// Pilih item dari picker → tutup picker, buka modal harga dengan item TERKUNCI.
+function pickFromPicker(opt) {
+  picker.value.open = false
+  modal.value = {
+    open: true,
+    mode: 'create',
+    payload: {
+      ...emptyForm(),
+      item_id:    opt.id,
+      _itemLabel: `${opt.code || '-'} · ${opt.name}`,
+    },
+    errors: null,
+    submitting: false,
+    editingId: null,
   }
 }
 
@@ -166,8 +219,10 @@ function onSearch(v) {
 }
 
 // ─── CRUD modal ───────────────────────────────────────────────────────────
+// Tambah tarif = buka PICKER dulu (cari-server, tanpa batas 500), bukan dropdown.
 function openCreate() {
-  modal.value = { open: true, mode: 'create', payload: emptyForm(), errors: null, submitting: false, editingId: null }
+  picker.value = { open: true, search: '', results: [], page: 1, lastPage: 1, total: 0, loading: false }
+  searchPickerItems(true)
 }
 
 // Buku Tarif: item belum bertarif → buka modal create dgn item terkunci (set harga).
@@ -280,16 +335,10 @@ async function removeKemasan(u) {
   } finally { kemasanModal.value.busy = false }
 }
 
-// Watch item selection for auto-fill master price
+// Watch item selection for auto-fill master price (item selalu dari picker/Set Harga)
 watch(() => modal.value.payload.item_id, async (newId, oldId) => {
   if (modal.value.mode !== 'create') return
   if (!newId || newId === oldId) return
-  // Cek dari dropdown local dulu (faster); fallback panggil master-price API
-  const localItem = itemDropdown.value.find((it) => it.id === newId)
-  if (localItem && localItem[meta.value.masterPriceKey] !== undefined) {
-    modal.value.payload.price = Number(localItem[meta.value.masterPriceKey] ?? 0)
-    return
-  }
   try {
     const res = await tarifPaketApi.masterPrice(props.type, newId)
     modal.value.payload.price = Number(res.data?.data?.price ?? 0)
@@ -297,10 +346,6 @@ watch(() => modal.value.payload.item_id, async (newId, oldId) => {
 })
 
 const modalFields = computed(() => {
-  const itemOpts = itemDropdown.value.map((it) => ({
-    value: it.id,
-    label: `${it[meta.value.itemCodeKey] ?? '-'} · ${it[meta.value.itemNameKey] ?? '-'}`,
-  }))
   // Field pos kwitansi hanya untuk tab Obat (1 obat = 1 pos; berlaku lintas penjamin).
   const posField = isObat.value
     ? [{ key: 'pos_kwitansi', label: 'Klasifikasi', type: 'select', options: POS_OPTIONS, cols: 2,
@@ -308,13 +353,10 @@ const modalFields = computed(() => {
     : []
 
   if (modal.value.mode === 'create') {
-    // Item terkunci bila dibuka via "Set Harga" (item sudah ditentukan); else dropdown.
-    const itemField = modal.value.payload._itemLabel
-      ? { key: '_itemLabel', label: meta.value.itemLabel, type: 'text', disabled: true, cols: 2 }
-      : { key: 'item_id', label: meta.value.itemLabel, type: 'select', options: itemOpts, required: true, cols: 2,
-          hint: 'Setelah pilih, harga master ter-isi otomatis. Anda bisa override.' }
+    // Item SELALU sudah terpilih (via picker "Tambah Tarif" atau tombol "Set Harga")
+    // → tampil terkunci; harga master ter-isi otomatis (bisa di-override).
     return [
-      itemField,
+      { key: '_itemLabel', label: meta.value.itemLabel, type: 'text', disabled: true, cols: 2 },
       { key: 'price',     label: 'Harga (Rp)',  type: 'number',   required: true, min: 0, cols: 1 },
       { key: 'is_active', label: 'Aktif',       type: 'checkbox', cols: 1 },
       ...posField,
@@ -449,7 +491,7 @@ async function onCsvImportSelected(e) {
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
-  await Promise.all([refresh(), loadItemDropdown()])
+  await refresh()
 })
 onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 
@@ -578,6 +620,42 @@ watch(() => props.insurerId, () => refresh())
         </template>
       </template>
     </MasterTable>
+
+    <!-- Picker item: cari-server + paginasi (tanpa batas jumlah master) -->
+    <Teleport to="body">
+      <div v-if="picker.open" class="tt-picker-overlay" @click.self="picker.open = false">
+        <div class="tt-picker">
+          <div class="tt-picker-head">
+            <h3>Pilih {{ meta.itemLabel }}</h3>
+            <button class="tt-picker-close" @click="picker.open = false">✕</button>
+          </div>
+          <input
+            class="tt-picker-search"
+            type="search"
+            :value="picker.search"
+            :placeholder="`Cari ${meta.itemLabel.toLowerCase()} (nama / kode)…`"
+            autofocus
+            @input="onPickerSearchInput"
+          />
+          <div class="tt-picker-list">
+            <div v-if="picker.loading && !picker.results.length" class="tt-picker-empty">Memuat…</div>
+            <div v-else-if="!picker.results.length" class="tt-picker-empty">Tidak ada item yang cocok.</div>
+            <button v-for="opt in picker.results" :key="opt.id" class="tt-picker-item" @click="pickFromPicker(opt)">
+              <span class="tt-picker-code">{{ opt.code || '—' }}</span>
+              <span class="tt-picker-name">{{ opt.name }}<small v-if="opt.cat"> · {{ opt.cat }}</small></span>
+              <span class="tt-picker-price">{{ formatRp(opt.price) }}</span>
+            </button>
+            <button
+              v-if="picker.page < picker.lastPage"
+              class="tt-picker-more"
+              :disabled="picker.loading"
+              @click="loadMorePicker"
+            >{{ picker.loading ? 'Memuat…' : `Muat lebih banyak (${picker.results.length} / ${picker.total})` }}</button>
+          </div>
+          <div class="tt-picker-foot">{{ picker.total }} item · pilih untuk set harga</div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Modal CRUD -->
     <MasterFormModal
@@ -736,6 +814,27 @@ watch(() => props.insurerId, () => refresh())
 .tt-icon-btn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tt-icon-btn:hover { background: var(--gl); color: var(--td); border-color: var(--ga); }
 .tt-icon-danger:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+
+/* ── Picker item (Tambah Tarif): cari-server + muat-lebih-banyak ── */
+.tt-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
+.tt-picker { background: var(--bc); border-radius: 16px; width: 620px; max-width: 95vw; border: 1px solid var(--gb); padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.7rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); max-height: 80vh; }
+.tt-picker-head { display: flex; align-items: center; justify-content: space-between; }
+.tt-picker-head h3 { font-family: 'Space Grotesk', serif; font-size: 17px; color: var(--td); margin: 0; }
+.tt-picker-close { border: none; background: transparent; color: var(--tm); font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 8px; }
+.tt-picker-close:hover { background: var(--gb); color: var(--td); }
+.tt-picker-search { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13.5px; }
+.tt-picker-search:focus { outline: none; border-color: var(--ga); }
+.tt-picker-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 200px; }
+.tt-picker-empty { padding: 1.4rem; text-align: center; color: var(--tm); font-size: 13px; }
+.tt-picker-item { display: flex; align-items: center; gap: 0.7rem; padding: 8px 10px; border: none; background: transparent; border-radius: 8px; cursor: pointer; text-align: left; width: 100%; }
+.tt-picker-item:hover { background: var(--gb); }
+.tt-picker-code { font-family: monospace; font-size: 11.5px; color: var(--tm); flex: 0 0 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-picker-name { flex: 1; font-size: 13px; color: var(--td); font-weight: 600; }
+.tt-picker-name small { color: var(--tm); font-weight: 400; }
+.tt-picker-price { font-size: 12.5px; color: var(--tm); white-space: nowrap; }
+.tt-picker-more { margin-top: 4px; padding: 8px; border: 1px dashed var(--gb); background: transparent; border-radius: 8px; color: var(--tm); font-size: 12.5px; cursor: pointer; }
+.tt-picker-more:hover:not(:disabled) { border-color: var(--ga); color: var(--td); }
+.tt-picker-foot { font-size: 11.5px; color: var(--tm); text-align: right; }
 
 .tt-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 9100; backdrop-filter: blur(3px); padding: 1rem; }
 .tt-confirm { background: var(--bc); border-radius: 16px; width: 420px; max-width: 95vw; border: 1px solid var(--gb); padding: 1.6rem 1.5rem 1.3rem; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.7rem; box-shadow: 0 20px 60px rgba(0,0,0,0.22); }

@@ -935,12 +935,20 @@ class TarifPaketService
     }
 
     /**
-     * IOL display name: "{brand} {model} {power}D".
-     * Strategi: split akhiran power, sisa = brand+model.
+     * IOL display name: "{brand} {model} {power}D" — power OPSIONAL.
+     * Data katalog live banyak yang model/power NULL → export menulis nama tanpa
+     * power; tanpa fallback ini, re-import gagal senyap (roundtrip putus).
      */
     private function lookupIolByDisplayName(string $needle): ?string
     {
-        // Tangkap power di akhir (mis. "21D" / "21.5D")
+        // 1. Cocokkan nama lengkap TANPA power: "brand" / "brand model" (tepat 1 baris).
+        $exact = IolItem::whereRaw("LOWER(TRIM(CONCAT_WS(' ', brand, model))) = ?", [$needle])
+            ->limit(2)->pluck('id');
+        if ($exact->count() === 1) {
+            return (string) $exact->first();
+        }
+
+        // 2. Tangkap power di akhir (mis. "21D" / "21.5D")
         if (! preg_match('/^(.*?)\s+([\d.]+)d\s*$/i', $needle, $m)) {
             return null;
         }
