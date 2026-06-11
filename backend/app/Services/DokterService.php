@@ -1792,30 +1792,45 @@ class DokterService
         if (! $refraksi) {
             return '';
         }
+        // Sumber tunggal: soap_o (ditulis RefraksionisView oDerived). Fallback di bawah
+        // hanya untuk record lama tanpa soap_o. Urutan SELARAS dgn oDerived &
+        // RmeAggregator::refraksiObjektif: Visus awal → Subjektif (S/C/X) → Visus akhir → ADD → IOP.
         if ($refraksi->soap_o) {
             return trim($refraksi->soap_o);
         }
         $parts = [];
-        if ($refraksi->visus_akhir_od || $refraksi->visus_akhir_os) {
-            $parts[] = 'Visus OD ' . ($refraksi->visus_akhir_od ?? '-') . ' / OS ' . ($refraksi->visus_akhir_os ?? '-');
+        $sg = fn ($n) => $n === null ? null : (($n >= 0 ? '+' : '') . $n);
+        // 1. Visus awal (UCVA)
+        if ($refraksi->visus_awal_od || $refraksi->visus_awal_os) {
+            $parts[] = 'Visus awal OD ' . ($refraksi->visus_awal_od ?? '-') . ' / OS ' . ($refraksi->visus_awal_os ?? '-');
         }
-        $rx = function ($sph, $cyl, $axis, $add) {
-            if ($sph === null && $cyl === null && $axis === null && $add === null) {
+        // 2. Refraksi subjektif S/C/X (tanpa ADD)
+        $scx = function ($sph, $cyl, $axis) use ($sg) {
+            if ($sph === null && $cyl === null && $axis === null) {
                 return '';
             }
-            // Label S/C/X (Sphere/Cylinder/Axis) agar nilai tunggal tak ambigu.
-            $parts = [];
-            if ($sph !== null)  { $parts[] = 'S ' . ($sph >= 0 ? '+' : '') . $sph; }
-            if ($cyl !== null)  { $parts[] = 'C ' . ($cyl >= 0 ? '+' : '') . $cyl; }
-            if ($axis !== null) { $parts[] = "X {$axis}"; }
-            if ($add !== null)  { $parts[] = 'Add ' . ($add >= 0 ? '+' : '') . $add; }
-            return implode(' / ', $parts);
+            $p = [];
+            if ($sph !== null)  { $p[] = 'S ' . $sg($sph); }
+            if ($cyl !== null)  { $p[] = 'C ' . $sg($cyl); }
+            if ($axis !== null) { $p[] = "X {$axis}"; }
+            return implode(' / ', $p);
         };
-        $rxOd = $rx($refraksi->refraksi_subjektif_od_sph, $refraksi->refraksi_subjektif_od_cyl, $refraksi->refraksi_subjektif_od_axis, $refraksi->add_power_od);
-        $rxOs = $rx($refraksi->refraksi_subjektif_os_sph, $refraksi->refraksi_subjektif_os_cyl, $refraksi->refraksi_subjektif_os_axis, $refraksi->add_power_os);
+        $rxOd = $scx($refraksi->refraksi_subjektif_od_sph, $refraksi->refraksi_subjektif_od_cyl, $refraksi->refraksi_subjektif_od_axis);
+        $rxOs = $scx($refraksi->refraksi_subjektif_os_sph, $refraksi->refraksi_subjektif_os_cyl, $refraksi->refraksi_subjektif_os_axis);
         if ($rxOd || $rxOs) {
             $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '-') . ' | OS ' . ($rxOs ?: '-');
         }
+        // 3. Visus akhir (BCVA)
+        if ($refraksi->visus_akhir_od || $refraksi->visus_akhir_os) {
+            $parts[] = 'Visus akhir OD ' . ($refraksi->visus_akhir_od ?? '-') . ' / OS ' . ($refraksi->visus_akhir_os ?? '-');
+        }
+        // 4. ADD (adisi baca)
+        $hasAdd = ($refraksi->add_power_od !== null && (float) $refraksi->add_power_od != 0.0)
+            || ($refraksi->add_power_os !== null && (float) $refraksi->add_power_os != 0.0);
+        if ($hasAdd) {
+            $parts[] = 'Add OD ' . ($sg($refraksi->add_power_od) ?? '-') . ' / OS ' . ($sg($refraksi->add_power_os) ?? '-');
+        }
+        // 5. IOP/TIO
         if ($refraksi->iop_od || $refraksi->iop_os) {
             $parts[] = 'TIO OD ' . ($refraksi->iop_od ?? '-') . ' / OS ' . ($refraksi->iop_os ?? '-') . ' mmHg' . ($refraksi->iop_method ? " ({$refraksi->iop_method})" : '');
         }

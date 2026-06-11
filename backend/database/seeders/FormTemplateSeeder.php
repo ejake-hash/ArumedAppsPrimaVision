@@ -278,7 +278,8 @@ HTML;
 
             // ── Isi resume — AUTO-prefill + EDITABLE ─────────────────────────
             $editable('anamnese',         'Anamnese',          ['via' => 'db', 'source' => 'doctorExamination.anamnese']),
-            $editable('pemeriksaan_fisik','Pemeriksaan Fisik', ['via' => 'db', 'source' => 'doctorExamination.soap_objective']),
+            // Pemeriksaan Fisik = refraksi objektif (RO, soap_o) + segmen mata dokter (soap_objective).
+            $editable('pemeriksaan_fisik','Pemeriksaan Fisik', ['via' => 'aggregate', 'source' => 'physical_exam']),
             $editable('alergi',           'Alergi Obat',       ['via' => 'db', 'source' => 'nurseAssessment.allergy_detail']),
             $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
             $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),

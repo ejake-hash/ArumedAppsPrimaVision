@@ -49,8 +49,73 @@ final class AggregateResolver
             'surgery_operation_summary'           => $this->resolveOperationSummary($visit, $format),
             'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
             'planning_instruction'                => $this->resolvePlanningInstruction($visit),
+            'physical_exam'                       => $this->resolvePhysicalExam($visit),
             default                               => null,
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // physical_exam — "Pemeriksaan Fisik" Resume Medis = refraksi objektif (RO,
+    // sumber tunggal refraction_records.soap_o yang ditulis RefraksionisView) +
+    // pemeriksaan segmen mata dokter (doctorExamination.soap_objective). Tetap
+    // EDITABLE di FormRMRenderer (prefill saja). Urutan RO mengikuti soap_o.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolvePhysicalExam(Visit $visit): ?string
+    {
+        $parts = [];
+        $rec = $visit->refractionRecord;
+        // RO: utamakan soap_o (sumber tunggal), fallback bangun dari record (visit lama).
+        $ro = trim((string) ($rec?->soap_o ?? ''));
+        if ($ro === '' && $rec !== null) {
+            $ro = (string) $this->buildRefraksiObjektif($rec);
+        }
+        if ($ro !== '') {
+            $parts[] = $ro;
+        }
+        $seg = trim((string) ($visit->doctorExamination?->soap_objective ?? ''));
+        if ($seg !== '') {
+            $parts[] = $seg;
+        }
+        return $parts ? implode("\n", $parts) : null;
+    }
+
+    /**
+     * Bangun teks refraksi objektif dari record (fallback bila soap_o kosong).
+     * Urutan SELARAS dgn RefraksionisView::oDerived & RmeAggregator::refraksiObjektif:
+     * Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
+     */
+    private function buildRefraksiObjektif(\App\Models\RefractionRecord $r): string
+    {
+        $sg = fn ($n) => $n === null ? null : (($n >= 0 ? '+' : '') . $n);
+        $scx = function ($sph, $cyl, $axis) use ($sg) {
+            if ($sph === null && $cyl === null && $axis === null) return '';
+            $p = [];
+            if ($sph !== null)  { $p[] = 'S ' . $sg($sph); }
+            if ($cyl !== null)  { $p[] = 'C ' . $sg($cyl); }
+            if ($axis !== null) { $p[] = "X {$axis}"; }
+            return implode(' / ', $p);
+        };
+        $parts = [];
+        if ($r->visus_awal_od || $r->visus_awal_os) {
+            $parts[] = 'Visus awal OD ' . ($r->visus_awal_od ?? '–') . ' / OS ' . ($r->visus_awal_os ?? '–');
+        }
+        $rxOd = $scx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis);
+        $rxOs = $scx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis);
+        if ($rxOd || $rxOs) {
+            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
+        }
+        if ($r->visus_akhir_od || $r->visus_akhir_os) {
+            $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
+        }
+        $hasAdd = ($r->add_power_od !== null && (float) $r->add_power_od != 0.0)
+            || ($r->add_power_os !== null && (float) $r->add_power_os != 0.0);
+        if ($hasAdd) {
+            $parts[] = 'Add OD ' . ($sg($r->add_power_od) ?? '–') . ' / OS ' . ($sg($r->add_power_os) ?? '–');
+        }
+        if ($r->iop_od || $r->iop_os) {
+            $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        }
+        return $parts ? implode("\n", $parts) : '';
     }
 
     // ─────────────────────────────────────────────────────────────────────────

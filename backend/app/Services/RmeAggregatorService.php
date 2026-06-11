@@ -334,17 +334,33 @@ class RmeAggregatorService
     }
 
     /** Ringkas Objektif refraksionis (visus akhir + refraksi subjektif + TIO) untuk timeline. */
+    // Objektif refraksi — SUMBER TUNGGAL refraction_records.soap_o (ditulis oleh
+    // RefraksionisView oDerived). Ini fallback bila soap_o kosong (record lama/skip).
+    // Urutan SELARAS: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
     private function refraksiObjektif(RefractionRecord $r): ?string
     {
         $parts = [];
-        if ($r->visus_akhir_od || $r->visus_akhir_os) {
-            $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
+        // 1. Visus awal (UCVA)
+        if ($r->visus_awal_od || $r->visus_awal_os) {
+            $parts[] = 'Visus awal OD ' . ($r->visus_awal_od ?? '–') . ' / OS ' . ($r->visus_awal_os ?? '–');
         }
-        $rxOd = $this->fmtRx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis, $r->add_power_od);
-        $rxOs = $this->fmtRx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis, $r->add_power_os);
+        // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
+        $rxOd = $this->fmtRx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis, null);
+        $rxOs = $this->fmtRx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis, null);
         if ($rxOd || $rxOs) {
             $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
         }
+        // 3. Visus akhir (BCVA)
+        if ($r->visus_akhir_od || $r->visus_akhir_os) {
+            $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
+        }
+        // 4. ADD (adisi baca)
+        $hasAdd = ($r->add_power_od !== null && (float) $r->add_power_od != 0.0)
+            || ($r->add_power_os !== null && (float) $r->add_power_os != 0.0);
+        if ($hasAdd) {
+            $parts[] = 'Add OD ' . ($this->signed($r->add_power_od) ?? '–') . ' / OS ' . ($this->signed($r->add_power_os) ?? '–');
+        }
+        // 5. IOP/TIO
         if ($r->iop_od || $r->iop_os) {
             $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
         }

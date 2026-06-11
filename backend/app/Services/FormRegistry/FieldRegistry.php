@@ -146,6 +146,10 @@ final class FieldRegistry
                 'label'   => 'Instruksi/Anjuran dari Rencana Tatalaksana (planning) — kalimat siap-pakai',
                 'formats' => ['text'],
             ],
+            'physical_exam' => [
+                'label'   => 'Pemeriksaan Fisik = refraksi objektif (RO/soap_o) + segmen mata dokter (soap_objective)',
+                'formats' => ['text'],
+            ],
         ];
     }
 

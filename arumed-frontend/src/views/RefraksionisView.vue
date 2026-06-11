@@ -195,28 +195,33 @@ const SOAP_P_DEFAULT = 'Konsultasi ke Dokter'
 const soap = ref({ s: '', o: '', a: SOAP_A_DEFAULT, p: SOAP_P_DEFAULT })
 const soapODirty = ref(false)   // O disentuh manual → hentikan autofill dari data refraksi
 
-// Objektif (O) tersusun dari data refraksi — mirror RmeAggregator::refraksiObjektif:
-// visus akhir (BCVA) + refraksi subjektif + TIO. Editable: begitu diedit, autofill berhenti.
+// Objektif (O) tersusun dari data refraksi — SUMBER TUNGGAL `soap_o`, mirror
+// RmeAggregator::refraksiObjektif & DokterService::refraksiObjektifResume.
+// Urutan: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP.
+// Editable: begitu diedit manual, autofill berhenti.
 const oDerived = computed(() => {
   const parts = []
-  const bod = visus.value.bcva_od, bos = visus.value.bcva_os
-  if (bod || bos) parts.push(`Visus akhir OD ${bod || '–'} / OS ${bos || '–'}`)
-  const fmt = (s, c, a, ad) => {
-    if (![s, c, a, ad].some((x) => x !== '' && x != null)) return ''
-    // Label S/C/X (Sphere/Cylinder/Axis) agar nilai tunggal tak ambigu di SOAP.
-    const parts = []
-    if (s !== '' && s != null) parts.push(`S${Number(s) >= 0 ? '+' : ''}${s}`)
-    if (c !== '' && c != null) parts.push(`C${Number(c) >= 0 ? '+' : ''}${c}`)
-    if (a !== '' && a != null) parts.push(`X${a}°`)
-    if (ad !== '' && ad != null) parts.push(`Add ${ad}`)
-    return parts.join(' / ')
+  const v = visus.value, r = refine.value, i = iop.value
+  const has = (x) => x !== '' && x != null
+  const signed = (x) => `${Number(x) >= 0 ? '+' : ''}${x}`
+  // 1. Visus awal (UCVA)
+  if (has(v.ucva_od) || has(v.ucva_os)) parts.push(`Visus awal OD ${v.ucva_od || '–'} / OS ${v.ucva_os || '–'}`)
+  // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
+  const scx = (s, c, a) => {
+    const p = []
+    if (has(s)) p.push(`S${signed(s)}`)
+    if (has(c)) p.push(`C${signed(c)}`)
+    if (has(a)) p.push(`X${a}°`)
+    return p.join(' / ')
   }
-  const rxOd = fmt(refine.value.od_s, refine.value.od_c, refine.value.od_ax, refine.value.add_od)
-  const rxOs = fmt(refine.value.os_s, refine.value.os_c, refine.value.os_ax, refine.value.add_os)
+  const rxOd = scx(r.od_s, r.od_c, r.od_ax), rxOs = scx(r.os_s, r.os_c, r.os_ax)
   if (rxOd || rxOs) parts.push(`Refraksi subjektif OD ${rxOd || '–'} | OS ${rxOs || '–'}`)
-  if (iop.value.od || iop.value.os) {
-    parts.push(`TIO OD ${iop.value.od || '–'} / OS ${iop.value.os || '–'} mmHg${iop.value.method ? ` (${iop.value.method})` : ''}`)
-  }
+  // 3. Visus akhir (BCVA)
+  if (has(v.bcva_od) || has(v.bcva_os)) parts.push(`Visus akhir OD ${v.bcva_od || '–'} / OS ${v.bcva_os || '–'}`)
+  // 4. ADD (adisi baca)
+  if (has(r.add_od) || has(r.add_os)) parts.push(`Add OD ${has(r.add_od) ? signed(r.add_od) : '–'} / OS ${has(r.add_os) ? signed(r.add_os) : '–'}`)
+  // 5. IOP/TIO
+  if (has(i.od) || has(i.os)) parts.push(`TIO OD ${i.od || '–'} / OS ${i.os || '–'} mmHg${i.method ? ` (${i.method})` : ''}`)
   return parts.join('\n')
 })
 
