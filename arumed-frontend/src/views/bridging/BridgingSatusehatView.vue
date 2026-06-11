@@ -544,9 +544,24 @@ onMounted(() => { load(); loadBatches() })
                   Diproses <b>{{ ready.ihsResult.processed }}</b> · berhasil <b>{{ ready.ihsResult.resolved }}</b> ·
                   NIK tak ditemukan <b>{{ ready.ihsResult.not_found }}</b> ·
                   sisa siap-resolve <b>{{ (ready.ihsResult.remaining_resolvable || 0).toLocaleString('id-ID') }}</b>
+                  <b v-if="ready.ihsResult.resolved" class="delta-ok">(−{{ ready.ihsResult.resolved }})</b>
                   <template v-if="ready.ihsResult.error"><br />⚠ Terhenti: {{ ready.ihsResult.error }}</template>
                 </span>
               </div>
+              <!-- Bukti per-pasien: IHS yang didapat tersimpan di kolom pasien
+                   (tampil juga di Profil Pasien Admisi). -->
+              <template v-if="ready.ihsResult?.sample?.length">
+                <ul class="rd-list rd-sample">
+                  <li v-for="(s, i) in ready.ihsResult.sample" :key="i">
+                    <span class="rd-s-name">{{ s.name }} <small>{{ s.nik }}</small></span>
+                    <code v-if="s.ihs" class="ihs-ok">✓ {{ s.ihs }}</code>
+                    <span v-else class="ihs-fail">✗ NIK tak ditemukan</span>
+                  </li>
+                </ul>
+                <p v-if="ready.ihsResult.processed > ready.ihsResult.sample.length" class="muted">
+                  Menampilkan {{ ready.ihsResult.sample.length }} pertama dari {{ ready.ihsResult.processed }} yang diproses.
+                </p>
+              </template>
             </template>
           </div>
 
@@ -691,6 +706,13 @@ onMounted(() => { load(); loadBatches() })
 .rd-input { width: 170px; padding: 7px 10px; border: 1.5px solid #DEE4EB; border-radius: 8px; font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #081F38; }
 .rd-input:focus { outline: none; border-color: #1FAAE0; }
 .rd-plain li { font-size: 12.5px; color: #081F38; padding: 6px 10px; background: #F6F8FA; border: 1px solid #DEE4EB; border-radius: 8px; }
+.rd-sample { max-height: 32vh; }
+.rd-sample li { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; font-size: 12.5px; padding: 6px 10px; background: #F6F8FA; border: 1px solid #DEE4EB; border-radius: 8px; }
+.rd-s-name { color: #081F38; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-s-name small { color: #4C5A6B; font-weight: 400; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; margin-left: 6px; }
+.ihs-ok { color: #1E9E63; font-weight: 700; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; white-space: nowrap; }
+.ihs-fail { color: #E14942; font-weight: 600; font-size: 11.5px; white-space: nowrap; }
+.delta-ok { color: #1E9E63; }
 .bf-note code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #fff; border: 1px solid #DEE4EB; border-radius: 5px; padding: 1px 5px; }
 
 /* ── TREND ───────────────────────────────────────────────────────── */
@@ -733,7 +755,14 @@ onMounted(() => { load(); loadBatches() })
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(8px); }
 
 /* ── BACKFILL MODAL ──────────────────────────────────────────────── */
-.bf-overlay { position: fixed; inset: 0; background: rgba(8,31,56,.5); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 1200; padding: 1rem; }
+/* Modal di-Teleport ke <body> → DI LUAR .ss, jadi var palet (--navy dst.) tidak
+   ter-resolve → tombol .btn.primary kehilangan background (teks putih di atas
+   footer abu = "tombol hantu"). Definisikan ulang palet di overlay. */
+.bf-overlay {
+  --navy: #0E3A66; --cyan: #1FAAE0;
+  --green: #1E9E63; --amber: #E8930C; --red: #E14942;
+  position: fixed; inset: 0; background: rgba(8,31,56,.5); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 1200; padding: 1rem;
+}
 .bf-box { background: #fff; border-radius: 18px; width: min(560px, 96vw); max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 60px rgba(8,31,56,.28); }
 .bf-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.4rem 1rem; border-bottom: 1px solid #DEE4EB; }
 .bf-head h3 { margin: 0; font-size: 16px; font-weight: 700; color: #081F38; }

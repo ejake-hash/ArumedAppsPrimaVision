@@ -829,14 +829,24 @@ class SatusehatService
         $resolved = 0;
         $notFound = 0;
         $error    = null;
+        $sample   = []; // bukti per-pasien (cap 20) utk ditampilkan di modal hasil
 
         foreach ($patients as $p) {
             try {
-                if ($this->resolvePatientIhs($p)) {
+                $ihs = $this->resolvePatientIhs($p);
+                if ($ihs) {
                     $resolved++;
                 } else {
                     $notFound++;
                     $p->touch(); // ke belakang antrean (lihat docblock)
+                }
+                if (count($sample) < 20) {
+                    $sample[] = [
+                        'name' => $p->name,
+                        // NIK dimask (privasi): cukup utk identifikasi visual.
+                        'nik'  => substr((string) $p->nik, 0, 6) . str_repeat('•', 10),
+                        'ihs'  => $ihs,
+                    ];
                 }
             } catch (\Throwable $e) {
                 // Token/jaringan bermasalah → sisa batch pasti gagal juga; berhenti
@@ -854,6 +864,7 @@ class SatusehatService
             'resolved'             => $resolved,
             'not_found'            => $notFound,
             'error'                => $error,
+            'sample'               => $sample,
             'remaining_resolvable' => $resolvableQ->count(),
             'remaining_total'      => \App\Models\Patient::whereNull('satusehat_ihs')->count(),
         ];
