@@ -503,6 +503,48 @@ final class FormRegistryService
     }
 
     /**
+     * Normalisasi payload dokumen BELUM final (DRAFT/RENDERED/PENDING_SIGNATURE):
+     * static_payload diganti autofill SEGAR (prefill withDraft=false) + meta
+     * manual_fields direset []. Dipakai migrasi satu-kali (rewire --include-drafts)
+     * saat mapping autofill berubah — draft lama yang payload-nya berisi nilai
+     * autofill versi lama (mis. kode penunjang nyangkut di kolom Tindakan) ikut
+     * tersamakan; tanpa ini, nilai non-kosong lama menang saat render & dianggap
+     * "manual" oleh heuristik prefill. Draft tidak ber-TTD → tak ada embed ulang.
+     */
+    public function rewireDraftPayload(string $patientDocumentId): PatientDocument
+    {
+        return DB::transaction(function () use ($patientDocumentId) {
+            /** @var PatientDocument $doc */
+            $doc = PatientDocument::query()->lockForUpdate()->findOrFail($patientDocumentId);
+
+            if (in_array($doc->status, ['FINALIZED', 'FINAL', 'SUPERSEDED'], true)) {
+                throw new RuntimeException('Hanya dokumen belum-final yang bisa di-rewire payload-nya.');
+            }
+            if ($doc->template_code === null || $doc->visit_id === null) {
+                throw new RuntimeException('Dokumen tidak ter-link template_code/visit_id.');
+            }
+
+            $fresh = $this->prefill($doc->template_code, $doc->visit_id, false)['defaults'] ?? [];
+
+            $sig = $doc->signatures ?? [];
+            $sig['static_payload'] = $fresh;
+            $sig['manual_fields']  = [];   // semua dianggap autofill ke depan
+            $doc->signatures = $sig;
+            $doc->save();
+
+            FormRegistryAudit::record(
+                'FORM_DOC_DRAFT_REWIRED',
+                model: 'PatientDocument',
+                modelId: $doc->id,
+                description: "Payload draft diganti autofill segar (rewire --include-drafts) template={$doc->template_code}",
+                context: ['template_code' => $doc->template_code],
+            );
+
+            return $doc;
+        });
+    }
+
+    /**
      * Regenerasi NON-THROWING semua dokumen FINAL sebuah visit untuk satu template
      * (default Resume Medis) — dipanggil dari titik REVISI dokter ("Buka Kembali"
      * tambah/ubah resep & tindakan) agar resume yang sudah terbit ikut ter-refresh:

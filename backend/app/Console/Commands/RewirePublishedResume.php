@@ -26,6 +26,7 @@ class RewirePublishedResume extends Command
     protected $signature = 'resume:rewire-published
                             {--apply : Tulis perubahan (default: dry-run preview saja)}
                             {--overwrite : Resolve ulang isi autofill (timpa static_payload) — bukan hanya isi field kosong}
+                            {--include-drafts : Ikut normalisasi dokumen BELUM final (payload draft diganti autofill segar + manual_fields direset)}
                             {--code=RESUME_MEDIS : Kode template yang diregenerasi}
                             {--id= : Batasi ke satu patient_document_id tertentu}';
 
@@ -80,6 +81,43 @@ class RewirePublishedResume extends Command
         }
 
         $this->line(str_repeat('-', 92));
+
+        // ── Dokumen BELUM final (DRAFT/RENDERED/PENDING_SIGNATURE) — opsional ────
+        // Payload draft lama bisa berisi nilai autofill versi LAMA yang non-kosong
+        // (mis. kode penunjang nyangkut di kolom Tindakan) → menang saat render &
+        // dianggap manual oleh heuristik prefill. Normalisasi: payload = autofill segar.
+        if ($this->option('include-drafts')) {
+            $draftQuery = PatientDocument::query()
+                ->where('template_code', $code)
+                ->whereNotIn('status', ['FINALIZED', 'FINAL', 'SUPERSEDED'])
+                ->with(['visit.patient']);
+            if ($id) {
+                $draftQuery->where('id', $id);
+            }
+            $drafts = $draftQuery->orderBy('created_at')->get();
+
+            $this->info(($apply ? '[APPLY] ' : '[DRY RUN] ') . "Draft belum final: {$drafts->count()} dokumen (payload → autofill segar).");
+            foreach ($drafts as $doc) {
+                $patient = $doc->visit?->patient?->name ?? '—';
+                $rm      = $doc->visit?->patient?->no_rm ?? '—';
+                $label   = "doc={$doc->id} status={$doc->status} · {$patient} (RM {$rm})";
+
+                if (!$apply) {
+                    $this->line('  • ' . $label);
+                    continue;
+                }
+                try {
+                    $svc->rewireDraftPayload($doc->id);
+                    $this->info("  ✓ {$label} → payload disegarkan");
+                    $ok++;
+                } catch (\Throwable $e) {
+                    $this->error("  ✗ {$label} → {$e->getMessage()}");
+                    $fail++;
+                }
+            }
+            $this->line(str_repeat('-', 92));
+        }
+
         if ($apply) {
             $this->info("Selesai: {$ok} berhasil, {$fail} gagal.");
         } else {
