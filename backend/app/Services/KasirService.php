@@ -58,6 +58,8 @@ class KasirService
                 // Paket bedah utk badge "Kategori — Nama Paket" di antrean & banner pasien.
                 'visit.surgerySchedule.surgeryPackage',
                 'visit.doctorExamination.surgerySchedule.surgeryPackage',
+                // COB: penjamin-2 utk badge "COB — <insurer>" di antrean & kartu pasien.
+                'visit.visitCob.penjamin2',
             ])
             ->where('station', 'KASIR')
             ->boardVisibleOpenBilling()   // +pasien belum tutup kasir (Masih Aktif)
@@ -2997,6 +2999,8 @@ class KasirService
         $invoice = BillingInvoice::with([
             'visit.patient',
             'visit.insurer',
+            // COB: penjamin-2 (insurer) utk baris "BPJS Kesehatan — COB <insurer>" di kwitansi.
+            'visit.visitCob.penjamin2',
             'visit.room',
             'visit.bed',
             // DPJP/dokter penanggung jawab untuk ditampilkan di kwitansi (RANAP & RAJAL).
@@ -3058,6 +3062,14 @@ class KasirService
                 'nik'            => $invoice->visit->patient?->nik,
                 'guarantor_type' => $invoice->visit->guarantor_type,
                 'insurer'        => $invoice->visit->insurer?->name,
+                // Penjamin kedua (COB) — null bila bukan COB. Dipakai kwitansi utk
+                // baris "BPJS Kesehatan — COB <insurer-2>".
+                'cob' => ($cob = $invoice->visit->visitCob) && $cob->is_active && $cob->penjamin2_insurer_id
+                    ? [
+                        'guarantor_type' => $cob->penjamin2_type,
+                        'insurer'        => $cob->penjamin2?->name,
+                    ]
+                    : null,
                 // Dokter penanggung jawab (DPJP) — RANAP pakai dpjp eksplisit, RAJAL/IGD
                 // pakai dokter pemeriksa / dokter jadwal (lihat resolveDpjpName).
                 'dpjp'           => $this->resolveDpjpName($invoice->visit),

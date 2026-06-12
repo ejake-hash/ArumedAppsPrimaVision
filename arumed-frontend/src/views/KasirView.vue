@@ -770,16 +770,30 @@ function penjaminLabel(g) {
   return 'Umum'
 }
 // Penjamin lengkap: tampilkan nama insurer HANYA bila menambah info (mis. "Asuransi —
-// Admedika", "BPJS Kesehatan — COB Kereta Api"). Sembunyikan bila redundan dgn jenis
-// penjamin (mis. Umum — UMUM, BPJS — BPJS).
+// Admedika"). Sembunyikan bila redundan dgn jenis penjamin (mis. Umum — UMUM, BPJS — BPJS).
+// Bila COB (penjamin-2), tambahkan "— COB <insurer-2>" → "BPJS Kesehatan — COB PT KAI".
 function penjaminFull(p) {
   const base = penjaminLabel(p?.guarantor_type)
   const ins  = (p?.insurer ?? '').trim()
-  if (!ins) return base
-  const g = (p?.guarantor_type ?? '').toUpperCase()
-  const insU = ins.toUpperCase()
-  if (insU === g || insU === base.toUpperCase()) return base
-  return `${base} — ${ins}`
+  let label = base
+  if (ins) {
+    const g = (p?.guarantor_type ?? '').toUpperCase()
+    const insU = ins.toUpperCase()
+    if (insU !== g && insU !== base.toUpperCase()) label = `${base} — ${ins}`
+  }
+  const cob = p?.cob
+  if (cob && (cob.insurer || cob.guarantor_type)) {
+    const c2 = (cob.insurer ?? '').trim() || penjaminLabel(cob.guarantor_type)
+    label += ` — COB ${c2}`
+  }
+  return label
+}
+// Penjamin-2 (COB) dari data antrean/visit → nama insurer untuk badge "COB: …".
+// null bila bukan COB. Sumber: visit.visit_cob.penjamin2 (eager-load Kasir).
+function cobBadge(q) {
+  const cob = q?.visit?.visit_cob
+  if (!cob || cob.is_active === false || !cob.penjamin2_insurer_id) return null
+  return (cob.penjamin2?.name ?? '').trim() || penjaminLabel(cob.penjamin2_type)
 }
 // Jenis layanan kunjungan (judul kwitansi + label/badge).
 function svcCode(t)  { return (t ?? 'RAJAL').toUpperCase() }
@@ -1100,6 +1114,7 @@ const groupedPrintItems = computed(() =>
                     <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
+                    <span v-if="cobBadge(q)" class="pill pill-cob" :title="`COB — penjamin kedua: ${cobBadge(q)}`">COB: {{ cobBadge(q) }}</span>
                     <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
                     <span v-if="paketBedahLabel(q)" class="pill pill-bedah" :title="`Paket bedah: ${paketBedahLabel(q)}`">{{ paketBedahLabel(q) }}</span>
                     <span
@@ -1216,6 +1231,7 @@ const groupedPrintItems = computed(() =>
                   <span :class="['ptg', ptypeOf(selQ) === 'bpjs' ? 'ptg-b' : ptypeOf(selQ) === 'asn' ? 'ptg-a' : 'ptg-u']">
                     {{ ptypeOf(selQ) === 'bpjs' ? 'BPJS' : ptypeOf(selQ) === 'asn' ? 'Asuransi' : 'Umum' }}
                   </span>
+                  <span v-if="cobBadge(selQ)" class="ptg ptg-cob" :title="`COB — penjamin kedua: ${cobBadge(selQ)}`">COB: {{ cobBadge(selQ) }}</span>
                   <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
                   <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
                   <span v-if="paketBedahLabel(selQ)" class="ptg ptg-bedah" :title="`Paket bedah: ${paketBedahLabel(selQ)}`">{{ paketBedahLabel(selQ) }}</span>
@@ -1532,9 +1548,10 @@ const groupedPrintItems = computed(() =>
 
                       <div v-if="taxAmount" class="row"><span>Pajak</span><span class="num">Rp {{ taxAmount.toLocaleString('id-ID') }}</span></div>
                       <div class="row"><span>Total Tagihan</span><span class="num">Rp {{ totalTagihan.toLocaleString('id-ID') }}</span></div>
-                      <!-- COB: rincian tanggungan per penjamin (BPJS INA-CBG + selisih penjamin-2) -->
+                      <!-- COB: rincian tanggungan per penjamin (BPJS INA-CBG + selisih penjamin-2).
+                           Sembunyikan baris bernilai Rp 0 — rancu (belum ada nilai tanggungan). -->
                       <template v-if="cobSplit && cobSplit.is_cob">
-                        <div v-for="p in cobSplit.penjamin" :key="p.sequence" class="row green">
+                        <div v-for="p in cobSplit.penjamin.filter((x) => Number(x.covered_amount) > 0)" :key="p.sequence" class="row green">
                           <span>Ditanggung Penjamin {{ p.sequence }} ({{ p.guarantor_type }})</span>
                           <span class="num">−Rp {{ Number(p.covered_amount).toLocaleString('id-ID') }}</span>
                         </div>
@@ -2240,6 +2257,9 @@ const groupedPrintItems = computed(() =>
 /* Badge paket bedah "Kategori — Nama Paket" (antrean & banner identitas). */
 .pill-bedah { background: #ffe4e6; color: #9f1239; max-width: 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ptg-bedah  { background: #ffe4e6; color: #9f1239; max-width: 260px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* Badge COB (penjamin kedua) — ungu, beda dari penjamin utama & paket bedah. */
+.pill-cob { background: #ede9fe; color: #5b21b6; max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ptg-cob  { background: rgba(139, 92, 246, 0.18); color: #c4b5fd; border: 1px solid rgba(139, 92, 246, 0.25); max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
 .tbl-fi:focus { border-color: var(--ga); outline: none; }
