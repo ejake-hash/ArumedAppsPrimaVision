@@ -6,6 +6,7 @@ use App\Models\BhpItem;
 use App\Models\IolItem;
 use App\Models\Medication;
 use App\Models\Procedure;
+use App\Models\ProcedureCategory;
 use App\Models\SurgeryPackage;
 use App\Models\SurgeryPackageItem;
 use App\Models\SurgeryPackageTariff;
@@ -675,7 +676,7 @@ class TarifPaketService
             'Format LONG: 1 baris = 1 item. Paket multi-item → ulang baris dgn nama_paket sama.',
             'Kolom WAJIB: nama_paket, item_tipe, item_nama, qty. (kategori/tipe_paket/deskripsi/aktif/item_kategori/harga/catatan opsional)',
             'tipe_paket: BEDAH (boleh PROCEDURE/MEDICATION/BHP/IOL) atau PEMERIKSAAN (hanya PROCEDURE). Kosong → BEDAH (paket baru) / dipertahankan (paket lama).',
-            'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . '.',
+            'item_tipe salah satu: ' . implode(' | ', SurgeryPackageItem::TYPES) . ' — atau label kategori Buku Tarif (mis. "Tindakan", "Perawatan", "Sewa Kamar", "Sewa Peralatan Medik", "Obat Tindakan", "Bahan Habis Pakai", "CSSD").',
             'item_kategori = kategori buku tarif item — OPSIONAL, hanya untuk membedakan bila ada nama item kembar di kategori berbeda. Tindakan: mis. "Tarif Administrasi"/"CSSD"; Obat: golongan (mis. "KERAS"/"BEBAS").',
             'item_nama dicocokkan ke master (case-insensitive). IOL: tulis "Brand Model PowerD" mis. "Alcon AcrySof IQ 21D".',
             'Pos kwitansi obat (Obat Tindakan/Pulang/Injeksi) BUKAN di sini — itu atribut TARIF, diatur di Buku Tarif / Metode Bayar; komposisi paket cukup merujuk obatnya.',
@@ -754,8 +755,18 @@ class TarifPaketService
             }
 
             if (! in_array($itemTipe, SurgeryPackageItem::TYPES, true)) {
-                $errors[] = "Baris {$lineNum}: item_tipe '{$itemTipe}' tidak valid (harus " . implode('/', SurgeryPackageItem::TYPES) . ')';
-                continue;
+                // Terima juga label kategori Buku Tarif ("Obat Tindakan", "Tindakan",
+                // "Sewa Kamar", ...) — file olahan Excel paket lazim memakai label
+                // tampilan, bukan enum.
+                [$aliasTipe, $katHint] = $this->resolveItemTipeAlias($itemTipe);
+                if ($aliasTipe === null) {
+                    $errors[] = "Baris {$lineNum}: item_tipe '{$itemTipe}' tidak valid (harus " . implode('/', SurgeryPackageItem::TYPES) . ' atau label kategori Buku Tarif, mis. Obat Tindakan/Tindakan/Sewa Kamar)';
+                    continue;
+                }
+                $itemTipe = $aliasTipe;
+                if ($itemKat === '' && $katHint !== null) {
+                    $itemKat = $katHint;
+                }
             }
             if ($itemNama === '') {
                 $errors[] = "Baris {$lineNum}: 'item_nama' kosong";
@@ -958,10 +969,61 @@ class TarifPaketService
         return match ($type) {
             SurgeryPackageItem::TYPE_PROCEDURE  => $this->lookupByNameCategory(Procedure::query(), $needle, $cat, 'category'),
             SurgeryPackageItem::TYPE_MEDICATION => $this->lookupByNameCategory(Medication::query(), $needle, $cat, 'golongan'),
-            SurgeryPackageItem::TYPE_BHP        => $this->lookupByNameCategory(BhpItem::query(), $needle, $cat, 'category'),
+            SurgeryPackageItem::TYPE_BHP        => $this->lookupByNameCategory(BhpItem::query(), $needle, $this->normalizeBhpCategory($cat), 'category'),
             SurgeryPackageItem::TYPE_IOL        => $this->lookupIolByDisplayName($needle),
             default                             => null,
         };
+    }
+
+    /**
+     * item_kategori BHP dari CSV bisa berupa label tampilan ("BHP"/"Bahan Habis Pakai"/
+     * "Instrument") — petakan ke nilai mentah bhp_items.category supaya disambiguator
+     * nama tetap bekerja. Sudah lowercase (lookup membandingkan LOWER kedua sisi).
+     */
+    private function normalizeBhpCategory(?string $cat): ?string
+    {
+        return match ($cat) {
+            'bhp', 'bahan habis pakai'    => mb_strtolower(BhpItem::CATEGORY_MEDICAL_BHP),
+            'cssd supplies'               => mb_strtolower(BhpItem::CATEGORY_CSSD),
+            'instrument', 'instrument set' => mb_strtolower(BhpItem::CATEGORY_INSTRUMENT_SET),
+            default                       => $cat,
+        };
+    }
+
+    /**
+     * Terjemahkan label kategori Buku Tarif / section Excel paket bedah menjadi enum
+     * item_tipe. Return [enum, kategoriHint] — hint mengisi item_kategori (disambiguator
+     * lookup nama) bila kolom itu kosong; [null, null] = label tak dikenal.
+     * Selaras SECTION_TYPE pada command paket:import-excel.
+     */
+    private function resolveItemTipeAlias(string $label): array
+    {
+        $norm = mb_strtoupper(trim((string) preg_replace('/\s+/', ' ', $label)));
+
+        $static = [
+            // Obat — label pos kwitansi Buku Tarif (pos = atribut tarif, bukan golongan).
+            'OBAT'              => [SurgeryPackageItem::TYPE_MEDICATION, null],
+            'OBAT TINDAKAN'     => [SurgeryPackageItem::TYPE_MEDICATION, null],
+            'OBAT PULANG'       => [SurgeryPackageItem::TYPE_MEDICATION, null],
+            'OBAT INJEKSI'      => [SurgeryPackageItem::TYPE_MEDICATION, null],
+            // BHP — hint = nilai mentah bhp_items.category.
+            'BAHAN HABIS PAKAI' => [SurgeryPackageItem::TYPE_BHP, BhpItem::CATEGORY_MEDICAL_BHP],
+            'CSSD'              => [SurgeryPackageItem::TYPE_BHP, BhpItem::CATEGORY_CSSD],
+            'CSSD SUPPLIES'     => [SurgeryPackageItem::TYPE_BHP, BhpItem::CATEGORY_CSSD],
+            'INSTRUMENT'        => [SurgeryPackageItem::TYPE_BHP, BhpItem::CATEGORY_INSTRUMENT_SET],
+            // Tindakan — label section Excel yang tak sama persis dgn nama kategori master.
+            'TINDAKAN'          => [SurgeryPackageItem::TYPE_PROCEDURE, 'Tindakan Dokter'],
+            'PERAWATAN'         => [SurgeryPackageItem::TYPE_PROCEDURE, 'Tindakan Perawatan dan Kefarmasian'],
+            'ADMINISTRASI'      => [SurgeryPackageItem::TYPE_PROCEDURE, 'Tarif Administrasi'],
+        ];
+        if (isset($static[$norm])) {
+            return $static[$norm];
+        }
+
+        // Nama kategori tindakan master (dinamis — "Sewa Kamar", "Tarif Administrasi",
+        // "Sewa Peralatan Medik", dst.) → PROCEDURE dgn hint nama kanonisnya.
+        $cat = ProcedureCategory::whereRaw('UPPER(name) = ?', [$norm])->value('name');
+        return $cat !== null ? [SurgeryPackageItem::TYPE_PROCEDURE, $cat] : [null, null];
     }
 
     /**
