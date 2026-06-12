@@ -247,7 +247,20 @@ class DokterService
     {
         $this->authorizeVisitOwnership($visitId);
 
-        return DoctorExamination::where('visit_id', $visitId)->first();
+        $exam = DoctorExamination::where('visit_id', $visitId)->first();
+        if (! $exam) {
+            return null;
+        }
+
+        // Rencana kontrol tersimpan di Visit (bukan kolom DoctorExamination). Sertakan
+        // agar FE bisa memulihkan tanggalKontrol saat kunjungan dibuka ulang — tanpa ini
+        // teks Planning (P) ter-regenerasi TANPA "— kontrol …" setelah refresh (read-only,
+        // tidak pernah di-save → aman walau bukan kolom asli).
+        $visit = Visit::find($visitId);
+        $exam->setAttribute('follow_up_date', optional($visit?->follow_up_date)->format('Y-m-d'));
+        $exam->setAttribute('follow_up_reason', $visit?->follow_up_reason);
+
+        return $exam;
     }
 
     /**

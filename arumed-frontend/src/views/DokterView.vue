@@ -680,6 +680,14 @@ async function loadTab2() {
     // bedah (tanggal/jam) tak ikut showTab2 — cukup planning + paket untuk display.
     planning.value = e.planning ? (PLANNING_ENUM_REV[e.planning] ?? '') : ''
     if (e.surgery_package_id) surgeryPkg.value = e.surgery_package_id
+    // Rencana kontrol (Pulang) — pulihkan agar teks Planning (P) tetap memuat
+    // "— kontrol …" setelah refresh. Tanpa ini tanggalKontrol kosong → planningText
+    // ter-regenerasi tanpa tanggal & menimpa soap.P (soapDirty.P=false).
+    tanggalKontrol.value = e.follow_up_date ?? ''
+    // Pasca-refresh kunjungan yang SUDAH difinalisasi: samakan banner "RME telah
+    // difinalisasi" dengan status backend (tanpa ini kartu balik menampilkan tombol
+    // Finalisasi walau is_finalized=true).
+    finalized.value = !!e.is_finalized
   } catch { tab2Exists.value = false; examFinalized.value = false }
 }
 
