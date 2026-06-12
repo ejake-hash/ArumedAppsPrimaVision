@@ -1586,6 +1586,22 @@ function toggleQuickPanel(name) {
   quickPanel.value = quickPanel.value === name ? '' : name
 }
 
+/* ─── Panel kanan collapsible (lega & dinamis) — state per-perangkat ─── */
+const RIGHT_COLLAPSE_KEY = 'admisi.rightCollapse'
+function loadRightCollapse() {
+  try {
+    const v = JSON.parse(localStorage.getItem(RIGHT_COLLAPSE_KEY) ?? '{}')
+    return { aksi: !!v.aksi, status: !!v.status, antrean: !!v.antrean }
+  } catch (_) {
+    return { aksi: false, status: false, antrean: false }
+  }
+}
+const rightCollapse = reactive(loadRightCollapse())
+function toggleRight(name) {
+  rightCollapse[name] = !rightCollapse[name]
+  try { localStorage.setItem(RIGHT_COLLAPSE_KEY, JSON.stringify(rightCollapse)) } catch (_) { /* storage penuh / private */ }
+}
+
 /* ─── Aksi Cepat: Cek No. Rujukan ke VClaim (standalone, mandiri form) ─── */
 const rujukanQuick = reactive({ no: '', sumber: 'fktp', loading: false, error: '', data: null })
 async function cekRujukanQuick() {
@@ -2538,8 +2554,10 @@ onUnmounted(() => {
     <!-- ===================== MAIN: TENGAH + KANAN ===================== -->
     <div class="main-grid">
       <div class="center-col">
-        <!-- CALLABLE QUEUE -->
-        <div class="card call-card">
+        <!-- CALLABLE QUEUE — default tersembunyi; muncul dinamis saat ada
+             walk-in baru ambil tiket di Anjungan Mandiri (callableQueue terisi). -->
+        <transition name="callcard">
+        <div v-if="callableQueue.length" class="card call-card">
           <div class="card-head">
             <div>
               <div class="card-head-title">
@@ -2621,13 +2639,9 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div v-if="callableQueue.length === 0" class="empty-state">
-              <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-              <div class="empty-title">Tidak ada antrean menunggu</div>
-              <div class="empty-sub">Semua pasien sudah dilayani atau dalam proses</div>
-            </div>
           </div>
         </div>
+        </transition>
 
         <!-- DETAIL TABLE — collapsible -->
         <div class="card">
@@ -2843,13 +2857,15 @@ onUnmounted(() => {
        
       <div class="right-col">
         <div class="card">
-          <div class="card-head">
+          <div class="card-head clickable" @click="toggleRight('aksi')">
             <div class="card-head-title">
               <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               Aksi Cepat
             </div>
+            <svg class="head-caret" :class="{ open: !rightCollapse.aksi }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-          <div class="card-body actions-stack">
+          <transition name="collapse">
+          <div v-show="!rightCollapse.aksi" class="card-body actions-stack">
             <!-- ===== Cek No. Rujukan ke VClaim (search bar default hidden) ===== -->
             <button
               type="button"
@@ -2927,6 +2943,8 @@ onUnmounted(() => {
                 <div class="qa-res-row"><span class="qa-res-k">Nama</span><span class="qa-res-v">{{ pesertaQuick.data.nama ?? '—' }}</span></div>
                 <div class="qa-res-row"><span class="qa-res-k">No. Kartu</span><span class="qa-res-v">{{ pesertaQuick.data.noKartu ?? '—' }}</span></div>
                 <div class="qa-res-row"><span class="qa-res-k">Hak Kelas</span><span class="qa-res-v">{{ pesertaQuick.data.hakKelas?.keterangan ?? '—' }}</span></div>
+                <div v-if="pesertaQuick.data.provUmum?.nmProvider" class="qa-res-row"><span class="qa-res-k">Faskes Asal</span><span class="qa-res-v">{{ pesertaQuick.data.provUmum.nmProvider }}</span></div>
+                <div v-if="pesertaQuick.data.provUKP?.nmProvider" class="qa-res-row"><span class="qa-res-k">Faskes Gigi</span><span class="qa-res-v">{{ pesertaQuick.data.provUKP.nmProvider }}</span></div>
                 <div class="qa-res-row">
                   <span class="qa-res-k">Status</span>
                   <span class="qa-res-v" :class="pesertaQuick.data.statusPeserta?.kode === '0' ? 'st-ok' : 'st-warn'">
@@ -2938,16 +2956,19 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+          </transition>
         </div>
 
         <div class="card">
-          <div class="card-head">
+          <div class="card-head clickable" @click="toggleRight('status')">
             <div class="card-head-title">
               <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
               Status BPJS &amp; Integrasi
             </div>
+            <svg class="head-caret" :class="{ open: !rightCollapse.status }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-          <div class="card-body stack-gap">
+          <transition name="collapse">
+          <div v-show="!rightCollapse.status" class="card-body stack-gap">
             <div v-for="svc in bpjsStatusList" :key="svc.name" class="svc-row">
               <span class="svc-name">{{ svc.name }}</span>
               <span class="svc-state">
@@ -2961,36 +2982,48 @@ onUnmounted(() => {
               <span class="kv-val success">{{ stats.sepCount }} terbit</span>
             </div>
           </div>
+          </transition>
         </div>
 
         <div class="card">
-          <div class="card-head">
+          <div class="card-head clickable" @click="toggleRight('antrean')">
             <div class="card-head-title">
               <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               Antrean Real-time
             </div>
-            <span class="pill-live"><span class="live-dot"></span>LIVE</span>
+            <span class="head-right">
+              <span class="pill-live"><span class="live-dot"></span>LIVE</span>
+              <svg class="head-caret" :class="{ open: !rightCollapse.antrean }" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
           </div>
-          <div class="card-body live-list">
-            <div v-for="p in mappedAntrian.slice(0, 7)" :key="p.id" class="live-row">
-              <span class="live-num">{{ p.queueNo }}</span>
-              <div class="live-info">
-                <div class="live-name">{{ p.name }}</div>
-                <div class="live-poli">{{ p.station }}</div>
+          <transition name="collapse">
+          <div v-show="!rightCollapse.antrean" class="card-body live-list">
+            <transition-group name="liverow">
+              <div v-for="p in mappedAntrian.slice(0, 7)" :key="p.id" class="live-row">
+                <span class="live-num">{{ p.queueNo }}</span>
+                <div class="live-info">
+                  <div class="live-name">{{ p.name }}</div>
+                  <div class="live-poli">{{ p.station }}</div>
+                </div>
+                <span
+                  :class="[
+                    'status-pill mini',
+                    uiStatus(p) === 'waiting' ? 'sp-wait' :
+                    uiStatus(p) === 'called'  ? 'sp-called' :
+                    uiStatus(p) === 'triage'  ? 'sp-triage' :
+                    uiStatus(p) === 'doctor'  ? 'sp-doctor' : 'sp-done',
+                  ]"
+                >
+                  {{ statusLabel(uiStatus(p)) }}
+                </span>
               </div>
-              <span
-                :class="[
-                  'status-pill mini',
-                  uiStatus(p) === 'waiting' ? 'sp-wait' :
-                  uiStatus(p) === 'called'  ? 'sp-called' :
-                  uiStatus(p) === 'triage'  ? 'sp-triage' :
-                  uiStatus(p) === 'doctor'  ? 'sp-doctor' : 'sp-done',
-                ]"
-              >
-                {{ statusLabel(uiStatus(p)) }}
-              </span>
+            </transition-group>
+            <div v-if="!mappedAntrian.length" class="live-empty">
+              <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+              Belum ada antrean aktif
             </div>
           </div>
+          </transition>
         </div>
       </div>
     </div>
@@ -4587,16 +4620,17 @@ onUnmounted(() => {
 .dot-sep { margin: 0 6px; color: var(--th); }
 .clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--tm); }
 
-/* STATS */
-.stats-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0.5rem; }
-.stat-card { background: var(--bc); border-radius: 10px; padding: 0.6rem 0.65rem; border: 1px solid var(--gb); display: flex; align-items: center; gap: 8px; min-width: 0; }
-.stat-icon { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.stat-icon svg { width: 16px; height: 16px; fill: none; stroke-width: 2; stroke-linecap: round; }
-.stat-val { font-size: 18px; font-weight: 700; color: var(--td); line-height: 1; }
-.stat-lbl { font-size: 9.5px; color: var(--tu); margin-top: 2px; letter-spacing: 0.01em; white-space: nowrap; }
+/* STATS — kartu lega, sedikit lebih bernapas (selaras gaya Refraksionis/Dokter) */
+.stats-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 0.65rem; }
+.stat-card { background: var(--bc); border-radius: 12px; padding: 0.8rem 0.85rem; border: 1px solid var(--gb); display: flex; align-items: center; gap: 11px; min-width: 0; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
+.stat-card:hover { border-color: var(--ga); box-shadow: 0 4px 14px rgba(0,0,0,0.05); transform: translateY(-1px); }
+.stat-icon { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stat-icon svg { width: 18px; height: 18px; fill: none; stroke-width: 2; stroke-linecap: round; }
+.stat-val { font-size: 21px; font-weight: 700; color: var(--td); line-height: 1; }
+.stat-lbl { font-size: 10px; color: var(--tu); margin-top: 3px; letter-spacing: 0.01em; white-space: nowrap; }
 
 /* MAIN GRID */
-.main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 1rem; align-items: start; }
+.main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 1.25rem; align-items: start; }
 .center-col { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .right-col { display: flex; flex-direction: column; gap: 1rem; }
 
@@ -4609,6 +4643,11 @@ onUnmounted(() => {
 .card-head-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
 .card-head-sub { font-size: 11px; color: var(--tu); margin-top: 3px; }
 .card-body { padding: 1.25rem; }
+
+/* Caret lipat header panel kanan (Aksi Cepat / Status BPJS / Antrean) */
+.head-right { display: inline-flex; align-items: center; gap: 8px; }
+.head-caret { width: 16px; height: 16px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transform: rotate(-90deg); transition: transform 0.2s ease; flex-shrink: 0; }
+.head-caret.open { transform: rotate(0deg); }
 
 /* COLLAPSE BUTTON */
 .collapse-btn {
@@ -4637,7 +4676,14 @@ onUnmounted(() => {
 .care-seg.on { background: #1763d4; color: #fff !important; box-shadow: 0 1px 2px rgba(23,99,212,0.3); }
 
 /* CALLABLE QUEUE */
-.call-card { border-color: var(--ga); }
+/* Kartu walk-in: aksen menonjol karena kemunculannya = ada aksi yang perlu
+   ditangani petugas (pasien baru ambil tiket di Anjungan Mandiri). */
+.call-card { border-color: var(--ga); box-shadow: 0 0 0 1px var(--gl), 0 10px 30px rgba(43,124,176,0.10); }
+/* Transisi muncul/hilang dinamis (slide + fade) saat callableQueue berubah. */
+.callcard-enter-active { transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.22,1,0.36,1); }
+.callcard-leave-active { transition: opacity 0.22s ease, transform 0.22s ease; }
+.callcard-enter-from { opacity: 0; transform: translateY(-12px) scale(0.99); }
+.callcard-leave-to   { opacity: 0; transform: translateY(-8px) scale(0.99); }
 .call-list { display: flex; flex-direction: column; }
 .call-row { display: flex; align-items: center; gap: 14px; padding: 14px 1.25rem; border-bottom: 1px solid rgba(0,0,0,0.04); transition: background 0.15s; }
 .call-row:last-child { border-bottom: none; }
@@ -4846,6 +4892,14 @@ onUnmounted(() => {
 .live-info { flex: 1; min-width: 0; }
 .live-name { font-size: 11.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .live-poli { font-size: 10px; color: var(--tu); }
+/* Baris antrean masuk/keluar dinamis saat queue berubah (realtime). */
+.liverow-enter-active { transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.22,1,0.36,1); }
+.liverow-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; position: absolute; }
+.liverow-enter-from { opacity: 0; transform: translateX(14px); }
+.liverow-leave-to   { opacity: 0; transform: translateX(-14px); }
+.liverow-move { transition: transform 0.3s ease; }
+.live-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 8px; color: var(--tu); font-size: 11.5px; text-align: center; }
+.live-empty svg { width: 22px; height: 22px; fill: none; stroke: var(--gb); stroke-width: 2; stroke-linecap: round; }
 
 /* FORM CONTROLS */
 .form-select, .form-input { background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; font-family: 'Inter', sans-serif; font-size: 13px; color: var(--td); outline: none; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; padding: 9px 11px; width: 100%; }
