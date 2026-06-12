@@ -501,9 +501,14 @@ function onImported(result) {
   <div class="tt-wrap">
     <!-- Section header -->
     <div class="tt-section-head">
-      <div>
-        <h2>Buku Tarif</h2>
-        <p>Sumber tunggal harga jual ke pasien dalam satu daftar berkategori: Tindakan, Obat, BHP, IOL, Sewa Kamar. Harga = penjamin UMUM (override per penjamin di Metode Bayar). Tarif kamar diatur di tab “Tarif Kamar”.</p>
+      <div class="tt-head-left">
+        <div class="tt-head-ic">
+          <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </div>
+        <div>
+          <h2>Buku Tarif</h2>
+          <p>Sumber tunggal harga jual ke pasien dalam satu daftar berkategori: Tindakan, Obat, BHP, IOL, Sewa Kamar. Harga = penjamin UMUM (override per penjamin di Metode Bayar). Tarif kamar diatur di tab “Tarif Kamar”.</p>
+        </div>
       </div>
       <div v-if="activeTab === 'all'" class="tt-header-actions">
         <button class="tt-btn-secondary" @click="openKategoriModal" title="Kelola master kategori + prefix kode">
@@ -517,108 +522,159 @@ function onImported(result) {
       </div>
     </div>
 
-    <!-- Tab Jenis -->
-    <div class="tt-jenis-tabs">
+    <!-- Tab Jenis (segmented) -->
+    <div class="tt-jenis-tabs" role="tablist">
       <button
         v-for="t in TABS"
         :key="t.key"
         class="tt-jenis-tab"
-        :class="{ active: activeTab === t.key }"
+        :class="{ a: activeTab === t.key }"
+        role="tab"
+        :aria-selected="activeTab === t.key"
         @click="activeTab = t.key"
       >{{ t.label }}</button>
     </div>
 
     <!-- ══ Tab BUKU TARIF (terpadu, berkategori) ══ -->
     <template v-if="activeTab === 'all'">
-      <!-- CSV / Excel (tindakan/procedures) -->
-      <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-head-title">
+              <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              Daftar Harga
+            </div>
+            <div class="card-head-sub">
+              {{ buku.meta?.total ?? 0 }} item · {{ kategoriOptions.length }} kategori<template v-if="bukuKategori"> · filter “{{ bukuKategori }}”</template><template v-if="bukuHargaNol"> · hanya Rp 0</template>
+            </div>
+          </div>
+          <!-- Stats ringkas -->
+          <div class="tt-stats">
+            <div class="tt-stat">
+              <span class="tt-stat-label">Total Item</span>
+              <b class="tt-stat-num">{{ buku.meta?.total ?? 0 }}</b>
+            </div>
+            <div class="tt-stat-div"></div>
+            <div class="tt-stat">
+              <span class="tt-stat-label">Kategori</span>
+              <b class="tt-stat-num">{{ kategoriOptions.length }}</b>
+            </div>
+            <div class="tt-stat-div"></div>
+            <div class="tt-stat">
+              <span class="tt-stat-label">Halaman</span>
+              <b class="tt-stat-num">{{ buku.meta?.current_page ?? 1 }}<span class="tt-stat-sep">/</span>{{ buku.meta?.last_page ?? 1 }}</b>
+            </div>
+          </div>
+        </div>
 
-      <!-- Filter kategori (chip) -->
-      <div v-if="bukuChips.length" class="tt-filters">
-        <span class="tt-filter-label">Filter kategori:</span>
-        <button class="tt-chip" :class="{ active: !bukuKategori }" @click="setBukuKategori('')">Semua</button>
-        <button
-          v-for="c in bukuChips"
-          :key="c.name"
-          class="tt-chip"
-          :class="{ active: bukuKategori === c.name }"
-          @click="setBukuKategori(c.name)"
-        >{{ c.name }}<span v-if="c.prefix" class="tt-chip-prefix">{{ c.prefix }}</span></button>
-      </div>
+        <div class="card-body tt-body">
+          <!-- CSV / Excel (tindakan/procedures) -->
+          <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
 
-      <div class="tt-buku-toolbar">
-        <input
-          class="tt-buku-search"
-          type="search"
-          :value="bukuSearch"
-          placeholder="Cari kode / nama item…"
-          @input="onBukuSearch($event.target.value)"
-        />
-        <label class="tt-buku-zero" title="Tampilkan hanya item yang harga efektifnya Rp 0 — bakal tertagih nol di kasir; isi harganya lewat edit inline">
-          <input type="checkbox" v-model="bukuHargaNol" @change="loadBukuTarif(1)" />
-          Hanya Rp 0
-        </label>
-        <span class="tt-buku-count" v-if="buku.meta">{{ buku.meta.total }} item</span>
-      </div>
+          <!-- Filter kategori (chip) -->
+          <div v-if="bukuChips.length" class="tt-filters">
+            <span class="tt-filter-label">Filter kategori</span>
+            <button class="tt-chip" :class="{ active: !bukuKategori }" @click="setBukuKategori('')">Semua</button>
+            <button
+              v-for="c in bukuChips"
+              :key="c.name"
+              class="tt-chip"
+              :class="{ active: bukuKategori === c.name }"
+              @click="setBukuKategori(c.name)"
+            >{{ c.name }}<span v-if="c.prefix" class="tt-chip-prefix">{{ c.prefix }}</span></button>
+          </div>
 
-      <div v-if="buku.error" class="tt-jenis-warn">{{ buku.error }}</div>
+          <div class="tt-buku-toolbar">
+            <div class="tt-buku-searchwrap">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                class="tt-buku-search"
+                type="search"
+                :value="bukuSearch"
+                placeholder="Cari kode / nama item…"
+                @input="onBukuSearch($event.target.value)"
+              />
+            </div>
+            <label class="tt-buku-zero" :class="{ on: bukuHargaNol }" title="Tampilkan hanya item yang harga efektifnya Rp 0 — bakal tertagih nol di kasir; isi harganya lewat tombol ubah harga">
+              <input type="checkbox" v-model="bukuHargaNol" @change="loadBukuTarif(1)" />
+              Hanya Rp 0
+            </label>
+          </div>
 
-      <div class="tt-buku-tablewrap">
-        <table class="tt-buku-table">
-          <thead>
-            <tr>
-              <th style="width:50px" class="ac">No</th>
-              <th style="width:130px">Kode</th>
-              <th>Nama</th>
-              <th style="width:190px">Kategori</th>
-              <th style="width:90px">Satuan</th>
-              <th style="width:150px" class="ar">Harga (UMUM)</th>
-              <th style="width:90px" class="ac">Status</th>
-              <th style="width:90px" class="ac">Aksi</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="buku.loading"><td colspan="8" class="tt-buku-empty">Memuat…</td></tr>
-            <tr v-else-if="!bukuRowsNumbered.length"><td colspan="8" class="tt-buku-empty">Tidak ada item.</td></tr>
-            <tr v-for="row in bukuRowsNumbered" :key="row._key">
-              <td class="ac">{{ row._no }}</td>
-              <td><span class="tt-code">{{ row.kode || '—' }}</span></td>
-              <td>
-                <strong class="tt-name">{{ row.nama }}</strong>
-                <span class="tt-tipe-pill" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] }}</span>
-              </td>
-              <td><span class="tt-cat-pill">{{ row.kategori }}</span></td>
-              <td>{{ row.satuan || '—' }}</td>
-              <td class="ar"><span class="tt-price">{{ formatRupiah(row.harga) }}</span></td>
-              <td class="ac">
-                <span class="tt-status" :class="row.aktif ? 'on' : 'off'">{{ row.aktif ? 'Aktif' : 'Nonaktif' }}</span>
-              </td>
-              <td class="ac">
-                <!-- TINDAKAN: edit detail (modal) + hapus -->
-                <template v-if="row.tipe === 'tindakan'">
-                  <button class="tt-icon-btn" title="Edit tindakan" @click="editTindakanRow(row)">
-                    <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-                  </button>
-                  <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete({ id: row.id, name: row.nama, code: row.kode })">
-                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                  </button>
+          <div v-if="buku.error" class="tt-jenis-warn">{{ buku.error }}</div>
+
+          <div class="tt-buku-tablewrap">
+            <table class="tt-buku-table">
+              <thead>
+                <tr>
+                  <th style="width:50px" class="ac">No</th>
+                  <th style="width:130px">Kode</th>
+                  <th>Nama</th>
+                  <th style="width:190px">Kategori</th>
+                  <th style="width:90px">Satuan</th>
+                  <th style="width:150px" class="ar">Harga (UMUM)</th>
+                  <th style="width:90px" class="ac">Status</th>
+                  <th style="width:90px" class="ac">Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Skeleton saat memuat -->
+                <template v-if="buku.loading">
+                  <tr v-for="i in 8" :key="`sk-${i}`" class="tt-sk-row">
+                    <td v-for="c in 8" :key="c"><span class="tt-sk" :style="{ animationDelay: `${(i * 8 + c) * 0.04}s` }"></span></td>
+                  </tr>
                 </template>
-                <!-- OBAT/BHP/IOL: ubah harga UMUM via modal -->
-                <button v-else-if="row.tipe !== 'kamar'" class="tt-icon-btn" title="Ubah harga jual UMUM" @click="openHargaModal(row)">
-                  <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-                </button>
-                <!-- KAMAR: read-only, edit di tab Tarif Kamar -->
-                <span v-else class="tt-kamar-ro" title="Atur di tab Tarif Kamar">Tarif Kamar</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+                <tr v-else-if="!bukuRowsNumbered.length">
+                  <td colspan="8">
+                    <div class="tt-buku-empty">
+                      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                      <p>Tidak ada item pada filter ini.</p>
+                    </div>
+                  </td>
+                </tr>
+                <template v-else>
+                  <tr v-for="(row, i) in bukuRowsNumbered" :key="row._key" class="tt-row" :style="{ animationDelay: `${Math.min(i, 14) * 0.02}s` }">
+                    <td class="ac tt-dim">{{ row._no }}</td>
+                    <td><span class="tt-code">{{ row.kode || '—' }}</span></td>
+                    <td>
+                      <strong class="tt-name">{{ row.nama }}</strong>
+                      <span class="tt-tipe-pill" :data-t="row.tipe">{{ TIPE_LABEL[row.tipe] }}</span>
+                    </td>
+                    <td><span class="tt-cat-pill">{{ row.kategori }}</span></td>
+                    <td class="tt-dim">{{ row.satuan || '—' }}</td>
+                    <td class="ar"><span class="tt-price" :class="{ zero: !Number(row.harga) }">{{ formatRupiah(row.harga) }}</span></td>
+                    <td class="ac">
+                      <span class="tt-status" :class="row.aktif ? 'on' : 'off'">{{ row.aktif ? 'Aktif' : 'Nonaktif' }}</span>
+                    </td>
+                    <td class="ac">
+                      <!-- TINDAKAN: edit detail (modal) + hapus -->
+                      <template v-if="row.tipe === 'tindakan'">
+                        <button class="tt-icon-btn" title="Edit tindakan" @click="editTindakanRow(row)">
+                          <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                        </button>
+                        <button class="tt-icon-btn tt-icon-danger" title="Hapus" @click="askDelete({ id: row.id, name: row.nama, code: row.kode })">
+                          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                      </template>
+                      <!-- OBAT/BHP/IOL: ubah harga UMUM via modal -->
+                      <button v-else-if="row.tipe !== 'kamar'" class="tt-icon-btn" title="Ubah harga jual UMUM" @click="openHargaModal(row)">
+                        <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                      </button>
+                      <!-- KAMAR: read-only, edit di tab Tarif Kamar -->
+                      <span v-else class="tt-kamar-ro" title="Atur di tab Tarif Kamar">Tarif Kamar</span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
 
-      <div class="tt-buku-pager" v-if="buku.meta && buku.meta.last_page > 1">
-        <button class="tt-btn-secondary" :disabled="buku.meta.current_page <= 1" @click="loadBukuTarif(buku.meta.current_page - 1)">‹ Sebelumnya</button>
-        <span>Hal {{ buku.meta.current_page }} / {{ buku.meta.last_page }}</span>
-        <button class="tt-btn-secondary" :disabled="buku.meta.current_page >= buku.meta.last_page" @click="loadBukuTarif(buku.meta.current_page + 1)">Berikutnya ›</button>
+          <div class="tt-buku-pager" v-if="buku.meta && buku.meta.last_page > 1">
+            <button class="tt-pager-btn" :disabled="buku.meta.current_page <= 1" @click="loadBukuTarif(buku.meta.current_page - 1)">‹ Sebelumnya</button>
+            <span>Hal {{ buku.meta.current_page }} / {{ buku.meta.last_page }}</span>
+            <button class="tt-pager-btn" :disabled="buku.meta.current_page >= buku.meta.last_page" @click="loadBukuTarif(buku.meta.current_page + 1)">Berikutnya ›</button>
+          </div>
+        </div>
       </div>
     </template>
 
@@ -790,28 +846,47 @@ function onImported(result) {
 </template>
 
 <style scoped>
-.tt-wrap { display: flex; flex-direction: column; gap: 1rem; }
+.tt-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
 
-/* ─── Tab Jenis (Buku Tarif) ─── */
-.tt-jenis-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--gb); }
-.tt-jenis-tab { padding: 9px 18px; border: none; background: transparent; color: var(--tm); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s, border-color 0.15s; }
-.tt-jenis-tab:hover { color: var(--td); }
-.tt-jenis-tab.active { color: var(--ga); border-bottom-color: var(--ga); }
+/* ─── Tab Jenis (segmented, ala primary-filter Refraksionis/Dokter) ─── */
+.tt-jenis-tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; width: max-content; }
+.tt-jenis-tab { padding: 8px 22px; border: 1.5px solid transparent; border-radius: 8px; background: transparent; color: var(--tm); font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif; transition: all .15s ease; }
+.tt-jenis-tab:hover { color: var(--ga); }
+.tt-jenis-tab.a { background: var(--gd); border-color: var(--gd); color: #fff; }
 .tt-jenis-warn { padding: 1.2rem; text-align: center; color: var(--wt); background: var(--wb); border: 1px solid var(--wbd); border-radius: 10px; font-size: 13px; }
 
 .tt-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; }
+.tt-head-left { display: flex; align-items: flex-start; gap: 0.85rem; }
+.tt-head-ic { width: 44px; height: 44px; border-radius: 12px; background: var(--gl); color: var(--ga); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tt-head-ic svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tt-section-head h2 { font-family: 'Space Grotesk', serif; font-size: 20px; color: var(--td); margin: 0; }
-.tt-section-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; max-width: 640px; }
+.tt-section-head p { font-size: 13px; color: var(--tm); margin: 4px 0 0; max-width: 640px; line-height: 1.55; }
+
+/* ─── Card (selaras RefraksionisView/DokterView) ─── */
+.card { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; overflow: hidden; }
+.card-head { padding: 0.85rem 1.2rem; border-bottom: 1px solid var(--gb); display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.card-head-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--td); }
+.card-head-title svg { width: 15px; height: 15px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.card-head-sub { font-size: 11px; color: var(--tu); margin-top: 3px; }
+.tt-body { padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.85rem; }
+
+/* Stats ringkas di card-head */
+.tt-stats { display: flex; align-items: center; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; padding: 7px 4px; }
+.tt-stat { min-width: 86px; text-align: center; padding: 0 12px; }
+.tt-stat-label { display: block; font-size: 9.5px; color: var(--tu); letter-spacing: 0.03em; margin-bottom: 2px; text-transform: uppercase; }
+.tt-stat-num { display: block; font-size: 16px; font-weight: 700; color: var(--td); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.tt-stat-sep { color: var(--tu); font-weight: 400; margin: 0 2px; font-size: 12px; }
+.tt-stat-div { width: 1px; height: 26px; background: var(--gb); flex-shrink: 0; }
 
 .tt-btn-primary { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 9px; border: 1px solid var(--ga); background: var(--ga); color: white; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 0.15s; }
 .tt-btn-primary:hover { background: var(--gm); border-color: var(--gm); }
 .tt-btn-primary svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
 
-.tt-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.6rem 0.8rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
-.tt-filter-label { font-size: 12px; color: var(--tm); font-weight: 500; margin-right: 4px; }
-.tt-chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 11.5px; cursor: pointer; font-weight: 500; transition: background 0.15s, border-color 0.15s, color 0.15s; }
-.tt-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--td); }
-.tt-chip.active { background: var(--ga); border-color: var(--ga); color: white; }
+.tt-filters { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; padding: 0.65rem 0.85rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
+.tt-filter-label { font-size: 10.5px; color: var(--tu); font-weight: 600; margin-right: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+.tt-chip { padding: 6px 13px; border-radius: 999px; border: 1.5px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 11.5px; cursor: pointer; font-weight: 500; transition: all .14s ease; }
+.tt-chip:hover { background: var(--gl); border-color: var(--ga); color: var(--td); transform: translateY(-1px); }
+.tt-chip.active { background: var(--ga); border-color: var(--ga); color: white; box-shadow: 0 2px 8px rgba(31, 170, 224, 0.3); }
 
 .tt-code { font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--td); background: var(--bs); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--gb); }
 .tt-name { font-weight: 500; color: var(--td); }
@@ -896,27 +971,55 @@ function onImported(result) {
 .tt-kat-empty { padding: 1.5rem; text-align: center; color: var(--tm); font-size: 12.5px; }
 
 /* ── Buku Tarif terpadu ── */
-.tt-buku-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
-.tt-buku-search { flex: 1 1 260px; min-width: 200px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 13px; }
-.tt-buku-search:focus { outline: none; border-color: var(--ga); }
-.tt-buku-zero { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--td); cursor: pointer; white-space: nowrap; user-select: none; }
+.tt-buku-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.tt-buku-searchwrap { position: relative; flex: 1 1 280px; min-width: 220px; }
+.tt-buku-searchwrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+.tt-buku-search { width: 100%; box-sizing: border-box; height: 38px; padding: 0 12px 0 34px; border-radius: 9px; border: 1.5px solid var(--gb); background: var(--bs); color: var(--td); font-size: 13px; font-family: 'Inter', sans-serif; transition: border-color .14s, background .14s, box-shadow .14s; }
+.tt-buku-search:focus { outline: none; border-color: var(--ga); background: #fff; box-shadow: 0 0 0 3px rgba(31, 170, 224, 0.12); }
+.tt-buku-zero { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border: 1.5px solid var(--gb); border-radius: 9px; background: var(--bs); font-size: 12px; font-weight: 500; color: var(--tm); cursor: pointer; white-space: nowrap; user-select: none; transition: all .14s ease; }
+.tt-buku-zero:hover { border-color: var(--ga); color: var(--ga); }
+.tt-buku-zero.on { background: var(--wb); border-color: var(--wbd); color: var(--wt); font-weight: 600; }
 .tt-buku-zero input { accent-color: var(--ga); cursor: pointer; }
-.tt-buku-count { margin-left: auto; font-size: 12px; color: var(--tm); white-space: nowrap; }
-.tt-buku-tablewrap { border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; }
+.tt-buku-tablewrap { border: 1px solid var(--gb); border-radius: 10px; overflow: auto; max-height: calc(100vh - 340px); min-height: 240px; }
 .tt-buku-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.tt-buku-table thead th { background: var(--bs); color: var(--tu); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--gb); }
-.tt-buku-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
+.tt-buku-table thead th { position: sticky; top: 0; z-index: 2; background: var(--bs); color: var(--tu); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 10px 13px; text-align: left; border-bottom: 1px solid var(--gb); box-shadow: 0 1px 0 var(--gb); }
+.tt-buku-table tbody td { padding: 10px 13px; border-bottom: 1px solid var(--gb); color: var(--td); vertical-align: middle; }
 .tt-buku-table tbody tr:last-child td { border-bottom: none; }
-.tt-buku-table tbody tr:hover { background: var(--bs); }
+.tt-buku-table tbody tr.tt-row { transition: background .12s ease; animation: tt-fadeup .24s ease both; }
+.tt-buku-table tbody tr.tt-row:hover { background: var(--bs); }
 .tt-buku-table .ar { text-align: right; }
 .tt-buku-table .ac { text-align: center; }
-.tt-buku-empty { padding: 1.6rem; text-align: center; color: var(--tm); }
+.tt-dim { color: var(--tu); }
+.tt-price.zero { color: var(--et); font-weight: 700; }
+@keyframes tt-fadeup { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Skeleton loading (shimmer) */
+.tt-sk-row td { padding: 12px 13px; }
+.tt-sk { display: block; height: 13px; border-radius: 6px; background: linear-gradient(90deg, var(--bs) 25%, var(--gb) 50%, var(--bs) 75%); background-size: 200% 100%; animation: tt-shimmer 1.2s ease-in-out infinite; }
+@keyframes tt-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Empty state */
+.tt-buku-empty { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; padding: 2.4rem 1.5rem; text-align: center; color: var(--tm); }
+.tt-buku-empty svg { width: 36px; height: 36px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; }
+.tt-buku-empty p { margin: 0; font-size: 12.5px; }
 .tt-tipe-pill { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; background: var(--bs); color: var(--tu); border: 1px solid var(--gb); }
 .tt-tipe-pill[data-t="tindakan"] { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
 .tt-tipe-pill[data-t="obat"] { color: #16a34a; border-color: #bbf7d0; background: #f0fdf4; }
 .tt-tipe-pill[data-t="bhp"] { color: #c2410c; border-color: #fed7aa; background: #fff7ed; }
 .tt-tipe-pill[data-t="iol"] { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
 .tt-kamar-ro { font-size: 11px; color: var(--tm); font-style: italic; white-space: nowrap; }
-.tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.9rem; font-size: 12.5px; color: var(--tm); }
-.tt-buku-pager button:disabled { opacity: 0.5; cursor: not-allowed; }
+.tt-buku-pager { display: flex; align-items: center; justify-content: center; gap: 1rem; font-size: 12.5px; color: var(--tm); font-variant-numeric: tabular-nums; }
+.tt-pager-btn { padding: 8px 16px; border-radius: 9px; border: 1.5px solid var(--gb); background: var(--bc); color: var(--tm); font-size: 12.5px; font-weight: 500; cursor: pointer; font-family: 'Inter', sans-serif; transition: all .14s ease; }
+.tt-pager-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }
+.tt-pager-btn:active:not(:disabled) { transform: translateY(1px); }
+.tt-pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Responsif: header & stats menumpuk rapi di layar sempit */
+@media (max-width: 900px) {
+  .tt-section-head { flex-direction: column; align-items: stretch; }
+  .tt-header-actions { justify-content: flex-end; }
+  .card-head { align-items: flex-start; }
+  .tt-stats { width: 100%; justify-content: space-between; }
+  .tt-buku-tablewrap { max-height: none; }
+}
 </style>
