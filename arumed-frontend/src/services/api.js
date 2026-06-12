@@ -171,6 +171,8 @@ export const dokterApi = {
   billingStatus:    (visitId)             => api.get(`/dokter/kunjungan/${visitId}/billing-status`),
   // Finalisasi mengunci RME — kirim body SOAP (S/O/A/P).
   finalize:         (visitId, soap = {})  => api.post(`/dokter/kunjungan/${visitId}/finalize`, soap),
+  // Buka kembali RME final utk revisi (hanya pra-bayar — paritas Buka Kembali Tab 3).
+  bukaFinalisasi:   (visitId)             => api.post(`/dokter/kunjungan/${visitId}/buka-finalisasi`),
 
   // Resume Medis — auto-generate dari data kunjungan, edit, lalu finalisasi (terbit).
   showResumeMedis:     (visitId)          => api.get(`/dokter/kunjungan/${visitId}/resume-medis`),
@@ -720,6 +722,9 @@ export const igdApi = {
   addObat:       (visitId, payload)  => api.post(`/igd/${visitId}/obat`, payload),
   deleteCharge:  (visitId, chargeId) => api.delete(`/igd/${visitId}/charge/${chargeId}`),
   disposisi:     (visitId, payload)  => api.post(`/igd/${visitId}/disposisi`, payload),
+  // Opsi modal disposisi: BEDAH (paket/operator/anestesi) & RAJAL (poli tujuan).
+  bedahOptions:  (visitId)           => api.get(`/igd/${visitId}/bedah-options`),
+  rajalTargets:  (visitId)           => api.get(`/igd/${visitId}/rajal-targets`),
 
   // CPPT IGD
   cpptList:      (visitId)           => api.get(`/igd/${visitId}/cppt`),

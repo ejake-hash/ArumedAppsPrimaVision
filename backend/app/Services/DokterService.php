@@ -1337,6 +1337,45 @@ class DokterService
     }
 
     /**
+     * Buka kembali pemeriksaan yang SUDAH difinalisasi (SOAP & RME terkunci) —
+     * paritas dengan "Buka Kembali" Tab 3: batas kunci = PEMBAYARAN, bukan
+     * finalisasi. Selama invoice belum PAID/PARTIALLY_PAID, dokter boleh merevisi
+     * Tab 2/SOAP lalu Finalisasi ulang (TTD finalisasi lama dihapus — finalisasi
+     * ulang membuat TTD baru; resume terbit ikut ter-refresh saat finalisasi/
+     * kirim-ulang berikutnya via regeneratePublishedForVisit).
+     */
+    public function bukaFinalisasi(string $visitId): DoctorExamination
+    {
+        $this->authorizeVisitOwnership($visitId);
+
+        $examination = DoctorExamination::where('visit_id', $visitId)->firstOrFail();
+
+        if (! $examination->is_finalized) {
+            throw new \Exception('Pemeriksaan belum difinalisasi — tidak ada yang perlu dibuka.', 422);
+        }
+
+        // Setelah kasir konfirmasi pembayaran, RME final dikunci permanen.
+        $this->assertBillingNotCommitted($visitId);
+
+        $examination->update([
+            'is_finalized'        => false,
+            'finalized_at'        => null,
+            'digital_signature'   => null,
+            'signature_timestamp' => null,
+        ]);
+
+        $this->log(
+            auth('api')->id(),
+            'BUKA_FINALISASI_RME',
+            DoctorExamination::class,
+            $examination->id,
+            "Finalisasi RME dibuka kembali untuk revisi (kunjungan {$visitId})"
+        );
+
+        return $examination->fresh(['doctor', 'surgeryPackage']);
+    }
+
+    /**
      * Kirim ke Kasir (Tab 3): komit billing & majukan antrean TANPA mengunci RME.
      * Simpan planning (reuse storePlanning: jadwal bedah + inap + follow-up + snapshot)
      * lalu advance idempoten. is_finalized tetap false → segmen/diagnosis/SOAP masih
@@ -2003,9 +2042,16 @@ class DokterService
         if ($hasAdd) {
             $parts[] = 'Add OD ' . ($sg($refraksi->add_power_od) ?? '-') . ' / OS ' . ($sg($refraksi->add_power_os) ?? '-');
         }
-        // 5. IOP/TIO
+        // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
         if ($refraksi->iop_od || $refraksi->iop_os) {
             $parts[] = 'TIO OD ' . ($refraksi->iop_od ?? '-') . ' / OS ' . ($refraksi->iop_os ?? '-') . ' mmHg' . ($refraksi->iop_method ? " ({$refraksi->iop_method})" : '');
+        }
+        foreach (array_values((array) ($refraksi->iop_extra_readings ?? [])) as $i => $x) {
+            $od = $x['od'] ?? null;
+            $os = $x['os'] ?? null;
+            if ($od || $os) {
+                $parts[] = 'TIO #' . ($i + 2) . ' OD ' . ($od ?? '-') . ' / OS ' . ($os ?? '-') . ' mmHg';
+            }
         }
         // 6. PD (pupillary distance) — paling bawah
         if ($refraksi->pd_distance !== null && $refraksi->pd_distance !== '') {

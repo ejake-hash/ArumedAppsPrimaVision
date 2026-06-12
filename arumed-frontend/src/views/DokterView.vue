@@ -2083,6 +2083,26 @@ const signerRole = computed(() => {
 // filter "Selesai") selama belum finalisasi. TTD dokter pindah ke Resume Medis RM 1.7.
 const isLocked = computed(() => examFinalized.value)
 
+// Buka kembali RME yang SUDAH difinalisasi (paritas "Buka Kembali" Tab 3):
+// batas kunci = PEMBAYARAN. BE menghapus TTD finalisasi → dokter merevisi
+// Tab 2/SOAP lalu Finalisasi ulang (TTD baru + resume ter-refresh).
+const reopeningRme = ref(false)
+async function bukaKembaliRme() {
+  if (billingPaid.value) { toast('w', 'Pembayaran sudah dikonfirmasi — RME terkunci permanen'); return }
+  if (!store.selectedVisitId) return
+  if (!confirm('Buka kembali pemeriksaan yang sudah difinalisasi?\nTanda tangan finalisasi dihapus — setelah revisi, lakukan Finalisasi ulang.')) return
+  reopeningRme.value = true
+  try {
+    await dokterApi.bukaFinalisasi(store.selectedVisitId)
+    examFinalized.value = false
+    toast('s', 'Finalisasi dibuka — silakan revisi lalu Finalisasi ulang')
+  } catch (e) {
+    toast('e', e.response?.data?.message || 'Gagal membuka finalisasi')
+  } finally {
+    reopeningRme.value = false
+  }
+}
+
 // Diagnosa dianggap terisi bila ADA kode ICD-10 utama ATAU teks bebas (dokter
 // boleh menulis diagnosa naratif saat ragu kode). Keduanya valid utk finalisasi.
 const hasDiagnosis = computed(() =>
@@ -2693,6 +2713,21 @@ function closeResumeRM() {
           </div>
 
           <!-- ═══ TAB 2: PEMERIKSAAN MATA ═══════════════════════════════════ -->
+          <!-- Notice finalisasi DI LUAR pane inert agar tombol Buka Kembali bisa diklik. -->
+          <div
+            v-if="tab === 'pemeriksaan' && isLocked"
+            class="lock-notice"
+            style="max-width: 1340px; margin-inline: auto; width: 100%;"
+          >
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            <template v-if="billingPaid">
+              Pemeriksaan sudah difinalisasi &amp; tagihan sudah <strong>dibayar</strong> — dikunci permanen (read-only).
+            </template>
+            <template v-else>
+              Pemeriksaan sudah difinalisasi — dikunci (read-only). Perlu revisi? Buka kembali selama pasien belum bayar.
+              <button class="lock-notice-undo" :disabled="reopeningRme" @click="bukaKembaliRme">{{ reopeningRme ? 'Membuka…' : 'Buka Kembali' }}</button>
+            </template>
+          </div>
           <div v-if="tab === 'pemeriksaan'" :inert="isLocked" :class="['pem-grid', isLocked ? 'pane-locked' : '']">
 
             <!-- ── KIRI: FORM ── -->
@@ -3708,10 +3743,17 @@ function closeResumeRM() {
           <!-- ═══ TAB 4: SOAP & DIAGNOSIS ════════════════════════════════════ -->
           <div v-if="tab === 'soap'" class="af">
 
-            <!-- Lock notice -->
+            <!-- Lock notice — paritas Tab 3: batas kunci = PEMBAYARAN. Selama belum
+                 dibayar, finalisasi boleh dibuka kembali utk revisi SOAP/RME. -->
             <div v-if="isLocked" class="lock-notice">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-              Pemeriksaan sudah difinalisasi — data dikunci (read-only).
+              <template v-if="billingPaid">
+                Pemeriksaan sudah difinalisasi &amp; tagihan sudah <strong>dibayar</strong> — dikunci permanen (read-only).
+              </template>
+              <template v-else>
+                Pemeriksaan sudah difinalisasi — data dikunci (read-only). Perlu revisi? Buka kembali selama pasien belum bayar.
+                <button class="lock-notice-undo" :disabled="reopeningRme" @click="bukaKembaliRme">{{ reopeningRme ? 'Membuka…' : 'Buka Kembali' }}</button>
+              </template>
             </div>
 
             <!-- SOAP + ICD + Planning — locked setelah finalisasi -->

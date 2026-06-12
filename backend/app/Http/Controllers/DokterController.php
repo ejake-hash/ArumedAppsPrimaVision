@@ -532,6 +532,22 @@ class DokterController extends Controller
         return $this->ok($examination, 'Pemeriksaan dikunci. Pasien diteruskan ke stasiun berikutnya.');
     }
 
+    /**
+     * POST /dokter/kunjungan/{visitId}/buka-finalisasi
+     * Buka kembali RME yang sudah difinalisasi untuk revisi — hanya selama
+     * pembayaran belum dikonfirmasi kasir (paritas "Buka Kembali" Tab 3).
+     */
+    public function bukaFinalisasi(string $visitId): JsonResponse
+    {
+        try {
+            $examination = $this->service->bukaFinalisasi($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($examination, 'Finalisasi dibuka — silakan revisi lalu Finalisasi ulang.');
+    }
+
     // =========================================================================
     // FOLLOW-UP STANDALONE
     // =========================================================================

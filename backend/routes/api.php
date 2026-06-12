@@ -372,6 +372,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/kunjungan/{visitId}/billing-status',   [DokterController::class, 'billingStatus']);
 
             Route::post('/kunjungan/{visitId}/finalize',        [DokterController::class, 'finalizeKunjungan']);
+            // Buka kembali RME final utk revisi (hanya pra-bayar — paritas Buka Kembali Tab 3).
+            Route::post('/kunjungan/{visitId}/buka-finalisasi', [DokterController::class, 'bukaFinalisasi']);
 
             Route::post('/kunjungan/{visitId}/follow-up',       [DokterController::class, 'storeFollowUp']);
             Route::put('/kunjungan/{visitId}/follow-up',        [DokterController::class, 'updateFollowUp']);
@@ -637,6 +639,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/{visitId}/tindakan',            [IgdController::class, 'addTindakan'])->middleware('permission:igd.write');
             Route::post('/{visitId}/obat',                [IgdController::class, 'addObat'])->middleware('permission:igd.write');
             Route::delete('/{visitId}/charge/{chargeId}', [IgdController::class, 'deleteCharge'])->middleware('permission:igd.write');
+            // Opsi modal disposisi: BEDAH (paket/operator/anestesi) & RAJAL (poli tujuan).
+            Route::get('/{visitId}/bedah-options',        [IgdController::class, 'bedahOptions'])->middleware('permission:igd.read');
+            Route::get('/{visitId}/rajal-targets',        [IgdController::class, 'rajalTargets'])->middleware('permission:igd.read');
             Route::post('/{visitId}/disposisi',           [IgdController::class, 'disposisi'])->middleware('permission:igd.write');
 
             // CPPT IGD (delegasi mesin RANAP); cppt/{id} literal sebelum tak perlu (id UUID).
