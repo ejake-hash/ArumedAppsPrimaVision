@@ -174,6 +174,11 @@ async function loadBatches(page = 1) {
 
 const statusClass = (s) => ({ SUCCESS: 's-ok', PARTIAL: 's-warn', FAILED: 's-fail', RUNNING: 's-run' }[s] || 's-idle')
 
+// Catatan batch dipisah: kalimat "Sebab gagal: …" (penyebab nyata, tampil menonjol)
+// vs sisanya (warning KFA dsb yang BUKAN penyebab gagal, tampil amber).
+const noteCause = (n) => (String(n || '').match(/Sebab gagal:[^.]*\./) || [''])[0]
+const noteRest  = (n) => String(n || '').replace(/Sebab gagal:[^.]*\.\s*/, '').trim()
+
 // ── Backfill kunjungan historis ──────────────────────────────────────────────
 const backfill = reactive({
   open: false,
@@ -377,7 +382,13 @@ onMounted(() => { load(); loadBatches() })
                 <td class="num"><b class="ok">{{ b.total_sent }}</b></td>
                 <td class="num"><b :class="{ fail: b.total_failed }">{{ b.total_failed }}</b></td>
                 <td class="num">{{ b.retry_count }}</td>
-                <td class="t-note">{{ b.notes || '—' }}</td>
+                <td class="t-note">
+                  <template v-if="b.notes">
+                    <span v-if="noteCause(b.notes)" class="note-cause">{{ noteCause(b.notes) }}</span>
+                    <span v-if="noteRest(b.notes)" class="note-rest">{{ noteRest(b.notes) }}</span>
+                  </template>
+                  <template v-else>—</template>
+                </td>
                 <td>
                   <button v-if="b.status === 'PARTIAL' || b.status === 'FAILED'" class="btn sm" :disabled="retrying === b.id" @click="retry(b.id)">
                     {{ retrying === b.id ? '…' : 'Retry' }}
@@ -742,7 +753,9 @@ onMounted(() => { load(); loadBatches() })
 .tbl tbody tr:hover { background: var(--bs); }
 .tbl td.num b.ok { color: var(--green); } .tbl td.num b.fail { color: var(--red); }
 .type-chip { background: var(--bs); border: 1px solid var(--gb); padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; color: var(--td); }
-.t-note { max-width: 340px; font-size: 11px; color: var(--amber); line-height: 1.4; }
+.t-note { max-width: 340px; font-size: 11px; line-height: 1.4; }
+.note-cause { display: block; color: var(--red); font-weight: 600; margin-bottom: 2px; }
+.note-rest { display: block; color: var(--amber); }
 .st { padding: 3px 10px; border-radius: 20px; font-size: 10.5px; font-weight: 700; }
 .s-ok { background: rgba(30,158,99,.12); color: var(--green); } .s-warn { background: rgba(232,147,12,.14); color: var(--amber); }
 .s-fail { background: rgba(225,73,66,.12); color: var(--red); } .s-run { background: rgba(31,170,224,.14); color: var(--cyan); } .s-idle { background: var(--bs); color: var(--tm); }

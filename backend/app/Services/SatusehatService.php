@@ -120,6 +120,7 @@ class SatusehatService
             };
 
             $notes = trim(implode(' ', array_filter([
+                $this->buildFailureBreakdownNote($syncLog->id),
                 $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames),
                 $this->buildSkipNote($skippedReasons),
             ])));
@@ -285,9 +286,11 @@ class SatusehatService
 
             // Sisa eligible setelah run ini → tampilkan agar operator tahu perlu lanjut.
             $remaining = (clone $this->backfillEligibleQuery($from, $to))->count();
-            $kfaNote = $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames);
+            $kfaNote   = $this->buildKfaWarningNote($visitsWithSkip, $kfaSkippedNames);
+            $failNote  = $this->buildFailureBreakdownNote($syncLog->id);
             $note = "Backfill: {$sent} terkirim, {$failed} gagal dari " . $visits->count()
                 . " diproses. Sisa eligible: {$remaining}."
+                . ($failNote ? ' ' . $failNote : '')
                 . ($kfaNote ? ' ' . $kfaNote : '');
 
             $syncLog->update([
@@ -344,6 +347,55 @@ class SatusehatService
 
         return 'Dilewati (data tidak lengkap): ' . array_sum($skippedReasons)
             . " kunjungan — {$detail}. Lengkapi via Kesiapan Data / modul Dokter.";
+    }
+
+    /**
+     * Ringkasan SEBAB GAGAL aktual sebuah batch — dibaca dari resource log
+     * (error_message), dikelompokkan per kategori & dihitung per kunjungan unik.
+     * Ditaruh di depan notes agar kolom "Catatan" di UI menjelaskan KENAPA gagal,
+     * bukan cuma menampilkan warning KFA (yang BUKAN penyebab kegagalan).
+     */
+    private function buildFailureBreakdownNote(?string $syncLogId): ?string
+    {
+        if (! $syncLogId) {
+            return null;
+        }
+
+        $rows = SatusehatResourceLog::where('satusehat_sync_log_id', $syncLogId)
+            ->where('status', 'FAILED')
+            ->get(['visit_id', 'error_message']);
+
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        // Urutan = prioritas pelabelan bila satu kunjungan punya >1 pesan.
+        $cats = [
+            'obat duplikat (KFA berulang)' => fn (string $m) => str_contains($m, 'duplicate: Medication'),
+            'Encounter sudah ada'          => fn (string $m) => str_contains($m, 'duplicate resource: Encounter'),
+            'NIK pasien belum ter-resolve' => fn (string $m) => str_contains($m, 'IHS pasien belum'),
+            'diagnosis ICD-10 kosong'      => fn (string $m) => str_contains($m, 'Encounter.diagnosis') || str_contains($m, 'Diagnosis (ICD-10) belum'),
+            'kode KFA obat tak valid'      => fn (string $m) => str_contains($m, 'kemkes.go.id/kfa for element'),
+            'kode ICD-10 tak valid'        => fn (string $m) => str_contains($m, 'sid/icd-10'),
+        ];
+
+        $buckets = [];
+        foreach ($rows->groupBy('visit_id') as $logs) {
+            $msgs  = $logs->pluck('error_message')->filter()->map(fn ($m) => (string) $m);
+            $label = 'lainnya';
+            foreach ($cats as $lbl => $match) {
+                if ($msgs->contains(fn ($m) => $match($m))) {
+                    $label = $lbl;
+                    break;
+                }
+            }
+            $buckets[$label] = ($buckets[$label] ?? 0) + 1;
+        }
+
+        arsort($buckets);
+        $detail = collect($buckets)->map(fn ($n, $l) => "{$n} {$l}")->implode(', ');
+
+        return "Sebab gagal: {$detail}.";
     }
 
     /**
@@ -480,11 +532,16 @@ class SatusehatService
 
         $newStatus = $failed === 0 ? 'SUCCESS' : 'PARTIAL';
 
-        // Timpa kalimat skip lama di notes (kalau ada) agar tidak menumpuk
-        // antar-retry; sisakan catatan lain (mis. warning KFA).
+        // Timpa kalimat "Sebab gagal" & skip lama di notes (kalau ada) agar tidak
+        // menumpuk antar-retry; sisakan catatan lain (mis. warning KFA).
         $baseNotes = trim((string) preg_replace(
-            '/Dilewati \(data tidak lengkap\):.*$/s', '', (string) $syncLog->notes));
-        $notes = trim(implode(' ', array_filter([$baseNotes, $this->buildSkipNote($skippedReasons)])));
+            ['/Sebab gagal:.*?\.(?=\s|$)/s', '/Dilewati \(data tidak lengkap\):.*$/s'],
+            '', (string) $syncLog->notes));
+        $notes = trim(implode(' ', array_filter([
+            $this->buildFailureBreakdownNote($syncLog->id),
+            $baseNotes,
+            $this->buildSkipNote($skippedReasons),
+        ])));
 
         $syncLog->update([
             'status'       => $newStatus,
@@ -1556,6 +1613,9 @@ class SatusehatService
         $subject = ['reference' => "Patient/{$patientIhs}", 'display' => $patient->name];
         $orgId   = $this->client()->organizationId();
         $entries = [];
+        // Peta KFA → urn:uuid Medication agar 1 obat (1 KODE KFA) hanya tercipta
+        // SEKALI per Bundle, sekalipun diresepkan di banyak baris item.
+        $medUuidByKfa = [];
 
         foreach ($visit->prescriptions ?? [] as $presc) {
             // Resep batal jangan dikirim sebagai MedicationRequest "active"
@@ -1582,45 +1642,56 @@ class SatusehatService
                     continue; // SKIP item tanpa KFA (skip-aman, lihat note Fase 4).
                 }
 
-                $medUuid = 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString();
                 $reqUuid = 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString();
                 $medName = $item->medication->name;
+                $kfa     = (string) $kfa;
 
-                // 1. Medication (resource terpisah, refer via medicationReference).
-                //    extension medicationType WAJIB (RuleNumber 10031): NC = non-racikan.
-                $entries[] = [
-                    'fullUrl'  => $medUuid,
-                    'resource' => [
-                        'resourceType' => 'Medication',
-                        'extension'    => [[
-                            'url' => 'https://fhir.kemkes.go.id/r4/StructureDefinition/MedicationType',
-                            'valueCodeableConcept' => [
+                // 1. Medication — DEDUP per KODE KFA dalam satu Bundle.
+                //    Satu Sehat menolak >1 Medication ber-KFA sama dalam satu
+                //    transaction (RuleNumber 20002, "duplicate … due to previous").
+                //    Identifier unik per item TIDAK menolong: dedup server berbasis
+                //    CODE, bukan identifier. Obat yang sama diresepkan di banyak baris
+                //    (lazim: tetes OD/OS, tapering dosis) → seluruh Bundle (termasuk
+                //    Encounter) di-rollback dan visit stuck FAILED permanen. Maka cukup
+                //    1 resource Medication per KFA; semua MedicationRequest/Dispense
+                //    obat itu mereferensikannya.
+                if (! isset($medUuidByKfa[$kfa])) {
+                    $medUuid            = 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString();
+                    $medUuidByKfa[$kfa] = $medUuid;
+
+                    // extension medicationType WAJIB (RuleNumber 10031): NC = non-racikan.
+                    $entries[] = [
+                        'fullUrl'  => $medUuid,
+                        'resource' => [
+                            'resourceType' => 'Medication',
+                            'extension'    => [[
+                                'url' => 'https://fhir.kemkes.go.id/r4/StructureDefinition/MedicationType',
+                                'valueCodeableConcept' => [
+                                    'coding' => [[
+                                        'system'  => 'http://terminology.kemkes.go.id/CodeSystem/medication-type',
+                                        'code'    => 'NC',
+                                        'display' => 'Non-compound',
+                                    ]],
+                                ],
+                            ]],
+                            'identifier' => [[
+                                'system' => "http://sys-ids.kemkes.go.id/medication/{$orgId}",
+                                // Unik per (kunjungan, KFA) — aman lintas-Bundle.
+                                'value'  => $item->id,
+                            ]],
+                            'code' => [
                                 'coding' => [[
-                                    'system'  => 'http://terminology.kemkes.go.id/CodeSystem/medication-type',
-                                    'code'    => 'NC',
-                                    'display' => 'Non-compound',
+                                    'system'  => self::KFA_SYSTEM,
+                                    'code'    => $kfa,
+                                    'display' => $medName,
                                 ]],
                             ],
-                        ]],
-                        'identifier' => [[
-                            'system' => "http://sys-ids.kemkes.go.id/medication/{$orgId}",
-                            // HARUS unik per item resep — dulu pakai kode master
-                            // obat sehingga obat yang sama hanya bisa di-POST
-                            // SEKALI se-organisasi; kunjungan berikutnya ditolak
-                            // duplicate 20002 dan SELURUH Bundle transaksi gagal.
-                            'value'  => $item->id,
-                        ]],
-                        'code' => [
-                            'coding' => [[
-                                'system'  => self::KFA_SYSTEM,
-                                'code'    => (string) $kfa,
-                                'display' => $medName,
-                            ]],
+                            'status' => 'active',
                         ],
-                        'status' => 'active',
-                    ],
-                    'request' => ['method' => 'POST', 'url' => 'Medication'],
-                ];
+                        'request' => ['method' => 'POST', 'url' => 'Medication'],
+                    ];
+                }
+                $medUuid = $medUuidByKfa[$kfa];
 
                 // 2. MedicationRequest.
                 $entries[] = [
