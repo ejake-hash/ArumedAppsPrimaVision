@@ -130,6 +130,10 @@ const selInvLoading = ref(false)
 const awaitingVerify = ref(false)
 // Split COB (2 penjamin) — diisi dari /kasir/invoice/{id}/coverages bila visit COB.
 const cobSplit    = ref(null)
+// Batalkan tagihan (DRAFT/FINALIZED) → susun ulang dari data terkini.
+const cancelConfirmOpen = ref(false)
+const cancelling        = ref(false)
+const justCancelled     = ref(false)
 
 // Warning verifikasi asuransi (Sprint 4 modul Asuransi/TPA)
 const insuranceWarning = ref({ show: false })
@@ -186,6 +190,8 @@ async function pickP(q) {
   insuranceWarning.value = { show: false }
   awaitingVerify.value = false
   cobSplit.value     = null
+  cancelConfirmOpen.value = false
+  justCancelled.value = false
   emailTujuan.value  = q.visit?.patient?.email ?? ''   // prefill email pasien
   if (!q.visit?.id) return
 
@@ -227,6 +233,27 @@ async function pickP(q) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat tagihan')
   } finally {
     selInvLoading.value = false
+  }
+}
+
+// Batalkan invoice (status → CANCELLED). Tagihan TIDAK langsung disusun ulang —
+// kasir diberi kesempatan membenahi penjamin/COB dulu di Admisi, baru klik
+// "Susun Ulang Tagihan" (pickP → showInvoice null → auto-generate dari data terkini).
+async function batalkanInvoice() {
+  if (!selInv.value?.id || cancelling.value) return
+  cancelling.value = true
+  try {
+    await kasirApi.cancelInvoice(selInv.value.id)
+    toast('s', `Tagihan ${selInv.value.invoice_number} dibatalkan`)
+    cancelConfirmOpen.value = false
+    selInv.value      = null
+    cobSplit.value    = null
+    editTagihan.value = false
+    justCancelled.value = true
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membatalkan tagihan')
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -1156,6 +1183,11 @@ const groupedPrintItems = computed(() =>
             <p><b>Menunggu verifikasi Farmasi.</b><br/>Resep pasien ini belum diverifikasi &amp; dikunci Farmasi, jadi tagihan belum bisa dibuat. Minta Farmasi memverifikasi resep, lalu klik Muat ulang.</p>
             <button class="btn btn-primary btn-sm" @click="pickP(selQ)">↻ Muat ulang</button>
           </div>
+          <div v-else-if="justCancelled" class="empty-state">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <p><b>Tagihan dibatalkan.</b><br/>Bila perlu, benahi dulu penjamin/COB pasien di Admisi (Ubah Penjamin), lalu susun ulang. Tagihan baru dibangun dari data terkini: penjamin, tindakan, resep, dan harga Buku Tarif.</p>
+            <button class="btn btn-primary btn-sm" @click="pickP(selQ)">⟳ Susun Ulang Tagihan</button>
+          </div>
           <template v-else-if="selInv">
             <!-- Patient header -->
             <div class="pt-banner">
@@ -1322,6 +1354,31 @@ const groupedPrintItems = computed(() =>
                           </label>
                           <div class="print-set-foot">Berlaku untuk semua cetak kwitansi/rincian kasir.</div>
                         </div>
+                      </div>
+                      <button v-if="!['PAID','PARTIALLY_PAID','CANCELLED'].includes(selInv.status)"
+                        class="btn btn-sm btn-danger" title="Batalkan tagihan ini lalu susun ulang dari data terkini"
+                        @click="cancelConfirmOpen = true">
+                        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                        Batalkan
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Konfirmasi batalkan tagihan -->
+                  <div v-if="cancelConfirmOpen" class="cancel-overlay" @click.self="cancelConfirmOpen = false">
+                    <div class="cancel-box">
+                      <div class="cancel-title">Batalkan Tagihan?</div>
+                      <div class="cancel-msg">
+                        <b>{{ selInv.invoice_number }}</b> akan dibatalkan (tetap tercatat sebagai riwayat berstatus CANCELLED — tidak dihapus).
+                        Setelah itu tagihan bisa <b>disusun ulang dari data terkini</b> — termasuk perubahan penjamin/COB, tindakan, resep, dan harga Buku Tarif.
+                        Bila penjamin/COB pasien perlu dibenahi, lakukan di Admisi <b>sebelum</b> menyusun ulang.
+                      </div>
+                      <div class="cancel-actions">
+                        <button class="btn btn-sm btn-secondary" :disabled="cancelling" @click="cancelConfirmOpen = false">Kembali</button>
+                        <button class="btn btn-sm btn-danger" :disabled="cancelling" @click="batalkanInvoice">
+                          <span v-if="cancelling" class="sp"></span>
+                          {{ cancelling ? 'Membatalkan…' : 'Ya, Batalkan Tagihan' }}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -2352,6 +2409,18 @@ const groupedPrintItems = computed(() =>
 .btn-success:disabled { background: var(--th); cursor: not-allowed; }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
 .btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+.btn-danger { background: transparent; color: #b91c1c; border-color: #fecaca; }
+.btn-danger:hover:not(:disabled) { background: #fef2f2; border-color: #b91c1c; }
+.btn-danger:disabled { opacity: .6; cursor: not-allowed; }
+
+/* Konfirmasi batalkan tagihan — overlay di dalam root view agar token CSS resolve */
+.cancel-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; }
+.cancel-box { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1.25rem 1.4rem; width: min(440px, calc(100vw - 2rem)); box-shadow: 0 16px 40px rgba(0,0,0,.18); }
+.cancel-title { font-size: 15px; font-weight: 700; color: var(--td); margin-bottom: .5rem; }
+.cancel-msg { font-size: 12.5px; color: var(--tm); line-height: 1.55; margin-bottom: 1rem; }
+.cancel-msg b { color: var(--td); }
+.cancel-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.cancel-actions .btn-danger .sp { border-color: rgba(185,28,28,.3); border-top-color: #b91c1c; }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .sp { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #fff; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

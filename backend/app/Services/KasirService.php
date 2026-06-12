@@ -134,8 +134,11 @@ class KasirService
 
     public function getInvoiceByVisit(string $visitId): ?BillingInvoice
     {
+        // Invoice CANCELLED dikecualikan supaya kasir yang membuka pasien pasca-
+        // pembatalan otomatis generate tagihan BARU (alur Batalkan → Susun Ulang).
         $invoice = BillingInvoice::with(['visit.patient', 'items', 'cashier'])
             ->where('visit_id', $visitId)
+            ->whereNotIn('status', ['CANCELLED'])
             ->first();
 
         // Auto-override harga baris Rp 0 ke Buku Tarif terbaru saat kasir membuka
@@ -2082,17 +2085,31 @@ class KasirService
 
     public function cancelInvoice(string $id): BillingInvoice
     {
-        $invoice = BillingInvoice::findOrFail($id);
+        $invoice = BillingInvoice::with('visit')->findOrFail($id);
 
-        if ($invoice->status === 'PAID') {
-            throw new \Exception('Invoice yang sudah dibayar tidak bisa dibatalkan.', 422);
+        if (in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true)) {
+            throw new \Exception('Invoice yang sudah dibayar (penuh/sebagian) tidak bisa dibatalkan.', 422);
+        }
+        if ($invoice->status === 'CANCELLED') {
+            throw new \Exception('Invoice sudah dibatalkan.', 422);
         }
 
-        $invoice->update(['status' => 'CANCELLED']);
+        return DB::transaction(function () use ($invoice, $id) {
+            $invoice->update(['status' => 'CANCELLED']);
 
-        $this->log(auth('api')->id(), 'CANCEL_INVOICE', BillingInvoice::class, $id);
+            // Buka kembali biaya inap yang ditandai tertagih agar konsolidasi ulang
+            // memuatnya lagi — builder RANAP/IGD hanya mengambil is_billed=false,
+            // tanpa reset ini tagihan baru kehilangan seluruh biaya inap.
+            if ($invoice->visit && $this->usesInpatientCharges($invoice->visit)) {
+                InpatientCharge::where('visit_id', $invoice->visit_id)
+                    ->where('is_billed', true)
+                    ->update(['is_billed' => false]);
+            }
 
-        return $invoice->fresh();
+            $this->log(auth('api')->id(), 'CANCEL_INVOICE', BillingInvoice::class, $id, "Invoice {$invoice->invoice_number} dibatalkan");
+
+            return $invoice->fresh();
+        });
     }
 
     // =========================================================================
