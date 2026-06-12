@@ -28,7 +28,8 @@ class RewirePublishedResume extends Command
                             {--overwrite : Resolve ulang isi autofill (timpa static_payload) — bukan hanya isi field kosong}
                             {--include-drafts : Ikut normalisasi dokumen BELUM final (payload draft diganti autofill segar + manual_fields direset)}
                             {--code=RESUME_MEDIS : Kode template yang diregenerasi}
-                            {--id= : Batasi ke satu patient_document_id tertentu}';
+                            {--id= : Batasi ke satu patient_document_id tertentu}
+                            {--only-contaminated-anamnese : Hanya dokumen yang Anamnese-nya tercemar baris ICD-9/visus/IOP (TTV/TOD/VOD/mmHg) — sisanya dilewati}';
 
     protected $description = 'Regenerasi in-place dokumen final (default Resume Medis) dengan template/wiring terbaru, pertahankan TTD.';
 
@@ -46,6 +47,7 @@ class RewirePublishedResume extends Command
         if ($id) {
             $query->where('id', $id);
         }
+        $this->scopeContaminated($query);
 
         $docs = $query->orderBy('finalized_at')->get();
 
@@ -97,6 +99,7 @@ class RewirePublishedResume extends Command
             if ($id) {
                 $draftQuery->where('id', $id);
             }
+            $this->scopeContaminated($draftQuery);
             $drafts = $draftQuery->orderBy('created_at')->get();
 
             $this->info(($apply ? '[APPLY] ' : '[DRY RUN] ') . "Draft belum final: {$drafts->count()} dokumen (payload → autofill segar).");
@@ -128,5 +131,23 @@ class RewirePublishedResume extends Command
         }
 
         return $fail > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * Batasi query ke dokumen yang Anamnese (static_payload) tercemar konten objektif:
+     * baris "Tindakan/Prosedur (ICD-9): …" (oAutoText baru) ATAU pola TTV/Visus/IOP
+     * (TOD/TOS/VOD/VOS/mmHg, format O lama). Idempoten — setelah dibersihkan tak cocok
+     * lagi. No-op bila opsi tidak diberikan.
+     */
+    private function scopeContaminated($query): void
+    {
+        if (! $this->option('only-contaminated-anamnese')) {
+            return;
+        }
+        $path = "signatures->'static_payload'->>'anamnese'";
+        $query->where(function ($q) use ($path) {
+            $q->whereRaw("$path ILIKE ?", ['%Tindakan/Prosedur (ICD-9)%'])
+              ->orWhereRaw("$path ~ ?", ['VOD|TOD|TOS|VOS|mmHg']);
+        });
     }
 }

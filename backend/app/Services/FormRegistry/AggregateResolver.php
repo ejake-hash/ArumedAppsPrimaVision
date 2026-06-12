@@ -89,9 +89,16 @@ final class AggregateResolver
 
     // ─────────────────────────────────────────────────────────────────────────
     // anamnese_full — "Anamnese" Resume Medis = anamnesa dokter
-    // (doctorExamination.anamnese) + segmen mata anterior/posterior dokter
-    // (doctorExamination.soap_objective). Segmen dipindah KE SINI dari
-    // physical_exam (keputusan user 12 Jun 2026). Editable (prefill saja).
+    // (doctorExamination.anamnese) + HANYA segmen mata anterior/posterior dokter
+    // dari soap_objective. Segmen dipindah KE SINI dari physical_exam (keputusan
+    // user 12 Jun 2026). Editable (prefill saja).
+    //
+    // ⚠️ soap_objective TIDAK lagi dibawa apa adanya: untuk kunjungan lama format
+    // O berisi TTV/Visus/IOP/Rx (mis. "TOD : 16mmHg\tTOS…", "Visus: UCVA…",
+    // "TIO OD 19 / OS 13 mmHg") dan untuk kunjungan baru oAutoText menambah baris
+    // "Tindakan/Prosedur (ICD-9): …" — semua itu BUKAN milik Anamnese (sudah tampil
+    // di Pemeriksaan Fisik / Tindakan) & dulu bocor ke kotak Anamnese. Kini hanya
+    // baris yang berawalan "Segmen/Catatan anterior|posterior" yang dipertahankan.
     // ─────────────────────────────────────────────────────────────────────────
     private function resolveAnamneseFull(Visit $visit): ?string
     {
@@ -103,7 +110,13 @@ final class AggregateResolver
         }
         $seg = trim((string) ($exam?->soap_objective ?? ''));
         if ($seg !== '') {
-            $parts[] = $seg;
+            $kept = array_values(array_filter(
+                preg_split('/\r?\n/', $seg),
+                fn ($ln) => preg_match('/^\s*(Segmen|Catatan)\s+(anterior|posterior)/i', $ln) === 1
+            ));
+            if (!empty($kept)) {
+                $parts[] = implode("\n", $kept);
+            }
         }
 
         return $parts ? implode("\n", $parts) : null;
