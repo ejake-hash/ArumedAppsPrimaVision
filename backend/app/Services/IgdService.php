@@ -2,13 +2,19 @@
 
 namespace App\Services;
 
+use App\Models\ClinicProfile;
+use App\Models\DoctorSchedule;
+use App\Models\Employee;
 use App\Models\IgdTriageRecord;
 use App\Models\InpatientCharge;
 use App\Models\Medication;
 use App\Models\Patient;
 use App\Models\Procedure;
 use App\Models\Queue;
+use App\Models\SurgeryPackage;
+use App\Models\SurgerySchedule;
 use App\Models\Visit;
+use App\Models\VisitSurgeryPackage;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -368,16 +374,27 @@ class IgdService
     // =========================================================================
 
     /**
-     * Disposisi pasien IGD (keputusan dokter):
+     * Disposisi pasien IGD (keputusan dokter). 6 cabang (selaras regulasi gawat
+     * darurat SNARS/STARKES ARK — kontinuitas pelayanan, tiap transfer terdokumentasi):
      *   PULANG / RUJUK → advance IGD→KASIR (1 invoice INV-IGD).
      *   RANAP          → set current_station='MENUNGGU_RANAP' (lihat papan RANAP;
      *                    petugas ranap admit bed → jenis_pelayanan jadi RANAP, SEP
      *                    inap baru diurus admin manual). Baris IGD ditutup COMPLETED.
+     *   BEDAH          → jadwalkan operasi CITO (hari ini) + rutekan ke papan BEDAH.
+     *                    jenis_pelayanan TETAP IGD → biaya IGD (inpatient_charges) +
+     *                    paket bedah dikonsolidasi jadi SATU invoice di akhir (carry-forward).
+     *   RAJAL          → encounter rawat jalan TERPISAH (IGD≠rajal): biaya IGD ditutup
+     *                    ke KASIR, lalu kunjungan ANAK rawat jalan ke poli tujuan
+     *                    (hari ini→DOKTER, lain hari→ADMISI). Pola rujukan internal.
      *   MENINGGAL      → tutup baris IGD (SELESAI), tanpa kasir.
      *
-     * @param  string  $disposition  PULANG|RANAP|RUJUK|MENINGGAL
+     * @param  string  $disposition  PULANG|RANAP|RUJUK|MENINGGAL|BEDAH|RAJAL
+     * @param  array   $extra        field tambahan per-disposisi (BEDAH: surgery_package_id,
+     *                               lead_surgeon_id, anesthesiologist_id, location_type,
+     *                               scheduled_time, operation_room, surgery_package_tariff_id;
+     *                               RAJAL: target_doctor_schedule_id, scheduled_date).
      */
-    public function disposisi(Visit $visit, string $disposition, ?string $notes = null): array
+    public function disposisi(Visit $visit, string $disposition, ?string $notes = null, array $extra = []): array
     {
         $igdQueue = Queue::byStation(Queue::STATION_IGD)
             ->where('visit_id', $visit->id)
@@ -425,6 +442,142 @@ class IgdService
             });
         }
 
+        if ($disposition === 'BEDAH') {
+            // Operasi CITO gawat darurat → jadwalkan operasi HARI INI + pindahkan kartu
+            // pasien ke papan BEDAH. jenis_pelayanan TETAP 'IGD' → biaya IGD
+            // (inpatient_charges) + paket bedah dikonsolidasi jadi SATU invoice di akhir
+            // episode (carry-forward, konsisten alur RANAP→Bedah). Papan BEDAH me-resolve
+            // pasien via visit.surgery_schedule_id (pola PREOP_BEDAH).
+            return DB::transaction(function () use ($setDisposisi, $visit, $igdQueue, $extra, $notes) {
+                $setDisposisi();
+
+                $locationType = ($extra['location_type'] ?? null) === SurgerySchedule::LOCATION_RUANG_TINDAKAN
+                    ? SurgerySchedule::LOCATION_RUANG_TINDAKAN
+                    : SurgerySchedule::LOCATION_RUANG_BEDAH;
+                $packageId = $extra['surgery_package_id'] ?? null;
+
+                // Ruang OK default dari Profil Klinik (ambil pertama bila ada).
+                $defaultRoom = ClinicProfile::query()->value('operating_rooms');
+                $defaultRoom = is_array($defaultRoom) ? ($defaultRoom[0] ?? null) : null;
+
+                $schedule = SurgerySchedule::create([
+                    'surgery_package_id'  => $packageId,
+                    'location_type'       => $locationType,
+                    'lead_surgeon_id'     => $extra['lead_surgeon_id'] ?? null,
+                    'anesthesiologist_id' => $extra['anesthesiologist_id'] ?? null,
+                    'scheduled_date'      => today(),
+                    'scheduled_time'      => $extra['scheduled_time'] ?? now('Asia/Jakarta')->format('H:i'),
+                    'operation_room'      => $extra['operation_room'] ?? $defaultRoom,
+                    'status'              => 'SCHEDULED',
+                    'requires_inpatient'  => false,   // cito hari ini, bukan pre-op H-1
+                    'notes'               => 'Operasi cito dari IGD' . ($notes ? ' — ' . $notes : ''),
+                ]);
+
+                // Propagasi ke visit → papan BEDAH me-resolve via surgery_schedule_id.
+                $visit->update(['surgery_schedule_id' => $schedule->id]);
+
+                // Snapshot paket bedah (dasar diskon + sumber tagih paket di kwitansi).
+                // Hanya bila paket dipilih (RUANG_TINDAKAN/laser bisa tanpa paket — ditagih
+                // via procedure). Reuse generik DokterService::syncVisitPackageSnapshot.
+                if ($packageId) {
+                    app(DokterService::class)->syncVisitPackageSnapshot(
+                        $visit,
+                        $packageId,
+                        $schedule->id,
+                        VisitSurgeryPackage::TYPE_BEDAH,
+                        $extra['surgery_package_tariff_id'] ?? null
+                    );
+                }
+
+                // Tutup baris IGD + enqueue BEDAH (kartu pasien pindah ke papan bedah;
+                // RUANG_TINDAKAN otomatis tampil di papan Ruang Tindakan via filter lokasi).
+                $igdQueue->update([
+                    'status'       => Queue::STATUS_COMPLETED,
+                    'completed_at' => now(),
+                ]);
+                $this->queue->enqueue($visit->id, Queue::STATION_BEDAH);
+                $visit->update(['current_station' => Queue::STATION_BEDAH]);
+
+                return [
+                    'routed_to'           => 'BEDAH',
+                    'next_station'        => Queue::STATION_BEDAH,
+                    'surgery_schedule_id' => $schedule->id,
+                ];
+            });
+        }
+
+        if ($disposition === 'RAJAL') {
+            // Rujuk ke poliklinik = encounter rawat jalan TERPISAH (kaidah SNARS/BPJS:
+            // IGD-darurat ≠ rajal-rujukan, SEP berbeda). Encounter IGD diselesaikan ke
+            // KASIR (biaya gawat darurat), lalu dibuat kunjungan ANAK rawat jalan ke poli
+            // tujuan. Jejak rujukan internal (parent_visit_id + alasan) tersimpan utk RME.
+            $targetScheduleId = $extra['target_doctor_schedule_id'] ?? null;
+            if (! $targetScheduleId) {
+                throw new \Exception('Poli/dokter tujuan wajib dipilih untuk rujukan rawat jalan.', 422);
+            }
+            $target = DoctorSchedule::with('employee')->findOrFail($targetScheduleId);
+
+            // Tanggal kunjungan poli: default kemunculan berikutnya hari praktik dokter
+            // tujuan (≥ hari ini). Bila dipilih eksplisit → validasi jatuh di hari praktik.
+            $today = now('Asia/Jakarta')->startOfDay();
+            $scheduledDate = $extra['scheduled_date'] ?? null;
+            if ($scheduledDate) {
+                $date = Carbon::parse($scheduledDate, 'Asia/Jakarta')->startOfDay();
+                if ($date->lt($today)) {
+                    throw new \Exception('Tanggal rujukan tidak boleh di masa lalu.', 422);
+                }
+                if ((int) $date->isoWeekday() !== (int) $target->day_of_week) {
+                    throw new \Exception('Tanggal rujukan harus jatuh pada hari praktik dokter tujuan.', 422);
+                }
+            } else {
+                $delta = ($target->day_of_week - $today->isoWeekday() + 7) % 7;
+                $date  = $today->copy()->addDays($delta);
+            }
+            $isToday = $date->isSameDay($today);
+
+            $result = DB::transaction(function () use ($setDisposisi, $visit, $igdQueue, $target, $date, $isToday, $notes) {
+                $setDisposisi();
+
+                // 1) Selesaikan encounter IGD → KASIR (invoice biaya gawat darurat).
+                $advance = $this->queue->advanceFromStation($igdQueue->id, Queue::STATION_IGD);
+
+                // 2) Kunjungan ANAK rawat jalan ke poli tujuan (pola rujukan internal).
+                $child = Visit::create([
+                    'parent_visit_id'               => $visit->id,
+                    'patient_id'                    => $visit->patient_id,
+                    'insurer_id'                    => $visit->insurer_id,
+                    'registered_by_id'              => auth('api')->user()?->employee_id,
+                    'doctor_schedule_id'            => $target->id,
+                    'internal_referral_reason'      => $notes,
+                    'no_registrasi'                 => $this->generateNoRegistrasi(),
+                    'visit_date'                    => $date->toDateString(),
+                    'classification'                => 'Rujukan IGD',
+                    'visit_type'                    => 'REGULAR',
+                    // Hari ini → langsung antrean DOKTER. Hari lain → penanda di ADMISI
+                    // (petugas memunculkan ke antrean saat pasien datang di hari-H).
+                    'current_station'               => $isToday ? Queue::STATION_DOKTER : Queue::STATION_ADMISI,
+                    'guarantor_type'                => $visit->guarantor_type,
+                    'satusehat_sync_status'         => 'PENDING',
+                    'insurance_verification_status' => 'NONE',
+                ]);
+                if ($isToday) {
+                    $this->queue->enqueue($child->id, Queue::STATION_DOKTER);
+                }
+
+                return [
+                    'routed_to'      => 'KASIR',
+                    'next_station'   => $advance['next_station'] ?? Queue::STATION_KASIR,
+                    'child_visit_id' => $child->id,
+                    'child_enqueued' => $isToday,
+                ];
+            });
+
+            // Lapor tgl pulang IGD ke BPJS (non-blocking, di luar transaksi).
+            $this->maybeUpdateTglPulangBpjs($visit->fresh());
+
+            return $result;
+        }
+
         // MENINGGAL → tutup baris IGD, pasien selesai (tanpa kasir).
         return DB::transaction(function () use ($setDisposisi, $visit, $igdQueue) {
             $setDisposisi();
@@ -436,6 +589,96 @@ class IgdService
 
             return ['routed_to' => 'SELESAI', 'next_station' => 'SELESAI'];
         });
+    }
+
+    /**
+     * Opsi modal disposisi BEDAH (operasi cito): paket bedah (harga per-penjamin
+     * pasien), operator (spesialis mata), anestesiologis, & lokasi. Operator boleh
+     * dikosongkan di sini (ditetapkan saat operasi di papan Bedah) — selaras alur
+     * penjadwalan dokter yang tak men-set lead_surgeon di awal.
+     */
+    public function bedahOptions(Visit $visit): array
+    {
+        $gt  = $visit->guarantor_type ?? 'UMUM';
+        $ins = $visit->insurer_id;
+
+        $packages = SurgeryPackage::where('is_active', true)
+            ->where(fn ($q) => $q
+                ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+                ->orWhereNull('package_type'))
+            ->orderBy('name')
+            ->get(['id', 'name', 'code', 'package_type'])
+            ->map(function (SurgeryPackage $p) use ($gt, $ins) {
+                $t = $this->kasir->resolvePackageTariff($p->id, $gt, $ins);
+                return [
+                    'id'         => $p->id,
+                    'name'       => $t?->display_name ?: $p->name,
+                    'code'       => $p->code,
+                    'sell_price' => $t ? (float) $t->sell_price : null,
+                ];
+            })->all();
+
+        $operators = Employee::where('doctor_type', Employee::DT_SPESIALIS_MATA)
+            ->where('is_active', true)->orderBy('name')
+            ->get(['id', 'name', 'profession'])->all();
+
+        $anesthesiologists = Employee::where('doctor_type', Employee::DT_ANESTESI)
+            ->where('is_active', true)->orderBy('name')
+            ->get(['id', 'name', 'profession'])->all();
+
+        return [
+            'packages'          => $packages,
+            'operators'         => $operators,
+            'anesthesiologists' => $anesthesiologists,
+            'locations'         => [
+                ['code' => SurgerySchedule::LOCATION_RUANG_BEDAH,    'label' => 'Ruang Bedah (Operasi)'],
+                ['code' => SurgerySchedule::LOCATION_RUANG_TINDAKAN, 'label' => 'Ruang Tindakan (Laser)'],
+            ],
+        ];
+    }
+
+    /**
+     * Daftar tujuan rujukan rawat jalan (disposisi RAJAL): jadwal dokter/poli aktif
+     * minggu ini. Tiap baris menandai apakah dokter tujuan praktik HARI INI (langsung
+     * antre DOKTER) atau praktik berikutnya (penanda di ADMISI). Pola sama
+     * DokterService::getRujukInternalTargets tanpa pengecualian dokter (IGD tak punya
+     * doctor_schedule_id).
+     */
+    public function rajalTargets(): array
+    {
+        $weekStart = DoctorSchedule::currentWeekStart();
+        $todayDow  = (int) now('Asia/Jakarta')->isoWeekday();
+
+        return DoctorSchedule::with('employee')
+            ->forWeek($weekStart)
+            ->where('is_active', true)
+            ->orderBy('poliklinik')->orderBy('day_of_week')->orderBy('start_time')
+            ->get()
+            ->map(fn (DoctorSchedule $s) => [
+                'schedule_id' => $s->id,
+                'doctor_name' => $s->employee?->name,
+                'poliklinik'  => $s->poliklinik,
+                'poli_code'   => $s->poli_code,
+                'day_of_week' => $s->day_of_week,
+                'day_label'   => $this->dayLabel($s->day_of_week),
+                'start_time'  => substr((string) $s->start_time, 0, 5),
+                'end_time'    => substr((string) $s->end_time, 0, 5),
+                'is_today'    => $s->day_of_week === $todayDow,
+                'next_date'   => $this->nextDateForDow((int) $s->day_of_week),
+            ])->values()->all();
+    }
+
+    /** Tanggal kemunculan berikutnya (≥ hari ini, WIB) dari sebuah hari praktik (ISO 1..7). */
+    private function nextDateForDow(int $dow): string
+    {
+        $today = now('Asia/Jakarta')->startOfDay();
+        $delta = ($dow - $today->isoWeekday() + 7) % 7;
+        return $today->copy()->addDays($delta)->toDateString();
+    }
+
+    private function dayLabel(int $dow): string
+    {
+        return [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'][$dow] ?? '-';
     }
 
     // =========================================================================

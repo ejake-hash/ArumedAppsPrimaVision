@@ -44,7 +44,21 @@ const triaseForm = ref({})
 
 // Modal disposisi
 const showDisposisi = ref(false)
-const dispForm = ref({ disposition: 'PULANG', notes: '' })
+const dispForm = ref(emptyDispForm())
+// Opsi modal disposisi (lazy-load saat BEDAH/RAJAL dipilih).
+const dispOptions = ref({ packages: [], operators: [], anesthesiologists: [], locations: [] })
+const rajalTargets = ref([])
+const dispLoading = ref(false)
+
+function emptyDispForm() {
+  return {
+    disposition: 'PULANG', notes: '',
+    // BEDAH (operasi cito)
+    location_type: 'RUANG_BEDAH', surgery_package_id: '', lead_surgeon_id: '', anesthesiologist_id: '',
+    // RAJAL (rujuk poliklinik)
+    target_doctor_schedule_id: '',
+  }
+}
 
 // CPPT (panel detail)
 const cpptList = ref([])
@@ -516,27 +530,75 @@ async function deleteCharge(chargeId) {
 // DISPOSISI
 // ---------------------------------------------------------------------------
 function openDisposisi() {
-  dispForm.value = { disposition: 'PULANG', notes: '' }
+  dispForm.value = emptyDispForm()
+  dispOptions.value = { packages: [], operators: [], anesthesiologists: [], locations: [] }
+  rajalTargets.value = []
   showDisposisi.value = true
 }
 
 const DISPOSITIONS = [
   { code: 'PULANG',    label: 'Pulang → Kasir',        hint: 'Lanjut bayar lalu farmasi.' },
+  { code: 'RAJAL',     label: 'Rujuk Poliklinik → Kasir', hint: 'Biaya IGD diselesaikan; kontrol/spesialis di poli (kunjungan baru).' },
+  { code: 'BEDAH',     label: 'Operasi (Cito) → Bedah', hint: 'Jadwalkan operasi darurat hari ini; pasien ke papan Bedah.' },
   { code: 'RANAP',     label: 'Rawat Inap → Menunggu Kamar', hint: 'Petugas RANAP admit bed. SEP inap diurus admin.' },
-  { code: 'RUJUK',     label: 'Rujuk → Kasir',         hint: 'Dirujuk ke faskes lain, selesaikan biaya dulu.' },
+  { code: 'RUJUK',     label: 'Rujuk Keluar → Kasir',  hint: 'Dirujuk ke faskes lain, selesaikan biaya dulu.' },
   { code: 'MENINGGAL', label: 'Meninggal (DOA)',       hint: 'Tutup kunjungan, tanpa kasir.' },
 ]
 
+// Pilih disposisi + lazy-load opsi (paket/operator utk BEDAH, poli tujuan utk RAJAL).
+async function selectDisposition(code) {
+  dispForm.value.disposition = code
+  if (code === 'BEDAH' && !dispOptions.value.packages.length) {
+    dispLoading.value = true
+    try {
+      const { data } = await igdApi.bedahOptions(detail.value.id)
+      dispOptions.value = data.data || { packages: [], operators: [], anesthesiologists: [], locations: [] }
+    } catch (e) { notify(errMsg(e, 'Gagal memuat opsi bedah'), false) }
+    finally { dispLoading.value = false }
+  }
+  if (code === 'RAJAL' && !rajalTargets.value.length) {
+    dispLoading.value = true
+    try {
+      const { data } = await igdApi.rajalTargets(detail.value.id)
+      rajalTargets.value = data.data || []
+    } catch (e) { notify(errMsg(e, 'Gagal memuat poli tujuan'), false) }
+    finally { dispLoading.value = false }
+  }
+}
+
+const selectedRajalTarget = computed(() =>
+  rajalTargets.value.find(t => t.schedule_id === dispForm.value.target_doctor_schedule_id) || null)
+
+const dispValid = computed(() => {
+  const f = dispForm.value
+  if (f.disposition === 'BEDAH') return f.location_type === 'RUANG_TINDAKAN' || !!f.surgery_package_id
+  if (f.disposition === 'RAJAL') return !!f.target_doctor_schedule_id
+  return true
+})
+
+const dispSubmitLabel = computed(() => {
+  if (dispForm.value.disposition === 'BEDAH') return 'Proses & Kirim ke Bedah'
+  if (dispForm.value.disposition === 'RAJAL') return 'Proses & Buat Kunjungan Poli'
+  return 'Proses Disposisi'
+})
+
 async function submitDisposisi() {
-  if (!detail.value) return
+  if (!detail.value || !dispValid.value) return
+  const f = dispForm.value
+  const payload = { disposition: f.disposition, notes: f.notes || null }
+  if (f.disposition === 'BEDAH') {
+    payload.location_type       = f.location_type
+    payload.surgery_package_id  = f.surgery_package_id || null
+    payload.lead_surgeon_id     = f.lead_surgeon_id || null
+    payload.anesthesiologist_id = f.anesthesiologist_id || null
+  } else if (f.disposition === 'RAJAL') {
+    payload.target_doctor_schedule_id = f.target_doctor_schedule_id || null
+  }
   busy.value = true
   try {
-    await igdApi.disposisi(detail.value.id, {
-      disposition: dispForm.value.disposition,
-      notes: dispForm.value.notes || null,
-    })
+    await igdApi.disposisi(detail.value.id, payload)
     showDisposisi.value = false
-    notify(`Disposisi ${dispForm.value.disposition} diproses`)
+    notify(`Disposisi ${f.disposition} diproses`)
     detail.value = null
     await loadBoard()
   } catch (e) {
@@ -982,20 +1044,81 @@ onMounted(loadBoard)
             <button
               v-for="d in DISPOSITIONS" :key="d.code"
               class="disp-choice" :class="{ sel: dispForm.disposition === d.code }"
-              @click="dispForm.disposition = d.code"
+              @click="selectDisposition(d.code)"
             >
               <strong>{{ d.label }}</strong>
               <span class="disp-hint">{{ d.hint }}</span>
             </button>
           </div>
+
+          <!-- BEDAH (operasi cito): jadwal hari ini, biaya nyatu 1 invoice di akhir -->
+          <div v-if="dispForm.disposition === 'BEDAH'" class="disp-extra">
+            <p v-if="dispLoading" class="muted" style="margin:0 0 .5rem;">Memuat opsi bedah…</p>
+            <div class="grid2">
+              <div class="field">
+                <label>Lokasi</label>
+                <select v-model="dispForm.location_type">
+                  <option v-for="l in dispOptions.locations" :key="l.code" :value="l.code">{{ l.label }}</option>
+                  <option v-if="!dispOptions.locations.length" value="RUANG_BEDAH">Ruang Bedah (Operasi)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Paket Bedah <span v-if="dispForm.location_type !== 'RUANG_TINDAKAN'" class="req">*</span></label>
+                <select v-model="dispForm.surgery_package_id">
+                  <option value="">— pilih paket —</option>
+                  <option v-for="p in dispOptions.packages" :key="p.id" :value="p.id">
+                    {{ p.name }}<template v-if="p.sell_price != null"> · {{ fmtRp(p.sell_price) }}</template>
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div class="grid2">
+              <div class="field">
+                <label>Operator <span class="muted">(opsional)</span></label>
+                <select v-model="dispForm.lead_surgeon_id">
+                  <option value="">— tetapkan di Bedah —</option>
+                  <option v-for="o in dispOptions.operators" :key="o.id" :value="o.id">{{ o.name }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Anestesiologis <span class="muted">(opsional)</span></label>
+                <select v-model="dispForm.anesthesiologist_id">
+                  <option value="">— belum ditetapkan —</option>
+                  <option v-for="a in dispOptions.anesthesiologists" :key="a.id" :value="a.id">{{ a.name }}</option>
+                </select>
+              </div>
+            </div>
+            <p class="muted" style="margin:2px 0 0; font-size:10.5px;">
+              Biaya IGD + paket bedah dikonsolidasi jadi <strong>satu invoice</strong> di akhir (pasca-operasi).
+            </p>
+          </div>
+
+          <!-- RAJAL (rujuk poliklinik): encounter rawat jalan terpisah -->
+          <div v-if="dispForm.disposition === 'RAJAL'" class="disp-extra">
+            <p v-if="dispLoading" class="muted" style="margin:0 0 .5rem;">Memuat poli tujuan…</p>
+            <div class="field">
+              <label>Poli / Dokter Tujuan <span class="req">*</span></label>
+              <select v-model="dispForm.target_doctor_schedule_id">
+                <option value="">— pilih poli tujuan —</option>
+                <option v-for="t in rajalTargets" :key="t.schedule_id" :value="t.schedule_id">
+                  {{ t.poliklinik }} — {{ t.doctor_name }} ({{ t.day_label }} {{ t.start_time }}){{ t.is_today ? ' · HARI INI' : '' }}
+                </option>
+              </select>
+            </div>
+            <p v-if="selectedRajalTarget" class="muted" style="margin:2px 0 0; font-size:10.5px;">
+              <template v-if="selectedRajalTarget.is_today">Pasien langsung antre poli <strong>hari ini</strong> setelah biaya IGD diselesaikan.</template>
+              <template v-else>Kunjungan poli dijadwalkan <strong>{{ selectedRajalTarget.next_date }}</strong> (muncul di antrean saat pasien datang). Biaya IGD tetap diselesaikan sekarang.</template>
+            </p>
+          </div>
+
           <div class="field">
-            <label>Catatan</label>
-            <textarea v-model="dispForm.notes" rows="2" placeholder="resume singkat / alasan rujuk…"></textarea>
+            <label>Catatan <span v-if="dispForm.disposition === 'RAJAL' || dispForm.disposition === 'BEDAH'" class="muted">(indikasi / alasan rujuk — terdokumentasi RME)</span></label>
+            <textarea v-model="dispForm.notes" rows="2" placeholder="resume singkat / alasan rujuk / indikasi operasi…"></textarea>
           </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost btn-press" @click="showDisposisi = false">Batal</button>
-          <button class="btn btn-primary btn-press" :disabled="busy" @click="submitDisposisi">Proses Disposisi</button>
+          <button class="btn btn-primary btn-press" :disabled="busy || !dispValid" @click="submitDisposisi">{{ dispSubmitLabel }}</button>
         </div>
       </div>
     </div>
@@ -1159,6 +1282,8 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--g
 .disp-choice.sel { border-color: var(--gd); background: var(--gl); }
 .disp-choice strong { font-size: 12.5px; color: var(--td); }
 .disp-hint { font-size: 10.5px; color: var(--tu); margin-top: 2px; }
+.disp-extra { background: var(--gl); border: 1px solid var(--gb); border-radius: 9px; padding: 10px; margin-bottom: 0.8rem; }
+.disp-extra .field { margin-bottom: 0.5rem; }
 
 .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--st, #16a34a); color: #fff; padding: .75rem 1.25rem; border-radius: 9px; z-index: 9200; font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
 .toast.err { background: var(--et, #dc2626); }

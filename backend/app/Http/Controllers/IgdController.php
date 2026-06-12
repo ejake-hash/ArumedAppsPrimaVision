@@ -191,22 +191,70 @@ class IgdController extends Controller
         return $this->ok(null, 'Biaya dihapus');
     }
 
-    /** POST /igd/{visitId}/disposisi — keputusan akhir IGD (PULANG/RANAP/RUJUK/MENINGGAL). */
+    /**
+     * POST /igd/{visitId}/disposisi — keputusan akhir IGD
+     * (PULANG/RANAP/RUJUK/MENINGGAL/BEDAH/RAJAL).
+     *   BEDAH → operasi cito (paket+operator+lokasi, jadwal hari ini).
+     *   RAJAL → rujuk poliklinik (poli tujuan + tanggal kunjungan).
+     */
     public function disposisi(string $visitId, Request $request): JsonResponse
     {
         $data = $request->validate([
-            'disposition' => 'required|in:PULANG,RANAP,RUJUK,MENINGGAL',
+            'disposition' => 'required|in:PULANG,RANAP,RUJUK,MENINGGAL,BEDAH,RAJAL',
             'notes'       => 'nullable|string|max:1000',
+            // BEDAH (operasi cito) — operator/anestesi opsional (boleh ditetapkan di papan Bedah).
+            'surgery_package_id'        => 'nullable|uuid|exists:surgery_packages,id',
+            'surgery_package_tariff_id' => 'nullable|uuid',
+            'lead_surgeon_id'           => 'nullable|uuid|exists:employees,id',
+            'anesthesiologist_id'       => 'nullable|uuid|exists:employees,id',
+            'location_type'             => 'nullable|in:RUANG_BEDAH,RUANG_TINDAKAN',
+            'scheduled_time'            => 'nullable|string|max:8',
+            'operation_room'            => 'nullable|string|max:100',
+            // RAJAL (rujuk poliklinik).
+            'target_doctor_schedule_id' => 'nullable|uuid|exists:doctor_schedules,id',
+            'scheduled_date'            => 'nullable|date',
         ]);
+
+        // Aturan bersyarat: BEDAH (ruang bedah) wajib paket; RAJAL wajib poli tujuan.
+        if ($data['disposition'] === 'BEDAH'
+            && ($data['location_type'] ?? 'RUANG_BEDAH') !== 'RUANG_TINDAKAN'
+            && empty($data['surgery_package_id'])) {
+            return $this->error('Paket bedah wajib dipilih untuk operasi (Ruang Bedah).', 422);
+        }
+        if ($data['disposition'] === 'RAJAL' && empty($data['target_doctor_schedule_id'])) {
+            return $this->error('Poli/dokter tujuan wajib dipilih untuk rujukan rawat jalan.', 422);
+        }
 
         try {
             $visit  = Visit::findOrFail($visitId);
-            $result = $this->service->disposisi($visit, $data['disposition'], $data['notes'] ?? null);
+            $result = $this->service->disposisi($visit, $data['disposition'], $data['notes'] ?? null, $data);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
         return $this->ok($result, 'Disposisi IGD diproses');
+    }
+
+    /** GET /igd/{visitId}/bedah-options — paket bedah + operator + anestesiologis (modal disposisi BEDAH). */
+    public function bedahOptions(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->bedahOptions($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** GET /igd/{visitId}/rajal-targets — jadwal poli tujuan (modal disposisi RAJAL). */
+    public function rajalTargets(string $visitId): JsonResponse
+    {
+        try {
+            Visit::findOrFail($visitId);
+            return $this->ok($this->service->rajalTargets());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
     }
 
     // =========================================================================

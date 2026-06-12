@@ -681,8 +681,27 @@ class QueueService
         // alur long-lived sendiri. IGD diaktifkan di fase akhir.
         return match ($visit->jenis_pelayanan ?? 'RAJAL') {
             'RANAP' => $this->resolveNextRanap($visit, $fromStation),
-            // 'IGD' => $this->resolveNextIgd($visit, $fromStation), // diaktifkan di fase IGD (akhir)
+            'IGD'   => $this->resolveNextIgd($visit, $fromStation),
             default => $this->resolveNextRajal($visit, $fromStation),
+        };
+    }
+
+    /**
+     * Alur IGD (gawat darurat) — 1 stasiun gabung long-lived. Transisi nyata HANYA
+     * saat disposisi (IgdService::disposisi). Satu-satunya advance lewat QueueService
+     * dari papan IGD = IGD→KASIR (disposisi PULANG/RUJUK/RAJAL menyelesaikan biaya
+     * gawat darurat — biaya IGD memakai inpatient_charges, lihat KasirService).
+     * Disposisi RANAP/BEDAH/MENINGGAL ditangani langsung di IgdService (set
+     * current_station / enqueue BEDAH), tidak lewat sini. Tail KASIR→FARMASI/SELESAI
+     * = reuse nextAfterKasir (obat IGD via resep → Farmasi, else pulang).
+     */
+    private function resolveNextIgd(Visit $visit, string $fromStation): string|array|null
+    {
+        return match ($fromStation) {
+            Queue::STATION_IGD     => Queue::STATION_KASIR,
+            Queue::STATION_KASIR   => $this->nextAfterKasir($visit),
+            Queue::STATION_FARMASI => self::END_OF_FLOW,
+            default                => null,
         };
     }
 
