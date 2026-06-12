@@ -209,11 +209,12 @@ const oDerived = computed(() => {
   // 1. Visus awal (UCVA)
   if (has(v.ucva_od) || has(v.ucva_os)) parts.push(`Visus awal OD ${v.ucva_od || '–'} / OS ${v.ucva_os || '–'}`)
   // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
+  // Label berspasi "S -1.75 / C -0.75 / X 90" — seragam dgn RmeAggregator::fmtRx.
   const scx = (s, c, a) => {
     const p = []
-    if (has(s)) p.push(`S${signed(s)}`)
-    if (has(c)) p.push(`C${signed(c)}`)
-    if (has(a)) p.push(`X${a}°`)
+    if (has(s)) p.push(`S ${signed(s)}`)
+    if (has(c)) p.push(`C ${signed(c)}`)
+    if (has(a)) p.push(`X ${a}`)
     return p.join(' / ')
   }
   const rxOd = scx(r.od_s, r.od_c, r.od_ax), rxOs = scx(r.os_s, r.os_c, r.os_ax)
