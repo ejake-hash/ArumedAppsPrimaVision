@@ -11,6 +11,17 @@
         'SOSIAL' => 'Sosial', 'UMUM' => 'Umum',
     ][strtoupper($g ?? '')] ?? 'Umum';
 
+    // Diskon Paket (DISKON_PAKET) — meniru paketDiscountPrint di KasirView.vue:
+    // baris diskon paket dikeluarkan dari daftar item, ditambah kembali ke Subtotal
+    // tampilan, lalu disajikan sebagai baris "Diskon Paket" di ringkasan.
+    $PAKET_DISCOUNT_TYPE = 'DISKON_PAKET';
+    $paketDiscount = 0.0;
+    foreach (($items ?? []) as $it) {
+        if (($it['item_type'] ?? null) === $PAKET_DISCOUNT_TYPE) {
+            $paketDiscount += abs((float) ($it['net_price'] ?? $it['total_price'] ?? 0));
+        }
+    }
+
     // Grouping per kategori — meniru groupItemsByCategory di KasirView.vue.
     $FALLBACK = 'Lainnya';
     $orderMap = [];
@@ -19,6 +30,7 @@
     }
     $buckets = [];
     foreach (($items ?? []) as $it) {
+        if (($it['item_type'] ?? null) === $PAKET_DISCOUNT_TYPE) continue;
         $rawCat = trim((string) ($it['category'] ?? '')) ?: $FALLBACK;
         $key = array_key_exists(strtolower($rawCat), $orderMap) ? $rawCat : $FALLBACK;
         $buckets[$key][] = $it;
@@ -88,6 +100,7 @@
     table.summary td.c-num { text-align: right; white-space: nowrap; }
     table.summary tr.grand td { border-top: 1.5px solid #0E3A66; font-weight: bold; font-size: 12px; color: #0E3A66; padding-top: 4px; }
     table.summary tr.sisa td { color: #b91c1c; font-weight: bold; }
+    table.summary tr.disc-paket td { color: #b45309; }
     .status { margin-top: 12px; text-align: center; font-weight: bold; font-size: 13px; padding: 6px; border-radius: 4px; }
     .status.lunas { background: #e7f6ee; color: #1f7d4a; border: 1px solid #b6e3c8; }
     .status.belum { background: #fdeaea; color: #b91c1c; border: 1px solid #f3c2c2; }
@@ -148,13 +161,21 @@
             <td class="k">NIK</td><td class="s">:</td><td>{{ $patient['nik'] ?? '—' }}</td>
             <td class="k">Penjamin</td><td class="s">:</td>
             @php
+                // penjaminFull — meniru KasirView.vue: base (+ insurer bila menambah info)
+                // (+ "— COB <insurer-2>" bila COB/penjamin-2).
                 $pLabel = $penjaminLabel($patient['guarantor_type'] ?? null);
                 $pIns   = trim((string) ($patient['insurer'] ?? ''));
                 $pGt    = strtoupper((string) ($patient['guarantor_type'] ?? ''));
                 // Tampilkan insurer hanya bila menambah info (bukan redundan "Umum — UMUM").
                 $showIns = $pIns !== '' && strtoupper($pIns) !== $pGt && strtoupper($pIns) !== strtoupper($pLabel);
+                $penjaminText = $pLabel . ($showIns ? ' — ' . $pIns : '');
+                $cob = $patient['cob'] ?? null;
+                if ($cob && (! empty($cob['insurer']) || ! empty($cob['guarantor_type']))) {
+                    $c2 = trim((string) ($cob['insurer'] ?? '')) ?: $penjaminLabel($cob['guarantor_type'] ?? null);
+                    $penjaminText .= ' — COB ' . $c2;
+                }
             @endphp
-            <td>{{ $pLabel }}@if($showIns) — {{ $pIns }}@endif</td>
+            <td>{{ $penjaminText }}</td>
         </tr>
         <tr>
             <td class="k">Dokter (DPJP)</td><td class="s">:</td><td>{{ $patient['dpjp'] ?? '—' }}</td>
@@ -211,7 +232,10 @@
     </table>
 
     <table class="summary">
-        <tr><td>Subtotal</td><td class="c-num">{{ $rp($summary['subtotal'] ?? 0) }}</td></tr>
+        <tr><td>Subtotal</td><td class="c-num">{{ $rp((float)($summary['subtotal'] ?? 0) + $paketDiscount) }}</td></tr>
+        @if($paketDiscount)
+            <tr class="disc-paket"><td>Diskon Paket</td><td class="c-num">− {{ $rp($paketDiscount) }}</td></tr>
+        @endif
         @if((float)($summary['item_discount'] ?? 0))
             <tr><td>Diskon Item</td><td class="c-num">− {{ $rp($summary['item_discount']) }}</td></tr>
         @endif
