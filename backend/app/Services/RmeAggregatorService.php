@@ -337,7 +337,7 @@ class RmeAggregatorService
     // Objektif refraksi — SUMBER TUNGGAL refraction_records.soap_o (ditulis oleh
     // RefraksionisView oDerived). Ini fallback bila soap_o kosong (record lama/skip).
     // Urutan SELARAS: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
-    private function refraksiObjektif(RefractionRecord $r): ?string
+    public function refraksiObjektif(RefractionRecord $r): ?string
     {
         $parts = [];
         // 1. Visus awal (UCVA)

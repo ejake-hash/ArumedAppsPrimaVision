@@ -75,13 +75,25 @@ class RewriteRefraksiSoapO extends Command
                 $count
             );
             if (! $count) {
-                // soap_o ditulis-ulang manual tanpa baris TIO → jangan tebak posisi.
-                $tanpaTio[] = $r->id;
-                continue;
+                // Tak ada baris TIO di soap_o. Bila SEMUA baris yang ada merupakan
+                // subset baris hasil derive (murni autofill lama yang membeku dini,
+                // mis. cuma "PD 64 mm"), aman diregenerasi penuh dari data record.
+                // Ada baris di luar derive = tulisan manual → jangan tebak, cek manual.
+                $derived = app(\App\Services\RmeAggregatorService::class)->refraksiObjektif($r) ?? '';
+                $derivedLines = array_map('trim', explode("\n", $derived));
+                $soapLines    = array_filter(array_map('trim', preg_split('/\r?\n/', $soapO)));
+                $subsetDerive = $soapLines !== [] && array_diff($soapLines, $derivedLines) === [];
+                if (! $subsetDerive) {
+                    $tanpaTio[] = $r->id;
+                    continue;
+                }
+                $baru = $derived;
+                $this->line(($apply ? 'TULIS  ' : 'DRY    ') . $r->id . "  REGEN penuh dari data record (soap_o lama murni autofill: \"" . str_replace("\n", ' | ', $soapO) . "\")");
+            } else {
+                $this->line(($apply ? 'TULIS  ' : 'DRY    ') . $r->id . '  +' . count($extraLines) . " baris TIO ulangan (visit {$r->visit_id})");
             }
 
             $updated++;
-            $this->line(($apply ? 'TULIS  ' : 'DRY    ') . $r->id . '  +' . count($extraLines) . " baris TIO ulangan (visit {$r->visit_id})");
             if ($apply) {
                 $r->soap_o = $baru;
                 $r->save();
