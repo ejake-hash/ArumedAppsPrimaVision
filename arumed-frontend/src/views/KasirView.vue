@@ -783,17 +783,25 @@ function penjaminFull(p) {
   }
   const cob = p?.cob
   if (cob && (cob.insurer || cob.guarantor_type)) {
-    const c2 = (cob.insurer ?? '').trim() || penjaminLabel(cob.guarantor_type)
-    label += ` — COB ${c2}`
+    label += ` — COB ${cobName(cob.insurer, cob.guarantor_type)}`
   }
   return label
+}
+// Nama insurer penjamin-2 untuk label COB. Master insurer sering disimpan sbg label
+// penuh "BPJS Kesehatan COB PT KAI" → buang prefix "… COB " agar tidak redundant
+// ("PT KAI", bukan "BPJS KESEHATAN COB PT KAI"). Bila nama langsung perusahaan tanpa
+// kata "COB" (mis. "PT KAI") → dipakai apa adanya. \b = hanya kata "COB" berdiri
+// sendiri yang dibuang, jadi "PT JACOB SENTOSA" dll tidak ikut terpotong.
+function cobName(name, type) {
+  const s = (name ?? '').trim().replace(/^.*\bCOB\b\s+/i, '').trim()
+  return s || penjaminLabel(type)
 }
 // Penjamin-2 (COB) dari data antrean/visit → nama insurer untuk badge "COB: …".
 // null bila bukan COB. Sumber: visit.visit_cob.penjamin2 (eager-load Kasir).
 function cobBadge(q) {
   const cob = q?.visit?.visit_cob
   if (!cob || cob.is_active === false || !cob.penjamin2_insurer_id) return null
-  return (cob.penjamin2?.name ?? '').trim() || penjaminLabel(cob.penjamin2_type)
+  return cobName(cob.penjamin2?.name, cob.penjamin2_type)
 }
 // Jenis layanan kunjungan (judul kwitansi + label/badge).
 function svcCode(t)  { return (t ?? 'RAJAL').toUpperCase() }
