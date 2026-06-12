@@ -675,17 +675,39 @@ final class FormRegistryService
         }
 
         // Persist sebagai patient_document DRAFT — supaya bisa di-render/finalize nanti.
-        $doc = PatientDocument::create([
-            'patient_id'         => $visit->patient_id,
-            'visit_id'           => $visit->id,
-            'document_type_id'   => $template->document_type_id,
-            'template_code'      => $template->code,
-            'template_version'   => $template->version,
-            'status'             => 'DRAFT',
-            'created_by_station' => $syncResult['_station'] ?? null,
-            // Simpan static payload + computed (+ meta manual_fields) ke signatures (jsonb).
-            'signatures'         => empty($signatures) ? null : $signatures,
-        ]);
+        // Dedup: bila SUDAH ada draf aktif pra-TTD (DRAFT/RENDERED) utk visit+template
+        // ini, PERBARUI draf itu alih-alih membuat dokumen kembar. Mencegah duplikat saat
+        // dokter menyimpan resume berkali-kali ATAU saat finalisasi sudah lebih dulu
+        // membuat draf via ensureDraftForVisit(). Dokumen ber-TTD (PENDING_SIGNATURE),
+        // FINAL, atau SUPERSEDED tidak diutak — submit atas dokumen final = revisi baru.
+        $existingDraft = PatientDocument::query()
+            ->where('visit_id', $visit->id)
+            ->where('template_code', $template->code)
+            ->whereIn('status', ['DRAFT', 'RENDERED'])
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->first();
+        if ($existingDraft) {
+            $existingDraft->update([
+                'template_version'   => $template->version,
+                'created_by_station' => $syncResult['_station'] ?? $existingDraft->created_by_station,
+                // Simpan static payload + computed (+ meta manual_fields) ke signatures (jsonb).
+                'signatures'         => empty($signatures) ? $existingDraft->signatures : $signatures,
+            ]);
+            $doc = $existingDraft;
+        } else {
+            $doc = PatientDocument::create([
+                'patient_id'         => $visit->patient_id,
+                'visit_id'           => $visit->id,
+                'document_type_id'   => $template->document_type_id,
+                'template_code'      => $template->code,
+                'template_version'   => $template->version,
+                'status'             => 'DRAFT',
+                'created_by_station' => $syncResult['_station'] ?? null,
+                // Simpan static payload + computed (+ meta manual_fields) ke signatures (jsonb).
+                'signatures'         => empty($signatures) ? null : $signatures,
+            ]);
+        }
 
         // Surface computed values di response — frontend bisa verifikasi server == client compute.
         $syncResult['computed'] = $computed;
@@ -710,6 +732,47 @@ final class FormRegistryService
             'status'      => $doc->status,
             'sync'        => $syncResult,
         ];
+    }
+
+    /**
+     * Pastikan ada dokumen DRAFT (default Resume Medis) untuk sebuah visit, supaya
+     * MASUK ANTREAN TTD walau dokter melewati modal "Setuju & Terbitkan" pasca-
+     * finalisasi (akar bug "dokumen resume tidak muncul": finalizeKunjungan TIDAK
+     * membuat patient_document, dokumen hanya lahir saat submit modal non-blocking).
+     *
+     * Idempoten & aman:
+     * - Bila SUDAH ada dokumen non-arsip (status != SUPERSEDED/VOID/REJECTED) untuk
+     *   visit+template ini → tidak membuat apa pun (return null). Dokumen yang sudah
+     *   FINALIZED/aktif tidak diutak.
+     * - Bila belum ada → generate DRAFT dari autofill murni (setara submit tanpa edit
+     *   manual). TIDAK menulis ke data klinis (field editable hanya ke static_payload).
+     *
+     * @return PatientDocument|null Dokumen yang dibuat, atau null bila dilewati.
+     */
+    public function ensureDraftForVisit(int|string $visitId, string $code = 'RESUME_MEDIS'): ?PatientDocument
+    {
+        $template = $this->findActiveTemplateByCode($code); // throw bila template tak aktif
+        if (($template->kind ?? null) === 'OUTPUT') {
+            return null; // OUTPUT-only tak punya alur submit/TTD
+        }
+
+        $exists = PatientDocument::query()
+            ->where('visit_id', $visitId)
+            ->where('template_code', $code)
+            ->whereNotIn('status', ['SUPERSEDED', 'VOID', 'REJECTED'])
+            ->exists();
+        if ($exists) {
+            return null;
+        }
+
+        // Autofill murni (tanpa overlay draft) → submit sebagai DRAFT, nol field manual.
+        $pre = $this->prefill($code, $visitId, false);
+        $result = $this->submit($code, (string) $visitId, array_merge(
+            $pre['defaults'] ?? [],
+            ['_manual_fields' => []],
+        ));
+
+        return PatientDocument::find($result['document_id'] ?? null);
     }
 
     /**

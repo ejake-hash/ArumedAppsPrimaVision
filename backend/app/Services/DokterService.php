@@ -1346,6 +1346,19 @@ class DokterService
 
         $this->log(auth('api')->id(), 'FINALIZE_KUNJUNGAN', DoctorExamination::class, $examination->id, "Planning: {$examination->planning}");
 
+        // Pastikan dokumen Resume Medis (DRAFT) terbentuk → langsung MASUK ANTREAN TTD,
+        // walau dokter melewati/menutup modal "Setuju & Terbitkan" pasca-finalisasi
+        // (akar bug "dokumen resume tidak muncul"). Non-blocking: finalisasi sudah final;
+        // kegagalan generate hanya dicatat. Idempoten via ensureDraftForVisit().
+        try {
+            app(\App\Services\FormRegistry\FormRegistryService::class)
+                ->ensureDraftForVisit($visitId, 'RESUME_MEDIS');
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                "ensureDraftForVisit gagal saat finalisasi (visit {$visitId}): " . $e->getMessage()
+            );
+        }
+
         return $examination->fresh(['doctor', 'surgeryPackage']);
     }
 
