@@ -4,6 +4,7 @@ import { useRefraksiStore } from '@/stores/refraksiStore'
 import { refraksiApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 
 const store = useRefraksiStore()
 
@@ -835,6 +836,7 @@ function toast(type, msg) {
               <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
             </div>
             <div class="head-actions">
+              <UnitStockActions station="REFRAKSIONIS" compact />
               <span class="pill-live">LIVE</span>
               <button
                 :class="['panel-collapse', 'snd-toggle', soundEnabled ? '' : 'is-muted']"

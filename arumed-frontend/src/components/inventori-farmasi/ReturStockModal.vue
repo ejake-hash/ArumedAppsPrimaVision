@@ -1,16 +1,23 @@
 <script setup>
 /**
- * ReturObatModal — sisi UNIT Farmasi untuk meretur obat ke gudang Inventori Farmasi.
- *  - Buat Retur : pilih obat + qty + kondisi + alasan → create + submit (status SUBMITTED).
- *  - Retur Saya : pantau status. Stok unit berkurang saat admin gudang receive() (lihat toast).
+ * ReturStockModal — modal RETUR stok unit → gudang Inventori Farmasi (reusable).
+ *
+ * Generalisasi dari farmasi/ReturObatModal: stasiun di-parameter via prop `station`
+ * dan MULTI-TIPE (Obat/BHP/IOL). Katalog item = stok yang DIPEGANG unit (lokasi =
+ * station), dengan kolom "Stok Unit" agar tahu yang bisa diretur.
+ *  - Buat Retur : pilih item + qty + kondisi + alasan → create + submit (SUBMITTED).
+ *  - Histori    : pantau status. Stok unit berkurang saat admin gudang receive().
  */
-import { ref, watch } from 'vue'
-import { unitReturnApi } from '@/services/api'
+import { ref, computed, watch } from 'vue'
+import { unitReturnApi, inventoriStockApi } from '@/services/api'
 import Pager from '@/components/common/Pager.vue'
+import ItemSearchSelect from './ItemSearchSelect.vue'
 
 const props = defineProps({
-  open:        { type: Boolean, default: false },
-  medications: { type: Array,   default: () => [] },
+  open:      { type: Boolean, default: false },
+  station:   { type: String,  required: true },
+  // Default Obat+BHP (IOL hanya utk unit bedah terjadwal).
+  itemTypes: { type: Array,   default: () => ['MEDICATION', 'BHP'] },
 })
 const emit = defineEmits(['close', 'changed'])
 
@@ -29,6 +36,13 @@ const CONDITIONS = [
   { v: 'NEAR_EXPIRY', label: 'Hampir Exp' },
 ]
 
+const ALL_TYPES = [
+  { value: 'MEDICATION', label: 'Obat' },
+  { value: 'BHP',        label: 'BHP' },
+  { value: 'IOL',        label: 'IOL' },
+]
+const TYPES = computed(() => ALL_TYPES.filter((t) => props.itemTypes.includes(t.value)))
+
 // ─── Retur Saya (server-side pagination) ──────────────────────────────────
 const PER_PAGE    = 10
 const list        = ref([])
@@ -39,7 +53,7 @@ const busyId      = ref(null)
 async function fetchList(page = 1) {
   listLoading.value = true
   try {
-    const res = await unitReturnApi.list({ station: 'FARMASI', per_page: PER_PAGE, page })
+    const res = await unitReturnApi.list({ station: props.station, per_page: PER_PAGE, page })
     const p = res.data?.data
     list.value = (p && Array.isArray(p.data)) ? p.data : (Array.isArray(p) ? p : [])
     listMeta.value = {
@@ -73,28 +87,75 @@ function hapusRet(row) {
   act(row, () => unitReturnApi.remove(row.id), 'Retur dihapus')
 }
 
+// ─── Katalog item milik unit (lokasi = station) ───────────────────────────
+// RETUR hanya barang yang BENAR-BENAR dipegang unit (qty>0 di lokasi station) =
+// barang yang pernah dipesan & diterima dari gudang. Filter qty>0 client-side.
+const catalog    = ref({ MEDICATION: [], BHP: [], IOL: [] })
+const catLoading = ref(false)
+const itemCache  = ref({})
+
+function mapRows(res) {
+  return (res.data?.data ?? [])
+    .map((r) => ({ id: r.id, code: r.code, name: r.name, unit: r.unit ?? '', qty: Number(r.total_qty ?? 0) }))
+    .filter((it) => it.qty > 0)
+}
+
+async function fetchCatalogType(type, search = '') {
+  try {
+    const res = await inventoriStockApi.list(type, { location: props.station, ...(search ? { search } : {}) })
+    catalog.value = { ...catalog.value, [type]: mapRows(res) }
+  } catch (_) { /* silent */ }
+}
+
+async function fetchCatalog() {
+  catLoading.value = true
+  try { await Promise.all(TYPES.value.map((t) => fetchCatalogType(t.value))) }
+  finally { catLoading.value = false }
+}
+
+function onItemSearch(type, q) { fetchCatalogType(type, q) }
+function onItemSelect(r, it) { if (it) itemCache.value[it.id] = { ...it, _type: r.item_type } }
+
+function catItem(type, id) {
+  return catalog.value[type]?.find((x) => x.id === id) || (itemCache.value[id]?._type === type ? itemCache.value[id] : null)
+}
+function unitLabel(r) {
+  const it = catItem(r.item_type, r.item_id)
+  if (!it) return '…'
+  if (it.qty <= 0) return 'Kosong'
+  return `${it.qty} ${it.unit}`.trim()
+}
+function unitCls(r) {
+  const it = catItem(r.item_type, r.item_id)
+  if (!it) return ''
+  if (it.qty <= 0) return 'empty'
+  if (Number(r.qty) > it.qty) return 'less'
+  return 'ok'
+}
+function unitOf(r) { return catItem(r.item_type, r.item_id)?.unit ?? '' }
+
 // ─── Buat Retur ───────────────────────────────────────────────────────────
 const reason = ref('')
 const rows   = ref([emptyRow()])
 const saving = ref(false)
-function emptyRow() { return { item_id: '', qty: 1, condition: 'GOOD' } }
+function emptyRow() { return { item_type: TYPES.value[0]?.value ?? 'MEDICATION', item_id: '', qty: 1, condition: 'GOOD' } }
 function addRow() { rows.value.push(emptyRow()) }
 function removeRow(i) { rows.value.splice(i, 1); if (!rows.value.length) addRow() }
-function unitOf(id) { return props.medications.find((m) => m.id === id)?.unit ?? '' }
+function onTypeChange(r) { r.item_id = '' }
 
 async function saveReturn() {
   const items = rows.value
     .filter((r) => r.item_id && Number(r.qty) > 0)
-    .map((r) => ({ item_type: 'MEDICATION', item_id: r.item_id, qty_returned: Number(r.qty), condition: r.condition }))
+    .map((r) => ({ item_type: r.item_type, item_id: r.item_id, qty_returned: Number(r.qty), condition: r.condition }))
   if (!items.length) {
-    emit('changed', { type: 'w', message: 'Pilih minimal 1 obat dengan qty > 0' }); return
+    emit('changed', { type: 'w', message: 'Pilih minimal 1 barang dengan qty > 0' }); return
   }
   if (!reason.value.trim()) {
     emit('changed', { type: 'w', message: 'Alasan retur wajib diisi' }); return
   }
   saving.value = true
   try {
-    const res = await unitReturnApi.create({ returning_station: 'FARMASI', reason: reason.value.trim(), items })
+    const res = await unitReturnApi.create({ returning_station: props.station, reason: reason.value.trim(), items })
     const created = res.data?.data
     if (created?.id) await unitReturnApi.submit(created.id)
     emit('changed', { type: 's', message: 'Retur dikirim ke gudang' })
@@ -125,7 +186,13 @@ function itemsSummary(row) {
 }
 
 watch(() => props.open, (o) => {
-  if (o) { tab.value = 'create'; reason.value = ''; rows.value = [emptyRow()]; fetchList() }
+  if (o) {
+    tab.value = 'create'
+    reason.value = ''
+    rows.value = [emptyRow()]
+    fetchList()
+    fetchCatalog()
+  }
 })
 </script>
 
@@ -133,7 +200,7 @@ watch(() => props.open, (o) => {
   <div v-if="open" class="ro-overlay" @click.self="emit('close')">
     <div class="ro-modal">
       <div class="ro-head">
-        <h3>Retur Obat ke Gudang</h3>
+        <h3>Retur Barang ke Gudang Farmasi</h3>
         <button class="ro-x" @click="emit('close')" aria-label="Tutup">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -187,11 +254,14 @@ watch(() => props.open, (o) => {
           <label class="ro-label">Alasan Retur <span class="req">*</span></label>
           <input v-model="reason" class="ro-input" placeholder="cth: stok berlebih / mendekati kadaluarsa / salah kirim" />
         </div>
+        <p class="ro-hint">Hanya barang yang pernah dipesan &amp; masih dipegang unit yang dapat diretur.</p>
         <table class="ro-table">
           <thead>
             <tr>
               <th style="width:44px">No.</th>
-              <th>Obat</th>
+              <th style="width:90px">Jenis</th>
+              <th>Barang</th>
+              <th style="width:100px" class="c">Stok Unit</th>
               <th style="width:90px" class="c">Qty</th>
               <th style="width:56px">Unit</th>
               <th style="width:130px">Kondisi</th>
@@ -202,13 +272,26 @@ watch(() => props.open, (o) => {
             <tr v-for="(r, i) in rows" :key="i">
               <td>{{ i + 1 }}</td>
               <td>
-                <select v-model="r.item_id" class="ro-input">
-                  <option value="">— pilih obat —</option>
-                  <option v-for="m in medications" :key="m.id" :value="m.id">{{ m.name }}</option>
+                <select v-model="r.item_type" class="ro-input" @change="onTypeChange(r)">
+                  <option v-for="t in TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
                 </select>
               </td>
+              <td>
+                <ItemSearchSelect
+                  :model-value="r.item_id"
+                  :items="catalog[r.item_type]"
+                  placeholder="cari / pilih barang…"
+                  @update:model-value="(v) => r.item_id = v"
+                  @select="(it) => onItemSelect(r, it)"
+                  @search="(q) => onItemSearch(r.item_type, q)"
+                />
+              </td>
+              <td class="c">
+                <span v-if="r.item_id" class="ro-gudang" :class="unitCls(r)">{{ unitLabel(r) }}</span>
+                <span v-else class="ro-muted">—</span>
+              </td>
               <td class="c"><input v-model.number="r.qty" type="number" min="1" class="ro-input ro-qty" /></td>
-              <td class="ro-muted">{{ unitOf(r.item_id) || '—' }}</td>
+              <td class="ro-muted">{{ unitOf(r) || '—' }}</td>
               <td>
                 <select v-model="r.condition" class="ro-input">
                   <option v-for="c in CONDITIONS" :key="c.v" :value="c.v">{{ c.label }}</option>
@@ -233,7 +316,7 @@ watch(() => props.open, (o) => {
 
 <style scoped>
 .ro-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
-.ro-modal { background: var(--bc); border-radius: 12px; max-width: 760px; width: 100%; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.ro-modal { background: var(--bc); border-radius: 12px; max-width: 820px; width: 100%; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
 .ro-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--gb); }
 .ro-head h3 { margin: 0; font-size: 16px; color: var(--td); font-family: 'Space Grotesk', serif; }
 .ro-x { background: none; border: none; cursor: pointer; color: var(--tu); padding: 4px; }
@@ -249,6 +332,7 @@ watch(() => props.open, (o) => {
 .ro-field { margin-bottom: 14px; }
 .ro-label { display: block; font-size: 11px; font-weight: 700; color: var(--tu); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 5px; }
 .ro-label .req { color: var(--et); }
+.ro-hint { font-size: 11.5px; color: var(--tu); margin: 0 0 10px; }
 .ro-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .ro-table th, .ro-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--gb); }
 .ro-table th { background: var(--bs); font-weight: 600; color: var(--tm); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
@@ -256,6 +340,8 @@ watch(() => props.open, (o) => {
 .ro-state { text-align: center; padding: 22px; color: var(--tu); }
 .ro-muted { color: var(--tu); }
 
+.ro-searchbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ro-searchbar .ro-input { flex: 1; }
 .ro-input { width: 100%; height: 30px; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .ro-input:focus { border-color: var(--ga); background: #fff; }
 .ro-qty { text-align: center; }
@@ -273,6 +359,11 @@ watch(() => props.open, (o) => {
 .ro-btn.ghost { background: transparent; }
 
 .ro-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--gb); }
+
+.ro-gudang { display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.ro-gudang.ok    { background: var(--sb); color: var(--st); }
+.ro-gudang.less  { background: #fef3c7; color: #92400e; }
+.ro-gudang.empty { background: var(--eb); color: var(--et); }
 
 .ro-badge { display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 10.5px; font-weight: 700; }
 .s-draft { background: var(--bs); color: var(--tu); }

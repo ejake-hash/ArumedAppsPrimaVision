@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRawatInapStore } from '@/stores/rawatInapStore'
 import { useAuthStore } from '@/stores/authStore'
 import { ranapApi, tarifPaketApi } from '@/services/api'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 
 const store = useRawatInapStore()
 const auth = useAuthStore()
@@ -543,7 +544,10 @@ const statusPill = (s) => ({
         <h1>Rawat Inap</h1>
         <p class="sub">Papan kamar, admit/transfer/pulang, CPPT &amp; biaya pasien inap.</p>
       </div>
-      <button class="btn btn-secondary" @click="refreshAll">↻ Muat ulang</button>
+      <div class="ph-actions">
+        <UnitStockActions station="RANAP" />
+        <button class="btn btn-secondary" @click="refreshAll">↻ Muat ulang</button>
+      </div>
     </div>
 
     <div class="stat-grid">
@@ -1158,6 +1162,7 @@ const statusPill = (s) => ({
 /* ===== Selaras AsuransiView (tokens.css) ===== */
 .asuransi-view { padding: 1rem 1.25rem; font-family: var(--font-sans); }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1rem; gap: 1rem; }
+.ph-actions { display: flex; align-items: center; gap: 8px; }
 .page-head h1 { font-family: var(--font-display); font-size: 22px; margin: 0; color: var(--td); }
 .page-head .sub { font-size: 12px; color: var(--tu); margin: 4px 0 0; }
 

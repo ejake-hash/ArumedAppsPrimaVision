@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\UnitRequest;
 use App\Services\UnitReturnService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,7 +25,7 @@ class UnitReturnController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'returning_station'    => 'required|in:ADMISI,TRIASE,REFRAKSIONIS,DOKTER,PENUNJANG,BEDAH,KASIR,FARMASI',
+            'returning_station'    => 'required|in:' . implode(',', UnitRequest::STATIONS),
             'unit_request_id'      => 'nullable|uuid|exists:unit_requests,id',
             'return_date'          => 'nullable|date',
             'reason'               => 'nullable|string|max:100',
@@ -46,7 +47,7 @@ class UnitReturnController extends Controller
     public function update(Request $request, string $id): JsonResponse
     {
         $data = $request->validate([
-            'returning_station'    => 'nullable|in:ADMISI,TRIASE,REFRAKSIONIS,DOKTER,PENUNJANG,BEDAH,KASIR,FARMASI',
+            'returning_station'    => 'nullable|in:' . implode(',', UnitRequest::STATIONS),
             'unit_request_id'      => 'nullable|uuid|exists:unit_requests,id',
             'return_date'          => 'nullable|date',
             'reason'               => 'nullable|string|max:100',

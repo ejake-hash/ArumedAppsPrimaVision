@@ -23,6 +23,7 @@ class UnitRequest extends Model
     public const STATIONS = [
         'ADMISI', 'TRIASE', 'REFRAKSIONIS', 'DOKTER',
         'PENUNJANG', 'BEDAH', 'KASIR', 'FARMASI',
+        'RANAP', 'IGD',
     ];
 
     protected $fillable = [

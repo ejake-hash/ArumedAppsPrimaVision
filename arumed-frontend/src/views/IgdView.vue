@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { igdApi, admisiApi, masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 
 const auth = useAuthStore()
 
@@ -621,13 +622,18 @@ onMounted(loadBoard)
 
 <template>
   <div class="igd-view">
+    <!-- Tombol "Pesan Barang ke Gudang" kecil di topbar (samping Realtime aktif). -->
+    <Teleport to="#topbar-action-slot">
+      <UnitStockActions station="IGD" label="Pesan Barang" variant="soft" />
+    </Teleport>
+
     <!-- HEADER -->
     <div class="page-head">
       <div>
         <h1>IGD — Gawat Darurat</h1>
         <p class="sub">Papan triase berlevel (gawat didahulukan), pendaftaran walk-in, tindakan &amp; disposisi.</p>
       </div>
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; gap:8px; align-items:center;">
         <button v-if="auth.can('igd.write')" class="btn btn-primary btn-press" @click="openRegister">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Daftar Pasien IGD

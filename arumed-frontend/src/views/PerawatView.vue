@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { perawatApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 
 const store = usePerawatStore()
 
@@ -748,6 +749,7 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="head-actions">
+              <UnitStockActions station="TRIASE" compact />
               <span class="pill-live">LIVE</span>
               <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>

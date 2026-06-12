@@ -144,7 +144,7 @@ class UnitRequestController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'requesting_station'    => 'required|in:ADMISI,TRIASE,REFRAKSIONIS,DOKTER,PENUNJANG,BEDAH,KASIR,FARMASI',
+            'requesting_station'    => 'required|in:' . implode(',', UnitRequest::STATIONS),
             'request_date'          => 'nullable|date',
             'status'                => 'nullable|in:DRAFT,SUBMITTED',
             'notes'                 => 'nullable|string',
@@ -164,7 +164,7 @@ class UnitRequestController extends Controller
     public function update(Request $request, string $id): JsonResponse
     {
         $data = $request->validate([
-            'requesting_station'    => 'nullable|in:ADMISI,TRIASE,REFRAKSIONIS,DOKTER,PENUNJANG,BEDAH,KASIR,FARMASI',
+            'requesting_station'    => 'nullable|in:' . implode(',', UnitRequest::STATIONS),
             'request_date'          => 'nullable|date',
             'notes'                 => 'nullable|string',
             'items'                 => 'nullable|array',

@@ -8,6 +8,7 @@ import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
 import FormSection from '@/components/forms/FormSection.vue'
 import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 import { admisiApi, integrasiApi } from '@/services/api'
 import { compressImageToUnder } from '@/utils/imageCompress'
 
@@ -2435,6 +2436,11 @@ onUnmounted(() => {
 
 <template>
   <div class="admisi">
+    <!-- Tombol "Pesan Barang ke Gudang" kecil di topbar (samping Realtime aktif). Admisi = BHP saja. -->
+    <Teleport to="#topbar-action-slot">
+      <UnitStockActions station="ADMISI" label="Pesan Barang" variant="soft" :item-types="['BHP']" />
+    </Teleport>
+
     <!-- ===================== TOOLBAR ===================== -->
     <div class="toolbar">
       <div class="toolbar-info">

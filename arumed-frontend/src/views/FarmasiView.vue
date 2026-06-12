@@ -1,8 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { farmasiApi, unitRequestApi, unitReturnApi } from '@/services/api'
-import RequestObatModal from '@/components/farmasi/RequestObatModal.vue'
-import ReturObatModal from '@/components/farmasi/ReturObatModal.vue'
+import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 import Pager from '@/components/common/Pager.vue'
 
 const pgTab = ref('dispensing')
@@ -824,10 +823,7 @@ const lowStockCount = computed(
 )
 
 // ─── Request / Retur ke gudang Inventori Farmasi ─────────────────────────────
-const requestOpen = ref(false)
-const returOpen   = ref(false)
-
-// Dipanggil oleh modal saat ada perubahan: tampilkan toast + refresh stok bila perlu.
+// Dipanggil oleh UnitStockActions saat ada perubahan: toast + refresh stok bila perlu.
 function onUnitChanged({ type, message, refreshStok } = {}) {
   if (message) toast(type ?? 'i', message)
   if (refreshStok) fetchStok()
@@ -2362,14 +2358,7 @@ function toast(type, msg) {
             <input v-if="stokKind === 'obat'" v-model="stokSearch" class="fi stok-search-input" placeholder="Cari obat..." />
             <input v-else v-model="bhpSearch" class="fi stok-search-input" placeholder="Cari BHP (nama / kode)..." />
           </div>
-          <button v-if="stokKind === 'obat'" class="btn btn-primary btn-sm" @click="requestOpen = true">
-            <svg viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17M17 13v4a2 2 0 01-2 2H9"/></svg>
-            Minta Barang
-          </button>
-          <button v-if="stokKind === 'obat'" class="btn btn-secondary btn-sm" @click="returOpen = true">
-            <svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg>
-            Retur Obat
-          </button>
+          <UnitStockActions station="FARMASI" @changed="onUnitChanged" />
 
           <div class="stok-notif-wrap">
           <button
@@ -2891,10 +2880,6 @@ function toast(type, msg) {
       <!-- Catatan: riwayat "obat ini diberikan ke siapa" kini dilayani penuh oleh
            tab "Riwayat Pemberian" (cari per nama obat, tanggal & petugas akurat). -->
     </div>
-
-    <!-- Modal: Minta Barang / Retur ke gudang -->
-    <RequestObatModal :open="requestOpen" :medications="stokList" @close="requestOpen = false" @changed="onUnitChanged" />
-    <ReturObatModal   :open="returOpen"   :medications="stokList" @close="returOpen = false"   @changed="onUnitChanged" />
 
     <!-- Modal: koreksi stok manual -->
     <div v-if="editStok" class="es-overlay" @click.self="editStok = null">

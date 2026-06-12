@@ -13,6 +13,7 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 import { inventoriInboxApi } from '@/services/api'
+import { useNotificationSound } from '@/composables/useNotificationSound'
 import InventoriStockSidebar from '@/components/inventori-farmasi/InventoriStockSidebar.vue'
 
 const route = useRoute()
@@ -38,6 +39,7 @@ const allTabs = [
   { to: '/inventori-farmasi/supplier',   label: 'Supplier',          icon: 'truck',    section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/pembelian',  label: 'Pembelian (PO)',    icon: 'cart',     section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/penerimaan', label: 'Penerimaan',        icon: 'inbox',    section: 'Pengadaan',    perm: 'inventori_farmasi.read' },
+  { to: '/inventori-farmasi/laporan',    label: 'Laporan',           icon: 'chart',    section: 'Laporan',      perm: 'inventori_farmasi.read' },
 ]
 
 const tabs = computed(() => allTabs.filter((t) => auth.can(t.perm)))
@@ -73,12 +75,20 @@ const inboxOpen = ref(false)
 const inboxLoading = ref(false)
 let pollTimer = null
 
+// Chime saat inbox bertambah (request/retur baru dari unit). `prevTotal` mulai -1
+// agar load PERTAMA tak berbunyi — hanya kenaikan setelahnya yang memicu.
+const { muted: soundMuted, toggleMute, playChime } = useNotificationSound()
+let prevTotal = -1
+
 async function fetchInbox() {
   if (!canSeeInbox.value) return
   inboxLoading.value = true
   try {
     const res = await inventoriInboxApi.list()
     inbox.value = res.data?.data ?? { total: 0, request_count: 0, return_count: 0, items: [] }
+    const total = inbox.value.total ?? 0
+    if (prevTotal >= 0 && total > prevTotal) playChime()
+    prevTotal = total
   } catch (e) {
     // silent — polling background
   } finally {
@@ -141,6 +151,15 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="canSeeInbox" class="if-inbox-wrap">
+        <button
+          class="if-mute"
+          :class="{ muted: soundMuted }"
+          @click.stop="toggleMute"
+          :title="soundMuted ? 'Suara notifikasi: MATI — klik untuk nyalakan' : 'Suara notifikasi: NYALA — klik untuk bisukan'"
+        >
+          <svg v-if="!soundMuted" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          <svg v-else viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        </button>
         <button class="if-bell" :class="{ active: inbox.total > 0 }" @click.stop="toggleInbox" :title="`${inbox.total} notifikasi baru`">
           <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
           <span v-if="inbox.total > 0" class="if-bell-badge">{{ inbox.total > 99 ? '99+' : inbox.total }}</span>
@@ -214,6 +233,7 @@ onBeforeUnmount(() => {
             <svg v-else-if="item.icon === 'inbox'" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
             <svg v-else-if="item.icon === 'request'" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="13" y2="18"/></svg>
             <svg v-else-if="item.icon === 'opname'" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <svg v-else-if="item.icon === 'chart'" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
             <span>{{ item.label }}</span>
           </RouterLink>
         </template>
@@ -248,7 +268,12 @@ onBeforeUnmount(() => {
 .if-sub { font-size: 13px; color: var(--tm); margin: 4px 0 0; }
 
 /* Inbox bell */
-.if-inbox-wrap { position: relative; }
+.if-inbox-wrap { position: relative; display: flex; align-items: center; gap: 8px; }
+
+.if-mute { width: 40px; height: 40px; border-radius: 10px; background: var(--bc); border: 1px solid var(--gb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--tm); transition: all 0.15s; }
+.if-mute:hover { background: var(--bs); color: var(--td); }
+.if-mute.muted { color: var(--et); border-color: var(--ebd); }
+.if-mute svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .if-bell { position: relative; width: 40px; height: 40px; border-radius: 10px; background: var(--bc); border: 1px solid var(--gb); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--tm); transition: all 0.15s; }
 .if-bell:hover { background: var(--bs); color: var(--td); }
 .if-bell.active { color: var(--ga); border-color: var(--ga); }

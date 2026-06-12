@@ -49,6 +49,8 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
       <span>{{ title }}</span>
     </div>
     <div class="topbar-right">
+      <!-- Slot aksi per-view (mis. "Pesan Barang ke Gudang" Admisi/IGD) via Teleport -->
+      <div id="topbar-action-slot" class="topbar-action-slot"></div>
       <div v-if="isDoctorAccount" class="topbar-doctor">
         <span class="topbar-doctor-name">{{ doctorName }}</span>
         <span class="topbar-doctor-sip">SIP: {{ doctorSip || '—' }}</span>
@@ -119,6 +121,8 @@ const doctorSip = computed(() => auth.user?.employee?.sip ?? '')
   align-items: center;
   gap: 0.75rem;
 }
+.topbar-action-slot { display: flex; align-items: center; }
+.topbar-action-slot:empty { display: none; }
 .topbar-clock {
   font-size: 13px;
   font-weight: 600;

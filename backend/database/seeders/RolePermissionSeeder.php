@@ -67,6 +67,8 @@ class RolePermissionSeeder extends Seeder
                 'bpjs'         => ['R'],
                 // IGD triase (perawat) + ICD search via carve-out (gate perawat.read).
                 'igd'          => ['R','W'],
+                // Amprah/retur stok ke gudang Inventori (stasiun TRIASE/IGD/RANAP).
+                'request_unit' => ['R','W'],
             ],
             'refraksionis' => [
                 'admisi'       => ['R'],
@@ -75,6 +77,8 @@ class RolePermissionSeeder extends Seeder
                 'refraksionis' => ['R','W'],
                 'rme_dokter'   => ['R'],
                 'rekam_medis'  => ['R'],
+                // Amprah/retur stok ke gudang Inventori (stasiun REFRAKSIONIS).
+                'request_unit' => ['R','W'],
             ],
             'farmasi' => [
                 'admisi'            => ['R'],
@@ -121,6 +125,8 @@ class RolePermissionSeeder extends Seeder
                 'integrasi'    => ['R'],
                 'kasir'        => ['R'],
                 'laporan'      => ['R'],
+                // Amprah/retur stok ke gudang Inventori (stasiun ADMISI).
+                'request_unit' => ['R','W'],
             ],
             'penunjang' => [
                 'admisi'       => ['R'],

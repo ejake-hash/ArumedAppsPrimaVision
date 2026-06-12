@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { bedahApi, masterApi, unitRequestApi, unitReturnApi } from '@/services/api'
-import RequestBhpIolModal from '@/components/bedah/RequestBhpIolModal.vue'
+import RequestStockModal from '@/components/inventori-farmasi/RequestStockModal.vue'
 import ReturBhpIolModal from '@/components/bedah/ReturBhpIolModal.vue'
 
 // ── Data nyata ───────────────────────────────────────────────────────────────
@@ -693,8 +693,9 @@ async function submitRequest() {
     </div>
 
     <!-- ───────── MODAL: MINTA & RETUR STOK KE GUDANG ───────── -->
-    <RequestBhpIolModal
-      :open="showMintaModal" :bhp="bhpOptions" :iol="iolOptions"
+    <!-- Request via modal reusable: kini menampilkan kolom Stok Gudang (BHP/IOL). -->
+    <RequestStockModal
+      :open="showMintaModal" :station="'BEDAH'" :item-types="['BHP','IOL']"
       @close="showMintaModal = false" @changed="onStockChanged"
     />
     <ReturBhpIolModal
