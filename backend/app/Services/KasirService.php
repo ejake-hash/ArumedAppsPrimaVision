@@ -690,17 +690,6 @@ class KasirService
         // paket, harus diresepkan sebagai item terpisah / di luar paket.
         $paketObatMedIds = $this->paketObatMedIds($visit);
 
-        // Apakah visit punya SNAPSHOT paket BEDAH? Penanda ini menentukan apakah obat
-        // ber-flag is_bedah ditagih dari snapshot (buildPaketObatLines) atau dari resep
-        // langsung di sini. Bedah À LA CARTE (tanpa paket: Tindakan/BHP/IOL satuan)
-        // TIDAK punya snapshot → buildPaketObatLines return [] → bila is_bedah tetap
-        // di-skip tanpa syarat, obat bedah HILANG dari SEMUA tagihan (akar bug "obat
-        // bedah tak muncul di Kasir / kwitansi, stok tak terpotong"). Skip is_bedah
-        // HANYA bila paket BEDAH benar-benar bersnapshot (anti dobel-tagih).
-        $hasPaketBedahSnapshot = $visit->surgeryPackageSnapshots
-            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
-            ->isNotEmpty();
-
         // Hanya resep yang sudah diverifikasi & dikunci Farmasi (verified_at != null) yang
         // ditagih. Resep DRAFT/SUBMITTED belum-verif (mis. revisi dokter pasca "Kirim ke
         // Kasir" yang menunggu verifikasi ulang) DIKELUARKAN dari tagihan sampai dikunci
@@ -708,17 +697,19 @@ class KasirService
         // resep sudah verified saat invoice dibangun → tak ada perubahan perilaku.
         $billable = fn ($p) => $p->status !== 'CANCELLED' && ! is_null($p->verified_at);
 
-        // Obat ditagih di sini = resep verified yang BUKAN komponen paket. is_bedah
-        // di-skip HANYA bila paket BEDAH bersnapshot (obatnya ditagih dari snapshot via
-        // buildPaketObatLines); pada bedah À LA CARTE (tanpa snapshot) is_bedah TETAP
-        // ditagih di sini agar tak hilang. PENGECUALIAN resep PRE-OP (instruksi dokter
-        // jaga di Triase): stat-dose yang kebetulan = komponen paket adalah dosis
-        // TAMBAHAN nyata → tetap ditagih positif dari resep (safety-net dedup med-id
-        // dilewati). Item absorbed ("terserap ke paket") juga tampil positif di sini —
-        // penyerapannya lewat pembesaran basis DISKON_PAKET (preopAbsorbedBasis), bukan
-        // dengan menyembunyikan baris.
-        $isPaketObat = fn ($item, $rx) => ($item->is_bedah && $hasPaketBedahSnapshot)
-            || (! $rx->is_pre_op && isset($paketObatMedIds[$item->medication_id]));
+        // Obat di-skip di sini HANYA bila benar-benar ditagih buildPaketObatLines, yaitu
+        // ADA di KOMPOSISI OBAT snapshot paket BEDAH (paketObatMedIds). Flag is_bedah
+        // SAJA TIDAK dipakai sebagai patokan skip: obat ber-flag is_bedah yang TAK ada di
+        // komposisi snapshot (paket bedah tanpa item obat, atau dosis EKSTRA di luar
+        // paket) jika di-skip akan HILANG dari SEMUA tagihan — buildPaketObatLines hanya
+        // menagih item snapshot, bukan flag (akar bug "obat bedah tak muncul di Kasir/
+        // kwitansi, stok tak terpotong"). PENGECUALIAN resep PRE-OP (instruksi dokter jaga
+        // di Triase): stat-dose yang kebetulan = komponen paket adalah dosis TAMBAHAN nyata
+        // → tetap ditagih positif dari resep. Item absorbed ("terserap ke paket") juga
+        // tampil positif di sini — penyerapannya lewat pembesaran basis DISKON_PAKET
+        // (preopAbsorbedBasis), bukan dengan menyembunyikan baris.
+        $isPaketObat = fn ($item, $rx) => ! $rx->is_pre_op
+            && isset($paketObatMedIds[$item->medication_id]);
 
         $medIds = $visit->prescriptions
             ->filter($billable)
@@ -1442,7 +1433,7 @@ class KasirService
      * absorbInvoiceItem) — membesarkan basis DISKON_PAKET sehingga net tetap = harga
      * jual paket. Predikat WAJIB cermin builder terkait (invarian basis = baris tagih):
      *  - OBAT: cermin buildObatLines — skip RANAP/IGD (inpatient_charges), hanya resep
-     *    verified non-CANCELLED, skip $isPaketObat (is_bedah / dedup med-id non-pre-op),
+     *    verified non-CANCELLED, skip $isPaketObat (med-id ada di komposisi snapshot, non-pre-op),
      *    skip is_preop_absorbed (sudah dihitung preopAbsorbedBasis — anti dobel).
      *  - BHP: cermin buildBhpLines — request RECEIVED, used_qty>0; skip BHP yang ada di
      *    KOMPOSISI snapshot BEDAH (sudah masuk basis via snapshot — anti dobel).
@@ -1462,8 +1453,8 @@ class KasirService
                     if (! $it->is_paket_absorbed || $it->is_preop_absorbed) {
                         continue;
                     }
-                    if ($it->is_bedah || (! $rx->is_pre_op && isset($paketObatMedIds[$it->medication_id]))) {
-                        continue; // tak ditagih di buildObatLines → tak ikut basis
+                    if (! $rx->is_pre_op && isset($paketObatMedIds[$it->medication_id])) {
+                        continue; // ditagih buildPaketObatLines (komposisi snapshot) → tak ikut basis
                     }
                     $basis += $this->prescriptionItemBilledValue($it, $guarantorType, $insurerId);
                 }
