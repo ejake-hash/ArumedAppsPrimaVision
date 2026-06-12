@@ -1270,7 +1270,12 @@ class MasterDataService
             $query->where('is_active', (bool) $filters['active']);
         }
         if (! empty($filters['low_stock'])) {
-            $query->whereColumn('stock', '<=', 'min_stock');
+            // Stok riil = SUM(inventory_stocks) per item (kolom legacy medications.stock
+            // tak otoritatif). Bandingkan total on-hand vs min_stock.
+            $query->whereRaw(
+                '(SELECT COALESCE(SUM(qty_on_hand),0) FROM inventory_stocks WHERE inventory_stocks.item_type = ? AND inventory_stocks.item_id = medications.id) <= medications.min_stock',
+                [\App\Models\InventoryStock::TYPE_MEDICATION]
+            );
         }
         return $query->orderBy('name')->paginate($filters['per_page'] ?? 25);
     }
@@ -1281,10 +1286,17 @@ class MasterDataService
         // bukan kolom medications (pos tersimpan di medication_tariffs).
         $posHint = $data['pos_kwitansi'] ?? null;
         unset($data['pos_kwitansi']);
+        // Stok BUKAN ke kolom legacy medications.stock (tak otoritatif) — seed ke
+        // inventory_stocks (INVENTORI). Konsisten dgn storeIol; sumber stok tunggal.
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
         if (empty($data['code'])) {
             $data['code'] = $this->generateObatCode($posHint);
         }
         $med = Medication::create($data);
+        if ($stockQty > 0) {
+            $this->seedItemStock(\App\Models\InventoryStock::TYPE_MEDICATION, (string) $med->id, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'CREATE_OBAT', Medication::class, $med->id);
         return $med;
     }
@@ -1299,8 +1311,15 @@ class MasterDataService
 
     public function updateObat(string $id, array $data): Medication
     {
+        // Jangan tulis kolom legacy stock; bila klien mengirim stok seed ke
+        // inventory_stocks (penyesuaian sebenarnya lewat opname/penerimaan).
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
         $med = Medication::findOrFail($id);
         $med->update($data);
+        if ($stockQty > 0) {
+            $this->seedItemStock(\App\Models\InventoryStock::TYPE_MEDICATION, (string) $id, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'UPDATE_OBAT', Medication::class, $id);
         return $med->fresh();
     }
@@ -1334,19 +1353,43 @@ class MasterDataService
             $query->where('is_active', (bool) $filters['active']);
         }
         if (! empty($filters['low_stock'])) {
-            $query->whereColumn('stock', '<=', 'min_stock');
+            $query->whereRaw(
+                '(SELECT COALESCE(SUM(qty_on_hand),0) FROM inventory_stocks WHERE inventory_stocks.item_type = ? AND inventory_stocks.item_id = bhp_items.id) <= bhp_items.min_stock',
+                [\App\Models\InventoryStock::TYPE_BHP]
+            );
         }
         return $query->orderBy('name')->paginate($filters['per_page'] ?? 25);
     }
 
     public function storeBhp(array $data): BhpItem
     {
+        // Stok BUKAN ke kolom legacy bhp_items.stock — seed ke inventory_stocks
+        // (INVENTORI). Konsisten dgn storeObat/storeIol; sumber stok tunggal.
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
         if (empty($data['code'])) {
             $data['code'] = $this->generateBhpCode($data['category'] ?? null);
         }
         $bhp = BhpItem::create($data);
+        if ($stockQty > 0) {
+            $this->seedItemStock(\App\Models\InventoryStock::TYPE_BHP, (string) $bhp->id, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'CREATE_BHP', BhpItem::class, $bhp->id);
         return $bhp;
+    }
+
+    /** Seed stok awal item (obat/BHP) ke inventory_stocks INVENTORI bila form/klien kirim stok > 0. */
+    private function seedItemStock(string $type, string $itemId, int $qty, $expiry = null): void
+    {
+        if ($qty <= 0) return;
+        app(\App\Services\InventoryStockService::class)->upsertStock(
+            $type,
+            $itemId,
+            \App\Models\InventoryStock::LOC_INVENTORI,
+            null,
+            $qty,
+            ($expiry !== null && $expiry !== '') ? $expiry : null,
+        );
     }
 
     private function generateBhpCode(?string $category = null): string
@@ -1400,8 +1443,13 @@ class MasterDataService
 
     public function updateBhp(string $id, array $data): BhpItem
     {
+        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        unset($data['stock']);
         $bhp = BhpItem::findOrFail($id);
         $bhp->update($data);
+        if ($stockQty > 0) {
+            $this->seedItemStock(\App\Models\InventoryStock::TYPE_BHP, (string) $id, $stockQty, $data['expiry_date'] ?? null);
+        }
         $this->log(auth('api')->id(), 'UPDATE_BHP', BhpItem::class, $id);
         return $bhp->fresh();
     }
@@ -2806,6 +2854,20 @@ class MasterDataService
     }
 
     /**
+     * Parse sel `is_active` dari CSV import dengan default ramah-pengguna:
+     *  - blank/kosong → null (pakai default tabel = aktif), BUKAN false
+     *  - falsy eksplisit (0/false/no/n/tidak/nonaktif/inactive) → false
+     *  - selain itu (1/true/yes/y/aktif/ya/active/…) → true
+     */
+    private function parseActiveCell(mixed $raw): ?bool
+    {
+        $s = strtolower(trim((string) $raw));
+        if ($s === '') return null;
+        if (in_array($s, ['0', 'false', 'no', 'n', 'tidak', 'nonaktif', 'non-aktif', 'inactive', 'off'], true)) return false;
+        return true;
+    }
+
+    /**
      * Cocokkan nama kategori (case-insensitive) ke master ProcedureCategory dan
      * kembalikan NAMA KANONIK yang terdaftar. Null kalau tidak ada yang cocok.
      * Dipakai import tindakan supaya 'tindakan'/'TINDAKAN' = 'Tindakan'.
@@ -3260,6 +3322,17 @@ class MasterDataService
             $data = [];
             foreach ($schema['columns'] as $col) {
                 if (! array_key_exists($col, $row)) continue;
+                // is_active: sel KOSONG = aktif (biarkan default DB true), BUKAN false.
+                // castCsvCell('bool') memetakan blank/non-'1' → false sehingga supplier/obat
+                // hasil import hilang dari picker yang memfilter active=1 (mis. dropdown
+                // supplier di Penerimaan). Terima token truthy lebih luas; hanya falsy
+                // eksplisit yang menonaktifkan.
+                if ($col === 'is_active') {
+                    $active = $this->parseActiveCell($row[$col]);
+                    if ($active === null) continue; // blank → pakai default DB (true)
+                    $data[$col] = $active;
+                    continue;
+                }
                 $data[$col] = $this->castCsvCell($row[$col], $schema['casts'][$col] ?? 'string');
             }
             $data['name'] = $name;

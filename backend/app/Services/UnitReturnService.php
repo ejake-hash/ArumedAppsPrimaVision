@@ -291,12 +291,17 @@ class UnitReturnService
 
     /**
      * Kurangi stok di lokasi UNIT peretur saat retur diterima gudang (FEFO,
-     * strict). Abort 422 kalau stok unit kurang dari qty retur. IOL serialized
-     * → tidak dikelola di inventory_stocks, diabaikan.
+     * strict). Abort 422 kalau stok unit kurang dari qty retur.
+     *
+     * IOL kini dikelola PER-TIPE di inventory_stocks (sama spt obat/BHP) dan IKUT
+     * ditransfer INVENTORI→unit saat UnitRequest deliver — jadi pada retur HARUS
+     * ikut dikurangi dari unit. Tanpa ini, returnStock() menambah IOL ke INVENTORI
+     * tanpa mengurangi unit → stok IOL menggelembung (komentar lama "serialized/skip"
+     * usang pasca-redesign).
      */
     private function removeUnitStock(string $type, string $itemId, float $qty, string $location): void
     {
-        if ($type === 'IOL' || $qty <= 0) return;
+        if ($qty <= 0) return;
         $this->stockService->consume($type, $itemId, $qty, $location);
     }
 

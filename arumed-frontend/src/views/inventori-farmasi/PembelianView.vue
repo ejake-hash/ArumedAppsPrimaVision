@@ -8,6 +8,7 @@
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { pembelianApi, masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
+import { uid } from '@/utils/uid'
 
 const auth = useAuthStore()
 
@@ -173,7 +174,7 @@ async function openEdit(row) {
       total_amount: po.total_amount,
       items: po.items.map((it) => ({
         ...it,
-        _key: crypto.randomUUID(),
+        _key: uid(),
       })),
     }
   } catch (e) {
@@ -213,7 +214,7 @@ const canEditItems = computed(() => {
 // ─── Line items management ──────────────────────────────────────────────
 function addLine() {
   modal.value.form.items.push({
-    _key: crypto.randomUUID(),
+    _key: uid(),
     item_type: 'MEDICATION',
     item_id: '',
     item_code: '',

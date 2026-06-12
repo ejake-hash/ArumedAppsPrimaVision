@@ -39,18 +39,20 @@ class GoodsReceiptController extends Controller
             'invoice_number'        => 'nullable|string|max:50',
             'payment_method'        => 'nullable|in:TUNAI,KREDIT',
             'payment_term_days'     => 'nullable|integer|min:0|max:3650|required_if:payment_method,KREDIT',
-            'discount_amount'       => 'nullable|numeric|min:0',
+            // Diskon kini PER ITEM (persen). Header discount_amount tak lagi diterima dari
+            // klien — di-agregat oleh service dari diskon per baris.
             'ppn_percent'           => 'nullable|numeric|min:0|max:100',
             'notes'                 => 'nullable|string',
             'items'                 => 'required|array|min:1',
-            'items.*.po_item_id'    => 'nullable|uuid',
-            'items.*.item_type'     => 'required|in:MEDICATION,BHP,IOL',
-            'items.*.item_id'       => 'required|uuid',
-            'items.*.qty_received'  => 'required|numeric|min:0.01',
-            'items.*.batch_no'      => 'nullable|string|max:50',
-            'items.*.expiry_date'   => 'nullable|date|after:today',
-            'items.*.unit_price'    => 'nullable|numeric|min:0',
-            'items.*.notes'         => 'nullable|string',
+            'items.*.po_item_id'       => 'nullable|uuid',
+            'items.*.item_type'        => 'required|in:MEDICATION,BHP,IOL',
+            'items.*.item_id'          => 'required|uuid',
+            'items.*.qty_received'     => 'required|numeric|min:0.01',
+            'items.*.batch_no'         => 'nullable|string|max:50',
+            'items.*.expiry_date'      => 'nullable|date|after:today',
+            'items.*.unit_price'       => 'nullable|numeric|min:0',
+            'items.*.discount_percent' => 'nullable|numeric|min:0|max:100',
+            'items.*.notes'            => 'nullable|string',
         ]);
 
         $grn = $this->service->create($data);

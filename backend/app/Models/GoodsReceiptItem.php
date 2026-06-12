@@ -25,15 +25,17 @@ class GoodsReceiptItem extends Model
         'batch_no',
         'expiry_date',
         'unit_price',
+        'discount_percent',
         'subtotal',
         'notes',
     ];
 
     protected $casts = [
-        'qty_received' => 'decimal:2',
-        'expiry_date'  => 'date',
-        'unit_price'   => 'decimal:2',
-        'subtotal'     => 'decimal:2',
+        'qty_received'     => 'decimal:2',
+        'expiry_date'      => 'date',
+        'unit_price'       => 'decimal:2',
+        'discount_percent' => 'decimal:2',
+        'subtotal'         => 'decimal:2',
     ];
 
     public function goodsReceipt()

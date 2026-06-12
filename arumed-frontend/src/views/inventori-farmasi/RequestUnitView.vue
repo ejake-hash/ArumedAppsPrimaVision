@@ -159,18 +159,20 @@ async function openDeliver(row) {
         ...r,
         items: r.items.map(it => ({
           ...it,
-          _qty_deliver: it.qty_requested,
+          // Default = SISA yang belum terkirim (dukung kirim bertahap), bukan
+          // selalu qty_requested penuh.
+          _qty_deliver: Math.max(0, Number(it.qty_requested ?? 0) - Number(it.qty_delivered ?? 0)),
         })),
       },
     }
   } catch (e) { showToast('e', 'Gagal load detail') }
 }
 
-// Clamp qty kirim ke [0, qty_requested] saat diketik (max HTML tak mencegah ketik manual).
+// Clamp qty kirim ke [0, sisa belum terkirim] saat diketik (max HTML tak mencegah ketik manual).
 function clampDeliverQty(it) {
   let q = Number(it._qty_deliver)
   if (!Number.isFinite(q) || q < 0) q = 0
-  const maxQ = Number(it.qty_requested ?? 0)
+  const maxQ = Math.max(0, Number(it.qty_requested ?? 0) - Number(it.qty_delivered ?? 0))
   if (q > maxQ) q = maxQ
   it._qty_deliver = q
 }
@@ -783,8 +785,8 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-for="it in deliverModal.request?.items ?? []" :key="it.id">
                 <td>{{ it.item_name }}<span v-if="it.item_unit" class="ru-unit"> · {{ it.item_unit }}</span></td>
-                <td class="r">{{ it.qty_requested }}</td>
-                <td><input type="number" v-model.number="it._qty_deliver" min="0" :max="it.qty_requested" step="0.01" class="ru-inp ru-inp-sm" @input="clampDeliverQty(it)" /></td>
+                <td class="r">{{ it.qty_requested }}<span v-if="Number(it.qty_delivered) > 0" class="ru-unit"> · terkirim {{ it.qty_delivered }}</span></td>
+                <td><input type="number" v-model.number="it._qty_deliver" min="0" :max="Math.max(0, Number(it.qty_requested ?? 0) - Number(it.qty_delivered ?? 0))" step="0.01" class="ru-inp ru-inp-sm" @input="clampDeliverQty(it)" /></td>
               </tr>
             </tbody>
           </table>

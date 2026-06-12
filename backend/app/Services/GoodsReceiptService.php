@@ -166,7 +166,7 @@ class GoodsReceiptService
                     'due_date'          => $dueDate,
                     'notes'             => $data['notes'] ?? null,
                     'total_amount'      => 0,
-                    'discount_amount'   => max(0, (float) ($data['discount_amount'] ?? 0)),
+                    'discount_amount'   => 0, // diisi recalcTotal = agregat diskon per-item
                     'ppn_percent'       => max(0, (float) ($data['ppn_percent'] ?? 0)),
                     'ppn_amount'        => 0,
                     'grand_total'       => 0,
@@ -281,18 +281,24 @@ class GoodsReceiptService
     {
         $qty = (float) $row['qty_received'];
         $price = (float) ($row['unit_price'] ?? 0);
+        // Diskon PER ITEM (persen): subtotal disimpan NET (sudah dipotong diskon).
+        $discPct  = min(100, max(0, (float) ($row['discount_percent'] ?? 0)));
+        $gross    = $qty * $price;
+        $lineDisc = round($gross * $discPct / 100, 2);
+        $subtotal = round(max(0, $gross - $lineDisc), 2);
 
         $item = GoodsReceiptItem::create([
-            'grn_id'       => $grn->id,
-            'po_item_id'   => $row['po_item_id'] ?? null,
-            'item_type'    => $row['item_type'],
-            'item_id'      => $row['item_id'],
-            'qty_received' => $qty,
-            'batch_no'     => $row['batch_no'] ?? null,
-            'expiry_date'  => $row['expiry_date'] ?? null,
-            'unit_price'   => $price,
-            'subtotal'     => round($qty * $price, 2),
-            'notes'        => $row['notes'] ?? null,
+            'grn_id'           => $grn->id,
+            'po_item_id'       => $row['po_item_id'] ?? null,
+            'item_type'        => $row['item_type'],
+            'item_id'          => $row['item_id'],
+            'qty_received'     => $qty,
+            'batch_no'         => $row['batch_no'] ?? null,
+            'expiry_date'      => $row['expiry_date'] ?? null,
+            'unit_price'       => $price,
+            'discount_percent' => $discPct,
+            'subtotal'         => $subtotal,
+            'notes'            => $row['notes'] ?? null,
         ]);
 
         // Apply ke stok GUDANG (INVENTORI) per (type, item, batch) via upsertStock
@@ -372,21 +378,24 @@ class GoodsReceiptService
 
     /**
      * Hitung ulang Subtotal (Σ subtotal item) lalu turunkan DPP/PPN/Grand Total.
-     *   DPP        = Subtotal − Diskon (tidak pernah negatif)
-     *   PPN        = DPP × ppn_percent%
-     *   GrandTotal = DPP + PPN
-     * total_amount tetap = Subtotal (basis nilai inventori), diskon/ppn dipakai
-     * dari kolom yang sudah tersimpan saat create.
+     * Diskon kini PER ITEM (persen) — subtotal baris sudah NET. Header:
+     *   total_amount    = Σ (qty × unit_price)            [bruto, basis nilai]
+     *   discount_amount = Σ diskon per baris = bruto − Σ subtotal_net  [agregat]
+     *   DPP             = Σ subtotal_net (= bruto − diskon, tak pernah negatif)
+     *   PPN             = DPP × ppn_percent%
+     *   GrandTotal      = DPP + PPN
      */
     private function recalcTotal(GoodsReceipt $grn): void
     {
-        $subtotal = (float) $grn->items()->sum('subtotal');
-        $discount = min((float) $grn->discount_amount, $subtotal); // diskon tak melebihi subtotal
-        $dpp      = max(0, $subtotal - $discount);
-        $ppn      = round($dpp * ((float) $grn->ppn_percent) / 100, 2);
+        $items = $grn->items()->get(['qty_received', 'unit_price', 'subtotal']);
+        $gross = round($items->reduce(fn ($c, $it) => $c + (float) $it->qty_received * (float) $it->unit_price, 0.0), 2);
+        $net   = round($items->reduce(fn ($c, $it) => $c + (float) $it->subtotal, 0.0), 2);
+        $discount = round(max(0, $gross - $net), 2);
+        $dpp   = max(0, $net);
+        $ppn   = round($dpp * ((float) $grn->ppn_percent) / 100, 2);
 
         $grn->update([
-            'total_amount'    => $subtotal,
+            'total_amount'    => $gross,
             'discount_amount' => $discount,
             'ppn_amount'      => $ppn,
             'grand_total'     => round($dpp + $ppn, 2),
@@ -421,12 +430,13 @@ class GoodsReceiptService
             'item_code'    => $resolved['code'] ?? null,
             'item_name'    => $resolved['name'] ?? '-',
             'item_unit'    => $resolved['unit'] ?? null,
-            'qty_received' => (float) $it->qty_received,
-            'batch_no'     => $it->batch_no,
-            'expiry_date'  => optional($it->expiry_date)->toDateString(),
-            'unit_price'   => (float) $it->unit_price,
-            'subtotal'     => (float) $it->subtotal,
-            'notes'        => $it->notes,
+            'qty_received'     => (float) $it->qty_received,
+            'batch_no'         => $it->batch_no,
+            'expiry_date'      => optional($it->expiry_date)->toDateString(),
+            'unit_price'       => (float) $it->unit_price,
+            'discount_percent' => (float) $it->discount_percent,
+            'subtotal'         => (float) $it->subtotal,
+            'notes'            => $it->notes,
         ];
     }
 

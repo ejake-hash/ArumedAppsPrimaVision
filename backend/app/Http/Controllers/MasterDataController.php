@@ -475,7 +475,11 @@ class MasterDataController extends Controller
                 'Content-Disposition' => "attachment; filename=\"{$baseName}.xlsx\"",
             ]);
         }
-        return response($csv, 200, [
+        // BOM UTF-8 (\xEF\xBB\xBF) WAJIB di depan: Excel (locale ID) tak menghormati
+        // header charset, tanpa BOM ia membaca file sebagai ANSI/CP1252 → karakter
+        // > 0x7F jadi mojibake ("tidak terbaca") & gagal auto-deteksi delimiter.
+        // Sisi import sudah strip BOM (SpreadsheetHelper::normalizeCsvString) → roundtrip aman.
+        return response("\xEF\xBB\xBF" . $csv, 200, [
             'Content-Type'        => 'text/csv; charset=UTF-8',
             'Content-Disposition' => "attachment; filename=\"{$baseName}.csv\"",
         ]);

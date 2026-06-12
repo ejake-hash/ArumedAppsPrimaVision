@@ -96,53 +96,72 @@ function hapusReq(row) {
   act(row, () => unitRequestApi.remove(row.id), 'Permintaan dihapus')
 }
 
-// ─── Stok gudang Inventori (info saat memilih barang) ─────────────────────
-// Map item_id → { qty, unit } dari snapshot stok lokasi INVENTORI. Dimuat sekali
-// saat modal dibuka; item di luar 500 baris pertama di-resolve via search per nama.
-const gudang = ref({})
-async function fetchGudang(search = '') {
+// ─── Katalog item gudang (Obat / BHP / IOL) ───────────────────────────────
+// Sumber: endpoint stok gudang INVENTORI (master item aktif + qty on-hand per
+// item). Mendukung 3 tipe agar unit bisa amprah BHP/IOL, bukan hanya obat.
+// Endpoint cap 500/tipe → search box memuat ulang dgn kata kunci utk item di luar 500.
+const ITEM_TYPES = [
+  { value: 'MEDICATION', label: 'Obat' },
+  { value: 'BHP',        label: 'BHP' },
+  { value: 'IOL',        label: 'IOL' },
+]
+const catalog    = ref({ MEDICATION: [], BHP: [], IOL: [] })
+const catLoading = ref(false)
+const catSearch  = ref('')
+let catDebounce = null
+
+async function fetchCatalog(search = '') {
+  catLoading.value = true
   try {
-    const res = await inventoriStockApi.list('MEDICATION', { location: 'INVENTORI', ...(search ? { search } : {}) })
-    const rows = res.data?.data ?? []
-    const map = { ...gudang.value }
-    rows.forEach((r) => { map[r.id] = { qty: Number(r.total_qty ?? 0), unit: r.unit ?? '' } })
-    gudang.value = map
-  } catch { /* kolom stok gudang bersifat informatif — biarkan kosong bila gagal */ }
-}
-function onPickItem(r) {
-  if (r.item_id && !(r.item_id in gudang.value)) {
-    const name = props.medications.find((m) => m.id === r.item_id)?.name
-    if (name) fetchGudang(name)
+    const results = await Promise.all(ITEM_TYPES.map((t) =>
+      inventoriStockApi.list(t.value, { location: 'INVENTORI', ...(search ? { search } : {}) })
+        .then((res) => [t.value, (res.data?.data ?? []).map((r) => ({
+          id: r.id, code: r.code, name: r.name, unit: r.unit ?? '', qty: Number(r.total_qty ?? 0),
+        }))])
+        .catch(() => [t.value, []])
+    ))
+    const next = { MEDICATION: [], BHP: [], IOL: [] }
+    results.forEach(([type, list]) => { next[type] = list })
+    catalog.value = next
+  } finally {
+    catLoading.value = false
   }
 }
-function gudangLabel(id) {
-  const g = gudang.value[id]
-  if (!g) return '…'
-  if (g.qty <= 0) return 'Kosong'
-  return `${g.qty} ${g.unit}`.trim()
+function onCatSearch() {
+  clearTimeout(catDebounce)
+  catDebounce = setTimeout(() => fetchCatalog(catSearch.value.trim()), 300)
+}
+
+function catItem(type, id) { return catalog.value[type]?.find((x) => x.id === id) || null }
+function gudangLabel(r) {
+  const it = catItem(r.item_type, r.item_id)
+  if (!it) return '…'
+  if (it.qty <= 0) return 'Kosong'
+  return `${it.qty} ${it.unit}`.trim()
 }
 function gudangCls(r) {
-  const g = gudang.value[r.item_id]
-  if (!g) return ''
-  if (g.qty <= 0) return 'empty'
-  if (Number(r.qty) > g.qty) return 'less'
+  const it = catItem(r.item_type, r.item_id)
+  if (!it) return ''
+  if (it.qty <= 0) return 'empty'
+  if (Number(r.qty) > it.qty) return 'less'
   return 'ok'
 }
+function unitOf(r) { return catItem(r.item_type, r.item_id)?.unit ?? '' }
 
 // ─── Buat Permintaan ──────────────────────────────────────────────────────
 const rows   = ref([emptyRow()])
 const saving = ref(false)
-function emptyRow() { return { item_id: '', qty: 1 } }
+function emptyRow() { return { item_type: 'MEDICATION', item_id: '', qty: 1 } }
 function addRow() { rows.value.push(emptyRow()) }
 function removeRow(i) { rows.value.splice(i, 1); if (!rows.value.length) addRow() }
-function unitOf(id) { return props.medications.find((m) => m.id === id)?.unit ?? '' }
+function onTypeChange(r) { r.item_id = '' } // ganti jenis → reset pilihan item
 
 async function saveRequest() {
   const items = rows.value
     .filter((r) => r.item_id && Number(r.qty) > 0)
-    .map((r) => ({ item_type: 'MEDICATION', item_id: r.item_id, qty_requested: Number(r.qty) }))
+    .map((r) => ({ item_type: r.item_type, item_id: r.item_id, qty_requested: Number(r.qty) }))
   if (!items.length) {
-    emit('changed', { type: 'w', message: 'Pilih minimal 1 obat dengan qty > 0' }); return
+    emit('changed', { type: 'w', message: 'Pilih minimal 1 barang dengan qty > 0' }); return
   }
   saving.value = true
   try {
@@ -179,9 +198,10 @@ watch(() => props.open, (o) => {
   if (o) {
     tab.value = 'create'
     rows.value = [emptyRow()]
+    catSearch.value = ''
     fetchStatus(1)
     fetchHist(1)
-    fetchGudang()
+    fetchCatalog()
   }
 })
 </script>
@@ -280,11 +300,16 @@ watch(() => props.open, (o) => {
 
       <!-- BUAT PERMINTAAN -->
       <div v-else class="ro-body">
+        <div class="ro-searchbar">
+          <input v-model="catSearch" type="text" class="ro-input" placeholder="Cari barang (obat/BHP/IOL) bila tak muncul di daftar…" @input="onCatSearch" />
+          <span v-if="catLoading" class="ro-muted">memuat…</span>
+        </div>
         <table class="ro-table">
           <thead>
             <tr>
               <th style="width:44px">No.</th>
-              <th>Obat</th>
+              <th style="width:90px">Jenis</th>
+              <th>Barang</th>
               <th style="width:110px" class="c">Stok Gudang</th>
               <th style="width:120px" class="c">Qty</th>
               <th style="width:60px">Unit</th>
@@ -295,17 +320,22 @@ watch(() => props.open, (o) => {
             <tr v-for="(r, i) in rows" :key="i">
               <td>{{ i + 1 }}</td>
               <td>
-                <select v-model="r.item_id" class="ro-input" @change="onPickItem(r)">
-                  <option value="">— pilih obat —</option>
-                  <option v-for="m in medications" :key="m.id" :value="m.id">{{ m.name }}</option>
+                <select v-model="r.item_type" class="ro-input" @change="onTypeChange(r)">
+                  <option v-for="t in ITEM_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+                </select>
+              </td>
+              <td>
+                <select v-model="r.item_id" class="ro-input">
+                  <option value="">— pilih barang —</option>
+                  <option v-for="m in catalog[r.item_type]" :key="m.id" :value="m.id">{{ m.name }}</option>
                 </select>
               </td>
               <td class="c">
-                <span v-if="r.item_id" class="ro-gudang" :class="gudangCls(r)">{{ gudangLabel(r.item_id) }}</span>
+                <span v-if="r.item_id" class="ro-gudang" :class="gudangCls(r)">{{ gudangLabel(r) }}</span>
                 <span v-else class="ro-muted">—</span>
               </td>
               <td class="c"><input v-model.number="r.qty" type="number" min="1" class="ro-input ro-qty" /></td>
-              <td class="ro-muted">{{ unitOf(r.item_id) || '—' }}</td>
+              <td class="ro-muted">{{ unitOf(r) || '—' }}</td>
               <td class="c">
                 <button class="ro-btn danger" @click="removeRow(i)" aria-label="Hapus baris">×</button>
               </td>
@@ -348,6 +378,8 @@ watch(() => props.open, (o) => {
 .ro-state { text-align: center; padding: 22px; color: var(--tu); }
 .ro-muted { color: var(--tu); }
 
+.ro-searchbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ro-searchbar .ro-input { flex: 1; }
 .ro-input { width: 100%; height: 30px; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .ro-input:focus { border-color: var(--ga); background: #fff; }
 .ro-qty { text-align: center; }

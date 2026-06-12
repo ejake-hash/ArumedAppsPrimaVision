@@ -12,6 +12,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { penerimaanApi, pembelianApi, masterApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
+import { uid } from '@/utils/uid'
 
 const auth = useAuthStore()
 
@@ -109,11 +110,16 @@ async function openPoPicker() {
 async function loadPoList() {
   poPicker.value.loading = true
   try {
-    const params = { per_page: 30 }
+    // Filter status didorong ke SERVER (statuses[]) agar paginasi beroperasi pada
+    // himpunan PO yang bisa diterima. Tanpa ini, FE hanya menarik 30 baris terbaru
+    // lalu memfilter di klien → bila 30 PO terbaru semuanya RECEIVED/CANCELED, PO
+    // yang bisa diterima (di halaman berikutnya) ikut terbuang → picker kosong &
+    // user "tidak bisa tambah penerimaan".
+    const params = { per_page: 30, statuses: ['DRAFT', 'SENT', 'PARTIAL'] }
     if (poPicker.value.search) params.search = poPicker.value.search
-    // Hanya PO yang bisa diterima: SENT atau PARTIAL
     const res = await pembelianApi.list(params)
     const all = res.data?.data?.data ?? []
+    // Filter klien dipertahankan sebagai jaring pengaman defensif.
     poPicker.value.pos = all.filter((po) => ['SENT', 'PARTIAL', 'DRAFT'].includes(po.status))
   } catch (e) {
     showToast('e', 'Gagal memuat daftar PO')
@@ -158,14 +164,17 @@ function blankReceipt() {
 }
 
 // ─── Ringkasan finansial faktur ─────────────────────────────────────────
-// DPP = Subtotal − Diskon; PPN = DPP × ppn%; Grand Total = DPP + PPN.
+// Diskon kini PER ITEM (persen) → subtotal baris sudah NET. Ringkasan:
+//   Subtotal (bruto) = Σ qty×harga ; Total Diskon = bruto − Σ subtotal_net ;
+//   DPP = Σ subtotal_net ; PPN = DPP × ppn% ; Grand Total = DPP + PPN.
 const fin = computed(() => {
-  const f = receipt.value.form
-  const subtotal = Number(f.total_amount || 0)
-  const discount = Math.min(Math.max(Number(f.discount_amount || 0), 0), subtotal)
-  const dpp      = Math.max(0, subtotal - discount)
-  const ppn      = Math.round(dpp * (Number(f.ppn_percent || 0) / 100) * 100) / 100
-  return { subtotal, discount, dpp, ppn, grand: Math.round((dpp + ppn) * 100) / 100 }
+  const items = receipt.value.form.items.filter((it) => it._include !== false)
+  const gross = items.reduce((s, it) => s + Number(it.qty_received || 0) * Number(it.unit_price || 0), 0)
+  const net   = items.reduce((s, it) => s + Number(it.subtotal || 0), 0)
+  const discount = Math.max(0, Math.round((gross - net) * 100) / 100)
+  const dpp = Math.max(0, Math.round(net * 100) / 100)
+  const ppn = Math.round(dpp * (Number(receipt.value.form.ppn_percent || 0) / 100) * 100) / 100
+  return { subtotal: Math.round(gross * 100) / 100, discount, dpp, ppn, grand: Math.round((dpp + ppn) * 100) / 100 }
 })
 
 // Preview jatuh tempo (KREDIT) dari tanggal terima + jangka waktu.
@@ -191,7 +200,7 @@ async function startReceiptFromPo(po) {
     receipt.value.form.items = data.items
       .filter((it) => it.qty_remaining > 0)
       .map((it) => ({
-        _key: crypto.randomUUID(),
+        _key: uid(),
         po_item_id: it.po_item_id,
         item_type: it.item_type,
         item_id: it.item_id,
@@ -203,6 +212,7 @@ async function startReceiptFromPo(po) {
         batch_no: '',
         expiry_date: '',
         unit_price: it.unit_price,
+        discount_percent: 0,
         subtotal: it.qty_remaining * it.unit_price,
         notes: '',
         _include: true, // checkbox apakah baris ini diterima
@@ -242,7 +252,7 @@ async function openReceiptView(row) {
       total_amount: grn.total_amount,
       discount_amount: grn.discount_amount ?? 0,
       ppn_percent: grn.ppn_percent ?? 0,
-      items: grn.items.map((it) => ({ ...it, _key: crypto.randomUUID() })),
+      items: grn.items.map((it) => ({ ...it, _key: uid() })),
     }
   } catch (e) {
     showToast('e', 'Gagal memuat detail GRN')
@@ -257,7 +267,7 @@ function closeReceipt() {
 // ─── Direct mode: line items ────────────────────────────────────────────
 function addDirectLine() {
   receipt.value.form.items.push({
-    _key: crypto.randomUUID(),
+    _key: uid(),
     po_item_id: null,
     item_type: 'MEDICATION',
     item_id: '',
@@ -268,6 +278,7 @@ function addDirectLine() {
     batch_no: '',
     expiry_date: '',
     unit_price: 0,
+    discount_percent: 0,
     subtotal: 0,
     notes: '',
     _include: true,
@@ -280,7 +291,9 @@ function removeLine(idx) {
 }
 
 function recalcLine(line) {
-  line.subtotal = Math.round(Number(line.qty_received || 0) * Number(line.unit_price || 0) * 100) / 100
+  const gross = Number(line.qty_received || 0) * Number(line.unit_price || 0)
+  const disc = Math.min(100, Math.max(0, Number(line.discount_percent || 0)))
+  line.subtotal = Math.round(gross * (1 - disc / 100) * 100) / 100
   recalcTotal()
 }
 
@@ -436,7 +449,6 @@ async function submit() {
       payment_term_days: receipt.value.form.payment_method === 'KREDIT'
         ? Number(receipt.value.form.payment_term_days || 0)
         : null,
-      discount_amount: Number(receipt.value.form.discount_amount || 0),
       ppn_percent: Number(receipt.value.form.ppn_percent || 0),
       notes: receipt.value.form.notes || null,
       items: included.map((it) => ({
@@ -447,6 +459,7 @@ async function submit() {
         batch_no: it.batch_no || null,
         expiry_date: it.expiry_date,
         unit_price: Number(it.unit_price || 0),
+        discount_percent: Number(it.discount_percent || 0),
         notes: it.notes || null,
       })),
     }
@@ -708,13 +721,14 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
                   <th style="width:120px">No. Batch</th>
                   <th style="width:140px">Tgl. Expiry <span class="req">*</span></th>
                   <th style="width:120px" class="r">Harga Sat.</th>
+                  <th style="width:70px" class="r">Disc %</th>
                   <th style="width:120px" class="r">Subtotal</th>
                   <th v-if="receipt.mode === 'direct'" style="width:36px"></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="receipt.form.items.length === 0">
-                  <td :colspan="receipt.mode === 'po' ? 10 : receipt.mode === 'direct' ? 9 : 8" class="grn-state">
+                  <td :colspan="receipt.mode === 'po' ? 11 : receipt.mode === 'direct' ? 10 : 9" class="grn-state">
                     Belum ada item.
                   </td>
                 </tr>
@@ -781,6 +795,17 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
                     />
                     <span v-else>{{ formatRp(line.unit_price) }}</span>
                   </td>
+                  <td class="r">
+                    <input
+                      v-if="receipt.mode !== 'view'"
+                      type="number" min="0" max="100" step="0.5"
+                      v-model.number="line.discount_percent"
+                      @input="recalcLine(line)"
+                      :disabled="line._include === false"
+                      class="grn-input-inline grn-input-r"
+                    />
+                    <span v-else>{{ Number(line.discount_percent || 0) }}%</span>
+                  </td>
                   <td class="r"><strong>{{ formatRp(line.subtotal) }}</strong></td>
                   <td v-if="receipt.mode === 'direct'" class="c">
                     <button class="grn-icon-btn grn-icon-danger" @click="removeLine(idx)" title="Hapus baris">×</button>
@@ -789,7 +814,7 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
               </tbody>
               <tfoot>
                 <tr>
-                  <td :colspan="receipt.mode === 'po' ? 8 : 7" class="r"><strong>Subtotal</strong></td>
+                  <td :colspan="receipt.mode === 'po' ? 9 : 8" class="r"><strong>Subtotal</strong></td>
                   <td class="r"><strong>{{ formatRp(fin.subtotal) }}</strong></td>
                   <td v-if="receipt.mode === 'direct'"></td>
                 </tr>
@@ -803,12 +828,8 @@ const canDelete = computed(() => auth.can('inventori_farmasi.delete'))
                 <span class="grn-fin-val">{{ formatRp(fin.subtotal) }}</span>
               </div>
               <div class="grn-fin-row">
-                <span class="grn-fin-lbl">Diskon (Rp)</span>
-                <span class="grn-fin-input">
-                  <input v-if="receipt.mode !== 'view'" type="number" min="0" step="100"
-                         v-model.number="receipt.form.discount_amount" class="grn-fin-field grn-input-r" />
-                  <span v-else>− {{ formatRp(fin.discount) }}</span>
-                </span>
+                <span class="grn-fin-lbl">Total Diskon (per item)</span>
+                <span class="grn-fin-val">− {{ formatRp(fin.discount) }}</span>
               </div>
               <div class="grn-fin-row grn-fin-sub">
                 <span class="grn-fin-lbl">DPP (Dasar Pengenaan Pajak)</span>

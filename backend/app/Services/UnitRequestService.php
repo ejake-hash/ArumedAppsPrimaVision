@@ -206,8 +206,13 @@ class UnitRequestService
 
                 $qty = (float) ($row['qty_delivered'] ?? 0);
                 if ($qty <= 0) continue;
-                if ($qty > (float) $item->qty_requested + 0.001) {
-                    abort(422, "Qty deliver melebihi qty_requested untuk item " . $this->itemLabel($item));
+
+                // AKUMULASI: dukung kirim bertahap. Qty kali ini tak boleh melebihi
+                // SISA (qty_requested - yang sudah terkirim), bukan qty_requested penuh.
+                $already   = (float) ($item->qty_delivered ?? 0);
+                $remaining = (float) $item->qty_requested - $already;
+                if ($qty > $remaining + 0.001) {
+                    abort(422, "Qty deliver melebihi sisa qty_requested untuk item " . $this->itemLabel($item));
                 }
 
                 // IOL kini dikelola PER-TIPE di inventory_stocks (sama spt obat/BHP) →
@@ -223,17 +228,26 @@ class UnitRequestService
                 $firstBatch = $moved[0] ?? null;
 
                 $item->update([
-                    'qty_delivered' => $qty,
+                    'qty_delivered' => $already + $qty,
                     'batch_no'      => $firstBatch['batch_no'] ?? $item->batch_no,
                     'expiry_date'   => $firstBatch['expiry_date'] ?? $item->expiry_date,
                 ]);
             }
 
-            $req->update([
-                'status'       => UnitRequest::STATUS_DELIVERED,
-                'delivered_by' => auth('api')->id(),
-                'delivered_at' => now(),
-            ]);
+            // Status DELIVERED HANYA bila SEMUA item sudah terkirim penuh. Bila masih
+            // ada sisa, biarkan APPROVED agar bisa di-deliver lagi (kirim bertahap) —
+            // tanpa ini partial-deliver mengunci request (deliver butuh status APPROVED).
+            $fresh = $req->fresh('items');
+            $fullyDelivered = $fresh->items->every(
+                fn ($it) => (float) ($it->qty_delivered ?? 0) >= (float) $it->qty_requested - 0.001
+            );
+            if ($fullyDelivered) {
+                $req->update([
+                    'status'       => UnitRequest::STATUS_DELIVERED,
+                    'delivered_by' => auth('api')->id(),
+                    'delivered_at' => now(),
+                ]);
+            }
 
             return $req->fresh('items');
         });
