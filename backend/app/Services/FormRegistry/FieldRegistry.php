@@ -122,6 +122,14 @@ final class FieldRegistry
                 'label'   => 'Daftar Resep Obat',
                 'formats' => ['items_pretty', 'items_table_html'],
             ],
+            'anamnese_full' => [
+                'label'   => 'Anamnese = anamnesa dokter + segmen mata anterior/posterior (soap_objective)',
+                'formats' => ['text'],
+            ],
+            'tindakan_rmrj' => [
+                'label'   => 'Tindakan RMRJ = prosedur ICD-9 + "Visus, Tonometri, Autorefkeratometri" (auto)',
+                'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
             'visitServices' => [
                 'label'   => 'Daftar Tindakan',
                 'formats' => ['list_simple', 'list_with_tarif'],
@@ -147,11 +155,11 @@ final class FieldRegistry
                 'formats' => ['text'],
             ],
             'physical_exam' => [
-                'label'   => 'Pemeriksaan Fisik = TTV triase (fallback) + refraksi objektif (RO/soap_o) + segmen mata dokter (soap_objective)',
+                'label'   => 'Pemeriksaan Fisik = TTV triase + refraksi objektif (RO/O Refraksionis, soap_o)',
                 'formats' => ['text'],
             ],
             'allergy' => [
-                'label'   => 'Alergi Obat = detail alergi triase, fallback catatan alergi master pasien',
+                'label'   => 'Alergi Obat = detail alergi triase → catatan alergi master pasien → "Tidak Ada"',
                 'formats' => ['text'],
             ],
         ];

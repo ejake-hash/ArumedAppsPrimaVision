@@ -39,6 +39,8 @@ final class AggregateResolver
     {
         return match ($source) {
             'prescriptions'                       => $this->resolvePrescriptions($visit, $format),
+            'anamnese_full'                       => $this->resolveAnamneseFull($visit),
+            'tindakan_rmrj'                       => $this->resolveTindakanRmrj($visit, $format),
             'doctorExamination.icd10_diagnoses'   => $this->resolveIcd10Diagnoses($visit, $format),
             'doctorExamination.icd9_procedures'   => $this->resolveIcd9Procedures($visit, $format),
             'claim.icd10_diagnoses'               => $this->resolveClaimIcd10($visit, $format),
@@ -58,8 +60,8 @@ final class AggregateResolver
     // ─────────────────────────────────────────────────────────────────────────
     // allergy — Alergi Obat Resume Medis: detail alergi triase (nurse_assessments
     // .allergy_detail) dgn fallback catatan alergi master pasien (patients
-    // .allergy_notes). Kosong bila keduanya tak ada (keputusan user: blank,
-    // bukan "Tidak ada"). Sebelumnya binding `db` 1 jalur → fallback mustahil.
+    // .allergy_notes). Bila keduanya kosong → "Tidak Ada" (keputusan user 12 Jun
+    // 2026; sebelumnya blank). Tetap editable di FormRMRenderer.
     // ─────────────────────────────────────────────────────────────────────────
     private function resolveAllergy(Visit $visit): ?string
     {
@@ -69,13 +71,56 @@ final class AggregateResolver
         }
         $notes = trim((string) ($visit->patient?->allergy_notes ?? ''));
 
-        return $notes !== '' ? $notes : null;
+        return $notes !== '' ? $notes : 'Tidak Ada';
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // physical_exam — "Pemeriksaan Fisik" Resume Medis = refraksi objektif (RO,
-    // sumber tunggal refraction_records.soap_o yang ditulis RefraksionisView) +
-    // pemeriksaan segmen mata dokter (doctorExamination.soap_objective). Tetap
+    // anamnese_full — "Anamnese" Resume Medis = anamnesa dokter
+    // (doctorExamination.anamnese) + segmen mata anterior/posterior dokter
+    // (doctorExamination.soap_objective). Segmen dipindah KE SINI dari
+    // physical_exam (keputusan user 12 Jun 2026). Editable (prefill saja).
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolveAnamneseFull(Visit $visit): ?string
+    {
+        $exam = $visit->doctorExamination;
+        $parts = [];
+        $anam = trim((string) ($exam?->anamnese ?? ''));
+        if ($anam !== '') {
+            $parts[] = $anam;
+        }
+        $seg = trim((string) ($exam?->soap_objective ?? ''));
+        if ($seg !== '') {
+            $parts[] = $seg;
+        }
+
+        return $parts ? implode("\n", $parts) : null;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // tindakan_rmrj — "Tindakan" Resume Medis = prosedur ICD-9 dokter (kode—nama)
+    // + baris tetap "Visus, Tonometri, Autorefkeratometri" (pemeriksaan rutin
+    // refraksionis; tak tersimpan sebagai kode → auto-tulis, keputusan user 12 Jun
+    // 2026) bila pasien punya rekaman refraksi. Editable di FormRMRenderer.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolveTindakanRmrj(Visit $visit, ?string $format): string
+    {
+        $parts = [];
+        $icd9 = $this->resolveIcd9Procedures($visit, $format);
+        if ($icd9 !== '') {
+            $parts[] = $icd9;
+        }
+        if ($visit->refractionRecord !== null) {
+            $parts[] = 'Visus, Tonometri, Autorefkeratometri';
+        }
+
+        return implode("\n", $parts);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // physical_exam — "Pemeriksaan Fisik" Resume Medis = TTV triase + refraksi
+    // objektif (RO/O Refraksionis, sumber tunggal refraction_records.soap_o yang
+    // ditulis RefraksionisView). Segmen mata dokter (soap_objective) DIPINDAH ke
+    // Anamnese (anamnese_full) per keputusan user 12 Jun 2026. Tetap
     // EDITABLE di FormRMRenderer (prefill saja). Urutan RO mengikuti soap_o.
     // ─────────────────────────────────────────────────────────────────────────
     private function resolvePhysicalExam(Visit $visit): ?string
@@ -90,10 +135,9 @@ final class AggregateResolver
         if ($ro !== '') {
             $parts[] = $ro;
         }
-        $seg = trim((string) ($visit->doctorExamination?->soap_objective ?? ''));
-        if ($seg !== '') {
-            $parts[] = $seg;
-        }
+        // CATATAN: segmen mata dokter (soap_objective) TIDAK lagi di sini — dipindah
+        // ke Anamnese (anamnese_full) per keputusan user 12 Jun 2026. Pemeriksaan
+        // Fisik = TTV triase + O Refraksionis (RO) saja.
 
         // TTV triase (TD/Nadi/SpO2/Suhu/KGD) — fallback agar Pemeriksaan Fisik tak
         // kosong saat dokter tidak menyentuh SOAP O & refraksi tak ada (mis. kontrol
@@ -350,14 +394,22 @@ final class AggregateResolver
             }
         }
         $codes = array_values(array_unique($codes));
-        if (empty($codes)) {
-            return '';
+
+        $lines = [];
+        if (!empty($codes)) {
+            $lines[] = match ($format) {
+                'icd_only_join_comma' => implode(', ', $codes),
+                default               => $this->joinIcdWithDesc($codes),  // icd_with_desc_join_newline
+            };
+        }
+        // Diagnosa teks-bebas dokter (doctorExamination.diagnosis_text) ikut tampil
+        // di bawah kode ICD-10 (keputusan user 12 Jun 2026: kode+nama + tulis diagnosa).
+        $free = trim((string) ($exam->diagnosis_text ?? ''));
+        if ($free !== '') {
+            $lines[] = $free;
         }
 
-        return match ($format) {
-            'icd_only_join_comma' => implode(', ', $codes),
-            default               => $this->joinIcdWithDesc($codes),  // icd_with_desc_join_newline
-        };
+        return implode("\n", $lines);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

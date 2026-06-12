@@ -277,17 +277,20 @@ HTML;
             $auto('penanggung',    'Penanggung Pembayaran', 'text', ['kind' => 'db', 'source' => 'visit.guarantor_type']),
 
             // ── Isi resume — AUTO-prefill + EDITABLE ─────────────────────────
-            $editable('anamnese',         'Anamnese',          ['via' => 'db', 'source' => 'doctorExamination.anamnese']),
-            // Pemeriksaan Fisik = refraksi objektif (RO, soap_o) + segmen mata dokter (soap_objective).
+            // Anamnese = anamnesa dokter + segmen mata anterior/posterior (soap_objective).
+            $editable('anamnese',         'Anamnese',          ['via' => 'aggregate', 'source' => 'anamnese_full']),
+            // Pemeriksaan Fisik = TTV triase + O Refraksionis (RO, soap_o). Segmen dokter pindah ke Anamnese.
             $editable('pemeriksaan_fisik','Pemeriksaan Fisik', ['via' => 'aggregate', 'source' => 'physical_exam']),
-            // Alergi: aggregate (detail alergi triase → fallback catatan alergi master pasien).
+            // Alergi: detail alergi triase → catatan alergi master pasien → "Tidak Ada".
             $editable('alergi',           'Alergi Obat',       ['via' => 'aggregate', 'source' => 'allergy']),
             $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
+            // Diagnosa = kode+nama ICD-10 + teks diagnosa bebas (diagnosis_text).
             $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
-            $editable('tindakan',         'Tindakan (ICD-9)',  ['via' => 'aggregate', 'source' => 'doctorExamination.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
+            // Tindakan = kode+nama ICD-9 + "Visus, Tonometri, Autorefkeratometri" (auto-tulis).
+            $editable('tindakan',         'Tindakan (ICD-9)',  ['via' => 'aggregate', 'source' => 'tindakan_rmrj', 'format' => 'icd_with_desc_join_newline']),
             $editable('terapi',           'Terapi',            ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
-            // Riwayat: manual (tidak ada sumber otomatis).
-            ['key' => 'riwayat', 'label' => 'Riwayat/Rawat Inap/Operasi/Tindakan', 'type' => 'longtext', 'binding' => ['kind' => 'static']],
+            // Riwayat = Riwayat Penyakit Sekarang (RPS) dari triase perawat.
+            $editable('riwayat',          'Riwayat/Rawat Inap/Operasi/Tindakan', ['via' => 'db', 'source' => 'nurseAssessment.rps']),
             // Instruksi/Anjuran: kalimat siap-pakai dari rencana tatalaksana (kontrol +
             // tanggal / operasi-paket + tanggal / rawat inap / rujuk), bukan enum mentah.
             $editable('instruksi',        'Instruksi/Anjuran dan Edukasi Lanjutan', ['via' => 'aggregate', 'source' => 'planning_instruction']),

@@ -1901,6 +1901,9 @@ const assessmentText = computed(() => {
   diagnosisSekunder.value.forEach((d) => lines.push(`${d.code} — ${d.name} (Sekunder)`))
   const txt = (diagnosisText.value || '').trim()
   if (txt) lines.push(txt)
+  // Pemeriksaan penunjang yang dipesan kunjungan ini (jika ada).
+  const pj = penunjangOrders.value.map((o) => o.name).filter(Boolean)
+  if (pj.length) lines.push('Pemeriksaan penunjang: ' + pj.join(', '))
   return lines.join('\n')
 })
 
