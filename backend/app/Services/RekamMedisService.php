@@ -78,6 +78,70 @@ class RekamMedisService
     }
 
     /**
+     * Daftar pasien yang punya kunjungan pada satu tanggal / rentang tanggal.
+     * Dipakai RekamMedisView untuk "telusuri per tanggal" (mirip Rekap Kunjungan
+     * BPJS) — 1 baris = 1 pasien, dengan ringkasan kunjungan periode terpilih.
+     * Berpaginasi server-side. Filter: tanggal | tanggal_from+tanggal_to + search.
+     */
+    public function patientsByDate(array $f): LengthAwarePaginator
+    {
+        $from   = $f['tanggal_from'] ?? $f['tanggal'] ?? null;
+        $to     = $f['tanggal_to']   ?? $f['tanggal'] ?? null;
+        $search = trim($f['search'] ?? '');
+        $perPage = max(1, min(200, (int) ($f['per_page'] ?? 50)));
+
+        // Filter rentang visit_date yang dipakai bersama oleh whereHas, withCount,
+        // dan eager-load relasi visits agar konsisten.
+        $inRange = function ($q) use ($from, $to) {
+            if ($from) { $q->whereDate('visit_date', '>=', $from); }
+            if ($to)   { $q->whereDate('visit_date', '<=', $to); }
+        };
+
+        $query = Patient::active()
+            ->whereHas('visits', $inRange)
+            ->withCount(['visits as period_visits_count' => $inRange])
+            ->with(['visits' => function ($q) use ($inRange) {
+                $inRange($q);
+                $q->orderByDesc('visit_date')->orderByDesc('created_at')
+                  ->with(['dpjp', 'doctorExamination.doctor', 'doctorSchedule.employee']);
+            }]);
+
+        if ($search !== '') {
+            $query->where(fn ($q) => $q
+                ->where('name', 'ilike', "%{$search}%")
+                ->orWhere('no_rm', 'ilike', "%{$search}%")
+                ->orWhere('nik', 'like', "%{$search}%")
+            );
+        }
+
+        $paginator = $query->orderBy('name')->paginate($perPage);
+
+        $paginator->getCollection()->transform(function (Patient $p) {
+            $last = $p->visits->first();
+            $last?->append('dpjp_name');
+
+            return [
+                'id'                  => $p->id,
+                'no_rm'               => $p->no_rm,
+                'nama'                => $p->name,
+                'nik'                 => $p->nik,
+                'date_of_birth'       => $p->date_of_birth?->toDateString(),
+                'gender'              => $p->gender,
+                'address'             => $p->address,
+                'allergy'             => $p->allergy_notes,
+                'photo_url'           => $p->photo_url,
+                'period_visits'       => $p->period_visits_count,
+                'last_visit_date'     => $last?->visit_date?->toDateString(),
+                'last_classification' => $last?->classification,
+                'last_guarantor_type' => $last?->guarantor_type,
+                'last_doctor'         => $last?->dpjp_name,
+            ];
+        });
+
+        return $paginator;
+    }
+
+    /**
      * Full timeline — kunjungan pasien + semua catatan klinis per kunjungan.
      */
     public function getVisitHistory(string $patientId): array

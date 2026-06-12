@@ -37,6 +37,25 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * GET /rekam-medis/pasien-tanggal?tanggal=&tanggal_from=&tanggal_to=&search=&per_page=&page=
+     * Daftar pasien (berpaginasi) yang berkunjung pada tanggal / rentang tanggal —
+     * untuk telusur RME per tanggal (mirip Rekap Kunjungan BPJS).
+     */
+    public function pasienByTanggal(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'tanggal'      => 'nullable|date',
+            'tanggal_from' => 'nullable|date',
+            'tanggal_to'   => 'nullable|date|after_or_equal:tanggal_from',
+            'search'       => 'nullable|string',
+            'per_page'     => 'nullable|integer|min:1|max:200',
+            'page'         => 'nullable|integer|min:1',
+        ]);
+
+        return $this->ok($this->service->patientsByDate($validated));
+    }
+
+    /**
      * GET /rekam-medis/pasien/{patientId}
      * Full clinical timeline for a patient.
      */

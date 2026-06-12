@@ -6,6 +6,7 @@ import PatientAvatar from '@/components/common/PatientAvatar.vue'
 // PerawatView/RefraksionisView) & sumber data sama (RmeAggregatorService::cppt),
 // agar tampilan SOAP/CPPT konsisten lintas modul.
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
+import Pager from '@/components/common/Pager.vue'
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const BLN = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des']
@@ -94,8 +95,62 @@ function setSearchMode(m) {
   searchQuery.value = ''
   searchResults.value = []
   searching.value = false
+  showSearchDrop.value = false
+  // Saat masuk mode "Tanggal", langsung tampilkan pasien yang berkunjung hari ini.
+  if (m === 'tanggal' && !dateRows.value.length) { datePage.value = 1; fetchByDate() }
 }
 function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 200) }
+
+// ─── TELUSUR PER TANGGAL (daftar pasien per tanggal / rentang) ─────────────────
+// Mode "Tanggal": pilih 1 tanggal atau rentang → daftar pasien yang berkunjung
+// pada periode itu (mirip Rekap Kunjungan BPJS), berpaginasi server-side.
+const _todayStr = new Date().toISOString().slice(0, 10)
+const dateRangeMode = ref('single')      // 'single' | 'range'
+const dateSingle    = ref(_todayStr)
+const dateFrom      = ref(_todayStr)
+const dateTo        = ref(_todayStr)
+const dateSearch    = ref('')
+const dateRows      = ref([])
+const datePage      = ref(1)
+const datePerPage   = ref(50)
+const dateLast      = ref(1)
+const dateTotal     = ref(0)
+const dateLoading   = ref(false)
+
+const isDateMode = computed(() => searchMode.value === 'tanggal')
+
+function dateBrowseParams() {
+  const p = {}
+  if (dateRangeMode.value === 'single') {
+    if (dateSingle.value) p.tanggal = dateSingle.value
+  } else {
+    if (dateFrom.value) p.tanggal_from = dateFrom.value
+    if (dateTo.value)   p.tanggal_to = dateTo.value
+  }
+  if (dateSearch.value.trim()) p.search = dateSearch.value.trim()
+  return p
+}
+
+async function fetchByDate() {
+  dateLoading.value = true
+  try {
+    const params = { ...dateBrowseParams(), per_page: datePerPage.value, page: datePage.value }
+    const { data } = await api.get('/rekam-medis/pasien-tanggal', { params })
+    const p = data.data ?? {}
+    dateRows.value = p.data ?? []
+    dateLast.value = p.last_page ?? 1
+    dateTotal.value = p.total ?? 0
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal memuat daftar pasien per tanggal')
+    dateRows.value = []
+  } finally {
+    dateLoading.value = false
+  }
+}
+
+function onDateFilterChange() { datePage.value = 1; fetchByDate() }
+function onDatePage(n) { datePage.value = n; fetchByDate() }
+function setDateRangeMode(m) { if (dateRangeMode.value === m) return; dateRangeMode.value = m; onDateFilterChange() }
 
 // ─── MENU (master-detail) ──────────────────────────────────────────────────────
 const MENUS = [
@@ -429,10 +484,34 @@ function cetakLaporanOperasi(b) {
     <div class="rme-searchbar">
       <div class="rsb-inner">
         <div class="rsb-mode">
-          <button v-for="m in [{v:'nama',l:'Nama'},{v:'rm',l:'No. RM'},{v:'nik',l:'NIK'}]" :key="m.v"
+          <button v-for="m in [{v:'nama',l:'Nama'},{v:'rm',l:'No. RM'},{v:'nik',l:'NIK'},{v:'tanggal',l:'Tanggal'}]" :key="m.v"
             :class="['rsb-mode-btn', searchMode===m.v?'a':'']" @click="setSearchMode(m.v)">{{ m.l }}</button>
         </div>
-        <div class="rsb-input-wrap">
+
+        <!-- Mode TANGGAL: pemilih tanggal / rentang (daftar pasien tampil di bawah) -->
+        <div v-if="isDateMode" class="rsb-date-wrap">
+          <div class="rsb-date-seg">
+            <button :class="['rsb-seg', dateRangeMode==='single'?'a':'']" @click="setDateRangeMode('single')">1 Tanggal</button>
+            <button :class="['rsb-seg', dateRangeMode==='range'?'a':'']" @click="setDateRangeMode('range')">Rentang</button>
+          </div>
+          <template v-if="dateRangeMode==='single'">
+            <input type="date" class="rsb-date" v-model="dateSingle" @change="onDateFilterChange" />
+          </template>
+          <template v-else>
+            <input type="date" class="rsb-date" v-model="dateFrom" @change="onDateFilterChange" />
+            <span class="rsb-dash">s/d</span>
+            <input type="date" class="rsb-date" v-model="dateTo" @change="onDateFilterChange" />
+          </template>
+          <input type="search" class="rsb-date-search" v-model="dateSearch"
+                 placeholder="Saring nama / No. RM / NIK" @keyup.enter="onDateFilterChange" />
+          <button class="rsb-date-btn" @click="onDateFilterChange">Tampilkan</button>
+          <button v-if="patient" class="rsb-clear inline" @click="clearPatient">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Ganti Pasien
+          </button>
+        </div>
+
+        <div v-else class="rsb-input-wrap">
           <svg class="rsb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input v-model="searchQuery" class="rsb-input" :placeholder="searchPlaceholder"
             @focus="showSearchDrop=true" @blur="hideDropLater" />
@@ -445,7 +524,7 @@ function cetakLaporanOperasi(b) {
 
         <!-- Dropdown — tetap aktif walau sudah ada pasien terpilih, agar bisa
              ganti/cari pasien lain tanpa harus klik "Ganti Pasien" dulu. -->
-        <div v-if="showSearchDrop && searchQuery.trim()" class="rsb-dropdown">
+        <div v-if="!isDateMode && showSearchDrop && searchQuery.trim()" class="rsb-dropdown">
           <template v-if="searching">
             <div v-for="i in 3" :key="i" class="rsb-item rsb-sk">
               <div class="rsi-bar" style="background:#e2e5ea"></div>
@@ -475,10 +554,50 @@ function cetakLaporanOperasi(b) {
       </div>
     </div>
 
-    <!-- EMPTY STATE -->
-    <div v-if="!patient" class="empty">
+    <!-- EMPTY STATE (mode pencarian teks) -->
+    <div v-if="!patient && !isDateMode" class="empty">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       <p>Cari dan pilih pasien dari kolom pencarian di atas<br/>untuk melihat Rekam Medis Elektronik</p>
+    </div>
+
+    <!-- DAFTAR PASIEN PER TANGGAL -->
+    <div v-if="!patient && isDateMode" class="rme-datelist">
+      <div class="rdl-head">
+        <span class="rdl-count">{{ dateTotal }} pasien</span>
+        <select class="rdl-pp" v-model.number="datePerPage" @change="onDateFilterChange" title="Baris per halaman">
+          <option :value="25">25 / hal</option>
+          <option :value="50">50 / hal</option>
+          <option :value="100">100 / hal</option>
+        </select>
+      </div>
+      <div class="rdl-table-wrap">
+        <table class="rme-table">
+          <thead><tr>
+            <th class="rdl-no">No.</th><th>Pasien</th><th>No. RM</th>
+            <th>Kunjungan</th><th>Terakhir</th><th>Klasifikasi</th><th>Penjamin</th><th>Dokter</th>
+          </tr></thead>
+          <tbody>
+            <tr v-if="dateLoading"><td colspan="8" class="empty-mini">Memuat…</td></tr>
+            <tr v-else-if="!dateRows.length"><td colspan="8" class="empty-mini">Tidak ada pasien berkunjung pada periode ini.</td></tr>
+            <tr v-for="(p,i) in dateRows" :key="p.id" class="row-click" @click="pickPatient(p)">
+              <td class="rdl-no">{{ (datePage - 1) * datePerPage + i + 1 }}</td>
+              <td>
+                <div class="rdl-pt">
+                  <PatientAvatar :name="p.nama" :src="p.photo_url" :size="30" radius="50%" :zoomable="false" />
+                  <div class="cell-2"><b>{{ p.nama }}</b><small>{{ hitungUsia(p.date_of_birth) }} th · {{ p.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</small></div>
+                </div>
+              </td>
+              <td class="mono">{{ p.no_rm }}</td>
+              <td>{{ p.period_visits }}×</td>
+              <td class="nowrap">{{ fmtTgl(p.last_visit_date) }}</td>
+              <td><span class="cls-badge" :style="{background:classColor(p.last_classification)+'1f',color:classColor(p.last_classification)}">{{ val(p.last_classification) }}</span></td>
+              <td><span :class="['g-pill', guarantorCls(p.last_guarantor_type)]">{{ p.last_guarantor_type ?? 'UMUM' }}</span></td>
+              <td>{{ val(p.last_doctor) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <Pager v-model:page="datePage" :last-page="dateLast" :total="dateTotal" @change="onDatePage" />
     </div>
 
     <template v-if="patient">
@@ -1123,6 +1242,20 @@ function cetakLaporanOperasi(b) {
 .rsb-clear { display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; height: 36px; border: 1.5px solid #e2e5ea; border-radius: 8px; background: #f8f9fb; color: #4b5563; font-size: 11.5px; font-weight: 600; cursor: pointer; }
 .rsb-clear:hover { border-color: #dc2626; color: #dc2626; }
 .rsb-clear svg { width: 12px; height: 12px; }
+
+/* Mode TANGGAL — toolbar pemilih tanggal/rentang */
+.rsb-date-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.rsb-date-seg { display: inline-flex; border: 1.5px solid #e2e5ea; border-radius: 8px; overflow: hidden; }
+.rsb-seg { padding: 0 13px; height: 36px; border: 0; background: #f8f9fb; cursor: pointer; font-size: 11.5px; font-weight: 600; color: #6b7280; }
+.rsb-seg.a { background: #1763d4; color: #fff; }
+.rsb-date { height: 36px; padding: 0 10px; border: 1.5px solid #e2e5ea; border-radius: 8px; background: #f8f9fb; color: #000; font-size: 12.5px; }
+.rsb-date:focus { border-color: #1763d4; background: #fff; outline: none; }
+.rsb-dash { color: #6b7280; font-size: 12px; }
+.rsb-date-search { height: 36px; min-width: 210px; flex: 0 1 260px; padding: 0 10px; border: 1.5px solid #e2e5ea; border-radius: 8px; background: #f8f9fb; color: #000; font-size: 12.5px; }
+.rsb-date-search:focus { border-color: #1763d4; background: #fff; outline: none; }
+.rsb-date-btn { height: 36px; padding: 0 16px; border: 1.5px solid #1763d4; border-radius: 8px; background: #1763d4; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.rsb-date-btn:hover { background: #1257bd; }
+.rsb-clear.inline { margin-left: auto; }
 .rsb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border: 1px solid #1763d4; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 100; max-height: 320px; overflow-y: auto; }
 .rsb-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
 .rsb-item:hover { background: #eef4ff; }
@@ -1250,6 +1383,17 @@ function cetakLaporanOperasi(b) {
 .pl-kode { font-family: monospace; font-weight: 700; color: #1763d4; min-width: 60px; }
 .pl-nama { flex: 1; }
 .pl-meta { font-size: 10px; color: #9ca3af; }
+
+/* ─── DAFTAR PASIEN PER TANGGAL ─── */
+.rme-datelist { background: #fff; border: 1px solid #eceef2; border-radius: 12px; padding: 12px 14px; }
+.rdl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.rdl-count { font-size: 12px; font-weight: 600; color: #6b7280; }
+.rdl-pp { margin-left: auto; height: 30px; padding: 0 8px; border: 1px solid #e2e5ea; border-radius: 7px; background: #f8f9fb; color: #4b5563; font-size: 11.5px; cursor: pointer; }
+.rdl-table-wrap { overflow-x: auto; }
+.rdl-no { width: 42px; text-align: center; color: #9ca3af; font-variant-numeric: tabular-nums; }
+.rdl-pt { display: flex; align-items: center; gap: 8px; }
+.rme-datelist .row-click { cursor: pointer; }
+.rme-datelist .row-click:hover td { background: #eef4ff; }
 
 /* ─── STATES ─── */
 .empty-mini { text-align: center; padding: 2.5rem 1rem; font-size: 12.5px; color: #9ca3af; }

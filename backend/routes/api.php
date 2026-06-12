@@ -832,6 +832,7 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('rekam-medis')->middleware('permission:rekam_medis.read')->group(function () {
             Route::get('/pasien',                          [RekamMedisController::class, 'cariPasien']);
+            Route::get('/pasien-tanggal',                  [RekamMedisController::class, 'pasienByTanggal']);
             Route::get('/pasien/{patientId}',              [RekamMedisController::class, 'riwayatPasien']);
             Route::get('/pasien/{patientId}/kunjungan',    [RekamMedisController::class, 'indexKunjungan']);
             Route::get('/pasien/{patientId}/ringkasan',    [RekamMedisController::class, 'ringkasanPasien']);
