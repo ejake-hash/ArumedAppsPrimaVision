@@ -98,7 +98,17 @@ const router = createRouter({
           component: () => import('@/views/inventori-farmasi/InventoriFarmasiLayout.vue'),
           meta: { title: 'Inventori Farmasi', permission: 'inventori_farmasi.read' },
           children: [
-            { path: '',     name: 'inventori-farmasi',      redirect: '/inventori-farmasi/request-unit' },
+            // Index redirect RESILIEN: default Request dari Unit (alur harian gudang),
+            // TAPI route itu di-gate `request_unit.read` — beda dari permission modul
+            // (`inventori_farmasi.read`). Role inventori yang TIDAK punya request_unit
+            // dulu dipental ke /dashboard (menu tampil, klik bouncing). Jatuhkan ke tab
+            // ber-`inventori_farmasi.read` (Obat) supaya selalu mendarat di modul.
+            { path: '', name: 'inventori-farmasi', redirect: () => {
+              const auth = useAuthStore()
+              return auth.can('request_unit.read')
+                ? '/inventori-farmasi/request-unit'
+                : '/inventori-farmasi/obat'
+            } },
             { path: 'obat', name: 'inventori-farmasi-obat', component: () => import('@/views/master-data/ObatView.vue'), meta: { title: 'Obat' } },
             { path: 'bhp',  name: 'inventori-farmasi-bhp',  component: () => import('@/views/master-data/BhpView.vue'),  meta: { title: 'BHP' } },
             { path: 'iol',  name: 'inventori-farmasi-iol',  component: () => import('@/views/master-data/IolView.vue'),  meta: { title: 'IOL' } },
@@ -108,6 +118,7 @@ const router = createRouter({
             { path: 'pembelian', name: 'inventori-farmasi-pembelian', component: () => import('@/views/inventori-farmasi/PembelianView.vue'), meta: { title: 'Pembelian', permission: 'inventori_farmasi.read' } },
             { path: 'penerimaan', name: 'inventori-farmasi-penerimaan', component: () => import('@/views/inventori-farmasi/PenerimaanView.vue'), meta: { title: 'Penerimaan', permission: 'inventori_farmasi.read' } },
             { path: 'request-unit', name: 'inventori-farmasi-request-unit', component: () => import('@/views/inventori-farmasi/RequestUnitView.vue'), meta: { title: 'Request dari Unit', permission: 'request_unit.read' } },
+            { path: 'laporan', name: 'inventori-farmasi-laporan', component: () => import('@/views/inventori-farmasi/LaporanView.vue'), meta: { title: 'Laporan', permission: 'inventori_farmasi.read' } },
           ],
         },
 

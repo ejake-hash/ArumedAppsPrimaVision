@@ -1004,6 +1004,19 @@ export const inventoriInboxApi = {
   list: () => api.get('/inventori-farmasi/inbox'),
 }
 
+/** Laporan Inventori — ringkasan + pemesanan + retur (tracking konsumsi). */
+export const inventoriLaporanApi = {
+  summary:  (params) => api.get('/inventori-farmasi/laporan/summary', { params }),
+  pemesanan: (params) => api.get('/inventori-farmasi/laporan/pemesanan', { params }),
+  pemesananExport: (params, format) => api.get('/inventori-farmasi/laporan/pemesanan/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob',
+  }),
+  retur: (params) => api.get('/inventori-farmasi/laporan/retur', { params }),
+  returExport: (params, format) => api.get('/inventori-farmasi/laporan/retur/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob',
+  }),
+}
+
 // Penentuan Harga (inventoriHargaApi) DIHAPUS — harga jual obat/BHP/IOL kini di
 // Buku Tarif (lihat tarifPaketApi.tarif & MetodeBayarTarifTab, baris insurer UMUM).
 

@@ -24,6 +24,7 @@ use App\Http\Controllers\MasterDataController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\GoodsReceiptController;
+use App\Http\Controllers\InventoriReportController;
 use App\Http\Controllers\UnitRequestController;
 use App\Http\Controllers\InventoryStockController;
 use App\Http\Controllers\MedicalEquipmentController;
@@ -1207,6 +1208,18 @@ Route::prefix('v1')->group(function () {
             Route::post('/',               [GoodsReceiptController::class, 'store'])->middleware('permission:inventori_farmasi.write');
             Route::get('/{id}',            [GoodsReceiptController::class, 'show'])->middleware('permission:inventori_farmasi.read');
             Route::delete('/{id}',         [GoodsReceiptController::class, 'destroy'])->middleware('permission:inventori_farmasi.delete');
+        });
+
+        // -----------------------------------------------------------------
+        // INVENTORI FARMASI — Laporan (pemesanan/retur + tracking konsumsi)
+        // Taruh SEBELUM route wildcard `inventori-farmasi/stock/{type}` agar tak bentrok.
+        // -----------------------------------------------------------------
+        Route::prefix('inventori-farmasi/laporan')->middleware('permission:inventori_farmasi.read')->group(function () {
+            Route::get('/summary',          [InventoriReportController::class, 'summary']);
+            Route::get('/pemesanan',        [InventoriReportController::class, 'pemesanan']);
+            Route::get('/pemesanan/export', [InventoriReportController::class, 'pemesananExport']);
+            Route::get('/retur',            [InventoriReportController::class, 'retur']);
+            Route::get('/retur/export',     [InventoriReportController::class, 'returExport']);
         });
 
         // -----------------------------------------------------------------
