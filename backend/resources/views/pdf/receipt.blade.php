@@ -138,7 +138,7 @@
     <table class="meta">
         <tr>
             <td class="k">No. Rekam Medis</td><td class="s">:</td><td>{{ $patient['no_rm'] ?? '—' }}</td>
-            <td class="k">Tanggal</td><td class="s">:</td><td>{{ $invoice['date'] ?? '—' }}</td>
+            <td class="k">Tgl Kunjungan</td><td class="s">:</td><td>{{ $invoice['visit_date'] ?? $invoice['date'] ?? '—' }}</td>
         </tr>
         <tr>
             <td class="k">Nama Pasien</td><td class="s">:</td><td>{{ $patient['name'] ?? '—' }}</td>
@@ -160,6 +160,10 @@
             <td class="k">Dokter (DPJP)</td><td class="s">:</td><td>{{ $patient['dpjp'] ?? '—' }}</td>
             <td class="k">Jenis Layanan</td><td class="s">:</td>
             <td>{{ ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat (IGD)', 'RAJAL' => 'Rawat Jalan'][$svcType] ?? 'Rawat Jalan' }}</td>
+        </tr>
+        <tr>
+            <td class="k">Tgl Invoice</td><td class="s">:</td><td>{{ $invoice['date'] ?? '—' }}</td>
+            <td></td><td></td><td></td>
         </tr>
     </table>
 
@@ -219,7 +223,11 @@
         @endif
         <tr class="grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ $rp($summary['total'] ?? 0) }}</td></tr>
         @if((float)($summary['covered_amount'] ?? 0))
-            <tr><td>Ditanggung Asuransi</td><td class="c-num">− {{ $rp($summary['covered_amount']) }}</td></tr>
+            @php $isBpjs = strtoupper((string) ($patient['guarantor_type'] ?? '')) === 'BPJS'; @endphp
+            <tr>
+                <td>{{ $isBpjs ? 'Ditanggung BPJS Kesehatan (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</td>
+                <td class="c-num">{{ $isBpjs ? '' : '− ' . $rp($summary['covered_amount']) }}</td>
+            </tr>
         @endif
         <tr><td>Dibayar Pasien</td><td class="c-num">{{ $rp($summary['paid_amount'] ?? 0) }}</td></tr>
         @if(($invoice['is_paid'] ?? false) && (float)($summary['change'] ?? 0))
@@ -252,10 +260,13 @@
     </table>
 
     <div class="footer">
+        @if(($invoice['is_paid'] ?? false) && !empty($invoice['paid_at']))
+            Tgl Bayar: {{ $invoice['paid_at'] }} ·
+        @endif
         @if($showFooter && !empty($clinic['director_name']))
             Penanggung Jawab Rumah Sakit: {{ $clinic['director_name'] }}@if(!empty($clinic['director_sip'])) · SIP: {{ $clinic['director_sip'] }}@endif ·
         @endif
-        Arumed Apps
+        Dicetak: {{ \Illuminate\Support\Carbon::now()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d/m/Y H:i') }} · RS. Mata Prima Vision - PT. Karya Sistem Nusantara
     </div>
 </div>
 </body>
