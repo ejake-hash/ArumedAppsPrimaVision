@@ -838,6 +838,15 @@ class DokterService
             $snap = VisitSurgeryPackage::create(['visit_id' => $visit->id] + $headerData);
         }
 
+        // Item OVERRIDE varian tarif (scope: IOL) — varian "Phaco OSAKA" dst. boleh
+        // men-set IOL berbeda; saat snapshot, IOL komposisi DIGANTI baris override
+        // (tipe lain tetap ikut komposisi). $tariff = stdClass dari resolvePackageTariff
+        // → muat override via query, bukan relasi.
+        $iolOverrides = ! empty($tariff->id)
+            ? \App\Models\SurgeryPackageTariffItem::where('surgery_package_tariff_id', $tariff->id)
+                ->where('item_type', 'IOL')->get()
+            : collect();
+
         // Replace items: copy komponen paket, resolve harga Buku Tarif.
         // Obat disnapshot untuk SEMUA tipe paket. PEMERIKSAAN: snapshot = "ekspektasi" utk
         // absorpsi diskon (obat ditagih lewat resep). BEDAH: obat komponen paket ditagih
@@ -845,6 +854,10 @@ class DokterService
         // konsisten dgn PROCEDURE/BHP/IOL, mencegah obat injeksi mahal hilang dari tagihan.
         $snap->items()->delete();
         foreach ($pkg->items as $pi) {
+            // Varian punya override IOL → IOL komposisi diganti (di-append di bawah).
+            if ($pi->item_type === 'IOL' && $iolOverrides->isNotEmpty()) {
+                continue;
+            }
             $getPriceType = match ($pi->item_type) {
                 'PROCEDURE'  => 'procedure',
                 'BHP'        => 'bhp',
@@ -865,6 +878,18 @@ class DokterService
                 'quantity'                 => $pi->quantity ?? 1,
                 'unit_price'               => $unitPrice,
                 'notes'                    => $pi->notes ?? null,
+            ]);
+        }
+        foreach ($iolOverrides as $ov) {
+            VisitSurgeryPackageItem::create([
+                'visit_surgery_package_id' => $snap->id,
+                'item_type'                => 'IOL',
+                'item_id'                  => $ov->item_id,
+                'quantity'                 => max(1, (int) $ov->quantity),
+                'unit_price'               => $this->kasirService->getPrice(
+                    'iol', $ov->item_id, $visit->guarantor_type, $visit->insurer_id
+                ),
+                'notes'                    => 'IOL varian tarif',
             ]);
         }
 

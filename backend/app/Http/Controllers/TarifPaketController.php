@@ -300,6 +300,12 @@ class TarifPaketController extends Controller
             'sell_price'       => 'required_if:price_mode,NOMINAL|nullable|numeric|min:0',
             'discount_percent' => 'required_if:price_mode,PERSEN|nullable|numeric|min:0|max:100',
             'is_active'        => 'nullable|boolean',
+            // Item OVERRIDE varian (scope: IOL) — mengganti IOL komposisi saat snapshot;
+            // array kosong = hapus semua override varian ini (replace-all).
+            'override_items'              => 'nullable|array|max:5',
+            'override_items.*.item_type'  => 'nullable|in:IOL',
+            'override_items.*.item_id'    => 'required_with:override_items|uuid|exists:iol_items,id',
+            'override_items.*.quantity'   => 'nullable|integer|min:1',
         ]);
         return $this->ok($this->service->upsertTariff($id, $validated), 'Tarif paket disimpan');
     }

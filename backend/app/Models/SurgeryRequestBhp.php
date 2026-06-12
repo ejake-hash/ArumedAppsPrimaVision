@@ -21,7 +21,14 @@ class SurgeryRequestBhp extends Model
         'bhp_item_id',
         'quantity',
         'used_qty',
+        // BHP terpakai di luar komposisi paket yang DIPUTUSKAN KASIR "terserap ke
+        // paket": tetap tampil positif, nilainya ikut basis DISKON_PAKET.
+        'is_paket_absorbed',
         'notes',
+    ];
+
+    protected $casts = [
+        'is_paket_absorbed' => 'boolean',
     ];
 
     public function surgeryRequest(): BelongsTo

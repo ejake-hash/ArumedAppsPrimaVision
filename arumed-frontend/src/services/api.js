@@ -1159,6 +1159,8 @@ export const kasirApi = {
   storeItem:         (invoiceId, data)    => api.post(`/kasir/invoice/${invoiceId}/item`, data),
   updateItem:        (id, data)           => api.put(`/kasir/invoice-item/${id}`, data),
   deleteItem:        (id)                 => api.delete(`/kasir/invoice-item/${id}`),
+  // Toggle "terserap ke paket" baris obat/BHP tambahan (DISKON_PAKET menyesuaikan)
+  absorbItem:        (visitId, data)      => api.post(`/kasir/invoice/${visitId}/absorb-item`, data),
 
   // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master)
   tarifTindakan:     (visitId)            => api.get('/kasir/tarif-tindakan', { params: { visit_id: visitId } }),

@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class SurgeryPackageTariff extends Model
@@ -38,6 +39,15 @@ class SurgeryPackageTariff extends Model
     public function insurer(): BelongsTo
     {
         return $this->belongsTo(Insurer::class);
+    }
+
+    /**
+     * Item OVERRIDE varian (scope: IOL) — mengganti item komposisi ber-tipe sama
+     * saat snapshot visit. Kosong = varian murni harga/label, komposisi utuh.
+     */
+    public function overrideItems(): HasMany
+    {
+        return $this->hasMany(SurgeryPackageTariffItem::class, 'surgery_package_tariff_id');
     }
 
     /**

@@ -110,7 +110,7 @@ class TarifPaketService
 
     public function showPaket(string $id): SurgeryPackage
     {
-        $pkg = SurgeryPackage::with(['items', 'packageTariffs.insurer'])->findOrFail($id);
+        $pkg = SurgeryPackage::with(['items', 'packageTariffs.insurer', 'packageTariffs.overrideItems'])->findOrFail($id);
 
         // Enrich items dengan info nama/kode item terkait. withTrashed: master yang
         // sudah dihapus tetap tampil bernama (suffix "(terhapus)"), bukan "-".
@@ -134,6 +134,11 @@ class TarifPaketService
             $t->setAttribute('price_mode', $t->discount_percent !== null ? 'PERSEN' : 'NOMINAL');
             $t->setAttribute('discount_amount', $t->discountAmount());
             $t->setAttribute('discount_percent', $t->discountPercent());
+            // Item override varian (IOL) + nama tampil — utk seksi "IOL Varian" modal tarif.
+            // unsetRelation WAJIB: relasi overrideItems ikut serialisasi sbg key
+            // 'override_items' (snake_case) dan MENIMPA atribut enriched ini.
+            $t->setAttribute('override_items', $this->tariffOverrideItems($t));
+            $t->unsetRelation('overrideItems');
         });
 
         // Manfaat "kontrol gratis pasca-bedah" (Opsi B): nama prosedur konsultasi untuk kartu UI.
@@ -430,7 +435,7 @@ class TarifPaketService
     public function listTariffs(string $packageId): array
     {
         $pkg = SurgeryPackage::findOrFail($packageId);
-        return $pkg->packageTariffs()->with('insurer')->get()->map(function (SurgeryPackageTariff $t) use ($pkg) {
+        return $pkg->packageTariffs()->with('insurer', 'overrideItems')->get()->map(function (SurgeryPackageTariff $t) use ($pkg) {
             $t->setRelation('package', $pkg);
             return [
                 'id'                => $t->id,
@@ -445,8 +450,34 @@ class TarifPaketService
                 // %-diskon yang DIINPUT admin (mode PERSEN); beda dari discount_percent terhitung.
                 'input_discount_pct' => $t->discount_percent,
                 'is_active'         => $t->is_active,
+                'override_items'    => $this->tariffOverrideItems($t),
             ];
         })->toArray();
+    }
+
+    /**
+     * Bentuk array item override varian (scope: IOL) + nama tampil — dipakai
+     * listTariffs & showPaket. withTrashed: IOL terhapus tetap bernama "(terhapus)".
+     */
+    private function tariffOverrideItems(SurgeryPackageTariff $t): array
+    {
+        return $t->overrideItems->map(function ($ov) {
+            $iol  = IolItem::withTrashed()->find($ov->item_id);
+            $name = '-';
+            if ($iol) {
+                $power = $iol->power !== null
+                    ? rtrim(rtrim(number_format((float) $iol->power, 2, '.', ''), '0'), '.') . 'D'
+                    : '';
+                $name = trim("{$iol->brand} {$iol->model} {$power}") . ($iol->deleted_at ? ' (terhapus)' : '');
+            }
+            return [
+                'id'        => $ov->id,
+                'item_type' => $ov->item_type,
+                'item_id'   => $ov->item_id,
+                'quantity'  => $ov->quantity,
+                'item_name' => $name,
+            ];
+        })->values()->toArray();
     }
 
     public function upsertTariff(string $packageId, array $data): SurgeryPackageTariff
@@ -480,17 +511,37 @@ class TarifPaketService
         $values['display_name'] = $data['display_name'] ?? null;
         $values['is_active']    = $data['is_active'] ?? true;
 
-        if ($existing) {
-            if ($existing->trashed()) {
-                $existing->restore();
+        $tariff = DB::transaction(function () use ($pkg, $insurerId, $existing, $values, $data) {
+            if ($existing) {
+                if ($existing->trashed()) {
+                    $existing->restore();
+                }
+                $existing->update($values);
+                $tariff = $existing;
+            } else {
+                $tariff = SurgeryPackageTariff::create(
+                    ['surgery_package_id' => $pkg->id, 'insurer_id' => $insurerId] + $values
+                );
             }
-            $existing->update($values);
-            $tariff = $existing;
-        } else {
-            $tariff = SurgeryPackageTariff::create(
-                ['surgery_package_id' => $pkg->id, 'insurer_id' => $insurerId] + $values
-            );
-        }
+
+            // Item OVERRIDE varian (scope: IOL) — replace-all bila key dikirim; array
+            // kosong = hapus semua override (varian kembali murni harga/label).
+            if (array_key_exists('override_items', $data)) {
+                $tariff->overrideItems()->delete();
+                foreach (($data['override_items'] ?? []) as $row) {
+                    if (empty($row['item_id'])) {
+                        continue;
+                    }
+                    $tariff->overrideItems()->create([
+                        'item_type' => 'IOL',   // scope saat ini IOL saja (validasi controller)
+                        'item_id'   => $row['item_id'],
+                        'quantity'  => max(1, (int) ($row['quantity'] ?? 1)),
+                    ]);
+                }
+            }
+
+            return $tariff;
+        });
 
         $this->log(auth('api')->id(), 'UPSERT_PAKET_TARIFF', SurgeryPackageTariff::class, $tariff->id, "package:{$pkg->id}");
         return $tariff->load('insurer');

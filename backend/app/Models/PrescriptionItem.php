@@ -43,6 +43,8 @@ class PrescriptionItem extends Model
         // Item resep pre-op "terserap ke paket": tetap tampil positif di kwitansi,
         // nilainya ikut basis DISKON_PAKET (net tetap = harga jual paket).
         'is_preop_absorbed',
+        // Serupa, tapi diputuskan KASIR per baris rincian (obat tambahan/pasca-bedah).
+        'is_paket_absorbed',
         // Varian kemasan jual terpilih (di-set Farmasi saat verifikasi). NULL = satuan
         // kecil. INVARIAN: quantity (satuan kecil, sumber kebenaran stok) =
         // sale_unit_qty × isi kemasan. Lihat FarmasiService::setKemasanItem.
@@ -53,6 +55,7 @@ class PrescriptionItem extends Model
     protected $casts = [
         'is_bedah'          => 'boolean',
         'is_preop_absorbed' => 'boolean',
+        'is_paket_absorbed' => 'boolean',
         'changed_at'    => 'datetime',
         'sale_unit_qty' => 'integer',
     ];

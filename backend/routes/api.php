@@ -744,6 +744,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{invoiceId}/item',       [KasirController::class, 'storeItemInvoice']);
             Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice']);
             Route::delete('/invoice-item/{id}',            [KasirController::class, 'deleteItemInvoice']);
+            // Toggle "terserap ke paket" baris obat/BHP tambahan (DISKON_PAKET ikut membesar).
+            Route::post('/invoice/{visitId}/absorb-item',  [KasirController::class, 'absorbItem']);
 
             // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master, bukan ketik manual).
             Route::get('/tarif-tindakan',                  [KasirController::class, 'tarifTindakan']);

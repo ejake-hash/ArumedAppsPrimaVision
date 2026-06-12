@@ -37,6 +37,15 @@ function ptypeOf(q) {
 function isLunas(q) {
   return q.status === 'COMPLETED' || q.visit?.billing_invoice?.status === 'PAID'
 }
+// Label paket bedah "Kategori — Nama Paket" (cth. "Katarak — Phacoemulsifikasi").
+// Tampil untuk semua jadwal bedah kecuali CANCELLED (pasien pasca-operasi pun masih relevan di kasir).
+function paketBedahLabel(q) {
+  const s = q?.visit?.surgery_schedule ?? q?.visit?.doctor_examination?.surgery_schedule
+  if (!s || s.status === 'CANCELLED') return null
+  const p = s.surgery_package
+  if (!p) return null
+  return p.category ? `${p.category} — ${p.name}` : p.name
+}
 function formatTime(ts) {
   if (!ts) return '--:--'
   const d = new Date(ts)
@@ -434,6 +443,28 @@ async function removeItem(item) {
     toast('s', 'Item dihapus')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menghapus item')
+  } finally {
+    itemMutating.value = false
+  }
+}
+
+// Toggle "terserap ke paket" (obat/BHP tambahan): flag disimpan di baris SUMBER
+// (resep/BHP) lalu BE rebuild invoice — DISKON_PAKET membesar/mengecil otomatis,
+// pasien tetap bayar harga paket. Eligibility (is_absorbable) dihitung BE.
+async function toggleAbsorb(item) {
+  if (!selQ.value?.visit?.id || itemMutating.value) return
+  itemMutating.value = true
+  try {
+    const { data } = await kasirApi.absorbItem(selQ.value.visit.id, {
+      source_type: item.item_type === 'BHP' ? 'BHP' : 'OBAT',
+      source_id: item.reference_id,
+      absorbed: !item.is_absorbed,
+    })
+    if (data.data) selInv.value = data.data
+    syncGlobalDiscountFields()
+    toast('s', item.is_absorbed ? 'Item dikeluarkan dari paket' : 'Item diserap ke paket — diskon paket menyesuaikan')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengubah status terserap paket')
   } finally {
     itemMutating.value = false
   }
@@ -1042,6 +1073,7 @@ const groupedPrintItems = computed(() =>
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
                     <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
+                    <span v-if="paketBedahLabel(q)" class="pill pill-bedah" :title="`Paket bedah: ${paketBedahLabel(q)}`">{{ paketBedahLabel(q) }}</span>
                     <span
                       v-if="q.visit?.obat_status === 'VERIFIED'"
                       class="pill pill-obat-ok"
@@ -1153,6 +1185,7 @@ const groupedPrintItems = computed(() =>
                   </span>
                   <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
                   <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
+                  <span v-if="paketBedahLabel(selQ)" class="ptg ptg-bedah" :title="`Paket bedah: ${paketBedahLabel(selQ)}`">{{ paketBedahLabel(selQ) }}</span>
                   <span v-if="selQ.visit?.obat_status === 'VERIFIED'" class="ptg ptg-obat-ok" title="Ada resep obat — sudah diverifikasi & dikunci Farmasi">Obat ✓ Farmasi</span>
                   <span v-else-if="selQ.visit?.obat_status === 'PENDING'" class="ptg ptg-obat-wait" title="Ada resep obat — BELUM diverifikasi Farmasi">Obat • belum verif</span>
                   <span v-if="selInv.status === 'PAID'" class="ptg ptg-ok">LUNAS</span>
@@ -1364,7 +1397,7 @@ const groupedPrintItems = computed(() =>
                         <td v-if="editTagihan"></td>
                       </tr>
                       <tr v-for="item in grp.items" :key="item.id" :class="{ 'is-diskon': isDiskonPaket(item) }">
-                        <td class="strong">
+                        <td class="desc">
                           <input
                             v-if="editTagihan && isDiskonPaket(item)"
                             v-model="item.description"
@@ -1372,7 +1405,9 @@ const groupedPrintItems = computed(() =>
                             placeholder="Redaksi diskon (mis. Paket Bedah)"
                             @input="onPaketDescChange(item)"
                           />
-                          <template v-else>{{ item.description }}</template>
+                          <template v-else>{{ item.description }}
+                            <span v-if="item.is_absorbed" class="absorb-badge" title="Nilai baris ini diserap ke harga paket — pasien tetap membayar harga paket (DISKON_PAKET menyesuaikan)">Termasuk Paket</span>
+                          </template>
                         </td>
                         <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
                         <td class="num">{{ item.quantity }}</td>
@@ -1401,7 +1436,15 @@ const groupedPrintItems = computed(() =>
                           </span>
                           Rp {{ Number(item.net_price ?? item.total_price).toLocaleString('id-ID') }}
                         </td>
-                        <td v-if="editTagihan">
+                        <td v-if="editTagihan" class="act-cell">
+                          <button
+                            v-if="item.is_absorbable && ['OBAT','BHP'].includes(item.item_type) && !['PAID','PARTIALLY_PAID','CANCELLED'].includes(selInv.status)"
+                            class="absorb-btn"
+                            :class="{ on: item.is_absorbed }"
+                            :disabled="itemMutating"
+                            :title="(item.is_absorbed ? 'Keluarkan dari paket — baris kembali ditagih di atas harga paket' : 'Serap ke paket — pasien tetap bayar harga paket, diskon paket membesar otomatis') + '. Catatan: tagihan dibangun ulang (item manual & diskon per-baris ter-reset).'"
+                            @click="toggleAbsorb(item)"
+                          >{{ item.is_absorbed ? 'Keluarkan' : 'Serap ke Paket' }}</button>
                           <button class="del-btn" @click="removeItem(item)" :disabled="itemMutating || (selInv.items?.length ?? 0) <= 1">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                           </button>
@@ -2078,8 +2121,12 @@ const groupedPrintItems = computed(() =>
 /* Garis pemisah hanya antar item dalam satu grup — bukan tiap baris (lebih clean). */
 .kat-group tr + tr td { border-top: 1px solid rgba(0, 0, 0, 0.045); }
 .tbl tbody.kat-group tr:hover:not(.kat-group-head) td { background: var(--gl); }
-.tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
 .tbl .strong { font-weight: 600; }
+/* Nama item regular — bobot tebal disisakan utk header grup & Net agar hierarki terbaca. */
+.tbl td.desc { font-weight: 400; }
+/* Qty & harga satuan diredam; Net (.num.strong) tetap gelap sbg target scanning. */
+.tbl tbody.kat-group td.num:not(.strong) { color: var(--tm); }
 .tbl .muted { color: var(--tu); font-size: 10.5px; }
 .muted-strike { color: var(--tu); text-decoration: line-through; display: block; font-size: 10px; font-weight: 400; }
 /* Baris diskon paket — net negatif, warna potongan */
@@ -2098,11 +2145,11 @@ const groupedPrintItems = computed(() =>
 .kat-lainnya    { background: var(--bi); color: var(--tm); }
 
 /* ─── Group header per kategori ──────────────────────────────────────────── */
-.kat-group-head td { background: var(--bs); padding: 6px 14px; border-top: 1px solid var(--gb); }
+.kat-group-head td { background: var(--bi); padding: 7px 14px; border-top: 1px solid var(--gb); }
 .kat-group-head td:first-child { border-left: 3px solid var(--ga); }
-.kat-group-name { font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--td); }
+.kat-group-name { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--td); }
 .kat-group-count { font-size: 9.5px; color: var(--tu); margin-left: 8px; font-weight: 500; }
-.kat-group-head .num.strong { color: var(--td); font-size: 11.5px; }
+.kat-group-head .num.strong { color: var(--td); font-size: 12px; white-space: nowrap; }
 .kat-group:first-of-type .kat-group-head td { border-top: none; }
 .kat-group tr:first-child td { border-top: none; }
 .kat-bpjs { background: #dbeafe; color: #1e40af; }
@@ -2132,6 +2179,9 @@ const groupedPrintItems = computed(() =>
 .ptg-dpjp { background: #eef2ff; color: #4338ca; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ptg-obat-ok   { background: #dcfce7; color: #166534; }
 .ptg-obat-wait { background: #fef3c7; color: #92400e; }
+/* Badge paket bedah "Kategori — Nama Paket" (antrean & banner identitas). */
+.pill-bedah { background: #ffe4e6; color: #9f1239; max-width: 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ptg-bedah  { background: #ffe4e6; color: #9f1239; max-width: 260px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
 .tbl-fi:focus { border-color: var(--ga); outline: none; }
@@ -2141,6 +2191,12 @@ const groupedPrintItems = computed(() =>
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }
 .del-btn:disabled { opacity: .35; cursor: not-allowed; }
 .del-btn svg { width: 12px; height: 12px; }
+.act-cell { display: flex; align-items: center; gap: 4px; }
+.absorb-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 700; letter-spacing: .03em; background: var(--gl); color: var(--ga); border: 1px solid var(--ga); white-space: nowrap; vertical-align: 1px; }
+.absorb-btn { padding: 4px 8px; border-radius: 5px; border: 1px solid var(--gb); background: var(--bs); color: var(--tm); font-size: 10px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all .12s; font-family: 'Inter', sans-serif; }
+.absorb-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }
+.absorb-btn.on { background: var(--gl); border-color: var(--ga); color: var(--ga); }
+.absorb-btn:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Tambah tindakan: search-driven picker (konsep sama DokterView Tab 3) ──── */
 .add-tindakan-bar { padding: 0.75rem 1rem 0.25rem; }

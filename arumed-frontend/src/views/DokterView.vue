@@ -3425,7 +3425,7 @@ function closeResumeRM() {
                       <label class="fl">Varian / Nama Paket Penjamin</label>
                       <select v-model="surgeryTariffId" class="form-select">
                         <option v-for="v in selectedSurgeryVariants" :key="v.tariff_id" :value="v.tariff_id">
-                          {{ v.display_name || selectedSurgeryPackage.name }} — {{ fmtRp(v.sell_price) }}
+                          {{ v.display_name || selectedSurgeryPackage.name }} — {{ fmtRp(v.sell_price) }}{{ v.iol_label ? ` — IOL ${v.iol_label}` : '' }}
                         </option>
                       </select>
                     </div>

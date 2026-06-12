@@ -26,6 +26,10 @@ class BillingItem extends Model
         'discount_amount',
         'discount_percent',
         'net_price',
+        // Marker DERIVED toggle "terserap paket" (di-set ulang builder tiap rebuild;
+        // sumber kebenaran flag di prescription_items/surgery_request_bhp).
+        'is_absorbable',
+        'is_absorbed',
         'notes',
     ];
 
@@ -35,6 +39,8 @@ class BillingItem extends Model
         'discount_amount'  => 'decimal:2',
         'discount_percent' => 'decimal:2',
         'net_price'        => 'decimal:2',
+        'is_absorbable'    => 'boolean',
+        'is_absorbed'      => 'boolean',
     ];
 
     public function billingInvoice(): BelongsTo

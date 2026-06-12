@@ -281,6 +281,9 @@ async function removeItem(item) {
 const tariffModal = ref({
   open: false,
   payload: { insurer_id: '', display_name: '', price_mode: 'NOMINAL', sell_price: 0, discount_percent: null, is_active: true },
+  // Item OVERRIDE varian (scope: IOL) — mengganti IOL komposisi saat snapshot visit;
+  // kosong = varian murni harga/label. [{ item_id, label, quantity }]
+  overrideItems: [],
   errors: null, submitting: false, editingId: null,
 })
 
@@ -294,8 +297,10 @@ function openAddTariff() {
   tariffModal.value = {
     open: true,
     payload: { insurer_id: umumInsurerId.value, display_name: '', price_mode: 'NOMINAL', sell_price: paket.value?.total_base_price ?? 0, discount_percent: null, is_active: true },
+    overrideItems: [],
     errors: null, submitting: false, editingId: null,
   }
+  resetIolPicker()
 }
 
 function openEditTariff(t) {
@@ -309,8 +314,63 @@ function openEditTariff(t) {
       discount_percent: t.input_discount_pct ?? null,
       is_active: t.is_active,
     },
+    overrideItems: (t.override_items ?? []).map((o) => ({
+      item_id: o.item_id, label: o.item_name ?? '—', quantity: o.quantity ?? 1,
+    })),
     errors: null, submitting: false, editingId: t.id,
   }
+  resetIolPicker()
+}
+
+// ─── Picker IOL varian (cari-server, mirror itemPicker) ──────────────────
+const iolPicker = ref({ search: '', open: false, loading: false, results: [] })
+let iolSearchSeq = 0
+let iolSearchTimer = null
+
+function resetIolPicker() {
+  iolPicker.value = { search: '', open: false, loading: false, results: [] }
+}
+
+async function searchIolOptions() {
+  const seq = ++iolSearchSeq
+  iolPicker.value.loading = true
+  try {
+    const { data } = await masterApi.iol.list({
+      search: iolPicker.value.search || undefined, per_page: 25, page: 1, available_only: 1,
+    })
+    if (seq !== iolSearchSeq) return
+    const pg   = data?.data ?? {}
+    const rows = pg.data ?? (Array.isArray(pg) ? pg : [])
+    iolPicker.value.results = rows.map((r) => mapMasterRow('IOL', r))
+  } catch {
+    if (seq === iolSearchSeq) iolPicker.value.results = []
+  } finally {
+    if (seq === iolSearchSeq) iolPicker.value.loading = false
+  }
+}
+
+function onIolSearchInput(e) {
+  iolPicker.value.search = e.target.value
+  iolPicker.value.open = true
+  clearTimeout(iolSearchTimer)
+  iolSearchTimer = setTimeout(() => searchIolOptions(), 300)
+}
+
+function onIolPickerBlur() {
+  // jeda agar klik opsi (mousedown) sempat diproses sebelum dropdown ditutup.
+  setTimeout(() => { iolPicker.value.open = false }, 150)
+}
+
+function pickIolOverride(opt) {
+  if (!tariffModal.value.overrideItems.some((o) => o.item_id === opt.id)) {
+    tariffModal.value.overrideItems.push({ item_id: opt.id, label: opt.name, quantity: 1 })
+  }
+  iolPicker.value.open = false
+  iolPicker.value.search = ''
+}
+
+function removeIolOverride(idx) {
+  tariffModal.value.overrideItems.splice(idx, 1)
 }
 
 const tariffFields = computed(() => {
@@ -352,6 +412,10 @@ async function onSubmitTariff(payload) {
       id: tariffModal.value.editingId || undefined,
       insurer_id: payload.insurer_id || null,
       display_name: payload.display_name?.trim() || null,
+      // Selalu kirim (replace-all): array kosong = hapus semua override varian ini.
+      override_items: tariffModal.value.overrideItems.map((o) => ({
+        item_type: 'IOL', item_id: o.item_id, quantity: Math.max(1, Number(o.quantity) || 1),
+      })),
     }
     await store.upsertTariff(paketId.value, data)
     showToast('s', 'Tarif paket disimpan')
@@ -745,6 +809,11 @@ watch(paketId, async (id) => {
                 <td>
                   <span v-if="t.display_name" class="pd-name-alt">{{ t.display_name }}</span>
                   <span v-else class="pd-no-disc">— nama paket —</span>
+                  <span
+                    v-if="(t.override_items ?? []).length"
+                    class="pd-iol-badge"
+                    title="Varian ini mengganti IOL komposisi paket — kwitansi menampilkan IOL varian"
+                  >IOL: {{ t.override_items.map((o) => o.item_name).join(', ') }}</span>
                 </td>
                 <td class="r">
                   <strong>{{ formatRp(t.sell_price) }}</strong>
@@ -855,7 +924,48 @@ watch(paketId, async (id) => {
       submit-label="Simpan Tarif"
       width="560px"
       @submit="onSubmitTariff"
-    />
+    >
+      <template #extra>
+        <!-- IOL Varian (opsional) — override IOL komposisi khusus varian tarif ini -->
+        <div class="pd-ovr">
+          <div class="pd-ovr-head">
+            <span class="pd-ovr-title">IOL Varian (opsional)</span>
+            <span class="pd-ovr-hint">Mengganti IOL komposisi paket khusus varian ini — komponen lain tetap ikut komposisi. Kosongkan bila varian hanya beda harga/nama.</span>
+          </div>
+
+          <div v-if="tariffModal.overrideItems.length" class="pd-ovr-list">
+            <div v-for="(o, idx) in tariffModal.overrideItems" :key="o.item_id" class="pd-ovr-row">
+              <span class="pd-ovr-name">{{ o.label }}</span>
+              <label class="pd-ovr-qty">
+                Qty
+                <input type="number" min="1" v-model.number="o.quantity" />
+              </label>
+              <button type="button" class="pd-ovr-del" title="Hapus override" @click="removeIolOverride(idx)">×</button>
+            </div>
+          </div>
+
+          <div class="pdm-combo pd-ovr-combo">
+            <input
+              type="text"
+              :value="iolPicker.search"
+              placeholder="Cari IOL pengganti (brand / model)…"
+              autocomplete="off"
+              @focus="iolPicker.open = true; iolPicker.results.length || searchIolOptions()"
+              @input="onIolSearchInput"
+              @blur="onIolPickerBlur"
+            />
+            <ul v-if="iolPicker.open" class="pdm-drop">
+              <li v-if="iolPicker.loading && !iolPicker.results.length" class="pdm-drop-info">Memuat…</li>
+              <li v-else-if="!iolPicker.results.length" class="pdm-drop-info">Tidak ada IOL cocok</li>
+              <li v-for="opt in iolPicker.results" :key="opt.id" @mousedown.prevent="pickIolOverride(opt)">
+                <strong>{{ opt.name }}</strong>
+                <small>IOL</small>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </template>
+    </MasterFormModal>
 
     <Teleport to="body">
       <div v-if="toast" class="pd-toast-wrap">
@@ -979,6 +1089,22 @@ watch(paketId, async (id) => {
 .pdm-drop li small { display: block; font-size: 10.5px; color: var(--tm); }
 .pdm-drop li:hover small { color: var(--ga); }
 .pdm-drop-info, .pdm-drop-info:hover { color: var(--tm); cursor: default; background: transparent; }
+
+/* ── IOL Varian (override per varian tarif) ── */
+.pd-ovr { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.8rem 0.9rem; background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; }
+.pd-ovr-head { display: flex; flex-direction: column; gap: 2px; }
+.pd-ovr-title { font-size: 12px; font-weight: 600; color: var(--td); }
+.pd-ovr-hint { font-size: 11px; color: var(--tm); line-height: 1.45; }
+.pd-ovr-list { display: flex; flex-direction: column; gap: 4px; }
+.pd-ovr-row { display: flex; align-items: center; gap: 8px; padding: 6px 9px; background: var(--bc); border: 1px solid var(--gb); border-radius: 8px; }
+.pd-ovr-name { flex: 1; font-size: 12.5px; font-weight: 500; color: var(--td); }
+.pd-ovr-qty { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--tm); }
+.pd-ovr-qty input { width: 56px; padding: 4px 7px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12px; }
+.pd-ovr-del { width: 22px; height: 22px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bc); color: var(--tm); cursor: pointer; font-size: 14px; line-height: 1; }
+.pd-ovr-del:hover { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.pd-ovr-combo input { width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gb); background: var(--bc); color: var(--td); font-size: 12.5px; }
+.pd-ovr-combo input:focus { outline: none; border-color: var(--ga); }
+.pd-iol-badge { display: inline-block; margin-top: 3px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .pdm-more { text-align: center; color: var(--ga); font-weight: 500; font-size: 12px !important; border-top: 1px dashed var(--gb); margin-top: 2px; }
 .pdm-more:hover { background: var(--gl); }
 .pdm-err { color: var(--et); font-size: 12px; margin: 0; background: var(--eb); border: 1px solid var(--ebd); padding: 7px 10px; border-radius: 8px; }

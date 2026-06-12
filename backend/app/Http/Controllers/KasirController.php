@@ -311,6 +311,33 @@ class KasirController extends Controller
         return $this->ok(null, 'Item dihapus');
     }
 
+    /**
+     * POST /kasir/invoice/{visitId}/absorb-item — toggle "terserap ke paket" baris
+     * obat/BHP tambahan (flag di baris sumber + rebuild invoice; lihat
+     * KasirService::absorbInvoiceItem).
+     */
+    public function absorbItem(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'source_type' => 'required|in:OBAT,BHP',
+            'source_id'   => 'required|uuid',
+            'absorbed'    => 'required|boolean',
+        ]);
+
+        try {
+            $invoice = $this->service->absorbInvoiceItem(
+                $visitId,
+                $validated['source_type'],
+                $validated['source_id'],
+                (bool) $validated['absorbed']
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($invoice, 'Status terserap paket diperbarui');
+    }
+
     // =========================================================================
     // COB
     // =========================================================================

@@ -181,6 +181,11 @@ const colsMap = computed(() => {
             <p v-else-if="f.hint" class="mfm-hint">{{ f.hint }}</p>
           </div>
 
+          <!-- Konten kustom opsional (full-width) — mis. seksi IOL varian tarif paket -->
+          <div v-if="$slots.extra" class="mfm-extra">
+            <slot name="extra" :form="form" />
+          </div>
+
           <!-- Footer actions span full grid -->
           <div class="mfm-actions">
             <span class="mfm-legend"><span class="mfm-req">*</span> wajib diisi</span>
@@ -253,6 +258,7 @@ const colsMap = computed(() => {
 .mfm-field-action { flex-shrink: 0; padding: 0 12px; border: 1px solid #1763d4; background: #fff; color: #1763d4; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .mfm-field-action:hover { background: #1763d4; color: #fff; }
 
+.mfm-extra { grid-column: 1 / -1; }
 .mfm-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--gb); margin-top: 0.3rem; }
 .mfm-legend { margin-right: auto; font-size: 11.5px; color: var(--tm); }
 .mfm-btn-primary,
