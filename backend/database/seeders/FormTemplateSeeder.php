@@ -283,7 +283,8 @@ HTML;
             $editable('pemeriksaan_fisik','Pemeriksaan Fisik', ['via' => 'aggregate', 'source' => 'physical_exam']),
             // Alergi: detail alergi triase → catatan alergi master pasien → "Tidak Ada".
             $editable('alergi',           'Alergi Obat',       ['via' => 'aggregate', 'source' => 'allergy']),
-            $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
+            // Hasil Penunjang = HANYA kode ICD-9 penunjang (kode+nama) dari Tab 2 dokter.
+            $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'penunjang_rmrj', 'format' => 'icd_with_desc_join_newline']),
             // Diagnosa = kode+nama ICD-10 + teks diagnosa bebas (diagnosis_text).
             $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
             // Tindakan = kode+nama ICD-9 + "Visus, Tonometri, Autorefkeratometri" (auto-tulis).

@@ -342,10 +342,15 @@ final class FormRegistryService
      * ⚠️ medico-legal: ini menulis ulang snapshot dokumen ber-TTD. Sah HANYA untuk
      * koreksi BUG render (data klinis tak berubah, hanya tampilannya yang dibetulkan).
      * Untuk koreksi SUBSTANSI klinis gunakan reviseDocument() (versi baru + TTD ulang).
+     *
+     * $overwrite=true → REPLACE static_payload dengan prefill segar (autofill
+     * di-resolve ulang dari binding/data terkini) sebelum render — dipakai saat
+     * mapping autofill berubah & ingin disamakan ke resume lama. Revisi naik +
+     * audit (revisi tercatat, bukan rewrite diam-diam). TTD dipertahankan.
      */
-    public function regenerateFinalized(string $patientDocumentId): PatientDocument
+    public function regenerateFinalized(string $patientDocumentId, bool $overwrite = false): PatientDocument
     {
-        return DB::transaction(function () use ($patientDocumentId) {
+        return DB::transaction(function () use ($patientDocumentId, $overwrite) {
             /** @var PatientDocument $doc */
             $doc = PatientDocument::query()->lockForUpdate()->findOrFail($patientDocumentId);
 
@@ -358,6 +363,18 @@ final class FormRegistryService
 
             $template = $this->findActiveTemplateByCode($doc->template_code);
             $payload  = $doc->signatures['static_payload'] ?? [];
+
+            // overwrite → resolve ulang SEMUA field editable (autofill terkini),
+            // ganti penuh static_payload (key meta lain mis. field_schema_override
+            // dipertahankan). Field yang kini resolve KOSONG hilang dari payload →
+            // render() fallback resolvePrefill → kosong juga (replace bersih).
+            if ($overwrite) {
+                $fresh = $this->prefill($doc->template_code, $doc->visit_id)['defaults'] ?? [];
+                $sig = $doc->signatures ?? [];
+                $sig['static_payload'] = $fresh;
+                $doc->signatures = $sig;
+                $payload = $fresh;
+            }
 
             // Render ulang dari template + data terkini (aggregate/db ter-resolve lagi),
             // jawaban manual dokter dipertahankan via static_payload.

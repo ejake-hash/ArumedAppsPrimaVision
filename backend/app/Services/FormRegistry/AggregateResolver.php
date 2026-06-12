@@ -29,6 +29,18 @@ use App\Models\Visit;
  */
 final class AggregateResolver
 {
+    /**
+     * Kode ICD-9-CM yang dianggap PEMERIKSAAN PENUNJANG (bukan tindakan
+     * terapeutik). Dipilih dokter di Tab 2 (doctorExamination.tindakan_codes),
+     * lalu dirutekan ke kolom "Hasil Penunjang Medis" Resume Medis — sisanya ke
+     * "Tindakan". Match EXACT terhadap icd9_codes.code (format pakai titik).
+     * Keputusan user 12 Jun 2026.
+     */
+    private const PENUNJANG_ICD9 = [
+        '88.97', '88.91', '90.2', '87.03', '95.05',
+        '95.11', '95.12', '95.13', '95.16', '16.21',
+    ];
+
     /** Cache ICD-10 description lookup per request (kode → description). */
     private array $icd10DescCache = [];
 
@@ -41,6 +53,7 @@ final class AggregateResolver
             'prescriptions'                       => $this->resolvePrescriptions($visit, $format),
             'anamnese_full'                       => $this->resolveAnamneseFull($visit),
             'tindakan_rmrj'                       => $this->resolveTindakanRmrj($visit, $format),
+            'penunjang_rmrj'                      => $this->resolvePenunjangRmrj($visit),
             'doctorExamination.icd10_diagnoses'   => $this->resolveIcd10Diagnoses($visit, $format),
             'doctorExamination.icd9_procedures'   => $this->resolveIcd9Procedures($visit, $format),
             'claim.icd10_diagnoses'               => $this->resolveClaimIcd10($visit, $format),
@@ -98,22 +111,55 @@ final class AggregateResolver
 
     // ─────────────────────────────────────────────────────────────────────────
     // tindakan_rmrj — "Tindakan" Resume Medis = prosedur ICD-9 dokter (kode—nama)
-    // + baris tetap "Visus, Tonometri, Autorefkeratometri" (pemeriksaan rutin
-    // refraksionis; tak tersimpan sebagai kode → auto-tulis, keputusan user 12 Jun
-    // 2026) bila pasien punya rekaman refraksi. Editable di FormRMRenderer.
+    // yang BUKAN pemeriksaan penunjang (lihat PENUNJANG_ICD9 → dirutekan ke
+    // penunjang_rmrj) + baris tetap "Visus, Tonometri, Autorefkeratometri"
+    // (pemeriksaan rutin refraksionis; tak tersimpan sebagai kode → auto-tulis,
+    // keputusan user 12 Jun 2026) bila pasien punya rekaman refraksi. Editable.
     // ─────────────────────────────────────────────────────────────────────────
     private function resolveTindakanRmrj(Visit $visit, ?string $format): string
     {
         $parts = [];
-        $icd9 = $this->resolveIcd9Procedures($visit, $format);
-        if ($icd9 !== '') {
-            $parts[] = $icd9;
+        $codes = array_values(array_filter(
+            $this->tindakanCodesOf($visit),
+            fn ($c) => !in_array($c, self::PENUNJANG_ICD9, true)
+        ));
+        if (!empty($codes)) {
+            $parts[] = $this->joinIcd9WithDesc($codes);
         }
         if ($visit->refractionRecord !== null) {
             $parts[] = 'Visus, Tonometri, Autorefkeratometri';
         }
 
         return implode("\n", $parts);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // penunjang_rmrj — "Hasil Penunjang Medis" Resume Medis = HANYA kode ICD-9
+    // dokter (kode—nama) yang termasuk pemeriksaan penunjang (PENUNJANG_ICD9).
+    // Ringkasan modul penunjang (diagnosticResults.summary) TIDAK dipakai di
+    // resume (keputusan user 12 Jun 2026). Editable di FormRMRenderer.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolvePenunjangRmrj(Visit $visit): string
+    {
+        $codes = array_values(array_filter(
+            $this->tindakanCodesOf($visit),
+            fn ($c) => in_array($c, self::PENUNJANG_ICD9, true)
+        ));
+
+        return empty($codes) ? '' : $this->joinIcd9WithDesc($codes);
+    }
+
+    /** Kode ICD-9 unik (string) yang dipilih dokter di Tab 2 (tindakan_codes). */
+    private function tindakanCodesOf(Visit $visit): array
+    {
+        $codes = [];
+        foreach ((array) ($visit->doctorExamination?->tindakan_codes ?? []) as $c) {
+            if (is_string($c) && $c !== '') {
+                $codes[] = $c;
+            }
+        }
+
+        return array_values(array_unique($codes));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

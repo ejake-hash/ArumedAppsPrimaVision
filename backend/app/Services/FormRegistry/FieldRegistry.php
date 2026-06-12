@@ -127,8 +127,12 @@ final class FieldRegistry
                 'formats' => ['text'],
             ],
             'tindakan_rmrj' => [
-                'label'   => 'Tindakan RMRJ = prosedur ICD-9 + "Visus, Tonometri, Autorefkeratometri" (auto)',
+                'label'   => 'Tindakan RMRJ = ICD-9 NON-penunjang (kode+nama) + "Visus, Tonometri, Autorefkeratometri" (auto)',
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
+            'penunjang_rmrj' => [
+                'label'   => 'Hasil Penunjang RMRJ = kode ICD-9 penunjang (kode+nama) dari Tab 2 dokter',
+                'formats' => ['icd_with_desc_join_newline'],
             ],
             'visitServices' => [
                 'label'   => 'Daftar Tindakan',

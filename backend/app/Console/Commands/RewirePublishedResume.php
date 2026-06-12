@@ -25,6 +25,7 @@ class RewirePublishedResume extends Command
 {
     protected $signature = 'resume:rewire-published
                             {--apply : Tulis perubahan (default: dry-run preview saja)}
+                            {--overwrite : Resolve ulang isi autofill (timpa static_payload) — bukan hanya isi field kosong}
                             {--code=RESUME_MEDIS : Kode template yang diregenerasi}
                             {--id= : Batasi ke satu patient_document_id tertentu}';
 
@@ -32,9 +33,10 @@ class RewirePublishedResume extends Command
 
     public function handle(FormRegistryService $svc): int
     {
-        $apply = (bool) $this->option('apply');
-        $code  = (string) $this->option('code');
-        $id    = $this->option('id');
+        $apply     = (bool) $this->option('apply');
+        $overwrite = (bool) $this->option('overwrite');
+        $code      = (string) $this->option('code');
+        $id        = $this->option('id');
 
         $query = PatientDocument::query()
             ->where('template_code', $code)
@@ -51,7 +53,9 @@ class RewirePublishedResume extends Command
             return self::SUCCESS;
         }
 
-        $this->info(($apply ? '[APPLY] ' : '[DRY RUN] ') . "Kandidat: {$docs->count()} dokumen (template={$code}).");
+        $mode = ($apply ? '[APPLY' : '[DRY RUN') . ($overwrite ? '+OVERWRITE] ' : '] ');
+        $this->info($mode . "Kandidat: {$docs->count()} dokumen (template={$code})."
+            . ($overwrite ? ' Mode OVERWRITE: isi autofill di-resolve ulang & static_payload ditimpa.' : ''));
         $this->line(str_repeat('-', 92));
 
         $ok = 0; $fail = 0;
@@ -66,7 +70,7 @@ class RewirePublishedResume extends Command
             }
 
             try {
-                $new = $svc->regenerateFinalized($doc->id);
+                $new = $svc->regenerateFinalized($doc->id, $overwrite);
                 $this->info("  ✓ {$label} → revisi {$new->revision} (" . strlen((string) $new->rendered_html) . " byte)");
                 $ok++;
             } catch (\Throwable $e) {
