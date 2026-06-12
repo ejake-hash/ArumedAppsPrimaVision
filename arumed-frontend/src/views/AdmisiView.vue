@@ -697,6 +697,49 @@ const penjaminCobOptions = computed(() =>
   (admisiStore.insurers ?? [])
     .filter(i => ['ASURANSI', 'PERUSAHAAN'].includes(i.type) && i.id !== penjaminForm.insurer_id),
 )
+
+/* Typeahead penjamin utama (modal Ubah Penjamin) — ganti <select> agar bisa dicari. */
+const penjaminInsSearch   = ref('')
+const penjaminInsOpen     = ref(false)
+const penjaminInsFiltered = computed(() => {
+  const q = penjaminInsSearch.value.trim().toLowerCase()
+  return penjaminInsurerOptions.value.filter(i => !q || i.name.toLowerCase().includes(q))
+})
+function selectPenjaminInsurer(ins) {
+  penjaminForm.insurer_id = ins.id
+  penjaminInsSearch.value = ins.name
+  penjaminInsOpen.value   = false
+  // Cegah penjamin utama == penjamin kedua (COB).
+  if (penjaminForm.cobInsurerId === ins.id) {
+    penjaminForm.cobInsurerId = ''
+    penjaminCobSearch.value   = ''
+  }
+}
+function onPenjaminInsBlur() { setTimeout(() => { penjaminInsOpen.value = false }, 150) }
+
+/* Typeahead penjamin kedua / COB (modal Ubah Penjamin). */
+const penjaminCobSearch   = ref('')
+const penjaminCobOpen     = ref(false)
+const penjaminCobFiltered = computed(() => {
+  const q = penjaminCobSearch.value.trim().toLowerCase()
+  return penjaminCobOptions.value.filter(i => !q || i.name.toLowerCase().includes(q))
+})
+function selectPenjaminCob(ins) {
+  penjaminForm.cobInsurerId = ins.id
+  penjaminCobSearch.value   = ins.name
+  penjaminCobOpen.value     = false
+}
+function onPenjaminCobBlur() { setTimeout(() => { penjaminCobOpen.value = false }, 150) }
+function onPenjaminCobToggle(e) {
+  penjaminForm.cobEnabled = e.target.checked
+  if (!penjaminForm.cobEnabled) {
+    penjaminForm.cobInsurerId = ''
+    penjaminForm.cobNo        = ''
+    penjaminCobSearch.value   = ''
+    penjaminCobOpen.value     = false
+  }
+}
+
 function ensureInsurersLoaded() {
   if (!(admisiStore.insurers ?? []).length) admisiStore.fetchInsurers()
 }
@@ -713,6 +756,12 @@ function openEditPenjamin(p) {
     policyNumber: '', memberName: '', memberCardNumber: '',
     cobEnabled: false, cobInsurerId: '', cobNo: '',
   })
+  // Prefill kotak cari penjamin utama dgn nama insurer saat ini (kalau ada).
+  penjaminInsSearch.value = ['ASURANSI', 'PERUSAHAAN', 'SOSIAL'].includes(penjaminForm.guarantor)
+    ? (p.insurer ?? '') : ''
+  penjaminCobSearch.value = ''
+  penjaminInsOpen.value   = false
+  penjaminCobOpen.value   = false
   ensureInsurersLoaded()
   penjaminOpen.value = true
 }
@@ -721,10 +770,14 @@ function setPenjaminType(g) {
   if (penjaminForm.guarantor === g) return
   penjaminForm.guarantor  = g
   penjaminForm.insurer_id = ''
+  penjaminInsSearch.value = ''
+  penjaminInsOpen.value   = false
   if (!['BPJS', 'ASURANSI', 'PERUSAHAAN'].includes(g)) {
     penjaminForm.cobEnabled = false
     penjaminForm.cobInsurerId = ''
     penjaminForm.cobNo = ''
+    penjaminCobSearch.value = ''
+    penjaminCobOpen.value   = false
   }
 }
 async function submitEditPenjamin() {
@@ -3942,13 +3995,39 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Insurer (ASURANSI / PERUSAHAAN / SOSIAL) -->
+            <!-- Insurer (ASURANSI / PERUSAHAAN / SOSIAL) — typeahead cari nama -->
             <div v-if="['ASURANSI','PERUSAHAAN','SOSIAL'].includes(penjaminForm.guarantor)" class="field full">
               <label class="field-lbl">Penjamin ({{ guarantorLabel(penjaminForm.guarantor) }})</label>
-              <select v-model="penjaminForm.insurer_id" class="form-select">
-                <option value="">— Pilih penjamin —</option>
-                <option v-for="ins in penjaminInsurerOptions" :key="ins.id" :value="ins.id">{{ ins.name }}</option>
-              </select>
+              <div class="combo-wrap">
+                <div class="input-wrap-block">
+                  <input
+                    v-model="penjaminInsSearch"
+                    class="form-input"
+                    placeholder="Ketik untuk cari penjamin..."
+                    @focus="penjaminInsOpen = true"
+                    @input="penjaminInsOpen = true"
+                    @blur="onPenjaminInsBlur"
+                  />
+                  <svg class="combo-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <transition name="modal-fade">
+                  <div v-if="penjaminInsOpen" class="combo-dropdown">
+                    <div
+                      v-for="ins in penjaminInsFiltered"
+                      :key="ins.id"
+                      class="combo-item"
+                      :class="{ active: penjaminForm.insurer_id === ins.id }"
+                      @mousedown="selectPenjaminInsurer(ins)"
+                    >
+                      <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
+                      {{ ins.name }}
+                    </div>
+                    <div v-if="penjaminInsFiltered.length === 0" class="combo-empty">
+                      Tidak ada penjamin tipe "{{ guarantorLabel(penjaminForm.guarantor) }}"
+                    </div>
+                  </div>
+                </transition>
+              </div>
             </div>
 
             <!-- Data kartu TPA (ASURANSI / PERUSAHAAN) -->
@@ -3990,15 +4069,41 @@ onUnmounted(() => {
 
             <!-- COB (penjamin kedua) -->
             <div v-if="['BPJS','ASURANSI','PERUSAHAAN'].includes(penjaminForm.guarantor)" class="field full">
-              <label class="cob-check">
-                <input type="checkbox" v-model="penjaminForm.cobEnabled" />
-                COB — penjamin kedua menanggung selisih
+              <label class="cob-toggle-row">
+                <input type="checkbox" class="cob-check" :checked="penjaminForm.cobEnabled" @change="onPenjaminCobToggle" />
+                <span class="field-lbl" style="margin:0">COB — penjamin kedua menanggung selisih</span>
               </label>
               <template v-if="penjaminForm.cobEnabled">
-                <select v-model="penjaminForm.cobInsurerId" class="form-select" style="margin-top:8px">
-                  <option value="">— Pilih penjamin kedua —</option>
-                  <option v-for="ins in penjaminCobOptions" :key="ins.id" :value="ins.id">{{ ins.name }}</option>
-                </select>
+                <div class="combo-wrap" style="margin-top:8px">
+                  <div class="input-wrap-block">
+                    <input
+                      v-model="penjaminCobSearch"
+                      class="form-input"
+                      placeholder="Ketik untuk cari penjamin kedua..."
+                      @focus="penjaminCobOpen = true"
+                      @input="penjaminCobOpen = true"
+                      @blur="onPenjaminCobBlur"
+                    />
+                    <svg class="combo-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                  </div>
+                  <transition name="modal-fade">
+                    <div v-if="penjaminCobOpen" class="combo-dropdown">
+                      <div
+                        v-for="ins in penjaminCobFiltered"
+                        :key="ins.id"
+                        class="combo-item"
+                        :class="{ active: penjaminForm.cobInsurerId === ins.id }"
+                        @mousedown="selectPenjaminCob(ins)"
+                      >
+                        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
+                        {{ ins.name }}
+                      </div>
+                      <div v-if="penjaminCobFiltered.length === 0" class="combo-empty">
+                        Tidak ada penjamin lain (harus tipe Asuransi/Perusahaan & berbeda dari penjamin utama)
+                      </div>
+                    </div>
+                  </transition>
+                </div>
                 <input v-model="penjaminForm.cobNo" class="form-input" style="margin-top:8px" placeholder="No. polis penjamin 2 (opsional)" />
               </template>
             </div>

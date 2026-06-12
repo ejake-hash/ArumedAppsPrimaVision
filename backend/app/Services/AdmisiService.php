@@ -430,12 +430,19 @@ class AdmisiService
                 throw new \Exception('Kunjungan sudah selesai — penjamin tidak bisa diubah.', 422);
             }
 
-            // Guard 1: tagihan sudah dikirim ke kasir (antrean KASIR aktif).
+            // Guard 1: tagihan masih hidup di kasir (antrean KASIR aktif DAN ada
+            // invoice yang belum dibatalkan). Bila invoice sudah dibatalkan
+            // (CANCELLED) lewat tombol "Batalkan Tagihan" kasir, penjamin BOLEH
+            // diubah lagi untuk disusun ulang — antrean KASIR sengaja tetap aktif
+            // pasca-batal, jadi cek antrean saja tak cukup.
             $hasActiveKasir = $visit->queues()
                 ->where('station', Queue::STATION_KASIR)
                 ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
                 ->exists();
-            if ($hasActiveKasir) {
+            $hasLiveInvoice = \App\Models\BillingInvoice::where('visit_id', $visit->id)
+                ->where('status', '!=', 'CANCELLED')
+                ->exists();
+            if ($hasActiveKasir && $hasLiveInvoice) {
                 throw new \Exception('Tagihan sudah dikirim ke kasir — penjamin tidak bisa diubah. Batalkan dari kasir bila perlu.', 422);
             }
 
