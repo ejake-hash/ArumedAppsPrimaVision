@@ -51,6 +51,25 @@ const signedMeta    = ref({ total: 0, last_page: 1, current_page: 1 })
 const search       = ref('')
 const statusFilter = ref('ALL') // ALL | DRAFT | PENDING (RENDERED+PENDING_SIGNATURE)
 
+// Filter TANGGAL KUNJUNGAN (hanya tab Antrian — tab "ditandatangani hari ini"
+// memang sudah ber-scope hari ini). Default kosong = semua tanggal (perilaku lama).
+// Mode 'single' = 1 tanggal (from=to); 'range' = rentang from..to.
+const dateMode   = ref('single')
+const dateSingle = ref('')
+const dateFrom   = ref('')
+const dateTo     = ref('')
+const hasDateFilter = computed(() =>
+  dateMode.value === 'single' ? !!dateSingle.value : (!!dateFrom.value || !!dateTo.value),
+)
+// Param backend (date_from/date_to). Undefined bila tak diisi → tak ikut dikirim.
+function dateParams() {
+  if (dateMode.value === 'single') {
+    const d = dateSingle.value || undefined
+    return { date_from: d, date_to: d }
+  }
+  return { date_from: dateFrom.value || undefined, date_to: dateTo.value || undefined }
+}
+
 // Seleksi baris (centang). Simpan OBJEK dokumen (bukan sekadar id) supaya
 // seleksi BERTAHAN lintas-halaman — bulk modal butuh data lengkap tiap doc
 // (template_code, visit_id, patient) walau dokumen sudah tak di halaman aktif.
@@ -110,7 +129,9 @@ const total      = computed(() => curMeta.value.total ?? 0)
 const rangeStart = computed(() => (total.value === 0 ? 0 : (curPage.value - 1) * perPage.value + 1))
 const rangeEnd   = computed(() => Math.min(curPage.value * perPage.value, total.value))
 const hasActiveFilter = computed(() =>
-  search.value.trim() || (!isSignedTab.value && statusFilter.value !== 'ALL'),
+  search.value.trim()
+  || (!isSignedTab.value && statusFilter.value !== 'ALL')
+  || (!isSignedTab.value && hasDateFilter.value),
 )
 
 // Halaman yang ditampilkan di pager (jendela ringkas di sekitar halaman aktif).
@@ -160,8 +181,21 @@ function resetPage() { setPage(1) }
 function clearFilters() {
   search.value = ''
   statusFilter.value = 'ALL'
+  dateSingle.value = ''
+  dateFrom.value = ''
+  dateTo.value = ''
   resetPage()
   loadActive()
+}
+
+// Ubah tanggal/rentang kunjungan → reset halaman & muat ulang antrian.
+// (Filter tanggal hanya tab Antrian, jadi selalu load().)
+function onDateChange() { resetPage(); load() }
+function setDateMode(m) {
+  if (dateMode.value === m) return
+  dateMode.value = m
+  // Reload hanya bila sudah ada nilai tanggal aktif (hindari query sia-sia).
+  if (hasDateFilter.value) { resetPage(); load() }
 }
 function goPrev() { if (curPage.value > 1) { setPage(curPage.value - 1); loadActive() } }
 function goNext() { if (curPage.value < totalPages.value) { setPage(curPage.value + 1); loadActive() } }
@@ -202,6 +236,7 @@ async function load() {
       per_page: perPage.value,
       search: search.value.trim() || undefined,
       status: statusParam(),
+      ...dateParams(),
     })
     // ok() membungkus paginator: data.data = {data:[...rows], total, last_page, current_page,...}
     const p = data.data ?? {}
@@ -481,6 +516,23 @@ onMounted(() => { load(); refreshCount() })
         <option value="PENDING">Menunggu TTD</option>
         <option value="DRAFT">Draf</option>
       </select>
+
+      <!-- Filter tanggal KUNJUNGAN (1 tanggal / rentang) — hanya tab Antrian -->
+      <div v-if="!isSignedTab" class="dtfilter" title="Saring berdasarkan tanggal kunjungan">
+        <div class="dt-seg">
+          <button type="button" :class="['dt-seg-btn', { on: dateMode === 'single' }]" @click="setDateMode('single')">1 Tanggal</button>
+          <button type="button" :class="['dt-seg-btn', { on: dateMode === 'range' }]" @click="setDateMode('range')">Rentang</button>
+        </div>
+        <template v-if="dateMode === 'single'">
+          <input type="date" class="dt-input" v-model="dateSingle" @change="onDateChange" />
+        </template>
+        <template v-else>
+          <input type="date" class="dt-input" v-model="dateFrom" @change="onDateChange" />
+          <span class="dt-dash">s/d</span>
+          <input type="date" class="dt-input" v-model="dateTo" @change="onDateChange" />
+        </template>
+      </div>
+
       <button v-if="hasActiveFilter" class="lnk" @click="clearFilters">Reset</button>
     </div>
 
@@ -802,6 +854,23 @@ onMounted(() => { load(); refreshCount() })
   font-size: 13px; background: #fff; cursor: pointer; color: var(--ink);
 }
 .sel:focus { outline: none; border-color: var(--accent); }
+
+/* ── FILTER TANGGAL KUNJUNGAN ─────────────────────────────────────── */
+.dtfilter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.dt-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.dt-seg-btn {
+  border: 0; background: #fff; cursor: pointer; padding: 7px 10px;
+  font-size: 12.5px; color: var(--muted); white-space: nowrap;
+}
+.dt-seg-btn + .dt-seg-btn { border-left: 1px solid var(--line); }
+.dt-seg-btn:hover { background: #f2f6fb; }
+.dt-seg-btn.on { background: var(--accent); color: #fff; }
+.dt-input {
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px;
+  font-size: 13px; color: var(--ink); background: #fff; font-family: inherit;
+}
+.dt-input:focus { outline: none; border-color: var(--accent); }
+.dt-dash { font-size: 12.5px; color: var(--faint); }
 
 /* ── BULK BAR ─────────────────────────────────────────────────────── */
 .bulkbar {

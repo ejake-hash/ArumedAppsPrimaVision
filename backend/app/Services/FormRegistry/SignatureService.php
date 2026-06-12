@@ -235,7 +235,7 @@ final class SignatureService
      * Dipakai bersama oleh ttdQueueForDoctor() (paginate) & ttdCountForDoctor() (count).
      *
      * @param list<string> $templateCodes Hasil doctorSignatureTemplates()['codes'].
-     * @param array{search?: ?string, status?: ?string} $opts
+     * @param array{search?: ?string, status?: ?string, date_from?: ?string, date_to?: ?string} $opts
      */
     private function ttdQueueBuilder(string $userId, array $templateCodes, array $opts = [], string $signerType = 'doctor'): \Illuminate\Database\Eloquent\Builder
     {
@@ -282,6 +282,17 @@ final class SignatureService
             });
         }
 
+        // Filter tanggal KUNJUNGAN (visit_date) — 1 tanggal (from=to) atau rentang.
+        // Format string 'Y-m-d' divalidasi di controller; whereDate aman lintas-zona.
+        $dateFrom = trim((string) ($opts['date_from'] ?? ''));
+        $dateTo   = trim((string) ($opts['date_to'] ?? ''));
+        if ($dateFrom !== '' || $dateTo !== '') {
+            $q->whereHas('visit', function ($v) use ($dateFrom, $dateTo) {
+                if ($dateFrom !== '') { $v->whereDate('visit_date', '>=', $dateFrom); }
+                if ($dateTo   !== '') { $v->whereDate('visit_date', '<=', $dateTo); }
+            });
+        }
+
         return $q;
     }
 
@@ -290,7 +301,7 @@ final class SignatureService
      * Filter: status ∈ {DRAFT,RENDERED,PENDING_SIGNATURE}, template butuh TTD dokter,
      * punya visit, dan dokter ini BELUM TTD. Output diratakan per-dokumen + meta paginator.
      *
-     * @param array{page?: int, per_page?: int, search?: ?string, status?: ?string} $opts
+     * @param array{page?: int, per_page?: int, search?: ?string, status?: ?string, date_from?: ?string, date_to?: ?string} $opts
      */
     public function ttdQueueForDoctor(string $userId, array $opts = [], string $signerType = 'doctor'): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {

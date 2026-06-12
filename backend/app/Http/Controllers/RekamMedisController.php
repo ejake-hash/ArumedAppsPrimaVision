@@ -660,9 +660,11 @@ class RekamMedisController extends Controller
     {
         $userId = auth('api')->id();
         $paginator = $this->signatures->ttdQueueForDoctor($userId, [
-            'per_page' => (int) $request->query('per_page', 10),
-            'search'   => $request->query('search'),
-            'status'   => $request->query('status'),
+            'per_page'  => (int) $request->query('per_page', 10),
+            'search'    => $request->query('search'),
+            'status'    => $request->query('status'),
+            'date_from' => $this->validDateParam($request->query('date_from')),
+            'date_to'   => $this->validDateParam($request->query('date_to')),
         ], $this->signerTypeForUser());
         // Paginator di-serialize Laravel jadi {data, current_page, last_page, total, ...}
         // → FE baca rows di data.data.data, meta di data.data.{total,last_page,...}.
@@ -775,6 +777,16 @@ class RekamMedisController extends Controller
     // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================
+
+    /**
+     * Sanitasi parameter tanggal query (Y-m-d). Kembalikan null bila format tak
+     * valid agar tak bocor string sembarang ke whereDate (cegah error SQL).
+     */
+    private function validDateParam(mixed $v): ?string
+    {
+        $s = trim((string) $v);
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $s) === 1 ? $s : null;
+    }
 
     private function ok(mixed $data, string $message = 'Berhasil', int $status = 200): JsonResponse
     {
