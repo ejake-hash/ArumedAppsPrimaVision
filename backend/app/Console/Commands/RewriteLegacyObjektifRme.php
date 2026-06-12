@@ -14,10 +14,11 @@ use Illuminate\Console\Command;
  * yang seragam dengan timeline CPPT refraksionis:
  *
  *   Visus awal OD … / OS …
+ *   Refraksi subjektif OD … | OS …   ← legacy: dirakit dari nilai refraksi app lama
  *   Visus akhir OD … / OS …
- *   TIO OD … / OS … mmHg
+ *   Add OD … / OS …
+ *   TIO OD … / OS … mmHg  (+ TIO #2 … bila tonometri berulang)
  *   PD … mm
- *   Autoref OD … | OS …      ← khusus legacy (data subjektif tak ada di sumber)
  *
  * Sumber utama = RefractionRecord visit yang sama (ikut termigrasi, terstruktur)
  * via RmeAggregatorService::refraksiObjektif; bila record tak ada, fallback
@@ -85,7 +86,7 @@ class RewriteLegacyObjektifRme extends Command
                     $rec  = $this->sanitasiRecord($recs->get($de->visit_id));
                     $baru = null;
                     if ($rec) {
-                        $baru = $this->sisipkanAutoref($aggregator->refraksiObjektif($rec), $this->autorefLine($rec));
+                        $baru = $this->sisipkanSubjektif($aggregator->refraksiObjektif($rec), $this->subjektifLine($rec));
                         if ($baru) {
                             $dariRecord++;
                         }
@@ -174,13 +175,23 @@ class RewriteLegacyObjektifRme extends Command
         return in_array($norm, ['scx', 'sx', 'sc', 'cx', 's', 'c', 'x'], true);
     }
 
-    /** Sisipkan baris Autoref tepat setelah "Visus awal" (slot refraksi objektif). */
-    private function sisipkanAutoref(?string $baseO, ?string $autoref): ?string
+    /**
+     * Sisipkan baris "Refraksi subjektif" tepat setelah "Visus awal" (slot subjektif
+     * dalam struktur O). Record legacy tak punya kolom subjektif terstruktur, jadi
+     * baris ini DIRAKIT dari nilai refraksi app lama. Bila refraksiObjektif sudah
+     * menghasilkan baris subjektif (record non-legacy), jangan tambah duplikat.
+     */
+    private function sisipkanSubjektif(?string $baseO, ?string $subjektif): ?string
     {
-        if (! $autoref) {
+        if (! $subjektif) {
             return $baseO ? trim($baseO) : null;
         }
         $lines = $baseO ? explode("\n", trim($baseO)) : [];
+        foreach ($lines as $l) {
+            if (str_starts_with($l, 'Refraksi subjektif')) {
+                return implode("\n", $lines); // sudah ada — jangan dobel
+            }
+        }
         $pos = 0;
         foreach ($lines as $i => $l) {
             if (str_starts_with($l, 'Visus awal')) {
@@ -188,13 +199,13 @@ class RewriteLegacyObjektifRme extends Command
                 break;
             }
         }
-        array_splice($lines, $pos, 0, [$autoref]);
+        array_splice($lines, $pos, 0, [$subjektif]);
 
         return implode("\n", $lines);
     }
 
-    /** Baris "Autoref OD … | OS …" dari field terstruktur; fallback raw_data legacy. */
-    private function autorefLine(RefractionRecord $rec): ?string
+    /** Baris "Refraksi subjektif OD … | OS …" dari field terstruktur; fallback raw_data legacy. */
+    private function subjektifLine(RefractionRecord $rec): ?string
     {
         // Format selaras fmtRx/memory: "S -1.00 / C -0.75 / X 150" (2 desimal, berspasi).
         $fmt = function ($sph, $cyl, $axis) {
@@ -233,18 +244,20 @@ class RewriteLegacyObjektifRme extends Command
             return null;
         }
 
-        return 'Autoref OD ' . ($od ?? '–') . ' | OS ' . ($os ?? '–');
+        return 'Refraksi subjektif OD ' . ($od ?? '–') . ' | OS ' . ($os ?? '–');
     }
 
     /** Transformasi baris format migrasi lama → istilah skema baru (nilai persis,
-     *  kecuali placeholder s-c-x/"Error" → buang; baris tanpa nilai tersisa drop). */
+     *  kecuali placeholder s-c-x/"Error" → buang; baris tanpa nilai tersisa drop).
+     *  Hasil DIURUTKAN ke struktur kanonik: Visus awal → Refraksi subjektif →
+     *  Visus akhir → ADD → TIO → PD (sumber legacy urut UCVA/BCVA/IOP/Rx). */
     private function transformTeks(array $lines): ?string
     {
         $out = [];
         foreach ($lines as $l) {
             $l = preg_replace(
                 ['/^Visus UCVA: /u', '/^Visus BCVA: /u', '/^IOP: OD /u', '/^Rx: OD /u'],
-                ['Visus awal ', 'Visus akhir ', 'TIO OD ', 'Autoref OD '],
+                ['Visus awal ', 'Visus akhir ', 'TIO OD ', 'Refraksi subjektif OD '],
                 $l
             );
             // Netralkan nilai placeholder per-mata: "OD s-c-x / OS 6/9" → "OD – / OS 6/9".
@@ -262,7 +275,21 @@ class RewriteLegacyObjektifRme extends Command
             }
             $out[] = $l;
         }
+        if (! $out) {
+            return null;
+        }
+        // Urutkan ke struktur kanonik O refraksionis.
+        $rank = function ($l) {
+            foreach (['Visus awal' => 1, 'Refraksi subjektif' => 2, 'Visus akhir' => 3, 'Add' => 4, 'TIO' => 5, 'PD' => 6] as $p => $r) {
+                if (str_starts_with($l, $p)) {
+                    return $r;
+                }
+            }
 
-        return $out ? implode("\n", $out) : null;
+            return 9;
+        };
+        usort($out, fn ($a, $b) => $rank($a) <=> $rank($b));
+
+        return implode("\n", $out);
     }
 }
