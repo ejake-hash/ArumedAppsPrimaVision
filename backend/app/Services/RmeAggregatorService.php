@@ -360,9 +360,16 @@ class RmeAggregatorService
         if ($hasAdd) {
             $parts[] = 'Add OD ' . ($this->signed($r->add_power_od) ?? '–') . ' / OS ' . ($this->signed($r->add_power_os) ?? '–');
         }
-        // 5. IOP/TIO
+        // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
         if ($r->iop_od || $r->iop_os) {
             $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        }
+        foreach (array_values((array) ($r->iop_extra_readings ?? [])) as $i => $x) {
+            $od = $x['od'] ?? null;
+            $os = $x['os'] ?? null;
+            if ($od || $os) {
+                $parts[] = 'TIO #' . ($i + 2) . ' OD ' . ($od ?? '–') . ' / OS ' . ($os ?? '–') . ' mmHg';
+            }
         }
         // 6. PD (pupillary distance) — paling bawah
         if ($r->pd_distance !== null && $r->pd_distance !== '') {

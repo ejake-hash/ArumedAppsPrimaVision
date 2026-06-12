@@ -222,8 +222,11 @@ const oDerived = computed(() => {
   if (has(v.bcva_od) || has(v.bcva_os)) parts.push(`Visus akhir OD ${v.bcva_od || '–'} / OS ${v.bcva_os || '–'}`)
   // 4. ADD (adisi baca)
   if (has(r.add_od) || has(r.add_os)) parts.push(`Add OD ${has(r.add_od) ? signed(r.add_od) : '–'} / OS ${has(r.add_os) ? signed(r.add_os) : '–'}`)
-  // 5. IOP/TIO
+  // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
   if (has(i.od) || has(i.os)) parts.push(`TIO OD ${i.od || '–'} / OS ${i.os || '–'} mmHg${i.method ? ` (${i.method})` : ''}`)
+  iopExtra.value.forEach((x, idx) => {
+    if (has(x.od) || has(x.os)) parts.push(`TIO #${idx + 2} OD ${x.od || '–'} / OS ${x.os || '–'} mmHg`)
+  })
   // 6. PD (pupillary distance) — paling bawah
   if (has(r.pd)) parts.push(`PD ${r.pd} mm`)
   return parts.join('\n')
