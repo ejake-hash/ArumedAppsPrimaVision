@@ -579,6 +579,35 @@ class KlaimController extends Controller
     }
 
     /**
+     * GET /klaim/rekap/{visitId}/berkas — berkas pendukung LIVE per kunjungan:
+     * dokumen RM (status TTD), hasil penunjang terstruktur, lampiran manual, + checklist.
+     */
+    public function rekapBerkas(string $visitId): JsonResponse
+    {
+        try {
+            return $this->ok($this->service->getVisitBerkas($visitId));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+    }
+
+    /** POST /klaim/rekap/{visitId}/minta-koreksi — minta dokter koreksi diagnosa/dokumen. */
+    public function rekapRequestCorrection(Request $request, string $visitId): JsonResponse
+    {
+        $request->validate(['catatan' => 'nullable|string|max:500']);
+        try {
+            $res = $this->service->requestCorrection(
+                $visitId,
+                $request->input('catatan'),
+                optional($request->user())->id,
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+        return $this->ok($res, 'Permintaan koreksi dikirim ke dokter');
+    }
+
+    /**
      * GET /klaim/rekap/{visitId}/lampiran — daftar lampiran kunjungan.
      * TIDAK membuat klaim (read-only): bila visit belum punya klaim → daftar kosong.
      */

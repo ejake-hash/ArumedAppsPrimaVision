@@ -12,8 +12,11 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/services/api'
 import Pager from '@/components/common/Pager.vue'
+import { localDateStr } from '@/stores/admisiStore'
 
-const today = new Date().toISOString().slice(0, 10)
+// Tanggal LOKAL (WIB), bukan UTC. `toISOString().slice(0,10)` menggeser ke
+// kemarin pada 00:00–07:00 WIB → default rekap salah hari bagi verifikator pagi.
+const today = localDateStr()
 
 // ── Filter & data ──────────────────────────────────────────────────────────
 const jenisTab  = ref('')              // '' = Semua | 'RAJAL' | 'RANAP'
@@ -38,10 +41,13 @@ const rekapFileInput = ref(null)
 const rekapUploadTarget = ref(null)    // { visitId, category }
 
 // ── Panel detail ───────────────────────────────────────────────────────────────
+const EMPTY_BERKAS = () => ({ documents: [], penunjang: [], manual: [], checklist: { required: [], ready: false, missing: [] } })
 const detailOpen = ref(false)
 const detailRow = ref(null)
-const detailDocs = ref([])
+const detailBerkas = ref(EMPTY_BERKAS())
 const detailLoading = ref(false)
+const printingDocId = ref(null)
+const correctionBusy = ref(false)
 
 function dateParams() {
   const p = {}
@@ -116,38 +122,97 @@ function kelengkapanVal(row) {
   return row.berkas_lengkap ? 'lengkap' : 'belum'
 }
 
-// ── Panel detail ───────────────────────────────────────────────────────────────
-const detailDocsPendukung = computed(() => detailDocs.value.filter((a) => a.category !== 'PENUNJANG'))
-const detailDocsPenunjang = computed(() => detailDocs.value.filter((a) => a.category === 'PENUNJANG'))
+// ── Panel detail (berkas live: dokumen RM + penunjang + manual + checklist) ──────
+const detailDocuments = computed(() => detailBerkas.value.documents ?? [])
+const detailPenunjang = computed(() => detailBerkas.value.penunjang ?? [])
+const detailManual = computed(() => detailBerkas.value.manual ?? [])
+const manualPenunjang = computed(() => detailManual.value.filter((a) => a.category === 'PENUNJANG'))
+const manualOther = computed(() => detailManual.value.filter((a) => a.category !== 'PENUNJANG'))
+const checklist = computed(() => detailBerkas.value.checklist ?? { required: [], ready: false, missing: [] })
 
 async function openDetail(row) {
   detailRow.value = row
   detailOpen.value = true
-  await loadDetailDocs()
+  await loadBerkas()
 }
 
 function closeDetail() {
   detailOpen.value = false
   detailRow.value = null
-  detailDocs.value = []
+  detailBerkas.value = EMPTY_BERKAS()
 }
 
-async function loadDetailDocs() {
+async function loadBerkas() {
   if (!detailRow.value) return
   detailLoading.value = true
   try {
-    const { data } = await api.get(`/klaim/rekap/${detailRow.value.visit_id}/lampiran`)
-    detailDocs.value = data.data ?? []
+    const { data } = await api.get(`/klaim/rekap/${detailRow.value.visit_id}/berkas`)
+    detailBerkas.value = data.data ?? EMPTY_BERKAS()
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal memuat berkas')
-    detailDocs.value = []
+    detailBerkas.value = EMPTY_BERKAS()
   } finally {
     detailLoading.value = false
   }
 }
 
 function openFile(att) {
-  if (att.file_url) window.open(att.file_url, '_blank')
+  if (att.file_url || att.attachment_url) window.open(att.file_url || att.attachment_url, '_blank')
+}
+
+// Label + warna chip status dokumen RM.
+function docChipCls(doc) {
+  if (doc.signed) return 'dc-signed'
+  return doc.status === 'DRAFT' ? 'dc-draft' : 'dc-pending'
+}
+
+// Buka HTML di jendela cetak (dipakai kwitansi & dokumen RM).
+function printHtml(html, title) {
+  const w = window.open('', '_blank', 'width=900,height=1000')
+  if (!w) { toast('w', 'Popup diblokir browser — izinkan popup'); return }
+  w.document.open()
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>@page{size:A4;margin:14mm}body{margin:0;font-family:Arial,sans-serif}</style></head><body>${html}</body></html>`)
+  w.document.close()
+  w.focus()
+  setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P */ } }, 350)
+}
+
+// Buka dokumen Form Registry (resume/laporan operasi) → cetak HTML (snapshot bila
+// sudah final, fallback render preview untuk draft). Tanpa PDF backend.
+async function openDocument(doc) {
+  printingDocId.value = doc.id
+  try {
+    let html = (await api.get(`/rekam-medis/document/${doc.id}/render`)).data?.data?.rendered_html
+    if (!html && doc.template_code && detailRow.value) {
+      html = (await api.get(`/rekam-medis/form/${doc.template_code}/render`, { params: { visit_id: detailRow.value.visit_id } })).data?.data?.html
+    }
+    if (!html) { toast('w', 'Dokumen belum dapat ditampilkan'); return }
+    printHtml(html, doc.type_label || 'Dokumen')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal membuka dokumen')
+  } finally {
+    printingDocId.value = null
+  }
+}
+
+// Minta dokter mengoreksi diagnosa/dokumen (grouper mismatch).
+async function requestCorrection() {
+  if (!detailRow.value) return
+  const catatan = window.prompt('Catatan koreksi untuk dokter (opsional):', detailRow.value.keterangan || '')
+  if (catatan === null) return
+  correctionBusy.value = true
+  try {
+    const { data } = await api.post(`/klaim/rekap/${detailRow.value.visit_id}/minta-koreksi`, { catatan })
+    const notified = data.data?.notified
+    toast(notified ? 's' : 'i', notified ? 'Permintaan koreksi dikirim ke dokter' : 'Dicatat (dokter tak punya akun untuk notifikasi)')
+    if (data.data?.keterangan != null) detailRow.value.keterangan = data.data.keterangan
+    await fetchRekap()
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengirim permintaan koreksi')
+  } finally {
+    correctionBusy.value = false
+  }
 }
 
 async function deleteAtt(att) {
@@ -155,7 +220,7 @@ async function deleteAtt(att) {
   try {
     await api.delete(`/klaim/rekap/${detailRow.value.visit_id}/lampiran/${att.id}`)
     toast('s', 'Berkas dihapus')
-    await loadDetailDocs()
+    await loadBerkas()
     await fetchRekap()
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal menghapus berkas')
@@ -185,7 +250,7 @@ async function onRekapFileChange(e) {
     })
     toast('s', 'Berkas berhasil diunggah')
     await fetchRekap()
-    if (detailOpen.value && detailRow.value?.visit_id === t.visitId) await loadDetailDocs()
+    if (detailOpen.value && detailRow.value?.visit_id === t.visitId) await loadBerkas()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal mengunggah berkas')
   } finally {
@@ -218,14 +283,7 @@ async function openKwitansi(row) {
     const { data } = await api.get(`/rekam-medis/kunjungan/${row.visit_id}/kwitansi`)
     const html = data.data?.rendered_html
     if (!html) { toast('w', 'Kwitansi belum tersaji'); return }
-    const w = window.open('', '_blank', 'width=900,height=1000')
-    if (!w) { toast('w', 'Popup diblokir browser — izinkan popup'); return }
-    w.document.open()
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Kwitansi</title>
-<style>@page{size:A4;margin:14mm}body{margin:0;font-family:Arial,sans-serif}</style></head><body>${html}</body></html>`)
-    w.document.close()
-    w.focus()
-    setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P */ } }, 350)
+    printHtml(html, 'Kwitansi')
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal membuka kwitansi')
   }
@@ -383,6 +441,11 @@ onMounted(fetchRekap)
                 <option value="lengkap">Lengkap</option>
                 <option value="belum">Belum Lengkap</option>
               </select>
+              <span
+                class="rk-claimchip"
+                :class="r.claim_ready ? 'ok' : 'no'"
+                :title="r.claim_ready ? 'Dokumen wajib sudah TTD' : 'Dokumen wajib belum lengkap/TTD'"
+              >{{ r.claim_ready ? '✓ Siap klaim' : `Berkas ${r.docs_signed_count}/${r.docs_required_count}` }}</span>
             </td>
             <td class="c-ket" @click.stop>
               <input
@@ -435,20 +498,77 @@ onMounted(fetchRekap)
             </button>
           </div>
 
-          <!-- Dokumen Pendukung -->
+          <!-- Kelengkapan klaim (otomatis) -->
+          <div class="rk-checklist" :class="checklist.ready ? 'ready' : 'notready'">
+            <div class="rk-cl-head">
+              <span class="rk-cl-title">
+                <span class="rk-cl-badge" :class="checklist.ready ? 'ok' : 'no'">
+                  {{ checklist.ready ? '✓ Siap Klaim' : 'Belum Siap' }}
+                </span>
+                Kelengkapan otomatis
+              </span>
+              <button class="rk-chip rk-chip-warn" :disabled="correctionBusy" @click="requestCorrection">
+                {{ correctionBusy ? '…' : 'Minta Koreksi' }}
+              </button>
+            </div>
+            <ul class="rk-cl-list">
+              <li v-for="req in checklist.required" :key="req.key" :class="req.signed ? 'done' : (req.present ? 'partial' : 'miss')">
+                <span class="rk-cl-mark">{{ req.signed ? '✓' : (req.present ? '◐' : '✗') }}</span>
+                {{ req.label }}
+                <small>{{ req.signed ? 'sudah TTD' : (req.present ? 'belum TTD' : 'belum ada') }}</small>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Dokumen Rekam Medis (otomatis dari RM) -->
+          <div class="rk-docsec">
+            <div class="rk-docsec-head"><h4>Dokumen Rekam Medis</h4></div>
+            <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
+            <p v-else-if="!detailDocuments.length" class="rk-empty-sm">Belum ada dokumen RM.</p>
+            <ul v-else class="rk-doc-list">
+              <li v-for="d in detailDocuments" :key="d.id">
+                <div class="rk-doc-info">
+                  <span class="rk-doc-name">
+                    {{ d.type_label }}
+                    <span class="rk-dchip" :class="docChipCls(d)">{{ d.status_label }}</span>
+                    <span v-if="d.coding_synced === false" class="rk-dchip dc-warn">koding berubah</span>
+                  </span>
+                  <small v-if="d.signed_at">TTD {{ fmtDateTime(d.signed_at) }}<span v-if="d.revision"> · revisi {{ d.revision }}</span></small>
+                </div>
+                <div class="rk-doc-act">
+                  <button class="rk-chip" :disabled="printingDocId === d.id" @click="openDocument(d)">
+                    {{ printingDocId === d.id ? '…' : 'Lihat' }}
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Hasil Penunjang (terstruktur + upload manual) -->
           <div class="rk-docsec">
             <div class="rk-docsec-head">
-              <h4>Dokumen Pendukung</h4>
-              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'LAINNYA')">
+              <h4>Hasil Penunjang</h4>
+              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'PENUNJANG')">
                 {{ rekapUploadingId === detailRow?.visit_id ? '…' : '+ Upload' }}
               </button>
             </div>
             <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
-            <p v-else-if="!detailDocsPendukung.length" class="rk-empty-sm">Belum ada berkas.</p>
+            <p v-else-if="!detailPenunjang.length && !manualPenunjang.length" class="rk-empty-sm">Belum ada hasil penunjang.</p>
             <ul v-else class="rk-doc-list">
-              <li v-for="a in detailDocsPendukung" :key="a.id">
+              <li v-for="p in detailPenunjang" :key="p.order_id">
                 <div class="rk-doc-info">
-                  <span class="rk-doc-name">{{ a.title || a.file_name }}</span>
+                  <span class="rk-doc-name">{{ p.test_name }}<span v-if="p.eye_side"> · {{ p.eye_side }}</span>
+                    <span class="rk-dchip" :class="['COMPLETED','REVIEWED','APPROVED'].includes(p.status) ? 'dc-signed' : 'dc-pending'">{{ p.status }}</span>
+                  </span>
+                  <small>{{ p.summary || p.examiner || '—' }}</small>
+                </div>
+                <div class="rk-doc-act">
+                  <button class="rk-chip" :disabled="!p.attachment_url" @click="openFile(p)">Lihat</button>
+                </div>
+              </li>
+              <li v-for="a in manualPenunjang" :key="a.id">
+                <div class="rk-doc-info">
+                  <span class="rk-doc-name">{{ a.title || a.file_name }} <span class="rk-dchip dc-manual">upload</span></span>
                   <small>{{ fmtDateTime(a.at) }} · {{ a.by || '—' }}</small>
                 </div>
                 <div class="rk-doc-act">
@@ -459,18 +579,18 @@ onMounted(fetchRekap)
             </ul>
           </div>
 
-          <!-- Hasil Penunjang -->
+          <!-- Berkas Tambahan (upload manual: SEP, surat, dll) -->
           <div class="rk-docsec">
             <div class="rk-docsec-head">
-              <h4>Hasil Penunjang</h4>
-              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'PENUNJANG')">
+              <h4>Berkas Tambahan</h4>
+              <button class="rk-chip rk-chip-up" :disabled="rekapUploadingId === detailRow?.visit_id" @click="pickUpload(detailRow, 'LAINNYA')">
                 {{ rekapUploadingId === detailRow?.visit_id ? '…' : '+ Upload' }}
               </button>
             </div>
             <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
-            <p v-else-if="!detailDocsPenunjang.length" class="rk-empty-sm">Belum ada berkas.</p>
+            <p v-else-if="!manualOther.length" class="rk-empty-sm">Belum ada berkas tambahan.</p>
             <ul v-else class="rk-doc-list">
-              <li v-for="a in detailDocsPenunjang" :key="a.id">
+              <li v-for="a in manualOther" :key="a.id">
                 <div class="rk-doc-info">
                   <span class="rk-doc-name">{{ a.title || a.file_name }}</span>
                   <small>{{ fmtDateTime(a.at) }} · {{ a.by || '—' }}</small>
@@ -598,6 +718,37 @@ onMounted(fetchRekap)
 .rk-chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .rk-chip-up { color: var(--ga); border-color: var(--ga); }
 .rk-chip-del { color: var(--et); border-color: var(--ebd); }
+.rk-chip-warn { color: var(--wt); border-color: var(--wbd); background: var(--wb); }
+
+/* Chip status siap-klaim di kolom tabel */
+.rk-claimchip { display: inline-block; margin-top: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.rk-claimchip.ok { background: var(--sb); color: var(--st); }
+.rk-claimchip.no { background: var(--wb); color: var(--wt); }
+
+/* Kotak checklist kelengkapan klaim (panel detail) */
+.rk-checklist { border: 1px solid var(--gb); border-radius: 10px; padding: 12px; }
+.rk-checklist.ready { border-color: var(--sbd); background: color-mix(in srgb, var(--sb) 35%, transparent); }
+.rk-checklist.notready { border-color: var(--wbd); background: color-mix(in srgb, var(--wb) 35%, transparent); }
+.rk-cl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.rk-cl-title { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--td); }
+.rk-cl-badge { padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.rk-cl-badge.ok { background: var(--sb); color: var(--st); }
+.rk-cl-badge.no { background: var(--wb); color: var(--wt); }
+.rk-cl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.rk-cl-list li { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--td); }
+.rk-cl-list li small { color: var(--tu); font-size: 10.5px; margin-left: auto; }
+.rk-cl-mark { width: 16px; text-align: center; font-weight: 700; }
+.rk-cl-list li.done .rk-cl-mark { color: var(--st); }
+.rk-cl-list li.partial .rk-cl-mark { color: var(--wt); }
+.rk-cl-list li.miss .rk-cl-mark { color: var(--et); }
+
+/* Chip status dokumen RM dalam daftar */
+.rk-dchip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; margin-left: 6px; vertical-align: middle; }
+.dc-signed { background: var(--sb); color: var(--st); }
+.dc-draft { background: var(--gl); color: var(--tu); }
+.dc-pending { background: var(--ib); color: var(--it); }
+.dc-warn { background: var(--eb); color: var(--et); }
+.dc-manual { background: var(--gl); color: var(--tu); font-weight: 600; }
 
 /* Toast */
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 9999; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }

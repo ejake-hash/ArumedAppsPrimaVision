@@ -786,10 +786,13 @@ Route::prefix('v1')->group(function () {
             // Statis → WAJIB sebelum `/{id}` agar 'rekap' tak diparse jadi UUID.
             Route::get('/rekap',                          [KlaimController::class, 'rekap']);
             Route::get('/rekap/export',                   [KlaimController::class, 'rekapExport']);
+            // Berkas pendukung LIVE (dokumen RM + hasil penunjang + lampiran manual).
+            Route::get('/rekap/{visitId}/berkas',         [KlaimController::class, 'rekapBerkas']);
             Route::get('/rekap/{visitId}/lampiran',       [KlaimController::class, 'rekapAttachments']);
             Route::post('/rekap/{visitId}/lampiran',      [KlaimController::class, 'rekapUploadAttachment'])->middleware('permission:bpjs.write');
             Route::delete('/rekap/{visitId}/lampiran/{attId}', [KlaimController::class, 'rekapDeleteAttachment'])->middleware('permission:bpjs.write');
             Route::post('/rekap/{visitId}/kelengkapan',   [KlaimController::class, 'rekapSetKelengkapan'])->middleware('permission:bpjs.write');
+            Route::post('/rekap/{visitId}/minta-koreksi', [KlaimController::class, 'rekapRequestCorrection'])->middleware('permission:bpjs.write');
 
             Route::get('/{id}',                           [KlaimController::class, 'show']);
 

@@ -93,6 +93,18 @@ class KlaimService
                 'bpjsClaim.attachments',
                 'surgerySchedule:id,surgery_package_id',
                 'surgerySchedule.surgeryPackage:id,name,surgery_type',
+                // Dokumen RM pendukung klaim (live) — untuk status siap-klaim per baris.
+                'patientDocuments' => fn ($q) => $q
+                    ->whereIn('template_code', self::CLAIM_DOC_CODES)
+                    ->whereNotIn('status', self::DOC_ARCHIVED_STATUSES)
+                    ->select('id', 'visit_id', 'template_code', 'status'),
+            ])
+            // Hasil penunjang terstruktur: jumlah order vs order yang sudah ada hasil final.
+            ->withCount([
+                'diagnosticOrders as penunjang_order_count',
+                'diagnosticOrders as penunjang_done_count' => fn ($q) => $q
+                    ->whereHas('results', fn ($r) => $r
+                        ->whereIn('result_status', ['COMPLETED', 'REVIEWED', 'APPROVED'])),
             ]);
 
         if (! empty($filters['tanggal'])) {
@@ -155,6 +167,15 @@ class KlaimService
             $isBedah = $v->surgery_schedule_id !== null;
             $bedahLabel = $isBedah ? ($pkg?->surgery_type ?: $pkg?->name ?: 'Bedah') : null;
 
+            // Status siap-klaim otomatis (dari data eager-loaded → tanpa N+1).
+            $signedCodes = $v->patientDocuments
+                ->filter(fn ($d) => in_array($d->status, ['FINALIZED', 'FINAL'], true))
+                ->pluck('template_code')->unique()->values()->all();
+            $penunjangOrderCount = (int) ($v->penunjang_order_count ?? 0);
+            $penunjangDoneCount  = (int) ($v->penunjang_done_count ?? 0);
+            $penunjangOk = $penunjangOrderCount === 0 || $penunjangDoneCount >= $penunjangOrderCount;
+            $readiness = $this->rowClaimReadiness($v, $signedCodes, $penunjangOk);
+
             return [
                 'visit_id'           => $v->id,
                 'nama'               => $v->patient?->name,
@@ -174,7 +195,12 @@ class KlaimService
                 'diagnosa'           => $diagnosa,
                 'claim_id'           => $v->bpjsClaim?->id,
                 'penunjang_count'    => $att->where('category', 'PENUNJANG')->count(),
+                'penunjang_struct_count' => $penunjangDoneCount,
                 'dokpendukung_count' => $att->where('category', '!=', 'PENUNJANG')->count(),
+                // Status siap-klaim otomatis (dokumen wajib ber-TTD + penunjang final).
+                'claim_ready'         => $readiness['claim_ready'],
+                'docs_signed_count'   => $readiness['docs_signed_count'],
+                'docs_required_count' => $readiness['docs_required_count'],
                 'has_invoice'        => (bool) $v->billingInvoice,
                 'invoice_status'     => $v->billingInvoice?->status,
                 'is_paid'            => $v->billingInvoice?->status === 'PAID',
@@ -238,6 +264,220 @@ class KlaimService
             'visit_id'       => $visit->id,
             'berkas_lengkap' => $visit->berkas_lengkap,
             'keterangan'     => $visit->rekap_keterangan,
+        ];
+    }
+
+    // =========================================================================
+    // BERKAS KUNJUNGAN (LIVE) — dokumen RM + hasil penunjang + lampiran manual
+    // =========================================================================
+
+    /** Dokumen Form Registry yang relevan sebagai berkas pendukung klaim. */
+    public const CLAIM_DOC_CODES = [
+        'RESUME_MEDIS', 'RESUME_KLAIM', 'LAPORAN_PEMBEDAHAN',
+        'CATATAN_OPERASI_KATARAK', 'LAPORAN_OPERASI_VITREO_RETINA', 'CHECKLIST_KESIAPAN_BEDAH',
+    ];
+
+    /** Status arsip dokumen — dikecualikan dari daftar berkas aktif. */
+    public const DOC_ARCHIVED_STATUSES = ['SUPERSEDED', 'VOID', 'REJECTED'];
+
+    private function docStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'DRAFT'                      => 'Draf',
+            'RENDERED', 'PENDING_SIGNATURE' => 'Menunggu TTD',
+            'FINALIZED', 'FINAL'         => 'Sudah TTD',
+            default                      => $status,
+        };
+    }
+
+    /**
+     * Kode dokumen WAJIB ber-TTD untuk klaim, sesuai jenis kunjungan:
+     * - Semua: RESUME_MEDIS.
+     * - Bedah: laporan operasi sesuai surgery_type + checklist bedah.
+     */
+    private function requiredDocCodes(Visit $visit): array
+    {
+        $codes = ['RESUME_MEDIS'];
+        if ($visit->surgery_schedule_id !== null) {
+            $type = strtoupper((string) ($visit->surgerySchedule?->surgeryPackage?->surgery_type ?? ''));
+            $codes[] = str_contains($type, 'KATARAK') ? 'CATATAN_OPERASI_KATARAK'
+                : (str_contains($type, 'VITREO') ? 'LAPORAN_OPERASI_VITREO_RETINA' : 'LAPORAN_PEMBEDAHAN');
+            $codes[] = 'CHECKLIST_KESIAPAN_BEDAH';
+        }
+        return $codes;
+    }
+
+    /**
+     * Agregasi berkas pendukung klaim untuk SATU kunjungan — dibaca LIVE dari
+     * sumber aslinya (tidak menyalin file):
+     *  - documents : PatientDocument Form Registry (resume/laporan operasi/checklist)
+     *  - penunjang : diagnostic_results terstruktur
+     *  - manual    : ClaimAttachment (berkas luar yang di-upload)
+     *  - checklist : kelengkapan otomatis (wajib TTD + sesuai jenis)
+     */
+    public function getVisitBerkas(string $visitId): array
+    {
+        $visit = Visit::with([
+            'surgerySchedule.surgeryPackage:id,name,surgery_type',
+            'bpjsClaim',
+        ])->findOrFail($visitId);
+
+        $docs = PatientDocument::where('visit_id', $visitId)
+            ->whereIn('template_code', self::CLAIM_DOC_CODES)
+            ->whereNotIn('status', self::DOC_ARCHIVED_STATUSES)
+            ->orderBy('template_code')
+            ->orderByDesc('created_at')
+            ->get();
+
+        $tplNames = DocumentTemplate::whereIn('code', self::CLAIM_DOC_CODES)->pluck('name', 'code');
+        $claim = $visit->bpjsClaim;
+
+        $documents = $docs->map(function (PatientDocument $d) use ($tplNames, $claim) {
+            $signed = in_array($d->status, ['FINALIZED', 'FINAL'], true);
+            $codingSynced = null;
+            if ($d->template_code === self::CLAIM_RESUME_CODE && $claim) {
+                $codingSynced = $d->claim_coding_hash === $this->claimCodingHash($claim);
+            }
+            return [
+                'id'            => $d->id,
+                'source'        => 'document',
+                'template_code' => $d->template_code,
+                'type_label'    => $tplNames[$d->template_code] ?? $d->template_code,
+                'status'        => $d->status,
+                'status_label'  => $this->docStatusLabel($d->status),
+                'signed'        => $signed,
+                'claim_ready'   => $signed,
+                'revision'      => $d->revision,
+                'signed_at'     => $d->finalized_at?->toIso8601String(),
+                'coding_synced' => $codingSynced,
+            ];
+        })->values()->all();
+
+        $penunjang = app(\App\Services\RmeAggregatorService::class)->penunjangForVisit($visitId);
+        $manual = $claim ? $this->getAttachments($claim->id) : [];
+        $checklist = $this->computeClaimChecklist($visit, $docs);
+
+        return [
+            'documents' => $documents,
+            'penunjang' => $penunjang,
+            'manual'    => $manual,
+            'checklist' => $checklist,
+        ];
+    }
+
+    /**
+     * Kelengkapan klaim otomatis: tiap dokumen wajib harus FINALIZED; penunjang
+     * (bila ada order) harus ada hasil COMPLETED/REVIEWED/APPROVED.
+     * @param \Illuminate\Support\Collection<PatientDocument> $docs
+     */
+    public function computeClaimChecklist(Visit $visit, $docs): array
+    {
+        // template_code → signed? (true bila ada salah satu yg FINALIZED)
+        $signedByCode = [];
+        $presentByCode = [];
+        foreach ($docs as $d) {
+            $presentByCode[$d->template_code] = true;
+            if (in_array($d->status, ['FINALIZED', 'FINAL'], true)) {
+                $signedByCode[$d->template_code] = true;
+            }
+        }
+
+        $tplNames = DocumentTemplate::whereIn('code', self::CLAIM_DOC_CODES)->pluck('name', 'code');
+        $required = [];
+        foreach ($this->requiredDocCodes($visit) as $code) {
+            $required[] = [
+                'key'     => $code,
+                'label'   => $tplNames[$code] ?? $code,
+                'present' => $presentByCode[$code] ?? false,
+                'signed'  => $signedByCode[$code] ?? false,
+            ];
+        }
+
+        // Penunjang: wajib hasil final bila ada order.
+        $orders = \App\Models\DiagnosticOrder::where('visit_id', $visit->id)
+            ->withCount(['results as done_count' => fn ($q) => $q
+                ->whereIn('result_status', ['COMPLETED', 'REVIEWED', 'APPROVED'])])
+            ->get();
+        if ($orders->isNotEmpty()) {
+            $allDone = $orders->every(fn ($o) => $o->done_count > 0);
+            $required[] = [
+                'key'     => 'PENUNJANG',
+                'label'   => 'Hasil Penunjang',
+                'present' => $orders->contains(fn ($o) => $o->done_count > 0),
+                'signed'  => $allDone,
+            ];
+        }
+
+        $missing = collect($required)->reject(fn ($r) => $r['signed'])->pluck('label')->values()->all();
+
+        return [
+            'required' => $required,
+            'ready'    => count($missing) === 0,
+            'missing'  => $missing,
+        ];
+    }
+
+    /**
+     * Status siap-klaim ringkas dari data yang SUDAH di-eager-load pada baris rekap
+     * (tanpa query tambahan → aman dari N+1). $signedCodes = template_code dokumen
+     * FINALIZED milik visit; $penunjangOk dari withCount order vs hasil selesai.
+     */
+    private function rowClaimReadiness(Visit $visit, array $signedCodes, bool $penunjangOk): array
+    {
+        $required = $this->requiredDocCodes($visit);
+        $signedRequired = array_values(array_intersect($required, $signedCodes));
+        $docsReady = count($signedRequired) === count($required);
+
+        return [
+            'docs_required_count' => count($required),
+            'docs_signed_count'   => count($signedRequired),
+            'claim_ready'         => $docsReady && $penunjangOk,
+        ];
+    }
+
+    /**
+     * Verifikator minta dokter mengoreksi diagnosa/dokumen (grouper mismatch).
+     * Catat keterangan + tandai belum-lengkap + notifikasi DPJP. Koreksi nyata
+     * dilakukan dokter via "Buka Kembali" (pra-bayar) / "Revisi & TTD Ulang".
+     */
+    public function requestCorrection(string $visitId, ?string $catatan, ?string $userId): array
+    {
+        $visit = Visit::with(['patient:id,name', 'doctorExamination:id,visit_id,doctor_id', 'surgerySchedule:id,lead_surgeon_id'])
+            ->findOrFail($visitId);
+        if ($visit->guarantor_type !== 'BPJS') {
+            throw new \Exception('Kunjungan bukan pasien BPJS.', 422);
+        }
+
+        $note = trim((string) $catatan);
+        $visit->rekap_keterangan = $note !== ''
+            ? $note
+            : ($visit->rekap_keterangan ?: 'Perlu koreksi diagnosa/dokumen untuk klaim');
+        $visit->berkas_lengkap = false;
+        $visit->save();
+
+        $dpjpEmployeeId = $visit->doctorExamination?->doctor_id ?? $visit->surgerySchedule?->lead_surgeon_id;
+        $recipientId = $dpjpEmployeeId
+            ? \App\Models\User::where('employee_id', $dpjpEmployeeId)->value('id')
+            : null;
+
+        if ($recipientId) {
+            \App\Models\Notification::create([
+                'recipient_id' => $recipientId,
+                'type'         => 'KLAIM_KOREKSI',
+                'title'        => 'Permintaan koreksi untuk klaim BPJS',
+                'message'      => 'Verifikator meminta koreksi diagnosa/dokumen kunjungan '
+                    . ($visit->patient?->name ?? '')
+                    . ($note !== '' ? ' — ' . $note : '')
+                    . '. Buka kembali RME & finalisasi ulang.',
+            ]);
+        }
+
+        $this->log($userId, 'KLAIM_MINTA_KOREKSI', Visit::class, $visit->id, $note ?: null);
+
+        return [
+            'visit_id'   => $visit->id,
+            'notified'   => (bool) $recipientId,
+            'keterangan' => $visit->rekap_keterangan,
         ];
     }
 

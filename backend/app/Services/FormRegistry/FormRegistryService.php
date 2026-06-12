@@ -304,7 +304,7 @@ final class FormRegistryService
      */
     public function finalize(string $patientDocumentId, array $signatureIds = []): PatientDocument
     {
-        return DB::transaction(function () use ($patientDocumentId, $signatureIds) {
+        $doc = DB::transaction(function () use ($patientDocumentId, $signatureIds) {
             /** @var PatientDocument $doc */
             $doc = PatientDocument::query()->lockForUpdate()->findOrFail($patientDocumentId);
 
@@ -407,6 +407,39 @@ final class FormRegistryService
 
             return $doc;
         });
+
+        // Tautkan dokumen pendukung ke BpjsClaim (untuk rekap & bundle E-Klaim).
+        // Non-blocking: finalisasi sudah committed; kegagalan tautan hanya dicatat.
+        $this->stampBpjsClaimLink($doc);
+
+        return $doc;
+    }
+
+    /**
+     * Stamp bpjs_claim_id pada dokumen pendukung klaim yang baru FINALIZED milik
+     * kunjungan BPJS — supaya tertaut eksplisit ke klaim (tanpa menyalin file).
+     * Idempoten & best-effort; tidak mengganggu alur finalisasi bila gagal.
+     */
+    private function stampBpjsClaimLink(PatientDocument $doc): void
+    {
+        try {
+            if ($doc->status !== 'FINALIZED' || $doc->bpjs_claim_id !== null || $doc->visit_id === null) {
+                return;
+            }
+            if (! in_array($doc->template_code, \App\Services\KlaimService::CLAIM_DOC_CODES, true)) {
+                return;
+            }
+            $visit = \App\Models\Visit::find($doc->visit_id);
+            if (! $visit || $visit->guarantor_type !== 'BPJS' || empty($visit->no_sep)) {
+                return;
+            }
+            $claim = app(\App\Services\KlaimService::class)->ensureClaimForVisit($doc->visit_id);
+            $doc->forceFill(['bpjs_claim_id' => $claim->id])->save();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                "stampBpjsClaimLink gagal (doc {$doc->id}): " . $e->getMessage()
+            );
+        }
     }
 
     /**

@@ -465,6 +465,29 @@ class RmeAggregatorService
             ->orderByDesc('visit_date')
             ->get();
 
+        return $this->buildPenunjangRows($visits);
+    }
+
+    /**
+     * Hasil penunjang untuk SATU kunjungan (dipakai Rekap Klaim BPJS — wiring
+     * berkas pendukung live per visit). Bentuk baris identik dengan penunjang().
+     */
+    public function penunjangForVisit(string $visitId): array
+    {
+        $visits = Visit::with([
+            'diagnosticOrders.results.performedBy',
+            'diagnosticOrders.results.reviewedBy',
+        ])
+            ->whereKey($visitId)
+            ->whereHas('diagnosticOrders')
+            ->get();
+
+        return $this->buildPenunjangRows($visits);
+    }
+
+    /** Ratakan koleksi visit → baris hasil penunjang (order + result terbaru). */
+    private function buildPenunjangRows(\Illuminate\Support\Collection|\Illuminate\Database\Eloquent\Collection $visits): array
+    {
         $testNames = DiagnosticTestType::pluck('name', 'code')->all();
 
         $rows = [];
