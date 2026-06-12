@@ -51,7 +51,10 @@ class RewirePublishedResume extends Command
 
         if ($docs->isEmpty()) {
             $this->info("Tidak ada dokumen final dengan template_code={$code} untuk diregenerasi.");
-            return self::SUCCESS;
+            // Jangan berhenti bila --include-drafts: bagian draft di bawah tetap jalan.
+            if (! $this->option('include-drafts')) {
+                return self::SUCCESS;
+            }
         }
 
         $mode = ($apply ? '[APPLY' : '[DRY RUN') . ($overwrite ? '+OVERWRITE] ' : '] ');
