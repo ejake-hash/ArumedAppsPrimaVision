@@ -288,7 +288,26 @@ class FarmasiService
             ->when(
                 ! empty($filters['tanggal']),
                 fn ($q) => $q->whereDate('created_at', $filters['tanggal']),
-                fn ($q) => $q->where(fn ($w) => $w->whereDate('created_at', today())->orWhereNull('verified_at')),
+                // Default (tanpa filter tanggal) — resep tetap di worklist bila:
+                //  (1) dibuat HARI INI (alur normal hari berjalan), ATAU
+                //  (2) BELUM diverifikasi kapan pun (pekerjaan tertunda — selalu tampil), ATAU
+                //  (3) sudah diverifikasi TAPI KASIR BELUM TUTUP (tak ada invoice
+                //      PAID/PARTIALLY_PAID untuk kunjungan itu) DAN verifikasi masih ≤ H+7.
+                // Klausa (3) mencegah resep BACK-DATED (kunjungan kemarin) LENYAP dari
+                // worklist begitu dikunci — petugas tetap bisa melacak/dispense sampai
+                // tagihannya benar-benar dibayar (akar keluhan "resep hilang setelah
+                // verifikasi & kunci"). Batas H+7 (dari tgl verifikasi) = jaring agar
+                // resep yang tagihannya tak kunjung tutup tak menumpuk selamanya;
+                // sesudahnya tetap bisa dibuka via filter tanggal.
+                fn ($q) => $q->where(fn ($w) => $w
+                    ->whereDate('created_at', today())
+                    ->orWhereNull('verified_at')
+                    ->orWhere(fn ($v) => $v
+                        ->whereNotNull('verified_at')
+                        ->whereDate('verified_at', '>=', today()->subDays(7))
+                        ->whereHas('visit', fn ($vq) => $vq
+                            ->whereDoesntHave('billingInvoice', fn ($i) => $i
+                                ->whereIn('status', ['PAID', 'PARTIALLY_PAID']))))),
             )
             ->when(! empty($filters['search']), fn ($q) => $q->whereHas('visit.patient', fn ($p) => $p
                 ->where('name', 'ilike', "%{$filters['search']}%")

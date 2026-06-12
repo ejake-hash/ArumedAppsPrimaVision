@@ -690,6 +690,17 @@ class KasirService
         // paket, harus diresepkan sebagai item terpisah / di luar paket.
         $paketObatMedIds = $this->paketObatMedIds($visit);
 
+        // Apakah visit punya SNAPSHOT paket BEDAH? Penanda ini menentukan apakah obat
+        // ber-flag is_bedah ditagih dari snapshot (buildPaketObatLines) atau dari resep
+        // langsung di sini. Bedah À LA CARTE (tanpa paket: Tindakan/BHP/IOL satuan)
+        // TIDAK punya snapshot → buildPaketObatLines return [] → bila is_bedah tetap
+        // di-skip tanpa syarat, obat bedah HILANG dari SEMUA tagihan (akar bug "obat
+        // bedah tak muncul di Kasir / kwitansi, stok tak terpotong"). Skip is_bedah
+        // HANYA bila paket BEDAH benar-benar bersnapshot (anti dobel-tagih).
+        $hasPaketBedahSnapshot = $visit->surgeryPackageSnapshots
+            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+            ->isNotEmpty();
+
         // Hanya resep yang sudah diverifikasi & dikunci Farmasi (verified_at != null) yang
         // ditagih. Resep DRAFT/SUBMITTED belum-verif (mis. revisi dokter pasca "Kirim ke
         // Kasir" yang menunggu verifikasi ulang) DIKELUARKAN dari tagihan sampai dikunci
@@ -697,14 +708,16 @@ class KasirService
         // resep sudah verified saat invoice dibangun → tak ada perubahan perilaku.
         $billable = fn ($p) => $p->status !== 'CANCELLED' && ! is_null($p->verified_at);
 
-        // Obat ditagih di sini = resep verified yang BUKAN komponen paket (is_bedah=false
-        // & medication_id tak ada di komposisi paket BEDAH). PENGECUALIAN resep PRE-OP
-        // (instruksi dokter jaga di Triase): stat-dose yang kebetulan = komponen paket
-        // adalah dosis TAMBAHAN nyata → tetap ditagih positif dari resep (safety-net
-        // dedup med-id dilewati; is_bedah tetap dihormati). Item absorbed ("terserap ke
-        // paket") juga tampil positif di sini — penyerapannya terjadi lewat pembesaran
-        // basis DISKON_PAKET (preopAbsorbedBasis), bukan dengan menyembunyikan baris.
-        $isPaketObat = fn ($item, $rx) => $item->is_bedah
+        // Obat ditagih di sini = resep verified yang BUKAN komponen paket. is_bedah
+        // di-skip HANYA bila paket BEDAH bersnapshot (obatnya ditagih dari snapshot via
+        // buildPaketObatLines); pada bedah À LA CARTE (tanpa snapshot) is_bedah TETAP
+        // ditagih di sini agar tak hilang. PENGECUALIAN resep PRE-OP (instruksi dokter
+        // jaga di Triase): stat-dose yang kebetulan = komponen paket adalah dosis
+        // TAMBAHAN nyata → tetap ditagih positif dari resep (safety-net dedup med-id
+        // dilewati). Item absorbed ("terserap ke paket") juga tampil positif di sini —
+        // penyerapannya lewat pembesaran basis DISKON_PAKET (preopAbsorbedBasis), bukan
+        // dengan menyembunyikan baris.
+        $isPaketObat = fn ($item, $rx) => ($item->is_bedah && $hasPaketBedahSnapshot)
             || (! $rx->is_pre_op && isset($paketObatMedIds[$item->medication_id]));
 
         $medIds = $visit->prescriptions
