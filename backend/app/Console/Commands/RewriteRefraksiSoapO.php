@@ -82,7 +82,14 @@ class RewriteRefraksiSoapO extends Command
                 $derived = app(\App\Services\RmeAggregatorService::class)->refraksiObjektif($r) ?? '';
                 $derivedLines = array_map('trim', explode("\n", $derived));
                 $soapLines    = array_filter(array_map('trim', preg_split('/\r?\n/', $soapO)));
-                $subsetDerive = $soapLines !== [] && array_diff($soapLines, $derivedLines) === [];
+                // Baris "PD … mm" dihitung autofill walau NILAINYA beda dgn record —
+                // PD punya default '64' di form sehingga autofill bisa membeku di
+                // nilai basi sebelum petugas mengubahnya (nilai benar = pd_distance).
+                $sisa = array_filter(
+                    array_diff($soapLines, $derivedLines),
+                    fn ($l) => ! preg_match('/^PD\s+\d+([.,]\d+)?\s*mm$/u', $l)
+                );
+                $subsetDerive = $soapLines !== [] && $sisa === [];
                 if (! $subsetDerive) {
                     $tanpaTio[] = $r->id;
                     continue;
