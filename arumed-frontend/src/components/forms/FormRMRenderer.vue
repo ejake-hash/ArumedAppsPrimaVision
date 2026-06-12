@@ -62,6 +62,8 @@ const auditLoadedFor = ref(null)
 
 // INPUT mode state
 const formData    = ref({})        // { fieldKey: value }
+const prefillDefaults = ref({})    // nilai autofill awal dari /prefill (pembanding deteksi manual)
+const serverManualKeys = ref([])   // key MANUAL warisan draft sebelumnya (dari server)
 const fieldErrors = ref({})        // { fieldKey: message }
 const submitting  = ref(false)
 const submittedDocId = ref(null)
@@ -154,13 +156,31 @@ async function openAndLoad() {
 
 // Muat nilai awal field editable dari /form/{code}/prefill. Nilai prefill hanya
 // jadi default UI; kalau user sudah mengisi field (mis. computed), nilai user menang.
+// Server sudah meng-overlay tulisan MANUAL dari draft non-final terbaru (anti-hilang)
+// dan mengirim manual_keys — disimpan agar saat submit berikutnya status manual
+// tetap terbawa (lihat _manual_fields di submitInput).
 async function loadPrefill() {
   try {
     const { data } = await formTemplateApi.prefillForm(props.template.code, props.visitId)
     const defaults = data.data?.defaults ?? {}
+    prefillDefaults.value = defaults
+    serverManualKeys.value = Array.isArray(data.data?.manual_keys) ? data.data.manual_keys : []
     // Default di BAWAH nilai yang sudah ada di formData (computed/edit user menang).
     formData.value = { ...defaults, ...formData.value }
   } catch (_) { /* prefill best-effort — abaikan kegagalan */ }
+}
+
+// Deteksi field MANUAL: nilai sekarang ≠ autofill awal (dan tidak kosong), plus
+// warisan manual_keys dari draft sebelumnya yang nilainya masih terisi. Field yang
+// DIKOSONGKAN dokter keluar dari daftar manual → autofill mengisi lagi di buka
+// berikutnya (kosong = serahkan ke autofill, konsisten dgn DocumentRenderer).
+function collectManualFields() {
+  const isEmpty = (v) => Array.isArray(v) ? v.length === 0 : String(v ?? '').trim() === ''
+  const norm = (v) => Array.isArray(v) ? JSON.stringify(v) : String(v ?? '').trim()
+  const edited = Object.keys(formData.value).filter((k) =>
+    !isEmpty(formData.value[k]) && norm(formData.value[k]) !== norm(prefillDefaults.value[k]))
+  const kept = serverManualKeys.value.filter((k) => !isEmpty(formData.value[k]))
+  return [...new Set([...kept, ...edited])]
 }
 
 async function loadRender() {
@@ -229,7 +249,10 @@ async function submitInput({ stayOnInput = false } = {}) {
   submitting.value = true
   error.value = ''
   try {
-    const { data } = await formTemplateApi.submitForm(props.template.code, props.visitId, formData.value)
+    const { data } = await formTemplateApi.submitForm(props.template.code, props.visitId, {
+      ...formData.value,
+      _manual_fields: collectManualFields(),   // meta utk prefill draft (anti tulisan manual hilang)
+    })
     submittedDocId.value = data.data?.document_id
     submitInfo.value = data.data
     // Re-load output HTML (data klinis baru tersinkron → render terbaru).

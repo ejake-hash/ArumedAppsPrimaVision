@@ -85,9 +85,19 @@ final class FormRegistryService
      * kind 'static') tersimpan ke static_payload dokumen — TIDAK menulis balik ke
      * sumber klinis (lihat keputusan COB/klaim di Docs/PLAN-KATALOG-FORMULIR-RM.md).
      *
-     * @return array{defaults: array<string,mixed>, sources: array<string,mixed>}
+     * $withDraft=true (default): bila ada dokumen NON-final terbaru (DRAFT/
+     * RENDERED/PENDING_SIGNATURE) utk visit+template ini, nilai yang DITULIS
+     * MANUAL di draft itu di-overlay di atas autofill segar — supaya tulisan
+     * dokter di draft tidak hilang saat form dibuka lagi (keputusan user 12 Jun
+     * 2026). Field autofill murni TETAP segar (data klinis terbaru menang).
+     * Deteksi manual: meta signatures.manual_fields (draft baru, dicatat FE);
+     * draft legacy tanpa meta → heuristik nilai payload ≠ autofill segar.
+     * Set $withDraft=false untuk autofill murni (dipakai regenerateFinalized
+     * mode overwrite — menyamakan resume terbit, tanpa nimbrung draft orphan).
+     *
+     * @return array{defaults: array<string,mixed>, sources: array<string,mixed>, manual_keys: array<int,string>}
      */
-    public function prefill(string $code, int|string $visitId): array
+    public function prefill(string $code, int|string $visitId, bool $withDraft = true): array
     {
         $template = $this->findActiveTemplateByCode($code);
         $visit = Visit::query()->findOrFail($visitId);
@@ -95,7 +105,9 @@ final class FormRegistryService
         $resolver = new BindingResolver();
         $defaults = [];
 
-        foreach ($this->flattenSchemaFields($template->field_schema ?? []) as $field) {
+        $schemaFields = $this->flattenSchemaFields($template->field_schema ?? []);
+
+        foreach ($schemaFields as $field) {
             $key = $field['key'] ?? null;
             if (!is_string($key) || $key === '') continue;
 
@@ -115,9 +127,75 @@ final class FormRegistryService
             }
         }
 
+        // Overlay tulisan manual dari draft non-final terbaru (anti-hilang).
+        $manualKeys = [];
+        if ($withDraft) {
+            [$defaults, $manualKeys] = $this->overlayDraftManual($visit->id, $code, $schemaFields, $defaults);
+        }
+
         // sources == defaults (guardrail audit: nilai sumber = nilai prefill awal;
         // divergensi vs hasil edit dokter dapat direkonstruksi dari kedua sisi).
-        return ['defaults' => $defaults, 'sources' => $defaults];
+        return ['defaults' => $defaults, 'sources' => $defaults, 'manual_keys' => $manualKeys];
+    }
+
+    /**
+     * Overlay nilai MANUAL dari dokumen non-final terbaru (visit+template) ke
+     * atas autofill segar. Hanya field editable (binding static, bukan signature).
+     *
+     * - Draft pasca-fitur: signatures.manual_fields (dicatat FE saat submit) =
+     *   daftar key yang ditulis/diubah dokter → hanya itu yang dioverlay.
+     * - Draft legacy (tanpa meta): heuristik — nilai payload non-kosong yang
+     *   BERBEDA dari autofill segar dianggap manual (dipertahankan).
+     * Nilai kosong tidak pernah dioverlay (kosong = serahkan ke autofill).
+     *
+     * @return array{0: array<string,mixed>, 1: array<int,string>}  [defaults, manualKeys]
+     */
+    private function overlayDraftManual(string $visitId, string $code, array $schemaFields, array $defaults): array
+    {
+        $draft = PatientDocument::query()
+            ->where('visit_id', $visitId)
+            ->where('template_code', $code)
+            ->whereNotIn('status', ['FINALIZED', 'FINAL', 'SUPERSEDED'])
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')   // tiebreaker submit beruntun sedetik (id = ordered UUID)
+            ->first();
+
+        $payload = $draft->signatures['static_payload'] ?? null;
+        if (!is_array($payload) || empty($payload)) {
+            return [$defaults, []];
+        }
+
+        // Key editable saja (binding static, bukan kanvas TTD).
+        $editable = [];
+        foreach ($schemaFields as $f) {
+            $k = $f['key'] ?? null;
+            if (is_string($k) && $k !== ''
+                && (($f['binding']['kind'] ?? null) === 'static')
+                && (($f['type'] ?? '') !== 'signature_canvas')) {
+                $editable[$k] = true;
+            }
+        }
+
+        $isEmpty = fn ($v) => is_array($v) ? $v === [] : trim((string) ($v ?? '')) === '';
+        $norm    = fn ($v) => is_array($v) ? json_encode($v) : trim((string) ($v ?? ''));
+
+        $manualMeta = $draft->signatures['manual_fields'] ?? null;   // null = draft legacy
+        $manualKeys = [];
+
+        foreach ($payload as $k => $v) {
+            if (!isset($editable[$k]) || $isEmpty($v)) {
+                continue;
+            }
+            $isManual = is_array($manualMeta)
+                ? in_array($k, $manualMeta, true)
+                : $norm($v) !== $norm($defaults[$k] ?? '');   // legacy: beda dari fresh = manual
+            if ($isManual) {
+                $defaults[$k] = $v;
+                $manualKeys[] = $k;
+            }
+        }
+
+        return [$defaults, $manualKeys];
     }
 
     /** Ratakan field_schema (single_page / multi_page) → flat list. */
@@ -369,7 +447,8 @@ final class FormRegistryService
             // dipertahankan). Field yang kini resolve KOSONG hilang dari payload →
             // render() fallback resolvePrefill → kosong juga (replace bersih).
             if ($overwrite) {
-                $fresh = $this->prefill($doc->template_code, $doc->visit_id)['defaults'] ?? [];
+                // withDraft=false → autofill murni (jangan nimbrung draft orphan).
+                $fresh = $this->prefill($doc->template_code, $doc->visit_id, false)['defaults'] ?? [];
                 $sig = $doc->signatures ?? [];
                 $sig['static_payload'] = $fresh;
                 $doc->signatures = $sig;
@@ -536,6 +615,23 @@ final class FormRegistryService
         $computed   = $this->scoring->computeAll($schema, $rawPayload);
         $staticPayload = array_merge($rawPayload, $computed);
 
+        // Meta field MANUAL (dikirim FE sebagai `_manual_fields`): daftar key yang
+        // ditulis/diubah dokter (bukan autofill murni). Dipakai prefill() agar
+        // tulisan manual draft tidak hilang saat form dibuka lagi, sementara field
+        // autofill tetap segar. Absen (client lama) → null = mode heuristik legacy.
+        $manualFields = null;
+        if (array_key_exists('_manual_fields', $data)) {
+            $manualFields = array_values(array_unique(array_filter(
+                (array) $data['_manual_fields'],
+                fn ($k) => is_string($k) && $k !== ''
+            )));
+        }
+
+        $signatures = empty($staticPayload) ? [] : ['static_payload' => $staticPayload];
+        if ($manualFields !== null) {
+            $signatures['manual_fields'] = $manualFields;
+        }
+
         // Persist sebagai patient_document DRAFT — supaya bisa di-render/finalize nanti.
         $doc = PatientDocument::create([
             'patient_id'         => $visit->patient_id,
@@ -545,8 +641,8 @@ final class FormRegistryService
             'template_version'   => $template->version,
             'status'             => 'DRAFT',
             'created_by_station' => $syncResult['_station'] ?? null,
-            // Simpan static payload + computed ke kolom signatures (jsonb).
-            'signatures'         => empty($staticPayload) ? null : ['static_payload' => $staticPayload],
+            // Simpan static payload + computed (+ meta manual_fields) ke signatures (jsonb).
+            'signatures'         => empty($signatures) ? null : $signatures,
         ]);
 
         // Surface computed values di response — frontend bisa verifikasi server == client compute.
