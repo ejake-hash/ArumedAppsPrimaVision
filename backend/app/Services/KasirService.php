@@ -100,8 +100,13 @@ class KasirService
 
     public function getInvoiceList(array $filters = []): LengthAwarePaginator
     {
+        // Riwayat Pembayaran kasir difilter berdasarkan TANGGAL BAYAR (paid_at) —
+        // tanggal kwitansi dibayar/dikonfirmasi tutup — BUKAN tanggal invoice dibuat
+        // (created_at). Invoice yang dibuat tanggal X tapi dibayar tanggal Y kini
+        // muncul di tanggal Y, selaras label "Riwayat Pembayaran"/"Tanggal transaksi"
+        // di KasirView. paid_at NULL (belum bayar) otomatis tak masuk riwayat.
         $query = BillingInvoice::with(['visit.patient', 'cashier'])
-            ->whereDate('created_at', $filters['tanggal'] ?? today());
+            ->whereDate('paid_at', $filters['tanggal'] ?? today());
 
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -124,7 +129,7 @@ class KasirService
             );
         }
 
-        return $query->orderByDesc('created_at')->paginate($filters['per_page'] ?? 20);
+        return $query->orderByDesc('paid_at')->paginate($filters['per_page'] ?? 20);
     }
 
     public function getInvoiceByVisit(string $visitId): ?BillingInvoice

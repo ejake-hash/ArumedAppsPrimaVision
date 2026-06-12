@@ -2520,22 +2520,56 @@ class DokterService
 
         return $schedules->map(function (DoctorSchedule $s) use ($todayDow) {
             $isToday = $s->day_of_week === $todayDow;
+            // Tanggal kunjungan kandidat: beberapa kemunculan berikutnya dari hari
+            // praktik dokter tujuan (≥ hari ini). Dokter MEMILIH tanggal — supaya
+            // rujukan ke dokter yang praktik di hari-yang-sama-mingguan TIDAK otomatis
+            // dijadwalkan hari ini (mis. kontrol Kamis → rujuk retina Kamis depan).
+            $upcoming = $this->upcomingDatesForDow($s->day_of_week);
 
             return [
-                'schedule_id'  => $s->id,
-                'doctor_id'    => $s->employee_id,
-                'doctor_name'  => $s->employee?->name,
-                'poliklinik'   => $s->poliklinik,
-                'poli_code'    => $s->poli_code,
-                'service_type' => $s->service_type,
-                'room'         => $s->room,
-                'day_of_week'  => $s->day_of_week,
-                'day_label'    => $this->dayLabel($s->day_of_week),
-                'start_time'   => substr((string) $s->start_time, 0, 5),
-                'end_time'     => substr((string) $s->end_time, 0, 5),
-                'is_today'     => $isToday,
+                'schedule_id'    => $s->id,
+                'doctor_id'      => $s->employee_id,
+                'doctor_name'    => $s->employee?->name,
+                'poliklinik'     => $s->poliklinik,
+                'poli_code'      => $s->poli_code,
+                'service_type'   => $s->service_type,
+                'room'           => $s->room,
+                'day_of_week'    => $s->day_of_week,
+                'day_label'      => $this->dayLabel($s->day_of_week),
+                'start_time'     => substr((string) $s->start_time, 0, 5),
+                'end_time'       => substr((string) $s->end_time, 0, 5),
+                'is_today'       => $isToday,
+                'next_date'      => $upcoming[0]['date'] ?? null,
+                'upcoming_dates' => $upcoming,
             ];
         })->values()->all();
+    }
+
+    /**
+     * Beberapa tanggal kemunculan berikutnya (≥ hari ini, WIB) dari sebuah hari
+     * praktik (ISO 1=Senin..7=Minggu). Dipakai sebagai pilihan "Tanggal Kunjungan"
+     * saat rujuk internal. Kemunculan pertama bisa = hari ini bila hari ini cocok.
+     *
+     * @return array<array{date:string,label:string,is_today:bool}>
+     */
+    private function upcomingDatesForDow(int $dow, int $count = 4): array
+    {
+        $today    = now('Asia/Jakarta')->startOfDay();
+        $delta    = ($dow - $today->isoWeekday() + 7) % 7;   // 0 = hari ini
+        $first    = $today->copy()->addDays($delta);
+        $todayStr = $today->toDateString();
+
+        $out = [];
+        for ($i = 0; $i < $count; $i++) {
+            $d = $first->copy()->addWeeks($i);
+            $out[] = [
+                'date'     => $d->toDateString(),
+                'label'    => $d->locale('id')->isoFormat('dddd, D MMM Y'),
+                'is_today' => $d->toDateString() === $todayStr,
+            ];
+        }
+
+        return $out;
     }
 
     /**
@@ -2559,14 +2593,25 @@ class DokterService
      * (1:1 dengan doctor_examination & billing-nya sendiri — sesuai model BPJS
      * poli-berbeda) yang ditautkan ke visit induk via parent_visit_id.
      *
-     * - Dokter tujuan praktik HARI INI → visit anak langsung masuk antrean DOKTER.
-     * - Tidak praktik hari ini → visit anak dibuat sebagai penanda (current_station
-     *   = ADMISI); petugas Admisi memunculkannya ke antrean di hari praktik dokter.
+     * - $scheduledDate = HARI INI (dan dokter tujuan praktik hari ini) → visit anak
+     *   langsung masuk antrean DOKTER.
+     * - $scheduledDate hari lain → visit anak dibuat sebagai penanda (current_station
+     *   = ADMISI) ber-visit_date = tanggal itu; petugas Admisi memunculkannya ke
+     *   antrean saat pasien datang di hari-H (otomatis tampil di papan tanggal itu &
+     *   di tab "Masih Aktif").
+     *
+     * $scheduledDate (YYYY-MM-DD) HARUS jatuh di hari praktik dokter tujuan & ≥ hari
+     * ini. Bila null → default kemunculan berikutnya dari hari praktik (≥ hari ini)
+     * — menghindari asumsi lama "hari-sama-mingguan = hari ini".
      *
      * @return array { child_visit, enqueued, target }
      */
-    public function rujukInternal(string $visitId, string $targetScheduleId, ?string $reason = null): array
-    {
+    public function rujukInternal(
+        string $visitId,
+        string $targetScheduleId,
+        ?string $reason = null,
+        ?string $scheduledDate = null
+    ): array {
         $visit = $this->authorizeVisitOwnership($visitId);
         $user  = auth('api')->user();
 
@@ -2576,12 +2621,30 @@ class DokterService
             throw new \Exception('Tidak bisa merujuk ke poli/dokter yang sama.', 422);
         }
 
-        $todayDow = (int) now('Asia/Jakarta')->isoWeekday();
-        $isToday  = $target->week_start?->toDateString() === DoctorSchedule::currentWeekStart()
-            && $target->day_of_week === $todayDow
-            && $target->is_active;
+        $today = now('Asia/Jakarta')->startOfDay();
 
-        return DB::transaction(function () use ($visit, $target, $reason, $user, $isToday) {
+        // Tanggal kunjungan rujukan. Default: kemunculan berikutnya hari praktik
+        // dokter tujuan (≥ hari ini). Bila dokter memilih eksplisit, validasi.
+        if ($scheduledDate) {
+            $date = \Carbon\Carbon::parse($scheduledDate, 'Asia/Jakarta')->startOfDay();
+            if ($date->lt($today)) {
+                throw new \Exception('Tanggal rujukan tidak boleh di masa lalu.', 422);
+            }
+            if ($date->isoWeekday() !== $target->day_of_week) {
+                throw new \Exception(
+                    'Tanggal rujukan harus jatuh pada hari praktik dokter tujuan ('
+                    . $this->dayLabel($target->day_of_week) . ').',
+                    422
+                );
+            }
+        } else {
+            $delta = ($target->day_of_week - $today->isoWeekday() + 7) % 7;
+            $date  = $today->copy()->addDays($delta);
+        }
+
+        $isToday = $date->isSameDay($today);
+
+        return DB::transaction(function () use ($visit, $target, $reason, $user, $isToday, $date) {
             $child = Visit::create([
                 'parent_visit_id'                    => $visit->id,
                 'patient_id'                         => $visit->patient_id,
@@ -2591,7 +2654,9 @@ class DokterService
                 'internal_referral_from_schedule_id' => $visit->doctor_schedule_id,
                 'internal_referral_reason'           => $reason,
                 'no_registrasi'                      => $this->generateChildNoRegistrasi(),
-                'visit_date'                         => today(),
+                // visit_date = tanggal kunjungan rujukan (bukan tanggal tombol diklik)
+                // → RME & papan Admisi menampilkannya di tanggal yang benar.
+                'visit_date'                         => $date->toDateString(),
                 'classification'                     => 'Rujukan Internal',
                 'visit_type'                         => 'REGULAR',
                 // Hari ini → langsung antrean DOKTER. Hari lain → penanda di ADMISI
@@ -2612,7 +2677,9 @@ class DokterService
                 Visit::class,
                 $child->id,
                 "Rujukan internal dari kunjungan {$visit->id} → poli {$target->poliklinik}"
-                . ($isToday ? ' (antrean hari ini)' : ' (jadwal ' . $this->dayLabel($target->day_of_week) . ')')
+                . ($isToday
+                    ? ' (antrean hari ini)'
+                    : ' (jadwal ' . $this->dayLabel($target->day_of_week) . ' ' . $date->toDateString() . ')')
             );
 
             return [
@@ -2624,6 +2691,8 @@ class DokterService
                     'poliklinik'  => $target->poliklinik,
                     'day_label'   => $this->dayLabel($target->day_of_week),
                     'start_time'  => substr((string) $target->start_time, 0, 5),
+                    'date'        => $date->toDateString(),
+                    'date_label'  => $date->locale('id')->isoFormat('dddd, D MMM Y'),
                 ],
             ];
         });

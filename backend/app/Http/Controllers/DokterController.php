@@ -131,13 +131,15 @@ class DokterController extends Controller
         $validated = $request->validate([
             'target_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
             'reason'             => 'nullable|string|max:255',
+            'scheduled_date'     => 'nullable|date',
         ]);
 
         try {
             $result = $this->service->rujukInternal(
                 $visitId,
                 $validated['target_schedule_id'],
-                $validated['reason'] ?? null
+                $validated['reason'] ?? null,
+                $validated['scheduled_date'] ?? null
             );
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
@@ -145,7 +147,8 @@ class DokterController extends Controller
 
         $msg = $result['enqueued']
             ? 'Pasien dirujuk & masuk antrean dokter tujuan hari ini.'
-            : 'Rujukan dibuat. Pasien daftar ulang di hari praktik dokter tujuan.';
+            : 'Rujukan dibuat untuk ' . ($result['target']['date_label'] ?? 'jadwal praktik dokter tujuan')
+                . '. Pasien daftar ulang di tanggal itu.';
 
         return $this->ok($result, $msg, 201);
     }

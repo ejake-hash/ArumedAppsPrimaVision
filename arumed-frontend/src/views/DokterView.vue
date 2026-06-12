@@ -488,6 +488,7 @@ function resetFormState() {
   rujukMode.value = 'EXTERNAL'
   internalTargets.value = []
   internalTargetId.value = ''
+  internalDate.value = ''
   internalReason.value = ''
   Object.assign(rk, { faskesKode: '', faskesNama: '', poliKode: '', poliNama: '', tipeRujukan: '1', jnsPelayanan: '2', diagKode: '', diagNama: '', catatan: '' })
   rkFaskesQ.value = ''; rkFaskesRes.value = []; rkPoliQ.value = ''; rkPoliRes.value = []
@@ -1576,6 +1577,7 @@ const rujukMode = ref('EXTERNAL')          // 'INTERNAL' | 'EXTERNAL'
 const internalTargets = ref([])            // [{schedule_id, doctor_name, poliklinik, is_today, day_label, start_time, ...}]
 const internalTargetsLoading = ref(false)
 const internalTargetId = ref('')           // schedule_id tujuan terpilih
+const internalDate = ref('')               // tanggal kunjungan rujukan (YYYY-MM-DD)
 const internalReason = ref('')
 const internalSubmitting = ref(false)
 
@@ -1606,26 +1608,43 @@ const internalTargetSel = computed(() =>
   internalTargets.value.find((t) => t.schedule_id === internalTargetId.value) || null
 )
 
+// Pilihan tanggal kunjungan untuk tujuan terpilih (kemunculan berikutnya hari
+// praktiknya). Dokter memilih tanggal → rujukan ke dokter ber-hari-sama-mingguan
+// tak lagi otomatis dijadwalkan hari ini.
+const internalDateOptions = computed(() => internalTargetSel.value?.upcoming_dates ?? [])
+const internalDateSel = computed(() =>
+  internalDateOptions.value.find((d) => d.date === internalDate.value) || null
+)
+const internalDateIsToday = computed(() => !!internalDateSel.value?.is_today)
+
+// Ganti tujuan → set tanggal default ke kemunculan terdekat (next_date).
+watch(internalTargetId, () => {
+  internalDate.value = internalTargetSel.value?.next_date ?? ''
+})
+
 // Saat masuk mode internal pertama kali, muat daftar tujuan.
 watch(rujukMode, (m) => { if (m === 'INTERNAL' && !internalTargets.value.length) loadInternalTargets() })
 
 async function submitRujukInternal() {
   if (!store.selectedVisitId) { toast('e', 'Pasien belum dipilih'); return }
   if (!internalTargetId.value) { toast('e', 'Pilih poli/dokter tujuan dulu'); return }
+  if (!internalDate.value) { toast('e', 'Pilih tanggal kunjungan rujukan dulu'); return }
   internalSubmitting.value = true
   try {
     const { data } = await dokterApi.rujukInternal(store.selectedVisitId, {
       target_schedule_id: internalTargetId.value,
       reason: internalReason.value || null,
+      scheduled_date: internalDate.value,
     })
     const r = data.data ?? {}
     const t = r.target ?? {}
     toast('s', r.enqueued
       ? `Dirujuk ke ${t.poliklinik} (${t.doctor_name || 'dokter'}) — masuk antrean hari ini.`
-      : `Rujukan ke ${t.poliklinik} dibuat. Pasien daftar ulang hari ${t.day_label} (${t.start_time}).`)
+      : `Rujukan ke ${t.poliklinik} dibuat untuk ${t.date_label || t.day_label}. Pasien daftar ulang di tanggal itu.`)
     rujukDone.value = true   // tandai rujukan sudah dibuat (cek di doFinalize)
     // Reset sub-form internal; biarkan daftar tujuan agar bisa rujuk lagi bila perlu.
     internalTargetId.value = ''
+    internalDate.value = ''
     internalReason.value = ''
   } catch (e) {
     toast('e', e.response?.data?.message || 'Gagal membuat rujukan internal')
@@ -3500,29 +3519,38 @@ function closeResumeRM() {
                         </div>
                       </div>
                       <div class="fg">
-                        <label class="fl">Alasan Rujukan <span class="fl-opt">(opsional)</span></label>
-                        <input v-model="internalReason" class="form-input" placeholder="mis. Evaluasi retina / glaukoma..." />
+                        <label class="fl">Tanggal Kunjungan Rujukan</label>
+                        <select v-model="internalDate" class="form-select" :disabled="!internalTargetSel">
+                          <option value="">{{ internalTargetSel ? '— Pilih tanggal —' : 'Pilih tujuan dulu' }}</option>
+                          <option v-for="d in internalDateOptions" :key="d.date" :value="d.date">
+                            {{ d.label }}{{ d.is_today ? ' · HARI INI' : '' }}
+                          </option>
+                        </select>
                       </div>
                     </div>
+                    <div class="fg">
+                      <label class="fl">Alasan Rujukan <span class="fl-opt">(opsional)</span></label>
+                      <input v-model="internalReason" class="form-input" placeholder="mis. Evaluasi retina / glaukoma..." />
+                    </div>
 
-                    <!-- Preview jadwal dokter tujuan (jadwal-aware) -->
-                    <div v-if="internalTargetSel" class="rujuk-internal-preview">
-                      <template v-if="internalTargetSel.is_today">
-                        <span class="rip-badge rip-today">Praktik hari ini</span>
+                    <!-- Preview jadwal dokter tujuan (tanggal-aware) -->
+                    <div v-if="internalTargetSel && internalDate" class="rujuk-internal-preview">
+                      <template v-if="internalDateIsToday">
+                        <span class="rip-badge rip-today">Antrean hari ini</span>
                         Pasien langsung masuk antrean <b>{{ internalTargetSel.poliklinik }}</b>
                         ({{ internalTargetSel.doctor_name }}, mulai {{ internalTargetSel.start_time }}).
                       </template>
                       <template v-else>
-                        <span class="rip-badge rip-later">Jadwal {{ internalTargetSel.day_label }}</span>
-                        Dokter tujuan tidak praktik hari ini — pasien <b>daftar ulang</b> hari
-                        {{ internalTargetSel.day_label }} ({{ internalTargetSel.start_time }}).
+                        <span class="rip-badge rip-later">{{ internalDateSel?.label }}</span>
+                        Dijadwalkan untuk tanggal itu — pasien <b>daftar ulang</b> di hari tersebut
+                        (mulai {{ internalTargetSel.start_time }}).
                       </template>
                     </div>
 
                     <div class="rujuk-internal-actions">
                       <button
                         type="button" class="btn-rujuk-internal"
-                        :disabled="!internalTargetId || internalSubmitting"
+                        :disabled="!internalTargetId || !internalDate || internalSubmitting"
                         @click="submitRujukInternal"
                       >
                         {{ internalSubmitting ? 'Memproses…' : 'Buat Rujukan ke Poli Ini' }}

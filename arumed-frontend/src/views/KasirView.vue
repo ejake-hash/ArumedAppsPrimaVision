@@ -762,7 +762,8 @@ function svcShort(t) { return ({ RANAP: 'Rawat Inap', IGD: 'IGD', RAJAL: 'Rawat 
 
 // ─── History pembayaran ─────────────────────────────────────────────────────
 // Tanggal default = hari ini (format yyyy-mm-dd WIB). Backend getInvoiceList
-// memfilter `whereDate('created_at', tanggal)`, default today() bila kosong.
+// memfilter `whereDate('paid_at', tanggal)` (TANGGAL BAYAR/tutup kwitansi),
+// default today() bila kosong.
 function todayStr() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
