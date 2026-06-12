@@ -794,12 +794,22 @@ class BedahService
     // DOKUMEN LAPORAN OPERASI (RM-5.3) → PatientDocument multi-TTD
     // =========================================================================
 
-    /** Apakah operasi melibatkan anestesi (GA / ada anestesiolog) → TTD anestesi wajib. */
+    /**
+     * Apakah operasi melibatkan anestesi termonitor → TTD anestesi wajib.
+     * Selaras FE BedahView hasAnesthesia: jenis TIVA / Umum (GA) — diputuskan di awal
+     * (Pra-Bedah); lokal/topikal/sub-tenon TIDAK, walau slot anestesiolog terisi.
+     * Fallback anesthesiologist_id hanya untuk record legacy tanpa anesthesia_type.
+     */
     private function operationHasAnesthesia(SurgeryRecord $record): bool
     {
         $report = $record->operation_report ?? [];
         $type   = strtolower((string) ($report['anesthesia_type'] ?? ''));
-        return $type === 'umum' || ! empty($record->surgerySchedule?->anesthesiologist_id);
+
+        if ($type !== '') {
+            return in_array($type, ['umum', 'tiva'], true);
+        }
+
+        return ! empty($record->surgerySchedule?->anesthesiologist_id);
     }
 
     /**

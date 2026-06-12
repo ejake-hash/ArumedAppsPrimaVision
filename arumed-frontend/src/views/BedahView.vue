@@ -118,6 +118,7 @@ function transformQueueItem(q) {
     iolDipasang:    { itemId: '', merk: '', power: '', series: '', tipe: 'Monofocal', eyeSide: 'OD', lot: '', serial: '', gtin: '', gs1_barcode: '', expiry: '' },
     iolUsageSaved:  false,          // true setelah storeIolUsage sukses (badge info)
     anestesi:       'Topikal',
+    anestesiFromServer: false,  // true bila anesthesia_type pernah tersimpan di laporan (jangan auto-override)
     catatanIntra:   '',
     teknikOp:       '',
     temuanIntra:    '',
@@ -616,12 +617,14 @@ function fmtJamJadwal(t) {
 }
 
 // ── Perioperatif: anestesi adaptif + gating WHO ──────────────────────────────
-// Bagian anestesi (wizard/monitoring/sub-Sign In) hanya muncul bila operasi
-// melibatkan anestesi: jenis = Umum (GA) ATAU slot Anestesiologis terisi.
-const hasAnesthesia = computed(() => {
-  if (!selP.value) return false
-  return selP.value.anestesi === 'Umum' || !!(selP.value.tim?.anestesi || '').trim()
-})
+// Bagian anestesi (wizard/monitoring/sub-Sign In) hanya muncul bila JENIS anestesi
+// butuh monitoring: TIVA atau Umum (GA). Jenis diputuskan DI AWAL (tab Pra-Bedah);
+// anestesi lokal/topikal/sub-tenon TIDAK memunculkan panel walau slot Anestesiologis
+// terisi (permintaan user: lokal tak perlu monitoring anestesi).
+const ANES_MONITORED = ['TIVA', 'Umum']
+const hasAnesthesia = computed(() =>
+  !!selP.value && ANES_MONITORED.includes(selP.value.anestesi)
+)
 
 // Prosedur vitrektomi → section "Detail Vitrektomi" + simpan vitrectomy_details.
 // Pakai SUMBER KEBENARAN yang sama dengan pemicu RM 10.1 (selP.isVitreoretina =
@@ -1005,7 +1008,7 @@ function hydratePerioperative(rec) {
   if (or.estimated_blood_loss) s.estimatedBloodLoss = or.estimated_blood_loss
   // Jenis anestesi & diagnosa pasca-bedah & tim — pulihkan dari laporan tersimpan
   // (cegah default 'Topikal' menyesatkan + hasAnesthesia salah → panel anestesi hilang).
-  if (or.anesthesia_type) s.anestesi = or.anesthesia_type
+  if (or.anesthesia_type) { s.anestesi = or.anesthesia_type; s.anestesiFromServer = true }
   if (or.diagnosis_post && or.diagnosis_post !== '-' && !s.diagnosaPasca) s.diagnosaPasca = or.diagnosis_post
   if (or.operator && !s.tim.operator) s.tim.operator = or.operator
   if (or.anesthesiologist && !s.tim.anestesi) s.tim.anestesi = or.anesthesiologist
@@ -1035,6 +1038,16 @@ function vpForm(snapId) {
 const vpAllPackages = ref([])         // {id, name, code, package_type}
 const vpAddPkgId = ref('')
 const vpAddTariffId = ref('')   // varian harga terpilih (1 penjamin bisa >1 varian)
+
+// Paket anestesi TIVA terpasang pada pasien → jenis anestesi otomatis 'TIVA'
+// (keputusan anestesi di awal, tab Pra-Bedah). Hanya meng-upgrade dari jenis
+// non-monitor (Topikal/Lokal/Sub-Tenon) yang BELUM pernah tersimpan di laporan
+// (anestesiFromServer) — pilihan eksplisit user/server tidak ditimpa.
+watch(visitPackages, (pkgs) => {
+  const s = selP.value
+  if (!s || s.anestesiFromServer || ANES_MONITORED.includes(s.anestesi)) return
+  if ((pkgs || []).some(p => /\btiva\b/i.test(p?.package_name || ''))) s.anestesi = 'TIVA'
+})
 
 const fmtRp2 = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
 
@@ -1514,7 +1527,7 @@ const aldreteComponents = [
 //   Operator (DPJP)  → dokter
 //   Asisten 1/2      → perawat
 //   Scrub/Circulating Nurse → perawat
-//   Anestesiologis   → dokter anestesi (fallback: dokter mana pun, karena belum ada role khusus)
+//   Anestesiologis   → HANYA dokter anestesi (role dokter_anestesi / profesi anestesi)
 function employeeMatchesRole(e, key) {
   switch (key) {
     case 'operator':
@@ -1525,8 +1538,9 @@ function employeeMatchesRole(e, key) {
     case 'circNurse':
       return e.roleName === 'perawat'
     case 'anestesi':
-      // dokter dengan profesi anestesi; kalau tak ada penanda, terima semua dokter
-      return e.roleName === 'dokter' && (e.prof.includes('anestesi') || !employees.value.some(x => x.roleName === 'dokter' && x.prof.includes('anestesi')))
+      // ketat: role dokter_anestesi, atau dokter berprofesi anestesi (toleransi salah eja "anastesi")
+      return e.roleName === 'dokter_anestesi'
+        || (e.roleName === 'dokter' && (e.prof.includes('anestesi') || e.prof.includes('anastesi')))
     default:
       return true
   }
@@ -1799,6 +1813,17 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <label class="bd-label">Diagnosa</label>
                     <span class="bd-val bd-dx">{{ selP.diagnosa }}<span v-if="selP.diagnosaNama"> — {{ selP.diagnosaNama }}</span></span>
                   </div>
+                  <!-- Jenis anestesi DIPUTUSKAN DI AWAL: menentukan checklist "anestesi siap"
+                       (Sign In) & panel Laporan/Monitoring Anestesi (hanya TIVA / Umum-GA). -->
+                  <div class="bd-field-row">
+                    <label class="bd-label">Jenis Anestesi</label>
+                    <select class="bd-select" v-model="selP.anestesi" :disabled="selP.laporanFinalized">
+                      <option>Topikal</option><option>Lokal</option><option>Sub-Tenon</option><option>TIVA</option><option value="Umum">Umum (GA)</option>
+                    </select>
+                  </div>
+                  <p v-if="!hasAnesthesia" class="bd-anes-hint" style="margin:4px 0 0">
+                    Anestesi {{ selP.anestesi.toLowerCase() }} — tanpa Laporan & Monitoring Anestesi. Pilih TIVA / Umum (GA) bila perlu monitoring.
+                  </p>
                 </div>
               </div>
 
@@ -2092,7 +2117,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                       <option v-for="p in vpAvailablePackages" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}{{ p.package_type ? ` · ${p.package_type}` : '' }}</option>
                     </select>
                     <select v-if="vpSelectedVariants.length > 1" class="bd-select bd-select-sm" v-model="vpAddTariffId" style="flex:1" title="Varian / Nama Paket Penjamin">
-                      <option v-for="v in vpSelectedVariants" :key="v.tariff_id" :value="v.tariff_id">{{ v.display_name || 'Varian' }} — {{ fmtRp2(v.sell_price) }}</option>
+                      <option v-for="v in vpSelectedVariants" :key="v.tariff_id" :value="v.tariff_id">{{ v.display_name || 'Varian' }} — {{ fmtRp2(v.sell_price) }}{{ v.iol_label ? ` — IOL ${v.iol_label}` : '' }}</option>
                     </select>
                     <button class="bd-btn-add" @click="vpAddPackage" :disabled="vpBusy || !vpAddPkgId">+ Tambah Paket</button>
                   </div>
@@ -2202,19 +2227,19 @@ function mulaiBack() { mulaiStep.value = 1 }
                     </div>
                   </template>
 
+                  <!-- Jenis anestesi diputuskan di tab Pra-Bedah (read-only di sini). -->
                   <div class="bd-iol-field" style="margin-top:8px">
                     <label class="bd-label">Jenis Anestesi</label>
-                    <select class="bd-select" v-model="selP.anestesi" :disabled="selP.laporanFinalized">
-                      <option>Topikal</option><option>Lokal</option><option>Sub-Tenon</option><option>Umum</option>
-                    </select>
+                    <span class="bd-val">{{ selP.anestesi }}{{ selP.anestesi === 'Umum' ? ' (GA)' : '' }}</span>
+                    <span class="bd-anes-hint" style="margin-left:8px">— diatur di tab Pra-Bedah</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- Anestesi lengkap (wizard RM 5.2 + monitoring durante) — hanya bila operasi
-                 pakai anestesi (GA / ada anestesiolog). Wizard mengatur RBAC sendiri
-                 (anestesi.read tampil, anestesi.write edit) & memuat panel monitoring di hal 3. -->
+            <!-- Anestesi lengkap (wizard RM 5.2 + monitoring durante) — hanya bila jenis
+                 anestesi TIVA / Umum (GA), diputuskan di tab Pra-Bedah. Wizard mengatur RBAC
+                 sendiri (anestesi.read tampil, anestesi.write edit) & memuat panel monitoring di hal 3. -->
             <div v-if="hasAnesthesia && selP.recordId" class="bd-card bd-card-full">
               <div class="bd-card-hd">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
