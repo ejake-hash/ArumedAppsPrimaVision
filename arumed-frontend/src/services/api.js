@@ -392,6 +392,13 @@ export const masterApi = {
   bukuTarif: {
     list:     (params)  => api.get('/master/buku-tarif', { params }),
     setHarga: (payload) => api.put('/master/buku-tarif/harga', payload),
+    // CSV/Excel terpadu — 1 file lintas-tipe (Tindakan+Obat+BHP+IOL), roundtrip harga UMUM.
+    csvTemplate: (format)        => api.get('/master/buku-tarif/template-csv', { params: format ? { format } : {}, responseType: 'blob' }),
+    csvExport:   (params, format) => api.get('/master/buku-tarif/export-csv', { params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob' }),
+    csvImport:   (file) => {
+      const fd = new FormData(); fd.append('file', file)
+      return api.post('/master/buku-tarif/import-csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    },
   },
 
   // Tarif Tindakan (procedure_tariffs) — CSV via masterApi.csv('tarif/tindakan', ...)

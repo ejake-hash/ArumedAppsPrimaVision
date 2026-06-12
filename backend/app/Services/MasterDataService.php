@@ -2175,6 +2175,189 @@ class MasterDataService
         return $this->storeTarif($tipe, $data);
     }
 
+    // ─── Buku Tarif terpadu — CSV export/import lintas-tipe (1 file) ──────────
+    // Header kanonik: no, tipe, kode, nama, kategori, satuan, harga_jual, pos_kwitansi, aktif.
+    // tipe = tindakan|obat|bhp|iol. Roundtrip: export → edit harga_jual → import balik.
+
+    private const BUKU_TARIF_HEADER = ['no', 'tipe', 'kode', 'nama', 'kategori', 'satuan', 'harga_jual', 'pos_kwitansi', 'aktif'];
+
+    /** Template CSV Buku Tarif terpadu (header + petunjuk). */
+    public function templateBukuTarifCsv(): string
+    {
+        $notes = [
+            'PETUNJUK — baris diawali "#" diabaikan saat import (boleh dibiarkan/dihapus).',
+            'Kolom WAJIB: tipe, nama, harga_jual. (kode, kategori, pos_kwitansi, satuan, aktif OPSIONAL/INFO).',
+            'tipe = tindakan / obat / bhp / iol. Baris kamar TIDAK didukung di sini (kelola di tab Tarif Kamar).',
+            'Item dicocokkan: kode (bila ada, MENANG) lalu nama (+kategori khusus tindakan). Item HARUS sudah ada di master — import ini TIDAK membuat item baru, hanya set harga.',
+            'IOL tanpa kode → dicocokkan via nama display "Brand Model PowerD".',
+            'harga_jual = harga Buku Tarif UMUM (angka >= 0). Penjamin tanpa override otomatis ikut harga ini.',
+            'pos_kwitansi (khusus obat) = ' . implode(' / ', MedicationTariff::POS_LABELS) . '. Kosong → pos tidak diubah.',
+            'kolom "no", "satuan", "aktif" hanya info, DIABAIKAN saat import.',
+        ];
+        $output = fopen('php://temp', 'r+');
+        foreach ($notes as $n) {
+            fwrite($output, '# ' . $n . "\n");
+        }
+        fputcsv($output, self::BUKU_TARIF_HEADER, ',', '"', '\\');
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /**
+     * Export Buku Tarif terpadu (UMUM) ke CSV — SEMUA tipe (Tindakan+Obat+BHP+IOL)
+     * dalam satu file, kolom `tipe` jadi pembeda. Ikut filter (search/kategori/tipe/harga_nol)
+     * bila dikirim; tanpa filter → ekspor penuh. Kamar dikecualikan (read-only di tab ini).
+     */
+    public function exportBukuTarifCsv(array $filters = []): string
+    {
+        $rows = $this->bukuTarifExportRows($filters);
+
+        $output = fopen('php://temp', 'r+');
+        fputcsv($output, self::BUKU_TARIF_HEADER, ',', '"', '\\');
+        $no = 1;
+        foreach ($rows as $row) {
+            // Di union, kategori baris obat SUDAH berupa label pos (Obat Tindakan/Injeksi/
+            // Pulang) → pakai itu sbg pos_kwitansi agar lossless. Tipe lain: kosong.
+            $pos   = $row->tipe === 'obat' ? ($row->kategori ?? '') : '';
+            $harga = rtrim(rtrim(number_format((float) $row->harga, 2, '.', ''), '0'), '.');
+            fputcsv($output, [
+                $no++,
+                $row->tipe,
+                $row->kode ?? '',
+                $row->nama,
+                $row->kategori,
+                $row->satuan ?? '',
+                $harga === '' ? '0' : $harga,
+                $pos,
+                $row->aktif ? 'YA' : 'TIDAK',
+            ], ',', '"', '\\');
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+        return $csv;
+    }
+
+    /** Baris export Buku Tarif (union UMUM, tanpa kamar, ikut filter, urut tipe→kategori→nama). */
+    private function bukuTarifExportRows(array $filters = [])
+    {
+        $q = DB::query()->fromSub($this->bukuTarifUnion(), 'bt')
+            ->whereIn('bt.tipe', ['tindakan', 'obat', 'bhp', 'iol']);
+
+        if (! empty($filters['search'])) {
+            $s = '%' . mb_strtolower(trim($filters['search'])) . '%';
+            $q->where(function ($w) use ($s) {
+                $w->whereRaw('LOWER(bt.nama) LIKE ?', [$s])
+                  ->orWhereRaw("LOWER(COALESCE(bt.kode, '')) LIKE ?", [$s]);
+            });
+        }
+        if (! empty($filters['kategori'])) {
+            $q->where('bt.kategori', $filters['kategori']);
+        }
+        if (! empty($filters['tipe']) && in_array($filters['tipe'], ['tindakan', 'obat', 'bhp', 'iol'], true)) {
+            $q->where('bt.tipe', $filters['tipe']);
+        }
+        if (! empty($filters['harga_nol']) && filter_var($filters['harga_nol'], FILTER_VALIDATE_BOOLEAN)) {
+            $q->whereRaw('COALESCE(bt.harga, 0) <= 0');
+        }
+
+        return $q->orderBy('bt.tipe')->orderBy('bt.kategori')->orderBy('bt.nama')->get();
+    }
+
+    /**
+     * Import Buku Tarif terpadu: 1 file multi-tipe (kolom `tipe`) → set harga UMUM per item.
+     * Header wajib (case-insensitive): tipe, nama, harga_jual. Per baris di-dispatch ke
+     * setBukuTarifPrice (penjamin UMUM). HANYA mengubah harga item yang SUDAH ada di master.
+     */
+    public function importBukuTarifCsv(string $csvContent): array
+    {
+        $records = \App\Support\SpreadsheetHelper::parseCsvRecords($csvContent);
+        if (empty($records)) {
+            throw new \Exception('File CSV kosong.', 422);
+        }
+
+        $headers = array_map(fn ($h) => strtolower(trim((string) $h)), array_shift($records));
+        foreach (['tipe', 'nama', 'harga_jual'] as $required) {
+            if (! in_array($required, $headers, true)) {
+                throw new \Exception("Header CSV harus mengandung kolom '{$required}'.", 422);
+            }
+        }
+
+        $umumId = Insurer::where('is_system', true)->where('type', 'UMUM')->value('id');
+        $valid  = ['tindakan', 'obat', 'bhp', 'iol'];
+        $inserted = 0; $updated = 0; $skipped = 0; $errors = [];
+
+        foreach ($records as $idx => $values) {
+            $lineNum = $idx + 2;
+            if (count($values) !== count($headers)) {
+                $errors[] = "Baris {$lineNum}: jumlah kolom tidak sesuai header";
+                $skipped++;
+                continue;
+            }
+            $row  = array_combine($headers, $values);
+            $tipe = strtolower(trim((string) ($row['tipe'] ?? '')));
+
+            if ($tipe === 'kamar') {
+                $errors[] = "Baris {$lineNum}: tipe 'kamar' dikelola di tab Tarif Kamar — dilewati";
+                $skipped++;
+                continue;
+            }
+            if (! in_array($tipe, $valid, true)) {
+                $errors[] = "Baris {$lineNum}: tipe '{$tipe}' tidak dikenal (tindakan/obat/bhp/iol)";
+                $skipped++;
+                continue;
+            }
+
+            $nama      = trim((string) ($row['nama'] ?? ''));
+            $kategori  = trim((string) ($row['kategori'] ?? ''));
+            $hargaJual = trim((string) ($row['harga_jual'] ?? ''));
+            // kategori WAJIB hanya utk tindakan (nama bisa ambigu antar-kategori).
+            $kategoriWajib = $tipe === 'tindakan';
+            if ($nama === '' || ($kategoriWajib && $kategori === '') || $hargaJual === '') {
+                $errors[] = "Baris {$lineNum}: 'nama'" . ($kategoriWajib ? ", 'kategori'," : '') . " atau 'harga_jual' kosong";
+                $skipped++;
+                continue;
+            }
+
+            // Lookup: kode menang (identifier unik). Nama-fallback hanya pakai kategori utk
+            // tindakan — di Buku Tarif kategori obat/bhp = label tampilan (pos/sub-BHP),
+            // BUKAN kolom kategori master, jadi tak boleh dipakai menyaring (kosongkan).
+            $kode = trim((string) ($row['kode'] ?? ''));
+            $item = $kode !== '' ? $this->resolveTarifItemByCode($tipe, $kode) : null;
+            $item = $item ?? $this->resolveTarifItem($tipe, $nama, $kategoriWajib ? $kategori : '');
+            if (! $item) {
+                $errors[] = "Baris {$lineNum}: item '{$nama}'" . ($kategori !== '' ? " ({$kategori})" : '') . ' tidak ditemukan / ambigu di master';
+                $skipped++;
+                continue;
+            }
+
+            // Obat: pos dari kolom pos_kwitansi; bila kosong, ambil dari kategori (label pos).
+            $pos = null;
+            if ($tipe === 'obat') {
+                $rawPos = trim((string) ($row['pos_kwitansi'] ?? ''));
+                if ($rawPos === '') { $rawPos = $kategori; }
+                $pos = $this->normalizePosKwitansi($rawPos);
+                if ($rawPos !== '' && ! $pos) {
+                    $errors[] = "Baris {$lineNum}: pos_kwitansi '{$rawPos}' tidak dikenal — pos tidak diubah";
+                }
+            }
+
+            $fk       = $this->tariffFk($tipe);
+            $model    = $this->tariffModel($tipe);
+            $existing = $model::withTrashed()->where($fk, $item->id)->where('insurer_id', $umumId)->first();
+
+            $this->setBukuTarifPrice($tipe, (string) $item->id, $this->parseDecimalId($hargaJual), true, $pos);
+            if ($existing && $existing->deleted_at === null) { $updated++; } else { $inserted++; }
+        }
+
+        $this->log(auth('api')->id(), 'IMPORT_BUKU_TARIF_CSV', null, null, "new:{$inserted} upd:{$updated} skip:{$skipped}");
+
+        $imported = $inserted + $updated;
+        return compact('imported', 'inserted', 'updated', 'skipped', 'errors');
+    }
+
     /**
      * Generate template CSV (header only) untuk tarif per insurer per type.
      * Format: no, nama, kategori, harga_master, harga_jual (TANPA kode)

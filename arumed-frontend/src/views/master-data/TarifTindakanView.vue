@@ -18,7 +18,6 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { masterApi } from '@/services/api'
 import MasterFormModal from '@/components/master-data/MasterFormModal.vue'
-import CsvActionBar from '@/components/master-data/CsvActionBar.vue'
 import RoomTarifPanel from '@/components/tarif-paket/RoomTarifPanel.vue'
 
 const store = useMasterDataStore()
@@ -180,6 +179,63 @@ async function onKatImport(e) {
     showToast('e', err.response?.data?.message ?? 'Gagal import')
   } finally {
     katCsvBusy.value = false
+  }
+}
+
+// ─── Buku Tarif terpadu — CSV / Excel (Tindakan+Obat+BHP+IOL, 1 file) ────────
+// Export ikut filter aktif (kategori/tipe/search/harga_nol) → "ekspor yang tampil".
+// Import = set harga UMUM per item (roundtrip), TIDAK membuat item baru.
+const bukuMenu = ref(null)          // 'template' | 'export' | null
+const bukuFileInput = ref(null)
+const bukuCsvBusy = ref(false)
+
+function toggleBukuMenu(name) { bukuMenu.value = bukuMenu.value === name ? null : name }
+function closeBukuMenu(e) { if (!e.target.closest?.('.tt-split')) bukuMenu.value = null }
+
+function bukuExportParams() {
+  const p = {}
+  if (bukuSearch.value) p.search = bukuSearch.value
+  if (bukuKategori.value) p.kategori = bukuKategori.value
+  if (bukuTipe.value) p.tipe = bukuTipe.value
+  if (bukuHargaNol.value) p.harga_nol = 1
+  return p
+}
+
+async function onBukuTemplate(format = 'csv') {
+  bukuMenu.value = null
+  try {
+    const res = await masterApi.bukuTarif.csvTemplate(format === 'xlsx' ? 'xlsx' : undefined)
+    triggerKatDownload(res.data, `template-buku-tarif.${format}`)
+  } catch (e) { showToast('e', 'Gagal unduh template') }
+}
+
+async function onBukuExport(format = 'csv') {
+  bukuMenu.value = null
+  try {
+    const res = await masterApi.bukuTarif.csvExport(bukuExportParams(), format === 'xlsx' ? 'xlsx' : undefined)
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    triggerKatDownload(res.data, `buku-tarif-${stamp}.${format}`)
+  } catch (e) { showToast('e', 'Gagal export') }
+}
+
+function pickBukuImport() { bukuFileInput.value?.click() }
+
+async function onBukuImport(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  bukuCsvBusy.value = true
+  try {
+    const res = await masterApi.bukuTarif.csvImport(file)
+    const r = res.data?.data ?? {}
+    const msg = `Import: ${r.inserted ?? 0} baru, ${r.updated ?? 0} update, ${r.skipped ?? 0} dilewati`
+    showToast((r.errors?.length || (r.skipped ?? 0) > 0) ? 'w' : 's', msg)
+    if (r.errors?.length) console.warn('Import Buku Tarif:', r.errors)
+    await loadBukuTarif()
+  } catch (err) {
+    showToast('e', err.response?.data?.message ?? 'Gagal import')
+  } finally {
+    bukuCsvBusy.value = false
   }
 }
 
@@ -484,17 +540,12 @@ const modalFields = computed(() => {
 })
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────
+function closeMenus(e) { closeKatMenu(e); closeBukuMenu(e) }
 onMounted(async () => {
-  document.addEventListener('click', closeKatMenu)
+  document.addEventListener('click', closeMenus)
   await Promise.all([loadBukuTarif(), loadKategoriList(), loadBillingCatOrder()])
 })
-onUnmounted(() => document.removeEventListener('click', closeKatMenu))
-
-function onImported(result) {
-  showToast('s', `Import: ${result.inserted ?? 0} baru, ${result.updated ?? 0} update`)
-  loadBukuTarif()
-  loadKategoriList()
-}
+onUnmounted(() => document.removeEventListener('click', closeMenus))
 </script>
 
 <template>
@@ -568,8 +619,40 @@ function onImported(result) {
         </div>
 
         <div class="card-body tt-body">
-          <!-- CSV / Excel (tindakan/procedures) -->
-          <CsvActionBar :resource-key="KEY" :show-template="true" :allow-excel="true" @imported="onImported" @error="(m) => showToast('e', m)" />
+          <!-- CSV / Excel Buku Tarif terpadu: 1 file lintas-tipe (Tindakan+Obat+BHP+IOL).
+               Export ikut filter aktif; import = set harga UMUM per item (roundtrip). -->
+          <div class="tt-bukucsv">
+            <span class="tt-bukucsv-label">Buku Tarif (semua tipe)</span>
+            <div class="tt-kat-csv">
+              <div class="tt-split">
+                <button class="tt-btn-csv" @click.stop="toggleBukuMenu('template')" title="Unduh template (header + petunjuk)">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  Template
+                  <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="bukuMenu === 'template'" class="tt-menu">
+                  <button @click="onBukuTemplate('csv')">CSV (.csv)</button>
+                  <button @click="onBukuTemplate('xlsx')">Excel (.xlsx)</button>
+                </div>
+              </div>
+              <button class="tt-btn-csv" :disabled="bukuCsvBusy" @click="pickBukuImport" title="Import Buku Tarif dari CSV/Excel (update harga UMUM)">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                {{ bukuCsvBusy ? 'Mengimport…' : 'Import' }}
+              </button>
+              <div class="tt-split">
+                <button class="tt-btn-csv" @click.stop="toggleBukuMenu('export')" title="Export Buku Tarif (Tindakan+Obat+BHP+IOL, ikut filter aktif)">
+                  <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Export
+                  <svg class="tt-caret" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="bukuMenu === 'export'" class="tt-menu">
+                  <button @click="onBukuExport('csv')">CSV (.csv)</button>
+                  <button @click="onBukuExport('xlsx')">Excel (.xlsx)</button>
+                </div>
+              </div>
+              <input ref="bukuFileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" @change="onBukuImport" />
+            </div>
+          </div>
 
           <!-- Filter kategori (chip) -->
           <div v-if="bukuChips.length" class="tt-filters">
@@ -942,6 +1025,8 @@ function onImported(result) {
 .tt-kat-sub { font-size: 12.5px; color: var(--tm); margin: 0; }
 .tt-kat-sub code { background: var(--bs); padding: 1px 6px; border-radius: 4px; font-family: 'Geist Mono', monospace; font-size: 11.5px; color: var(--td); border: 1px solid var(--gb); }
 
+.tt-bukucsv { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.tt-bukucsv-label { font-size: 12px; font-weight: 600; color: var(--tm); }
 .tt-kat-csv { display: flex; gap: 6px; flex-wrap: wrap; }
 .tt-split { position: relative; }
 .tt-caret { width: 11px !important; height: 11px !important; margin-left: 1px; }

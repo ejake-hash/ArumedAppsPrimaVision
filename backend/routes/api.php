@@ -1109,6 +1109,10 @@ Route::prefix('v1')->group(function () {
             // Buku Tarif terpadu (Tindakan+Obat+BHP+IOL satu daftar berkategori).
             Route::get('/buku-tarif',                       [MasterDataController::class, 'indexBukuTarif']);
             Route::put('/buku-tarif/harga',                 [MasterDataController::class, 'setBukuTarifPrice']);
+            // CSV/Excel terpadu — 1 file lintas-tipe (kolom `tipe`), roundtrip harga UMUM.
+            Route::get('/buku-tarif/template-csv',          [MasterDataController::class, 'templateBukuTarifCsv']);
+            Route::get('/buku-tarif/export-csv',            [MasterDataController::class, 'exportBukuTarifCsv']);
+            Route::post('/buku-tarif/import-csv',           [MasterDataController::class, 'importBukuTarifCsv'])->middleware('permission:tarif_paket.write');
 
             Route::get('/tarif/tindakan',                   [MasterDataController::class, 'indexTarifTindakan']);
             Route::post('/tarif/tindakan',                  [MasterDataController::class, 'storeTarifTindakan']);

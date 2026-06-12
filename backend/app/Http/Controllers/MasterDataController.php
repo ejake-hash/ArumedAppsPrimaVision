@@ -1020,6 +1020,38 @@ class MasterDataController extends Controller
         return $this->ok($tariff, 'Harga diperbarui');
     }
 
+    /** GET /master/buku-tarif/template-csv  (?format=xlsx) */
+    public function templateBukuTarifCsv(Request $request): Response
+    {
+        return $this->csvOrXlsx($request, $this->service->templateBukuTarifCsv(), 'template-buku-tarif', 'Buku Tarif');
+    }
+
+    /** GET /master/buku-tarif/export-csv  (?format=xlsx) — semua tipe (Tindakan+Obat+BHP+IOL). */
+    public function exportBukuTarifCsv(Request $request): Response
+    {
+        $filters = $request->only(['search', 'kategori', 'tipe', 'harga_nol']);
+        $csv     = $this->service->exportBukuTarifCsv($filters);
+        return $this->csvOrXlsx($request, $csv, 'buku-tarif-' . now()->format('Ymd'), 'Buku Tarif');
+    }
+
+    /** POST /master/buku-tarif/import-csv — 1 file multi-tipe, set harga UMUM per item. */
+    public function importBukuTarifCsv(Request $request): JsonResponse
+    {
+        $request->validate(['file' => 'required|file|mimes:csv,txt,xlsx,xls,ods|max:5120']);
+
+        try {
+            $csvContent = \App\Support\SpreadsheetHelper::fileToCsv($request->file('file'));
+            $result     = $this->service->importBukuTarifCsv($csvContent);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(
+            $result,
+            "Import selesai: {$result['inserted']} baru, {$result['updated']} diperbarui, {$result['skipped']} dilewati."
+        );
+    }
+
     public function indexTarifObat(Request $request): JsonResponse
     {
         return $this->ok($this->service->indexTarif('obat', $request->only(['classification', 'insurer_id', 'per_page'])));
