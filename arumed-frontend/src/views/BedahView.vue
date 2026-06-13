@@ -1173,7 +1173,23 @@ async function vpRemovePackage(snap) {
 
 // Obat Pasca Bedah — wajib pilih obat dari master (medication_id) supaya resep
 // bisa dikirim ke Farmasi (PrescriptionItem.medication_id NOT NULL).
-const newObat = ref({ medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' })
+// Skema aturan pakai SELARAS DokterView (Signa combobox + Durasi + Posisi Mata).
+const SIGNA_OPTS = ['1×/hari', '2×/hari', '3×/hari', '4×/hari', '6×/hari', 'tiap 4 jam', 'tiap 6 jam', 'tiap 8 jam', 'tiap jam', 'bila perlu (prn)', 'sebelum tidur', '1 tetes tiap 1 jam']
+const DURASI_OPTS = ['3 hari', '5 hari', '7 hari', '10 hari', '14 hari', '21 hari', '28 hari', '30 hari', '60 hari', '90 hari']
+// Rute = posisi mata (OD/OS/ODS) atau kosong utk obat non-tetes — selaras DokterView.
+function normalizePosisi(v) {
+  const s = String(v ?? '').trim().toUpperCase()
+  if (s.includes('ODS')) return 'ODS'
+  if (s === 'OD' || s.endsWith(' OD')) return 'OD'
+  if (s === 'OS' || s.endsWith(' OS')) return 'OS'
+  return ''
+}
+// Baris obat baru dgn default aturan pakai (diedit inline di tabel, sama utk obat paket).
+function blankObatRow(medication_id = '', nama = '') {
+  return { medication_id, nama, jumlah: 1, dosis: '1 tetes', freq: '2×/hari', dur: '7 hari', rute: 'OD', fromPaket: false }
+}
+
+const newObat = ref({ medication_id: '', nama: '' })
 
 // Pilih obat dari master → isi medication_id + nama, tutup dropdown pencarian.
 function pickObatMaster(o) {
@@ -1196,9 +1212,10 @@ function parseDurDays(dur) {
 function addObat() {
   if (!selP.value) return
   if (!newObat.value.medication_id) { toast('w', 'Pilih obat dari master dulu'); return }
-  selP.value.obatPasca.push({ ...newObat.value })
-  newObat.value = { medication_id: '', nama: '', jumlah: 1, dosis: '1 tetes', freq: '4×/hari', dur: '7 hari', rute: 'Tetes OD' }
-  toast('s', 'Obat pasca bedah ditambahkan')
+  selP.value.obatPasca.push(blankObatRow(newObat.value.medication_id, newObat.value.nama))
+  newObat.value = { medication_id: '', nama: '' }
+  obatSearchPasca.value = ''
+  toast('s', 'Obat ditambahkan — atur aturan pakai di tabel')
 }
 function removeObat(idx) { selP.value?.obatPasca.splice(idx, 1) }
 
@@ -1315,13 +1332,10 @@ async function loadPaketObat() {
   } catch { paketObatList.value = [] }
 }
 
-// duration_days → label dropdown (kebalikan parseDurDays). 30→'1 bulan', else 'N hari'.
+// duration_days → label 'N hari' (selaras DURASI_OPTS DokterView; round-trip via parseDurDays).
 function formatDur(days) {
   const n = Number(days)
-  if (!n) return '7 hari'
-  if (n % 30 === 0) return `${n / 30} bulan`
-  if (n % 7 === 0 && n >= 21) return `${n / 7} minggu`
-  return `${n} hari`
+  return n ? `${n} hari` : '7 hari'
 }
 
 // Terapkan paket → auto-isi obatPasca (append + dedupe by medication_id), tandai fromPaket.
@@ -1338,10 +1352,10 @@ function applyPaketObat() {
       medication_id: it.medication_id,
       nama:    it.medication?.name ?? '—',
       jumlah:  it.quantity ?? 1,
-      dosis:   it.dose ?? '',
-      freq:    it.frequency ?? '',
+      dosis:   it.dose ?? '1 tetes',
+      freq:    it.frequency ?? '2×/hari',
       dur:     formatDur(it.duration_days),
-      rute:    it.route ?? '',
+      rute:    normalizePosisi(it.route) || 'OD',
       fromPaket: true,
     })
     existing.add(it.medication_id)
@@ -2605,10 +2619,21 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </p>
 
                   <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length">
-                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Frek.</th><th>Durasi</th><th>Rute</th><th></th></tr></thead>
+                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Signa</th><th>Durasi</th><th>Mata</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="(o, i) in selP.obatPasca" :key="`${o.medication_id}-${i}`">
-                        <td>{{ o.nama }} <span v-if="o.fromPaket && hasVisitPaket" class="bd-eye-pill" title="Termasuk harga paket">paket</span></td><td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                        <td>{{ o.nama }} <span v-if="o.fromPaket && hasVisitPaket" class="bd-eye-pill" title="Termasuk harga paket">paket</span></td>
+                        <!-- Aturan pakai editable inline (berlaku jg utk obat paket) — read-only setelah dikirim. -->
+                        <template v-if="!selP.resepSent">
+                          <td><input type="number" class="bd-input bd-input-sm" v-model.number="o.jumlah" min="1" style="width:46px" title="Jumlah" /></td>
+                          <td><input class="bd-input bd-input-sm" v-model="o.dosis" placeholder="1 tetes" style="width:78px" title="Dosis" /></td>
+                          <td><input class="bd-input bd-input-sm" v-model="o.freq" list="bdSignaOpts" autocomplete="off" placeholder="2×/hari" style="width:96px" title="Signa / aturan pakai" /></td>
+                          <td><select class="bd-select bd-select-sm" v-model="o.dur" title="Durasi"><option value="">—</option><option v-for="d in DURASI_OPTS" :key="d" :value="d">{{ d }}</option></select></td>
+                          <td><select class="bd-select bd-select-sm" v-model="o.rute" title="Posisi mata (kosong jika bukan tetes)"><option value="">—</option><option value="OD">OD</option><option value="OS">OS</option><option value="ODS">ODS</option></select></td>
+                        </template>
+                        <template v-else>
+                          <td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                        </template>
                         <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button></td>
@@ -2616,6 +2641,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                     </tbody>
                   </table>
                   <div v-else class="bd-tbl-empty">Belum ada obat ditambahkan</div>
+                  <datalist id="bdSignaOpts"><option v-for="s in SIGNA_OPTS" :key="s" :value="s" /></datalist>
 
                   <div v-if="!selP.resepSent" class="bd-obat-form">
                     <!-- Pilih obat dari master (wajib medication_id utk kirim ke Farmasi) -->
@@ -2634,16 +2660,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                         <div v-if="!filteredObatPasca.length" class="bd-combo-empty">Tidak ada hasil</div>
                       </div>
                     </div>
-                    <input class="bd-input bd-input-sm" v-model="newObat.dosis" placeholder="Dosis" style="flex:1" />
-                    <input type="number" class="bd-input bd-input-sm" v-model.number="newObat.jumlah" min="1" title="Jumlah" placeholder="Jml" style="width:60px" />
-                    <select class="bd-select bd-select-sm" v-model="newObat.freq">
-                      <option>1×/hari</option><option>2×/hari</option><option>3×/hari</option><option>4×/hari</option><option>6×/hari</option>
-                    </select>
-                    <select class="bd-select bd-select-sm" v-model="newObat.dur">
-                      <option>3 hari</option><option>5 hari</option><option>7 hari</option><option>10 hari</option><option>14 hari</option><option>1 bulan</option>
-                    </select>
-                    <input class="bd-input bd-input-sm" v-model="newObat.rute" placeholder="Rute" />
-                    <button class="bd-btn-add" @click="addObat">+ Tambah</button>
+                    <button class="bd-btn-add" :disabled="!newObat.medication_id" @click="addObat">+ Tambah</button>
                   </div>
 
                   <button

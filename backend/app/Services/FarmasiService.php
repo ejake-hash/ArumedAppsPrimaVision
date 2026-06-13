@@ -15,6 +15,7 @@ use App\Models\SurgeryRequest;
 use App\Models\SurgeryRequestBhp;
 use App\Models\SurgeryRequestIol;
 use App\Models\SystemLog;
+use App\Models\SurgerySchedule;
 use App\Models\Visit;
 use App\Services\QueueService;
 use App\Services\InventoryStockService;
@@ -282,6 +283,8 @@ class FarmasiService
                 'visit.patient', 'prescribedBy', 'verifiedBy', 'items.medication', 'items.saleUnit',
                 // Untuk accessor dpjp_name (bebas N+1): RANAP=dpjp, RAJAL/IGD=pemeriksa/jadwal.
                 'visit.dpjp', 'visit.doctorExamination.doctor', 'visit.doctorSchedule.employee',
+                // Bedakan badge "Pasca Bedah" vs "Pasca Tindakan" (klasifikasiAsalResep, bebas N+1).
+                'visit.surgerySchedule:id,location_type',
             ])
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'SUBMITTED')
@@ -718,10 +721,11 @@ class FarmasiService
 
     /**
      * Klasifikasi asal resep untuk badge antrean Verifikasi Farmasi → [kode, label].
-     * Berbasis data visit (RANAP/IGD/RAJAL + keterkaitan bedah via surgery_schedule_id
-     * / visit_type PREOP_BEDAH). Pasien yang datang RAWAT JALAN lalu DIBEDAH di hari
-     * yang sama = satu visit RAJAL ber-surgery_schedule_id → badge gabungan
-     * "RAJAL & Pasca Bedah" (dokter sudah meresepkan + ada resep pasca-bedah).
+     * Klasifikasi PER-RESEP (bukan per-visit): pasien operasi/tindakan hari-sama bisa
+     * punya dua resep obat pulang dalam satu visit — (1) dari dokter POLIKLINIK saat
+     * planning, dan (2) PASCA BEDAH/TINDAKAN yang ditambahkan setelah prosedur. Flag
+     * `is_post_op` (per-resep) membedakan keduanya agar Farmasi tahu sumbernya; bedah vs
+     * tindakan dibedakan via `surgerySchedule.location_type`.
      */
     private function klasifikasiAsalResep(?Visit $visit, ?Prescription $rx): array
     {
@@ -741,12 +745,19 @@ class FarmasiService
             return ['RANAP', 'Rawat Inap'];
         }
 
+        // Resep PASCA prosedur (ditambahkan dokter SETELAH bedah/tindakan selesai).
+        // Label bedah vs tindakan dari lokasi jadwal.
+        if ($rx?->is_post_op) {
+            return $visit?->surgerySchedule?->location_type === SurgerySchedule::LOCATION_RUANG_TINDAKAN
+                ? ['TINDAKAN', 'Pasca Tindakan']
+                : ['BEDAH', 'Pasca Bedah'];
+        }
+
+        // Resep dari POLIKLINIK pada visit yang juga punya jadwal bedah/tindakan → tandai
+        // "Poliklinik" agar Farmasi tahu obat ini diresepkan dokter poli (bukan pasca-prosedur).
         $adaBedah = $visit?->surgery_schedule_id !== null || $visit?->visit_type === 'PREOP_BEDAH';
         if ($adaBedah) {
-            // Visit rawat-jalan reguler yang juga punya jadwal bedah → datang rajal + dibedah.
-            return ($jenis === 'RAJAL' || $visit?->visit_type === 'REGULAR')
-                ? ['RAJAL_BEDAH', 'RAJAL & Pasca Bedah']
-                : ['BEDAH', 'Pasca Bedah'];
+            return ['POLI', 'Poliklinik'];
         }
 
         return ['RAJAL', 'Rawat Jalan'];

@@ -3322,6 +3322,10 @@ function toast(type, msg) {
 .jp-rajal_bedah { background: rgba(190, 24, 93, 0.12); color: #9d174d; border-color: rgba(190, 24, 93, 0.28); }
 /* Instruksi obat pre-operasi dokter jaga (stat-dose Triase) — harus diberikan SEBELUM naik OT. */
 .jp-pre_op { background: rgba(13, 148, 136, 0.12); color: #0f766e; border-color: rgba(13, 148, 136, 0.28); }
+/* Obat diresepkan dokter POLIKLINIK (pada visit yang juga ada bedah/tindakan). */
+.jp-poli { background: rgba(79, 70, 229, 0.12); color: #4338ca; border-color: rgba(79, 70, 229, 0.28); }
+/* Obat PASCA TINDAKAN (laser/ruang tindakan) — bedakan dari Pasca Bedah (jp-bedah, merah). */
+.jp-tindakan { background: rgba(202, 138, 4, 0.14); color: #a16207; border-color: rgba(202, 138, 4, 0.30); }
 
 /* Badge asal + DPJP pada kartu/header antrean Verifikasi Farmasi. */
 .rx-asal { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 4px; }
