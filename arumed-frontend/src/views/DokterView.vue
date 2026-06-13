@@ -1879,7 +1879,10 @@ async function loadSurgeryPackages() {
     const { data } = await masterApi.paketBedah.list({ active: 1, per_page: 200, package_type: 'BEDAH', visit_id: selP.value?.visitId || undefined })
     const rows = data.data?.data ?? data.data ?? []
     surgeryPackages.value = rows.map((p) => ({
-      id: p.id, code: p.code ?? '', name: p.resolved_name ?? p.name,
+      // NAMA PAKET ASLI (bukan resolved_name): resolved_name = display_name varian
+      // penjamin (mis. "OSAKA") → kalau dipakai sbg name, pencarian "phaco" tak cocok
+      // & paket hilang. Nama varian sudah ditempel terpisah di picker (variantName).
+      id: p.id, code: p.code ?? '', name: p.name ?? p.resolved_name ?? '',
       category: p.category || 'Tanpa Kategori',
       price: Number(p.resolved_sell_price ?? p.price ?? p.total_base_price) || 0,
       // Varian harga per-penjamin (1 penjamin bisa >1) → dropdown pilih varian.
@@ -2055,6 +2058,7 @@ const filteredSurgeryPackages = computed(() => {
   if (!q) return surgeryPackages.value
   return surgeryPackages.value.filter((p) =>
     (p.name || '').toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)
+    || (p.variants || []).some((v) => (v.display_name || '').toLowerCase().includes(q))
   )
 })
 // Daftar pilihan picker: bila paket punya >1 varian tarif untuk penjamin ini, tampilkan
