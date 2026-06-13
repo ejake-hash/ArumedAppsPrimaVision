@@ -373,8 +373,9 @@ final class SignatureService
         $names   = $this->doctorSignatureTemplates($signerType)['names'];
         $search  = trim((string) ($opts['search'] ?? ''));
 
-        // Rentang hari WIB di-konversi ke zona DB (default UTC) agar perbandingan
-        // created_at tepat lintas-zona. Kosong → hari ini.
+        // Rentang hari WIB (wall-clock). Kolom created_at = `timestamp without time
+        // zone` & APP_TIMEZONE=Asia/Jakarta → tersimpan sbg jam dinding WIB, jadi
+        // pembanding HARUS WIB juga (TANPA konversi UTC). Kosong → hari ini.
         [$startOfDay, $endOfDay] = $this->resolveSignedDateRange($opts);
 
         $paginator = DocumentSignature::query()
@@ -418,9 +419,15 @@ final class SignatureService
     }
 
     /**
-     * Resolve rentang waktu (UTC) untuk filter "ditandatangani". date_from/date_to
-     * berupa tanggal WIB (Y-m-d). Tanpa keduanya → hari ini (WIB). Salah satu sisi
-     * kosong → pakai sisi yang ada untuk membatasi rentang terbuka.
+     * Resolve rentang waktu (WIB wall-clock) untuk filter "ditandatangani".
+     * date_from/date_to berupa tanggal WIB (Y-m-d). Tanpa keduanya → hari ini (WIB).
+     * Salah satu sisi kosong → pakai sisi yang ada untuk membatasi rentang terbuka.
+     *
+     * Kolom created_at = `timestamp without time zone` & APP_TIMEZONE=Asia/Jakarta →
+     * Laravel menyimpan/membaca sbg jam dinding WIB. Maka rentang DITAHAN di zona WIB
+     * (TANPA ->utc()); konversi UTC dulu menggeser jendela 7 jam → TTD sore (>17:00
+     * WIB) hilang & TTD sore hari sebelumnya bocor masuk. Konsisten dgn pola
+     * whereDate('created_at', today()) di seluruh aplikasi.
      *
      * @param array{date_from?: ?string, date_to?: ?string} $opts
      * @return array{0: \Illuminate\Support\Carbon, 1: \Illuminate\Support\Carbon}
@@ -432,13 +439,13 @@ final class SignatureService
 
         if ($from === null && $to === null) {
             return [
-                \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc(),
-                \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc(),
+                \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay(),
+                \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay(),
             ];
         }
 
-        $start = \Illuminate\Support\Carbon::parse($from ?? $to, 'Asia/Jakarta')->startOfDay()->utc();
-        $end   = \Illuminate\Support\Carbon::parse($to ?? $from, 'Asia/Jakarta')->endOfDay()->utc();
+        $start = \Illuminate\Support\Carbon::parse($from ?? $to, 'Asia/Jakarta')->startOfDay();
+        $end   = \Illuminate\Support\Carbon::parse($to ?? $from, 'Asia/Jakarta')->endOfDay();
 
         return [$start, $end];
     }
@@ -446,8 +453,9 @@ final class SignatureService
     /** Jumlah dokumen yang ditandatangani dokter ini hari ini (WIB) — untuk kartu statistik. */
     public function signedTodayCountForDoctor(string $userId, string $signerType = 'doctor'): int
     {
-        $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc();
-        $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc();
+        // WIB wall-clock (lihat resolveSignedDateRange: created_at tersimpan jam WIB).
+        $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay();
+        $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay();
 
         return DocumentSignature::query()
             ->where('signer_type', $signerType)
