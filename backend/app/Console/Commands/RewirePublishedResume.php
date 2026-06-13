@@ -29,7 +29,8 @@ class RewirePublishedResume extends Command
                             {--include-drafts : Ikut normalisasi dokumen BELUM final (payload draft diganti autofill segar + manual_fields direset)}
                             {--code=RESUME_MEDIS : Kode template yang diregenerasi}
                             {--id= : Batasi ke satu patient_document_id tertentu}
-                            {--only-contaminated-anamnese : Hanya dokumen yang Anamnese-nya tercemar baris ICD-9/visus/IOP (TTV/TOD/VOD/mmHg) — sisanya dilewati}';
+                            {--only-contaminated-anamnese : Hanya dokumen yang Anamnese-nya tercemar baris ICD-9/visus/IOP (TTV/TOD/VOD/mmHg) — sisanya dilewati}
+                            {--only-segment-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris Segmen/Catatan anterior|posterior (dipindah ke Pemeriksaan Fisik) — sisanya dilewati}';
 
     protected $description = 'Regenerasi in-place dokumen final (default Resume Medis) dengan template/wiring terbaru, pertahankan TTD.';
 
@@ -141,13 +142,26 @@ class RewirePublishedResume extends Command
      */
     private function scopeContaminated($query): void
     {
-        if (! $this->option('only-contaminated-anamnese')) {
-            return;
+        $path  = "signatures->'static_payload'->>'anamnese'";
+        $conds = [];
+        if ($this->option('only-contaminated-anamnese')) {
+            $conds[] = function ($q) use ($path) {
+                $q->whereRaw("$path ILIKE ?", ['%Tindakan/Prosedur (ICD-9)%'])
+                  ->orWhereRaw("$path ~ ?", ['VOD|TOD|TOS|VOS|mmHg']);
+            };
         }
-        $path = "signatures->'static_payload'->>'anamnese'";
-        $query->where(function ($q) use ($path) {
-            $q->whereRaw("$path ILIKE ?", ['%Tindakan/Prosedur (ICD-9)%'])
-              ->orWhereRaw("$path ~ ?", ['VOD|TOD|TOS|VOS|mmHg']);
+        if ($this->option('only-segment-in-anamnese')) {
+            $conds[] = function ($q) use ($path) {
+                $q->whereRaw("$path ~* ?", ['(Segmen|Catatan) (anterior|posterior)']);
+            };
+        }
+        if (empty($conds)) {
+            return; // tanpa filter → seluruh dokumen (No-op).
+        }
+        $query->where(function ($outer) use ($conds) {
+            foreach ($conds as $i => $cond) {
+                $i === 0 ? $outer->where($cond) : $outer->orWhere($cond);
+            }
         });
     }
 }

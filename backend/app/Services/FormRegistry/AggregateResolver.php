@@ -88,38 +88,68 @@ final class AggregateResolver
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // anamnese_full — "Anamnese" Resume Medis = anamnesa dokter
-    // (doctorExamination.anamnese) + HANYA segmen mata anterior/posterior dokter
-    // dari soap_objective. Segmen dipindah KE SINI dari physical_exam (keputusan
-    // user 12 Jun 2026). Editable (prefill saja).
-    //
-    // ⚠️ soap_objective TIDAK lagi dibawa apa adanya: untuk kunjungan lama format
-    // O berisi TTV/Visus/IOP/Rx (mis. "TOD : 16mmHg\tTOS…", "Visus: UCVA…",
-    // "TIO OD 19 / OS 13 mmHg") dan untuk kunjungan baru oAutoText menambah baris
-    // "Tindakan/Prosedur (ICD-9): …" — semua itu BUKAN milik Anamnese (sudah tampil
-    // di Pemeriksaan Fisik / Tindakan) & dulu bocor ke kotak Anamnese. Kini hanya
-    // baris yang berawalan "Segmen/Catatan anterior|posterior" yang dipertahankan.
+    // anamnese_full — "Anamnese" Resume Medis = HANYA anamnesa dokter
+    // (doctorExamination.anamnese). Segmen mata anterior/posterior DIKEMBALIKAN ke
+    // Pemeriksaan Fisik (resolvePhysicalExam, di bawah data refraksionis) — keputusan
+    // user 13 Jun 2026, membalik penempatan 12 Jun yang menaruh segmen di Anamnese.
+    // Alasan: segmen = objektif, bukan anamnesa; + data lama (dropdown default
+    // "Normal") membanjiri kotak Anamnese. Editable (prefill saja).
     // ─────────────────────────────────────────────────────────────────────────
     private function resolveAnamneseFull(Visit $visit): ?string
     {
-        $exam = $visit->doctorExamination;
-        $parts = [];
-        $anam = trim((string) ($exam?->anamnese ?? ''));
-        if ($anam !== '') {
-            $parts[] = $anam;
+        $anam = trim((string) ($visit->doctorExamination?->anamnese ?? ''));
+
+        return $anam !== '' ? $anam : null;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // extractSegments — baris "Segmen/Catatan anterior|posterior" dari soap_objective
+    // dokter, dgn struktur bernilai "Normal" di KEDUA mata DISARING (data lama
+    // dropdown default Normal membanjiri; data baru free-text hanya mengisi yang
+    // bermakna). Baris "Catatan …" (free-text) dipertahankan apa adanya. Dipakai
+    // Pemeriksaan Fisik. Mengembalikan null bila tak ada sisa bermakna.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function extractSegments(Visit $visit): ?string
+    {
+        $seg = trim((string) ($visit->doctorExamination?->soap_objective ?? ''));
+        if ($seg === '') {
+            return null;
         }
-        $seg = trim((string) ($exam?->soap_objective ?? ''));
-        if ($seg !== '') {
+
+        $out = [];
+        foreach (preg_split('/\r?\n/', $seg) as $ln) {
+            if (preg_match('/^\s*Catatan\s+(anterior|posterior)/i', $ln) === 1) {
+                $out[] = trim($ln);
+                continue;
+            }
+            if (preg_match('/^\s*(Segmen\s+(?:anterior|posterior)\s*:\s*)(.*)$/i', $ln, $m) !== 1) {
+                continue;
+            }
             $kept = array_values(array_filter(
-                preg_split('/\r?\n/', $seg),
-                fn ($ln) => preg_match('/^\s*(Segmen|Catatan)\s+(anterior|posterior)/i', $ln) === 1
+                array_map('trim', explode(';', $m[2])),
+                fn ($tok) => $tok !== '' && ! $this->isAllNormal($tok)
             ));
             if (!empty($kept)) {
-                $parts[] = implode("\n", $kept);
+                $out[] = $m[1] . implode('; ', $kept);
             }
         }
 
-        return $parts ? implode("\n", $parts) : null;
+        return $out ? implode("\n", $out) : null;
+    }
+
+    /** Token struktur (mis. "Kornea OD Normal / OS Normal") bernilai "Normal" di SEMUA mata? */
+    private function isAllNormal(string $token): bool
+    {
+        if (preg_match_all('/\b(?:OD|OS)\s+(.+?)(?=\s*\/\s*(?:OD|OS)\b|$)/u', $token, $m) < 1) {
+            return false;
+        }
+        foreach ($m[1] as $val) {
+            if (strcasecmp(trim($val), 'Normal') !== 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -178,8 +208,9 @@ final class AggregateResolver
     // ─────────────────────────────────────────────────────────────────────────
     // physical_exam — "Pemeriksaan Fisik" Resume Medis = TTV triase + refraksi
     // objektif (RO/O Refraksionis, sumber tunggal refraction_records.soap_o yang
-    // ditulis RefraksionisView). Segmen mata dokter (soap_objective) DIPINDAH ke
-    // Anamnese (anamnese_full) per keputusan user 12 Jun 2026. Tetap
+    // ditulis RefraksionisView) + segmen mata dokter (soap_objective) DI BAWAH
+    // data refraksionis (struktur "Normal" disaring, lihat extractSegments) —
+    // keputusan user 13 Jun 2026 (membalik penempatan 12 Jun di Anamnese). Tetap
     // EDITABLE di FormRMRenderer (prefill saja). Urutan RO mengikuti soap_o.
     // ─────────────────────────────────────────────────────────────────────────
     private function resolvePhysicalExam(Visit $visit): ?string
@@ -194,9 +225,14 @@ final class AggregateResolver
         if ($ro !== '') {
             $parts[] = $ro;
         }
-        // CATATAN: segmen mata dokter (soap_objective) TIDAK lagi di sini — dipindah
-        // ke Anamnese (anamnese_full) per keputusan user 12 Jun 2026. Pemeriksaan
-        // Fisik = TTV triase + O Refraksionis (RO) saja.
+        // Segmen mata dokter (soap_objective) — DI BAWAH data refraksionis. Struktur
+        // bernilai "Normal" di kedua mata disaring (data lama dropdown default Normal
+        // membanjiri; data baru free-text hanya mengisi yang bermakna). Keputusan user
+        // 13 Jun 2026 (membalik penempatan 12 Jun yang menaruhnya di Anamnese).
+        $seg = $this->extractSegments($visit);
+        if ($seg !== null) {
+            $parts[] = $seg;
+        }
 
         // TTV triase (TD/Nadi/SpO2/Suhu/KGD) — fallback agar Pemeriksaan Fisik tak
         // kosong saat dokter tidak menyentuh SOAP O & refraksi tak ada (mis. kontrol

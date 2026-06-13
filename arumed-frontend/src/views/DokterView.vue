@@ -3239,10 +3239,14 @@ function closeResumeRM() {
                   </div>
                   <div class="rx-fg rx-fg-sig">
                     <label class="rx-fl">Signa</label>
-                    <select v-model="newRx.signa" class="form-input" title="Aturan pakai (frekuensi)">
-                      <option value="">— pilih —</option>
-                      <option v-for="s in SIGNA_OPTS" :key="s" :value="s">{{ s }}</option>
-                    </select>
+                    <!-- Combobox: pilih dari daftar ATAU ketik manual. Nilai disimpan
+                         sebagai `frequency` & dibaca apa adanya di FarmasiView. -->
+                    <input v-model="newRx.signa" class="form-input" list="signaOptList"
+                           autocomplete="off" placeholder="cth: 2×/hari atau ketik manual"
+                           title="Aturan pakai (frekuensi) — pilih atau ketik manual" />
+                    <datalist id="signaOptList">
+                      <option v-for="s in SIGNA_OPTS" :key="s" :value="s" />
+                    </datalist>
                   </div>
                   <div class="rx-fg rx-fg-dur">
                     <label class="rx-fl">Durasi</label>
