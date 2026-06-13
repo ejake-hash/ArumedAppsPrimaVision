@@ -1895,6 +1895,10 @@ async function loadSurgeryPackages() {
 const selectedSurgeryVariants = computed(() =>
   surgeryPackages.value.find((x) => x.id === surgeryPkg.value)?.variants ?? [],
 )
+// Varian tarif yang sedang terpilih (utk chip & badge nama). null bila paket tanpa varian.
+const selectedSurgeryVariant = computed(() =>
+  selectedSurgeryVariants.value.find((v) => v.tariff_id === surgeryTariffId.value) || null,
+)
 function syncSurgeryVariant() {
   const variants = selectedSurgeryVariants.value
   if (!variants.length) { surgeryTariffId.value = ''; return }
@@ -2053,13 +2057,42 @@ const filteredSurgeryPackages = computed(() => {
     (p.name || '').toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)
   )
 })
+// Daftar pilihan picker: bila paket punya >1 varian tarif untuk penjamin ini, tampilkan
+// TIAP varian sbg baris terpisah ("Phacoemulsifikasi — OSAKA" / "— MANDALIKA") agar dokter
+// memilih langsung. Paket tanpa/1 varian → 1 baris (varian otomatis bila ada).
+const surgeryPickList = computed(() => {
+  const out = []
+  for (const p of filteredSurgeryPackages.value) {
+    const vs = Array.isArray(p.variants) ? p.variants : []
+    if (vs.length > 1) {
+      for (const v of vs) {
+        out.push({
+          key: `${p.id}:${v.tariff_id}`, pkgId: p.id, tariffId: v.tariff_id,
+          code: p.code, name: p.name, category: p.category,
+          variantName: v.display_name || null, price: v.sell_price, iol_label: v.iol_label || null,
+        })
+      }
+    } else {
+      const v = vs[0] || null
+      out.push({
+        key: p.id, pkgId: p.id, tariffId: v?.tariff_id ?? '',
+        code: p.code, name: p.name, category: p.category,
+        variantName: v?.display_name || null, price: v?.sell_price ?? p.price, iol_label: v?.iol_label || null,
+      })
+    }
+  }
+  return out
+})
 const selectedSurgeryPackage = computed(() =>
   surgeryPackages.value.find((p) => p.id === surgeryPkg.value) || null
 )
 const surgeryComboOpen = ref(false)
 let surgeryComboTimer = null
-function pickSurgeryPkg(p) {
-  surgeryPkg.value = p.id
+function pickSurgeryPkg(entry) {
+  surgeryPkg.value = entry.pkgId
+  // Varian tarif terpilih langsung dari baris picker (paket >1 varian per-penjamin =
+  // satu baris per varian). Kosong → syncSurgeryVariant pilih default.
+  if (entry.tariffId) surgeryTariffId.value = entry.tariffId
   surgerySearch.value = ''
   surgeryComboOpen.value = false
 }
@@ -3464,7 +3497,7 @@ function closeResumeRM() {
                     <!-- Paket terpilih → chip dengan tombol ganti -->
                     <div v-else-if="selectedSurgeryPackage" class="pkg-chosen">
                       <span v-if="selectedSurgeryPackage.code" class="pkg-chosen-code">{{ selectedSurgeryPackage.code }}</span>
-                      <span class="pkg-chosen-name">{{ selectedSurgeryPackage.name }}</span>
+                      <span class="pkg-chosen-name">{{ selectedSurgeryPackage.name }}{{ selectedSurgeryVariant?.display_name ? ` — ${selectedSurgeryVariant.display_name}` : '' }}</span>
                       <span v-if="selectedSurgeryPackage.category" class="pkg-chosen-cat">{{ selectedSurgeryPackage.category }}</span>
                       <button type="button" class="dx-remove" @click="clearSurgeryPkg" title="Ganti paket">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -3479,14 +3512,14 @@ function closeResumeRM() {
                         @focus="surgeryComboOpen = true"
                         @blur="closeSurgeryComboSoon"
                       />
-                      <div v-if="surgeryComboOpen && filteredSurgeryPackages.length" class="dx-results" style="margin-top:0.35rem">
+                      <div v-if="surgeryComboOpen && surgeryPickList.length" class="dx-results" style="margin-top:0.35rem">
                         <div
-                          v-for="p in filteredSurgeryPackages" :key="p.id"
+                          v-for="p in surgeryPickList" :key="p.key"
                           class="dx-result-item"
                           @mousedown.prevent="pickSurgeryPkg(p)"
                         >
                           <span v-if="p.code" class="dx-code">{{ p.code }}</span>
-                          <span class="dx-result-name">{{ p.name }}</span>
+                          <span class="dx-result-name">{{ p.name }}{{ p.variantName ? ` — ${p.variantName}` : '' }}</span>
                           <span v-if="p.category" class="pkg-opt-cat">{{ p.category }}</span>
                         </div>
                       </div>
