@@ -130,6 +130,15 @@ const manualPenunjang = computed(() => detailManual.value.filter((a) => a.catego
 const manualOther = computed(() => detailManual.value.filter((a) => a.category !== 'PENUNJANG'))
 const checklist = computed(() => detailBerkas.value.checklist ?? { required: [], ready: false, missing: [] })
 
+// Tiap baris checklist + dokumen RM terkait (bila sudah ada, by template_code) →
+// tombol Lihat inline. Item tanpa dokumen (mis. PENUNJANG / belum dibuat) → doc null.
+const checklistRows = computed(() =>
+  (checklist.value.required ?? []).map((req) => ({
+    ...req,
+    doc: detailDocuments.value.find((d) => d.template_code === req.key) || null,
+  }))
+)
+
 async function openDetail(row) {
   detailRow.value = row
   detailOpen.value = true
@@ -512,10 +521,16 @@ onMounted(fetchRekap)
               </button>
             </div>
             <ul class="rk-cl-list">
-              <li v-for="req in checklist.required" :key="req.key" :class="req.signed ? 'done' : (req.present ? 'partial' : 'miss')">
+              <li v-for="req in checklistRows" :key="req.key" :class="req.signed ? 'done' : (req.present ? 'partial' : 'miss')">
                 <span class="rk-cl-mark">{{ req.signed ? '✓' : (req.present ? '◐' : '✗') }}</span>
                 {{ req.label }}
                 <small>{{ req.signed ? 'sudah TTD' : (req.present ? 'belum TTD' : 'belum ada') }}</small>
+                <button
+                  v-if="req.doc"
+                  class="rk-chip rk-cl-view"
+                  :disabled="printingDocId === req.doc.id"
+                  @click="openDocument(req.doc)"
+                >{{ printingDocId === req.doc.id ? '…' : 'Lihat' }}</button>
               </li>
             </ul>
           </div>
@@ -737,6 +752,7 @@ onMounted(fetchRekap)
 .rk-cl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .rk-cl-list li { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--td); }
 .rk-cl-list li small { color: var(--tu); font-size: 10.5px; margin-left: auto; }
+.rk-cl-view { padding: 2px 9px; font-size: 10.5px; flex-shrink: 0; }
 .rk-cl-mark { width: 16px; text-align: center; font-weight: 700; }
 .rk-cl-list li.done .rk-cl-mark { color: var(--st); }
 .rk-cl-list li.partial .rk-cl-mark { color: var(--wt); }
