@@ -150,22 +150,32 @@ class KasirController extends Controller
 
     /**
      * POST /kasir/invoice/{id}/resync-tarif
-     * Sinkron harga SEMUA baris bertarif ke tarif terkini (Buku Tarif/PKS).
+     * Sinkron harga + komposisi paket ke master terkini (Buku Tarif/PKS).
      * Tagihan belum dibayar (DRAFT/FINALIZED); PAID/PARTIALLY_PAID/CANCELLED ditolak.
      */
     public function resyncTarif(string $id): JsonResponse
     {
         try {
-            $updated = $this->service->resyncTarifPrices($id);
+            $result = $this->service->resyncTarifPrices($id);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        $msg = $updated > 0
-            ? "{$updated} harga item diperbarui dari tarif terkini."
-            : 'Harga sudah sesuai tarif terkini.';
+        $parts = [];
+        if ($result['updated'] > 0) {
+            $parts[] = "{$result['updated']} harga diperbarui";
+        }
+        if ($result['added'] > 0) {
+            $parts[] = "+{$result['added']} item paket";
+        }
+        if ($result['removed'] > 0) {
+            $parts[] = "-{$result['removed']} item paket";
+        }
+        $msg = $parts
+            ? ucfirst(implode(', ', $parts)) . ' dari tarif terkini.'
+            : 'Harga & komposisi sudah sesuai tarif terkini.';
 
-        return $this->ok(['updated' => $updated], $msg);
+        return $this->ok($result, $msg);
     }
 
     /**

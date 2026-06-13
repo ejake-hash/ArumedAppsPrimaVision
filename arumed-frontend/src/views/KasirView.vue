@@ -258,15 +258,16 @@ async function batalkanInvoice() {
   }
 }
 
-// Sinkron harga semua baris ke tarif terkini (Buku Tarif/PKS) — dipakai bila harga
-// di-update SETELAH tagihan masuk kasir. Hanya DRAFT/FINALIZED (belum dibayar).
+// Sinkron harga + KOMPOSISI paket ke master terkini (Buku Tarif/PKS) — dipakai bila harga
+// atau isi paket di-update SETELAH tagihan masuk kasir. Hanya DRAFT/FINALIZED (belum dibayar).
 async function resyncTarif() {
   if (!selInv.value?.id || resyncing.value) return
   resyncing.value = true
   try {
     const { data } = await kasirApi.resyncTarif(selInv.value.id)
-    const n = data.data?.updated ?? 0
-    toast(n > 0 ? 's' : 'i', n > 0 ? `${n} harga item diperbarui dari tarif terkini` : 'Harga sudah sesuai tarif terkini')
+    const d = data.data ?? {}
+    const changed = (d.updated ?? 0) + (d.added ?? 0) + (d.removed ?? 0) > 0
+    toast(changed ? 's' : 'i', data.message ?? (changed ? 'Tarif diperbarui' : 'Harga sudah sesuai tarif terkini'))
     await refreshInvoice()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal sinkron harga tarif')

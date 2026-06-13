@@ -2863,15 +2863,19 @@ class KasirService
     public function refreshZeroPricedItemsFromTarif(BillingInvoice $invoice): int
     {
         // Jaring pengaman otomatis saat buka tagihan: HANYA baris Rp 0, HANYA DRAFT.
-        return $this->repriceFromTarif($invoice, true);
+        // Mode auto TIDAK menyentuh komposisi paket (lihat repriceFromTarif).
+        return $this->repriceFromTarif($invoice, true)['updated'];
     }
 
     /**
-     * Sinkron harga SEMUA baris bertarif tagihan ke tarif terkini (Buku Tarif/PKS) —
-     * aksi manual kasir ("Sinkron Harga Tarif"). Tagihan belum dibayar (DRAFT/FINALIZED).
-     * Menimpa harga manual ke tarif (perilaku diharapkan dari aksi sinkron).
+     * Sinkron harga + KOMPOSISI paket tagihan ke master terkini (Buku Tarif/PKS) —
+     * aksi manual kasir ("Sinkron Harga"). Tagihan belum dibayar (DRAFT/FINALIZED).
+     * Menarik ulang komposisi paket bedah dari master (tambah/hapus item) lalu
+     * menimpa harga ke tarif terkini.
+     *
+     * @return array{updated:int,added:int,removed:int}
      */
-    public function resyncTarifPrices(string $invoiceId): int
+    public function resyncTarifPrices(string $invoiceId): array
     {
         $invoice = BillingInvoice::with('items')->findOrFail($invoiceId);
         if (in_array($invoice->status, ['PAID', 'PARTIALLY_PAID', 'CANCELLED'], true)) {
@@ -2881,22 +2885,167 @@ class KasirService
     }
 
     /**
+     * Tulis ulang item snapshot paket dari komposisi master. Dipakai bersama oleh
+     * planning (DokterService::syncVisitPackageSnapshot, $upsert=false → ganti total)
+     * dan Sinkron Harga ($upsert=true → pertahankan id item yang masih ada agar
+     * reference_id baris tagihan stabil; buat item baru; hapus item yang dibuang).
+     * IOL komposisi diganti oleh override varian tarif (SurgeryPackageTariffItem).
+     *
+     * @return string[] id VisitSurgeryPackageItem yang DIHAPUS (hanya relevan saat $upsert).
+     */
+    public function writeSnapshotItems(VisitSurgeryPackage $snap, \App\Models\SurgeryPackage $pkg, ?object $tariff, string $guarantorType, ?string $insurerId, bool $upsert = false): array
+    {
+        // Override IOL varian tarif (scope: IOL) → mengganti komposisi IOL master.
+        $iolOverrides = ! empty($tariff->id)
+            ? \App\Models\SurgeryPackageTariffItem::where('surgery_package_tariff_id', $tariff->id)
+                ->where('item_type', 'IOL')->get()
+            : collect();
+
+        // Komposisi target keyed by "item_type|item_id" (master + override IOL).
+        $target = [];
+        foreach ($pkg->items as $pi) {
+            if ($pi->item_type === 'IOL' && $iolOverrides->isNotEmpty()) {
+                continue; // IOL diganti override (di-append di bawah)
+            }
+            $gp = match ($pi->item_type) {
+                'PROCEDURE'  => 'procedure',
+                'BHP'        => 'bhp',
+                'IOL'        => 'iol',
+                'MEDICATION' => 'medication',
+                default      => null,
+            };
+            if (! $gp) {
+                continue;
+            }
+            $target["{$pi->item_type}|{$pi->item_id}"] = [
+                'item_type' => $pi->item_type,
+                'item_id'   => $pi->item_id,
+                'quantity'  => $pi->quantity ?? 1,
+                'notes'     => $pi->notes ?? null,
+                'gp'        => $gp,
+            ];
+        }
+        foreach ($iolOverrides as $ov) {
+            $target["IOL|{$ov->item_id}"] = [
+                'item_type' => 'IOL',
+                'item_id'   => $ov->item_id,
+                'quantity'  => max(1, (int) $ov->quantity),
+                'notes'     => 'IOL varian tarif',
+                'gp'        => 'iol',
+            ];
+        }
+
+        $removedIds = [];
+
+        if (! $upsert) {
+            // Perilaku planning: ganti total (delete + recreate).
+            $snap->items()->delete();
+            foreach ($target as $t) {
+                VisitSurgeryPackageItem::create([
+                    'visit_surgery_package_id' => $snap->id,
+                    'item_type'                => $t['item_type'],
+                    'item_id'                  => $t['item_id'],
+                    'quantity'                 => $t['quantity'],
+                    'unit_price'               => $this->getPrice($t['gp'], $t['item_id'], $guarantorType, $insurerId),
+                    'notes'                    => $t['notes'],
+                ]);
+            }
+            return $removedIds;
+        }
+
+        // Upsert: pertahankan id item yang masih ada → reference_id baris tagihan stabil.
+        $existing = $snap->items()->get()->keyBy(fn ($it) => "{$it->item_type}|{$it->item_id}");
+        foreach ($target as $key => $t) {
+            $price = $this->getPrice($t['gp'], $t['item_id'], $guarantorType, $insurerId);
+            $row   = $existing->get($key);
+            if ($row) {
+                $row->update(['quantity' => $t['quantity'], 'unit_price' => $price, 'notes' => $t['notes']]);
+            } else {
+                VisitSurgeryPackageItem::create([
+                    'visit_surgery_package_id' => $snap->id,
+                    'item_type'                => $t['item_type'],
+                    'item_id'                  => $t['item_id'],
+                    'quantity'                 => $t['quantity'],
+                    'unit_price'               => $price,
+                    'notes'                    => $t['notes'],
+                ]);
+            }
+        }
+        // Hapus komponen yang tidak lagi ada di master.
+        foreach ($existing as $key => $row) {
+            if (! isset($target[$key])) {
+                $removedIds[] = $row->id;
+                $row->delete();
+            }
+        }
+        return $removedIds;
+    }
+
+    /**
+     * Tarik ulang komposisi & harga jual SEMUA snapshot paket aktif visit dari master
+     * (dipanggil saat Sinkron Harga). Memperbarui header (sell_price/label/varian) +
+     * upsert item. Mengembalikan id item snapshot yang dihapus agar baris tagihannya
+     * ikut dibersihkan oleh repriceFromTarif.
+     *
+     * @return array{removed_item_ids:array<string,bool>,changed:bool}
+     */
+    public function refreshVisitPackageSnapshots(Visit $visit): array
+    {
+        $snaps   = $visit->surgeryPackageSnapshots()->get();
+        $removed = [];
+        foreach ($snaps as $snap) {
+            if (! $snap->source_surgery_package_id) {
+                continue; // snapshot tanpa sumber master — jangan utak-atik
+            }
+            $pkg = \App\Models\SurgeryPackage::with('items')->find($snap->source_surgery_package_id);
+            if (! $pkg) {
+                continue; // master terhapus — pertahankan snapshot apa adanya
+            }
+            $tariff = $this->resolvePackageTariff(
+                $pkg->id, $visit->guarantor_type, $visit->insurer_id, $snap->surgery_package_tariff_id
+            );
+            $snap->update([
+                'surgery_package_tariff_id' => $tariff->id ?? null,
+                'package_type'              => $pkg->package_type ?? VisitSurgeryPackage::TYPE_BEDAH,
+                'package_name'              => $pkg->name,
+                'package_code'              => $pkg->code,
+                'sell_price'                => (float) ($tariff?->sell_price ?? 0),
+                'label'                     => $tariff?->display_name ?: null,
+            ]);
+            $rm = $this->writeSnapshotItems($snap, $pkg, $tariff, $visit->guarantor_type, $visit->insurer_id, true);
+            foreach ($rm as $id) {
+                $removed[$id] = true;
+            }
+            $snap->recalcTotalBasePrice();
+        }
+
+        return ['removed_item_ids' => $removed, 'changed' => $snaps->isNotEmpty()];
+    }
+
+    /**
      * Mesin re-pricing baris tagihan dari tarif terkini (reuse buildLines→getPrice,
      * resolusi insurer per-penjamin via billingInsurerFor). Cocokkan baris via key
      * item_type|reference_id; pertahankan persen diskon; sinkron baris DISKON_PAKET.
      *
+     * Mode MANUAL ($onlyZero=false) juga menarik ulang KOMPOSISI paket dari master
+     * (refreshVisitPackageSnapshots): hapus baris komponen yang dibuang, tambah komponen
+     * baru, lalu bangun ulang DISKON_PAKET. Mode AUTO ($onlyZero=true, on-open) hanya
+     * mengisi baris Rp 0 dan TIDAK menyentuh komposisi.
+     *
      * @param bool $onlyZero true = hanya baris Rp 0 (auto on-open, DRAFT saja);
-     *                       false = semua baris yang harganya BERBEDA (manual, DRAFT/FINALIZED).
+     *                       false = sinkron harga + komposisi paket (manual, DRAFT/FINALIZED).
+     * @return array{updated:int,added:int,removed:int}
      */
-    private function repriceFromTarif(BillingInvoice $invoice, bool $onlyZero): int
+    private function repriceFromTarif(BillingInvoice $invoice, bool $onlyZero): array
     {
+        $empty   = ['updated' => 0, 'added' => 0, 'removed' => 0];
         $allowed = $onlyZero ? ['DRAFT'] : ['DRAFT', 'FINALIZED'];
         if (! in_array($invoice->status, $allowed, true)) {
-            return 0;
+            return $empty;
         }
 
         try {
-            return DB::transaction(function () use ($invoice, $onlyZero) {
+            return DB::transaction(function () use ($invoice, $onlyZero, $empty) {
                 // Eager-load identik dengan consolidateBilling agar buildLines lengkap.
                 $visit = Visit::with([
                     'patient',
@@ -2912,44 +3061,86 @@ class KasirService
                     'visitCob.penjamin2',
                 ])->find($invoice->visit_id);
                 if (! $visit) {
-                    return 0;
+                    return $empty;
+                }
+
+                // Komposisi paket terbaru — HANYA aksi manual (bukan auto on-open).
+                $removedSnapItemIds = [];
+                if (! $onlyZero) {
+                    $refresh = $this->refreshVisitPackageSnapshots($visit);
+                    $removedSnapItemIds = $refresh['removed_item_ids'];
+                    if ($refresh['changed']) {
+                        $visit->load('surgeryPackageSnapshots.items');
+                    }
                 }
 
                 [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
                 $fresh = $this->buildLines($visit, $billInsurerId, $billGuarantor);
 
-                // Index harga fresh per baris bertarif (reference_id non-null, harga > 0).
+                // Index harga + qty fresh per baris bertarif (reference_id non-null, harga > 0).
                 $freshPrice = [];
                 foreach ($fresh as $l) {
                     $ref = $l['reference_id'] ?? null;
                     if ($ref !== null && (float) ($l['unit_price'] ?? 0) > 0) {
-                        $freshPrice["{$l['item_type']}|{$ref}"] = (float) $l['unit_price'];
+                        $freshPrice["{$l['item_type']}|{$ref}"] = [
+                            'unit' => (float) $l['unit_price'],
+                            'qty'  => (int) ($l['quantity'] ?? 1),
+                        ];
                     }
                 }
 
-                $updated  = 0;
-                $bundledChanged = false;
+                // Id komponen snapshot terkini → batasi penambahan ke baris ber-asal paket.
+                $currentSnapItemIds = [];
+                foreach ($visit->surgeryPackageSnapshots as $s) {
+                    foreach ($s->items as $si) {
+                        $currentSnapItemIds[$si->id] = true;
+                    }
+                }
+
+                $updated = 0;
+                $added   = 0;
+                $removed = 0;
+                $paketChanged = false;
+
+                // 1) Hapus baris komponen paket yang dibuang dari master (manual saja).
+                if (! empty($removedSnapItemIds)) {
+                    foreach ($invoice->items as $item) {
+                        if ($item->reference_id !== null && isset($removedSnapItemIds[$item->reference_id])) {
+                            $item->delete();
+                            $removed++;
+                            $paketChanged = true;
+                        }
+                    }
+                    $invoice->load('items');
+                }
+
+                // 2) Reprice baris yang masih ada (match item_type|reference_id).
+                $existingKeys = [];
                 foreach ($invoice->items as $item) {
                     if ($item->reference_id === null) {
                         continue;
                     }
                     $key = "{$item->item_type}|{$item->reference_id}";
+                    $existingKeys[$key] = true;
                     if (! isset($freshPrice[$key])) {
                         continue;
                     }
-                    $unitPrice = $freshPrice[$key];
+                    $unitPrice = $freshPrice[$key]['unit'];
                     $cur       = (float) $item->unit_price;
+                    // Mode manual sinkronkan qty komposisi paket; mode auto pertahankan qty.
+                    $qty       = $onlyZero ? (int) $item->quantity : $freshPrice[$key]['qty'];
                     if ($onlyZero) {
                         if ($cur != 0.0) {
                             continue;   // mode auto: hanya isi baris Rp 0
                         }
-                    } elseif (abs($unitPrice - $cur) < 0.005) {
-                        continue;       // mode sinkron: hanya yang harganya BERBEDA
+                    } elseif (abs($unitPrice - $cur) < 0.005 && $qty === (int) $item->quantity) {
+                        continue;       // mode sinkron: hanya yang harga ATAU qty-nya BERBEDA
                     }
-                    $totalPrice = $unitPrice * $item->quantity;
+                    $totalPrice = $unitPrice * $qty;
                     // Pertahankan persen diskon per-baris yang ada.
                     [$discAmt, $discPc] = $this->computeItemDiscount($totalPrice, null, (float) $item->discount_percent);
                     $item->update([
+                        'quantity'         => $qty,
                         'unit_price'       => $unitPrice,
                         'total_price'      => $totalPrice,
                         'discount_amount'  => $discAmt,
@@ -2957,19 +3148,70 @@ class KasirService
                         'net_price'        => max(0, $totalPrice - $discAmt),
                     ]);
                     $updated++;
-                    // Obat terserap paket ("termasuk paket") → baris DISKON_PAKET harus ikut tumbuh.
-                    if ($item->item_type === 'OBAT' && str_contains((string) $item->description, 'termasuk paket')) {
-                        $bundledChanged = true;
+                    // Baris ber-asal paket berubah harga → DISKON_PAKET perlu dihitung ulang.
+                    if (isset($currentSnapItemIds[$item->reference_id])
+                        || ($item->item_type === 'OBAT' && str_contains((string) $item->description, 'termasuk paket'))) {
+                        $paketChanged = true;
                     }
                 }
 
-                if ($updated === 0) {
-                    return 0;
+                // 3) Tambah baris untuk komponen paket BARU (manual saja, hanya baris paket).
+                if (! $onlyZero) {
+                    foreach ($fresh as $l) {
+                        $ref = $l['reference_id'] ?? null;
+                        if ($ref === null || ! isset($currentSnapItemIds[$ref])) {
+                            continue;
+                        }
+                        $key = "{$l['item_type']}|{$ref}";
+                        if (isset($existingKeys[$key])) {
+                            continue;
+                        }
+                        BillingItem::create(array_merge($l, ['billing_invoice_id' => $invoice->id]));
+                        $added++;
+                        $paketChanged = true;
+                    }
                 }
 
-                // Sinkronkan baris DISKON_PAKET (negatif, reference_id null) dari fresh agar
-                // total pasien tetap netral saat obat-paket yang harganya berubah.
-                if ($bundledChanged) {
+                // 3b) Deteksi perubahan DISKON_PAKET (mis. HANYA sell_price/promo paket yang
+                //     berubah tanpa perubahan baris komponen). Hitung sebagai "updated" agar
+                //     diskon ikut diperbarui & tidak salah lapor "sudah sesuai" (manual saja).
+                if (! $onlyZero) {
+                    $freshDiskon = [];
+                    foreach ($fresh as $l) {
+                        if (($l['item_type'] ?? null) === 'DISKON_PAKET') {
+                            $freshDiskon[$l['reference_id']] = round((float) $l['net_price'], 2);
+                        }
+                    }
+                    $curDiskon = [];
+                    foreach ($invoice->items as $it) {
+                        if ($it->item_type === 'DISKON_PAKET') {
+                            $curDiskon[$it->reference_id] = round((float) $it->net_price, 2);
+                        }
+                    }
+                    $diskonDiff = 0;
+                    foreach ($freshDiskon as $k => $v) {
+                        if (! array_key_exists($k, $curDiskon) || abs($curDiskon[$k] - $v) >= 0.005) {
+                            $diskonDiff++;
+                        }
+                    }
+                    foreach ($curDiskon as $k => $v) {
+                        if (! array_key_exists($k, $freshDiskon)) {
+                            $diskonDiff++;
+                        }
+                    }
+                    if ($diskonDiff > 0) {
+                        $updated      += $diskonDiff;
+                        $paketChanged  = true;
+                    }
+                }
+
+                if ($updated === 0 && $added === 0 && $removed === 0) {
+                    return $empty;
+                }
+
+                // 4) Bangun ulang DISKON_PAKET dari fresh bila ada perubahan komponen paket
+                //    (manual: harga/komposisi/sell paket berubah; auto: obat-paket Rp 0 terisi).
+                if ($paketChanged) {
                     $invoice->items()->where('item_type', 'DISKON_PAKET')->delete();
                     foreach ($fresh as $l) {
                         if (($l['item_type'] ?? null) === 'DISKON_PAKET') {
@@ -2978,20 +3220,27 @@ class KasirService
                     }
                 }
 
+                $invoice->load('items');
                 $this->recalculateInvoice($invoice);
+
+                // COB: perbarui porsi tanggungan per penjamin sesuai total baru.
+                if (! $onlyZero && $visit->visitCob && $visit->visitCob->is_active) {
+                    $this->persistCoverages($invoice, $visit);
+                }
+
                 $detail = $onlyZero
                     ? "{$updated} baris Rp 0 diperbarui dari Buku Tarif"
-                    : "{$updated} baris disinkronkan ke tarif terkini";
+                    : "sinkron tarif/paket: {$updated} harga, +{$added} item, -{$removed} item";
                 $this->log(auth('api')->id(), 'REFRESH_TARIF_KWITANSI', BillingInvoice::class, $invoice->id, $detail);
 
-                return $updated;
+                return ['updated' => $updated, 'added' => $added, 'removed' => $removed];
             });
         } catch (\Throwable $e) {
             // Auto-refresh tak boleh menggagalkan pemuatan halaman kasir. Aksi manual
             // (resyncTarifPrices) sudah membungkus exception 422 sebelum memanggil ini,
             // jadi kegagalan tak terduga aman dilaporkan sebagai 0 baris.
             \Illuminate\Support\Facades\Log::warning('repriceFromTarif gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
-            return 0;
+            return $empty;
         }
     }
 
