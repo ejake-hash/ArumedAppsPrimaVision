@@ -6,7 +6,6 @@ import { useJadwalDokterStore } from '@/stores/jadwalDokterStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
-import FormSection from '@/components/forms/FormSection.vue'
 import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 import { admisiApi, integrasiApi } from '@/services/api'
@@ -1059,7 +1058,7 @@ async function loadRiwayat(page = 1) {
       // Field tambahan agar baris ini bisa dibuka di modal Detail Kunjungan
       // (edit/update SEP & Surat Kontrol). Pasien diambil dari profilePatient.
       noRegistrasi:   v.no_registrasi ?? '—',
-      queueNo:        v.no_antreen ?? v.no_antrian ?? '—',
+      queueNo:        v.no_antrian ?? '—',
       arrivedDate:    fmtDate(v.visit_date ?? v.created_at),
       walkIn:         false,
     }))
@@ -2165,23 +2164,15 @@ async function submitRegistration() {
     }
     const queueNo = pickTrQueueNo(visit)
 
-    // Capture nama+dokter untuk tiket sebelum closeWizard reset form
-    const ticketData = {
-      queueNo,
-      patientName: form.name,
-      doctor:      selectedSchedule.value?.name ?? '',
-      poliklinik:  selectedSchedule.value?.poliklinik ?? '',
-      room:        selectedSchedule.value?.room ?? '',
-    }
-
     // Capture data label pasien (No. RM dari pasien hasil daftar — untuk pasien
     // baru No. RM digenerate backend) sebelum closeWizard mereset form.
     const lp = visit?.patient ?? {}
     const labelData = {
       name:      lp.name ?? form.name,
       noRm:      lp.no_rm ?? form.noRm ?? '-',
-      birthDate: fmtDate(lp.date_of_birth ?? form.birthDate),
+      birthDate: lp.date_of_birth ?? form.birthDate,  // mentah (ISO/DMY) — printLabel parse sendiri
       sex:       lp.gender ?? form.sex,
+      nik:       lp.nik ?? form.nik ?? '—',
       queueNo,
     }
 
@@ -2210,10 +2201,9 @@ async function submitRegistration() {
     toast('s', msgs[form.guarantor] ?? `${form.name} ${action} · Antrean ${queueNo}`)
     closeWizard()
 
-    // Cetak tiket antrean (80mm) + label pasien (58×40mm) sekaligus — dua job cetak
-    // terpisah (umumnya printer/media berbeda). Keduanya butuh izin popup browser.
+    // Cetak label pasien (58×40mm) saja saat selesai daftar — tiket antrean tidak
+    // ikut tercetak otomatis. Butuh izin popup browser.
     nextTick(() => {
-      printAdmisiTicket(ticketData)
       printLabel(labelData)
     })
 
@@ -2340,6 +2330,12 @@ function openVisitDetailFromRiwayat(v) {
     ...v,
     name:      pt?.name ?? '—',
     patientId: pt?.id ?? null,
+    // Identitas pasien dari profil — agar "Cetak Label" & tampilan detail tidak
+    // kosong (baris riwayat tak membawa noRm/nik/sex/birthDate).
+    noRm:      pt?.no_rm ?? '—',
+    nik:       pt?.nik ?? '—',
+    sex:       pt?.gender ?? '—',
+    birthDate: pt?.date_of_birth ?? null,
   }
   closeProfile()
   openVisitDetail(row)
@@ -2350,34 +2346,68 @@ function gotoRekamMedis(p) {
   router.push({ name: 'rekam-medis', query: { patient: p.patientId } })
 }
 
+// Singkatan bulan Indonesia untuk label tgl lahir (mis. "20-Okt-2008").
+const ID_MON = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']
+
+// Parse tgl lahir yang bisa datang sbg ISO (YYYY-MM-DD…) atau DD/MM/YYYY → Date|null.
+function parseDob(v) {
+  if (!v || v === '—') return null
+  const s = String(v)
+  const dmy = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  const d = dmy
+    ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]))
+    : new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
+// "20-Okt-2008"
+function fmtDobLabel(d) {
+  if (!d) return '-'
+  return `${String(d.getDate()).padStart(2,'0')}-${ID_MON[d.getMonth()]}-${d.getFullYear()}`
+}
+
+// "17 tahun 7 bulan" (umur presisi tahun+bulan; 0 bulan → "17 tahun"; <1 th → "7 bulan")
+function fmtUmur(d) {
+  if (!d) return '-'
+  const now = new Date()
+  let y = now.getFullYear() - d.getFullYear()
+  let m = now.getMonth() - d.getMonth()
+  if (now.getDate() < d.getDate()) m--
+  if (m < 0) { y--; m += 12 }
+  if (y < 0) return '-'
+  if (y === 0) return `${m} bulan`
+  return m > 0 ? `${y} tahun ${m} bulan` : `${y} tahun`
+}
+
 function printLabel(p) {
   const t = p
   if (!t) return
-  // Tgl lahir bisa datang sbg ISO mentah (baris antrean/tabel) atau sudah DD/MM/YYYY.
-  // Normalkan: kalau cocok pola DD/MM/YYYY pakai apa adanya, selain itu fmtDate(ISO).
-  const lahir = /^\d{2}\/\d{2}\/\d{4}$/.test(String(t.birthDate ?? ''))
-    ? t.birthDate
-    : (t.birthDate ? fmtDate(t.birthDate) : null)
-  const lahirText = (lahir && lahir !== '—') ? lahir : (t.age ? `${t.age} th` : '-')
+  const dob = parseDob(t.birthDate)
+  // TL/Umur: "20-Okt-2008/17 tahun 7 bulan"; fallback ke umur tahun bila tgl tak ada.
+  const tlUmur = dob
+    ? `${fmtDobLabel(dob)}/${fmtUmur(dob)}`
+    : (t.age ? `${t.age} tahun` : '-')
+  const jk = t.sex === 'L' ? 'Laki-Laki' : (t.sex === 'P' ? 'Perempuan' : '-')
+  const nik = (t.nik && t.nik !== '—') ? t.nik : '-'
   const labelHtml = `
     <html><head><title>Label ${escHtml(t.name)}</title>
     <style>
       @page { size: 58mm 40mm; margin: 0; }
-      * { margin:0; padding:0; box-sizing:border-box; font-family:'Courier New',monospace; }
-      body { width:58mm; padding:3mm; }
-      .nm { font-size:12px; font-weight:bold; }
-      .rw { font-size:10px; margin-top:2px; }
-      .bc { margin-top:4px; font-size:20px; letter-spacing:2px; text-align:center; }
-      .qn { text-align:center; font-size:14px; font-weight:bold; margin-top:2px; }
-      hr { border:none; border-top:1px dashed #000; margin:3px 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:Arial,Helvetica,sans-serif; color:#000 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+      html, body { background:#fff; }
+      body { width:58mm; padding:2mm 2.5mm; color:#000; -webkit-text-stroke:0.15px #000; }
+      .nm { font-size:13px; font-weight:bold; line-height:1.12; text-transform:uppercase; }
+      .jk { font-size:10px; font-weight:bold; margin-top:1px; }
+      .row { font-size:10px; font-weight:bold; margin-top:1px; display:flex; align-items:flex-start; }
+      .row .k { flex:0 0 14mm; font-weight:bold; }
+      .row .v { font-weight:bold; }
+      .bc { margin-top:3px; font-size:20px; font-weight:bold; letter-spacing:2px; text-align:center; font-family:'Courier New',monospace; }
     </style></head><body>
       <div class="nm">${escHtml(t.name)}</div>
-      <div class="rw">No. RM : ${escHtml(t.noRm)}</div>
-      <div class="rw">Lahir&nbsp;&nbsp;: ${escHtml(lahirText)}</div>
-      <div class="rw">JK&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: ${t.sex === 'L' ? 'Laki-laki' : 'Perempuan'}</div>
-      <hr/>
+      <div class="jk">${jk} - ${escHtml(nik)}</div>
+      <div class="row"><span class="k">TL/Umur</span><span class="v">: ${escHtml(tlUmur)}</span></div>
+      <div class="row"><span class="k">No. RM</span><span class="v">: ${escHtml(t.noRm)}</span></div>
       <div class="bc">*${escHtml(t.noRm)}*</div>
-      <div class="qn">Antrean ${escHtml(t.queueNo ?? '-')}</div>
     </body></html>`
   const w = window.open('', '_blank', 'width=320,height=260')
   if (w) {
@@ -2396,7 +2426,7 @@ function printLabel(p) {
    ============================================================ */
 function onKeydown(e) {
   if (e.key !== 'Escape') return
-  if (profileOpen.value)     { profileOpen.value = false;     return }
+  if (profileOpen.value)     { closeProfile();                return }
   if (penjaminOpen.value)    { closeEditPenjamin();           return }
   if (dokterOpen.value)      { closeEditDokter();             return }
   if (editOpen.value)        { closeEditPasien();             return }
@@ -4332,17 +4362,6 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- ═══ FORM REGISTRY — Identitas (Fase 3 INPUT) ═══ -->
-            <div v-if="visitDetailRow.visitId" class="vd-section">
-              <div class="vd-section-title">Form Rekam Medis</div>
-              <FormSection
-                station="admisi"
-                section="identitas"
-                :visit-id="visitDetailRow.visitId"
-                :patient-id="visitDetailRow.patientId"
-                :hide-if-empty="true"
-              />
-            </div>
           </div>
 
           <div class="modal-foot">
