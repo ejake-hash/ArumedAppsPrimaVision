@@ -28,7 +28,8 @@ import BulkTtdReviewModal from '@/components/forms/BulkTtdReviewModal.vue'
 const auth = useAuthStore()
 const isAnestesi = computed(() => auth.roleName === 'dokter_anestesi')
 
-// Tab aktif: 'queue' (antrian belum-TTD) | 'signed' (sudah-TTD hari ini).
+// Tab aktif: 'queue' (antrian belum-TTD) | 'signed' (sudah-TTD; default hari ini,
+// dapat disaring ke tanggal/rentang lain).
 const activeTab = ref('queue')
 
 const rows    = ref([])
@@ -40,7 +41,7 @@ const perPage = ref(10)
 const page    = ref(1)
 const meta    = ref({ total: 0, last_page: 1, current_page: 1 })
 
-// Tab "Ditandatangani hari ini" — state terpisah (rows/pagination sendiri).
+// Tab "Ditanda Tangani" — state terpisah (rows/pagination sendiri).
 const signedRows    = ref([])
 const signedLoading = ref(false)
 const signedError   = ref('')
@@ -51,8 +52,9 @@ const signedMeta    = ref({ total: 0, last_page: 1, current_page: 1 })
 const search       = ref('')
 const statusFilter = ref('ALL') // ALL | DRAFT | PENDING (RENDERED+PENDING_SIGNATURE)
 
-// Filter TANGGAL KUNJUNGAN (hanya tab Antrian — tab "ditandatangani hari ini"
-// memang sudah ber-scope hari ini). Default kosong = semua tanggal (perilaku lama).
+// Filter TANGGAL — dipakai di KEDUA tab dgn arti berbeda: tab Antrian = tanggal
+// KUNJUNGAN (visit_date), tab Ditanda Tangani = tanggal TANDA TANGAN (created_at
+// signature). Default kosong → Antrian: semua tanggal; Ditanda Tangani: hari ini.
 // Mode 'single' = 1 tanggal (from=to); 'range' = rentang from..to.
 const dateMode   = ref('single')
 const dateSingle = ref('')
@@ -131,7 +133,7 @@ const rangeEnd   = computed(() => Math.min(curPage.value * perPage.value, total.
 const hasActiveFilter = computed(() =>
   search.value.trim()
   || (!isSignedTab.value && statusFilter.value !== 'ALL')
-  || (!isSignedTab.value && hasDateFilter.value),
+  || hasDateFilter.value,
 )
 
 // Halaman yang ditampilkan di pager (jendela ringkas di sekitar halaman aktif).
@@ -188,14 +190,14 @@ function clearFilters() {
   loadActive()
 }
 
-// Ubah tanggal/rentang kunjungan → reset halaman & muat ulang antrian.
-// (Filter tanggal hanya tab Antrian, jadi selalu load().)
-function onDateChange() { resetPage(); load() }
+// Ubah tanggal/rentang → reset halaman & muat ulang tab aktif (Antrian: tanggal
+// kunjungan; Ditandatangani: tanggal tanda tangan).
+function onDateChange() { resetPage(); loadActive() }
 function setDateMode(m) {
   if (dateMode.value === m) return
   dateMode.value = m
   // Reload hanya bila sudah ada nilai tanggal aktif (hindari query sia-sia).
-  if (hasDateFilter.value) { resetPage(); load() }
+  if (hasDateFilter.value) { resetPage(); loadActive() }
 }
 function goPrev() { if (curPage.value > 1) { setPage(curPage.value - 1); loadActive() } }
 function goNext() { if (curPage.value < totalPages.value) { setPage(curPage.value + 1); loadActive() } }
@@ -207,7 +209,9 @@ function switchTab(tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
   if (tab === 'signed') {
-    if (signedRows.value.length === 0) { signedPage.value = 1; loadSigned() }
+    // Muat ulang bila belum ada data ATAU ada filter aktif (mis. tanggal/cari
+    // yang dibawa dari tab Antrian) supaya input ↔ data konsisten.
+    if (signedRows.value.length === 0 || hasActiveFilter.value) { signedPage.value = 1; loadSigned() }
   } else {
     load()
   }
@@ -262,6 +266,7 @@ async function loadSigned() {
       page: signedPage.value,
       per_page: perPage.value,
       search: search.value.trim() || undefined,
+      ...dateParams(),
     })
     const p = data.data ?? {}
     signedRows.value = p.data ?? []
@@ -477,7 +482,7 @@ onMounted(() => { load(); refreshCount() })
         </div>
         <div class="stat-body">
           <span class="stat-num">{{ signedTodayCount }}</span>
-          <span class="stat-lbl">Ditandatangani hari ini</span>
+          <span class="stat-lbl">Ditanda Tangani</span>
         </div>
       </div>
     </section>
@@ -497,7 +502,7 @@ onMounted(() => { load(); refreshCount() })
         role="tab" :aria-selected="activeTab === 'signed'"
         @click="switchTab('signed')"
       >
-        Ditandatangani hari ini
+        Ditanda Tangani
         <span v-if="signedTodayCount > 0" class="tab-badge tab-badge-done">{{ signedTodayCount }}</span>
       </button>
     </div>
@@ -517,8 +522,9 @@ onMounted(() => { load(); refreshCount() })
         <option value="DRAFT">Draf</option>
       </select>
 
-      <!-- Filter tanggal KUNJUNGAN (1 tanggal / rentang) — hanya tab Antrian -->
-      <div v-if="!isSignedTab" class="dtfilter" title="Saring berdasarkan tanggal kunjungan">
+      <!-- Filter tanggal (1 tanggal / rentang). Tab Antrian = tanggal kunjungan;
+           tab Ditandatangani = tanggal tanda tangan. -->
+      <div class="dtfilter" :title="isSignedTab ? 'Saring berdasarkan tanggal tanda tangan' : 'Saring berdasarkan tanggal kunjungan'">
         <div class="dt-seg">
           <button type="button" :class="['dt-seg-btn', { on: dateMode === 'single' }]" @click="setDateMode('single')">1 Tanggal</button>
           <button type="button" :class="['dt-seg-btn', { on: dateMode === 'range' }]" @click="setDateMode('range')">Rentang</button>
@@ -616,7 +622,7 @@ onMounted(() => { load(); refreshCount() })
           </tr>
           <tr v-else-if="total === 0">
             <td colspan="5" class="cell-state">
-              {{ hasActiveFilter ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen yang ditandatangani hari ini.' }}
+              {{ hasActiveFilter ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen yang ditanda tangani hari ini.' }}
             </td>
           </tr>
           <tr v-for="r in signedRows" :key="r.signature_id">
@@ -627,7 +633,9 @@ onMounted(() => { load(); refreshCount() })
               </div>
             </td>
             <td>{{ r.template_name ?? r.template_code }}</td>
-            <td class="muted td-date">{{ formatTime(r.signed_at) }} WIB</td>
+            <td class="muted td-date">
+              <span v-if="hasDateFilter">{{ formatDate(r.signed_at) }} · </span>{{ formatTime(r.signed_at) }} WIB
+            </td>
             <td><span class="st st-signed">✓ Ditandatangani</span></td>
             <td class="ta-right">
               <button class="lnk" @click="openTtd(r, true)">Lihat</button>

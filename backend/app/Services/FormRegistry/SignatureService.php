@@ -359,11 +359,13 @@ final class SignatureService
     }
 
     /**
-     * Dokumen yang sudah DITANDATANGANI dokter ini HARI INI (zona Asia/Jakarta).
-     * Sumber kebenaran = baris DocumentSignature milik dokter (append-only, created_at
-     * = waktu tanda tangan server). Paginated + search opsional (pasien/No.RM/jenis dok).
+     * Dokumen yang sudah DITANDATANGANI dokter ini pada satu hari / rentang tanggal
+     * (zona Asia/Jakarta). Default (tanpa date_from/date_to) = HARI INI — mempertahankan
+     * identitas tab "Ditandatangani hari ini". Sumber kebenaran = baris DocumentSignature
+     * milik dokter (append-only, created_at = waktu tanda tangan server). Paginated +
+     * search opsional (pasien/No.RM/jenis dok).
      *
-     * @param array{page?: int, per_page?: int, search?: ?string} $opts
+     * @param array{page?: int, per_page?: int, search?: ?string, date_from?: ?string, date_to?: ?string} $opts
      */
     public function signedTodayForDoctor(string $userId, array $opts = [], string $signerType = 'doctor'): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
@@ -371,10 +373,9 @@ final class SignatureService
         $names   = $this->doctorSignatureTemplates($signerType)['names'];
         $search  = trim((string) ($opts['search'] ?? ''));
 
-        // Batas hari WIB di-konversi ke rentang waktu pada zona DB (default UTC) agar
-        // perbandingan created_at tepat lintas-zona.
-        $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc();
-        $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc();
+        // Rentang hari WIB di-konversi ke zona DB (default UTC) agar perbandingan
+        // created_at tepat lintas-zona. Kosong → hari ini.
+        [$startOfDay, $endOfDay] = $this->resolveSignedDateRange($opts);
 
         $paginator = DocumentSignature::query()
             ->where('signer_type', $signerType)
@@ -414,6 +415,32 @@ final class SignatureService
                 ],
             ];
         });
+    }
+
+    /**
+     * Resolve rentang waktu (UTC) untuk filter "ditandatangani". date_from/date_to
+     * berupa tanggal WIB (Y-m-d). Tanpa keduanya → hari ini (WIB). Salah satu sisi
+     * kosong → pakai sisi yang ada untuk membatasi rentang terbuka.
+     *
+     * @param array{date_from?: ?string, date_to?: ?string} $opts
+     * @return array{0: \Illuminate\Support\Carbon, 1: \Illuminate\Support\Carbon}
+     */
+    private function resolveSignedDateRange(array $opts): array
+    {
+        $from = trim((string) ($opts['date_from'] ?? '')) ?: null;
+        $to   = trim((string) ($opts['date_to'] ?? '')) ?: null;
+
+        if ($from === null && $to === null) {
+            return [
+                \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay()->utc(),
+                \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay()->utc(),
+            ];
+        }
+
+        $start = \Illuminate\Support\Carbon::parse($from ?? $to, 'Asia/Jakarta')->startOfDay()->utc();
+        $end   = \Illuminate\Support\Carbon::parse($to ?? $from, 'Asia/Jakarta')->endOfDay()->utc();
+
+        return [$start, $end];
     }
 
     /** Jumlah dokumen yang ditandatangani dokter ini hari ini (WIB) — untuk kartu statistik. */

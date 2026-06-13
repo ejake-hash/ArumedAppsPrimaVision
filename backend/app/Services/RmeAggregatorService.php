@@ -534,14 +534,26 @@ class RmeAggregatorService
             ->get();
 
         return $visits->map(function ($v) {
-            $items = $v->prescriptions->flatMap(fn ($p) => $p->items->map(fn ($it) => [
-                'nama'         => $it->medication?->name ?? '–',
-                'quantity'     => $it->quantity,
-                'unit'         => $it->medication?->unit,
-                'dosage'       => $it->dosage,
-                'instructions' => $it->instructions,
-                'notes'        => $it->notes,
-            ]))->values();
+            $items = $v->prescriptions->flatMap(fn ($p) => $p->items->map(function ($it) {
+                // E-resep modern (DokterService::storePrescription) menulis aturan pakai
+                // ke kolom granular dose/frequency/route/duration_days; kolom legacy
+                // dosage/instructions KOSONG untuk resep baru. Susun "Aturan Pakai" dari
+                // signa granular (frequency + rute + durasi), fallback ke kolom legacy.
+                $signa = trim(implode(' ', array_filter([
+                    $it->frequency,
+                    $it->route,
+                    $it->duration_days ? ('selama ' . $it->duration_days . ' hari') : null,
+                ])));
+
+                return [
+                    'nama'         => $it->medication?->name ?? '–',
+                    'quantity'     => $it->quantity,
+                    'unit'         => $it->medication?->unit,
+                    'dosage'       => $it->dose ?: $it->dosage,            // dosis (granular → legacy)
+                    'instructions' => $signa !== '' ? $signa : $it->instructions,
+                    'notes'        => $it->notes,
+                ];
+            }))->values();
 
             return [
                 'visit_id'    => $v->id,

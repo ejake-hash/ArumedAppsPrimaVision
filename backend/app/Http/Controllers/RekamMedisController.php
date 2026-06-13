@@ -30,7 +30,7 @@ class RekamMedisController extends Controller
     {
         $validated = $request->validate([
             'keyword' => 'required|string|min:1',
-            'mode'    => 'nullable|in:nama,rm,nik',
+            'mode'    => 'nullable|in:nama,rm,nik,id',
         ]);
 
         return $this->ok($this->service->searchPatient($validated['keyword'], $validated['mode'] ?? null));
@@ -718,15 +718,18 @@ class RekamMedisController extends Controller
 
     /**
      * GET /rekam-medis/ttd-signed-today
-     * Dokumen yang sudah ditandatangani dokter yang login HARI INI (paginated).
-     * Query: page, per_page (default 10, maks 100), search.
+     * Dokumen yang sudah ditandatangani dokter yang login (paginated). Default HARI INI;
+     * dapat disaring ke 1 tanggal / rentang via date_from & date_to (tanggal WIB).
+     * Query: page, per_page (default 10, maks 100), search, date_from, date_to.
      */
     public function ttdSignedToday(Request $request): JsonResponse
     {
         $userId = auth('api')->id();
         $paginator = $this->signatures->signedTodayForDoctor($userId, [
-            'per_page' => (int) $request->query('per_page', 10),
-            'search'   => $request->query('search'),
+            'per_page'  => (int) $request->query('per_page', 10),
+            'search'    => $request->query('search'),
+            'date_from' => $this->validDateParam($request->query('date_from')),
+            'date_to'   => $this->validDateParam($request->query('date_to')),
         ], $this->signerTypeForUser());
         return $this->ok($paginator);
     }

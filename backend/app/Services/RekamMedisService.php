@@ -31,7 +31,7 @@ class RekamMedisService
 
     /**
      * Cari pasien untuk modul RME.
-     * $mode: 'nama' | 'rm' | 'nik' (default: semua field).
+     * $mode: 'nama' | 'rm' | 'nik' | 'id' (default: semua field).
      * Mengembalikan bentuk siap-pakai untuk RekamMedisView (termasuk foto,
      * jumlah kunjungan, dan penjamin terakhir).
      */
@@ -43,7 +43,11 @@ class RekamMedisService
             ->withCount('visits')
             ->with(['visits' => fn ($q) => $q->orderByDesc('visit_date')->limit(1)]);
 
-        if ($mode === 'rm') {
+        if ($mode === 'id') {
+            // Buka-langsung dari modul lain (mis. tombol "Buka Rekam Medis" di Admisi)
+            // yang membawa patient_id — kecocokan persis, bukan ilike.
+            $query->whereKey($kw);
+        } elseif ($mode === 'rm') {
             $query->where('no_rm', 'ilike', "%{$kw}%");
         } elseif ($mode === 'nik') {
             $query->where('nik', 'like', "%{$kw}%");
@@ -608,24 +612,44 @@ class RekamMedisService
      */
     public function resumeMedis(string $visitId): array
     {
-        $resume = MedicalResume::with('doctor')->where('visit_id', $visitId)->first();
-        if (! $resume) {
-            throw new \Exception('Resume medis belum dibuat untuk kunjungan ini.', 404);
-        }
-
         $visit  = Visit::with('patient')->find($visitId);
         $clinic = ClinicProfile::query()->first();
 
-        // HTML siap-cetak (sumber tunggal builder di DokterService), agar cetak dari
-        // Kunjungan & dari menu Dokumen identik.
-        $html = app(\App\Services\DokterService::class)->buildRmrjHtml($resume, $visit);
+        // 1) UTAMAKAN dokumen RESUME_MEDIS yang sudah FINAL (rendered_html ber-stempel
+        //    TTD + QR). Tujuannya: hasil cetak dari menu Kunjungan IDENTIK dengan tombol
+        //    "Print" di section Dokumen / antrean TTD (TtdDokumenView) — keduanya pakai
+        //    snapshot rendered_html dokumen final yang sama.
+        $signedDoc = PatientDocument::query()
+            ->where('visit_id', $visitId)
+            ->where('template_code', 'RESUME_MEDIS')
+            ->whereIn('status', ['FINALIZED', 'FINAL'])
+            ->orderByDesc('finalized_at')
+            ->first();
+
+        $stampedHtml = null;
+        if ($signedDoc) {
+            $snap = app(\App\Services\FormRegistry\FormRegistryService::class)->getSnapshot($signedDoc->id);
+            $stampedHtml = ! empty($snap['rendered_html']) ? $snap['rendered_html'] : null;
+        }
+
+        // 2) Fallback: Resume Medis Rawat Jalan legacy (MedicalResume → buildRmrjHtml)
+        //    bila dokumen final belum ada / belum di-TTD.
+        $resume = MedicalResume::with('doctor')->where('visit_id', $visitId)->first();
+
+        if (! $stampedHtml && ! $resume) {
+            throw new \Exception('Resume medis belum dibuat untuk kunjungan ini.', 404);
+        }
+
+        $html = $stampedHtml
+            ?? app(\App\Services\DokterService::class)->buildRmrjHtml($resume, $visit);
 
         return [
-            'rmrj'      => $resume->rmrj_data ?? [],
+            'rmrj'      => $resume?->rmrj_data ?? [],
             'rendered_html' => $html,
-            'is_final'  => (bool) $resume->is_finalized,
-            'doctor'    => $resume->doctor?->name ?? ($resume->rmrj_data['dokter_merawat'] ?? null),
-            'finalized_at' => optional($resume->finalized_at)->format('Y-m-d'),
+            'is_final'  => $signedDoc ? true : (bool) ($resume?->is_finalized),
+            'signed'    => (bool) $signedDoc,   // true = HTML dari dokumen ber-stempel TTD
+            'doctor'    => $resume?->doctor?->name ?? ($resume?->rmrj_data['dokter_merawat'] ?? null),
+            'finalized_at' => optional($signedDoc?->finalized_at ?? $resume?->finalized_at)->format('Y-m-d'),
             'patient'   => $visit?->patient ? [
                 'nama'          => $visit->patient->name,
                 'no_rm'         => $visit->patient->no_rm,
@@ -661,7 +685,11 @@ class RekamMedisService
         }
 
         $data = app(\App\Services\KasirService::class)->generateReceipt($invoice->id);
-        $html = view('pdf.receipt', $data)->render();
+        // Jalur RME (browser: iframe preview + window cetak) → Blade bergaya Kasir
+        // (`pdf.receipt_print`, flex/leader titik-titik) agar hasil cetak IDENTIK dgn
+        // tombol "Cetak Rincian" di Kasir. Jalur email PDF tetap `pdf.receipt` (tabel,
+        // aman utk dompdf yang tak dukung flexbox).
+        $html = view('pdf.receipt_print', $data)->render();
 
         return [
             'rendered_html'  => $html,

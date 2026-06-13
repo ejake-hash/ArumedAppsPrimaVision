@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 // CPPT timeline pakai komponen bersama yang sama dgn rawat jalan (DokterView/
@@ -34,6 +35,9 @@ function guarantorCls(g) {
   return ({ BPJS:'bpjs', UMUM:'umum', ASURANSI:'asn', PERUSAHAAN:'asn', SOSIAL:'asn' })[g] ?? 'umum'
 }
 function val(v) { return (v === null || v === undefined || v === '') ? '–' : v }
+
+const route  = useRoute()
+const router = useRouter()
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -235,6 +239,30 @@ function clearPatient() {
   cache.value = {}
   searchQuery.value = ''
 }
+
+// Auto-buka RME dari modul lain (mis. tombol "Buka Rekam Medis" di Admisi yang
+// push route dgn ?patient=<id>). searchPatient mode 'id' = kecocokan persis.
+async function autoOpenById(patientId) {
+  const id = String(patientId ?? '').trim()
+  if (!id) return
+  try {
+    const { data } = await api.get('/rekam-medis/pasien', { params: { keyword: id, mode: 'id' } })
+    const hit = (data.data ?? [])[0]
+    if (hit) await pickPatient(hit)
+    else toast('w', 'Pasien tidak ditemukan')
+  } catch {
+    toast('e', 'Gagal membuka rekam medis pasien')
+  }
+}
+
+onMounted(() => {
+  const pid = route.query.patient
+  if (pid) {
+    autoOpenById(pid)
+    // Bersihkan query agar refresh / navigasi balik tak memicu auto-open ulang.
+    router.replace({ query: {} })
+  }
+})
 
 // Convenience getters
 const cur        = computed(() => cache.value[activeMenu.value])
