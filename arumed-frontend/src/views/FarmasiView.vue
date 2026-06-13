@@ -394,6 +394,45 @@ async function serahkanRx() {
   }
 }
 
+// Resep tanpa item obat (mis. obat dibatalkan pasien di Kasir / dokter tak meresepkan).
+const selRxEmpty = computed(() => !!selRx.value && (selRx.value.items ?? []).length === 0)
+
+// Jalan keluar untuk resep 0-item: tanpa ini pasien BUNTU di antrean Farmasi (tombol
+// "Serahkan" disabled karena tak ada item). Tutup antrean tanpa penyerahan obat —
+// selesaiDispensing aman dgn 0 item (tak ada stok dipotong), lalu selesaiAntrian.
+async function tutupTanpaObat() {
+  if (!selRx.value || serahkanLoading.value) return
+  if (!window.confirm('Resep ini tidak memiliki item obat (obat dibatalkan / tidak diresepkan).\nTutup antrean pasien tanpa penyerahan obat?')) return
+  serahkanLoading.value = true
+  try {
+    // selesaiDispensing butuh status DISPENSING — siapkan dulu bila masih SUBMITTED/DRAFT.
+    if (!['DISPENSING', 'DISPENSED'].includes(selRx.value.status)) {
+      const { data } = await farmasiApi.startDispensing(selRx.value.id)
+      selRx.value = hydrateRx(data.data, selRx.value)
+    }
+    if (selRx.value.status !== 'DISPENSED') {
+      const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
+      selRx.value = hydrateRx(data.data, selRx.value)
+      refreshQueueForRx(data.data)
+    }
+    // Tutup antrean pasien → pulang. Gagal di sini tak fatal (resep sudah DISPENSED).
+    if (selQ.value?.id) {
+      try {
+        const { data: qData } = await farmasiApi.selesaiAntrian(selQ.value.id)
+        const updated = qData.data?.queue ?? qData.data
+        if (updated?.id) Object.assign(selQ.value, updated)
+      } catch (e) {
+        toast('w', e.response?.data?.message ?? 'Antrean gagal ditutup. Tutup manual bila perlu.')
+      }
+    }
+    toast('s', 'Antrean pasien ditutup (tidak ada obat untuk diserahkan)')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menutup antrean')
+  } finally {
+    serahkanLoading.value = false
+  }
+}
+
 function refreshQueueForRx(rx) {
   if (!rx || !selQ.value) return
   const prescriptions = selQ.value.visit?.prescriptions ?? []
@@ -408,6 +447,8 @@ const verQueue   = ref([])
 const verLoading = ref(false)
 const verError   = ref('')
 const verSearch  = ref('')
+const verFrom    = ref('')   // filter rentang tgl (client-side) — kosong = semua
+const verTo      = ref('')
 const verSel     = ref(null)
 const verBusy    = ref(false)
 
@@ -421,13 +462,30 @@ const VER_REASONS = [
 const verReason = ref('STOK_HABIS')
 
 const verPendingCount = computed(() => verQueue.value.filter((rx) => !rx.verified_at).length)
+// Tanggal efektif kartu (YYYY-MM-DD) untuk filter rentang — selaras verTgl():
+// RANAP → tgl order (created_at), selain itu → tgl kunjungan (visit_date).
+function verRawDate(rx) {
+  const ranap = rx?.jenis_kode === 'RANAP'
+  const raw = ranap ? rx?.created_at : rx?.visit?.visit_date
+  return raw ? String(raw).slice(0, 10) : ''
+}
 const filtVerQueue = computed(() => {
   const s = verSearch.value.toLowerCase().trim()
-  if (!s) return verQueue.value
-  return verQueue.value.filter((rx) =>
-    (rx.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
-    (rx.visit?.patient?.no_rm ?? '').toLowerCase().includes(s))
+  const from = verFrom.value, to = verTo.value
+  return verQueue.value.filter((rx) => {
+    if (s && !(
+      (rx.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
+      (rx.visit?.patient?.no_rm ?? '').toLowerCase().includes(s))) return false
+    if (from || to) {
+      const d = verRawDate(rx)
+      if (!d) return false
+      if (from && d < from) return false
+      if (to && d > to) return false
+    }
+    return true
+  })
 })
+function verClearDates() { verFrom.value = ''; verTo.value = '' }
 const verSelTotal = computed(() =>
   (verSel.value?.items ?? []).reduce((sum, it) => sum + Number(it.est_total_price ?? 0), 0))
 
@@ -437,6 +495,7 @@ async function fetchVerQueue() {
     const { data } = await farmasiApi.verifikasiQueue()
     verQueue.value = data.data ?? []
     if (verSel.value) verSel.value = verQueue.value.find((r) => r.id === verSel.value.id) ?? null
+    verSubItem.value = null   // buang referensi picker substitusi yang bisa basi pasca-refetch
   } catch (err) {
     verError.value = err.response?.data?.message ?? 'Gagal memuat antrean verifikasi'
   } finally { verLoading.value = false }
@@ -1341,8 +1400,10 @@ function fmtDateId(d) {
   return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
-function printEtiket() {
-  printEtiketFor(selRx.value, selQ.value?.visit?.patient ?? {})
+// Etiket dari tab Verifikasi — setiap resep yang sedang diverifikasi bisa langsung dicetak
+// etiketnya (item & aturan pakai sudah final di tahap ini). Dipindah dari tab Dispensing.
+function printVerEtiket() {
+  printEtiketFor(verSel.value, verSel.value?.visit?.patient ?? {})
 }
 // Etiket untuk permintaan obat rawat inap (pasien dari panel Dispensing Rawat Inap).
 function printRanapEtiket() {
@@ -1909,10 +1970,8 @@ function toast(type, msg) {
                   </span>
                 </div>
               </div>
-              <button class="btn btn-etiket btn-sm" :disabled="!(selRx.items ?? []).length" @click="printEtiket">
-                <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                Etiket
-              </button>
+              <!-- Tombol Etiket DIPINDAH ke tab Verifikasi (etiket dicetak saat verifikasi,
+                   sebelum Kasir & Dispensing). -->
             </div>
 
             <div class="disp-steps">
@@ -1946,7 +2005,7 @@ function toast(type, msg) {
                 <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
               </div>
             </div>
-            <div v-if="!selRx.items?.length" class="empty-rx">Resep belum punya item obat.</div>
+            <div v-if="!selRx.items?.length" class="empty-rx">Resep tidak memiliki item obat (obat dibatalkan / tidak diresepkan). Klik <b>“Selesaikan tanpa obat”</b> di bawah untuk menutup antrean pasien.</div>
 
             <!-- Tambah obat di luar resep: hanya untuk resep BELUM dikunci (mis. OTC
                  tanpa resep dokter). Resep terverifikasi sudah ditagih → perubahan
@@ -2007,11 +2066,17 @@ function toast(type, msg) {
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/></svg>
                 Verifikasi Resep
               </button>
-              <button v-if="dispStep === 1" class="btn btn-warning btn-lg" @click="siapkanRx">
+              <!-- Resep 0-item (obat dibatalkan/tak diresepkan): tanpa jalan keluar ini pasien
+                   buntu di antrean (tombol Serahkan disabled). Tutup antrean tanpa penyerahan. -->
+              <button v-if="selRxEmpty && (dispStep === 1 || dispStep === 2)" class="btn btn-secondary btn-lg" :disabled="serahkanLoading" @click="tutupTanpaObat">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                {{ serahkanLoading ? 'Memproses…' : 'Selesaikan tanpa obat' }}
+              </button>
+              <button v-else-if="dispStep === 1" class="btn btn-warning btn-lg" @click="siapkanRx">
                 <svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
                 Siapkan Obat
               </button>
-              <button v-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="serahkanLoading || !(selRx.items ?? []).length || !(selRx.items ?? []).every((d) => d.checked)" @click="serahkanRx">
+              <button v-else-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="serahkanLoading || !(selRx.items ?? []).length || !(selRx.items ?? []).every((d) => d.checked)" @click="serahkanRx">
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                 {{ serahkanLoading ? 'Memproses…' : 'Serahkan ke Pasien' }}
               </button>
@@ -2035,16 +2100,41 @@ function toast(type, msg) {
       <div class="disp-grid">
         <!-- Daftar resep perlu verifikasi -->
         <div class="rx-col">
-          <div class="rx-filterbar">
-            <input v-model="verSearch" class="fi" placeholder="Cari nama / no. RM…" />
-            <button class="btn btn-secondary btn-sm" :disabled="verLoading" @click="fetchVerQueue">↻</button>
-          </div>
-          <div class="rx-list">
-            <div v-if="verError" class="empty-rx">{{ verError }}</div>
-            <div v-else-if="!filtVerQueue.length" class="empty-rx">Tidak ada resep menunggu verifikasi.</div>
-            <div v-for="rx in filtVerQueue" :key="rx.id"
-                 :class="['rx-card', verSel?.id === rx.id ? 'active' : '', rx.verified_at ? 'done' : '']"
-                 @click="pickVer(rx)">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-head-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                  Verifikasi
+                </div>
+                <div class="card-head-sub">{{ filtVerQueue.length }} resep · {{ verPendingCount }} menunggu</div>
+              </div>
+              <span class="pill-live">LIVE</span>
+            </div>
+
+            <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean verifikasi">
+              <!-- Baris 1: cari + muat ulang -->
+              <div class="ver-searchbar">
+                <input v-model="verSearch" class="fi ver-search" placeholder="Cari nama / no. RM…" />
+                <button class="btn btn-secondary btn-sm" :disabled="verLoading" title="Muat ulang" @click="fetchVerQueue">↻</button>
+              </div>
+              <!-- Baris 2: rentang tanggal (satu baris) -->
+              <div class="ver-datebar">
+                <label class="rp-date-lbl">Dari
+                  <input v-model="verFrom" type="date" class="fi" />
+                </label>
+                <label class="rp-date-lbl">s/d
+                  <input v-model="verTo" type="date" class="fi" />
+                </label>
+                <button v-if="verFrom || verTo" class="btn btn-secondary btn-sm" title="Hapus filter tanggal" @click="verClearDates">✕</button>
+              </div>
+
+              <div class="rx-list">
+                <div v-if="verError" class="empty-rx">{{ verError }}</div>
+                <div v-else-if="!filtVerQueue.length" class="empty-rx">{{ (verFrom || verTo || verSearch) ? 'Tidak ada resep cocok dengan filter.' : 'Tidak ada resep menunggu verifikasi.' }}</div>
+                <div v-for="rx in filtVerQueue" :key="rx.id"
+                     :class="['rx-card', verSel?.id === rx.id ? 'active' : '', rx.verified_at ? 'done' : '']"
+                     @click="pickVer(rx)">
               <div class="rx-body">
                 <div class="rx-top">
                   <div class="rx-name">{{ rx.visit?.patient?.name ?? '—' }}</div>
@@ -2058,6 +2148,8 @@ function toast(type, msg) {
                   <span v-if="rx.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ rx.visit.dpjp_name }}</span>
                 </div>
                 <div class="rx-items"><div class="rx-item muted">{{ (rx.items?.length ?? 0) }} item · est {{ rp(rx.est_total) }}</div></div>
+                </div>
+              </div>
               </div>
             </div>
           </div>
@@ -2216,6 +2308,11 @@ function toast(type, msg) {
                 </span>
                 <button class="btn btn-secondary btn-lg" :disabled="verBusy" @click="verUnlock(verSel)">Buka Kunci (koreksi)</button>
               </template>
+              <!-- Cetak etiket langsung dari Verifikasi (dipindah dari Dispensing) -->
+              <button class="btn btn-etiket btn-lg" :disabled="!(verSel.items ?? []).length" title="Cetak etiket obat (8×5 cm)" @click="printVerEtiket">
+                <svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
+                Cetak Etiket
+              </button>
             </div>
           </div>
         </div>
@@ -2953,6 +3050,13 @@ function toast(type, msg) {
 /* ── Verifikasi Farmasi ── */
 .rx-filterbar { display: flex; gap: 6px; padding: 0 0 8px; }
 .rx-filterbar .fi { flex: 1; }
+/* Filter Verifikasi: baris-1 cari (penuh), baris-2 rentang tanggal */
+.ver-searchbar { display: flex; align-items: center; gap: 6px; padding: 2px 0 6px; }
+.ver-searchbar .ver-search { flex: 1 1 auto; }
+.ver-datebar { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; padding: 0 0 10px; }
+.ver-datebar .rp-date-lbl { flex: 1 1 0; min-width: 0; }
+.ver-datebar .rp-date-lbl .fi { flex: 1 1 auto; width: auto; min-width: 0; }
+.ver-datebar .btn-sm { flex: 0 0 auto; }
 .ver-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
 .ver-badge.wait { background: #fef3c7; color: #92400e; }
 .ver-badge.ok { background: #dcfce7; color: #166534; }
