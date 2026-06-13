@@ -2628,7 +2628,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                           <td><input type="number" class="bd-input bd-input-sm" v-model.number="o.jumlah" min="1" style="width:46px" title="Jumlah" /></td>
                           <td><input class="bd-input bd-input-sm" v-model="o.dosis" placeholder="1 tetes" style="width:78px" title="Dosis" /></td>
                           <td><input class="bd-input bd-input-sm" v-model="o.freq" list="bdSignaOpts" autocomplete="off" placeholder="2×/hari" style="width:96px" title="Signa / aturan pakai" /></td>
-                          <td><select class="bd-select bd-select-sm" v-model="o.dur" title="Durasi"><option value="">—</option><option v-for="d in DURASI_OPTS" :key="d" :value="d">{{ d }}</option></select></td>
+                          <td><input class="bd-input bd-input-sm" v-model="o.dur" list="bdDurasiOpts" autocomplete="off" placeholder="7 hari" style="width:84px" title="Durasi — pilih atau ketik (mis. 12 hari)" /></td>
                           <td><select class="bd-select bd-select-sm" v-model="o.rute" title="Posisi mata (kosong jika bukan tetes)"><option value="">—</option><option value="OD">OD</option><option value="OS">OS</option><option value="ODS">ODS</option></select></td>
                         </template>
                         <template v-else>
@@ -2642,6 +2642,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </table>
                   <div v-else class="bd-tbl-empty">Belum ada obat ditambahkan</div>
                   <datalist id="bdSignaOpts"><option v-for="s in SIGNA_OPTS" :key="s" :value="s" /></datalist>
+                  <datalist id="bdDurasiOpts"><option v-for="d in DURASI_OPTS" :key="d" :value="d" /></datalist>
 
                   <div v-if="!selP.resepSent" class="bd-obat-form">
                     <!-- Pilih obat dari master (wajib medication_id utk kirim ke Farmasi) -->
