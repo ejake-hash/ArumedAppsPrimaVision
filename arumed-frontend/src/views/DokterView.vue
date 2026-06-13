@@ -3523,7 +3523,7 @@ function closeResumeRM() {
                           @mousedown.prevent="pickSurgeryPkg(p)"
                         >
                           <span v-if="p.code" class="dx-code">{{ p.code }}</span>
-                          <span class="dx-result-name">{{ p.name }}{{ p.variantName ? ` — ${p.variantName}` : '' }}</span>
+                          <span class="dx-result-name">{{ p.name }}{{ p.variantName ? ` — ${p.variantName}` : '' }}<span v-if="p.price" class="pkg-opt-price"> · {{ fmtRp(p.price) }}</span></span>
                           <span v-if="p.category" class="pkg-opt-cat">{{ p.category }}</span>
                         </div>
                       </div>
@@ -4971,6 +4971,7 @@ function closeResumeRM() {
 .dx-result-item { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 6px; cursor: pointer; transition: background .12s; }
 /* Combobox paket bedah */
 .pkg-opt-cat { font-size: 10px; color: var(--tu); margin-left: auto; white-space: nowrap; }
+.pkg-opt-price { font-weight: 600; color: var(--ga); white-space: nowrap; }
 .pkg-chosen { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--ga); border-radius: 8px; background: var(--gl); }
 .pkg-chosen-code { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px; color: var(--gd); }
 .pkg-chosen-name { font-size: 12.5px; font-weight: 600; color: var(--td); }
