@@ -17,6 +17,32 @@ class UserController extends Controller
         return ($code >= 400 && $code < 600) ? $code : $fallback;
     }
 
+    /** Pesan validasi Bahasa Indonesia (store & update) — agar toast FE tak Inggris. */
+    private function validationMessages(): array
+    {
+        return [
+            'name.required'        => 'Nama wajib diisi.',
+            'name.max'             => 'Nama maksimal 100 karakter.',
+            'username.required'    => 'Username wajib diisi.',
+            'username.unique'      => 'Username sudah dipakai akun lain.',
+            'username.max'         => 'Username maksimal 50 karakter.',
+            'email.required'       => 'Email wajib diisi.',
+            'email.email'          => 'Format email tidak valid.',
+            'email.unique'         => 'Email sudah dipakai akun lain.',
+            'role_id.required'     => 'Role wajib dipilih.',
+            'role_id.exists'       => 'Role yang dipilih tidak ditemukan.',
+            'employee_id.exists'   => 'Data pegawai tidak ditemukan.',
+            'password.min'         => 'Password minimal 6 karakter.',
+            'pin.digits_between'   => 'PIN harus 4–6 digit angka.',
+            'nip.unique'           => 'NIP sudah dipakai pegawai lain.',
+            'nip.max'              => 'NIP maksimal 20 karakter.',
+            'sip.max'              => 'SIP maksimal 50 karakter.',
+            'str.max'              => 'STR maksimal 50 karakter.',
+            'profession.max'       => 'Profesi maksimal 100 karakter.',
+            'doctor_type.in'       => 'Tipe dokter tidak valid.',
+        ];
+    }
+
     public function index(Request $request): JsonResponse
     {
         $filters = $request->only(['search', 'role_id', 'is_active']);
@@ -63,7 +89,7 @@ class UserController extends Controller
             'nip'         => 'nullable|string|max:20|unique:employees,nip',
             'sip'         => 'nullable|string|max:50',
             'str'         => 'nullable|string|max:50',
-        ]);
+        ], $this->validationMessages());
 
         $data = $this->service->create($validated);
 
@@ -96,7 +122,7 @@ class UserController extends Controller
             'nip'         => $nipRule,
             'sip'         => 'nullable|string|max:50',
             'str'         => 'nullable|string|max:50',
-        ]);
+        ], $this->validationMessages());
 
         try {
             $data = $this->service->update($id, $validated);

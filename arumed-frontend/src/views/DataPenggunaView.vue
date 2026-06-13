@@ -76,6 +76,18 @@ const modal       = ref(null)        // 'role' | 'user' | 'userDetail'
 const selRole     = ref(null)
 const selUser     = ref(null)
 
+// Role lengkap (dgn permission_keys) dari store untuk user yang sedang dilihat.
+// selUser.role dari list TIDAK membawa permission_keys → harus di-resolve dari
+// roles. Bila fetchRoles gagal (loadAll pakai allSettled), ini null → tampilkan
+// pesan "muat ulang", BUKAN badge "tanpa akses" yang menyesatkan.
+const selUserRole = computed(() =>
+  selUser.value?.role?.id ? store.roleById[selUser.value.role.id] : null,
+)
+
+// Lock per-role saat sync permission matriks sedang in-flight — cegah klik
+// beruntun yang menghitung ulang dari permission_keys stale (race last-write-wins).
+const syncingRoles = ref(new Set())
+
 const editRole = ref({
   id: null, name: '', display_name: '', description: '',
   is_active: true, is_system: false, perms: {},
@@ -115,13 +127,12 @@ const canHavePin = computed(() => {
 const isDokter = computed(() => DOCTOR_ROLES.includes(store.roleById[editUser.value.role_id]?.name))
 const canSetNik = computed(() => isDokter.value && !!editUser.value.employee_id)
 
-// Profil nakes (NIP/SIP/STR) hanya relevan untuk tenaga kesehatan klinis: dokter,
-// perawat, refraksionis, penunjang. Disimpan ke pegawai tertaut via update pengguna.
-const NAKES_ROLES = ['dokter', 'perawat', 'refraksionis', 'penunjang']
-const isNakes = computed(() => {
-  const name = store.roleById[editUser.value.role_id]?.name || ''
-  return NAKES_ROLES.some((r) => name.includes(r))
-})
+// Profil nakes (NIP/SIP/STR) hanya relevan untuk tenaga kesehatan klinis: dokter
+// (+varian umum/anestesi), perawat, refraksionis, penunjang. Disimpan ke pegawai
+// tertaut via update pengguna. Pakai exact-match (bukan substring) agar konsisten
+// dgn DOCTOR_ROLES/PIN_ROLES & tak salah-anggap role kustom sbg nakes.
+const NAKES_ROLES = ['dokter', 'dokter_umum', 'dokter_anestesi', 'perawat', 'refraksionis', 'penunjang']
+const isNakes = computed(() => NAKES_ROLES.includes(store.roleById[editUser.value.role_id]?.name))
 
 const filtUsers = computed(() => {
   let list = store.users
@@ -249,14 +260,13 @@ async function saveRole() {
 
   try {
     if (d.id) {
-      await store.updateRole(d.id, payload)
+      await store.updateRole(d.id, payload)   // updateRole me-replace role di store (incl. user_count)
       toast('s', `Role ${d.display_name} diperbarui`)
     } else {
-      await store.createRole(payload)
+      await store.createRole(payload)         // createRole sudah memanggil fetchRoles internal
       toast('s', `Role ${d.display_name} dibuat`)
     }
     modal.value = null
-    await store.fetchRoles()
   } catch (e) {
     toast('e', errMsg(e, 'Gagal menyimpan role'))
   }
@@ -281,18 +291,26 @@ async function toggleMatrixPerm(role, modId, code) {
     toast('i', 'Superadmin bypass — permission selalu penuh, tidak perlu di-set.')
     return
   }
+  // Abaikan klik bila sync role ini masih berjalan (anti-race klik beruntun).
+  if (syncingRoles.value.has(role.id)) return
+
   const perms = keysToPerms(role.permission_keys)
   if (! perms[modId]) perms[modId] = []
   const i = perms[modId].indexOf(code)
   if (i >= 0) perms[modId].splice(i, 1)
   else perms[modId].push(code)
 
+  syncingRoles.value = new Set(syncingRoles.value).add(role.id)
   try {
     // Pertahankan permission khusus (non-R/W/D, mis. bedah.checklist) — backend sync()
     // replace penuh, jadi harus dikirim ulang bersama id matriks.
     await store.syncRolePermissions(role.id, mergePermIds(perms, role.permission_keys))
   } catch (e) {
     toast('e', errMsg(e, 'Gagal update permission'))
+  } finally {
+    const s = new Set(syncingRoles.value)
+    s.delete(role.id)
+    syncingRoles.value = s
   }
 }
 
@@ -406,8 +424,18 @@ async function saveUser() {
       await store.updateUser(d.id, payload)
       toast('s', `Pengguna ${d.name} diperbarui`)
     } else {
-      await store.createUser(payload)
+      const saved = await store.createUser(payload)
       toast('s', `Pengguna ${d.name} dibuat`)
+      // Backend auto-buat employee utk nakes/dokter — tangkap id-nya agar NIK
+      // Satu Sehat bisa langsung disimpan di sesi yang sama (canSetNik butuh
+      // employee_id). Tanpa ini, NIK dokter baru terabaikan pada simpan pertama.
+      if (saved) {
+        d.id = saved.id
+        if (saved.employee?.id) {
+          d.employee_id  = saved.employee.id
+          d.employee_ihs = saved.employee.satusehat_ihs ?? null
+        }
+      }
     }
 
     // NIK dokter (Satu Sehat) — simpan terpisah ke employee bila berubah.
@@ -636,6 +664,13 @@ function shortModel(m) {
 <template>
   <div class="dp">
 
+    <!-- ─── BANNER ERROR MUAT DATA ─── -->
+    <div v-if="store.error" class="rbac-err">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span>Gagal memuat data: {{ store.error }}</span>
+      <button class="btn btn-sm btn-o" style="margin-left:auto" @click="store.loadAll()">Muat ulang</button>
+    </div>
+
     <!-- ─── MODAL: EDIT ROLE ─── -->
     <div v-if="modal === 'role'" class="ov" @click.self="modal = null">
       <div class="mbx lg">
@@ -840,13 +875,16 @@ function shortModel(m) {
             </div>
           </template>
           <div class="sec"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Hak Akses dari Role: {{ selUser.role?.display_name || selUser.role?.name }}</div>
-          <div class="g2" style="margin-bottom:.6rem">
+          <div v-if="!selUserRole" class="info-msg" style="margin-bottom:.6rem">
+            Data hak akses role belum termuat. Muat ulang halaman untuk menampilkannya.
+          </div>
+          <div v-else class="g2" style="margin-bottom:.6rem">
             <div v-for="mod in modules" :key="mod.id" class="perm-view-row">
               <span class="perm-mod">{{ mod.nama }}</span>
               <div style="display:flex;gap:3px">
                 <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
-                      :style="{ background: hasPerm(store.roleById[selUser.role?.id], mod.id, p) ? 'var(--ga)' : 'var(--gb)',
-                                color: hasPerm(store.roleById[selUser.role?.id], mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p }}</span>
+                      :style="{ background: hasPerm(selUserRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
+                                color: hasPerm(selUserRole, mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p }}</span>
               </div>
             </div>
           </div>
@@ -1151,7 +1189,8 @@ function shortModel(m) {
                   </td>
                   <template v-for="r in store.roles" :key="r.id">
                     <td v-for="p in ['R','W','D']" :key="p">
-                      <div :class="['perm-toggle', hasPerm(r, mod.id, p) ? 'on' : 'off', r.name === 'superadmin' ? 'locked' : '']"
+                      <div :class="['perm-toggle', hasPerm(r, mod.id, p) ? 'on' : 'off', (r.name === 'superadmin' || syncingRoles.has(r.id)) ? 'locked' : '']"
+                           :title="syncingRoles.has(r.id) ? 'Menyimpan…' : ''"
                            @click="toggleMatrixPerm(r, mod.id, p)">
                         {{ hasPerm(r, mod.id, p) ? '✓' : '—' }}
                       </div>
@@ -1328,6 +1367,10 @@ function shortModel(m) {
 .empty-state { padding: 1.5rem; text-align: center; color: var(--tu); font-size: 12px; }
 
 .info-msg { background: var(--ib); color: var(--it); padding: .5rem .8rem; border-radius: 7px; font-size: 11px; border: 1px solid var(--ibd); margin-bottom: .5rem; }
+
+/* Banner gagal muat data (B2) — agar halaman tak tampak kosong tanpa sebab. */
+.rbac-err { display: flex; align-items: center; gap: .5rem; margin: .5rem 0; padding: .55rem .8rem; background: var(--eb); border: 1px solid var(--ebd); border-radius: 8px; font-size: 11.5px; color: var(--et); }
+.rbac-err svg { width: 15px; height: 15px; fill: none; stroke: var(--et); stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 
 /* ─── CARD ─── */
 .card { background: var(--bc); border-radius: 11px; border: 1px solid var(--gb); overflow: hidden; }

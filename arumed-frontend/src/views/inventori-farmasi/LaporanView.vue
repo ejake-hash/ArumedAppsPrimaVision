@@ -15,6 +15,9 @@ import DoughnutChart from '@/components/common/charts/DoughnutChart.vue'
 const STATIONS = ['ADMISI', 'TRIASE', 'REFRAKSIONIS', 'DOKTER', 'PENUNJANG', 'BEDAH', 'KASIR', 'FARMASI', 'RANAP', 'IGD']
 const TYPES = [{ v: 'MEDICATION', l: 'Obat' }, { v: 'BHP', l: 'BHP' }, { v: 'IOL', l: 'IOL' }]
 const CONDITIONS = [{ v: 'GOOD', l: 'Baik' }, { v: 'DAMAGED', l: 'Rusak' }, { v: 'EXPIRED', l: 'Kadaluarsa' }, { v: 'NEAR_EXPIRY', l: 'Hampir Exp' }]
+const OPNAME_LOCS = [{ v: 'INVENTORI', l: 'Gudang' }, { v: 'FARMASI', l: 'Farmasi' }, { v: 'BEDAH', l: 'Bedah' }]
+const OPNAME_TYPES = [{ v: 'MEDICATION', l: 'Obat' }, { v: 'BHP', l: 'BHP' }]
+const SELISIH_STATUS = [{ v: 'LEBIH', l: 'Lebih' }, { v: 'KURANG', l: 'Kurang' }]
 const PER_PAGE = 50
 
 function localYmd(d) {
@@ -27,7 +30,7 @@ const period = reactive({
   to:   localYmd(now),
 })
 
-const tab = ref('ringkasan')   // 'ringkasan' | 'pemesanan' | 'retur'
+const tab = ref('ringkasan')   // 'ringkasan' | 'pemesanan' | 'retur' | 'selisih'
 
 // ─── Toast mini ───────────────────────────────────────────────────────────
 const toastMsg = ref(''); const toastType = ref('i'); let toastTimer = null
@@ -110,19 +113,43 @@ async function loadRetur(page = 1) {
   }
 }
 
+// ─── SELISIH OPNAME ──────────────────────────────────────────────────────────
+const slFilter = reactive({ location: '', item_type: '', status: '', search: '' })
+const slRows = ref([]); const slMeta = ref({ current_page: 1, last_page: 1, total: 0 }); const slLoading = ref(false)
+const slKpi = ref({ sessions: 0, items_selisih: 0, qty_lebih: 0, qty_kurang: 0 })
+const slParams = computed(() => ({ from: period.from, to: period.to, ...cleaned(slFilter) }))
+
+async function loadSelisih(page = 1) {
+  slLoading.value = true
+  try {
+    const res = await inventoriLaporanApi.selisih({ ...slParams.value, per_page: PER_PAGE, page })
+    slRows.value = res.data?.data ?? []
+    slMeta.value = res.data?.meta ?? { current_page: 1, last_page: 1, total: 0 }
+    slKpi.value = res.data?.kpi ?? { sessions: 0, items_selisih: 0, qty_lebih: 0, qty_kurang: 0 }
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat selisih opname')
+  } finally {
+    slLoading.value = false
+  }
+}
+
 function cleaned(obj) { return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== '' && v != null)) }
+
+function locLabel(v) { return OPNAME_LOCS.find((x) => x.v === v)?.l ?? (v || '—') }
 
 // ─── Filter & tab orchestration ────────────────────────────────────────────
 function applyFilter() {
   if (tab.value === 'ringkasan') loadSummary()
   else if (tab.value === 'pemesanan') loadPemesanan(1)
-  else loadRetur(1)
+  else if (tab.value === 'retur') loadRetur(1)
+  else loadSelisih(1)
 }
 function switchTab(t) {
   tab.value = t
   if (t === 'ringkasan' && !hasSummary.value) loadSummary()
   else if (t === 'pemesanan' && !pmRows.value.length) loadPemesanan(1)
   else if (t === 'retur' && !rtRows.value.length) loadRetur(1)
+  else if (t === 'selisih' && !slRows.value.length) loadSelisih(1)
 }
 
 // ─── Export ────────────────────────────────────────────────────────────────
@@ -135,8 +162,10 @@ function triggerDownload(blob, filename) {
 }
 async function exportData(kind, format) {
   try {
-    const fn = kind === 'pemesanan' ? inventoriLaporanApi.pemesananExport : inventoriLaporanApi.returExport
-    const params = kind === 'pemesanan' ? pmParams.value : rtParams.value
+    const fn = kind === 'pemesanan' ? inventoriLaporanApi.pemesananExport
+      : kind === 'retur' ? inventoriLaporanApi.returExport
+      : inventoriLaporanApi.selisihExport
+    const params = kind === 'pemesanan' ? pmParams.value : kind === 'retur' ? rtParams.value : slParams.value
     const res = await fn(params, format)
     triggerDownload(res.data, `laporan-${kind}-${period.from}_${period.to}.${format === 'xlsx' ? 'xlsx' : 'csv'}`)
   } catch (e) {
@@ -170,6 +199,7 @@ onMounted(loadSummary)
       <button :class="['lap-tab', tab === 'ringkasan' ? 'a' : '']" @click="switchTab('ringkasan')">Ringkasan</button>
       <button :class="['lap-tab', tab === 'pemesanan' ? 'a' : '']" @click="switchTab('pemesanan')">Pemesanan</button>
       <button :class="['lap-tab', tab === 'retur' ? 'a' : '']" @click="switchTab('retur')">Retur</button>
+      <button :class="['lap-tab', tab === 'selisih' ? 'a' : '']" @click="switchTab('selisih')">Selisih Opname</button>
     </div>
 
     <!-- ════════════ RINGKASAN ════════════ -->
@@ -239,7 +269,7 @@ onMounted(loadSummary)
     </div>
 
     <!-- ════════════ RETUR ════════════ -->
-    <div v-else>
+    <div v-else-if="tab === 'retur'">
       <div class="lap-toolbar">
         <select v-model="rtFilter.station"><option value="">Semua Unit</option><option v-for="s in STATIONS" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="rtFilter.item_type"><option value="">Semua Jenis</option><option v-for="t in TYPES" :key="t.v" :value="t.v">{{ t.l }}</option></select>
@@ -274,6 +304,47 @@ onMounted(loadSummary)
       <Pager :page="rtMeta.current_page" :last-page="rtMeta.last_page" :total="rtMeta.total" @change="loadRetur" />
     </div>
 
+    <!-- ════════════ SELISIH OPNAME ════════════ -->
+    <div v-else>
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-val">{{ fmtQty(slKpi.sessions) }}</div><div class="kpi-lbl">Berita Acara</div></div>
+        <div class="kpi"><div class="kpi-val">{{ fmtQty(slKpi.items_selisih) }}</div><div class="kpi-lbl">Item Berselisih</div></div>
+        <div class="kpi"><div class="kpi-val kpi-pos">+{{ fmtQty(slKpi.qty_lebih) }}</div><div class="kpi-lbl">Total Lebih</div></div>
+        <div class="kpi"><div class="kpi-val kpi-neg">−{{ fmtQty(slKpi.qty_kurang) }}</div><div class="kpi-lbl">Total Kurang</div></div>
+      </div>
+      <div class="lap-toolbar">
+        <select v-model="slFilter.location"><option value="">Semua Lokasi</option><option v-for="l in OPNAME_LOCS" :key="l.v" :value="l.v">{{ l.l }}</option></select>
+        <select v-model="slFilter.item_type"><option value="">Semua Jenis</option><option v-for="t in OPNAME_TYPES" :key="t.v" :value="t.v">{{ t.l }}</option></select>
+        <select v-model="slFilter.status"><option value="">Semua Status</option><option v-for="s in SELISIH_STATUS" :key="s.v" :value="s.v">{{ s.l }}</option></select>
+        <input v-model="slFilter.search" placeholder="Cari no. BA / barang…" @keyup.enter="loadSelisih(1)" />
+        <button class="btn-apply" @click="loadSelisih(1)">Terapkan</button>
+        <span class="spacer" />
+        <button class="btn-exp" @click="exportData('selisih','csv')">CSV</button>
+        <button class="btn-exp" @click="exportData('selisih','xlsx')">Excel</button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="lap-table">
+          <thead><tr>
+            <th>No. BA</th><th>Tanggal</th><th>Lokasi</th><th>Jenis</th><th>Kode</th><th>Barang</th>
+            <th class="r">Sistem</th><th class="r">Fisik</th><th class="r">Selisih</th><th>Status</th><th>Catatan</th>
+          </tr></thead>
+          <tbody>
+            <tr v-if="slLoading"><td colspan="11" class="lap-state">Memuat…</td></tr>
+            <tr v-else-if="!slRows.length"><td colspan="11" class="lap-state">Belum ada Berita Acara opname pada periode ini.</td></tr>
+            <tr v-for="(r, i) in slRows" :key="i" :class="{ 'row-waste': r.status === 'KURANG' }">
+              <td><strong>{{ r.session_number }}</strong></td><td>{{ r.date }}</td><td>{{ locLabel(r.location) }}</td>
+              <td>{{ r.type }}</td><td class="mono">{{ r.code || '—' }}</td><td>{{ r.name }}</td>
+              <td class="r">{{ fmtQty(r.system_qty) }}</td><td class="r">{{ fmtQty(r.physical_qty) }}</td>
+              <td class="r" :class="r.delta > 0 ? 'kpi-pos' : 'kpi-neg'">{{ r.delta > 0 ? '+' : '' }}{{ fmtQty(r.delta) }}</td>
+              <td><span class="badge" :class="r.status === 'KURANG' ? 'cond-waste' : 'cond-good'">{{ r.status }}</span></td>
+              <td>{{ r.note || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <Pager :page="slMeta.current_page" :last-page="slMeta.last_page" :total="slMeta.total" @change="loadSelisih" />
+    </div>
+
     <Teleport to="body">
       <div v-if="toastMsg" class="lap-toast" :class="`t-${toastType}`">{{ toastMsg }}</div>
     </Teleport>
@@ -305,6 +376,8 @@ onMounted(loadSummary)
 .kpi.accent { background: var(--gl); border-color: var(--ga); }
 .kpi.accent .kpi-val { color: var(--gd); }
 .kpi.waste .kpi-val { color: #dc2626; }
+.kpi-pos { color: #15803d !important; }
+.kpi-neg { color: #b91c1c !important; }
 
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
 @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }

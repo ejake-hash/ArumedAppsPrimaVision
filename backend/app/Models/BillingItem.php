@@ -26,10 +26,14 @@ class BillingItem extends Model
         'discount_amount',
         'discount_percent',
         'net_price',
-        // Marker DERIVED toggle "terserap paket" (di-set ulang builder tiap rebuild;
-        // sumber kebenaran flag di prescription_items/surgery_request_bhp).
+        // Marker DERIVED (di-set ulang builder tiap rebuild): is_absorbable = baris
+        // BOLEH dikeluarkan dari paket; is_absorbed = is_absorbable && !paket_excluded.
         'is_absorbable',
         'is_absorbed',
+        // OTORITATIF (model opt-out): false = baris terserap ke harga paket (default),
+        // true = dikeluarkan kasir → ditagih ekstra di atas harga paket. Sumber kebenaran
+        // keputusan serap per-baris (gantikan flag opt-in di tabel sumber).
+        'paket_excluded',
         'notes',
     ];
 
@@ -41,6 +45,7 @@ class BillingItem extends Model
         'net_price'        => 'decimal:2',
         'is_absorbable'    => 'boolean',
         'is_absorbed'      => 'boolean',
+        'paket_excluded'   => 'boolean',
     ];
 
     public function billingInvoice(): BelongsTo

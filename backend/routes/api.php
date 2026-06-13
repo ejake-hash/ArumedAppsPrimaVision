@@ -27,6 +27,7 @@ use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\InventoriReportController;
 use App\Http\Controllers\UnitRequestController;
 use App\Http\Controllers\InventoryStockController;
+use App\Http\Controllers\StockOpnameSessionController;
 use App\Http\Controllers\MedicalEquipmentController;
 use App\Http\Controllers\UnitReturnController;
 use App\Http\Controllers\TarifPaketController;
@@ -566,6 +567,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('ruang-tindakan')->middleware('permission:ruang_tindakan.read')->group(function () {
             Route::get('/antrian',              [RuangTindakanController::class, 'indexAntrian']);
             Route::put('/antrian/{id}/panggil', [RuangTindakanController::class, 'panggilAntrian'])->middleware('permission:ruang_tindakan.write');
+            Route::put('/antrian/{id}/lewati',  [RuangTindakanController::class, 'lewatiAntrian'])->middleware('permission:ruang_tindakan.write');
             Route::put('/jadwal/{id}/mulai',    [RuangTindakanController::class, 'mulaiTindakan'])->middleware('permission:ruang_tindakan.write');
             Route::put('/jadwal/{id}/selesai',  [RuangTindakanController::class, 'selesaiTindakan'])->middleware('permission:ruang_tindakan.write');
             Route::post('/jadwal/{id}/resep',   [RuangTindakanController::class, 'storeResep'])->middleware('permission:ruang_tindakan.write');
@@ -1228,6 +1230,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/pemesanan/export', [InventoriReportController::class, 'pemesananExport']);
             Route::get('/retur',            [InventoriReportController::class, 'retur']);
             Route::get('/retur/export',     [InventoriReportController::class, 'returExport']);
+            Route::get('/selisih',          [InventoriReportController::class, 'selisih']);
+            Route::get('/selisih/export',   [InventoriReportController::class, 'selisihExport']);
+        });
+
+        // -----------------------------------------------------------------
+        // INVENTORI FARMASI — Sesi Stock Opname (Berita Acara) + detail per item.
+        // Layer perekaman di atas stock/opname; mutasi stok tak berubah.
+        // Taruh SEBELUM wildcard `inventori-farmasi/stock/{type}` (aman: prefix beda).
+        // -----------------------------------------------------------------
+        Route::prefix('inventori-farmasi/opname-session')->group(function () {
+            Route::get('/',     [StockOpnameSessionController::class, 'index'])->middleware('permission:inventori_farmasi.read');
+            Route::get('/{id}', [StockOpnameSessionController::class, 'show'])->middleware('permission:inventori_farmasi.read');
+            Route::post('/',    [StockOpnameSessionController::class, 'store'])->middleware('permission:inventori_farmasi.write');
         });
 
         // -----------------------------------------------------------------

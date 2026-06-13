@@ -122,9 +122,18 @@ const showOperasional = computed(() =>
   auth.can('keuangan.read'),
 )
 const showSistem = computed(() =>
+  // role_akses TIDAK dimasukkan: menu Kepegawaian & RBAC kini superadmin-only
+  // (sudah tercakup `|| isSuperadmin`), jadi role_akses.read tak lagi membuka item apa pun.
   auth.can('jadwal_dokter.write') || auth.can('master_data.read') || auth.can('rawat_inap.read') ||
-  auth.can('tarif_paket.read') || auth.can('role_akses.read') || auth.can('antrian_tv.read') ||
+  auth.can('tarif_paket.read') || auth.can('antrian_tv.read') ||
   auth.can('integrasi.read') || auth.isSuperadmin,
+)
+
+// Dashboard memuat data manajemen sensitif (omzet/pendapatan, distribusi penjamin,
+// stok kritis). Hanya superadmin & level manajemen (akses Keuangan / Marketing)
+// yang boleh melihatnya. Selaras dgn meta `permission` route dashboard.
+const canDashboard = computed(() =>
+  auth.isSuperadmin || auth.can('keuangan.read') || auth.can('marketing.read'),
 )
 
 // ─── Badge antrian TTD dokter ────────────────────────────────────────────────
@@ -161,7 +170,7 @@ onMounted(async () => {
 
     <nav class="sb-nav">
       <div class="sb-section">Utama</div>
-      <RouterLink to="/dashboard" class="sb-item" title="Dashboard">
+      <RouterLink v-if="canDashboard" to="/dashboard" class="sb-item" title="Dashboard">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         <span>Dashboard</span>
       </RouterLink>
@@ -266,7 +275,7 @@ onMounted(async () => {
         <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         <span>Tarif &amp; Paket Bedah</span>
       </RouterLink>
-      <RouterLink v-if="auth.can('role_akses.read')" to="/DataPengguna" class="sb-item" title="Hak Akses">
+      <RouterLink v-if="auth.isSuperadmin" to="/DataPengguna" class="sb-item" title="Hak Akses">
         <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
         <span>Hak Akses</span>
       </RouterLink>

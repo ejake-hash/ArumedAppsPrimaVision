@@ -175,8 +175,10 @@ function docChipCls(doc) {
   return doc.status === 'DRAFT' ? 'dc-draft' : 'dc-pending'
 }
 
-// Buka HTML di jendela cetak (dipakai kwitansi & dokumen RM).
-function printHtml(html, title) {
+// Buka HTML di jendela (dipakai kwitansi & dokumen RM). doPrint=true → langsung
+// munculkan dialog cetak (perilaku tombol "Cetak"); false → preview saja, user
+// bisa cetak manual via Ctrl+P (tombol "Preview").
+function printHtml(html, title, doPrint = true) {
   const w = window.open('', '_blank', 'width=900,height=1000')
   if (!w) { toast('w', 'Popup diblokir browser — izinkan popup'); return }
   w.document.open()
@@ -184,12 +186,12 @@ function printHtml(html, title) {
 <style>@page{size:A4;margin:14mm}body{margin:0;font-family:Arial,sans-serif}</style></head><body>${html}</body></html>`)
   w.document.close()
   w.focus()
-  setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P */ } }, 350)
+  if (doPrint) setTimeout(() => { try { w.print() } catch (_) { /* user bisa Ctrl+P */ } }, 350)
 }
 
 // Buka dokumen Form Registry (resume/laporan operasi) → cetak HTML (snapshot bila
 // sudah final, fallback render preview untuk draft). Tanpa PDF backend.
-async function openDocument(doc) {
+async function openDocument(doc, doPrint = false) {
   printingDocId.value = doc.id
   try {
     let html = (await api.get(`/rekam-medis/document/${doc.id}/render`)).data?.data?.rendered_html
@@ -197,7 +199,7 @@ async function openDocument(doc) {
       html = (await api.get(`/rekam-medis/form/${doc.template_code}/render`, { params: { visit_id: detailRow.value.visit_id } })).data?.data?.html
     }
     if (!html) { toast('w', 'Dokumen belum dapat ditampilkan'); return }
-    printHtml(html, doc.type_label || 'Dokumen')
+    printHtml(html, doc.type_label || 'Dokumen', doPrint)
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal membuka dokumen')
   } finally {
@@ -286,13 +288,13 @@ async function printSep(row) {
 }
 
 // ── Kwitansi ───────────────────────────────────────────────────────────────────
-async function openKwitansi(row) {
+async function openKwitansi(row, doPrint = false) {
   if (!row.has_invoice) { toast('w', 'Belum ada kwitansi/tagihan untuk kunjungan ini'); return }
   try {
     const { data } = await api.get(`/rekam-medis/kunjungan/${row.visit_id}/kwitansi`)
     const html = data.data?.rendered_html
     if (!html) { toast('w', 'Kwitansi belum tersaji'); return }
-    printHtml(html, 'Kwitansi')
+    printHtml(html, 'Kwitansi', doPrint)
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal membuka kwitansi')
   }
@@ -502,8 +504,16 @@ onMounted(fetchRekap)
             <button class="rk-btn" :disabled="rekapPrintingSep === detailRow?.visit_id || !detailRow?.no_sep" @click="printSep(detailRow)">
               {{ rekapPrintingSep === detailRow?.visit_id ? 'Menyiapkan…' : 'Cetak SEP' }}
             </button>
-            <button class="rk-btn" :disabled="!detailRow?.has_invoice" @click="openKwitansi(detailRow)">
-              {{ detailRow?.has_invoice ? (detailRow?.is_paid ? 'Kwitansi' : 'Kwitansi (Belum Lunas)') : 'Kwitansi (—)' }}
+            <button
+              class="rk-btn"
+              :disabled="!detailRow?.has_invoice"
+              :title="detailRow?.has_invoice ? (detailRow?.is_paid ? 'Lunas' : 'Belum lunas') : 'Belum ada tagihan'"
+              @click="openKwitansi(detailRow, false)"
+            >
+              {{ detailRow?.has_invoice ? 'Preview Kwitansi' : 'Kwitansi (—)' }}
+            </button>
+            <button class="rk-btn" :disabled="!detailRow?.has_invoice" @click="openKwitansi(detailRow, true)">
+              Cetak Kwitansi
             </button>
           </div>
 
@@ -551,8 +561,11 @@ onMounted(fetchRekap)
                   <small v-if="d.signed_at">TTD {{ fmtDateTime(d.signed_at) }}<span v-if="d.revision"> · revisi {{ d.revision }}</span></small>
                 </div>
                 <div class="rk-doc-act">
-                  <button class="rk-chip" :disabled="printingDocId === d.id" @click="openDocument(d)">
-                    {{ printingDocId === d.id ? '…' : 'Lihat' }}
+                  <button class="rk-chip" :disabled="printingDocId === d.id" @click="openDocument(d, false)">
+                    {{ printingDocId === d.id ? '…' : 'Preview' }}
+                  </button>
+                  <button class="rk-chip" :disabled="printingDocId === d.id" title="Buka & cetak" @click="openDocument(d, true)">
+                    Cetak
                   </button>
                 </div>
               </li>
@@ -711,8 +724,8 @@ onMounted(fetchRekap)
 .rk-info-wide { grid-column: 1 / -1; }
 .rk-lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--tu); }
 
-.rk-actions { display: flex; gap: 8px; }
-.rk-actions .rk-btn { flex: 1; }
+.rk-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rk-actions .rk-btn { flex: 1 1 120px; white-space: nowrap; padding: 0 10px; }
 
 .rk-docsec { border: 1px solid var(--gb); border-radius: 10px; padding: 12px; }
 .rk-docsec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }

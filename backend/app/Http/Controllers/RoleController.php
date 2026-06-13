@@ -17,6 +17,18 @@ class RoleController extends Controller
         return ($code >= 400 && $code < 600) ? $code : $fallback;
     }
 
+    /** Pesan validasi Bahasa Indonesia (store & update role). */
+    private function roleMessages(): array
+    {
+        return [
+            'name.required'           => 'Kode role wajib diisi.',
+            'name.unique'             => 'Kode role sudah dipakai role lain.',
+            'name.max'                => 'Kode role maksimal 50 karakter.',
+            'display_name.max'        => 'Nama tampil maksimal 100 karakter.',
+            'permission_ids.*.exists' => 'Sebagian hak akses tidak dikenal.',
+        ];
+    }
+
     public function index(): JsonResponse
     {
         return response()->json([
@@ -53,7 +65,7 @@ class RoleController extends Controller
             'is_active'        => 'nullable|boolean',
             'permission_ids'   => 'nullable|array',
             'permission_ids.*' => 'uuid|exists:permissions,id',
-        ]);
+        ], $this->roleMessages());
 
         $data = $this->service->create($validated);
 
@@ -72,7 +84,7 @@ class RoleController extends Controller
             'is_active'        => 'sometimes|boolean',
             'permission_ids'   => 'sometimes|array',
             'permission_ids.*' => 'uuid|exists:permissions,id',
-        ]);
+        ], $this->roleMessages());
 
         try {
             $data = $this->service->update($id, $validated);

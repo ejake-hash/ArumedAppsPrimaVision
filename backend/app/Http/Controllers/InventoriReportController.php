@@ -53,6 +53,33 @@ class InventoriReportController extends Controller
         return $this->csvOrXlsx($request, $this->service->returCsv($f), 'laporan-retur-' . now()->format('Ymd'), 'Retur');
     }
 
+    public function selisih(Request $request): JsonResponse
+    {
+        $f = $this->validateSelisih($request);
+        $res = $this->service->selisihList($f);
+        return response()->json(['success' => true, 'data' => $res['data'], 'kpi' => $res['kpi'], 'meta' => $res['meta'], 'message' => 'Berhasil', 'errors' => null]);
+    }
+
+    public function selisihExport(Request $request): Response
+    {
+        $f = $this->validateSelisih($request);
+        return $this->csvOrXlsx($request, $this->service->selisihCsv($f), 'laporan-selisih-opname-' . now()->format('Ymd'), 'Selisih Opname');
+    }
+
+    private function validateSelisih(Request $request): array
+    {
+        return $request->validate([
+            'from'      => 'nullable|date',
+            'to'        => 'nullable|date',
+            'location'  => 'nullable|in:INVENTORI,FARMASI,BEDAH',
+            'item_type' => 'nullable|in:MEDICATION,BHP',
+            'status'    => 'nullable|in:LEBIH,KURANG',
+            'search'    => 'nullable|string|max:60',
+            'per_page'  => 'nullable|integer|min:10|max:200',
+            'page'      => 'nullable|integer|min:1',
+        ]);
+    }
+
     private function validateList(Request $request, bool $isRetur = false): array
     {
         return $request->validate([

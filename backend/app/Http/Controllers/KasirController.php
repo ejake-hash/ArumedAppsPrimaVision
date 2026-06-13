@@ -345,24 +345,22 @@ class KasirController extends Controller
     }
 
     /**
-     * POST /kasir/invoice/{visitId}/absorb-item — toggle "terserap ke paket" baris
-     * obat/BHP tambahan (flag di baris sumber + rebuild invoice; lihat
-     * KasirService::absorbInvoiceItem).
+     * POST /kasir/invoice/{visitId}/absorb-item — KELUARKAN/MASUKKAN satu baris tagihan
+     * dari/ke paket (model opt-out). Payload: billing_item_id + excluded. Flag otoritatif
+     * di billing_items.paket_excluded; hanya DISKON_PAKET dihitung ulang (tanpa rebuild
+     * sumber → item manual & diskon per-baris aman). Lihat KasirService::excludeInvoiceItem.
      */
     public function absorbItem(Request $request, string $visitId): JsonResponse
     {
         $validated = $request->validate([
-            'source_type' => 'required|in:OBAT,BHP',
-            'source_id'   => 'required|uuid',
-            'absorbed'    => 'required|boolean',
+            'billing_item_id' => 'required|uuid',
+            'excluded'        => 'required|boolean',
         ]);
 
         try {
-            $invoice = $this->service->absorbInvoiceItem(
-                $visitId,
-                $validated['source_type'],
-                $validated['source_id'],
-                (bool) $validated['absorbed']
+            $invoice = $this->service->excludeInvoiceItem(
+                $validated['billing_item_id'],
+                (bool) $validated['excluded']
             );
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);

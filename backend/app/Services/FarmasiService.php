@@ -288,6 +288,14 @@ class FarmasiService
             ])
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'SUBMITTED')
+            // Tahan resep selama pasien MASIH di stasiun bedah/tindakan (operasi belum
+            // selesai) agar resep poli tak nyangkut di Verifikasi sebelum prosedur usai —
+            // pasien hanya mengambil obat SEKALI setelah tindakan. Resep pasca-bedah ditulis
+            // setelah status jadi 'DONE' (completeOperation/selesaiTindakan), jadi tak ikut
+            // tersembunyi. whereDoesntHave lolos otomatis utk visit tanpa surgery_schedule &
+            // utk status DONE/CANCELLED (operasi batal → obat poli tetap perlu diverifikasi).
+            ->whereDoesntHave('visit.surgerySchedule', fn ($s) => $s
+                ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS']))
             ->when(
                 ! empty($filters['tanggal']),
                 fn ($q) => $q->whereDate('created_at', $filters['tanggal']),

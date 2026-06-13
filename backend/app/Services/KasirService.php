@@ -501,7 +501,58 @@ class KasirService
             ])->findOrFail($invoice->visit_id);
 
             [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
-            $lines    = $this->buildLines($visit, $billInsurerId, $billGuarantor);
+
+            // Snapshot keputusan kasir SEBELUM rebuild agar tak hilang saat delete+recreate:
+            // (a) exclude per baris bertarif (paket_excluded), (b) baris MANUAL (reference_id
+            // null) yang tak punya sumber → harus dipertahankan apa adanya.
+            $invoice->loadMissing('items');
+            $excludedMap = [];
+            $manualLines = [];
+            foreach ($invoice->items as $it) {
+                if (in_array($it->item_type, ['DISKON_PAKET', 'DISKON_KONTROL'], true)) {
+                    continue;
+                }
+                if ($it->reference_id !== null) {
+                    if ($it->paket_excluded) {
+                        $excludedMap["{$it->item_type}|{$it->reference_id}"] = true;
+                    }
+                } else {
+                    $manualLines[] = [
+                        'item_type'       => $it->item_type,
+                        'category'        => $it->category,
+                        'reference_id'    => null,
+                        'description'     => $it->description,
+                        'quantity'        => $it->quantity,
+                        'unit_price'      => $it->unit_price,
+                        'total_price'     => $it->total_price,
+                        'discount_amount' => $it->discount_amount,
+                        'discount_percent'=> $it->discount_percent,
+                        'net_price'       => $it->net_price,
+                        'is_absorbable'   => (bool) $it->is_absorbable,
+                        'is_absorbed'     => (bool) $it->is_absorbable && ! $it->paket_excluded,
+                        'paket_excluded'  => (bool) $it->paket_excluded,
+                        'notes'           => $it->notes,
+                    ];
+                }
+            }
+
+            // Bangun ulang baris positif dari sumber, kembalikan exclude kasir.
+            $positive = $this->buildPositiveLines($visit, $billInsurerId, $billGuarantor);
+            foreach ($positive as &$l) {
+                $key = "{$l['item_type']}|" . ($l['reference_id'] ?? '');
+                if (isset($excludedMap[$key])) {
+                    $l['paket_excluded'] = true;
+                    $l['is_absorbed']    = false;
+                }
+            }
+            unset($l);
+
+            $allNonDiscount = array_merge($positive, $manualLines);
+            $lines = array_merge(
+                $allNonDiscount,
+                $this->computePaketDiscountLines($visit, $billInsurerId, $billGuarantor, $allNonDiscount),
+                $this->buildFollowupConsultLines($visit, $billInsurerId, $billGuarantor),
+            );
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
             $discount = $this->calculateCOBDiscount($subtotal, $visit->visitCob); // 0 non-COB
             $total    = max(0, $subtotal - $discount);
@@ -532,40 +583,45 @@ class KasirService
      * (perilaku lama). Override dipakai untuk membangun tagihan COB di harga
      * penjamin-2 dan untuk recomputeTotalForInsurer (preview cob-basis).
      */
-    private function buildLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    /**
+     * Semua baris POSITIF (komponen + extra) tanpa baris diskon. Dipisah dari
+     * buildLines agar basis DISKON_PAKET (model opt-out) bisa dihitung dari baris
+     * yang benar-benar dibangun (net_price), bukan re-derive dari sumber.
+     */
+    private function buildPositiveLines(Visit $visit, ?string $insurerId, ?string $guarantorType): array
     {
-        $insurerId    ??= $visit->insurer_id;
-        $guarantorType ??= $visit->guarantor_type;
-
         return array_merge(
             // Tindakan + Penunjang kini SATU sumber: visit_services. Dokter menambahkan
             // pemeriksaan penunjang sebagai tindakan lewat Tab 3 DokterView ("Tambah
             // Tindakan") → tertarif via Buku Tarif (procedure_tariffs) di buildTindakanLines.
-            // Order penunjang (diagnostic_orders) kini MURNI operasional (kirim ke stasiun
-            // penunjang, hasil, rekomendasi IOL) dan TIDAK lagi jadi sumber tagihan —
-            // menghindari dobel tagih dengan baris tindakan Tab 3.
             $this->buildTindakanLines($visit, $insurerId, $guarantorType),
             $this->buildObatLines($visit, $insurerId, $guarantorType),
             $this->buildBhpLines($visit, $insurerId, $guarantorType),
             // Prosedur paket BEDAH (mis. Phacoemulsifikasi) tidak pernah masuk
             // visit_services → tagih langsung dari snapshot agar tampil di rincian
-            // & menyeimbangkan basis diskon paket (lihat buildPaketDiscountLines).
+            // & menyeimbangkan basis diskon paket (lihat computePaketDiscountLines).
             $this->buildPaketProcedureLines($visit, $insurerId, $guarantorType),
             $this->buildPaketBhpLines($visit, $insurerId, $guarantorType),
-            // IOL KOMPOSISI PAKET (snapshot visit_surgery_package_items) DITAGIH sebagai baris
-            // positif + IKUT basis diskon (buildPaketDiscountLines) → tampil di kwitansi, net
-            // tetap = harga jual paket. (Aturan user 11 Jun 2026 — ganti perilaku lama "IOL
-            // keluar kwitansi".) Catatan: IOL TERPASANG di surgery_iol_usage (input BedahView)
-            // tetap HANYA untuk laporan operasi RM-2.2-LP; buildIolLines (basis usage) tak dipakai
-            // agar tak dobel dgn baris snapshot.
+            // IOL/OBAT KOMPOSISI PAKET BEDAH (snapshot) ditagih positif + ikut basis diskon.
             $this->buildPaketIolLines($visit, $insurerId, $guarantorType),
-            // OBAT KOMPOSISI PAKET BEDAH (snapshot MEDICATION) ditagih positif + ikut basis
-            // diskon → obat injeksi mahal (Aflibercept/Bevacizumab) tak hilang dari tagihan.
-            // Obat resep yang sama di-skip di buildObatLines (dedup via paketObatMedIds).
             $this->buildPaketObatLines($visit, $insurerId, $guarantorType),
             $this->buildEquipmentLines($visit, $insurerId, $guarantorType),
             $this->buildInpatientChargeLines($visit),
-            $this->buildPaketDiscountLines($visit, $insurerId, $guarantorType),
+        );
+    }
+
+    private function buildLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    {
+        $insurerId    ??= $visit->insurer_id;
+        $guarantorType ??= $visit->guarantor_type;
+
+        $positive = $this->buildPositiveLines($visit, $insurerId, $guarantorType);
+
+        return array_merge(
+            $positive,
+            // DISKON_PAKET dihitung dari baris positif (model opt-out: baris extra
+            // is_absorbable & !paket_excluded ikut basis → net = harga jual paket).
+            $this->computePaketDiscountLines($visit, $insurerId, $guarantorType, $positive),
             $this->buildFollowupConsultLines($visit, $insurerId, $guarantorType),
         );
     }
@@ -699,20 +755,26 @@ class KasirService
         $guarantorType ??= $visit->guarantor_type;
         $dpjpName     = $visit->dpjp_name;
         $operatorName = $this->surgeryOperatorName($visit) ?: $dpjpName;
+        // Tindakan RJ/konsultasi/penunjang BOLEH diserap ke paket (opt-out) bila visit
+        // punya paket BEDAH bertarif. Default terserap (paket_excluded=false).
+        $canAbsorb = $this->visitCanAbsorbToPaket($visit);
         $lines = [];
         foreach ($visit->visitServices as $vs) {
             $price = $this->getPrice('procedure', $vs->procedure_id, $guarantorType, $insurerId);
             $total = $price * $vs->quantity;
             $cat   = $vs->procedure?->category ?: 'Tindakan';
             $lines[] = [
-                'item_type'    => 'TINDAKAN',
-                'category'     => $cat,
-                'reference_id' => $vs->id,
-                'description'  => ($vs->procedure?->name ?? 'Tindakan') . $this->doctorSuffixForCategory($cat, $dpjpName, $operatorName),
-                'quantity'     => $vs->quantity,
-                'unit_price'   => $price,
-                'total_price'  => $total,
-                'net_price'    => $total,
+                'item_type'     => 'TINDAKAN',
+                'category'      => $cat,
+                'reference_id'  => $vs->id,
+                'description'   => ($vs->procedure?->name ?? 'Tindakan') . $this->doctorSuffixForCategory($cat, $dpjpName, $operatorName),
+                'quantity'      => $vs->quantity,
+                'unit_price'    => $price,
+                'total_price'   => $total,
+                'net_price'     => $total,
+                'is_absorbable' => $canAbsorb,
+                'is_absorbed'   => $canAbsorb,
+                'paket_excluded'=> false,
             ];
         }
         return $lines;
@@ -763,9 +825,9 @@ class KasirService
         // menagih item snapshot, bukan flag (akar bug "obat bedah tak muncul di Kasir/
         // kwitansi, stok tak terpotong"). PENGECUALIAN resep PRE-OP (instruksi dokter jaga
         // di Triase): stat-dose yang kebetulan = komponen paket adalah dosis TAMBAHAN nyata
-        // → tetap ditagih positif dari resep. Item absorbed ("terserap ke paket") juga
-        // tampil positif di sini — penyerapannya lewat pembesaran basis DISKON_PAKET
-        // (preopAbsorbedBasis), bukan dengan menyembunyikan baris.
+        // → tetap ditagih positif dari resep. Baris extra (incl. obat) tampil positif di
+        // sini — penyerapannya lewat pembesaran basis DISKON_PAKET (computePaketDiscountLines,
+        // model opt-out is_absorbable), bukan dengan menyembunyikan baris.
         $isPaketObat = fn ($item, $rx) => ! $rx->is_pre_op
             && isset($paketObatMedIds[$item->medication_id]);
 
@@ -842,8 +904,9 @@ class KasirService
                         'unit_price'   => $price,
                         'total_price'  => $total,
                         'net_price'    => $total,
-                        'is_absorbable' => $canAbsorb && ! $item->is_preop_absorbed,
-                        'is_absorbed'  => (bool) ($item->is_paket_absorbed || $item->is_preop_absorbed),
+                        'is_absorbable' => $canAbsorb,
+                        'is_absorbed'   => $canAbsorb,
+                        'paket_excluded'=> false,
                         'notes'        => $item->dosage,
                     ];
                     continue;
@@ -860,8 +923,9 @@ class KasirService
                     'unit_price'   => $price,
                     'total_price'  => $total,
                     'net_price'    => $total,
-                    'is_absorbable' => $canAbsorb && ! $item->is_preop_absorbed,
-                    'is_absorbed'  => (bool) ($item->is_paket_absorbed || $item->is_preop_absorbed),
+                    'is_absorbable' => $canAbsorb,
+                    'is_absorbed'   => $canAbsorb,
+                    'paket_excluded'=> false,
                     'notes'        => $item->dosage,
                 ];
             }
@@ -934,8 +998,9 @@ class KasirService
                     'unit_price'   => $price,
                     'total_price'  => $total,
                     'net_price'    => $total,
-                    'is_absorbable' => $canAbsorb && ! isset($paketBhpIds[$bhp->bhp_item_id]),
-                    'is_absorbed'  => (bool) $bhp->is_paket_absorbed,
+                    'is_absorbable'  => $canAbsorb && ! isset($paketBhpIds[$bhp->bhp_item_id]),
+                    'is_absorbed'    => $canAbsorb && ! isset($paketBhpIds[$bhp->bhp_item_id]),
+                    'paket_excluded' => false,
                 ];
             }
         }
@@ -1227,6 +1292,7 @@ class KasirService
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
         $lines = [];
+        $canAbsorb = $this->visitCanAbsorbToPaket($visit);
         // Flat fee per pemakaian. Tarif Rp 0 → skip (mis. BPJS yg sudah include di INA-CBGs).
         foreach ($visit->equipmentUsages as $usage) {
             $price = $this->getPrice('equipment', $usage->medical_equipment_id, $guarantorType, $insurerId);
@@ -1237,14 +1303,17 @@ class KasirService
             $label = $eq ? trim(($eq->name ?? '') . ($eq->brand ? " ({$eq->brand})" : '')) : 'Alat Medis';
             $cat   = $eq?->category;
             $lines[] = [
-                'item_type'    => 'MEDICAL_EQUIPMENT',
-                'category'     => $cat ?: 'Alat Kesehatan',
-                'reference_id' => $usage->id,
-                'description'  => "Pemakaian {$label}",
-                'quantity'     => 1,
-                'unit_price'   => $price,
-                'total_price'  => $price,
-                'net_price'    => $price,
+                'item_type'     => 'MEDICAL_EQUIPMENT',
+                'category'      => $cat ?: 'Alat Kesehatan',
+                'reference_id'  => $usage->id,
+                'description'   => "Pemakaian {$label}",
+                'quantity'      => 1,
+                'unit_price'    => $price,
+                'total_price'   => $price,
+                'net_price'     => $price,
+                'is_absorbable' => $canAbsorb,
+                'is_absorbed'   => $canAbsorb,
+                'paket_excluded'=> false,
             ];
         }
         return $lines;
@@ -1300,17 +1369,20 @@ class KasirService
     }
 
     /**
-     * Diskon paket pasien — SATU baris negatif bila pasien punya snapshot paket
-     * (bedah/pemeriksaan) yang harga jualnya < total komponen.
+     * Diskon paket pasien (MODEL OPT-OUT) — baris negatif per paket bertarif.
      *
-     * Basis diskon dihitung LIVE dari snapshot.items via getPrice (bukan angka
-     * beku → bebas bug "snapshot basi"). Komponen aktual tetap ditagih dari sumber
-     * masing-masing (visitServices / used_qty / iolUsages); baris ini hanya
-     * mengurangi total sebesar (Σ komponen dalam paket − sell_price), sehingga
-     * pasien bayar = sell_price + komponen di luar paket. Anti dobel-tagih: tidak
-     * menambah/menghapus baris komponen, hanya 1 baris diskon.
+     * Basis komponen snapshot dihitung LIVE via getPrice (bebas "snapshot basi").
+     * EXTRA (baris non-komponen: tindakan RJ, obat incl. pulang, BHP, IOL, alkes,
+     * item manual) OTOMATIS terserap ke paket BEDAH bertarif PERTAMA — kecuali kasir
+     * mengeluarkannya (paket_excluded=true). Basis extra = Σ net_price baris $lines
+     * yang `is_absorbable && !paket_excluded`. discount = Σbasis − sell_price (≥0) →
+     * net = sell_price + Σ(baris yang dikeluarkan).
+     *
+     * $lines = baris non-diskon yang akan dipertimbangkan (positif yang baru dibangun
+     * atau baris invoice tersimpan via syncPaketDiscount). Komponen snapshot tak ikut
+     * basis extra (is_absorbable=false) — sudah dihitung dari snapshot.
      */
-    private function buildPaketDiscountLines(Visit $visit, ?string $insurerId = null, ?string $guarantorType = null): array
+    private function computePaketDiscountLines(Visit $visit, ?string $insurerId, ?string $guarantorType, array $lines = []): array
     {
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
@@ -1327,36 +1399,38 @@ class KasirService
         // utama saat planning). Non-override → pakai sell_price snapshot (zero-diff).
         $overrideInsurer = $insurerId !== $visit->insurer_id;
 
-        // Sisa qty obat diresepkan (non-cancelled, non-bedah) — untuk "absorpsi" obat ke
-        // paket PEMERIKSAAN. Greedy: dikurangi tiap kali terserap (cegah serap-ganda antar paket).
-        $rxRemaining = [];
-        foreach ($visit->prescriptions as $rx) {
-            if ($rx->status === 'CANCELLED') {
-                continue;
-            }
-            foreach ($rx->items as $rxIt) {
-                // is_bedah: ditagih snapshot paket. sale_unit: ditagih per KEMASAN
-                // (harga independen) — keluar dari absorpsi agar basis (per satuan
-                // kecil) tak meleset dari baris yang benar-benar ditagih.
-                // is_preop_absorbed/is_paket_absorbed: sudah terserap via
-                // preopAbsorbedBasis/paketAbsorbedBasis (paket BEDAH) — jangan ikut
-                // greedy PEMERIKSAAN (cegah serap-ganda).
-                if ($rxIt->is_bedah || $rxIt->sale_unit_id || $rxIt->is_preop_absorbed || $rxIt->is_paket_absorbed) {
-                    continue;
-                }
-                $rxRemaining[$rxIt->medication_id] = ($rxRemaining[$rxIt->medication_id] ?? 0) + (int) $rxIt->quantity;
+        // Visit punya paket BEDAH bertarif → penyerapan extra aktif.
+        $canAbsorb = $this->visitCanAbsorbToPaket($visit);
+
+        // EXTRA basis (opt-out): Σ net baris yang boleh & tidak dikeluarkan kasir.
+        // Komponen snapshot (is_absorbable=false) & baris diskon tak ikut.
+        $extraAbsorbBasis = 0.0;
+        foreach ($lines as $l) {
+            if (! empty($l['is_absorbable']) && empty($l['paket_excluded'])) {
+                $extraAbsorbBasis += (float) ($l['net_price'] ?? 0);
             }
         }
-
-        // Item "terserap ke paket": (a) obat pre-op instruksi dokter jaga
-        // (is_preop_absorbed, di-set Perawat) + (b) obat/BHP tambahan yang diserap
-        // KASIR (is_paket_absorbed). Baris-barisnya tetap tertagih positif
-        // (buildObatLines/buildBhpLines) — nilainya ditambahkan ke basis SATU paket
-        // BEDAH ber-tarif di bawah agar DISKON_PAKET membesar persis senilai baris
-        // tsb → total bersih tetap = harga jual paket.
-        $preopAbsorbBasis = $this->preopAbsorbedBasis($visit, $guarantorType, $insurerId)
-            + $this->paketAbsorbedBasis($visit, $guarantorType, $insurerId);
+        $extraAbsorbBasis = round($extraAbsorbBasis, 2);
         $absorbApplied    = false;
+
+        // Greedy obat ke paket PEMERIKSAAN — HANYA bila TAK ada paket BEDAH bertarif
+        // (visit murni pemeriksaan). Bila ada BEDAH, obat sudah terserap via extra di
+        // atas → matikan greedy agar tak dobel-hitung.
+        $rxRemaining = [];
+        if (! $canAbsorb) {
+            foreach ($visit->prescriptions as $rx) {
+                if ($rx->status === 'CANCELLED') {
+                    continue;
+                }
+                foreach ($rx->items as $rxIt) {
+                    // is_bedah: ditagih snapshot paket. sale_unit: ditagih per KEMASAN.
+                    if ($rxIt->is_bedah || $rxIt->sale_unit_id) {
+                        continue;
+                    }
+                    $rxRemaining[$rxIt->medication_id] = ($rxRemaining[$rxIt->medication_id] ?? 0) + (int) $rxIt->quantity;
+                }
+            }
+        }
 
         // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah).
         $lines = [];
@@ -1413,11 +1487,11 @@ class KasirService
             if ($sell <= 0) {
                 continue;
             }
-            // Serap obat pre-op ke paket BEDAH ber-tarif PERTAMA saja (sekali, multi-paket
+            // Serap baris EXTRA ke paket BEDAH ber-tarif PERTAMA saja (sekali, multi-paket
             // aman). Paket tanpa tarif (sell<=0) sudah ter-skip di atas → penyerapan jatuh
             // ke paket berikutnya; tanpa paket ber-tarif sama sekali → item tertagih aditif.
-            if (! $isPemeriksaan && ! $absorbApplied && $preopAbsorbBasis > 0) {
-                $basis        += $preopAbsorbBasis;
+            if (! $isPemeriksaan && ! $absorbApplied && $extraAbsorbBasis > 0) {
+                $basis        += $extraAbsorbBasis;
                 $absorbApplied = true;
             }
             $discount = round($basis - $sell, 2);
@@ -1440,101 +1514,71 @@ class KasirService
     }
 
     /**
-     * Σ nilai item resep PRE-OP ber-flag "terserap ke paket" (is_preop_absorbed) —
-     * dipakai buildPaketDiscountLines untuk membesarkan basis diskon paket BEDAH.
+     * Hitung ulang DISKON_PAKET dari baris invoice yang TERSIMPAN (sumber kebenaran
+     * paket_excluded ada di billing_items). Dipakai oleh aksi yang mengubah baris
+     * TANPA rebuild dari sumber: toggle keluarkan/masukkan paket, tambah/ubah/hapus
+     * item manual, dan recompute diskon di repriceFromTarif. Hitung dari net baris
+     * non-diskon; hanya tulis ulang bila baris diskon BERBEDA (idempoten, tak churn).
+     * Pemanggil menjalankan recalculateInvoice setelahnya.
      *
-     * WAJIB memakai kondisi billable & SUMBER HARGA yang sama persis dengan
-     * buildObatLines (verified_at + getPrice / harga kemasan × sale_unit_qty) agar
-     * diskon membesar tepat senilai baris yang ditagih → invarian net = sell terjaga.
-     * Item belum verified tidak ditagih → tidak ikut basis (simetris).
+     * @return int jumlah baris DISKON_PAKET yang berubah (0 = tak ada perubahan).
      */
-    private function preopAbsorbedBasis(Visit $visit, ?string $guarantorType, ?string $insurerId): float
+    private function syncPaketDiscount(BillingInvoice $invoice): int
     {
-        $basis = 0.0;
-        foreach ($visit->prescriptions as $rx) {
-            if (! $rx->is_pre_op || $rx->status === 'CANCELLED' || is_null($rx->verified_at)) {
-                continue;
-            }
-            foreach ($rx->items as $it) {
-                if (! $it->is_preop_absorbed || $it->is_bedah) {
-                    continue;
-                }
-                $basis += $this->prescriptionItemBilledValue($it, $guarantorType, $insurerId);
+        $visit = Visit::with([
+            'prescriptions.items',
+            'surgeryPackageSnapshots.items',
+            'visitCob',
+        ])->find($invoice->visit_id);
+        if (! $visit) {
+            return 0;
+        }
+        [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+
+        $invoice->loadMissing('items');
+        $lines = $invoice->items
+            ->reject(fn ($i) => in_array($i->item_type, ['DISKON_PAKET', 'DISKON_KONTROL'], true))
+            ->map(fn ($i) => [
+                'item_type'      => $i->item_type,
+                'reference_id'   => $i->reference_id,
+                'net_price'      => (float) $i->net_price,
+                'is_absorbable'  => (bool) $i->is_absorbable,
+                'paket_excluded' => (bool) $i->paket_excluded,
+            ])->values()->all();
+
+        $newDisc = $this->computePaketDiscountLines($visit, $billInsurerId, $billGuarantor, $lines);
+
+        // Diff vs DISKON_PAKET tersimpan (per reference_id snapshot).
+        $new = [];
+        foreach ($newDisc as $l) {
+            $new[$l['reference_id']] = round((float) $l['net_price'], 2);
+        }
+        $cur = [];
+        foreach ($invoice->items as $it) {
+            if ($it->item_type === 'DISKON_PAKET') {
+                $cur[$it->reference_id] = round((float) $it->net_price, 2);
             }
         }
-
-        return round($basis, 2);
-    }
-
-    /**
-     * Nilai TAGIH satu item resep — cermin persis baris buildObatLines: varian kemasan
-     * (harga kemasan × sale_unit_qty) bila di-set Farmasi, selain itu getPrice × qty.
-     * Dipakai preopAbsorbedBasis & paketAbsorbedBasis agar basis = baris yang ditagih.
-     */
-    private function prescriptionItemBilledValue(object $it, ?string $guarantorType, ?string $insurerId): float
-    {
-        if ($it->sale_unit_id && $it->sale_unit_qty > 0) {
-            $ref    = \App\Models\MedicationSaleUnit::withTrashed()->find($it->sale_unit_id);
-            $prices = $this->resolveSaleUnitPrices([[
-                'medication_id'    => $it->medication_id,
-                'label'            => $ref?->label ?? '',
-                'fallback_unit_id' => $it->sale_unit_id,
-            ]], $guarantorType, $insurerId);
-            $key = $it->medication_id . '|' . mb_strtolower($ref?->label ?? '');
-            return ($prices[$key] ?? 0.0) * (int) $it->sale_unit_qty;
-        }
-        return $this->getPrice('medication', $it->medication_id, $guarantorType, $insurerId) * (int) $it->quantity;
-    }
-
-    /**
-     * Σ nilai baris obat/BHP TAMBAHAN ber-flag is_paket_absorbed (di-set KASIR via
-     * absorbInvoiceItem) — membesarkan basis DISKON_PAKET sehingga net tetap = harga
-     * jual paket. Predikat WAJIB cermin builder terkait (invarian basis = baris tagih):
-     *  - OBAT: cermin buildObatLines — skip RANAP/IGD (inpatient_charges), hanya resep
-     *    verified non-CANCELLED, skip $isPaketObat (med-id ada di komposisi snapshot, non-pre-op),
-     *    skip is_preop_absorbed (sudah dihitung preopAbsorbedBasis — anti dobel).
-     *  - BHP: cermin buildBhpLines — request RECEIVED, used_qty>0; skip BHP yang ada di
-     *    KOMPOSISI snapshot BEDAH (sudah masuk basis via snapshot — anti dobel).
-     */
-    private function paketAbsorbedBasis(Visit $visit, ?string $guarantorType, ?string $insurerId): float
-    {
-        $basis = 0.0;
-
-        // ── OBAT tambahan terserap ──
-        if (! $this->usesInpatientCharges($visit)) {
-            $paketObatMedIds = $this->paketObatMedIds($visit);
-            foreach ($visit->prescriptions as $rx) {
-                if ($rx->status === 'CANCELLED' || is_null($rx->verified_at)) {
-                    continue;
-                }
-                foreach ($rx->items as $it) {
-                    if (! $it->is_paket_absorbed || $it->is_preop_absorbed) {
-                        continue;
-                    }
-                    if (! $rx->is_pre_op && isset($paketObatMedIds[$it->medication_id])) {
-                        continue; // ditagih buildPaketObatLines (komposisi snapshot) → tak ikut basis
-                    }
-                    $basis += $this->prescriptionItemBilledValue($it, $guarantorType, $insurerId);
-                }
+        $changed = 0;
+        foreach ($new as $k => $v) {
+            if (! array_key_exists($k, $cur) || abs($cur[$k] - $v) >= 0.005) {
+                $changed++;
             }
         }
-
-        // ── BHP terpakai terserap ──
-        $paketBhpIds = $this->paketBhpCompositionIds($visit);
-        foreach ($visit->surgeryRequests as $req) {
-            if ($req->status !== 'RECEIVED') {
-                continue;
-            }
-            foreach ($req->bhpItems as $bhp) {
-                $usedQty = (int) ($bhp->used_qty ?? 0);
-                if ($usedQty <= 0 || ! $bhp->is_paket_absorbed || isset($paketBhpIds[$bhp->bhp_item_id])) {
-                    continue;
-                }
-                $basis += $this->getPrice('bhp', $bhp->bhp_item_id, $guarantorType, $insurerId) * $usedQty;
+        foreach ($cur as $k => $v) {
+            if (! array_key_exists($k, $new)) {
+                $changed++;
             }
         }
+        if ($changed === 0) {
+            return 0;
+        }
 
-        return round($basis, 2);
+        $invoice->items()->where('item_type', 'DISKON_PAKET')->delete();
+        foreach ($newDisc as $l) {
+            BillingItem::create(array_merge($l, ['billing_invoice_id' => $invoice->id]));
+        }
+        return $changed;
     }
 
     /**
@@ -2589,6 +2633,11 @@ class KasirService
         [$discAmt, $discPc] = $this->computeItemDiscount($totalPrice, $data['discount_amount'] ?? null, $data['discount_percent'] ?? null);
         $netPrice  = max(0, $totalPrice - $discAmt);
 
+        // Item manual juga ikut model opt-out: default terserap ke paket bila visit punya
+        // paket BEDAH bertarif (kasir bisa keluarkan lewat toggle).
+        $visit     = Visit::with('surgeryPackageSnapshots')->find($invoice->visit_id);
+        $canAbsorb = $visit ? $this->visitCanAbsorbToPaket($visit) : false;
+
         $item = BillingItem::create([
             'billing_invoice_id' => $invoiceId,
             'item_type'          => $data['item_type'],
@@ -2601,9 +2650,13 @@ class KasirService
             'discount_amount'    => $discAmt,
             'discount_percent'   => $discPc,
             'net_price'          => $netPrice,
+            'is_absorbable'      => $canAbsorb,
+            'is_absorbed'        => $canAbsorb,
+            'paket_excluded'     => false,
             'notes'              => $data['notes'] ?? null,
         ]);
 
+        $this->syncPaketDiscount($invoice);
         $this->recalculateInvoice($invoice);
 
         return $item;
@@ -2682,6 +2735,7 @@ class KasirService
                 ->where('medication_id', $medId)->where('insurer_id', $umumId)
                 ->whereNull('deleted_at')->value('pos_kwitansi') : null;
 
+            $canAbsorb = $this->visitCanAbsorbToPaket($visit);
             $billItem = BillingItem::create([
                 'billing_invoice_id' => $invoice->id,
                 'item_type'          => 'OBAT',
@@ -2692,9 +2746,13 @@ class KasirService
                 'unit_price'         => $price,
                 'total_price'        => $total,
                 'net_price'          => $total,
+                'is_absorbable'      => $canAbsorb,
+                'is_absorbed'        => $canAbsorb,
+                'paket_excluded'     => false,
                 'notes'              => $data['dosage'] ?? null,
             ]);
 
+            $this->syncPaketDiscount($invoice);
             $this->recalculateInvoice($invoice);
             $this->log(auth('api')->id(), 'ADD_OBAT_TAMBAHAN_KASIR', BillingInvoice::class, $invoice->id,
                 "Obat tambahan Kasir: {$med->name} x{$qty} → resep {$prescription->id}");
@@ -2764,6 +2822,8 @@ class KasirService
             'notes'            => $data['notes'] ?? $item->notes,
         ]);
 
+        // Perubahan qty/harga/diskon baris terserap mengubah basis paket → recompute.
+        $this->syncPaketDiscount($invoice);
         $this->recalculateInvoice($invoice);
 
         return $item->fresh();
@@ -2780,69 +2840,54 @@ class KasirService
 
         $item->delete();
 
+        $this->syncPaketDiscount($invoice);
         $this->recalculateInvoice($invoice);
     }
 
     /**
-     * Toggle "terserap ke paket" satu baris obat/BHP TAMBAHAN — diputuskan KASIR.
-     * Set flag is_paket_absorbed di baris SUMBER (prescription_items /
-     * surgery_request_bhp; flag bertahan walau invoice di-rebuild), lalu
-     * reconsolidate: baris tetap tampil positif, DISKON_PAKET membesar/mengecil
-     * persis senilai baris → total bersih kembali = harga jual paket + sisa tambahan.
-     *
-     * $sourceType: 'OBAT' (source_id = prescription_items.id) | 'BHP'
-     * (source_id = surgery_request_bhp.id) — sama dengan reference_id baris invoice.
+     * Toggle KELUARKAN/MASUKKAN satu baris tagihan dari/ke paket (model opt-out) —
+     * diputuskan KASIR. Set billing_items.paket_excluded pada baris (otoritatif),
+     * lalu hitung ulang DISKON_PAKET dari baris tersimpan (TANPA rebuild dari sumber →
+     * item manual & diskon per-baris aman). excluded=true → baris ditagih ekstra di
+     * atas harga paket; excluded=false → kembali terserap (pasien bayar harga paket).
      */
-    public function absorbInvoiceItem(string $visitId, string $sourceType, string $sourceId, bool $absorbed): BillingInvoice
+    public function excludeInvoiceItem(string $billingItemId, bool $excluded): BillingInvoice
     {
-        $invoice = BillingInvoice::where('visit_id', $visitId)
-            ->where('status', '!=', 'CANCELLED')
-            ->firstOrFail();
+        $item    = BillingItem::with('billingInvoice')->findOrFail($billingItemId);
+        $invoice = $item->billingInvoice;
+        if (! $invoice || $invoice->status === 'CANCELLED') {
+            throw new \Exception('Invoice tidak ditemukan / sudah dibatalkan.', 422);
+        }
         if (! in_array($invoice->status, ['DRAFT', 'FINALIZED'], true)) {
             throw new \Exception('Invoice sudah dibayar — status terserap paket tidak bisa diubah.', 422);
         }
-
-        $visit = Visit::with(['surgeryPackageSnapshots.items'])->findOrFail($visitId);
-        if (! $this->visitCanAbsorbToPaket($visit)) {
-            throw new \Exception('Kunjungan tidak punya paket bedah bertarif (atau BPJS ditanggung penuh) — tidak ada paket tempat item diserap.', 422);
+        if (! $item->is_absorbable) {
+            throw new \Exception('Baris ini tidak bisa dikeluarkan/diserap ke paket.', 422);
         }
 
-        DB::transaction(function () use ($visit, $sourceType, $sourceId, $absorbed) {
-            if ($sourceType === 'OBAT') {
-                $pi = PrescriptionItem::with('prescription')->findOrFail($sourceId);
-                if ($pi->prescription?->visit_id !== $visit->id) {
-                    throw new \Exception('Item resep bukan milik kunjungan ini.', 422);
-                }
-                if ($pi->is_bedah) {
-                    throw new \Exception('Obat komponen paket sudah termasuk paket.', 422);
-                }
-                $pi->is_paket_absorbed = $absorbed;
-                $pi->save();
-            } else { // BHP
-                $bhp = SurgeryRequestBhp::with('surgeryRequest')->findOrFail($sourceId);
-                if ($bhp->surgeryRequest?->visit_id !== $visit->id) {
-                    throw new \Exception('Baris BHP bukan milik kunjungan ini.', 422);
-                }
-                if ((int) ($bhp->used_qty ?? 0) <= 0) {
-                    throw new \Exception('BHP belum tercatat terpakai (used_qty 0).', 422);
-                }
-                if (isset($this->paketBhpCompositionIds($visit)[$bhp->bhp_item_id])) {
-                    throw new \Exception('BHP komposisi paket sudah termasuk basis paket.', 422);
-                }
-                $bhp->is_paket_absorbed = $absorbed;
-                $bhp->save();
-            }
+        $visit = Visit::with(['surgeryPackageSnapshots.items'])->findOrFail($invoice->visit_id);
+        if (! $this->visitCanAbsorbToPaket($visit)) {
+            throw new \Exception('Kunjungan tidak punya paket bedah bertarif — tidak ada paket tempat item diserap.', 422);
+        }
+
+        DB::transaction(function () use ($invoice, $item, $excluded) {
+            $item->update([
+                'paket_excluded' => $excluded,
+                'is_absorbed'    => ! $excluded,
+            ]);
+            $this->syncPaketDiscount($invoice);
+            $this->recalculateInvoice($invoice);
         });
 
         $this->log(
             auth('api')->id(),
-            'ABSORB_INVOICE_ITEM',
+            'EXCLUDE_INVOICE_ITEM',
             BillingInvoice::class,
             $invoice->id,
-            ($absorbed ? 'Serap' : 'Keluarkan') . " {$sourceType} {$sourceId} " . ($absorbed ? 'ke' : 'dari') . ' paket'
+            ($excluded ? 'Keluarkan' : 'Masukkan') . " baris {$item->id} " . ($excluded ? 'dari' : 'ke') . ' paket'
         );
 
-        return $this->reconsolidateInvoice($invoice->id);
+        return $invoice->fresh(['items', 'visit.patient']);
     }
 
     /**
@@ -3172,52 +3217,17 @@ class KasirService
                     }
                 }
 
-                // 3b) Deteksi perubahan DISKON_PAKET (mis. HANYA sell_price/promo paket yang
-                //     berubah tanpa perubahan baris komponen). Hitung sebagai "updated" agar
-                //     diskon ikut diperbarui & tidak salah lapor "sudah sesuai" (manual saja).
+                // 3b/4) Hitung ulang DISKON_PAKET dari baris TERSIMPAN (hormati exclude kasir,
+                //       item manual, sell_price/komposisi terbaru). Mengembalikan jumlah baris
+                //       diskon yang berubah → dihitung sbg "updated" agar perubahan sell-only/
+                //       exclude tak salah lapor "sudah sesuai". Mode auto (onlyZero) tak menyentuh.
                 if (! $onlyZero) {
-                    $freshDiskon = [];
-                    foreach ($fresh as $l) {
-                        if (($l['item_type'] ?? null) === 'DISKON_PAKET') {
-                            $freshDiskon[$l['reference_id']] = round((float) $l['net_price'], 2);
-                        }
-                    }
-                    $curDiskon = [];
-                    foreach ($invoice->items as $it) {
-                        if ($it->item_type === 'DISKON_PAKET') {
-                            $curDiskon[$it->reference_id] = round((float) $it->net_price, 2);
-                        }
-                    }
-                    $diskonDiff = 0;
-                    foreach ($freshDiskon as $k => $v) {
-                        if (! array_key_exists($k, $curDiskon) || abs($curDiskon[$k] - $v) >= 0.005) {
-                            $diskonDiff++;
-                        }
-                    }
-                    foreach ($curDiskon as $k => $v) {
-                        if (! array_key_exists($k, $freshDiskon)) {
-                            $diskonDiff++;
-                        }
-                    }
-                    if ($diskonDiff > 0) {
-                        $updated      += $diskonDiff;
-                        $paketChanged  = true;
-                    }
+                    $invoice->load('items');
+                    $updated += $this->syncPaketDiscount($invoice);
                 }
 
                 if ($updated === 0 && $added === 0 && $removed === 0) {
                     return $empty;
-                }
-
-                // 4) Bangun ulang DISKON_PAKET dari fresh bila ada perubahan komponen paket
-                //    (manual: harga/komposisi/sell paket berubah; auto: obat-paket Rp 0 terisi).
-                if ($paketChanged) {
-                    $invoice->items()->where('item_type', 'DISKON_PAKET')->delete();
-                    foreach ($fresh as $l) {
-                        if (($l['item_type'] ?? null) === 'DISKON_PAKET') {
-                            BillingItem::create(array_merge($l, ['billing_invoice_id' => $invoice->id]));
-                        }
-                    }
                 }
 
                 $invoice->load('items');

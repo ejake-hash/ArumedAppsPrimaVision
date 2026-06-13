@@ -33,7 +33,7 @@ const router = createRouter({
         { path: '', redirect: '/admisi' },
         { path: 'admisi', name: 'admisi', component: AdmisiView, meta: { title: 'Admisi & Pendaftaran' } },
         { path: 'dokter', name: 'dokter', component: DokterView, meta: { title: 'Poliklinik Dokter', permission: 'rme_dokter.read' } },
-        { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { title: 'Dashboard' } },
+        { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { title: 'Dashboard', permission: ['keuangan.read', 'marketing.read'] } },
         { path: 'perawat', name: 'perawat', component: PerawatView, meta: { title: 'Triase / Perawat', permission: 'perawat.read' } },
         { path: 'refraksionis', name: 'refraksionis', component: RefraksionisView, meta: { title: 'Refraksionis', permission: 'refraksionis.read' } },
         { path: 'rekam-medis', name: 'rekam-medis', component: RekamMedisView, meta: { title: 'Rekam Medis', permission: 'rekam_medis.read' } },
@@ -48,7 +48,7 @@ const router = createRouter({
         { path: 'bpjs', name: 'bpjs', component: KlaimView, meta: { title: 'BPJS & Klaim', permission: 'bpjs.read' } },
         { path: 'rekap-kunjungan-bpjs', name: 'rekap-kunjungan-bpjs', component: () => import('@/views/RekapKunjunganBpjsView.vue'), meta: { title: 'Rekap Kunjungan BPJS', permission: 'bpjs.read' } },
         { path: 'asuransi', name: 'asuransi', component: () => import('@/views/AsuransiView.vue'), meta: { title: 'Asuransi & Klaim TPA', permission: 'asuransi.read' } },
-        { path: 'DataPengguna', name: 'DataPengguna', component: DataPenggunaView, meta: { title: 'Kepegawaian & RBAC', permission: 'role_akses.read' } },
+        { path: 'DataPengguna', name: 'DataPengguna', component: DataPenggunaView, meta: { title: 'Kepegawaian & RBAC', superadmin: true } },
         { path: 'jadwal-dokter', name: 'jadwal-dokter', component: JadwalDokterView, meta: { title: 'Jadwal Dokter', permission: 'jadwal_dokter.write' } },
         { path: 'laporan-marketing', name: 'laporan-marketing', component: () => import('@/views/LaporanMarketingView.vue'), meta: { title: 'Laporan Marketing', permission: 'marketing.read' } },
         { path: 'keuangan', name: 'keuangan', component: () => import('@/views/KeuanganView.vue'), meta: { title: 'Keuangan — Rekap Honor', permission: 'keuangan.read' } },
@@ -192,8 +192,18 @@ router.beforeEach((to) => {
     if (recordPerm) perm = recordPerm
   }
   if (perm && auth.isAuthenticated && !auth.can(perm)) {
-    // Tidak punya akses — redirect ke landing default
-    return { name: 'dashboard' }
+    // Tidak punya akses — jatuhkan ke landing default yang TAK ber-gate (Admisi).
+    // Jangan pakai 'dashboard': sejak Dashboard ikut di-gate (manajemen-only),
+    // memantulkan user yang ditolak ke sana akan memicu redirect-loop.
+    return { name: 'admisi' }
+  }
+
+  // 3. Route KHUSUS SUPERADMIN (mis. Kepegawaian & RBAC). Backend mengunci seluruh
+  //    grup /rbac/* ke role:superadmin, jadi FE harus konsisten — role lain (walau
+  //    diberi role_akses.read) tak boleh masuk agar tak melihat halaman kosong (403).
+  const superadminOnly = to.matched.some((r) => r.meta?.superadmin)
+  if (superadminOnly && auth.isAuthenticated && !auth.isSuperadmin) {
+    return { name: 'admisi' }
   }
 })
 

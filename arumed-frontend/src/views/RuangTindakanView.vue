@@ -35,6 +35,7 @@ const DISPOSITIONS = [
 const form = ref(blankForm())
 const submitting = ref(false)   // kunci anti double-submit "Selesai Tindakan"
 const resepSaved = ref(false)   // resep sudah terkirim → jangan dobel saat retry
+const pendingCallIds = ref([])  // queue_id yg sedang diproses Panggil (anti dobel-klik)
 
 function blankForm() {
   return {
@@ -175,6 +176,7 @@ function switchTab(tab) {
 
 const statusLabel = (s) => ({ SCHEDULED: 'Terjadwal', IN_PROGRESS: 'Berlangsung', DONE: 'Selesai', CANCELLED: 'Batal' }[s] || s || '—')
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short' }) : '—'
+const fmtDob  = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 
 // ─── Status helper ────────────────────────────────────────────────────────────
 function schedStatus(p) { return p.schedule?.status || 'SCHEDULED' }
@@ -222,12 +224,39 @@ const filtBoard = computed(() => {
 })
 
 // ─── Aksi lifecycle ───────────────────────────────────────────────────────────
-async function panggil(p) {
-  // Panggil beroperasi pada antrean (queue). Pasien terjadwal yang belum punya
-  // baris antrean belum bisa dipanggil — langsung "Mulai Tindakan" saja.
+// Panggil / Panggil Ulang (per-kartu antrean, gaya PerawatView). Panggil beroperasi
+// pada antrean (queue). Pasien terjadwal yang belum punya baris antrean belum bisa
+// dipanggil — langsung "Mulai Tindakan" saja.
+async function callPt(p, e) {
+  e?.stopPropagation()
+  if (!canWrite.value) return
   if (!p.queue_id) return toast('e', 'Antrean belum terbentuk — langsung Mulai Tindakan.')
-  try { await ruangTindakanApi.panggil(p.queue_id); toast('s', 'Pasien dipanggil.'); await loadBoard() }
-  catch (e) { toast('e', e?.response?.data?.message || 'Gagal memanggil.') }
+  if (pendingCallIds.value.includes(p.queue_id)) return
+  const isRecall = p.status && p.status !== 'WAITING'
+  pendingCallIds.value.push(p.queue_id)
+  try {
+    await ruangTindakanApi.panggil(p.queue_id)
+    toast('s', `${isRecall ? 'Memanggil ulang' : 'Memanggil'} ${p.queue_number || ''} — ${p.patient?.name || 'pasien'}`)
+    await loadBoard()
+  } catch (err) {
+    toast('e', err?.response?.data?.message || 'Gagal memanggil.')
+  } finally {
+    pendingCallIds.value = pendingCallIds.value.filter(id => id !== p.queue_id)
+  }
+}
+
+// Lewati: demote 1 posisi + reset panggilan (CALLED→WAITING). Sama dengan PerawatView.
+async function skipPt(p, e) {
+  e?.stopPropagation()
+  if (!canWrite.value) return
+  if (!p.queue_id) return toast('e', 'Antrean belum terbentuk — tidak bisa dilewati.')
+  try {
+    await ruangTindakanApi.lewati(p.queue_id)
+    toast('w', `${p.patient?.name || 'Pasien'} (${p.queue_number || '-'}) diturunkan 1 antrean`)
+    await loadBoard()
+  } catch (err) {
+    toast('e', err?.response?.data?.message || 'Gagal melewati pasien.')
+  }
 }
 
 async function mulai(p) {
@@ -418,10 +447,24 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
                   <div class="q-meta">
                     {{ p.patient?.age != null ? p.patient.age + ' th' : '-' }} · {{ p.patient?.gender || '-' }} · {{ p.patient?.no_rm || '-' }}
                   </div>
+                  <div class="q-meta">TL: {{ fmtDob(p.patient?.date_of_birth) }}</div>
+                  <div class="q-meta">DPJP: {{ p.visit?.operator || '—' }}</div>
                   <div class="q-tags">
                     <span class="pill pill-pkg">{{ p.schedule?.package?.name || 'Tindakan Laser' }}</span>
                     <span :class="['pill', isBpjs(p) ? 'pill-bpjs' : 'pill-umum']">{{ penjaminLabel(p) }}</span>
                     <span v-if="p.schedule?.scheduled_time" class="pill pill-time">{{ String(p.schedule.scheduled_time).slice(0,5) }}</span>
+                  </div>
+
+                  <!-- Aksi antrean (Panggil/Lewati) — gaya PerawatView, hanya sebelum tindakan dimulai -->
+                  <div v-if="!isRunning(p) && !isDone(p) && p.queue_id" class="q-actions" @click.stop>
+                    <button
+                      :class="['q-act-btn', 'call', p.status && p.status !== 'WAITING' ? 'recall' : '']"
+                      :disabled="!canWrite || pendingCallIds.includes(p.queue_id)"
+                      @click="callPt(p, $event)"
+                    >
+                      {{ p.status && p.status !== 'WAITING' ? 'Panggil Ulang' : 'Panggil' }}
+                    </button>
+                    <button class="q-act-btn skip" :disabled="!canWrite" @click="skipPt(p, $event)">Lewati</button>
                   </div>
                 </div>
               </div>
@@ -441,6 +484,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
                 {{ sel.patient?.no_rm }} · {{ sel.patient?.gender }} · {{ sel.patient?.age != null ? sel.patient.age + ' th' : '-' }}
                 · {{ sel.visit?.insurer_name || sel.visit?.guarantor_type || 'Umum' }}
               </div>
+              <div class="dt-sub">TL: {{ fmtDob(sel.patient?.date_of_birth) }} · DPJP: {{ sel.visit?.operator || '—' }}</div>
             </div>
             <div class="dt-tags">
               <span class="tag">{{ sel.schedule?.package?.name || 'Tindakan Laser' }}</span>
@@ -456,9 +500,8 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             <span v-if="sel.preop.iop_os">TIO OS: <b>{{ sel.preop.iop_os }}</b></span>
           </div>
 
-          <!-- Aksi state: Menunggu → Panggil → Mulai -->
+          <!-- Aksi state: Menunggu → Mulai (Panggil/Lewati ada di kartu antrean) -->
           <div v-if="!isRunning(sel) && !isDone(sel)" class="action-row">
-            <button v-if="sel.queue_id && sel.status !== 'CALLED'" class="btn-primary" :disabled="!canWrite" @click="panggil(sel)">Panggil Pasien</button>
             <button class="btn-primary accent" :disabled="!canWrite" @click="mulai(sel)">Mulai Tindakan</button>
           </div>
           <div v-else-if="isDone(sel)" class="done-banner">
@@ -679,6 +722,17 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .q-meta { font-size: 10px; color: #6b7280; margin-top: 2px; }
 .q-tags { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; }
 
+/* Aksi antrean (Panggil/Lewati) — gaya PerawatView/BedahView */
+.q-actions { display: flex; gap: 4px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed #DEE4EB; width: 100%; }
+.q-act-btn { display: inline-flex; align-items: center; gap: 3px; padding: 3px 10px; font-size: 10px; font-weight: 600; border-radius: 5px; border: 1px solid; cursor: pointer; font-family: inherit; transition: background .12s, color .12s, border-color .12s; background: none; user-select: none; }
+.q-act-btn.call { color: #1FAAE0; border-color: #1FAAE0; background: #E4F4FB; }
+.q-act-btn.call:hover:not(:disabled) { background: #1FAAE0; color: #fff; }
+.q-act-btn.call.recall { color: #b45309; border-color: #fbbf24; background: #fef3c7; }
+.q-act-btn.call.recall:hover:not(:disabled) { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+.q-act-btn.skip { color: #6b7280; border-color: #DEE4EB; }
+.q-act-btn.skip:hover:not(:disabled) { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.q-act-btn:disabled { opacity: .5; cursor: not-allowed; }
+
 /* Pills antrean */
 .pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
 .pill-menunggu { background: #fef3c7; color: #92400e; }
@@ -775,6 +829,8 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 11px 20px; border-radius: 9px; color: #fff; font-size: 0.88rem; font-weight: 600; box-shadow: 0 8px 24px rgba(15,23,42,.2); z-index: 100; }
 .toast.s { background: #16a34a; }
 .toast.e { background: #dc2626; }
+.toast.w { background: #d97706; }
+.toast.i { background: #0E3A66; }
 .toast-enter-active, .toast-leave-active { transition: opacity .25s, transform .25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>

@@ -534,21 +534,22 @@ async function removeItem(item) {
   }
 }
 
-// Toggle "terserap ke paket" (obat/BHP tambahan): flag disimpan di baris SUMBER
-// (resep/BHP) lalu BE rebuild invoice — DISKON_PAKET membesar/mengecil otomatis,
-// pasien tetap bayar harga paket. Eligibility (is_absorbable) dihitung BE.
+// Toggle KELUARKAN/MASUKKAN baris dari/ke paket (model opt-out). Default semua baris
+// extra TERSERAP (pasien bayar harga paket); kasir mengeluarkan baris agar ditagih
+// ekstra. Flag disimpan di billing_items.paket_excluded; BE hanya hitung ulang
+// DISKON_PAKET (item manual & diskon per-baris TIDAK ter-reset).
 async function toggleAbsorb(item) {
   if (!selQ.value?.visit?.id || itemMutating.value) return
   itemMutating.value = true
   try {
+    const excluded = item.is_absorbed   // sedang terserap → keluarkan
     const { data } = await kasirApi.absorbItem(selQ.value.visit.id, {
-      source_type: item.item_type === 'BHP' ? 'BHP' : 'OBAT',
-      source_id: item.reference_id,
-      absorbed: !item.is_absorbed,
+      billing_item_id: item.id,
+      excluded,
     })
     if (data.data) selInv.value = data.data
     syncGlobalDiscountFields()
-    toast('s', item.is_absorbed ? 'Item dikeluarkan dari paket' : 'Item diserap ke paket — diskon paket menyesuaikan')
+    toast('s', excluded ? 'Baris dikeluarkan dari paket — ditagih terpisah' : 'Baris dimasukkan ke paket — pasien bayar harga paket')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal mengubah status terserap paket')
   } finally {
@@ -1600,7 +1601,8 @@ const groupedPrintItems = computed(() =>
                             @input="onPaketDescChange(item)"
                           />
                           <template v-else>{{ item.description }}
-                            <span v-if="item.is_absorbed" class="absorb-badge" title="Nilai baris ini diserap ke harga paket — pasien tetap membayar harga paket (DISKON_PAKET menyesuaikan)">Termasuk Paket</span>
+                            <span v-if="item.is_absorbed" class="absorb-badge" title="Nilai baris ini terserap ke harga paket — pasien tetap membayar harga paket (DISKON_PAKET menyesuaikan)">Termasuk Paket</span>
+                            <span v-else-if="item.is_absorbable" class="absorb-badge off" title="Baris ini dikeluarkan dari paket — ditagih ekstra di atas harga paket">Ditagih Terpisah</span>
                           </template>
                         </td>
                         <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
@@ -1632,13 +1634,13 @@ const groupedPrintItems = computed(() =>
                         </td>
                         <td v-if="editTagihan" class="act-cell">
                           <button
-                            v-if="item.is_absorbable && ['OBAT','BHP'].includes(item.item_type) && !['PAID','PARTIALLY_PAID','CANCELLED'].includes(selInv.status)"
+                            v-if="item.is_absorbable && !['PAID','PARTIALLY_PAID','CANCELLED'].includes(selInv.status)"
                             class="absorb-btn"
                             :class="{ on: item.is_absorbed }"
                             :disabled="itemMutating"
-                            :title="(item.is_absorbed ? 'Keluarkan dari paket — baris kembali ditagih di atas harga paket' : 'Serap ke paket — pasien tetap bayar harga paket, diskon paket membesar otomatis') + '. Catatan: tagihan dibangun ulang (item manual & diskon per-baris ter-reset).'"
+                            :title="item.is_absorbed ? 'Keluarkan dari paket — baris ditagih ekstra di atas harga paket' : 'Masukkan ke paket — pasien bayar harga paket, diskon paket menyesuaikan otomatis'"
                             @click="toggleAbsorb(item)"
-                          >{{ item.is_absorbed ? 'Keluarkan' : 'Serap ke Paket' }}</button>
+                          >{{ item.is_absorbed ? 'Keluarkan' : 'Masukkan' }}</button>
                           <button class="del-btn" @click="removeItem(item)" :disabled="itemMutating || (selInv.items?.length ?? 0) <= 1">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                           </button>
@@ -2393,6 +2395,7 @@ const groupedPrintItems = computed(() =>
 .del-btn svg { width: 12px; height: 12px; }
 .act-cell { display: flex; align-items: center; gap: 4px; }
 .absorb-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 700; letter-spacing: .03em; background: var(--gl); color: var(--ga); border: 1px solid var(--ga); white-space: nowrap; vertical-align: 1px; }
+.absorb-badge.off { background: #fff4e5; color: #b45309; border-color: #f59e0b; }
 .absorb-btn { padding: 4px 8px; border-radius: 5px; border: 1px solid var(--gb); background: var(--bs); color: var(--tm); font-size: 10px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all .12s; font-family: 'Inter', sans-serif; }
 .absorb-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); }
 .absorb-btn.on { background: var(--gl); border-color: var(--ga); color: var(--ga); }

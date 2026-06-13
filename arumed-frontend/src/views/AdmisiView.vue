@@ -326,6 +326,19 @@ function ptypeClass(g) {
   return { BPJS:'pt-bpjs', ASURANSI:'pt-asuransi', PERUSAHAAN:'pt-perusahaan', SOSIAL:'pt-sosial' }[g] ?? 'pt-umum'
 }
 
+// Jenis kunjungan (Rawat Jalan / Rawat Inap / IGD) dari kolom kanonik
+// `jenis_pelayanan` (RAJAL/RANAP/IGD, default RAJAL). Stasiun RANAP/MENUNGGU_RANAP
+// = rawat inap walau jenis_pelayanan masih RAJAL (pasien "menunggu kamar"),
+// konsisten dgn AdmisiService::getKunjungan.
+const JENIS_KUNJUNGAN_LABEL = { RAJAL: 'Rawat Jalan', RANAP: 'Rawat Inap', IGD: 'IGD' }
+function jenisKunjunganCanon(v) {
+  const st = v?.current_station
+  if (st === 'RANAP' || st === 'MENUNGGU_RANAP') return 'RANAP'
+  return String(v?.jenis_pelayanan ?? 'RAJAL').toUpperCase()
+}
+function jenisKunjunganLabel(code) { return JENIS_KUNJUNGAN_LABEL[code] ?? 'Rawat Jalan' }
+function jenisKunjunganClass(code) { return { RAJAL:'care-rajal', RANAP:'care-ranap', IGD:'care-igd' }[code] ?? 'care-rajal' }
+
 /* ============================================================
    FILTERS + TABLE — server-side (filter, search, pagination)
    ============================================================ */
@@ -1048,6 +1061,7 @@ async function loadRiwayat(page = 1) {
       date:           fmtDate(v.visit_date ?? v.created_at),
       photo:          v.photo_url ?? null,
       classification: v.classification ?? '—',
+      careType:       jenisKunjunganCanon(v),
       internalRefFrom: v.internal_referral_from_schedule?.poliklinik ?? null,
       guarantor:      v.guarantor_type ?? '—',
       station:        v.current_station ?? '—',
@@ -4646,6 +4660,7 @@ onUnmounted(() => {
                         <span class="vh-date-inline">{{ v.date }}</span>
                         <span class="vh-class">{{ v.classification }}</span>
                         <span :class="['ptype-tag', ptypeClass(v.guarantor)]">{{ v.guarantor }}</span>
+                        <span :class="['care-tag', jenisKunjunganClass(v.careType)]">{{ jenisKunjunganLabel(v.careType) }}</span>
                         <span class="vh-station">{{ v.station }}</span>
                       </div>
                       <div class="vh-meta">
@@ -4968,6 +4983,12 @@ onUnmounted(() => {
 .pt-umum { background: var(--gl); color: var(--ga); }
 .pt-asuransi { background: #fef3c7; color: #92400e; }
 .pt-walkin { background: #fff4d6; color: #92651b; border: 1px dashed #d4a73a; }
+
+/* Jenis kunjungan: Rawat Jalan / Rawat Inap / IGD */
+.care-tag { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+.care-rajal { background: #dcfce7; color: #166534; }
+.care-ranap { background: #e0e7ff; color: #3730a3; }
+.care-igd { background: #fee2e2; color: #991b1b; }
 
 /* Verifikasi asuransi badge (Sprint 4 modul Asuransi/TPA) */
 .verif-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 12px; margin-left: 4px; }

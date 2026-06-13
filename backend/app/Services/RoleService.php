@@ -72,7 +72,7 @@ class RoleService
                     // Superadmin bypass via kode, ignore pivot edit.
                     $role->permissions()->detach();
                 } else {
-                    $role->permissions()->sync($data['permission_ids']);
+                    $role->permissions()->sync($this->withRetainedInactive($role, $data['permission_ids']));
                 }
             }
         });
@@ -105,9 +105,26 @@ class RoleService
 
         // Validasi semua id valid
         $valid = Permission::whereIn('id', $permissionIds)->pluck('id')->toArray();
-        $role->permissions()->sync($valid);
+        $role->permissions()->sync($this->withRetainedInactive($role, $valid));
 
         return $this->getById($id);
+    }
+
+    /**
+     * Pertahankan id permission NON-AKTIF (is_active=false) yang sudah melekat ke
+     * role. Matriks UI hanya mengenal permission aktif, jadi tanpa jaring ini
+     * ->sync() (replace penuh) akan menghapus permission non-aktif secara
+     * diam-diam tiap kali admin menyimpan/toggle role — dan tak bisa dipulihkan
+     * lewat UI. Dipakai di update() & syncPermissions().
+     */
+    private function withRetainedInactive(Role $role, array $permissionIds): array
+    {
+        $inactiveOwned = $role->permissions()
+            ->where('permissions.is_active', false)
+            ->pluck('permissions.id')
+            ->toArray();
+
+        return array_values(array_unique(array_merge($permissionIds, $inactiveOwned)));
     }
 
     // ─── CSV / Excel: Template / Export / Import ──────────────────────────────

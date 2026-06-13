@@ -30,6 +30,16 @@ const paket = computed(() => store.paketDetail)
 // searchItems & searchFollowup). Prefetch tersisa: insurers (modal tarif).
 const insurers = ref([])
 
+// Kategori tagihan (master billing_categories) — untuk URUTAN grup komposisi
+// agar sama dengan pengelompokan kwitansi Kasir.
+const billingCategories = ref([])
+async function loadBillingCategories() {
+  try {
+    const { data } = await masterApi.kategoriTagihan.list({ active: 1 })
+    billingCategories.value = data?.data?.data ?? data?.data ?? []
+  } catch { billingCategories.value = [] }
+}
+
 async function loadDropdowns() {
   try {
     const ins = await masterApi.penjamin({ per_page: 200 })
@@ -451,6 +461,63 @@ const itemsEnriched = computed(() => {
 
 const tariffsRaw = computed(() => paket.value?.package_tariffs ?? paket.value?.packageTariffs ?? [])
 
+// ─── Komposisi: search + kelompok per kategori kwitansi ────────────────────
+const compoSearch = ref('')
+const FALLBACK_CATEGORY = 'Lainnya'
+
+// Kelompokkan item komposisi per kategori MENGIKUTI sort_order billing_categories
+// (sama dengan grouping rincian/kwitansi Kasir). Kategori item = item_category
+// (Tindakan) atau label tipe (Obat/BHP/IOL); tak dikenal → "Lainnya" di akhir.
+function groupCompositionByCategory(items, categories) {
+  if (!items?.length) return []
+  const orderMap = new Map()
+  for (const cat of (categories ?? [])) {
+    if (cat?.name) orderMap.set(String(cat.name).toLowerCase(), cat.sort_order ?? 100)
+  }
+  const buckets = new Map()
+  for (const it of items) {
+    const rawCat   = (it.item_category && String(it.item_category).trim()) || it._type_label || FALLBACK_CATEGORY
+    const inMaster = orderMap.has(rawCat.toLowerCase())
+    const key      = inMaster || !orderMap.size ? rawCat : FALLBACK_CATEGORY
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(it)
+  }
+  const groups = Array.from(buckets.entries()).map(([name, rows]) => ({
+    name,
+    sort_order: orderMap.get(name.toLowerCase()) ?? 99999,
+    items: rows,
+    subtotal: rows.reduce((a, r) => a + Number(r.subtotal ?? 0), 0),
+  }))
+  groups.sort((a, b) => {
+    if (a.name === FALLBACK_CATEGORY) return 1
+    if (b.name === FALLBACK_CATEGORY) return -1
+    return a.sort_order - b.sort_order
+  })
+  return groups
+}
+
+const filteredItems = computed(() => {
+  const q = compoSearch.value.trim().toLowerCase()
+  if (!q) return itemsEnriched.value
+  return itemsEnriched.value.filter((it) =>
+    (it.item_name || '').toLowerCase().includes(q)
+    || (it.item_category || '').toLowerCase().includes(q)
+    || (it._type_label || '').toLowerCase().includes(q),
+  )
+})
+const groupedComposition = computed(() => groupCompositionByCategory(filteredItems.value, billingCategories.value))
+
+// Keterangan total / yang diperlukan: jumlah item + rincian per tipe.
+const compositionSummary = computed(() => {
+  const byType = { PROCEDURE: 0, MEDICATION: 0, BHP: 0, IOL: 0 }
+  let totalQty = 0
+  for (const it of itemsEnriched.value) {
+    byType[it.item_type] = (byType[it.item_type] || 0) + 1
+    totalQty += Number(it.quantity || 0)
+  }
+  return { count: itemsEnriched.value.length, totalQty, byType }
+})
+
 const formatRp = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
 
 const toast = ref(null)
@@ -610,7 +677,7 @@ function onFollowupBlur() {
 
 onMounted(async () => {
   document.addEventListener('click', closeMenuOnOutside)
-  await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns(), loadProcedureCategories()])
+  await Promise.all([store.fetchPaketDetail(paketId.value), loadDropdowns(), loadProcedureCategories(), loadBillingCategories()])
 })
 onUnmounted(() => document.removeEventListener('click', closeMenuOnOutside))
 
@@ -751,24 +818,50 @@ watch(paketId, async (id) => {
             </div>
           </div>
 
-          <table v-if="itemsEnriched.length" class="pd-table">
+          <!-- Keterangan total / yang diperlukan -->
+          <div v-if="itemsEnriched.length" class="pd-compo-summary">
+            <span class="pd-cs-main"><strong>{{ compositionSummary.count }}</strong> item diperlukan</span>
+            <span v-if="compositionSummary.byType.PROCEDURE" class="pd-cs-chip">{{ compositionSummary.byType.PROCEDURE }} Tindakan</span>
+            <span v-if="compositionSummary.byType.MEDICATION" class="pd-cs-chip">{{ compositionSummary.byType.MEDICATION }} Obat</span>
+            <span v-if="compositionSummary.byType.BHP" class="pd-cs-chip">{{ compositionSummary.byType.BHP }} BHP</span>
+            <span v-if="compositionSummary.byType.IOL" class="pd-cs-chip">{{ compositionSummary.byType.IOL }} IOL</span>
+            <span class="pd-cs-spacer"></span>
+            <span class="pd-cs-base">Base total <strong>{{ formatRp(paket.total_base_price) }}</strong></span>
+          </div>
+          <p v-if="itemsEnriched.length" class="pd-compo-note">
+            Base total hanya <strong>acuan diskon</strong>. Harga yang DITAGIH mengikuti <strong>Buku Tarif</strong> (Tarif Tindakan) per penjamin — lihat Tarif Jual di panel kanan.
+          </p>
+
+          <!-- Search komposisi -->
+          <div v-if="itemsEnriched.length" class="pd-compo-search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input v-model="compoSearch" type="text" placeholder="Cari item / kategori di komposisi…" />
+            <button v-if="compoSearch" class="pd-compo-search-clear" title="Hapus" @click="compoSearch = ''">×</button>
+          </div>
+
+          <table v-if="groupedComposition.length" class="pd-table">
             <thead>
-              <tr><th>Tipe</th><th>Item</th><th class="r">Qty</th><th class="r">Harga</th><th class="r">Subtotal</th><th></th></tr>
+              <tr><th>Item</th><th class="r">Qty</th><th class="r">Harga (Buku Tarif)</th><th class="r">Subtotal</th><th></th></tr>
             </thead>
-            <tbody>
-              <tr v-for="it in itemsEnriched" :key="it.id">
-                <!-- Pill TIPE = kategori Buku Tarif (sama dgn grouping kwitansi); warna tetap per tipe item. -->
-                <td><span class="pd-type-pill" :data-t="it.item_type">{{ it.item_category || it._type_label }}</span></td>
+            <!-- Grup per kategori — urutan ikut master billing_categories (= kwitansi). -->
+            <tbody v-for="grp in groupedComposition" :key="grp.name" class="pd-cat-group">
+              <tr class="pd-cat-head">
+                <td colspan="3"><span class="pd-cat-name">{{ grp.name }}</span><span class="pd-cat-count">{{ grp.items.length }} item</span></td>
+                <td class="r"><strong>{{ formatRp(grp.subtotal) }}</strong></td>
+                <td></td>
+              </tr>
+              <tr v-for="it in grp.items" :key="it.id">
                 <td>
                   <div class="pd-item-cell">
                     <strong>{{ it.item_name || '—' }}</strong>
+                    <span class="pd-item-cat"><span class="pd-type-pill" :data-t="it.item_type">{{ it._type_label }}</span></span>
                   </div>
                 </td>
                 <td class="r">{{ it.quantity }}</td>
                 <td class="r">{{ formatRp(it.default_price) }}</td>
                 <td class="r"><strong>{{ formatRp(it.subtotal) }}</strong></td>
                 <td class="r" style="white-space:nowrap">
-                  <button class="pd-icon-btn" title="Edit qty/harga" @click="openEditItem(it)">
+                  <button class="pd-icon-btn" title="Edit qty" @click="openEditItem(it)">
                     <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
                   </button>
                   <button class="pd-icon-btn pd-icon-danger" title="Hapus" @click="removeItem(it)">
@@ -778,10 +871,11 @@ watch(paketId, async (id) => {
               </tr>
             </tbody>
             <tfoot>
-              <tr><td colspan="4" class="r"><strong>Base Total</strong></td><td class="r"><strong>{{ formatRp(paket.total_base_price) }}</strong></td><td></td></tr>
+              <tr><td colspan="3" class="r"><strong>Base Total</strong></td><td class="r"><strong>{{ formatRp(paket.total_base_price) }}</strong></td><td></td></tr>
             </tfoot>
           </table>
-          <div v-else class="pd-empty">Belum ada item. Klik <strong>Tambah Item</strong> untuk mulai mengisi komposisi paket.</div>
+          <div v-else-if="!itemsEnriched.length" class="pd-empty">Belum ada item. Klik <strong>Tambah Item</strong> untuk mulai mengisi komposisi paket.</div>
+          <div v-else class="pd-empty">Tidak ada item cocok dengan pencarian "{{ compoSearch }}".</div>
         </section>
 
         <!-- TARIFFS PANEL -->
@@ -892,8 +986,12 @@ watch(paketId, async (id) => {
                 <input type="number" min="1" v-model.number="itemModal.quantity" />
               </label>
               <label class="pdm-field">
-                <span>Harga Snapshot (Rp)</span>
-                <input type="number" min="0" v-model.number="itemModal.default_price" />
+                <span>Harga (Buku Tarif) <small class="pdm-hint-inline">otomatis — atur di Buku Tarif</small></span>
+                <div
+                  class="pdm-readonly pdm-readonly-click"
+                  title="Klik untuk info"
+                  @click="showToast('i', 'Harga item mengikuti Buku Tarif & tidak memengaruhi harga tagihan dari sini. Untuk ubah harga, set di Tarif & Paket → Tarif Tindakan.')"
+                >{{ itemModal.item_id ? formatRp(itemModal.default_price) : '— pilih item dulu —' }}</div>
               </label>
             </div>
 
@@ -1141,5 +1239,33 @@ watch(paketId, async (id) => {
 .pd-toast { padding: 9px 14px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 14px rgba(0,0,0,0.1); min-width: 240px; animation: pd-toast-in 0.2s ease; }
 .pd-toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .pd-toast-e { background: var(--eb); color: var(--et); border-color: var(--ebd); }
+.pd-toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+.pd-toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 @keyframes pd-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Keterangan total / yang diperlukan */
+.pd-compo-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 11px; background: var(--bs); border: 1px solid var(--gb); border-radius: 9px; }
+.pd-cs-main { font-size: 12.5px; color: var(--td); }
+.pd-cs-main strong { font-variant-numeric: tabular-nums; }
+.pd-cs-chip { font-size: 11px; font-weight: 500; color: var(--tm); background: var(--bc); border: 1px solid var(--gb); border-radius: 999px; padding: 2px 9px; }
+.pd-cs-spacer { flex: 1; }
+.pd-cs-base { font-size: 12px; color: var(--tm); }
+.pd-cs-base strong { color: var(--td); font-variant-numeric: tabular-nums; }
+.pd-compo-note { font-size: 11.5px; color: var(--tm); margin: 0; line-height: 1.5; }
+
+/* Search komposisi */
+.pd-compo-search { position: relative; display: flex; align-items: center; }
+.pd-compo-search svg { position: absolute; left: 10px; width: 14px; height: 14px; fill: none; stroke: var(--tu); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.pd-compo-search input { width: 100%; padding: 8px 30px 8px 32px; border: 1px solid var(--gb); border-radius: 9px; font-size: 12.5px; background: var(--bc); color: var(--td); }
+.pd-compo-search input:focus { outline: none; border-color: var(--ga); }
+.pd-compo-search-clear { position: absolute; right: 8px; width: 18px; height: 18px; border: none; background: var(--gb); color: var(--td); border-radius: 50%; font-size: 13px; line-height: 1; cursor: pointer; }
+.pd-compo-search-clear:hover { background: var(--ga); color: #fff; }
+
+/* Grup kategori komposisi (selaras grouping kwitansi) */
+.pd-cat-head td { background: var(--gl); border-bottom: 1px solid var(--gb); padding: 7px 10px; }
+.pd-cat-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--td); }
+.pd-cat-count { font-size: 10.5px; color: var(--tm); margin-left: 8px; }
+.pd-cat-group:not(:first-of-type) .pd-cat-head td { border-top: 4px solid var(--bs); }
+
+.pd-readonly-click, .pdm-readonly-click { cursor: help; }
 </style>

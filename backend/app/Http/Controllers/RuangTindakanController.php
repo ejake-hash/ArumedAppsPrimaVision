@@ -30,6 +30,16 @@ class RuangTindakanController extends Controller
         }
     }
 
+    // PUT /ruang-tindakan/antrian/{id}/lewati
+    public function lewatiAntrian(string $id): JsonResponse
+    {
+        try {
+            return $this->ok($this->service->lewatiAntrian($id), 'Pasien dilewati');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
     // PUT /ruang-tindakan/jadwal/{id}/mulai
     public function mulaiTindakan(string $id): JsonResponse
     {

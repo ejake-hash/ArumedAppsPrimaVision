@@ -88,7 +88,14 @@ class UserService
         foreach (['profession', 'doctor_type', 'nip', 'sip', 'str'] as $field) {
             if (array_key_exists($field, $data)) {
                 $value = $data[$field];
-                $payload[$field] = ($value === '' || $value === null) ? null : $value;
+                $norm  = ($value === '' || $value === null) ? null : $value;
+                // profession = label/jenis nakes; JANGAN timpa dgn null — biarkan
+                // default ('Dokter'/'Nakes' dari ensureEmployeeForDoctor/create) atau
+                // nilai lama tetap. nip/sip/str tetap boleh di-null-kan (hapus).
+                if ($field === 'profession' && $norm === null) {
+                    continue;
+                }
+                $payload[$field] = $norm;
             }
         }
 

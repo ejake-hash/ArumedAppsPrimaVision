@@ -18,10 +18,12 @@ const rxSearch          = ref('')
 // Tandai resep yang sudah diverifikasi tapi belum mulai dispensing di sini.
 const verifiedRxIds  = ref(new Set())
 
-function pickActiveRx(prescriptions = []) {
-  if (!Array.isArray(prescriptions) || !prescriptions.length) return null
-  const active = prescriptions.find((r) => ['DRAFT', 'SUBMITTED', 'DISPENSING'].includes(r.status))
-  return active ?? prescriptions.find((r) => r.status === 'DISPENSED') ?? prescriptions[0]
+// SEMUA resep yang relevan untuk dispensing loket dlm 1 visit (poli + pasca
+// bedah/tindakan). Satu visit bisa punya >1 resep yg realitanya diserahkan SEKALI
+// → diproses sbg satu bundel (lihat selRxList), bukan hanya resep pertama.
+function dispActiveList(prescriptions = []) {
+  if (!Array.isArray(prescriptions)) return []
+  return prescriptions.filter((r) => ['DRAFT', 'SUBMITTED', 'DISPENSING', 'DISPENSED'].includes(r.status))
 }
 
 // Buang ID resep yang sudah tidak ada lagi di antrean hari ini, supaya Set
@@ -39,11 +41,13 @@ function pruneVerifiedRxIds() {
 
 function rxStatusOf(q) {
   if (q.status === 'COMPLETED') return 'done'
-  const rx = pickActiveRx(q.visit?.prescriptions)
-  if (!rx) return 'menunggu'
-  if (rx.status === 'DISPENSED') return 'done'
-  if (rx.status === 'DISPENSING') return 'disiapkan'
-  if (verifiedRxIds.value.has(rx.id)) return 'verifikasi'
+  const list = dispActiveList(q.visit?.prescriptions)
+  if (!list.length) return 'menunggu'
+  // 'done' HANYA bila SEMUA resep visit ini sudah diserahkan — cegah baris
+  // "hilang/selesai" padahal resep pasca-bedah belum diserahkan.
+  if (list.every((r) => r.status === 'DISPENSED')) return 'done'
+  if (list.some((r) => r.status === 'DISPENSING')) return 'disiapkan'
+  if (list.some((r) => verifiedRxIds.value.has(r.id))) return 'verifikasi'
   return 'menunggu'
 }
 
@@ -113,18 +117,32 @@ async function fetchQueue() {
 
 // ─── Detail resep terpilih ──────────────────────────────────────────────────
 const selQ          = ref(null)   // queue item dipilih
-const selRx         = ref(null)   // resep penuh (dengan items.medication)
+const selRx         = ref(null)   // resep PRIMER (= selRxList[0]) — utk OTC add-obat & header
+const selRxList     = ref([])     // SEMUA resep visit (poli + pasca) → bundel 1 serah-terima
 const selRxLoading  = ref(false)
+
+// Gabungan seluruh item lintas-resep (utk validasi checklist serah & tombol).
+const selAllItems = computed(() => selRxList.value.flatMap((r) => r.items ?? []))
+// Label sumber resep di panel (hanya tampil saat >1 resep agar tak ramai).
+function dispRxLabel(rx) { return rx?.is_post_op ? 'Pasca Bedah/Tindakan' : 'Poliklinik' }
+// Ganti satu resep di selRxList (+selRx primer) dengan versi terbaru dari backend.
+function replaceSelRx(rx) {
+  if (!rx) return
+  const idx = selRxList.value.findIndex((r) => r.id === rx.id)
+  if (idx !== -1) selRxList.value.splice(idx, 1, rx)
+  if (selRx.value?.id === rx.id) selRx.value = rx
+}
 
 const dispSteps = ['Verifikasi', 'Siapkan', 'Serah Terima']
 const dispStep = computed(() => {
-  if (!selRx.value) return 0
-  if (selRx.value.status === 'DISPENSED') return 3
-  if (selRx.value.status === 'DISPENSING') return 2
+  const list = selRxList.value
+  if (!list.length) return 0
+  if (list.every((r) => r.status === 'DISPENSED')) return 3
+  if (list.some((r) => r.status === 'DISPENSING')) return 2
   // Resep yang masuk antrean serah SUDAH diverifikasi & dikunci Farmasi sebelum
   // bayar (alur D→K→F) → lewati langkah verifikasi UI lama. verifiedRxIds hanya
   // fallback untuk resep tanpa verified_at (mis. OTC dibuat di apotek).
-  if (selRx.value.verified_at || verifiedRxIds.value.has(selRx.value.id)) return 1
+  if (list.every((r) => r.verified_at || verifiedRxIds.value.has(r.id))) return 1
   return 0
 })
 
@@ -146,16 +164,25 @@ function hydrateRx(rx, prev = null) {
 async function pickRx(q) {
   selQ.value  = q
   selRx.value = null
+  selRxList.value = []
   resetAddObat()
 
-  const stub = pickActiveRx(q.visit?.prescriptions)
+  const stubs = dispActiveList(q.visit?.prescriptions)
   // Tanpa resep dokter → panel akan menawarkan "Buat Penjualan OTC" (obat tambahan).
-  if (!stub) return
+  if (!stubs.length) return
 
   selRxLoading.value = true
   try {
-    const { data } = await farmasiApi.showResep(stub.id)
-    selRx.value = hydrateRx(data.data)
+    // Muat SEMUA resep (poli + pasca) → satu bundel serah-terima. Poli dulu (bukan
+    // post-op) sbg primer agar OTC add-obat menempel di resep poliklinik.
+    const loaded = []
+    for (const stub of stubs) {
+      const { data } = await farmasiApi.showResep(stub.id)
+      loaded.push(hydrateRx(data.data))
+    }
+    loaded.sort((a, b) => (a.is_post_op === b.is_post_op ? 0 : a.is_post_op ? 1 : -1))
+    selRxList.value = loaded
+    selRx.value = loaded[0] ?? null
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat resep')
   } finally {
@@ -284,11 +311,12 @@ async function submitAddObat() {
     if (selRx.value?.id) {
       await farmasiApi.storeItem(selRx.value.id, [item])
       const { data } = await farmasiApi.showResep(selRx.value.id)
-      selRx.value = hydrateRx(data.data, selRx.value)
+      replaceSelRx(hydrateRx(data.data, selRx.value))
     } else {
       // Belum ada resep → buat penjualan OTC baru untuk visit ini.
       const { data } = await farmasiApi.storeOtc(selQ.value?.visit?.id, [item])
       selRx.value = hydrateRx(data.data)
+      selRxList.value = [selRx.value]
       refreshQueueForRx(data.data)
     }
     toast('s', 'Obat tambahan ditambahkan')
@@ -319,7 +347,7 @@ async function lewatiRx(q, e) {
     await farmasiApi.lewatiAntrian(q.id)
     toast('i', `${q.visit?.patient?.name ?? 'Pasien'} (${q.queue_number ?? ''}) dilewati`)
     // Bila pasien yang dilewati sedang terbuka di panel, tutup supaya tak rancu.
-    if (selQ.value?.id === q.id) { selQ.value = null; selRx.value = null }
+    if (selQ.value?.id === q.id) { selQ.value = null; selRx.value = null; selRxList.value = [] }
     await fetchQueue()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal melewati pasien')
@@ -327,17 +355,21 @@ async function lewatiRx(q, e) {
 }
 
 function verifikasiRx() {
-  if (!selRx.value) return
-  verifiedRxIds.value = new Set([...verifiedRxIds.value, selRx.value.id])
-  toast('s', 'Resep diverifikasi')
+  if (!selRxList.value.length) return
+  verifiedRxIds.value = new Set([...verifiedRxIds.value, ...selRxList.value.map((r) => r.id)])
+  toast('s', selRxList.value.length > 1 ? `${selRxList.value.length} resep diverifikasi` : 'Resep diverifikasi')
 }
 
 async function siapkanRx() {
-  if (!selRx.value) return
+  if (!selRxList.value.length) return
   try {
-    const { data } = await farmasiApi.startDispensing(selRx.value.id)
-    selRx.value = hydrateRx(data.data, selRx.value)
-    refreshQueueForRx(data.data)
+    // Siapkan SEMUA resep visit sekaligus (poli + pasca) — satu bundel serah-terima.
+    for (const rx of selRxList.value) {
+      if (['DISPENSING', 'DISPENSED'].includes(rx.status)) continue
+      const { data } = await farmasiApi.startDispensing(rx.id)
+      replaceSelRx(hydrateRx(data.data, rx))
+      refreshQueueForRx(data.data)
+    }
     toast('s', 'Obat disiapkan, cek kembali sebelum diserahkan')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal mulai dispensing')
@@ -346,8 +378,8 @@ async function siapkanRx() {
 
 const serahkanLoading = ref(false)
 async function serahkanRx() {
-  if (!selRx.value || serahkanLoading.value) return
-  const items = selRx.value.items ?? []
+  if (!selRxList.value.length || serahkanLoading.value) return
+  const items = selAllItems.value
   if (!items.length) { toast('w', 'Resep tidak punya item obat'); return }
   if (!items.every((d) => d.checked)) {
     toast('w', 'Cek semua item terlebih dahulu'); return
@@ -356,21 +388,33 @@ async function serahkanRx() {
   // disabled → tak ada perubahan. Resep BELUM-terkunci (OTC/tambahan apotek):
   // persist qty teredit dulu agar stok terpotong & tagihan sesuai jumlah final
   // yang benar-benar diserahkan (cegah edit qty diam-diam hilang). Mirror serahRanap.
-  if (!selRx.value.verified_at) {
-    const invalid = items.find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
+  for (const rx of selRxList.value) {
+    if (rx.verified_at) continue
+    const invalid = (rx.items ?? []).find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
     if (invalid) { toast('w', `Jumlah obat ${invalid.medication?.name ?? ''} tidak valid (min. 1)`); return }
   }
   serahkanLoading.value = true
   try {
-    if (!selRx.value.verified_at) {
-      const changed = items.filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
-      for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+    // Serahkan tiap resep (poli + pasca) berurutan; antrean baru ditutup setelah
+    // SEMUA resep DISPENSED → pasien tak perlu diklik-ulang & resep pasca tak lupa.
+    for (const rx of selRxList.value) {
+      if (rx.status === 'DISPENSED') continue
+      let cur = rx
+      // selesaiDispensing butuh status DISPENSING — siapkan dulu bila terlewat.
+      if (!['DISPENSING', 'DISPENSED'].includes(cur.status)) {
+        const { data } = await farmasiApi.startDispensing(cur.id)
+        cur = hydrateRx(data.data, cur); replaceSelRx(cur)
+      }
+      if (!cur.verified_at) {
+        const changed = (cur.items ?? []).filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
+        for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+      }
+      // DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
+      // lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
+      const { data } = await farmasiApi.selesaiDispensing(cur.id)
+      replaceSelRx(hydrateRx(data.data, cur))
+      refreshQueueForRx(data.data)
     }
-    // DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
-    // lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.
-    const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
-    selRx.value = hydrateRx(data.data, selRx.value)
-    refreshQueueForRx(data.data)
 
     // 3) Selesaikan antrean farmasi → pasien PULANG.
     //    Resep SUDAH DISPENSED (stok terpotong); kalau langkah ini gagal, pasien
@@ -394,26 +438,30 @@ async function serahkanRx() {
   }
 }
 
-// Resep tanpa item obat (mis. obat dibatalkan pasien di Kasir / dokter tak meresepkan).
-const selRxEmpty = computed(() => !!selRx.value && (selRx.value.items ?? []).length === 0)
+// Semua resep visit tanpa item obat (mis. obat dibatalkan pasien di Kasir / dokter
+// tak meresepkan) → tawarkan "Selesaikan tanpa obat" untuk menutup antrean.
+const selRxEmpty = computed(() => selRxList.value.length > 0 && selAllItems.value.length === 0)
 
 // Jalan keluar untuk resep 0-item: tanpa ini pasien BUNTU di antrean Farmasi (tombol
 // "Serahkan" disabled karena tak ada item). Tutup antrean tanpa penyerahan obat —
 // selesaiDispensing aman dgn 0 item (tak ada stok dipotong), lalu selesaiAntrian.
 async function tutupTanpaObat() {
-  if (!selRx.value || serahkanLoading.value) return
+  if (!selRxList.value.length || serahkanLoading.value) return
   if (!window.confirm('Resep ini tidak memiliki item obat (obat dibatalkan / tidak diresepkan).\nTutup antrean pasien tanpa penyerahan obat?')) return
   serahkanLoading.value = true
   try {
-    // selesaiDispensing butuh status DISPENSING — siapkan dulu bila masih SUBMITTED/DRAFT.
-    if (!['DISPENSING', 'DISPENSED'].includes(selRx.value.status)) {
-      const { data } = await farmasiApi.startDispensing(selRx.value.id)
-      selRx.value = hydrateRx(data.data, selRx.value)
-    }
-    if (selRx.value.status !== 'DISPENSED') {
-      const { data } = await farmasiApi.selesaiDispensing(selRx.value.id)
-      selRx.value = hydrateRx(data.data, selRx.value)
-      refreshQueueForRx(data.data)
+    for (const rx of selRxList.value) {
+      let cur = rx
+      // selesaiDispensing butuh status DISPENSING — siapkan dulu bila masih SUBMITTED/DRAFT.
+      if (!['DISPENSING', 'DISPENSED'].includes(cur.status)) {
+        const { data } = await farmasiApi.startDispensing(cur.id)
+        cur = hydrateRx(data.data, cur); replaceSelRx(cur)
+      }
+      if (cur.status !== 'DISPENSED') {
+        const { data } = await farmasiApi.selesaiDispensing(cur.id)
+        cur = hydrateRx(data.data, cur); replaceSelRx(cur)
+        refreshQueueForRx(data.data)
+      }
     }
     // Tutup antrean pasien → pulang. Gagal di sini tak fatal (resep sudah DISPENSED).
     if (selQ.value?.id) {
@@ -488,6 +536,23 @@ const filtVerQueue = computed(() => {
 function verClearDates() { verFrom.value = ''; verTo.value = '' }
 const verSelTotal = computed(() =>
   (verSel.value?.items ?? []).reduce((sum, it) => sum + Number(it.est_total_price ?? 0), 0))
+
+// Kelompokkan antrean per PASIEN/visit: 1 visit bisa punya >1 resep (poli + pasca
+// bedah/tindakan) yang realitanya diambil SEKALI. Kartu = 1 pasien; tiap resep
+// jadi chip terpisah (pill POLI/Pasca tetap terlihat). Resep tetap record terpisah
+// di backend — verifikasi tetap per-resep, hanya tampilan yang digabung.
+const verGroups = computed(() => {
+  const m = new Map()
+  for (const rx of filtVerQueue.value) {
+    const vid = rx.visit?.id ?? rx.id
+    if (!m.has(vid)) m.set(vid, { vid, visit: rx.visit, items: [] })
+    m.get(vid).items.push(rx)
+  }
+  return [...m.values()].map((g) => ({
+    ...g,
+    pendingCount: g.items.filter((rx) => !rx.verified_at).length,
+  }))
+})
 
 async function fetchVerQueue() {
   verLoading.value = true; verError.value = ''
@@ -666,6 +731,25 @@ async function verLock(rx) {
     toast('s', 'Resep diverifikasi & dikunci. Kasir dapat membuat tagihan.')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memverifikasi resep')
+  } finally { verBusy.value = false }
+}
+// Verifikasi SEMUA resep belum-terverifikasi dalam satu grup pasien (poli + pasca)
+// sekaligus → 1 kali aksi untuk 1 kali pengambilan obat. Loop FE (reuse endpoint
+// per-resep), lalu satu refetch di akhir.
+async function verLockAll(group) {
+  if (verBusy.value) return
+  const pend = (group?.items ?? []).filter((rx) => !rx.verified_at)
+  if (!pend.length) return
+  const hasEmpty = pend.some((rx) => !(rx.items ?? []).length)
+  if (hasEmpty && !window.confirm('Ada resep tanpa item obat. Tetap verifikasi & kunci semua?')) return
+  verBusy.value = true
+  try {
+    for (const rx of pend) await farmasiApi.verifikasiResep(rx.id)
+    await fetchVerQueue()
+    toast('s', `${pend.length} resep diverifikasi & dikunci. Kasir dapat membuat tagihan.`)
+  } catch (err) {
+    await fetchVerQueue()
+    toast('w', err.response?.data?.message ?? 'Gagal memverifikasi sebagian resep')
   } finally { verBusy.value = false }
 }
 async function verUnlock(rx) {
@@ -1954,7 +2038,7 @@ function toast(type, msg) {
             <div class="disp-head">
               <div>
                 <div class="disp-title">{{ selQ.visit?.patient?.name ?? '—' }} — {{ selQ.queue_number }}</div>
-                <div class="disp-sub">{{ selQ.visit?.patient?.no_rm ?? '—' }} · dr. {{ selRx.prescribed_by?.name ?? '—' }} · {{ selRx.items?.length ?? 0 }} item</div>
+                <div class="disp-sub">{{ selQ.visit?.patient?.no_rm ?? '—' }} · dr. {{ selRx.prescribed_by?.name ?? '—' }} · {{ selRxList.length > 1 ? `${selRxList.length} resep · ` : '' }}{{ selAllItems.length }} item</div>
                 <div class="ident-row">
                   <span v-if="selQ.visit?.dpjp_name" class="ident-dpjp" title="Dokter Penanggung Jawab Pelayanan">
                     <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -1986,26 +2070,33 @@ function toast(type, msg) {
             </div>
 
             <div class="sec-title">Item Obat Resep</div>
-            <div v-for="(d, i) in selRx.items" :key="d.id ?? i" :class="['dd', { otc: d.source === 'TAMBAHAN' }]">
-              <input type="checkbox" v-model="d.checked" />
-              <div class="dd-info">
-                <div class="dd-name">
-                  {{ d.medication?.name ?? '—' }}
-                  <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">TAMBAHAN APOTEK</span>
-                </div>
-                <div class="dd-dose">{{ rxAturan(d) }}</div>
-                <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
-                  Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
-                </div>
-                <div v-if="d.notes" class="dd-dose">Catatan: {{ d.notes }}</div>
+            <!-- Item dikelompokkan per resep (poli + pasca) → satu kali serah-terima. -->
+            <template v-for="rx in selRxList" :key="rx.id">
+              <div v-if="selRxList.length > 1" class="disp-rx-sub">
+                <span :class="['jp-pill', rx.is_post_op ? 'jp-bedah' : 'jp-poli']">{{ dispRxLabel(rx) }}</span>
+                <span class="muted">{{ rx.items?.length ?? 0 }} item</span>
               </div>
-              <div class="dd-qty-col">
-                <span class="dd-qty-label">Jumlah</span>
-                <input v-model.number="d.quantity" type="number" min="1" class="dd-qty" :disabled="selRx.status === 'DISPENSED' || !!selRx.verified_at" />
-                <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+              <div v-for="(d, i) in rx.items" :key="d.id ?? i" :class="['dd', { otc: d.source === 'TAMBAHAN' }]">
+                <input type="checkbox" v-model="d.checked" />
+                <div class="dd-info">
+                  <div class="dd-name">
+                    {{ d.medication?.name ?? '—' }}
+                    <span v-if="d.source === 'TAMBAHAN'" class="otc-tag">TAMBAHAN APOTEK</span>
+                  </div>
+                  <div class="dd-dose">{{ rxAturan(d) }}</div>
+                  <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
+                    Stok: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
+                  </div>
+                  <div v-if="d.notes" class="dd-dose">Catatan: {{ d.notes }}</div>
+                </div>
+                <div class="dd-qty-col">
+                  <span class="dd-qty-label">Jumlah</span>
+                  <input v-model.number="d.quantity" type="number" min="1" class="dd-qty" :disabled="rx.status === 'DISPENSED' || !!rx.verified_at" />
+                  <span class="dd-unit">{{ d.medication?.unit ?? '' }}</span>
+                </div>
               </div>
-            </div>
-            <div v-if="!selRx.items?.length" class="empty-rx">Resep tidak memiliki item obat (obat dibatalkan / tidak diresepkan). Klik <b>“Selesaikan tanpa obat”</b> di bawah untuk menutup antrean pasien.</div>
+            </template>
+            <div v-if="!selAllItems.length" class="empty-rx">Resep tidak memiliki item obat (obat dibatalkan / tidak diresepkan). Klik <b>“Selesaikan tanpa obat”</b> di bawah untuk menutup antrean pasien.</div>
 
             <!-- Tambah obat di luar resep: hanya untuk resep BELUM dikunci (mis. OTC
                  tanpa resep dokter). Resep terverifikasi sudah ditagih → perubahan
@@ -2076,7 +2167,7 @@ function toast(type, msg) {
                 <svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
                 Siapkan Obat
               </button>
-              <button v-else-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="serahkanLoading || !(selRx.items ?? []).length || !(selRx.items ?? []).every((d) => d.checked)" @click="serahkanRx">
+              <button v-else-if="dispStep === 2" class="btn btn-success btn-lg" :disabled="serahkanLoading || !selAllItems.length || !selAllItems.every((d) => d.checked)" @click="serahkanRx">
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                 {{ serahkanLoading ? 'Memproses…' : 'Serahkan ke Pasien' }}
               </button>
@@ -2132,24 +2223,32 @@ function toast(type, msg) {
               <div class="rx-list">
                 <div v-if="verError" class="empty-rx">{{ verError }}</div>
                 <div v-else-if="!filtVerQueue.length" class="empty-rx">{{ (verFrom || verTo || verSearch) ? 'Tidak ada resep cocok dengan filter.' : 'Tidak ada resep menunggu verifikasi.' }}</div>
-                <div v-for="rx in filtVerQueue" :key="rx.id"
-                     :class="['rx-card', verSel?.id === rx.id ? 'active' : '', rx.verified_at ? 'done' : '']"
-                     @click="pickVer(rx)">
+                <!-- Satu kartu = satu PASIEN/visit; tiap resep (poli + pasca) jadi chip terpisah. -->
+                <div v-for="g in verGroups" :key="g.vid"
+                     :class="['rx-card', 'ver-group', g.items.some((rx) => verSel?.id === rx.id) ? 'active' : '', g.pendingCount === 0 ? 'done' : '']">
               <div class="rx-body">
                 <div class="rx-top">
-                  <div class="rx-name">{{ rx.visit?.patient?.name ?? '—' }}</div>
-                  <span v-if="rx.is_revision" class="ver-badge revisi" title="Resep direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi</span>
-                  <span :class="['ver-badge', rx.verified_at ? 'ok' : 'wait']">{{ rx.verified_at ? '🔒 Terkunci' : 'Perlu verifikasi' }}</span>
+                  <div class="rx-name">{{ g.visit?.patient?.name ?? '—' }}</div>
+                  <span v-if="g.items.some((rx) => rx.is_revision)" class="ver-badge revisi" title="Ada resep yang direvisi dokter setelah tagihan dibuat — verifikasi ulang">↻ Revisi</span>
+                  <span :class="['ver-badge', g.pendingCount === 0 ? 'ok' : 'wait']">{{ g.pendingCount === 0 ? '🔒 Terkunci' : (g.items.length > 1 ? `${g.pendingCount}/${g.items.length} perlu verifikasi` : 'Perlu verifikasi') }}</span>
                 </div>
-                <div class="rx-meta">RM {{ rx.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(rx.visit?.patient?.date_of_birth) }} · {{ (rx.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
-                <div class="rx-meta">{{ verTgl(rx).label }}: {{ verTgl(rx).value }}</div>
-                <div class="rx-asal">
-                  <span :class="verPillClass(rx.jenis_kode)">{{ rx.sumber ?? 'Rawat Jalan' }}</span>
-                  <span v-if="rx.visit?.dpjp_name" class="rx-dpjp" title="Dokter Penanggung Jawab Pelayanan">DPJP: {{ rx.visit.dpjp_name }}</span>
+                <div class="rx-meta">RM {{ g.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(g.visit?.patient?.date_of_birth) }} · {{ (g.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div v-if="g.visit?.dpjp_name" class="rx-meta">DPJP: {{ g.visit.dpjp_name }}</div>
+                <!-- Chip per resep: klik untuk pilih & lihat detail; pill sumber tetap tampil. -->
+                <div class="ver-rx-chips">
+                  <button v-for="rx in g.items" :key="rx.id" type="button"
+                          :class="['ver-rx-chip', verSel?.id === rx.id ? 'active' : '', rx.verified_at ? 'locked' : '']"
+                          @click="pickVer(rx)">
+                    <span :class="verPillClass(rx.jenis_kode)">{{ rx.sumber ?? 'Rawat Jalan' }}</span>
+                    <span class="ver-rx-chip-meta">{{ (rx.items?.length ?? 0) }} item · est {{ rp(rx.est_total) }}</span>
+                    <span class="ver-rx-chip-stat">{{ rx.verified_at ? '🔒' : '•' }}</span>
+                  </button>
                 </div>
-                <div class="rx-items"><div class="rx-item muted">{{ (rx.items?.length ?? 0) }} item · est {{ rp(rx.est_total) }}</div></div>
+                <div v-if="g.pendingCount > 0 && g.items.length > 1" class="ver-group-actions">
+                  <button class="btn btn-primary btn-sm" :disabled="verBusy" @click="verLockAll(g)">Verifikasi semua ({{ g.pendingCount }})</button>
                 </div>
-              </div>
+                </div>
+                </div>
               </div>
             </div>
           </div>
@@ -3108,6 +3207,16 @@ function toast(type, msg) {
 .rx-card.active { border-color: var(--ga); background: var(--gl); }
 .rx-card.done { opacity: 0.55; }
 .rx-card.urgent { border-color: var(--ebd); background: var(--eb); }
+/* Kartu grup-pasien di Verifikasi: bukan tombol tunggal — chip resep di dalamnya yang diklik. */
+.rx-card.ver-group { cursor: default; }
+.ver-rx-chips { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ver-rx-chip { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 6px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); cursor: pointer; transition: all 0.12s; }
+.ver-rx-chip:hover { border-color: var(--lm); }
+.ver-rx-chip.active { border-color: var(--ga); background: var(--gl); }
+.ver-rx-chip.locked { opacity: 0.6; }
+.ver-rx-chip-meta { font-size: 10px; color: var(--tu); flex: 1; min-width: 0; }
+.ver-rx-chip-stat { font-size: 11px; }
+.ver-group-actions { margin-top: 7px; }
 .rx-bar { width: 3px; }
 .bar-menunggu { background: var(--wt); }
 .bar-verifikasi { background: var(--it); }
@@ -3165,6 +3274,10 @@ function toast(type, msg) {
 .ident-dpjp { background: rgba(255, 255, 255, 0.92); color: var(--gd); font-weight: 700; }
 .ident-addr { max-width: 320px; }
 .ident-addr :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Sub-judul per resep di panel dispensing (poli vs pasca) saat 1 visit >1 resep. */
+.disp-rx-sub { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; padding: 0 2px; font-size: 11px; }
+.disp-rx-sub .muted { color: var(--tu); }
 
 .disp-steps { display: flex; align-items: center; padding: 0.85rem 1.1rem; background: var(--bs); border-bottom: 1px solid var(--gb); }
 .ds { display: flex; align-items: center; flex: 1; }

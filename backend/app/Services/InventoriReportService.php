@@ -19,8 +19,14 @@ use Illuminate\Support\Facades\DB;
  */
 class InventoriReportService
 {
-    /** Status request yang stoknya benar-benar keluar ke unit. */
-    private const DELIVERED_STATUSES = ['DELIVERED', 'CLOSED'];
+    /**
+     * Status request yang stoknya benar-benar keluar ke unit.
+     * APPROVED ikut: kirim bertahap (partial deliver) membiarkan status tetap
+     * APPROVED walau qty_delivered sudah bertambah & stok fisik sudah keluar gudang
+     * (lihat UnitRequestService::deliver). Selalu dipasangkan dgn filter
+     * qty_delivered > 0 agar APPROVED yg belum dikirim apa pun tak ikut terhitung.
+     */
+    private const DELIVERED_STATUSES = ['APPROVED', 'DELIVERED', 'CLOSED'];
     /** Status request yang dianggap "diminta" (sudah disubmit, bukan draft/tolak). */
     private const ACTIVE_REQ_STATUSES = ['SUBMITTED', 'APPROVED', 'DELIVERED', 'CLOSED'];
     /** Kondisi retur yang TIDAK masuk stok lagi (rugi/waste). */
@@ -40,6 +46,7 @@ class InventoriReportService
             ->join('unit_requests as ur', 'ur.id', '=', 'uri.unit_request_id')
             ->whereNull('ur.deleted_at')
             ->whereIn('ur.status', self::DELIVERED_STATUSES)
+            ->where('uri.qty_delivered', '>', 0)
             ->whereBetween('ur.request_date', [$from, $to]);
 
         $deliveredTotal   = (float) (clone $delivered)->sum('uri.qty_delivered');
@@ -256,6 +263,97 @@ class InventoriReportService
             $r->status,
             $r->batch_no ?? '',
             $r->expiry_date ? Carbon::parse($r->expiry_date)->toDateString() : '',
+        ]));
+    }
+
+    // =========================================================================
+    // LAPORAN SELISIH OPNAME (dari stock_opname_items + sessions)
+    // =========================================================================
+    private function selisihQuery(array $f)
+    {
+        [$from, $to] = $this->range($f);
+        $q = DB::table('stock_opname_items as soi')
+            ->join('stock_opname_sessions as sos', 'sos.id', '=', 'soi.stock_opname_session_id')
+            ->whereNull('sos.deleted_at')
+            ->whereBetween('sos.opname_date', [$from, $to]);
+
+        if (!empty($f['location']))  $q->where('sos.location', $f['location']);
+        if (!empty($f['item_type'])) $q->where('soi.item_type', $f['item_type']);
+        if (!empty($f['status']))    $q->where('soi.status', $f['status']);
+        if (!empty($f['search'])) {
+            $term = '%' . trim($f['search']) . '%';
+            $q->where(fn ($qq) => $qq
+                ->where('sos.session_number', 'ilike', $term)
+                ->orWhere('soi.item_name', 'ilike', $term)
+                ->orWhere('soi.item_code', 'ilike', $term));
+        }
+
+        return $q->select(
+            'soi.id', 'sos.session_number', 'sos.opname_date', 'sos.location',
+            'soi.item_type', 'soi.item_code', 'soi.item_name',
+            'soi.system_qty', 'soi.physical_qty', 'soi.delta', 'soi.status', 'soi.note',
+        )->orderByDesc('sos.opname_date')->orderByDesc('sos.session_number');
+    }
+
+    public function selisihList(array $f): array
+    {
+        [$from, $to] = $this->range($f);
+        $perPage = min(200, max(10, (int) ($f['per_page'] ?? 50)));
+        $p = $this->selisihQuery($f)->paginate($perPage);
+
+        // KPI seluruh rentang (bukan hanya halaman aktif).
+        $kpiBase = DB::table('stock_opname_items as soi')
+            ->join('stock_opname_sessions as sos', 'sos.id', '=', 'soi.stock_opname_session_id')
+            ->whereNull('sos.deleted_at')
+            ->whereBetween('sos.opname_date', [$from, $to]);
+        if (!empty($f['location']))  $kpiBase->where('sos.location', $f['location']);
+        if (!empty($f['item_type'])) $kpiBase->where('soi.item_type', $f['item_type']);
+
+        $sessions = (clone $kpiBase)->distinct('soi.stock_opname_session_id')->count('soi.stock_opname_session_id');
+        $itemsSelisih = (clone $kpiBase)->count();
+        $qtyLebih  = (float) (clone $kpiBase)->where('soi.status', 'LEBIH')->sum('soi.delta');
+        $qtyKurang = (float) (clone $kpiBase)->where('soi.status', 'KURANG')->sum('soi.delta');
+
+        return [
+            'data' => collect($p->items())->map(fn ($r) => [
+                'session_number' => $r->session_number,
+                'date'           => $r->opname_date,
+                'location'       => $r->location,
+                'type'           => self::TYPE_LABELS[$r->item_type] ?? $r->item_type,
+                'code'           => $r->item_code,
+                'name'           => $r->item_name ?? '-',
+                'system_qty'     => (float) $r->system_qty,
+                'physical_qty'   => (float) $r->physical_qty,
+                'delta'          => (float) $r->delta,
+                'status'         => $r->status,
+                'note'           => $r->note,
+            ])->values(),
+            'kpi' => [
+                'sessions'      => $sessions,
+                'items_selisih' => $itemsSelisih,
+                'qty_lebih'     => round($qtyLebih, 2),
+                'qty_kurang'    => round(abs($qtyKurang), 2),
+            ],
+            'meta' => ['current_page' => $p->currentPage(), 'last_page' => $p->lastPage(), 'total' => $p->total()],
+        ];
+    }
+
+    public function selisihCsv(array $f): string
+    {
+        $rows = $this->selisihQuery($f)->limit(50000)->get();
+        $header = ['No. BA', 'Tanggal', 'Lokasi', 'Jenis', 'Kode', 'Barang', 'Stok Sistem', 'Stok Fisik', 'Selisih', 'Status', 'Catatan'];
+        return $this->buildCsv($header, $rows->map(fn ($r) => [
+            $r->session_number,
+            $r->opname_date,
+            $r->location,
+            self::TYPE_LABELS[$r->item_type] ?? $r->item_type,
+            $r->item_code ?? '',
+            $r->item_name ?? '-',
+            (float) $r->system_qty,
+            (float) $r->physical_qty,
+            (float) $r->delta,
+            $r->status,
+            $r->note ?? '',
         ]));
     }
 

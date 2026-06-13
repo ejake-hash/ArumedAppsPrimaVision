@@ -65,7 +65,7 @@ class RuangTindakanService
 
         $activeStatuses = [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS];
 
-        return $schedules->map(function (SurgerySchedule $s) use ($activeStatuses) {
+        $rows = $schedules->map(function (SurgerySchedule $s) use ($activeStatuses) {
             $visit   = $s->visit
                 ?? Visit::with(['patient', 'insurer', 'doctorExamination.doctor', 'refractionRecord', 'queues'])
                     ->whereHas('doctorExamination', fn ($q) => $q->where('surgery_schedule_id', $s->id))
@@ -89,6 +89,7 @@ class RuangTindakanService
                 'id'             => $s->id,
                 'queue_id'       => $queue?->id,                  // null bila queue belum ada (Panggil di-disable)
                 'queue_number'   => $queue?->queue_number,
+                'queue_sequence' => $queue?->queue_sequence,      // utk urutan papan (Lewati menukar ini)
                 'status'         => $queue?->status,              // status antrean (WAITING/CALLED/…) atau null
                 'called_at'      => $queue?->called_at?->toIso8601String(),
                 'started_at'     => $queue?->started_at?->toIso8601String(),
@@ -105,11 +106,12 @@ class RuangTindakanService
                 ] : null,
 
                 'patient' => $patient ? [
-                    'id'     => $patient->id,
-                    'no_rm'  => $patient->no_rm,
-                    'name'   => $patient->name,
-                    'gender' => $patient->gender,
-                    'age'    => $dob ? $dob->age : null,
+                    'id'            => $patient->id,
+                    'no_rm'         => $patient->no_rm,
+                    'name'          => $patient->name,
+                    'gender'        => $patient->gender,
+                    'age'           => $dob ? $dob->age : null,
+                    'date_of_birth' => $dob?->toDateString(),
                 ] : null,
 
                 'schedule' => [
@@ -143,6 +145,21 @@ class RuangTindakanService
                 ] : null,
             ];
         })->all();
+
+        // Urutan papan: jam jadwal dulu, lalu queue_sequence (agar "Lewati" yang
+        // menukar queue_sequence terlihat menggeser pasien dalam slot waktu sama).
+        usort($rows, function ($a, $b) {
+            $ta = $a['schedule']['scheduled_time'] ?? '';
+            $tb = $b['schedule']['scheduled_time'] ?? '';
+            if ($ta !== $tb) {
+                return strcmp((string) $ta, (string) $tb);
+            }
+            $sa = $a['queue_sequence'] ?? PHP_INT_MAX;
+            $sb = $b['queue_sequence'] ?? PHP_INT_MAX;
+            return $sa <=> $sb;
+        });
+
+        return $rows;
     }
 
     // =========================================================================
@@ -156,6 +173,18 @@ class RuangTindakanService
         $this->assertTindakanQueue($queue);
 
         return $this->queueService->panggil($queue->id);
+    }
+
+    /**
+     * Lewati pasien (demote 1 posisi + reset CALLED→WAITING) — perilaku sama
+     * dengan stasiun lain (Perawat/Refraksi/Dokter), delegasi ke QueueService::lewati.
+     */
+    public function lewatiAntrian(string $queueId): Queue
+    {
+        $queue = Queue::byStation(Queue::STATION_BEDAH)->findOrFail($queueId);
+        $this->assertTindakanQueue($queue);
+
+        return $this->queueService->lewati($queue->id);
     }
 
     /** Mulai tindakan (Time In) — reuse BedahService::startOperation (membuat SurgeryRecord). */

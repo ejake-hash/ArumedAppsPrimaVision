@@ -980,6 +980,13 @@ export const inventoriStockApi = {
   },
 }
 
+/** Inventori Farmasi — Sesi Stock Opname (Berita Acara) + detail per item */
+export const opnameSessionApi = {
+  list:   (params)  => api.get('/inventori-farmasi/opname-session', { params }),
+  show:   (id)      => api.get(`/inventori-farmasi/opname-session/${id}`),
+  create: (payload) => api.post('/inventori-farmasi/opname-session', payload),
+}
+
 /** Inventori Farmasi — Request dari Unit (klinik → gudang) */
 export const unitRequestApi = {
   list:    (params)     => api.get('/inventori-farmasi/unit-request', { params }),
@@ -1020,6 +1027,10 @@ export const inventoriLaporanApi = {
   }),
   retur: (params) => api.get('/inventori-farmasi/laporan/retur', { params }),
   returExport: (params, format) => api.get('/inventori-farmasi/laporan/retur/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob',
+  }),
+  selisih: (params) => api.get('/inventori-farmasi/laporan/selisih', { params }),
+  selisihExport: (params, format) => api.get('/inventori-farmasi/laporan/selisih/export', {
     params: { ...(params || {}), ...(format ? { format } : {}) }, responseType: 'blob',
   }),
 }
@@ -1111,6 +1122,7 @@ export const bedahApi = {
 export const ruangTindakanApi = {
   antrian:        ()         => api.get('/ruang-tindakan/antrian'),
   panggil:        (id)       => api.put(`/ruang-tindakan/antrian/${id}/panggil`),
+  lewati:         (id)       => api.put(`/ruang-tindakan/antrian/${id}/lewati`),
   mulai:          (scheduleId) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/mulai`),
   selesai:        (scheduleId, data) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/selesai`, data),
   showRecord:     (scheduleId) => api.get(`/ruang-tindakan/record/${scheduleId}`),
