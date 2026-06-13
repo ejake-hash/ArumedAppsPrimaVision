@@ -680,6 +680,12 @@ async function loadTab2() {
     // bedah (tanggal/jam) tak ikut showTab2 — cukup planning + paket untuk display.
     planning.value = e.planning ? (PLANNING_ENUM_REV[e.planning] ?? '') : ''
     if (e.surgery_package_id) surgeryPkg.value = e.surgery_package_id
+    // Lokasi pelaksanaan (Ruang Bedah vs Ruang Tindakan) tersimpan di
+    // surgery_schedules.location_type. Tanpa pemulihan ini panel SELALU balik ke
+    // "Ruang Bedah" walau dokter memilih Ruang Tindakan (laser) — bug dilaporkan.
+    if (e.location_type === 'RUANG_BEDAH' || e.location_type === 'RUANG_TINDAKAN') {
+      surgeryLocation.value = e.location_type
+    }
     // Rencana kontrol (Pulang) — pulihkan agar teks Planning (P) tetap memuat
     // "— kontrol …" setelah refresh. Tanpa ini tanggalKontrol kosong → planningText
     // ter-regenerasi tanpa tanggal & menimpa soap.P (soapDirty.P=false).
@@ -3362,14 +3368,14 @@ function closeResumeRM() {
                       <svg v-if="planning === 'PULANG'" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
                     </div>
                   </div>
-                  <!-- Bedah -->
+                  <!-- Bedah / Laser / Tindakan -->
                   <div :class="['plan-opt', planning === 'BEDAH' ? 'selected' : '']" @click="planning = 'BEDAH'">
                     <div class="plan-icon bedah">
                       <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/><path d="M12 8v4l3 3"/></svg>
                     </div>
                     <div class="plan-body">
-                      <div class="plan-title">Bedah</div>
-                      <div class="plan-sub">Antrean kamar operasi</div>
+                      <div class="plan-title">Bedah/Laser/Tindakan</div>
+                      <div class="plan-sub">Operasi, laser, atau tindakan</div>
                     </div>
                     <div class="plan-check">
                       <svg v-if="planning === 'BEDAH'" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
