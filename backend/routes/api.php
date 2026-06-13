@@ -738,6 +738,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{visitId}/generate',     [KasirController::class, 'generateInvoice']);
             Route::put('/invoice/{id}',                    [KasirController::class, 'updateInvoice']);
             Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice']);
+            Route::post('/invoice/{id}/resync-tarif',      [KasirController::class, 'resyncTarif']);
             Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
             Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
             Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);

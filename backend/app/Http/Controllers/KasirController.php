@@ -149,6 +149,26 @@ class KasirController extends Controller
     }
 
     /**
+     * POST /kasir/invoice/{id}/resync-tarif
+     * Sinkron harga SEMUA baris bertarif ke tarif terkini (Buku Tarif/PKS).
+     * Tagihan belum dibayar (DRAFT/FINALIZED); PAID/PARTIALLY_PAID/CANCELLED ditolak.
+     */
+    public function resyncTarif(string $id): JsonResponse
+    {
+        try {
+            $updated = $this->service->resyncTarifPrices($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        $msg = $updated > 0
+            ? "{$updated} harga item diperbarui dari tarif terkini."
+            : 'Harga sudah sesuai tarif terkini.';
+
+        return $this->ok(['updated' => $updated], $msg);
+    }
+
+    /**
      * POST /kasir/invoice/{id}/bayar
      * Body: { paid_amount, payment_method, notes }
      */
@@ -266,6 +286,9 @@ class KasirController extends Controller
             'discount_amount'  => 'nullable|numeric|min:0',
             'discount_percent' => 'nullable|numeric|min:0|max:100',
             'notes'            => 'nullable|string|max:255',
+            // Khusus OBAT tambahan (Opsi A): aturan pakai → resep TAMBAHAN ke Dispensing Farmasi.
+            'dosage'           => 'nullable|string|max:255',
+            'instructions'     => 'nullable|string|max:255',
         ]);
 
         try {

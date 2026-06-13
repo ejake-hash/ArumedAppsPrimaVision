@@ -1171,6 +1171,7 @@ export const kasirApi = {
   generateInvoice:   (visitId)            => api.post(`/kasir/invoice/${visitId}/generate`),
   updateInvoice:     (id, data)           => api.put(`/kasir/invoice/${id}`, data),
   finalizeInvoice:   (id)                 => api.post(`/kasir/invoice/${id}/finalize`),
+  resyncTarif:       (id)                 => api.post(`/kasir/invoice/${id}/resync-tarif`),
   bayarInvoice:      (id, data)           => api.post(`/kasir/invoice/${id}/bayar`, data),
   confirmCoverage:   (id, data)           => api.post(`/kasir/invoice/${id}/confirm-coverage`, data),
   confirmBpjs:       (id, data)           => api.post(`/kasir/invoice/${id}/confirm-bpjs`, data ?? {}),

@@ -1004,7 +1004,7 @@ class FarmasiService
      * NB: master `golongan` di DB tidak seragam (mis. "OBAT KERAS", "OBAT BEBAS",
      * "SUPLEMEN", NULL), jadi normalisasi via kata kunci, bukan match enum persis.
      */
-    private function assertObatBolehTambahan(string $medicationId): void
+    public function assertObatBolehTambahan(string $medicationId): void
     {
         $med = Medication::findOrFail($medicationId);
         $g = strtoupper(trim((string) $med->golongan));

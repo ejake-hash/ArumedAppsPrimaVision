@@ -168,9 +168,67 @@ class KasirService
                 ->whereIn('status', ['DRAFT', 'SUBMITTED'])
                 ->whereNull('verified_at')
                 ->exists());
+
+            // Desync diam: bila reconsolidate gagal saat re-verifikasi (revisi qty/substitusi/
+            // hapus resep), baris OBAT existing bisa BASI terhadap resep terbaru — finalize &
+            // bayar TIDAK rebuild. syncVerifiedObatLines hanya MENAMBAH (add-only), tak
+            // memperbaiki qty/harga baris yang sudah ada. Flag ini → banner "Susun Ulang"
+            // di KasirView agar kasir menyinkronkan sebelum bayar (read-only, tak ubah angka).
+            $invoice->setAttribute('obat_lines_stale', $this->obatLinesStale($invoice));
         }
 
         return $invoice;
+    }
+
+    /**
+     * Deteksi baris OBAT invoice DRAFT yang tak sinkron dengan resep verified terbaru.
+     * Membandingkan per reference_id (= PrescriptionItem.id) qty & harga satuan; juga
+     * mendeteksi baris yang refnya HILANG dari resep (item dihapus). HANYA membaca —
+     * tak mengubah tagihan; perbaikan dilakukan kasir lewat "Susun Ulang".
+     */
+    private function obatLinesStale(BillingInvoice $invoice): bool
+    {
+        $visit = Visit::with([
+            'patient', 'prescriptions.items.medication',
+            'surgeryPackageSnapshots.items', 'visitCob.penjamin1', 'visitCob.penjamin2',
+        ])->find($invoice->visit_id);
+        if (! $visit || $this->usesInpatientCharges($visit)) {
+            return false;   // RANAP/IGD: obat lewat inpatient_charges, bukan baris OBAT resep.
+        }
+
+        // HANYA baris OBAT yang berasal dari RESEP (reference_id = PrescriptionItem.id) yang
+        // dibandingkan. Obat komponen paket BEDAH ditagih dari snapshot (buildPaketObatLines,
+        // reference_id = item snapshot, BUKAN resep) → DIKECUALIKAN agar invoice bedah tak
+        // false-positive (buildObatLines mengembalikan kosong untuk obat paket).
+        $rxItemIds = $visit->prescriptions
+            ->flatMap(fn ($rx) => $rx->items->pluck('id'))
+            ->filter()->flip();
+        if ($rxItemIds->isEmpty()) {
+            return false;
+        }
+
+        [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+        $fresh = collect($this->buildObatLines($visit, $billInsurerId, $billGuarantor))
+            ->filter(fn ($l) => ($l['item_type'] ?? null) === 'OBAT'
+                && ($l['reference_id'] ?? null) !== null
+                && ! str_contains((string) ($l['description'] ?? ''), 'termasuk paket'))
+            ->keyBy('reference_id');
+
+        foreach ($invoice->items->where('item_type', 'OBAT') as $it) {
+            $ref = $it->reference_id;
+            if ($ref === null || ! $rxItemIds->has($ref)) {
+                continue;   // baris non-resep (snapshot paket / obat manual) — lewati.
+            }
+            $f = $fresh->get($ref);
+            if (! $f) {
+                return true;   // item resep tak lagi billable (cancel/unverif) tapi baris masih ada.
+            }
+            if ((float) $it->quantity !== (float) $f['quantity']
+                || abs((float) $it->unit_price - (float) $f['unit_price']) > 0.009) {
+                return true;   // qty/substitusi/kemasan berubah → tagihan basi.
+            }
+        }
+        return false;
     }
 
     /**
@@ -2516,6 +2574,15 @@ class KasirService
             throw new \Exception('Invoice sudah final, tidak bisa tambah item.', 422);
         }
 
+        // OBAT tambahan dari Kasir TIDAK boleh jadi baris invoice telanjang: tanpa resep,
+        // obat tak masuk Dispensing Farmasi (stok TAK terpotong, tanpa etiket/aturan pakai)
+        // dan pasien tak diarahkan ke apotek (nextAfterKasir butuh resep). Maka: buat resep
+        // TAMBAHAN (OTC) yang mengalir ke Farmasi. Hanya obat bebas; KERAS ditolak (arahkan
+        // ke dokter/Farmasi). Lihat addObatTambahanViaResep.
+        if (($data['item_type'] ?? null) === 'OBAT' && ! empty($data['reference_id'])) {
+            return $this->addObatTambahanViaResep($invoice, $data);
+        }
+
         $qty       = $data['quantity']   ?? 1;
         $unitPrice = $data['unit_price'] ?? 0;
         $totalPrice = $unitPrice * $qty;
@@ -2540,6 +2607,100 @@ class KasirService
         $this->recalculateInvoice($invoice);
 
         return $item;
+    }
+
+    /** Penanda resep obat tambahan yang diinput dari loket Kasir (find-or-create per visit). */
+    private const OTC_KASIR_NOTE = 'Obat tambahan apotek (input Kasir)';
+
+    /**
+     * Kasir menambah OBAT → buat/append resep TAMBAHAN (OTC) agar obat mengalir ke
+     * Dispensing Farmasi (stok terpotong + etiket + aturan pakai) DAN pasien diarahkan ke
+     * apotek (nextAfterKasir butuh resep DRAFT/SUBMITTED/DISPENSING). Resep dibuat status
+     * DISPENSING + verified_at (1) agar dibilling buildObatLines, (2) tak mencemari antrean
+     * Verifikasi (filter status=SUBMITTED), (3) tampil di langkah "Serah Terima" Farmasi.
+     *
+     * Baris invoice memakai harga buildObatLines (getPrice) + reference_id = PrescriptionItem.id
+     * → CERMIN PERSIS buildObatLines: tak dobel saat reconsolidate/syncVerifiedObatLines, tak
+     * ter-flag obat_lines_stale. Obat KERAS/NARKOTIKA/tanpa golongan ditolak 422 (fallback:
+     * arahkan ke dokter/Farmasi) via FarmasiService::assertObatBolehTambahan.
+     */
+    private function addObatTambahanViaResep(BillingInvoice $invoice, array $data): BillingItem
+    {
+        if (! in_array($invoice->status, ['DRAFT', 'FINALIZED'], true)) {
+            throw new \Exception('Tagihan harus DRAFT/FINALIZED untuk menambah obat.', 422);
+        }
+
+        $visit = $invoice->visit ?: Visit::findOrFail($invoice->visit_id);
+        if ($this->usesInpatientCharges($visit)) {
+            throw new \Exception('Obat rawat inap/IGD ditagih lewat charge inap, bukan tambah obat di Kasir.', 422);
+        }
+
+        $medId = $data['reference_id'];
+        $med   = Medication::findOrFail($medId);
+
+        // Gate OTC — obat keras dilempar 422 (fallback: arahkan ke dokter/Farmasi).
+        app(\App\Services\FarmasiService::class)->assertObatBolehTambahan($medId);
+
+        $qty        = max(1, (int) ($data['quantity'] ?? 1));
+        $employeeId = auth('api')->user()?->employee_id;
+
+        return DB::transaction(function () use ($invoice, $visit, $med, $medId, $qty, $data, $employeeId) {
+            // Find-or-create satu resep TAMBAHAN-Kasir per visit (append item bila sudah ada).
+            $prescription = Prescription::where('visit_id', $visit->id)
+                ->where('type', '!=', Prescription::TYPE_RANAP)
+                ->where('notes', self::OTC_KASIR_NOTE)
+                ->whereIn('status', ['SUBMITTED', 'DISPENSING'])
+                ->first();
+            if (! $prescription) {
+                $prescription = Prescription::create([
+                    'visit_id'         => $visit->id,
+                    'prescribed_by_id' => $employeeId,
+                    'status'           => 'DISPENSING',
+                    'verified_at'      => now(),
+                    'verified_by_id'   => $employeeId,
+                    'notes'            => self::OTC_KASIR_NOTE,
+                ]);
+            }
+
+            $rxItem = PrescriptionItem::create([
+                'prescription_id' => $prescription->id,
+                'medication_id'   => $medId,
+                'source'          => 'TAMBAHAN',
+                'added_by_id'     => $employeeId,
+                'quantity'        => $qty,
+                'dosage'          => $data['dosage'] ?? null,
+                'instructions'    => $data['instructions'] ?? null,
+            ]);
+
+            // Harga & kategori CERMIN buildObatLines (getPrice + pos dari tarif UMUM).
+            [$insurerId, $guarantor] = $this->billingInsurerFor($visit);
+            $price = (float) $this->getPrice('medication', $medId, $guarantor, $insurerId);
+            $total = $price * $qty;
+
+            $umumId = $this->systemInsurerId('UMUM');
+            $pos = $umumId ? DB::table('medication_tariffs')
+                ->where('medication_id', $medId)->where('insurer_id', $umumId)
+                ->whereNull('deleted_at')->value('pos_kwitansi') : null;
+
+            $billItem = BillingItem::create([
+                'billing_invoice_id' => $invoice->id,
+                'item_type'          => 'OBAT',
+                'category'           => MedicationTariff::posLabel($pos),
+                'reference_id'       => $rxItem->id,
+                'description'        => $med->name,
+                'quantity'           => $qty,
+                'unit_price'         => $price,
+                'total_price'        => $total,
+                'net_price'          => $total,
+                'notes'              => $data['dosage'] ?? null,
+            ]);
+
+            $this->recalculateInvoice($invoice);
+            $this->log(auth('api')->id(), 'ADD_OBAT_TAMBAHAN_KASIR', BillingInvoice::class, $invoice->id,
+                "Obat tambahan Kasir: {$med->name} x{$qty} → resep {$prescription->id}");
+
+            return $billItem;
+        });
     }
 
     /**
@@ -2701,12 +2862,41 @@ class KasirService
      */
     public function refreshZeroPricedItemsFromTarif(BillingInvoice $invoice): int
     {
-        if ($invoice->status !== 'DRAFT') {
+        // Jaring pengaman otomatis saat buka tagihan: HANYA baris Rp 0, HANYA DRAFT.
+        return $this->repriceFromTarif($invoice, true);
+    }
+
+    /**
+     * Sinkron harga SEMUA baris bertarif tagihan ke tarif terkini (Buku Tarif/PKS) —
+     * aksi manual kasir ("Sinkron Harga Tarif"). Tagihan belum dibayar (DRAFT/FINALIZED).
+     * Menimpa harga manual ke tarif (perilaku diharapkan dari aksi sinkron).
+     */
+    public function resyncTarifPrices(string $invoiceId): int
+    {
+        $invoice = BillingInvoice::with('items')->findOrFail($invoiceId);
+        if (in_array($invoice->status, ['PAID', 'PARTIALLY_PAID', 'CANCELLED'], true)) {
+            throw new \Exception('Tagihan sudah dibayar/dibatalkan — harga tidak bisa disinkronkan.', 422);
+        }
+        return $this->repriceFromTarif($invoice, false);
+    }
+
+    /**
+     * Mesin re-pricing baris tagihan dari tarif terkini (reuse buildLines→getPrice,
+     * resolusi insurer per-penjamin via billingInsurerFor). Cocokkan baris via key
+     * item_type|reference_id; pertahankan persen diskon; sinkron baris DISKON_PAKET.
+     *
+     * @param bool $onlyZero true = hanya baris Rp 0 (auto on-open, DRAFT saja);
+     *                       false = semua baris yang harganya BERBEDA (manual, DRAFT/FINALIZED).
+     */
+    private function repriceFromTarif(BillingInvoice $invoice, bool $onlyZero): int
+    {
+        $allowed = $onlyZero ? ['DRAFT'] : ['DRAFT', 'FINALIZED'];
+        if (! in_array($invoice->status, $allowed, true)) {
             return 0;
         }
 
         try {
-            return DB::transaction(function () use ($invoice) {
+            return DB::transaction(function () use ($invoice, $onlyZero) {
                 // Eager-load identik dengan consolidateBilling agar buildLines lengkap.
                 $visit = Visit::with([
                     'patient',
@@ -2740,14 +2930,22 @@ class KasirService
                 $updated  = 0;
                 $bundledChanged = false;
                 foreach ($invoice->items as $item) {
-                    if ((float) $item->unit_price != 0.0 || $item->reference_id === null) {
+                    if ($item->reference_id === null) {
                         continue;
                     }
                     $key = "{$item->item_type}|{$item->reference_id}";
                     if (! isset($freshPrice[$key])) {
                         continue;
                     }
-                    $unitPrice  = $freshPrice[$key];
+                    $unitPrice = $freshPrice[$key];
+                    $cur       = (float) $item->unit_price;
+                    if ($onlyZero) {
+                        if ($cur != 0.0) {
+                            continue;   // mode auto: hanya isi baris Rp 0
+                        }
+                    } elseif (abs($unitPrice - $cur) < 0.005) {
+                        continue;       // mode sinkron: hanya yang harganya BERBEDA
+                    }
                     $totalPrice = $unitPrice * $item->quantity;
                     // Pertahankan persen diskon per-baris yang ada.
                     [$discAmt, $discPc] = $this->computeItemDiscount($totalPrice, null, (float) $item->discount_percent);
@@ -2770,7 +2968,7 @@ class KasirService
                 }
 
                 // Sinkronkan baris DISKON_PAKET (negatif, reference_id null) dari fresh agar
-                // total pasien tetap netral saat obat-paket yang tadinya Rp 0 jadi berharga.
+                // total pasien tetap netral saat obat-paket yang harganya berubah.
                 if ($bundledChanged) {
                     $invoice->items()->where('item_type', 'DISKON_PAKET')->delete();
                     foreach ($fresh as $l) {
@@ -2781,13 +2979,18 @@ class KasirService
                 }
 
                 $this->recalculateInvoice($invoice);
-                $this->log(auth('api')->id(), 'REFRESH_TARIF_KWITANSI', BillingInvoice::class, $invoice->id, "{$updated} baris Rp 0 diperbarui dari Buku Tarif");
+                $detail = $onlyZero
+                    ? "{$updated} baris Rp 0 diperbarui dari Buku Tarif"
+                    : "{$updated} baris disinkronkan ke tarif terkini";
+                $this->log(auth('api')->id(), 'REFRESH_TARIF_KWITANSI', BillingInvoice::class, $invoice->id, $detail);
 
                 return $updated;
             });
         } catch (\Throwable $e) {
-            // Refresh tak boleh menggagalkan pemuatan halaman kasir — invoice tampil apa adanya.
-            \Illuminate\Support\Facades\Log::warning('refreshZeroPricedItemsFromTarif gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
+            // Auto-refresh tak boleh menggagalkan pemuatan halaman kasir. Aksi manual
+            // (resyncTarifPrices) sudah membungkus exception 422 sebelum memanggil ini,
+            // jadi kegagalan tak terduga aman dilaporkan sebagai 0 baris.
+            \Illuminate\Support\Facades\Log::warning('repriceFromTarif gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
             return 0;
         }
     }

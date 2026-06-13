@@ -133,6 +133,7 @@ const cobSplit    = ref(null)
 // Batalkan tagihan (DRAFT/FINALIZED) → susun ulang dari data terkini.
 const cancelConfirmOpen = ref(false)
 const cancelling        = ref(false)
+const resyncing         = ref(false)
 const justCancelled     = ref(false)
 
 // Warning verifikasi asuransi (Sprint 4 modul Asuransi/TPA)
@@ -254,6 +255,23 @@ async function batalkanInvoice() {
     toast('w', err.response?.data?.message ?? 'Gagal membatalkan tagihan')
   } finally {
     cancelling.value = false
+  }
+}
+
+// Sinkron harga semua baris ke tarif terkini (Buku Tarif/PKS) — dipakai bila harga
+// di-update SETELAH tagihan masuk kasir. Hanya DRAFT/FINALIZED (belum dibayar).
+async function resyncTarif() {
+  if (!selInv.value?.id || resyncing.value) return
+  resyncing.value = true
+  try {
+    const { data } = await kasirApi.resyncTarif(selInv.value.id)
+    const n = data.data?.updated ?? 0
+    toast(n > 0 ? 's' : 'i', n > 0 ? `${n} harga item diperbarui dari tarif terkini` : 'Harga sudah sesuai tarif terkini')
+    await refreshInvoice()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal sinkron harga tarif')
+  } finally {
+    resyncing.value = false
   }
 }
 
@@ -443,6 +461,46 @@ async function addTindakanFromTarif(t) {
     toast('w', err.response?.data?.message ?? 'Gagal menambahkan item')
   } finally {
     addingTindakanIds.value = addingTindakanIds.value.filter((k) => k !== key)
+  }
+}
+
+// ── Tambah OBAT dari Kasir (Opsi A): wajib lewat resep TAMBAHAN agar masuk Dispensing
+// Farmasi (stok terpotong + etiket) → butuh Jumlah + Aturan pakai. Obat keras ditolak
+// backend (arahkan ke dokter/Farmasi). Klik hasil OBAT → buka form ini dulu, baru POST.
+const obatAddTarget = ref(null)   // baris tarif obat yang dipilih
+const obatAddForm   = ref({ quantity: 1, dosage: '', instructions: '' })
+const obatAddSaving = ref(false)
+function pickObatToAdd(t) {
+  obatAddTarget.value = t
+  obatAddForm.value = { quantity: 1, dosage: '', instructions: '' }
+  tindakanSearchFocus.value = false
+}
+async function confirmAddObat() {
+  const t = obatAddTarget.value
+  if (!t || !selInv.value?.id || obatAddSaving.value) return
+  const qty = Number(obatAddForm.value.quantity)
+  if (!Number.isFinite(qty) || qty < 1) { toast('w', 'Jumlah minimal 1'); return }
+  obatAddSaving.value = true
+  try {
+    await kasirApi.storeItem(selInv.value.id, {
+      item_type:    'OBAT',
+      category:     t.category || 'Obat',
+      description:  t.name,
+      quantity:     qty,
+      unit_price:   Number(t.price) || 0,
+      reference_id: t.id,
+      dosage:       obatAddForm.value.dosage || null,
+      instructions: obatAddForm.value.instructions || null,
+    })
+    await refreshInvoice()
+    toast('s', `${t.name} ditambahkan — obat akan disiapkan & diserahkan di Farmasi`)
+    obatAddTarget.value = null
+    tindakanSearch.value = ''
+  } catch (err) {
+    // 422 obat keras / tanpa golongan → pesan jelas dari backend (fallback dokter/Farmasi).
+    toast('w', err.response?.data?.message ?? 'Gagal menambahkan obat')
+  } finally {
+    obatAddSaving.value = false
   }
 }
 
@@ -1141,6 +1199,7 @@ const groupedPrintItems = computed(() =>
                       <svg viewBox="0 0 24 24" class="pill-icon"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                       Obat • belum verif
                     </span>
+                    <span v-else class="pill pill-obat-none" title="Dokter tidak meresepkan obat untuk kunjungan ini">Tidak ada Obat</span>
                     <span v-if="isLunas(q)" class="pill pill-done">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                       Lunas
@@ -1245,6 +1304,7 @@ const groupedPrintItems = computed(() =>
                   <span v-if="paketBedahLabel(selQ)" class="ptg ptg-bedah" :title="`Paket bedah: ${paketBedahLabel(selQ)}`">{{ paketBedahLabel(selQ) }}</span>
                   <span v-if="selQ.visit?.obat_status === 'VERIFIED'" class="ptg ptg-obat-ok" title="Ada resep obat — sudah diverifikasi & dikunci Farmasi">Obat ✓ Farmasi</span>
                   <span v-else-if="selQ.visit?.obat_status === 'PENDING'" class="ptg ptg-obat-wait" title="Ada resep obat — BELUM diverifikasi Farmasi">Obat • belum verif</span>
+                  <span v-else class="ptg ptg-obat-none" title="Dokter tidak meresepkan obat untuk kunjungan ini">Tidak ada Obat</span>
                   <span v-if="selInv.status === 'PAID'" class="ptg ptg-ok">LUNAS</span>
                   <span v-else-if="selInv.status === 'PARTIALLY_PAID'" class="ptg ptg-ok">Bayar Sebagian</span>
                 </div>
@@ -1263,6 +1323,18 @@ const groupedPrintItems = computed(() =>
                 <strong>Tagihan diperbarui oleh revisi dokter.</strong>
                 <div class="rb-msg">Ada obat yang menunggu verifikasi ulang Farmasi — obat belum masuk tagihan & pembayaran ditahan sampai Farmasi mengunci resep. Klik Muat ulang setelah Farmasi verifikasi.</div>
                 <button class="btn btn-secondary btn-sm" @click="pickP(selQ)">↻ Muat ulang</button>
+              </div>
+            </div>
+
+            <!-- Tagihan obat BASI: revisi resep (jumlah/substitusi/hapus) belum terpantul ke
+                 baris tagihan, dan finalize/bayar TIDAK membangun ulang otomatis. Arahkan ke
+                 Batalkan → Susun Ulang (rebuild penuh COB-safe lewat consolidateBilling). -->
+            <div v-if="selInv.obat_lines_stale && !selInv.pending_obat_verification" class="revisi-banner">
+              <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div>
+                <strong>Tagihan obat mungkin tidak sinkron dengan resep terbaru.</strong>
+                <div class="rb-msg">Ada perubahan obat (jumlah / substitusi / hapus) yang belum terpantul ke baris tagihan ini — pembayaran tidak membangun ulang otomatis. Batalkan lalu Susun Ulang tagihan agar obat tertagih benar sebelum dibayar.</div>
+                <button class="btn btn-secondary btn-sm" @click="cancelConfirmOpen = true">Batalkan &amp; Susun Ulang</button>
               </div>
             </div>
 
@@ -1357,6 +1429,14 @@ const groupedPrintItems = computed(() =>
                         <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         {{ editTagihan ? 'Selesai Edit' : 'Edit Tagihan' }}
                       </button>
+                      <button v-if="['DRAFT','FINALIZED'].includes(selInv.status)"
+                        class="btn btn-sm btn-secondary"
+                        :disabled="resyncing"
+                        title="Tarik ulang harga semua item dari Buku Tarif / tarif penjamin terkini"
+                        @click="resyncTarif">
+                        <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                        {{ resyncing ? 'Menyinkron…' : 'Sinkron Harga' }}
+                      </button>
                       <button class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakRincian">
                         <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         {{ printing ? 'Menyiapkan…' : 'Cetak Rincian' }}
@@ -1407,6 +1487,37 @@ const groupedPrintItems = computed(() =>
                     </div>
                   </div>
 
+                  <!-- Tambah OBAT (Opsi A): Jumlah + Aturan pakai → resep TAMBAHAN ke Farmasi. -->
+                  <div v-if="obatAddTarget" class="cancel-overlay" @click.self="obatAddTarget = null">
+                    <div class="cancel-box obat-add-box">
+                      <div class="cancel-title">Tambah Obat: {{ obatAddTarget.name }}</div>
+                      <div class="obat-add-note">
+                        Obat akan dibuat sebagai <b>resep tambahan</b> dan disiapkan di <b>Farmasi</b> (stok terpotong, etiket dicetak). Pasien diarahkan ke apotek setelah membayar. Hanya obat bebas — obat keras ditolak (lewat dokter/Farmasi).
+                      </div>
+                      <div class="obat-add-grid">
+                        <label class="obat-add-field obat-add-narrow">
+                          <span>Jumlah</span>
+                          <input v-model.number="obatAddForm.quantity" type="number" min="1" class="fi" />
+                        </label>
+                        <label class="obat-add-field">
+                          <span>Dosis</span>
+                          <input v-model="obatAddForm.dosage" class="fi" placeholder="mis. 1 tetes" />
+                        </label>
+                        <label class="obat-add-field">
+                          <span>Aturan pakai</span>
+                          <input v-model="obatAddForm.instructions" class="fi" placeholder="mis. 3x/hari" />
+                        </label>
+                      </div>
+                      <div class="cancel-actions">
+                        <button class="btn btn-sm btn-secondary" :disabled="obatAddSaving" @click="obatAddTarget = null">Batal</button>
+                        <button class="btn btn-sm btn-primary" :disabled="obatAddSaving" @click="confirmAddObat">
+                          <span v-if="obatAddSaving" class="sp"></span>
+                          {{ obatAddSaving ? 'Menambahkan…' : 'Tambahkan Obat' }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <!-- Tambah tindakan (konsep sama Tab Tindakan DokterView): search → dropdown → klik tambah.
                        Harga ikut tarif master per-penjamin visit. -->
                   <div v-if="editTagihan" class="add-tindakan-bar">
@@ -1435,7 +1546,7 @@ const groupedPrintItems = computed(() =>
                         <div
                           v-for="t in tarifResults" :key="rowKey(t)"
                           :class="['tarif-list-item', tarifInInvoice(t) ? 'in-list' : '', addingTindakanIds.includes(rowKey(t)) ? 'is-adding' : '']"
-                          @mousedown.prevent="addTindakanFromTarif(t)"
+                          @mousedown.prevent="t.item_type === 'OBAT' ? pickObatToAdd(t) : addTindakanFromTarif(t)"
                         >
                           <span :class="['tarif-type-badge', `tt-${(t.item_type || 'lainnya').toLowerCase()}`]">{{ t.item_type }}</span>
                           <span v-if="t.code" class="tarif-kode">{{ t.code }}</span>
@@ -2092,6 +2203,7 @@ const groupedPrintItems = computed(() =>
 /* Badge status obat (resep) — bedakan kunjungan dgn obat vs tanpa obat di antrean kasir. */
 .pill-obat-ok   { background: #dcfce7; color: #166534; }
 .pill-obat-wait { background: #fef3c7; color: #92400e; }
+.pill-obat-none { background: #f1f5f9; color: #64748b; }
 
 /* ─── RIGHT ──────────────────────────────────────────────────────────────── */
 .rp { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -2262,6 +2374,7 @@ const groupedPrintItems = computed(() =>
 .ptg-dpjp { background: #eef2ff; color: #4338ca; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ptg-obat-ok   { background: #dcfce7; color: #166534; }
 .ptg-obat-wait { background: #fef3c7; color: #92400e; }
+.ptg-obat-none { background: #f1f5f9; color: #64748b; }
 /* Badge paket bedah "Kategori — Nama Paket" (antrean & banner identitas). */
 .pill-bedah { background: #ffe4e6; color: #9f1239; max-width: 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ptg-bedah  { background: #ffe4e6; color: #9f1239; max-width: 260px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -2449,6 +2562,13 @@ const groupedPrintItems = computed(() =>
 .cancel-msg b { color: var(--td); }
 .cancel-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 .cancel-actions .btn-danger .sp { border-color: rgba(185,28,28,.3); border-top-color: #b91c1c; }
+/* Form tambah obat dari Kasir (Opsi A) */
+.obat-add-box { width: min(480px, calc(100vw - 2rem)); }
+.obat-add-note { font-size: 11.5px; color: var(--tm); background: var(--bs); border-radius: 8px; padding: 8px 10px; margin-bottom: .8rem; line-height: 1.45; }
+.obat-add-grid { display: flex; gap: 10px; margin-bottom: 1rem; }
+.obat-add-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; font-size: 11px; color: var(--tu); font-weight: 600; }
+.obat-add-field.obat-add-narrow { flex: 0 0 80px; }
+.obat-add-field .fi { width: 100%; }
 .btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .sp { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #fff; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
