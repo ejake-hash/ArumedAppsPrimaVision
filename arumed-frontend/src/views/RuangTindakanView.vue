@@ -15,6 +15,11 @@ const loading = ref(false)
 const selId = ref(null)
 const sel = computed(() => board.value.find(p => p.id === selId.value) || null)
 
+// ─── Filter antrean (gaya BedahView/PerawatView) ───────────────────────────────
+const qPrimaryFilter   = ref('waiting')   // 'waiting' | 'active' | 'done'
+const qSecondaryFilter = ref('semua')     // 'semua' | 'bpjs' | 'umum'
+const qSearch = ref('')
+
 // ─── Form laporan laser ───────────────────────────────────────────────────────
 const EYE_OPTS = [
   { v: 'OD', l: 'OD (kanan)' },
@@ -61,9 +66,9 @@ async function loadBoard() {
   try {
     const res = await ruangTindakanApi.antrian()
     board.value = res.data?.data || []
-    // Pertahankan pilihan bila masih ada; else pilih pertama.
+    // Pertahankan pilihan bila masih ada; else pilih pertama (utamakan yang terlihat di filter).
     if (selId.value && !board.value.some(p => p.id === selId.value)) selId.value = null
-    if (!selId.value && board.value.length) selectPatient(board.value[0])
+    if (!selId.value && board.value.length) selectPatient(filtBoard.value[0] || board.value[0])
   } catch (e) {
     toast('e', e?.response?.data?.message || 'Gagal memuat antrean.')
   } finally {
@@ -72,6 +77,9 @@ async function loadBoard() {
 }
 
 function selectPatient(p) {
+  // Klik pada pasien yang SUDAH terpilih: jangan re-hydrate — kalau tidak,
+  // laporan laser & resep yang sedang diketik (belum tersimpan) akan terhapus.
+  if (selId.value === p.id) return
   selId.value = p.id
   // Hydrate form dari laporan tersimpan (operation_report) + kolom record
   // (complication/followup/disposition disimpan terpisah, bukan di operation_report).
@@ -173,6 +181,46 @@ function schedStatus(p) { return p.schedule?.status || 'SCHEDULED' }
 function isRunning(p) { return schedStatus(p) === 'IN_PROGRESS' }
 function isDone(p) { return schedStatus(p) === 'DONE' }
 
+// Hitungan papan (stats bar bergaya BedahView).
+const cMenunggu    = computed(() => board.value.filter(p => !isRunning(p) && !isDone(p)).length)
+const cBerlangsung = computed(() => board.value.filter(p => isRunning(p)).length)
+const cSelesai     = computed(() => board.value.filter(p => isDone(p)).length)
+
+// Penjamin (untuk pill antrean): BPJS bila guarantor/insurer mengandung "BPJS".
+function isBpjs(p) {
+  const g = (p.visit?.guarantor_type || '').toUpperCase()
+  const n = (p.visit?.insurer_name || '').toUpperCase()
+  return g.includes('BPJS') || n.includes('BPJS')
+}
+function penjaminLabel(p) {
+  return isBpjs(p) ? 'BPJS' : (p.visit?.insurer_name || 'Umum')
+}
+
+// Antrean tersaring: primary (status) + secondary (penjamin) + pencarian.
+const filtBoard = computed(() => {
+  let list = board.value
+  if (qPrimaryFilter.value === 'active') {
+    list = list.filter(p => isRunning(p))
+  } else if (qPrimaryFilter.value === 'done') {
+    list = list.filter(p => isDone(p))
+  } else {
+    list = list.filter(p => !isRunning(p) && !isDone(p))
+  }
+  if (qSecondaryFilter.value === 'bpjs') {
+    list = list.filter(p => isBpjs(p))
+  } else if (qSecondaryFilter.value === 'umum') {
+    list = list.filter(p => !isBpjs(p))
+  }
+  if (qSearch.value) {
+    const s = qSearch.value.toLowerCase()
+    list = list.filter(p =>
+      (p.patient?.name || '').toLowerCase().includes(s)
+      || String(p.queue_number || '').toLowerCase().includes(s)
+      || (p.patient?.no_rm || '').toLowerCase().includes(s))
+  }
+  return list
+})
+
 // ─── Aksi lifecycle ───────────────────────────────────────────────────────────
 async function panggil(p) {
   // Panggil beroperasi pada antrean (queue). Pasien terjadwal yang belum punya
@@ -245,7 +293,8 @@ let pollTimer = null
 onMounted(() => {
   loadBoard()
   // Polling hanya untuk papan antrean hari ini (tab terjadwal di-refresh manual).
-  pollTimer = setInterval(() => { if (activeTab.value === 'antrean') loadBoard() }, 15000)
+  // Jangan refetch saat submit "Selesai Tindakan" berjalan (cegah balapan dgn reset selId).
+  pollTimer = setInterval(() => { if (activeTab.value === 'antrean' && !submitting.value) loadBoard() }, 15000)
 })
 onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 </script>
@@ -255,7 +304,7 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
     <header class="rt-head">
       <div>
         <h1>Ruang Tindakan</h1>
-        <p class="sub">Tindakan laser (YAG &amp; Retina/PRP) — pasien terjadwal hari ini.</p>
+        <p class="sub">Tindakan Laser atau Tindakan Non Bedah Lainnya — pasien terjadwal hari ini.</p>
       </div>
       <button v-if="activeTab === 'antrean'" class="btn-soft" @click="loadBoard" :disabled="loading">
         {{ loading ? 'Memuat…' : 'Muat ulang' }}
@@ -277,27 +326,108 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 
     <!-- TAB 1: Antrean hari ini -->
     <div v-show="activeTab === 'antrean'" class="rt-body">
-      <!-- Papan antrean -->
+      <!-- Papan antrean (gaya BedahView) -->
       <aside class="rt-board">
-        <div class="board-title">Antrean <span class="cnt">{{ board.length }}</span></div>
-        <div v-if="!board.length && !loading" class="empty">Tidak ada pasien tindakan hari ini.</div>
-        <button
-          v-for="p in board" :key="p.id"
-          class="pt-card" :class="{ active: p.id === selId }"
-          @click="selectPatient(p)"
-        >
-          <div class="pt-top">
-            <span class="pt-no">{{ p.queue_number || '—' }}</span>
-            <span class="pt-status" :class="'st-' + (schedStatus(p) || '').toLowerCase()">
-              {{ isDone(p) ? 'Selesai' : isRunning(p) ? 'Berlangsung' : p.status === 'CALLED' ? 'Dipanggil' : 'Menunggu' }}
-            </span>
+        <div class="rt-card">
+          <div class="card-head">
+            <div>
+              <div class="card-head-title">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
+                Antrean Tindakan
+              </div>
+              <div class="card-head-sub">{{ board.length }} pasien hari ini</div>
+            </div>
+            <span class="pill-live">LIVE</span>
           </div>
-          <div class="pt-name">{{ p.patient?.name || '-' }}</div>
-          <div class="pt-meta">
-            {{ p.patient?.no_rm || '' }} · {{ p.patient?.age != null ? p.patient.age + ' th' : '-' }}
-            <span v-if="p.schedule?.scheduled_time"> · {{ String(p.schedule.scheduled_time).slice(0,5) }}</span>
+
+          <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean tindakan">
+            <!-- Stats bar -->
+            <div class="stats-bar">
+              <div class="stat-item">
+                <span class="stat-label">Menunggu</span>
+                <b class="stat-num stat-waiting">{{ cMenunggu }}</b>
+              </div>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Berlangsung</span>
+                <b class="stat-num stat-live">{{ cBerlangsung }}</b>
+              </div>
+              <div class="stat-divider"></div>
+              <div class="stat-item">
+                <span class="stat-label">Selesai</span>
+                <b class="stat-num stat-done">{{ cSelesai }}</b>
+              </div>
+            </div>
+
+            <!-- Primary filter -->
+            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+              <button :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']" @click="qPrimaryFilter = 'waiting'">
+                Belum Dipanggil
+                <span v-if="cMenunggu" class="pf-ct">{{ cMenunggu }}</span>
+              </button>
+              <button :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']" @click="qPrimaryFilter = 'active'" title="Tindakan sedang berlangsung">
+                Masih Aktif
+                <span v-if="cBerlangsung" class="pf-ct">{{ cBerlangsung }}</span>
+              </button>
+              <button :class="['pf-btn', qPrimaryFilter === 'done' ? 'a' : '']" @click="qPrimaryFilter = 'done'">
+                Selesai
+                <span v-if="cSelesai" class="pf-ct">{{ cSelesai }}</span>
+              </button>
+            </div>
+
+            <!-- Secondary filter (penjamin) -->
+            <div class="ptype-tabs" role="group" aria-label="Filter jenis penjamin">
+              <button :class="['ptype-tab', qSecondaryFilter === 'semua' ? 'a' : '']" @click="qSecondaryFilter = 'semua'">Semua</button>
+              <button :class="['ptype-tab ptype-bpjs', qSecondaryFilter === 'bpjs' ? 'a' : '']" @click="qSecondaryFilter = 'bpjs'">BPJS</button>
+              <button :class="['ptype-tab ptype-umum', qSecondaryFilter === 'umum' ? 'a' : '']" @click="qSecondaryFilter = 'umum'">Umum/Asuransi</button>
+            </div>
+
+            <!-- Search -->
+            <div class="q-search-wrap">
+              <input v-model="qSearch" class="q-search" placeholder="Cari nama / no. antrean / RM…" />
+            </div>
+
+            <!-- Empty -->
+            <div v-if="!filtBoard.length" class="empty-section" aria-live="polite">
+              {{ board.length ? 'Tidak ada pasien dalam filter ini' : 'Tidak ada pasien tindakan hari ini.' }}
+            </div>
+
+            <!-- Queue list -->
+            <div v-else role="list" aria-label="Daftar antrean tindakan">
+              <div
+                v-for="p in filtBoard" :key="p.id"
+                role="listitem"
+                :class="['q-item',
+                  p.id === selId ? 'active' : '',
+                  isDone(p) ? 'done' : '',
+                  isRunning(p) ? 'live' : '',
+                ]"
+                tabindex="0"
+                @click="selectPatient(p)"
+                @keydown.enter="selectPatient(p)"
+              >
+                <div class="qi-left">
+                  <div class="q-num">{{ p.queue_number || '—' }}</div>
+                  <span :class="['pill', isDone(p) ? 'pill-selesai' : isRunning(p) ? 'pill-proses' : 'pill-menunggu']">
+                    {{ isDone(p) ? 'Selesai' : isRunning(p) ? 'Proses' : p.status === 'CALLED' ? 'Dipanggil' : 'Menunggu' }}
+                  </span>
+                </div>
+
+                <div class="q-info">
+                  <div class="q-name">{{ p.patient?.name || '-' }}</div>
+                  <div class="q-meta">
+                    {{ p.patient?.age != null ? p.patient.age + ' th' : '-' }} · {{ p.patient?.gender || '-' }} · {{ p.patient?.no_rm || '-' }}
+                  </div>
+                  <div class="q-tags">
+                    <span class="pill pill-pkg">{{ p.schedule?.package?.name || 'Tindakan Laser' }}</span>
+                    <span :class="['pill', isBpjs(p) ? 'pill-bpjs' : 'pill-umum']">{{ penjaminLabel(p) }}</span>
+                    <span v-if="p.schedule?.scheduled_time" class="pill pill-time">{{ String(p.schedule.scheduled_time).slice(0,5) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-        </button>
+        </div>
       </aside>
 
       <!-- Detail / form -->
@@ -331,7 +461,12 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             <button v-if="sel.queue_id && sel.status !== 'CALLED'" class="btn-primary" :disabled="!canWrite" @click="panggil(sel)">Panggil Pasien</button>
             <button class="btn-primary accent" :disabled="!canWrite" @click="mulai(sel)">Mulai Tindakan</button>
           </div>
-          <div v-else-if="isDone(sel)" class="done-banner">✓ Tindakan selesai — pasien telah diteruskan ke Kasir.</div>
+          <div v-else-if="isDone(sel)" class="done-banner">
+            ✓ Tindakan selesai —
+            {{ sel.record?.post_op_disposition === 'RAWAT_INAP'
+                ? 'pasien diteruskan ke Rawat Inap (Menunggu Kamar).'
+                : 'pasien telah diteruskan ke Kasir.' }}
+          </div>
 
           <!-- Form laporan laser (saat berlangsung) -->
           <div v-if="isRunning(sel)" class="laser-form">
@@ -487,20 +622,72 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 
 .rt-body { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
 
-/* Papan */
-.rt-board { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; background: #fff; max-height: calc(100vh - 160px); overflow: auto; }
-.board-title { font-weight: 700; color: #0E3A66; font-size: 0.9rem; margin-bottom: 10px; display: flex; align-items: center; gap: 7px; }
-.board-title .cnt { background: #1FAAE0; color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 0.72rem; }
-.pt-card { display: block; width: 100%; text-align: left; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 11px; margin-bottom: 8px; background: #fff; cursor: pointer; transition: border-color .15s, background .15s; }
-.pt-card:hover { border-color: #94a3b8; }
-.pt-card.active { border-color: #1FAAE0; background: #f0f9ff; }
-.pt-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-.pt-no { font-weight: 700; color: #0E3A66; font-size: 0.85rem; }
-.pt-status { font-size: 0.68rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #f1f5f9; color: #475569; }
-.st-in_progress { background: #fef3c7; color: #b45309; }
-.st-done { background: #dcfce7; color: #15803d; }
-.pt-name { font-weight: 600; color: #1e293b; font-size: 0.9rem; }
-.pt-meta { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+/* Papan antrean (gaya BedahView) */
+.rt-board { min-width: 0; }
+.rt-card { background: #fff; border: 1px solid #DEE4EB; border-radius: 12px; overflow: hidden; }
+.card-head { padding: 0.85rem 1.1rem; border-bottom: 1px solid #DEE4EB; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.card-head-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: #1a1a1a; }
+.card-head-title svg { width: 14px; height: 14px; fill: none; stroke: #1FAAE0; stroke-width: 2; stroke-linecap: round; }
+.card-head-sub { font-size: 11px; color: #6b7280; margin-top: 3px; }
+.pill-live { font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: #dcfce7; color: #15803d; border: 1px solid #86efac; border-radius: 20px; letter-spacing: 0.05em; }
+
+.queue-scroll { padding: 0.6rem; max-height: calc(100vh - 200px); overflow-y: auto; }
+
+/* Stats bar */
+.stats-bar { display: flex; align-items: center; background: #f8fafc; border: 1px solid #DEE4EB; border-radius: 9px; padding: 8px 12px; margin-bottom: 0.65rem; }
+.stat-item { flex: 1; text-align: center; }
+.stat-divider { width: 1px; height: 28px; background: #DEE4EB; flex-shrink: 0; }
+.stat-label { display: block; font-size: 9.5px; color: #6b7280; letter-spacing: 0.03em; margin-bottom: 2px; }
+.stat-num { display: block; font-size: 17px; font-weight: 700; color: #1a1a1a; font-variant-numeric: tabular-nums; }
+.stat-waiting { color: #d97706; }
+.stat-live { color: #1e40af; }
+.stat-done { color: #15803d; }
+
+/* Primary filter */
+.primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
+.pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid #DEE4EB; border-radius: 8px; background: #f8fafc; color: #475569; cursor: pointer; font-family: inherit; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.pf-btn:hover { border-color: #1FAAE0; color: #1FAAE0; }
+.pf-btn.a { background: #0E3A66; color: #fff; border-color: #0E3A66; }
+.pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
+
+/* Secondary filter */
+.ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
+.ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid #DEE4EB; border-radius: 7px; background: #f8fafc; color: #6b7280; cursor: pointer; font-family: inherit; text-align: center; transition: all .13s; white-space: nowrap; }
+.ptype-tab:hover { border-color: #1FAAE0; color: #1FAAE0; }
+.ptype-tab.a { color: #fff; font-weight: 700; }
+.ptype-bpjs.a { background: #1d4ed8; border-color: #1d4ed8; }
+.ptype-umum.a { background: #1FAAE0; border-color: #1FAAE0; }
+
+/* Search */
+.q-search-wrap { margin-bottom: 0.5rem; }
+.q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid #DEE4EB; border-radius: 7px; padding: 0 10px; background: #f8fafc; font-family: inherit; outline: none; color: #1a1a1a; box-sizing: border-box; }
+.q-search:focus { border-color: #1FAAE0; background: #fff; }
+
+.empty-section { text-align: center; padding: 0.75rem 1rem; font-size: 11px; color: #94a3b8; background: #f8fafc; border-radius: 7px; border: 1px dashed #DEE4EB; }
+
+/* Queue item */
+.q-item { display: flex; gap: 8px; padding: 8px 10px; background: #f8fafc; border: 1.5px solid #DEE4EB; border-radius: 9px; margin-bottom: 5px; cursor: pointer; transition: all 0.14s; width: 100%; text-align: left; flex-wrap: wrap; }
+.q-item:hover { border-color: #94a3b8; background: #E4F4FB; }
+.q-item.active { border-color: #1FAAE0; background: #E4F4FB; }
+.q-item.done { opacity: .6; }
+.q-item.live { border-left: 3px solid #1e40af; }
+.q-item:focus-visible { outline: 2px solid #1FAAE0; outline-offset: 2px; }
+.qi-left { display: flex; flex-direction: column; gap: 4px; min-width: 56px; }
+.q-num { font-weight: 700; font-size: 13.5px; color: #1FAAE0; letter-spacing: 0.03em; }
+.q-info { flex: 1; min-width: 0; }
+.q-name { font-size: 12.5px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-meta { font-size: 10px; color: #6b7280; margin-top: 2px; }
+.q-tags { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; }
+
+/* Pills antrean */
+.pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
+.pill-menunggu { background: #fef3c7; color: #92400e; }
+.pill-proses   { background: #dbeafe; color: #1e40af; }
+.pill-selesai  { background: #dcfce7; color: #15803d; }
+.pill-bpjs     { background: #dbeafe; color: #1e40af; }
+.pill-umum     { background: #E4F4FB; color: #1FAAE0; }
+.pill-pkg      { background: #fff; color: #1a1a1a; border: 1px solid #DEE4EB; }
+.pill-time     { background: #f1f5f9; color: #6b7280; font-variant-numeric: tabular-nums; }
 
 /* Detail */
 .rt-detail { border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px 20px; background: #fff; min-height: 300px; }
