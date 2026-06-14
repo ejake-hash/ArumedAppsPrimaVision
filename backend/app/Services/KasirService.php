@@ -2352,17 +2352,20 @@ class KasirService
             $kodeDpjp = $visit->doctorSchedule?->employee?->bpjs_dpjp_code;
 
             // Diagnosa: utama (level 1) + sekunder (level 2).
+            // diagnosis_sekunder/tindakan_codes kini {code,name}; ambil KODE saja utk BPJS.
+            $codeOf = fn ($x) => is_array($x) ? ($x['code'] ?? $x['kode'] ?? null) : $x;
+
             $diagnosa = [];
             if ($exam?->diagnosis_utama) {
                 $diagnosa[] = ['kode' => $exam->diagnosis_utama, 'level' => '1'];
             }
-            foreach ((array) ($exam?->diagnosis_sekunder ?? []) as $kode) {
-                if ($kode) $diagnosa[] = ['kode' => $kode, 'level' => '2'];
+            foreach ((array) ($exam?->diagnosis_sekunder ?? []) as $sec) {
+                if ($kode = $codeOf($sec)) $diagnosa[] = ['kode' => $kode, 'level' => '2'];
             }
 
             // Procedure: ICD-9 dari tindakan_codes.
             $procedure = array_values(array_filter(array_map(
-                fn ($k) => $k ? ['kode' => $k] : null,
+                fn ($k) => ($code = $codeOf($k)) ? ['kode' => $code] : null,
                 (array) ($exam?->tindakan_codes ?? [])
             )));
 
@@ -4056,9 +4059,13 @@ class KasirService
                 'status'      => $existing?->status ?? 'DRAFT',
             ];
             if (! $existing) {
+                // Klaim = KODE kanonik saja (exam menyimpan {code,name} sub-diagnosa).
+                $stripCodes = fn ($arr) => collect((array) $arr)
+                    ->map(fn ($x) => is_array($x) ? ($x['code'] ?? $x['kode'] ?? null) : $x)
+                    ->filter()->values()->all();
                 $payload['diagnosis_utama']    = $exam?->diagnosis_utama;
-                $payload['diagnosis_sekunder'] = $exam?->diagnosis_sekunder ?? [];
-                $payload['procedure_codes']    = $exam?->tindakan_codes ?? [];
+                $payload['diagnosis_sekunder'] = $stripCodes($exam?->diagnosis_sekunder);
+                $payload['procedure_codes']    = $stripCodes($exam?->tindakan_codes);
             }
 
             \App\Models\BpjsClaim::updateOrCreate(['visit_id' => $visit->id], $payload);

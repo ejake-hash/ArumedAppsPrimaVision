@@ -162,18 +162,33 @@ final class AggregateResolver
     private function resolveTindakanRmrj(Visit $visit, ?string $format): string
     {
         $parts = [];
-        $codes = array_values(array_filter(
-            $this->tindakanCodesOf($visit),
-            fn ($c) => !in_array($c, self::PENUNJANG_ICD9, true)
+        $pairs = array_values(array_filter(
+            $this->tindakanPairsOf($visit),
+            fn ($p) => !in_array($p['code'], self::PENUNJANG_ICD9, true)
         ));
-        if (!empty($codes)) {
-            $parts[] = $this->joinIcd9WithDesc($codes);
+        if (!empty($pairs)) {
+            $parts[] = $this->joinIcd9Pairs($pairs, $format);   // utamakan nama sub tersimpan
         }
         if ($visit->refractionRecord !== null) {
             $parts[] = 'Visus, Tonometri, Autorefkeratometri';
         }
 
         return implode("\n", $parts);
+    }
+
+    /** Pasangan {code,name} ICD-9 dari tindakan_codes (objek {code,name} / string kode lama). */
+    private function tindakanPairsOf(Visit $visit): array
+    {
+        $pairs = []; $seen = [];
+        foreach ((array) ($visit->doctorExamination?->tindakan_codes ?? []) as $c) {
+            $code = is_array($c) ? ($c['code'] ?? $c['kode'] ?? null) : $c;
+            $code = is_string($code) ? trim($code) : '';
+            if ($code === '' || isset($seen[$code])) continue;
+            $seen[$code] = true;
+            $name = is_array($c) ? ($c['name'] ?? null) : null;
+            $pairs[] = ['code' => $code, 'name' => ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null];
+        }
+        return $pairs;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -184,12 +199,12 @@ final class AggregateResolver
     // ─────────────────────────────────────────────────────────────────────────
     private function resolvePenunjangRmrj(Visit $visit): string
     {
-        $codes = array_values(array_filter(
-            $this->tindakanCodesOf($visit),
-            fn ($c) => in_array($c, self::PENUNJANG_ICD9, true)
+        $pairs = array_values(array_filter(
+            $this->tindakanPairsOf($visit),
+            fn ($p) => in_array($p['code'], self::PENUNJANG_ICD9, true)
         ));
 
-        return empty($codes) ? '' : $this->joinIcd9WithDesc($codes);
+        return empty($pairs) ? '' : $this->joinIcd9Pairs($pairs, null);
     }
 
     /** Kode ICD-9 unik (string) yang dipilih dokter di Tab 2 (tindakan_codes). */
@@ -197,8 +212,10 @@ final class AggregateResolver
     {
         $codes = [];
         foreach ((array) ($visit->doctorExamination?->tindakan_codes ?? []) as $c) {
-            if (is_string($c) && $c !== '') {
-                $codes[] = $c;
+            // tindakan_codes kini {code,name}; toleran string kode lama.
+            $code = is_array($c) ? ($c['code'] ?? $c['kode'] ?? null) : $c;
+            if (is_string($code) && $code !== '') {
+                $codes[] = $code;
             }
         }
 

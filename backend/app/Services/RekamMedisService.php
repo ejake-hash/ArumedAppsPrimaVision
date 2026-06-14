@@ -815,7 +815,10 @@ class RekamMedisService
             ] : null,
             'diagnosis' => $doctor ? [
                 'utama'    => $doctor->diagnosis_utama,
-                'sekunder' => $doctor->diagnosis_sekunder,
+                // diagnosis_sekunder kini {code,name}; pertahankan kontrak lama (array kode).
+                'sekunder' => collect((array) $doctor->diagnosis_sekunder)
+                    ->map(fn ($x) => is_array($x) ? ($x['code'] ?? $x['kode'] ?? null) : $x)
+                    ->filter()->values()->all(),
                 'planning' => $doctor->planning,
             ] : null,
             'resume' => $resume ? [
