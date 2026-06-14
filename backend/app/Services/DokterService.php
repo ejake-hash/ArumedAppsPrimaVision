@@ -346,6 +346,9 @@ class DokterService
             // Catatan bebas segmen posterior
             'sp_notes'       => $data['sp_notes'] ?? null,
 
+            // Sketsa mata (OD/OS) — daftar key eksplisit, WAJIB disertakan saat create.
+            'eye_drawings'   => $data['eye_drawings'] ?? null,
+
             // Diagnosis (ICD-10 + naratif) + kode ICD-9 tindakan — pindah ke Tab 2.
             // Nullable saat simpan; diwajibkan hanya saat Finalisasi.
             'diagnosis_utama'      => $data['diagnosis_utama'] ?? null,

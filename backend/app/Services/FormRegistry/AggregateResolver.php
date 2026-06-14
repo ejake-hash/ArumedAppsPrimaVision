@@ -186,7 +186,11 @@ final class AggregateResolver
             if ($code === '' || isset($seen[$code])) continue;
             $seen[$code] = true;
             $name = is_array($c) ? ($c['name'] ?? null) : null;
-            $pairs[] = ['code' => $code, 'name' => ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null];
+            $name = $name !== null ? trim((string) $name) : '';
+            // Nama yg sekadar mengulang kode (kode di luar master → FE fallback nama=kode)
+            // dianggap "tanpa nama" → joinIcd9Pairs lookup master / tampil kode saja,
+            // bukan "11.73 — 11.73".
+            $pairs[] = ['code' => $code, 'name' => ($name !== '' && $name !== $code) ? $name : null];
         }
         return $pairs;
     }
@@ -550,7 +554,11 @@ final class AggregateResolver
             if ($code === '' || isset($seen[$code])) continue;
             $seen[$code] = true;
             $name = is_array($c) ? ($c['name'] ?? null) : null;
-            $pairs[] = ['code' => $code, 'name' => ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null];
+            $name = $name !== null ? trim((string) $name) : '';
+            // Nama yg sekadar mengulang kode (kode di luar master → FE fallback nama=kode)
+            // dianggap "tanpa nama" → joinIcd9Pairs lookup master / tampil kode saja,
+            // bukan "11.73 — 11.73".
+            $pairs[] = ['code' => $code, 'name' => ($name !== '' && $name !== $code) ? $name : null];
         }
         if (empty($pairs)) {
             // KOSONG bila dokter tidak memilih ICD-9 — JANGAN fallback ke

@@ -52,6 +52,8 @@ class DoctorExamination extends Model
         'sp_vitreous_os',
         // Catatan bebas segmen posterior (di bawah blok Posterior)
         'sp_notes',
+        // Sketsa/anotasi mata (OD/OS) — JSONB {od:{strokes,png_base64,template}, os:{...}}
+        'eye_drawings',
         'slitlamp_notes',
         // Tab 4 — SOAP & Planning
         'soap_subjective',
@@ -79,6 +81,7 @@ class DoctorExamination extends Model
     protected $casts = [
         'diagnosis_sekunder'  => 'array',
         'tindakan_codes'      => 'array',
+        'eye_drawings'        => 'array',
         'is_finalized'        => 'boolean',
         'finalized_at'        => 'datetime',
         'signature_timestamp' => 'datetime',

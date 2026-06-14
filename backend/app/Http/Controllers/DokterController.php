@@ -186,6 +186,18 @@ class DokterController extends Controller
         $rules['sa_notes'] = 'nullable|string|max:2000';
         $rules['sp_notes'] = 'nullable|string|max:2000';
 
+        // Sketsa/anotasi mata (OD/OS) — JSONB {od:{strokes,png_base64,template}, os:{...}}.
+        // Nullable (kedua mata kosong → null). Validasi longgar: struktur dijaga FE.
+        $rules['eye_drawings']             = 'nullable|array';
+        $rules['eye_drawings.od']          = 'nullable|array';
+        $rules['eye_drawings.os']          = 'nullable|array';
+        $rules['eye_drawings.od.strokes']  = 'nullable|array';
+        $rules['eye_drawings.os.strokes']  = 'nullable|array';
+        $rules['eye_drawings.od.png_base64'] = 'nullable|string';
+        $rules['eye_drawings.os.png_base64'] = 'nullable|string';
+        $rules['eye_drawings.od.template'] = 'nullable|string|max:20';
+        $rules['eye_drawings.os.template'] = 'nullable|string|max:20';
+
         return $rules;
     }
 

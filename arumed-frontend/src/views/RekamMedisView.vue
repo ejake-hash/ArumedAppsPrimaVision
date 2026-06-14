@@ -792,6 +792,20 @@ function cetakLaporanOperasi(b) {
                             <div class="det-t">Rencana</div>
                             <div>{{ v.detail.planning_text }}</div>
                           </div>
+                          <div class="det-box span2"
+                               v-if="v.detail?.eye_drawings && (v.detail.eye_drawings.od || v.detail.eye_drawings.os)">
+                            <div class="det-t">Sketsa Mata</div>
+                            <div class="eye-sketch-row">
+                              <figure v-if="v.detail.eye_drawings.od?.png_base64" class="eye-sketch">
+                                <img :src="v.detail.eye_drawings.od.png_base64" alt="Sketsa OD" />
+                                <figcaption>OD (Kanan)</figcaption>
+                              </figure>
+                              <figure v-if="v.detail.eye_drawings.os?.png_base64" class="eye-sketch">
+                                <img :src="v.detail.eye_drawings.os.png_base64" alt="Sketsa OS" />
+                                <figcaption>OS (Kiri)</figcaption>
+                              </figure>
+                            </div>
+                          </div>
                           <div class="det-box span2 det-actions">
                             <button class="rm17-btn" :disabled="cetakingResume" @click.stop="cetakResumeMedis(v.visit_id)">
                               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
@@ -1379,6 +1393,10 @@ function cetakLaporanOperasi(b) {
 .vt-row { display: flex; flex-wrap: wrap; gap: .4rem .8rem; }
 .vt-row span { background: #f1f3f6; padding: 1px 7px; border-radius: 5px; font-size: 10.5px; }
 .soap-mini { margin-bottom: 2px; } .soap-mini b { color: #1763d4; margin-right: 5px; }
+.eye-sketch-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+.eye-sketch { margin: 0; }
+.eye-sketch img { width: 180px; max-width: 46vw; height: auto; border: 1px solid #e0e4ea; border-radius: 6px; background: #fff; display: block; }
+.eye-sketch figcaption { font-size: 10.5px; color: #6b7280; margin-top: 3px; text-align: center; }
 .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 1rem; }
 .kv { display: flex; gap: 6px; font-size: 11px; }
 .kv-k { color: #6b7280; text-transform: capitalize; min-width: 90px; }

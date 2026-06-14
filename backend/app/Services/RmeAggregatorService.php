@@ -215,6 +215,9 @@ class RmeAggregatorService
                         'a' => $de->soap_assessment,
                         'p' => $de->soap_plan,
                     ] : null,
+                    // Sketsa mata (OD/OS) bila ada — dirender read-only di RekamMedis &
+                    // jadi "sketsa sebelumnya" di DokterView kunjungan berikutnya.
+                    'eye_drawings'   => $de?->eye_drawings,
                     'planning'       => $de?->planning,
                     'planning_text'  => $this->planningText($de?->planning, $v->follow_up_date, $v->follow_up_reason),
                     'follow_up_date' => $v->follow_up_date?->toDateString(),
@@ -275,7 +278,9 @@ class RmeAggregatorService
                 $when = $de->finalized_at ?? $de->updated_at ?? $v->visit_date;
                 return [
                     'kind'           => 'SOAP',
-                    'episode'        => 'POLI',
+                    // Badge episode entri DOKTER ikut jenis layanan visit (RAJAL/RANAP/IGD),
+                    // seragam dgn sumber perawat (L249) & refraksi (L311). Dulu hardcode 'POLI'.
+                    'episode'        => $v?->jenis_pelayanan ?? 'RAJAL',
                     'visit_id'       => $v->id,
                     'datetime'       => $when?->toDateTimeString(),
                     'date'           => ($de->finalized_at ?? $v->visit_date)?->toDateString(),

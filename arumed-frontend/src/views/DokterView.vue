@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { masterApi, dokterApi, formTemplateApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import CpptHistoryCard from '@/components/common/CpptHistoryCard.vue'
+import EyeDrawingModal from '@/components/forms/EyeDrawingModal.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 import IolDecisionPanel from '@/components/dokter/IolDecisionPanel.vue'
@@ -159,6 +160,15 @@ function fmtGlasses(sph, cyl, ax, add, visus) {
 
 // Map satu baris queue dari API → bentuk yang dipakai template.
 // Default safe values supaya template tidak crash kalau nurse/refraksi belum ada.
+// Frasa yang BERARTI "tidak ada alergi" → jangan tampilkan sbg alergen (hindari
+// alarm palsu di chip header & banner Resep). Cocokkan seluruh string ter-normalisasi.
+function isNegationAllergy(s) {
+  const t = String(s ?? '').toLowerCase().replace(/[().]/g, '').trim()
+  if (!t || t === '-' || t === '0') return true
+  return ['tidak ada', 'tidak ada alergi', 'tdk ada', 'tak ada', 'disangkal',
+    'nihil', 'none', 'no', 'tidak', 'belum ada', 'tidak diketahui', 'na'].includes(t)
+}
+
 function mapPatient(q) {
   if (!q) return null
   const v     = q.visit ?? {}
@@ -185,6 +195,8 @@ function mapPatient(q) {
     // Jalur B pre-op: visit PREOP_BEDAH dikirim Triase → Dokter (periksa ulang
     // operator). surgery_schedule di-eager-load BE (getPatientQueue) khusus utk ini.
     visitType: v.visit_type ?? 'REGULAR',
+    // Episode layanan (RAJAL/RANAP/IGD) → judul dokumen CPPT dinamis.
+    jenisPelayanan: v.jenis_pelayanan ?? 'RAJAL',
     preopSurgeryToday: v.visit_type === 'PREOP_BEDAH'
       && !!v.surgery_schedule
       && ['SCHEDULED', 'IN_PROGRESS'].includes(v.surgery_schedule.status)
@@ -200,9 +212,12 @@ function mapPatient(q) {
     time:    fmtTime(q.created_at),
     hasNurse: !!(nurse?.is_finalized || v.assessment_finalized),
     hasRO:    !!refr?.is_finalized,
-    allergies: nurse?.allergy_detail
+    // Hanya alergen NYATA: buang frasa negasi ("tidak ada"/"disangkal"/"-"/dst)
+    // agar chip & banner SKP3 tak memicu alarm palsu (lihat isNegationAllergy).
+    allergies: (nurse?.allergy_detail
       ? nurse.allergy_detail.split(',').map((s) => s.trim()).filter(Boolean)
-      : (p.allergy_notes ? [p.allergy_notes] : []),
+      : (p.allergy_notes ? [p.allergy_notes] : []))
+      .filter((s) => !isNegationAllergy(s)),
     nd: {
       td_s:    nurse?.td_sistol  ?? '—',
       td_d:    nurse?.td_diastol ?? '—',
@@ -354,10 +369,39 @@ async function loadRiwayatKunjungan() {
         poli:    v.poli_name || '',
         dx:      [v.diagnosis_utama_nama, ...((v.diagnosis_sekunder || []).map((d) => d.nama))].filter(Boolean).join('; '),
         terapi:  v.terapi || [],
+        eyeDrawings: v.detail?.eye_drawings ?? null,
       }))
   } catch { riwayatList.value = [] }
 }
 watch(() => selP.value?.patientId, loadRiwayatKunjungan, { immediate: true })
+
+// Judul dokumen CPPT terpadu mengikuti episode kunjungan aktif (Pasal 17 STARKES).
+const CPPT_EP_LABEL = { RAJAL: 'Rawat Jalan', RANAP: 'Rawat Inap', IGD: 'IGD' }
+const cpptDocTitle = computed(
+  () => 'CPPT ' + (CPPT_EP_LABEL[selP.value?.jenisPelayanan] ?? 'Rawat Jalan'),
+)
+
+// Sketsa mata kunjungan TERAKHIR yang punya gambar (banding antar-waktu).
+const prevEyeDrawings = computed(() => {
+  const hit = riwayatList.value.find((r) => r.eyeDrawings && (r.eyeDrawings.od || r.eyeDrawings.os))
+  return hit?.eyeDrawings ?? null
+})
+
+// ─── Modal sketsa mata (editor + penampil kunjungan lalu) ───────────────────
+const eyeModalOpen = ref(false)
+const eyeModalSegment = ref('anterior')
+const eyePrevOpen = ref(false)
+const eyePrevSegment = ref('anterior')
+function hasSketsa(d) { return !!(d && (d.od || d.os)) }
+function openEyeModal(segment) {
+  // Saat terkunci (finalisasi) modal tetap dibuka namun read-only (:disabled=isLocked).
+  eyeModalSegment.value = segment
+  eyeModalOpen.value = true
+}
+function openPrevEyeModal(segment) {
+  eyePrevSegment.value = segment
+  eyePrevOpen.value = true
+}
 
 // ─── Riwayat CPPT lintas-episode (IGD / RANAP / Poli) ────────────────────────
 // Agar DPJP rawat jalan tahu perkembangan dari episode lain (IGD/RANAP) tanpa
@@ -639,6 +683,8 @@ function makeExam() {
     sp: { papil: { od: '', os: '' }, macula: { od: '', os: '' }, retina: { od: '', os: '' }, vitreous: { od: '', os: '' } },
     sa_notes: '',
     sp_notes: '',
+    // Sketsa mata (OD/OS) — null bila belum digambar. {od:{strokes,png_base64,template}, os:{...}}
+    eyeDrawings: { od: null, os: null },
   }
 }
 
@@ -667,7 +713,11 @@ function buildTab2Payload() {
     diagnosis_utama_name: diagnosisUtama.value?.name || null,
     diagnosis_sekunder:   diagnosisSekunder.value.map((d) => ({ code: d.code, name: d.name || null })),
     diagnosis_text:       diagnosisText.value?.trim() || null,
-    tindakan_codes:       icd9List.value.map((t) => ({ code: t.code, name: t.name || null })),
+    // Jangan persist nama yg cuma mengulang kode (kode di luar master) → null agar
+    // reader fallback ke master / tampil kode saja, bukan "11.73 — 11.73".
+    tindakan_codes:       icd9List.value.map((t) => ({ code: t.code, name: (t.name && t.name !== t.code) ? t.name : null })),
+    // Selalu kirim objek penuh {od,os}; null bila kedua mata kosong (hindari overwrite trap).
+    eye_drawings:         eyeDrawingsPayload(),
   }
   for (const f of saFields) {
     out[`sa_${f.key}_od`] = exam.value.sa[f.key].od || null
@@ -678,6 +728,13 @@ function buildTab2Payload() {
     out[`sp_${f.key}_os`] = exam.value.sp[f.key].os || null
   }
   return out
+}
+
+// Normalisasi sketsa mata utk payload: null bila KEDUA mata kosong, jika tidak
+// kirim objek penuh {od,os} (mata tak diedit tetap terkirim → anti overwrite-null).
+function eyeDrawingsPayload() {
+  const d = exam.value.eyeDrawings || {}
+  return (d.od || d.os) ? { od: d.od ?? null, os: d.os ?? null } : null
 }
 
 // Prefill `exam` + diagnosis dari record backend saat kunjungan dipilih (read-back).
@@ -693,6 +750,8 @@ async function loadTab2() {
     exam.value.anamnese = e.anamnese ?? ''
     exam.value.sa_notes = e.sa_notes ?? ''
     exam.value.sp_notes = e.sp_notes ?? ''
+    // Re-hidrasi sketsa mata (juga pasca reopen finalisasi). Selalu objek {od,os}.
+    exam.value.eyeDrawings = e.eye_drawings ?? { od: null, os: null }
     for (const f of saFields) {
       exam.value.sa[f.key].od = e[`sa_${f.key}_od`] ?? ''
       exam.value.sa[f.key].os = e[`sa_${f.key}_os`] ?? ''
@@ -2016,9 +2075,16 @@ const sendKasirLabel = computed(() => {
   return surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Lanjutkan ke Tindakan' : 'Lanjutkan ke Bedah'
 })
 
+// Label ICD-9 "kode — nama"; bila nama tak ada / sekadar mengulang kode (kode
+// di luar master → picker fallback nama=kode), cukup tampilkan kodenya (hindari
+// "11.73 11.73"). Konsisten dgn format ICD-10 "H35.3 — WET AMD".
+function icd9Label(t) {
+  return (t.name && t.name !== t.code) ? `${t.code} — ${t.name}` : t.code
+}
+
 const planningText = computed(() => {
   const blocks = []
-  if (icd9List.value.length) blocks.push('Prosedur (ICD-9): ' + icd9List.value.map((t) => `${t.code} ${t.name}`).join('; '))
+  if (icd9List.value.length) blocks.push('Prosedur (ICD-9): ' + icd9List.value.map(icd9Label).join('; '))
   const decision = planningDecisionText.value
   if (decision) blocks.push(decision)
   const rx = rxList.value.filter((r) => r.name)
@@ -2036,7 +2102,7 @@ const oAutoText = computed(() => {
   const blocks = []
   if (objectiveText.value) blocks.push(objectiveText.value)
   if (icd9List.value.length) {
-    blocks.push('Tindakan/Prosedur (ICD-9): ' + icd9List.value.map((t) => `${t.code} ${t.name}`).join('; '))
+    blocks.push('Tindakan/Prosedur (ICD-9): ' + icd9List.value.map(icd9Label).join('; '))
   }
   return blocks.join('\n')
 })
@@ -2810,7 +2876,7 @@ function closeResumeRM() {
 
             <!-- Riwayat CPPT/SOAP lintas-episode terpadu (semua PPA: Dokter/Perawat/
                  Refraksionis) — komponen bersama dgn pager panah (terbaru dulu). -->
-            <CpptHistoryCard :patient-id="selP.patientId" :fetcher="dokterApi.riwayatCppt">
+            <CpptHistoryCard :patient-id="selP.patientId" :fetcher="dokterApi.riwayatCppt" :title="cpptDocTitle">
               <template #footer>
                 <div class="soap-mini-footer">
                   <button class="btn btn-sm btn-secondary" style="width:100%;justify-content:center" @click="tab = 'soap'">
@@ -2893,6 +2959,18 @@ function closeResumeRM() {
                     <input v-model="exam.sa_notes" class="form-input"
                       placeholder="Catatan segmen anterior (mis. injeksi konjungtiva, sekret)…" />
                   </div>
+                  <div class="sketsa-row">
+                    <label class="fl seg-note-lbl">Sketsa</label>
+                    <div class="sketsa-ctl">
+                      <template v-if="hasSketsa(exam.eyeDrawings)">
+                        <img v-if="exam.eyeDrawings.od?.png_base64" class="sketsa-thumb" :src="exam.eyeDrawings.od.png_base64" alt="OD" />
+                        <img v-if="exam.eyeDrawings.os?.png_base64" class="sketsa-thumb" :src="exam.eyeDrawings.os.png_base64" alt="OS" />
+                        <button type="button" class="sketsa-btn" @click="openEyeModal('anterior')">✎ Edit sketsa</button>
+                      </template>
+                      <button v-else type="button" class="sketsa-btn add" @click="openEyeModal('anterior')">✎ Tambah sketsa</button>
+                      <button v-if="prevEyeDrawings" type="button" class="sketsa-prev" @click="openPrevEyeModal('anterior')">🕘 Sketsa sebelumnya</button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -2922,6 +3000,18 @@ function closeResumeRM() {
                     <label class="fl seg-note-lbl">Catatan</label>
                     <input v-model="exam.sp_notes" class="form-input"
                       placeholder="Catatan segmen posterior (mis. CDR, perdarahan retina)…" />
+                  </div>
+                  <div class="sketsa-row">
+                    <label class="fl seg-note-lbl">Sketsa</label>
+                    <div class="sketsa-ctl">
+                      <template v-if="hasSketsa(exam.eyeDrawings)">
+                        <img v-if="exam.eyeDrawings.od?.png_base64" class="sketsa-thumb" :src="exam.eyeDrawings.od.png_base64" alt="OD" />
+                        <img v-if="exam.eyeDrawings.os?.png_base64" class="sketsa-thumb" :src="exam.eyeDrawings.os.png_base64" alt="OS" />
+                        <button type="button" class="sketsa-btn" @click="openEyeModal('posterior')">✎ Edit sketsa</button>
+                      </template>
+                      <button v-else type="button" class="sketsa-btn add" @click="openEyeModal('posterior')">✎ Tambah sketsa</button>
+                      <button v-if="prevEyeDrawings" type="button" class="sketsa-prev" @click="openPrevEyeModal('posterior')">🕘 Sketsa sebelumnya</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3293,6 +3383,12 @@ function closeResumeRM() {
                 <span class="card-counter">{{ rxList.length }} obat</span>
               </div>
               <div class="cb">
+                <!-- Banner alergi TEBAL (SKP3 medication safety) — hanya di titik keputusan
+                     obat. Tampil hanya bila ada alergen NYATA (negasi sudah disaring). -->
+                <div v-if="selP && selP.allergies.length" class="rx-allergy-banner">
+                  <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <span><strong>ALERGI:</strong> {{ selP.allergies.join(', ') }} — pastikan resep aman.</span>
+                </div>
                 <!-- Cari & pilih obat dari inventori (harga = HJA penentuan harga) -->
                 <div class="rx-picker">
                   <input
@@ -4327,6 +4423,23 @@ function closeResumeRM() {
       />
     </div>
 
+    <!-- Sketsa/anotasi mata (OD|OS) — editor + penampil "kunjungan lalu" (read-only). -->
+    <EyeDrawingModal
+      v-model="exam.eyeDrawings"
+      :open="eyeModalOpen"
+      :disabled="isLocked"
+      :segment="eyeModalSegment"
+      @update:open="eyeModalOpen = $event"
+    />
+    <EyeDrawingModal
+      :model-value="prevEyeDrawings"
+      :open="eyePrevOpen"
+      :disabled="true"
+      :segment="eyePrevSegment"
+      title="Sketsa Kunjungan Lalu — hanya lihat"
+      @update:open="eyePrevOpen = $event"
+    />
+
     <!-- TOASTS -->
     <div class="toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['toast', 'toast-' + t.type]">
@@ -4952,6 +5065,38 @@ function closeResumeRM() {
 .seg-note-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
 .seg-note-lbl { margin: 0; flex-shrink: 0; font-size: 11px; }
 .seg-note-row .form-input { flex: 1; padding: 0.3rem 0.5rem; font-size: 11.5px; }
+
+/* Baris "Sketsa" di kartu segmen — thumbnail OD|OS + tombol edit/tambah/lihat-lalu. */
+.sketsa-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.45rem; flex-wrap: wrap; }
+.sketsa-ctl { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.sketsa-thumb {
+  width: 46px; height: 38px; object-fit: cover; border: 1px solid var(--gb);
+  border-radius: 5px; background: #fff;
+}
+.sketsa-btn {
+  padding: 0.25rem 0.6rem; border: 1px solid var(--gb); border-radius: 5px;
+  background: #fff; cursor: pointer; font-size: 11.5px; color: var(--td);
+}
+.sketsa-btn:hover { background: var(--bg); }
+.sketsa-btn.add { border-style: dashed; color: var(--tm); }
+.sketsa-prev {
+  padding: 0.25rem 0.6rem; border: 1px solid #cdd9e0; border-radius: 5px;
+  background: #f4f9fb; cursor: pointer; font-size: 11.5px; color: #36637a;
+}
+.sketsa-prev:hover { background: #e6f1f6; }
+
+/* Banner alergi tebal di kartu E-Resep (SKP3 — titik keputusan obat). */
+.rx-allergy-banner {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: #fdecec; border: 1.5px solid #e3a0a0; border-radius: 7px;
+  padding: 0.55rem 0.8rem; margin-bottom: 0.7rem;
+  color: #a11d1d; font-size: 12.5px; line-height: 1.35;
+}
+.rx-allergy-banner svg {
+  width: 18px; height: 18px; flex-shrink: 0;
+  fill: none; stroke: #c62828; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.rx-allergy-banner strong { font-weight: 800; letter-spacing: 0.02em; }
 
 /* Badge tanggal lahir di kartu pasien. */
 .ptg-dob { background: #f1f5f9; color: #475569; }
