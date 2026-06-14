@@ -1209,8 +1209,13 @@ class MasterDataService
     public function storeDiagnosticTestType(array $data): DiagnosticTestType
     {
         return DB::transaction(function () use ($data) {
-            // Kode dibuat dari kategori "Penunjang" (prefix PNJ) bila admin tak mengisi.
-            $code = ! empty($data['code']) ? $data['code'] : $this->generateProcedureCode('Penunjang');
+            // Kode dibuat dari kategori prosedur penunjang (prefix PNJ) bila admin tak
+            // mengisi. Nama kategori bisa beda antar-dataset (mis. hasil rebuild data
+            // bernama "Pemeriksaan Penunjang Diagnostik Mata") → resolve via PREFIX PNJ
+            // yang stabil, fallback nama 'Penunjang'. (Fix: nama hardcoded 'Penunjang'
+            // tak ada di procedure_categories → 500 saat tambah jenis.)
+            $pnjName = ProcedureCategory::where('code_prefix', 'PNJ')->value('name') ?? 'Penunjang';
+            $code = ! empty($data['code']) ? $data['code'] : $this->generateProcedureCode($pnjName);
 
             // Buat master billing = procedure kategori Penunjang (base_price 0 — harga
             // diatur terpisah di Buku Tarif). ProcedureObserver otomatis membuat cermin.
