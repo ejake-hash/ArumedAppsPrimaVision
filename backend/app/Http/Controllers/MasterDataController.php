@@ -615,6 +615,7 @@ class MasterDataController extends Controller
             // Master sebenarnya = procedure; cermin diagnostic_test_types ikut kode sama.
             'code'       => 'nullable|string|max:30|unique:diagnostic_test_types,code|unique:procedures,code',
             'name'       => 'required|string|max:150',
+            'modality'   => 'nullable|in:OPT,US,OT',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);
@@ -628,6 +629,7 @@ class MasterDataController extends Controller
         // Harga TIDAK diatur di sini — semua tarif berasal dari Buku Tarif (Tarif Tindakan).
         $validated = $request->validate([
             'name'       => 'sometimes|string|max:150',
+            'modality'   => 'nullable|in:OPT,US,OT',
             'is_active'  => 'nullable|boolean',
             'sort_order' => 'nullable|integer|min:0',
         ]);

@@ -1,0 +1,11 @@
+[Unit]
+Description=Jalankan Arumed OCT worklist feeder tiap 60 detik
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=10
+Unit=arumed-oct-feeder.service
+
+[Install]
+WantedBy=timers.target

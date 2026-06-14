@@ -39,10 +39,23 @@ class PenunjangIngestService
             if ($parsed) {
                 $meta['no_rm']        = ($meta['no_rm'] ?? null) ?: ($parsed['no_rm'] ?? null);
                 $meta['external_ref'] = ($meta['external_ref'] ?? null) ?: ($parsed['exam_key'] ?? null);
-                $meta['prefer_test_type'] = DiagnosticTestType::BIOMETRI_CODE;
+
+                // Arahkan ke order yang tepat sesuai jenis exam Quantel (xsi:type):
+                //  - BIOMETRY → order Biometri (kode BIOM)
+                //  - USG      → order ber-modalitas US selain Biometri
+                $kind = $parsed['exam_kind'] ?? 'UNKNOWN';
+                if ($kind === 'USG') {
+                    $meta['prefer_modality']   = 'US';
+                    $meta['exclude_test_type'] = DiagnosticTestType::BIOMETRI_CODE;
+                } else {
+                    // BIOMETRY (default) — perilaku lama.
+                    $meta['prefer_test_type'] = DiagnosticTestType::BIOMETRI_CODE;
+                }
+
                 $expertisePatch = [
                     'source'   => $parsed['source'],
                     'biometry' => [
+                        'exam_kind' => $kind,
                         'exam_key'  => $parsed['exam_key'],
                         'exam_date' => $parsed['exam_date'],
                         'physician' => $parsed['physician'],
@@ -121,11 +134,29 @@ class PenunjangIngestService
                 ->whereHas('visit', fn ($q) => $q->where('patient_id', $patient->id))
                 ->get();
 
-            // Quantel kirim biometri → bila ambigu, persempit ke order BIOMETRI dulu.
-            if ($orders->count() > 1 && ! empty($meta['prefer_test_type'])) {
-                $preferred = $orders->where('test_type', $meta['prefer_test_type']);
-                if ($preferred->count() === 1) {
-                    return $preferred->first();
+            // Bila ambigu (≥2 order terbuka), persempit sesuai jenis exam Quantel:
+            if ($orders->count() > 1) {
+                // (a) cocokkan kode test persis (mis. BIOMETRI = BIOM).
+                if (! empty($meta['prefer_test_type'])) {
+                    $preferred = $orders->where('test_type', $meta['prefer_test_type']);
+                    if ($preferred->count() === 1) {
+                        return $preferred->first();
+                    }
+                }
+
+                // (b) cocokkan modalitas jenis (mis. USG = modalitas US selain Biometri).
+                if (! empty($meta['prefer_modality'])) {
+                    $accession = app(AccessionService::class);
+                    $exclude   = $meta['exclude_test_type'] ?? null;
+                    $preferred = $orders->filter(function ($o) use ($accession, $meta, $exclude) {
+                        if ($exclude && $o->test_type === $exclude) {
+                            return false;
+                        }
+                        return $accession->modalityFor($o->test_type) === $meta['prefer_modality'];
+                    });
+                    if ($preferred->count() === 1) {
+                        return $preferred->first();
+                    }
                 }
             }
 

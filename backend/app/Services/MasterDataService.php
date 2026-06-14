@@ -1222,10 +1222,12 @@ class MasterDataService
                 'is_active'  => $data['is_active'] ?? true,
             ]);
 
-            // Cermin sudah ada (dibuat observer) → set urutan tampil.
+            // Cermin sudah ada (dibuat observer) → set urutan tampil + modalitas alat.
+            // `modality` atribut cermin (diagnostic) — bukan field Procedure/billing.
             $mirror = DiagnosticTestType::where('code', $code)->firstOrFail();
             $mirror->update([
                 'sort_order' => $data['sort_order'] ?? ((int) DiagnosticTestType::max('sort_order') + 1),
+                'modality'   => $data['modality'] ?? null,
             ]);
 
             $this->log(auth('api')->id(), 'CREATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $mirror->id);
@@ -1254,9 +1256,12 @@ class MasterDataService
                 $mirror->update(array_intersect_key($data, array_flip(['name', 'is_active'])));
             }
 
-            // sort_order hanya atribut cermin (bukan procedure).
+            // sort_order & modality hanya atribut cermin (bukan procedure).
             if (array_key_exists('sort_order', $data)) {
                 $mirror->update(['sort_order' => $data['sort_order']]);
+            }
+            if (array_key_exists('modality', $data)) {
+                $mirror->update(['modality' => $data['modality']]);
             }
 
             $this->log(auth('api')->id(), 'UPDATE_DIAGNOSTIC_TEST_TYPE', DiagnosticTestType::class, $id);

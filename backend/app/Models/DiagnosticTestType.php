@@ -24,6 +24,7 @@ class DiagnosticTestType extends Model
         'code',
         'name',
         'category',
+        'modality',
         'is_active',
         'sort_order',
     ];

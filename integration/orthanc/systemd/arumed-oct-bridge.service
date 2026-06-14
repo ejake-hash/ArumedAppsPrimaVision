@@ -1,0 +1,15 @@
+[Unit]
+Description=Arumed OCT bridge (Orthanc study -> Arumed /ingest)
+After=network-online.target orthanc.service
+Wants=orthanc.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/arumed-oct.env
+ExecStart=/usr/bin/python3 /opt/arumed-oct/oct-bridge.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

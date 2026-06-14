@@ -46,6 +46,7 @@ class QuantelXmlParser
 
         return [
             'source'    => self::SOURCE,
+            'exam_kind' => $this->examKind($doc),   // BIOMETRY | USG | UNKNOWN
             'exam_key'  => $this->str($doc->ExamKey),
             'exam_date' => $this->str($doc->ExamDate),
             'patient'   => $patient,
@@ -53,6 +54,25 @@ class QuantelXmlParser
             'physician' => $this->str($doc->Physician->PhysicianLastName ?? null),
             'eyes'      => $this->parseEyes($doc),
         ];
+    }
+
+    /**
+     * Jenis pemeriksaan dari atribut `xsi:type` akar:
+     *   C_ExamBioIol → BIOMETRY (A-scan + hitung IOL)
+     *   C_ExamB      → USG (B-scan)
+     *   selain itu   → UNKNOWN
+     * Dipakai ingest untuk mengarahkan ke order yang tepat (Biometri vs USG).
+     */
+    private function examKind(\SimpleXMLElement $doc): string
+    {
+        $xsi = $doc->attributes('http://www.w3.org/2001/XMLSchema-instance');
+        $type = $xsi !== null ? (string) ($xsi['type'] ?? '') : '';
+
+        return match ($type) {
+            'C_ExamBioIol' => 'BIOMETRY',
+            'C_ExamB'      => 'USG',
+            default        => 'UNKNOWN',
+        };
     }
 
     /**

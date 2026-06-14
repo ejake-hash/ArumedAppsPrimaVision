@@ -1,0 +1,32 @@
+{
+  "//": "Drop-in konfig Orthanc untuk integrasi OCT Maestro ↔ Arumed.",
+  "//": "Taруh sebagai /etc/orthanc/arumed.json (Orthanc membaca SEMUA *.json di /etc/orthanc).",
+  "//": "Orthanc = SCP murni: terima C-FIND worklist + C-STORE dari OCT. REST/8042 LOCALHOST saja (bridge lokal).",
+
+  "Name": "ARUMED-ORTHANC",
+  "DicomAet": "ORTHANC",
+  "DicomPort": 4242,
+
+  "//": "Terima dari modality manapun (OCT sering kirim Called/Calling AET tak terdaftar).",
+  "DicomCheckCalledAet": false,
+  "DicomAlwaysAllowStore": true,
+  "DicomAlwaysAllowFind": true,
+  "DicomAlwaysAllowFindWorklist": true,
+  "DicomScpTimeout": 30,
+
+  "//": "HTTP REST (8042) hanya localhost — bridge jalan di server yang sama. Jangan buka ke LAN.",
+  "HttpPort": 8042,
+  "RemoteAccessAllowed": false,
+  "AuthenticationEnabled": false,
+
+  "//": "Daftarkan OCT (opsional; berguna bila Orthanc perlu kirim balik). IP & port DICOM OCT.",
+  "DicomModalities": {
+    "maestro": [ "MAESTRO", "192.168.100.21", 104 ]
+  },
+
+  "//": "Plugin Modality Worklists — layani C-FIND MWL dari file .wl di folder ini.",
+  "Worklists": {
+    "Enable": true,
+    "Database": "/var/lib/orthanc/worklists"
+  }
+}

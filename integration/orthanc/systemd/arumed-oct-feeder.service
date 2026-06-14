@@ -1,0 +1,9 @@
+[Unit]
+Description=Arumed OCT worklist feeder (Arumed worklist -> Orthanc .wl)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/arumed-oct.env
+ExecStart=/usr/bin/python3 /opt/arumed-oct/worklist-feeder.py
+User=root

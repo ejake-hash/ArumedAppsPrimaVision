@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-16"?>
+<C_Exam xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:type="C_ExamB">
+  <Eyechanged>false</Eyechanged>
+  <Saved>true</Saved>
+  <Version>5.0.3</Version>
+  <LastEditDate>2026-02-21T13:47:28.9467505+07:00</LastEditDate>
+  <ExamComment />
+  <ProbeName>B15</ProbeName>
+  <ExamDate>2026-02-21T13:46:51.5361885+07:00</ExamDate>
+  <ExamKey>171df5d6-6c20-4f3e-ad7d-1612e45160e1</ExamKey>
+  <ExamKeyOld>455ce861-ebab-494b-8345-0249b1d15ed8</ExamKeyOld>
+  <Patient>
+    <PatientAccessionNumber />
+    <PatientReferringPhysican />
+    <PatientKey>192a7a5b-5fbe-444a-92f7-8c16466bee34</PatientKey>
+    <PatientGender />
+    <PatientGenderStr />
+    <PatientLastName>HOTMARTONO KALOKO</PatientLastName>
+    <PatientFirstName />
+    <PatientIdNumber>260201427</PatientIdNumber>
+    <PatientAddress />
+    <PatientZip />
+    <PatientCity />
+    <PatientPhone />
+    <PatientBirthDate>1995-10-24T00:00:00</PatientBirthDate>
+  </Patient>
+  <Physician>
+    <PhysicianKey>e7c204fe-15d9-40ae-bab2-f9bb920da71a</PhysicianKey>
+    <PhysicianMail />
+    <PhysicianClinic />
+    <PhysicianLastName>Dr Veronika SpM</PhysicianLastName>
+    <PhysicianFirstName />
+  </Physician>
+  <Operator>
+    <IsEdit>true</IsEdit>
+    <OperatorKey>11111111-1111-1111-1111-111111111111</OperatorKey>
+    <OperatorName>&lt;NONE&gt;</OperatorName>
+    <OperatorFirstName />
+  </Operator>
+  <Section />
+  <ProbePositionTime>2000-01-01T09:00:00</ProbePositionTime>
+  <ProbePositionType>None</ProbePositionType>
+  <ProbePositionEq />
+  <Image xsi:type="C_ImageB">
+    <ImageJpegFileName>171df5d6-6c20-4f3e-ad7d-1612e45160e1.JPG</ImageJpegFileName>
+    <ParamImageFileName>171df5d6-6c20-4f3e-ad7d-1612e45160e1.CIP</ParamImageFileName>
+    <PriseDeVueFileName>171df5d6-6c20-4f3e-ad7d-1612e45160e1.CIM</PriseDeVueFileName>
+    <ImageCineBindFileName />
+    <ImageThumbJpegFileName>171df5d6-6c20-4f3e-ad7d-1612e45160e1_Thumb.JPG</ImageThumbJpegFileName>
+  </Image>
+  <MesureB />
+  <Eye>Right</Eye>
+</C_Exam>

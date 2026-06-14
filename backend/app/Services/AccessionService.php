@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\DiagnosticTestType;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -21,11 +22,21 @@ class AccessionService
     }
 
     /**
-     * Peta test-type code → DICOM modality (dari config, editable agar cocok dgn alat).
-     * Mis. OCT→OPT, USG→US, default OT.
+     * Peta test-type code → DICOM modality. Urutan:
+     *   1) kolom `modality` pada jenis penunjang (diatur per-jenis dari UI master),
+     *   2) peta tetap di config (legacy OCT→OPT/USG→US/BIOM→US),
+     *   3) default OT.
+     * Membuat jenis baru (kode auto PNJ-xxx) bisa diberi modalitas tanpa edit config.
      */
     public function modalityFor(?string $testTypeCode): string
     {
+        if ($testTypeCode) {
+            $perJenis = DiagnosticTestType::where('code', $testTypeCode)->value('modality');
+            if (! empty($perJenis)) {
+                return (string) $perJenis;
+            }
+        }
+
         $map = (array) config('penunjang_dicom.modality_map', []);
 
         return $map[$testTypeCode] ?? (string) config('penunjang_dicom.modality_default', 'OT');
