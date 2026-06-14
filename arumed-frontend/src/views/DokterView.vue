@@ -332,7 +332,7 @@ async function loadSoapHistory() {
 // terapi/obat. Sumber dokterApi.riwayatKunjungan (RmeAggregator::kunjungan).
 const riwayatList = ref([])
 const riwayatPage = ref(1)
-const RIWAYAT_PER_PAGE = 8
+const RIWAYAT_PER_PAGE = 5
 const riwayatTotalPages = computed(() => Math.max(1, Math.ceil(riwayatList.value.length / RIWAYAT_PER_PAGE)))
 const riwayatPaged = computed(() => {
   const start = (riwayatPage.value - 1) * RIWAYAT_PER_PAGE
