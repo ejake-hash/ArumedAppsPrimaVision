@@ -142,6 +142,7 @@ class RmeAggregatorService
             'diagnosticOrders',
             'patientDocuments',
             'billingInvoice',
+            'prescriptions.items.medication',   // ringkasan Terapi/Obat per kunjungan
         ])
             ->where('patient_id', $patientId)
             ->orderByDesc('visit_date')
@@ -162,7 +163,28 @@ class RmeAggregatorService
                 'current_station' => $v->current_station,
                 'no_sep'          => $v->no_sep,
                 'diagnosis_utama' => $de?->diagnosis_utama,
-                'diagnosis_utama_nama' => $de?->diagnosis_utama ? $this->icd10Name($de->diagnosis_utama) : null,
+                // Utamakan nama sub-diagnosa spesifik tersimpan; fallback nama kanonik master.
+                'diagnosis_utama_nama' => $de?->diagnosis_utama
+                    ? ($de->diagnosis_utama_name ?: $this->icd10Name($de->diagnosis_utama))
+                    : null,
+                'diagnosis_sekunder' => collect($de?->diagnosis_sekunder ?? [])->map(function ($d) {
+                    $kode = is_array($d) ? ($d['code'] ?? $d['kode'] ?? null) : $d;
+                    if (! $kode) return null;
+                    $nama = is_array($d) ? ($d['name'] ?? null) : null;
+                    return ['kode' => $kode, 'nama' => $nama ?: $this->icd10Name($kode)];
+                })->filter()->values()->all(),
+                // Terapi/Obat ringkas kunjungan ini: "Nama (frekuensi rute durasi)".
+                'terapi' => $v->prescriptions
+                    ->filter(fn ($p) => $p->status !== 'CANCELLED')
+                    ->flatMap(fn ($p) => $p->items)
+                    ->map(function ($it) {
+                        $nama  = $it->medication?->name ?? '–';
+                        $signa = trim(implode(' ', array_filter([
+                            $it->frequency, $it->route,
+                            $it->duration_days ? ('selama ' . $it->duration_days . ' hari') : null,
+                        ])));
+                        return $signa !== '' ? "{$nama} ({$signa})" : $nama;
+                    })->values()->all(),
                 'is_finalized'    => (bool) ($de?->is_finalized),
                 'penunjang_count' => $v->diagnosticOrders->count(),
                 'dokumen_count'   => $v->patientDocuments->count(),

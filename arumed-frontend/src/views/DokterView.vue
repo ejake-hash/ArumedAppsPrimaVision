@@ -327,6 +327,30 @@ async function loadSoapHistory() {
   }
 }
 
+// ─── Riwayat Kunjungan ringkas (drawer "Riwayat") ───────────────────────────
+// Tiap kunjungan LAMPAU pasien → tanggal + dokter + diagnosa (nama spesifik) +
+// terapi/obat. Sumber dokterApi.riwayatKunjungan (RmeAggregator::kunjungan).
+const riwayatList = ref([])
+async function loadRiwayatKunjungan() {
+  const pid = selP.value?.patientId
+  if (!pid) { riwayatList.value = []; return }
+  try {
+    const { data } = await dokterApi.riwayatKunjungan(pid)
+    const curVid = selP.value?.visitId
+    riwayatList.value = (data.data ?? [])
+      .filter((v) => v.visit_id !== curVid)   // kunjungan yang sedang diperiksa bukan "riwayat"
+      .map((v) => ({
+        visitId: v.visit_id,
+        date:    v.visit_date,
+        doctor:  v.doctor_name || '—',
+        poli:    v.poli_name || '',
+        dx:      [v.diagnosis_utama_nama, ...((v.diagnosis_sekunder || []).map((d) => d.nama))].filter(Boolean).join('; '),
+        terapi:  v.terapi || [],
+      }))
+  } catch { riwayatList.value = [] }
+}
+watch(() => selP.value?.patientId, loadRiwayatKunjungan, { immediate: true })
+
 // ─── Riwayat CPPT lintas-episode (IGD / RANAP / Poli) ────────────────────────
 // Agar DPJP rawat jalan tahu perkembangan dari episode lain (IGD/RANAP) tanpa
 // buka tiap kunjungan. Read-only; sumber RmeAggregator::cppt (1 timeline).
@@ -2643,12 +2667,13 @@ function closeResumeRM() {
                 <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                 Riwayat Kunjungan
               </div>
-              <div v-for="h in selP.history" :key="h.date" class="histi">
-                <div class="hd">{{ h.date }} · {{ h.doctor }}</div>
-                <div class="hdx">{{ h.dx }}</div>
-                <div class="hdet">{{ h.detail }}</div>
+              <div v-for="h in riwayatList" :key="h.visitId" class="histi">
+                <div class="hd">{{ fmtDocDate(h.date) }} · {{ h.doctor }}<span v-if="h.poli"> · {{ h.poli }}</span></div>
+                <div class="hdx">{{ h.dx || 'Diagnosa belum diisi' }}</div>
+                <div v-if="h.terapi.length" class="hdet"><b>Terapi:</b> {{ h.terapi.join('; ') }}</div>
+                <div v-else class="hdet hdet-empty">Tanpa obat</div>
               </div>
-              <div v-if="!selP.history.length" class="hist-empty">Pasien baru — belum ada riwayat</div>
+              <div v-if="!riwayatList.length" class="hist-empty">Pasien baru — belum ada riwayat</div>
             </div>
           </div>
         </transition>
