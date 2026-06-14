@@ -477,25 +477,29 @@ final class AggregateResolver
             return '';
         }
 
-        $codes = [];
+        // Pasangan {code,name}: utamakan nama sub-diagnosa tersimpan (diagnosis_utama_name
+        // utk utama; objek {code,name} utk sekunder), fallback nama dari master (data lama
+        // kode-only). Dedupe per kode (nama pertama menang).
+        $pairs = [];
+        $seen  = [];
+        $add = function ($code, $name) use (&$pairs, &$seen) {
+            $code = trim((string) $code);
+            if ($code === '' || isset($seen[$code])) return;
+            $seen[$code] = true;
+            $name = ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null;
+            $pairs[] = ['code' => $code, 'name' => $name];
+        };
         if (!empty($exam->diagnosis_utama)) {
-            $codes[] = $exam->diagnosis_utama;
+            $add($exam->diagnosis_utama, $exam->diagnosis_utama_name);
         }
-        if (is_array($exam->diagnosis_sekunder)) {
-            foreach ($exam->diagnosis_sekunder as $sec) {
-                if (is_string($sec) && $sec !== '') {
-                    $codes[] = $sec;
-                }
-            }
+        foreach ((array) ($exam->diagnosis_sekunder ?? []) as $sec) {
+            if (is_array($sec)) $add($sec['code'] ?? $sec['kode'] ?? '', $sec['name'] ?? null);
+            elseif (is_string($sec)) $add($sec, null);
         }
-        $codes = array_values(array_unique($codes));
 
         $lines = [];
-        if (!empty($codes)) {
-            $lines[] = match ($format) {
-                'icd_only_join_comma' => implode(', ', $codes),
-                default               => $this->joinIcdWithDesc($codes),  // icd_with_desc_join_newline
-            };
+        if (!empty($pairs)) {
+            $lines[] = $this->joinIcd10Pairs($pairs, $format);
         }
         // Diagnosa teks-bebas dokter (doctorExamination.diagnosis_text) ikut tampil
         // di bawah kode ICD-10 (keputusan user 12 Jun 2026: kode+nama + tulis diagnosa).
@@ -521,14 +525,17 @@ final class AggregateResolver
             return '';
         }
 
-        $codes = [];
+        $pairs = [];
+        $seen  = [];
         foreach ((array) ($exam->tindakan_codes ?? []) as $c) {
-            if (is_string($c) && $c !== '') {
-                $codes[] = $c;
-            }
+            $code = is_array($c) ? ($c['code'] ?? $c['kode'] ?? '') : $c;
+            $code = trim((string) $code);
+            if ($code === '' || isset($seen[$code])) continue;
+            $seen[$code] = true;
+            $name = is_array($c) ? ($c['name'] ?? null) : null;
+            $pairs[] = ['code' => $code, 'name' => ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null];
         }
-        $codes = array_values(array_unique($codes));
-        if (empty($codes)) {
+        if (empty($pairs)) {
             // KOSONG bila dokter tidak memilih ICD-9 — JANGAN fallback ke
             // visit_services: itu item TAGIHAN (Admisi/Konsultasi/Visus/NCT dsb.),
             // bukan tindakan medis. Kolom "Tindakan" resume = murni prosedur ICD-9
@@ -536,10 +543,7 @@ final class AggregateResolver
             return '';
         }
 
-        return match ($format) {
-            'icd_only_join_comma' => implode(', ', $codes),
-            default               => $this->joinIcd9WithDesc($codes),  // icd_with_desc_join_newline
-        };
+        return $this->joinIcd9Pairs($pairs, $format);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -876,6 +880,63 @@ final class AggregateResolver
         foreach ($codes as $code) {
             $desc = $this->icd9DescCache[$code] ?? null;
             $lines[] = $desc ? "{$code} — {$desc}" : $code;
+        }
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Render pasangan {code,name} ICD-10: utamakan nama sub-diagnosa tersimpan;
+     * pair tanpa nama (data lama kode-only) → fallback deskripsi master.
+     * @param list<array{code:string,name:?string}> $pairs
+     */
+    private function joinIcd10Pairs(array $pairs, ?string $format): string
+    {
+        if ($format === 'icd_only_join_comma') {
+            return implode(', ', array_map(fn ($p) => $p['code'], $pairs));
+        }
+        $missing = array_values(array_unique(array_filter(
+            array_map(fn ($p) => empty($p['name']) ? $p['code'] : null, $pairs),
+            fn ($c) => $c !== null
+        )));
+        if (!empty($missing)) {
+            $rows = Icd10Code::query()->whereIn('code', $missing)->pluck('description', 'code')->all();
+            foreach ($missing as $code) {
+                $this->icd10DescCache[$code] = $rows[$code] ?? null;
+            }
+        }
+        $lines = [];
+        foreach ($pairs as $p) {
+            $name = !empty($p['name']) ? $p['name'] : ($this->icd10DescCache[$p['code']] ?? null);
+            $lines[] = $name ? "{$p['code']} — {$name}" : $p['code'];
+        }
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Render pasangan {code,name} ICD-9 (prefer nama tersimpan, fallback master indo/eng).
+     * @param list<array{code:string,name:?string}> $pairs
+     */
+    private function joinIcd9Pairs(array $pairs, ?string $format): string
+    {
+        if ($format === 'icd_only_join_comma') {
+            return implode(', ', array_map(fn ($p) => $p['code'], $pairs));
+        }
+        $missing = array_values(array_unique(array_filter(
+            array_map(fn ($p) => empty($p['name']) ? $p['code'] : null, $pairs),
+            fn ($c) => $c !== null
+        )));
+        if (!empty($missing)) {
+            $rows = Icd9Code::query()->whereIn('code', $missing)
+                ->get(['code', 'indonesian_description', 'description'])->keyBy('code');
+            foreach ($missing as $code) {
+                $row = $rows->get($code);
+                $this->icd9DescCache[$code] = $row?->indonesian_description ?: $row?->description;
+            }
+        }
+        $lines = [];
+        foreach ($pairs as $p) {
+            $name = !empty($p['name']) ? $p['name'] : ($this->icd9DescCache[$p['code']] ?? null);
+            $lines[] = $name ? "{$p['code']} — {$name}" : $p['code'];
         }
         return implode("\n", $lines);
     }

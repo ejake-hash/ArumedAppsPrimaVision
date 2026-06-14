@@ -486,6 +486,19 @@ class KlaimService
     // =========================================================================
 
     /**
+     * Normalisasi list diagnosa/prosedur ke KODE telanjang. Exam kini menyimpan
+     * {code,name} (sub-diagnosa), tapi klaim/SEP hanya butuh kode kanonik. Toleran
+     * elemen string (data lama) maupun objek.
+     */
+    private function stripToCodes($arr): array
+    {
+        return collect(is_array($arr) ? $arr : [])
+            ->map(fn ($el) => is_array($el) ? ($el['code'] ?? $el['kode'] ?? null) : $el)
+            ->map(fn ($c) => is_string($c) ? trim($c) : null)
+            ->filter()->unique()->values()->all();
+    }
+
+    /**
      * Create or update BpjsClaim from visit doctor examination data.
      * Source: visit.no_sep, doctorExamination.{diagnosis_utama, diagnosis_sekunder, tindakan_codes}
      */
@@ -523,8 +536,10 @@ class KlaimService
                     'no_sep'             => $visit->no_sep,
                     'patient_nik'        => $visit->patient->nik,
                     'diagnosis_utama'    => $exam->diagnosis_utama,
-                    'diagnosis_sekunder' => $exam->diagnosis_sekunder ?? [],
-                    'procedure_codes'    => $exam->tindakan_codes ?? [],
+                    // Klaim/SEP = KODE kanonik saja (BPJS-safe). Exam menyimpan {code,name}
+                    // (sub-diagnosa) → strip ke kode telanjang; nama spesifik hidup di RME.
+                    'diagnosis_sekunder' => $this->stripToCodes($exam->diagnosis_sekunder),
+                    'procedure_codes'    => $this->stripToCodes($exam->tindakan_codes),
                     'status'             => $existing?->status ?? 'DRAFT',
                 ]
             );

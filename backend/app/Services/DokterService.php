@@ -272,6 +272,32 @@ class DokterService
     /**
      * Create Tab 2 (anamnese + segmen). One per visit.
      */
+    /**
+     * Normalisasi elemen diagnosis_sekunder & tindakan_codes ke bentuk {code,name}
+     * (sub-diagnosa). Toleran string kode lama → {code, name:null}. Reader (resolver/
+     * label/klaim) menerima objek atau string.
+     */
+    private function normalizeDiagnosisData(array $data): array
+    {
+        $norm = function ($arr) {
+            return collect(is_array($arr) ? $arr : [])->map(function ($el) {
+                if (is_array($el)) {
+                    $code = trim((string) ($el['code'] ?? $el['kode'] ?? ''));
+                    return $code === '' ? null : ['code' => $code, 'name' => isset($el['name']) ? (string) $el['name'] : null];
+                }
+                $code = trim((string) $el);
+                return $code === '' ? null : ['code' => $code, 'name' => null];
+            })->filter()->values()->all();
+        };
+        if (array_key_exists('diagnosis_sekunder', $data)) {
+            $data['diagnosis_sekunder'] = $norm($data['diagnosis_sekunder']);
+        }
+        if (array_key_exists('tindakan_codes', $data)) {
+            $data['tindakan_codes'] = $norm($data['tindakan_codes']);
+        }
+        return $data;
+    }
+
     public function storeExamination(string $visitId, array $data): DoctorExamination
     {
         $this->authorizeVisitOwnership($visitId);
@@ -280,6 +306,7 @@ class DokterService
             throw new \Exception('Data pemeriksaan sudah ada. Gunakan update.', 422);
         }
 
+        $data = $this->normalizeDiagnosisData($data);
         $user = auth('api')->user();
 
         $examination = DoctorExamination::create([
@@ -321,10 +348,11 @@ class DokterService
 
             // Diagnosis (ICD-10 + naratif) + kode ICD-9 tindakan — pindah ke Tab 2.
             // Nullable saat simpan; diwajibkan hanya saat Finalisasi.
-            'diagnosis_utama'    => $data['diagnosis_utama'] ?? null,
-            'diagnosis_sekunder' => $data['diagnosis_sekunder'] ?? [],
-            'diagnosis_text'     => $data['diagnosis_text'] ?? null,
-            'tindakan_codes'     => $data['tindakan_codes'] ?? [],
+            'diagnosis_utama'      => $data['diagnosis_utama'] ?? null,
+            'diagnosis_utama_name' => $data['diagnosis_utama_name'] ?? null,
+            'diagnosis_sekunder'   => $data['diagnosis_sekunder'] ?? [],
+            'diagnosis_text'       => $data['diagnosis_text'] ?? null,
+            'tindakan_codes'       => $data['tindakan_codes'] ?? [],
 
             'is_finalized' => false,
         ]);
@@ -344,6 +372,7 @@ class DokterService
             throw new \Exception('Pemeriksaan sudah dikunci, tidak bisa diubah.', 422);
         }
 
+        $data = $this->normalizeDiagnosisData($data);
         $examination->update(array_intersect_key($data, array_flip($examination->getFillable())));
 
         $this->log(auth('api')->id(), 'UPDATE_TAB2', DoctorExamination::class, $examination->id);
@@ -1740,7 +1769,7 @@ class DokterService
         // A — Assessment: ICD-10 (kode + nama) + diagnosa teks bebas bila ada.
         $aParts = [];
         if ($doctor?->diagnosis_utama) {
-            $aParts[] = $this->labelIcd10($doctor->diagnosis_utama);
+            $aParts[] = $this->labelIcd10($doctor->diagnosis_utama, $doctor->diagnosis_utama_name);
         }
         foreach ($doctor->diagnosis_sekunder ?? [] as $kode) {
             $aParts[] = $this->labelIcd10($kode);
@@ -1863,7 +1892,7 @@ class DokterService
         // --- Diagnosa: ICD-10 utama + sekunder (kode + nama) ---
         $diagParts = [];
         if ($doctor?->diagnosis_utama) {
-            $diagParts[] = $this->labelIcd10($doctor->diagnosis_utama);
+            $diagParts[] = $this->labelIcd10($doctor->diagnosis_utama, $doctor->diagnosis_utama_name);
         }
         foreach ($doctor->diagnosis_sekunder ?? [] as $kode) {
             $diagParts[] = $this->labelIcd10($kode);
@@ -1949,30 +1978,51 @@ class DokterService
         ];
     }
 
+    /** Ekstrak [code, storedName] dari item string-kode ATAU pair {code,name}. */
+    private function icdCodeName($item, ?string $name = null): array
+    {
+        if (is_array($item)) {
+            $code = trim((string) ($item['code'] ?? $item['kode'] ?? ''));
+            $name = isset($item['name']) && trim((string) $item['name']) !== '' ? trim((string) $item['name']) : $name;
+        } else {
+            $code = trim((string) $item);
+        }
+        $name = ($name !== null && trim((string) $name) !== '') ? trim((string) $name) : null;
+        return [$code === '' ? null : $code, $name];
+    }
+
     private array $icd10NameCache = [];
 
-    /** "H25.1 - Katarak senilis..." (nama dari icd10_codes bila ada). */
-    private function labelIcd10(?string $code): ?string
+    /** "H25.1 - WET AMD" — utamakan nama sub-diagnosa tersimpan, fallback master. */
+    private function labelIcd10($item, ?string $name = null): ?string
     {
+        [$code, $stored] = $this->icdCodeName($item, $name);
         if (! $code) {
             return null;
+        }
+        if ($stored) {
+            return "{$code} - {$stored}";
         }
         if (! array_key_exists($code, $this->icd10NameCache)) {
             $row = Icd10Code::where('code', $code)->first();
             $this->icd10NameCache[$code] = $row?->indonesian_description ?: $row?->description;
         }
-        $name = $this->icd10NameCache[$code];
+        $masterName = $this->icd10NameCache[$code];
 
-        return $name ? "{$code} - {$name}" : $code;
+        return $masterName ? "{$code} - {$masterName}" : $code;
     }
 
     private array $icd9NameCache = [];
 
-    /** "13.41 - Fakoemulsifikasi + IOL" (nama dari icd9_codes bila ada). */
-    private function labelIcd9(?string $code): ?string
+    /** "13.41 - Fakoemulsifikasi" — utamakan nama tersimpan, fallback master. */
+    private function labelIcd9($item, ?string $name = null): ?string
     {
+        [$code, $stored] = $this->icdCodeName($item, $name);
         if (! $code) {
             return null;
+        }
+        if ($stored) {
+            return "{$code} - {$stored}";
         }
         if (! array_key_exists($code, $this->icd9NameCache)) {
             $row = Icd9Code::where('code', $code)->first();

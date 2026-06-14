@@ -491,6 +491,11 @@ class MasterDataController extends Controller
 
     public function indexIcd10(Request $request): JsonResponse
     {
+        // Picker dokter (with_sub=1): daftar sub-diagnosa + kanonik tanpa-sub {code,name,is_sub}.
+        if ($request->boolean('with_sub')) {
+            return $this->ok($this->service->searchDiagnosesWithSub('icd10',
+                $request->only(['search', 'eye_related', 'per_page'])));
+        }
         return $this->ok($this->service->indexIcd10(
             $request->only(['search', 'category', 'eye_related', 'favorite', 'per_page'])
         ));
@@ -543,6 +548,10 @@ class MasterDataController extends Controller
 
     public function indexIcd9(Request $request): JsonResponse
     {
+        if ($request->boolean('with_sub')) {
+            return $this->ok($this->service->searchDiagnosesWithSub('icd9',
+                $request->only(['search', 'eye_related', 'per_page'])));
+        }
         return $this->ok($this->service->indexIcd9(
             $request->only(['search', 'category', 'eye_related', 'favorite', 'per_page'])
         ));

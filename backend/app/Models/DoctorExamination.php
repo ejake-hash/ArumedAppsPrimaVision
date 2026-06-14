@@ -59,6 +59,7 @@ class DoctorExamination extends Model
         'soap_assessment',
         'soap_plan',
         'diagnosis_utama',
+        'diagnosis_utama_name',
         'diagnosis_sekunder',
         'diagnosis_text',
         'tindakan_codes',

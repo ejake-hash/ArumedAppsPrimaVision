@@ -195,13 +195,15 @@ class DokterController extends Controller
      */
     private function diagnosisRules(): array
     {
+        // Sekunder & tindakan kini boleh berisi objek {code,name} (sub-diagnosa) ATAU
+        // string kode lama — dinormalisasi di DokterService. diagnosis_utama_name =
+        // nama sub-diagnosa spesifik utk Dx utama (kode tetap di diagnosis_utama).
         return [
             'diagnosis_utama'      => 'nullable|string|max:20',
+            'diagnosis_utama_name' => 'nullable|string|max:500',
             'diagnosis_sekunder'   => 'nullable|array',
-            'diagnosis_sekunder.*' => 'string|max:20',
             'diagnosis_text'       => 'nullable|string|max:1000',
             'tindakan_codes'       => 'nullable|array',
-            'tindakan_codes.*'     => 'string|max:20',
         ];
     }
 

@@ -1039,6 +1039,46 @@ class MasterDataService
         return $query->orderBy('code')->paginate($filters['per_page'] ?? 25);
     }
 
+    /**
+     * Daftar untuk PICKER diagnosa/prosedur dokter: sub-diagnosa (Excel) + kode kanonik
+     * HANYA untuk kode yang TAK punya sub (sembunyikan nama generik lama bila ada sub).
+     * Tiap item {code, name, is_sub}. type = 'icd10' | 'icd9'. Lihat plan ICD sub-diagnosa.
+     */
+    public function searchDiagnosesWithSub(string $type, array $filters = []): \Illuminate\Support\Collection
+    {
+        $isIcd10   = $type !== 'icd9';
+        $subModel  = $isIcd10 ? \App\Models\Icd10Subdiagnosis::class : \App\Models\Icd9Subdiagnosis::class;
+        $codeModel = $isIcd10 ? Icd10Code::class : Icd9Code::class;
+        $search    = trim((string) ($filters['search'] ?? ''));
+        $limit     = max(1, (int) ($filters['per_page'] ?? 50));
+        $eyeOnly   = ! empty($filters['eye_related']);
+
+        $subQ = $subModel::query()->where('is_active', true);
+        if ($eyeOnly) $subQ->where('is_eye_related', true);
+        if ($search !== '') {
+            $subQ->where(fn ($w) => $w->where('name', 'ilike', "%{$search}%")->orWhere('code', 'ilike', "%{$search}%"));
+        }
+        $subs = $subQ->orderBy('code')->orderBy('sort_order')->limit($limit)->get(['code', 'name']);
+
+        $codesWithSub = $subModel::query()->where('is_active', true)->distinct()->pluck('code')->all();
+
+        $canQ = $codeModel::query();
+        if (! empty($codesWithSub)) $canQ->whereNotIn('code', $codesWithSub);
+        if ($eyeOnly) $canQ->where('is_eye_related', true);
+        if ($search !== '') {
+            $canQ->where(fn ($w) => $w->where('code', 'ilike', "%{$search}%")
+                ->orWhere('description', 'ilike', "%{$search}%")
+                ->orWhere('indonesian_description', 'ilike', "%{$search}%"));
+        }
+        $cans = $canQ->orderBy('code')->limit($limit)->get();
+
+        $out = collect();
+        foreach ($subs as $s) $out->push(['code' => $s->code, 'name' => $s->name, 'is_sub' => true]);
+        foreach ($cans as $c) $out->push(['code' => $c->code, 'name' => $c->indonesian_description ?: $c->description, 'is_sub' => false]);
+
+        return $out->take($limit)->values();
+    }
+
     public function storeIcd10(array $data): Icd10Code
     {
         $code = $this->upsertIcdRow(Icd10Code::class, $data);

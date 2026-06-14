@@ -631,10 +631,11 @@ function buildTab2Payload() {
     anamnese: exam.value.anamnese || null,
     sa_notes: exam.value.sa_notes || null,
     sp_notes: exam.value.sp_notes || null,
-    diagnosis_utama:    diagnosisUtama.value?.code || null,
-    diagnosis_sekunder: diagnosisSekunder.value.map((d) => d.code),
-    diagnosis_text:     diagnosisText.value?.trim() || null,
-    tindakan_codes:     icd9List.value.map((t) => t.code),
+    diagnosis_utama:      diagnosisUtama.value?.code || null,
+    diagnosis_utama_name: diagnosisUtama.value?.name || null,
+    diagnosis_sekunder:   diagnosisSekunder.value.map((d) => ({ code: d.code, name: d.name || null })),
+    diagnosis_text:       diagnosisText.value?.trim() || null,
+    tindakan_codes:       icd9List.value.map((t) => ({ code: t.code, name: t.name || null })),
   }
   for (const f of saFields) {
     out[`sa_${f.key}_od`] = exam.value.sa[f.key].od || null
@@ -670,11 +671,15 @@ async function loadTab2() {
     }
     // Diagnosis (ICD-10) + Prosedur (ICD-9) kini milik Tab 2 → hidrasi dari record.
     diagnosisText.value = e.diagnosis_text ?? ''
-    diagnosisUtama.value = e.diagnosis_utama ? await resolveIcd10(e.diagnosis_utama) : null
+    // Utama: pakai nama sub-diagnosa tersimpan (diagnosis_utama_name); fallback resolve master.
+    diagnosisUtama.value = e.diagnosis_utama
+      ? { code: e.diagnosis_utama, name: e.diagnosis_utama_name || (await resolveIcd10(e.diagnosis_utama))?.name || e.diagnosis_utama }
+      : null
+    // Sekunder/tindakan: elemen kini {code,name}; toleran string kode lama (resolve master).
     diagnosisSekunder.value = Array.isArray(e.diagnosis_sekunder)
-      ? (await Promise.all(e.diagnosis_sekunder.map(resolveIcd10))).filter(Boolean) : []
+      ? (await Promise.all(e.diagnosis_sekunder.map(hydrateIcd10))).filter(Boolean) : []
     icd9List.value = Array.isArray(e.tindakan_codes)
-      ? (await Promise.all(e.tindakan_codes.map(resolveIcd9))).filter(Boolean) : []
+      ? (await Promise.all(e.tindakan_codes.map(hydrateIcd9))).filter(Boolean) : []
     // Planning (Tab 3) sudah dikomit saat Kirim ke Kasir → hidrasi agar gate
     // Finalisasi lolos saat buka ulang (lengkapi RME belakangan). Detail jadwal
     // bedah (tanggal/jam) tak ikut showTab2 — cukup planning + paket untuk display.
@@ -700,19 +705,20 @@ async function loadTab2() {
 // Pulihkan {code,name} dari kode tersimpan. Cek cache lokal dulu; kalau tak ada,
 // query master ICD backend (tabel penuh) supaya NAMA muncul, bukan cuma kode.
 // Fallback name=code hanya bila benar-benar tak ketemu / offline.
-function mapIcd10Row(r) { return { code: r.code, name: r.indonesian_description || r.description || r.code } }
-function mapIcd9Row(r)  { return { code: r.code, name: r.indonesian_description || r.description || r.code } }
+// `r.name` = sub-diagnosa (with_sub); fallback deskripsi kanonik untuk baris kode biasa.
+function mapIcd10Row(r) { return { code: r.code, name: r.name || r.indonesian_description || r.description || r.code, is_sub: !!r.is_sub } }
+function mapIcd9Row(r)  { return { code: r.code, name: r.name || r.indonesian_description || r.description || r.code, is_sub: !!r.is_sub } }
 
 // Muat kode mata dari MASTER ICD sebagai favorit/cache instan (dipanggil saat mount).
 // Mengganti daftar hardcoded → semua kode yang dipilih dijamin ada di master.
 async function loadIcdFavorites() {
   try {
-    const { data } = await masterApi.icd10.list({ eye_related: 1, per_page: 300 })
+    const { data } = await masterApi.icd10.list({ eye_related: 1, per_page: 300, with_sub: 1 })
     const rows = data.data?.data ?? data.data ?? []
     if (rows.length) icd10DB = rows.map(mapIcd10Row)
   } catch { /* offline → cache tetap kosong, search master tetap jalan saat online */ }
   try {
-    const { data } = await masterApi.icd9.list({ eye_related: 1, per_page: 300 })
+    const { data } = await masterApi.icd9.list({ eye_related: 1, per_page: 300, with_sub: 1 })
     const rows = data.data?.data ?? data.data ?? []
     if (rows.length) icd9DB = rows.map(mapIcd9Row)
   } catch { /* offline */ }
@@ -741,6 +747,21 @@ async function resolveIcd9(code) {
     if (m) { const obj = mapIcd9Row(m); icd9DB.push(obj); return obj }
   } catch { /* offline → fallback */ }
   return { code, name: code }
+}
+
+// Hidrasi elemen sekunder/tindakan saat buka ulang: elemen {code,name} (sub-diagnosa)
+// dipakai langsung; bila objek tanpa nama / string kode lama → resolve dari master.
+async function hydrateIcd10(el) {
+  if (el && typeof el === 'object') {
+    return el.name ? { code: el.code, name: el.name } : (await resolveIcd10(el.code)) || { code: el.code, name: el.code }
+  }
+  return resolveIcd10(el)
+}
+async function hydrateIcd9(el) {
+  if (el && typeof el === 'object') {
+    return el.name ? { code: el.code, name: el.name } : (await resolveIcd9(el.code)) || { code: el.code, name: el.code }
+  }
+  return resolveIcd9(el)
 }
 
 // Simpan Tab 2: PUT bila record sudah ada, POST bila belum. Bila POST gagal
@@ -1495,7 +1516,7 @@ function localIcd10(s) {
 }
 async function searchIcd10Master(s) {
   try {
-    const { data } = await masterApi.icd10.list({ search: s, per_page: 25 })
+    const { data } = await masterApi.icd10.list({ search: s, per_page: 25, with_sub: 1 })
     const rows = data.data?.data ?? data.data ?? []
     return rows.map(mapIcd10Row)
   } catch { return localIcd10(s) }
@@ -1554,7 +1575,7 @@ watch(icd9Search, (v) => {
   icd9Timer = setTimeout(async () => {
     if ((icd9Search.value || '').trim().toLowerCase() !== s) return
     try {
-      const { data } = await masterApi.icd9.list({ search: s, per_page: 25 })
+      const { data } = await masterApi.icd9.list({ search: s, per_page: 25, with_sub: 1 })
       const rows = data.data?.data ?? data.data ?? []
       filteredIcd9.value = rows.map(mapIcd9Row)
     } catch { /* tetap pakai hasil lokal */ }
@@ -2970,13 +2991,13 @@ function closeResumeRM() {
                       <input v-model="dxSearch" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
                       <div class="dx-results">
                         <div
-                          v-for="d in filteredIcd10" :key="d.code"
-                          :class="['dx-result-item', diagnosisUtama?.code === d.code ? 'sel' : '']"
+                          v-for="d in filteredIcd10" :key="d.code + '|' + d.name"
+                          :class="['dx-result-item', diagnosisUtama?.code === d.code && diagnosisUtama?.name === d.name ? 'sel' : '']"
                           @click="setDxUtama(d)"
                         >
                           <span class="dx-code">{{ d.code }}</span>
                           <span class="dx-result-name">{{ d.name }}</span>
-                          <svg v-if="diagnosisUtama?.code === d.code" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                          <svg v-if="diagnosisUtama?.code === d.code && diagnosisUtama?.name === d.name" class="dx-result-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                         </div>
                       </div>
                       <div v-if="diagnosisUtama" class="dx-row dx-utama" style="margin-top:0.5rem">
@@ -3000,7 +3021,7 @@ function closeResumeRM() {
                       <input v-model="dxSearchSek" class="form-input dx-search" placeholder="Cari kode / nama penyakit..." />
                       <div class="dx-results">
                         <div
-                          v-for="d in filteredIcd10Sek" :key="d.code"
+                          v-for="d in filteredIcd10Sek" :key="d.code + '|' + d.name"
                           :class="['dx-result-item', diagnosisSekKodeSet.has(d.code) ? 'sel' : '']"
                           @click="addDxSekunder(d)"
                         >
@@ -3053,7 +3074,7 @@ function closeResumeRM() {
                     <input v-model="icd9Search" class="form-input dx-search" placeholder="Cari kode / nama prosedur..." />
                     <div class="dx-results">
                       <div
-                        v-for="t in filteredIcd9" :key="t.code"
+                        v-for="t in filteredIcd9" :key="t.code + '|' + t.name"
                         :class="['dx-result-item', icd9KodeSet.has(t.code) ? 'sel' : '']"
                         @click="addIcd9(t)"
                       >
