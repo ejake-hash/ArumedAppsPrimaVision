@@ -331,7 +331,15 @@ async function loadSoapHistory() {
 // Tiap kunjungan LAMPAU pasien → tanggal + dokter + diagnosa (nama spesifik) +
 // terapi/obat. Sumber dokterApi.riwayatKunjungan (RmeAggregator::kunjungan).
 const riwayatList = ref([])
+const riwayatPage = ref(1)
+const RIWAYAT_PER_PAGE = 8
+const riwayatTotalPages = computed(() => Math.max(1, Math.ceil(riwayatList.value.length / RIWAYAT_PER_PAGE)))
+const riwayatPaged = computed(() => {
+  const start = (riwayatPage.value - 1) * RIWAYAT_PER_PAGE
+  return riwayatList.value.slice(start, start + RIWAYAT_PER_PAGE)
+})
 async function loadRiwayatKunjungan() {
+  riwayatPage.value = 1
   const pid = selP.value?.patientId
   if (!pid) { riwayatList.value = []; return }
   try {
@@ -2666,14 +2674,23 @@ function closeResumeRM() {
               <div class="dwt">
                 <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
                 Riwayat Kunjungan
+                <span v-if="riwayatList.length" class="hist-total">{{ riwayatList.length }}</span>
               </div>
-              <div v-for="h in riwayatList" :key="h.visitId" class="histi">
+              <div v-for="h in riwayatPaged" :key="h.visitId" class="histi">
                 <div class="hd">{{ fmtDocDate(h.date) }} · {{ h.doctor }}<span v-if="h.poli"> · {{ h.poli }}</span></div>
                 <div class="hdx">{{ h.dx || 'Diagnosa belum diisi' }}</div>
-                <div v-if="h.terapi.length" class="hdet"><b>Terapi:</b> {{ h.terapi.join('; ') }}</div>
+                <div v-if="h.terapi.length" class="hdet">
+                  <span class="hdet-lbl">Terapi</span>
+                  <ul class="hdet-list"><li v-for="(t, i) in h.terapi" :key="i">{{ t }}</li></ul>
+                </div>
                 <div v-else class="hdet hdet-empty">Tanpa obat</div>
               </div>
               <div v-if="!riwayatList.length" class="hist-empty">Pasien baru — belum ada riwayat</div>
+              <div v-if="riwayatTotalPages > 1" class="hist-pager">
+                <button class="hp-btn" :disabled="riwayatPage <= 1" @click="riwayatPage--" aria-label="Sebelumnya">‹</button>
+                <span class="hp-info">Hal {{ riwayatPage }} / {{ riwayatTotalPages }}</span>
+                <button class="hp-btn" :disabled="riwayatPage >= riwayatTotalPages" @click="riwayatPage++" aria-label="Berikutnya">›</button>
+              </div>
             </div>
           </div>
         </transition>
@@ -4637,7 +4654,16 @@ function closeResumeRM() {
 .histi { padding: 0.45rem 0.55rem; border: 1px solid var(--gb); border-radius: 7px; background: var(--bs); margin-bottom: 4px; }
 .hd { font-size: 10.5px; font-weight: 600; color: var(--td); }
 .hdx { font-size: 11px; color: var(--td); margin-top: 2px; }
-.hdet { font-size: 10px; color: var(--tu); margin-top: 1px; }
+.hdet { font-size: 10px; color: var(--tu); margin-top: 3px; }
+.hdet-lbl { font-weight: 600; color: var(--td); }
+.hdet-list { margin: 1px 0 0; padding-left: 14px; list-style: disc; }
+.hdet-list li { line-height: 1.35; word-break: break-word; }
+.hdet-empty { font-style: italic; }
+.hist-total { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--ga); background: rgba(37,99,235,.10); border-radius: 9px; padding: 1px 7px; }
+.hist-pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; }
+.hp-btn { width: 26px; height: 24px; border: 1px solid var(--gb); border-radius: 6px; background: var(--bs); color: var(--td); font-size: 15px; line-height: 1; cursor: pointer; }
+.hp-btn:disabled { opacity: .4; cursor: default; }
+.hp-info { font-size: 10.5px; color: var(--tu); font-variant-numeric: tabular-nums; }
 .hist-empty { font-size: 11px; color: var(--th); text-align: center; padding: 0.5rem; }
 
 /* TABS */
