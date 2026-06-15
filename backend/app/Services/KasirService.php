@@ -1169,7 +1169,9 @@ class KasirService
             $total = $price * $qty;
             $lines[] = [
                 'item_type'    => 'OBAT',
-                'category'     => MedicationTariff::posLabel($posMap[$pi->item_id] ?? null),
+                // Pos kwitansi pilihan operator di komposisi (Obat Tindakan/Injeksi/Pulang),
+                // fallback ke default master tarif obat bila tak diset.
+                'category'     => MedicationTariff::posLabel($pi->pos_kwitansi ?: ($posMap[$pi->item_id] ?? null)),
                 'reference_id' => $pi->id,
                 'description'  => $med->name,
                 'quantity'     => $qty,

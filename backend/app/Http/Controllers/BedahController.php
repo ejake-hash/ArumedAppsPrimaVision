@@ -793,11 +793,13 @@ class BedahController extends Controller
     public function addVisitPackageItem(Request $request, string $visitId): JsonResponse
     {
         $data = $request->validate([
-            'item_type'  => 'required|in:PROCEDURE,BHP',
-            'item_id'    => 'required|uuid',
-            'quantity'   => 'nullable|integer|min:1',
-            'unit_price' => 'nullable|numeric|min:0',
-            'notes'      => 'nullable|string|max:255',
+            'item_type'    => 'required|in:PROCEDURE,BHP,MEDICATION',
+            'item_id'      => 'required|uuid',
+            'quantity'     => 'nullable|integer|min:1',
+            'unit_price'   => 'nullable|numeric|min:0',
+            // Pos kwitansi obat komposisi (hanya dipakai untuk MEDICATION).
+            'pos_kwitansi' => 'nullable|string|in:OBAT_PULANG,OBAT_TINDAKAN,OBAT_INJEKSI',
+            'notes'        => 'nullable|string|max:255',
         ]);
 
         try {
@@ -813,9 +815,10 @@ class BedahController extends Controller
     public function updateVisitPackageItem(Request $request, string $itemId): JsonResponse
     {
         $data = $request->validate([
-            'quantity'   => 'nullable|integer|min:1',
-            'unit_price' => 'nullable|numeric|min:0',
-            'notes'      => 'nullable|string|max:255',
+            'quantity'     => 'nullable|integer|min:1',
+            'unit_price'   => 'nullable|numeric|min:0',
+            'pos_kwitansi' => 'nullable|string|in:OBAT_PULANG,OBAT_TINDAKAN,OBAT_INJEKSI',
+            'notes'        => 'nullable|string|max:255',
         ]);
 
         try {

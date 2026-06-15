@@ -23,8 +23,8 @@ class VisitSurgeryPackageItem extends Model
     public const TYPE_IOL        = 'IOL';
     public const TYPE_MEDICATION = 'MEDICATION';
 
-    /** Komponen yang boleh diedit operator di modul Bedah. */
-    public const EDITABLE_TYPES = [self::TYPE_PROCEDURE, self::TYPE_BHP];
+    /** Komponen yang boleh diedit operator di modul Bedah (incl. obat komposisi). */
+    public const EDITABLE_TYPES = [self::TYPE_PROCEDURE, self::TYPE_BHP, self::TYPE_MEDICATION];
 
     /** Komponen yang masuk basis perhitungan diskon (obat diserap terpisah via resep). */
     public const BILLABLE_TYPES = [self::TYPE_PROCEDURE, self::TYPE_BHP, self::TYPE_IOL];
@@ -33,6 +33,10 @@ class VisitSurgeryPackageItem extends Model
         'visit_surgery_package_id',
         'item_type',
         'item_id',
+        // Pos kwitansi obat komposisi (OBAT_TINDAKAN/OBAT_INJEKSI/OBAT_PULANG) — dipilih
+        // operator di Intraoperatif. NULL = ikut default master tarif. Lihat migrasi
+        // 2026_07_28_000002. Hanya relevan untuk item MEDICATION.
+        'pos_kwitansi',
         'quantity',
         'unit_price',
         'notes',

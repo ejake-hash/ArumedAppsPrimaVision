@@ -2021,6 +2021,10 @@ class BedahService
                 'item_id'    => $it->item_id,
                 'item_name'  => $resolved?->name ?? $resolved?->brand ?? '-',
                 'item_code'  => $resolved?->code ?? null,
+                // Kategori Buku Tarif untuk kolom JENIS (PROCEDURE→kategori prosedur,
+                // BHP→BAHAN HABIS PAKAI/CSSD, IOL→IOL, OBAT→pos kwitansi).
+                'category'    => $this->visitPackageItemCategory($it, $resolved),
+                'pos_kwitansi'=> $it->pos_kwitansi,
                 'quantity'   => $it->quantity,
                 'unit_price' => (float) $it->unit_price,
                 'subtotal'   => $it->subtotal(),
@@ -2040,6 +2044,35 @@ class BedahService
             'label'                     => $snap->label,
             'items'                     => $items,
         ];
+    }
+
+    /**
+     * Kategori "Buku Tarif" untuk satu komponen snapshot (kolom JENIS + pos obat).
+     * Selaras KasirService (bhpBillingCategory / MedicationTariff::posLabel).
+     */
+    private function visitPackageItemCategory(VisitSurgeryPackageItem $it, $resolved): string
+    {
+        return match ($it->item_type) {
+            VisitSurgeryPackageItem::TYPE_PROCEDURE  => $resolved?->category ?: 'Tindakan',
+            VisitSurgeryPackageItem::TYPE_BHP        => BhpItem::billingCategoryLabel($resolved?->category),
+            VisitSurgeryPackageItem::TYPE_IOL        => 'IOL',
+            VisitSurgeryPackageItem::TYPE_MEDICATION => \App\Models\MedicationTariff::posLabel($it->pos_kwitansi ?: $this->medicationUmumPos($it->item_id)),
+            default                                  => $it->item_type,
+        };
+    }
+
+    /** Pos kwitansi default obat dari baris tarif UMUM (acuan saat pos komponen NULL). */
+    private function medicationUmumPos(string $medicationId): ?string
+    {
+        $umumId = DB::table('insurers')->where('type', 'UMUM')->whereNull('deleted_at')->value('id');
+        if (! $umumId) {
+            return null;
+        }
+        return DB::table('medication_tariffs')
+            ->where('medication_id', $medicationId)
+            ->where('insurer_id', $umumId)
+            ->whereNull('deleted_at')
+            ->value('pos_kwitansi');
     }
 
     /** Guard: tolak edit komponen bila operasi sudah difinalisasi. */
@@ -2063,18 +2096,25 @@ class BedahService
 
         $type = $data['item_type'];
         if (! in_array($type, VisitSurgeryPackageItem::EDITABLE_TYPES, true)) {
-            throw new \Exception('Hanya komponen Tindakan / BHP yang dapat ditambah.', 422);
+            throw new \Exception('Hanya komponen Tindakan / BHP / Obat yang dapat ditambah.', 422);
         }
 
         return DB::transaction(function () use ($snap, $data, $type) {
             $visit     = $snap->visit;
-            $priceType = $type === 'PROCEDURE' ? 'procedure' : 'bhp';
+            $priceType = match ($type) {
+                VisitSurgeryPackageItem::TYPE_PROCEDURE  => 'procedure',
+                VisitSurgeryPackageItem::TYPE_MEDICATION => 'medication',
+                default                                  => 'bhp',
+            };
             $unitPrice = $data['unit_price']
                 ?? app(KasirService::class)->getPrice($priceType, $data['item_id'], $visit->guarantor_type, $visit->insurer_id);
 
+            // Pos kwitansi hanya relevan untuk OBAT (Obat Tindakan/Injeksi/Pulang).
+            $pos = $type === VisitSurgeryPackageItem::TYPE_MEDICATION ? ($data['pos_kwitansi'] ?? null) : null;
+
             VisitSurgeryPackageItem::updateOrCreate(
                 ['visit_surgery_package_id' => $snap->id, 'item_type' => $type, 'item_id' => $data['item_id']],
-                ['quantity' => (int) ($data['quantity'] ?? 1), 'unit_price' => $unitPrice, 'notes' => $data['notes'] ?? null]
+                ['quantity' => (int) ($data['quantity'] ?? 1), 'unit_price' => $unitPrice, 'pos_kwitansi' => $pos, 'notes' => $data['notes'] ?? null]
             );
             $snap->recalcTotalBasePrice();
             $this->log(auth('api')->id(), 'ADD_VISIT_PACKAGE_ITEM', VisitSurgeryPackage::class, $snap->id, "visit:{$snap->visit_id}");
@@ -2108,11 +2148,17 @@ class BedahService
         $this->assertVisitPackageEditable($snap);
 
         return DB::transaction(function () use ($item, $snap, $data) {
-            $item->update(array_filter([
+            // pos_kwitansi: hanya untuk OBAT; dikirim → terapkan apa adanya (termasuk null
+            // untuk reset ke default master). array_key_exists agar null sah membatalkan pos.
+            $patch = array_filter([
                 'quantity'   => isset($data['quantity'])   ? (int) $data['quantity']   : null,
                 'unit_price' => isset($data['unit_price']) ? (float) $data['unit_price'] : null,
                 'notes'      => $data['notes'] ?? null,
-            ], fn ($v) => $v !== null));
+            ], fn ($v) => $v !== null);
+            if (array_key_exists('pos_kwitansi', $data) && $item->item_type === VisitSurgeryPackageItem::TYPE_MEDICATION) {
+                $patch['pos_kwitansi'] = $data['pos_kwitansi'] ?: null;
+            }
+            $item->update($patch);
             $snap->recalcTotalBasePrice();
             $this->log(auth('api')->id(), 'UPDATE_VISIT_PACKAGE_ITEM', VisitSurgeryPackageItem::class, $item->id);
 

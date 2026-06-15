@@ -1027,11 +1027,22 @@ function hydratePerioperative(rec) {
 const visitPackages = ref([])         // [{ id, package_name, sell_price, total_base_price, discount_amount, items[] }]
 const vpProcOptions = ref([])         // {id, name, code} master tindakan (tarif metode bayar)
 const vpBhpOptions = ref([])          // {id, name, code} master BHP
+const vpMedOptions = ref([])          // {id, name, code} master obat (komposisi)
 const vpBusy = ref(false)
-// Form "tambah komponen" per-kartu (key = snapshot id) → {type, itemId, qty}.
+// Pos kwitansi obat komposisi — operator memilih saat input obat ke paket.
+// KODE dikirim ke backend; jadi kategori (pos) baris obat di kwitansi (tetap terserap).
+const VP_POS_OPTS = [
+  { v: 'OBAT_TINDAKAN', l: 'Obat Tindakan' },
+  { v: 'OBAT_INJEKSI',  l: 'Obat Injeksi' },
+  { v: 'OBAT_PULANG',   l: 'Obat Pulang' },
+]
+// Label kategori (mis. "Obat Pulang" dari default master) → KODE pos, agar dropdown
+// menampilkan pos efektif walau pos_kwitansi baris masih NULL (ikut master).
+const posCodeFromLabel = (label) => VP_POS_OPTS.find((o) => o.l === label)?.v || 'OBAT_PULANG'
+// Form "tambah komponen" per-kartu (key = snapshot id) → {type, itemId, qty, pos}.
 const vpAddForm = reactive({})
 function vpForm(snapId) {
-  if (!vpAddForm[snapId]) vpAddForm[snapId] = { type: 'PROCEDURE', itemId: '', qty: 1 }
+  if (!vpAddForm[snapId]) vpAddForm[snapId] = { type: 'PROCEDURE', itemId: '', qty: 1, pos: 'OBAT_TINDAKAN' }
   return vpAddForm[snapId]
 }
 // Pilihan paket utk "Tambah Paket" (semua paket aktif; dokter sudah pilih 1 di planning).
@@ -1081,6 +1092,12 @@ async function loadVpPickerOptions(visitId) {
     const rows = data.data?.data ?? data.data ?? []
     vpBhpOptions.value = rows.map((b) => ({ id: b.id, name: b.name, code: b.code }))
   } catch { vpBhpOptions.value = [] }
+  // Obat: master obat untuk komposisi (Obat Tindakan/Injeksi yang dipakai saat operasi).
+  try {
+    const { data } = await masterApi.obat.list({ per_page: 1000, active: 1 })
+    const rows = data.data?.data ?? data.data ?? []
+    vpMedOptions.value = rows.map((m) => ({ id: m.id, name: m.name, code: m.code }))
+  } catch { vpMedOptions.value = [] }
   // Daftar paket untuk "Tambah Paket" (mis. paket anestesi TIVA di samping Phaco).
   // Pakai master paket-bedah dgn visit_id → dapat resolved_variants per-penjamin.
   try {
@@ -1094,7 +1111,10 @@ async function loadVpPickerOptions(visitId) {
 }
 // Opsi item utk form-tambah satu kartu (berdasar type form kartu itu).
 function vpOptionsFor(snapId) {
-  return vpForm(snapId).type === 'BHP' ? vpBhpOptions.value : vpProcOptions.value
+  const t = vpForm(snapId).type
+  if (t === 'BHP') return vpBhpOptions.value
+  if (t === 'MEDICATION') return vpMedOptions.value
+  return vpProcOptions.value
 }
 // Paket yang belum dipakai pasien (sembunyikan yang sudah ter-snapshot).
 const vpAvailablePackages = computed(() => {
@@ -1109,10 +1129,13 @@ async function vpAddItem(snap) {
   if (!visitId || !form.itemId || vpBusy.value) { toast('w', 'Pilih item dulu'); return }
   vpBusy.value = true
   try {
-    const { data } = await bedahApi.addVisitPackageItem(visitId, {
+    const payload = {
       visit_surgery_package_id: snap.id,
       item_type: form.type, item_id: form.itemId, quantity: Math.max(1, form.qty || 1),
-    })
+    }
+    // Pos kwitansi hanya untuk OBAT (Obat Tindakan/Injeksi/Pulang).
+    if (form.type === 'MEDICATION') payload.pos_kwitansi = form.pos || 'OBAT_TINDAKAN'
+    const { data } = await bedahApi.addVisitPackageItem(visitId, payload)
     if (Array.isArray(data.data)) visitPackages.value = data.data
     form.itemId = ''; form.qty = 1
     toast('s', 'Komponen paket ditambah')
@@ -1133,6 +1156,19 @@ async function vpUpdateQty(item, qty) {
     if (selP.value?.visitId) await loadVisitPackage(selP.value.visitId)
   }
   finally { vpBusy.value = false }
+}
+// Ubah pos kwitansi obat komposisi (Obat Tindakan/Injeksi/Pulang) → kategori baris obat
+// di kwitansi Kasir. Tetap terserap paket (hanya label/pos, tak ubah harga/diskon).
+async function vpUpdatePos(item, pos) {
+  if (vpBusy.value) { if (selP.value?.visitId) await loadVisitPackage(selP.value.visitId); return }
+  vpBusy.value = true
+  try {
+    const { data } = await bedahApi.updateVisitPackageItem(item.id, { pos_kwitansi: pos || null })
+    if (Array.isArray(data.data)) visitPackages.value = data.data
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal ubah pos')
+    if (selP.value?.visitId) await loadVisitPackage(selP.value.visitId)
+  } finally { vpBusy.value = false }
 }
 async function vpRemoveItem(item) {
   if (vpBusy.value) return
@@ -1184,19 +1220,9 @@ function normalizePosisi(v) {
   if (s === 'OS' || s.endsWith(' OS')) return 'OS'
   return ''
 }
-// Pos kwitansi per-obat — operator menentukan klasifikasi tagihan saat input.
-// '' = Otomatis (ikut master tarif obat). Disimpan sebagai KODE ke backend.
-const POS_OPTS = [
-  { v: '',              l: 'Otomatis' },
-  { v: 'OBAT_PULANG',   l: 'Obat Pulang' },
-  { v: 'OBAT_TINDAKAN', l: 'Obat Tindakan' },
-  { v: 'OBAT_INJEKSI',  l: 'Obat Injeksi' },
-]
-const posLabelOf = (v) => POS_OPTS.find((o) => o.v === v)?.l ?? 'Otomatis'
-
 // Baris obat baru dgn default aturan pakai (diedit inline di tabel, sama utk obat paket).
 function blankObatRow(medication_id = '', nama = '') {
-  return { medication_id, nama, jumlah: 1, dosis: '1 tetes', freq: '2×/hari', dur: '7 hari', rute: 'OD', pos: '', fromPaket: false }
+  return { medication_id, nama, jumlah: 1, dosis: '1 tetes', freq: '2×/hari', dur: '7 hari', rute: 'OD', fromPaket: false }
 }
 
 const newObat = ref({ medication_id: '', nama: '' })
@@ -1255,8 +1281,6 @@ async function kirimResep() {
       frequency:     o.freq || null,
       route:         o.rute || null,
       duration_days: parseDurDays(o.dur),
-      // Pos kwitansi pilihan operator (kosong = ikut master tarif obat).
-      pos_kwitansi:  o.pos || null,
       notes:         null,
       // Obat dari paket → kandidat terserap ke harga paket (backend set is_bedah
       // bersyarat bila pasien berpaket). Obat manual → bundled=false → tetap ditagih.
@@ -1297,7 +1321,6 @@ async function loadResepPasca(recordId) {
         freq:    it.frequency ?? '',
         dur:     formatDur(it.duration_days),
         rute:    it.route ?? '',
-        pos:     it.pos_kwitansi ?? '',
         fromPaket: !!it.from_paket,
       }))
       selP.value.resepSent = true
@@ -1369,7 +1392,6 @@ function applyPaketObat() {
       freq:    it.frequency ?? '2×/hari',
       dur:     formatDur(it.duration_days),
       rute:    normalizePosisi(it.route) || 'OD',
-      pos:     '',
       fromPaket: true,
     })
     existing.add(it.medication_id)
@@ -2093,16 +2115,34 @@ function mulaiBack() { mulaiStep.value = 1 }
 
                     <!-- Ringkasan harga paket & diskon -->
                     <div class="bd-vp-summary">
-                      <span>Harga paket: <b>{{ fmtRp2(snap.sell_price) }}</b></span>
+                      <!-- Tanpa tarif paket (sell_price 0) → komponen ditagih PENUH, TIDAK ada
+                           diskon. Tampilkan harga paket = total komponen & diskon Rp 0 (jangan
+                           tampil "diskon = total" yang menyesatkan seolah gratis). -->
+                      <span>Harga paket: <b>{{ fmtRp2(Number(snap.sell_price) > 0 ? snap.sell_price : snap.total_base_price) }}</b></span>
                       <span>Total komponen: <b>{{ fmtRp2(snap.total_base_price) }}</b></span>
-                      <span class="bd-vp-disc">Diskon: <b>{{ fmtRp2(snap.discount_amount) }}</b></span>
+                      <span class="bd-vp-disc">Diskon: <b>{{ Number(snap.sell_price) > 0 ? fmtRp2(snap.discount_amount) : 'Rp 0' }}</b></span>
+                      <span v-if="Number(snap.sell_price) <= 0" class="bd-vp-type-tag" title="Paket belum punya tarif jual per penjamin — seluruh komponen ditagih penuh ke pasien, tanpa diskon paket">tanpa tarif → ditagih penuh</span>
                     </div>
 
                     <table class="bd-tbl" v-if="snap.items.length">
                       <thead><tr><th>Jenis</th><th>Item</th><th>Tarif</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
                       <tbody>
                         <tr v-for="it in snap.items" :key="it.id">
-                          <td><span class="bd-vp-type" :class="it.item_type.toLowerCase()">{{ it.item_type === 'PROCEDURE' ? 'Tindakan' : it.item_type }}</span></td>
+                          <td>
+                            <!-- OBAT: pos kwitansi bisa diubah (Obat Tindakan/Injeksi/Pulang) → kategori di kwitansi.
+                                 Lainnya: kategori Buku Tarif (read-only). -->
+                            <select
+                              v-if="it.item_type === 'MEDICATION' && it.editable && !selP.laporanFinalized"
+                              class="bd-select bd-select-sm" style="width:130px"
+                              :value="it.pos_kwitansi || posCodeFromLabel(it.category)"
+                              :disabled="vpBusy"
+                              title="Pos kwitansi obat (kategori di kwitansi) — tetap terserap paket"
+                              @change="vpUpdatePos(it, $event.target.value)"
+                            >
+                              <option v-for="p in VP_POS_OPTS" :key="p.v" :value="p.v">{{ p.l }}</option>
+                            </select>
+                            <span v-else class="bd-vp-type" :class="it.item_type.toLowerCase()">{{ it.category || (it.item_type === 'PROCEDURE' ? 'Tindakan' : it.item_type) }}</span>
+                          </td>
                           <td>{{ it.item_name }}</td>
                           <td>{{ fmtRp2(it.unit_price) }}</td>
                           <td>
@@ -2123,20 +2163,24 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <div v-else class="bd-tbl-empty">Belum ada komponen.</div>
 
                     <div v-if="!selP.laporanFinalized" class="bd-bhp-add">
-                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).type" style="width:110px">
+                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).type" style="width:104px">
                         <option value="PROCEDURE">Tindakan</option>
                         <option value="BHP">BHP</option>
+                        <option value="MEDICATION">Obat</option>
                       </select>
                       <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).itemId" style="flex:1">
-                        <option value="">-- Pilih {{ vpForm(snap.id).type === 'BHP' ? 'BHP' : 'Tindakan' }} --</option>
+                        <option value="">-- Pilih {{ vpForm(snap.id).type === 'BHP' ? 'BHP' : (vpForm(snap.id).type === 'MEDICATION' ? 'Obat' : 'Tindakan') }} --</option>
                         <option v-for="o in vpOptionsFor(snap.id)" :key="o.id" :value="o.id">{{ o.code ? `[${o.code}] ` : '' }}{{ o.name }}</option>
+                      </select>
+                      <select v-if="vpForm(snap.id).type === 'MEDICATION'" class="bd-select bd-select-sm" v-model="vpForm(snap.id).pos" style="width:128px" title="Pos kwitansi obat ini">
+                        <option v-for="p in VP_POS_OPTS" :key="p.v" :value="p.v">{{ p.l }}</option>
                       </select>
                       <input type="number" class="bd-input bd-input-sm" v-model.number="vpForm(snap.id).qty" min="1" style="width:54px" />
                       <button class="bd-btn-add" @click="vpAddItem(snap)" :disabled="vpBusy">+ Tambah</button>
                     </div>
                   </div>
 
-                  <p v-if="visitPackages.length" class="bd-vp-hint">Ubah/tambah/kurang Tindakan & BHP tiap paket. Memengaruhi diskon paket di kwitansi; tagihan komponen tetap dari pemakaian aktual.</p>
+                  <p v-if="visitPackages.length" class="bd-vp-hint">Ubah/tambah/kurang Tindakan, BHP & Obat tiap paket. Untuk Obat pilih pos kwitansi (Obat Tindakan/Injeksi/Pulang) — jadi kategori di kwitansi, tetap terserap paket. Memengaruhi diskon paket di kwitansi.</p>
 
                   <!-- Tambah paket (mis. paket anestesi TIVA di samping Phaco) -->
                   <div v-if="!selP.laporanFinalized" class="bd-vp-addpkg">
@@ -2633,7 +2677,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </p>
 
                   <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length">
-                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Signa</th><th>Durasi</th><th>Mata</th><th>Pos Kwitansi</th><th></th></tr></thead>
+                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Signa</th><th>Durasi</th><th>Mata</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="(o, i) in selP.obatPasca" :key="`${o.medication_id}-${i}`">
                         <td>{{ o.nama }} <span v-if="o.fromPaket && hasVisitPaket" class="bd-eye-pill" title="Termasuk harga paket">paket</span></td>
@@ -2644,10 +2688,9 @@ function mulaiBack() { mulaiStep.value = 1 }
                           <td><input class="bd-input bd-input-sm" v-model="o.freq" list="bdSignaOpts" autocomplete="off" placeholder="2×/hari" style="width:96px" title="Signa / aturan pakai" /></td>
                           <td><input class="bd-input bd-input-sm" v-model="o.dur" list="bdDurasiOpts" autocomplete="off" placeholder="7 hari" style="width:84px" title="Durasi — pilih atau ketik (mis. 12 hari)" /></td>
                           <td><select class="bd-select bd-select-sm" v-model="o.rute" title="Posisi mata (kosong jika bukan tetes)"><option value="">—</option><option value="OD">OD</option><option value="OS">OS</option><option value="ODS">ODS</option></select></td>
-                          <td><select class="bd-select bd-select-sm" v-model="o.pos" style="width:118px" title="Pos kwitansi obat — Otomatis mengikuti master tarif obat"><option v-for="p in POS_OPTS" :key="p.v" :value="p.v">{{ p.l }}</option></select></td>
                         </template>
                         <template v-else>
-                          <td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td><td>{{ posLabelOf(o.pos) }}</td>
+                          <td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
                         </template>
                         <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
