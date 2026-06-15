@@ -991,12 +991,16 @@ class KasirService
                 }
                 $price = $this->getPrice('bhp', $bhp->bhp_item_id, $guarantorType, $insurerId);
                 $total = $price * $usedQty;
-                $label = $bhp->bhpItem?->name ?? 'BHP';
+                // withTrashed (resolusi lokal, TANPA ubah relasi bhpItem yg juga dipakai
+                // FarmasiService): nama & kategori BHP pemakaian operasi tetap tampil di
+                // kwitansi walau master di-soft-delete setelah dipakai.
+                $bhpMaster = BhpItem::withTrashed()->find($bhp->bhp_item_id);
+                $label = $bhpMaster?->name ?? 'BHP';
                 $lines[] = [
                     'item_type'    => 'BHP',
                     // Kelompok kwitansi = sub-kategori item (BAHAN HABIS PAKAI/CSSD/INSTRUMENT)
                     // → konsisten dgn Buku Tarif + billing_categories (seed 2026_07_14).
-                    'category'     => $this->bhpBillingCategory($bhp->bhpItem?->category),
+                    'category'     => $this->bhpBillingCategory($bhpMaster?->category),
                     'reference_id' => $bhp->id,
                     'description'  => $label,    // tanpa suffix kategori
                     'quantity'     => $usedQty,
@@ -1050,7 +1054,12 @@ class KasirService
         foreach ($items as $pi) {
             if (isset($alreadyBilled[$pi->item_id])) continue;
 
-            $bhp = BhpItem::find($pi->item_id);
+            // withTrashed: BHP master yang di-soft-delete setelah snapshot dibuat tetap
+            // ditagih (komponen historis yg benar-benar dipakai pasien) — kalau pakai
+            // find() biasa, baris BHP HILANG dari kwitansi ("bhp tidak lengkap"). Harga
+            // tetap live dari bhp_tariffs (independen status master). Hard-delete sejati
+            // (tak ada walau withTrashed) → tetap skip (selaras basis diskon di bawah).
+            $bhp = BhpItem::withTrashed()->find($pi->item_id);
             if (! $bhp) {
                 continue;
             }
@@ -1098,7 +1107,8 @@ class KasirService
 
         $lines = [];
         foreach ($items as $pi) {
-            $iol = \App\Models\IolItem::find($pi->item_id);
+            // withTrashed: lihat catatan buildPaketBhpLines (komponen snapshot historis).
+            $iol = \App\Models\IolItem::withTrashed()->find($pi->item_id);
             if (! $iol) {
                 continue;
             }
@@ -1160,7 +1170,8 @@ class KasirService
 
         $lines = [];
         foreach ($items as $pi) {
-            $med = Medication::find($pi->item_id);
+            // withTrashed: lihat catatan buildPaketBhpLines (komponen snapshot historis).
+            $med = Medication::withTrashed()->find($pi->item_id);
             if (! $med) {
                 continue;
             }
@@ -1224,7 +1235,9 @@ class KasirService
                 if (isset($billedProcIds[$it->item_id])) {
                     continue; // sudah ditagih lewat visit_services
                 }
-                $proc  = Procedure::find($it->item_id);
+                // withTrashed: nama & kategori prosedur tetap tampil walau master
+                // di-soft-delete (prosedur memang selalu ditagih lewat getPrice).
+                $proc  = Procedure::withTrashed()->find($it->item_id);
                 $qty   = (int) ($it->quantity ?? 1);
                 $price = $this->getPrice('procedure', $it->item_id, $guarantorType, $insurerId);
                 $total = $price * $qty;
@@ -1492,10 +1505,11 @@ class KasirService
                     }
                     // Paket BEDAH: obat ditagih dari snapshot (buildPaketObatLines) → masuk
                     // basis penuh (qty snapshot), sama perlakuan PROCEDURE/BHP/IOL → net = sell.
-                    // Mirror buildPaketObatLines: obat yang master Medication-nya tak ada
-                    // (dihapus/nonaktif sejak snapshot) TIDAK ditagih → jangan hitung di basis,
-                    // kalau tidak over-discount (net < harga jual paket). Lihat bug orphan 5.000.
-                    if (! Medication::find($it->item_id)) {
+                    // Mirror buildPaketObatLines (withTrashed): obat yang master-nya HARD-deleted
+                    // (tak ada walau withTrashed) TIDAK ditagih → jangan hitung di basis, kalau
+                    // tidak over-discount (net < harga jual paket). Soft-delete tetap ditagih +
+                    // ikut basis (konsisten). Lihat bug orphan 5.000.
+                    if (! Medication::withTrashed()->find($it->item_id)) {
                         continue;
                     }
                     // Tak lagi jadi baris tagihan (dihapus di Kasir) → jangan hitung basis.
@@ -1521,10 +1535,13 @@ class KasirService
                 // (dihapus/nonaktif sejak snapshot) TIDAK ditagih → jangan hitung di basis, kalau
                 // tidak over-discount (net < harga jual paket). PROCEDURE TETAP dihitung karena
                 // buildPaketProcedureLines tetap menagihnya (pakai getPrice) walau master tak ada.
-                if ($it->item_type === 'BHP' && ! BhpItem::find($it->item_id)) {
+                // withTrashed mirror buildPaketBhpLines/buildPaketIolLines: hanya HARD-delete
+                // sejati (tak ada walau withTrashed) yang di-skip dari basis. Soft-delete tetap
+                // ditagih + ikut basis → net = sell.
+                if ($it->item_type === 'BHP' && ! BhpItem::withTrashed()->find($it->item_id)) {
                     continue;
                 }
-                if ($it->item_type === 'IOL' && ! \App\Models\IolItem::find($it->item_id)) {
+                if ($it->item_type === 'IOL' && ! \App\Models\IolItem::withTrashed()->find($it->item_id)) {
                     continue;
                 }
                 // Tak lagi jadi baris tagihan → jangan hitung basis (total tetap = harga paket).

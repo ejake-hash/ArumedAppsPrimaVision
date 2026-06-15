@@ -55,11 +55,16 @@ class VisitSurgeryPackageItem extends Model
     /** Resolve item terkait (Procedure/BhpItem/IolItem/Medication). */
     public function resolveItem(): ?Model
     {
+        // withTrashed: snapshot = rekaman saat-itu komponen yang BENAR-BENAR dipakai
+        // pasien. Master yang di-soft-delete BELAKANGAN (dikeluarkan dari katalog)
+        // tak boleh menghapus identitas komponen historis — dgn find() biasa nama &
+        // kategori jadi "-"/"BHP" (orphan semu) padahal datanya masih ada. Keempat
+        // model memakai SoftDeletes.
         return match ($this->item_type) {
-            self::TYPE_PROCEDURE  => Procedure::find($this->item_id),
-            self::TYPE_BHP        => BhpItem::find($this->item_id),
-            self::TYPE_IOL        => IolItem::find($this->item_id),
-            self::TYPE_MEDICATION => Medication::find($this->item_id),
+            self::TYPE_PROCEDURE  => Procedure::withTrashed()->find($this->item_id),
+            self::TYPE_BHP        => BhpItem::withTrashed()->find($this->item_id),
+            self::TYPE_IOL        => IolItem::withTrashed()->find($this->item_id),
+            self::TYPE_MEDICATION => Medication::withTrashed()->find($this->item_id),
             default               => null,
         };
     }
