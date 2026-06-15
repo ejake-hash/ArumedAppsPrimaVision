@@ -488,6 +488,51 @@ class QueueService
     }
 
     /**
+     * Lepas pasien yang ter-route ke BEDAH tapi KEHILANGAN jadwalnya (planning bedah
+     * dibatalkan dokter, atau SurgerySchedule dihapus/di-CANCELLED) → teruskan lewat
+     * alur normal: RAJAL → KASIR, RANAP → kembali ke baris RANAP (lihat resolveNext*).
+     *
+     * Tanpa ini pasien nyangkut di current_station=BEDAH: tak tampil di papan bedah
+     * (guard getPatientQueue menyembunyikan baris tanpa jadwal) dan tak pernah sampai
+     * Kasir. Operasi yang SUDAH mulai (IN_PROGRESS) / selesai TIDAK diganggu — hanya
+     * baris WAITING/CALLED yang dilepas.
+     *
+     * Idempoten & aman dipanggil dari dalam transaksi (advanceFromStation = nested-tx).
+     * @return bool true bila ada antrean bedah yang dilepas.
+     */
+    public function releaseUnscheduledBedah(Visit $visit): bool
+    {
+        $bedahQueue = Queue::byStation(Queue::STATION_BEDAH)
+            ->where('visit_id', $visit->id)
+            ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+            ->first();
+        if (! $bedahQueue) {
+            return false;
+        }
+
+        // Masih punya jadwal valid (belum dibatalkan) dari salah satu tautan? jangan lepas.
+        $visit->loadMissing('doctorExamination');
+        $schedIds = array_filter([
+            $visit->surgery_schedule_id,
+            $visit->doctorExamination?->surgery_schedule_id,
+        ]);
+        if ($schedIds && SurgerySchedule::whereIn('id', $schedIds)->where('status', '!=', 'CANCELLED')->exists()) {
+            return false;
+        }
+
+        $this->log(
+            auth('api')->id(),
+            'RELEASE_UNSCHEDULED_BEDAH',
+            Visit::class,
+            $visit->id,
+            "Pasien di BEDAH tanpa jadwal (planning bedah dibatalkan / jadwal dihapus) → diteruskan via alur normal"
+        );
+        // reportBpjs:false — transisi BEDAH→KASIR tak punya taskid BPJS (reportAntreanWaktu no-op).
+        $this->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH, reportBpjs: false);
+        return true;
+    }
+
+    /**
      * Kirim updatewaktu ke BPJS Antrean berdasarkan PERPINDAHAN station.
      *
      * taskid RESMI BPJS Antrol (Docs/Antrol.md:339-347 — tiap task = SATU titik

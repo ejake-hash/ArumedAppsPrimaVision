@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\BhpItem;
+use App\Models\DoctorExamination;
 use App\Models\DocumentTemplate;
 use App\Models\Icd10Code;
 use App\Models\DocumentType;
@@ -303,6 +304,11 @@ class BedahService
 
         $this->log(auth('api')->id(), 'UPDATE_JADWAL', SurgerySchedule::class, $id);
 
+        // Jadwal dibatalkan → pasien yang terlanjur ter-route ke BEDAH jangan nyangkut.
+        if ($schedule->status === 'CANCELLED') {
+            $this->releaseBedahForSchedule($id);
+        }
+
         return $schedule->fresh(['surgeryPackage', 'leadSurgeon']);
     }
 
@@ -314,8 +320,49 @@ class BedahService
             throw new \Exception('Jadwal tidak bisa dihapus — operasi sudah berjalan atau selesai.', 422);
         }
 
+        // Tangkap visit tertaut SEBELUM hapus (FK akan menggantung setelah delete).
+        $visitIds = $this->scheduleLinkedVisitIds($id);
+
         $schedule->delete();
+        // Lepas tautan menggantung agar tak ada referensi ke jadwal yang sudah tiada.
+        Visit::where('surgery_schedule_id', $id)->update(['surgery_schedule_id' => null]);
+        DoctorExamination::where('surgery_schedule_id', $id)->update(['surgery_schedule_id' => null]);
+
         $this->log(auth('api')->id(), 'DELETE_JADWAL', SurgerySchedule::class, $id);
+
+        // Pasien yang terlanjur ter-route ke BEDAH karena jadwal ini → teruskan ke
+        // alur normal (BEDAH→KASIR / kembali RANAP) supaya tak nyangkut tanpa jadwal.
+        foreach ($visitIds as $vid) {
+            $visit = Visit::find($vid);
+            if ($visit) {
+                $this->queueService->releaseUnscheduledBedah($visit);
+            }
+        }
+    }
+
+    /** Visit yang menunjuk sebuah jadwal bedah (lewat visit ATAU doctor_examination). */
+    private function scheduleLinkedVisitIds(string $scheduleId)
+    {
+        return Visit::where('surgery_schedule_id', $scheduleId)->pluck('id')
+            ->merge(DoctorExamination::where('surgery_schedule_id', $scheduleId)->pluck('visit_id'))
+            ->filter()
+            ->unique()
+            ->values();
+    }
+
+    /**
+     * Lepas pasien yang ter-route ke BEDAH karena jadwal ini, saat jadwal di-CANCELLED
+     * (schedule row masih ada). Delegasi ke QueueService::releaseUnscheduledBedah yang
+     * mengecek validitas jadwal (CANCELLED → dianggap tak valid) lalu teruskan alur normal.
+     */
+    private function releaseBedahForSchedule(string $scheduleId): void
+    {
+        foreach ($this->scheduleLinkedVisitIds($scheduleId) as $vid) {
+            $visit = Visit::find($vid);
+            if ($visit) {
+                $this->queueService->releaseUnscheduledBedah($visit);
+            }
+        }
     }
 
     /**

@@ -804,6 +804,15 @@ class DokterService
             // Handle planning-specific side-effects
             $this->handlePlanningFollowUp($visit, $data, $examination);
 
+            // Planning berubah DARI bedah → non-bedah: bila pasien sudah terlanjur
+            // ter-route ke stasiun BEDAH (current_station=BEDAH, antrean bedah aktif)
+            // sementara jadwalnya kini dibatalkan, jangan biarkan nyangkut (tak tampil
+            // di papan bedah tanpa jadwal, tak juga di Kasir) → teruskan ke alur normal
+            // (BEDAH→KASIR / kembali RANAP). No-op bila tak ada antrean bedah aktif.
+            if ($planning !== 'BEDAH') {
+                $this->queueService->releaseUnscheduledBedah($visit);
+            }
+
             $this->log($user->id, 'STORE_TAB4', DoctorExamination::class, $examination->id, "Planning: {$planning} — kunjungan {$visit->id}");
 
             return [
