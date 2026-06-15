@@ -22,6 +22,7 @@ class IgdTriageRecord extends Model
         'triage_level',
         'triage_color',
         'chief_complaint',
+        'arrival_mode',
         'td_sistol',
         'td_diastol',
         'nadi',
@@ -31,15 +32,24 @@ class IgdTriageRecord extends Model
         'gcs_e',
         'gcs_v',
         'gcs_m',
+        'keadaan_umum',
+        'kesadaran',
+        'akral',
+        'reflex_cahaya',
+        'pain_score',
+        'pain_scale_type',
+        'pain_location',
+        'pain_detail',
         'triaged_by_id',
         'triaged_at',
         'disposition',
     ];
 
     protected $casts = [
-        'suhu'       => 'decimal:1',
-        'spo2'       => 'decimal:2',
-        'triaged_at' => 'datetime',
+        'suhu'        => 'decimal:1',
+        'spo2'        => 'decimal:2',
+        'pain_detail' => 'array',
+        'triaged_at'  => 'datetime',
     ];
 
     public function visit(): BelongsTo

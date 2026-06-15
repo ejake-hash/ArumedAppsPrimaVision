@@ -57,6 +57,18 @@ class StationMappingSeeder extends Seeder
             ['BEDAH', 'RM-8.1', false, false, true],
             ['BEDAH', 'RM-8.2', false, false, true],
 
+            // RANAP (Rawat Inap — Phase 1, 3 form nakes-only)
+            ['RANAP', 'RM-3.5-RI',   true, true, true],
+            ['RANAP', 'RM-7.7-PAM',  true, true, true],
+            ['RANAP', 'RM-7.8-AAKRI', true, true, true],
+            // RANAP Phase 2 (Tier 2 keselamatan/kepatuhan)
+            ['RANAP', 'RM-2.9-JTH',  true, true, true],
+            ['RANAP', 'RM-2.4-EDU',  true, true, true],
+            ['RANAP', 'RM-2.7-REK',  true, true, true],
+            // RANAP Phase 3 (Tier 3 ARK)
+            ['RANAP', 'RM-2.5-SPD',  true, true, true],
+            ['RANAP', 'RM-2.6-TRF',  true, true, true],
+
             // FARMASI
             ['FARMASI', 'RM-4.1', false, false, true],
             ['FARMASI', 'RM-4.2', false, false, true],

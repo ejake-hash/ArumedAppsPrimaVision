@@ -275,6 +275,8 @@ class KlaimService
     public const CLAIM_DOC_CODES = [
         'RESUME_MEDIS', 'RESUME_KLAIM', 'LAPORAN_PEMBEDAHAN',
         'CATATAN_OPERASI_KATARAK', 'LAPORAN_OPERASI_VITREO_RETINA', 'CHECKLIST_KESIAPAN_BEDAH',
+        // Pengkajian Gawat Darurat (RM 3.7) — dokumen klinis pendukung klaim IGD BPJS.
+        'PENGKAJIAN_IGD_3_7',
     ];
 
     /** Status arsip dokumen — dikecualikan dari daftar berkas aktif. */

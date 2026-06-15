@@ -656,6 +656,15 @@ Route::prefix('v1')->group(function () {
             // SEP IGD (BPJS gawat darurat).
             Route::get('/{visitId}/sep',                  [IgdController::class, 'sepInfo'])->middleware('permission:igd.read');
             Route::post('/{visitId}/sep',                 [IgdController::class, 'generateSep'])->middleware('permission:igd.write');
+
+            // RM 3.7 — Asesmen/Pengkajian Gawat Darurat (terstruktur + dokumen ber-TTD).
+            Route::get('/{visitId}/assessment',           [IgdController::class, 'getAssessment'])->middleware('permission:igd.read');
+            Route::put('/{visitId}/assessment',           [IgdController::class, 'saveAssessment'])->middleware('permission:igd.write');
+            Route::post('/{visitId}/assessment/finalize', [IgdController::class, 'finalizeAssessment'])->middleware('permission:igd.write');
+
+            // Self-checkout IGD (hari libur/kasir tidak bertugas) — butuh hak kasir.
+            Route::get('/{visitId}/billing-preview',      [IgdController::class, 'billingPreview'])->middleware('permission:kasir.read');
+            Route::post('/{visitId}/self-checkout',       [IgdController::class, 'selfCheckout'])->middleware('permission:kasir.write');
         });
 
         // -----------------------------------------------------------------

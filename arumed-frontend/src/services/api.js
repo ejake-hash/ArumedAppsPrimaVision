@@ -742,6 +742,15 @@ export const igdApi = {
   // SEP IGD (BPJS gawat darurat)
   sepInfo:       (visitId)           => api.get(`/igd/${visitId}/sep`),
   generateSep:   (visitId, payload)  => api.post(`/igd/${visitId}/sep`, payload),
+
+  // RM 3.7 — Asesmen/Pengkajian Gawat Darurat
+  getAssessment:      (visitId)          => api.get(`/igd/${visitId}/assessment`),
+  saveAssessment:     (visitId, payload) => api.put(`/igd/${visitId}/assessment`, payload),
+  finalizeAssessment: (visitId, payload) => api.post(`/igd/${visitId}/assessment/finalize`, payload),
+
+  // Self-checkout IGD (hari libur / kasir tidak bertugas)
+  billingPreview: (visitId)          => api.get(`/igd/${visitId}/billing-preview`),
+  selfCheckout:   (visitId, payload) => api.post(`/igd/${visitId}/self-checkout`, payload),
 }
 
 /** Anjungan Mandiri (Kiosk — public, no auth) */
@@ -968,8 +977,8 @@ export const alatMedisApi = {
 export const inventoriStockApi = {
   list: (type, params) => api.get(`/inventori-farmasi/stock/${type}`, { params }),
   opname: (payload) => api.post('/inventori-farmasi/stock/opname', payload),
-  templateCsv: (type) => api.get(`/inventori-farmasi/stock/${type}/template-csv`, { responseType: 'blob' }),
-  exportCsv:   (type, location) => api.get(`/inventori-farmasi/stock/${type}/export-csv`, { params: location ? { location } : {}, responseType: 'blob' }),
+  templateCsv: (type, format) => api.get(`/inventori-farmasi/stock/${type}/template-csv`, { params: format ? { format } : {}, responseType: 'blob' }),
+  exportCsv:   (type, location, format) => api.get(`/inventori-farmasi/stock/${type}/export-csv`, { params: { ...(location ? { location } : {}), ...(format ? { format } : {}) }, responseType: 'blob' }),
   importCsv:   (type, file, location) => {
     const fd = new FormData()
     fd.append('file', file)

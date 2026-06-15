@@ -113,6 +113,7 @@ const router = createRouter({
             { path: 'bhp',  name: 'inventori-farmasi-bhp',  component: () => import('@/views/master-data/BhpView.vue'),  meta: { title: 'BHP' } },
             { path: 'iol',  name: 'inventori-farmasi-iol',  component: () => import('@/views/master-data/IolView.vue'),  meta: { title: 'IOL' } },
             { path: 'alat-medis', name: 'inventori-farmasi-alat-medis', component: () => import('@/views/inventori-farmasi/AlatMedisView.vue'), meta: { title: 'Alat Medis' } },
+            { path: 'data-stock', name: 'inventori-farmasi-data-stock', component: () => import('@/views/inventori-farmasi/DataStockView.vue'), meta: { title: 'Data Stock', permission: 'inventori_farmasi.read' } },
             { path: 'stock-opname', name: 'inventori-farmasi-stock-opname', component: () => import('@/views/inventori-farmasi/StockOpnameView.vue'), meta: { title: 'Stock Opname', permission: 'inventori_farmasi.read' } },
             { path: 'supplier', name: 'inventori-farmasi-supplier', component: () => import('@/views/inventori-farmasi/SupplierView.vue'), meta: { title: 'Supplier', permission: 'inventori_farmasi.read' } },
             { path: 'pembelian', name: 'inventori-farmasi-pembelian', component: () => import('@/views/inventori-farmasi/PembelianView.vue'), meta: { title: 'Pembelian', permission: 'inventori_farmasi.read' } },

@@ -1,9 +1,11 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { igdApi, admisiApi, masterApi } from '@/services/api'
+import KwitansiPrint from '@/components/kasir/KwitansiPrint.vue'
 import { useAuthStore } from '@/stores/authStore'
 import WilayahPicker from '@/components/master-data/WilayahPicker.vue'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
+import IgdAsesmenPanel from '@/components/igd/IgdAsesmenPanel.vue'
 
 const auth = useAuthStore()
 
@@ -43,6 +45,9 @@ const patientSearch = ref('')
 const showTriase = ref(false)
 const triaseForm = ref({})
 
+// Panel Pengkajian RM 3.7 (asesmen gawat darurat terstruktur + TTD)
+const showAsesmen = ref(false)
+
 // Modal disposisi
 const showDisposisi = ref(false)
 const dispForm = ref(emptyDispForm())
@@ -80,10 +85,42 @@ const TRIAGE_COLORS = [
   { code: 'HITAM',  label: 'Hitam — DOA',        hex: '#111827' },
 ]
 
+// Triase ATS (Australasian Triage Scale) — RM 3.7. Kategori 1..5 + waktu respons
+// target + warna papan + panduan kriteria ABCD (Airway/Breathing/Circulation/Disability).
+const ATS_CATEGORIES = [
+  { code: '1', label: 'Kategori 1', resp: 'Segera',     hex: '#dc2626', abcd: 'Henti jantung/napas · obstruksi jalan napas · distress napas berat · GCS <9 · syok berat.' },
+  { code: '2', label: 'Kategori 2', resp: '≤ 10 menit', hex: '#ea580c', abcd: 'Distress napas sedang · gangguan hemodinamik sedang · GCS 9–12 · nyeri berat.' },
+  { code: '3', label: 'Kategori 3', resp: '≤ 30 menit', hex: '#d97706', abcd: 'Distress napas ringan · hemodinamik ringan · GCS 13–14 · dehidrasi sedang.' },
+  { code: '4', label: 'Kategori 4', resp: '≤ 60 menit', hex: '#16a34a', abcd: 'Tanpa gangguan jalan napas/napas · hemodinamik stabil · GCS normal · gejala ringan.' },
+  { code: '5', label: 'Kategori 5', resp: '≤ 120 menit', hex: '#16a34a', abcd: 'Stabil · keluhan non-urgent · administratif.' },
+]
+function atsHex(code) { return ATS_CATEGORIES.find(c => c.code === String(code))?.hex || '#94a3b8' }
+
+const ARRIVAL_MODES = [
+  { code: 'KELUARGA', label: 'Keluarga' },
+  { code: 'SENDIRI',  label: 'Datang sendiri' },
+  { code: 'POLISI',   label: 'Polisi' },
+  { code: 'LAINNYA',  label: 'Lain-lain' },
+]
+
+// Skala nyeri. FLACC (anak <6 th) 5 parameter @0-2 → total 0-10.
+const PAIN_TYPES = [
+  { code: 'NRS',        label: 'NRS (Numeric, ≥6 th & dewasa)' },
+  { code: 'WONG_BAKER', label: 'Wong-Baker Faces (≥6 th & dewasa)' },
+  { code: 'FLACC',      label: 'FLACC (anak <6 th)' },
+]
+const FLACC_PARAMS = [
+  { key: 'wajah',     label: 'Wajah' },
+  { key: 'kaki',      label: 'Kaki' },
+  { key: 'aktivitas', label: 'Aktivitas' },
+  { key: 'menangis',  label: 'Menangis' },
+  { key: 'bersuara',  label: 'Bersuara' },
+]
+
 function emptyRegForm() {
   return {
     patient_id: '', patient_name: '', guarantor_type: 'UMUM', insurer_id: '',
-    chief_complaint: '', triage_color: '',
+    chief_complaint: '', triage_level: '', arrival_mode: '',
   }
 }
 
@@ -92,7 +129,7 @@ function emptyNewForm() {
     name: '', gender: 'L', dob_display: '', identity_type: 'KTP', nik: '',
     phone: '', province: '', address: '',
     guarantor_type: 'UMUM', bpjs_number: '',
-    chief_complaint: '', triage_color: '',
+    chief_complaint: '', triage_level: '', arrival_mode: '',
   }
 }
 
@@ -142,6 +179,7 @@ async function openDetail(visitId) {
   try {
     const { data } = await igdApi.detail(visitId)
     detail.value = data.data.visit
+    triaseSource.value = data.data.triase || null
     charges.value = data.data.charges || []
     runningBill.value = data.data.running_bill || { total: 0, billed: 0 }
     cpptEditId.value = null
@@ -225,7 +263,8 @@ async function submitRegister() {
       guarantor_type: regForm.value.guarantor_type,
       insurer_id: regForm.value.insurer_id || null,
       chief_complaint: regForm.value.chief_complaint || null,
-      triage_color: regForm.value.triage_color || null,
+      triage_level: regForm.value.triage_level || null,
+      arrival_mode: regForm.value.arrival_mode || null,
     }
     await igdApi.register(payload)
     showRegister.value = false
@@ -329,7 +368,8 @@ async function submitRegisterNew() {
       guarantor_type: f.guarantor_type,
       bpjs_number: f.guarantor_type === 'BPJS' ? (f.bpjs_number || null) : null,
       chief_complaint: f.chief_complaint || null,
-      triage_color: f.triage_color || null,
+      triage_level: f.triage_level || null,
+      arrival_mode: f.arrival_mode || null,
     })
     showRegister.value = false
     notify('Pasien baru terdaftar di IGD')
@@ -445,17 +485,43 @@ async function submitSep() {
 // TRIASE
 // ---------------------------------------------------------------------------
 function openTriase(row) {
+  // Prefill vital/kondisi dari catatan triase bila pasien yang sama sedang dibuka.
+  const t = (detail.value?.id === row.visit_id) ? (detail.value?.igd_triage_record || triaseSource.value) : null
   triaseForm.value = {
     visit_id: row.visit_id,
     name: row.name,
-    triage_color: row.triase_color || '',
-    triage_level: row.triase_level || '',
-    chief_complaint: row.chief_complaint || '',
-    td_sistol: null, td_diastol: null, nadi: null, suhu: null,
-    respirasi: null, spo2: null, gcs_e: null, gcs_v: null, gcs_m: null,
+    triage_level: String(row.triase_level || t?.triage_level || ''),
+    chief_complaint: row.chief_complaint || t?.chief_complaint || '',
+    arrival_mode: t?.arrival_mode || '',
+    td_sistol: t?.td_sistol ?? null, td_diastol: t?.td_diastol ?? null, nadi: t?.nadi ?? null,
+    suhu: t?.suhu ?? null, respirasi: t?.respirasi ?? null, spo2: t?.spo2 ?? null,
+    gcs_e: t?.gcs_e ?? null, gcs_v: t?.gcs_v ?? null, gcs_m: t?.gcs_m ?? null,
+    keadaan_umum: t?.keadaan_umum || '', kesadaran: t?.kesadaran || '',
+    akral: t?.akral || '', reflex_cahaya: t?.reflex_cahaya || '',
+    pain_scale_type: t?.pain_scale_type || 'NRS',
+    pain_score: t?.pain_score ?? null,
+    pain_location: t?.pain_location || '',
+    flacc: { wajah: null, kaki: null, aktivitas: null, menangis: null, bersuara: null, ...(t?.pain_detail || {}) },
   }
   showTriase.value = true
 }
+
+// Sumber triase terakhir (diisi saat openDetail) untuk prefill modal triase.
+const triaseSource = ref(null)
+
+// Total FLACC otomatis (0-10) dari 5 sub-parameter.
+const flaccTotal = computed(() => {
+  const f = triaseForm.value?.flacc || {}
+  return FLACC_PARAMS.reduce((s, p) => s + (Number(f[p.key]) || 0), 0)
+})
+const painInterp = computed(() => {
+  const s = triaseForm.value?.pain_scale_type === 'FLACC' ? flaccTotal.value : Number(triaseForm.value?.pain_score)
+  if (s === null || Number.isNaN(s)) return ''
+  if (s === 0) return 'Tidak nyeri'
+  if (s <= 3) return 'Nyeri ringan'
+  if (s <= 6) return 'Nyeri sedang'
+  return 'Nyeri berat'
+})
 
 // v-model.number pada input yang dikosongkan menghasilkan '' (bukan null), yang
 // menggagalkan cast decimal di backend. Bersihkan: kosong/NaN → null.
@@ -466,17 +532,25 @@ function numOrNull(v) {
 }
 
 async function submitTriase() {
-  if (!triaseForm.value.triage_color) return notify('Pilih warna triase', false)
+  if (!triaseForm.value.triage_level) return notify('Pilih kategori triase (ATS 1–5)', false)
   busy.value = true
   try {
     const f = triaseForm.value
+    const isFlacc = f.pain_scale_type === 'FLACC'
+    const painScore = isFlacc ? flaccTotal.value : numOrNull(f.pain_score)
     await igdApi.triase(f.visit_id, {
-      triage_color: f.triage_color,
-      triage_level: f.triage_level || null,
+      triage_level: f.triage_level,
       chief_complaint: f.chief_complaint || null,
+      arrival_mode: f.arrival_mode || null,
       td_sistol: numOrNull(f.td_sistol), td_diastol: numOrNull(f.td_diastol), nadi: numOrNull(f.nadi),
       suhu: numOrNull(f.suhu), respirasi: numOrNull(f.respirasi), spo2: numOrNull(f.spo2),
       gcs_e: numOrNull(f.gcs_e), gcs_v: numOrNull(f.gcs_v), gcs_m: numOrNull(f.gcs_m),
+      keadaan_umum: f.keadaan_umum || null, kesadaran: f.kesadaran || null,
+      akral: f.akral || null, reflex_cahaya: f.reflex_cahaya || null,
+      pain_scale_type: f.pain_scale_type || null,
+      pain_score: painScore,
+      pain_location: f.pain_location || null,
+      pain_detail: isFlacc ? f.flacc : null,
     })
     showTriase.value = false
     notify('Triase disimpan')
@@ -487,6 +561,25 @@ async function submitTriase() {
   } finally {
     busy.value = false
   }
+}
+
+// ---------------------------------------------------------------------------
+// PENGKAJIAN RM 3.7 (asesmen gawat darurat)
+// ---------------------------------------------------------------------------
+function openAsesmen() {
+  if (detail.value) showAsesmen.value = true
+}
+
+// Dari panel asesmen → buka modal Triase pasien yang sedang dibuka.
+function asesmenEditTriase() {
+  if (!detail.value) return
+  openTriase({
+    visit_id: detail.value.id,
+    name: detail.value.patient?.name,
+    triase_color: detail.value.triase_color,
+    triase_level: detail.value.triase_level,
+    chief_complaint: triaseSource.value?.chief_complaint,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +627,76 @@ function openDisposisi() {
   dispForm.value = emptyDispForm()
   dispOptions.value = { packages: [], operators: [], anesthesiologists: [], locations: [] }
   rajalTargets.value = []
+  scEnabled.value = false
+  scPreview.value = null
+  scForm.value = { payment_method: 'CASH', cash_received: null }
   showDisposisi.value = true
+}
+
+// ── Self-checkout IGD (hari libur / kasir tidak bertugas) ──────────────────
+const scEnabled = ref(false)        // toggle "bayar di IGD"
+const scPreview = ref(null)         // ringkasan tagihan
+const scForm = ref({ payment_method: 'CASH', cash_received: null })
+const scLoading = ref(false)
+
+const canSelfCheckout = computed(() =>
+  auth.can('kasir.write') && ['PULANG', 'RUJUK'].includes(dispForm.value.disposition))
+const isBpjsSc = computed(() =>
+  (scPreview.value?.guarantor_type || detail.value?.guarantor_type) === 'BPJS')
+const scChange = computed(() => {
+  const due = scPreview.value?.amount_due || 0
+  return Math.max(0, (Number(scForm.value.cash_received) || 0) - due)
+})
+
+async function toggleSelfCheckout(on) {
+  scEnabled.value = on
+  if (on && !scPreview.value) await loadBillingPreview()
+}
+async function loadBillingPreview() {
+  if (!detail.value) return
+  scLoading.value = true
+  try {
+    const { data } = await igdApi.billingPreview(detail.value.id)
+    scPreview.value = data.data
+  } catch (e) {
+    notify(errMsg(e, 'Gagal memuat tagihan'), false)
+    scEnabled.value = false
+  } finally {
+    scLoading.value = false
+  }
+}
+
+async function submitSelfCheckout() {
+  const f = dispForm.value
+  const payload = { disposition: f.disposition, notes: f.notes || null }
+  if (!isBpjsSc.value) {
+    payload.payment_method = scForm.value.payment_method
+    payload.paid_amount = scPreview.value?.amount_due ?? null
+    if (scForm.value.payment_method === 'CASH') payload.cash_received = numOrNull(scForm.value.cash_received)
+  }
+  busy.value = true
+  try {
+    const { data } = await igdApi.selfCheckout(detail.value.id, payload)
+    showDisposisi.value = false
+    notify('Pembayaran tercatat — mencetak kwitansi')
+    printKwitansi(data.data?.receipt)
+    detail.value = null
+    await loadBoard()
+  } catch (e) {
+    notify(errMsg(e, 'Self-checkout gagal'), false)
+  } finally {
+    busy.value = false
+  }
+}
+
+// Data kwitansi (struktur generateReceipt) → dirender komponen KwitansiPrint
+// (sama persis dgn KasirView). Set data → cetak via @media print.
+const kwitansiData = ref(null)
+async function printKwitansi(r) {
+  if (!r) return
+  kwitansiData.value = r
+  await nextTick()
+  setTimeout(() => window.print(), 120)
 }
 
 const DISPOSITIONS = [
@@ -578,6 +740,7 @@ const dispValid = computed(() => {
 })
 
 const dispSubmitLabel = computed(() => {
+  if (scEnabled.value && canSelfCheckout.value) return 'Proses, Bayar & Cetak Kwitansi'
   if (dispForm.value.disposition === 'BEDAH') return 'Proses & Kirim ke Bedah'
   if (dispForm.value.disposition === 'RAJAL') return 'Proses & Buat Kunjungan Poli'
   return 'Proses Disposisi'
@@ -585,6 +748,8 @@ const dispSubmitLabel = computed(() => {
 
 async function submitDisposisi() {
   if (!detail.value || !dispValid.value) return
+  // Self-checkout IGD aktif (Pulang/Rujuk) → bayar + cetak kwitansi via KasirService.
+  if (scEnabled.value && canSelfCheckout.value) return submitSelfCheckout()
   const f = dispForm.value
   const payload = { disposition: f.disposition, notes: f.notes || null }
   if (f.disposition === 'BEDAH') {
@@ -686,7 +851,8 @@ onMounted(loadBoard)
               <div class="br-top">
                 <span class="br-no">{{ row.queue_number }}</span>
                 <span class="br-name">{{ row.name }}</span>
-                <span v-if="row.triase_color" class="tri-pill" :style="{ background: colorHex(row.triase_color) }">{{ row.triase_color }}</span>
+                <span v-if="row.triase_level" class="tri-pill" :style="{ background: atsHex(row.triase_level) }">ATS {{ row.triase_level }}</span>
+                <span v-else-if="row.triase_color" class="tri-pill" :style="{ background: colorHex(row.triase_color) }">{{ row.triase_color }}</span>
                 <span v-else class="tri-pill tri-belum">BELUM TRIASE</span>
               </div>
               <div class="br-sub">
@@ -709,13 +875,17 @@ onMounted(loadBoard)
               <strong>{{ detail.patient?.name }}</strong>
               <span class="muted"> · {{ detail.patient?.no_rm }}</span>
             </div>
-            <button v-if="auth.can('igd.write')" class="btn btn-primary btn-press btn-sm" @click="openDisposisi">Disposisi</button>
+            <div style="display:flex; gap:6px;">
+              <button v-if="auth.can('igd.write')" class="btn btn-secondary btn-press btn-sm" @click="openAsesmen">Pengkajian RM 3.7</button>
+              <button v-if="auth.can('igd.write')" class="btn btn-primary btn-press btn-sm" @click="openDisposisi">Disposisi</button>
+            </div>
           </div>
 
           <div class="det-meta">
             <div><span class="lbl">Penjamin</span> {{ detail.guarantor_type }}</div>
             <div><span class="lbl">Triase</span>
-              <span v-if="detail.triase_color" class="tri-pill" :style="{ background: colorHex(detail.triase_color) }">{{ detail.triase_color }}</span>
+              <span v-if="detail.triase_level" class="tri-pill" :style="{ background: atsHex(detail.triase_level) }">ATS {{ detail.triase_level }}</span>
+              <span v-else-if="detail.triase_color" class="tri-pill" :style="{ background: colorHex(detail.triase_color) }">{{ detail.triase_color }}</span>
               <span v-else>—</span>
             </div>
             <div><span class="lbl">Datang</span> {{ detail.igd_arrival_at ? new Date(detail.igd_arrival_at).toLocaleString('id-ID') : '—' }}</div>
@@ -867,20 +1037,29 @@ onMounted(loadBoard)
             </select>
           </div>
 
-          <div class="field">
-            <label>Keluhan Utama</label>
-            <input v-model="regForm.chief_complaint" placeholder="mis. mata terkena cairan kimia" />
+          <div class="grid2">
+            <div class="field">
+              <label>Keluhan Utama</label>
+              <input v-model="regForm.chief_complaint" placeholder="mis. mata terkena cairan kimia" />
+            </div>
+            <div class="field">
+              <label>Cara Datang</label>
+              <select v-model="regForm.arrival_mode">
+                <option value="">— pilih —</option>
+                <option v-for="a in ARRIVAL_MODES" :key="a.code" :value="a.code">{{ a.label }}</option>
+              </select>
+            </div>
           </div>
 
           <div class="field">
-            <label>Triase Awal (opsional)</label>
+            <label>Triase Awal ATS (opsional)</label>
             <div class="tri-choices">
               <button
-                v-for="c in TRIAGE_COLORS" :key="c.code"
-                class="tri-choice" :class="{ sel: regForm.triage_color === c.code }"
+                v-for="c in ATS_CATEGORIES" :key="c.code"
+                class="tri-choice" :class="{ sel: regForm.triage_level === c.code }"
                 :style="{ '--c': c.hex }"
-                @click="regForm.triage_color = regForm.triage_color === c.code ? '' : c.code"
-              >{{ c.code }}</button>
+                @click="regForm.triage_level = regForm.triage_level === c.code ? '' : c.code"
+              >ATS {{ c.code }}</button>
             </div>
           </div>
         </div>
@@ -977,19 +1156,28 @@ onMounted(loadBoard)
             </p>
           </div>
 
-          <div class="field">
-            <label>Keluhan Utama</label>
-            <input v-model="newForm.chief_complaint" placeholder="mis. trauma mata" />
+          <div class="grid2">
+            <div class="field">
+              <label>Keluhan Utama</label>
+              <input v-model="newForm.chief_complaint" placeholder="mis. trauma mata" />
+            </div>
+            <div class="field">
+              <label>Cara Datang</label>
+              <select v-model="newForm.arrival_mode">
+                <option value="">— pilih —</option>
+                <option v-for="a in ARRIVAL_MODES" :key="a.code" :value="a.code">{{ a.label }}</option>
+              </select>
+            </div>
           </div>
           <div class="field">
-            <label>Triase Awal (opsional)</label>
+            <label>Triase Awal ATS (opsional)</label>
             <div class="tri-choices">
               <button
-                v-for="c in TRIAGE_COLORS" :key="c.code"
-                class="tri-choice" :class="{ sel: newForm.triage_color === c.code }"
+                v-for="c in ATS_CATEGORIES" :key="c.code"
+                class="tri-choice" :class="{ sel: newForm.triage_level === c.code }"
                 :style="{ '--c': c.hex }"
-                @click="newForm.triage_color = newForm.triage_color === c.code ? '' : c.code"
-              >{{ c.code }}</button>
+                @click="newForm.triage_level = newForm.triage_level === c.code ? '' : c.code"
+              >ATS {{ c.code }}</button>
             </div>
           </div>
         </div>
@@ -1002,41 +1190,104 @@ onMounted(loadBoard)
       </div>
     </div>
 
-    <!-- MODAL: TRIASE -->
+    <!-- MODAL: TRIASE (ATS) -->
     <div v-if="showTriase" class="modal-bg" @click.self="showTriase = false">
-      <div class="modal">
-        <div class="modal-head">Triase — {{ triaseForm.name }}</div>
+      <div class="modal modal-wide">
+        <div class="modal-head">Triase ATS — {{ triaseForm.name }}</div>
         <div class="modal-body">
+          <!-- Kategori ATS 1-5 -->
           <div class="field">
-            <label>Warna Triase <span class="req">*</span></label>
-            <div class="tri-choices">
+            <label>Kategori Triase (ATS) <span class="req">*</span></label>
+            <div class="ats-grid">
               <button
-                v-for="c in TRIAGE_COLORS" :key="c.code"
-                class="tri-choice" :class="{ sel: triaseForm.triage_color === c.code }"
+                v-for="c in ATS_CATEGORIES" :key="c.code"
+                class="ats-card" :class="{ sel: triaseForm.triage_level === c.code }"
                 :style="{ '--c': c.hex }"
-                @click="triaseForm.triage_color = c.code"
-              >{{ c.code }}</button>
+                @click="triaseForm.triage_level = c.code"
+              >
+                <span class="ats-top"><b>{{ c.label }}</b><span class="ats-resp">{{ c.resp }}</span></span>
+                <span class="ats-abcd">{{ c.abcd }}</span>
+              </button>
             </div>
           </div>
-          <div class="field">
-            <label>Keluhan Utama</label>
-            <input v-model="triaseForm.chief_complaint" />
+
+          <div class="grid2">
+            <div class="field">
+              <label>Cara Datang</label>
+              <select v-model="triaseForm.arrival_mode">
+                <option value="">— pilih —</option>
+                <option v-for="a in ARRIVAL_MODES" :key="a.code" :value="a.code">{{ a.label }}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Keluhan Utama</label>
+              <input v-model="triaseForm.chief_complaint" />
+            </div>
           </div>
+
+          <div class="ds-sub">Tanda Vital & Kesadaran</div>
           <div class="grid3">
             <div class="field"><label>TD Sistol</label><input v-model.number="triaseForm.td_sistol" type="number" /></div>
             <div class="field"><label>TD Diastol</label><input v-model.number="triaseForm.td_diastol" type="number" /></div>
             <div class="field"><label>Nadi</label><input v-model.number="triaseForm.nadi" type="number" /></div>
-            <div class="field"><label>Suhu</label><input v-model.number="triaseForm.suhu" type="number" step="0.1" /></div>
             <div class="field"><label>Respirasi</label><input v-model.number="triaseForm.respirasi" type="number" /></div>
+            <div class="field"><label>Suhu</label><input v-model.number="triaseForm.suhu" type="number" step="0.1" /></div>
             <div class="field"><label>SpO₂</label><input v-model.number="triaseForm.spo2" type="number" /></div>
             <div class="field"><label>GCS E</label><input v-model.number="triaseForm.gcs_e" type="number" /></div>
             <div class="field"><label>GCS V</label><input v-model.number="triaseForm.gcs_v" type="number" /></div>
             <div class="field"><label>GCS M</label><input v-model.number="triaseForm.gcs_m" type="number" /></div>
           </div>
+          <div class="grid2">
+            <div class="field">
+              <label>Keadaan Umum</label>
+              <select v-model="triaseForm.keadaan_umum">
+                <option value="">—</option><option>BAIK</option><option>SEDANG</option><option>LEMAH</option><option>BURUK</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Kesadaran</label>
+              <select v-model="triaseForm.kesadaran">
+                <option value="">—</option><option value="CM">Compos Mentis</option><option value="SOMNOLEN">Somnolen</option><option value="KOMA">Koma</option>
+              </select>
+            </div>
+            <div class="field"><label>Akral</label><input v-model="triaseForm.akral" placeholder="hangat / dingin" /></div>
+            <div class="field"><label>Refleks Cahaya</label><input v-model="triaseForm.reflex_cahaya" placeholder="+/+  -/-" /></div>
+          </div>
+
+          <div class="ds-sub">Skala Nyeri</div>
+          <div class="grid2">
+            <div class="field">
+              <label>Metode</label>
+              <select v-model="triaseForm.pain_scale_type">
+                <option v-for="p in PAIN_TYPES" :key="p.code" :value="p.code">{{ p.label }}</option>
+              </select>
+            </div>
+            <div class="field"><label>Lokasi Nyeri</label><input v-model="triaseForm.pain_location" /></div>
+          </div>
+          <!-- NRS / Wong-Baker: skor 0-10 -->
+          <div v-if="triaseForm.pain_scale_type !== 'FLACC'" class="field">
+            <label>Skor Nyeri (0–10) <span class="muted" v-if="painInterp">· {{ painInterp }}</span></label>
+            <div class="pain-scale">
+              <button v-for="n in 11" :key="n-1" class="pain-dot" :class="{ sel: triaseForm.pain_score === (n-1) }"
+                      @click="triaseForm.pain_score = (n-1)">{{ n-1 }}</button>
+            </div>
+          </div>
+          <!-- FLACC: 5 parameter @0-2 -->
+          <div v-else class="field">
+            <label>FLACC (anak &lt;6 th) — total otomatis: <b>{{ flaccTotal }}/10</b> <span class="muted" v-if="painInterp">· {{ painInterp }}</span></label>
+            <div class="grid3">
+              <div v-for="p in FLACC_PARAMS" :key="p.key" class="field">
+                <label>{{ p.label }}</label>
+                <select v-model.number="triaseForm.flacc[p.key]">
+                  <option :value="null">—</option><option :value="0">0</option><option :value="1">1</option><option :value="2">2</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost btn-press" @click="showTriase = false">Batal</button>
-          <button class="btn btn-primary btn-press" :disabled="busy || !triaseForm.triage_color" @click="submitTriase">Simpan Triase</button>
+          <button class="btn btn-primary btn-press" :disabled="busy || !triaseForm.triage_level" @click="submitTriase">Simpan Triase</button>
         </div>
       </div>
     </div>
@@ -1121,6 +1372,47 @@ onMounted(loadBoard)
             <label>Catatan <span v-if="dispForm.disposition === 'RAJAL' || dispForm.disposition === 'BEDAH'" class="muted">(indikasi / alasan rujuk — terdokumentasi RME)</span></label>
             <textarea v-model="dispForm.notes" rows="2" placeholder="resume singkat / alasan rujuk / indikasi operasi…"></textarea>
           </div>
+
+          <!-- SELF-CHECKOUT IGD (hari libur / kasir tidak bertugas) -->
+          <div v-if="canSelfCheckout" class="sc-box">
+            <label class="sc-toggle">
+              <input type="checkbox" :checked="scEnabled" @change="toggleSelfCheckout($event.target.checked)" />
+              <span>Kasir tidak bertugas — <b>bayar &amp; cetak kwitansi di IGD</b></span>
+            </label>
+            <template v-if="scEnabled">
+              <p v-if="scLoading" class="muted" style="margin:6px 0;">Memuat tagihan…</p>
+              <template v-else-if="scPreview">
+                <div class="sc-total">
+                  <span>Total Tagihan</span>
+                  <strong>{{ fmtRp(scPreview.total) }}</strong>
+                </div>
+                <div v-if="scPreview.amount_due !== scPreview.total" class="sc-line"><span>Sisa harus dibayar</span><span>{{ fmtRp(scPreview.amount_due) }}</span></div>
+
+                <template v-if="isBpjsSc">
+                  <p class="sc-note">Pasien <b>BPJS</b> — ditanggung penjamin, tanpa pembayaran tunai. Kwitansi (Rp 0) tetap tercetak &amp; tercatat di Kasir.</p>
+                </template>
+                <template v-else-if="scPreview.amount_due > 0">
+                  <div class="grid2" style="margin-top:6px;">
+                    <div class="field">
+                      <label>Metode Bayar</label>
+                      <select v-model="scForm.payment_method">
+                        <option value="CASH">Tunai</option>
+                        <option value="CREDIT_CARD">Kartu Debit/Kredit</option>
+                        <option value="TRANSFER">Transfer</option>
+                      </select>
+                    </div>
+                    <div class="field" v-if="scForm.payment_method === 'CASH'">
+                      <label>Tunai Diterima</label>
+                      <input v-model.number="scForm.cash_received" type="number" placeholder="0" />
+                    </div>
+                  </div>
+                  <div v-if="scForm.payment_method === 'CASH' && Number(scForm.cash_received)" class="sc-line"><span>Kembalian</span><span>{{ fmtRp(scChange) }}</span></div>
+                </template>
+                <p v-else class="sc-note">Tagihan Rp 0 — akan diselesaikan sebagai lunas (tanpa uang).</p>
+              </template>
+              <p class="muted" style="font-size:10px; margin:6px 0 0;">Tercatat di Riwayat Kasir &amp; invoice/kwitansi sama persis dengan Kasir.</p>
+            </template>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost btn-press" @click="showDisposisi = false">Batal</button>
@@ -1160,6 +1452,20 @@ onMounted(loadBoard)
         </div>
       </div>
     </div>
+
+    <!-- PANEL PENGKAJIAN RM 3.7 -->
+    <IgdAsesmenPanel
+      v-if="showAsesmen && detail"
+      :visit-id="detail.id"
+      :patient-name="detail.patient?.name"
+      :patient-no-rm="detail.patient?.no_rm"
+      @close="showAsesmen = false"
+      @saved="loadBoard"
+      @edit-triase="asesmenEditTriase"
+    />
+
+    <!-- KWITANSI CETAK (sama persis dgn KasirView) -->
+    <KwitansiPrint :data="kwitansiData" />
 
     <!-- TOAST -->
     <div v-if="toast" class="toast" :class="{ err: !toast.ok }">{{ toast.msg }}</div>
@@ -1282,6 +1588,27 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--g
 .tri-choices { display: flex; gap: 6px; flex-wrap: wrap; }
 .tri-choice { flex: 1; min-width: 70px; padding: 7px 4px; border: 2px solid var(--gb); border-radius: 7px; background: var(--bc); cursor: pointer; font-size: 11px; font-weight: 700; color: var(--tm); }
 .tri-choice.sel { border-color: var(--c); background: var(--c); color: #fff; }
+
+.modal-wide { width: 760px; }
+.ds-sub { font-size: 11px; font-weight: 700; color: var(--td); text-transform: uppercase; letter-spacing: .3px; margin: 10px 0 5px; padding-top: 6px; border-top: 1px dashed var(--gb); }
+.ats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; }
+.ats-card { text-align: left; padding: 8px 9px; border: 2px solid var(--gb); border-radius: 9px; background: var(--bc); cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.ats-card.sel { border-color: var(--c); box-shadow: inset 4px 0 0 var(--c); background: color-mix(in srgb, var(--c) 8%, var(--bc)); }
+.ats-top { display: flex; justify-content: space-between; align-items: center; }
+.ats-top b { font-size: 12px; color: var(--c); }
+.ats-resp { font-size: 9.5px; font-weight: 700; color: #fff; background: var(--c); padding: 1px 6px; border-radius: 10px; }
+.ats-abcd { font-size: 9.5px; color: var(--tu); line-height: 1.3; }
+.pain-scale { display: flex; gap: 4px; flex-wrap: wrap; }
+.pain-dot { width: 30px; height: 30px; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bc); cursor: pointer; font-size: 12px; font-weight: 700; color: var(--tm); }
+.pain-dot.sel { background: var(--ga); border-color: var(--ga); color: #fff; }
+
+.sc-box { margin-top: 10px; padding: 10px; border: 1.5px dashed #0ea5e9; border-radius: 9px; background: #f0f9ff; }
+.sc-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--td); cursor: pointer; }
+.sc-toggle input { width: auto; }
+.sc-total { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; }
+.sc-total strong { font-size: 16px; color: #0369a1; }
+.sc-line { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--tm); margin-top: 3px; }
+.sc-note { font-size: 11px; color: #075985; background: #e0f2fe; padding: 6px 9px; border-radius: 7px; margin: 6px 0 0; }
 
 .disp-choices { display: flex; flex-direction: column; gap: 7px; margin-bottom: 0.8rem; }
 .disp-choice { display: flex; flex-direction: column; text-align: left; padding: 9px 11px; border: 2px solid var(--gb); border-radius: 9px; background: var(--bc); cursor: pointer; }

@@ -23,6 +23,7 @@ final class SectionRegistry
             'bedah'        => ['laporan_bedah', 'consent_operasi'],
             'kasir'        => ['invoice_dokumen'],
             'farmasi'      => ['resep_dokumen'],
+            'ranap'        => ['pengantar_dirawat', 'pengkajian_awal', 'asuhan_keperawatan', 'keselamatan', 'edukasi', 'obat', 'transfer', 'ringkasan_pulang', 'consent_ranap'],
         ];
     }
 

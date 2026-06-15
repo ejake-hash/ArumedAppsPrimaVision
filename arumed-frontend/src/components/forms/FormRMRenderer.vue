@@ -69,6 +69,9 @@ const submitting  = ref(false)
 const submittedDocId = ref(null)
 const submitInfo  = ref(null)      // hasil { sync: { synced, skipped, warnings } }
 const finalizing  = ref(false)
+const autosaving  = ref(false)     // indikator "menyimpan…" (auto-save draft accordion)
+const autosaveReady = ref(false)   // true setelah openAndLoad selesai (cegah autosave saat prefill awal)
+let   autosaveTimer = null
 
 const isInput  = computed(() => props.template.kind === 'INPUT' || props.template.kind === 'HYBRID')
 const isOutput = computed(() => props.template.kind === 'OUTPUT' || props.template.kind === 'HYBRID')
@@ -101,6 +104,46 @@ const visibleFields = computed(() => {
     return true
   })
 })
+
+// ── UX accordion (form besar RANAP) — field dikelompokkan per atribut `group`.
+// BACKWARD-COMPATIBLE: form tanpa `group` (mis. Resume RJ) → hasGroups=false →
+// render datar seperti semula (tak ada accordion / autosave).
+const hasGroups = computed(() => visibleFields.value.some(f => !!f.group))
+const activeGroup = ref(null)
+
+const isEmptyVal = (v) => Array.isArray(v) ? v.length === 0 : String(v ?? '').trim() === ''
+
+// Kelompok field: bucket visibleFields by `group` (urutan kemunculan pertama).
+// Tiap grup: indikator terisi (✓ semua / • sebagian / ○ kosong) + skor live
+// (computed_sum + computed_threshold) untuk header (Norton/MST).
+const fieldGroups = computed(() => {
+  const order = []
+  const map = {}
+  for (const f of visibleFields.value) {
+    const g = f.group || 'Umum'
+    if (!map[g]) { map[g] = []; order.push(g) }
+    map[g].push(f)
+  }
+  return order.map((name) => {
+    const fields = map[name]
+    const inputs = fields.filter(f => !String(f.type ?? '').startsWith('computed_'))
+    const filled = inputs.filter(f => !isEmptyVal(formData.value[f.key])).length
+    const status = filled === 0 ? 'empty' : (filled === inputs.length ? 'full' : 'partial')
+    const sumF = fields.find(f => f.type === 'computed_sum')
+    const thrF = fields.find(f => f.type === 'computed_threshold')
+    return {
+      name, fields, status,
+      score: sumF ? (formData.value[sumF.key] ?? 0) : null,
+      scoreLabel: thrF ? (formData.value[thrF.key] ?? '') : '',
+    }
+  })
+})
+
+// Jaga activeGroup tetap valid saat daftar grup berubah.
+watch(fieldGroups, (groups) => {
+  if (!groups.length) { activeGroup.value = null; return }
+  if (!groups.some(g => g.name === activeGroup.value)) activeGroup.value = groups[0].name
+}, { immediate: true })
 
 // Live compute scored fields → inject ke formData supaya FormFieldRenderer
 // computed_* nampilkan hasil real-time.
@@ -152,6 +195,35 @@ async function openAndLoad() {
   if (tab.value === 'output' && !html.value) {
     await loadRender()
   }
+
+  // Aktifkan auto-save SETELAH prefill awal selesai (supaya prefill tidak langsung
+  // memicu submit). Hanya untuk form ber-grup (RANAP) — form datar (RJ) tak berubah.
+  autosaveReady.value = true
+}
+
+// ── Auto-save draft (form accordion) — debounce ~800ms. Tujuan: submittedDocId
+//    selalu ada tanpa user klik Simpan, supaya section TTD & "Selesai & TTD" siap.
+//    Best-effort: kegagalan diabaikan diam-diam (tak ganggu pengisian). Hanya aktif
+//    untuk form ber-`group` (RANAP); form datar (Resume RJ) tidak ikut autosave.
+watch(formData, () => {
+  if (!autosaveReady.value || !hasGroups.value) return
+  if (isFinalized.value || submitting.value || finalizing.value) return
+  clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(autoSaveDraft, 800)
+}, { deep: true })
+
+async function autoSaveDraft() {
+  if (submitting.value || finalizing.value) return
+  autosaving.value = true
+  try {
+    const { data } = await formTemplateApi.submitForm(props.template.code, props.visitId, {
+      ...formData.value,
+      _manual_fields: collectManualFields(),
+    })
+    submittedDocId.value = data.data?.document_id
+    submitInfo.value = data.data
+  } catch (_) { /* autosave best-effort — abaikan */ }
+  finally { autosaving.value = false }
 }
 
 // Muat nilai awal field editable dari /form/{code}/prefill. Nilai prefill hanya
@@ -233,7 +305,10 @@ function validateBeforeSubmit() {
   fieldErrors.value = {}
   let ok = true
   for (const f of visibleFields.value) {
-    if (f.required && (formData.value[f.key] === undefined || formData.value[f.key] === null || formData.value[f.key] === '')) {
+    const v = formData.value[f.key]
+    // Field wajib dianggap kosong bila null/''/array kosong (mis. multi_checkbox).
+    const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)
+    if (f.required && empty) {
       fieldErrors.value[f.key] = 'Field wajib diisi'
       ok = false
     }
@@ -596,15 +671,61 @@ async function submitAddendum() {
               </p>
             </div>
 
-            <FormFieldRenderer
-              v-for="f in visibleFields"
-              :key="f.key"
-              :field="f"
-              v-model="formData[f.key]"
-              :error="fieldErrors[f.key]"
-              :readonly="submitting || finalizing"
-              :document-name="template.name"
-            />
+            <!-- Accordion + nav samping (form besar RANAP, field ber-`group`) -->
+            <div v-if="hasGroups" class="frr-grouped">
+              <aside class="frr-groupnav">
+                <button
+                  v-for="g in fieldGroups"
+                  :key="g.name"
+                  type="button"
+                  class="frr-gn-btn"
+                  :class="{ active: activeGroup === g.name }"
+                  @click="activeGroup = g.name"
+                >
+                  <span class="frr-gn-ind" :class="`ind-${g.status}`">
+                    {{ g.status === 'full' ? '✓' : (g.status === 'partial' ? '•' : '○') }}
+                  </span>
+                  <span class="frr-gn-name">{{ g.name }}</span>
+                  <span v-if="g.score !== null" class="frr-gn-score">{{ g.score }}</span>
+                </button>
+                <button type="button" class="frr-gn-doc" @click="switchTab('output')">Lihat Dokumen →</button>
+              </aside>
+
+              <div class="frr-grouppanel">
+                <template v-for="g in fieldGroups" :key="g.name">
+                  <section v-show="activeGroup === g.name">
+                    <h4 class="frr-grouphead">
+                      <span>{{ g.name }}</span>
+                      <span v-if="g.score !== null" class="frr-group-score">
+                        Skor: <strong>{{ g.score }}</strong><em v-if="g.scoreLabel"> — {{ g.scoreLabel }}</em>
+                      </span>
+                    </h4>
+                    <FormFieldRenderer
+                      v-for="f in g.fields"
+                      :key="f.key"
+                      :field="f"
+                      v-model="formData[f.key]"
+                      :error="fieldErrors[f.key]"
+                      :readonly="submitting || finalizing"
+                      :document-name="template.name"
+                    />
+                  </section>
+                </template>
+              </div>
+            </div>
+
+            <!-- Render datar (backward-compatible: form tanpa `group`, mis. Resume RJ) -->
+            <template v-else>
+              <FormFieldRenderer
+                v-for="f in visibleFields"
+                :key="f.key"
+                :field="f"
+                v-model="formData[f.key]"
+                :error="fieldErrors[f.key]"
+                :readonly="submitting || finalizing"
+                :document-name="template.name"
+              />
+            </template>
 
             <!-- Section Tanda Tangan — visible setelah submit DRAFT -->
             <div v-if="hasSignatureFields && submittedDocId" class="frr-sig-section">
@@ -634,6 +755,8 @@ async function submitAddendum() {
             <div v-if="error" class="frr-err">{{ error }}</div>
 
             <div class="frr-footer">
+              <span v-if="hasGroups && autosaving" class="frr-autosave">Menyimpan…</span>
+              <span v-else-if="hasGroups && submittedDocId" class="frr-autosave frr-autosave-ok">Tersimpan otomatis ✓</span>
               <button class="frr-btn-ghost" :disabled="submitting || finalizing" @click="submitInput()">
                 {{ submitting ? 'Menyimpan…' : (submittedDocId ? 'Update Draft' : 'Simpan Draft') }}
               </button>
@@ -644,7 +767,7 @@ async function submitAddendum() {
                 @click="signAndFinalize"
                 title="Simpan draft, tanda tangani dengan PIN, lalu finalisasi & kunci"
               >
-                {{ finalizing ? 'Memfinalisasi…' : (submitting ? 'Menyimpan…' : 'Tanda Tangani & Finalisasi') }}
+                {{ finalizing ? 'Memfinalisasi…' : (submitting ? 'Menyimpan…' : 'Selesai & TTD') }}
               </button>
               <!-- Dokumen tanpa field TTD: finalisasi langsung (jarang utk resume). -->
               <button
@@ -827,6 +950,49 @@ async function submitAddendum() {
   margin-top: 1rem; padding: 0.6rem 0.85rem; background: #f0f1f4; border-radius: 6px;
   font-size: 12.5px; color: var(--tm); font-style: italic;
 }
+
+/* ── Accordion + nav samping (form RANAP ber-group) ───────────────────────── */
+.frr-grouped { display: grid; grid-template-columns: 210px 1fr; gap: 1rem; align-items: start; }
+.frr-groupnav {
+  position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px;
+  border-right: 1px solid var(--gb); padding-right: 0.6rem;
+}
+.frr-gn-btn {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%; text-align: left;
+  padding: 0.5rem 0.6rem; border: 0; background: transparent; border-radius: 6px;
+  cursor: pointer; font-size: 12.5px; color: var(--td); font-family: inherit;
+  transition: background .12s ease;
+}
+.frr-gn-btn:hover { background: var(--bg); }
+.frr-gn-btn.active { background: #eef6ff; color: #1763d4; font-weight: 600; }
+.frr-gn-ind { flex-shrink: 0; width: 16px; text-align: center; font-size: 12px; }
+.frr-gn-ind.ind-full    { color: #1e8a3a; }
+.frr-gn-ind.ind-partial { color: #b46f00; }
+.frr-gn-ind.ind-empty   { color: var(--th); }
+.frr-gn-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frr-gn-score {
+  flex-shrink: 0; padding: 1px 7px; background: #f0f1f4; color: var(--tm);
+  border-radius: 999px; font-size: 10.5px; font-weight: 700;
+}
+.frr-gn-doc {
+  margin-top: 0.5rem; padding: 0.45rem 0.6rem; border: 1px dashed var(--gb);
+  background: transparent; border-radius: 6px; cursor: pointer; font-size: 12px;
+  color: var(--tm); font-family: inherit;
+}
+.frr-gn-doc:hover { background: var(--bg); color: var(--td); }
+
+.frr-grouppanel { min-width: 0; }
+.frr-grouphead {
+  display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem;
+  margin: 0 0 0.85rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--gb);
+  font-family: 'Space Grotesk', serif; font-size: 14.5px; color: var(--td);
+}
+.frr-group-score { font-size: 12px; color: var(--tm); font-weight: 400; }
+.frr-group-score strong { color: #b46f00; font-size: 14px; }
+.frr-group-score em { font-style: normal; color: var(--td); }
+
+.frr-autosave { margin-right: auto; font-size: 12px; color: var(--tm); align-self: center; }
+.frr-autosave-ok { color: #1e8a3a; }
 
 /* Status badge & addendum modal */
 .frr-card-badges { display: flex; gap: 4px; align-items: center; }

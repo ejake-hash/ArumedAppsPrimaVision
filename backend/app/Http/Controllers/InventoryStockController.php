@@ -20,7 +20,10 @@ class InventoryStockController extends Controller
         $data = $request->validate([
             'item_type'             => 'required|in:MEDICATION,BHP',
             'item_id'               => 'required|uuid',
-            'location'              => 'nullable|in:INVENTORI,BEDAH,FARMASI',
+            // Selaras resolveLocation()/deliver(): SELURUH depo valid bisa diopname,
+            // bukan hanya 3 — unit (RANAP/IGD/dll) yang menerima kiriman gudang juga
+            // perlu koreksi stok. Dulu dibatasi 3 → endpoint JSON 422 untuk depo lain.
+            'location'              => 'nullable|in:' . implode(',', InventoryStock::LOCATIONS),
             'reason'                => 'nullable|string|max:255',
             'batches'               => 'nullable|array',
             'batches.*.stock_id'    => 'nullable|uuid',
@@ -37,32 +40,54 @@ class InventoryStockController extends Controller
         return $this->ok($this->service->opname($data), 'Opname berhasil');
     }
 
-    /** GET /inventori-farmasi/stock/{type}/template-csv  (type: obat|bhp) */
-    public function templateCsv(string $type): Response
+    /** GET /inventori-farmasi/stock/{type}/template-csv?format=csv|xlsx  (type: obat|bhp) */
+    public function templateCsv(Request $request, string $type): Response
     {
+        $format = strtolower((string) $request->query('format', 'csv'));
         try {
             $csv = $this->service->csvTemplate($type);
         } catch (\Exception $e) {
             return response($e->getMessage(), $e->getCode() ?: 422);
         }
+
+        if ($format === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, "Template {$type}");
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"template-stok-{$type}.xlsx\"",
+            ]);
+        }
+
         return response($csv, 200, [
             'Content-Type'        => 'text/csv; charset=UTF-8',
             'Content-Disposition' => "attachment; filename=\"template-stok-{$type}.csv\"",
         ]);
     }
 
-    /** GET /inventori-farmasi/stock/{type}/export-csv?location= */
+    /** GET /inventori-farmasi/stock/{type}/export-csv?location=&format=csv|xlsx */
     public function exportCsv(Request $request, string $type): Response
     {
         $location = $this->resolveLocation($request);
+        $format   = strtolower((string) $request->query('format', 'csv'));
         try {
             $csv = $this->service->exportCsv($type, $location);
         } catch (\Exception $e) {
             return response($e->getMessage(), $e->getCode() ?: 422);
         }
+
+        $base = "stok-{$type}-{$location}-" . now()->format('Ymd');
+
+        if ($format === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, "Stok {$type}");
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$base}.xlsx\"",
+            ]);
+        }
+
         return response($csv, 200, [
             'Content-Type'        => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => "attachment; filename=\"stok-{$type}-{$location}-" . now()->format('Ymd') . ".csv\"",
+            'Content-Disposition' => "attachment; filename=\"{$base}.csv\"",
         ]);
     }
 

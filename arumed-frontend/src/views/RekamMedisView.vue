@@ -948,16 +948,19 @@ function cetakLaporanOperasi(b) {
               <table v-else class="rme-table">
                 <thead><tr><th>Tanggal</th><th>Prosedur</th><th>Jam</th><th>IOL</th><th>Komplikasi</th><th></th></tr></thead>
                 <tbody>
-                  <template v-for="b in cur" :key="b.visit_id">
-                    <tr class="row-click" @click="toggleRow(b.visit_id)">
+                  <!-- key/toggle pakai record_id (1 baris per SurgeryRecord): satu visit
+                       bisa punya >1 operasi → visit_id TIDAK unik (key dobel + expand
+                       kedua baris sekaligus). record_id unik per operasi. -->
+                  <template v-for="b in cur" :key="b.record_id">
+                    <tr class="row-click" @click="toggleRow(b.record_id)">
                       <td class="nowrap">{{ fmtTgl(b.visit_date) }}</td>
                       <td>{{ (b.procedures ?? []).length ? b.procedures.join(', ') : '–' }}</td>
                       <td class="nowrap">{{ val(b.time_in) }}–{{ val(b.time_out) }}</td>
                       <td class="trunc">{{ (b.iol_used ?? []).length ? b.iol_used.join(', ') : '–' }}</td>
                       <td><span v-if="b.has_complication" class="st-pill rejected">Ada</span><span v-else class="st-pill final">Tidak</span></td>
-                      <td class="chev">{{ expanded===b.visit_id ? '▲' : '▼' }}</td>
+                      <td class="chev">{{ expanded===b.record_id ? '▲' : '▼' }}</td>
                     </tr>
-                    <tr v-if="expanded===b.visit_id" class="row-detail">
+                    <tr v-if="expanded===b.record_id" class="row-detail">
                       <td colspan="6">
                         <div class="det-grid">
                           <div class="det-box span2" v-if="b.detail?.operation_notes"><div class="det-t">Laporan Operasi</div><div>{{ b.detail.operation_notes }}</div></div>

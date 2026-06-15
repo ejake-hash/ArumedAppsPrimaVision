@@ -42,31 +42,38 @@ const STATUS_FILTERS = [
   { key: 'final', label: 'Final' },
 ]
 
+// Per-section fetch dgn allSettled — satu section gagal (mis. 403) TIDAK
+// mem-blank seluruh daftar. Kegagalan dirangkum di `error` agar terlihat.
 async function load() {
   if (!props.visitId) return
   loading.value = true
   error.value = ''
-  try {
-    const results = await Promise.all(
-      props.sections.map((s) =>
-        formTemplateApi
-          .forms({ station: props.station, section: s.key, visit_id: props.visitId })
-          .then((res) => (res.data?.data ?? []).map((f) => ({
-            ...f,
-            _section: s.key,
-            _sectionLabel: s.label,
-          }))),
-      ),
-    )
-    allForms.value = results.flat()
-  } catch (e) {
-    error.value = e.response?.data?.message ?? 'Gagal memuat dokumen.'
-  } finally {
-    loading.value = false
-  }
+  const settled = await Promise.allSettled(
+    props.sections.map((s) =>
+      formTemplateApi
+        .forms({ station: props.station, section: s.key, visit_id: props.visitId })
+        .then((res) => (res.data?.data ?? []).map((f) => ({
+          ...f, _section: s.key, _sectionLabel: s.label,
+        }))),
+    ),
+  )
+  const ok = []
+  const fails = []
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') ok.push(...r.value)
+    else {
+      const sec = props.sections[i]?.key
+      const e = r.reason
+      fails.push(`${sec}: ${e?.response?.status ?? ''} ${e?.response?.data?.message ?? e?.message ?? 'gagal'}`.trim())
+    }
+  })
+  allForms.value = ok
+  if (fails.length) error.value = `Sebagian dokumen gagal dimuat — ${fails.join(' · ')}`
+  loading.value = false
 }
 
 onMounted(load)
+defineExpose({ load })
 watch(() => props.visitId, load)
 
 // Status existing doc → bucket intent. existing_document null = belum ada doc.
@@ -144,19 +151,25 @@ function resetFilters() {
       </div>
     </div>
 
+    <!-- Banner error (boleh tampil bersama kartu — allSettled) -->
+    <div v-if="error" class="fdb-error-banner">
+      <span>{{ error }}</span>
+      <button type="button" class="fdb-reload-btn" @click="load">Muat ulang</button>
+    </div>
+
     <!-- States -->
     <div v-if="loading" class="fdb-state fdb-loading">
       <span class="fdb-spin" aria-hidden="true"></span>
       Memuat dokumen…
     </div>
-    <div v-else-if="error" class="fdb-state fdb-error">{{ error }}</div>
 
     <div v-else-if="!allForms.length" class="fdb-state fdb-empty">
       <svg class="fdb-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       <div>
-        <div class="fdb-empty-title">Belum ada template aktif</div>
-        <div class="fdb-empty-hint">Tambahkan template di <em>Master Form RM</em> untuk station ini.</div>
+        <div class="fdb-empty-title">Belum ada dokumen termuat</div>
+        <div class="fdb-empty-hint">Station <em>{{ station }}</em> · {{ sections.length }} section diminta, 0 dokumen kembali.<br>Klik Muat ulang; bila tetap kosong, cek Network tab (request <code>forms?station={{ station }}</code>).</div>
       </div>
+      <button class="fdb-reset-btn" type="button" @click="load">Muat ulang</button>
     </div>
 
     <div v-else-if="!totalMatches" class="fdb-state fdb-empty">
@@ -251,6 +264,17 @@ function resetFilters() {
   color: #b42323; background: #fff0f0; border: 1px solid #fbb;
   border-radius: 8px; padding: 0.7rem 1rem;
 }
+.fdb-error-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 0.5rem 0; padding: 0.55rem 0.85rem;
+  background: #fff0f0; border: 1px solid #fbb; border-radius: 8px;
+  font-size: 12px; color: #b42323;
+}
+.fdb-reload-btn {
+  flex-shrink: 0; padding: 4px 12px; border: 1px solid #b42323; border-radius: 6px;
+  background: #fff; color: #b42323; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.fdb-reload-btn:hover { background: #b42323; color: #fff; }
 .fdb-empty {
   display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
   text-align: center; padding: 2rem 1rem;

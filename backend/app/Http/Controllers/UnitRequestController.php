@@ -96,6 +96,19 @@ class UnitRequestController extends Controller
             'IOL'        => IolItem::query()->select(['id', 'brand', 'model', 'power'])->where('is_active', true),
         };
 
+        // Gudang INVENTORI = pemegang master → tampilkan seluruh item aktif.
+        // Lokasi unit (FARMASI/BEDAH) hanya menyimpan barang yang PERNAH dikirim
+        // gudang (transfer saat deliver membuat baris inventory_stocks di lokasi
+        // itu, dan baris bertahan walau qty habis/0). Maka cukup batasi master ke
+        // item yang punya baris stok di lokasi tsb — bukan seluruh master data.
+        if ($location !== InventoryStock::LOC_INVENTORI) {
+            $locationItemIds = InventoryStock::where('item_type', $type)
+                ->where('location', $location)
+                ->distinct()
+                ->pluck('item_id');
+            $masterQ->whereIn('id', $locationItemIds);
+        }
+
         if ($search !== '') {
             $term = '%' . $search . '%';
             if ($type === 'IOL') {

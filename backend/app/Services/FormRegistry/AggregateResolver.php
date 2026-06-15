@@ -63,6 +63,7 @@ final class AggregateResolver
             'surgery_iol_usage'                   => $this->resolveIolUsage($visit, $format),
             'surgery_operation_summary'           => $this->resolveOperationSummary($visit, $format),
             'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
+            'ranap_identity'                      => $this->resolveRanapIdentity($visit, $format),
             'planning_instruction'                => $this->resolvePlanningInstruction($visit),
             'physical_exam'                       => $this->resolvePhysicalExam($visit),
             'allergy'                             => $this->resolveAllergy($visit),
@@ -924,6 +925,64 @@ final class AggregateResolver
         $h = intdiv($mins, 60);
         $m = $mins % 60;
         return $h > 0 ? "{$h} jam {$m} menit" : "{$m} menit";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ranap_identity — identitas rawat inap (tgl masuk/keluar/lama rawat/kelas/
+    // DPJP/kamar) dari kolom RANAP di Visit. Dipakai prefill form RANAP (RM 3.5
+    // Resume Medis RI dst.) agar identitas perawatan tidak diketik ulang — sumber
+    // tunggal = RawatInapView (admit/discharge). format = field yang diminta.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function resolveRanapIdentity(Visit $visit, ?string $format): string
+    {
+        return match ($format) {
+            'admission_date' => $visit->admission_at ? $this->idDate($visit->admission_at) : '',
+            'discharge_date' => $visit->discharge_at ? $this->idDate($visit->discharge_at) : '',
+            'los'            => $this->lamaRawat($visit),
+            'kelas'          => trim((string) ($visit->kelas_rawat ?? $visit->kelas_rawat_hak ?? '')),
+            'dpjp'           => trim((string) ($visit->dpjp?->name ?? $visit->doctorExamination?->doctor?->name ?? '')),
+            'room_bed'       => $this->ranapRoomBed($visit),
+            'discharge_type' => $this->dischargeTypeLabel($visit),
+            default          => '',
+        };
+    }
+
+    /** Lama rawat dalam hari (inklusif: masuk & keluar di hari sama = 1 hari). */
+    private function lamaRawat(Visit $visit): string
+    {
+        if (! $visit->admission_at) {
+            return '';
+        }
+        $in  = \Illuminate\Support\Carbon::parse($visit->admission_at)->startOfDay();
+        $out = \Illuminate\Support\Carbon::parse($visit->discharge_at ?: \Illuminate\Support\Carbon::parse($visit->admission_at))->startOfDay();
+        $days = (int) $in->diffInDays($out) + 1;
+
+        return $days . ' hari';
+    }
+
+    /** "Kamar Anggrek - Bed 2" dari relasi room/bed (kosong bila belum dialokasi). */
+    private function ranapRoomBed(Visit $visit): string
+    {
+        $room = trim((string) ($visit->room?->name ?? ''));
+        $bed  = trim((string) ($visit->bed?->label ?? $visit->bed?->code ?? ''));
+        $parts = array_filter([
+            $room !== '' ? $room : null,
+            $bed !== '' ? "Bed {$bed}" : null,
+        ]);
+
+        return implode(' - ', $parts);
+    }
+
+    /** Label kondisi pulang (discharge_type enum → teks). */
+    private function dischargeTypeLabel(Visit $visit): string
+    {
+        return match ((string) ($visit->discharge_type ?? '')) {
+            'PULANG_SEHAT' => 'Pulang (Sembuh/Membaik)',
+            'RUJUK'        => 'Dirujuk',
+            'APS'          => 'Pulang Atas Permintaan Sendiri (APS)',
+            'MENINGGAL'    => 'Meninggal',
+            default        => '',
+        };
     }
 
     /** @param list<string> $codes */

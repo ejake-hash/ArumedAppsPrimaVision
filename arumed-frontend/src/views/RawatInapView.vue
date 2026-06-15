@@ -2,8 +2,10 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRawatInapStore } from '@/stores/rawatInapStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ranapApi, tarifPaketApi } from '@/services/api'
+import { ranapApi, tarifPaketApi, formTemplateApi } from '@/services/api'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
+import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
+import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 
 const store = useRawatInapStore()
 const auth = useAuthStore()
@@ -156,12 +158,39 @@ async function submitDischarge() {
         duration_days: o.duration_days || null,
       }))
     }
-    await store.discharge(dischargePt.value.visit_id, payload)
+    const dischargedVisitId = dischargePt.value.visit_id
+    await store.discharge(dischargedVisitId, payload)
     let msg = 'Pasien dipulangkan → kasir'
     if (obatPulangList.value.length) msg += ' (obat pulang → farmasi)'
     if (dischargeForm.value.spri_tgl_rencana) msg += ' (SPRI diproses)'
     notify(msg); showDischarge.value = false
+    // Auto-buka Resume Medis Rawat Inap (RM 3.5) agar DPJP melengkapi & TTD saat pulang.
+    openResumeRanap(dischargedVisitId)
   } catch { notify(store.error || 'Gagal discharge', false) } finally { busy.value = false }
+}
+
+// ── Resume Medis RI (RM 3.5) auto-buka saat discharge — meniru openResumeRM DokterView ──
+const showResumeRanap = ref(false)
+const resumeRanapTpl  = ref(null)
+const resumeRanapVisitId = ref(null)
+async function openResumeRanap(visitId) {
+  try {
+    const { data } = await formTemplateApi.forms({ station: 'ranap', section: 'ringkasan_pulang', visit_id: visitId })
+    const list = data.data ?? []
+    // Auto-buka HANYA template Resume RI yang tepat — JANGAN fallback list[0]
+    // (bisa membuka form lain yang kebetulan di section sama). Bila tak ada,
+    // diam (resume bisa diisi manual lewat tab Dokumen RM).
+    const tpl = list.find((f) => f.code === 'RESUME_MEDIS_RANAP') ?? null
+    if (!tpl) return
+    resumeRanapTpl.value = tpl
+    resumeRanapVisitId.value = visitId
+    showResumeRanap.value = true
+  } catch (_) { /* resume best-effort — bisa diisi manual lewat tab Dokumen RM */ }
+}
+function closeResumeRanap() {
+  showResumeRanap.value = false
+  resumeRanapTpl.value = null
+  resumeRanapVisitId.value = null
 }
 
 // ── SEP (modal view + update) ───────────────────────────────────────────────────
@@ -236,6 +265,14 @@ const showKirimBedah = ref(false)
 const kirimBedahPt = ref(null)
 const kirimBedahForm = ref({ surgery_package_id: '', scheduled_date: '' })
 const paketBedahOptions = ref([])
+// Cari paket bedah (client-side; daftar paket aktif dari master Tarif & Paket).
+const paketSearch = ref('')
+const filteredPaketBedah = computed(() => {
+  const q = paketSearch.value.trim().toLowerCase()
+  if (!q) return paketBedahOptions.value
+  return paketBedahOptions.value.filter((p) =>
+    `${p.name ?? ''} ${p.code ?? ''}`.toLowerCase().includes(q))
+})
 
 async function doKirimBedah(p) {
   kirimBedahPt.value = p
@@ -274,15 +311,25 @@ async function markBedAvailable(bed) {
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal update bed', false) }
 }
 
-// ── DETAIL + tindakan/obat ────────────────────────────────────────────────────
-const showDetail = ref(false)
-const detailTab = ref('cppt') // 'cppt' | 'biaya' | 'dokumen'
+// ── DETAIL + tindakan/obat (panel inline 2-kolom di tab "Pasien Aktif") ───────
+const detailTab = ref('cppt') // 'cppt' | 'biaya' (Hasil Eksternal → modal kecil di CPPT)
 const detailVisitId = ref(null)
+// Pasien terpilih (dari store.aktif) — untuk tombol aksi Pindah/Bedah/Pulang.
+const selectedPt = computed(() => store.aktif.find((p) => p.visit_id === detailVisitId.value) || null)
+// Dokumen RM — tombol di header kartu → modal kecil (pola IgdView "Pengkajian RM 3.7").
+const showDocModal = ref(false)
+function openDocModal() { if (detailVisitId.value) showDocModal.value = true }
 
-// ── Hasil eksternal (Fase 8C) ─────────────────────────────────────────────────
+// ── Hasil eksternal (Fase 8C) — modal kecil dibuka dari header CPPT ────────────
 const docList = ref([])
 const docForm = ref({ category: 'LAB', title: '', file: null })
 const docFileInput = ref(null)
+const showExtDocs = ref(false)   // modal kecil "Hasil Eksternal"
+
+function openExtDocs() {
+  showExtDocs.value = true
+  loadDocuments()
+}
 
 async function loadDocuments() {
   if (!detailVisitId.value) return
@@ -319,8 +366,39 @@ async function removeDocument(d) {
 const tindakanList = ref([])
 const obatList = ref([])
 const pickTindakan = ref({ procedure_id: '', quantity: 1 })
-const pickObat = ref({ medication_id: '', quantity: 1 })
 const obatSearch = ref('')
+// Picker tindakan (typeahead, gaya DokterView: input + dropdown hasil → klik pilih).
+// Dropdown DIBATASI 50 item agar tidak merender ratusan node (299 tindakan) →
+// cegah jank/freeze. Ketik untuk mempersempit.
+const PICK_LIMIT = 50
+const tindakanSearch = ref('')
+const tindakanComboOpen = ref(false)
+const filteredTindakanAll = computed(() => {
+  const q = tindakanSearch.value.trim().toLowerCase()
+  if (!q) return tindakanList.value
+  return tindakanList.value.filter((t) => String(t.name ?? '').toLowerCase().includes(q))
+})
+const filteredTindakan = computed(() => filteredTindakanAll.value.slice(0, PICK_LIMIT))
+const tindakanOverflow = computed(() => Math.max(0, filteredTindakanAll.value.length - PICK_LIMIT))
+// Dropdown obat juga dibatasi 50 (obatList server max 100).
+const obatDropList = computed(() => obatList.value.slice(0, PICK_LIMIT))
+const obatOverflow = computed(() => Math.max(0, obatList.value.length - PICK_LIMIT))
+const selectedTindakan = computed(() => tindakanList.value.find((t) => t.id === pickTindakan.value.procedure_id) || null)
+function pickTindakanItem(t) { pickTindakan.value.procedure_id = t.id; tindakanSearch.value = ''; tindakanComboOpen.value = false }
+function clearTindakan() { pickTindakan.value.procedure_id = '' }
+function closeTindakanComboSoon() { setTimeout(() => { tindakanComboOpen.value = false }, 150) }
+
+// Opsi aturan pakai (selaras resep DokterView) untuk permintaan obat Farmasi.
+const SIGNA_OPTS = ['1×/hari', '2×/hari', '3×/hari', '4×/hari', '6×/hari', 'tiap 4 jam', 'tiap 6 jam', 'tiap 8 jam', 'tiap jam', 'bila perlu (prn)', 'sebelum tidur', '1 tetes tiap 1 jam']
+const DURASI_OPTS = ['3 hari', '5 hari', '7 hari', '10 hari', '14 hari', '21 hari', '28 hari', '30 hari']
+const ROUTE_OPTS = ['Oral', 'Tetes Mata (OD)', 'Tetes Mata (OS)', 'Tetes Mata (ODS)', 'Salep Mata', 'IV', 'IM', 'SC', 'Topikal', 'Sublingual', 'Rektal', 'Inhalasi']
+
+// Picker obat Permintaan Farmasi (typeahead; obatList di-search server via searchObat).
+const obatComboOpen = ref(false)
+const reqPickObat = ref(null)   // simpan objek obat terpilih (chip + fallback nama saat add)
+function pickReqObat(o) { reqPick.value.medication_id = o.id; reqPickObat.value = o; obatComboOpen.value = false }
+function clearReqObat() { reqPick.value = { medication_id: '', quantity: 1, dose: '', frequency: '2×/hari', route: 'Oral', duration: '', instructions: '' }; reqPickObat.value = null }
+function closeObatComboSoon() { setTimeout(() => { obatComboOpen.value = false }, 150) }
 
 // CPPT terintegrasi multi-PPA (SOAP + TTV opsional)
 const cpptList = ref([])
@@ -351,25 +429,28 @@ const PPA_LABEL = { DOKTER: 'Dokter', PERAWAT: 'Perawat', APOTEKER: 'Apoteker', 
 async function openDetail(visitId) {
   detailVisitId.value = visitId
   detailTab.value = 'cppt'
-  showDetail.value = true
+  tab.value = 'aktif'   // panel detail inline ada di tab "Pasien Aktif"
   // Bersihkan list pasien sebelumnya agar tak bocor bila fetch gagal.
   tindakanList.value = []
   obatList.value = []
   cpptList.value = []
   permintaanList.value = []
   reqCart.value = []
+  docList.value = []
   await store.fetchDetail(visitId)
   try {
-    const [t, o, c, p] = await Promise.all([
+    const [t, o, c, p, d] = await Promise.all([
       ranapApi.tarifTindakan(visitId),
       ranapApi.daftarObat(visitId, ''),
       ranapApi.cpptList(visitId),
       ranapApi.permintaanObatList(visitId),
+      ranapApi.documents(visitId),   // hitung untuk badge chip "Hasil Eksternal (N)"
     ])
     tindakanList.value = t.data?.data ?? []
     obatList.value = o.data?.data ?? []
     cpptList.value = c.data?.data ?? []
     permintaanList.value = p.data?.data ?? []
+    docList.value = d.data?.data ?? []
   } catch { /* abaikan */ }
 }
 
@@ -436,11 +517,6 @@ async function searchObat() {
   } catch { /* */ }
 }
 
-const selectedTindakanPrice = computed(() =>
-  tindakanList.value.find((t) => t.id === pickTindakan.value.procedure_id)?.price ?? 0)
-const selectedObatPrice = computed(() =>
-  obatList.value.find((o) => o.id === pickObat.value.medication_id)?.price ?? 0)
-
 async function submitTindakan() {
   if (!pickTindakan.value.procedure_id) { notify('Pilih tindakan', false); return }
   try {
@@ -448,14 +524,6 @@ async function submitTindakan() {
     pickTindakan.value = { procedure_id: '', quantity: 1 }
     notify('Tindakan dicatat')
   } catch { notify(store.error || 'Gagal catat tindakan', false) }
-}
-async function submitObat() {
-  if (!pickObat.value.medication_id) { notify('Pilih obat', false); return }
-  try {
-    await store.addObat(detailVisitId.value, { ...pickObat.value })
-    pickObat.value = { medication_id: '', quantity: 1 }
-    notify('Obat dicatat')
-  } catch { notify(store.error || 'Gagal catat obat', false) }
 }
 async function removeCharge(c) {
   if (c.is_billed) { notify('Biaya sudah masuk invoice', false); return }
@@ -468,7 +536,7 @@ async function removeCharge(c) {
 // Beda dari "+ Obat (biaya langsung)": obat ini benar-benar diminta ke Farmasi,
 // dipotong stok & ditagih saat Farmasi menyerahkan ke ruangan (bukan saat diminta).
 const permintaanList = ref([])
-const reqPick = ref({ medication_id: '', quantity: 1, dose: '', frequency: '', instructions: '' })
+const reqPick = ref({ medication_id: '', quantity: 1, dose: '', frequency: '2×/hari', route: 'Oral', duration: '', instructions: '' })
 const reqCart = ref([])
 
 async function loadPermintaan() {
@@ -484,7 +552,7 @@ function addToReqCart() {
   if (!f.medication_id) { notify('Pilih obat dulu', false); return }
   if (!Number.isFinite(Number(f.quantity)) || Number(f.quantity) < 1) { notify('Jumlah minimal 1', false); return }
   if (reqCart.value.some((x) => x.medication_id === f.medication_id)) { notify('Obat sudah ada di daftar', false); return }
-  const med = obatList.value.find((o) => o.id === f.medication_id)
+  const med = obatList.value.find((o) => o.id === f.medication_id) ?? reqPickObat.value
   reqCart.value.push({
     medication_id: f.medication_id,
     name: med?.name ?? '',
@@ -492,9 +560,12 @@ function addToReqCart() {
     quantity: Number(f.quantity),
     dose: f.dose || null,
     frequency: f.frequency || null,
+    route: f.route || null,
+    duration: f.duration || null,
     instructions: f.instructions || null,
   })
-  reqPick.value = { medication_id: '', quantity: 1, dose: '', frequency: '', instructions: '' }
+  reqPick.value = { medication_id: '', quantity: 1, dose: '', frequency: '2×/hari', route: 'Oral', duration: '', instructions: '' }
+  reqPickObat.value = null
 }
 function removeFromReqCart(i) { reqCart.value.splice(i, 1) }
 
@@ -508,7 +579,9 @@ async function submitPermintaan() {
         quantity:      x.quantity,
         dose:          x.dose,
         frequency:     x.frequency,
-        instructions:  x.instructions,
+        route:         x.route,
+        // Durasi digabung ke instructions (backend simpan dose/frequency/route/instructions).
+        instructions:  [x.duration ? `Selama ${x.duration}` : '', x.instructions || ''].filter(Boolean).join(' · ') || null,
       })),
     })
     notify('Permintaan obat dikirim ke Farmasi')
@@ -519,6 +592,22 @@ async function submitPermintaan() {
   } finally { busy.value = false }
 }
 
+// Rangkai aturan pakai terstruktur jadi satu teks (signa · rute · durasi · catatan).
+function reqAturanText(x) {
+  return [x.frequency, x.route, x.duration ? `selama ${x.duration}` : '', x.instructions].filter(Boolean).join(' · ')
+}
+// Obat yang sudah diminta ke Farmasi TAPI belum diserahkan → baris "menunggu
+// Farmasi" di Rincian Biaya (biaya baru tercatat saat Farmasi menyerahkan).
+const pendingFarmasiItems = computed(() => {
+  const out = []
+  for (const p of permintaanList.value) {
+    if (['DISPENSED', 'CANCELLED'].includes(p.status)) continue
+    for (const it of (p.items || [])) {
+      out.push({ id: `${p.id}-${it.id}`, name: it.medication?.name ?? '—', quantity: it.quantity, status: p.status })
+    }
+  }
+  return out
+})
 function reqStatusLabel(s) {
   return { SUBMITTED: 'Diminta', DISPENSING: 'Disiapkan', DISPENSED: 'Diserahkan', CANCELLED: 'Dibatalkan' }[s] ?? s
 }
@@ -646,43 +735,8 @@ const statusPill = (s) => ({
       </div>
     </section>
 
-    <!-- PASIEN AKTIF -->
-    <section v-if="tab === 'aktif'" class="tab-pane">
-      <div class="po-table-wrap">
-        <table class="po-table">
-          <thead>
-            <tr>
-              <th style="width:50px">No.</th><th>Pasien</th><th>RM</th>
-              <th>Room/Bed</th><th>Kls Hak</th><th>Masuk</th><th class="c">Aksi</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!store.aktif.length"><td colspan="7" class="po-state">Tidak ada pasien rawat inap aktif</td></tr>
-            <tr v-for="(p, i) in store.aktif" :key="p.visit_id">
-              <td class="muted">{{ i + 1 }}</td>
-              <td>
-                <a href="#" class="lnk" @click.prevent="openDetail(p.visit_id)">{{ p.name }}</a>
-                <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op rawat inap — menunggu operasi terjadwal">PRE-OP</span>
-                <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Rawat inap observasi/pemeriksaan">OBSERVASI</span>
-              </td>
-              <td class="muted">{{ p.no_rm }}</td>
-              <td>{{ p.room }} / {{ p.bed }}</td>
-              <td>{{ p.kelas_rawat_hak }}</td>
-              <td class="muted">{{ fmt(p.admission_at) }}</td>
-              <td class="c">
-                <div class="action-row">
-                  <button class="btn btn-sm btn-secondary" @click="openDetail(p.visit_id)">Detail</button>
-                  <button class="btn btn-sm btn-secondary" @click="openTransfer(p)">Pindah</button>
-                  <button v-if="p.guarantor_type === 'BPJS' && p.no_sep" class="btn btn-sm btn-info" @click="openSep(p)">SEP</button>
-                  <button class="btn btn-sm btn-secondary" @click="doKirimBedah(p)">→ Bedah</button>
-                  <button class="btn btn-sm btn-primary" @click="openDischarge(p)">Pulang</button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <!-- PASIEN AKTIF — panel inline 2-kolom (list kiri + detail kanan) dirender
+         di bawah pada blok .ri-split (menggantikan modal Detail Pasien lama). -->
 
     <!-- RIWAYAT PASIEN PULANG -->
     <section v-if="tab === 'history'" class="tab-pane">
@@ -780,9 +834,10 @@ const statusPill = (s) => ({
         <template v-else>
           <h4>Jadwal Operasi (opsional)</h4>
           <label>Paket bedah
+            <input v-model="paketSearch" placeholder="cari paket bedah…" class="add-search" />
             <select v-model="kirimBedahForm.surgery_package_id">
               <option value="">— Tanpa jadwal (langsung antrean bedah) —</option>
-              <option v-for="pk in paketBedahOptions" :key="pk.id" :value="pk.id">{{ pk.name }}</option>
+              <option v-for="pk in filteredPaketBedah" :key="pk.id" :value="pk.id">{{ pk.name }}{{ pk.code ? ' · ' + pk.code : '' }}</option>
             </select>
           </label>
           <label v-if="kirimBedahForm.surgery_package_id">Tgl rencana
@@ -906,20 +961,58 @@ const statusPill = (s) => ({
       </div>
     </div>
 
-    <!-- MODAL DETAIL + tindakan/obat + running bill -->
-    <div v-if="showDetail" class="modal-bg" @click.self="showDetail = false">
-      <div class="modal wide">
-        <h3>Detail Pasien Inap</h3>
-        <template v-if="store.detail">
-          <p><strong>{{ store.detail.visit?.patient?.name }}</strong> — RM {{ store.detail.visit?.patient?.no_rm }}</p>
-          <p class="muted2">Room {{ store.detail.visit?.room?.name }} / {{ store.detail.visit?.bed?.label }} ·
-             Kelas hak {{ store.detail.visit?.kelas_rawat_hak }} · Masuk {{ fmt(store.detail.visit?.admission_at) }}</p>
+    <!-- PASIEN AKTIF: panel inline 2-kolom (list pasien kiri + detail kanan) -->
+    <section v-if="tab === 'aktif'" class="tab-pane">
+      <div class="ri-split">
+        <!-- KIRI: daftar pasien aktif -->
+        <aside class="ri-list">
+          <div v-if="!store.aktif.length" class="ri-list-empty">Tidak ada pasien rawat inap aktif.</div>
+          <button
+            v-for="p in store.aktif" :key="p.visit_id"
+            type="button" class="ri-pcard" :class="{ sel: detailVisitId === p.visit_id }"
+            @click="openDetail(p.visit_id)"
+          >
+            <div class="ri-pcard-top">
+              <strong class="ri-pcard-name">{{ p.name }}</strong>
+              <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op rawat inap — menunggu operasi terjadwal">PRE-OP</span>
+              <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Observasi/pemeriksaan">OBS</span>
+            </div>
+            <div class="ri-pcard-sub">RM {{ p.no_rm }} · {{ p.room }}/{{ p.bed }} · Kls {{ p.kelas_rawat_hak }}</div>
+            <div class="ri-pcard-since">Masuk {{ fmt(p.admission_at) }}</div>
+          </button>
+        </aside>
 
-          <!-- Tab dalam detail -->
+        <!-- KANAN: detail pasien terpilih -->
+        <div class="ri-detail">
+          <div v-if="!detailVisitId" class="ri-detail-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
+            <p>Pilih pasien di kiri untuk melihat detail, CPPT &amp; biaya.</p>
+          </div>
+          <template v-else-if="store.detail">
+          <div class="det-head">
+            <div class="det-id">
+              <strong>{{ store.detail.visit?.patient?.name }}</strong>
+              <span class="det-rm">RM {{ store.detail.visit?.patient?.no_rm }}</span>
+            </div>
+            <div class="det-actions">
+              <button class="btn btn-sm btn-secondary" @click="openDocModal">Dokumen RM</button>
+              <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="openTransfer(selectedPt)">Pindah</button>
+              <button v-if="selectedPt?.guarantor_type === 'BPJS' && selectedPt?.no_sep" class="btn btn-sm btn-info" @click="openSep(selectedPt)">SEP</button>
+              <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="doKirimBedah(selectedPt)">→ Bedah</button>
+              <button v-if="selectedPt" class="btn btn-sm btn-primary" @click="openDischarge(selectedPt)">Pulang</button>
+            </div>
+          </div>
+          <div class="det-meta">
+            <span><i>Room/Bed</i> {{ store.detail.visit?.room?.name }} / {{ store.detail.visit?.bed?.label }}</span>
+            <span><i>Kelas hak</i> {{ store.detail.visit?.kelas_rawat_hak }}</span>
+            <span><i>Masuk</i> {{ fmt(store.detail.visit?.admission_at) }}</span>
+            <span v-if="store.detail.visit?.dpjp?.name"><i>DPJP</i> {{ store.detail.visit?.dpjp?.name }}</span>
+          </div>
+
+          <!-- Tab dalam detail (Hasil Eksternal kini chip→modal kecil di header CPPT) -->
           <nav class="dtabs">
             <button :class="{ on: detailTab === 'cppt' }" @click="detailTab = 'cppt'">CPPT &amp; Observasi</button>
             <button :class="{ on: detailTab === 'biaya' }" @click="detailTab = 'biaya'">Tindakan, Obat &amp; Biaya</button>
-            <button :class="{ on: detailTab === 'dokumen' }" @click="detailTab = 'dokumen'; loadDocuments()">Hasil Eksternal</button>
           </nav>
 
           <!-- TAB CPPT — terintegrasi multi-PPA (SOAP) -->
@@ -928,6 +1021,10 @@ const statusPill = (s) => ({
               <h4>
                 {{ cpptEditId ? 'Edit Catatan (CPPT)' : '+ Catatan Perkembangan Terintegrasi (CPPT)' }}
                 <span class="ppa-badge" :class="'ppa-' + myPpa">{{ PPA_LABEL[myPpa] }}</span>
+                <button type="button" class="ext-chip" @click="openExtDocs" title="Hasil lab/radiologi/EKG dari pihak ketiga">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                  Hasil Eksternal<span v-if="docList.length" class="ext-count">{{ docList.length }}</span>
+                </button>
               </h4>
               <div class="soap-grid">
                 <label class="soap-cell"><span class="soap-tag">S</span>
@@ -1026,60 +1123,86 @@ const statusPill = (s) => ({
 
           <!-- TAB BIAYA -->
           <div v-show="detailTab === 'biaya'">
-            <div class="add-grid">
-              <div class="add-box">
-                <h4>+ Tindakan</h4>
-                <select v-model="pickTindakan.procedure_id">
-                  <option value="">— pilih tindakan —</option>
-                  <option v-for="t in tindakanList" :key="t.id" :value="t.id">{{ t.name }} — {{ rupiah(t.price) }}</option>
-                </select>
-                <div class="add-row">
-                  <input v-model.number="pickTindakan.quantity" type="number" min="1" style="width:70px" />
-                  <span class="add-price">{{ rupiah(selectedTindakanPrice * pickTindakan.quantity) }}</span>
-                  <button class="btn-primary btn-press btn-add" @click="submitTindakan">+ Tambah</button>
-                </div>
+            <div class="add-box">
+              <h4>+ Tindakan</h4>
+              <!-- Terpilih → chip -->
+              <div v-if="selectedTindakan" class="picked-chip">
+                <span class="picked-name">{{ selectedTindakan.name }} — {{ rupiah(selectedTindakan.price) }}</span>
+                <button class="picked-x" @click="clearTindakan" title="Ganti tindakan">×</button>
               </div>
-              <div class="add-box">
-                <h4>+ Obat (biaya langsung)</h4>
-                <input v-model="obatSearch" placeholder="cari obat…" @input="searchObat" class="add-search" />
-                <select v-model="pickObat.medication_id">
-                  <option value="">— pilih obat —</option>
-                  <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }}{{ o.is_active === false ? ' · (nonaktif)' : '' }} — {{ rupiah(o.price) }}</option>
-                </select>
-                <div class="add-row">
-                  <input v-model.number="pickObat.quantity" type="number" min="1" style="width:70px" />
-                  <span class="add-price">{{ rupiah(selectedObatPrice * pickObat.quantity) }}</span>
-                  <button class="btn-primary btn-press btn-add" @click="submitObat">+ Tambah</button>
+              <!-- Belum → typeahead picker (input + dropdown hasil) -->
+              <div v-else class="combo">
+                <input
+                  v-model="tindakanSearch" class="add-search"
+                  placeholder="Ketik nama tindakan, atau klik untuk lihat semua…"
+                  @focus="tindakanComboOpen = true" @blur="closeTindakanComboSoon"
+                />
+                <div v-if="tindakanComboOpen && filteredTindakan.length" class="combo-drop">
+                  <div v-for="t in filteredTindakan" :key="t.id" class="combo-item" @mousedown.prevent="pickTindakanItem(t)">
+                    <span class="combo-name">{{ t.name }}</span>
+                    <span class="combo-price">{{ rupiah(t.price) }}</span>
+                  </div>
+                  <div v-if="tindakanOverflow" class="combo-more">+{{ tindakanOverflow }} lainnya — ketik untuk mempersempit</div>
                 </div>
-                <p class="req-hint">Catat biaya obat saja (tanpa serah/potong stok Farmasi) — mis. obat dari stok ruangan.</p>
+                <div v-else-if="tindakanComboOpen && tindakanSearch.trim()" class="combo-empty">Tindakan tidak ditemukan</div>
               </div>
+              <div class="add-row add-row-end">
+                <button class="btn-primary btn-press btn-add" :disabled="!selectedTindakan" @click="submitTindakan">+ Tambah</button>
+              </div>
+              <p class="req-hint">Harga mengikuti Buku Tarif sesuai penjamin pasien (qty 1).</p>
             </div>
 
             <!-- Permintaan obat ke Farmasi (dispensing ke ruangan) -->
             <div class="req-obat">
               <h4>Permintaan Obat ke Farmasi</h4>
-              <p class="req-hint">Obat diminta ke Farmasi untuk diserahkan ke ruangan. Stok dipotong &amp; biaya tercatat saat Farmasi menyerahkan (bukan saat diminta).</p>
+              <p class="req-hint">Perawat minta obat ke Farmasi → Farmasi siapkan &amp; antar ke ruangan. <strong>Stok Farmasi dipotong</strong> &amp; biaya tercatat saat diserahkan (bukan saat diminta).</p>
               <div class="add-box">
-                <input v-model="obatSearch" placeholder="cari obat…" @input="searchObat" class="add-search" />
-                <select v-model="reqPick.medication_id">
-                  <option value="">— pilih obat —</option>
-                  <option v-for="o in obatList" :key="o.id" :value="o.id">{{ o.name }}{{ o.is_active === false ? ' · (nonaktif)' : '' }}</option>
-                </select>
+                <!-- Terpilih → chip -->
+                <div v-if="reqPickObat" class="picked-chip">
+                  <span class="picked-name">{{ reqPickObat.name }}{{ reqPickObat.is_active === false ? ' · (nonaktif)' : '' }}</span>
+                  <button class="picked-x" @click="clearReqObat" title="Ganti obat">×</button>
+                </div>
+                <!-- Belum → typeahead picker (server search via searchObat) -->
+                <div v-else class="combo">
+                  <input
+                    v-model="obatSearch" class="add-search"
+                    placeholder="Ketik nama / kode obat, atau klik untuk lihat semua…"
+                    @input="searchObat" @focus="obatComboOpen = true" @blur="closeObatComboSoon"
+                  />
+                  <div v-if="obatComboOpen && obatDropList.length" class="combo-drop">
+                    <div v-for="o in obatDropList" :key="o.id" class="combo-item" @mousedown.prevent="pickReqObat(o)">
+                      <span class="combo-name">{{ o.name }}<span v-if="o.is_active === false" class="combo-inactive">nonaktif</span></span>
+                      <span class="combo-price">{{ o.unit || '' }}</span>
+                    </div>
+                    <div v-if="obatOverflow" class="combo-more">+{{ obatOverflow }} lainnya — ketik untuk mempersempit</div>
+                  </div>
+                  <div v-else-if="obatComboOpen && obatSearch.trim()" class="combo-empty">Obat tidak ditemukan</div>
+                </div>
                 <div class="req-fields">
-                  <input v-model.number="reqPick.quantity" type="number" min="1" placeholder="Qty" style="width:64px" />
-                  <input v-model="reqPick.dose" placeholder="dosis" />
-                  <input v-model="reqPick.frequency" placeholder="frekuensi" />
-                  <input v-model="reqPick.instructions" placeholder="aturan/catatan" />
-                  <button class="btn-primary btn-press btn-add" @click="addToReqCart">+ Tambah</button>
+                  <input v-model.number="reqPick.quantity" type="number" min="1" placeholder="Qty" style="width:58px" title="Jumlah" />
+                  <input v-model="reqPick.dose" placeholder="dosis (cth: 1 tablet)" style="min-width:120px" title="Dosis" />
+                  <input v-model="reqPick.frequency" list="ranapSignaOpts" placeholder="frekuensi" style="min-width:104px" autocomplete="off" title="Signa / Frekuensi" />
+                  <datalist id="ranapSignaOpts"><option v-for="s in SIGNA_OPTS" :key="s" :value="s" /></datalist>
+                  <select v-model="reqPick.route" style="min-width:96px" title="Rute pemberian">
+                    <option value="">— rute —</option>
+                    <option v-for="r in ROUTE_OPTS" :key="r" :value="r">{{ r }}</option>
+                  </select>
+                  <select v-model="reqPick.duration" style="min-width:88px" title="Durasi">
+                    <option value="">— durasi —</option>
+                    <option v-for="d in DURASI_OPTS" :key="d" :value="d">{{ d }}</option>
+                  </select>
+                  <input v-model="reqPick.instructions" placeholder="catatan (opsional)" style="min-width:110px" title="Catatan" />
+                  <button class="btn-primary btn-press btn-add" :disabled="!reqPickObat" @click="addToReqCart">+ Tambah</button>
                 </div>
               </div>
 
               <table v-if="reqCart.length" class="bill">
-                <thead><tr><th>Obat</th><th>Qty</th><th>Dosis</th><th>Frekuensi</th><th>Aturan</th><th></th></tr></thead>
+                <thead><tr><th>Obat</th><th>Qty</th><th>Dosis</th><th>Aturan Pakai</th><th></th></tr></thead>
                 <tbody>
                   <tr v-for="(x, i) in reqCart" :key="x.medication_id">
                     <td>{{ x.name }}</td><td>{{ x.quantity }} {{ x.unit }}</td>
-                    <td>{{ x.dose || '—' }}</td><td>{{ x.frequency || '—' }}</td><td>{{ x.instructions || '—' }}</td>
+                    <td>{{ x.dose || '—' }}</td>
+                    <td>{{ reqAturanText(x) || '—' }}</td>
                     <td><button class="del-x" @click="removeFromReqCart(i)" title="Hapus">×</button></td>
                   </tr>
                 </tbody>
@@ -1107,51 +1230,99 @@ const statusPill = (s) => ({
             <table class="bill">
               <thead><tr><th>Tgl</th><th>Jenis</th><th>Deskripsi</th><th>Qty</th><th>Harga</th><th>Total</th><th></th></tr></thead>
               <tbody>
+                <!-- Provisional: obat diminta ke Farmasi, belum diserahkan (belum ditagih) -->
+                <tr v-for="x in pendingFarmasiItems" :key="x.id" class="row-pending">
+                  <td>—</td>
+                  <td><span class="pill pill-warning">Menunggu Farmasi</span></td>
+                  <td>{{ x.name }} <small class="muted">({{ reqStatusLabel(x.status) }})</small></td>
+                  <td>{{ x.quantity }}</td>
+                  <td colspan="2" class="muted">biaya saat diserahkan</td>
+                  <td></td>
+                </tr>
                 <tr v-for="c in store.detail.charges" :key="c.id">
-                  <td>{{ c.charge_date }}</td><td>{{ c.charge_type }}</td><td>{{ c.description }}</td>
+                  <td>{{ fmt(c.created_at || c.charge_date) }}</td><td>{{ c.charge_type }}</td><td>{{ c.description }}</td>
                   <td>{{ c.quantity }}</td><td>{{ rupiah(c.unit_price) }}</td><td>{{ rupiah(c.total_price) }}</td>
                   <td><button v-if="!c.is_billed" class="del-x" @click="removeCharge(c)" title="Hapus">×</button></td>
                 </tr>
-                <tr v-if="!store.detail.charges?.length"><td colspan="7" class="muted">Belum ada biaya</td></tr>
+                <tr v-if="!store.detail.charges?.length && !pendingFarmasiItems.length"><td colspan="7" class="muted">Belum ada biaya</td></tr>
               </tbody>
             </table>
             <p class="total">Total berjalan: <strong>{{ rupiah(store.detail.running_bill?.total) }}</strong></p>
           </div>
 
-          <!-- TAB HASIL EKSTERNAL (dokumen/Fase 8C) -->
-          <div v-show="detailTab === 'dokumen'">
-            <h4>Unggah Hasil Eksternal</h4>
-            <p class="req-hint">Lampirkan hasil lab/radiologi/EKG dari pihak ketiga (PDF/JPG/PNG, maks 10&nbsp;MB).</p>
-            <div class="doc-upload">
-              <select v-model="docForm.category" class="doc-cat">
-                <option value="LAB">Lab</option>
-                <option value="RADIOLOGI">Radiologi</option>
-                <option value="EKG">EKG</option>
-                <option value="LAINNYA">Lainnya</option>
-              </select>
-              <input v-model="docForm.title" class="doc-title" placeholder="Judul (opsional, default = nama berkas)" />
-              <input ref="docFileInput" type="file" class="doc-file" accept=".pdf,.jpg,.jpeg,.png" @change="onDocFile" />
-              <button class="btn-primary btn-press btn-add" :disabled="busy" @click="submitDocument">{{ busy ? '…' : 'Unggah' }}</button>
-            </div>
+          </template>
+        </div><!-- /.ri-detail -->
+      </div><!-- /.ri-split -->
+    </section>
 
-            <table class="bill">
-              <thead><tr><th>Waktu</th><th>Kategori</th><th>Judul</th><th>Oleh</th><th>Berkas</th><th></th></tr></thead>
-              <tbody>
-                <tr v-for="d in docList" :key="d.id">
-                  <td>{{ fmt(d.at) }}</td>
-                  <td><span class="pill pill-gray">{{ d.category }}</span></td>
-                  <td>{{ d.title }}</td>
-                  <td>{{ d.by || '—' }}</td>
-                  <td><a v-if="d.file_url" :href="d.file_url" target="_blank" rel="noopener">Lihat</a><span v-else class="muted">—</span></td>
-                  <td><button class="del-x" @click="removeDocument(d)" title="Hapus">×</button></td>
-                </tr>
-                <tr v-if="!docList.length"><td colspan="6" class="muted">Belum ada hasil eksternal.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </template>
-        <div class="modal-actions"><button @click="showDetail = false">Tutup</button></div>
+    <!-- MODAL DOKUMEN RM (Form Registry) — tombol "Dokumen RM" di header kartu pasien -->
+    <div v-if="showDocModal && detailVisitId" class="modal-bg" @click.self="showDocModal = false">
+      <div class="modal wide">
+        <h3>Dokumen Rekam Medis — {{ store.detail?.visit?.patient?.name }}</h3>
+        <p class="muted2">Pengkajian awal medis &amp; keperawatan (≤24 jam masuk), keselamatan, edukasi, rekonsiliasi, transfer, dan resume medis (saat pulang). Diisi via UI → dokumen resmi ber-TTD.</p>
+        <FormDocsBrowser
+          station="ranap"
+          :visit-id="detailVisitId"
+          :patient-id="store.detail?.visit?.patient?.id || null"
+          :sections="[
+            { key: 'pengantar_dirawat', label: 'Surat Pengantar Dirawat' },
+            { key: 'pengkajian_awal',   label: 'Pengkajian Awal Medis' },
+            { key: 'asuhan_keperawatan', label: 'Asesmen Awal Keperawatan' },
+            { key: 'keselamatan',       label: 'Keselamatan (Risiko Jatuh)' },
+            { key: 'edukasi',           label: 'Edukasi Terintegrasi' },
+            { key: 'obat',              label: 'Rekonsiliasi Obat' },
+            { key: 'transfer',          label: 'Transfer Pasien' },
+            { key: 'ringkasan_pulang',  label: 'Resume Medis (Pulang)' },
+          ]"
+        />
+        <div class="modal-actions"><button @click="showDocModal = false">Tutup</button></div>
       </div>
+    </div>
+
+    <!-- MODAL HASIL EKSTERNAL (kecil) — dibuka dari chip di header CPPT -->
+    <div v-if="showExtDocs && detailVisitId" class="modal-bg" @click.self="showExtDocs = false">
+      <div class="modal">
+        <h3>Hasil Eksternal — {{ store.detail?.visit?.patient?.name }}</h3>
+        <p class="req-hint">Lampirkan hasil lab/radiologi/EKG dari pihak ketiga (PDF/JPG/PNG, maks 10&nbsp;MB).</p>
+        <div class="doc-upload">
+          <select v-model="docForm.category" class="doc-cat">
+            <option value="LAB">Lab</option>
+            <option value="RADIOLOGI">Radiologi</option>
+            <option value="EKG">EKG</option>
+            <option value="LAINNYA">Lainnya</option>
+          </select>
+          <input v-model="docForm.title" class="doc-title" placeholder="Judul (opsional, default = nama berkas)" />
+          <input ref="docFileInput" type="file" class="doc-file" accept=".pdf,.jpg,.jpeg,.png" @change="onDocFile" />
+          <button class="btn-primary btn-press btn-add" :disabled="busy" @click="submitDocument">{{ busy ? '…' : 'Unggah' }}</button>
+        </div>
+
+        <table class="bill">
+          <thead><tr><th>Waktu</th><th>Kategori</th><th>Judul</th><th>Oleh</th><th>Berkas</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="d in docList" :key="d.id">
+              <td>{{ fmt(d.at) }}</td>
+              <td><span class="pill pill-gray">{{ d.category }}</span></td>
+              <td>{{ d.title }}</td>
+              <td>{{ d.by || '—' }}</td>
+              <td><a v-if="d.file_url" :href="d.file_url" target="_blank" rel="noopener">Lihat</a><span v-else class="muted">—</span></td>
+              <td><button class="del-x" @click="removeDocument(d)" title="Hapus">×</button></td>
+            </tr>
+            <tr v-if="!docList.length"><td colspan="6" class="muted">Belum ada hasil eksternal.</td></tr>
+          </tbody>
+        </table>
+        <div class="modal-actions"><button @click="showExtDocs = false">Tutup</button></div>
+      </div>
+    </div>
+
+    <!-- Resume Medis RI auto-buka saat discharge (FormRMRenderer meng-Teleport modalnya
+         sendiri; kartu pemicu disembunyikan karena dibuka via autoOpen). -->
+    <div v-if="showResumeRanap && resumeRanapTpl" style="display:none">
+      <FormRMRenderer
+        :template="resumeRanapTpl"
+        :visit-id="resumeRanapVisitId"
+        :auto-open="true"
+        @close="closeResumeRanap"
+      />
     </div>
 
     <div v-if="toast" class="toast" :class="{ err: !toast.ok }">{{ toast.msg }}</div>
@@ -1286,10 +1457,42 @@ const statusPill = (s) => ({
 /* Tindakan/obat picker + bill */
 .add-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: .5rem 0 1rem; }
 .add-box { border: 1px solid var(--gb); border-radius: 8px; padding: .6rem; }
-.add-search { margin-bottom: .4rem; }
+/* Input yang dulu mewarisi gaya global .modal — kini panel detail inline, beri gaya sendiri. */
+.add-search { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; font: inherit; font-size: 12.5px; background: var(--bc); color: var(--td); margin-bottom: .4rem; }
+.add-search:focus { outline: none; border-color: var(--ga); }
+.req-fields select { height: 30px; padding: 0 6px; border: 1px solid var(--gb); border-radius: 6px; font-family: inherit; font-size: 12px; background: var(--bc); color: var(--td); }
+.doc-cat, .doc-title, .doc-file { box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--gb); border-radius: 6px; font: inherit; font-size: 12.5px; background: var(--bc); color: var(--td); }
 .add-row { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
+.add-row-end { justify-content: flex-end; }
+.row-pending td { background: #fffaf0; color: var(--td); }
 .add-price { flex: 1; font-size: .85rem; color: var(--ga); font-weight: 600; }
 .add-box h4 { color: var(--gd); margin: 0 0 .4rem; font-size: .9rem; }
+/* Typeahead picker (gaya DokterView): input + dropdown hasil + chip terpilih */
+.combo { position: relative; }
+.combo-drop {
+  position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px);
+  max-height: 240px; overflow-y: auto; background: var(--bc);
+  border: 1px solid var(--gb); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+.combo-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px; cursor: pointer; font-size: 12.5px; color: var(--td);
+  border-bottom: 1px solid var(--bs);
+}
+.combo-item:last-child { border-bottom: 0; }
+.combo-item:hover { background: var(--gl); }
+.combo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-inactive { margin-left: 6px; font-size: 9.5px; color: #b46f00; background: #fff1e6; padding: 0 6px; border-radius: 999px; }
+.combo-price { flex-shrink: 0; font-size: 11.5px; color: var(--ga); font-weight: 600; }
+.combo-empty { margin-top: 4px; padding: 8px 10px; font-size: 12px; color: var(--tu); background: var(--bs); border-radius: 6px; }
+.combo-more { padding: 6px 10px; font-size: 11px; color: var(--tu); background: var(--bs); text-align: center; position: sticky; bottom: 0; }
+.picked-chip {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px; background: var(--gl); border: 1px solid var(--ga); border-radius: 7px;
+}
+.picked-name { font-size: 12.5px; font-weight: 600; color: var(--gd); }
+.picked-x { border: 0; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; color: var(--tm); padding: 0 4px; }
+.picked-x:hover { color: var(--rd, #c0392b); }
 .req-obat { border-top: 1px dashed var(--gb); margin-top: .85rem; padding-top: .85rem; }
 .req-obat > h4 { color: var(--gd); margin: 0 0 .3rem; font-size: .92rem; }
 .req-hint { font-size: 11px; color: var(--tu); margin: .2rem 0 .55rem; }
@@ -1307,13 +1510,47 @@ const statusPill = (s) => ({
 .btn-press:active { transform: translateY(1px) scale(.98); }
 
 /* Tab dalam modal detail */
-.dtabs { display: flex; gap: .4rem; margin: .8rem 0; border-bottom: 1px solid var(--gb); }
+.dtabs { display: flex; gap: .4rem; margin: .2rem 0 .8rem; border-bottom: 1px solid var(--gb); flex-wrap: wrap; }
 .dtabs button { padding: .45rem .9rem; border: none; background: none; cursor: pointer; color: var(--tu); border-bottom: 2px solid transparent; font-size: .9rem; }
 .dtabs button.on { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
+
+/* ── Pasien Aktif: panel inline 2-kolom (gaya IgdView, lega tapi padat) ──────── */
+.ri-split { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 1rem; align-items: start; }
+.ri-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 230px); overflow-y: auto; padding-right: 2px; position: sticky; top: 0; }
+.ri-list-empty { padding: 1.2rem .6rem; text-align: center; color: var(--tu); font-size: 12.5px; }
+.ri-pcard { width: 100%; text-align: left; background: var(--bc); border: 1px solid var(--gb); border-left: 3px solid var(--gb); border-radius: 10px; padding: .6rem .7rem; cursor: pointer; font-family: inherit; transition: border-color .14s, background .14s, box-shadow .14s; }
+.ri-pcard:hover { border-color: #b8c1cf; background: var(--bg); }
+.ri-pcard.sel { border-color: var(--ga); border-left-color: var(--ga); background: var(--gl); box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.ri-pcard-top { display: flex; align-items: center; gap: 6px; }
+.ri-pcard-name { font-size: 13.5px; color: var(--td); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ri-pcard-sub { font-size: 11.5px; color: var(--tm); margin-top: 2px; }
+.ri-pcard-since { font-size: 10.5px; color: var(--tu); margin-top: 1px; }
+
+.ri-detail { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; min-height: 240px; padding: 0 1rem 1rem; }
+.ri-detail-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .6rem; min-height: 240px; color: var(--tu); text-align: center; }
+.ri-detail-empty svg { width: 40px; height: 40px; opacity: .5; }
+.ri-detail-empty p { font-size: 12.5px; margin: 0; }
+.det-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; padding: .85rem 0 .7rem; border-bottom: 1px solid var(--gb); position: sticky; top: 0; background: var(--bc); z-index: 2; }
+.det-id strong { font-family: var(--font-display); font-size: 16px; color: var(--td); }
+.det-rm { margin-left: 8px; font-size: 12px; color: var(--tm); }
+.det-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.det-meta { display: flex; gap: 1.2rem; flex-wrap: wrap; padding: .6rem 0; font-size: 12px; color: var(--td); border-bottom: 1px solid var(--gb); }
+.det-meta i { color: var(--tu); font-style: normal; margin-right: 4px; }
+
+@media (max-width: 900px) {
+  .ri-split { grid-template-columns: 1fr; }
+  .ri-list { max-height: none; position: static; flex-direction: row; flex-wrap: wrap; }
+  .ri-pcard { flex: 1 1 220px; }
+}
 
 /* CPPT */
 .cppt-form { border: 1px solid var(--gb); border-radius: 8px; padding: .7rem; margin-bottom: 1rem; background: var(--bs); }
 .cppt-form h4 { display: flex; align-items: center; gap: .5rem; margin: 0 0 .6rem; color: var(--td); }
+/* Chip "Hasil Eksternal" di header composer CPPT → buka modal kecil */
+.ext-chip { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 1px solid var(--gb); border-radius: 999px; background: var(--bc); color: var(--tm); font-family: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; transition: border-color .14s, color .14s, background .14s; }
+.ext-chip:hover { border-color: var(--ga); color: var(--gd); background: var(--gl); }
+.ext-chip svg { width: 13px; height: 13px; }
+.ext-count { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--ga); color: #fff; font-size: 10px; font-weight: 700; }
 .ttv-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .ttv-row label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .8rem; color: var(--td); }
 .ttv-row input { width: 56px; padding: .25rem; margin: 0; border: 1px solid var(--gb); border-radius: 4px; }

@@ -328,6 +328,112 @@ class DocumentTypeSeeder extends Seeder
                 'show_in_rme'         => true,
                 'sort_order'          => 12,
             ],
+
+            // ── RANAP (Rawat Inap) — Phase 1, 3 form nakes-only/PIN (TTD pasien
+            // ditunda sampai PSrE). Kode disambiguasi (-RI/-PAM/-AAKRI) karena nomor
+            // resmi RM 3.5/7.7/7.8 bentrok dengan slot kode internal lama. Stasiun
+            // RANAP (RawatInapView tab Dokumen). Slug template di FormTemplateSeeder:
+            // RESUME_MEDIS_RANAP / PENGKAJIAN_AWAL_MEDIS / ASESMEN_AWAL_KEPERAWATAN_RI.
+
+            // RM-3.5-RI — Resume Medis Rawat Inap (discharge summary). DPJP, auto-buka
+            // saat discharge (mirip Resume RJ). TTD dokter opsional (fase transisi).
+            [
+                'code'                => 'RM-3.5-RI',
+                'name'                => 'Resume Medis Rawat Inap',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 40,
+            ],
+            // RM-7.7-PAM — Pengkajian Awal Medis Rawat Inap (asesmen medis ≤24 jam).
+            // DPJP. TTD dokter opsional.
+            [
+                'code'                => 'RM-7.7-PAM',
+                'name'                => 'Pengkajian Awal Medis Rawat Inap',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 41,
+            ],
+            // RM-7.8-AAKRI — Asesmen Awal Keperawatan Rawat Inap (perawat ≤24 jam;
+            // skor Norton + skrining gizi MST via ScoringEngine). TTD perawat opsional.
+            [
+                'code'                => 'RM-7.8-AAKRI',
+                'name'                => 'Asesmen Awal Keperawatan Rawat Inap',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 42,
+            ],
+
+            // ── RANAP Phase 2 (Tier 2 — keselamatan/kepatuhan akreditasi) ─────
+            // Kode disambiguasi (-JTH/-EDU/-REK) karena nomor resmi RM 2.9/2.4/2.7
+            // bentrok dgn slot kode internal RAJAL. TTD nakes (perawat/apoteker) opsional.
+            // RM-2.9-JTH — Pencegahan Pasien Jatuh (SKP 6). Perawat.
+            [
+                'code'                => 'RM-2.9-JTH',
+                'name'                => 'Pelaksanaan Pencegahan Pasien Jatuh',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 43,
+            ],
+            // RM-2.4-EDU — Edukasi Terintegrasi (MKE). Perawat/edukator. TTD pasien
+            // DITUNDA (butuh PSrE) → hanya TTD nakes.
+            [
+                'code'                => 'RM-2.4-EDU',
+                'name'                => 'Edukasi Terintegrasi Rawat Inap',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 44,
+            ],
+            // RM-2.7-REK — Rekonsiliasi Obat (PKPO/SKP 3). Farmasi/perawat.
+            [
+                'code'                => 'RM-2.7-REK',
+                'name'                => 'Rekonsiliasi Obat',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'FARMASI',
+                'required_signatures' => [['role' => 'APOTEKER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 45,
+            ],
+
+            // ── RANAP Phase 3 (Tier 3 — ARK: akses & kontinuitas) ────────────
+            // Kode disambiguasi (-SPD/-TRF). TTD nakes; TTD pasien/keluarga ditunda (PSrE).
+            // RM-2.5-SPD — Surat Pengantar Untuk Dirawat Inap. Dokter IGD/poli.
+            [
+                'code'                => 'RM-2.5-SPD',
+                'name'                => 'Surat Pengantar Untuk Dirawat Inap',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 46,
+            ],
+            // RM-2.6-TRF — Transfer Pasien (antar ruang/unit). DPJP/perawat.
+            [
+                'code'                => 'RM-2.6-TRF',
+                'name'                => 'Formulir Transfer Pasien',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'KLINIS',
+                'required_signatures' => [['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 47,
+            ],
         ];
 
         // PEMBERSIHAN 7 Jun 2026 (atas permintaan): katalog jenis dokumen dibangun
@@ -335,7 +441,7 @@ class DocumentTypeSeeder extends Seeder
         // template RESUME_MEDIS) yang di-seed. Definisi 24 jenis lain DIPERTAHANKAN
         // di array $types sebagai referensi; tambahkan kembali code-nya ke filter
         // ini saat jenisnya dibangun dari PDF resmi.
-        $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, ['RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP'], true)));
+        $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, ['RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP', 'RM-3.5-RI', 'RM-7.7-PAM', 'RM-7.8-AAKRI', 'RM-2.9-JTH', 'RM-2.4-EDU', 'RM-2.7-REK', 'RM-2.5-SPD', 'RM-2.6-TRF'], true)));
 
         foreach ($types as $type) {
             DocumentType::updateOrCreate(

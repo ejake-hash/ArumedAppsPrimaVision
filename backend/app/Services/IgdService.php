@@ -2,11 +2,15 @@
 
 namespace App\Services;
 
+use App\Models\BillingInvoice;
 use App\Models\ClinicProfile;
+use App\Models\DocumentTemplate;
 use App\Models\DoctorSchedule;
 use App\Models\Employee;
+use App\Models\IgdAssessment;
 use App\Models\IgdTriageRecord;
 use App\Models\InpatientCharge;
+use App\Models\PatientDocument;
 use App\Models\Medication;
 use App\Models\Patient;
 use App\Models\Procedure;
@@ -51,6 +55,41 @@ class IgdService
         'HIJAU'  => 3, // non-urgent
         'HITAM'  => 4, // expectant / DOA
     ];
+
+    /**
+     * Triase ATS (Australasian Triage Scale) — kategori 1..5 sesuai form RM 3.7.
+     * Tiap kategori dipetakan ke priority papan (makin kecil makin gawat) + warna
+     * label (papan IGD memakai 4 warna). DOA/expectant tetap via warna HITAM.
+     *   Cat 1 Segera · Cat 2 ≤10' · Cat 3 ≤30' · Cat 4 ≤60' · Cat 5 ≤120'.
+     */
+    public const ATS_CATEGORY_COLOR = [
+        '1' => 'MERAH',
+        '2' => 'MERAH',
+        '3' => 'KUNING',
+        '4' => 'HIJAU',
+        '5' => 'HIJAU',
+    ];
+
+    /**
+     * Resolve triase: dari kategori ATS (1..5) bila ada, jika tidak dari warna
+     * (kompatibel data lama). Return ['level','color','priority'].
+     *   - priority dari kategori ATS = nilai kategori (1..5) → urutan papan presisi.
+     *   - DOA (warna HITAM tanpa kategori) → priority 6 (paling belakang/expectant).
+     */
+    private function resolveTriage(array $data): array
+    {
+        $level = ($data['triage_level'] ?? '') === '' ? null : (string) $data['triage_level'];
+        $color = $data['triage_color'] ?? null;
+
+        if ($level !== null && isset(self::ATS_CATEGORY_COLOR[$level])) {
+            $color ??= self::ATS_CATEGORY_COLOR[$level];
+            return ['level' => $level, 'color' => $color, 'priority' => (int) $level];
+        }
+
+        // Tanpa kategori ATS → pakai warna (HITAM/DOA = priority 6).
+        $priority = $color === 'HITAM' ? 6 : (self::TRIAGE_PRIORITY[$color] ?? 0);
+        return ['level' => $level, 'color' => $color, 'priority' => $priority];
+    }
 
     // =========================================================================
     // QUERY (papan IGD, detail pasien, running bill)
@@ -143,8 +182,11 @@ class IgdService
             $patient = Patient::findOrFail($data['patient_id']);
             $arrival = ! empty($data['arrival_at']) ? Carbon::parse($data['arrival_at']) : now();
 
-            $color = $data['triage_color'] ?? null;
-            $priority = $color ? (self::TRIAGE_PRIORITY[$color] ?? 0) : 0;
+            $tri      = $this->resolveTriage($data);
+            $color    = $tri['color'];
+            $level    = $tri['level'];
+            $priority = $tri['priority'];
+            $hasTriage = $color !== null || $level !== null;
 
             $visit = Visit::create([
                 'patient_id'       => $patient->id,
@@ -157,7 +199,7 @@ class IgdService
                 'current_station'  => Queue::STATION_IGD,
                 'guarantor_type'   => $data['guarantor_type'],
                 'igd_arrival_at'   => $arrival,
-                'triase_level'     => $data['triage_level'] ?? null,
+                'triase_level'     => $level,
                 'triase_color'     => $color,
                 'satusehat_sync_status' => 'PENDING',
             ]);
@@ -165,11 +207,12 @@ class IgdService
             // Catatan triase awal (boleh kosong dulu, dilengkapi via triase()).
             IgdTriageRecord::create([
                 'visit_id'        => $visit->id,
-                'triage_level'    => $data['triage_level'] ?? null,
+                'triage_level'    => $level,
                 'triage_color'    => $color,
                 'chief_complaint' => $data['chief_complaint'] ?? null,
-                'triaged_by_id'   => $color ? auth('api')->user()?->employee_id : null,
-                'triaged_at'      => $color ? $arrival : null,
+                'arrival_mode'    => $data['arrival_mode'] ?? null,
+                'triaged_by_id'   => $hasTriage ? auth('api')->user()?->employee_id : null,
+                'triaged_at'      => $hasTriage ? $arrival : null,
             ]);
 
             // Enqueue baris IGD long-lived (langsung IN_PROGRESS = kartu di papan),
@@ -221,19 +264,23 @@ class IgdService
     public function triase(Visit $visit, array $data): IgdTriageRecord
     {
         return DB::transaction(function () use ($visit, $data) {
-            $color = $data['triage_color'];
-            $priority = self::TRIAGE_PRIORITY[$color] ?? 0;
+            $tri      = $this->resolveTriage($data);
+            $color    = $tri['color'];
+            $level    = $tri['level'];
+            $priority = $tri['priority'];
 
             // String kosong dari form (v-model.number kosong → '') harus jadi null,
             // kalau tidak kolom decimal/integer gagal cast ("Unable to cast to decimal").
             $num = fn ($k) => (($data[$k] ?? null) === '' || ($data[$k] ?? null) === null) ? null : $data[$k];
+            $str = fn ($k) => (($data[$k] ?? null) === '' || ($data[$k] ?? null) === null) ? null : $data[$k];
 
             $record = IgdTriageRecord::updateOrCreate(
                 ['visit_id' => $visit->id],
                 [
-                    'triage_level'    => ($data['triage_level'] ?? '') === '' ? null : $data['triage_level'],
+                    'triage_level'    => $level,
                     'triage_color'    => $color,
-                    'chief_complaint' => ($data['chief_complaint'] ?? '') === '' ? null : $data['chief_complaint'],
+                    'chief_complaint' => $str('chief_complaint'),
+                    'arrival_mode'    => $str('arrival_mode'),
                     'td_sistol'       => $num('td_sistol'),
                     'td_diastol'      => $num('td_diastol'),
                     'nadi'            => $num('nadi'),
@@ -243,6 +290,14 @@ class IgdService
                     'gcs_e'           => $num('gcs_e'),
                     'gcs_v'           => $num('gcs_v'),
                     'gcs_m'           => $num('gcs_m'),
+                    'keadaan_umum'    => $str('keadaan_umum'),
+                    'kesadaran'       => $str('kesadaran'),
+                    'akral'           => $str('akral'),
+                    'reflex_cahaya'   => $str('reflex_cahaya'),
+                    'pain_score'      => $num('pain_score'),
+                    'pain_scale_type' => $str('pain_scale_type'),
+                    'pain_location'   => $str('pain_location'),
+                    'pain_detail'     => $data['pain_detail'] ?? null,
                     'triaged_by_id'   => auth('api')->user()?->employee_id,
                     'triaged_at'      => now(),
                 ]
@@ -250,7 +305,7 @@ class IgdService
 
             // Snapshot ke visits (display/SatuSehat) + re-sort papan via priority queue.
             $visit->update([
-                'triase_level' => $data['triage_level'] ?? null,
+                'triase_level' => $level,
                 'triase_color' => $color,
             ]);
 
@@ -796,6 +851,267 @@ class IgdService
             Log::warning('IGD resolveHakKelas gagal: ' . $e->getMessage(), ['visit_id' => $visit->id]);
             return null;
         }
+    }
+
+    // =========================================================================
+    // RM 3.7 — ASESMEN/PENGKAJIAN GAWAT DARURAT (terstruktur + dokumen ber-TTD)
+    // =========================================================================
+
+    /** Blok JSONB asesmen (di-cast array di model). */
+    private const ASSESS_JSON = ['anamnesa', 'psikososial', 'perilaku', 'fisik', 'mata_od_os', 'penunjang', 'planning'];
+
+    /** Skalar asesmen yang boleh ditulis dari form. */
+    private const ASSESS_SCALAR = ['diagnosa_kerja', 'diagnosa_kerja_name', 'diagnosa_banding', 'keadaan_pulang', 'perawatan_lanjutan', 'waktu_keluar'];
+
+    /**
+     * Ambil asesmen RM 3.7 milik visit (+ triase utk prefill Tahap 1). Return
+     * struktur siap dikonsumsi panel; assessment null bila belum pernah disimpan.
+     */
+    public function getAssessment(Visit $visit): array
+    {
+        $assessment = IgdAssessment::where('visit_id', $visit->id)->first();
+        if ($assessment) {
+            $this->assessmentLocked($assessment); // sinkron lazily is_finalized dari status dokumen
+        }
+        $triase = $visit->igdTriageRecord ?: IgdTriageRecord::where('visit_id', $visit->id)->first();
+        $doc = $assessment?->patient_document_id
+            ? PatientDocument::find($assessment->patient_document_id)
+            : null;
+
+        return [
+            'assessment'    => $assessment,
+            'triase'        => $triase,
+            'document'      => $doc ? [
+                'id'           => $doc->id,
+                'status'       => $doc->status,
+                'finalized_at' => $doc->finalized_at,
+            ] : null,
+            'patient'       => $visit->patient,
+            'visit'         => [
+                'id'              => $visit->id,
+                'no_registrasi'   => $visit->no_registrasi,
+                'guarantor_type'  => $visit->guarantor_type,
+                'igd_arrival_at'  => $visit->igd_arrival_at,
+            ],
+        ];
+    }
+
+    /**
+     * Simpan (autosave draft) asesmen RM 3.7. Diblok bila sudah final (koreksi
+     * harus lewat addendum dokumen di RME). Idempoten via updateOrCreate.
+     */
+    public function saveAssessment(Visit $visit, array $data): IgdAssessment
+    {
+        $existing = IgdAssessment::where('visit_id', $visit->id)->first();
+        if ($existing && $this->assessmentLocked($existing)) {
+            throw new \Exception('Asesmen sudah ditandatangani & final. Koreksi lewat addendum di Rekam Medis.', 422);
+        }
+        return $this->writeAssessment($visit, $data);
+    }
+
+    /**
+     * Finalisasi asesmen RM 3.7 + terbitkan dokumen ber-TTD (patient_documents
+     * status DRAFT). Mengembalikan id dokumen agar FE capture TTD (PIN) + finalize
+     * lewat endpoint Form Registry. Diagnosa kerja wajib (akreditasi).
+     *
+     * Asesmen TIDAK dikunci di sini — penguncian (is_finalized) baru efektif saat
+     * dokumen benar-benar FINALIZED (ditandatangani). Jadi bila dokter membatalkan
+     * TTD, asesmen masih bisa diedit & di-finalisasi ulang (dokumen DRAFT dipakai
+     * ulang). Dokumen DRAFT yang belum diteken juga muncul di Antrean TTD dokter.
+     */
+    public function finalizeAssessment(Visit $visit, array $data): array
+    {
+        return DB::transaction(function () use ($visit, $data) {
+            $existing = IgdAssessment::where('visit_id', $visit->id)->first();
+            if ($existing && $this->assessmentLocked($existing)) {
+                // Dokumen sudah ditandatangani → idempoten, kembalikan apa adanya.
+                return ['assessment' => $existing, 'document_id' => $existing->patient_document_id];
+            }
+
+            if (empty($data['diagnosa_kerja']) && empty($data['diagnosa_kerja_name'])) {
+                throw new \Exception('Diagnosa kerja wajib diisi sebelum finalisasi.', 422);
+            }
+
+            $assessment = $this->writeAssessment($visit, $data);
+            $assessment->update(['doctor_id' => auth('api')->user()?->employee_id]);
+
+            $docId = $this->generatePengkajianDocument($visit, $assessment);
+            $assessment->update(['patient_document_id' => $docId]);
+
+            return ['assessment' => $assessment->fresh(), 'document_id' => $docId];
+        });
+    }
+
+    /**
+     * Asesmen terkunci HANYA jika dokumen RM 3.7 tertautnya sudah FINALIZED
+     * (ditandatangani). Sinkron lazily: set is_finalized saat terdeteksi final.
+     */
+    private function assessmentLocked(IgdAssessment $a): bool
+    {
+        if (! $a->patient_document_id) {
+            return false;
+        }
+        $status = PatientDocument::whereKey($a->patient_document_id)->value('status');
+        $final = $status === 'FINALIZED';
+        if ($final && ! $a->is_finalized) {
+            $a->forceFill(['is_finalized' => true, 'finalized_at' => now()])->saveQuietly();
+        }
+        return $final;
+    }
+
+    /** Tulis kolom asesmen dari payload (filter blok JSONB + skalar dikenal). */
+    private function writeAssessment(Visit $visit, array $data): IgdAssessment
+    {
+        $attrs = [];
+        foreach (self::ASSESS_JSON as $k) {
+            if (array_key_exists($k, $data)) {
+                $attrs[$k] = $data[$k] ?: null;
+            }
+        }
+        foreach (self::ASSESS_SCALAR as $k) {
+            if (array_key_exists($k, $data)) {
+                $attrs[$k] = ($data[$k] ?? '') === '' ? null : $data[$k];
+            }
+        }
+
+        return IgdAssessment::updateOrCreate(['visit_id' => $visit->id], $attrs);
+    }
+
+    /**
+     * Terbitkan/segarkan dokumen RM 3.7 (patient_documents DRAFT) memakai pipeline
+     * Form Registry: body HTML di-render server-side dari asesmen + triase, lalu
+     * disimpan sebagai static field {{body}} pada template PENGKAJIAN_IGD_3_7.
+     * Dokter lanjut TTD (PIN) + finalize lewat endpoint /rekam-medis/document/*.
+     */
+    public function generatePengkajianDocument(Visit $visit, IgdAssessment $assessment): string
+    {
+        $template = DocumentTemplate::where('code', 'PENGKAJIAN_IGD_3_7')
+            ->where('is_active', true)->first();
+        if (! $template) {
+            throw new \Exception('Template RM 3.7 belum tersedia. Jalankan: php artisan db:seed --class=IgdPengkajianSeeder', 500);
+        }
+
+        $bodyHtml = view('pdf.igd_pengkajian_body', [
+            'clinic'     => ClinicProfile::first(),
+            'patient'    => $visit->patient,
+            'visit'      => $visit,
+            'triase'     => $visit->igdTriageRecord ?: IgdTriageRecord::where('visit_id', $visit->id)->first(),
+            'assessment' => $assessment,
+            'doctor'     => $assessment->doctor ?: ($assessment->doctor_id ? Employee::find($assessment->doctor_id) : auth('api')->user()?->employee),
+        ])->render();
+
+        // Reuse dokumen DRAFT yang belum final (regenerate body bila asesmen berubah).
+        $doc = PatientDocument::where('visit_id', $visit->id)
+            ->where('template_code', 'PENGKAJIAN_IGD_3_7')
+            ->whereNull('finalized_at')
+            ->latest('created_at')->first();
+
+        if (! $doc) {
+            $doc = new PatientDocument();
+            $doc->patient_id        = $visit->patient_id;
+            $doc->visit_id          = $visit->id;
+            $doc->document_type_id  = $template->document_type_id;
+            $doc->template_code     = 'PENGKAJIAN_IGD_3_7';
+            $doc->created_by_station = 'igd';
+            $doc->status            = 'DRAFT';
+        }
+        $doc->template_version        = $template->version;
+        $doc->pending_signature_roles = ['DOKTER'];
+        $doc->signatures              = ['static_payload' => ['body' => $bodyHtml]];
+        $doc->save();
+
+        return $doc->id;
+    }
+
+    // =========================================================================
+    // SELF-CHECKOUT IGD (hari libur / kasir tidak bertugas)
+    // =========================================================================
+    // Reuse PENUH KasirService (sumber tunggal billing) → invoice, pembayaran, &
+    // kwitansi IDENTIK dengan KasirView dan otomatis masuk Riwayat KasirView
+    // (history = query billing_invoices status PAID, tanpa gating stasiun). Tak ada
+    // syarat shift/sesi kasir; hanya butuh hak akses kasir.write.
+
+    /**
+     * Pratinjau tagihan IGD (untuk panel bayar): pastikan invoice ada (konsolidasi
+     * lazily seperti KasirView saat dibuka), kembalikan ringkasan + sisa tagihan.
+     */
+    public function billingPreview(Visit $visit): array
+    {
+        $inv = $this->kasir->getInvoiceByVisit($visit->id) ?: $this->kasir->consolidateBilling($visit->id);
+        return $this->billingSummary($inv, $visit);
+    }
+
+    private function billingSummary(BillingInvoice $inv, Visit $visit): array
+    {
+        $inv->loadMissing('items');
+        $due = (float) $inv->total - (float) $inv->covered_amount - (float) $inv->paid_amount;
+        return [
+            'invoice_id'     => $inv->id,
+            'invoice_number' => $inv->invoice_number,
+            'status'         => $inv->status,
+            'guarantor_type' => $visit->guarantor_type,
+            'total'          => (float) $inv->total,
+            'covered_amount' => (float) $inv->covered_amount,
+            'paid_amount'    => (float) $inv->paid_amount,
+            'amount_due'     => max(0, round($due, 2)),
+            'items'          => $inv->items->map(fn ($i) => [
+                'item_type'   => $i->item_type,
+                'description' => $i->description,
+                'quantity'    => (float) $i->quantity,
+                'total_price' => (float) $i->total_price,
+            ])->values()->all(),
+        ];
+    }
+
+    /**
+     * Self-checkout IGD: disposisi (PULANG/RUJUK) → invoice → pembayaran → kwitansi,
+     * semua via KasirService. Cabang penjamin: BPJS → confirmBpjsCoverage (tanpa
+     * uang), tagihan Rp0 → settleZeroInvoice, lainnya → processPayment (CASH/CARD/
+     * TRANSFER). Mengembalikan invoice + data kwitansi (sama dgn KasirView::cetak).
+     *
+     * @param  array  $payment  payment_method?, paid_amount?, cash_received?, notes?
+     */
+    public function selfCheckout(Visit $visit, string $disposition, ?string $notes, array $payment): array
+    {
+        if (! in_array($disposition, ['PULANG', 'RUJUK'], true)) {
+            throw new \Exception('Self-checkout IGD hanya untuk disposisi Pulang atau Rujuk Keluar.', 422);
+        }
+
+        // 1) Disposisi → advance IGD ke KASIR (lewati bila sudah di KASIR / sudah disposisi).
+        if ($visit->current_station === Queue::STATION_IGD && empty($visit->igd_disposition)) {
+            $this->disposisi($visit, $disposition, $notes);
+            $visit->refresh();
+        }
+
+        // 2) Pastikan invoice ada + final.
+        $inv = $this->kasir->getInvoiceByVisit($visit->id) ?: $this->kasir->consolidateBilling($visit->id);
+        if ($inv->status === 'DRAFT') {
+            $inv = $this->kasir->finalizeInvoice($inv->id);
+        }
+
+        // 3) Pelunasan sesuai penjamin/metode (idempoten: invoice PAID → lewati).
+        if ($inv->status !== 'PAID') {
+            $due = (float) $inv->total - (float) $inv->covered_amount - (float) $inv->paid_amount;
+            $note = $payment['notes'] ?? 'Pembayaran di IGD (kasir tidak bertugas)';
+
+            if (($visit->guarantor_type ?? '') === 'BPJS') {
+                $inv = $this->kasir->confirmBpjsCoverage($inv->id, ['notes' => $note]);
+            } elseif ($due <= 0.009) {
+                $inv = $this->kasir->settleZeroInvoice($inv->id, ['notes' => $note]);
+            } else {
+                $inv = $this->kasir->processPayment($inv->id, [
+                    'paid_amount'    => $payment['paid_amount'] ?? $due,
+                    'payment_method' => $payment['payment_method'] ?? 'CASH',
+                    'cash_received'  => $payment['cash_received'] ?? null,
+                    'notes'          => $note,
+                ]);
+            }
+        }
+
+        return [
+            'invoice' => $this->billingSummary($inv, $visit),
+            'receipt' => $this->kasir->generateReceipt($inv->id),
+        ];
     }
 
     // =========================================================================

@@ -40,6 +40,20 @@ class FormTemplateSeeder extends Seeder
         // RM 2.2/LP/22 — Laporan Pembedahan generik (universal semua operasi).
         $this->seedLaporanPembedahan();
 
+        // ── RANAP (Rawat Inap) — Phase 1, 3 form nakes-only (TTD pasien ditunda
+        // sampai PSrE). Pola HYBRID auto-fill seperti Resume RJ; field ber-`group`
+        // untuk UX accordion FormRMRenderer. Lihat plan resilient-singing-pearl.
+        $this->seedResumeMedisRanap();      // RM 3.5/RI — Resume Medis Rawat Inap (DPJP, auto saat discharge)
+        $this->seedPengkajianAwalMedis();   // RM 7.7/PAM — Pengkajian Awal Medis (DPJP ≤24 jam)
+        $this->seedAsesmenAwalKeperawatan();// RM 7.8/AAKRI — Asesmen Awal Keperawatan (perawat, Norton+MST)
+        // RANAP Phase 2 (Tier 2 — keselamatan/kepatuhan akreditasi; perawat/farmasi).
+        $this->seedPencegahanJatuh();       // RM 2.9/JTH — Pencegahan Pasien Jatuh (SKP 6)
+        $this->seedEdukasiTerintegrasi();   // RM 2.4/EDU — Edukasi Terintegrasi (MKE)
+        $this->seedRekonsiliasiObat();      // RM 2.7/REK — Rekonsiliasi Obat (PKPO/SKP 3)
+        // RANAP Phase 3 (Tier 3 — ARK akses & kontinuitas; dokter/perawat).
+        $this->seedSuratPengantarDirawat(); // RM 2.5/SPD — Surat Pengantar Untuk Dirawat Inap
+        $this->seedTransferPasien();        // RM 2.6/TRF — Transfer Pasien antar ruang/unit
+
         // — DINONAKTIFKAN (prototipe lama; aktifkan ulang saat dibangun dari PDF) —
         // $this->seedSuratBerobat();
         // $this->seedSuratKontrol();
@@ -1915,6 +1929,1049 @@ HTML;
             'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
             'station_assignments'   => [
                 ['station' => 'perawat', 'section' => 'asesmen_input', 'mode' => 'INPUT'],
+            ],
+        ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // RANAP — Phase 1 (3 form nakes-only/PIN). Pola HYBRID auto-fill seperti
+    // Resume RJ. Field editable diberi atribut `group` untuk UX accordion
+    // (FormRMRenderer mengelompokkan field per `group`; field tanpa group →
+    // fallback datar = backward-compatible). TTD `required:false` (fase transisi).
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * RM 3.5/RI — Resume Medis Rawat Inap (discharge summary). DPJP. Auto-terbuka
+     * saat discharge di RawatInapView (mirip Resume RJ). Prefill identitas perawatan
+     * (tgl masuk/keluar/lama rawat/kelas/DPJP) dari kolom RANAP Visit + diagnosa
+     * (ICD-10) / tindakan (ICD-9) / terapi pulang (resep) dari data yang sudah ada.
+     */
+    private function seedResumeMedisRanap(): void
+    {
+        $docType = $this->requireDocType('RM-3.5-RI');
+        if (!$docType) return;
+
+        // Helper closures — sejajar seedResumeMedis, + parameter `group` (accordion).
+        $auto = fn (string $key, string $label, string $type, array $binding, array $extra = []) => array_merge(
+            ['key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding],
+            $extra
+        );
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = [
+            // ── Kop klinik + identitas (display_only, di kop/meta output) ─────
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            // Identitas perawatan (display_only) — dari aggregate ranap_identity.
+            $auto('tgl_masuk',     'Tanggal Masuk',  'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'admission_date']),
+            $auto('tgl_keluar',    'Tanggal Keluar', 'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'discharge_date']),
+            $auto('lama_rawat',    'Lama Rawat',     'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'los']),
+            $auto('ruang_rawat',   'Ruang Rawat',    'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'room_bed']),
+            $auto('kelas_rawat',   'Kelas',          'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'kelas']),
+            $auto('dpjp_nama',     'DPJP',           'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'dpjp']),
+            $auto('penanggung',    'Penanggung Pembayaran', 'text', ['kind' => 'db', 'source' => 'visit.guarantor_type']),
+
+            // ── Diagnosa & Alasan Dirawat ────────────────────────────────────
+            $manual('alasan_dirawat',  'Alasan Dirawat',                  'Diagnosa'),
+            $ed('diagnosa_masuk',      'Diagnosa Masuk',                  'Diagnosa', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $ed('diagnosa_keluar',     'Diagnosa Keluar (Diagnosa Utama, ICD-10)', 'Diagnosa', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+
+            // ── Pemeriksaan & Penunjang ──────────────────────────────────────
+            $ed('pemeriksaan_fisik',   'Pemeriksaan Fisik yang Penting',  'Pemeriksaan & Penunjang', ['via' => 'aggregate', 'source' => 'physical_exam']),
+            $manual('laboratorium',    'Laboratorium yang Penting',       'Pemeriksaan & Penunjang'),
+            $manual('radiologi',       'Radiologi',                       'Pemeriksaan & Penunjang'),
+            $ed('penunjang_lain',      'Penunjang Lain',                  'Pemeriksaan & Penunjang', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
+
+            // ── Tindakan & Pengobatan selama dirawat ─────────────────────────
+            $ed('tindakan_operasi',    'Tindakan / Operasi (ICD-9)',      'Tindakan & Pengobatan', ['via' => 'aggregate', 'source' => 'doctorExamination.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
+            $manual('pengobatan_dirawat','Pengobatan Selama Dirawat',     'Tindakan & Pengobatan'),
+
+            // ── Kondisi Pulang & Tindak Lanjut ───────────────────────────────
+            $ed('kondisi_pulang',      'Kondisi Pulang',                  'Kondisi Pulang', ['via' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'discharge_type'], 'text'),
+            $ed('instruksi',           'Instruksi & Edukasi Lanjutan (follow up)', 'Kondisi Pulang', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            $ed('kontrol_tgl',         'Kontrol Tanggal',                 'Kondisi Pulang', ['via' => 'db', 'source' => 'visit.follow_up_date'], 'date'),
+            $manual('diet',            'Diet',                            'Kondisi Pulang', 'text'),
+            $manual('latihan',         'Latihan',                         'Kondisi Pulang', 'text'),
+            $manual('tanda_bahaya',    'Segera Kembali ke RS / IGD bila Terjadi', 'Kondisi Pulang'),
+
+            // ── Terapi Pulang ────────────────────────────────────────────────
+            $ed('terapi_pulang',       'Terapi Pulang (Obat)',            'Terapi Pulang', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+
+            // ── TTD DPJP (PIN → stempel + QR; opsional fase transisi) ────────
+            ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan DPJP', 'type' => 'signature_canvas',
+             'signer_type' => 'doctor', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">RM 3.5/RI/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+          <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:6px 0 0;">RESUME MEDIS RAWAT INAP</div>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Masuk</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_masuk}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Keluar</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_keluar}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Ruang Rawat / Kelas</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{ruang_rawat}} &nbsp; ({{kelas_rawat}})</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Lama Rawat</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{lama_rawat}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">DPJP</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{dpjp_nama}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Penanggung</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{penanggung}}</td>
+    </tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Alasan Dirawat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alasan_dirawat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Masuk</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_masuk}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Keluar<br><span style="font-weight:400; font-size:9.5px;">(Diagnosa Utama)</span></td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_keluar}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik yang Penting</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Laboratorium yang Penting</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{laboratorium}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Radiologi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{radiologi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Penunjang Lain</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{penunjang_lain}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Tindakan / Operasi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tindakan_operasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pengobatan Selama Dirawat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pengobatan_dirawat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Kondisi Pulang</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{kondisi_pulang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Instruksi &amp; Edukasi<br>Lanjutan (follow up)</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{instruksi}}<br>Kontrol Tanggal: <strong>{{kontrol_tgl}}</strong><br>Diet: {{diet}}<br>Latihan: {{latihan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Segera kembali ke RS / IGD<br>bila terjadi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tanda_bahaya}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi Pulang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_pulang}}</td></tr>
+  </table>
+
+  <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+    <td style="width:58%;"></td>
+    <td style="width:42%; text-align:center;">
+      <div>Dokter Penanggung Jawab (DPJP),</div>
+      <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div>
+      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dpjp_nama}}</strong></div>
+      <div style="font-size:9px; color:#666;">Nama Jelas dan Tandatangan</div>
+    </td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('RESUME_MEDIS_RANAP', [
+            'name'                  => 'Resume Medis Rawat Inap',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'ringkasan_pulang', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 7.7/PAM — Pengkajian Awal Medis (Mata). DPJP, ≤24 jam sejak masuk. Prefill
+     * anamnesa / nyeri / TTV dari triase perawat + diagnosa & rencana dari pemeriksaan
+     * dokter bila sudah ada. HYBRID; field ber-group untuk accordion.
+     */
+    private function seedPengkajianAwalMedis(): void
+    {
+        $docType = $this->requireDocType('RM-7.7-PAM');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding, array $extra = []) => array_merge(
+            ['key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding],
+            $extra
+        );
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = [
+            // Kop + identitas
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            $auto('tgl_masuk',     'Tanggal Masuk','text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'admission_date']),
+            $auto('dpjp_nama',     'DPJP',         'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'dpjp']),
+
+            // ── Anamnesa ─────────────────────────────────────────────────────
+            $ed('keluhan_utama',  'Keluhan Utama',                 'Anamnesa', ['via' => 'db', 'source' => 'nurseAssessment.chief_complaint']),
+            $ed('rps',            'Riwayat Penyakit Sekarang',     'Anamnesa', ['via' => 'db', 'source' => 'nurseAssessment.rps']),
+            $manual('rpd',        'Riwayat Penyakit Dahulu',       'Anamnesa'),
+            $manual('riwayat_obat','Riwayat Pengobatan',           'Anamnesa'),
+            $manual('riwayat_keluarga','Riwayat Penyakit Keluarga','Anamnesa'),
+            $manual('riwayat_operasi','Riwayat Operasi / Transfusi','Anamnesa'),
+            $ed('alergi',         'Alergi',                        'Anamnesa', ['via' => 'aggregate', 'source' => 'allergy']),
+
+            // ── Penilaian Nyeri (VAS) ────────────────────────────────────────
+            $ed('skala_nyeri',    'Skala Nyeri (0–10)',            'Penilaian Nyeri', ['via' => 'db', 'source' => 'nurseAssessment.pain_scale'], 'number'),
+            $manual('nyeri_lokasi','Lokasi / Karakteristik Nyeri', 'Penilaian Nyeri'),
+
+            // ── Tanda Vital & Status Generalis ───────────────────────────────
+            $manual('keadaan_umum','Keadaan Umum / Kesadaran / GCS','Tanda Vital'),
+            $ed('nadi',           'Nadi (x/mnt)',                  'Tanda Vital', ['via' => 'db', 'source' => 'nurseAssessment.nadi'], 'number'),
+            $ed('rr',             'Respirasi (x/mnt)',             'Tanda Vital', ['via' => 'db', 'source' => 'nurseAssessment.respirasi'], 'number'),
+            $ed('suhu',           'Suhu (°C)',                     'Tanda Vital', ['via' => 'db', 'source' => 'nurseAssessment.suhu'], 'number'),
+            $ed('spo2',           'Saturasi O₂ (%)',               'Tanda Vital', ['via' => 'db', 'source' => 'nurseAssessment.spo2'], 'number'),
+            $manual('tekanan_darah','Tekanan Darah (mmHg)',        'Tanda Vital', 'text'),
+            $ed('berat_badan',    'Berat Badan (kg)',              'Tanda Vital', ['via' => 'db', 'source' => 'nurseAssessment.berat_badan'], 'number'),
+
+            // ── Pemeriksaan Fisik & Status Lokalis Mata ──────────────────────
+            $manual('pemeriksaan_umum','Pemeriksaan Fisik Umum (Kepala/Leher/Thorax)', 'Pemeriksaan Mata'),
+            $ed('status_mata',    'Status Lokalis Mata (OD / OS)',  'Pemeriksaan Mata', ['via' => 'db', 'source' => 'doctorExamination.soap_objective']),
+            $manual('penunjang',  'Pemeriksaan Penunjang (Lab/EKG/X-Ray)', 'Pemeriksaan Mata'),
+
+            // ── Diagnosa & Rencana ───────────────────────────────────────────
+            $ed('diagnosa_kerja', 'Diagnosa Kerja (ICD-10)',       'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $manual('diagnosa_diferensial','Diagnosa Diferensial', 'Diagnosa & Rencana'),
+            $ed('terapi',         'Terapi',                        'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            $ed('rencana_kerja',  'Rencana Kerja',                 'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+
+            // ── TTD DPJP ─────────────────────────────────────────────────────
+            ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan DPJP', 'type' => 'signature_canvas',
+             'signer_type' => 'doctor', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">RM 7.7/PAM/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+          <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:1px solid #0E3A66; padding:4px 0 2px; margin:6px 0 0;">PENGKAJIAN AWAL MEDIS MATA</div>
+  <div style="text-align:center; font-size:9px; color:#666; border-bottom:2px solid #0E3A66; padding-bottom:3px;">(Diisi oleh Dokter dalam waktu 24 jam sejak pasien masuk) — Masuk: {{tgl_masuk}} · DPJP: {{dpjp_nama}}</div>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px; margin-top:0;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">ANAMNESA</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Keluhan Utama</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{keluhan_utama}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Penyakit Sekarang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{rps}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Penyakit Dahulu</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{rpd}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Pengobatan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{riwayat_obat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Penyakit Keluarga</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{riwayat_keluarga}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Operasi / Transfusi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{riwayat_operasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alergi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alergi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Penilaian Nyeri</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">Skala: <strong>{{skala_nyeri}}</strong> / 10 &nbsp; — &nbsp; {{nyeri_lokasi}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="4" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">TANDA VITAL</td></tr>
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%;">Tekanan Darah: <strong>{{tekanan_darah}}</strong></td>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%;">Nadi: <strong>{{nadi}}</strong> x/mnt</td>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%;">RR: <strong>{{rr}}</strong> x/mnt</td>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%;">Suhu: <strong>{{suhu}}</strong> °C</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px;">SpO₂: <strong>{{spo2}}</strong> %</td>
+      <td style="border:1px solid #333; padding:4px 6px;">BB: <strong>{{berat_badan}}</strong> kg</td>
+      <td colspan="2" style="border:1px solid #333; padding:4px 6px; white-space:pre-line;">{{keadaan_umum}}</td>
+    </tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">PEMERIKSAAN FISIK</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Pemeriksaan Fisik Umum</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_umum}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Status Lokalis Mata (OD/OS)</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{status_mata}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Penunjang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{penunjang}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">DIAGNOSA &amp; RENCANA</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Diagnosa Kerja</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_kerja}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Diferensial</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_diferensial}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Rencana Kerja</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{rencana_kerja}}</td></tr>
+  </table>
+
+  <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+    <td style="width:58%;"></td>
+    <td style="width:42%; text-align:center;">
+      <div>Dokter Pemeriksa (DPJP),</div>
+      <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div>
+      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dpjp_nama}}</strong></div>
+      <div style="font-size:9px; color:#666;">Nama Jelas dan Tandatangan</div>
+    </td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('PENGKAJIAN_AWAL_MEDIS', [
+            'name'                  => 'Pengkajian Awal Medis Rawat Inap',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'pengkajian_awal', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 7.8/AAKRI — Asesmen Awal Keperawatan Rawat Inap. Perawat, ≤24 jam. SCORED
+     * form (Skala Norton dekubitus 5 item + skrining gizi MST 2 item via
+     * ScoringEngine) + discharge planning. HYBRID (dokumen ber-kop + skor + TTD
+     * perawat). Field ber-group untuk accordion; skor live di header grup (FE).
+     */
+    private function seedAsesmenAwalKeperawatan(): void
+    {
+        $docType = $this->requireDocType('RM-7.8-AAKRI');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding, array $extra = []) => array_merge(
+            ['key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding],
+            $extra
+        );
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'],
+        ];
+        // scored_radio helper (Norton/MST) — opsi {label, score}.
+        $scored = fn (string $key, string $label, string $group, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'scored_radio', 'group' => $group,
+            'required' => false, 'options' => $options, 'binding' => ['kind' => 'static', 'value' => null],
+        ];
+
+        $fields = [
+            // Kop + identitas
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            $auto('tgl_masuk',     'Tanggal Masuk','text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'admission_date']),
+
+            // ── Alergi & Pemeriksaan Fisik ───────────────────────────────────
+            $ed('alergi',          'Alergi / Reaksi',               'Alergi & Fisik', ['via' => 'aggregate', 'source' => 'allergy']),
+            $ed('pemeriksaan_fisik','Pemeriksaan Fisik (Kesadaran/Pernafasan/Kulit/dll)', 'Alergi & Fisik', ['via' => 'aggregate', 'source' => 'physical_exam']),
+            $manual('keadaan_umum','Keadaan Umum',                  'Alergi & Fisik', 'text'),
+
+            // ── Skrining Risiko Cedera/Jatuh ─────────────────────────────────
+            $manual('risiko_jatuh','Risiko Cedera/Jatuh & Tindak Lanjut (gelang/segitiga)', 'Risiko Jatuh'),
+
+            // ── Skala Norton (dekubitus) — 5 scored_radio + computed ─────────
+            $scored('norton_fisik',    'Keluhan Fisik',   'Skala Norton', [
+                ['label' => 'Baik',         'score' => 4],
+                ['label' => 'Sedang',       'score' => 3],
+                ['label' => 'Buruk',        'score' => 2],
+                ['label' => 'Sangat buruk', 'score' => 1],
+            ]),
+            $scored('norton_mental',   'Status Mental',   'Skala Norton', [
+                ['label' => 'Sadar',   'score' => 4],
+                ['label' => 'Apatis',  'score' => 3],
+                ['label' => 'Bingung', 'score' => 2],
+                ['label' => 'Stupor',  'score' => 1],
+            ]),
+            $scored('norton_aktifitas','Aktifitas',       'Skala Norton', [
+                ['label' => 'Jalan sendiri',   'score' => 4],
+                ['label' => 'Dengan bantuan',  'score' => 3],
+                ['label' => 'Kursi roda',      'score' => 2],
+                ['label' => 'Di tempat tidur', 'score' => 1],
+            ]),
+            $scored('norton_mobilitas','Mobilitas',       'Skala Norton', [
+                ['label' => 'Bebas bergerak',  'score' => 4],
+                ['label' => 'Gerak terbatas',  'score' => 3],
+                ['label' => 'Sangat terbatas', 'score' => 2],
+                ['label' => 'Tidak bergerak',  'score' => 1],
+            ]),
+            $scored('norton_inkontinensia','Inkontinensia','Skala Norton', [
+                ['label' => 'Kontinen',            'score' => 4],
+                ['label' => 'Kadang inkontinen',   'score' => 3],
+                ['label' => 'Selalu inkontinen',   'score' => 2],
+                ['label' => 'Inkontinen urin & alvi','score' => 1],
+            ]),
+            ['key' => 'norton_total', 'label' => 'Total Skor Norton', 'type' => 'computed_sum', 'group' => 'Skala Norton',
+             'sum_of' => ['norton_fisik', 'norton_mental', 'norton_aktifitas', 'norton_mobilitas', 'norton_inkontinensia'],
+             'binding' => ['kind' => 'computed']],
+            ['key' => 'norton_interpretasi', 'label' => 'Interpretasi Risiko Dekubitus', 'type' => 'computed_threshold', 'group' => 'Skala Norton',
+             'based_on' => 'norton_total',
+             'thresholds' => [
+                 ['max' => 11, 'label' => 'Risiko Tinggi (<12)'],
+                 ['max' => 15, 'label' => 'Risiko Sedang (12–15)'],
+                 ['max' => 20, 'label' => 'Tidak Ada Risiko (16–20)'],
+             ],
+             'binding' => ['kind' => 'computed']],
+
+            // ── Skala Nyeri ──────────────────────────────────────────────────
+            $ed('skala_nyeri',    'Skala Nyeri (0–10)',             'Skala Nyeri', ['via' => 'db', 'source' => 'nurseAssessment.pain_scale'], 'number'),
+            $manual('nyeri_detail','Lokasi / Onset / Karakteristik Nyeri', 'Skala Nyeri'),
+
+            // ── Skrining Gizi (MST) — 2 scored_radio + computed ──────────────
+            $scored('mst_bb', 'Penurunan BB tidak diinginkan (3 bulan terakhir)', 'Skrining Gizi', [
+                ['label' => 'Tidak ada penurunan BB', 'score' => 0],
+                ['label' => 'Penurunan 1–5 kg',       'score' => 1],
+                ['label' => 'Penurunan 6–10 kg',      'score' => 2],
+                ['label' => 'Penurunan 11–15 kg',     'score' => 3],
+                ['label' => 'Penurunan >15 kg',       'score' => 4],
+            ]),
+            $scored('mst_nafsu', 'Asupan makan berkurang karena tidak nafsu makan', 'Skrining Gizi', [
+                ['label' => 'Tidak', 'score' => 0],
+                ['label' => 'Ya',    'score' => 1],
+            ]),
+            ['key' => 'mst_total', 'label' => 'Total Skor MST', 'type' => 'computed_sum', 'group' => 'Skrining Gizi',
+             'sum_of' => ['mst_bb', 'mst_nafsu'], 'binding' => ['kind' => 'computed']],
+            ['key' => 'mst_interpretasi', 'label' => 'Interpretasi Risiko Gizi', 'type' => 'computed_threshold', 'group' => 'Skrining Gizi',
+             'based_on' => 'mst_total',
+             'thresholds' => [
+                 ['max' => 1,    'label' => 'Risiko Rendah (tidak perlu rujukan gizi)'],
+                 ['max' => 9999, 'label' => 'Berisiko Malnutrisi — pengkajian lanjutan oleh ahli gizi (skor ≥2)'],
+             ],
+             'binding' => ['kind' => 'computed']],
+
+            // ── Status Fungsional ────────────────────────────────────────────
+            $manual('status_fungsional','Status Fungsional / Tingkat Ketergantungan (Mandiri / Bantuan minimal / Total)', 'Status Fungsional'),
+
+            // ── Discharge Planning ───────────────────────────────────────────
+            $manual('estimasi_pulang','Estimasi Tanggal Pemulangan',  'Discharge Planning', 'date'),
+            $manual('kebutuhan_pulang','Masalah & Kebutuhan saat Pulang (mobilitas/hygiene/obat/diet)', 'Discharge Planning'),
+            $manual('alat_bantu',  'Alat Medis / Alat Bantu / Perawatan Lanjutan di Rumah', 'Discharge Planning'),
+
+            // ── Diagnosa & Rencana Keperawatan ───────────────────────────────
+            $manual('diagnosa_kep','Diagnosa Keperawatan',           'Rencana Keperawatan'),
+            $manual('tujuan_kep',  'Tujuan',                         'Rencana Keperawatan'),
+            $manual('intervensi_kep','Intervensi',                   'Rencana Keperawatan'),
+
+            // ── TTD Perawat ──────────────────────────────────────────────────
+            ['key' => 'ttd_perawat', 'label' => 'Tanda Tangan Perawat', 'type' => 'signature_canvas',
+             'signer_type' => 'nurse', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">RM 7.8/AAKRI/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+          <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:1px solid #0E3A66; padding:4px 0 2px; margin:6px 0 0;">ASESMEN AWAL KEPERAWATAN RAWAT INAP</div>
+  <div style="text-align:center; font-size:9px; color:#666; border-bottom:2px solid #0E3A66; padding-bottom:3px;">(Dilengkapi perawat dalam 24 jam pertama pasien masuk ruang rawat inap) — Masuk: {{tgl_masuk}}</div>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Alergi / Reaksi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alergi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Keadaan Umum</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{keadaan_umum}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Skrining Risiko Cedera/Jatuh</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{risiko_jatuh}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">PENILAIAN RISIKO DEKUBITUS (SKALA NORTON)</td></tr>
+    <tr><td style="border:1px solid #333; padding:4px 6px; width:50%;">Keluhan Fisik: <strong>{{norton_fisik}}</strong></td><td style="border:1px solid #333; padding:4px 6px;">Status Mental: <strong>{{norton_mental}}</strong></td></tr>
+    <tr><td style="border:1px solid #333; padding:4px 6px;">Aktifitas: <strong>{{norton_aktifitas}}</strong></td><td style="border:1px solid #333; padding:4px 6px;">Mobilitas: <strong>{{norton_mobilitas}}</strong></td></tr>
+    <tr><td style="border:1px solid #333; padding:4px 6px;">Inkontinensia: <strong>{{norton_inkontinensia}}</strong></td><td style="border:1px solid #333; padding:4px 6px; background:#fff7ec;">Total Skor: <strong>{{norton_total}}</strong> — {{norton_interpretasi}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Skala Nyeri</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">Skala: <strong>{{skala_nyeri}}</strong> / 10 &nbsp; {{nyeri_detail}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">SKRINING GIZI (MST)</td></tr>
+    <tr><td style="border:1px solid #333; padding:4px 6px; width:50%;">Penurunan BB: <strong>{{mst_bb}}</strong></td><td style="border:1px solid #333; padding:4px 6px;">Nafsu makan turun: <strong>{{mst_nafsu}}</strong></td></tr>
+    <tr><td colspan="2" style="border:1px solid #333; padding:4px 6px; background:#fff7ec;">Total Skor MST: <strong>{{mst_total}}</strong> — {{mst_interpretasi}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Status Fungsional</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{status_fungsional}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">RENCANA PEMULANGAN PASIEN (DISCHARGE PLANNING)</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Estimasi Tanggal Pulang</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{estimasi_pulang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Kebutuhan saat Pulang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{kebutuhan_pulang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alat Medis / Perawatan Lanjutan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alat_bantu}}</td></tr>
+  </table>
+
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="2" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">RENCANA KEPERAWATAN</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Diagnosa Keperawatan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_kep}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Tujuan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tujuan_kep}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Intervensi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{intervensi_kep}}</td></tr>
+  </table>
+
+  <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+    <td style="width:58%;"></td>
+    <td style="width:42%; text-align:center;">
+      <div>Perawat Asesor,</div>
+      <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat}}</div>
+      <div style="border-top:1px solid #333; padding-top:3px;">Nama Jelas dan Tandatangan</div>
+    </td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('ASESMEN_AWAL_KEPERAWATAN_RI', [
+            'name'                  => 'Asesmen Awal Keperawatan Rawat Inap',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SCORED_FORM,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'asuhan_keperawatan', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // RANAP — Phase 2 (Tier 2 keselamatan/kepatuhan). Pola sama Phase 1: HYBRID,
+    // field ber-`group`, TTD nakes `required:false`. INPUT mostly multi_checkbox
+    // (static_payload) + sedikit prefill. Helper kop ringkas dibagi via closure.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /** Field kop+identitas standar RANAP (display_only) — dipakai 3 form Phase 2. */
+    private function ranapKopFields(): array
+    {
+        $auto = fn (string $key, string $label, string $type, array $binding, array $extra = []) => array_merge(
+            ['key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding],
+            $extra
+        );
+
+        return [
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+        ];
+    }
+
+    /** Heredoc kop+identitas RANAP (dipakai 3 layout Phase 2). $kode = label form pojok. */
+    private function ranapKopHtml(string $kode, string $judul): string
+    {
+        return <<<HTML
+<table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+  <tr>
+    <td style="vertical-align:top; width:58%;">
+      <table style="border-collapse:collapse;"><tr>
+        <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+        <td style="vertical-align:middle;">
+          <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+          <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+          <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+        </td>
+      </tr></table>
+    </td>
+    <td style="vertical-align:top; width:42%;">
+      <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">{$kode}</div>
+      <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+        <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+        <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+        <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+        <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:6px 0 8px;">{$judul}</div>
+HTML;
+    }
+
+    /** Blok TTD nakes RANAP (perawat/apoteker) — heredoc. */
+    private function ranapTtdHtml(string $peran, string $placeholder): string
+    {
+        return <<<HTML
+<table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+  <td style="width:58%;"></td>
+  <td style="width:42%; text-align:center;">
+    <div>{$peran},</div>
+    <div style="min-height:80px; display:flex; align-items:center; justify-content:center;">{{{$placeholder}}}</div>
+    <div style="border-top:1px solid #333; padding-top:3px;">Nama Jelas dan Tandatangan</div>
+  </td>
+</tr></table>
+HTML;
+    }
+
+    /**
+     * RM 2.9/JTH — Pelaksanaan Pencegahan Pasien Jatuh (SKP 6). Perawat. Tingkat
+     * risiko + intervensi standar/risiko-tinggi (multi_checkbox). TTD perawat.
+     */
+    private function seedPencegahanJatuh(): void
+    {
+        $docType = $this->requireDocType('RM-2.9-JTH');
+        if (!$docType) return;
+
+        $mcheck = fn (string $key, string $label, string $group, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'group' => $group,
+            'options' => $options, 'binding' => ['kind' => 'static'],
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group, 'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = array_merge($this->ranapKopFields(), [
+            ['key' => 'tingkat_risiko', 'label' => 'Tingkat Risiko Jatuh', 'type' => 'radio_with_detail',
+             'group' => 'Tingkat Risiko', 'options' => ['Rendah', 'Sedang', 'Tinggi'], 'binding' => ['kind' => 'static']],
+            $mcheck('intervensi_standar', 'Intervensi Standar (semua pasien)', 'Intervensi Standar', [
+                'Orientasi ruangan & penggunaan bel',
+                'Posisi tempat tidur rendah & terkunci',
+                'Pagar pengaman terpasang',
+                'Pencahayaan cukup',
+                'Alas kaki anti-licin',
+                'Barang kebutuhan dalam jangkauan',
+            ]),
+            $mcheck('intervensi_tinggi', 'Intervensi Risiko Tinggi', 'Intervensi Risiko Tinggi', [
+                'Gelang risiko jatuh (kuning) terpasang',
+                'Tanda/segitiga risiko jatuh di tempat tidur',
+                'Pasien tidak ditinggalkan sendiri',
+                'Pendampingan saat mobilisasi/ke kamar mandi',
+                'Edukasi keluarga tentang pencegahan jatuh',
+                'Evaluasi ulang risiko tiap shift',
+            ]),
+            $manual('catatan_jatuh', 'Catatan / Kejadian', 'Catatan'),
+            ['key' => 'ttd_perawat', 'label' => 'Tanda Tangan Perawat', 'type' => 'signature_canvas',
+             'signer_type' => 'nurse', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ]);
+
+        $kop = $this->ranapKopHtml('RM 2.9/JTH/22', 'PELAKSANAAN PENCEGAHAN PASIEN JATUH');
+        $ttd = $this->ranapTtdHtml('Perawat', 'ttd_perawat');
+        $layoutHtml = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  {$kop}
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Tingkat Risiko Jatuh</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{tingkat_risiko}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Intervensi Standar</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{intervensi_standar}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Intervensi Risiko Tinggi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{intervensi_tinggi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Catatan / Kejadian</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{catatan_jatuh}}</td></tr>
+  </table>
+  {$ttd}
+</div>
+HTML;
+
+        $this->upsert('PENCEGAHAN_JATUH_RI', [
+            'name'                  => 'Pelaksanaan Pencegahan Pasien Jatuh',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'keselamatan', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 2.4/EDU — Edukasi Terintegrasi (MKE). Perawat/edukator. Hambatan + topik +
+     * metode (multi_checkbox) + evaluasi pemahaman. TTD pasien DITUNDA (PSrE) →
+     * hanya TTD nakes.
+     */
+    private function seedEdukasiTerintegrasi(): void
+    {
+        $docType = $this->requireDocType('RM-2.4-EDU');
+        if (!$docType) return;
+
+        $mcheck = fn (string $key, string $label, string $group, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'group' => $group,
+            'options' => $options, 'binding' => ['kind' => 'static'],
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group, 'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = array_merge($this->ranapKopFields(), [
+            $mcheck('hambatan', 'Hambatan Belajar', 'Hambatan', [
+                'Tidak ada hambatan', 'Bahasa', 'Pendengaran', 'Penglihatan',
+                'Kognitif / daya ingat', 'Emosi / motivasi', 'Hambatan fisik',
+            ]),
+            $mcheck('topik', 'Topik Edukasi', 'Topik', [
+                'Penyakit & rencana perawatan', 'Penggunaan obat', 'Diet & nutrisi',
+                'Perawatan luka', 'Penggunaan alat medis', 'Rehabilitasi / mobilisasi',
+                'Manajemen nyeri', 'Pencegahan infeksi', 'Hak & kewajiban pasien',
+            ]),
+            $mcheck('metode', 'Metode Edukasi', 'Metode', [
+                'Lisan / diskusi', 'Demonstrasi', 'Leaflet / brosur', 'Audiovisual',
+            ]),
+            ['key' => 'pemahaman', 'label' => 'Evaluasi Pemahaman', 'type' => 'radio_with_detail',
+             'group' => 'Evaluasi', 'options' => ['Mengerti', 'Perlu pengulangan', 'Perlu demonstrasi ulang'], 'binding' => ['kind' => 'static']],
+            $manual('sasaran_edukasi', 'Sasaran (Pasien / Keluarga, nama)', 'Evaluasi', 'text'),
+            $manual('catatan_edukasi', 'Catatan Tambahan', 'Evaluasi'),
+            ['key' => 'ttd_edukator', 'label' => 'Tanda Tangan Edukator', 'type' => 'signature_canvas',
+             'signer_type' => 'nurse', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ]);
+
+        $kop = $this->ranapKopHtml('RM 2.4/EDU/22', 'FORMULIR EDUKASI TERINTEGRASI');
+        $ttd = $this->ranapTtdHtml('Edukator / Perawat', 'ttd_edukator');
+        $layoutHtml = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  {$kop}
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Sasaran Edukasi</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{sasaran_edukasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Hambatan Belajar</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{hambatan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Topik Edukasi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{topik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Metode</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{metode}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Evaluasi Pemahaman</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{pemahaman}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Catatan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{catatan_edukasi}}</td></tr>
+  </table>
+  {$ttd}
+</div>
+HTML;
+
+        $this->upsert('EDUKASI_TERINTEGRASI_RI', [
+            'name'                  => 'Edukasi Terintegrasi Rawat Inap',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'edukasi', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 2.7/REK — Rekonsiliasi Obat (PKPO/SKP 3). Farmasi/perawat. Daftar obat
+     * yang dibawa pasien + sumber data + keputusan tindak lanjut. Prefill terapi
+     * dari resep berjalan (referensi). TTD apoteker/perawat.
+     */
+    private function seedRekonsiliasiObat(): void
+    {
+        $docType = $this->requireDocType('RM-2.7-REK');
+        if (!$docType) return;
+
+        $mcheck = fn (string $key, string $label, string $group, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'group' => $group,
+            'options' => $options, 'binding' => ['kind' => 'static'],
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group, 'binding' => ['kind' => 'static'],
+        ];
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+
+        $fields = array_merge($this->ranapKopFields(), [
+            $mcheck('sumber_data', 'Sumber Data Riwayat Obat', 'Sumber', [
+                'Pasien', 'Keluarga', 'Obat yang dibawa', 'Resep terdahulu', 'Rekam medis', 'Tidak ada data',
+            ]),
+            $manual('obat_dibawa', 'Daftar Obat yang Sedang/Pernah Digunakan (nama · dosis · frekuensi · sejak kapan)', 'Riwayat Obat'),
+            $manual('alergi_obat', 'Riwayat Alergi Obat', 'Riwayat Obat', 'text'),
+            $ed('terapi_berjalan', 'Terapi Saat Ini (referensi resep berjalan)', 'Tindak Lanjut', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            $manual('tindak_lanjut', 'Keputusan Rekonsiliasi (Lanjut / Stop / Ganti / Tunda — per obat)', 'Tindak Lanjut'),
+            ['key' => 'ada_diskrepansi', 'label' => 'Ditemukan Diskrepansi?', 'type' => 'radio_with_detail',
+             'group' => 'Tindak Lanjut', 'options' => ['Tidak', 'Ya'], 'binding' => ['kind' => 'static']],
+            $manual('catatan_rekonsiliasi', 'Catatan / Konfirmasi ke DPJP', 'Tindak Lanjut'),
+            ['key' => 'ttd_petugas', 'label' => 'Tanda Tangan Apoteker / Perawat', 'type' => 'signature_canvas',
+             'signer_type' => 'nurse', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ]);
+
+        $kop = $this->ranapKopHtml('RM 2.7/REK/22', 'FORMULIR REKONSILIASI OBAT');
+        $ttd = $this->ranapTtdHtml('Apoteker / Perawat', 'ttd_petugas');
+        $layoutHtml = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  {$kop}
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Sumber Data</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{sumber_data}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Obat Digunakan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{obat_dibawa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Riwayat Alergi Obat</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{alergi_obat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi Saat Ini</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_berjalan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diskrepansi</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{ada_diskrepansi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Keputusan Rekonsiliasi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tindak_lanjut}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Catatan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{catatan_rekonsiliasi}}</td></tr>
+  </table>
+  {$ttd}
+</div>
+HTML;
+
+        $this->upsert('REKONSILIASI_OBAT_RI', [
+            'name'                  => 'Rekonsiliasi Obat',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'obat', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // RANAP — Phase 3 (Tier 3 ARK: akses & kontinuitas). HYBRID, field ber-group,
+    // TTD nakes `required:false`. TTD pasien/keluarga DITUNDA (PSrE).
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * RM 2.5/SPD — Surat Pengantar Untuk Dirawat Inap. Dokter IGD/poli. Surat
+     * pendek: alasan dirawat + saran terapi + rencana tindakan. Prefill diagnosa
+     * (ICD-10), terapi (resep), rencana (planning_instruction). TTD dokter.
+     */
+    private function seedSuratPengantarDirawat(): void
+    {
+        $docType = $this->requireDocType('RM-2.5-SPD');
+        if (!$docType) return;
+
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group, 'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = array_merge($this->ranapKopFields(), [
+            ['key' => 'asal_ruangan', 'label' => 'Asal Ruangan', 'type' => 'radio_with_detail',
+             'group' => 'Pengantar', 'options' => ['IGD', 'Poliklinik'], 'binding' => ['kind' => 'static']],
+            $manual('rencana_perawatan', 'Rencana Perawatan Di (ruang/kelas)', 'Pengantar', 'text'),
+            $ed('alasan_dirawat', 'Karena Menderita (alasan dirawat / diagnosa)', 'Klinis', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $ed('saran_terapi', 'Saran Terapi', 'Klinis', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            $ed('rencana_tindakan', 'Rencana Tindakan', 'Klinis', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter', 'type' => 'signature_canvas',
+             'signer_type' => 'doctor', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ]);
+
+        $kop = $this->ranapKopHtml('RM 2.5/SPD/22', 'SURAT PENGANTAR UNTUK DIRAWAT INAP');
+        $ttd = $this->ranapTtdHtml('Dokter yang Memeriksa', 'ttd_dokter');
+        $layoutHtml = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  {$kop}
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:32%; vertical-align:top; font-weight:600;">Asal Ruangan</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{asal_ruangan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Rencana Perawatan Di</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{rencana_perawatan}}</td></tr>
+  </table>
+  <p style="margin:8px 0 4px;">Bersama ini kami kirimkan pasien tersebut di atas untuk dirawat inap:</p>
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:32%; vertical-align:top; font-weight:600;">Karena Menderita</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alasan_dirawat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Saran Terapi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{saran_terapi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Rencana Tindakan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{rencana_tindakan}}</td></tr>
+  </table>
+  <p style="margin:8px 0;">Mohon ditindaklanjuti untuk rencana tindakan/terapi.</p>
+  {$ttd}
+</div>
+HTML;
+
+        $this->upsert('SURAT_PENGANTAR_DIRAWAT', [
+            'name'                  => 'Surat Pengantar Untuk Dirawat Inap',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'pengantar_dirawat', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 2.6/TRF — Formulir Transfer Pasien (antar ruang/unit). DPJP/perawat.
+     * Prefill diagnosa/DPJP/TTV; alasan & metode transfer (multi_checkbox); kondisi
+     * pasien saat pindah. TTD perawat pengirim (TTD pasien/keluarga & penerima
+     * ditunda — PSrE). Selaras transferBed() RanapService.
+     */
+    private function seedTransferPasien(): void
+    {
+        $docType = $this->requireDocType('RM-2.6-TRF');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $ed = fn (string $key, string $label, string $group, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $manual = fn (string $key, string $label, string $group, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'group' => $group, 'binding' => ['kind' => 'static'],
+        ];
+        $mcheck = fn (string $key, string $label, string $group, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'group' => $group,
+            'options' => $options, 'binding' => ['kind' => 'static'],
+        ];
+
+        $fields = array_merge($this->ranapKopFields(), [
+            $auto('dpjp_nama', 'DPJP', 'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'dpjp']),
+            $auto('ruang_asal_auto', 'Ruang Saat Ini', 'text', ['kind' => 'aggregate', 'source' => 'ranap_identity', 'format' => 'room_bed']),
+
+            // ── Transfer ─────────────────────────────────────────────────────
+            $manual('ruangan_selanjutnya', 'Ruangan Selanjutnya (tujuan)', 'Transfer', 'text'),
+            $mcheck('alasan_transfer', 'Alasan Perpindahan', 'Transfer', [
+                'Kondisi pasien memburuk', 'Kondisi pasien stabil', 'Tidak ada perubahan',
+                'Fasilitas kurang memadai', 'Membutuhkan peralatan lebih baik',
+                'Membutuhkan tenaga lebih ahli', 'Jumlah tenaga kurang',
+            ]),
+            $manual('alasan_lain', 'Alasan Lain', 'Transfer', 'text'),
+            $mcheck('metode_transfer', 'Metode Perpindahan', 'Transfer', [
+                'Kursi roda', 'Tempat tidur', 'Brankar / stretcher',
+            ]),
+
+            // ── Klinis ───────────────────────────────────────────────────────
+            $ed('diagnosa_utama', 'Diagnosa Utama (ICD-10)', 'Klinis', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $manual('diagnosa_sekunder', 'Diagnosa Sekunder', 'Klinis'),
+            $ed('perhatian_khusus', 'Perlu Perhatian (Alergi / MRSA / dll)', 'Klinis', ['via' => 'aggregate', 'source' => 'allergy']),
+            $manual('pemeriksaan_fisik', 'Pemeriksaan Fisik (Status Generalis/Lokalis signifikan)', 'Klinis'),
+            $ed('terapi_berjalan', 'Terapi / Intervensi Berjalan', 'Klinis', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+
+            // ── Kondisi Saat Pindah ──────────────────────────────────────────
+            $manual('keadaan_umum', 'Keadaan Umum / Kesadaran', 'Kondisi Pindah', 'text'),
+            $manual('status_nyeri', 'Status Nyeri', 'Kondisi Pindah', 'text'),
+            $ed('nadi', 'Nadi (x/mnt)', 'Kondisi Pindah', ['via' => 'db', 'source' => 'nurseAssessment.nadi'], 'number'),
+            $ed('suhu', 'Suhu (°C)', 'Kondisi Pindah', ['via' => 'db', 'source' => 'nurseAssessment.suhu'], 'number'),
+            $ed('rr', 'Pernafasan (x/mnt)', 'Kondisi Pindah', ['via' => 'db', 'source' => 'nurseAssessment.respirasi'], 'number'),
+            $manual('tekanan_darah', 'Tekanan Darah (mmHg)', 'Kondisi Pindah', 'text'),
+            $mcheck('peralatan_menyertai', 'Peralatan yang Menyertai', 'Kondisi Pindah', [
+                'Tidak ada', 'Portable O₂', 'Alat penghisap', 'Bagging', 'NGT',
+                'Ventilator', 'Kateter urin', 'Pompa infus',
+            ]),
+            $manual('pendamping', 'Pendamping / Petugas Pengantar', 'Kondisi Pindah', 'text'),
+
+            ['key' => 'ttd_perawat', 'label' => 'Tanda Tangan Perawat Pengirim', 'type' => 'signature_canvas',
+             'signer_type' => 'nurse', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
+        ]);
+
+        $kop = $this->ranapKopHtml('RM 2.6/TRF/22', 'FORMULIR TRANSFER PASIEN');
+        $ttd = $this->ranapTtdHtml('Perawat Pengirim', 'ttd_perawat');
+        $layoutHtml = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  {$kop}
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:11px;">
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%; font-weight:600;">DPJP</td><td style="border:1px solid #333; padding:4px 6px;">{{dpjp_nama}}</td>
+      <td style="border:1px solid #333; padding:4px 6px; width:25%; font-weight:600;">Ruang Asal</td><td style="border:1px solid #333; padding:4px 6px;">{{ruang_asal_auto}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px; font-weight:600;">Ruangan Selanjutnya</td><td colspan="3" style="border:1px solid #333; padding:4px 6px;">{{ruangan_selanjutnya}}</td>
+    </tr>
+  </table>
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Diagnosa Utama</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_utama}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Sekunder</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_sekunder}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Perlu Perhatian</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{perhatian_khusus}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alasan Perpindahan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alasan_transfer}}<br>{{alasan_lain}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Metode Perpindahan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{metode_transfer}}</td></tr>
+  </table>
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td colspan="4" style="border:1px solid #333; padding:3px 6px; background:#eef3f8; font-weight:700;">KEADAAN PASIEN SAAT PINDAH</td></tr>
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px; width:50%;">Keadaan Umum / Kesadaran: <strong>{{keadaan_umum}}</strong></td>
+      <td style="border:1px solid #333; padding:4px 6px;" colspan="3">Status Nyeri: <strong>{{status_nyeri}}</strong></td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px;">TD: <strong>{{tekanan_darah}}</strong> mmHg</td>
+      <td style="border:1px solid #333; padding:4px 6px;">Nadi: <strong>{{nadi}}</strong> x/mnt</td>
+      <td style="border:1px solid #333; padding:4px 6px;">Suhu: <strong>{{suhu}}</strong> °C</td>
+      <td style="border:1px solid #333; padding:4px 6px;">RR: <strong>{{rr}}</strong> x/mnt</td>
+    </tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik</td><td colspan="3" style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi / Intervensi</td><td colspan="3" style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_berjalan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Peralatan Menyertai</td><td colspan="3" style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{peralatan_menyertai}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pendamping</td><td colspan="3" style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{pendamping}}</td></tr>
+  </table>
+  {$ttd}
+</div>
+HTML;
+
+        $this->upsert('TRANSFER_PASIEN_RI', [
+            'name'                  => 'Formulir Transfer Pasien',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'ranap', 'section' => 'transfer', 'mode' => 'HYBRID'],
             ],
         ]);
     }

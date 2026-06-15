@@ -104,13 +104,27 @@ class RanapService
             ])->all();
     }
 
-    /** Pasien rawat inap aktif (current_station=RANAP). */
+    /**
+     * Pasien rawat inap aktif (current_station=RANAP).
+     *
+     * Filter per-DPJP: HANYA dokter spesialis (DT_SPESIALIS_MATA = DPJP poliklinik)
+     * yang dibatasi melihat pasiennya sendiri (dpjp_employee_id = employee-nya).
+     * Perawat, dokter umum, dokter anestesi, dan akun non-dokter (admin/superadmin)
+     * tetap melihat SELURUH pasien bangsal — model bangsal bersama, sesuai
+     * keputusan user. Dasar pembeda = Employee::doctor_type (bukan profession bebas).
+     */
     public function activeInpatients(): array
     {
+        $employee = auth('api')->user()?->employee;
+        $onlyOwnDpjp = $employee
+            && $employee->id
+            && $employee->doctor_type === Employee::DT_SPESIALIS_MATA;
+
         return Visit::with(['patient', 'room', 'bed', 'activeBedAssignment'])
             ->where('jenis_pelayanan', 'RANAP')
             ->where('current_station', Queue::STATION_RANAP)
             ->whereNull('discharge_at')
+            ->when($onlyOwnDpjp, fn ($q) => $q->where('dpjp_employee_id', $employee->id))
             ->get()
             ->map(fn (Visit $v) => [
                 'visit_id'        => $v->id,

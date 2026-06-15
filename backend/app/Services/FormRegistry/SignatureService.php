@@ -275,7 +275,10 @@ final class SignatureService
             if ($employeeId) {
                 $q->where(function ($w) use ($employeeId) {
                     $w->whereHas('visit.doctorExamination', fn ($e) => $e->where('doctor_id', $employeeId))
-                      ->orWhereHas('visit.surgerySchedule', fn ($s) => $s->where('lead_surgeon_id', $employeeId));
+                      ->orWhereHas('visit.surgerySchedule', fn ($s) => $s->where('lead_surgeon_id', $employeeId))
+                      // IGD: DPJP = dokter jaga yang menerbitkan asesmen RM 3.7
+                      // (visit IGD tak punya doctorExamination/surgerySchedule).
+                      ->orWhereHas('visit.igdAssessment', fn ($a) => $a->where('doctor_id', $employeeId));
                 });
             }
         }

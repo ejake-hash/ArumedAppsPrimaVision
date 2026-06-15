@@ -1354,11 +1354,21 @@ const rxTotal = computed(() =>
 // ── Tab 3: muat data tersimpan + autosave (replace) ke DB ───────────────────
 let _loadingResep = false   // true saat loadTindakanResep menulis kasirNote (suppress autosave)
 async function loadTindakanResep() {
+  // Suppress autosave-resep SELAMA load — di-set SINKRON sebelum await pertama.
+  // Saat ganti pasien, resetFormState meng-clear kasirNote/pharmacyNote → watcher
+  // [kasirNote,pharmacyNote] fire & (dulu) menjadwalkan saveResep dgn rxList kosong;
+  // bila load >600ms timer itu menghapus draft resep pasien baru. Flag aktif sejak
+  // awal fungsi + guard di saveResep menutup race ini. Direset di akhir (nextTick).
+  _loadingResep = true
   const visitId = selP.value?.visitId
   // Reset state paket pemeriksaan agar tak bocor antar pasien.
   examPackageSel.value = ''
   examPackageInfo.value = null
-  if (!visitId) { tindakanList.value = []; rxList.value = []; rxTambahan.value = []; return }
+  if (!visitId) {
+    tindakanList.value = []; rxList.value = []; rxTambahan.value = []
+    nextTick(() => { _loadingResep = false })
+    return
+  }
   try {
     const { data } = await dokterApi.indexTindakan(visitId)
     tindakanList.value = (data.data ?? []).map((vs) => ({
@@ -1377,11 +1387,10 @@ async function loadTindakanResep() {
     // (dobel tagih). BE juga mengecualikan keduanya dari REPLACE storePrescription.
     const list = (data.data ?? []).filter((p) => !p.is_pre_op && !p.is_post_op)
     const presc = list.find((p) => p.status === 'DRAFT') ?? list[0] ?? null
-    // Set kasirNote/pharmacyNote dari hasil load TANPA memicu autosave (watcher di-suppress).
-    _loadingResep = true
+    // Set kasirNote/pharmacyNote dari hasil load TANPA memicu autosave — di-suppress
+    // oleh _loadingResep yang aktif sejak awal fungsi (direset di akhir).
     kasirNote.value = presc?.notes ?? ''
     pharmacyNote.value = presc?.pharmacy_note ?? ''
-    nextTick(() => { _loadingResep = false })
     const allItems = presc?.items ?? []
     // Item TAMBAHAN Farmasi (OTC/tambahan apotek) BUKAN milik dokter — JANGAN
     // dihidrasi ke rxList: autosave akan menulis ulang sbg item dokter dan aturan
@@ -1412,6 +1421,8 @@ async function loadTindakanResep() {
         posisi: normalizePosisi(it.route) || (it.route ?? ''),
       }))
   } catch { /* biarkan */ }
+  // Load selesai → izinkan autosave lagi (nextTick: setelah set rxList/notes ter-flush).
+  nextTick(() => { _loadingResep = false })
 }
 
 // Muat tarif tindakan + tindakan/resep tersimpan tiap kali kunjungan berganti.
@@ -1443,6 +1454,10 @@ function _parseDur(s) { const m = String(s ?? '').match(/\d+/); return m ? parse
 let _saveResepTimer = null
 function scheduleSaveResep() { clearTimeout(_saveResepTimer); _saveResepTimer = setTimeout(saveResep, 600) }
 async function saveResep() {
+  // Jangan simpan saat sedang load (rxList/notes belum terisi) — timer autosave yang
+  // terlanjur dijadwalkan oleh reset notes (ganti pasien) akan no-op di sini, mencegah
+  // storePrescription dgn items kosong yang menghapus draft resep pasien baru.
+  if (_loadingResep) return
   const visitId = selP.value?.visitId
   if (!visitId) return
   try {
@@ -2303,8 +2318,7 @@ const PLANNING_ENUM_REV = { PULANG_BEROBAT_JALAN: 'PULANG', BEDAH: 'BEDAH', RAWA
 async function doFinalize() {
   // Finalisasi = KUNCI RME (S/O/A/P + diagnosis). Billing & antrean SUDAH dikomit
   // di "Kirim ke Kasir" (Tab 3); di sini advance bersifat idempoten (no-op bila
-  // antrean sudah maju). Validasi inti: diagnosis utama + assessment. Detail bedah
-  // (paket/tanggal) divalidasi di Kirim ke Kasir, bukan di sini.
+  // antrean sudah maju). Validasi inti: diagnosis utama + assessment + planning.
   // Kumpulkan SEMUA field wajib yang masih kosong → tampilkan dalam satu popup
   // (tombol tidak lagi terkunci; dokter tahu persis apa yang harus dilengkapi).
   const missing = []
@@ -2316,6 +2330,19 @@ async function doFinalize() {
   }
   if (!planning.value) {
     missing.push({ label: 'Planning', tab: 'tindakan', hint: 'Pilih Planning (Pulang / Bedah / Rawat Inap / Rujuk) lalu Kirim ke Kasir.' })
+  }
+  // BEDAH: paket (Ruang Bedah) + tanggal WAJIB di sini juga — bukan hanya di Kirim ke
+  // Kasir. Pada jalur "finalisasi tanpa Kirim ke Kasir" (lihat advance di bawah),
+  // tanpa guard ini storeTab4 mengirim paket/tanggal null → backend resolveSurgerySchedule
+  // mengembalikan null → routing jatuh ke KASIR (bukan BEDAH): jadwal bedah TAK terbuat,
+  // snapshot/diskon paket hilang, pasien tak pernah masuk papan BedahView.
+  if (planning.value === 'BEDAH') {
+    if (surgeryLocation.value === 'RUANG_BEDAH' && !surgeryPkg.value) {
+      missing.push({ label: 'Paket bedah', tab: 'tindakan', hint: 'Pilih paket bedah pada kartu Planning (Tab Tindakan & Resep).' })
+    }
+    if (!surgeryDate.value) {
+      missing.push({ label: surgeryLocation.value === 'RUANG_TINDAKAN' ? 'Tanggal rencana tindakan' : 'Tanggal rencana bedah', tab: 'tindakan', hint: 'Isi tanggal pelaksanaan pada kartu Planning (Tab Tindakan & Resep).' })
+    }
   }
   if (missing.length) {
     finalizeMissing.value = missing

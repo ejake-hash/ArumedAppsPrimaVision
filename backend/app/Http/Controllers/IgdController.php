@@ -41,7 +41,8 @@ class IgdController extends Controller
             'classification'  => 'nullable|string|max:20',
             'chief_complaint' => 'nullable|string|max:500',
             'triage_color'    => 'nullable|in:MERAH,KUNING,HIJAU,HITAM',
-            'triage_level'    => 'nullable|string|max:5',
+            'triage_level'    => 'nullable|in:1,2,3,4,5',
+            'arrival_mode'    => 'nullable|in:KELUARGA,SENDIRI,POLISI,LAINNYA',
             'arrival_at'      => 'nullable|date',
         ]);
 
@@ -80,7 +81,8 @@ class IgdController extends Controller
             'insurer_id'      => 'nullable|uuid',
             'chief_complaint' => 'nullable|string|max:500',
             'triage_color'    => 'nullable|in:MERAH,KUNING,HIJAU,HITAM',
-            'triage_level'    => 'nullable|string|max:5',
+            'triage_level'    => 'nullable|in:1,2,3,4,5',
+            'arrival_mode'    => 'nullable|in:KELUARGA,SENDIRI,POLISI,LAINNYA',
         ]);
 
         try {
@@ -96,9 +98,11 @@ class IgdController extends Controller
     public function triase(string $visitId, Request $request): JsonResponse
     {
         $data = $request->validate([
-            'triage_color'    => 'required|in:MERAH,KUNING,HIJAU,HITAM',
-            'triage_level'    => 'nullable|string|max:5',
+            // Triase ATS: kategori 1..5 (RM 3.7) ATAU warna (kompat lama). Salah satu wajib.
+            'triage_level'    => 'nullable|in:1,2,3,4,5',
+            'triage_color'    => 'nullable|in:MERAH,KUNING,HIJAU,HITAM',
             'chief_complaint' => 'nullable|string|max:500',
+            'arrival_mode'    => 'nullable|in:KELUARGA,SENDIRI,POLISI,LAINNYA',
             'td_sistol'       => 'nullable|integer',
             'td_diastol'      => 'nullable|integer',
             'nadi'            => 'nullable|integer',
@@ -108,7 +112,19 @@ class IgdController extends Controller
             'gcs_e'           => 'nullable|integer',
             'gcs_v'           => 'nullable|integer',
             'gcs_m'           => 'nullable|integer',
+            'keadaan_umum'    => 'nullable|in:BAIK,SEDANG,LEMAH,BURUK',
+            'kesadaran'       => 'nullable|in:CM,SOMNOLEN,KOMA',
+            'akral'           => 'nullable|string|max:50',
+            'reflex_cahaya'   => 'nullable|string|max:50',
+            'pain_score'      => 'nullable|integer|min:0|max:10',
+            'pain_scale_type' => 'nullable|in:NRS,WONG_BAKER,FLACC',
+            'pain_location'   => 'nullable|string|max:150',
+            'pain_detail'     => 'nullable|array',
         ]);
+
+        if (empty($data['triage_level']) && empty($data['triage_color'])) {
+            return $this->error('Kategori triase (ATS 1–5) wajib dipilih.', 422);
+        }
 
         try {
             $visit  = Visit::findOrFail($visitId);
@@ -393,6 +409,108 @@ class IgdController extends Controller
         }
 
         return $this->ok($result, 'SEP IGD diterbitkan');
+    }
+
+    // =========================================================================
+    // RM 3.7 — ASESMEN / PENGKAJIAN GAWAT DARURAT
+    // =========================================================================
+
+    /** GET /igd/{visitId}/assessment — asesmen RM 3.7 + triase (prefill panel). */
+    public function getAssessment(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::with(['patient', 'igdTriageRecord'])->findOrFail($visitId);
+            return $this->ok($this->service->getAssessment($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** PUT /igd/{visitId}/assessment — autosave draft asesmen RM 3.7. */
+    public function saveAssessment(string $visitId, Request $request): JsonResponse
+    {
+        $data = $this->validateAssessment($request);
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $assessment = $this->service->saveAssessment($visit, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($assessment, 'Asesmen disimpan');
+    }
+
+    /** POST /igd/{visitId}/assessment/finalize — finalisasi + terbitkan dokumen RM 3.7 (siap TTD). */
+    public function finalizeAssessment(string $visitId, Request $request): JsonResponse
+    {
+        $data = $this->validateAssessment($request);
+        try {
+            $visit = Visit::with('patient')->findOrFail($visitId);
+            $result = $this->service->finalizeAssessment($visit, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+        return $this->ok($result, 'Asesmen difinalisasi — silakan tanda tangan');
+    }
+
+    /** Validasi payload asesmen RM 3.7 (blok JSONB longgar + skalar terbatas). */
+    private function validateAssessment(Request $request): array
+    {
+        return $request->validate([
+            'anamnesa'            => 'nullable|array',
+            'psikososial'         => 'nullable|array',
+            'perilaku'            => 'nullable|array',
+            'fisik'               => 'nullable|array',
+            'mata_od_os'          => 'nullable|array',
+            'penunjang'           => 'nullable|array',
+            'planning'            => 'nullable|array',
+            'diagnosa_kerja'      => 'nullable|string|max:255',
+            'diagnosa_kerja_name' => 'nullable|string|max:255',
+            'diagnosa_banding'    => 'nullable|string',
+            'keadaan_pulang'      => 'nullable|in:BAIK,SEDANG,BURUK,PERDARAHAN,KOMA,MENINGGAL',
+            'perawatan_lanjutan'  => 'nullable|in:RAWAT_JALAN,RAWAT_INAP,RAWAT_INTENSIF,DIRUJUK',
+            'waktu_keluar'        => 'nullable|date',
+        ]);
+    }
+
+    // =========================================================================
+    // SELF-CHECKOUT IGD (hari libur / kasir tidak bertugas)
+    // =========================================================================
+
+    /** GET /igd/{visitId}/billing-preview — ringkasan tagihan IGD (konsolidasi lazily). */
+    public function billingPreview(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::with('patient')->findOrFail($visitId);
+            return $this->ok($this->service->billingPreview($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
+    /** POST /igd/{visitId}/self-checkout — disposisi + bayar + kwitansi (reuse KasirService). */
+    public function selfCheckout(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'disposition'    => 'required|in:PULANG,RUJUK',
+            'notes'          => 'nullable|string|max:1000',
+            'payment_method' => 'nullable|in:CASH,CREDIT_CARD,TRANSFER',
+            'paid_amount'    => 'nullable|numeric|min:0',
+            'cash_received'  => 'nullable|numeric|min:0',
+        ]);
+
+        try {
+            $visit  = Visit::with('patient')->findOrFail($visitId);
+            $result = $this->service->selfCheckout($visit, $data['disposition'], $data['notes'] ?? null, [
+                'payment_method' => $data['payment_method'] ?? 'CASH',
+                'paid_amount'    => $data['paid_amount'] ?? null,
+                'cash_received'  => $data['cash_received'] ?? null,
+                'notes'          => $data['notes'] ?? null,
+            ]);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Pembayaran IGD tercatat & kwitansi siap');
     }
 
     // =========================================================================

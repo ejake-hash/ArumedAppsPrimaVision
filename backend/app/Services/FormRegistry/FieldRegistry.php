@@ -154,6 +154,10 @@ final class FieldRegistry
                 'label'   => 'Identitas Operasi (operator/asisten/jam/durasi/anestesi) — dari BedahView',
                 'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration'],
             ],
+            'ranap_identity' => [
+                'label'   => 'Identitas Rawat Inap (tgl masuk/keluar/lama rawat/kelas/DPJP/kamar) — dari RawatInapView',
+                'formats' => ['admission_date', 'discharge_date', 'los', 'kelas', 'dpjp', 'room_bed', 'discharge_type'],
+            ],
             'planning_instruction' => [
                 'label'   => 'Instruksi/Anjuran dari Rencana Tatalaksana (planning) — kalimat siap-pakai',
                 'formats' => ['text'],

@@ -366,6 +366,12 @@ class Visit extends Model
         return $this->hasOne(IgdTriageRecord::class);
     }
 
+    /** Asesmen Gawat Darurat (RM 3.7) terstruktur untuk kunjungan IGD. */
+    public function igdAssessment(): HasOne
+    {
+        return $this->hasOne(IgdAssessment::class);
+    }
+
     /** SPRI (Surat Perintah Rawat Inap) BPJS yang pernah dibuat untuk kunjungan ini. */
     public function spris(): HasMany
     {

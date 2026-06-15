@@ -23,13 +23,14 @@ const auth = useAuthStore()
 // Sidebar "Data Stock" (340px) tampil di alur inventori, KECUALI halaman yang
 // kontennya sendiri sudah tabel lebar — di sana sidebar cuma menyempitkan & redundan.
 // Stock Opname butuh ~900px untuk 7 kolomnya; beri kolom tengah lebar penuh.
-const STOCK_SIDEBAR_HIDDEN_ROUTES = ['inventori-farmasi-stock-opname']
+const STOCK_SIDEBAR_HIDDEN_ROUTES = ['inventori-farmasi-stock-opname', 'inventori-farmasi-data-stock']
 const showStockSidebar = computed(() =>
   route.path.startsWith('/inventori-farmasi') &&
   !STOCK_SIDEBAR_HIDDEN_ROUTES.includes(route.name),
 )
 
 const allTabs = [
+  { to: '/inventori-farmasi/data-stock',   label: 'Data Stock',        icon: 'box',     section: 'Operasional', perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/request-unit', label: 'Request dari Unit', icon: 'request', section: 'Operasional', perm: 'request_unit.read' },
   { to: '/inventori-farmasi/stock-opname', label: 'Stock Opname',      icon: 'opname',  section: 'Operasional', perm: 'inventori_farmasi.read' },
   { to: '/inventori-farmasi/obat',       label: 'Obat',              icon: 'pill',     section: 'Master Item',  perm: 'inventori_farmasi.read' },

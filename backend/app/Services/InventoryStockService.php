@@ -306,7 +306,17 @@ class InventoryStockService
         $this->assertCsvType($type);
         $itemType = $this->itemTypeOf($type);
 
-        $masters = $this->mastersFor($type)->get();
+        $mastersQ = $this->mastersFor($type);
+        // Lokasi unit (non-gudang): hanya item yang pernah dikirim ke lokasi itu
+        // (punya baris inventory_stocks di sana). Gudang INVENTORI = semua master.
+        if ($location !== InventoryStock::LOC_INVENTORI) {
+            $locationItemIds = InventoryStock::where('item_type', $itemType)
+                ->where('location', $location)
+                ->distinct()
+                ->pluck('item_id');
+            $mastersQ->whereIn('id', $locationItemIds);
+        }
+        $masters = $mastersQ->get();
         $totals  = InventoryStock::where('item_type', $itemType)
             ->where('location', $location)
             ->whereIn('item_id', $masters->pluck('id'))
