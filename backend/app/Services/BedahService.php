@@ -109,6 +109,17 @@ class BedahService
                       $s->where('location_type', '!=', SurgerySchedule::LOCATION_RUANG_TINDAKAN)
                         ->orWhereNull('location_type'));
             })
+            // GUARD: hanya pasien yang BENAR-BENAR punya jadwal bedah boleh tampil di
+            // papan. Operasi tak bisa dimulai tanpa surgery_schedule (startOperation
+            // butuh schedule untuk transisi SCHEDULED→IN_PROGRESS + buat SurgeryRecord),
+            // jadi baris YATIM — jadwal dihapus/dibatalkan, atau planning=BEDAH tanpa
+            // paket+tanggal (DokterService::resolveSurgerySchedule kembalikan null) —
+            // tak boleh muncul. Sumber jadwal: visit (preop flow) ATAU doctor_examination
+            // (jalur dokter), selaras resolusi $schedule di mapper di bawah.
+            ->where(function ($q) {
+                $q->whereHas('visit.surgerySchedule')
+                  ->orWhereHas('visit.doctorExamination.surgerySchedule');
+            })
             ->orderBy('queue_sequence')
             ->get();
 
