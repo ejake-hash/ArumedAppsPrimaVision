@@ -348,6 +348,14 @@ final class AggregateResolver
     private function buildRefraksiObjektif(\App\Models\RefractionRecord $r): string
     {
         $sg = fn ($n) => $n === null ? null : (($n >= 0 ? '+' : '') . $n);
+        // Normalisasi nilai visus/IOP: placeholder "-"/"–"/"—"/"/"/kosong (lazim dari
+        // data migrasi sistem lama yang menulis "-" saat tak diperiksa) → null, agar
+        // baris "Visus awal OD - / OS -" tak lagi tampil sebagai isi semu. Bila SATU
+        // mata bernilai nyata, baris tetap tampil ('–' untuk mata yang kosong).
+        $real = function ($x) {
+            $s = trim((string) ($x ?? ''));
+            return ($s === '' || in_array($s, ['-', '–', '—', '/', '0'], true)) ? null : $s;
+        };
         $scx = function ($sph, $cyl, $axis) use ($sg) {
             if ($sph === null && $cyl === null && $axis === null) return '';
             $p = [];
@@ -357,24 +365,27 @@ final class AggregateResolver
             return implode(' / ', $p);
         };
         $parts = [];
-        if ($r->visus_awal_od || $r->visus_awal_os) {
-            $parts[] = 'Visus awal OD ' . ($r->visus_awal_od ?? '–') . ' / OS ' . ($r->visus_awal_os ?? '–');
+        $vaOd = $real($r->visus_awal_od); $vaOs = $real($r->visus_awal_os);
+        if ($vaOd || $vaOs) {
+            $parts[] = 'Visus awal OD ' . ($vaOd ?? '–') . ' / OS ' . ($vaOs ?? '–');
         }
         $rxOd = $scx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis);
         $rxOs = $scx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis);
         if ($rxOd || $rxOs) {
             $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
         }
-        if ($r->visus_akhir_od || $r->visus_akhir_os) {
-            $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
+        $vkOd = $real($r->visus_akhir_od); $vkOs = $real($r->visus_akhir_os);
+        if ($vkOd || $vkOs) {
+            $parts[] = 'Visus akhir OD ' . ($vkOd ?? '–') . ' / OS ' . ($vkOs ?? '–');
         }
         $hasAdd = ($r->add_power_od !== null && (float) $r->add_power_od != 0.0)
             || ($r->add_power_os !== null && (float) $r->add_power_os != 0.0);
         if ($hasAdd) {
             $parts[] = 'Add OD ' . ($sg($r->add_power_od) ?? '–') . ' / OS ' . ($sg($r->add_power_os) ?? '–');
         }
-        if ($r->iop_od || $r->iop_os) {
-            $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
+        $iopOd = $real($r->iop_od); $iopOs = $real($r->iop_os);
+        if ($iopOd || $iopOs) {
+            $parts[] = 'TIO OD ' . ($iopOd ?? '–') . ' / OS ' . ($iopOs ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
         }
         if ($r->pd_distance !== null && $r->pd_distance !== '') {
             $pd = rtrim(rtrim((string) $r->pd_distance, '0'), '.');

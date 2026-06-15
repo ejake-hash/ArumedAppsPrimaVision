@@ -31,7 +31,8 @@ class RewirePublishedResume extends Command
                             {--id= : Batasi ke satu patient_document_id tertentu}
                             {--only-contaminated-anamnese : Hanya dokumen yang Anamnese-nya tercemar baris ICD-9/visus/IOP (TTV/TOD/VOD/mmHg) — sisanya dilewati}
                             {--only-segment-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris Segmen/Catatan anterior|posterior (dipindah ke Pemeriksaan Fisik) — sisanya dilewati}
-                            {--only-vitals-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris TTV (TD/HR/Nadi/RR/SpO2/Suhu/KGD/TIO/PD) — disaring ke Pemeriksaan Fisik; sisanya dilewati}';
+                            {--only-vitals-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris TTV (TD/HR/Nadi/RR/SpO2/Suhu/KGD/TIO/PD) — disaring ke Pemeriksaan Fisik; sisanya dilewati}
+                            {--only-dash-visus : Hanya dokumen yang Pemeriksaan Fisik-nya memuat baris "Visus awal/akhir OD - / OS -" placeholder (data migrasi visus="-"); sisanya dilewati}';
 
     protected $description = 'Regenerasi in-place dokumen final (default Resume Medis) dengan template/wiring terbaru, pertahankan TTD.';
 
@@ -161,6 +162,15 @@ class RewirePublishedResume extends Command
             // Idempoten: pasca-saring (resolveAnamneseFull) tak memuat pola ini lagi.
             $conds[] = function ($q) use ($path) {
                 $q->whereRaw("$path ~* ?", ['(^|\n)[[:space:]]*(TD|HR|Nadi|RR|Sp?O2|Suhu|Temp|KGD|GD[SAPRN]|TIO|TOD|TOS)\y']);
+            };
+        }
+        if ($this->option('only-dash-visus')) {
+            // Baris "Visus awal/akhir OD - / OS -" placeholder (data migrasi visus="-").
+            // Difilter di kolom Pemeriksaan Fisik (BUKAN anamnese). Idempoten: pasca-fix
+            // buildRefraksiObjektif, baris visus kosong tak lagi dirender.
+            $fisik = "signatures->'static_payload'->>'pemeriksaan_fisik'";
+            $conds[] = function ($q) use ($fisik) {
+                $q->whereRaw("$fisik ~* ?", ['Visus (awal|akhir)[^\n]*[[:space:]][-–—]([[:space:]]|/|$)']);
             };
         }
         if (empty($conds)) {
