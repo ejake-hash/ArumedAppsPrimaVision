@@ -1478,6 +1478,12 @@ class KasirService
                     }
                     // Paket BEDAH: obat ditagih dari snapshot (buildPaketObatLines) → masuk
                     // basis penuh (qty snapshot), sama perlakuan PROCEDURE/BHP/IOL → net = sell.
+                    // Mirror buildPaketObatLines: obat yang master Medication-nya tak ada
+                    // (dihapus/nonaktif sejak snapshot) TIDAK ditagih → jangan hitung di basis,
+                    // kalau tidak over-discount (net < harga jual paket). Lihat bug orphan 5.000.
+                    if (! Medication::find($it->item_id)) {
+                        continue;
+                    }
                     $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * (int) $it->quantity;
                     continue;
                 }
@@ -1491,6 +1497,16 @@ class KasirService
                     default     => null,
                 };
                 if (! $type) {
+                    continue;
+                }
+                // Mirror buildPaketBhpLines/buildPaketIolLines: BHP/IOL yang master-nya tak ada
+                // (dihapus/nonaktif sejak snapshot) TIDAK ditagih → jangan hitung di basis, kalau
+                // tidak over-discount (net < harga jual paket). PROCEDURE TETAP dihitung karena
+                // buildPaketProcedureLines tetap menagihnya (pakai getPrice) walau master tak ada.
+                if ($it->item_type === 'BHP' && ! BhpItem::find($it->item_id)) {
+                    continue;
+                }
+                if ($it->item_type === 'IOL' && ! \App\Models\IolItem::find($it->item_id)) {
                     continue;
                 }
                 // SEMUA BHP komposisi paket masuk basis (kini semua BHP paket ditagih via
