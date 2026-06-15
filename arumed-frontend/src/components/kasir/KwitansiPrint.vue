@@ -131,10 +131,6 @@ const groupedPrintItems = computed(() =>
             <td class="k">Dokter (DPJP)</td><td class="s">:</td><td class="v">{{ data.patient?.dpjp ?? '—' }}</td>
             <td class="k">Jenis Layanan</td><td class="s">:</td><td class="v">{{ svcLabel(data.service_type) }}</td>
           </tr>
-          <tr>
-            <td class="k">Tgl Invoice</td><td class="s">:</td><td class="v">{{ data.invoice?.date ?? '—' }}</td>
-            <td class="k"></td><td class="s"></td><td class="v"></td>
-          </tr>
         </tbody>
       </table>
 
@@ -223,13 +219,15 @@ const groupedPrintItems = computed(() =>
       </div>
 
       <footer class="rp-footer">
+        <!-- Tgl Bayar disembunyikan (req kasir); aktifkan kembali bila diminta.
         <span v-if="data.invoice?.is_paid && data.invoice?.paid_at">
           Tgl Bayar: {{ data.invoice.paid_at }} ·
         </span>
+        -->
         <span v-if="data.print_settings?.show_footer !== false && data.clinic?.director_name">
           Penanggung Jawab Rumah Sakit: {{ data.clinic.director_name }}<span v-if="data.clinic?.director_sip"> · SIP: {{ data.clinic.director_sip }}</span> ·
         </span>
-        Dicetak: {{ new Date().toLocaleString('id-ID') }} · RS. Mata Prima Vision - PT. Karya Sistem Nusantara
+        RS. Mata Prima Vision - PT. Karya Sistem Nusantara
       </footer>
     </div>
   </Teleport>
