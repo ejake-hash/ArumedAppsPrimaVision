@@ -1006,6 +1006,29 @@ function onPaketDescChange(item) {
   }, 500)
 }
 
+// Pindah POS KWITANSI obat (grouping di kwitansi): Obat Pulang / Tindakan / Injeksi.
+// Default pos diambil dari tarif obat (MedicationTariff::posLabel) saat konsolidasi,
+// tapi kasir bisa memindahkan baris yang salah pos (mis. obat injeksi yang masuk ke
+// "Obat Pulang"). Hanya mengubah label kategori baris — TIDAK menyentuh harga/diskon/
+// penyerapan paket (basis diskon dihitung dari net, bukan kategori). Catatan: bila
+// invoice disusun ulang ("Batalkan & Susun Ulang"), pos kembali ke default tarif.
+const OBAT_POS_OPTIONS = ['Obat Pulang', 'Obat Tindakan', 'Obat Injeksi']
+function isObatLine(item) { return item.item_type === 'OBAT' }
+async function onObatPosChange(item) {
+  if (itemMutating.value) return
+  itemMutating.value = true
+  try {
+    await kasirApi.updateItem(item.id, { category: item.category })
+    await refreshInvoice()
+    toast('s', `Obat dipindah ke pos "${item.category}"`)
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memindahkan pos kwitansi')
+    await refreshInvoice()
+  } finally {
+    itemMutating.value = false
+  }
+}
+
 // ─── Grouping rincian tagihan per kategori ───────────────────────────────────
 // Mengelompokkan selInv.items berdasarkan category, mengikuti sort_order dari
 // master billingCategories. Item yang category-nya tidak terdaftar di master
@@ -1605,7 +1628,20 @@ const groupedPrintItems = computed(() =>
                             <span v-else-if="item.is_absorbable" class="absorb-badge off" title="Baris ini dikeluarkan dari paket — ditagih ekstra di atas harga paket">Ditagih Terpisah</span>
                           </template>
                         </td>
-                        <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
+                        <td>
+                          <select
+                            v-if="editTagihan && isObatLine(item) && !['PAID','CANCELLED'].includes(selInv.status)"
+                            v-model="item.category"
+                            class="fi tbl-fi pos-select"
+                            title="Pindahkan pos kwitansi obat (Obat Pulang / Tindakan / Injeksi)"
+                            :disabled="itemMutating"
+                            @change="onObatPosChange(item)"
+                          >
+                            <option v-if="!OBAT_POS_OPTIONS.includes(item.category)" :value="item.category">{{ catLabel(item) }}</option>
+                            <option v-for="p in OBAT_POS_OPTIONS" :key="p" :value="p">{{ p }}</option>
+                          </select>
+                          <span v-else :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span>
+                        </td>
                         <td class="num">{{ item.quantity }}</td>
                         <td class="num">Rp {{ Number(item.unit_price).toLocaleString('id-ID') }}</td>
                         <td v-if="editTagihan" class="num">
@@ -2388,6 +2424,7 @@ const groupedPrintItems = computed(() =>
 .tbl-fi { width: 100%; box-sizing: border-box; height: 30px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--gb); background: var(--bc); }
 .tbl-fi:focus { border-color: var(--ga); outline: none; }
 .tbl-num { width: 78px; text-align: right; }
+.pos-select { width: 130px; cursor: pointer; }
 .tbl-select { font-size: 11px; }
 .del-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ebd); background: var(--eb); color: var(--et); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .12s; }
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }

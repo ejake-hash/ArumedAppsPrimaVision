@@ -1691,7 +1691,7 @@ class BedahService
                     $tambahanCarry[] = $t->only([
                         'medication_id', 'original_medication_id', 'quantity',
                         'dosage', 'instructions', 'notes',
-                        'dose', 'frequency', 'route', 'duration_days',
+                        'dose', 'frequency', 'route', 'duration_days', 'pos_kwitansi',
                         'source', 'change_reason', 'changed_by_id', 'changed_at', 'added_by_id',
                     ]);
                 }
@@ -1725,6 +1725,8 @@ class BedahService
                     'route'           => $it['route'] ?? null,
                     'duration_days'   => $it['duration_days'] ?? null,
                     'notes'           => $it['notes'] ?? null,
+                    // Pos kwitansi pilihan operator (null = ikut master tarif obat).
+                    'pos_kwitansi'    => $it['pos_kwitansi'] ?? null,
                     // Terserap ke harga paket HANYA bila obat paket (bundled) & pasien
                     // berpaket. Else ditagih sbg obat pulang (lihat docblock).
                     'is_bedah'        => ($it['bundled'] ?? false) && $hasPaket,
@@ -1839,6 +1841,7 @@ class BedahService
                 'frequency'     => $it->frequency,
                 'duration_days' => $it->duration_days,
                 'route'         => $it->route,
+                'pos_kwitansi'  => $it->pos_kwitansi,
                 'from_paket'    => (bool) $it->is_bedah,
             ];
         }

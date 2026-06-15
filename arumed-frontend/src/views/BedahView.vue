@@ -1184,9 +1184,19 @@ function normalizePosisi(v) {
   if (s === 'OS' || s.endsWith(' OS')) return 'OS'
   return ''
 }
+// Pos kwitansi per-obat — operator menentukan klasifikasi tagihan saat input.
+// '' = Otomatis (ikut master tarif obat). Disimpan sebagai KODE ke backend.
+const POS_OPTS = [
+  { v: '',              l: 'Otomatis' },
+  { v: 'OBAT_PULANG',   l: 'Obat Pulang' },
+  { v: 'OBAT_TINDAKAN', l: 'Obat Tindakan' },
+  { v: 'OBAT_INJEKSI',  l: 'Obat Injeksi' },
+]
+const posLabelOf = (v) => POS_OPTS.find((o) => o.v === v)?.l ?? 'Otomatis'
+
 // Baris obat baru dgn default aturan pakai (diedit inline di tabel, sama utk obat paket).
 function blankObatRow(medication_id = '', nama = '') {
-  return { medication_id, nama, jumlah: 1, dosis: '1 tetes', freq: '2×/hari', dur: '7 hari', rute: 'OD', fromPaket: false }
+  return { medication_id, nama, jumlah: 1, dosis: '1 tetes', freq: '2×/hari', dur: '7 hari', rute: 'OD', pos: '', fromPaket: false }
 }
 
 const newObat = ref({ medication_id: '', nama: '' })
@@ -1245,6 +1255,8 @@ async function kirimResep() {
       frequency:     o.freq || null,
       route:         o.rute || null,
       duration_days: parseDurDays(o.dur),
+      // Pos kwitansi pilihan operator (kosong = ikut master tarif obat).
+      pos_kwitansi:  o.pos || null,
       notes:         null,
       // Obat dari paket → kandidat terserap ke harga paket (backend set is_bedah
       // bersyarat bila pasien berpaket). Obat manual → bundled=false → tetap ditagih.
@@ -1285,6 +1297,7 @@ async function loadResepPasca(recordId) {
         freq:    it.frequency ?? '',
         dur:     formatDur(it.duration_days),
         rute:    it.route ?? '',
+        pos:     it.pos_kwitansi ?? '',
         fromPaket: !!it.from_paket,
       }))
       selP.value.resepSent = true
@@ -1356,6 +1369,7 @@ function applyPaketObat() {
       freq:    it.frequency ?? '2×/hari',
       dur:     formatDur(it.duration_days),
       rute:    normalizePosisi(it.route) || 'OD',
+      pos:     '',
       fromPaket: true,
     })
     existing.add(it.medication_id)
@@ -2619,7 +2633,7 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </p>
 
                   <table class="bd-tbl bd-tbl-sm" v-if="selP.obatPasca.length">
-                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Signa</th><th>Durasi</th><th>Mata</th><th></th></tr></thead>
+                    <thead><tr><th>Nama Obat</th><th>Jml</th><th>Dosis</th><th>Signa</th><th>Durasi</th><th>Mata</th><th>Pos Kwitansi</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="(o, i) in selP.obatPasca" :key="`${o.medication_id}-${i}`">
                         <td>{{ o.nama }} <span v-if="o.fromPaket && hasVisitPaket" class="bd-eye-pill" title="Termasuk harga paket">paket</span></td>
@@ -2630,9 +2644,10 @@ function mulaiBack() { mulaiStep.value = 1 }
                           <td><input class="bd-input bd-input-sm" v-model="o.freq" list="bdSignaOpts" autocomplete="off" placeholder="2×/hari" style="width:96px" title="Signa / aturan pakai" /></td>
                           <td><input class="bd-input bd-input-sm" v-model="o.dur" list="bdDurasiOpts" autocomplete="off" placeholder="7 hari" style="width:84px" title="Durasi — pilih atau ketik (mis. 12 hari)" /></td>
                           <td><select class="bd-select bd-select-sm" v-model="o.rute" title="Posisi mata (kosong jika bukan tetes)"><option value="">—</option><option value="OD">OD</option><option value="OS">OS</option><option value="ODS">ODS</option></select></td>
+                          <td><select class="bd-select bd-select-sm" v-model="o.pos" style="width:118px" title="Pos kwitansi obat — Otomatis mengikuti master tarif obat"><option v-for="p in POS_OPTS" :key="p.v" :value="p.v">{{ p.l }}</option></select></td>
                         </template>
                         <template v-else>
-                          <td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td>
+                          <td>{{ o.jumlah }}</td><td>{{ o.dosis }}</td><td>{{ o.freq }}</td><td>{{ o.dur }}</td><td>{{ o.rute }}</td><td>{{ posLabelOf(o.pos) }}</td>
                         </template>
                         <td><button class="bd-del" @click="removeObat(i)" :disabled="selP.resepSent" aria-label="Hapus obat" title="Hapus obat">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>

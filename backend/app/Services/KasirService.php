@@ -896,7 +896,7 @@ class KasirService
                     $total = $price * $item->sale_unit_qty;
                     $lines[] = [
                         'item_type'    => 'OBAT',
-                        'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
+                        'category'     => MedicationTariff::posLabel($item->pos_kwitansi ?: ($posMap[$item->medication_id] ?? null)),
                         'reference_id' => $item->id,
                         'description'  => ($item->medication?->name ?? 'Obat')
                             . ' (' . ($ref?->label ?? 'Kemasan') . " isi {$isi} " . ($item->medication?->unit ?? '') . ')',
@@ -916,7 +916,7 @@ class KasirService
                 $total = $price * $item->quantity;
                 $lines[] = [
                     'item_type'    => 'OBAT',
-                    'category'     => MedicationTariff::posLabel($posMap[$item->medication_id] ?? null),
+                    'category'     => MedicationTariff::posLabel($item->pos_kwitansi ?: ($posMap[$item->medication_id] ?? null)),
                     'reference_id' => $item->id,
                     'description'  => $item->medication?->name ?? 'Obat',
                     'quantity'     => $item->quantity,
@@ -1413,6 +1413,25 @@ class KasirService
         $extraAbsorbBasis = round($extraAbsorbBasis, 2);
         $absorbApplied    = false;
 
+        // BHP komposisi yang ditagih lewat PEMAKAIAN operasi (buildBhpLines, used_qty)
+        // dibilling per used_qty — BUKAN qty snapshot. Basis diskon HARUS ikut qty yang
+        // BENAR-BENAR jadi baris tagihan, kalau tidak selisih (qty snapshot − used_qty)
+        // bocor ke total (bug "set paket Rp 9.997.000 → kwitansi Rp 9.992.000"). BHP
+        // komposisi tanpa pemakaian (used_qty=0) ditagih buildPaketBhpLines pada qty
+        // snapshot → tak masuk map ini, basis tetap pakai qty snapshot (sudah cocok).
+        $surgeryUsedBhpQty = [];
+        foreach ($visit->surgeryRequests as $req) {
+            if ($req->status !== 'RECEIVED') {
+                continue;
+            }
+            foreach ($req->bhpItems as $b) {
+                $u = (int) ($b->used_qty ?? 0);
+                if ($u > 0) {
+                    $surgeryUsedBhpQty[$b->bhp_item_id] = ($surgeryUsedBhpQty[$b->bhp_item_id] ?? 0) + $u;
+                }
+            }
+        }
+
         // Greedy obat ke paket PEMERIKSAAN — HANYA bila TAK ada paket BEDAH bertarif
         // (visit murni pemeriksaan). Bila ada BEDAH, obat sudah terserap via extra di
         // atas → matikan greedy agar tak dobel-hitung.
@@ -1472,7 +1491,13 @@ class KasirService
                 // SEMUA BHP komposisi paket masuk basis (kini semua BHP paket ditagih via
                 // buildPaketBhpLines — bukan cuma kategori room) → basis = baris ditagih → net = sell.
                 $price = $this->getPrice($type, $it->item_id, $guarantorType, $insurerId);
-                $basis += $price * (int) $it->quantity;
+                // BHP komposisi yang ditagih per used_qty (pemakaian operasi) → basis IKUT
+                // used_qty agar persis = baris tagihan. Tipe lain & BHP tanpa pemakaian
+                // tetap pakai qty snapshot.
+                $qty = ($it->item_type === 'BHP' && isset($surgeryUsedBhpQty[$it->item_id]))
+                    ? $surgeryUsedBhpQty[$it->item_id]
+                    : (int) $it->quantity;
+                $basis += $price * $qty;
             }
 
             // COB penjamin-2: resolve ulang harga DAN nama tampil di insurer override —
@@ -1528,6 +1553,7 @@ class KasirService
         $visit = Visit::with([
             'prescriptions.items',
             'surgeryPackageSnapshots.items',
+            'surgeryRequests.bhpItems',
             'visitCob',
         ])->find($invoice->visit_id);
         if (! $visit) {

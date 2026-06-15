@@ -38,6 +38,11 @@ class PrescriptionItem extends Model
         'frequency',
         'route',
         'duration_days',
+        // Pos kwitansi per-baris (OBAT_PULANG/OBAT_TINDAKAN/OBAT_INJEKSI) — override
+        // klasifikasi master tarif obat, dipilih operator di Obat Pasca Bedah (BedahView).
+        // NULL = ikut default master (medication_tariffs.pos_kwitansi). Lihat migrasi
+        // 2026_07_28_000001.
+        'pos_kwitansi',
         // Penanda obat operasi (migrasi Gel-2): tercakup paket bedah, jangan dobel-tagih.
         'is_bedah',
         // Item resep pre-op "terserap ke paket": tetap tampil positif di kwitansi,

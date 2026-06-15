@@ -465,6 +465,9 @@ class BedahController extends Controller
             'items.*.route'          => 'nullable|string|max:100',
             'items.*.duration_days'  => 'nullable|integer|min:1',
             'items.*.notes'          => 'nullable|string|max:255',
+            // Pos kwitansi per-baris (Obat Pulang/Tindakan/Injeksi) — dipilih operator.
+            // NULL/kosong = ikut default master tarif obat.
+            'items.*.pos_kwitansi'   => 'nullable|string|in:OBAT_PULANG,OBAT_TINDAKAN,OBAT_INJEKSI',
             // Penanda obat dari "paket obat" → kandidat terserap ke harga paket
             // (is_bedah di-set bersyarat di service bila pasien berpaket).
             'items.*.bundled'        => 'nullable|boolean',
