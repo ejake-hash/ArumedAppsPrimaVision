@@ -30,7 +30,8 @@ class RewirePublishedResume extends Command
                             {--code=RESUME_MEDIS : Kode template yang diregenerasi}
                             {--id= : Batasi ke satu patient_document_id tertentu}
                             {--only-contaminated-anamnese : Hanya dokumen yang Anamnese-nya tercemar baris ICD-9/visus/IOP (TTV/TOD/VOD/mmHg) — sisanya dilewati}
-                            {--only-segment-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris Segmen/Catatan anterior|posterior (dipindah ke Pemeriksaan Fisik) — sisanya dilewati}';
+                            {--only-segment-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris Segmen/Catatan anterior|posterior (dipindah ke Pemeriksaan Fisik) — sisanya dilewati}
+                            {--only-vitals-in-anamnese : Hanya dokumen yang Anamnese-nya memuat baris TTV (TD/HR/Nadi/RR/SpO2/Suhu/KGD/TIO/PD) — disaring ke Pemeriksaan Fisik; sisanya dilewati}';
 
     protected $description = 'Regenerasi in-place dokumen final (default Resume Medis) dengan template/wiring terbaru, pertahankan TTD.';
 
@@ -153,6 +154,13 @@ class RewirePublishedResume extends Command
         if ($this->option('only-segment-in-anamnese')) {
             $conds[] = function ($q) use ($path) {
                 $q->whereRaw("$path ~* ?", ['(Segmen|Catatan) (anterior|posterior)']);
+            };
+        }
+        if ($this->option('only-vitals-in-anamnese')) {
+            // Baris TTV di AWAL baris anamnese (TD/HR/Nadi/RR/SpO2/Suhu/KGD/TIO/PD).
+            // Idempoten: pasca-saring (resolveAnamneseFull) tak memuat pola ini lagi.
+            $conds[] = function ($q) use ($path) {
+                $q->whereRaw("$path ~* ?", ['(^|\n)[[:space:]]*(TD|HR|Nadi|RR|Sp?O2|Suhu|Temp|KGD|GD[SAPRN]|TIO|TOD|TOS)\y']);
             };
         }
         if (empty($conds)) {

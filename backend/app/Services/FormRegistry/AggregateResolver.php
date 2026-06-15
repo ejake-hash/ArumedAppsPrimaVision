@@ -98,8 +98,58 @@ final class AggregateResolver
     private function resolveAnamneseFull(Visit $visit): ?string
     {
         $anam = trim((string) ($visit->doctorExamination?->anamnese ?? ''));
+        if ($anam === '') {
+            return null;
+        }
+
+        // Sebagian dokter mengetik TTV (TD/HR/Nadi/RR/SpO2/Suhu/KGD/TIO/PD) langsung
+        // ke kotak Anamnese — salah letak: TTV sudah tampil di Pemeriksaan Fisik
+        // (buildTtvTriase). Saring baris vital-sign agar Anamnese = keluhan saja.
+        // Presentation-layer (DB doctorExamination.anamnese TAK diubah; audit-safe).
+        // Idempoten: setelah disaring tak ada baris cocok lagi. Lihat juga
+        // extractSegments/whitelist soap_objective (fix kontaminasi 12-13 Jun 2026).
+        $anam = $this->stripVitalsFromAnamnese($anam);
 
         return $anam !== '' ? $anam : null;
+    }
+
+    /**
+     * Pola baris vital-sign yang TAK boleh berada di kotak Anamnese (cocokkan di
+     * awal baris; sebagian butuh angka mengikut agar tak menyapu kalimat keluhan
+     * yang kebetulan berawalan huruf serupa, mis. "T..." / "PD ..." bermakna lain).
+     */
+    private const ANAMNESE_VITALS_PATTERNS = [
+        '/^\s*TD\b/i',                       // tekanan darah
+        '/^\s*HR\b/i',                       // heart rate
+        '/^\s*Nadi\b/i',                     // nadi
+        '/^\s*N\s*:?\s*\d/i',                // N: 85 (nadi singkat)
+        '/^\s*RR\b/i',                       // respiratory rate
+        '/^\s*Sp?O2\b/i',                    // SpO2 / SO2 saturasi
+        '/^\s*(Suhu|Temp)\b/i',              // suhu
+        '/^\s*T\s*:?\s*\d/i',                // T: 36.5 (suhu singkat — butuh angka)
+        '/^\s*(KGD|GDS|GDA|GDP|GDR|GDN)\b/i',// gula darah
+        '/^\s*(TIO|TOD|TOS)\b/i',            // tekanan intraokular
+        '/^\s*PD\s*:?\s*\d/i',               // pupil distance — butuh angka
+    ];
+
+    /** Buang baris vital-sign dari teks anamnese; pertahankan urutan baris sisanya. */
+    private function stripVitalsFromAnamnese(string $text): string
+    {
+        $kept = [];
+        foreach (preg_split('/\r?\n/', $text) as $ln) {
+            $isVital = false;
+            foreach (self::ANAMNESE_VITALS_PATTERNS as $re) {
+                if (preg_match($re, $ln) === 1) {
+                    $isVital = true;
+                    break;
+                }
+            }
+            if (! $isVital) {
+                $kept[] = $ln;
+            }
+        }
+
+        return trim(implode("\n", $kept));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
