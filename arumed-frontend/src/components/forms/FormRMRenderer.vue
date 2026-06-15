@@ -392,15 +392,6 @@ async function signAndFinalize() {
   if (primarySignKey.value) triggerSignKey.value = primarySignKey.value
 }
 
-// Begitu semua TTD wajib lengkap dalam alur "Tanda Tangani & Finalisasi" → finalisasi otomatis.
-watch(canFinalize, async (ok) => {
-  if (ok && autoFinalizeAfterSign.value && !finalizing.value) {
-    autoFinalizeAfterSign.value = false
-    triggerSignKey.value = null
-    await finalize({ silent: true })
-  }
-})
-
 // Capture signature → POST /document/{id}/sign → simpan ke capturedSignatures map.
 async function onCaptureSignature(field, payload) {
   if (!submittedDocId.value) {
@@ -467,6 +458,18 @@ const requiredSignersUnsigned = computed(() => {
 const canFinalize = computed(() => {
   if (!submittedDocId.value) return false
   return requiredSignersUnsigned.value.length === 0
+})
+
+// Begitu semua TTD wajib lengkap dalam alur "Tanda Tangani & Finalisasi" → finalisasi otomatis.
+// CATATAN: watch ini WAJIB diletakkan SETELAH `const canFinalize` di atas. Bila diletakkan
+// sebelumnya, `watch(canFinalize, …)` membaca `canFinalize` saat masih di temporal-dead-zone →
+// ReferenceError saat setup() → SELURUH FormRMRenderer gagal render (kartu dokumen blank).
+watch(canFinalize, async (ok) => {
+  if (ok && autoFinalizeAfterSign.value && !finalizing.value) {
+    autoFinalizeAfterSign.value = false
+    triggerSignKey.value = null
+    await finalize({ silent: true })
+  }
 })
 
 function openAddendum() {
