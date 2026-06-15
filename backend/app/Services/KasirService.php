@@ -1420,6 +1420,18 @@ class KasirService
         $extraAbsorbBasis = round($extraAbsorbBasis, 2);
         $absorbApplied    = false;
 
+        // Reference_id baris yang BENAR-BENAR jadi tagihan. Basis diskon hanya menghitung
+        // komponen snapshot yang masih ditagih → bila baris komposisi DIHAPUS di Kasir
+        // (snapshot utuh), atau orphan (master hilang → tak ditagih), atau prosedur sudah
+        // ditagih via visit_services, item itu TAK ADA di sini → tak masuk basis → diskon
+        // menyusut → total TETAP = harga jual paket (bukan turun di bawah paket).
+        $billedRefs = [];
+        foreach ($lines as $l) {
+            if (! empty($l['reference_id']) && ! in_array($l['item_type'] ?? '', ['DISKON_PAKET', 'DISKON_KONTROL'], true)) {
+                $billedRefs[$l['reference_id']] = true;
+            }
+        }
+
         // BHP komposisi yang ditagih lewat PEMAKAIAN operasi (buildBhpLines, used_qty)
         // dibilling per used_qty — BUKAN qty snapshot. Basis diskon HARUS ikut qty yang
         // BENAR-BENAR jadi baris tagihan, kalau tidak selisih (qty snapshot − used_qty)
@@ -1486,6 +1498,10 @@ class KasirService
                     if (! Medication::find($it->item_id)) {
                         continue;
                     }
+                    // Tak lagi jadi baris tagihan (dihapus di Kasir) → jangan hitung basis.
+                    if (! isset($billedRefs[$it->id])) {
+                        continue;
+                    }
                     $basis += $this->getPrice('medication', $it->item_id, $guarantorType, $insurerId) * (int) $it->quantity;
                     continue;
                 }
@@ -1509,6 +1525,13 @@ class KasirService
                     continue;
                 }
                 if ($it->item_type === 'IOL' && ! \App\Models\IolItem::find($it->item_id)) {
+                    continue;
+                }
+                // Tak lagi jadi baris tagihan → jangan hitung basis (total tetap = harga paket).
+                // KECUALI BHP yang ditagih lewat pemakaian operasi (buildBhpLines, reference_id
+                // beda = surgery bhp), yang TETAP dihitung via used_qty di bawah.
+                $isUsedBhp = ($it->item_type === 'BHP' && isset($surgeryUsedBhpQty[$it->item_id]));
+                if (! $isUsedBhp && ! isset($billedRefs[$it->id])) {
                     continue;
                 }
                 // SEMUA BHP komposisi paket masuk basis (kini semua BHP paket ditagih via
