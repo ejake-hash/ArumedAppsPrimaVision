@@ -107,8 +107,13 @@ class KasirService
         // (created_at). Invoice yang dibuat tanggal X tapi dibayar tanggal Y kini
         // muncul di tanggal Y, selaras label "Riwayat Pembayaran"/"Tanggal transaksi"
         // di KasirView. paid_at NULL (belum bayar) otomatis tak masuk riwayat.
+        // Basis tanggal: default 'paid_at' (tanggal kwitansi dibayar/tutup — perilaku
+        // Riwayat Pembayaran KasirView). Bila date_field='created_at' (dipakai tab
+        // Pengaturan→Kwitansi), filter berdasar TANGGAL INVOICE dibuat → menampilkan
+        // SELURUH invoice tanggal itu termasuk yang belum dibayar (paid_at NULL).
+        $dateField = ($filters['date_field'] ?? 'paid_at') === 'created_at' ? 'created_at' : 'paid_at';
         $query = BillingInvoice::with(['visit.patient', 'cashier'])
-            ->whereDate('paid_at', $filters['tanggal'] ?? today());
+            ->whereDate($dateField, $filters['tanggal'] ?? today());
 
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -131,7 +136,7 @@ class KasirService
             );
         }
 
-        return $query->orderByDesc('paid_at')->paginate($filters['per_page'] ?? 20);
+        return $query->orderByDesc($dateField)->paginate($filters['per_page'] ?? 20);
     }
 
     public function getInvoiceByVisit(string $visitId): ?BillingInvoice

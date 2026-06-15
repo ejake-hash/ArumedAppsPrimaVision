@@ -64,7 +64,7 @@ class KasirController extends Controller
     public function indexInvoice(Request $request): JsonResponse
     {
         return $this->ok($this->service->getInvoiceList(
-            $request->only(['tanggal', 'status', 'search', 'per_page', 'jenis_pelayanan'])
+            $request->only(['tanggal', 'status', 'search', 'per_page', 'jenis_pelayanan', 'date_field'])
         ));
     }
 

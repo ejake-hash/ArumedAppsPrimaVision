@@ -10,13 +10,19 @@
  *   - master_data.read  → lihat
  *   - master_data.write → tambah/edit/hapus
  */
-import { computed, onMounted, reactive, ref } from 'vue'
-import { masterApi } from '@/services/api'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { masterApi, kasirApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { useAppearance, FONT_SCALES } from '@/composables/useAppearance'
+import KwitansiPrint from '@/components/kasir/KwitansiPrint.vue'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can?.('master_data.write') ?? auth.isSuperadmin)
+// Tab Kwitansi hanya untuk yang punya hak kasir (baca invoice + cetak kwitansi).
+const canKasir = computed(() => auth.can?.('kasir.read') ?? auth.isSuperadmin)
+
+// ── Tab aktif ────────────────────────────────────────────────────────────────
+const activeTab = ref('umum')   // 'umum' | 'kwitansi'
 
 // ── Tampilan (ukuran font & kepadatan) — preferensi per-perangkat ────────────
 const appearance = useAppearance()
@@ -154,6 +160,190 @@ async function remove(row) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB KWITANSI — telusuri invoice yang sudah di-generate lalu ubah TAMPILAN
+// cetaknya (Tgl Invoice / Tgl Bayar / Tgl Kunjungan / Metode Bayar).
+//
+// Override disimpan di localStorage browser (per-ID invoice), BUKAN ke DB:
+//   - Data asli di backend 100% utuh (created_at/paid_at/visit_date tak disentuh).
+//   - Cetak ulang dari perangkat yang sama tetap konsisten (override termuat lagi).
+//   - Konsekuensi: override bersifat per-perangkat/per-browser (tak tersinkron
+//     lintas-komputer). Cukup untuk reprint dari stasiun yang sama.
+// Cetak memakai komponen bersama KwitansiPrint (kop/struktur identik KasirView).
+// ═══════════════════════════════════════════════════════════════════════════
+const OVR_PREFIX = 'kwitansi_print_override:'
+
+function todayStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const PAY_METHODS = [
+  { value: 'CASH',        label: 'Tunai' },
+  { value: 'CREDIT_CARD', label: 'Debit/Kredit' },
+  { value: 'TRANSFER',    label: 'Transfer' },
+  { value: 'BPJS',        label: 'BPJS' },
+  { value: 'INSURANCE',   label: 'Ditanggung Asuransi' },
+  { value: 'WAIVED',      label: 'Gratis / Diskon 100%' },
+]
+
+// ── Konversi format tanggal (kwitansi pakai dd/mm/yyyy & dd/mm/yyyy HH:mm) ──
+function dmyToInput(s) {                 // "16/06/2026" → "2026-06-16"
+  const m = String(s ?? '').match(/(\d{2})\/(\d{2})\/(\d{4})/)
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : ''
+}
+function dmyhmToInput(s) {                // "16/06/2026 10:30" → "2026-06-16T10:30"
+  const m = String(s ?? '').match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/)
+  if (!m) return ''
+  return `${m[3]}-${m[2]}-${m[1]}T${m[4] ?? '00'}:${m[5] ?? '00'}`
+}
+function inputToDmy(s) {                  // "2026-06-16" → "16/06/2026"
+  const m = String(s ?? '').match(/(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+}
+function inputToDmyHm(s) {                // "2026-06-16T10:30" → "16/06/2026 10:30"
+  const m = String(s ?? '').match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : ''
+}
+
+function loadOverride(id) {
+  try { return JSON.parse(localStorage.getItem(OVR_PREFIX + id) || 'null') } catch { return null }
+}
+function persistOverride(id, ovr) { localStorage.setItem(OVR_PREFIX + id, JSON.stringify(ovr)) }
+function dropOverride(id) { localStorage.removeItem(OVR_PREFIX + id) }
+
+// ── Daftar invoice (riwayat) ──────────────────────────────────────────────────
+// Basis tanggal: 'created_at' (Tgl Invoice — SELURUH invoice tanggal itu, termasuk
+// belum bayar) atau 'paid_at' (Tgl Bayar — hanya yang sudah ditutup hari itu).
+const kwDate      = ref(todayStr())
+const kwDateField = ref('created_at')
+const kwSearch    = ref('')
+const kwList      = ref([])
+const kwLoading   = ref(false)
+
+const DATE_FIELDS = [
+  { value: 'created_at', label: 'Tgl Invoice' },
+  { value: 'paid_at',    label: 'Tgl Bayar' },
+]
+
+async function loadKwList() {
+  if (!canKasir.value) return
+  kwLoading.value = true
+  try {
+    const { data } = await kasirApi.invoiceList({
+      tanggal: kwDate.value || todayStr(),
+      date_field: kwDateField.value,
+      search: kwSearch.value.trim() || undefined,
+      per_page: 300,
+    })
+    const payload = data.data
+    kwList.value = Array.isArray(payload) ? payload : (payload?.data ?? [])
+  } catch (e) {
+    alert('Gagal memuat invoice: ' + (e.response?.data?.message ?? e.message))
+    kwList.value = []
+  } finally {
+    kwLoading.value = false
+  }
+}
+
+// ── Invoice terpilih + form override ─────────────────────────────────────────
+const selId        = ref(null)
+const receiptData  = ref(null)     // hasil generateReceipt (data asli backend)
+const kwBusy       = ref(false)
+const kwMsg        = ref('')
+const printData    = ref(null)     // data yang diteruskan ke <KwitansiPrint>
+const hasOverride  = ref(false)
+const asli = reactive({ date: '', visit_date: '', paid_at: '', payment_method: '' })
+const ovr  = reactive({ date: '', visit_date: '', paid_at: '', payment_method: '' })
+
+function metodeLabel(code) {
+  return PAY_METHODS.find((m) => m.value === code)?.label ?? (code || '—')
+}
+
+async function selectKw(row) {
+  if (!row?.id) return
+  selId.value = row.id
+  kwMsg.value = ''
+  receiptData.value = null
+  kwBusy.value = true
+  try {
+    const { data } = await kasirApi.cetakInvoice(row.id)
+    const rec = data.data
+    receiptData.value = rec
+    // Nilai asli (apa adanya dari backend) untuk referensi "Asli: …".
+    asli.date           = rec.invoice?.date ?? ''
+    asli.visit_date     = rec.invoice?.visit_date ?? ''
+    asli.paid_at        = rec.invoice?.paid_at ?? ''
+    asli.payment_method = rec.invoice?.payment_method ?? ''
+    // Prefill form dari override tersimpan (bila ada) atau dari nilai asli.
+    const saved = loadOverride(row.id)
+    hasOverride.value = !!saved
+    ovr.date           = dmyToInput(saved?.date ?? asli.date)
+    ovr.visit_date     = dmyToInput(saved?.visit_date ?? asli.visit_date)
+    ovr.paid_at        = dmyhmToInput(saved?.paid_at ?? asli.paid_at)
+    ovr.payment_method = saved?.payment_method ?? asli.payment_method ?? ''
+  } catch (e) {
+    alert('Gagal memuat kwitansi: ' + (e.response?.data?.message ?? e.message))
+    selId.value = null
+  } finally {
+    kwBusy.value = false
+  }
+}
+
+// Bentuk override (format tampilan dd/mm/yyyy) dari nilai form saat ini.
+function currentOverride() {
+  return {
+    date:           inputToDmy(ovr.date),
+    visit_date:     inputToDmy(ovr.visit_date),
+    paid_at:        inputToDmyHm(ovr.paid_at),
+    payment_method: ovr.payment_method || null,
+  }
+}
+
+// Terapkan override ke salinan data kwitansi (tak mengubah receiptData asli).
+function applyOverride(base) {
+  const d = JSON.parse(JSON.stringify(base))
+  const o = currentOverride()
+  if (!d.invoice) d.invoice = {}
+  if (o.date)           d.invoice.date           = o.date
+  if (o.visit_date)     d.invoice.visit_date     = o.visit_date
+  if (o.paid_at)        d.invoice.paid_at        = o.paid_at
+  if (o.payment_method) d.invoice.payment_method = o.payment_method
+  return d
+}
+
+function saveOverride() {
+  if (!selId.value) return
+  persistOverride(selId.value, currentOverride())
+  hasOverride.value = true
+  kwMsg.value = 'Override cetak tersimpan di perangkat ini.'
+}
+
+function resetOverride() {
+  if (!selId.value) return
+  dropOverride(selId.value)
+  hasOverride.value = false
+  ovr.date           = dmyToInput(asli.date)
+  ovr.visit_date     = dmyToInput(asli.visit_date)
+  ovr.paid_at        = dmyhmToInput(asli.paid_at)
+  ovr.payment_method = asli.payment_method ?? ''
+  kwMsg.value = 'Dikembalikan ke nilai asli.'
+}
+
+// Cetak: simpan override dulu (agar reprint konsisten), lalu render & print.
+async function cetakKw() {
+  if (!receiptData.value) return
+  saveOverride()
+  printData.value = applyOverride(receiptData.value)
+  await nextTick()
+  setTimeout(() => window.print(), 80)
+}
+
+function openKwTab() {
+  activeTab.value = 'kwitansi'
+  if (!kwList.value.length) loadKwList()
+}
+
 onMounted(() => { loadList(); loadClinicCode() })
 </script>
 
@@ -162,10 +352,18 @@ onMounted(() => { loadList(); loadClinicCode() })
     <header class="pg-header">
       <div>
         <h1>Pengaturan</h1>
-        <p class="pg-sub">Atur tampilan aplikasi dan penomoran dokumen.</p>
+        <p class="pg-sub">Atur tampilan aplikasi, penomoran dokumen, dan cetak kwitansi.</p>
       </div>
     </header>
 
+    <!-- ── Tab ───────────────────────────────────────────────────────────── -->
+    <nav class="tabs">
+      <button class="tab" :class="{ active: activeTab === 'umum' }" @click="activeTab = 'umum'">Umum</button>
+      <button v-if="canKasir" class="tab" :class="{ active: activeTab === 'kwitansi' }" @click="openKwTab">Kwitansi</button>
+    </nav>
+
+    <!-- ════════════════════════ TAB: UMUM ════════════════════════════════ -->
+    <div v-show="activeTab === 'umum'">
     <!-- ── Bagian: Tampilan ──────────────────────────────────────────────── -->
     <section class="card sec">
       <div class="sec-head">
@@ -311,6 +509,126 @@ onMounted(() => { loadList(); loadClinicCode() })
         </div>
       </div>
     </Transition>
+    </div>
+    <!-- ════════════════════════ /TAB: UMUM ═══════════════════════════════ -->
+
+    <!-- ════════════════════════ TAB: KWITANSI ════════════════════════════ -->
+    <div v-if="activeTab === 'kwitansi'" class="kw-tab">
+      <div class="sec-head">
+        <h2>Cetak Kwitansi</h2>
+        <p class="sec-sub">
+          Telusuri invoice yang sudah dibayar, lalu ubah <strong>tampilan cetak</strong>
+          (Tgl Invoice / Tgl Bayar / Tgl Kunjungan / Metode Bayar). Data asli di sistem
+          tidak berubah; perubahan hanya untuk tampilan/print dan tersimpan di perangkat ini.
+        </p>
+      </div>
+
+      <div class="kw-grid">
+        <!-- Kolom kiri: daftar invoice -->
+        <div class="kw-list-col card">
+          <div class="kw-filter">
+            <label class="fld">
+              <span>Berdasarkan</span>
+              <select v-model="kwDateField" @change="loadKwList">
+                <option v-for="f in DATE_FIELDS" :key="f.value" :value="f.value">{{ f.label }}</option>
+              </select>
+            </label>
+            <label class="fld">
+              <span>Tanggal</span>
+              <input v-model="kwDate" type="date" @change="loadKwList" />
+            </label>
+            <label class="fld kw-grow">
+              <span>Cari (nama / no. RM / no. invoice)</span>
+              <input v-model="kwSearch" type="text" placeholder="opsional — ketik lalu Enter" @keyup.enter="loadKwList" />
+            </label>
+            <button class="btn-primary kw-search-btn" :disabled="kwLoading" @click="loadKwList">
+              {{ kwLoading ? 'Memuat…' : 'Muat' }}
+            </button>
+          </div>
+
+          <p v-if="kwLoading" class="muted">Memuat…</p>
+          <p v-else-if="!kwList.length" class="muted">Tidak ada invoice pada tanggal/kriteria ini.</p>
+
+          <template v-else>
+            <p class="kw-count">{{ kwList.length }} kwitansi pada tanggal ini</p>
+            <ul class="kw-list">
+              <li
+                v-for="row in kwList"
+                :key="row.id"
+                class="kw-item"
+                :class="{ active: selId === row.id }"
+                @click="selectKw(row)"
+              >
+                <div class="kw-item-main">
+                  <span class="kw-item-name">{{ row.visit?.patient?.name ?? '—' }}</span>
+                  <span class="kw-item-inv">{{ row.invoice_number }}</span>
+                </div>
+                <div class="kw-item-meta">
+                  <span>RM {{ row.visit?.patient?.no_rm ?? '—' }}</span>
+                  <span class="kw-chip" :class="row.status === 'PAID' ? 'paid' : 'unpaid'">{{ row.status === 'PAID' ? 'Lunas' : 'Belum' }}</span>
+                  <span class="kw-item-amt">Rp {{ Number(row.total ?? 0).toLocaleString('id-ID') }}</span>
+                </div>
+              </li>
+            </ul>
+          </template>
+        </div>
+
+        <!-- Kolom kanan: form override -->
+        <div class="kw-edit-col card">
+          <p v-if="!selId" class="muted kw-placeholder">Pilih invoice di sebelah kiri untuk mengubah tampilan cetaknya.</p>
+          <p v-else-if="kwBusy" class="muted kw-placeholder">Memuat kwitansi…</p>
+
+          <template v-else-if="receiptData">
+            <div class="kw-edit-head">
+              <div>
+                <div class="kw-edit-title">{{ receiptData.patient?.name ?? '—' }}</div>
+                <div class="kw-edit-sub">{{ receiptData.invoice?.number }} · {{ receiptData.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS' }}</div>
+              </div>
+              <span v-if="hasOverride" class="kw-badge-ovr">● Override aktif</span>
+            </div>
+
+            <label class="fld">
+              <span>Tgl Invoice</span>
+              <input v-model="ovr.date" type="date" />
+              <small class="hint">Asli: {{ asli.date || '—' }}</small>
+            </label>
+
+            <label class="fld">
+              <span>Tgl Kunjungan</span>
+              <input v-model="ovr.visit_date" type="date" />
+              <small class="hint">Asli: {{ asli.visit_date || '—' }}</small>
+            </label>
+
+            <label class="fld">
+              <span>Tgl Bayar</span>
+              <input v-model="ovr.paid_at" type="datetime-local" />
+              <small class="hint">Asli: {{ asli.paid_at || '—' }}</small>
+            </label>
+
+            <label class="fld">
+              <span>Metode Bayar</span>
+              <select v-model="ovr.payment_method">
+                <option value="">— (kosongkan)</option>
+                <option v-for="m in PAY_METHODS" :key="m.value" :value="m.value">{{ m.label }}</option>
+              </select>
+              <small class="hint">Asli: {{ asli.payment_method ? metodeLabel(asli.payment_method) : '—' }}</small>
+            </label>
+
+            <p v-if="kwMsg" class="kw-msg">{{ kwMsg }}</p>
+
+            <div class="kw-actions">
+              <button class="btn-ghost danger" :disabled="!hasOverride" @click="resetOverride">Kembalikan Asli</button>
+              <button class="btn-ghost" @click="saveOverride">Simpan</button>
+              <button class="btn-primary" :disabled="kwBusy" @click="cetakKw">Simpan &amp; Cetak</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+    <!-- ════════════════════════ /TAB: KWITANSI ═══════════════════════════ -->
+
+    <!-- Template cetak bersama (teleport ke <body>, hanya muncul saat print) -->
+    <KwitansiPrint :data="printData" />
   </div>
 </template>
 
@@ -385,4 +703,43 @@ onMounted(() => { loadList(); loadClinicCode() })
 .seg-btn.active { background: var(--gd); color: #fff; }
 
 .sec-foot { display: flex; justify-content: flex-end; }
+
+/* ── Tab ── */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); margin-bottom: 0.3rem; }
+.tab { background: transparent; border: none; border-bottom: 2px solid transparent; padding: 8px 16px; font-size: 13.5px; font-weight: 600; color: var(--tm); cursor: pointer; margin-bottom: -1px; }
+.tab:hover { color: var(--td); }
+.tab.active { color: #1763d4; border-bottom-color: #1763d4; }
+
+/* ── Tab Kwitansi ── */
+.kw-tab { display: flex; flex-direction: column; gap: 0.9rem; }
+.kw-grid { display: grid; grid-template-columns: minmax(320px, 1.2fr) 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 860px) { .kw-grid { grid-template-columns: 1fr; } }
+
+.kw-list-col { padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.7rem; }
+.kw-filter { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+.kw-grow { flex: 1 1 180px; }
+.kw-search-btn { white-space: nowrap; height: 36px; }
+
+.kw-count { font-size: 11.5px; color: var(--tm); margin: 0; }
+.kw-chip { font-size: 10px; font-weight: 700; border-radius: 5px; padding: 1px 6px; }
+.kw-chip.paid { color: #15803d; background: #dcfce7; }
+.kw-chip.unpaid { color: #b45309; background: #fef3c7; }
+.kw-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; max-height: 60vh; overflow-y: auto; }
+.kw-item { border: 1px solid var(--gb); border-radius: 9px; padding: 8px 11px; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.kw-item:hover { background: var(--bs); }
+.kw-item.active { border-color: #1763d4; background: #eff5ff; }
+.kw-item-main { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.kw-item-name { font-size: 13px; font-weight: 600; color: var(--td); }
+.kw-item-inv { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--tm); white-space: nowrap; }
+.kw-item-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--tm); margin-top: 2px; }
+.kw-item-amt { font-weight: 600; color: var(--td); }
+
+.kw-edit-col { padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.kw-placeholder { padding: 1.5rem 0.5rem; text-align: center; }
+.kw-edit-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding-bottom: 0.6rem; border-bottom: 1px solid var(--gb); }
+.kw-edit-title { font-size: 15px; font-weight: 700; color: var(--td); }
+.kw-edit-sub { font-size: 11.5px; color: var(--tm); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+.kw-badge-ovr { font-size: 10.5px; font-weight: 700; color: #b45309; background: #fef3c7; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+.kw-msg { font-size: 12px; color: #15803d; margin: 0; }
+.kw-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 0.4rem; flex-wrap: wrap; }
 </style>
