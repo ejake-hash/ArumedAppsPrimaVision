@@ -2851,10 +2851,17 @@ function mulaiBack() { mulaiStep.value = 1 }
           <h3>Konfirmasi Data Pasien</h3>
           <p class="bd-modal-sub">Pastikan data berikut benar sebelum memulai operasi</p>
           <div class="bd-modal-detail-grid">
+            <!-- 1. Nama -->
             <div class="bd-mfield"><span class="bd-mlabel">Nama Pasien</span><span class="bd-mval">{{ selP?.name }}</span></div>
-            <div class="bd-mfield"><span class="bd-mlabel">Diagnosa</span><span class="bd-mval">{{ selP?.diagnosa }}</span></div>
-            <div class="bd-mfield"><span class="bd-mlabel">Nama Operasi</span><span class="bd-mval">{{ selP?.prosedur }}</span></div>
-            <!-- Visus/IOP hanya tampil bila ada datanya (hindari '—/—' menyesatkan). -->
+            <!-- 2. Diagnosa: kode ICD-10 + nama/deskripsi -->
+            <div class="bd-mfield">
+              <span class="bd-mlabel">Diagnosa</span>
+              <span class="bd-mval" v-if="selP?.diagnosa">{{ selP.diagnosa }}<span v-if="selP?.diagnosaNama"> — {{ selP.diagnosaNama }}</span></span>
+              <span class="bd-mval bd-mval-na" v-else>—</span>
+            </div>
+            <!-- 3. Jenis Operasi -->
+            <div class="bd-mfield"><span class="bd-mlabel">Jenis Operasi</span><span class="bd-mval">{{ selP?.prosedur }}</span></div>
+            <!-- 4. Visus & IOP pre-op — hanya tampil bila ada datanya (hindari '—/—' menyesatkan). -->
             <div v-if="selP?.visusOD || selP?.visusOS" class="bd-mfield">
               <span class="bd-mlabel">Visus Pre-op</span>
               <span class="bd-mval">OD: {{ selP?.visusOD || '—' }} / OS: {{ selP?.visusOS || '—' }}</span>
@@ -2863,10 +2870,27 @@ function mulaiBack() { mulaiStep.value = 1 }
               <span class="bd-mlabel">IOP Pre-op</span>
               <span class="bd-mval">OD: {{ selP?.iopOD || '—' }} mmHg / OS: {{ selP?.iopOS || '—' }} mmHg</span>
             </div>
+            <!-- 5. IOL Direncanakan -->
             <div class="bd-mfield">
               <span class="bd-mlabel">IOL Direncanakan</span>
               <span class="bd-mval" v-if="selP?.isPhaco">{{ selP?.iolRencana?.merk || '—' }} {{ selP?.iolRencana?.power ? `· ${selP.iolRencana.power} D` : '' }}</span>
               <span class="bd-mval bd-mval-na" v-else>Tidak ada (bukan prosedur Phaco)</span>
+            </div>
+            <!-- 6. Operator (DPJP / lead surgeon) -->
+            <div class="bd-mfield">
+              <span class="bd-mlabel">Operator</span>
+              <span class="bd-mval" v-if="selP?.tim?.operator || selP?.dpjp">{{ selP?.tim?.operator || selP?.dpjp }}</span>
+              <span class="bd-mval bd-mval-na" v-else>Belum dipilih</span>
+            </div>
+            <!-- 7. Asisten (jika ada 1–2) -->
+            <div v-if="selP?.tim?.asisten1 || selP?.tim?.asisten2" class="bd-mfield">
+              <span class="bd-mlabel">Asisten</span>
+              <span class="bd-mval">{{ [selP?.tim?.asisten1, selP?.tim?.asisten2].filter(Boolean).join(', ') }}</span>
+            </div>
+            <!-- 8. Anestesiologis (jika ada) -->
+            <div v-if="selP?.tim?.anestesi" class="bd-mfield">
+              <span class="bd-mlabel">Anestesiologis</span>
+              <span class="bd-mval">{{ selP.tim.anestesi }}</span>
             </div>
           </div>
           <div class="bd-modal-actions">
