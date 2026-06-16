@@ -381,9 +381,17 @@ final class SignatureService
         // pembanding HARUS WIB juga (TANPA konversi UTC). Kosong → hari ini.
         [$startOfDay, $endOfDay] = $this->resolveSignedDateRange($opts);
 
+        // Akun TANPA employee (superadmin/pengawas) melihat SELURUH antrean TTD
+        // (ttdQueueBuilder melepas filter DPJP saat employee_id null). Tab
+        // "Ditanda Tangani" harus SIMETRIS — kalau hanya difilter signer_user_id,
+        // akun pengawas yang tak pernah TTD sendiri selalu kosong walau ada ribuan
+        // dokumen tertanda. Maka: ada employee → riwayat TTD-nya sendiri (dokter);
+        // tanpa employee → semua tanda tangan signer_type ini.
+        $scopeToSelf = (bool) User::whereKey($userId)->value('employee_id');
+
         $paginator = DocumentSignature::query()
             ->where('signer_type', $signerType)
-            ->where('signer_user_id', $userId)
+            ->when($scopeToSelf, fn ($q) => $q->where('signer_user_id', $userId))
             ->whereBetween('created_at', [$startOfDay, $endOfDay])
             ->whereHas('patientDocument', function ($dq) use ($search) {
                 if ($search !== '') {
@@ -460,9 +468,13 @@ final class SignatureService
         $startOfDay = \Illuminate\Support\Carbon::now('Asia/Jakarta')->startOfDay();
         $endOfDay   = \Illuminate\Support\Carbon::now('Asia/Jakarta')->endOfDay();
 
+        // Selaras signedTodayForDoctor: akun tanpa employee (pengawas) menghitung
+        // SEMUA tanda tangan signer_type ini (kartu konsisten dgn daftar & antrean).
+        $scopeToSelf = (bool) User::whereKey($userId)->value('employee_id');
+
         return DocumentSignature::query()
             ->where('signer_type', $signerType)
-            ->where('signer_user_id', $userId)
+            ->when($scopeToSelf, fn ($q) => $q->where('signer_user_id', $userId))
             ->whereBetween('created_at', [$startOfDay, $endOfDay])
             ->count();
     }
