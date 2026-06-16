@@ -31,12 +31,26 @@ class PenunjangService
 
     public function getPatientQueue(): Collection
     {
-        return Queue::with(['visit.patient', 'visit.diagnosticOrders'])
+        $queues = Queue::with(['visit.patient', 'visit.diagnosticOrders'])
             ->where('station', 'PENUNJANG')
             ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
+
+        // Lampirkan NAMA pemeriksaan (master diagnostic_test_types) ke tiap order agar
+        // panel "Daftar Order dari Dokter" menampilkan nama, bukan kode (BIOM/PNJ-015).
+        // FE sudah pakai `o.test_name ?? o.test_type`; kode lama tak pernah mengisi test_name.
+        $codes = $queues->flatMap(fn ($q) => $q->visit?->diagnosticOrders ?? [])
+            ->pluck('test_type')->filter()->unique()->all();
+        $names = $codes ? DiagnosticTestType::whereIn('code', $codes)->pluck('name', 'code') : collect();
+        foreach ($queues as $q) {
+            foreach ($q->visit?->diagnosticOrders ?? [] as $o) {
+                $o->test_name = $names[$o->test_type] ?? $o->test_type;
+            }
+        }
+
+        return $queues;
     }
 
     public function panggilAntrian(string $queueId): Queue
