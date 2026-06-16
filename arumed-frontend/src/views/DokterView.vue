@@ -182,6 +182,7 @@ function mapPatient(q) {
     id:      q.id,
     visitId: v.id ?? null,
     patientId: p.id ?? null,
+    visitDate: v.visit_date ?? null,
     qNum:    q.queue_number,
     name:    p.name ?? '—',
     rm:      p.no_rm ?? '—',
@@ -2630,7 +2631,12 @@ function closeResumeRM() {
             </div>
             <div class="q-info">
               <div class="q-name">{{ p.name }}</div>
-              <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.poli }}</div>
+              <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.poli }}
+                <span v-if="p.visitDate" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtDocDate(p.visitDate)}`">
+                  <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  {{ fmtDocDate(p.visitDate) }}
+                </span>
+              </div>
               <div class="q-tags">
                 <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : p.ptype === 'asn' ? 'pill-asn' : 'pill-umum']">
                   {{ p.ptype === 'bpjs' ? 'BPJS' : p.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
@@ -2645,21 +2651,14 @@ function closeResumeRM() {
                 </span>
                 <span v-if="p.allergies?.length" class="pill pill-allergy">⚠ Alergi</span>
               </div>
-              <!-- Pasien sedang di penunjang — tidak ada aksi panggil -->
+              <!-- Pasien sedang di penunjang — tidak ada aksi panggil. Aksi Batalkan/
+                   Pindah Dokter dipindah ke header kartu pemeriksaan (mengurangi padat
+                   di kartu antrean). -->
               <div v-if="p.status === 'penunjang'" class="q-actions" @click.stop>
                 <span class="q-at-penunjang">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
                   Sedang di Penunjang
                 </span>
-                <button
-                  class="q-act-btn cancel"
-                  :disabled="pendingCancelIds.includes(p.id)"
-                  title="Batalkan kunjungan (pasien salah daftar / batal periksa) — hanya dokter pemilik"
-                  @click.stop="cancelPt(p)"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                  {{ pendingCancelIds.includes(p.id) ? 'Membatalkan…' : 'Batalkan' }}
-                </button>
               </div>
               <div v-else-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
                 <button
@@ -2680,24 +2679,8 @@ function closeResumeRM() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
                   {{ pendingSkipIds.includes(p.id) ? 'Melewati…' : 'Lewati' }}
                 </button>
-                <button
-                  v-if="p.rawStatus === 'WAITING'"
-                  class="q-act-btn ganti"
-                  title="Pindahkan pasien ke dokter lain (salah pilih dokter saat pendaftaran)"
-                  @click.stop="openGantiDokter(p)"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
-                  Pindah Dokter
-                </button>
-                <button
-                  class="q-act-btn cancel"
-                  :disabled="pendingCancelIds.includes(p.id)"
-                  title="Batalkan kunjungan (pasien salah daftar / batal periksa) — hanya dokter pemilik"
-                  @click.stop="cancelPt(p)"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                  {{ pendingCancelIds.includes(p.id) ? 'Membatalkan…' : 'Batalkan' }}
-                </button>
+                <!-- "Pindah Dokter" & "Batalkan" dipindah ke header kartu pemeriksaan
+                     (beraksi atas pasien yang sedang dibuka) — kartu antrean lebih ringkas. -->
               </div>
             </div>
 
@@ -2764,6 +2747,27 @@ function closeResumeRM() {
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
               Dokumen RM
+            </button>
+            <!-- Aksi administratif pasien (dipindah dari kartu antrean) — beraksi atas
+                 pasien yang sedang dibuka. Pindah Dokter hanya bila belum dipanggil. -->
+            <button
+              v-if="selP.rawStatus === 'WAITING'"
+              class="db db-ganti"
+              title="Pindahkan pasien ke dokter lain (salah pilih dokter saat pendaftaran)"
+              @click="openGantiDokter(selP)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
+              Pindah Dokter
+            </button>
+            <button
+              v-if="selP.status !== 'done' && selP.status !== 'skip'"
+              class="db db-cancel"
+              :disabled="pendingCancelIds.includes(selP.id)"
+              title="Batalkan kunjungan (pasien salah daftar / batal periksa) — hanya dokter pemilik"
+              @click="cancelPt(selP)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+              {{ pendingCancelIds.includes(selP.id) ? 'Membatalkan…' : 'Batalkan' }}
             </button>
           </div>
         </div>
@@ -4649,6 +4653,8 @@ function closeResumeRM() {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 9.5px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 9.5px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 
 .pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
@@ -4676,11 +4682,8 @@ function closeResumeRM() {
 .q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .q-act-btn.resume { color: #fff; border-color: var(--ga); background: var(--ga); }
 .q-act-btn.resume:hover { filter: brightness(1.07); }
-.q-act-btn.ganti { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
-.q-act-btn.ganti:hover { background: #7c3aed; color: #fff; border-color: #7c3aed; }
-.q-act-btn.cancel { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
-.q-act-btn.cancel:hover { background: #dc2626; color: #fff; border-color: #dc2626; }
-.q-act-btn.cancel:active:not(:disabled) { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+/* .q-act-btn.ganti/.cancel dipindah ke header (.db-ganti/.db-cancel) — kartu antrean
+   kini hanya Panggil/Lewati. */
 .ganti-empty { padding: 10px 0; font-size: 12px; color: var(--tu); text-align: center; }
 .ganti-select { width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px; border: 1px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; background: #fff; }
 .q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
@@ -4759,6 +4762,17 @@ function closeResumeRM() {
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 .db-doc:hover { color: #fff; background: #1763d4; border-color: #1763d4; }
+/* Aksi administratif pasien di header (dipindah dari kartu antrean) — selaras .db-doc */
+.db-ganti, .db-cancel { display: inline-flex; align-items: center; gap: 5px; }
+.db-ganti svg, .db-cancel svg {
+  width: 13px; height: 13px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.db-ganti { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+.db-ganti:hover { color: #fff; background: #7c3aed; border-color: #7c3aed; }
+.db-cancel { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+.db-cancel:hover { color: #fff; background: #dc2626; border-color: #dc2626; }
+.db-cancel:disabled { opacity: .55; cursor: wait; }
 
 /* DRAWER */
 .dwr { background: var(--bs); border-bottom: 1px solid var(--gb); flex-shrink: 0; padding: 0.75rem 1rem; }
