@@ -108,7 +108,10 @@ function hideDropLater() { setTimeout(() => { showSearchDrop.value = false }, 20
 // ─── TELUSUR PER TANGGAL (daftar pasien per tanggal / rentang) ─────────────────
 // Mode "Tanggal": pilih 1 tanggal atau rentang → daftar pasien yang berkunjung
 // pada periode itu (mirip Rekap Kunjungan BPJS), berpaginasi server-side.
-const _todayStr = new Date().toISOString().slice(0, 10)
+// Tanggal LOKAL (bukan UTC): toISOString() memakai UTC, sehingga dini hari WIB
+// (00:00–06:59) akan jatuh ke tanggal kemarin → daftar pasien hari ini kosong.
+// 'sv-SE' memberi format YYYY-MM-DD memakai zona waktu perangkat.
+const _todayStr = new Date().toLocaleDateString('sv-SE')
 const dateRangeMode = ref('single')      // 'single' | 'range'
 const dateSingle    = ref(_todayStr)
 const dateFrom      = ref(_todayStr)
@@ -237,7 +240,14 @@ async function pickPatient(p) {
 function clearPatient() {
   patient.value = null
   cache.value = {}
+  loading.value = {}
+  errors.value = {}
+  expanded.value = null
+  activeMenu.value = 'ringkasan'
   searchQuery.value = ''
+  searchResults.value = []
+  showSearchDrop.value = false
+  _searchSeq++              // batalkan respons pencarian in-flight
 }
 
 // Auto-buka RME dari modul lain (mis. tombol "Buka Rekam Medis" di Admisi yang
@@ -331,7 +341,7 @@ async function printDoc(doc) {
     const { data } = await api.get(`/rekam-medis/document/${doc.id}/render`)
     const html = data.data?.rendered_html
     if (!html) { toast('w', 'Dokumen belum punya isi tersaji untuk dicetak'); return }
-    const title = `${doc.document_type?.code ?? 'Dokumen'} — ${patient.value?.nama ?? ''}`
+    const title = `${doc.document_type?.code ?? 'Dokumen'} — ${(patient.value?.nama ?? '').replace(/[<>&]/g, '')}`
     const w = window.open('', '_blank', 'width=900,height=1200')
     if (!w) { toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak'); return }
     w.document.open()
@@ -1050,28 +1060,33 @@ function cetakLaporanOperasi(b) {
       </div>
 
       <!-- PRINT RESUME (hidden, shown on print) -->
-      <div class="resume-print">
-        <div class="rp-header"><strong>RUMAH SAKIT MATA</strong><br/>Resume Medis Rawat Jalan · PMK No. 24/2022</div>
-        <h2>RESUME REKAM MEDIS</h2>
-        <table class="rp-table">
-          <tr><td>Nama</td><td>{{ patient.nama }}</td><td>No. RM</td><td>{{ patient.no_rm }}</td></tr>
-          <tr><td>Tgl. Lahir</td><td>{{ fmtTgl(patient.date_of_birth) }}</td><td>NIK</td><td>{{ patient.nik }}</td></tr>
-          <tr><td>Gender</td><td>{{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</td><td>Penjamin</td><td>{{ patient.last_guarantor_type }}</td></tr>
-          <tr><td>Alamat</td><td colspan="3">{{ patient.address }}</td></tr>
-          <tr v-if="patient.allergy"><td>Alergi</td><td colspan="3">{{ patient.allergy }}</td></tr>
-        </table>
-        <h3>Riwayat Kunjungan</h3>
-        <table class="rp-grid">
-          <thead><tr><th>Tanggal</th><th>Klasifikasi</th><th>Dokter</th><th>Diagnosis</th></tr></thead>
-          <tbody>
-            <tr v-for="v in (cache.kunjungan ?? [])" :key="v.visit_id">
-              <td>{{ fmtTgl(v.visit_date) }}</td><td>{{ v.classification }}</td><td>{{ v.doctor_name }}</td>
-              <td>{{ v.diagnosis_utama }} {{ v.diagnosis_utama_nama }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="rp-footer">Dicetak: {{ new Date().toLocaleDateString('id-ID') }} · Arumed Apps</div>
-      </div>
+      <!-- Di-Teleport ke <body> agar lolos dari `@media print { #app { display:none } }`.
+           Bila tetap di dalam #app, display:none pada ancestor menyembunyikan seluruh
+           subtree → "Cetak Resume" tercetak kosong (sama spt op-print yg juga di-teleport). -->
+      <Teleport to="body">
+        <div class="resume-print">
+          <div class="rp-header"><strong>RUMAH SAKIT MATA</strong><br/>Resume Medis Rawat Jalan · PMK No. 24/2022</div>
+          <h2>RESUME REKAM MEDIS</h2>
+          <table class="rp-table">
+            <tr><td>Nama</td><td>{{ patient.nama }}</td><td>No. RM</td><td>{{ patient.no_rm }}</td></tr>
+            <tr><td>Tgl. Lahir</td><td>{{ fmtTgl(patient.date_of_birth) }}</td><td>NIK</td><td>{{ patient.nik }}</td></tr>
+            <tr><td>Gender</td><td>{{ patient.gender === 'L' ? 'Laki-laki' : 'Perempuan' }}</td><td>Penjamin</td><td>{{ patient.last_guarantor_type }}</td></tr>
+            <tr><td>Alamat</td><td colspan="3">{{ patient.address }}</td></tr>
+            <tr v-if="patient.allergy"><td>Alergi</td><td colspan="3">{{ patient.allergy }}</td></tr>
+          </table>
+          <h3>Riwayat Kunjungan</h3>
+          <table class="rp-grid">
+            <thead><tr><th>Tanggal</th><th>Klasifikasi</th><th>Dokter</th><th>Diagnosis</th></tr></thead>
+            <tbody>
+              <tr v-for="v in (cache.kunjungan ?? [])" :key="v.visit_id">
+                <td>{{ fmtTgl(v.visit_date) }}</td><td>{{ v.classification }}</td><td>{{ v.doctor_name }}</td>
+                <td>{{ v.diagnosis_utama }} {{ v.diagnosis_utama_nama }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="rp-footer">Dicetak: {{ new Date().toLocaleDateString('id-ID') }} · Arumed Apps</div>
+        </div>
+      </Teleport>
     </template>
 
     <!-- ─── PENUNJANG MODAL (lihat hasil) ─── -->
