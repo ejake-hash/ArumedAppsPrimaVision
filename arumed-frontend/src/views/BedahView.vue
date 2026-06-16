@@ -84,8 +84,12 @@ function transformQueueItem(q) {
                   : 'MENUNGGU',
     icdProsedur:    '',
     dpjp:           q.visit?.dpjp ?? '',          // operator utama (lead surgeon / dokter pemeriksa)
-    diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter
+    diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter (referensi read-only)
     diagnosaNama:   q.visit?.diagnosa_nama ?? '', // nama/deskripsi ICD-10 (resolusi backend)
+    // Diagnosis pra-bedah versi tim bedah (editable: pilih master ICD-10 / ketik manual);
+    // default = diagnosa dokter. Disimpan ke laporan operasi → dokumen RM.
+    diagnosaPra:    q.visit?.diagnosa ?? '',
+    diagnosaPraNama: q.visit?.diagnosa_nama ?? '',
     diagnosaPasca:  '',
     isPhaco:        isIol,          // auto-deteksi IOL; petugas dpt override via checkbox Pra-Bedah
     // Pemicu RM 10.1 (Laporan Operasi Vitreo Retina): surgery_type paket = sumber
@@ -166,6 +170,13 @@ function syncAuthoritativeFields(s, q) {
   // melengkapi/ubah setelah pasien masuk antrean bedah) → aman disinkron tiap poll.
   if (q.visit?.diagnosa !== undefined) s.diagnosa = q.visit.diagnosa ?? ''
   if (q.visit?.diagnosa_nama !== undefined) s.diagnosaNama = q.visit.diagnosa_nama ?? ''
+  // Pra-bedah tim: isi default dari diagnosa dokter HANYA bila tim belum mengisi
+  // (kosong) — supaya diagnosa dokter yang baru dilengkapi terpungut, tanpa menimpa
+  // pilihan/ketikan tim bedah maupun nilai yang sudah dipulihkan dari laporan.
+  if (!s.diagnosaPra && !s.diagnosaPraNama && q.visit?.diagnosa) {
+    s.diagnosaPra = q.visit.diagnosa
+    s.diagnosaPraNama = q.visit.diagnosa_nama ?? ''
+  }
   // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
   if (s.status === 'MENUNGGU') {
     s.status = q.status === 'COMPLETED' ? 'SELESAI'
@@ -300,6 +311,9 @@ function stopQueuePolling() {
 onUnmounted(() => {
   stopTimerInterval()
   stopQueuePolling()
+  clearTimeout(obatPascaTimer)
+  clearTimeout(paketMedTimer)
+  clearTimeout(icdPreTimer)
 })
 
 watch(selP, (p) => {
@@ -552,6 +566,43 @@ watch(obatSearchPasca, (q) => {
   obatPascaTimer = setTimeout(async () => { obatPascaResults.value = await searchObatFarmasi(q) }, 300)
 })
 const filteredObatPasca = computed(() => obatPascaResults.value.slice(0, 50))
+
+// ── Diagnosis Pra-Bedah: autocomplete master ICD-10 ATAU ketik manual ─────────
+// Default = diagnosis dokter (diagnosaPra/Nama di transformQueueItem). Tim bedah
+// boleh pilih dari master atau ketik bebas (kode kosong = manual). Mengalir ke
+// surgery_records.operation_report.diagnosis_pre[_name] → dokumen RM Laporan Operasi.
+const icdPreSearch  = ref('')
+const icdPreResults = ref([])
+const icdPreOpen    = ref(false)
+let   icdPreTimer   = null
+const mapIcd10Row = (r) => ({ code: r.code, name: r.name || r.indonesian_description || r.description || r.code })
+watch(icdPreSearch, (q) => {
+  clearTimeout(icdPreTimer)
+  const s = (q || '').trim()
+  if (!s) { icdPreResults.value = []; return }
+  icdPreTimer = setTimeout(async () => {
+    try {
+      const { data } = await masterApi.icd10.list({ search: s, per_page: 25, with_sub: 1 })
+      const rows = data.data?.data ?? data.data ?? []
+      icdPreResults.value = rows.map(mapIcd10Row)
+    } catch { icdPreResults.value = [] }
+  }, 300)
+})
+// Ketik manual → set nama bebas, kosongkan kode kanonik (bukan dari master).
+function onIcdPreInput(e) {
+  if (!selP.value) return
+  const v = e.target.value
+  selP.value.diagnosaPraNama = v
+  selP.value.diagnosaPra = ''
+  icdPreSearch.value = v
+}
+function pickIcdPre(it) {
+  if (!selP.value) return
+  selP.value.diagnosaPra = it.code
+  selP.value.diagnosaPraNama = it.name
+  icdPreSearch.value = ''
+  icdPreOpen.value = false
+}
 
 const timerDisplay = computed(() => {
   if (!selP.value?.timIn) return '--:--:--'
@@ -939,8 +990,9 @@ async function saveOperationReport(silent = false) {
   const p = selP.value
   try {
     await bedahApi.saveOperationReport(p.recordId, {
-      diagnosis_pre:        p.diagnosa || null,
-      diagnosis_post:       p.diagnosaPasca || p.diagnosa || '-',
+      diagnosis_pre:        p.diagnosaPra || null,
+      diagnosis_pre_name:   p.diagnosaPraNama || null,
+      diagnosis_post:       p.diagnosaPasca || p.diagnosaPraNama || '-',
       procedure_name:       p.prosedur || null,
       operator:             p.tim?.operator || null,
       asisten:              [p.tim?.asisten1, p.tim?.asisten2].filter(Boolean),
@@ -1025,6 +1077,11 @@ function hydratePerioperative(rec) {
   // Jenis anestesi & diagnosa pasca-bedah & tim — pulihkan dari laporan tersimpan
   // (cegah default 'Topikal' menyesatkan + hasAnesthesia salah → panel anestesi hilang).
   if (or.anesthesia_type) { s.anestesi = or.anesthesia_type; s.anestesiFromServer = true }
+  // Pra-bedah tersimpan (pilihan/ketikan tim) menang atas default diagnosa dokter.
+  if (or.diagnosis_pre_name || or.diagnosis_pre) {
+    s.diagnosaPra = or.diagnosis_pre || ''
+    s.diagnosaPraNama = or.diagnosis_pre_name || or.diagnosis_pre || ''
+  }
   if (or.diagnosis_post && or.diagnosis_post !== '-' && !s.diagnosaPasca) s.diagnosaPasca = or.diagnosis_post
   if (or.operator && !s.tim.operator) s.tim.operator = or.operator
   if (or.anesthesiologist && !s.tim.anestesi) s.tim.anestesi = or.anesthesiologist
@@ -2478,7 +2535,25 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div class="bd-card-bd">
                   <div class="bd-iol-field">
                     <label class="bd-label">Diagnosis Pra-Bedah</label>
-                    <div class="bd-dx-chip" :class="!selP.diagnosa && 'bd-dx-chip-empty'">{{ selP.diagnosa ? (selP.diagnosa + (selP.diagnosaNama ? ' — ' + selP.diagnosaNama : '')) : 'Belum ada diagnosis dari dokter' }}</div>
+                    <div class="bd-combo-wrap">
+                      <input
+                        class="bd-input bd-combo-input"
+                        :value="selP.diagnosaPraNama"
+                        placeholder="Cari ICD-10 atau ketik manual…"
+                        :disabled="selP.laporanFinalized"
+                        @input="onIcdPreInput"
+                        @focus="icdPreOpen = true"
+                        @blur="() => setTimeout(() => icdPreOpen = false, 150)"
+                      />
+                      <span v-if="selP.diagnosaPra" class="bd-icd bd-dx-code">{{ selP.diagnosaPra }}</span>
+                      <div v-if="icdPreOpen && !selP.laporanFinalized && icdPreResults.length" class="bd-combo-dropdown">
+                        <div v-for="it in icdPreResults" :key="it.code" class="bd-combo-option" @mousedown.prevent="pickIcdPre(it)">
+                          <span class="bd-combo-name">{{ it.name }}</span>
+                          <span class="bd-combo-role">{{ it.code }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="bd-dx-hint">Default = diagnosis dokter; bisa diganti dari master ICD-10 atau diketik manual.</div>
                   </div>
                   <div class="bd-iol-field" style="margin-top:12px">
                     <label class="bd-label">Diagnosis Pasca-Bedah</label>
@@ -3462,6 +3537,8 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-finalized-banner svg { width: 16px; height: 16px; }
 .bd-dx-chip { padding: 8px 12px; background: var(--gl); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--td); display: inline-block; }
 .bd-dx-chip-empty { background: #f3f4f6; color: #9ca3af; font-weight: 500; font-style: italic; }
+.bd-dx-code { position: absolute; right: 30px; top: 50%; transform: translateY(-50%); background: var(--gl); color: var(--ga); pointer-events: none; }
+.bd-dx-hint { font-size: 10.5px; color: var(--tu); margin-top: 4px; }
 .bd-no-komplikasi { font-size: 12px; color: var(--st); background: var(--sb); padding: 6px 12px; border-radius: 6px; display: inline-block; }
 .bd-disp-hint { display: block; margin-top: 6px; font-size: 12px; color: #1763d4; }
 .bd-komplikasi { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
