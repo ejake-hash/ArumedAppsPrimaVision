@@ -252,20 +252,24 @@ class PerawatController extends Controller
 
     public function updateAsesmen(Request $request, string $id): JsonResponse
     {
+        // Tidak ada field wajib untuk perawat — semua TTV/keluhan/alergi opsional.
+        // WAJIB pakai `nullable` (bukan `sometimes` polos): FE selalu mengirim
+        // setiap key (null bila kosong), jadi `sometimes` tak melewati key → rule
+        // integer/numeric/boolean/string menolak null → field jadi seolah wajib.
         $validated = $request->validate([
-            'td_sistol'        => 'sometimes|integer|between:50,300',
-            'td_diastol'       => 'sometimes|integer|between:30,200',
-            'nadi'             => 'sometimes|integer|between:20,250',
-            'suhu'             => 'sometimes|numeric|between:30,45',
-            'respirasi'        => 'sometimes|integer|between:5,60',
+            'td_sistol'        => 'nullable|integer|between:50,300',
+            'td_diastol'       => 'nullable|integer|between:30,200',
+            'nadi'             => 'nullable|integer|between:20,250',
+            'suhu'             => 'nullable|numeric|between:30,45',
+            'respirasi'        => 'nullable|integer|between:5,60',
             'spo2'             => 'nullable|numeric|between:50,100',
             'kgd'              => 'nullable|numeric|between:20,800',
             'pain_scale'       => 'nullable|integer|between:0,10',
             'berat_badan'      => 'nullable|numeric|between:1,300',
             'tinggi_badan'     => 'nullable|numeric|between:30,250',
-            'has_allergy'      => 'sometimes|boolean',
+            'has_allergy'      => 'nullable|boolean',
             'allergy_detail'   => 'required_if:has_allergy,true|nullable|string|max:500',
-            'chief_complaint'  => 'sometimes|string|max:1000',
+            'chief_complaint'  => 'nullable|string|max:1000',
             'rps'              => 'nullable|string|max:2000',
             'assessment_notes' => 'nullable|string|max:1000',
         ]);
