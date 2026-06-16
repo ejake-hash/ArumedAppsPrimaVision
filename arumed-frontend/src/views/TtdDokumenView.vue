@@ -354,6 +354,44 @@ function closeModal() {
   revisiOpen.value = false
   revisiAlasan.value = ''
   revisiError.value = ''
+  confirmDelete.value = false
+  deleteError.value = ''
+}
+
+// ── Hapus draft (dokumen pra-TTD yang tak jadi dipakai) ──────────────────
+// Hanya DRAFT/RENDERED & belum ber-TTD (server menolak yang sudah ada TTD).
+const deletable = computed(() => ['DRAFT', 'RENDERED'].includes(currentDoc.value?.status))
+const deleting = ref(false)
+const confirmDelete = ref(false)
+const deleteError = ref('')
+let confirmDeleteTimer = null
+function askDeleteDraft() {
+  deleteError.value = ''
+  if (!confirmDelete.value) {
+    confirmDelete.value = true
+    clearTimeout(confirmDeleteTimer)
+    confirmDeleteTimer = setTimeout(() => { confirmDelete.value = false }, 4000)
+    return
+  }
+  clearTimeout(confirmDeleteTimer)
+  confirmDelete.value = false
+  doDeleteDraft()
+}
+async function doDeleteDraft() {
+  if (!currentDoc.value) return
+  deleting.value = true
+  try {
+    const id = currentDoc.value.id
+    await formTemplateApi.discardDraft(id)
+    if (selectedMap.value.has(id)) {
+      const m = new Map(selectedMap.value); m.delete(id); selectedMap.value = m
+    }
+    closeModal()
+    await loadActive()
+    await refreshCount()
+  } catch (e) {
+    deleteError.value = e.response?.data?.message || 'Gagal menghapus draft'
+  } finally { deleting.value = false }
 }
 
 function startEdit() {
@@ -734,6 +772,16 @@ onMounted(() => { load(); refreshCount() })
               </button>
             </template>
             <template v-else>
+              <button
+                v-if="deletable"
+                class="btn btn-discard"
+                :disabled="deleting"
+                title="Hapus dokumen ini (belum dipakai). Hanya yang belum di-TTD."
+                @click="askDeleteDraft"
+              >
+                {{ deleting ? 'Menghapus…' : (confirmDelete ? 'Klik lagi untuk hapus' : '🗑 Hapus Draft') }}
+              </button>
+              <span v-if="deleteError" class="pv-del-err">{{ deleteError }}</span>
               <button v-if="isDraft" class="btn btn-ghost" @click="startEdit">Edit isi</button>
               <button class="btn btn-blue" @click="openPin">Tanda tangani</button>
             </template>
@@ -988,6 +1036,9 @@ onMounted(() => { load(); refreshCount() })
 .pv-body { padding: 1.5rem 2rem; overflow: auto; flex: 1; }
 .pv-foot { padding: 0.9rem 1.4rem; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; align-items: center; gap: 1rem; }
 .pv-signed { margin-right: auto; font-size: 12.5px; font-weight: 500; color: var(--done); }
+.btn-discard { margin-right: auto; background: #fff; color: #c83b3b; border-color: #e3b1b1; }
+.btn-discard:hover:not(:disabled) { background: #c83b3b; color: #fff; border-color: #c83b3b; }
+.pv-del-err { font-size: 12px; color: #b42323; }
 
 .edit-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
 .edit-hint { margin: 0; font-size: 12px; color: var(--muted); }

@@ -919,7 +919,9 @@ final class FormRegistryService
                 "Hanya dokumen DRAFT yang dapat dihapus. Status saat ini: {$doc->status}."
             );
         }
-        if (! empty($doc->signatures)) {
+        // TTD asli tersimpan di tabel DocumentSignature (BUKAN kolom JSON `signatures`,
+        // yang ikut menyimpan static_payload/manual_fields → selalu terisi pada draft).
+        if (\App\Models\DocumentSignature::where('patient_document_id', $doc->id)->exists()) {
             throw new RuntimeException('Dokumen sudah memiliki tanda tangan — tidak dapat dihapus.');
         }
 
