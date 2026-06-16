@@ -75,6 +75,9 @@ class BedahService
             // B7: data pra-op (visus + IOP) utk modal konfirmasi "Mulai Operasi".
             // HasOne murah; sumber tunggal RefractionRecord (refraksionis).
             'visit.refractionRecord',
+            // Status tutup-kasir utk pemisahan tab "Selesai" (hari ini) vs "Masih Aktif"
+            // (kunjungan belum tutup kasir) di FE — selaras klausa filter di bawah.
+            'visit.billingInvoice',
         ])
             ->where('station', 'BEDAH')
             // Antrean HARI INI, ATAU operasi yang BELUM selesai dari hari sebelumnya.
@@ -165,6 +168,11 @@ class BedahService
                     'diagnosa'        => $exam?->diagnosis_utama,
                     'diagnosa_nama'   => $this->icd10Name($exam?->diagnosis_utama),
                     'dpjp'            => $dpjp,
+                    // Kunjungan sudah ditutup di kasir? current_station=SELESAI (di-set saat
+                    // invoice PAID) ATAU invoice sudah PAID/PARTIALLY_PAID. Dipakai FE utk
+                    // tab "Masih Aktif" = lintas-hari & kasir BELUM selesai (bukan proksi tanggal).
+                    'kasir_selesai'   => $visit->current_station === 'SELESAI'
+                        || in_array($visit->billingInvoice?->status, ['PAID', 'PARTIALLY_PAID'], true),
                 ] : null,
 
                 'patient' => $patient ? [

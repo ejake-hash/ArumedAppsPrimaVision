@@ -55,6 +55,7 @@ function transformQueueItem(q) {
     visitId:        q.visit?.id,
     visitType:      q.visit?.visit_type,
     jenisPelayanan: q.visit?.jenis_pelayanan ?? 'RAJAL',   // RANAP = pasien dari kamar
+    kasirDone:      !!q.visit?.kasir_selesai,   // kunjungan sudah tutup di kasir (PAID / current_station=SELESAI)
     scheduleId:     sched?.id ?? null,
     classification: q.visit?.classification ?? 'Pre-Op',
     rm:             q.patient?.no_rm ?? '—',
@@ -157,6 +158,9 @@ function syncAuthoritativeFields(s, q) {
   if (q.status === 'COMPLETED') s.operationDone = true
   // jenis_pelayanan = server-authoritative (bisa berubah saat admit RANAP) → sinkron.
   if (q.visit?.jenis_pelayanan) s.jenisPelayanan = q.visit.jenis_pelayanan
+  // Status tutup-kasir = server-authoritative (berubah saat kasir bayar) → sinkron tiap poll
+  // supaya pasien yang baru ditutup kasir keluar dari "Masih Aktif".
+  if (q.visit) s.kasirDone = !!q.visit.kasir_selesai
   // Diagnosa (kode + nama) = data dokter, server-authoritative (dokter bisa
   // melengkapi/ubah setelah pasien masuk antrean bedah) → aman disinkron tiap poll.
   if (q.visit?.diagnosa !== undefined) s.diagnosa = q.visit.diagnosa ?? ''
@@ -577,11 +581,15 @@ function isTodayRow(c) {
 }
 const isTodayP = (p) => isTodayRow(p.createdAt)
 const isDoneP  = (p) => p.status === 'SELESAI'
+// "Masih Aktif" = baris lintas-hari yang kunjungannya BELUM ditutup di kasir
+// (operasi terbengkalai / pasca-op belum dibilling). Pasien yang sudah tutup kasir
+// keluar dari papan. Operasi hari ini tetap di tab "Belum Dipanggil"/"Selesai".
+const isActiveP = (p) => !isTodayP(p) && !p.kasirDone
 
 const filtQ = computed(() => {
   let list = patients.value
   if (qPrimaryFilter.value === 'active') {
-    list = list.filter(p => !isTodayP(p))
+    list = list.filter(isActiveP)
   } else if (qPrimaryFilter.value === 'waiting') {
     list = list.filter(p => isTodayP(p) && !isDoneP(p))
   } else {
@@ -604,7 +612,7 @@ const cMenunggu = computed(() => patients.value.filter(p => isTodayP(p) && p.sta
 const cBerlangsung = computed(() => patients.value.filter(p => isTodayP(p) && p.status === 'BERLANGSUNG').length)
 const cSelesai = computed(() => patients.value.filter(p => isTodayP(p) && isDoneP(p)).length)
 const belumDipanggilCount = computed(() => patients.value.filter(p => isTodayP(p) && !isDoneP(p)).length)
-const cActive = computed(() => patients.value.filter(p => !isTodayP(p)).length)
+const cActive = computed(() => patients.value.filter(isActiveP).length)
 const cToday = computed(() => patients.value.filter(p => isTodayP(p)).length)
 
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
