@@ -1256,7 +1256,7 @@ const statusPill = (s) => ({
     </section>
 
     <!-- MODAL DOKUMEN RM (Form Registry) — tombol "Dokumen RM" di header kartu pasien -->
-    <div v-if="showDocModal && detailVisitId" class="modal-bg" @click.self="showDocModal = false">
+    <div v-if="showDocModal && detailVisitId" class="modal-bg modal-bg-docrm" @click.self="showDocModal = false">
       <div class="modal wide">
         <h3>Dokumen Rekam Medis — {{ store.detail?.visit?.patient?.name }}</h3>
         <p class="muted2">Pengkajian awal medis &amp; keperawatan (≤24 jam masuk), keselamatan, edukasi, rekonsiliasi, transfer, dan resume medis (saat pulang). Diisi via UI → dokumen resmi ber-TTD.</p>
@@ -1420,6 +1420,10 @@ const statusPill = (s) => ({
 
 /* ===== MODAL (gaya AsuransiView: header gradient navy) ===== */
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 9100; padding: 1rem; }
+/* Modal Dokumen RM = picker; editor FormRMRenderer (Teleport ke body, z-index 1000)
+   harus muncul DI ATAS picker. Picker lain di app pakai z 100–300, jadi turunkan
+   picker ini ke bawah 1000 agar editor tak tertutup (akar bug "form tak muncul"). */
+.modal-bg-docrm { z-index: 900; }
 .modal { background: var(--bc); border-radius: 12px; width: 460px; max-width: 94vw; max-height: 90vh; overflow-y: auto; padding: 0 1.2rem 1.2rem; }
 .modal.wide { width: 860px; }
 /* Header full-bleed gradient navy (negative margin menutup padding samping .modal) */
