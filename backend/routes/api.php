@@ -345,6 +345,9 @@ Route::prefix('v1')->group(function () {
             Route::put('/antrian/{id}/lewati',                  [DokterController::class, 'lewatiAntrian']);
             Route::put('/antrian/{id}/selesai',                 [DokterController::class, 'selesaiAntrian']);
             Route::put('/antrian/{id}/ke-penunjang',            [DokterController::class, 'kirimKePenunjang']);
+            // Batalkan kunjungan dari sisi dokter (Admisi terkunci begitu pasien
+            // mencapai stasiun klinis) — hanya dokter pemilik / superadmin.
+            Route::put('/kunjungan/{visitId}/cancel',           [DokterController::class, 'cancelKunjungan']);
 
             // Rujukan internal antar-poli (mis. Poli Mata Umum → Poli Retina)
             Route::get('/kunjungan/{visitId}/rujuk-internal/targets', [DokterController::class, 'rujukInternalTargets']);

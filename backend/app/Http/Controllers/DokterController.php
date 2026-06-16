@@ -89,6 +89,25 @@ class DokterController extends Controller
         return $this->ok($queue, 'Pasien dikirim ke pemeriksaan penunjang');
     }
 
+    /**
+     * PUT /dokter/kunjungan/{visitId}/cancel
+     * Batalkan kunjungan pasien yang sudah sampai ke stasiun Dokter. Admisi tak
+     * bisa lagi membatalkan begitu pasien masuk stasiun klinis (AdmisiService::
+     * cancelKunjungan), jadi hanya dokter pemilik (atau superadmin) yang berwenang.
+     */
+    public function cancelKunjungan(string $visitId): JsonResponse
+    {
+        try {
+            $this->service->cancelKunjungan($visitId);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return $this->error('Kunjungan tidak ditemukan atau sudah dibatalkan.', 404);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Kunjungan dibatalkan');
+    }
+
     // =========================================================================
     // RUJUKAN INTERNAL ANTAR-POLI
     // =========================================================================

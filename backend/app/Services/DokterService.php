@@ -165,6 +165,47 @@ class DokterService
     }
 
     /**
+     * Batalkan kunjungan dari sisi DOKTER. Admisi mengunci pembatalan begitu pasien
+     * meninggalkan fase resepsi (AdmisiService::cancelKunjungan → 422), sehingga pasien
+     * salah-daftar / batal periksa yang sudah masuk antrean DOKTER tak punya pintu keluar
+     * dan nyangkut. Pintu itu dipindah ke sini, dengan otoritas dipersempit: hanya dokter
+     * PEMILIK kunjungan (authorizeVisitOwnership) — atau superadmin — yang boleh.
+     *
+     * Guard: (1) kepemilikan, (2) pasien benar di stasiun DOKTER, (3) pembayaran belum
+     * dikonfirmasi di kasir. Pola hapus identik AdmisiService: batalkan antrean aktif +
+     * soft-delete visit + audit log.
+     */
+    public function cancelKunjungan(string $visitId): void
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+
+        if ($visit->current_station !== Queue::STATION_DOKTER) {
+            throw new \Exception(
+                "Pembatalan hanya untuk pasien di stasiun Dokter (saat ini: {$visit->current_station}).",
+                422
+            );
+        }
+
+        // Pembayaran sudah dikonfirmasi di kasir → tolak (integritas billing/audit).
+        $this->assertBillingNotCommitted($visitId);
+
+        DB::transaction(function () use ($visit) {
+            $visit->queues()
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->update(['status' => 'CANCELLED']);
+            $visit->delete(); // soft delete
+        });
+
+        $this->log(
+            auth('api')->id(),
+            'CANCEL_KUNJUNGAN',
+            Visit::class,
+            $visitId,
+            "Kunjungan dibatalkan oleh dokter (station: {$visit->current_station})"
+        );
+    }
+
+    /**
      * Pastikan queue ini milik dokter yang sedang login.
      * Superadmin dikecualikan (boleh memanggil/menyelesaikan antrean siapa pun).
      * Dokter lain → tolak (403), konsisten dengan filter di getPatientQueue().

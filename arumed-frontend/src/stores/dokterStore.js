@@ -85,6 +85,19 @@ export const useDokterStore = defineStore('dokter', () => {
     }
   }
 
+  // Batalkan kunjungan pasien (visit) yang sudah masuk antrean dokter ini.
+  // Server soft-delete visit + CANCEL antrean aktif → pasien hilang dari papan.
+  async function cancelKunjungan(visitId) {
+    try {
+      await dokterApi.cancelKunjungan(visitId)
+      // Bersihkan state lokal + lepas pilihan bila pasien yang dibatalkan sedang dibuka.
+      antrian.value = antrian.value.filter((q) => q.visit?.id !== visitId)
+      if (selectedQueue.value?.visit?.id === visitId) selectedQueue.value = null
+    } catch (err) {
+      throw new Error(err.response?.data?.message ?? 'Gagal membatalkan kunjungan')
+    }
+  }
+
   // ─── Patient Selection ──────────────────────────────────────────────────────
   function pickPatient(queueItem) {
     selectedQueue.value = queueItem
@@ -161,6 +174,7 @@ export const useDokterStore = defineStore('dokter', () => {
 
     // actions
     fetchAntrian, panggilAntrian, lewatiAntrian, selesaiAntrian, kirimKePenunjang,
+    cancelKunjungan,
     pickPatient, clearSelected,
     startPolling, stopPolling,
   }

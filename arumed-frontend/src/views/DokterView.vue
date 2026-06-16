@@ -74,6 +74,7 @@ function toggleQueue() {
 }
 const pendingCallIds = ref([])
 const pendingSkipIds = ref([])
+const pendingCancelIds = ref([])
 
 // ─── Adapter helpers ────────────────────────────────────────────────────────
 function ptypeOf(visit) {
@@ -621,6 +622,29 @@ async function skipPt(p) {
     toast('w', err.message ?? 'Gagal melewati pasien')
   } finally {
     pendingSkipIds.value = pendingSkipIds.value.filter((id) => id !== p.id)
+  }
+}
+
+// Batalkan kunjungan pasien yang sudah masuk antrean dokter ini. Admisi tak bisa
+// lagi membatalkan begitu pasien sampai stasiun klinis — jadi pintu pembatalan ada
+// di sini, dan server hanya mengizinkan dokter pemilik (atau superadmin).
+async function cancelPt(p) {
+  if (!p?.visitId || pendingCancelIds.value.includes(p.id)) return
+  if (!window.confirm(
+    `Batalkan kunjungan ${p.name} (${p.qNum})?\n\n`
+    + 'Kunjungan & nomor antrean akan dihapus dan tidak bisa dikembalikan. '
+    + 'Lakukan hanya bila pasien salah daftar atau batal periksa.'
+  )) return
+  pendingCancelIds.value.push(p.id)
+  try {
+    await store.cancelKunjungan(p.visitId)
+    if (store.selectedQueue?.id === p.id) { store.clearSelected(); resetFormState() }
+    toast('s', `Kunjungan ${p.name} dibatalkan`)
+    await store.fetchAntrian()
+  } catch (err) {
+    toast('e', err.message ?? 'Gagal membatalkan kunjungan')
+  } finally {
+    pendingCancelIds.value = pendingCancelIds.value.filter((id) => id !== p.id)
   }
 }
 
@@ -2627,6 +2651,15 @@ function closeResumeRM() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
                   Sedang di Penunjang
                 </span>
+                <button
+                  class="q-act-btn cancel"
+                  :disabled="pendingCancelIds.includes(p.id)"
+                  title="Batalkan kunjungan (pasien salah daftar / batal periksa) — hanya dokter pemilik"
+                  @click.stop="cancelPt(p)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                  {{ pendingCancelIds.includes(p.id) ? 'Membatalkan…' : 'Batalkan' }}
+                </button>
               </div>
               <div v-else-if="p.status !== 'done' && p.status !== 'skip'" class="q-actions" @click.stop>
                 <button
@@ -2655,6 +2688,15 @@ function closeResumeRM() {
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
                   Pindah Dokter
+                </button>
+                <button
+                  class="q-act-btn cancel"
+                  :disabled="pendingCancelIds.includes(p.id)"
+                  title="Batalkan kunjungan (pasien salah daftar / batal periksa) — hanya dokter pemilik"
+                  @click.stop="cancelPt(p)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                  {{ pendingCancelIds.includes(p.id) ? 'Membatalkan…' : 'Batalkan' }}
                 </button>
               </div>
             </div>
@@ -4636,6 +4678,9 @@ function closeResumeRM() {
 .q-act-btn.resume:hover { filter: brightness(1.07); }
 .q-act-btn.ganti { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
 .q-act-btn.ganti:hover { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+.q-act-btn.cancel { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+.q-act-btn.cancel:hover { background: #dc2626; color: #fff; border-color: #dc2626; }
+.q-act-btn.cancel:active:not(:disabled) { background: #b91c1c; color: #fff; border-color: #b91c1c; }
 .ganti-empty { padding: 10px 0; font-size: 12px; color: var(--tu); text-align: center; }
 .ganti-select { width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px; border: 1px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; background: #fff; }
 .q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }

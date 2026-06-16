@@ -163,6 +163,9 @@ export const dokterApi = {
   lewati:           (id)                  => api.put(`/dokter/antrian/${id}/lewati`),
   selesai:          (id)                  => api.put(`/dokter/antrian/${id}/selesai`),
   kePenunjang:      (id)                  => api.put(`/dokter/antrian/${id}/ke-penunjang`),
+  // Batalkan kunjungan pasien yang sudah di stasiun Dokter (Admisi terkunci di fase ini).
+  // Hanya dokter pemilik / superadmin — guard di DokterService::cancelKunjungan.
+  cancelKunjungan:  (visitId)             => api.put(`/dokter/kunjungan/${visitId}/cancel`),
 
   kunjungan:        (visitId)             => api.get(`/dokter/kunjungan/${visitId}`),
   // Komit billing + majukan antrean (RME tetap bisa dilengkapi belakangan).
