@@ -1819,52 +1819,9 @@ async function submitRujukInternal() {
   }
 }
 
-// ── Ganti Dokter dari antrean — koreksi salah-pilih dokter saat pendaftaran ───
-// Memindahkan pasien WAITING ke dokter lain TANPA membuat visit baru (berbeda
-// dari rujukInternal). Cukup tukar visits.doctor_schedule_id → pasien re-route
-// otomatis. Backend menolak bila pasien sudah dipanggil/diperiksa.
-const gantiOpen = ref(false)
-const gantiVisitId = ref(null)
-const gantiPatientName = ref('')
-const gantiTargets = ref([])
-const gantiTargetId = ref('')
-const gantiLoading = ref(false)
-const gantiSubmitting = ref(false)
-
-async function openGantiDokter(p) {
-  gantiVisitId.value = p.visitId
-  gantiPatientName.value = p.name
-  gantiTargetId.value = ''
-  gantiTargets.value = []
-  gantiOpen.value = true
-  gantiLoading.value = true
-  try {
-    const { data } = await dokterApi.rujukInternalTargets(p.visitId)
-    // Hanya jadwal yang praktik HARI INI (tanggal kunjungan) yang valid utk ganti.
-    gantiTargets.value = (data.data ?? []).filter((t) => t.is_today)
-  } catch {
-    gantiTargets.value = []
-  } finally {
-    gantiLoading.value = false
-  }
-}
-function closeGantiDokter() { gantiOpen.value = false }
-async function submitGantiDokter() {
-  if (!gantiVisitId.value) return
-  if (!gantiTargetId.value) { toast('e', 'Pilih dokter tujuan dulu'); return }
-  gantiSubmitting.value = true
-  try {
-    const picked = gantiTargets.value.find((t) => t.schedule_id === gantiTargetId.value)
-    await dokterApi.gantiDokter(gantiVisitId.value, gantiTargetId.value)
-    toast('s', `${gantiPatientName.value} dipindahkan ke ${picked?.doctor_name || 'dokter lain'}.`)
-    gantiOpen.value = false
-    await store.fetchAntrian()   // pasien hilang dari antrean dokter ini
-  } catch (e) {
-    toast('e', e.response?.data?.message || 'Gagal memindahkan dokter')
-  } finally {
-    gantiSubmitting.value = false
-  }
-}
+// ── "Pindah Dokter" dari sisi dokter DIHAPUS: koreksi salah-pilih dokter cukup
+// di Admisi; setelah pasien di stasiun dokter, pemindahan ditangani via Rujuk
+// Internal (membuat alur kunjungan baru ke poli/dokter tujuan).
 
 // ── Rujuk EXTERNAL (faskes lain). Pasien BPJS → terbit ke VClaim ─────────────
 const isBpjsPatient = computed(() => selP.value?.ptype === 'bpjs')
@@ -2651,9 +2608,8 @@ function closeResumeRM() {
                 </span>
                 <span v-if="p.allergies?.length" class="pill pill-allergy">⚠ Alergi</span>
               </div>
-              <!-- Pasien sedang di penunjang — tidak ada aksi panggil. Aksi Batalkan/
-                   Pindah Dokter dipindah ke header kartu pemeriksaan (mengurangi padat
-                   di kartu antrean). -->
+              <!-- Pasien sedang di penunjang — tidak ada aksi panggil. Aksi Batalkan
+                   dipindah ke header kartu pemeriksaan (mengurangi padat di kartu antrean). -->
               <div v-if="p.status === 'penunjang'" class="q-actions" @click.stop>
                 <span class="q-at-penunjang">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
@@ -2679,8 +2635,8 @@ function closeResumeRM() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
                   {{ pendingSkipIds.includes(p.id) ? 'Melewati…' : 'Lewati' }}
                 </button>
-                <!-- "Pindah Dokter" & "Batalkan" dipindah ke header kartu pemeriksaan
-                     (beraksi atas pasien yang sedang dibuka) — kartu antrean lebih ringkas. -->
+                <!-- "Batalkan" dipindah ke header kartu pemeriksaan (beraksi atas pasien
+                     yang sedang dibuka) — kartu antrean lebih ringkas. -->
               </div>
             </div>
 
@@ -2748,17 +2704,9 @@ function closeResumeRM() {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
               Dokumen RM
             </button>
-            <!-- Aksi administratif pasien (dipindah dari kartu antrean) — beraksi atas
-                 pasien yang sedang dibuka. Pindah Dokter hanya bila belum dipanggil. -->
-            <button
-              v-if="selP.rawStatus === 'WAITING'"
-              class="db db-ganti"
-              title="Pindahkan pasien ke dokter lain (salah pilih dokter saat pendaftaran)"
-              @click="openGantiDokter(selP)"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
-              Pindah Dokter
-            </button>
+            <!-- Aksi Batalkan kunjungan (dipindah dari kartu antrean) — beraksi atas
+                 pasien yang sedang dibuka. Pindah dokter setelah di stasiun dokter
+                 ditangani via Rujuk Internal (di tab Tindakan), bukan tombol terpisah. -->
             <button
               v-if="selP.status !== 'done' && selP.status !== 'skip'"
               class="db db-cancel"
@@ -4362,38 +4310,6 @@ function closeResumeRM() {
       </div>
     </Teleport>
 
-    <!-- ═══ MODAL: GANTI DOKTER (pasien belum dipanggil) ═══ -->
-    <Teleport to="body">
-      <div v-if="gantiOpen" class="modal-overlay" @click.self="closeGantiDokter">
-        <div class="modal-box modal-box-sm">
-          <div class="modal-box-head">
-            <div class="modal-box-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 4a3 3 0 11-3 3"/><path d="M5 21v-2a4 4 0 014-4h2"/><circle cx="9" cy="7" r="3"/><polyline points="17 13 20 16 17 19"/><path d="M20 16h-6"/></svg>
-              Pindah ke Dokter Lain
-            </div>
-            <button class="modal-box-close" @click="closeGantiDokter">×</button>
-          </div>
-          <div class="modal-box-body">
-            <p class="finalize-warn-msg">Pindahkan <b>{{ gantiPatientName }}</b> ke dokter lain (koreksi salah-pilih saat pendaftaran). Pasien hilang dari antrean Anda dan masuk antrean dokter tujuan. Hanya berlaku selama pasien belum dipanggil.</p>
-            <div v-if="gantiLoading" class="ganti-empty">Memuat daftar dokter…</div>
-            <div v-else-if="!gantiTargets.length" class="ganti-empty">Tidak ada dokter lain yang praktik hari ini.</div>
-            <select v-else v-model="gantiTargetId" class="ganti-select">
-              <option value="" disabled>— Pilih dokter tujuan —</option>
-              <option v-for="t in gantiTargets" :key="t.schedule_id" :value="t.schedule_id">
-                {{ t.doctor_name }} · {{ t.poliklinik }}{{ t.start_time ? ` · ${t.start_time}–${t.end_time}` : '' }}
-              </option>
-            </select>
-          </div>
-          <div class="modal-box-foot">
-            <button class="btn btn-secondary" :disabled="gantiSubmitting" @click="closeGantiDokter">Batal</button>
-            <button class="btn btn-primary" :disabled="gantiSubmitting || !gantiTargetId" @click="submitGantiDokter">
-              {{ gantiSubmitting ? 'Memindahkan…' : 'Pindahkan' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
     <!-- ═══ MODAL: LIHAT HASIL PENUNJANG ═══ -->
     <Teleport to="body">
       <div v-if="showHasilModal && selectedHasil" class="modal-overlay" @click.self="showHasilModal = false">
@@ -4682,10 +4598,7 @@ function closeResumeRM() {
 .q-act-btn.skip:hover { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .q-act-btn.resume { color: #fff; border-color: var(--ga); background: var(--ga); }
 .q-act-btn.resume:hover { filter: brightness(1.07); }
-/* .q-act-btn.ganti/.cancel dipindah ke header (.db-ganti/.db-cancel) — kartu antrean
-   kini hanya Panggil/Lewati. */
-.ganti-empty { padding: 10px 0; font-size: 12px; color: var(--tu); text-align: center; }
-.ganti-select { width: 100%; margin-top: 8px; padding: 8px 10px; font-size: 13px; border: 1px solid var(--gb); border-radius: 7px; font-family: 'Inter', sans-serif; background: #fff; }
+/* Batalkan dipindah ke header (.db-cancel) — kartu antrean kini hanya Panggil/Lewati. */
 .q-act-btn:active:not(:disabled) { transform: scale(0.93); box-shadow: inset 0 1px 3px rgba(0,0,0,.12); }
 .q-act-btn.call:active:not(:disabled) { background: var(--gd); color: #fff; border-color: var(--gd); }
 .q-act-btn.call.recall:active:not(:disabled) { background: #b45309; color: #fff; border-color: #b45309; }
@@ -4763,13 +4676,11 @@ function closeResumeRM() {
 }
 .db-doc:hover { color: #fff; background: #1763d4; border-color: #1763d4; }
 /* Aksi administratif pasien di header (dipindah dari kartu antrean) — selaras .db-doc */
-.db-ganti, .db-cancel { display: inline-flex; align-items: center; gap: 5px; }
-.db-ganti svg, .db-cancel svg {
+.db-cancel { display: inline-flex; align-items: center; gap: 5px; }
+.db-cancel svg {
   width: 13px; height: 13px; fill: none; stroke: currentColor;
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
-.db-ganti { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
-.db-ganti:hover { color: #fff; background: #7c3aed; border-color: #7c3aed; }
 .db-cancel { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
 .db-cancel:hover { color: #fff; background: #dc2626; border-color: #dc2626; }
 .db-cancel:disabled { opacity: .55; cursor: wait; }
