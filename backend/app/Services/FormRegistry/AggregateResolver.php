@@ -902,14 +902,6 @@ final class AggregateResolver
             'anesthesiologist' => trim((string) ($r['anesthesiologist'] ?? '')),
             'anesthesia_type'  => trim((string) ($r['anesthesia_type'] ?? '')),
             'procedure'        => trim((string) ($r['procedure_name'] ?? '')),
-            // Pra-bedah: utamakan nilai yang diisi tim bedah di Laporan Operasi
-            // (nama → kode), fallback ke diagnosis utama dokter (nama → kode).
-            'diagnosis_pre'    => trim((string) (
-                ($r['diagnosis_pre_name'] ?? '')
-                ?: ($r['diagnosis_pre'] ?? '')
-                ?: ($visit->doctorExamination?->diagnosis_utama_name ?? '')
-                ?: ($visit->doctorExamination?->diagnosis_utama ?? '')
-            )),
             'diagnosis_post'   => trim((string) ($r['diagnosis_post'] ?? '')),
             'time_in'          => $timeStr($rec->time_in),
             'time_out'         => $timeStr($rec->time_out),

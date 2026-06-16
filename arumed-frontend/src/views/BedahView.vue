@@ -84,13 +84,11 @@ function transformQueueItem(q) {
                   : 'MENUNGGU',
     icdProsedur:    '',
     dpjp:           q.visit?.dpjp ?? '',          // operator utama (lead surgeon / dokter pemeriksa)
-    diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis utama dari dokter (referensi read-only)
+    diagnosa:       q.visit?.diagnosa ?? '',      // kode ICD-10 diagnosis pra-bedah dari dokter (read-only)
     diagnosaNama:   q.visit?.diagnosa_nama ?? '', // nama/deskripsi ICD-10 (resolusi backend)
-    // Diagnosis pra-bedah versi tim bedah (editable: pilih master ICD-10 / ketik manual);
-    // default = diagnosa dokter. Disimpan ke laporan operasi → dokumen RM.
-    diagnosaPra:    q.visit?.diagnosa ?? '',
-    diagnosaPraNama: q.visit?.diagnosa_nama ?? '',
-    diagnosaPasca:  '',
+    // Diagnosis pasca-bedah versi tim bedah (editable: pilih master ICD-10 / ketik manual).
+    diagnosaPasca:    '',   // nama/teks diagnosis pasca-bedah
+    diagnosaPascaKode: '',  // kode ICD-10 (bila dipilih dari master; kosong = manual)
     isPhaco:        isIol,          // auto-deteksi IOL; petugas dpt override via checkbox Pra-Bedah
     // Pemicu RM 10.1 (Laporan Operasi Vitreo Retina): surgery_type paket = sumber
     // kebenaran; bila belum diset, fallback deteksi nama (VITREK_RE). Override manual
@@ -170,13 +168,6 @@ function syncAuthoritativeFields(s, q) {
   // melengkapi/ubah setelah pasien masuk antrean bedah) → aman disinkron tiap poll.
   if (q.visit?.diagnosa !== undefined) s.diagnosa = q.visit.diagnosa ?? ''
   if (q.visit?.diagnosa_nama !== undefined) s.diagnosaNama = q.visit.diagnosa_nama ?? ''
-  // Pra-bedah tim: isi default dari diagnosa dokter HANYA bila tim belum mengisi
-  // (kosong) — supaya diagnosa dokter yang baru dilengkapi terpungut, tanpa menimpa
-  // pilihan/ketikan tim bedah maupun nilai yang sudah dipulihkan dari laporan.
-  if (!s.diagnosaPra && !s.diagnosaPraNama && q.visit?.diagnosa) {
-    s.diagnosaPra = q.visit.diagnosa
-    s.diagnosaPraNama = q.visit.diagnosa_nama ?? ''
-  }
   // Jangan downgrade status lokal: hanya naikkan dari MENUNGGU mengikuti server.
   if (s.status === 'MENUNGGU') {
     s.status = q.status === 'COMPLETED' ? 'SELESAI'
@@ -313,7 +304,7 @@ onUnmounted(() => {
   stopQueuePolling()
   clearTimeout(obatPascaTimer)
   clearTimeout(paketMedTimer)
-  clearTimeout(icdPreTimer)
+  clearTimeout(icdPostTimer)
 })
 
 watch(selP, (p) => {
@@ -567,41 +558,41 @@ watch(obatSearchPasca, (q) => {
 })
 const filteredObatPasca = computed(() => obatPascaResults.value.slice(0, 50))
 
-// ── Diagnosis Pra-Bedah: autocomplete master ICD-10 ATAU ketik manual ─────────
-// Default = diagnosis dokter (diagnosaPra/Nama di transformQueueItem). Tim bedah
-// boleh pilih dari master atau ketik bebas (kode kosong = manual). Mengalir ke
-// surgery_records.operation_report.diagnosis_pre[_name] → dokumen RM Laporan Operasi.
-const icdPreSearch  = ref('')
-const icdPreResults = ref([])
-const icdPreOpen    = ref(false)
-let   icdPreTimer   = null
+// ── Diagnosis Pasca-Bedah: autocomplete master ICD-10 ATAU ketik manual ───────
+// (Diagnosis Pra-Bedah tetap read-only dari pemeriksaan dokter.) Tim bedah boleh
+// pilih dari master ICD-10 atau ketik bebas (kode kosong = manual). Disimpan ke
+// surgery_records.operation_report.diagnosis_post[_code] → dokumen RM Laporan Operasi.
+const icdPostSearch  = ref('')
+const icdPostResults = ref([])
+const icdPostOpen    = ref(false)
+let   icdPostTimer   = null
 const mapIcd10Row = (r) => ({ code: r.code, name: r.name || r.indonesian_description || r.description || r.code })
-watch(icdPreSearch, (q) => {
-  clearTimeout(icdPreTimer)
+watch(icdPostSearch, (q) => {
+  clearTimeout(icdPostTimer)
   const s = (q || '').trim()
-  if (!s) { icdPreResults.value = []; return }
-  icdPreTimer = setTimeout(async () => {
+  if (!s) { icdPostResults.value = []; return }
+  icdPostTimer = setTimeout(async () => {
     try {
       const { data } = await masterApi.icd10.list({ search: s, per_page: 25, with_sub: 1 })
       const rows = data.data?.data ?? data.data ?? []
-      icdPreResults.value = rows.map(mapIcd10Row)
-    } catch { icdPreResults.value = [] }
+      icdPostResults.value = rows.map(mapIcd10Row)
+    } catch { icdPostResults.value = [] }
   }, 300)
 })
 // Ketik manual → set nama bebas, kosongkan kode kanonik (bukan dari master).
-function onIcdPreInput(e) {
+function onIcdPostInput(e) {
   if (!selP.value) return
   const v = e.target.value
-  selP.value.diagnosaPraNama = v
-  selP.value.diagnosaPra = ''
-  icdPreSearch.value = v
+  selP.value.diagnosaPasca = v
+  selP.value.diagnosaPascaKode = ''
+  icdPostSearch.value = v
 }
-function pickIcdPre(it) {
+function pickIcdPost(it) {
   if (!selP.value) return
-  selP.value.diagnosaPra = it.code
-  selP.value.diagnosaPraNama = it.name
-  icdPreSearch.value = ''
-  icdPreOpen.value = false
+  selP.value.diagnosaPasca = it.name
+  selP.value.diagnosaPascaKode = it.code
+  icdPostSearch.value = ''
+  icdPostOpen.value = false
 }
 
 const timerDisplay = computed(() => {
@@ -990,9 +981,9 @@ async function saveOperationReport(silent = false) {
   const p = selP.value
   try {
     await bedahApi.saveOperationReport(p.recordId, {
-      diagnosis_pre:        p.diagnosaPra || null,
-      diagnosis_pre_name:   p.diagnosaPraNama || null,
-      diagnosis_post:       p.diagnosaPasca || p.diagnosaPraNama || '-',
+      diagnosis_pre:        p.diagnosa || null,
+      diagnosis_post:       p.diagnosaPasca || p.diagnosa || '-',
+      diagnosis_post_code:  p.diagnosaPascaKode || null,
       procedure_name:       p.prosedur || null,
       operator:             p.tim?.operator || null,
       asisten:              [p.tim?.asisten1, p.tim?.asisten2].filter(Boolean),
@@ -1077,12 +1068,8 @@ function hydratePerioperative(rec) {
   // Jenis anestesi & diagnosa pasca-bedah & tim — pulihkan dari laporan tersimpan
   // (cegah default 'Topikal' menyesatkan + hasAnesthesia salah → panel anestesi hilang).
   if (or.anesthesia_type) { s.anestesi = or.anesthesia_type; s.anestesiFromServer = true }
-  // Pra-bedah tersimpan (pilihan/ketikan tim) menang atas default diagnosa dokter.
-  if (or.diagnosis_pre_name || or.diagnosis_pre) {
-    s.diagnosaPra = or.diagnosis_pre || ''
-    s.diagnosaPraNama = or.diagnosis_pre_name || or.diagnosis_pre || ''
-  }
   if (or.diagnosis_post && or.diagnosis_post !== '-' && !s.diagnosaPasca) s.diagnosaPasca = or.diagnosis_post
+  if (or.diagnosis_post_code && !s.diagnosaPascaKode) s.diagnosaPascaKode = or.diagnosis_post_code
   if (or.operator && !s.tim.operator) s.tim.operator = or.operator
   if (or.anesthesiologist && !s.tim.anestesi) s.tim.anestesi = or.anesthesiologist
   if (Array.isArray(or.asisten)) {
@@ -2535,29 +2522,30 @@ function mulaiBack() { mulaiStep.value = 1 }
                 <div class="bd-card-bd">
                   <div class="bd-iol-field">
                     <label class="bd-label">Diagnosis Pra-Bedah</label>
+                    <div class="bd-dx-chip" :class="!selP.diagnosa && 'bd-dx-chip-empty'">{{ selP.diagnosa ? (selP.diagnosa + (selP.diagnosaNama ? ' — ' + selP.diagnosaNama : '')) : 'Belum ada diagnosis dari dokter' }}</div>
+                    <div class="bd-dx-hint">Dari pemeriksaan dokter (read-only).</div>
+                  </div>
+                  <div class="bd-iol-field" style="margin-top:12px">
+                    <label class="bd-label">Diagnosis Pasca-Bedah</label>
                     <div class="bd-combo-wrap">
                       <input
                         class="bd-input bd-combo-input"
-                        :value="selP.diagnosaPraNama"
+                        :value="selP.diagnosaPasca"
                         placeholder="Cari ICD-10 atau ketik manual…"
                         :disabled="selP.laporanFinalized"
-                        @input="onIcdPreInput"
-                        @focus="icdPreOpen = true"
-                        @blur="() => setTimeout(() => icdPreOpen = false, 150)"
+                        @input="onIcdPostInput"
+                        @focus="icdPostOpen = true"
+                        @blur="() => setTimeout(() => icdPostOpen = false, 150)"
                       />
-                      <span v-if="selP.diagnosaPra" class="bd-icd bd-dx-code">{{ selP.diagnosaPra }}</span>
-                      <div v-if="icdPreOpen && !selP.laporanFinalized && icdPreResults.length" class="bd-combo-dropdown">
-                        <div v-for="it in icdPreResults" :key="it.code" class="bd-combo-option" @mousedown.prevent="pickIcdPre(it)">
+                      <span v-if="selP.diagnosaPascaKode" class="bd-icd bd-dx-code">{{ selP.diagnosaPascaKode }}</span>
+                      <div v-if="icdPostOpen && !selP.laporanFinalized && icdPostResults.length" class="bd-combo-dropdown">
+                        <div v-for="it in icdPostResults" :key="it.code" class="bd-combo-option" @mousedown.prevent="pickIcdPost(it)">
                           <span class="bd-combo-name">{{ it.name }}</span>
                           <span class="bd-combo-role">{{ it.code }}</span>
                         </div>
                       </div>
                     </div>
-                    <div class="bd-dx-hint">Default = diagnosis dokter; bisa diganti dari master ICD-10 atau diketik manual.</div>
-                  </div>
-                  <div class="bd-iol-field" style="margin-top:12px">
-                    <label class="bd-label">Diagnosis Pasca-Bedah</label>
-                    <input class="bd-input" v-model="selP.diagnosaPasca" :disabled="selP.laporanFinalized" />
+                    <div class="bd-dx-hint">Pilih dari master ICD-10 atau ketik manual.</div>
                   </div>
                 </div>
               </div>

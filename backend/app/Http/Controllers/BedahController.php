@@ -204,8 +204,8 @@ class BedahController extends Controller
     {
         $validated = $request->validate([
             'diagnosis_pre'        => 'nullable|string|max:1000',
-            'diagnosis_pre_name'   => 'nullable|string|max:1000',
             'diagnosis_post'       => 'required|string|max:1000',
+            'diagnosis_post_code'  => 'nullable|string|max:100',
             'procedure_name'       => 'nullable|string|max:255',
             'operator'             => 'nullable|string|max:255',
             'asisten'              => 'nullable|array',
