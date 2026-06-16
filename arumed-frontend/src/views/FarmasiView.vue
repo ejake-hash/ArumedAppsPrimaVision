@@ -499,6 +499,10 @@ const verFrom    = ref('')   // filter rentang tgl (client-side) — kosong = se
 const verTo      = ref('')
 const verSel     = ref(null)
 const verBusy    = ref(false)
+// Filter utama tab Verifikasi: 'belum' = grup masih ada resep perlu verifikasi,
+// 'selesai' = grup yang seluruh resepnya sudah terkunci. Default sembunyikan yang
+// selesai (kurangi keramaian) — yang terkunci tetap bisa dilihat via tab "Selesai".
+const verPrimaryFilter = ref('belum')
 
 const VER_REASONS = [
   { v: 'STOK_HABIS',        t: 'Stok habis' },
@@ -541,7 +545,7 @@ const verSelTotal = computed(() =>
 // bedah/tindakan) yang realitanya diambil SEKALI. Kartu = 1 pasien; tiap resep
 // jadi chip terpisah (pill POLI/Pasca tetap terlihat). Resep tetap record terpisah
 // di backend — verifikasi tetap per-resep, hanya tampilan yang digabung.
-const verGroups = computed(() => {
+const verAllGroups = computed(() => {
   const m = new Map()
   for (const rx of filtVerQueue.value) {
     const vid = rx.visit?.id ?? rx.id
@@ -553,6 +557,13 @@ const verGroups = computed(() => {
     pendingCount: g.items.filter((rx) => !rx.verified_at).length,
   }))
 })
+// Jumlah grup per status (untuk badge filter) — basis = setelah cari/tanggal.
+const verBelumGroupCount   = computed(() => verAllGroups.value.filter((g) => g.pendingCount > 0).length)
+const verSelesaiGroupCount = computed(() => verAllGroups.value.filter((g) => g.pendingCount === 0).length)
+// Grup yang ditampilkan sesuai filter utama: 'belum' = masih ada yg perlu verifikasi,
+// 'selesai' = seluruh resep grup sudah terkunci.
+const verGroups = computed(() => verAllGroups.value.filter((g) =>
+  verPrimaryFilter.value === 'selesai' ? g.pendingCount === 0 : g.pendingCount > 0))
 
 async function fetchVerQueue() {
   verLoading.value = true; verError.value = ''
@@ -2204,6 +2215,17 @@ function toast(type, msg) {
             </div>
 
             <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean verifikasi">
+              <!-- Filter utama: belum vs sudah terkunci -->
+              <div class="primary-filter" role="group" aria-label="Filter status verifikasi">
+                <button :class="['pf-btn', verPrimaryFilter === 'belum' ? 'a' : '']" @click="verPrimaryFilter = 'belum'">
+                  Perlu Verifikasi
+                  <span v-if="verBelumGroupCount" class="pf-ct">{{ verBelumGroupCount }}</span>
+                </button>
+                <button :class="['pf-btn', verPrimaryFilter === 'selesai' ? 'a' : '']" @click="verPrimaryFilter = 'selesai'" title="Resep yang sudah diverifikasi & dikunci (belum dibayar)">
+                  Terkunci
+                  <span v-if="verSelesaiGroupCount" class="pf-ct">{{ verSelesaiGroupCount }}</span>
+                </button>
+              </div>
               <!-- Baris 1: cari + muat ulang -->
               <div class="ver-searchbar">
                 <input v-model="verSearch" class="fi ver-search" placeholder="Cari nama / no. RM…" />
@@ -2222,7 +2244,7 @@ function toast(type, msg) {
 
               <div class="rx-list">
                 <div v-if="verError" class="empty-rx">{{ verError }}</div>
-                <div v-else-if="!filtVerQueue.length" class="empty-rx">{{ (verFrom || verTo || verSearch) ? 'Tidak ada resep cocok dengan filter.' : 'Tidak ada resep menunggu verifikasi.' }}</div>
+                <div v-else-if="!verGroups.length" class="empty-rx">{{ (verFrom || verTo || verSearch) ? 'Tidak ada resep cocok dengan filter.' : (verPrimaryFilter === 'selesai' ? 'Belum ada resep terkunci.' : 'Tidak ada resep menunggu verifikasi.') }}</div>
                 <!-- Satu kartu = satu PASIEN/visit; tiap resep (poli + pasca) jadi chip terpisah. -->
                 <div v-for="g in verGroups" :key="g.vid"
                      :class="['rx-card', 'ver-group', g.items.some((rx) => verSel?.id === rx.id) ? 'active' : '', g.pendingCount === 0 ? 'done' : '']">
@@ -2233,6 +2255,7 @@ function toast(type, msg) {
                   <span :class="['ver-badge', g.pendingCount === 0 ? 'ok' : 'wait']">{{ g.pendingCount === 0 ? '🔒 Terkunci' : (g.items.length > 1 ? `${g.pendingCount}/${g.items.length} perlu verifikasi` : 'Perlu verifikasi') }}</span>
                 </div>
                 <div class="rx-meta">RM {{ g.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(g.visit?.patient?.date_of_birth) }} · {{ (g.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
+                <div class="rx-meta">{{ verTgl(g.items[0]).label }}: {{ verTgl(g.items[0]).value }}</div>
                 <div v-if="g.visit?.dpjp_name" class="rx-meta">DPJP: {{ g.visit.dpjp_name }}</div>
                 <!-- Chip per resep: klik untuk pilih & lihat detail; pill sumber tetap tampil. -->
                 <div class="ver-rx-chips">
