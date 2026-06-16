@@ -60,6 +60,10 @@ const dateMode   = ref('single')
 const dateSingle = ref('')
 const dateFrom   = ref('')
 const dateTo     = ref('')
+// true bila tanggal di tab Signed di-isi OTOMATIS (default hari ini) — bukan dipilih
+// user. Dipakai agar tanggal auto ini dilepas saat balik ke tab Antrian (supaya
+// antrian tak ikut terfilter), sedangkan tanggal pilihan user tetap dipertahankan.
+const signedDateAutoSet = ref(false)
 const hasDateFilter = computed(() =>
   dateMode.value === 'single' ? !!dateSingle.value : (!!dateFrom.value || !!dateTo.value),
 )
@@ -186,16 +190,25 @@ function clearFilters() {
   dateSingle.value = ''
   dateFrom.value = ''
   dateTo.value = ''
+  signedDateAutoSet.value = false
+  // Tab Signed: kembalikan ke default HARI INI yang terlihat (bukan kosong, agar
+  // tetap konsisten dgn perilaku masuk tab — tanggal tampak & dapat diubah).
+  if (isSignedTab.value) {
+    dateMode.value = 'single'
+    dateSingle.value = todayStr()
+    signedDateAutoSet.value = true
+  }
   resetPage()
   loadActive()
 }
 
 // Ubah tanggal/rentang → reset halaman & muat ulang tab aktif (Antrian: tanggal
 // kunjungan; Ditandatangani: tanggal tanda tangan).
-function onDateChange() { resetPage(); loadActive() }
+function onDateChange() { signedDateAutoSet.value = false; resetPage(); loadActive() }
 function setDateMode(m) {
   if (dateMode.value === m) return
   dateMode.value = m
+  signedDateAutoSet.value = false   // perubahan mode = intent user, jangan dilepas otomatis
   // Reload hanya bila sudah ada nilai tanggal aktif (hindari query sia-sia).
   if (hasDateFilter.value) { resetPage(); loadActive() }
 }
@@ -209,10 +222,23 @@ function switchTab(tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
   if (tab === 'signed') {
+    // Default tab Signed = HARI INI, tapi TAMPILKAN di input tanggal agar jelas
+    // (bukan today-only tersembunyi) & mudah diubah untuk melihat riwayat.
+    if (!hasDateFilter.value) {
+      dateMode.value = 'single'
+      dateSingle.value = todayStr()
+      signedDateAutoSet.value = true
+    }
     // Muat ulang bila belum ada data ATAU ada filter aktif (mis. tanggal/cari
     // yang dibawa dari tab Antrian) supaya input ↔ data konsisten.
     if (signedRows.value.length === 0 || hasActiveFilter.value) { signedPage.value = 1; loadSigned() }
   } else {
+    // Balik ke Antrian: lepas tanggal yang DI-AUTO-SET supaya antrian tak ikut
+    // terfilter hari ini. Tanggal yang dipilih manual user tetap dipertahankan.
+    if (signedDateAutoSet.value) {
+      dateSingle.value = ''
+      signedDateAutoSet.value = false
+    }
     load()
   }
 }
@@ -442,6 +468,19 @@ function formatDate(iso) {
   return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Jakarta' })
 }
 
+// Tanggal lokal hari ini (YYYY-MM-DD) untuk pra-isi <input type="date">.
+// Pakai 'sv-SE' (zona perangkat = WIB di Indonesia), bukan toISOString() yang UTC.
+function todayStr() { return new Date().toLocaleDateString('sv-SE') }
+
+// Pesan empty-state tab "Ditanda Tangani" — informatif sesuai tanggal terpilih,
+// supaya jelas bahwa daftar dibatasi tanggal & mengarahkan ke filter utk riwayat.
+const signedEmptyMsg = computed(() => {
+  if (search.value.trim()) return 'Tidak ada dokumen yang cocok dengan pencarian.'
+  if (dateMode.value === 'range') return 'Tidak ada dokumen ditandatangani pada rentang tanggal ini. Ubah tanggal untuk melihat riwayat lain.'
+  if (dateSingle.value) return `Tidak ada dokumen ditandatangani pada ${formatDate(dateSingle.value)}. Ubah tanggal untuk melihat riwayat lain.`
+  return 'Belum ada dokumen yang ditandatangani. Pilih tanggal untuk melihat riwayat.'
+})
+
 function formatTime(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -621,9 +660,7 @@ onMounted(() => { load(); refreshCount() })
             <td colspan="5" class="cell-state err">{{ signedError }}</td>
           </tr>
           <tr v-else-if="total === 0">
-            <td colspan="5" class="cell-state">
-              {{ hasActiveFilter ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen yang ditanda tangani hari ini.' }}
-            </td>
+            <td colspan="5" class="cell-state">{{ signedEmptyMsg }}</td>
           </tr>
           <tr v-for="r in signedRows" :key="r.signature_id">
             <td>
