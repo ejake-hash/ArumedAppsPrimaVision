@@ -18,6 +18,13 @@
 /public/fonts-manifest.dev.json
 /public/hot
 /public/storage
+# Artefak build SPA yang disalin saat deploy (cp dist → public). Bukan source —
+# di-generate dari arumed-frontend. JANGAN commit (index.php/.htaccess tetap dilacak).
+/public/assets
+/public/index.html
+/public/sounds
+/public/favicon.jpg
+/public/favicon.png
 /storage/*.key
 /storage/pail
 /vendor

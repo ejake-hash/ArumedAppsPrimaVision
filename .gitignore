@@ -13,6 +13,9 @@ backend/.phpunit.result.cache
 arumed-frontend/.env
 arumed-frontend/node_modules/
 arumed-frontend/dist/
+
+# Stray lockfile di root (npm dijalankan di arumed-frontend, bukan root)
+/package-lock.json
 arumed-frontend/.vite/
 
 # IDE
