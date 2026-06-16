@@ -532,6 +532,21 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * DELETE /rekam-medis/document/{id}
+     * Hapus dokumen DRAFT/RENDERED yang tidak jadi dipakai. Hanya pra-TTD; selain
+     * itu 422 (dokumen ber-TTD/final dilindungi demi integritas RM).
+     */
+    public function deleteDocument(string $id): JsonResponse
+    {
+        try {
+            $this->formRegistry->deleteDraft($id);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+        return $this->ok(null, 'Draft dokumen dihapus');
+    }
+
+    /**
      * POST /rekam-medis/document/{id}/mark-rendered
      * Soft transition DRAFT → RENDERED (idempoten).
      */

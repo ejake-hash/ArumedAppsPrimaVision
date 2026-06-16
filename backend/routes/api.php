@@ -620,6 +620,17 @@ Route::prefix('v1')->group(function () {
             // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
             Route::get('/{visitId}/permintaan-obat',  [RanapController::class, 'listPermintaanObat'])->middleware('permission:rawat_inap.read');
             Route::post('/{visitId}/permintaan-obat', [RanapController::class, 'createPermintaanObat'])->middleware('permission:rawat_inap.write');
+
+            // eMAR — pemberian obat ke pasien (PKPO 4.3).
+            Route::get('/{visitId}/mar',         [RanapController::class, 'marBoard'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/mar',        [RanapController::class, 'recordAdministration'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/mar/{id}', [RanapController::class, 'deleteAdministration'])->middleware('permission:rawat_inap.write');
+
+            // Balance cairan (intake/output) — STARKES PAP.
+            Route::get('/{visitId}/fluid-balance',         [RanapController::class, 'fluidBalance'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/fluid-balance',        [RanapController::class, 'addFluidBalance'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/fluid-balance/{id}', [RanapController::class, 'deleteFluidBalance'])->middleware('permission:rawat_inap.write');
+
             Route::post('/{visitId}/kirim-bedah',     [RanapController::class, 'sendToBedah'])->middleware('permission:rawat_inap.write');
             Route::post('/{visitId}/discharge',       [RanapController::class, 'discharge'])->middleware('permission:rawat_inap.write');
 
@@ -895,6 +906,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/document/{id}/finalize',         [RekamMedisController::class, 'finalizeDocument']);
             Route::get('/document/{id}/render',            [RekamMedisController::class, 'showDocumentSnapshot']);
             Route::put('/document/{id}/draft-content',     [RekamMedisController::class, 'saveDraftContent']);
+            Route::delete('/document/{id}',                [RekamMedisController::class, 'deleteDocument']);
 
             // Fase 4 — Signature flow
             Route::post('/document/{id}/sign',             [RekamMedisController::class, 'signDocument']);

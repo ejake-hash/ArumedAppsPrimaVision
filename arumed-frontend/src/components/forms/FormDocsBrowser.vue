@@ -192,6 +192,7 @@ function resetFilters() {
             :template="t"
             :visit-id="visitId"
             :patient-id="patientId"
+            @deleted="load"
           />
         </div>
       </section>

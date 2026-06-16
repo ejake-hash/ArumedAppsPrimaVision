@@ -225,6 +225,104 @@ class RanapController extends Controller
     }
 
     // =========================================================================
+    // eMAR — pemberian obat ke pasien (PKPO 4.3)
+    // =========================================================================
+
+    /** GET /rawat-inap/{visitId}/mar — order obat aktif + riwayat pemberian. */
+    public function marBoard(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->marBoard($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** POST /rawat-inap/{visitId}/mar — catat pemberian obat (jam + perawat otomatis). */
+    public function recordAdministration(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'prescription_item_id' => 'nullable|uuid|exists:prescription_items,id',
+            'medication_id'        => 'nullable|uuid|exists:medications,id',
+            'medication_name'      => 'nullable|string|max:255',
+            'dose'                 => 'nullable|string|max:100',
+            'route'                => 'nullable|string|max:100',
+            'administered_at'      => 'nullable|date',
+            'status'               => 'nullable|in:GIVEN,HELD,SKIPPED',
+            'reason'               => 'nullable|string|max:255',
+            'notes'                => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $rec   = $this->service->recordAdministration($visit, $data);
+            return $this->ok($rec, 'Pemberian obat dicatat', 201);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
+    /** DELETE /rawat-inap/{visitId}/mar/{id} — hapus catatan pemberian (koreksi). */
+    public function deleteAdministration(string $visitId, string $id): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $this->service->deleteAdministration($visit, $id);
+            return $this->ok(null, 'Catatan pemberian dihapus');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    // =========================================================================
+    // BALANCE CAIRAN (intake/output) — STARKES PAP
+    // =========================================================================
+
+    /** GET /rawat-inap/{visitId}/fluid-balance — catatan + ringkasan saldo. */
+    public function fluidBalance(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->fluidBalanceBoard($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** POST /rawat-inap/{visitId}/fluid-balance — tambah intake/output. */
+    public function addFluidBalance(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'direction'   => 'required|in:INTAKE,OUTPUT',
+            'category'    => 'nullable|string|max:100',
+            'volume_ml'   => 'required|integer|min:1|max:100000',
+            'recorded_at' => 'nullable|date',
+            'notes'       => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $rec   = $this->service->addFluidBalance($visit, $data);
+            return $this->ok($rec, 'Catatan cairan ditambahkan', 201);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+    }
+
+    /** DELETE /rawat-inap/{visitId}/fluid-balance/{id} — hapus catatan. */
+    public function deleteFluidBalance(string $visitId, string $id): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $this->service->deleteFluidBalance($visit, $id);
+            return $this->ok(null, 'Catatan cairan dihapus');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    // =========================================================================
     // DOKUMEN/HASIL EKSTERNAL (Fase 8C)
     // =========================================================================
 

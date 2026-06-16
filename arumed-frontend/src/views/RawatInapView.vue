@@ -1,11 +1,14 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRawatInapStore } from '@/stores/rawatInapStore'
 import { useAuthStore } from '@/stores/authStore'
 import { ranapApi, tarifPaketApi, formTemplateApi } from '@/services/api'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
+import VitalTrendChart from '@/components/ranap/VitalTrendChart.vue'
+import MarPanel from '@/components/ranap/MarPanel.vue'
+import FluidBalancePanel from '@/components/ranap/FluidBalancePanel.vue'
 
 const store = useRawatInapStore()
 const auth = useAuthStore()
@@ -17,6 +20,15 @@ function notify(msg, ok = true) {
   toast.value = { msg, ok }
   setTimeout(() => (toast.value = null), 3500)
 }
+
+// ── Konfirmasi modal generik (ganti window.confirm agar konsisten & ter-style) ──
+const confirmState = ref(null) // { message, title, danger, okLabel, resolve }
+function askConfirm(message, opts = {}) {
+  return new Promise((resolve) => {
+    confirmState.value = { message, title: opts.title || 'Konfirmasi', danger: opts.danger ?? true, okLabel: opts.okLabel || 'Ya, lanjutkan', resolve }
+  })
+}
+function resolveConfirm(val) { confirmState.value?.resolve(val); confirmState.value = null }
 
 const allAvailableBeds = computed(() => {
   const out = []
@@ -48,7 +60,32 @@ const stats = computed(() => {
 async function refreshAll() {
   await Promise.all([store.fetchBedBoard(), store.fetchMenungguKamar(), store.fetchAktif()])
 }
-onMounted(refreshAll)
+// Auto-poll 15 dtk (pola modul Bedah) — papan & daftar selalu mutakhir; jeda saat tab tak aktif.
+let pollTimer = null
+onMounted(() => {
+  refreshAll()
+  pollTimer = setInterval(() => {
+    if (document.hidden) return
+    store.fetchBedBoard(); store.fetchMenungguKamar(); store.fetchAktif()
+  }, 15000)
+})
+onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+
+// ── Pencarian / filter (Pasien Aktif & Papan Room) ──────────────────────────
+const aktifSearch = ref('')
+const filteredAktif = computed(() => {
+  const q = aktifSearch.value.trim().toLowerCase()
+  if (!q) return store.aktif
+  return store.aktif.filter((p) => `${p.name || ''} ${p.no_rm || ''}`.toLowerCase().includes(q))
+})
+const boardSearch = ref('')
+const filteredBoard = computed(() => {
+  const q = boardSearch.value.trim().toLowerCase()
+  if (!q) return store.bedBoard
+  return store.bedBoard.filter((room) =>
+    String(room.name || '').toLowerCase().includes(q) ||
+    (room.beds || []).some((b) => String(b.patient?.name || '').toLowerCase().includes(q) || String(b.label || '').toLowerCase().includes(q)))
+})
 
 // ── ADMIT ───────────────────────────────────────────────────────────────────
 const showAdmit = ref(false)
@@ -64,7 +101,7 @@ async function submitAdmit() {
   if (!admitForm.value.bed_id || !admitForm.value.kelas_hak) { notify('Pilih bed & kelas hak', false); return }
   const bed = allAvailableBeds.value.find((b) => b.id === admitForm.value.bed_id)
   if (bed && String(bed.kelas) !== String(admitForm.value.kelas_hak)) {
-    if (!confirm(`Titip kelas: bed ${bed.label} (Kelas ${bed.kelas}), hak pasien Kelas ${admitForm.value.kelas_hak}. Tarif tetap kelas hak. Lanjut?`)) return
+    if (!(await askConfirm(`Titip kelas: bed ${bed.label} (Kelas ${bed.kelas}), hak pasien Kelas ${admitForm.value.kelas_hak}. Tarif tetap mengikuti kelas hak. Lanjutkan?`, { title: 'Titip Kelas', danger: false, okLabel: 'Lanjut Admit' }))) return
   }
   busy.value = true
   try {
@@ -103,6 +140,20 @@ const dischargeForm = ref({ discharge_type: 'PULANG_SEHAT', summary: '', follow_
 const obatPulangList = ref([])           // [{ medication_id, name, quantity, dose, frequency, route, duration_days }]
 const obatPulangSearch = ref('')
 const obatPulangOptions = ref([])        // hasil pencarian obat + harga
+
+// Checklist kesiapan pulang (advisory, mengikuti isian form discharge — bukan blokir keras).
+const dischargeChecklist = computed(() => {
+  const f = dischargeForm.value
+  const items = [
+    { label: 'Resume medis pulang diisi', ok: !!f.summary?.trim() },
+    { label: 'Rencana kontrol dijadwalkan', ok: !!f.follow_up_date },
+  ]
+  if (dischargePt.value?.guarantor_type === 'BPJS') {
+    items.push({ label: 'Tgl rencana SPRI (BPJS) diisi', ok: !!f.spri_tgl_rencana })
+  }
+  return items
+})
+const dischargeReady = computed(() => dischargeChecklist.value.every((i) => i.ok))
 
 async function openDischarge(p) {
   dischargePt.value = p
@@ -235,25 +286,34 @@ async function loadHistory() {
     histList.value = r.data?.data ?? []
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal muat riwayat', false) }
 }
-async function issueSpri(row) {
-  const tgl = prompt('Tanggal rencana kontrol/SPRI (YYYY-MM-DD):', histTo.value)
-  if (!tgl) return
-  try {
-    await ranapApi.createSpri(row.visit_id, { tgl_rencana: tgl })
-    notify('SPRI diterbitkan'); await loadHistory()
-  } catch (e) { notify(e.response?.data?.message ?? 'Gagal terbitkan SPRI', false) }
+// SPRI: terbit/ubah lewat modal + date-picker (ganti prompt YYYY-MM-DD).
+const showSpriModal = ref(false)
+const spriModal = ref({ mode: 'issue', row: null, tgl: '' })
+function openSpriModal(mode, row) {
+  spriModal.value = { mode, row, tgl: mode === 'edit' ? (row.spri?.tgl_rencana || histTo.value) : histTo.value }
+  showSpriModal.value = true
 }
-async function editSpri(row) {
-  if (!row.spri?.id) return
-  const tgl = prompt('Ubah tanggal SPRI (YYYY-MM-DD):', row.spri.tgl_rencana || histTo.value)
-  if (!tgl) return
+async function confirmSpriModal() {
+  const { mode, row, tgl } = spriModal.value
+  if (!tgl) { notify('Pilih tanggal dulu', false); return }
+  busy.value = true
   try {
-    await ranapApi.updateSpri(row.spri.id, { tgl_rencana: tgl })
-    notify('SPRI diperbarui'); await loadHistory()
-  } catch (e) { notify(e.response?.data?.message ?? 'Gagal update SPRI', false) }
+    if (mode === 'edit') {
+      if (!row.spri?.id) return
+      await ranapApi.updateSpri(row.spri.id, { tgl_rencana: tgl })
+      notify('SPRI diperbarui')
+    } else {
+      await ranapApi.createSpri(row.visit_id, { tgl_rencana: tgl })
+      notify('SPRI diterbitkan')
+    }
+    showSpriModal.value = false
+    await loadHistory()
+  } catch (e) { notify(e.response?.data?.message ?? 'Gagal proses SPRI', false) }
+  finally { busy.value = false }
 }
 async function removeSpri(row) {
-  if (!row.spri?.id || !confirm('Hapus SPRI ini? (hanya yang belum terbit)')) return
+  if (!row.spri?.id) return
+  if (!(await askConfirm('Hapus SPRI ini? (hanya yang belum terbit yang bisa dihapus)', { title: 'Hapus SPRI', okLabel: 'Hapus' }))) return
   try {
     await ranapApi.deleteSpri(row.spri.id)
     notify('SPRI dihapus'); await loadHistory()
@@ -303,7 +363,7 @@ async function confirmKirimBedah () {
 
 // ── BED CLEANING → AVAILABLE ──────────────────────────────────────────────────
 async function markBedAvailable(bed) {
-  if (!confirm(`Tandai bed ${bed.label} selesai dibersihkan (siap dipakai)?`)) return
+  if (!(await askConfirm(`Tandai bed ${bed.label} selesai dibersihkan (siap dipakai)?`, { title: 'Bed Siap Dipakai', danger: false, okLabel: 'Tandai Siap' }))) return
   try {
     await ranapApi.markBedAvailable(bed.id)
     notify(`Bed ${bed.label} siap dipakai`)
@@ -357,7 +417,7 @@ async function submitDocument() {
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal unggah', false) } finally { busy.value = false }
 }
 async function removeDocument(d) {
-  if (!confirm(`Hapus dokumen "${d.title}"?`)) return
+  if (!(await askConfirm(`Hapus dokumen "${d.title}"?`, { title: 'Hapus Dokumen', okLabel: 'Hapus' }))) return
   try {
     await ranapApi.deleteDocument(detailVisitId.value, d.id)
     notify('Dokumen dihapus'); await loadDocuments()
@@ -402,6 +462,7 @@ function closeObatComboSoon() { setTimeout(() => { obatComboOpen.value = false }
 
 // CPPT terintegrasi multi-PPA (SOAP + TTV opsional)
 const cpptList = ref([])
+const cpptUnverifiedCount = computed(() => cpptList.value.filter((e) => !e.verified_at).length)
 const emptyCppt = () => ({
   soap_s: '', soap_o: '', soap_a: '', soap_p: '', instruksi: '',
   td_sistol: null, td_diastol: null, nadi: null, suhu: null, respirasi: null, spo2: null, kgd: null, pain_scale: null,
@@ -527,7 +588,7 @@ async function submitTindakan() {
 }
 async function removeCharge(c) {
   if (c.is_billed) { notify('Biaya sudah masuk invoice', false); return }
-  if (!confirm(`Hapus "${c.description}"?`)) return
+  if (!(await askConfirm(`Hapus biaya "${c.description}"?`, { title: 'Hapus Biaya', okLabel: 'Hapus' }))) return
   try { await store.deleteCharge(detailVisitId.value, c.id); notify('Biaya dihapus') }
   catch { notify(store.error || 'Gagal hapus', false) }
 }
@@ -617,6 +678,22 @@ function reqStatusPill(s) {
 
 const bedStatusColor = { AVAILABLE: '#16a34a', OCCUPIED: '#1763d4', CLEANING: '#d97706', MAINTENANCE: '#6b7280', RESERVED: '#7c3aed' }
 function fmt(dt) { return dt ? new Date(dt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' }) : '—' }
+// Lama rawat (LOS) inklusif: hari masuk = Hari ke-1.
+function losText(admissionAt) {
+  if (!admissionAt) return '—'
+  const days = Math.max(1, Math.floor((Date.now() - new Date(admissionAt).getTime()) / 86400000) + 1)
+  return `Hari ke-${days}`
+}
+// Flag alergi (selaras DokterView): saring frasa negasi agar tak ada alarm palsu.
+function isNegationAllergy(s) {
+  const t = (s || '').trim().toLowerCase()
+  return !t || ['tidak ada', 'tidak', 'disangkal', 'nihil', 'none', 'no', '-', '0', 'tak ada', '(-)'].includes(t)
+}
+const detailAllergies = computed(() => {
+  const raw = store.detail?.visit?.patient?.allergy_notes
+  if (!raw) return []
+  return String(raw).split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).filter((s) => !isNegationAllergy(s))
+})
 function rupiah(n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID') }
 const statusPill = (s) => ({
   APPROVED: 'pill-success', SUCCESS: 'pill-success', VERIFIED: 'pill-success',
@@ -639,7 +716,7 @@ const statusPill = (s) => ({
       </div>
     </div>
 
-    <div class="stat-grid">
+    <div v-show="!(tab === 'aktif' && detailVisitId)" class="stat-grid">
       <div class="stat-card">
         <div class="stat-icon" style="background: var(--ib)">
           <svg viewBox="0 0 24 24" stroke="var(--it)"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
@@ -683,9 +760,14 @@ const statusPill = (s) => ({
     </div>
 
     <!-- PAPAN ROOM -->
-    <section v-if="tab === 'board'" class="tab-pane board">
-      <p v-if="store.loading" class="po-state">Memuat…</p>
-      <div v-for="room in store.bedBoard" :key="room.id" class="room-card">
+    <section v-if="tab === 'board'" class="tab-pane">
+      <div class="filter-bar">
+        <input v-model="boardSearch" class="filt" placeholder="Cari kamar / pasien / bed…" style="min-width:260px" />
+        <span v-if="boardSearch" class="muted2">{{ filteredBoard.length }} kamar cocok</span>
+      </div>
+      <p v-if="store.loading && !store.bedBoard.length" class="po-state">Memuat…</p>
+      <div class="board">
+      <div v-for="room in filteredBoard" :key="room.id" class="room-card">
         <div class="room-head">
           <strong>{{ room.name }}</strong>
           <span class="kelas">Kelas {{ room.kelas_rawat }} · {{ room.type }}</span>
@@ -705,6 +787,8 @@ const statusPill = (s) => ({
           <p v-if="!room.beds.length" class="muted">Belum ada bed</p>
         </div>
       </div>
+      </div>
+      <p v-if="boardSearch && !filteredBoard.length" class="muted">Tak ada kamar/pasien cocok dengan pencarian.</p>
       <p v-if="!store.loading && !store.bedBoard.length" class="muted">
         Belum ada room. Tambah di Master Data → Fasilitas &amp; Ruang.
       </p>
@@ -773,8 +857,8 @@ const statusPill = (s) => ({
               <td class="c">
                 <div class="action-row" v-if="h.guarantor_type === 'BPJS' && h.no_sep">
                   <button class="btn btn-sm btn-info" @click="openSep(h)">SEP</button>
-                  <button v-if="!h.spri || h.spri.status === 'FAILED'" class="btn btn-sm btn-secondary" @click="issueSpri(h)">+ SPRI</button>
-                  <button v-if="h.spri && h.spri.status === 'SUCCESS'" class="btn btn-sm btn-secondary" @click="editSpri(h)">Edit SPRI</button>
+                  <button v-if="!h.spri || h.spri.status === 'FAILED'" class="btn btn-sm btn-secondary" @click="openSpriModal('issue', h)">+ SPRI</button>
+                  <button v-if="h.spri && h.spri.status === 'SUCCESS'" class="btn btn-sm btn-secondary" @click="openSpriModal('edit', h)">Edit SPRI</button>
                   <button v-if="h.spri && h.spri.status !== 'SUCCESS'" class="btn btn-sm btn-warning" @click="removeSpri(h)">Hapus</button>
                 </div>
                 <span v-else class="muted">—</span>
@@ -901,6 +985,17 @@ const statusPill = (s) => ({
       <div class="modal">
         <h3>Pulangkan: {{ dischargePt?.name }}</h3>
         <p class="hint">Room charge akan digenerate (LOS × tarif kelas hak) lalu pasien diteruskan ke Kasir.</p>
+
+        <!-- Checklist kesiapan pulang (advisory) -->
+        <div class="dc-checklist" :class="{ ready: dischargeReady }">
+          <div class="dc-title">{{ dischargeReady ? '✓ Siap dipulangkan' : 'Kelengkapan pulang' }}</div>
+          <ul>
+            <li v-for="(c, i) in dischargeChecklist" :key="i" :class="c.ok ? 'dc-ok' : 'dc-warn'">
+              <span class="dc-mark">{{ c.ok ? '✓' : '○' }}</span>{{ c.label }}
+            </li>
+          </ul>
+          <p class="dc-note">Resume Medis (RM 3.5) akan otomatis terbuka untuk dilengkapi &amp; di-TTD setelah pemulangan.</p>
+        </div>
         <label>Jenis pulang
           <select v-model="dischargeForm.discharge_type">
             <option value="PULANG_SEHAT">Pulang sehat</option>
@@ -963,60 +1058,91 @@ const statusPill = (s) => ({
 
     <!-- PASIEN AKTIF: panel inline 2-kolom (list pasien kiri + detail kanan) -->
     <section v-if="tab === 'aktif'" class="tab-pane">
-      <div class="ri-split">
-        <!-- KIRI: daftar pasien aktif -->
-        <aside class="ri-list">
-          <div v-if="!store.aktif.length" class="ri-list-empty">Tidak ada pasien rawat inap aktif.</div>
-          <button
-            v-for="p in store.aktif" :key="p.visit_id"
-            type="button" class="ri-pcard" :class="{ sel: detailVisitId === p.visit_id }"
-            @click="openDetail(p.visit_id)"
-          >
-            <div class="ri-pcard-top">
-              <strong class="ri-pcard-name">{{ p.name }}</strong>
-              <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op rawat inap — menunggu operasi terjadwal">PRE-OP</span>
-              <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Observasi/pemeriksaan">OBS</span>
-            </div>
-            <div class="ri-pcard-sub">RM {{ p.no_rm }} · {{ p.room }}/{{ p.bed }} · Kls {{ p.kelas_rawat_hak }}</div>
-            <div class="ri-pcard-since">Masuk {{ fmt(p.admission_at) }}</div>
-          </button>
-        </aside>
+      <!-- DAFTAR pasien aktif (tabel full-width) — saat belum ada pasien dibuka -->
+      <template v-if="!detailVisitId">
+        <div class="filter-bar">
+          <input v-model="aktifSearch" class="filt" placeholder="Cari nama / No. RM…" style="min-width:260px" />
+          <span class="muted2">{{ filteredAktif.length }} pasien dirawat</span>
+        </div>
+        <div class="po-table-wrap">
+          <table class="po-table">
+            <thead>
+              <tr>
+                <th style="width:46px">No.</th><th>Pasien</th><th>No. RM</th><th>Penjamin</th>
+                <th>Kamar / Bed</th><th>Kelas</th><th>Masuk</th><th>Lama Rawat</th><th class="c">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!store.aktif.length"><td colspan="9" class="po-state">Tidak ada pasien rawat inap aktif.</td></tr>
+              <tr v-else-if="!filteredAktif.length"><td colspan="9" class="po-state">Tak ada pasien cocok “{{ aktifSearch }}”.</td></tr>
+              <tr v-for="(p, i) in filteredAktif" :key="p.visit_id" class="ri-row" @click="openDetail(p.visit_id)">
+                <td class="muted">{{ i + 1 }}</td>
+                <td>
+                  {{ p.name }}
+                  <span v-if="p.inpatient_reason === 'PRE_OP'" class="ri-badge ri-preop" title="Pre-op — menunggu operasi terjadwal">PRE-OP</span>
+                  <span v-else-if="p.inpatient_reason === 'OBSERVASI'" class="ri-badge ri-obs" title="Observasi/pemeriksaan">OBS</span>
+                </td>
+                <td class="muted">{{ p.no_rm }}</td>
+                <td><span class="pill pill-gray">{{ p.guarantor_type }}</span></td>
+                <td>{{ p.room }} / {{ p.bed }}</td>
+                <td>{{ p.kelas_rawat_hak }}</td>
+                <td class="muted">{{ fmt(p.admission_at) }}</td>
+                <td class="muted">{{ losText(p.admission_at) }}</td>
+                <td class="c"><button class="btn btn-sm btn-primary" @click.stop="openDetail(p.visit_id)">Buka</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
 
-        <!-- KANAN: detail pasien terpilih -->
-        <div class="ri-detail">
-          <div v-if="!detailVisitId" class="ri-detail-empty">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
-            <p>Pilih pasien di kiri untuk melihat detail, CPPT &amp; biaya.</p>
-          </div>
-          <template v-else-if="store.detail">
-          <div class="det-head">
+      <!-- DETAIL pasien (full-width) — saat pasien dibuka -->
+      <div v-else class="ri-detail ri-detail-full">
+        <button class="btn btn-sm btn-secondary ri-back" @click="detailVisitId = null">← Daftar Pasien</button>
+          <template v-if="store.detail">
+          <div class="det-banner">
             <div class="det-id">
               <strong>{{ store.detail.visit?.patient?.name }}</strong>
               <span class="det-rm">RM {{ store.detail.visit?.patient?.no_rm }}</span>
             </div>
-            <div class="det-actions">
-              <button class="btn btn-sm btn-secondary" @click="openDocModal">Dokumen RM</button>
-              <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="openTransfer(selectedPt)">Pindah</button>
-              <button v-if="selectedPt?.guarantor_type === 'BPJS' && selectedPt?.no_sep" class="btn btn-sm btn-info" @click="openSep(selectedPt)">SEP</button>
-              <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="doKirimBedah(selectedPt)">→ Bedah</button>
-              <button v-if="selectedPt" class="btn btn-sm btn-primary" @click="openDischarge(selectedPt)">Pulang</button>
+            <div class="det-meta">
+              <span><i>Room/Bed</i> {{ store.detail.visit?.room?.name }} / {{ store.detail.visit?.bed?.label }}</span>
+              <span><i>Kelas hak</i> {{ store.detail.visit?.kelas_rawat_hak }}</span>
+              <span><i>Masuk</i> {{ fmt(store.detail.visit?.admission_at) }}</span>
+              <span><i>Rawat</i> {{ losText(store.detail.visit?.admission_at) }}</span>
+              <span v-if="store.detail.visit?.dpjp?.name"><i>DPJP</i> {{ store.detail.visit?.dpjp?.name }}</span>
             </div>
           </div>
-          <div class="det-meta">
-            <span><i>Room/Bed</i> {{ store.detail.visit?.room?.name }} / {{ store.detail.visit?.bed?.label }}</span>
-            <span><i>Kelas hak</i> {{ store.detail.visit?.kelas_rawat_hak }}</span>
-            <span><i>Masuk</i> {{ fmt(store.detail.visit?.admission_at) }}</span>
-            <span v-if="store.detail.visit?.dpjp?.name"><i>DPJP</i> {{ store.detail.visit?.dpjp?.name }}</span>
+          <div class="det-toolbar">
+            <button class="btn btn-sm btn-secondary" @click="openDocModal">Dokumen RM</button>
+            <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="openTransfer(selectedPt)">Pindah</button>
+            <button v-if="selectedPt?.guarantor_type === 'BPJS' && selectedPt?.no_sep" class="btn btn-sm btn-info" @click="openSep(selectedPt)">SEP</button>
+            <button v-if="selectedPt" class="btn btn-sm btn-secondary" @click="doKirimBedah(selectedPt)">→ Bedah</button>
+            <button v-if="selectedPt" class="btn btn-sm btn-primary" @click="openDischarge(selectedPt)">Pulang</button>
+          </div>
+
+          <!-- Flag keselamatan: alergi (SKP 3) + CPPT belum diverifikasi DPJP -->
+          <div v-if="detailAllergies.length || cpptUnverifiedCount" class="det-flags">
+            <div v-if="detailAllergies.length" class="alert-allergy">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span><strong>ALERGI:</strong> {{ detailAllergies.join(', ') }} — pastikan terapi &amp; tindakan aman.</span>
+            </div>
+            <span v-if="cpptUnverifiedCount" class="flag-chip flag-warn" title="CPPT menunggu verifikasi DPJP">
+              {{ cpptUnverifiedCount }} CPPT belum diverifikasi DPJP
+            </span>
           </div>
 
           <!-- Tab dalam detail (Hasil Eksternal kini chip→modal kecil di header CPPT) -->
           <nav class="dtabs">
             <button :class="{ on: detailTab === 'cppt' }" @click="detailTab = 'cppt'">CPPT &amp; Observasi</button>
+            <button :class="{ on: detailTab === 'emar' }" @click="detailTab = 'emar'">eMAR (Pemberian Obat)</button>
+            <button :class="{ on: detailTab === 'cairan' }" @click="detailTab = 'cairan'">Balance Cairan</button>
             <button :class="{ on: detailTab === 'biaya' }" @click="detailTab = 'biaya'">Tindakan, Obat &amp; Biaya</button>
           </nav>
 
           <!-- TAB CPPT — terintegrasi multi-PPA (SOAP) -->
           <div v-show="detailTab === 'cppt'">
+            <!-- Grafik tren tanda vital + EWS (NEWS2-parsial) -->
+            <VitalTrendChart :entries="cpptList" />
             <div class="cppt-form">
               <h4>
                 {{ cpptEditId ? 'Edit Catatan (CPPT)' : '+ Catatan Perkembangan Terintegrasi (CPPT)' }}
@@ -1071,8 +1197,8 @@ const statusPill = (s) => ({
                 </div>
               </details>
               <div class="cppt-actions">
-                <button class="btn-primary btn-press btn-add" @click="submitCppt">{{ cpptEditId ? 'Simpan Perubahan' : '+ Tambah CPPT' }}</button>
-                <button v-if="cpptEditId" class="btn-ghost btn-press" @click="cancelEditCppt">Batal</button>
+                <button class="btn btn-sm btn-primary btn-add" @click="submitCppt">{{ cpptEditId ? 'Simpan Perubahan' : '+ Tambah CPPT' }}</button>
+                <button v-if="cpptEditId" class="btn btn-sm btn-secondary" @click="cancelEditCppt">Batal</button>
               </div>
             </div>
 
@@ -1083,6 +1209,7 @@ const statusPill = (s) => ({
                   <strong>{{ e.by || '—' }}</strong>
                   <span class="cppt-time">{{ fmt(e.at) }}</span>
                   <span v-if="e.edited_at" class="cppt-edited">(diedit)</span>
+                  <span v-if="e.ews_level" class="ews-badge" :class="'ews-' + e.ews_level.toLowerCase()" :title="`EWS ${e.ews_score} (${e.ews_params} parameter)`">EWS {{ e.ews_score }} · {{ e.ews_label }}</span>
                 </div>
                 <div v-if="e.td_sistol || e.nadi || e.suhu || e.spo2 || e.kgd || e.pain_scale != null" class="cppt-ttv">
                   <span v-if="e.td_sistol">TD {{ e.td_sistol }}/{{ e.td_diastol }}</span>
@@ -1121,6 +1248,16 @@ const statusPill = (s) => ({
             </div>
           </div>
 
+          <!-- TAB eMAR — pemberian obat ke pasien (PKPO 4.3) -->
+          <div v-show="detailTab === 'emar'">
+            <MarPanel v-if="detailVisitId" :visit-id="detailVisitId" @notify="(p) => notify(p.msg, p.ok)" />
+          </div>
+
+          <!-- TAB BALANCE CAIRAN — STARKES PAP -->
+          <div v-show="detailTab === 'cairan'">
+            <FluidBalancePanel v-if="detailVisitId" :visit-id="detailVisitId" @notify="(p) => notify(p.msg, p.ok)" />
+          </div>
+
           <!-- TAB BIAYA -->
           <div v-show="detailTab === 'biaya'">
             <div class="add-box">
@@ -1147,7 +1284,7 @@ const statusPill = (s) => ({
                 <div v-else-if="tindakanComboOpen && tindakanSearch.trim()" class="combo-empty">Tindakan tidak ditemukan</div>
               </div>
               <div class="add-row add-row-end">
-                <button class="btn-primary btn-press btn-add" :disabled="!selectedTindakan" @click="submitTindakan">+ Tambah</button>
+                <button class="btn btn-sm btn-primary btn-add" :disabled="!selectedTindakan" @click="submitTindakan">+ Tambah</button>
               </div>
               <p class="req-hint">Harga mengikuti Buku Tarif sesuai penjamin pasien (qty 1).</p>
             </div>
@@ -1192,7 +1329,7 @@ const statusPill = (s) => ({
                     <option v-for="d in DURASI_OPTS" :key="d" :value="d">{{ d }}</option>
                   </select>
                   <input v-model="reqPick.instructions" placeholder="catatan (opsional)" style="min-width:110px" title="Catatan" />
-                  <button class="btn-primary btn-press btn-add" :disabled="!reqPickObat" @click="addToReqCart">+ Tambah</button>
+                  <button class="btn btn-sm btn-primary btn-add" :disabled="!reqPickObat" @click="addToReqCart">+ Tambah</button>
                 </div>
               </div>
 
@@ -1208,7 +1345,7 @@ const statusPill = (s) => ({
                 </tbody>
               </table>
               <div class="req-actions">
-                <button class="btn-primary btn-press" :disabled="busy || !reqCart.length" @click="submitPermintaan">Kirim ke Farmasi</button>
+                <button class="btn btn-sm btn-primary" :disabled="busy || !reqCart.length" @click="submitPermintaan">Kirim ke Farmasi</button>
               </div>
 
               <h4 style="margin-top:1rem">Riwayat Permintaan</h4>
@@ -1251,8 +1388,8 @@ const statusPill = (s) => ({
           </div>
 
           </template>
-        </div><!-- /.ri-detail -->
-      </div><!-- /.ri-split -->
+          <p v-else class="po-state">Memuat detail pasien…</p>
+      </div><!-- /.ri-detail-full -->
     </section>
 
     <!-- MODAL DOKUMEN RM (Form Registry) — tombol "Dokumen RM" di header kartu pasien -->
@@ -1293,7 +1430,7 @@ const statusPill = (s) => ({
           </select>
           <input v-model="docForm.title" class="doc-title" placeholder="Judul (opsional, default = nama berkas)" />
           <input ref="docFileInput" type="file" class="doc-file" accept=".pdf,.jpg,.jpeg,.png" @change="onDocFile" />
-          <button class="btn-primary btn-press btn-add" :disabled="busy" @click="submitDocument">{{ busy ? '…' : 'Unggah' }}</button>
+          <button class="btn btn-sm btn-primary btn-add" :disabled="busy" @click="submitDocument">{{ busy ? '…' : 'Unggah' }}</button>
         </div>
 
         <table class="bill">
@@ -1325,6 +1462,32 @@ const statusPill = (s) => ({
       />
     </div>
 
+    <!-- MODAL SPRI (date-picker, ganti prompt) -->
+    <div v-if="showSpriModal" class="modal-bg" @click.self="showSpriModal = false">
+      <div class="modal modal-narrow">
+        <h3>{{ spriModal.mode === 'edit' ? 'Ubah Tanggal SPRI' : 'Terbitkan SPRI' }}</h3>
+        <p class="muted2">{{ spriModal.row?.name }} · RM {{ spriModal.row?.no_rm }}</p>
+        <label>Tanggal rencana<input v-model="spriModal.tgl" type="date" /></label>
+        <p class="hint">SPRI (Surat Perintah Rawat Inap) dikirim ke VClaim BPJS.</p>
+        <div class="modal-actions">
+          <button @click="showSpriModal = false">Batal</button>
+          <button class="btn-primary" :disabled="busy" @click="confirmSpriModal">{{ busy ? '…' : (spriModal.mode === 'edit' ? 'Simpan' : 'Terbitkan') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL KONFIRMASI generik (ganti window.confirm) -->
+    <div v-if="confirmState" class="modal-bg" @click.self="resolveConfirm(false)">
+      <div class="modal modal-narrow">
+        <h3>{{ confirmState.title }}</h3>
+        <p class="confirm-msg">{{ confirmState.message }}</p>
+        <div class="modal-actions">
+          <button @click="resolveConfirm(false)">Batal</button>
+          <button :class="confirmState.danger ? 'btn-danger' : 'btn-primary'" @click="resolveConfirm(true)">{{ confirmState.okLabel }}</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="toast" class="toast" :class="{ err: !toast.ok }">{{ toast.msg }}</div>
   </div>
 </template>
@@ -1338,12 +1501,13 @@ const statusPill = (s) => ({
 .page-head .sub { font-size: 12px; color: var(--tu); margin: 4px 0 0; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.6rem; margin-bottom: 1rem; }
-.stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; }
+.stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; transition: box-shadow .15s; }
+.stat-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.06); }
 .stat-card.alert-card { border-color: var(--wbd); }
 .stat-icon { width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .stat-icon svg { width: 16px; height: 16px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.stat-val { font-size: 18px; font-weight: 700; color: var(--td); font-family: var(--font-mono); }
-.stat-lbl { font-size: 10.5px; color: var(--tu); }
+.stat-val { font-size: 20px; font-weight: 700; color: var(--td); font-family: var(--font-mono); }
+.stat-lbl { font-size: 11.5px; color: var(--tm); }
 
 .nav-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--gb); padding: 0 4px; margin-bottom: 1rem; flex-wrap: wrap; }
 .nt { padding: 0.6rem 1rem; font-size: 12px; font-weight: 500; color: var(--tu); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--font-sans); display: inline-flex; align-items: center; gap: 6px; }
@@ -1382,16 +1546,23 @@ const statusPill = (s) => ({
 .pill-danger { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
 .pill-warning { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
 
-/* Tombol */
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; height: 32px; border-radius: 7px; font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; }
-.btn-sm { height: 26px; padding: 0 10px; font-size: 11px; }
+/* Tombol — diseragamkan ke skala kanonik DokterView (38px/9px/13px) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 16px; height: 38px; border-radius: 9px; font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer; border: 1.5px solid transparent; transition: all .15s; }
+.btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.btn:active:not(:disabled) { transform: translateY(1px) scale(.99); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 11px; border-radius: 8px; }
+.btn-lg { height: 46px; padding: 0 22px; font-size: 14px; font-weight: 600; }
 .btn-primary { background: var(--gd); color: #fff; border-color: var(--gd); }
-.btn-primary:hover:not(:disabled) { background: var(--gm); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary:hover:not(:disabled) { background: var(--gm); border-color: var(--gm); }
+.btn-success { background: var(--ga); color: #fff; border-color: var(--ga); }
+.btn-success:hover:not(:disabled) { background: var(--gm); border-color: var(--gm); }
 .btn-info { background: var(--it); color: #fff; border-color: var(--it); }
-.btn-warning { background: var(--lm); color: var(--td); border-color: var(--lm); }
+.btn-info:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-warning { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
+.btn-warning:hover:not(:disabled) { background: var(--wt); color: #fff; border-color: var(--wt); }
 .btn-secondary { background: transparent; color: var(--tm); border-color: var(--gb); }
-.btn-secondary:hover { border-color: var(--ga); color: var(--td); background: var(--gl); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--ga); color: var(--td); background: var(--gl); }
 
 .hint { font-size: 11px; color: var(--tu); padding-left: 2px; }
 .muted { color: var(--tu); }
@@ -1399,15 +1570,17 @@ const statusPill = (s) => ({
 
 /* Papan Room (cards) */
 .board { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.85rem; }
-.room-card { border: 1px solid var(--gb); border-radius: 11px; padding: .75rem; background: var(--bc); }
+.room-card { border: 1px solid var(--gb); border-radius: 11px; padding: .75rem; background: var(--bc); transition: box-shadow .15s; }
+.room-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.05); }
 .room-head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: baseline; border-bottom: 1px solid var(--gb); padding-bottom: .5rem; }
 .room-head strong { color: var(--td); }
 .room-head .kelas { color: var(--tu); font-size: .8rem; }
 .room-head .occ { margin-left: auto; font-size: .8rem; color: var(--ga); font-weight: 600; }
 .beds { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
-.bed { border: 2px solid; border-radius: 8px; padding: .4rem; min-width: 120px; font-size: .8rem; }
+.bed { border: 2px solid; border-radius: 8px; padding: .4rem; min-width: 120px; font-size: .8rem; transition: transform .12s, box-shadow .12s; }
+.bed:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
 .bed-label { font-weight: 700; color: var(--td); }
-.bed-status { font-size: .7rem; font-weight: 600; }
+.bed-status { display: inline-block; margin-top: 2px; font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
 .bed-pt { margin-top: .3rem; cursor: pointer; color: var(--ga); font-weight: 600; }
 .bed-clean-btn { margin-top: .4rem; width: 100%; background: var(--wt); color: #fff; border: none; border-radius: 5px; padding: .25rem; font-size: .72rem; cursor: pointer; }
 
@@ -1438,6 +1611,22 @@ const statusPill = (s) => ({
 .modal-actions .btn-primary { background: var(--gd); color: #fff; border-color: var(--gd); }
 .modal-actions .btn-primary:hover:not(:disabled) { background: var(--gm); }
 .modal-actions .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+.modal-actions .btn-danger { background: var(--et); color: #fff; border-color: var(--et); }
+.modal-actions .btn-danger:hover { filter: brightness(1.06); }
+.modal-narrow { width: 380px; }
+.confirm-msg { font-size: 13px; color: var(--td); line-height: 1.5; margin: .2rem 0 .4rem; }
+
+/* Checklist kesiapan pulang */
+.dc-checklist { border: 1px solid var(--wbd); background: var(--wb); border-radius: 9px; padding: .55rem .75rem; margin: .6rem 0; }
+.dc-checklist.ready { border-color: var(--sbd); background: var(--sb); }
+.dc-title { font-size: 12px; font-weight: 700; color: var(--wt); margin-bottom: .3rem; }
+.dc-checklist.ready .dc-title { color: var(--st); }
+.dc-checklist ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.dc-checklist li { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.dc-mark { width: 14px; text-align: center; font-weight: 700; }
+.dc-ok { color: var(--st); }
+.dc-warn { color: var(--wt); }
+.dc-note { font-size: 10.5px; color: var(--tu); margin: .35rem 0 0; }
 
 /* Discharge sections */
 .discharge-section { border: 1px solid var(--gb); border-radius: 8px; padding: .5rem .7rem; margin: .6rem 0; }
@@ -1520,7 +1709,10 @@ const statusPill = (s) => ({
 
 /* ── Pasien Aktif: panel inline 2-kolom (gaya IgdView, lega tapi padat) ──────── */
 .ri-split { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 1rem; align-items: start; }
-.ri-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 230px); overflow-y: auto; padding-right: 2px; position: sticky; top: 0; }
+.ri-side { display: flex; flex-direction: column; gap: 8px; position: sticky; top: 0; }
+.ri-search { width: 100%; box-sizing: border-box; height: 34px; padding: 0 12px; border: 1px solid var(--gb); border-radius: 9px; font: inherit; font-size: 12.5px; background: var(--bc); color: var(--td); }
+.ri-search:focus { outline: none; border-color: var(--ga); }
+.ri-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 270px); overflow-y: auto; padding-right: 2px; }
 .ri-list-empty { padding: 1.2rem .6rem; text-align: center; color: var(--tu); font-size: 12.5px; }
 .ri-pcard { width: 100%; text-align: left; background: var(--bc); border: 1px solid var(--gb); border-left: 3px solid var(--gb); border-radius: 10px; padding: .6rem .7rem; cursor: pointer; font-family: inherit; transition: border-color .14s, background .14s, box-shadow .14s; }
 .ri-pcard:hover { border-color: #b8c1cf; background: var(--bg); }
@@ -1531,21 +1723,35 @@ const statusPill = (s) => ({
 .ri-pcard-since { font-size: 10.5px; color: var(--tu); margin-top: 1px; }
 
 .ri-detail { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; min-height: 240px; padding: 0 1rem 1rem; }
+/* Detail full-width (tab Pasien Aktif: tabel → detail, bukan 2 kolom) */
+.ri-detail-full { padding: .55rem 1rem 1rem; }
+.ri-back { margin: 0 0 .5rem; }
+.ri-row { cursor: pointer; }
+.ri-row:hover { background: var(--bs); }
 .ri-detail-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .6rem; min-height: 240px; color: var(--tu); text-align: center; }
 .ri-detail-empty svg { width: 40px; height: 40px; opacity: .5; }
 .ri-detail-empty p { font-size: 12.5px; margin: 0; }
-.det-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; padding: .85rem 0 .7rem; border-bottom: 1px solid var(--gb); position: sticky; top: 0; background: var(--bc); z-index: 2; }
-.det-id strong { font-family: var(--font-display); font-size: 16px; color: var(--td); }
-.det-rm { margin-left: 8px; font-size: 12px; color: var(--tm); }
-.det-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.det-meta { display: flex; gap: 1.2rem; flex-wrap: wrap; padding: .6rem 0; font-size: 12px; color: var(--td); border-bottom: 1px solid var(--gb); }
-.det-meta i { color: var(--tu); font-style: normal; margin-right: 4px; }
+/* Header detail = banner gradient navy (identitas + meta) + toolbar aksi di bawahnya */
+.det-banner { position: sticky; top: 0; z-index: 2; margin: 0 -1rem; padding: .85rem 1rem .8rem; background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; border-radius: 12px 12px 0 0; }
+.det-id strong { font-family: var(--font-display); font-size: 19px; color: #fff; line-height: 1.15; }
+.det-rm { margin-left: 8px; font-size: 12px; color: rgba(255,255,255,.78); }
+.det-meta { display: flex; gap: 1.1rem; flex-wrap: wrap; margin-top: .5rem; font-size: 12px; color: rgba(255,255,255,.92); }
+.det-meta i { color: rgba(255,255,255,.6); font-style: normal; margin-right: 4px; }
+.det-toolbar { display: flex; gap: 6px; flex-wrap: wrap; padding: .65rem 0; border-bottom: 1px solid var(--gb); }
 
 @media (max-width: 900px) {
   .ri-split { grid-template-columns: 1fr; }
-  .ri-list { max-height: none; position: static; flex-direction: row; flex-wrap: wrap; }
+  .ri-side { position: static; }
+  .ri-list { max-height: none; flex-direction: row; flex-wrap: wrap; }
   .ri-pcard { flex: 1 1 220px; }
 }
+
+/* Flag keselamatan di header detail */
+.det-flags { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .6rem 0 0; }
+.alert-allergy { display: flex; align-items: center; gap: 8px; flex: 1 1 280px; background: var(--eb); border: 1px solid var(--ebd); color: var(--et); border-radius: 9px; padding: .5rem .7rem; font-size: 12.5px; }
+.alert-allergy svg { width: 16px; height: 16px; flex-shrink: 0; }
+.flag-chip { display: inline-flex; align-items: center; gap: 5px; padding: .3rem .6rem; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.flag-warn { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
 
 /* CPPT */
 .cppt-form { border: 1px solid var(--gb); border-radius: 8px; padding: .7rem; margin-bottom: 1rem; background: var(--bs); }
@@ -1599,6 +1805,12 @@ const statusPill = (s) => ({
 .cppt-foot-actions { margin-left: auto; display: flex; gap: .6rem; }
 .btn-link { background: none; border: none; padding: 0; color: var(--ga); cursor: pointer; font-size: .76rem; text-decoration: underline; }
 .btn-verify { color: var(--st); font-weight: 600; }
+/* Badge EWS di timeline CPPT */
+.ews-badge { font-size: .66rem; font-weight: 700; padding: .1rem .45rem; border-radius: 999px; white-space: nowrap; }
+.ews-hijau { background: var(--sb); color: var(--st); border: 1px solid var(--sbd); }
+.ews-kuning { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); }
+.ews-merah { background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
+
 /* Badge peran PPA */
 .ppa-badge { font-size: .68rem; font-weight: 700; padding: .1rem .45rem; border-radius: 10px; color: #fff; white-space: nowrap; }
 .ppa-DOKTER { background: var(--gd); }

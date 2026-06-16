@@ -544,6 +544,7 @@ export const formTemplateApi = {
   finalize:    (docId, signatureIds = []) => api.post(`/rekam-medis/document/${docId}/finalize`, { signature_ids: signatureIds }),
   snapshot:    (docId) => api.get(`/rekam-medis/document/${docId}/render`),
   saveDraftContent: (docId, renderedHtml) => api.put(`/rekam-medis/document/${docId}/draft-content`, { rendered_html: renderedHtml }),
+  discardDraft:     (docId) => api.delete(`/rekam-medis/document/${docId}`),
 
   // ─── Fase 4 — Signature flow ───────────────────────────────────────────
   sign:                (docId, payload) => api.post(`/rekam-medis/document/${docId}/sign`, payload),
@@ -697,6 +698,16 @@ export const ranapApi = {
   // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
   permintaanObatList:   (visitId)          => api.get(`/rawat-inap/${visitId}/permintaan-obat`),
   createPermintaanObat: (visitId, payload) => api.post(`/rawat-inap/${visitId}/permintaan-obat`, payload),
+
+  // eMAR — pemberian obat ke pasien (PKPO 4.3)
+  marBoard:            (visitId)          => api.get(`/rawat-inap/${visitId}/mar`),
+  recordAdministration:(visitId, payload) => api.post(`/rawat-inap/${visitId}/mar`, payload),
+  deleteAdministration:(visitId, id)      => api.delete(`/rawat-inap/${visitId}/mar/${id}`),
+
+  // Balance cairan (intake/output)
+  fluidBalance:        (visitId)          => api.get(`/rawat-inap/${visitId}/fluid-balance`),
+  addFluidBalance:     (visitId, payload) => api.post(`/rawat-inap/${visitId}/fluid-balance`, payload),
+  deleteFluidBalance:  (visitId, id)      => api.delete(`/rawat-inap/${visitId}/fluid-balance/${id}`),
 
   // CPPT
   cpptList:      (visitId)           => api.get(`/rawat-inap/${visitId}/cppt`),

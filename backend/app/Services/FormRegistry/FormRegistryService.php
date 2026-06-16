@@ -905,6 +905,40 @@ final class FormRegistryService
     }
 
     /**
+     * Hapus dokumen DRAFT/RENDERED yang tidak jadi dipakai (mis. form dibuka lalu
+     * autosave membuat draft yang nyangkut). HANYA pra-tanda-tangan & tanpa TTD:
+     * status PENDING_SIGNATURE/FINALIZED/FINAL/SUPERSEDED/VOID TIDAK boleh dihapus
+     * demi integritas RM & audit. Soft-delete (riwayat tetap di DB).
+     */
+    public function deleteDraft(string $patientDocumentId): void
+    {
+        $doc = PatientDocument::query()->findOrFail($patientDocumentId);
+
+        if (! in_array($doc->status, ['DRAFT', 'RENDERED'], true)) {
+            throw new RuntimeException(
+                "Hanya dokumen DRAFT yang dapat dihapus. Status saat ini: {$doc->status}."
+            );
+        }
+        if (! empty($doc->signatures)) {
+            throw new RuntimeException('Dokumen sudah memiliki tanda tangan — tidak dapat dihapus.');
+        }
+
+        FormRegistryAudit::record(
+            'FORM_DOC_DRAFT_DELETED',
+            model: 'PatientDocument',
+            modelId: $doc->id,
+            description: 'DRAFT dihapus (form tidak jadi dipakai)',
+            context: [
+                'template_code' => $doc->template_code,
+                'visit_id'      => $doc->visit_id,
+                'status'        => $doc->status,
+            ],
+        );
+
+        $doc->delete(); // soft-delete (SoftDeletes)
+    }
+
+    /**
      * Revisi dokumen final (koreksi via "generate ulang + TTD ulang").
      *
      * Alih-alih mengubah dokumen yang sudah TTD (immutable), dibuat dokumen

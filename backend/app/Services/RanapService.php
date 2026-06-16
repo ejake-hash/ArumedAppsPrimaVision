@@ -531,6 +531,145 @@ class RanapService
     }
 
     // =========================================================================
+    // eMAR — pemberian obat ke pasien (PKPO 4.3). Order = item resep RANAP yang
+    // sudah DISPENSED; pemberian dicatat per-event (jam + perawat + status).
+    // Bukan tagihan — billing tetap terjadi saat dispensing Farmasi.
+    // =========================================================================
+
+    /** Papan eMAR: daftar order obat aktif (dispensed) + riwayat pemberian. */
+    public function marBoard(Visit $visit): array
+    {
+        $orders = \App\Models\PrescriptionItem::with('medication')
+            ->whereHas('prescription', function ($q) use ($visit) {
+                $q->where('visit_id', $visit->id)
+                  ->where('type', \App\Models\Prescription::TYPE_RANAP)
+                  ->where('status', 'DISPENSED');
+            })
+            ->get()
+            ->map(fn ($it) => [
+                'prescription_item_id' => $it->id,
+                'medication_id'        => $it->medication_id,
+                'name'                 => $it->medication?->name ?? '—',
+                'unit'                 => $it->medication?->unit,
+                'dose'                 => $it->dose,
+                'frequency'            => $it->frequency,
+                'route'                => $it->route,
+                'quantity'             => $it->quantity,
+            ])->values()->all();
+
+        $administrations = \App\Models\MedicationAdministration::with('administeredBy:id,name')
+            ->where('visit_id', $visit->id)
+            ->orderByDesc('administered_at')
+            ->get()
+            ->map(fn ($a) => [
+                'id'                   => $a->id,
+                'prescription_item_id' => $a->prescription_item_id,
+                'medication_id'        => $a->medication_id,
+                'medication_name'      => $a->medication_name,
+                'dose'                 => $a->dose,
+                'route'                => $a->route,
+                'status'               => $a->status,
+                'reason'               => $a->reason,
+                'notes'                => $a->notes,
+                'administered_at'      => $a->administered_at,
+                'by'                   => $a->administeredBy?->name,
+            ])->all();
+
+        return ['orders' => $orders, 'administrations' => $administrations];
+    }
+
+    /** Catat pemberian obat (default jam = sekarang, perawat = user login). */
+    public function recordAdministration(Visit $visit, array $data): \App\Models\MedicationAdministration
+    {
+        $employeeId = auth('api')->user()?->employee?->id;
+
+        return \App\Models\MedicationAdministration::create([
+            'visit_id'             => $visit->id,
+            'prescription_item_id' => $data['prescription_item_id'] ?? null,
+            'medication_id'        => $data['medication_id'] ?? null,
+            'medication_name'      => $data['medication_name'] ?? null,
+            'dose'                 => $data['dose'] ?? null,
+            'route'                => $data['route'] ?? null,
+            'administered_at'      => $data['administered_at'] ?? now(),
+            'administered_by_id'   => $employeeId,
+            'status'               => in_array($data['status'] ?? null, ['GIVEN', 'HELD', 'SKIPPED'], true) ? $data['status'] : 'GIVEN',
+            'reason'               => $data['reason'] ?? null,
+            'notes'                => $data['notes'] ?? null,
+        ]);
+    }
+
+    /** Hapus catatan pemberian (koreksi). */
+    public function deleteAdministration(Visit $visit, string $id): void
+    {
+        $rec = \App\Models\MedicationAdministration::where('visit_id', $visit->id)->findOrFail($id);
+        $rec->delete();
+    }
+
+    // =========================================================================
+    // BALANCE CAIRAN (intake/output) — STARKES PAP (kondisional).
+    // Catatan per-event; saldo dihitung saat baca (intake − output).
+    // =========================================================================
+
+    /** Papan balance cairan: catatan + ringkasan saldo 24 jam & total. */
+    public function fluidBalanceBoard(Visit $visit): array
+    {
+        $records = \App\Models\FluidBalanceRecord::with('recordedBy:id,name')
+            ->where('visit_id', $visit->id)
+            ->orderByDesc('recorded_at')
+            ->get();
+
+        $since24 = now()->subDay();
+        $intake24 = $output24 = $intakeTotal = $outputTotal = 0;
+        foreach ($records as $r) {
+            $isIn = $r->direction === \App\Models\FluidBalanceRecord::DIR_INTAKE;
+            if ($isIn) $intakeTotal += $r->volume_ml; else $outputTotal += $r->volume_ml;
+            if ($r->recorded_at && $r->recorded_at->gte($since24)) {
+                if ($isIn) $intake24 += $r->volume_ml; else $output24 += $r->volume_ml;
+            }
+        }
+
+        return [
+            'records' => $records->map(fn ($r) => [
+                'id'          => $r->id,
+                'recorded_at' => $r->recorded_at,
+                'direction'   => $r->direction,
+                'category'    => $r->category,
+                'volume_ml'   => $r->volume_ml,
+                'notes'       => $r->notes,
+                'by'          => $r->recordedBy?->name,
+            ])->all(),
+            'summary' => [
+                'intake_24h'    => $intake24,
+                'output_24h'    => $output24,
+                'balance_24h'   => $intake24 - $output24,
+                'intake_total'  => $intakeTotal,
+                'output_total'  => $outputTotal,
+                'balance_total' => $intakeTotal - $outputTotal,
+            ],
+        ];
+    }
+
+    /** Tambah catatan intake/output (jam = sekarang, pencatat = user login). */
+    public function addFluidBalance(Visit $visit, array $data): \App\Models\FluidBalanceRecord
+    {
+        return \App\Models\FluidBalanceRecord::create([
+            'visit_id'       => $visit->id,
+            'recorded_at'    => $data['recorded_at'] ?? now(),
+            'direction'      => $data['direction'],
+            'category'       => $data['category'] ?? null,
+            'volume_ml'      => $data['volume_ml'],
+            'recorded_by_id' => auth('api')->user()?->employee?->id,
+            'notes'          => $data['notes'] ?? null,
+        ]);
+    }
+
+    /** Hapus catatan balance cairan (koreksi). */
+    public function deleteFluidBalance(Visit $visit, string $id): void
+    {
+        \App\Models\FluidBalanceRecord::where('visit_id', $visit->id)->findOrFail($id)->delete();
+    }
+
+    // =========================================================================
     // DOKUMEN/HASIL EKSTERNAL (Fase 8C) — lab/radiologi pihak ke-3 pre-op.
     // Hanya tempel HASIL (RS bayar pihak ke-3 di luar alur); tagihan tindakan
     // terkait tetap lewat alur procedures biasa.
@@ -604,9 +743,22 @@ class RanapService
 
     private function formatCpptEntry(NurseCpptEntry $e): array
     {
+        // EWS (NEWS2-parsial) dihitung dari TTV entri — calc-on-read, tanpa tabel.
+        $ews = \App\Services\EwsCalculator::calculate([
+            'respirasi' => $e->respirasi,
+            'spo2'      => $e->spo2,
+            'suhu'      => $e->suhu,
+            'td_sistol' => $e->td_sistol,
+            'nadi'      => $e->nadi,
+        ]);
+
         return [
             'id'          => $e->id,
             'ppa_role'    => $e->ppa_role,
+            'ews_score'   => $ews['score'] ?? null,
+            'ews_level'   => $ews['level'] ?? null,
+            'ews_label'   => $ews['label'] ?? null,
+            'ews_params'  => $ews['params'] ?? null,
             'td_sistol'   => $e->td_sistol,
             'td_diastol'  => $e->td_diastol,
             'nadi'        => $e->nadi,

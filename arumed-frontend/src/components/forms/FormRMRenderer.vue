@@ -33,7 +33,7 @@ const props = defineProps({
   autoOpen:  { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'deleted'])
 
 const open    = ref(false)
 const tab     = ref('input')   // INPUT mode start at 'input'; toggle to 'output' setelah submit
@@ -281,6 +281,43 @@ async function switchTab(t) {
 function close() {
   open.value = false
   emit('close')
+}
+
+// ── Hapus draft (form dibuka lalu tak jadi dipakai) ──────────────────────────
+// Hanya DRAFT/RENDERED pra-TTD yang boleh dihapus (server menolak yang ber-TTD/final).
+const deleting = ref(false)
+const confirmDelete = ref(false)
+let confirmDeleteTimer = null
+const deletableDocId = computed(() => {
+  const id = submittedDocId.value || existingDocId.value
+  if (!id) return null
+  const st = docStatus.value
+  if (st && !['DRAFT', 'RENDERED'].includes(st)) return null  // ber-TTD/final → tak boleh
+  return id
+})
+function askDeleteDraft() {
+  if (!confirmDelete.value) {
+    confirmDelete.value = true
+    clearTimeout(confirmDeleteTimer)
+    confirmDeleteTimer = setTimeout(() => { confirmDelete.value = false }, 4000)
+    return
+  }
+  clearTimeout(confirmDeleteTimer)
+  confirmDelete.value = false
+  doDeleteDraft()
+}
+async function doDeleteDraft() {
+  const id = deletableDocId.value
+  if (!id) return
+  deleting.value = true
+  try {
+    await formTemplateApi.discardDraft(id)
+    submittedDocId.value = null
+    emit('deleted', id)
+    close()
+  } catch (e) {
+    error.value = e.response?.data?.message || 'Gagal menghapus draft'
+  } finally { deleting.value = false }
 }
 
 // autoOpen → buka modal langsung saat mount (mis. Resume Medis pasca-finalisasi).
@@ -758,6 +795,15 @@ async function submitAddendum() {
             <div v-if="error" class="frr-err">{{ error }}</div>
 
             <div class="frr-footer">
+              <button
+                v-if="deletableDocId"
+                class="frr-btn-discard"
+                :disabled="deleting || finalizing"
+                title="Hapus draft ini (form tidak jadi dipakai). Hanya dokumen belum di-TTD."
+                @click="askDeleteDraft"
+              >
+                {{ deleting ? 'Menghapus…' : (confirmDelete ? 'Klik lagi untuk hapus' : '🗑 Hapus Draft') }}
+              </button>
               <span v-if="hasGroups && autosaving" class="frr-autosave">Menyimpan…</span>
               <span v-else-if="hasGroups && submittedDocId" class="frr-autosave frr-autosave-ok">Tersimpan otomatis ✓</span>
               <button class="frr-btn-ghost" :disabled="submitting || finalizing" @click="submitInput()">
@@ -935,8 +981,16 @@ async function submitAddendum() {
 
 .frr-footer {
   margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--gb);
-  display: flex; gap: 0.75rem; justify-content: flex-end;
+  display: flex; gap: 0.75rem; justify-content: flex-end; align-items: center;
 }
+/* Hapus Draft — di kiri footer, gaya danger-outline (konfirmasi 2-langkah). */
+.frr-btn-discard {
+  margin-right: auto; padding: 0 14px; height: 38px; border-radius: 9px;
+  font-family: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
+  background: transparent; color: #c83b3b; border: 1.5px solid #e3b1b1; transition: all .15s;
+}
+.frr-btn-discard:hover:not(:disabled) { background: #c83b3b; color: #fff; border-color: #c83b3b; }
+.frr-btn-discard:disabled { opacity: .5; cursor: not-allowed; }
 
 .frr-sig-section {
   margin-top: 1.25rem; padding: 1rem; border: 1px solid var(--gb); border-radius: 8px;
