@@ -793,6 +793,17 @@ export const antreanTvApi = {
     signal, // AbortController.signal — untuk cancel upload
   }),
   deleteMediaVideo:    () => api.delete('/antrean-tv/media-settings/video'),
+  uploadMediaImage:    (formData, onProgress) => api.post('/antrean-tv/media-settings/image', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 5 * 60 * 1000,
+    onUploadProgress: onProgress,
+  }),
+  // Registry TV per-perangkat
+  registerDevice:      (payload) => api.post('/antrean-tv/device/register', payload),
+  deviceMedia:         (deviceKey) => api.get(`/antrean-tv/device/${deviceKey}`),
+  listDevices:         () => api.get('/antrean-tv/devices'),
+  updateDevice:        (id, payload) => api.put(`/antrean-tv/devices/${id}`, payload),
+  deleteDevice:        (id) => api.delete(`/antrean-tv/devices/${id}`),
 }
 
 /** Jadwal Dokter */

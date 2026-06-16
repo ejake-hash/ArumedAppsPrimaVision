@@ -42,6 +42,10 @@ class TvMediaSettingController extends Controller
             'slides'             => 'nullable|array',
             'slides.*.url'       => 'required_with:slides|string|max:1000',
             'slide_interval'     => 'sometimes|integer|min:3|max:60',
+            // Cakupan tampilan: panel kiri vs fullscreen, + apakah flash panggilan
+            // tetap muncul di atas slideshow fullscreen.
+            'slide_scope'           => 'sometimes|string|in:panel,fullscreen',
+            'flash_over_fullscreen' => 'sometimes|boolean',
             // Running text bawah layar — array of string (boleh kosong = hapus semua).
             'ticker_messages'    => 'sometimes|array|max:30',
             'ticker_messages.*'  => 'string|max:200',
@@ -146,9 +150,35 @@ class TvMediaSettingController extends Controller
             'has_uploaded_file'  => (bool) $row->local_video_path,
             'slides'             => $row->slides ?? [],
             'slide_interval'     => (int) $row->slide_interval,
+            'slide_scope'           => $row->slide_scope ?: 'panel',
+            'flash_over_fullscreen' => (bool) $row->flash_over_fullscreen,
             // Null (baris lama sebelum migrasi) → fallback ke pesan bawaan supaya
             // ticker tidak kosong sampai operator menyimpan untuk pertama kali.
             'ticker_messages'    => $row->ticker_messages ?? TvMediaSetting::defaultTickerMessages(),
         ];
+    }
+
+    /**
+     * POST /antrean-tv/media-settings/image — protected (auth:api, multipart).
+     * Upload satu gambar untuk slideshow (global ATAU per-TV). Hanya menyimpan
+     * file & mengembalikan URL-nya; penyusunan daftar slide dilakukan FE lalu
+     * dikirim balik via update() (global) atau update device (per-TV). Dengan
+     * begitu gambar yang sama bisa dipakai TV mana pun tanpa kolom per-target.
+     */
+    public function uploadImage(Request $request): JsonResponse
+    {
+        $request->validate([
+            // 10 MB cukup untuk foto promo resolusi tinggi.
+            'image' => 'required|image|mimes:jpeg,jpg,png,webp,gif|max:10240',
+        ]);
+
+        $path = $request->file('image')->store('tv-media/images', 'public');
+        $url  = Storage::disk('public')->url($path);
+
+        return response()->json([
+            'success' => true,
+            'data'    => ['url' => $url, 'path' => $path],
+            'message' => 'Gambar terunggah.',
+        ]);
     }
 }

@@ -344,8 +344,10 @@ onUnmounted(() => {
 <style scoped>
 /* ─── ROOT ─── */
 .anjungan {
-  width: 100vw;
-  height: 100vh;
+  /* Pin ke viewport (bukan 100vw/100vh yang memasukkan lebar scrollbar →
+     gutter putih). position:fixed inset:0 mengisi layar kiosk persis. */
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
   background: linear-gradient(155deg, var(--gd) 0%, var(--gm) 100%);

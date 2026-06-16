@@ -43,6 +43,7 @@ use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\TvDisplaySettingController;
 use App\Http\Controllers\TvAudioSettingController;
 use App\Http\Controllers\TvMediaSettingController;
+use App\Http\Controllers\TvDeviceController;
 use App\Http\Controllers\TvBrandingSettingController;
 use App\Http\Controllers\AsuransiController;
 use App\Http\Controllers\IgdController;
@@ -117,6 +118,9 @@ Route::prefix('v1')->group(function () {
         Route::get('/branding-settings', [TvBrandingSettingController::class, 'show']);
         // Media (mode, YouTube URL, video lokal, slideshow) — public read
         Route::get('/media-settings',    [TvMediaSettingController::class, 'show']);
+        // Registry TV per-perangkat — TV lapor diri & ambil media efektifnya (public)
+        Route::post('/device/register',  [TvDeviceController::class, 'register']);
+        Route::get('/device/{deviceKey}', [TvDeviceController::class, 'show']);
     });
 
     // =========================================================================
@@ -175,6 +179,12 @@ Route::prefix('v1')->group(function () {
         Route::put('/antrean-tv/media-settings',           [TvMediaSettingController::class, 'update'])->middleware('permission:antrian_tv.write');
         Route::post('/antrean-tv/media-settings/video',    [TvMediaSettingController::class, 'uploadVideo'])->middleware('permission:antrian_tv.write');
         Route::delete('/antrean-tv/media-settings/video',  [TvMediaSettingController::class, 'deleteVideo'])->middleware('permission:antrian_tv.write');
+        // Upload gambar slideshow (global atau per-TV) — kembalikan URL saja
+        Route::post('/antrean-tv/media-settings/image',    [TvMediaSettingController::class, 'uploadImage'])->middleware('permission:antrian_tv.write');
+        // Registry TV per-perangkat — kelola nama & media tiap TV
+        Route::get('/antrean-tv/devices',         [TvDeviceController::class, 'index'])->middleware('permission:antrian_tv.write');
+        Route::put('/antrean-tv/devices/{id}',    [TvDeviceController::class, 'update'])->middleware('permission:antrian_tv.write');
+        Route::delete('/antrean-tv/devices/{id}', [TvDeviceController::class, 'destroy'])->middleware('permission:antrian_tv.write');
 
         // -----------------------------------------------------------------
         // AUTH

@@ -20,15 +20,18 @@ class TvMediaSetting extends Model
         'external_video_url',
         'slides',
         'slide_interval',
+        'slide_scope',
+        'flash_over_fullscreen',
         'ticker_messages',
     ];
 
     protected $casts = [
-        'video_autoplay'  => 'boolean',
-        'video_loop'      => 'boolean',
-        'slides'          => 'array',
-        'slide_interval'  => 'integer',
-        'ticker_messages' => 'array',
+        'video_autoplay'        => 'boolean',
+        'video_loop'            => 'boolean',
+        'slides'                => 'array',
+        'slide_interval'        => 'integer',
+        'flash_over_fullscreen' => 'boolean',
+        'ticker_messages'       => 'array',
     ];
 
     public static function singleton(): self
@@ -47,6 +50,8 @@ class TvMediaSetting extends Model
             'external_video_url' => null,
             'slides'             => [],
             'slide_interval'     => 8,
+            'slide_scope'        => 'panel',
+            'flash_over_fullscreen' => true,
             'ticker_messages'    => static::defaultTickerMessages(),
         ];
     }

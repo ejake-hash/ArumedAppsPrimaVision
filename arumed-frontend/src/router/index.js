@@ -148,11 +148,12 @@ import { useAuthStore } from '@/stores/auth'
 // Route yang tidak perlu login (public display screens + login itu sendiri)
 const publicRoutes = ['login', 'antrean-tv', 'anjungan']
 
-// Rute yang tampil "fluid"/responsif (mengalir mengikuti lebar layar). Hanya
-// Login & TTD Dokumen yang perlu jalan nyaman di HP/tablet; halaman kerja lain
-// SELALU desktop penuh (scroll horizontal bila jendela sempit). Lihat base.css
-// (kelas `app-fluid` pada <html>).
-const fluidRoutes = ['login', 'ttd-dokumen']
+// Rute yang tampil "fluid"/responsif (mengalir mengikuti lebar layar). Login &
+// TTD Dokumen perlu jalan nyaman di HP/tablet; antrean-tv & anjungan adalah
+// display publik LAYAR PENUH yang harus mengisi layar TV/kiosk berapa pun
+// resolusinya (tanpa min-width 1280 yang bikin terpotong + area putih). Halaman
+// kerja lain SELALU desktop penuh. Lihat base.css (kelas `app-fluid` pada <html>).
+const fluidRoutes = ['login', 'ttd-dokumen', 'antrean-tv', 'anjungan']
 
 // Terapkan mode tata letak per-rute: pasang/lepas kelas `app-fluid` di <html>
 // dan setel meta viewport. Browser desktop mengabaikan meta viewport, jadi

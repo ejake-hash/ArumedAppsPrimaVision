@@ -17,7 +17,16 @@ class TvMediaUpdated implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public function __construct(public readonly array $media) {}
+    /**
+     * @param array       $media     payload media (bentuk AntreanTVView.applyMediaPayload)
+     * @param string|null $deviceKey null = perubahan media GLOBAL (semua TV yang
+     *                               synced menerapkannya); berisi key = perubahan
+     *                               untuk SATU TV (hanya TV dengan device_key itu).
+     */
+    public function __construct(
+        public readonly array $media,
+        public readonly ?string $deviceKey = null,
+    ) {}
 
     public function broadcastOn(): array
     {
@@ -31,6 +40,9 @@ class TvMediaUpdated implements ShouldBroadcast
 
     public function broadcastWith(): array
     {
-        return ['media' => $this->media];
+        return [
+            'media'      => $this->media,
+            'device_key' => $this->deviceKey,
+        ];
     }
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { antreanTvApi } from '@/services/api'
 import logoPvPutih from '@/assets/images/logo-pv-putih.png'
 
@@ -373,12 +373,19 @@ async function fetchSnapshot() {
 // SEMUA station (ADMISI/TRIASE/REFRAKSIONIS/DOKTER/PENUNJANG/BEDAH/KASIR/FARMASI).
 // Backend fire AntreanTvUpdated dari QueueService::broadcastQueueUpdate +
 // AdmisiService::ambilTiketUmumKiosk.
+// Safety poll SELALU jalan berdampingan dengan WS — WS memberi update instan,
+// poll merekonsiliasi event yang sempat hilang (Reverb restart, blip jaringan,
+// gap saat resubscribe). Aman dari panggilan dobel karena `announcedCalls`
+// (dedup durable) menyaring panggilan yang sudah diumumkan via WS.
+const POLL_WS_OK   = 45_000   // WS sehat → poll lambat (sekadar jaring pengaman)
+const POLL_WS_DOWN = 3_000    // WS mati → poll cepat (jadi sumber update utama)
+
 function connectWs() {
+  // Selalu mulai dengan poll cepat sampai WS mengonfirmasi 'connected'.
+  setPollRate(POLL_WS_DOWN)
+
   const appKey = import.meta.env.VITE_REVERB_APP_KEY
-  if (!appKey) {
-    startPolling()
-    return
-  }
+  if (!appKey) return   // tak ada WS → tetap polling cepat selamanya
 
   import('pusher-js').then(({ default: Pusher }) => {
     pusher = new Pusher(appKey, {
@@ -392,10 +399,22 @@ function connectWs() {
 
     tvChannel = pusher.subscribe('antrean-tv')
     tvChannel.bind('queue-updated', handleQueueEvent)
-    tvChannel.bind('media-updated', (payload) => applyMediaPayload(payload?.media))
+    tvChannel.bind('media-updated', handleMediaEvent)
 
-    pusher.connection.bind('error', () => startPolling())
-  }).catch(() => startPolling())
+    // (Re)connect: rekonsiliasi snapshot untuk menutup event yang hilang selama
+    // gap, lalu turunkan poll ke mode lambat. pusher-js auto-resubscribe channel
+    // + binding tetap melekat, jadi tak perlu bind ulang.
+    pusher.connection.bind('connected', () => {
+      fetchSnapshot()
+      registerDevice()   // rekonsiliasi media efektif TV ini setelah gap
+      setPollRate(POLL_WS_OK)
+    })
+    // WS goyah → percepat poll supaya update tetap cepat sampai WS pulih.
+    const degrade = () => setPollRate(POLL_WS_DOWN)
+    pusher.connection.bind('unavailable',  degrade)
+    pusher.connection.bind('disconnected', degrade)
+    pusher.connection.bind('error',        degrade)
+  }).catch(() => setPollRate(POLL_WS_DOWN))
 }
 
 function handleQueueEvent(payload) {
@@ -463,24 +482,33 @@ function handleQueueEvent(payload) {
   }
 }
 
-function startPolling(intervalMs = 3_000) {
-  // Polling fallback saat WS Reverb tidak tersedia. Interval kecil supaya
-  // panggilan dari stasiun lain ter-detect cepat (max 3 detik delay).
-  // fetchSnapshot membandingkan called_at lama vs baru untuk trigger flash.
-  //
-  // Lepas binding WS dulu: kalau koneksi WS error lalu jatuh ke polling,
-  // handleQueueEvent (WS) + fetchSnapshot (polling) bisa memproses event yang
-  // sama → flash/TTS ganda. Selain itu, `lastCalledAtById` basi sejak fetch
-  // awal selama sesi WS, jadi reset isInitialFetch supaya fetch pertama hanya
-  // menyinkronkan catatan called_at TANPA mengumumkan ulang panggilan lama.
-  tvChannel?.unbind_all()
-  isInitialFetch = true
+// Broadcast media bertarget: device_key null = perubahan GLOBAL (terapkan hanya
+// bila TV ini synced); device_key === deviceKey TV ini = perubahan khusus TV ini
+// (selalu terapkan; payload memuat flag `synced` yang memutakhirkan mediaSynced).
+// device_key milik TV lain → diabaikan.
+function handleMediaEvent(payload) {
+  const targetKey = payload?.device_key ?? null
+  if (targetKey === null) {
+    if (mediaSynced.value) applyMediaPayload(payload?.media)
+  } else if (targetKey === deviceKey) {
+    applyMediaPayload(payload?.media)
+  }
+}
+
+// Setel ulang interval poll snapshot. Idempoten: hentikan timer lama dulu lalu
+// pasang yang baru. Tidak melepas binding WS — poll & WS sengaja koeksis
+// (lihat catatan di POLL_WS_OK/DOWN); dedup `announcedCalls` cegah dobel.
+let currentPollMs = null
+function setPollRate(intervalMs) {
+  if (currentPollMs === intervalMs && pollInterval) return
+  currentPollMs = intervalMs
   stopPolling()
   pollInterval = setInterval(fetchSnapshot, intervalMs)
 }
 
 function stopPolling() {
   if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+  currentPollMs = null
 }
 
 function disconnectWs() {
@@ -493,10 +521,12 @@ function disconnectWs() {
 
 onMounted(async () => {
   timer = setInterval(updateClock, 1000)
-  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings(), fetchMediaSettings()])
+  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings(), registerDevice()])
   connectWs()
   // Refresh dokter aktif tiap 2 menit (toggle aktif/non-aktif dari menu dokter)
   doctorPollInterval = setInterval(fetchActiveDoctors, 120_000)
+  // Heartbeat status TV tiap 60 detik (last_seen → indikator online di panel)
+  heartbeatInterval = setInterval(heartbeat, 60_000)
   // TTS voices: load awal + listen perubahan (Chrome lazy-load voice list)
   loadTtsVoices()
   if (window.speechSynthesis) {
@@ -511,6 +541,7 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(timer)
   if (doctorPollInterval) clearInterval(doctorPollInterval)
+  if (heartbeatInterval) clearInterval(heartbeatInterval)
   disconnectWs()
   stopSlideshow()
   if (slideIntervalDebounce) clearTimeout(slideIntervalDebounce)
@@ -590,6 +621,7 @@ function submitPin() {
     showPinModal.value = false
     showControl.value = true
     activeTab.value = 'media'
+    openMediaControl()
   } else {
     pinError.value = true
     pinShake.value = true
@@ -626,6 +658,54 @@ const hasUploadedFile = ref(false)
 const videoLoop = ref(true)
 const videoAutoplay = ref(true)
 
+// ─── Cakupan tampilan media + registry TV per-perangkat ─────────────────────
+// slideScope: 'panel' (panel kiri, default) | 'fullscreen' (seluruh layar).
+// flashOverFullscreen: saat fullscreen, apakah flash panggilan tetap muncul.
+const slideScope = ref('panel')
+const flashOverFullscreen = ref(true)
+
+// Identitas perangkat (per-TV) — token unik persist di localStorage supaya TV
+// ini dikenali server walau di-reload (termasuk auto-reload tengah malam).
+const DEVICE_KEY_STORAGE = 'av_tv_device_key'
+function loadOrCreateDeviceKey() {
+  try {
+    let k = localStorage.getItem(DEVICE_KEY_STORAGE)
+    if (!k || k.length < 8) {
+      k = 'tv_' + ((window.crypto?.randomUUID?.() ?? (Math.random().toString(36).slice(2) + Date.now().toString(36))))
+      localStorage.setItem(DEVICE_KEY_STORAGE, k)
+    }
+    return k
+  } catch (_) {
+    return 'tv_eph_' + Math.random().toString(36).slice(2)
+  }
+}
+const deviceKey   = loadOrCreateDeviceKey()
+const deviceId    = ref(null)         // UUID dari server (untuk update/delete)
+const deviceName  = ref('TV ini')
+const mediaSynced = ref(true)         // true = ikut media global; false = mandiri
+const devices     = ref([])           // daftar TV terdaftar (untuk panel kontrol)
+
+// ─── Editor media TERPISAH dari tampilan layar ini ───────────────────────────
+// Admin bisa memilih TARGET (Global / TV mana pun) dan menyunting medianya TANPA
+// mengubah layar yang sedang dipakai admin. `editor` = draft target terpilih;
+// `editorTarget` = ke mana perubahan disimpan.
+const editorTarget = ref({ kind: 'global', id: null, key: null, name: 'Semua TV (Global)' })
+function blankEditor() {
+  return {
+    media_mode: 'placeholder', youtube_embed_url: '', external_video_url: '',
+    video_autoplay: true, video_loop: true,
+    has_uploaded_file: false, local_video_name: '', local_video_url: '',
+    slides: [], slide_interval: 8, slide_scope: 'panel', flash_over_fullscreen: true,
+  }
+}
+const editor = reactive(blankEditor())
+const editorLoading = ref(false)
+let lastEditorInterval = null   // guard agar load tidak memicu write-back interval
+
+// Saat fullscreen + flash dimatikan → TV jadi papan iklan murni: jangan
+// umumkan panggilan sama sekali (tanpa flash & tanpa TTS).
+const suppressCalls = computed(() => slideScope.value === 'fullscreen' && !flashOverFullscreen.value)
+
 function showMediaMsg(msg, type) {
   mediaSaveMsg.value = msg
   mediaSaveMsgType.value = type
@@ -643,6 +723,10 @@ function applyMediaPayload(s) {
   localVideoName.value = s.local_video_name ?? ''
   externalVideoUrl.value = s.external_video_url ?? ''
   hasUploadedFile.value  = !!s.has_uploaded_file
+  if (s.slide_scope) slideScope.value = s.slide_scope
+  if (typeof s.flash_over_fullscreen === 'boolean') flashOverFullscreen.value = s.flash_over_fullscreen
+  if (typeof s.synced === 'boolean') mediaSynced.value = s.synced
+  if (s.device_name) deviceName.value = s.device_name
   if (Array.isArray(s.slides)) slides.value = s.slides
   if (typeof s.slide_interval === 'number') slideDuration.value = s.slide_interval
   if (Array.isArray(s.ticker_messages)) tickerMessages.value = s.ticker_messages
@@ -665,6 +749,157 @@ async function fetchMediaSettings() {
   }
 }
 
+// Daftarkan TV ini ke server (upsert by device_key) + ambil media efektifnya
+// (global bila synced, override bila mandiri). Dipanggil saat mount & tiap WS
+// (re)connect untuk rekonsiliasi. Fallback ke media global bila gagal.
+async function registerDevice() {
+  try {
+    const { data } = await antreanTvApi.registerDevice({ device_key: deviceKey })
+    const d = data.data ?? {}
+    if (d.device) { deviceId.value = d.device.id; deviceName.value = d.device.name }
+    if (d.media)  applyMediaPayload(d.media)
+  } catch {
+    await fetchMediaSettings()
+  }
+}
+
+// Heartbeat ringan: perbarui last_seen di server tanpa menyentuh tampilan
+// layar ini (beda dari registerDevice yang juga apply media). Supaya status
+// online/offline TV akurat walau koneksi WS bertahan lama tanpa reconnect.
+async function heartbeat() {
+  try { await antreanTvApi.registerDevice({ device_key: deviceKey }) } catch { /* offline sementara */ }
+}
+let heartbeatInterval = null
+
+// Ambil daftar TV terdaftar untuk panel kontrol (butuh login/permission).
+async function fetchDevices() {
+  try {
+    const { data } = await antreanTvApi.listDevices()
+    devices.value = data.data ?? []
+  } catch {
+    devices.value = []
+  }
+}
+
+// Saat panel kontrol dibuka: muat daftar TV + media target (default Global).
+async function openMediaControl() {
+  await fetchDevices()
+  await selectTarget('global')
+}
+
+// Isi `editor` dari payload media (respons mediaSettings / deviceMedia / update).
+function fillEditor(m) {
+  if (!m) return
+  editor.media_mode        = m.media_mode ?? 'placeholder'
+  editor.youtube_embed_url = m.youtube_embed_url ?? ''
+  editor.external_video_url = m.external_video_url ?? ''
+  editor.video_autoplay    = m.video_autoplay !== false
+  editor.video_loop        = m.video_loop !== false
+  editor.has_uploaded_file = !!m.has_uploaded_file
+  editor.local_video_name  = m.local_video_name ?? ''
+  editor.local_video_url   = m.local_video_url ?? ''
+  editor.slides            = Array.isArray(m.slides) ? m.slides : []
+  editor.slide_interval    = typeof m.slide_interval === 'number' ? m.slide_interval : 8
+  editor.slide_scope       = m.slide_scope ?? 'panel'
+  editor.flash_over_fullscreen = m.flash_over_fullscreen !== false
+  lastEditorInterval = editor.slide_interval   // cegah watch menulis-balik
+}
+
+// Muat media TARGET terpilih (Global atau satu TV) ke editor.
+async function loadEditor() {
+  editorLoading.value = true
+  try {
+    if (editorTarget.value.kind === 'global') {
+      const { data } = await antreanTvApi.mediaSettings()
+      fillEditor(data.data)
+    } else {
+      const { data } = await antreanTvApi.deviceMedia(editorTarget.value.key)
+      fillEditor(data.data.media)
+    }
+  } catch {
+    Object.assign(editor, blankEditor())
+  } finally {
+    editorLoading.value = false
+  }
+}
+
+// Ganti target edit (dari dropdown). value = 'global' atau device id.
+async function selectTarget(value) {
+  if (value === 'global') {
+    editorTarget.value = { kind: 'global', id: null, key: null, name: 'Semua TV (Global)' }
+  } else {
+    const d = devices.value.find((x) => x.id === value)
+    if (!d) return
+    editorTarget.value = { kind: 'device', id: d.id, key: d.device_key, name: d.name }
+  }
+  await loadEditor()
+}
+
+// Simpan perubahan ke TARGET terpilih. Hanya menerapkan ke LAYAR INI bila target
+// memang memengaruhi layar ini (global & TV ini synced, atau target = TV ini).
+async function saveTarget(payload) {
+  try {
+    let media
+    if (editorTarget.value.kind === 'global') {
+      const { data } = await antreanTvApi.updateMedia(payload)
+      media = data.data
+      if (mediaSynced.value) applyMediaPayload(media)
+    } else {
+      const { data } = await antreanTvApi.updateDevice(editorTarget.value.id, payload)
+      media = data.data.media
+      if (editorTarget.value.key === deviceKey) applyMediaPayload(media)
+    }
+    fillEditor(media)
+    fetchDevices()   // segarkan badge Global/Mandiri + status
+    return media
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
+    throw err
+  }
+}
+
+// Pesan sukses dengan nama target.
+function targetLabel(base) {
+  return editorTarget.value.kind === 'global'
+    ? `${base} — berlaku semua TV (Global).`
+    : `${base} — di ${editorTarget.value.name}.`
+}
+
+// Ubah nama / lokasi TV (salah satu di daftar).
+async function renameDevice(id, name) {
+  try {
+    await antreanTvApi.updateDevice(id, { name })
+    if (id === deviceId.value) deviceName.value = name
+    await fetchDevices()
+    showMediaMsg('Nama TV tersimpan.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan nama', 'err')
+  }
+}
+
+// Kembalikan satu TV ke media GLOBAL (lepas mode mandiri).
+async function syncDeviceToGlobal(id) {
+  try {
+    const { data } = await antreanTvApi.updateDevice(id, { media_synced: true })
+    if (id === deviceId.value) applyMediaPayload(data.data.media)
+    await fetchDevices()
+    showMediaMsg('TV dikembalikan ke media global.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyinkronkan', 'err')
+  }
+}
+
+async function deleteDevice(id) {
+  if (!confirm('Hapus pendaftaran TV ini? TV yang masih hidup akan mendaftar ulang (ikut global) saat reload.')) return
+  try {
+    await antreanTvApi.deleteDevice(id)
+    await fetchDevices()
+    showMediaMsg('TV dihapus.', 'ok')
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menghapus', 'err')
+  }
+}
+
 function buildYoutubeUrl(id, opts) {
   const loop = opts.loop ? `&loop=1&playlist=${id}` : ''
   const auto = opts.autoplay ? '&autoplay=1' : ''
@@ -684,38 +919,31 @@ async function applyYoutube() {
     if (m) { id = m[1]; break }
   }
   if (!id) { youtubeError.value = 'URL YouTube tidak valid'; return }
-  const embed = buildYoutubeUrl(id, { autoplay: videoAutoplay.value, loop: videoLoop.value })
+  const embed = buildYoutubeUrl(id, { autoplay: editor.video_autoplay, loop: editor.video_loop })
   try {
-    const { data } = await antreanTvApi.updateMedia({
+    await saveTarget({
       media_mode:        'youtube',
       youtube_embed_url: embed,
-      video_autoplay:    videoAutoplay.value,
-      video_loop:        videoLoop.value,
+      video_autoplay:    editor.video_autoplay,
+      video_loop:        editor.video_loop,
     })
-    applyMediaPayload(data.data)
-    showMediaMsg('YouTube disiarkan ke TV.', 'ok')
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
-  }
+    youtubeDraft.value = ''
+    showMediaMsg(targetLabel('YouTube disiarkan'), 'ok')
+  } catch { /* pesan sudah ditampilkan saveTarget */ }
 }
 
 // Re-sync video options (autoplay/loop) — kalau lagi mode youtube,
 // rebuild embed URL dengan opsi baru.
 async function syncVideoOptions() {
   const payload = {
-    video_autoplay: videoAutoplay.value,
-    video_loop:     videoLoop.value,
+    video_autoplay: editor.video_autoplay,
+    video_loop:     editor.video_loop,
   }
-  if (mediaMode.value === 'youtube' && youtubeEmbedUrl.value) {
-    const m = youtubeEmbedUrl.value.match(/\/embed\/([A-Za-z0-9_-]{11})/)
-    if (m) payload.youtube_embed_url = buildYoutubeUrl(m[1], { autoplay: videoAutoplay.value, loop: videoLoop.value })
+  if (editor.media_mode === 'youtube' && editor.youtube_embed_url) {
+    const m = editor.youtube_embed_url.match(/\/embed\/([A-Za-z0-9_-]{11})/)
+    if (m) payload.youtube_embed_url = buildYoutubeUrl(m[1], { autoplay: editor.video_autoplay, loop: editor.video_loop })
   }
-  try {
-    const { data } = await antreanTvApi.updateMedia(payload)
-    applyMediaPayload(data.data)
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
-  }
+  try { await saveTarget(payload) } catch { /* noop */ }
 }
 
 function fmtBytes(n) {
@@ -746,8 +974,9 @@ async function handleVideoFile(e) {
       mediaUploadPct.value = Math.round((ev.loaded / ev.total) * 100)
       mediaUploadInfo.value = `${fmtBytes(ev.loaded)} / ${fmtBytes(ev.total)}`
     }, mediaUploadAbort.signal)
-    applyMediaPayload(data.data)
-    showMediaMsg('Video diupload dan disiarkan ke TV.', 'ok')
+    fillEditor(data.data)
+    if (mediaSynced.value) applyMediaPayload(data.data)   // video file = media global
+    showMediaMsg('Video diupload & disiarkan ke semua TV (Global).', 'ok')
   } catch (err) {
     // Axios membatalkan dengan CanceledError saat AbortController.abort()
     if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
@@ -769,11 +998,12 @@ function cancelUpload() {
 }
 
 async function deleteLocalVideo() {
-  if (!confirm('Hapus video lokal? TV akan kembali ke placeholder.')) return
+  if (!confirm('Hapus video lokal global? TV yang memakai video ini kembali ke placeholder.')) return
   try {
     const { data } = await antreanTvApi.deleteMediaVideo()
-    applyMediaPayload(data.data)
-    showMediaMsg('Video lokal dihapus.', 'ok')
+    fillEditor(data.data)
+    if (mediaSynced.value) applyMediaPayload(data.data)
+    showMediaMsg('Video lokal global dihapus.', 'ok')
   } catch (err) {
     showMediaMsg(err.response?.data?.message ?? 'Gagal menghapus (perlu login)', 'err')
   }
@@ -784,44 +1014,30 @@ async function applyExternalVideoUrl() {
   if (!url) { showMediaMsg('Paste URL video MP4 dulu', 'err'); return }
   if (!/^https?:\/\//i.test(url)) { showMediaMsg('URL harus dimulai http:// atau https://', 'err'); return }
   try {
-    const { data } = await antreanTvApi.updateMedia({
-      external_video_url: url,
-      media_mode:         'localvideo',
-    })
-    applyMediaPayload(data.data)
+    await saveTarget({ external_video_url: url, media_mode: 'localvideo' })
     externalVideoDraft.value = ''
-    showMediaMsg('URL video disiarkan ke TV.', 'ok')
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan URL (perlu login / URL invalid)', 'err')
-  }
+    showMediaMsg(targetLabel('URL video disiarkan'), 'ok')
+  } catch { /* noop */ }
 }
 
 async function clearExternalVideoUrl() {
   try {
-    const { data } = await antreanTvApi.updateMedia({
+    await saveTarget({
       external_video_url: null,
       // Kalau tidak ada file upload sebagai fallback, balik ke placeholder.
-      media_mode: hasUploadedFile.value ? 'localvideo' : 'placeholder',
+      media_mode: editor.has_uploaded_file ? 'localvideo' : 'placeholder',
     })
-    applyMediaPayload(data.data)
     showMediaMsg('URL video dihapus.', 'ok')
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menghapus URL', 'err')
-  }
+  } catch { /* noop */ }
 }
 
 async function setMediaMode(mode) {
-  // Untuk localvideo, hanya bisa kalau sudah ada file upload.
-  if (mode === 'localvideo' && !localVideoUrl.value) {
-    showMediaMsg('Upload video lokal dulu via tombol "Pilih file video".', 'err')
+  // Untuk localvideo, butuh ada file upload (global) atau URL video eksternal.
+  if (mode === 'localvideo' && !editor.local_video_url && !editor.external_video_url) {
+    showMediaMsg('Belum ada video. Upload video (Global) atau isi URL video dulu.', 'err')
     return
   }
-  try {
-    const { data } = await antreanTvApi.updateMedia({ media_mode: mode })
-    applyMediaPayload(data.data)
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
-  }
+  try { await saveTarget({ media_mode: mode }) } catch { /* noop */ }
 }
 
 // --- FLASH OVERLAY + FIFO CALL QUEUE ---------------------------------------
@@ -887,6 +1103,9 @@ function loadTtsVoices() {
 }
 
 function enqueueCall(q) {
+  // TV mode papan iklan murni (fullscreen + flash dimatikan): jangan umumkan
+  // panggilan sama sekali (tanpa flash & tanpa TTS).
+  if (suppressCalls.value) return
   const calledAt = q.called_at ?? ''
   const key = `${q.id}:${calledAt}`
   // 1. Sudah sedang tampil / sudah antri (event WS duplikat berturut-turut).
@@ -1137,11 +1356,12 @@ function speakAnnouncement(q) {
       if (ttsVoiceName.value) chosen = voices.find((v) => v.name === ttsVoiceName.value)
       if (!chosen) chosen = voices.find((v) => v.lang?.toLowerCase().startsWith('id'))
       if (chosen) utter.voice = chosen
-      utter.onend   = () => resolve()
-      utter.onerror = () => resolve()
-      synth.speak(utter)
       // Fallback: TTS kadang stuck di browser tertentu, force resolve setelah 10s.
-      setTimeout(resolve, 10_000)
+      // Timer di-clear saat onend/onerror supaya tidak menggantung sampai 10s.
+      const fallback = setTimeout(resolve, 10_000)
+      utter.onend   = () => { clearTimeout(fallback); resolve() }
+      utter.onerror = () => { clearTimeout(fallback); resolve() }
+      synth.speak(utter)
     } catch (_) {
       resolve()
     }
@@ -1178,33 +1398,65 @@ const slideIndex = ref(0)
 const slideDuration = ref(5)
 let slideTimer = null
 
-async function persistSlides(nextSlides, opts = {}) {
+// Simpan daftar slide TARGET (editor.slides) — optimistik update editor.slides.
+async function editorPersistSlides(nextSlides, opts = {}) {
+  editor.slides = nextSlides
   const payload = { slides: nextSlides }
   if (opts.mode) payload.media_mode = opts.mode
-  if (opts.interval !== undefined) payload.slide_interval = opts.interval
-  try {
-    const { data } = await antreanTvApi.updateMedia(payload)
-    applyMediaPayload(data.data)
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
-  }
+  try { await saveTarget(payload) } catch { /* noop */ }
 }
 
 async function addSlides() {
   const urls = slidesDraft.value.split('\n').map(u => u.trim()).filter(u => u)
   if (!urls.length) return
-  const next = [...slides.value, ...urls.map(url => ({ url }))]
+  const next = [...editor.slides, ...urls.map(url => ({ url }))]
   slidesDraft.value = ''
-  await persistSlides(next)
+  await editorPersistSlides(next)
+}
+
+// Upload satu/lebih gambar dari perangkat → simpan ke server → tambahkan URL-nya
+// ke daftar slide TARGET terpilih.
+const slideUploading = ref(false)
+async function handleSlideImageFiles(e) {
+  const files = Array.from(e.target.files ?? [])
+  e.target.value = ''   // reset agar file sama bisa dipilih lagi
+  if (!files.length) return
+  slideUploading.value = true
+  const uploaded = []
+  try {
+    for (const file of files) {
+      const fd = new FormData()
+      fd.append('image', file)
+      const { data } = await antreanTvApi.uploadMediaImage(fd)
+      if (data?.data?.url) uploaded.push({ url: data.data.url })
+    }
+    if (uploaded.length) {
+      await editorPersistSlides([...editor.slides, ...uploaded])
+      showMediaMsg(targetLabel(`${uploaded.length} gambar diunggah`), 'ok')
+    }
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal mengunggah gambar (perlu login / >10MB)', 'err')
+  } finally {
+    slideUploading.value = false
+  }
+}
+
+// Simpan cakupan tampilan (panel/fullscreen) + flag flash — ke TARGET terpilih.
+async function saveScope(patch) {
+  try {
+    await saveTarget({
+      slide_scope:           patch.slide_scope ?? editor.slide_scope,
+      flash_over_fullscreen: patch.flash_over_fullscreen ?? editor.flash_over_fullscreen,
+    })
+  } catch { /* noop */ }
 }
 
 async function removeSlide(idx) {
-  const next = slides.value.filter((_, i) => i !== idx)
-  if (slideIndex.value >= next.length) slideIndex.value = Math.max(0, next.length - 1)
-  const opts = (next.length === 0 && mediaMode.value === 'slideshow')
+  const next = editor.slides.filter((_, i) => i !== idx)
+  const opts = (next.length === 0 && editor.media_mode === 'slideshow')
     ? { mode: 'placeholder' }
     : {}
-  await persistSlides(next, opts)
+  await editorPersistSlides(next, opts)
 }
 
 function startSlideshow() {
@@ -1219,26 +1471,21 @@ function stopSlideshow() {
   if (slideTimer) { clearInterval(slideTimer); slideTimer = null }
 }
 
-// slideDuration kontrol di tab slideshow — disimpan ke backend saat user
-// adjust. Lokal effect (restart timer) di-handle di applyMediaPayload yang
-// ter-trigger oleh respons updateMedia/broadcast.
+// Durasi per-slide TARGET (editor.slide_interval) → simpan debounce. Guard
+// `lastEditorInterval` mencegah load men-trigger penyimpanan balik.
 let slideIntervalDebounce = null
-watch(slideDuration, (v) => {
+watch(() => editor.slide_interval, (v) => {
+  if (v === lastEditorInterval) return
   clearTimeout(slideIntervalDebounce)
-  slideIntervalDebounce = setTimeout(() => {
-    persistSlides(slides.value, { interval: v })
-  }, 400)
+  slideIntervalDebounce = setTimeout(() => saveTarget({ slide_interval: v }), 400)
 })
 
 async function applySlideshowMode() {
-  if (slides.value.length === 0) return
-  slideIndex.value = 0
+  if (editor.slides.length === 0) return
   try {
-    const { data } = await antreanTvApi.updateMedia({ media_mode: 'slideshow' })
-    applyMediaPayload(data.data)
-  } catch (err) {
-    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan (perlu login)', 'err')
-  }
+    await saveTarget({ media_mode: 'slideshow' })
+    showMediaMsg(targetLabel('Slideshow diaktifkan'), 'ok')
+  } catch { /* noop */ }
 }
 
 // --- TICKER EDITOR ---
@@ -1609,9 +1856,52 @@ async function saveAudioDefaults() {
     </div>
   </div>
 
+  <!-- FULL-SCREEN MEDIA OVERLAY — saat slideScope = 'fullscreen', media menutupi
+       seluruh layar (papan iklan). Z-index 500: di bawah panel kontrol (1000) &
+       flash panggilan (10000) supaya operator tetap bisa kontrol & panggilan
+       tetap muncul (bila diaktifkan). -->
+  <Teleport to="body">
+    <div v-if="slideScope === 'fullscreen'" class="media-fullscreen">
+      <!-- Slideshow -->
+      <div v-if="mediaMode === 'slideshow' && slides.length" class="slideshow fs">
+        <img
+          v-for="(s, i) in slides"
+          :key="i"
+          :src="s.url"
+          :class="['slide-img', { active: i === slideIndex }]"
+          alt=""
+        />
+      </div>
+      <!-- YouTube -->
+      <iframe
+        v-else-if="mediaMode === 'youtube'"
+        :src="youtubeEmbedUrl"
+        class="yt-frame fs"
+        allow="autoplay; encrypted-media"
+        allowfullscreen
+        frameborder="0"
+      ></iframe>
+      <!-- Video lokal/eksternal -->
+      <video
+        v-else-if="mediaMode === 'localvideo' && localVideoUrl"
+        :src="localVideoUrl"
+        :loop="videoLoop"
+        :autoplay="videoAutoplay"
+        muted
+        class="local-video fs"
+      ></video>
+      <!-- Placeholder -->
+      <div v-else class="video-placeholder fs">
+        <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+        <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
+        <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
+      </div>
+    </div>
+  </Teleport>
+
   <!-- FULL-SCREEN FLASH OVERLAY (queue called) -->
   <Teleport to="body">
-    <div v-if="flashVisible" class="flash-overlay" @click="flashVisible = false">
+    <div v-if="flashVisible" class="flash-overlay" @click="unlockAudio(); flashVisible = false">
       <div class="flash-content">
         <div class="flash-label-top">{{ flashSettings.flash_label_top || 'Nomor Antrean Dipanggil' }}</div>
         <div class="flash-num">{{ flashQueue?.num }}</div>
@@ -1718,24 +2008,95 @@ async function saveAudioDefaults() {
         <div class="ctrl-body">
           <!-- TAB: MEDIA -->
           <div v-if="activeTab === 'media'" class="ctrl-section">
-            <p class="ctrl-lbl">Mode Tampilan Panel Kiri (sinkron ke semua TV)</p>
+            <!-- TARGET: pilih TV mana yang diatur (Global / TV tertentu) -->
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Atur tampilan untuk</p>
+              <select class="ctrl-input" :value="editorTarget.kind === 'global' ? 'global' : editorTarget.id"
+                      @change="selectTarget($event.target.value)">
+                <option value="global">🌐 Semua TV (Global)</option>
+                <option v-for="d in devices" :key="d.id" :value="d.id">
+                  📺 {{ d.name }}{{ d.device_key === deviceKey ? ' — TV ini' : '' }}
+                  ({{ d.media_synced ? 'ikut Global' : 'Mandiri' }}{{ d.online ? ', online' : ', offline' }})
+                </option>
+              </select>
+              <p class="ctrl-lbl" style="opacity:.6; font-weight:400; margin-top:8px">
+                <template v-if="editorTarget.kind === 'global'">
+                  Perubahan berlaku untuk <strong>semua TV</strong> yang mengikuti Global. TV yang diatur sendiri (Mandiri) tidak ikut.
+                </template>
+                <template v-else>
+                  Perubahan <strong>hanya untuk {{ editorTarget.name }}</strong>. Mengatur medianya otomatis membuat TV ini "Mandiri" (lepas dari Global).
+                </template>
+                <span v-if="editorLoading"> · memuat…</span>
+              </p>
+            </div>
+
+            <!-- Daftar TV terdaftar: beri nama/lokasi, status, kelola -->
+            <div class="ctrl-sub-section">
+              <div class="ctrl-row" style="align-items:center; justify-content:space-between">
+                <p class="ctrl-lbl" style="margin:0">TV Terdaftar ({{ devices.length }})</p>
+                <button class="ctrl-action-btn" style="padding:4px 12px; font-size:12px" @click="fetchDevices">Muat Ulang</button>
+              </div>
+              <p class="ctrl-lbl" style="opacity:.55; font-weight:400; margin-top:2px">
+                Beri nama sesuai lokasi (mis. "TV Lobi", "TV Lt. 2"). Tiap TV yang membuka halaman ini terdaftar otomatis.
+              </p>
+              <div v-if="devices.length === 0" class="ctrl-empty">Belum ada TV terdaftar.</div>
+              <div v-for="d in devices" :key="d.id" class="tvdev-row">
+                <span :class="['tvdev-dot', d.online ? 'on' : 'off']" :title="d.online ? 'Online' : 'Offline'"></span>
+                <input
+                  class="ctrl-input tvdev-name"
+                  :value="d.name"
+                  placeholder="Nama / lokasi TV"
+                  @keydown.enter="renameDevice(d.id, $event.target.value)"
+                  @blur="$event.target.value !== d.name && renameDevice(d.id, $event.target.value)"
+                />
+                <span :class="['tvdev-badge', d.media_synced ? 'global' : 'self']">
+                  {{ d.media_synced ? 'Global' : 'Mandiri' }}
+                </span>
+                <span v-if="d.device_key === deviceKey" class="tvdev-this">TV ini</span>
+                <button class="icon-btn" title="Atur tampilan TV ini" @click="selectTarget(d.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                </button>
+                <button v-if="!d.media_synced" class="icon-btn" title="Kembalikan ke media global" @click="syncDeviceToGlobal(d.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </button>
+                <button class="icon-btn danger" title="Hapus pendaftaran" @click="deleteDevice(d.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <p class="ctrl-lbl">Mode Tampilan — <strong>{{ editorTarget.name }}</strong></p>
             <div class="mode-grid">
-              <button :class="['mode-card', { active: mediaMode === 'placeholder' }]" @click="setMediaMode('placeholder')">
+              <button :class="['mode-card', { active: editor.media_mode === 'placeholder' }]" @click="setMediaMode('placeholder')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 <span>Placeholder</span>
                 <small>Logo + nama rumah sakit</small>
               </button>
-              <button :class="['mode-card', { active: mediaMode === 'youtube' }]" @click="mediaMode === 'youtube' ? null : setMediaMode('youtube')" :disabled="!youtubeEmbedUrl">
+              <button :class="['mode-card', { active: editor.media_mode === 'youtube' }]" @click="editor.media_mode === 'youtube' ? null : setMediaMode('youtube')" :disabled="!editor.youtube_embed_url">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 001.46 6.42 29 29 0 001 12a29 29 0 00.46 5.58 2.78 2.78 0 001.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.96A29 29 0 0023 12a29 29 0 00-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
                 <span>YouTube</span>
-                <small>{{ youtubeEmbedUrl ? 'Video tersimpan' : 'Belum ada URL' }}</small>
+                <small>{{ editor.youtube_embed_url ? 'Video tersimpan' : 'Belum ada URL' }}</small>
               </button>
-              <button :class="['mode-card', { active: mediaMode === 'localvideo' }]" @click="$refs.videoFileInput.click()" :disabled="mediaUploading">
+              <button :class="['mode-card', { active: editor.media_mode === 'localvideo' }]"
+                      @click="(editor.local_video_url || editor.external_video_url) ? setMediaMode('localvideo') : null"
+                      :disabled="!editor.local_video_url && !editor.external_video_url">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                <span>Video Lokal</span>
-                <small>{{ mediaUploading ? 'Mengupload…' : (localVideoName || 'Pilih file video') }}</small>
+                <span>Video</span>
+                <small>{{ editor.local_video_name || editor.external_video_url ? 'Video tersimpan' : 'Upload (Global) / isi URL' }}</small>
               </button>
             </div>
+
+            <!-- Upload video FILE: hanya untuk Global (penyimpanan bersama) -->
+            <div v-if="editorTarget.kind === 'global'" class="ctrl-sub-section" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="ctrl-action-btn" :disabled="mediaUploading" @click="$refs.videoFileInput.click()">
+                {{ mediaUploading ? 'Mengupload…' : '⬆ Upload Video File (Global)' }}
+              </button>
+              <span class="ctrl-lbl" style="opacity:.55;font-weight:400;margin:0">Maks 500 MB. File video dipakai bersama semua TV Global.</span>
+            </div>
+            <p v-else class="ctrl-lbl" style="opacity:.55;font-weight:400">
+              Untuk TV tertentu: pakai <strong>YouTube</strong>, <strong>URL video</strong>, atau <strong>Slideshow gambar</strong> (upload file video hanya tersedia di Global).
+            </p>
+            <input ref="videoFileInput" type="file" accept="video/*" style="display:none" @change="handleVideoFile" />
             <input ref="videoFileInput" type="file" accept="video/*" style="display:none" @change="handleVideoFile" />
 
             <!-- Upload progress -->
@@ -1759,15 +2120,20 @@ async function saveAudioDefaults() {
               {{ mediaSaveMsg }}
             </p>
 
-            <!-- Info video lokal + tombol hapus (cuma kalau file upload, bukan URL) -->
-            <div v-if="hasUploadedFile" class="ctrl-sub-section" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+            <!-- Info video file (Global saja) + ganti/hapus -->
+            <div v-if="editorTarget.kind === 'global' && editor.has_uploaded_file" class="ctrl-sub-section" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
               <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;color:#fff">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ localVideoName || 'video lokal' }}</span>
+                <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ editor.local_video_name || 'video lokal' }}</span>
               </div>
-              <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)" @click="deleteLocalVideo">
-                Hapus File
-              </button>
+              <div style="display:flex;gap:8px;flex-shrink:0">
+                <button class="ctrl-action-btn" :disabled="mediaUploading" @click="$refs.videoFileInput.click()">
+                  Ganti Video
+                </button>
+                <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)" @click="deleteLocalVideo">
+                  Hapus File
+                </button>
+              </div>
             </div>
 
             <!-- Video URL eksternal (Drive/Dropbox/CDN/hosting) — alternatif upload -->
@@ -1786,10 +2152,10 @@ async function saveAudioDefaults() {
               <p style="font-size:11px;color:rgba(255,255,255,.55);margin:4px 0 0">
                 Paste link MP4 langsung. Untuk Dropbox: ganti <code>?dl=0</code> jadi <code>?raw=1</code>. Untuk Drive: gunakan <code>uc?export=download&amp;id=FILE_ID</code>.
               </p>
-              <div v-if="externalVideoUrl" style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:8px;padding:8px 10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:8px">
+              <div v-if="editor.external_video_url" style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:8px;padding:8px 10px;background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.2);border-radius:8px">
                 <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;color:#fff">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--lm)" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
-                  <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">URL aktif: {{ externalVideoUrl }}</span>
+                  <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">URL aktif: {{ editor.external_video_url }}</span>
                 </div>
                 <button class="ctrl-action-btn" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);padding:4px 10px;font-size:12px" @click="clearExternalVideoUrl">
                   Hapus URL
@@ -1802,12 +2168,12 @@ async function saveAudioDefaults() {
               <p class="ctrl-lbl">Pengaturan Pemutaran</p>
               <div class="ctrl-toggles">
                 <label class="ctrl-toggle">
-                  <input type="checkbox" v-model="videoAutoplay" @change="syncVideoOptions" />
+                  <input type="checkbox" v-model="editor.video_autoplay" @change="syncVideoOptions" />
                   <span class="toggle-track"></span>
                   <span class="toggle-label">Autoplay (mulai otomatis)</span>
                 </label>
                 <label class="ctrl-toggle">
-                  <input type="checkbox" v-model="videoLoop" @change="syncVideoOptions" />
+                  <input type="checkbox" v-model="editor.video_loop" @change="syncVideoOptions" />
                   <span class="toggle-track"></span>
                   <span class="toggle-label">Loop (ulangi dari awal)</span>
                 </label>
@@ -1828,38 +2194,78 @@ async function saveAudioDefaults() {
                 <button class="ctrl-action-btn" @click="applyYoutube">Terapkan</button>
               </div>
               <p v-if="youtubeError" class="ctrl-err">{{ youtubeError }}</p>
-              <p v-if="mediaMode === 'youtube' && youtubeEmbedUrl" class="ctrl-ok">
+              <p v-if="editor.media_mode === 'youtube' && editor.youtube_embed_url" class="ctrl-ok">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                Video aktif di semua TV
+                YouTube aktif di {{ editorTarget.name }}
               </p>
             </div>
           </div>
 
           <!-- TAB: SLIDESHOW -->
           <div v-if="activeTab === 'slideshow'" class="ctrl-section">
+            <!-- Penanda target (ikut pilihan di tab Media) -->
+            <p class="ctrl-lbl" style="opacity:.7; font-weight:500; margin-top:-2px">
+              Target: <strong>{{ editorTarget.name }}</strong> — ganti di tab Media.
+            </p>
+
+            <!-- Upload gambar dari perangkat -->
             <div class="ctrl-sub-section">
-              <p class="ctrl-lbl">Tambah Gambar (URL per baris)</p>
+              <p class="ctrl-lbl">Upload Gambar dari Perangkat</p>
+              <input ref="slideImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" @change="handleSlideImageFiles" />
+              <button class="ctrl-action-btn" :disabled="slideUploading" @click="$refs.slideImageInput.click()">
+                {{ slideUploading ? 'Mengunggah…' : '⬆ Pilih Gambar (bisa banyak)' }}
+              </button>
+              <p class="ctrl-hint" style="margin-top:6px">JPG, PNG, WebP, atau GIF. Maks 10 MB per gambar. Gambar disimpan di server lalu masuk daftar slide.</p>
+            </div>
+
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Tambah Gambar via URL (per baris)</p>
               <textarea
                 v-model="slidesDraft"
                 class="ctrl-textarea"
-                rows="4"
+                rows="3"
                 placeholder="https://contoh.com/gambar1.jpg&#10;https://contoh.com/gambar2.jpg"
               ></textarea>
-              <button class="ctrl-action-btn" style="margin-top:8px" @click="addSlides">Tambah</button>
+              <button class="ctrl-action-btn" style="margin-top:8px" @click="addSlides">Tambah URL</button>
+            </div>
+
+            <!-- Cakupan tampilan: panel kiri vs fullscreen -->
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Cakupan Tampilan</p>
+              <div class="target-grid">
+                <button :class="['target-card', { active: editor.slide_scope === 'panel' }]" @click="editor.slide_scope = 'panel'; saveScope({ slide_scope: 'panel' })">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="11" y1="4" x2="11" y2="20"/></svg>
+                  <span>Panel Kiri</span>
+                  <small>Slideshow di panel, grid antrean tetap tampil</small>
+                </button>
+                <button :class="['target-card', { active: editor.slide_scope === 'fullscreen' }]" @click="editor.slide_scope = 'fullscreen'; saveScope({ slide_scope: 'fullscreen' })">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+                  <span>Layar Penuh</span>
+                  <small>Slideshow menutupi seluruh layar (papan iklan)</small>
+                </button>
+              </div>
+              <label v-if="editor.slide_scope === 'fullscreen'" class="ctrl-toggle" style="margin-top:10px">
+                <input type="checkbox" :checked="editor.flash_over_fullscreen" @change="editor.flash_over_fullscreen = $event.target.checked; saveScope({ flash_over_fullscreen: $event.target.checked })" />
+                <span class="toggle-track"></span>
+                <span class="toggle-label">Tetap tampilkan panggilan pasien (flash nomor + suara) di atas slideshow</span>
+              </label>
+              <p v-if="editor.slide_scope === 'fullscreen' && !editor.flash_over_fullscreen" class="ctrl-lbl" style="opacity:.6; font-weight:400; margin-top:4px; color:#fcd34d">
+                ⚠ TV target jadi papan iklan murni — panggilan pasien TIDAK ditampilkan.
+              </p>
             </div>
 
             <div class="ctrl-sub-section">
               <div class="ctrl-row" style="align-items:center; gap:1rem">
                 <p class="ctrl-lbl" style="margin:0">Durasi per Slide</p>
-                <input type="range" v-model.number="slideDuration" min="3" max="30" step="1" class="ctrl-range" />
-                <span class="ctrl-dur-val">{{ slideDuration }}s</span>
+                <input type="range" v-model.number="editor.slide_interval" min="3" max="30" step="1" class="ctrl-range" />
+                <span class="ctrl-dur-val">{{ editor.slide_interval }}s</span>
               </div>
             </div>
 
             <div class="ctrl-sub-section">
-              <p class="ctrl-lbl">Daftar Gambar ({{ slides.length }})</p>
-              <div v-if="slides.length === 0" class="ctrl-empty">Belum ada gambar ditambahkan</div>
-              <div v-for="(s, i) in slides" :key="i" class="slide-row">
+              <p class="ctrl-lbl">Daftar Gambar ({{ editor.slides.length }})</p>
+              <div v-if="editor.slides.length === 0" class="ctrl-empty">Belum ada gambar ditambahkan</div>
+              <div v-for="(s, i) in editor.slides" :key="i" class="slide-row">
                 <span class="slide-idx">{{ i + 1 }}</span>
                 <div class="slide-thumb-wrap">
                   <img :src="s.url" class="slide-thumb" alt="" />
@@ -1871,8 +2277,8 @@ async function saveAudioDefaults() {
               </div>
             </div>
 
-            <button v-if="slides.length" class="ctrl-action-btn" @click="applySlideshowMode">
-              Aktifkan Slideshow
+            <button v-if="editor.slides.length" class="ctrl-action-btn" @click="applySlideshowMode">
+              Aktifkan Slideshow di {{ editorTarget.name }}
             </button>
           </div>
 
@@ -2232,8 +2638,11 @@ async function saveAudioDefaults() {
 
 <style scoped>
 .tv {
-  width: 100vw;
-  height: 100vh;
+  /* Pin ke viewport (bukan 100vw/100vh): 100vw memasukkan lebar scrollbar →
+     overflow 1px → muncul scrollbar + gutter putih di kanan/bawah. position:fixed
+     inset:0 mengisi layar persis di semua kondisi/resolusi TV. */
+  position: fixed;
+  inset: 0;
   background: linear-gradient(180deg, #0B2440 0%, #06182E 100%);
   color: #fff;
   display: flex;
@@ -3033,7 +3442,10 @@ async function saveAudioDefaults() {
 
 /* FLASH OVERLAY */
 .flash-overlay {
-  position: fixed; inset: 0; z-index: 9999;
+  /* 10000 > audio-unlock-overlay (9999): saat TV baru menyala & belum di-unlock,
+     flash panggilan tetap tampil DI ATAS overlay unlock, dan klik flash sekaligus
+     meng-unlock audio untuk panggilan berikutnya. */
+  position: fixed; inset: 0; z-index: 10000;
   background: linear-gradient(135deg, #06182E 0%, #0B2440 50%, #06182E 100%);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; animation: flash-in .3s ease;
@@ -3456,5 +3868,52 @@ async function saveAudioDefaults() {
   40% { transform: translateX(8px); }
   60% { transform: translateX(-6px); }
   80% { transform: translateX(6px); }
+}
+
+/* TARGET cards (Global vs TV ini) & cakupan (panel vs fullscreen) */
+.target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.target-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer; text-align: left;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+  color: #fff; transition: border-color .15s, background .15s;
+}
+.target-card svg { width: 22px; height: 22px; margin-bottom: 4px; color: rgba(56,189,248,.8); }
+.target-card span { font-weight: 600; font-size: 14px; }
+.target-card small { font-size: 11px; color: rgba(255,255,255,.55); }
+.target-card:hover { background: rgba(255,255,255,.07); }
+.target-card.active { border-color: var(--lm); background: rgba(56,189,248,.12); }
+.target-card:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Daftar TV terdaftar */
+.tvdev-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.tvdev-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.tvdev-dot.on  { background: #34d399; box-shadow: 0 0 6px #34d399; }
+.tvdev-dot.off { background: rgba(255,255,255,.25); }
+.tvdev-name { flex: 1; min-width: 0; padding: 5px 8px; font-size: 13px; }
+.tvdev-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; flex-shrink: 0; }
+.tvdev-badge.global { background: rgba(56,189,248,.18); color: #7dd3fc; }
+.tvdev-badge.self   { background: rgba(252,211,77,.18); color: #fcd34d; }
+.tvdev-this { font-size: 10px; color: rgba(255,255,255,.45); flex-shrink: 0; }
+
+/* Media fullscreen overlay (papan iklan) */
+.media-fullscreen {
+  position: fixed; inset: 0; z-index: 500; background: #06182E;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.media-fullscreen .slideshow.fs,
+.media-fullscreen .yt-frame.fs,
+.media-fullscreen .local-video.fs,
+.media-fullscreen .video-placeholder.fs {
+  width: 100%; height: 100%;
+}
+.media-fullscreen .slideshow.fs { position: relative; }
+.media-fullscreen .yt-frame.fs { border: 0; }
+.media-fullscreen .local-video.fs { object-fit: contain; background: #000; }
+.media-fullscreen .video-placeholder.fs {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
 }
 </style>
