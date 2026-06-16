@@ -62,6 +62,13 @@ function calcAge(dob) {
     (n < new Date(n.getFullYear(), d.getMonth(), d.getDate()) ? 1 : 0)
 }
 
+// Tanggal kunjungan kartu antrean → "16 Jun 2026" (sumber Y-m-d; '' bila kosong/invalid).
+function fmtVisitDate(d) {
+  if (!d) return ''
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 function mapQueueRow(q) {
   const visit   = q.visit ?? {}
   const patient = visit.patient ?? q.patient ?? {}
@@ -76,6 +83,7 @@ function mapQueueRow(q) {
     room:         sched?.room ?? null,
     id:           q.id,
     createdAt:    q.created_at,
+    visitDate:    visit.visit_date ?? null,
     qNum:         q.queue_number,
     name:         patient.name ?? '—',
     rm:           patient.no_rm ?? '—',
@@ -930,7 +938,12 @@ function toast(type, msg) {
 
                 <div class="q-info">
                   <div class="q-name">{{ p.name }}</div>
-                  <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.poli }}</div>
+                  <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.poli }}
+                    <span v-if="p.visitDate" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtVisitDate(p.visitDate)}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtVisitDate(p.visitDate) }}
+                    </span>
+                  </div>
                   <div v-if="p.dpjp" class="q-dpjp" :title="`DPJP tujuan: ${p.dpjp}`">
                     <svg viewBox="0 0 24 24" class="q-dpjp-ic" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
                     DPJP: {{ p.dpjp }}
@@ -1730,6 +1743,8 @@ function toast(type, msg) {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-dpjp { font-size: 10px; color: #0e3a66; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-dpjp-ic { width: 10px; height: 10px; flex-shrink: 0; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }

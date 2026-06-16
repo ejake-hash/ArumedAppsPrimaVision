@@ -862,6 +862,10 @@ onUnmounted(() => {
                     {{ q.patient?.age ?? '—' }} th
                     · {{ q.patient?.gender === 'L' ? 'L' : 'P' }}
                     · {{ q.visit?.classification ?? '—' }}
+                    <span v-if="q.visit?.visit_date" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtDate(q.visit.visit_date)}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtDate(q.visit.visit_date) }}
+                    </span>
                   </div>
                   <div v-if="q.doctor" class="q-dpjp" :title="`DPJP tujuan: ${q.doctor}`">
                     <svg viewBox="0 0 24 24" class="q-dpjp-ic" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
@@ -1925,6 +1929,8 @@ onUnmounted(() => {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-dpjp { font-size: 10px; color: #0e3a66; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-dpjp-ic { width: 10px; height: 10px; flex-shrink: 0; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }

@@ -50,6 +50,7 @@ function transformQueueItem(q) {
     // ── Real data ──
     id:             q.id,
     createdAt:      q.created_at,
+    visitDate:      q.visit?.visit_date ?? null,
     qNum:           q.queue_number,
     queueStatus:    q.status,            // WAITING/CALLED/IN_PROGRESS/COMPLETED
     visitId:        q.visit?.id,
@@ -780,6 +781,13 @@ function skipPt(p, e) {
 function fmtTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+}
+
+// Tanggal kunjungan kartu antrean → "16 Jun 2026" (sumber Y-m-d; '' bila kosong/invalid).
+function fmtVisitDate(d) {
+  if (!d) return ''
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 async function doMulaiOperasi() {
@@ -1746,7 +1754,12 @@ function mulaiBack() { mulaiStep.value = 1 }
 
                 <div class="q-info">
                   <div class="q-name">{{ p.name }}</div>
-                  <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.rm }}</div>
+                  <div class="q-meta">{{ p.age }} th · {{ p.gender }} · {{ p.rm }}
+                    <span v-if="p.visitDate" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtVisitDate(p.visitDate)}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtVisitDate(p.visitDate) }}
+                    </span>
+                  </div>
                   <div class="q-prosedur">{{ p.prosedur }}</div>
                   <div class="q-tags">
                     <span v-if="p.visitType === 'PREOP_BEDAH'" class="pill pill-preop" title="Preop bedah — bypass dokter">PREOP</span>
@@ -3138,6 +3151,8 @@ function mulaiBack() { mulaiStep.value = 1 }
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-prosedur { font-size: 11px; color: var(--td); margin-top: 3px; font-weight: 500; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 

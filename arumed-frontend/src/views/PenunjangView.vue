@@ -152,6 +152,13 @@ function fmtTime(d) {
   return new Date(d).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
 }
 
+// Tanggal kunjungan kartu antrean → "16 Jun 2026" (sumber Y-m-d; '' bila kosong/invalid).
+function fmtVisitDate(d) {
+  if (!d) return ''
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 const statusLabel = { WAITING: 'Menunggu', CALLED: 'Dipanggil', IN_PROGRESS: 'Proses', COMPLETED: 'Selesai' }
 
 // ─── Diagnostic orders (delegated to store) ─────────────────────────────────
@@ -482,6 +489,10 @@ onUnmounted(() => {
                     {{ calcAge(q.visit?.patient?.date_of_birth) ?? '—' }} th
                     · {{ q.visit?.patient?.gender === 'L' ? 'L' : 'P' }}
                     · {{ q.visit?.classification ?? '—' }}
+                    <span v-if="q.visit?.visit_date" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtVisitDate(q.visit.visit_date)}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtVisitDate(q.visit.visit_date) }}
+                    </span>
                   </div>
                   <div v-if="q.visit?.patient?.address" class="q-addr">{{ q.visit.patient.address }}</div>
                   <div class="q-tags">
@@ -902,6 +913,8 @@ onUnmounted(() => {
 .q-info { flex: 1; min-width: 0; }
 .q-name { font-size: 12.5px; font-weight: 500; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-meta { font-size: 10px; color: var(--tu); margin-top: 2px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-addr { font-size: 10px; color: var(--tu); margin-top: 2px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .qi-time { font-size: 10px; color: var(--tu); font-variant-numeric: tabular-nums; }

@@ -158,6 +158,7 @@ class BedahService
 
                 'visit' => $visit ? [
                     'id'              => $visit->id,
+                    'visit_date'      => $visit->visit_date?->toDateString(),
                     'classification'  => $visit->classification,
                     'visit_type'      => $visit->visit_type,
                     'guarantor_type'  => $visit->guarantor_type,

@@ -1494,6 +1494,12 @@ function fmtDateId(d) {
   const dt = new Date(d)
   return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
+// Tanggal kunjungan kartu antrean → "16 Jun 2026" (sumber Y-m-d; '' bila kosong/invalid).
+function fmtVisitDate(d) {
+  if (!d) return ''
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+}
 
 // Etiket dari tab Verifikasi — setiap resep yang sedang diverifikasi bisa langsung dicetak
 // etiketnya (item & aturan pakai sudah final di tahap ini). Dipindah dari tab Dispensing.
@@ -1936,7 +1942,12 @@ function toast(type, msg) {
                   <div class="rx-time">{{ formatTime(q.called_at ?? q.created_at) }}</div>
                 </div>
                 <div class="rx-name">{{ q.visit?.patient?.name ?? '—' }}</div>
-                <div class="rx-meta">{{ q.visit?.patient?.no_rm ?? '—' }}</div>
+                <div class="rx-meta">{{ q.visit?.patient?.no_rm ?? '—' }}
+                  <span v-if="(q.visit?.visit_date ?? q.created_at)" class="q-visit-date" :title="`Tanggal kunjungan: ${fmtVisitDate(q.visit?.visit_date ?? q.created_at)}`">
+                    <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    {{ fmtVisitDate(q.visit?.visit_date ?? q.created_at) }}
+                  </span>
+                </div>
                 <div class="rx-tags">
                   <span :class="['rxt', guarantorType(q) === 'bpjs' ? 'rxt-b' : 'rxt-u']">{{ guarantorType(q) === 'bpjs' ? 'BPJS' : 'Umum' }}</span>
                   <span v-if="q.visit?.visit_type === 'RAWAT_INAP'" class="rxt rxt-ranap">Rawat Inap (Pulang)</span>
@@ -3252,6 +3263,8 @@ function toast(type, msg) {
 .rx-time { font-size: 9.5px; color: var(--tu); font-variant-numeric: tabular-nums; }
 .rx-name { font-size: 12.5px; font-weight: 500; color: var(--td); }
 .rx-meta { font-size: 10px; color: var(--tu); margin-top: 1px; }
+.q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
+.q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .rx-tags { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; }
 .rxt { font-size: 8.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
 .rxt-b { background: #dbeafe; color: #1e40af; }
