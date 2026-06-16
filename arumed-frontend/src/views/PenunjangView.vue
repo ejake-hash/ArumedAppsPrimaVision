@@ -82,7 +82,7 @@ function hasUnsavedForm() {
   if (order.test_type === BIOMETRI_CODE) {
     for (const eye of ['od', 'os']) {
       const b = f.biometri?.[eye] ?? {}
-      if (b.recommended_iol_power || b.brand) return true
+      if (b.recommended_iol_power || b.brand || (b.iol_type && b.iol_type !== 'MONOFOCAL')) return true
     }
   }
   return false
@@ -191,6 +191,9 @@ function ensureForm(order) {
     f.ringkasan       = d.ringkasan ?? ''
     f.notes           = existing.notes ?? ''
     f.attachment_path = existing.attachment_path ?? ''
+    // URL absolut dari backend (accessor DiagnosticResult) — agar lampiran yang sudah
+    // tersimpan / dikirim mesin tetap bisa diklik saat panel dibuka ulang, bukan hanya teks nama.
+    f.attachment_url  = existing.attachment_url ?? ''
     if (order.test_type === BIOMETRI_CODE) {
       f.biometri.od = { ...f.biometri.od, ...(d.od ?? {}) }
       f.biometri.os = { ...f.biometri.os, ...(d.os ?? {}) }
@@ -771,11 +774,17 @@ onUnmounted(() => {
             <div v-for="it in store.inbox" :key="it.id" class="inbox-item">
               <div class="inbox-row">
                 <div class="inbox-info">
-                  <div class="inbox-name">{{ it.original_filename || it.attachment_path }}</div>
+                  <!-- Identitas pasien dulu (nama + No.RM), bukan nama file GUID acak. -->
+                  <div class="inbox-name">
+                    <template v-if="it.patient_name">{{ it.patient_name }}</template>
+                    <span v-else class="inbox-unknown">Pasien tak dikenal</span>
+                    <span v-if="it.patient_no_rm" class="inbox-rm">· RM {{ it.patient_no_rm }}</span>
+                    <span v-if="it.patient_no_rm && !it.patient_name" class="inbox-warn">No.RM tak ada di sistem</span>
+                  </div>
                   <div class="inbox-meta">
                     <span :class="['pill', it.source === 'OCT' ? 'pill-order' : 'pill-umum']">{{ it.source }}</span>
                     <span v-if="it.accession_number">Acc: {{ it.accession_number }}</span>
-                    <span v-if="it.claimed_no_rm">RM(file): {{ it.claimed_no_rm }}</span>
+                    <span class="inbox-file" :title="it.original_filename || it.attachment_path">{{ it.original_filename || it.attachment_path }}</span>
                     <a v-if="it.attachment_url" :href="it.attachment_url" target="_blank" rel="noopener" class="inbox-link">Lihat berkas</a>
                   </div>
                 </div>
@@ -1051,8 +1060,12 @@ onUnmounted(() => {
 .inbox-item { border: 1.5px solid var(--gb); border-radius: 9px; background: var(--bs); overflow: hidden; }
 .inbox-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; }
 .inbox-info { flex: 1; min-width: 0; }
-.inbox-name { font-size: 12.5px; font-weight: 600; color: var(--td); word-break: break-all; }
+.inbox-name { font-size: 12.5px; font-weight: 600; color: var(--td); }
+.inbox-unknown { color: var(--tu); font-style: italic; font-weight: 500; }
+.inbox-rm { color: var(--tm); font-weight: 500; margin-left: 4px; }
+.inbox-warn { display: inline-block; margin-left: 6px; padding: 1px 7px; font-size: 9.5px; font-weight: 700; border-radius: 10px; background: var(--eb); color: var(--et); border: 1px solid var(--ebd); }
 .inbox-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10.5px; color: var(--tu); margin-top: 4px; }
+.inbox-file { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .8; }
 .inbox-link { color: var(--ga); text-decoration: underline; }
 .inbox-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .assign-panel { border-top: 1px dashed var(--gb); padding: 10px 12px; background: var(--bc); }

@@ -127,10 +127,12 @@ class PenunjangIngestService
             if (! $patient) {
                 return null;
             }
+            // Order terbuka ≤7 hari (selaras Queue::boardVisible & worklist) — pasien yang
+            // discan keesokan harinya tetap bisa tercocok otomatis, tak jatuh ke Inbox.
             $orders = DiagnosticOrder::with('visit.patient')
                 ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
                 ->whereNotNull('accession_number')
-                ->whereDate('created_at', today())
+                ->where('created_at', '>=', today()->subDays(7))
                 ->whereHas('visit', fn ($q) => $q->where('patient_id', $patient->id))
                 ->get();
 

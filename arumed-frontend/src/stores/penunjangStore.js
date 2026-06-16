@@ -164,7 +164,16 @@ export const usePenunjangStore = defineStore('penunjang', () => {
   async function saveHasil(orderId, payload) {
     hasilSaving.value.add(orderId)
     try {
-      const existing = resultsByOrderId.value[orderId]
+      let existing = resultsByOrderId.value[orderId]
+      // Mesin (ingest bridge/watcher) bisa membuat row hasil SETELAH panel dibuka →
+      // state lokal masih null. Re-cek ke server dulu agar storeHasil tak menabrak
+      // "Hasil sudah ada" (422). updateResult mengabaikan field null → lampiran mesin aman.
+      if (!existing) {
+        try {
+          const { data } = await penunjangApi.showHasil(orderId)
+          if (data.data) existing = resultsByOrderId.value[orderId] = data.data
+        } catch { /* abaikan — lanjut sebagai store baru */ }
+      }
       const { data } = existing
         ? await penunjangApi.updateHasil(existing.id, payload)
         : await penunjangApi.storeHasil({ diagnostic_order_id: orderId, ...payload })

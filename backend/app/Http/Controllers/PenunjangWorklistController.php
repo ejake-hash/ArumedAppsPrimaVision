@@ -26,10 +26,17 @@ class PenunjangWorklistController extends Controller
         $modalityFilter = $request->query('modality');       // opsional, saring per alat
         $scheduledDate  = $date ? \Illuminate\Support\Carbon::parse($date) : today();
 
+        // Bila tanggal diminta eksplisit → tepat hari itu. Tanpa tanggal → order terbuka
+        // hari ini ATAU yang masih nyangkut ≤7 hari (selaras Queue::boardVisible), supaya
+        // pasien yang baru discan keesokan harinya tetap terkirim ke alat.
         $orders = DiagnosticOrder::with('visit.patient')
             ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
             ->whereNotNull('accession_number')
-            ->whereDate('created_at', $date ?: today())
+            ->when(
+                $date,
+                fn ($q) => $q->whereDate('created_at', $date),
+                fn ($q) => $q->where('created_at', '>=', today()->subDays(7)),
+            )
             ->whereHas('visit.patient')
             ->orderBy('created_at')
             ->get();

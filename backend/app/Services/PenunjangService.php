@@ -7,6 +7,7 @@ use App\Models\DiagnosticTestType;
 use App\Models\DiagnosticResult;
 use App\Models\IolRecommendation;
 use App\Models\Notification;
+use App\Models\Patient;
 use App\Models\PenunjangIngestInbox;
 use App\Models\Queue;
 use App\Models\SystemLog;
@@ -538,10 +539,41 @@ class PenunjangService
     /** Daftar item inbox UNMATCHED (opsional saring per source: OCT|USG_WATCHER). */
     public function getInbox(?string $source = null): Collection
     {
-        return PenunjangIngestInbox::where('status', 'UNMATCHED')
+        $items = PenunjangIngestInbox::where('status', 'UNMATCHED')
             ->when($source, fn ($q) => $q->where('source', $source))
             ->orderBy('created_at')
             ->get();
+
+        // Resolusi NAMA pasien — nama file alat berupa GUID acak tak informatif.
+        // Dua jalur sesuai cara cocok masing-masing alat:
+        //  - OCT (DICOM)        → punya accession_number → telusuri order → visit → pasien
+        //    (berlaku walau order sudah COMPLETED/CANCELLED → itu sebab gagal cocok otomatis).
+        //  - Quantel/USG watcher → punya claimed_no_rm → cari Patient by No.RM.
+        // patient_name=null berarti identitas file tak terpetakan di sistem (sinyal salah
+        // No.RM/accession di alat atau pasien belum terdaftar).
+        $byRm = Patient::whereIn('no_rm', $items->pluck('claimed_no_rm')->filter()->unique()->all())
+            ->pluck('name', 'no_rm');
+
+        $accessions = $items->pluck('accession_number')->filter()->unique()->all();
+        $byAcc = $accRm = collect();
+        if ($accessions) {
+            $orders = DiagnosticOrder::with('visit.patient')
+                ->whereIn('accession_number', $accessions)->get();
+            $byAcc = $orders->mapWithKeys(fn ($o) => [$o->accession_number => $o->visit?->patient?->name]);
+            $accRm = $orders->mapWithKeys(fn ($o) => [$o->accession_number => $o->visit?->patient?->no_rm]);
+        }
+
+        foreach ($items as $it) {
+            if ($it->accession_number && $byAcc->has($it->accession_number)) {
+                $it->patient_name  = $byAcc[$it->accession_number];
+                $it->patient_no_rm = $accRm[$it->accession_number] ?? $it->claimed_no_rm;
+            } else {
+                $it->patient_name  = $it->claimed_no_rm ? ($byRm[$it->claimed_no_rm] ?? null) : null;
+                $it->patient_no_rm = $it->claimed_no_rm;
+            }
+        }
+
+        return $items;
     }
 
     /** Order penunjang terbuka hari ini sebagai kandidat penautan (picker UI). */
@@ -550,7 +582,13 @@ class PenunjangService
         $query = DiagnosticOrder::with('visit.patient')
             ->whereIn('status', ['REQUESTED', 'IN_PROGRESS'])
             ->whereNotNull('accession_number')
-            ->whereDate('created_at', $filters['date'] ?? today());
+            // Tanggal eksplisit → tepat hari itu; tanpa tanggal → order terbuka ≤7 hari
+            // (selaras worklist & auto-match) supaya order nyangkut lintas-hari tetap bisa ditautkan.
+            ->when(
+                ! empty($filters['date']),
+                fn ($q) => $q->whereDate('created_at', $filters['date']),
+                fn ($q) => $q->where('created_at', '>=', today()->subDays(7)),
+            );
 
         if (! empty($filters['search'])) {
             $kw = $filters['search'];

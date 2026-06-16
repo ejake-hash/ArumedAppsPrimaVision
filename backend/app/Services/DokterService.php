@@ -1574,19 +1574,30 @@ class DokterService
             'status'           => 'REQUESTED',
         ]);
 
-        // Route visit to PENUNJANG station (but keep in DOKTER until comes back)
-        // Create PENUNJANG queue so penunjang can see the order
-        $lastSeq  = Queue::where('station', 'PENUNJANG')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
-        $sequence = $lastSeq + 1;
+        // Route visit to PENUNJANG station (but keep in DOKTER until comes back).
+        // Buat baris antrean PENUNJANG HANYA bila pasien belum mengantre hari ini — order
+        // ke-2/3 untuk visit yang sama menumpang baris yang ada (1 pasien = 1 baris di papan,
+        // semua order tampil di panel), bukan menambah antrean ganda. Selaras dgn guard di
+        // PenunjangService::createOrder.
+        $alreadyQueued = Queue::where('visit_id', $data['visit_id'])
+            ->where('station', 'PENUNJANG')
+            ->whereDate('created_at', today())
+            ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+            ->exists();
 
-        Queue::create([
-            'visit_id'       => $data['visit_id'],
-            'station'        => 'PENUNJANG',
-            'queue_prefix'   => 'P',
-            'queue_sequence' => $sequence,
-            'queue_number'   => 'P-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
-            'status'         => 'WAITING',
-        ]);
+        if (! $alreadyQueued) {
+            $lastSeq  = Queue::where('station', 'PENUNJANG')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
+            $sequence = $lastSeq + 1;
+
+            Queue::create([
+                'visit_id'       => $data['visit_id'],
+                'station'        => 'PENUNJANG',
+                'queue_prefix'   => 'P',
+                'queue_sequence' => $sequence,
+                'queue_number'   => 'P-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
+                'status'         => 'WAITING',
+            ]);
+        }
 
         $this->log($user->id, 'ORDER_PENUNJANG', DiagnosticOrder::class, $order->id, "Order {$data['test_type']} untuk kunjungan {$data['visit_id']}");
 

@@ -935,7 +935,7 @@ async function loadPenunjangHistory() {
       kesimpulan:    r.detail?.expertise_data?.kesimpulan ?? '',
       ringkasan:     r.detail?.expertise_data?.ringkasan ?? '',
       notes:         r.detail?.notes ?? '',
-      biometri:      (r.test_type === 'Biometri' && (r.detail?.expertise_data?.od || r.detail?.expertise_data?.os))
+      biometri:      (r.test_type === 'BIOM' && (r.detail?.expertise_data?.od || r.detail?.expertise_data?.os))
         ? { od: r.detail.expertise_data.od ?? null, os: r.detail.expertise_data.os ?? null } : null,
       attachmentUrl:  r.attachment_url ?? null,
       attachmentPath: r.attachment_url ?? '',   // regex ekstensi gambar di modal pakai URL
