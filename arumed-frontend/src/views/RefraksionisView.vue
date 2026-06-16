@@ -186,7 +186,7 @@ const iopHigh = computed(() => {
 })
 const visus = ref({ ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' })
 const pinhole = ref({ od: '', os: '' })
-const refine = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '64' })
+const refine = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '' })
 const clinicalNotes = ref('')
 const rxFinal = ref({ perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' })
 
@@ -250,7 +250,7 @@ function resetForm() {
   iopExtra.value   = []
   visus.value      = { ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' }
   pinhole.value    = { od: '', os: '' }
-  refine.value     = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '64' }
+  refine.value     = { od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '' }
   clinicalNotes.value = ''
   rxFinal.value    = { perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' }
   soap.value       = { s: '', o: '', a: SOAP_A_DEFAULT, p: SOAP_P_DEFAULT }
@@ -316,7 +316,7 @@ function fillFormFromRecord(rec, presc) {
     os_ax: v(rec.refraksi_subjektif_os_axis),
     add_od: v(rec.add_power_od),
     add_os: v(rec.add_power_os),
-    pd:    vnum(rec.pd_distance) || '64',
+    pd:    vnum(rec.pd_distance),
   }
   oldGlasses.value = {
     od_s:   v(rec.old_glasses_od_sph),
