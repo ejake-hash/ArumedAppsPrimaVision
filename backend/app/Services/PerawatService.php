@@ -1195,6 +1195,16 @@ class PerawatService
                 ->isNotEmpty()
             : false;
 
+        // Stasiun pasangan (REFRAKSIONIS) SUDAH selesai memeriksa? → badge "Selesai
+        // Refraksionis" di kartu antrean triase (finalizeRefraction menutup queue
+        // REFRAKSIONIS jadi COMPLETED).
+        $siblingCompleted = $visit && $visit->relationLoaded('queues')
+            ? $visit->queues
+                ->where('station', Queue::STATION_REFRAKSIONIS)
+                ->where('status', Queue::STATUS_COMPLETED)
+                ->isNotEmpty()
+            : false;
+
         // Hasil refraksi (visus/IOP) bila refraksionis sudah memeriksa — utk kartu pasien triase.
         $rfx = $visit?->refractionRecord;
         $refraksi = ($rfx && ($rfx->visus_akhir_od || $rfx->visus_akhir_os || $rfx->visus_awal_od || $rfx->visus_awal_os || $rfx->iop_od !== null || $rfx->iop_os !== null)) ? [
@@ -1215,6 +1225,7 @@ class PerawatService
             'created_at'     => $queue->created_at?->toIso8601String(),
             // Mutual-exclusion stasiun paralel (Triase ↔ Refraksionis)
             'sibling_active'        => $siblingActive,
+            'sibling_completed'     => $siblingCompleted,
             'sibling_station_label' => 'Refraksionis',
             'refraksi'              => $refraksi,
             'visit'          => $visit ? [

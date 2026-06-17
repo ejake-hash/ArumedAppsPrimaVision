@@ -891,6 +891,10 @@ onUnmounted(() => {
                       {{ q.schedule_risk.reason }}
                     </span>
                     <span v-if="q.sibling_active" class="pill pill-sibling" :title="`Pasien sedang ditangani di ${q.sibling_station_label}`">⏳ Sedang di {{ q.sibling_station_label }}</span>
+                    <span v-else-if="q.sibling_completed" class="pill pill-done" :title="`Sudah selesai diperiksa di ${q.sibling_station_label}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
+                      Selesai {{ q.sibling_station_label }}
+                    </span>
                   </div>
                   <div v-if="q.status !== 'COMPLETED'" class="q-actions" @click.stop>
                     <button

@@ -952,9 +952,9 @@ function toast(type, msg) {
                     <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : p.ptype === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ p.ptype === 'bpjs' ? 'BPJS' : p.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
-                    <span v-if="p.hasNurse" class="pill pill-done">
+                    <span v-if="p.hasNurse" class="pill pill-done" :title="`Sudah selesai diperiksa di ${p.siblingLabel}`">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
-                      Triase
+                      Selesai {{ p.siblingLabel }}
                     </span>
                     <span v-if="p.allergies?.length" class="pill pill-allergy">⚠ Alergi</span>
                     <span v-if="p.siblingActive" class="pill pill-sibling" :title="`Pasien sedang ditangani di ${p.siblingLabel}`">⏳ Sedang di {{ p.siblingLabel }}</span>
