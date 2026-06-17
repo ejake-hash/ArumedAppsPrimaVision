@@ -70,9 +70,24 @@ function isTodayRow(c) {
 }
 const isTodayQ = (q) => isTodayRow(q.created_at)
 
+// Umur baris antrean (hari penuh sejak dibuat) — untuk badge "aging" di "Masih Aktif".
+function ageDays(q) {
+  if (!q?.created_at) return 0
+  const d = new Date(q.created_at); d.setHours(0, 0, 0, 0)
+  const n = new Date(); n.setHours(0, 0, 0, 0)
+  return Math.max(0, Math.round((n - d) / 86400000))
+}
+// Target tutup kasir: hari yang sama, maksimal 7 hari. Lewat itu = "crit".
+const KASIR_AGE_TARGET = 7
+const ageClass = (n) => (n > KASIR_AGE_TARGET ? 'crit' : n >= 3 ? 'warn' : '')
+
 const belumBayarCount = computed(() => queue.value.filter((q) => isTodayQ(q) && !isLunas(q)).length)
 const selesaiCount    = computed(() => queue.value.filter((q) => isTodayQ(q) &&  isLunas(q)).length)
 const cActive         = computed(() => queue.value.filter((q) => !isTodayQ(q)).length)
+// Tunggakan lintas-hari (Masih Aktif): umur tertua & berapa yang lewat target.
+const activeRows      = computed(() => queue.value.filter((q) => !isTodayQ(q)))
+const oldestActiveAge = computed(() => activeRows.value.reduce((m, q) => Math.max(m, ageDays(q)), 0))
+const overdueCount    = computed(() => activeRows.value.filter((q) => ageDays(q) > KASIR_AGE_TARGET).length)
 // "Pasien hari ini" / Total = HANYA baris hari ini (lintas-hari "Masih Aktif" tak dihitung).
 const cToday          = computed(() => queue.value.filter((q) => isTodayQ(q)).length)
 
@@ -1113,6 +1128,22 @@ const groupedPrintItems = computed(() =>
               </div>
             </div>
 
+            <!-- Peringatan tunggakan lintas-hari (muncul saat kasir dibuka) -->
+            <button
+              v-if="cActive"
+              type="button"
+              :class="['kasir-backlog-banner', overdueCount ? 'crit' : '']"
+              title="Buka tab Masih Aktif"
+              @click="qPrimaryFilter = 'active'"
+            >
+              <svg viewBox="0 0 24 24" class="bb-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>
+                <b>{{ cActive }}</b> tagihan belum tutup kasir<template v-if="oldestActiveAge"> (tertua H+{{ oldestActiveAge }})</template>.
+                <template v-if="overdueCount"> {{ overdueCount }} lewat {{ KASIR_AGE_TARGET }} hari.</template>
+                Selesaikan secepatnya →
+              </span>
+            </button>
+
             <!-- Primary filter -->
             <div class="primary-filter" role="group" aria-label="Filter utama antrean">
               <button :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']" @click="qPrimaryFilter = 'waiting'">
@@ -1123,9 +1154,9 @@ const groupedPrintItems = computed(() =>
                 Lunas
                 <span v-if="selesaiCount" class="pf-ct">{{ selesaiCount }}</span>
               </button>
-              <button :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']" @click="qPrimaryFilter = 'active'" title="Tagihan belum selesai dari hari sebelumnya (lintas-hari)">
+              <button :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']" @click="qPrimaryFilter = 'active'" title="Tagihan belum selesai dari hari sebelumnya (lintas-hari) — wajib ditutup ≤7 hari">
                 Masih Aktif
-                <span v-if="cActive" class="pf-ct">{{ cActive }}</span>
+                <span v-if="cActive" :class="['pf-ct', overdueCount ? 'ct-crit' : 'ct-warn']">{{ cActive }}</span>
               </button>
             </div>
 
@@ -1179,6 +1210,11 @@ const groupedPrintItems = computed(() =>
                     </span>
                   </div>
                   <div class="q-tags">
+                    <span
+                      v-if="!isTodayQ(q)"
+                      :class="['pill', 'pill-age', ageClass(ageDays(q))]"
+                      :title="`Belum tutup kasir ${ageDays(q)} hari — target maksimal ${KASIR_AGE_TARGET} hari`"
+                    >H+{{ ageDays(q) }}</span>
                     <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
@@ -2142,6 +2178,17 @@ const groupedPrintItems = computed(() =>
 .pf-btn:hover { border-color: var(--ga); color: var(--ga); }
 .pf-btn.a { background: var(--gd); color: #fff; border-color: var(--gd); }
 .pf-ct { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,.25); }
+/* Counter "Masih Aktif" menonjol: kuning bila ada, merah bila ada yang lewat target. */
+.pf-btn:not(.a) .pf-ct.ct-warn { background: #f59e0b; color: #fff; }
+.pf-btn:not(.a) .pf-ct.ct-crit { background: #dc2626; color: #fff; }
+
+/* Banner peringatan tunggakan kasir (lintas-hari). */
+.kasir-backlog-banner { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; margin-bottom: 0.5rem; padding: 8px 10px; border-radius: 8px; border: 1.5px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 11px; line-height: 1.35; font-family: 'Inter', sans-serif; cursor: pointer; transition: all .13s; }
+.kasir-backlog-banner:hover { background: #fef3c7; }
+.kasir-backlog-banner.crit { border-color: #dc2626; background: #fef2f2; color: #991b1b; }
+.kasir-backlog-banner.crit:hover { background: #fee2e2; }
+.kasir-backlog-banner .bb-icon { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.kasir-backlog-banner b { font-weight: 800; }
 
 .ptype-tabs { display: flex; gap: 3px; margin-bottom: 0.55rem; }
 .ptype-tab { flex: 1; padding: 5px 4px; font-size: 10px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--tu); cursor: pointer; font-family: 'Inter',sans-serif; text-align: center; transition: all .13s; white-space: nowrap; }
@@ -2201,6 +2248,10 @@ const groupedPrintItems = computed(() =>
 .pill-asn   { background: var(--pb); color: var(--pt); }
 .pill-done  { background: var(--sb); color: var(--st); }
 .pill-belum { background: var(--wb); color: var(--wt); }
+/* Badge umur tunggakan (Masih Aktif): netral → kuning (≥H+3) → merah (lewat target). */
+.pill-age      { background: #e5e7eb; color: #374151; }
+.pill-age.warn { background: #fde68a; color: #92400e; }
+.pill-age.crit { background: #dc2626; color: #fff; }
 /* Badge status obat (resep) — bedakan kunjungan dgn obat vs tanpa obat di antrean kasir. */
 .pill-obat-ok   { background: #dcfce7; color: #166534; }
 .pill-obat-wait { background: #fef3c7; color: #92400e; }

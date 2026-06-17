@@ -115,4 +115,13 @@ return [
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Penerima Laporan Tunggakan Kasir
+    |--------------------------------------------------------------------------
+    | Email supervisor untuk laporan harian kasir:report-backlog (boleh dipisah
+    | koma). Kosong → laporan tak dikirim (hanya tampil di konsol/log).
+    */
+    'kasir_backlog_to' => env('KASIR_BACKLOG_REPORT_TO'),
+
 ];

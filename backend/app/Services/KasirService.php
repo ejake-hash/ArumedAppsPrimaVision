@@ -62,7 +62,10 @@ class KasirService
                 'visit.visitCob.penjamin2',
             ])
             ->where('station', 'KASIR')
-            ->boardVisibleOpenBilling()   // +pasien belum tutup kasir (Masih Aktif)
+            // Kasir = stasiun penagihan terakhir: TANPA batas umur (null). Setiap
+            // tagihan belum tutup kasir tetap muncul di "Masih Aktif" sampai lunas/
+            // dibatalkan — tak lenyap diam-diam setelah 7 hari (≠ stasiun lain).
+            ->boardVisibleOpenBilling(null)
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();

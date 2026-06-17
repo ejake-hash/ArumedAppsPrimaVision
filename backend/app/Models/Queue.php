@@ -164,26 +164,35 @@ class Queue extends Model
      * diutak-atik (tambah obat/tindakan, revisi SOAP/resume/paket bedah) dari
      * stasiun manapun via tab "Masih Aktif".
      *
-     * Klausa ke-3 (tambahan): baris ≤7 hari, STATUS APA PUN (termasuk COMPLETED),
-     * di mana visit-nya:
+     * Klausa ke-3 (tambahan): baris (default ≤7 hari), STATUS APA PUN (termasuk
+     * COMPLETED), di mana visit-nya:
      *   - belum SELESAI (current_station != 'SELESAI'), DAN
      *   - billing belum dikunci: tanpa invoice ATAU invoice DRAFT/FINALIZED
      *     (BUKAN PAID/PARTIALLY_PAID/CANCELLED) — selaras gate assertBillingNotCommitted.
      *
      * Begitu kasir LUNAS/konfirmasi (invoice PAID + visit SELESAI), baris berhenti
-     * disurfacekan ulang. Window 7 hari menjaga papan tidak membanjir data lama.
+     * disurfacekan ulang.
+     *
+     * @param int|null $openBillingDays Window umur (hari) klausa ke-3. Default 7
+     *   menjaga papan stasiun (Farmasi/Refraksi/Perawat/Dokter) tak membanjir data
+     *   lama. KASIR memanggil dengan `null` → TANPA batas umur: setiap tagihan yang
+     *   belum tutup kasir tetap terlihat sampai benar-benar dituntaskan (mencegah
+     *   pasien belum-lunas lenyap diam-diam setelah 7 hari). Klausa 1 & 2 (antrean
+     *   normal harian) tak terpengaruh parameter ini.
      */
-    public function scopeBoardVisibleOpenBilling(Builder $q): Builder
+    public function scopeBoardVisibleOpenBilling(Builder $q, ?int $openBillingDays = 7): Builder
     {
-        return $q->where(function ($w) {
+        return $q->where(function ($w) use ($openBillingDays) {
             $w->whereDate('created_at', today())
               ->orWhere(function ($a) {
                   $a->whereIn('status', self::ACTIVE_STATUSES)
                     ->where('created_at', '>=', today()->subDays(7));
               })
-              ->orWhere(function ($b) {
-                  $b->where('created_at', '>=', today()->subDays(7))
-                    ->whereHas('visit', function ($v) {
+              ->orWhere(function ($b) use ($openBillingDays) {
+                  if ($openBillingDays !== null) {
+                      $b->where('created_at', '>=', today()->subDays($openBillingDays));
+                  }
+                  $b->whereHas('visit', function ($v) {
                         $v->where('current_station', '!=', 'SELESAI')
                           ->where(function ($iv) {
                               $iv->whereDoesntHave('billingInvoice')

@@ -26,3 +26,11 @@ Schedule::command('satusehat:batch-sync --retry')
     ->dailyAt('01:00')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
+
+// Jam 17.00 WIB — laporan tunggakan kasir (tagihan belum tutup kasir + umurnya)
+// ke supervisor (env KASIR_BACKLOG_REPORT_TO). No-op aman bila tak ada tunggakan
+// atau penerima belum diset.
+Schedule::command('kasir:report-backlog')
+    ->dailyAt('17:00')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();
