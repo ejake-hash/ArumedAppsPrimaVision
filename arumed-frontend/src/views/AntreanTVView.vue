@@ -779,6 +779,25 @@ async function fetchDevices() {
   } catch {
     devices.value = []
   }
+  scrollToThisDevice()
+}
+
+// Baris di daftar yang merupakan TV yang SEDANG membuka panel ini (cocok
+// device_key di localStorage). Null bila panel dibuka dari perangkat lain
+// (mis. laptop admin) yang belum/tidak terdaftar di daftar ini.
+const thisDeviceInList = computed(() =>
+  devices.value.find((d) => d.device_key === deviceKey) ?? null
+)
+const thisDeviceRow = ref(null)   // ref elemen baris "TV ini" untuk auto-scroll
+
+// Gulir + sorot baris TV ini ketika daftar dimuat, supaya admin yang membuka
+// panel DI TV bersangkutan langsung melihat baris mana miliknya di antara
+// banyak "TV Baru" serupa. No-op bila TV ini tak ada di daftar.
+function scrollToThisDevice() {
+  if (!thisDeviceInList.value) return
+  nextTick(() => {
+    thisDeviceRow.value?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
 }
 
 // Saat panel kontrol dibuka: muat daftar TV + media target (default Global).
@@ -2039,8 +2058,18 @@ async function saveAudioDefaults() {
               <p class="ctrl-lbl" style="opacity:.55; font-weight:400; margin-top:2px">
                 Beri nama sesuai lokasi (mis. "TV Lobi", "TV Lt. 2"). Tiap TV yang membuka halaman ini terdaftar otomatis.
               </p>
+              <p v-if="devices.length && !thisDeviceInList" class="tvdev-hint">
+                ⚠️ TV yang Anda pakai sekarang tidak ada di daftar — panel ini sepertinya dibuka dari perangkat lain (mis. laptop). Buka halaman ini <strong>langsung di TV</strong> agar baris "TV ini" tersorot.
+              </p>
+              <p v-else-if="thisDeviceInList" class="tvdev-hint ok">
+                ✓ Baris bertanda <strong>TV ini</strong> (tersorot) adalah layar yang sedang Anda lihat. Ganti namanya sesuai lokasi.
+              </p>
               <div v-if="devices.length === 0" class="ctrl-empty">Belum ada TV terdaftar.</div>
-              <div v-for="d in devices" :key="d.id" class="tvdev-row">
+              <div
+                v-for="d in devices"
+                :key="d.id"
+                :ref="(el) => { if (d.device_key === deviceKey) thisDeviceRow = el }"
+                :class="['tvdev-row', { 'is-this': d.device_key === deviceKey }]">
                 <span :class="['tvdev-dot', d.online ? 'on' : 'off']" :title="d.online ? 'Online' : 'Offline'"></span>
                 <input
                   class="ctrl-input tvdev-name"
@@ -2052,7 +2081,7 @@ async function saveAudioDefaults() {
                 <span :class="['tvdev-badge', d.media_synced ? 'global' : 'self']">
                   {{ d.media_synced ? 'Global' : 'Mandiri' }}
                 </span>
-                <span v-if="d.device_key === deviceKey" class="tvdev-this">TV ini</span>
+                <span v-if="d.device_key === deviceKey" class="tvdev-this">★ TV ini</span>
                 <button class="icon-btn" title="Atur tampilan TV ini" @click="selectTarget(d.id)">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                 </button>
@@ -3897,7 +3926,35 @@ async function saveAudioDefaults() {
 .tvdev-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; flex-shrink: 0; }
 .tvdev-badge.global { background: rgba(56,189,248,.18); color: #7dd3fc; }
 .tvdev-badge.self   { background: rgba(252,211,77,.18); color: #fcd34d; }
-.tvdev-this { font-size: 10px; color: rgba(255,255,255,.45); flex-shrink: 0; }
+.tvdev-this {
+  font-size: 10px; font-weight: 800; letter-spacing: .3px; flex-shrink: 0;
+  padding: 2px 9px; border-radius: 20px;
+  background: rgba(52,211,153,.2); color: #6ee7b7;
+  border: 1px solid rgba(52,211,153,.45);
+}
+/* Sorot baris TV yang sedang membuka panel ini agar mudah dibedakan dari
+   baris "TV Baru" lain yang serupa. */
+.tvdev-row.is-this {
+  background: rgba(52,211,153,.08);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(52,211,153,.35);
+  padding-left: 8px; padding-right: 8px;
+  animation: tvdev-pulse 1.6s ease-out 2;
+}
+@keyframes tvdev-pulse {
+  0%   { box-shadow: inset 0 0 0 1px rgba(52,211,153,.35), 0 0 0 0 rgba(52,211,153,.5); }
+  100% { box-shadow: inset 0 0 0 1px rgba(52,211,153,.35), 0 0 0 10px rgba(52,211,153,0); }
+}
+.tvdev-hint {
+  font-size: 11.5px; line-height: 1.45; margin: 8px 0 4px;
+  padding: 7px 10px; border-radius: 8px;
+  background: rgba(252,211,77,.12); color: #fde68a;
+  border: 1px solid rgba(252,211,77,.25);
+}
+.tvdev-hint.ok {
+  background: rgba(52,211,153,.1); color: #a7f3d0;
+  border-color: rgba(52,211,153,.28);
+}
 
 /* Media fullscreen overlay (papan iklan) */
 .media-fullscreen {
