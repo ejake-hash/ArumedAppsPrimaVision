@@ -16,10 +16,10 @@ class PenunjangController extends Controller
     // ANTRIAN PENUNJANG
     // =========================================================================
 
-    /** GET /penunjang/antrian */
-    public function indexAntrian(): JsonResponse
+    /** GET /penunjang/antrian?tanggal=Y-m-d (default: papan live hari ini) */
+    public function indexAntrian(Request $request): JsonResponse
     {
-        return $this->ok($this->service->getPatientQueue());
+        return $this->ok($this->service->getPatientQueue($request->query('tanggal')));
     }
 
     public function panggilAntrian(string $id): JsonResponse
@@ -322,10 +322,10 @@ class PenunjangController extends Controller
     // INBOX HASIL TAK-TERTAUT (ingest gagal cocok otomatis → tautkan manual)
     // =========================================================================
 
-    /** GET /penunjang/inbox?source=OCT|USG_WATCHER */
+    /** GET /penunjang/inbox?source=OCT|USG_WATCHER&tanggal=Y-m-d (default hari ini) */
     public function indexInbox(Request $request): JsonResponse
     {
-        return $this->ok($this->service->getInbox($request->query('source')));
+        return $this->ok($this->service->getInbox($request->query('source'), $request->query('tanggal')));
     }
 
     /** GET /penunjang/inbox/assignable?search=&date= — kandidat order penautan */

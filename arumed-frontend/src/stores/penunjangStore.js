@@ -8,6 +8,10 @@ export const usePenunjangStore = defineStore('penunjang', () => {
   const antrian       = ref([])
   const queueLoading  = ref(false)
   const queueError    = ref(null)
+  // Tanggal papan antrean: null = papan live hari ini (boardVisible, termasuk pasien
+  // nyangkut ≤7 hari). Diisi Y-m-d hanya saat operator menengok hari LAIN (tampilan
+  // historis tepat hari itu). Dipakai juga oleh polling agar tetap konsisten.
+  const queueDate     = ref(null)
 
   // ─── Selected order/queue ───────────────────────────────────────────────────
   const selectedQueue = ref(null)
@@ -47,7 +51,7 @@ export const usePenunjangStore = defineStore('penunjang', () => {
     queueLoading.value = true
     queueError.value   = null
     try {
-      const { data } = await penunjangApi.antrian()
+      const { data } = await penunjangApi.antrian(queueDate.value ? { tanggal: queueDate.value } : {})
       antrian.value   = data.data ?? []
 
       // Re-link selectedQueue ke objek terbaru dari antrian (id sama) supaya:
@@ -228,10 +232,13 @@ export const usePenunjangStore = defineStore('penunjang', () => {
   }
 
   // ─── Inbox Actions ──────────────────────────────────────────────────────────
-  async function fetchInbox(source = null) {
+  async function fetchInbox(source = null, tanggal = null) {
     inboxLoading.value = true
     try {
-      const { data } = await penunjangApi.inbox(source ? { source } : {})
+      const params = {}
+      if (source)  params.source  = source
+      if (tanggal) params.tanggal = tanggal
+      const { data } = await penunjangApi.inbox(params)
       inbox.value = data.data ?? []
     } catch (err) {
       throw new Error(err.response?.data?.message ?? 'Gagal memuat inbox')
@@ -319,7 +326,7 @@ export const usePenunjangStore = defineStore('penunjang', () => {
 
   return {
     // state
-    antrian, queueLoading, queueError,
+    antrian, queueLoading, queueError, queueDate,
     selectedQueue, finalizing,
     resultsByOrderId, hasilSaving,
     inbox, inboxLoading, assignable,

@@ -29,11 +29,21 @@ class PenunjangService
     // ANTRIAN
     // =========================================================================
 
-    public function getPatientQueue(): Collection
+    public function getPatientQueue(?string $tanggal = null): Collection
     {
+        // Tanggal eksplisit (Y-m-d) → tampilan historis tepat hari itu; tanpa tanggal →
+        // papan live default (boardVisible: hari ini ATAU masih aktif lintas-hari ≤7 hari,
+        // supaya pasien nyangkut tak hilang). FE hanya mengirim `tanggal` saat operator
+        // memilih hari LAIN dari hari ini, jadi default tetap papan live.
+        $tanggal = $this->normalizeDate($tanggal);
+
         $queues = Queue::with(['visit.patient', 'visit.diagnosticOrders'])
             ->where('station', 'PENUNJANG')
-            ->boardVisible()   // hari ini ATAU masih aktif lintas-hari (≤7 hari) — pasien nyangkut tak hilang
+            ->when(
+                $tanggal,
+                fn ($q) => $q->whereDate('created_at', $tanggal),
+                fn ($q) => $q->boardVisible(),
+            )
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
@@ -341,11 +351,21 @@ class PenunjangService
             throw new \Exception('Hasil sudah di-approve, tidak bisa diubah.', 422);
         }
 
-        $result->update(array_filter([
-            'expertise_data'  => $data['expertise_data'] ?? null,
+        $attrs = array_filter([
             'attachment_path' => $data['attachment_path'] ?? null,
             'notes'           => $data['notes'] ?? null,
-        ], fn ($v) => ! is_null($v)));
+        ], fn ($v) => ! is_null($v));
+
+        // expertise_data: MERGE (shallow) ke data lama. Form operator hanya memiliki
+        // kunci kesimpulan/ringkasan/od/os — tanpa merge, sub-kunci dari MESIN
+        // (biometry, source, ingest_refs, attachments) ikut TERTIMPA/HILANG saat
+        // operator menyimpan. Kunci operator tetap menang (override), kunci mesin
+        // yang tak dikirim form dipertahankan.
+        if (is_array($data['expertise_data'] ?? null)) {
+            $attrs['expertise_data'] = array_merge($result->expertise_data ?? [], $data['expertise_data']);
+        }
+
+        $result->update($attrs);
 
         $this->log(auth('api')->id(), 'UPDATE_HASIL', DiagnosticResult::class, $id);
 
@@ -550,10 +570,15 @@ class PenunjangService
     // INBOX HASIL TAK-TERTAUT (ingest yang gagal cocok otomatis → tautkan manual)
     // =========================================================================
 
-    /** Daftar item inbox UNMATCHED (opsional saring per source: OCT|USG_WATCHER). */
-    public function getInbox(?string $source = null): Collection
+    /**
+     * Daftar item inbox UNMATCHED (opsional saring per source: OCT|USG_WATCHER).
+     * Difilter per tanggal masuk hasil (created_at); default hari ini supaya papan
+     * Inbox tidak menumpuk lintas-hari — operator bisa menengok hari lain via picker.
+     */
+    public function getInbox(?string $source = null, ?string $tanggal = null): Collection
     {
         $items = PenunjangIngestInbox::where('status', 'UNMATCHED')
+            ->whereDate('created_at', $this->normalizeDate($tanggal) ?? today())
             ->when($source, fn ($q) => $q->where('source', $source))
             ->orderBy('created_at')
             ->get();
@@ -657,6 +682,20 @@ class PenunjangService
     // =========================================================================
     // PRIVATE HELPERS
     // =========================================================================
+
+    /**
+     * Validasi ringan tanggal filter dari query (whereDate butuh Y-m-d valid).
+     * Kembalikan string Y-m-d bila valid, null bila kosong/tak berformat — supaya
+     * input cacat dari klien tidak meledakkan query Postgres.
+     */
+    private function normalizeDate(?string $tanggal): ?string
+    {
+        if (! $tanggal || ! preg_match('/^\d{4}-\d{2}-\d{2}$/', $tanggal)) {
+            return null;
+        }
+
+        return $tanggal;
+    }
 
     /**
      * When all penunjang orders are done → re-create DOKTER queue so patient returns to doctor.

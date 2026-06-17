@@ -2,6 +2,7 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { usePenunjangStore } from '@/stores/penunjangStore'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import BiometriMesinPanel from '@/components/common/BiometriMesinPanel.vue'
 import JenisPenunjangView from '@/views/master-data/JenisPenunjangView.vue'
 
 const store = usePenunjangStore()
@@ -17,6 +18,18 @@ const mainTab = ref('antrean')   // 'antrean' | 'jenis'
 const qPrimary   = ref('waiting')   // 'waiting' | 'done'
 const qSecondary = ref('semua')     // 'semua' | 'bpjs' | 'umum'
 const qSearch    = ref('')
+
+// Tanggal Y-m-d lokal hari ini (default filter tanggal antrean & inbox).
+function todayStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Filter tanggal — default hari ini. Antrean: tanggal == hari ini → papan live
+// (boardVisible, pasien nyangkut tetap muncul); hari lain → tampilan historis tepat
+// hari itu. Inbox: selalu tepat tanggal terpilih (filter ketat). Lihat watcher di bawah.
+const qDate     = ref(todayStr())   // tanggal papan Antrean
+const inboxDate = ref(todayStr())   // tanggal Inbox Hasil
 
 const toasts          = ref([])
 const pendingCallIds  = ref([])
@@ -263,6 +276,12 @@ async function uploadFile(order, ev) {
   }
 }
 
+// Data biometri mentah dari alat (Quantel) untuk order ini, bila hasilnya sudah
+// ter-ingest. Disimpan di expertise_data.biometry (lihat PenunjangIngestService).
+function machineBio(order) {
+  return store.resultsByOrderId[order.id]?.expertise_data?.biometry ?? null
+}
+
 function buildExpertiseData(order) {
   const f = forms[order.id]
   const base = { kesimpulan: f.kesimpulan, ringkasan: f.ringkasan }
@@ -307,7 +326,7 @@ const assignSearch    = ref('')
 let   _assignTimer    = null
 
 async function refreshInbox() {
-  try { await store.fetchInbox() } catch (e) { toast('w', e.message) }
+  try { await store.fetchInbox(null, inboxDate.value) } catch (e) { toast('w', e.message) }
 }
 
 function startAssign(it) {
@@ -343,15 +362,40 @@ async function doDiscard(it) {
 
 watch(() => mainTab.value, (v) => { if (v === 'inbox') refreshInbox() })
 
+// ─── Filter tanggal ──────────────────────────────────────────────────────────
+// Antrean: hari ini → papan live (queueDate=null); hari lain → historis (queueDate=Y-m-d).
+watch(qDate, (v) => {
+  store.queueDate = (v && v === todayStr()) ? null : (v || null)
+  store.fetchAntrian()
+})
+// Inbox: selalu tepat tanggal terpilih (filter ketat).
+watch(inboxDate, () => refreshInbox())
+
+// Reset otomatis ke hari ini saat lewat tengah malam (kiosk dibuka semalaman):
+// hanya kontrol yang masih menunjuk "hari kemarin" yang ikut maju; tanggal historis
+// yang dipilih manual dibiarkan.
+let _today = todayStr()
+let _midnightTimer = null
+function checkDayRollover() {
+  const t = todayStr()
+  if (t === _today) return
+  if (qDate.value === _today)     qDate.value     = t   // memicu watcher → refetch
+  if (inboxDate.value === _today) inboxDate.value = t
+  _today = t
+}
+
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 onMounted(async () => {
+  store.queueDate = null               // mulai dari papan live hari ini
   await store.fetchAntrian()
-  store.fetchInbox().catch(() => {})   // populasi badge Inbox
+  store.fetchInbox(null, inboxDate.value).catch(() => {})   // populasi badge Inbox (hari ini)
   store.startPolling()
+  _midnightTimer = setInterval(checkDayRollover, 60_000)
 })
 
 onUnmounted(() => {
   store.stopPolling()
+  if (_midnightTimer) clearInterval(_midnightTimer)
   store.clearSelected()
 })
 </script>
@@ -387,12 +431,21 @@ onUnmounted(() => {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 Antrean Penunjang
               </div>
-              <div class="card-head-sub">{{ store.totalCount }} pasien hari ini</div>
+              <div class="card-head-sub">
+                {{ store.totalCount }} pasien {{ qDate === todayStr() ? 'hari ini' : `· ${fmtVisitDate(qDate)}` }}
+              </div>
             </div>
-            <span class="pill-live"><span class="live-dot"></span>LIVE</span>
+            <span v-if="qDate === todayStr()" class="pill-live"><span class="live-dot"></span>LIVE</span>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean penunjang">
+
+            <!-- Filter tanggal -->
+            <div class="date-filter">
+              <label class="date-filter-label">Tanggal</label>
+              <input v-model="qDate" type="date" :max="todayStr()" class="date-input" />
+              <button v-if="qDate !== todayStr()" class="date-today-btn" @click="qDate = todayStr()">Hari ini</button>
+            </div>
 
             <!-- Stats bar -->
             <div class="stats-bar">
@@ -644,6 +697,12 @@ onUnmounted(() => {
 
                   <!-- Panel input hasil (per-order) -->
                   <div v-if="activeOrderId === o.id && forms[o.id]" class="hasil-panel">
+                    <!-- Data mentah alat (Quantel) — read-only, untuk rujukan saat memutuskan IOL -->
+                    <BiometriMesinPanel
+                      v-if="o.test_type === BIOMETRI_CODE && machineBio(o)"
+                      :biometry="machineBio(o)"
+                    />
+
                     <!-- Form khusus Biometri — fokus rekomendasi IOL (untuk request gudang Bedah) -->
                     <div v-if="o.test_type === BIOMETRI_CODE" class="biometri-grid">
                       <div v-for="eye in ['od', 'os']" :key="eye" class="biometri-col">
@@ -772,7 +831,14 @@ onUnmounted(() => {
             </div>
             <div class="card-head-sub">Hasil dari alat yang belum bisa dicocokkan otomatis — tautkan ke order yang benar.</div>
           </div>
-          <button class="oa-btn oa-view" @click="refreshInbox">Muat ulang</button>
+          <div class="inbox-head-actions">
+            <div class="date-filter">
+              <label class="date-filter-label">Tanggal</label>
+              <input v-model="inboxDate" type="date" :max="todayStr()" class="date-input" />
+              <button v-if="inboxDate !== todayStr()" class="date-today-btn" @click="inboxDate = todayStr()">Hari ini</button>
+            </div>
+            <button class="oa-btn oa-view" @click="refreshInbox">Muat ulang</button>
+          </div>
         </div>
         <div class="card-body">
           <template v-if="store.inboxLoading">
@@ -794,6 +860,10 @@ onUnmounted(() => {
                   </div>
                   <div class="inbox-meta">
                     <span :class="['pill', it.source === 'OCT' ? 'pill-order' : 'pill-umum']">{{ it.source }}</span>
+                    <span v-if="it.created_at" class="inbox-date" title="Waktu hasil masuk dari alat">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtVisitDate(it.created_at) }} · {{ fmtTime(it.created_at) }}
+                    </span>
                     <span v-if="it.accession_number">Acc: {{ it.accession_number }}</span>
                     <span class="inbox-file" :title="it.original_filename || it.attachment_path">{{ it.original_filename || it.attachment_path }}</span>
                     <a v-if="it.attachment_url" :href="it.attachment_url" target="_blank" rel="noopener" class="inbox-link">Lihat berkas</a>
@@ -891,6 +961,18 @@ onUnmounted(() => {
 .q-search-wrap { margin-bottom: 0.5rem; }
 .q-search { width: 100%; height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 10px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
 .q-search:focus { border-color: var(--ga); background: #fff; }
+
+/* ── Filter tanggal (Antrean & Inbox) ────────────────────────────────────── */
+.date-filter { display: flex; align-items: center; gap: 6px; margin-bottom: 0.6rem; }
+.date-filter-label { font-size: 10.5px; font-weight: 600; color: var(--tu); }
+.date-input { height: 30px; font-size: 11.5px; border: 1.5px solid var(--gb); border-radius: 7px; padding: 0 8px; background: var(--bs); font-family: 'Inter', sans-serif; outline: none; color: var(--td); box-sizing: border-box; }
+.date-input:focus { border-color: var(--ga); background: #fff; }
+.date-today-btn { height: 30px; padding: 0 10px; font-size: 10.5px; font-weight: 600; border: 1.5px solid var(--gb); border-radius: 7px; background: var(--bs); color: var(--ga); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; white-space: nowrap; }
+.date-today-btn:hover { border-color: var(--ga); background: #fff; }
+.inbox-head-actions { display: flex; align-items: center; gap: 10px; }
+.inbox-head-actions .date-filter { margin-bottom: 0; }
+.inbox-date { display: inline-flex; align-items: center; gap: 3px; }
+.inbox-date .pill-icon { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
 
 /* ── Skeleton loader ─────────────────────────────────────────────────────── */
 .q-skeleton { height: 68px; background: var(--bs); border: 1.5px solid var(--gb); border-radius: 9px; margin-bottom: 5px; animation: shimmer 1.2s ease-in-out infinite; }

@@ -11,6 +11,7 @@ import EyeDrawingModal from '@/components/forms/EyeDrawingModal.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 import IolDecisionPanel from '@/components/dokter/IolDecisionPanel.vue'
+import BiometriMesinPanel from '@/components/common/BiometriMesinPanel.vue'
 
 const store      = useDokterStore()
 const jadwalStore = useJadwalDokterStore()
@@ -960,8 +961,14 @@ async function loadPenunjangHistory() {
       kesimpulan:    r.detail?.expertise_data?.kesimpulan ?? '',
       ringkasan:     r.detail?.expertise_data?.ringkasan ?? '',
       notes:         r.detail?.notes ?? '',
-      biometri:      (r.test_type === 'BIOM' && (r.detail?.expertise_data?.od || r.detail?.expertise_data?.os))
-        ? { od: r.detail.expertise_data.od ?? null, os: r.detail.expertise_data.os ?? null } : null,
+      // Biometri: gabungkan keputusan IOL manual (od/os) + data mentah alat
+      // (expertise_data.biometry → AL/K1/K2/ACD + tabel hitung IOL per formula).
+      biometri:      (r.test_type === 'BIOM' && (r.detail?.expertise_data?.od || r.detail?.expertise_data?.os || r.detail?.expertise_data?.biometry))
+        ? {
+            od: r.detail.expertise_data.od ?? null,
+            os: r.detail.expertise_data.os ?? null,
+            machine: r.detail.expertise_data.biometry ?? null,
+          } : null,
       attachmentUrl:  r.attachment_url ?? null,
       attachmentPath: r.attachment_url ?? '',   // regex ekstensi gambar di modal pakai URL
     }))
@@ -4348,21 +4355,27 @@ function closeResumeRM() {
 
             <!-- Biometri OD/OS -->
             <template v-if="selectedHasil.biometri">
-              <div class="hasil-modal-label">Hasil Biometri</div>
+              <div class="hasil-modal-label">Keputusan IOL</div>
               <table class="hasil-bio-table">
                 <thead>
                   <tr><th>Parameter</th><th>OD</th><th>OS</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td>Axial Length (mm)</td><td>{{ selectedHasil.biometri.od?.axial_length || '—' }}</td><td>{{ selectedHasil.biometri.os?.axial_length || '—' }}</td></tr>
-                  <tr><td>K1 (D)</td><td>{{ selectedHasil.biometri.od?.k1 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k1 || '—' }}</td></tr>
-                  <tr><td>K2 (D)</td><td>{{ selectedHasil.biometri.od?.k2 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k2 || '—' }}</td></tr>
-                  <tr><td>ACD (mm)</td><td>{{ selectedHasil.biometri.od?.acd || '—' }}</td><td>{{ selectedHasil.biometri.os?.acd || '—' }}</td></tr>
+                  <!-- Biometri inti manual hanya untuk data lama (sebelum integrasi alat) -->
+                  <template v-if="!selectedHasil.biometri.machine">
+                    <tr><td>Axial Length (mm)</td><td>{{ selectedHasil.biometri.od?.axial_length || '—' }}</td><td>{{ selectedHasil.biometri.os?.axial_length || '—' }}</td></tr>
+                    <tr><td>K1 (D)</td><td>{{ selectedHasil.biometri.od?.k1 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k1 || '—' }}</td></tr>
+                    <tr><td>K2 (D)</td><td>{{ selectedHasil.biometri.od?.k2 || '—' }}</td><td>{{ selectedHasil.biometri.os?.k2 || '—' }}</td></tr>
+                    <tr><td>ACD (mm)</td><td>{{ selectedHasil.biometri.od?.acd || '—' }}</td><td>{{ selectedHasil.biometri.os?.acd || '—' }}</td></tr>
+                  </template>
                   <tr><td>Rec. IOL (D)</td><td>{{ selectedHasil.biometri.od?.recommended_iol_power || '—' }}</td><td>{{ selectedHasil.biometri.os?.recommended_iol_power || '—' }}</td></tr>
                   <tr><td>Tipe IOL</td><td>{{ selectedHasil.biometri.od?.iol_type || '—' }}</td><td>{{ selectedHasil.biometri.os?.iol_type || '—' }}</td></tr>
                   <tr><td>Brand IOL</td><td>{{ selectedHasil.biometri.od?.brand || '—' }}</td><td>{{ selectedHasil.biometri.os?.brand || '—' }}</td></tr>
                 </tbody>
               </table>
+
+              <!-- Data mentah alat: AL/ACD/K1/K2/KCor + tabel hitung IOL per formula -->
+              <BiometriMesinPanel v-if="selectedHasil.biometri.machine" :biometry="selectedHasil.biometri.machine" />
             </template>
 
             <!-- Lampiran (gambar / PDF) -->

@@ -1169,7 +1169,7 @@ export const ruangTindakanApi = {
 /** Penunjang — antrian, order, hasil pemeriksaan */
 export const penunjangApi = {
   // Antrian
-  antrian:           ()           => api.get('/penunjang/antrian'),
+  antrian:           (params)     => api.get('/penunjang/antrian', { params }),
   panggilAntrian:    (id)         => api.put(`/penunjang/antrian/${id}/panggil`),
   lewatiAntrian:     (id)         => api.put(`/penunjang/antrian/${id}/lewati`),
   selesaiAntrian:    (id)         => api.put(`/penunjang/antrian/${id}/selesai`),
