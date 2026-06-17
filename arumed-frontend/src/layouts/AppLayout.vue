@@ -33,7 +33,13 @@ watch(() => route.fullPath, () => closeMobileNav())
 <style scoped>
 .app-shell {
   display: flex;
-  height: 100vh;
+  /* Tinggi mengikuti rantai DOM (html/body/#app = height:100%) — BUKAN `100vh`.
+     `100vh` terikat ke layout viewport; saat router menukar meta viewport
+     `device-width`→`width=1280` SETELAH paint pertama, `100vh` sempat memakai
+     tinggi viewport basi → konten bawah kepotong / muncul celah sampai ada
+     reflow (refresh/resize). Persen mengikuti containing block nyata, jadi
+     dihitung ulang dengan benar dan race itu hilang. */
+  height: 100%;
   overflow: hidden;
 }
 .app-main {
