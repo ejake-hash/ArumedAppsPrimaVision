@@ -191,6 +191,7 @@ function renderTemplate(tmpl, q) {
     .replaceAll('{nomor}',   q.num ?? '')
     .replaceAll('{nama}',    q.name && q.name !== '—' ? q.name : '')
     .replaceAll('{poli}',    q.poly ?? '')
+    .replaceAll('{dokter}',  q.dokter && q.dokter !== '—' ? q.dokter : '')
     .replaceAll('{stasiun}', stationLabel[q.station] ?? q.station ?? '')
     .replace(/\s+,/g, ',')   // bersihkan koma kembar saat {nama} kosong
     .replace(/\s{2,}/g, ' ')
@@ -265,12 +266,22 @@ function stationPoly(row, stationKey) {
   return stationLabel[stationKey] ?? stationKey
 }
 
+// Nama dokter untuk antrean DOKTER (dari jadwal dokter aktif via queue_prefix).
+// Stasiun lain tak punya konsep dokter di alur ini → null (baris disembunyikan).
+function stationDoctor(row, stationKey) {
+  if (stationKey !== 'DOKTER') return null
+  const prefix = prefixOf(row.queue_number)
+  const doc    = prefix ? doctorByPrefix.value[prefix] : null
+  return doc?.nama_dokter ?? null
+}
+
 function mapStationRow(row, stationKey) {
   return {
     id:     row.id,
     num:    row.queue_number,
     name:   row.patient_name ?? '—',
     poly:   stationPoly(row, stationKey),
+    dokter: stationDoctor(row, stationKey),
     status: row.status === 'CALLED'      ? 'called'
           : row.status === 'COMPLETED'   ? 'done'
           : 'waiting',
@@ -307,10 +318,11 @@ function refreshCurrentCalled() {
     const called = [...st.rows].reverse().find((r) => r.status === 'CALLED')
     if (called) {
       next[key] = {
-        id:   called.id,
-        num:  called.queue_number,
-        name: called.patient_name ?? '—',
-        poly: stationPoly(called, key),
+        id:     called.id,
+        num:    called.queue_number,
+        name:   called.patient_name ?? '—',
+        poly:   stationPoly(called, key),
+        dokter: stationDoctor(called, key),
       }
     }
   }
@@ -464,10 +476,11 @@ function handleQueueEvent(payload) {
     currentCalledByStation.value = {
       ...currentCalledByStation.value,
       [station]: {
-        id:   normalized.id,
-        num:  normalized.queue_number,
-        name: normalized.patient_name,
-        poly: stationPoly(normalized, station),
+        id:     normalized.id,
+        num:    normalized.queue_number,
+        name:   normalized.patient_name,
+        poly:   stationPoly(normalized, station),
+        dokter: stationDoctor(normalized, station),
       },
     }
   } else if ((q.status === 'COMPLETED' || q.status === 'CANCELLED')
@@ -760,6 +773,24 @@ async function registerDevice() {
     if (d.media)  applyMediaPayload(d.media)
   } catch {
     await fetchMediaSettings()
+  }
+}
+
+// Namai TV INI dari layar TV sendiri — TANPA login admin. Memakai endpoint
+// register publik (scoped ke device_key milik TV ini), jadi operator di lokasi
+// bisa memberi nama ("TV Lobi", "TV Lt. 2") walau panel hanya dibuka via PIN.
+// fetchDevices() di-refresh untuk admin yang login; no-op bila tak berhak.
+async function renameThisDevice(name) {
+  const trimmed = (name ?? '').trim()
+  if (!trimmed || trimmed === (deviceName.value ?? '')) return
+  try {
+    const { data } = await antreanTvApi.registerDevice({ device_key: deviceKey, name: trimmed })
+    const d = data.data ?? {}
+    if (d.device) { deviceId.value = d.device.id; deviceName.value = d.device.name }
+    showMediaMsg('Nama TV ini tersimpan.', 'ok')
+    fetchDevices()
+  } catch (err) {
+    showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan nama TV ini', 'err')
   }
 }
 
@@ -1835,6 +1866,8 @@ async function saveAudioDefaults() {
                    class="sc-called-name">{{ stationView[key].called.name }}</div>
               <div v-if="settingsFor(key).show_poly_in_card === true"
                    class="sc-called-poly">{{ stationView[key].called.poly }}</div>
+              <div v-if="stationView[key].called.dokter"
+                   class="sc-called-dokter">{{ stationView[key].called.dokter }}</div>
             </template>
             <template v-else>
               <div class="sc-called-lbl muted">Belum ada panggilan</div>
@@ -1928,6 +1961,7 @@ async function saveAudioDefaults() {
           {{ flashQueue.name }}
         </div>
         <div v-if="flashSettings.show_poly_in_flash !== false" class="flash-poly">{{ flashQueue?.poly }}</div>
+        <div v-if="flashQueue?.dokter" class="flash-dokter">{{ flashQueue.dokter }}</div>
         <div class="flash-badge">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
           {{ flashBadgeRendered }}
@@ -2049,10 +2083,30 @@ async function saveAudioDefaults() {
               </p>
             </div>
 
-            <!-- Daftar TV terdaftar: beri nama/lokasi, status, kelola -->
+            <!-- TV INI: selalu tampil (data dari register publik), bisa dinamai
+                 langsung di layar TV tanpa login admin. -->
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl" style="margin:0">TV ini (layar yang sedang Anda lihat)</p>
+              <p class="ctrl-lbl" style="opacity:.55; font-weight:400; margin-top:2px">
+                Beri nama sesuai lokasi (mis. "TV Lobi", "TV Lt. 2"). Tersimpan langsung untuk TV ini — tidak perlu login.
+              </p>
+              <div class="tvdev-row is-this">
+                <span class="tvdev-dot on" title="TV ini"></span>
+                <input
+                  class="ctrl-input tvdev-name"
+                  :value="deviceName"
+                  placeholder="Nama / lokasi TV ini"
+                  @keydown.enter="renameThisDevice($event.target.value); $event.target.blur()"
+                  @blur="renameThisDevice($event.target.value)"
+                />
+                <span class="tvdev-this">★ TV ini</span>
+              </div>
+            </div>
+
+            <!-- Daftar TV terdaftar: beri nama/lokasi, status, kelola (perlu login admin) -->
             <div class="ctrl-sub-section">
               <div class="ctrl-row" style="align-items:center; justify-content:space-between">
-                <p class="ctrl-lbl" style="margin:0">TV Terdaftar ({{ devices.length }})</p>
+                <p class="ctrl-lbl" style="margin:0">Semua TV Terdaftar ({{ devices.length }})</p>
                 <button class="ctrl-action-btn" style="padding:4px 12px; font-size:12px" @click="fetchDevices">Muat Ulang</button>
               </div>
               <p class="ctrl-lbl" style="opacity:.55; font-weight:400; margin-top:2px">
@@ -2064,7 +2118,9 @@ async function saveAudioDefaults() {
               <p v-else-if="thisDeviceInList" class="tvdev-hint ok">
                 ✓ Baris bertanda <strong>TV ini</strong> (tersorot) adalah layar yang sedang Anda lihat. Ganti namanya sesuai lokasi.
               </p>
-              <div v-if="devices.length === 0" class="ctrl-empty">Belum ada TV terdaftar.</div>
+              <div v-if="devices.length === 0" class="ctrl-empty">
+                Daftar semua TV hanya muncul untuk admin yang login. Untuk menamai layar ini, pakai kotak <strong>"TV ini"</strong> di atas.
+              </div>
               <div
                 v-for="d in devices"
                 :key="d.id"
@@ -3048,6 +3104,15 @@ async function saveAudioDefaults() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sc-called-dokter {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7dd3fc;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sc-next {
   font-size: 10.5px;
   color: #fff;
@@ -3499,6 +3564,7 @@ async function saveAudioDefaults() {
   font-family: 'Inter', sans-serif;
 }
 .flash-poly { font-size: clamp(14px, 2vw, 24px); color: rgba(255,255,255,.5); margin-top: .4rem; font-family: 'Inter', sans-serif; }
+.flash-dokter { font-size: clamp(16px, 2.2vw, 28px); font-weight: 600; color: #7dd3fc; margin-top: .3rem; font-family: 'Inter', sans-serif; }
 .flash-badge {
   display: inline-flex; align-items: center; gap: 8px; margin-top: 2rem;
   background: rgba(56,189,248,.2); border: 1.5px solid rgba(56,189,248,.4);

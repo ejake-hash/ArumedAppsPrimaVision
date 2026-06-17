@@ -28,7 +28,11 @@ class TvDeviceController extends Controller
         ]);
 
         $device = TvDevice::firstOrNew(['device_key' => $data['device_key']]);
-        if (! $device->exists && ! empty($data['name'])) {
+        // Beri nama bila dikirim — saat pendaftaran awal MAUPUN saat TV menamai
+        // dirinya sendiri (rename dari layar TV tanpa login). Aman: hanya bisa
+        // mengubah baris milik device_key-nya sendiri. Heartbeat/mount biasa tak
+        // mengirim `name` sehingga nama tak tersentuh.
+        if (! empty($data['name'])) {
             $device->name = $data['name'];
         }
         $device->last_seen_at = now();
