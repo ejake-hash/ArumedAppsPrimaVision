@@ -221,6 +221,9 @@ class RefraksiService
             'soap_a'         => $data['soap_a'] ?? null,
             'soap_p'         => $data['soap_p'] ?? null,
 
+            // Literal autoref non-numerik ("error") + provenance migrasi (jsonb).
+            'raw_data'       => $data['raw_data'] ?? null,
+
             'is_finalized' => false,
         ]);
 

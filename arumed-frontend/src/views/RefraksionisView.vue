@@ -196,6 +196,12 @@ const visus = ref({ ucva_od: '', ucva_os: '', bcva_od: '', bcva_os: '' })
 const pinhole = ref({ od: '', os: '' })
 const refine = ref({ od_s: '', od_c: '', od_ax: '', os_s: '', os_c: '', os_ax: '', add_od: '', add_os: '', pd: '' })
 const clinicalNotes = ref('')
+// raw_data (jsonb) — string autoref non-numerik yang diketik petugas (mis. mesin
+// cetak "error" pada katarak matur / media keruh). Kolom autoref numerik tak bisa
+// menyimpan teks → num() membuangnya jadi null; literalnya kita simpan di sini agar
+// tak hilang & tetap muncul di SOAP-O. Existing raw_data (mis. dari migrasi) di-MERGE,
+// hanya kunci ui_autoref_* yang disentuh. [[fix_resume_anamnese_ttv_migrasi]]
+const rawData = ref(null)
 const rxFinal = ref({ perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' })
 
 // SOAP refraksionis (PPA). O autofill dari data refraksi tapi editable & tersimpan
@@ -210,11 +216,38 @@ const soapODirty = ref(false)   // O disentuh manual → hentikan autofill dari 
 // RmeAggregator::refraksiObjektif & DokterService::refraksiObjektifResume.
 // Urutan: Visus awal → Refraksi subjektif (S/C/X) → Visus akhir → ADD → IOP → PD.
 // Editable: begitu diedit manual, autofill berhenti.
+// Autoref non-numerik per mata (mesin gagal baca → "error"/"tidak terbaca"). Satu
+// field S/C/Axis berisi teks (num() → null padahal ada isi) sudah cukup menandai
+// mata itu gagal. Mengembalikan string literal yang diketik (gabungan), null bila
+// semuanya angka/kosong.
+function isErrLike(x) {
+  return x !== '' && x != null && num(x) === null
+}
+function autorefRawForEye(eye) {
+  const s = autoref.value[`${eye}_s`], c = autoref.value[`${eye}_c`], ax = autoref.value[`${eye}_ax`]
+  if (!isErrLike(s) && !isErrLike(c) && !isErrLike(ax)) return null
+  const parts = [s, c, ax].map((x) => String(x ?? '').trim()).filter(Boolean)
+  return parts.join(' ') || null
+}
+// raw_data payload: MERGE existing (jaga kunci migrasi) + set/hapus ui_autoref_*.
+function buildRawData() {
+  const base = (rawData.value && typeof rawData.value === 'object' && !Array.isArray(rawData.value))
+    ? { ...rawData.value } : {}
+  const od = autorefRawForEye('od'), os = autorefRawForEye('os')
+  if (od) base.ui_autoref_od = od; else delete base.ui_autoref_od
+  if (os) base.ui_autoref_os = os; else delete base.ui_autoref_os
+  if (od || os) base._ui_source = 'refraksionis'; else delete base._ui_source
+  return Object.keys(base).length ? base : null
+}
+
 const oDerived = computed(() => {
   const parts = []
   const v = visus.value, r = refine.value, i = iop.value
   const has = (x) => x !== '' && x != null
   const signed = (x) => `${Number(x) >= 0 ? '+' : ''}${x}`
+  // 0. Autoref tak terbaca (mesin "error") — penanda media keruh; hanya saat non-numerik.
+  const arOd = autorefRawForEye('od'), arOs = autorefRawForEye('os')
+  if (arOd || arOs) parts.push(`Autoref tidak terbaca — OD ${arOd || '–'} / OS ${arOs || '–'}`)
   // 1. Visus awal (UCVA)
   if (has(v.ucva_od) || has(v.ucva_os)) parts.push(`Visus awal OD ${v.ucva_od || '–'} / OS ${v.ucva_os || '–'}`)
   // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
@@ -263,6 +296,7 @@ function resetForm() {
   rxFinal.value    = { perception_type: 'JAUH', od_add: '', os_add: '', jenis: 'Bifocal', lensa: 'CR-39', coating: 'Anti-reflection', remarks: '' }
   soap.value       = { s: '', o: '', a: SOAP_A_DEFAULT, p: SOAP_P_DEFAULT }
   soapODirty.value = false
+  rawData.value    = null
 }
 
 /**
@@ -296,6 +330,17 @@ function fillFormFromRecord(rec, presc) {
     k_os_2:  v(rec.keratometri2_os),
     k_ax_os:  v(rec.keratometri_axis_os),
     k_ax2_os: v(rec.keratometri_axis2_os),
+  }
+  // raw_data: simpan utuh (jaga kunci migrasi) + pulihkan literal autoref non-numerik
+  // ("error") ke field Sferis bila kolom numerik mata itu kosong — supaya hasil "error"
+  // tetap terlihat saat record dibuka lagi & ikut menyusun SOAP-O.
+  rawData.value = (rec.raw_data && typeof rec.raw_data === 'object' && !Array.isArray(rec.raw_data))
+    ? { ...rec.raw_data } : null
+  for (const eye of ['od', 'os']) {
+    const lit = rawData.value?.[`ui_autoref_${eye}`]
+    if (lit && !autoref.value[`${eye}_s`] && !autoref.value[`${eye}_c`] && !autoref.value[`${eye}_ax`]) {
+      autoref.value[`${eye}_s`] = lit
+    }
   }
   iop.value = {
     od:     vnum(rec.iop_od),
@@ -471,6 +516,8 @@ function buildPemeriksaanPayload() {
     // Shared
     pd_distance:    num(refine.value.pd),
     clinical_notes: str(clinicalNotes.value),
+    // Literal autoref non-numerik ("error") — kolom numerik tak bisa menampungnya.
+    raw_data:       buildRawData(),
     // SOAP refraksionis (PPA) — O di-derive backend dari data refraksi
     soap_s:         str(soap.value.s),
     soap_o:         str(soap.value.o),

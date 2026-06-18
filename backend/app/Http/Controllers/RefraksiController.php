@@ -192,6 +192,9 @@ class RefraksiController extends Controller
             'soap_o'         => 'nullable|string|max:2000',
             'soap_a'         => 'nullable|string|max:2000',
             'soap_p'         => 'nullable|string|max:2000',
+
+            // raw_data (jsonb): literal autoref non-numerik ("error") & provenance migrasi.
+            'raw_data'       => 'nullable|array',
         ]);
 
         try {
@@ -267,10 +270,15 @@ class RefraksiController extends Controller
             'pd_distance'    => 'nullable|numeric|between:40,80',
             'clinical_notes' => 'nullable|string|max:2000',
 
-            // SOAP refraksionis (PPA)
+            // SOAP refraksionis (PPA). soap_o WAJIB di sini juga — tanpanya Objektif yang
+            // diedit/diautofill HILANG saat update (validate() hanya kembalikan key tervalidasi).
             'soap_s'         => 'nullable|string|max:2000',
+            'soap_o'         => 'nullable|string|max:2000',
             'soap_a'         => 'nullable|string|max:2000',
             'soap_p'         => 'nullable|string|max:2000',
+
+            // raw_data (jsonb): literal autoref non-numerik ("error") & provenance migrasi.
+            'raw_data'       => 'nullable|array',
         ]);
 
         try {
