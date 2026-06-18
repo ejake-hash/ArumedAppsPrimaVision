@@ -618,6 +618,14 @@ class TarifPaketService
 
         fputcsv($output, self::CSV_HEADERS, ',', '"', '\\');
 
+        // Preload pos kwitansi semua obat sekaligus (hindari N+1 saat menulis item_tipe
+        // obat sebagai label pos Buku Tarif — Obat Tindakan/Injeksi/Pulang).
+        $medIds = $packages->flatMap(fn ($p) => $p->items
+            ->where('item_type', SurgeryPackageItem::TYPE_MEDICATION)->pluck('item_id'))->all();
+        if ($medIds) {
+            $this->preloadMedicationPos($medIds);
+        }
+
         foreach ($packages as $pkg) {
             $headerRow = [
                 $pkg->name,
@@ -645,8 +653,14 @@ class TarifPaketService
                     SurgeryPackageItem::TYPE_MEDICATION => $resolved->golongan ?? '',
                     default                             => '',
                 };
+                // item_tipe obat ditulis sbg label pos kwitansi Buku Tarif (Obat Tindakan/
+                // Injeksi/Pulang) agar export SAMA dgn picker komposisi & Daftar Harga;
+                // import menerima label ini (resolveItemTipeAlias) maupun enum MEDICATION.
+                $itemTipeCol = $item->item_type === SurgeryPackageItem::TYPE_MEDICATION
+                    ? $this->medicationPosLabel($resolved->id)
+                    : $item->item_type;
                 fputcsv($output, array_merge($headerRow, [
-                    $item->item_type,
+                    $itemTipeCol,
                     $rawCat,
                     $itemName,
                     (string) $item->quantity,

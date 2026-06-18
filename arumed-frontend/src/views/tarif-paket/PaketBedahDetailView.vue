@@ -58,6 +58,15 @@ const ITEM_TYPE_OPTIONS = [
 ]
 const typeLabel = (t) => ITEM_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t
 
+// Pos kwitansi obat — label SAMA persis dgn kategori obat di Buku Tarif (bukuTarifUnion:
+// Obat Tindakan/Injeksi/Pulang). Dipakai memilah obat di picker komposisi paket.
+const MED_POS_OPTIONS = [
+  { value: 'OBAT_TINDAKAN', label: 'Obat Tindakan' },
+  { value: 'OBAT_INJEKSI',  label: 'Obat Injeksi' },
+  { value: 'OBAT_PULANG',   label: 'Obat Pulang' },
+]
+const posCodeFromLabel = (label) => MED_POS_OPTIONS.find((o) => o.label === label)?.value || 'OBAT_PULANG'
+
 // ─── Kategori buku tarif (dropdown "Kategori" di picker item) ──────────────
 // Kategori prosedur (master /master/tindakan/kategori-list) = kategori buku tarif
 // untuk Tindakan (Konsultasi Dokter, Laboratorium, Sewa Kamar, dst). Obat/BHP/IOL
@@ -74,16 +83,22 @@ async function loadProcedureCategories() {
 const categoryOptions = computed(() => {
   const isPemeriksaan = paket.value?.package_type === 'PEMERIKSAAN'
   const procCats = procedureCategories.value.map((c) => ({
-    value: `PROC:${c.name}`, label: c.name, item_type: 'PROCEDURE', category: c.name,
+    value: `PROC:${c.name}`, label: c.name, item_type: 'PROCEDURE', category: c.name, pos: null,
   }))
-  const typeOpts = [
-    { value: 'TYPE:MEDICATION', label: 'Obat', item_type: 'MEDICATION', category: null },
-    ...(isPemeriksaan ? [] : [
-      { value: 'TYPE:BHP', label: 'BHP', item_type: 'BHP', category: null },
-      { value: 'TYPE:IOL', label: 'IOL', item_type: 'IOL', category: null },
-    ]),
+  // Obat dipilah per pos kwitansi Buku Tarif (Obat Tindakan/Injeksi/Pulang) + 1 entri
+  // "Obat (semua pos)" lintas-pos. Daftar item ditarik dari Buku Tarif (bukuTarifUnion),
+  // jadi kategori yang muncul SAMA dengan Daftar Harga.
+  const obatOpts = [
+    { value: 'MED:ALL', label: 'Obat (semua pos)', item_type: 'MEDICATION', category: null, pos: null },
+    ...MED_POS_OPTIONS.map((p) => ({
+      value: `MEDPOS:${p.value}`, label: p.label, item_type: 'MEDICATION', category: p.label, pos: p.value,
+    })),
   ]
-  return [...procCats, ...typeOpts]
+  const typeOpts = isPemeriksaan ? [] : [
+    { value: 'TYPE:BHP', label: 'BHP', item_type: 'BHP', category: null, pos: null },
+    { value: 'TYPE:IOL', label: 'IOL', item_type: 'IOL', category: null, pos: null },
+  ]
+  return [...procCats, ...obatOpts, ...typeOpts]
 })
 function categoryOptionByValue(v) {
   return categoryOptions.value.find((o) => o.value === v) ?? null
@@ -93,6 +108,10 @@ function categoryValueForItem(item) {
   if (item.item_type === 'PROCEDURE' && item.item_category) {
     const v = `PROC:${item.item_category}`
     if (categoryOptionByValue(v)) return v
+  }
+  if (item.item_type === 'MEDICATION') {
+    const v = `MEDPOS:${posCodeFromLabel(item.item_category || '')}`
+    return categoryOptionByValue(v) ? v : 'MED:ALL'
   }
   return `TYPE:${item.item_type}`
 }
@@ -139,6 +158,7 @@ function openAddItem() {
     category_value: first?.value ?? '',
     item_type: first?.item_type ?? 'PROCEDURE',
     category: first?.category ?? null,
+    pos: first?.pos ?? null,
     item_id: '', item_label: '',
     quantity: 1, default_price: '', notes: '',
   }
@@ -147,11 +167,13 @@ function openAddItem() {
 }
 
 function openEditItem(item) {
+  const isMed = item.item_type === 'MEDICATION'
   itemModal.value = {
     open: true, mode: 'edit', submitting: false, errors: null, editingId: item.id,
     category_value: categoryValueForItem(item),
     item_type: item.item_type,
-    category: item.item_type === 'PROCEDURE' ? (item.item_category || null) : null,
+    category: (item.item_type === 'PROCEDURE' || isMed) ? (item.item_category || null) : null,
+    pos: isMed ? posCodeFromLabel(item.item_category || '') : null,
     item_id: item.item_id,
     item_label: `${item.item_category || typeLabel(item.item_type)} - ${item.item_name ?? '—'}`,
     quantity: item.quantity, default_price: item.default_price, notes: item.notes ?? '',
@@ -164,25 +186,45 @@ function resetItemPicker() {
 }
 
 async function searchItems(reset = true) {
-  const type  = itemModal.value.item_type
-  const apiFn = MASTER_API_MAP[type]
-  if (!apiFn) return
+  const type = itemModal.value.item_type
+  if (type !== 'MEDICATION' && !MASTER_API_MAP[type]) return
   if (reset) { itemPicker.value.page = 1; itemPicker.value.results = [] }
   const seq = ++itemSearchSeq
   itemPicker.value.loading = true
   try {
-    const params = { search: itemPicker.value.search || undefined, per_page: 25, page: itemPicker.value.page, active: 1 }
-    if (type === 'IOL') { delete params.active; params.available_only = 1 }
-    // Saring per kategori buku tarif (hanya Tindakan/PROCEDURE yang punya kategori master).
-    if (type === 'PROCEDURE' && itemModal.value.category) params.category = itemModal.value.category
-    const { data } = await apiFn(params)
-    if (seq !== itemSearchSeq) return   // hasil basi (user sudah ketik lagi / ganti tipe)
-    const pg   = data?.data ?? {}
-    const rows = pg.data ?? (Array.isArray(pg) ? pg : [])
-    const mapped = rows.map((r) => mapMasterRow(type, r))
+    let mapped = [], lastPage = 1, total = 0
+    if (type === 'MEDICATION') {
+      // Obat: sumber Buku Tarif (bukuTarifUnion) → kategori baris = pos kwitansi
+      // (Obat Tindakan/Injeksi/Pulang). category kosong = "Obat (semua pos)".
+      const params = {
+        tipe: 'obat', aktif: 1, per_page: 25, page: itemPicker.value.page,
+        search: itemPicker.value.search || undefined,
+      }
+      if (itemModal.value.category) params.kategori = itemModal.value.category
+      const { data } = await masterApi.bukuTarif.list(params)
+      if (seq !== itemSearchSeq) return
+      const pg = (data?.data ?? data ?? {}).tarif ?? {}
+      mapped = (pg.data ?? []).map((r) => ({
+        id: r.id, name: r.nama, category: r.kategori || 'Obat Pulang', suggestedPrice: Number(r.harga) || 0,
+      }))
+      lastPage = pg.last_page ?? 1
+      total    = pg.total ?? mapped.length
+    } else {
+      const params = { search: itemPicker.value.search || undefined, per_page: 25, page: itemPicker.value.page, active: 1 }
+      if (type === 'IOL') { delete params.active; params.available_only = 1 }
+      // Saring per kategori buku tarif (hanya Tindakan/PROCEDURE yang punya kategori master).
+      if (type === 'PROCEDURE' && itemModal.value.category) params.category = itemModal.value.category
+      const { data } = await MASTER_API_MAP[type](params)
+      if (seq !== itemSearchSeq) return   // hasil basi (user sudah ketik lagi / ganti tipe)
+      const pg   = data?.data ?? {}
+      const rows = pg.data ?? (Array.isArray(pg) ? pg : [])
+      mapped     = rows.map((r) => mapMasterRow(type, r))
+      lastPage   = pg.last_page ?? 1
+      total      = pg.total ?? mapped.length
+    }
     itemPicker.value.results  = reset ? mapped : [...itemPicker.value.results, ...mapped]
-    itemPicker.value.lastPage = pg.last_page ?? 1
-    itemPicker.value.total    = pg.total ?? itemPicker.value.results.length
+    itemPicker.value.lastPage = lastPage
+    itemPicker.value.total    = total
   } catch {
     if (seq === itemSearchSeq) itemPicker.value.results = []
   } finally {
@@ -232,6 +274,7 @@ function onCategoryChange() {
   const opt = categoryOptionByValue(itemModal.value.category_value)
   itemModal.value.item_type = opt?.item_type ?? 'PROCEDURE'
   itemModal.value.category  = opt?.category ?? null
+  itemModal.value.pos       = opt?.pos ?? null
   itemModal.value.item_id = ''
   itemModal.value.item_label = ''
   itemModal.value.default_price = ''
