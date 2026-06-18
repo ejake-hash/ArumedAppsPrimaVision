@@ -328,6 +328,11 @@ const itemDiscount   = computed(() => (selInv.value?.items ?? []).reduce(
   (a, it) => a + Number(it.discount_amount ?? 0), 0,
 ))
 const subtotalNet    = computed(() => Math.max(0, subtotal() - itemDiscount.value))
+// Jumlah baris RIIL (tanpa baris diskon paket/kontrol otomatis) — guard "jangan hapus
+// item terakhir" harus berbasis ini, bukan items.length yang ikut menghitung DISKON_PAKET.
+const realItemCount  = computed(() => (selInv.value?.items ?? []).filter(
+  (it) => !['DISKON_PAKET', 'DISKON_KONTROL'].includes(it.item_type),
+).length)
 const discountAmount = computed(() => Number(selInv.value?.discount ?? 0))
 const taxAmount      = computed(() => Number(selInv.value?.tax ?? 0))
 const totalTagihan   = computed(() => Number(selInv.value?.total ?? 0))
@@ -606,10 +611,14 @@ async function refreshInvoice() {
 const globalDiscRp = ref(0)
 const globalDiscPc = ref(0)
 const globalDiscDebounce = ref(null)
+// Field diskon global yang sedang difokus kasir ('pc' | 'rp' | null). Dipakai agar
+// syncGlobalDiscountFields TIDAK menimpa angka yang sedang diketik (race ketik-vs-
+// respons), tapi tetap boleh mengisi field PASANGAN dengan nilai ekuivalen dari server.
+const globalDiscFocusedField = ref(null)
 
 function syncGlobalDiscountFields() {
-  globalDiscRp.value = Number(selInv.value?.discount ?? 0)
-  globalDiscPc.value = Number(selInv.value?.discount_percent ?? 0)
+  if (globalDiscFocusedField.value !== 'rp') globalDiscRp.value = Number(selInv.value?.discount ?? 0)
+  if (globalDiscFocusedField.value !== 'pc') globalDiscPc.value = Number(selInv.value?.discount_percent ?? 0)
 }
 
 function onGlobalDiscChange(field) {
@@ -1610,8 +1619,8 @@ const groupedPrintItems = computed(() =>
                         <th>Kategori</th>
                         <th class="num">Qty</th>
                         <th class="num">Harga</th>
-                        <th v-if="editTagihan" class="num">Disc %</th>
-                        <th v-if="editTagihan" class="num">Disc Rp</th>
+                        <th v-if="editTagihan" class="num disc-col">Disc %</th>
+                        <th v-if="editTagihan" class="num disc-col">Disc Rp</th>
                         <th class="num">Net</th>
                         <th v-if="editTagihan"></th>
                       </tr>
@@ -1644,23 +1653,29 @@ const groupedPrintItems = computed(() =>
                         <td><span :class="['kat-pill', catCls(item)]">{{ catLabel(item) }}</span></td>
                         <td class="num">{{ item.quantity }}</td>
                         <td class="num">Rp {{ Number(item.unit_price).toLocaleString('id-ID') }}</td>
-                        <td v-if="editTagihan" class="num">
-                          <input
-                            v-if="!isDiskonPaket(item)"
-                            v-model.number="item.discount_percent"
-                            type="number" min="0" max="100" step="0.01"
-                            class="fi tbl-fi tbl-num"
-                            @input="onItemDiscChange(item, 'discount_percent')"
-                          />
+                        <td v-if="editTagihan" class="num disc-col">
+                          <div v-if="!isDiskonPaket(item)" class="disc-cell">
+                            <input
+                              v-model.number="item.discount_percent"
+                              type="number" min="0" max="100" step="0.01"
+                              class="fi tbl-fi tbl-disc"
+                              placeholder="0"
+                              @input="onItemDiscChange(item, 'discount_percent')"
+                            />
+                            <span class="disc-unit">%</span>
+                          </div>
                         </td>
-                        <td v-if="editTagihan" class="num">
-                          <input
-                            v-if="!isDiskonPaket(item)"
-                            v-model.number="item.discount_amount"
-                            type="number" min="0" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
-                            class="fi tbl-fi tbl-num"
-                            @input="onItemDiscChange(item, 'discount_amount')"
-                          />
+                        <td v-if="editTagihan" class="num disc-col">
+                          <div v-if="!isDiskonPaket(item)" class="disc-cell">
+                            <span class="disc-unit pre">Rp</span>
+                            <input
+                              v-model.number="item.discount_amount"
+                              type="number" min="0" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
+                              class="fi tbl-fi tbl-disc"
+                              placeholder="0"
+                              @input="onItemDiscChange(item, 'discount_amount')"
+                            />
+                          </div>
                         </td>
                         <td class="num strong">
                           <span v-if="Number(item.discount_amount) > 0" class="muted-strike">
@@ -1677,7 +1692,7 @@ const groupedPrintItems = computed(() =>
                             :title="item.is_absorbed ? 'Keluarkan dari paket — baris ditagih ekstra di atas harga paket' : 'Masukkan ke paket — pasien bayar harga paket, diskon paket menyesuaikan otomatis'"
                             @click="toggleAbsorb(item)"
                           >{{ item.is_absorbed ? 'Keluarkan' : 'Masukkan' }}</button>
-                          <button class="del-btn" @click="removeItem(item)" :disabled="itemMutating || (selInv.items?.length ?? 0) <= 1">
+                          <button class="del-btn" @click="removeItem(item)" :disabled="itemMutating || realItemCount <= 1">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
                           </button>
                         </td>
@@ -1697,9 +1712,11 @@ const groupedPrintItems = computed(() =>
                       <div class="row global-disc" v-if="editTagihan && !['PAID','CANCELLED'].includes(selInv.status)">
                         <span>Diskon Global</span>
                         <span class="disc-inputs">
-                          <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="0.01" class="fi disc-pc" @input="onGlobalDiscChange('pc')" /><span class="disc-suffix">%</span>
+                          <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="0.01" class="fi disc-pc" placeholder="0"
+                            @focus="globalDiscFocusedField = 'pc'" @blur="globalDiscFocusedField = null" @input="onGlobalDiscChange('pc')" /><span class="disc-suffix">%</span>
                           <span class="disc-sep">atau</span>
-                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" :max="subtotalNet" class="fi disc-rp" @input="onGlobalDiscChange('rp')" /></span>
+                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" :max="subtotalNet" class="fi disc-rp" placeholder="0"
+                            @focus="globalDiscFocusedField = 'rp'" @blur="globalDiscFocusedField = null" @input="onGlobalDiscChange('rp')" /></span>
                         </span>
                       </div>
                       <div v-else-if="discountAmount" class="row red"><span>Diskon Global<span v-if="Number(selInv.discount_percent) > 0"> ({{ Number(selInv.discount_percent) }}%)</span></span><span class="num">−Rp {{ discountAmount.toLocaleString('id-ID') }}</span></div>
@@ -2438,6 +2455,14 @@ const groupedPrintItems = computed(() =>
 .tbl-fi:focus { border-color: var(--ga); outline: none; }
 .tbl-num { width: 78px; text-align: right; }
 .tbl-select { font-size: 11px; }
+/* ── Kolom diskon per-baris: lega + tanpa spinner number (sebelumnya terpotong) ── */
+.tbl th.disc-col, .tbl td.disc-col { width: 112px; }
+.disc-cell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.tbl-disc { width: 72px; text-align: right; height: 32px; }
+.tbl-disc::-webkit-outer-spin-button, .tbl-disc::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.tbl-disc { -moz-appearance: textfield; appearance: textfield; }
+.disc-cell .disc-unit { font-size: 10.5px; font-weight: 700; color: var(--tu); white-space: nowrap; }
+.disc-cell .disc-unit.pre { color: var(--tm); }
 .del-btn { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ebd); background: var(--eb); color: var(--et); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .12s; }
 .del-btn:hover:not(:disabled) { background: var(--et); color: #fff; }
 .del-btn:disabled { opacity: .35; cursor: not-allowed; }
@@ -2533,8 +2558,10 @@ const groupedPrintItems = computed(() =>
 .totals .row.grand { font-size: 15px; font-weight: 700; color: var(--td); padding: 6px 0 0; border-top: 1px dashed var(--gb); margin-top: 4px; }
 .totals .global-disc .disc-inputs { display: inline-flex; align-items: center; gap: 6px; }
 .totals .global-disc .fi { height: 28px; font-size: 11px; padding: 0 6px; }
-.totals .global-disc .disc-pc { width: 60px; text-align: right; }
-.totals .global-disc .disc-rp { width: 110px; text-align: right; }
+.totals .global-disc .disc-pc { width: 64px; text-align: right; }
+.totals .global-disc .disc-rp { width: 120px; text-align: right; }
+.totals .global-disc input::-webkit-outer-spin-button, .totals .global-disc input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.totals .global-disc input { -moz-appearance: textfield; appearance: textfield; }
 .totals .global-disc .disc-suffix { color: var(--tm); font-weight: 600; font-size: 11px; }
 .totals .global-disc .disc-sep { color: var(--tu); font-size: 10px; }
 .totals .global-disc .disc-rp-wrap { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--tm); }

@@ -2253,7 +2253,9 @@ class KasirService
         if (isset($patch['discount_percent']) && ! isset($patch['discount'])) {
             $itemDiscount   = (float) $invoice->items()->sum('discount_amount');
             $subtotalAfter  = max(0, (float) $invoice->subtotal - $itemDiscount);
-            $patch['discount'] = round($subtotalAfter * ((float) $patch['discount_percent']) / 100, 2);
+            // Bulatkan ke rupiah penuh — diskon % atas nominal ganjil menghasilkan
+            // pecahan (mis. 50% dari 24.906.123 = …,5) yang merembet ke total tagihan.
+            $patch['discount'] = round($subtotalAfter * ((float) $patch['discount_percent']) / 100);
         }
 
         $invoice->update($patch);
@@ -3893,8 +3895,9 @@ class KasirService
         $globalDiscPc = (float) ($invoice->discount_percent ?? 0);
 
         // Bila discount_percent terisi, hitung ulang nominal global dari net item.
+        // Bulatkan ke rupiah penuh agar total tagihan tak berakhir pecahan (…,5).
         if ($globalDiscPc > 0) {
-            $globalDisc = round($itemNet * $globalDiscPc / 100, 2);
+            $globalDisc = round($itemNet * $globalDiscPc / 100);
             $invoice->update(['discount' => $globalDisc]);
         }
 
