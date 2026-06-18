@@ -755,6 +755,20 @@ class BedahController extends Controller
     // KOMPONEN PAKET PASIEN (snapshot) — edit BHP & Tindakan
     // =========================================================================
 
+    /**
+     * GET /bedah/tarif-tindakan?visit_id=… — daftar tindakan + harga per-penjamin visit
+     * untuk picker komposisi paket. Sengaja TIDAK memakai endpoint /dokter/tarif-tindakan
+     * (terkunci DPJP via authorizeVisitOwnership → 403 bagi perawat bedah / dokter non-DPJP).
+     * Di-gate permission:bedah.read (grup) — selaras pola Kasir/IGD/RANAP yang punya endpoint
+     * tarif sendiri tanpa kunci kepemilikan.
+     */
+    public function tarifTindakan(Request $request): JsonResponse
+    {
+        $request->validate(['visit_id' => 'required|uuid|exists:visits,id']);
+
+        return $this->ok(app(\App\Services\KasirService::class)->getTarifTindakan($request->query('visit_id')));
+    }
+
     /** GET /bedah/visit-package/{visitId} — SEMUA paket pasien + komponen (multi-paket). */
     public function getVisitPackage(string $visitId): JsonResponse
     {

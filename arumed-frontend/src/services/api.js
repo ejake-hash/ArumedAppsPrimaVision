@@ -1094,6 +1094,10 @@ export const bedahApi = {
   terimaRequest:  (id)     => api.put(`/bedah/request/${id}/terima`),
   adjustBhpUsage: (id, items) => api.post(`/bedah/request/${id}/adjust-bhp`, { items }),
 
+  // Tarif tindakan per-penjamin visit untuk picker komposisi paket (gate bedah.read,
+  // tanpa kunci DPJP — beda dari dokterApi.tarifTindakan yang 403 bagi non-DPJP).
+  tarifTindakan:          (visitId)       => api.get('/bedah/tarif-tindakan', { params: { visit_id: visitId } }),
+
   // Komponen paket pasien (snapshot) — edit BHP & Tindakan saat operasi.
   // getVisitPackage kini balikkan ARRAY paket (multi-paket per visit, mis. Phaco + TIVA).
   getVisitPackage:        (visitId)       => api.get(`/bedah/visit-package/${visitId}`),

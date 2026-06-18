@@ -522,6 +522,10 @@ Route::prefix('v1')->group(function () {
             Route::put('/request/{id}/terima',              [BedahController::class, 'terimaRequest'])->middleware('permission:bedah.write');
             Route::post('/request/{id}/adjust-bhp',         [BedahController::class, 'adjustBhpUsage'])->middleware('permission:bedah.write');
 
+            // Tarif tindakan per-penjamin visit untuk picker komposisi paket (bedah.read,
+            // tanpa kunci DPJP — beda dari /dokter/tarif-tindakan yang 403 bagi non-DPJP).
+            Route::get('/tarif-tindakan',                   [BedahController::class, 'tarifTindakan'])->middleware('permission:bedah.read');
+
             // Komponen paket pasien (snapshot) — edit BHP & Tindakan saat operasi.
             // Multi-paket: satu visit boleh punya >1 paket (mis. Phaco + TIVA).
             Route::get('/visit-package/{visitId}',          [BedahController::class, 'getVisitPackage'])->middleware('permission:bedah.read');

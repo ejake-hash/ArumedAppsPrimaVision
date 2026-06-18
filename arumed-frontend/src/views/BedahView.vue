@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useMasterDataStore } from '@/stores/masterDataStore'
 import { useAuthStore } from '@/stores/authStore'
-import { bedahApi, masterApi, dokterApi } from '@/services/api'
+import { bedahApi, masterApi } from '@/services/api'
 import ScanBarcodeModal from '@/components/common/ScanBarcodeModal.vue'
 import AnesthesiaReportWizard from '@/components/bedah/AnesthesiaReportWizard.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
@@ -1141,9 +1141,11 @@ async function loadVisitPackage(visitId) {
   } catch { visitPackages.value = [] }
 }
 async function loadVpPickerOptions(visitId) {
-  // Tindakan: tarif per metode bayar pasien (sama dgn kasir/dokter).
+  // Tindakan: tarif per penjamin visit. Pakai endpoint BEDAH (bedah.read), BUKAN
+  // dokterApi.tarifTindakan yang terkunci DPJP (403 → daftar Tindakan kosong utk
+  // perawat bedah / dokter non-DPJP). Harga tetap resolve dari penjamin visit.
   try {
-    const { data } = await dokterApi.tarifTindakan(visitId)
+    const { data } = await bedahApi.tarifTindakan(visitId)
     vpProcOptions.value = (data.data ?? []).map((t) => ({ id: t.id, name: t.name, code: t.code }))
   } catch { vpProcOptions.value = [] }
   // BHP: master item.
@@ -1175,6 +1177,37 @@ function vpOptionsFor(snapId) {
   if (t === 'BHP') return vpBhpOptions.value
   if (t === 'MEDICATION') return vpMedOptions.value
   return vpProcOptions.value
+}
+
+// ── Picker komponen paket dengan PENCARIAN (Tindakan/BHP/Obat) ───────────────
+// Master bisa ratusan baris → ganti <select> panjang dengan combobox cari-ketik.
+// Filter klien atas opsi yang sudah dimuat (vpProcOptions/vpBhpOptions/vpMedOptions);
+// state per-kartu (key = snapshot id) supaya tiap paket punya query sendiri.
+const vpItemSearch = reactive({})   // { snapId: query }
+const vpItemOpen   = reactive({})   // { snapId: bool }
+function vpSelectedName(snapId) {
+  const id = vpForm(snapId).itemId
+  if (!id) return ''
+  const o = vpOptionsFor(snapId).find((x) => x.id === id)
+  return o ? `${o.code ? `[${o.code}] ` : ''}${o.name}` : ''
+}
+function vpFilteredOptions(snapId) {
+  const q = String(vpItemSearch[snapId] ?? '').trim().toLowerCase()
+  const opts = vpOptionsFor(snapId)
+  const list = q
+    ? opts.filter((o) => `${o.name ?? ''} ${o.code ?? ''}`.toLowerCase().includes(q))
+    : opts
+  return list.slice(0, 50)   // cap tampilan; ketik lebih spesifik utk mempersempit
+}
+function vpPickItem(snapId, o) {
+  vpForm(snapId).itemId = o.id
+  vpItemSearch[snapId] = ''
+  vpItemOpen[snapId] = false
+}
+// Ganti jenis (Tindakan/BHP/Obat) → reset item terpilih + query (opsi beda set).
+function vpResetItem(snapId) {
+  vpForm(snapId).itemId = ''
+  vpItemSearch[snapId] = ''
 }
 // Paket yang belum dipakai pasien (sembunyikan yang sudah ter-snapshot).
 const vpAvailablePackages = computed(() => {
@@ -2228,15 +2261,29 @@ function mulaiBack() { mulaiStep.value = 1 }
                     <div v-else class="bd-tbl-empty">Belum ada komponen.</div>
 
                     <div v-if="!selP.laporanFinalized" class="bd-bhp-add">
-                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).type" style="width:104px">
+                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).type" style="width:104px" @change="vpResetItem(snap.id)">
                         <option value="PROCEDURE">Tindakan</option>
                         <option value="BHP">BHP</option>
                         <option value="MEDICATION">Obat</option>
                       </select>
-                      <select class="bd-select bd-select-sm" v-model="vpForm(snap.id).itemId" style="flex:1">
-                        <option value="">-- Pilih {{ vpForm(snap.id).type === 'BHP' ? 'BHP' : (vpForm(snap.id).type === 'MEDICATION' ? 'Obat' : 'Tindakan') }} --</option>
-                        <option v-for="o in vpOptionsFor(snap.id)" :key="o.id" :value="o.id">{{ o.code ? `[${o.code}] ` : '' }}{{ o.name }}</option>
-                      </select>
+                      <div class="bd-combo-wrap" style="flex:1;min-width:170px">
+                        <input
+                          class="bd-input bd-input-sm bd-combo-input"
+                          :placeholder="`Cari ${vpForm(snap.id).type === 'BHP' ? 'BHP' : (vpForm(snap.id).type === 'MEDICATION' ? 'Obat' : 'Tindakan')} (nama / kode)…`"
+                          :value="vpForm(snap.id).itemId ? vpSelectedName(snap.id) : (vpItemSearch[snap.id] || '')"
+                          @focus="vpItemOpen[snap.id] = true"
+                          @input="e => { vpItemSearch[snap.id] = e.target.value; vpForm(snap.id).itemId = ''; vpItemOpen[snap.id] = true }"
+                          @blur="() => setTimeout(() => { vpItemOpen[snap.id] = false }, 150)"
+                        />
+                        <svg class="bd-combo-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        <div v-if="vpItemOpen[snap.id]" class="bd-combo-dropdown">
+                          <div v-for="o in vpFilteredOptions(snap.id)" :key="o.id" class="bd-combo-option" @mousedown.prevent="vpPickItem(snap.id, o)">
+                            <span class="bd-combo-name">{{ o.name }}</span>
+                            <span class="bd-combo-role">{{ o.code || '' }}</span>
+                          </div>
+                          <div v-if="!vpFilteredOptions(snap.id).length" class="bd-combo-empty">Tidak ada hasil</div>
+                        </div>
+                      </div>
                       <select v-if="vpForm(snap.id).type === 'MEDICATION'" class="bd-select bd-select-sm" v-model="vpForm(snap.id).pos" style="width:128px" title="Pos kwitansi obat ini">
                         <option v-for="p in VP_POS_OPTS" :key="p.v" :value="p.v">{{ p.l }}</option>
                       </select>
