@@ -2679,7 +2679,7 @@ function closeResumeRM() {
               {{ selP.address }}
             </div>
             <div class="ptags">
-              <span v-if="selP.dob" class="ptg ptg-dob" title="Tanggal lahir">🎂 {{ fmtDob(selP.dob) }}</span>
+              <span v-if="selP.dob" class="ptg ptg-dob" title="Tanggal lahir">Tanggal Lahir : {{ fmtDob(selP.dob) }}</span>
               <span
                 v-if="selP.visitType === 'PREOP_BEDAH'"
                 class="ptg ptg-preop"
