@@ -312,7 +312,7 @@ HTML;
             $editable('penunjang',        'Hasil Penunjang Medis (Lab/Radiologi/dll)', ['via' => 'aggregate', 'source' => 'penunjang_rmrj', 'format' => 'icd_with_desc_join_newline']),
             // Diagnosa = kode+nama ICD-10 + teks diagnosa bebas (diagnosis_text).
             $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
-            // Tindakan = kode+nama ICD-9 + "Visus, Tonometri, Autorefkeratometri" (auto-tulis).
+            // Tindakan = kode+nama ICD-9 + "Visus, Tonometri, Autorefkeratometri, Slit Lamp" (auto-tulis).
             $editable('tindakan',         'Tindakan (ICD-9)',  ['via' => 'aggregate', 'source' => 'tindakan_rmrj', 'format' => 'icd_with_desc_join_newline']),
             $editable('terapi',           'Terapi',            ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
             // Riwayat = Riwayat Penyakit Sekarang (RPS) dari triase perawat.

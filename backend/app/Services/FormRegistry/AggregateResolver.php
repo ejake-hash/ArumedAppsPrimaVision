@@ -207,7 +207,7 @@ final class AggregateResolver
     // ─────────────────────────────────────────────────────────────────────────
     // tindakan_rmrj — "Tindakan" Resume Medis = prosedur ICD-9 dokter (kode—nama)
     // yang BUKAN pemeriksaan penunjang (lihat PENUNJANG_ICD9 → dirutekan ke
-    // penunjang_rmrj) + baris tetap "Visus, Tonometri, Autorefkeratometri"
+    // penunjang_rmrj) + baris tetap "Visus, Tonometri, Autorefkeratometri, Slit Lamp"
     // (pemeriksaan rutin refraksionis; tak tersimpan sebagai kode → auto-tulis,
     // keputusan user 12 Jun 2026) bila pasien punya rekaman refraksi. Editable.
     // ─────────────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ final class AggregateResolver
             $parts[] = $this->joinIcd9Pairs($pairs, $format);   // utamakan nama sub tersimpan
         }
         if ($visit->refractionRecord !== null) {
-            $parts[] = 'Visus, Tonometri, Autorefkeratometri';
+            $parts[] = 'Visus, Tonometri, Autorefkeratometri, Slit Lamp';
         }
 
         return implode("\n", $parts);

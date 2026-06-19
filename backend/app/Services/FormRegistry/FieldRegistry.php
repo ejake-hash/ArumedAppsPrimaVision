@@ -127,7 +127,7 @@ final class FieldRegistry
                 'formats' => ['text'],
             ],
             'tindakan_rmrj' => [
-                'label'   => 'Tindakan RMRJ = ICD-9 NON-penunjang (kode+nama) + "Visus, Tonometri, Autorefkeratometri" (auto)',
+                'label'   => 'Tindakan RMRJ = ICD-9 NON-penunjang (kode+nama) + "Visus, Tonometri, Autorefkeratometri, Slit Lamp" (auto)',
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
             ],
             'penunjang_rmrj' => [
