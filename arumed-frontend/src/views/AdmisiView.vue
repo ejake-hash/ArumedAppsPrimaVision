@@ -878,14 +878,6 @@ function schedulesForGuarantor(guarantor) {
 }
 const wizardDoctorList = computed(() => schedulesForGuarantor(form.guarantor))
 
-// Bila penjamin berganti & dokter terpilih tak lagi sesuai layanannya, reset.
-watch(() => form.guarantor, () => {
-  if (form.doctor_schedule_id &&
-      !wizardDoctorList.value.some(d => d.id === form.doctor_schedule_id)) {
-    form.doctor_schedule_id = ''
-  }
-})
-
 /* ============================================================
    GANTI DOKTER — koreksi salah-pilih saat pendaftaran.
    Aman & ringan: antrean dokter tak menyimpan doctor_id, cukup
@@ -1522,6 +1514,15 @@ const blankForm = () => ({
   doctor_schedule_id: '',
 })
 const form = reactive(blankForm())
+
+// Bila penjamin berganti & dokter terpilih tak lagi sesuai layanannya, reset.
+// (Harus SETELAH `form` dideklarasikan — getter watch dievaluasi saat setup.)
+watch(() => form.guarantor, () => {
+  if (form.doctor_schedule_id &&
+      !wizardDoctorList.value.some(d => d.id === form.doctor_schedule_id)) {
+    form.doctor_schedule_id = ''
+  }
+})
 
 /* Wilayah di wizard (pasien lama): status prefill & apakah petugas memilih ulang.
    - wizPrefilled: true=provinsi lama cocok master (dropdown terisi → lock),
