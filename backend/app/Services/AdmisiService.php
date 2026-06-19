@@ -1905,6 +1905,13 @@ class AdmisiService
         // visit tetap utuh; ini hanya nilai yang dikirim ke VClaim).
         $noRujukanSep = $adaSuratKontrol ? '' : $noRujukan;
 
+        // noTelp: BPJS wajib ANGKA saja, maksimal 14 digit. Data pasien sering berisi
+        // dua nomor ("0813… / 0859…"), spasi, tanda baca, atau >14 digit → BPJS tolak
+        // "No.Telepon Diisi Dengan Benar (max 14 digit)". Ambil nomor PERTAMA, buang
+        // semua non-digit, potong 14.
+        $noTelpRaw = (string) ($visit->patient?->phone ?? '');
+        $noTelp    = substr(preg_replace('/\D+/', '', preg_split('/[\/,;]/', $noTelpRaw)[0] ?? ''), 0, 14);
+
         // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
         // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
         // visit (hasil "Tarik dari BPJS"/input petugas) → auto-tarik dari rujukan FKTP
@@ -1951,7 +1958,7 @@ class AdmisiService
             'assesmentPel' => '',
             'skdp'         => $skdp,
             'dpjpLayan'    => $dpjpLayan,
-            'noTelp'       => $visit->patient?->phone ?? '',
+            'noTelp'       => $noTelp,
             'user'         => auth('api')->user()?->name ?? 'arumed',
         ];
 
