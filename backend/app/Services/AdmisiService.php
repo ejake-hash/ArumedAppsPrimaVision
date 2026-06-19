@@ -2172,7 +2172,7 @@ class AdmisiService
         // hanya untuk pemindaian No.SEP internal.
         $qr = null;
         try {
-            $svg = \App\Services\FormRegistry\QrCodeHelper::svg($visit->no_sep, 90);
+            $svg = \App\Services\FormRegistry\QrCodeHelper::svg($visit->no_sep, 72);
             $qr  = 'data:image/svg+xml;base64,' . base64_encode($svg);
         } catch (\Throwable $e) {
             $qr = null;

@@ -721,10 +721,10 @@ class AdmisiController extends Controller
         }
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.sep', $data)
-            ->setPaper('a4')
+            ->setPaper('a5')
             ->setOption('isRemoteEnabled', true);
 
-        $safe = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) ($data['sep']['no_sep'] ?? 'SEP')) ?: 'SEP';
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) ($data['no_sep'] ?? 'SEP')) ?: 'SEP';
 
         return $pdf->stream("SEP-{$safe}.pdf");
     }

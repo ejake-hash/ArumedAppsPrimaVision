@@ -9,43 +9,43 @@
 <meta charset="utf-8">
 <style>
     * { box-sizing: border-box; }
-    @page { margin: 12mm 12mm; }
-    body { font-family: DejaVu Sans, sans-serif; font-size: 10px; color: #1a1a1a; margin: 0; }
+    @page { margin: 8mm 9mm; }
+    body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #1a1a1a; margin: 0; }
 
-    .head { width: 100%; border-collapse: collapse; border-bottom: 2px solid #16873f; padding-bottom: 4px; }
+    .head { width: 100%; border-collapse: collapse; border-bottom: 2px solid #16873f; padding-bottom: 3px; }
     .head td { vertical-align: middle; }
-    .head .logo { width: 250px; }
-    .head .logo img { width: 240px; height: auto; display: block; }
-    .bpjs-txt .b1 { font-size: 22px; font-weight: bold; color: #1f9d57; letter-spacing: -0.5px; }
+    .head .logo { width: 190px; }
+    .head .logo img { width: 185px; height: auto; display: block; }
+    .bpjs-txt .b1 { font-size: 18px; font-weight: bold; color: #1f9d57; letter-spacing: -0.5px; }
     .bpjs-txt .b1 .k { color: #0a4f9e; }
-    .bpjs-txt .b2 { font-size: 8px; font-weight: bold; color: #0a4f9e; letter-spacing: 0.5px; }
-    .title .t1 { font-size: 16px; font-weight: bold; color: #111; line-height: 1.05; }
-    .title .t2 { font-size: 13px; font-weight: bold; color: #111; line-height: 1.1; }
+    .bpjs-txt .b2 { font-size: 6.5px; font-weight: bold; color: #0a4f9e; letter-spacing: 0.3px; }
+    .title .t1 { font-size: 12.5px; font-weight: bold; color: #111; line-height: 1.05; }
+    .title .t2 { font-size: 10.5px; font-weight: bold; color: #111; line-height: 1.1; }
 
-    .grid { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    .grid > td { width: 50%; vertical-align: top; padding: 0 10px 0 0; }
-    .grid > td.right { padding: 0 0 0 14px; }
+    .grid { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .grid > td { width: 50%; vertical-align: top; padding: 0 7px 0 0; }
+    .grid > td.right { padding: 0 0 0 8px; }
 
     table.kv { width: 100%; border-collapse: collapse; }
-    table.kv td { padding: 2px 0; vertical-align: top; font-size: 10.5px; line-height: 1.25; }
-    table.kv td.k { width: 92px; white-space: nowrap; }
-    table.kv td.s { width: 8px; }
+    table.kv td { padding: 1.5px 0; vertical-align: top; font-size: 8.7px; line-height: 1.22; }
+    table.kv td.k { width: 78px; white-space: nowrap; }
+    table.kv td.s { width: 7px; }
     table.kv td.v { font-weight: normal; }
-    .right table.kv td.k { width: 86px; }
+    .right table.kv td.k { width: 72px; }
 
-    .katarak-flag { font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #111; }
+    .katarak-flag { font-weight: bold; font-size: 9px; margin-bottom: 3px; color: #111; }
 
-    .legal { margin-top: 16px; font-size: 8px; color: #222; line-height: 1.35; }
-    .legal p { margin: 2px 0; }
+    .legal { margin-top: 11px; font-size: 6.6px; color: #222; line-height: 1.3; }
+    .legal p { margin: 1.5px 0; }
     .legal .hd { font-weight: bold; }
 
-    .sign { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .sign { width: 100%; border-collapse: collapse; margin-top: 4px; }
     .sign td { vertical-align: top; }
     .sign .approve { text-align: left; }
-    .sign .approve .lbl { font-size: 11px; font-weight: bold; color: #111; margin-bottom: 4px; }
-    .sign .approve img { height: 84px; width: 84px; display: block; }
-    .sign .approve .nm { font-size: 11px; font-weight: bold; margin-top: 2px; }
-    .sign .approve .ct { font-size: 9px; color: #444; margin-top: 1px; }
+    .sign .approve .lbl { font-size: 9px; font-weight: bold; color: #111; margin-bottom: 3px; }
+    .sign .approve img { height: 66px; width: 66px; display: block; }
+    .sign .approve .nm { font-size: 9px; font-weight: bold; margin-top: 2px; }
+    .sign .approve .ct { font-size: 7.5px; color: #444; margin-top: 1px; }
 </style>
 </head>
 <body>
