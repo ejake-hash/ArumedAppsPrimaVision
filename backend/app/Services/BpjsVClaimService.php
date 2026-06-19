@@ -186,6 +186,15 @@ class BpjsVClaimService
         return $result;
     }
 
+    /** GET /SEP/{noSep} — detail SEP yang sudah terbit (mis. dibuat via portal VClaim). */
+    public function getSep(string $noSep, ?string $visitId = null): array
+    {
+        $result = $this->client->request('GET', "/SEP/{$noSep}");
+        $this->log($visitId, 'GET_SEP', compact('noSep'), $result);
+
+        return $result;
+    }
+
     /** DELETE /SEP/2.0/delete */
     public function cancelSep(string $noSep, string $user, ?string $visitId = null): array
     {

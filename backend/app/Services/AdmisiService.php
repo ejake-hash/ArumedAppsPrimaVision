@@ -1997,6 +1997,43 @@ class AdmisiService
                 ]
             );
             $visit->update(['no_sep' => $noSep, 'sep_data' => $sepSnapshot]);
+
+            return $result;
+        }
+
+        // SEP sudah dibuat DI LUAR sistem (mis. langsung di portal VClaim): BPJS menolak
+        // insert dgn pesan "telah mendapat Pelayanan … Dgn No.SEP <nomor>". Tangkap nomor
+        // itu, tarik detail SEP dari BPJS, lalu tautkan ke kunjungan (no_sep + snapshot)
+        // → otomatis masuk Rekap Kunjungan BPJS / Klaim. Idempoten: klik ulang aman.
+        $msg = (string) ($result['metaData']['message'] ?? '');
+        if (preg_match('/No\.?\s*SEP\s*[:\-]?\s*([0-9A-Za-z]{10,})/i', $msg, $m)) {
+            $existing = $m[1];
+            $snapshot = [
+                'noSep'       => $existing,
+                'noKartu'     => $tSep['noKartu'],
+                'tglSep'      => $tSep['tglSep'],
+                'poliTujuan'  => $kodePoli,
+                'diagAwal'    => $tSep['diagAwal'],
+                'namaPeserta' => $visit->patient?->name,
+                'sumber'      => 'EKSTERNAL_PORTAL',
+            ];
+            // Best-effort: lengkapi snapshot dgn detail asli dari BPJS (peserta, dpjp, dll).
+            try {
+                $detail = $this->vclaim->getSep($existing, $visit->id);
+                $sepDetail = $detail['response']['sep'] ?? $detail['response'] ?? [];
+                if (is_array($sepDetail) && $sepDetail) {
+                    $snapshot = array_merge($sepDetail, $snapshot);
+                }
+            } catch (\Throwable $e) {
+                // detail tak tertarik (BPJS error/format) — tetap tautkan nomornya.
+            }
+            $visit->update(['no_sep' => $existing, 'sep_data' => $snapshot]);
+
+            // Bentuk respons seperti sukses insert → FE menampilkan SEP tertaut, bukan error.
+            return [
+                'metaData' => ['code' => '200', 'message' => "SEP sudah terbit di BPJS — ditautkan ke kunjungan: {$existing}"],
+                'response' => ['sep' => array_merge((array) ($snapshot ?? []), ['noSep' => $existing])],
+            ];
         }
 
         return $result;
