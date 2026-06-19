@@ -1898,6 +1898,12 @@ class AdmisiService
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
+        // SEP kontrol berbasis surat kontrol (skdp), BUKAN rujukan FKTP. Mengirim
+        // noRujukan + skdp bersamaan membuat "tujuan kunjungan" ambigu → BPJS tolak
+        // "tujuanKunj tidak sesuai" (log VClaim NOVIDA: noRujukan & skdp dua-duanya
+        // terisi). Untuk kunjungan kontrol, kosongkan noRujukan di payload (data
+        // visit tetap utuh; ini hanya nilai yang dikirim ke VClaim).
+        $noRujukanSep = $adaSuratKontrol ? '' : $noRujukan;
 
         // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
         // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
@@ -1930,7 +1936,7 @@ class AdmisiService
             'rujukan'      => [
                 'asalRujukan' => $asalRujukan, // 1=FKTP, 2=gawat darurat (IGD)
                 'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
-                'noRujukan'   => $noRujukan,
+                'noRujukan'   => $noRujukanSep,
                 'ppkRujukan'  => $data['ppk_rujukan'] ?? '',
             ],
             'catatan'      => 'SEP dari Arumed',
