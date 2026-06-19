@@ -1909,6 +1909,13 @@ class AdmisiService
         // menurunkannya → minta kode PPK eksplisit ("Kode PPK.Rujukan Tidak Sesuai").
         // Surat kontrol diterbitkan RS ini sendiri → ppkRujukan = kode faskes RS.
         $ppkRujukanSep = $adaSuratKontrol ? $kodeFaskes : ($data['ppk_rujukan'] ?? '');
+        // asalRujukan harus KONSISTEN dgn ppkRujukan: '1'=FKTP, '2'=Faskes Lanjutan (FKRTL).
+        // Kontrol berbasis surat kontrol terbitan RS (FKRTL) → asalRujukan '2' (kalau tetap
+        // '1'/FKTP sementara ppkRujukan=kode RS → "Kode PPK.Rujukan Tidak Sesuai"). IGD tetap
+        // '2' (gawat darurat). Normal (rujukan FKTP) tetap '1'.
+        if ($adaSuratKontrol) {
+            $asalRujukan = '2';
+        }
 
         // noTelp: BPJS wajib ANGKA saja, maksimal 14 digit. Data pasien sering berisi
         // dua nomor ("0813… / 0859…"), spasi, tanda baca, atau >14 digit → BPJS tolak
