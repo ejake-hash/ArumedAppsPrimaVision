@@ -873,6 +873,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/eklaim/final',             [KlaimController::class, 'eklaimFinal'])->middleware('permission:bpjs.write');
             Route::get('/{id}/eklaim/status',             [KlaimController::class, 'eklaimStatus']);
             Route::post('/{id}/eklaim/reedit',            [KlaimController::class, 'eklaimReedit'])->middleware('permission:bpjs.write');
+            // Kirim Klaim Online (DC Kemenkes/BPJS) + sinkron status DC + cetak berkas.
+            Route::post('/{id}/eklaim/kirim-online',      [KlaimController::class, 'eklaimKirimOnline'])->middleware('permission:bpjs.write');
+            Route::get('/{id}/eklaim/sync-dc',            [KlaimController::class, 'eklaimSyncDc']);
+            Route::get('/{id}/cetak',                     [KlaimController::class, 'cetakKlaim']);
 
             Route::get('/{id}/audit-log',                 [KlaimController::class, 'auditLog']);
 

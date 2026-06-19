@@ -365,6 +365,48 @@ class KlaimController extends Controller
         return $this->ok($claim, 'Klaim dibuka kembali dari E-Klaim untuk koreksi (DRAFT).');
     }
 
+    /** POST /klaim/{id}/eklaim/kirim-online — Kirim Klaim Online ke DC Kemenkes/BPJS */
+    public function eklaimKirimOnline(string $id): JsonResponse
+    {
+        try {
+            $res = $this->service->sendClaimOnline($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, $res['message'] ?? 'Klaim dikirim online.');
+    }
+
+    /** GET /klaim/{id}/eklaim/sync-dc — sinkron status pengiriman DC (read-only) */
+    public function eklaimSyncDc(string $id): JsonResponse
+    {
+        try {
+            $res = $this->service->syncDcStatus($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res, $res['terkirim'] ? 'Klaim sudah terkirim ke DC Kemenkes.' : 'Status DC disinkronkan.');
+    }
+
+    /** GET /klaim/{id}/cetak — Berkas Klaim Individual Pasien (replika cetak E-Klaim) → PDF */
+    public function cetakKlaim(string $id)
+    {
+        try {
+            $data = $this->service->buildBerkasKlaimPrintData($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.klaim-individual', $data)
+            ->setPaper('a4')
+            ->setOption('isRemoteEnabled', true);
+
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) ($data['no_sep'] ?? 'KLAIM')) ?: 'KLAIM';
+
+        return $pdf->stream("BERKAS-KLAIM-{$safe}.pdf");
+    }
+
     // =========================================================================
     // SUBMIT
     // =========================================================================

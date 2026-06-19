@@ -37,6 +37,18 @@ return [
     // Kode tarif INA-CBG faskes (Setup Institusi). Prima Vision = 'CS'.
     'kode_tarif' => env('EKLAIM_KODE_TARIF', 'CS'),
 
+    // Penjamin & koder default untuk set_claim_data (terverifikasi dari
+    // get_claim_data: payor_id '3'=JKN, coder_nik faskes).
+    'payor_id'  => env('EKLAIM_PAYOR_ID', '3'),
+    'payor_cd'  => env('EKLAIM_PAYOR_CD', 'JKN'),
+    'coder_nik' => env('EKLAIM_CODER_NIK', '00001'),
+
+    // Nama method WS untuk "Kirim Klaim Online" (dorong klaim final ke Pusat
+    // Data Kemenkes/BPJS). BELUM diverifikasi dari WS live (operasi tulis ke
+    // produksi tak boleh ditebak-fuzz). Konfirmasi dari Manual WS / 1x uji
+    // terkontrol, lalu set EKLAIM_SEND_METHOD bila berbeda.
+    'send_method' => env('EKLAIM_SEND_METHOD', 'send_claim'),
+
     // Timeout HTTP (detik).
     'timeout' => (int) env('EKLAIM_TIMEOUT', 30),
 

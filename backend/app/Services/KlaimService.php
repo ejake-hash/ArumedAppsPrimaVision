@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BillingInvoice;
 use App\Models\BpjsClaim;
 use App\Models\ClaimAuditLog;
 use App\Models\DocumentTemplate;
@@ -1031,10 +1032,17 @@ class KlaimService
 
         $res = $this->eklaim->grouper($claim->no_sep, $stage, $claim->id, $claim->visit_id);
 
-        // Bentuk respons grouper E-Klaim (umum): data.cbg.code / .tariff / .description.
-        $cbg = $res['data']['cbg'] ?? $res['raw']['response']['cbg'] ?? [];
+        // Bentuk respons grouper E-Klaim. Terverifikasi dari get_claim_data:
+        // grouper.response_inacbg.cbg.{code,tariff}. Sediakan beberapa fallback
+        // karena method grouper langsung bisa membungkus berbeda dari get_claim_data.
+        $cbg = $res['data']['cbg']
+            ?? $res['data']['response_inacbg']['cbg']
+            ?? $res['raw']['response']['cbg']
+            ?? $res['raw']['response']['response_inacbg']['cbg']
+            ?? $res['raw']['response']['grouper']['response_inacbg']['cbg']
+            ?? [];
         $code  = $cbg['code']   ?? $cbg['kode']  ?? null;
-        $tarif = $cbg['tariff'] ?? $cbg['tarif'] ?? null;
+        $tarif = $cbg['tariff'] ?? $cbg['tarif'] ?? $cbg['base_tariff'] ?? null;
 
         if ($res['success'] && $code) {
             $claim->update([
@@ -1127,12 +1135,153 @@ class KlaimService
     }
 
     /**
+     * Sinkron status pengiriman DC (Pusat Data Kemenkes & BPJS) via get_claim_data.
+     * Membaca kemenkes_dc_status_cd / bpjs_dc_status_cd / klaim_status_cd lalu
+     * menyimpan snapshot ke bpjs_response & memetakan bpjs_status. Read-only di
+     * sisi E-Klaim (tak mengubah klaim).
+     *
+     * @return array{kemenkes_dc:?string, bpjs_dc:?string, klaim_status:?string, terkirim:bool}
+     */
+    public function syncDcStatus(string $claimId): array
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        $res  = $this->eklaim->getClaimData($claim->no_sep, $claim->id, $claim->visit_id);
+        $data = $res['data']['data'] ?? $res['data'] ?? [];
+
+        $kemenkesDc = $data['kemenkes_dc_status_cd'] ?? null; // 'sent' = terkirim
+        $bpjsDc     = $data['bpjs_dc_status_cd'] ?? null;
+        $klaimSt    = $data['klaim_status_cd'] ?? null;        // 'final'
+        $terkirim   = $kemenkesDc === 'sent' || $bpjsDc === 'sent';
+
+        $snapshot = array_merge((array) $claim->bpjs_response, [
+            'kemenkes_dc_status_cd' => $kemenkesDc,
+            'kemenkes_dc_sent_dttm' => $data['kemenkes_dc_sent_dttm'] ?? null,
+            'bpjs_dc_status_cd'     => $bpjsDc,
+            'bpjs_dc_sent_dttm'     => $data['bpjs_dc_sent_dttm'] ?? null,
+            'klaim_status_cd'       => $klaimSt,
+            'synced_at'             => now()->toIso8601String(),
+        ]);
+
+        $claim->update([
+            'bpjs_response' => $snapshot,
+            'bpjs_status'   => $terkirim ? 'TERKIRIM' : ($klaimSt === 'final' ? 'FINAL' : $claim->bpjs_status),
+        ]);
+
+        return [
+            'kemenkes_dc'  => $kemenkesDc,
+            'bpjs_dc'      => $bpjsDc,
+            'klaim_status' => $klaimSt,
+            'terkirim'     => $terkirim,
+            'message'      => $res['message'] ?? null,
+        ];
+    }
+
+    /**
+     * "Kirim Klaim Online" — dorong klaim final ke Pusat Data Kemenkes/BPJS.
+     * Memanggil WS (method dari config eklaim.send_method), lalu sinkron status
+     * DC. Hanya untuk klaim yang SUDAH final (SUBMITTED).
+     *
+     * ⚠️ Nama method WS belum diverifikasi dari WS live. Jalankan 1x uji
+     * terkontrol; log inacbgs_grouping_logs menangkap REQ+RESP untuk konfirmasi.
+     */
+    public function sendClaimOnline(string $claimId): array
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        if (! in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim harus difinalisasi dulu sebelum dikirim online.', 422);
+        }
+
+        $res = $this->eklaim->sendClaimOnline($claim->no_sep, $claim->id, $claim->visit_id);
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_KIRIM_ONLINE',
+            $claim->status, $claim->status,
+            $res['success'] ? ('Klaim dikirim online. ' . ($res['message'] ?? '')) : ('Kirim online gagal: ' . ($res['message'] ?? 'Unknown')));
+
+        if (! $res['success']) {
+            throw new \Exception('Kirim Klaim Online gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        // Sinkron status DC pasca-kirim (kemenkes_dc_status_cd → TERKIRIM).
+        $dc = $this->syncDcStatus($claimId);
+
+        return array_merge($dc, ['message' => $res['message'] ?? 'Klaim dikirim online.']);
+    }
+
+    /**
+     * Data "Berkas Klaim Individual Pasien" (replika cetak resmi E-Klaim) dari
+     * get_claim_data. BPJS/E-Klaim tak menyediakan API cetak PDF → dibangun ulang
+     * dari data klaim (pola sama Cetak SEP). Dipakai blade pdf.klaim-individual.
+     */
+    public function buildBerkasKlaimPrintData(string $claimId): array
+    {
+        $claim = BpjsClaim::with('visit.patient')->findOrFail($claimId);
+
+        $res = $this->eklaim->getClaimData($claim->no_sep, $claim->id, $claim->visit_id);
+        if (! $res['success']) {
+            throw new \Exception('Gagal ambil data klaim dari E-Klaim: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+        $d = $res['data']['data'] ?? $res['data'] ?? [];
+
+        $logoPath = resource_path('images/kemenkes-logo.png');
+        $logo = is_file($logoPath)
+            ? 'data:image/png;base64,' . base64_encode((string) file_get_contents($logoPath))
+            : null;
+
+        $splitCodes = function (?string $s): array {
+            return collect(explode('#', (string) $s))->map(fn ($x) => trim($x))->filter()->values()->all();
+        };
+
+        $grouper = $d['grouper']['response_inacbg'] ?? [];
+
+        return [
+            'logo'        => $logo,
+            'no_sep'      => $d['nomor_sep'] ?? $claim->no_sep,
+            'no_kartu'    => $d['nomor_kartu'] ?? null,
+            'no_rm'       => $d['nomor_rm'] ?? null,
+            'nama_pasien' => $d['nama_pasien'] ?? $claim->visit?->patient?->name,
+            'kode_rs'     => $d['kode_rs'] ?? null,
+            'kelas_rs'    => $d['kelas_rs'] ?? null,
+            'nama_rs'     => config('app.facility_name', 'RSK MATA PRIMA VISION'),
+            'jenis_tarif' => $d['kode_tarif'] ?? null,
+            'tgl_lahir'   => $d['tgl_lahir'] ?? null,
+            'tgl_masuk'   => $d['tgl_masuk'] ?? null,
+            'tgl_pulang'  => $d['tgl_pulang'] ?? null,
+            'umur_tahun'  => $d['umur_tahun'] ?? null,
+            'umur_hari'   => $d['umur_hari'] ?? null,
+            'gender'      => ((string) ($d['gender'] ?? '')) === '2' ? '2 - Perempuan' : '1 - Laki-laki',
+            'jenis_rawat' => ((string) ($d['jenis_rawat'] ?? '')) === '1' ? '1 - Rawat Inap' : '2 - Rawat Jalan',
+            'kelas_rawat' => $d['kelas_rawat'] ?? null,
+            'cara_pulang' => $d['discharge_status'] ?? null,
+            'los'         => $d['los'] ?? null,
+            'berat_lahir' => $d['berat_lahir'] ?? '-',
+            'adl_sub_acute' => $d['adl_sub_acute'] ?? '-',
+            'adl_chronic'   => $d['adl_chronic'] ?? '-',
+            'diagnosa'    => $splitCodes($d['diagnosa'] ?? ''),
+            'procedure'   => $splitCodes($d['procedure'] ?? ''),
+            'inacbg_code' => $grouper['cbg']['code'] ?? $claim->inacbgs_kode,
+            'inacbg_desc' => $grouper['cbg']['description'] ?? null,
+            'tarif'       => $grouper['tariff'] ?? $claim->inacbgs_tarif,
+            'dc_status'   => $d['kemenkes_dc_status_cd'] ?? null,
+            'klaim_status' => $d['klaim_status_cd'] ?? null,
+            'generated_at' => now()->format('Y-m-d H:i:s'),
+        ];
+    }
+
+    /**
      * Fase 4 — Builder payload set_claim_data dari relasi Visit Arumed.
      *
-     * ⚠️ PERLU VERIFIKASI ke Manual WS E-Klaim build 5.10.x: nama field,
-     * format tanggal, kode gender, separator diagnosa/prosedur, dan apakah
-     * tarif dikirim per-komponen atau total. Struktur di bawah memakai bentuk
-     * umum WS E-Klaim; sesuaikan setelah Manual WS tersedia.
+     * Struktur field & format DIVERIFIKASI EMPIRIS dari respons get_claim_data
+     * WS E-Klaim build 5.10.7 (klaim nyata RSK Mata Prima Vision), bukan tebakan:
+     *   - separator diagnosa/prosedur = '#' (BUKAN ';')
+     *   - tarif_rs = OBJEK 18 komponen (BUKAN angka flat)
+     *   - gender int (1=L, 2=P), jenis_rawat int (1=inap, 2=jalan, 3=IGD)
+     *   - payor_id '3'=JKN, coder_nm/coder_nik, cara_masuk 'gp'=rujukan FKTP
+     *   - nama_dokter = NAMA DPJP (bukan kode)
+     *
+     * Format tanggal SET: 'Y-m-d H:i:s' (masuk/pulang) & 'Y-m-d' (lahir) sesuai
+     * standar set_claim_data; get_claim_data menampilkan ulang ke 'd/m/Y'.
      */
     public function buildEklaimPayload(BpjsClaim $claim): array
     {
@@ -1143,45 +1292,135 @@ class KlaimService
 
         $isRanap = ($visit?->jenis_pelayanan ?? 'RAJAL') === 'RANAP';
 
-        $tglMasuk = $visit?->admission_at
-            ? \Illuminate\Support\Carbon::parse($visit->admission_at)->format('Y-m-d')
-            : \Illuminate\Support\Carbon::parse($visit?->visit_date ?? now())->format('Y-m-d');
-        $tglPulang = $visit?->discharge_at
-            ? \Illuminate\Support\Carbon::parse($visit->discharge_at)->format('Y-m-d')
-            : $tglMasuk;
+        $masuk = $visit?->admission_at
+            ? \Illuminate\Support\Carbon::parse($visit->admission_at)
+            : \Illuminate\Support\Carbon::parse($visit?->visit_date ?? now());
+        $pulang = $visit?->discharge_at
+            ? \Illuminate\Support\Carbon::parse($visit->discharge_at)
+            : $masuk->copy();
+        $los = max(1, $masuk->copy()->startOfDay()->diffInDays($pulang->copy()->startOfDay()) + ($isRanap ? 1 : 0));
 
-        // Diagnosa: utama + sekunder digabung separator ';' (umum WS E-Klaim).
+        // Diagnosa & prosedur: separator '#' (terverifikasi dari get_claim_data).
         $dxSekunder = collect($claim->diagnosis_sekunder ?? [])
             ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
             ->filter()->values()->all();
-        $diagnosa = implode(';', array_filter(array_merge([$claim->diagnosis_utama], $dxSekunder)));
+        $diagnosa = implode('#', array_filter(array_merge([$claim->diagnosis_utama], $dxSekunder)));
 
         $prosedur = collect($claim->procedure_codes ?? [])
             ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
             ->filter()->values()->all();
 
         return [
-            'nomor_sep'      => $claim->no_sep,
-            'nomor_kartu'    => $patient?->bpjs_number,
-            'nomor_rm'       => $patient?->no_rm ?? $claim->patient_nik,
-            'nama_pasien'    => $patient?->name,
-            'tgl_lahir'      => $patient?->date_of_birth?->format('Y-m-d'),
-            // E-Klaim: 1=laki-laki, 2=perempuan. Patient Arumed: L/P.
-            'gender'         => ($patient?->gender === 'P') ? '2' : '1',
-            'tgl_masuk'      => $tglMasuk,
-            'tgl_pulang'     => $tglPulang,
-            'jenis_rawat'    => $isRanap ? '1' : '2', // 1=inap, 2=jalan
-            'kelas_rawat'    => (string) ($visit?->kelas_rawat_hak ?? '3'),
-            'diagnosa'       => $diagnosa,
-            'procedure'      => implode(';', $prosedur),
-            'tarif_rs'       => (float) ($invoice?->total ?? 0),
-            'kode_tarif'     => config('eklaim.kode_tarif', 'CS'),
-            'cara_pulang'    => $this->mapCaraPulang($visit?->discharge_type),
-            'dpjp'           => $exam?->doctor?->name,
+            'nomor_sep'    => $claim->no_sep,
+            'nomor_kartu'  => $patient?->bpjs_number,
+            'nomor_rm'     => $patient?->no_rm ?? $claim->patient_nik,
+            'nama_pasien'  => $patient?->name,
+            'tgl_lahir'    => $patient?->date_of_birth?->format('Y-m-d'),
+            'gender'       => ($patient?->gender === 'P') ? 2 : 1,
+            'tgl_masuk'    => $masuk->format('Y-m-d H:i:s'),
+            'tgl_pulang'   => $pulang->format('Y-m-d H:i:s'),
+            'los'          => (string) $los,
+            'jenis_rawat'  => $isRanap ? 1 : 2,
+            'kelas_rawat'  => (int) ($visit?->kelas_rawat_hak ?? 3),
+            'cara_masuk'   => $this->mapCaraMasuk($visit),
+            'discharge_status' => (int) $this->mapCaraPulang($visit?->discharge_type),
+            'diagnosa'     => $diagnosa,
+            'procedure'    => implode('#', $prosedur),
+            'tarif_rs'     => $this->buildTarifRsBreakdown($invoice),
+            'tarif_poli_eks' => 0,
+            'kode_tarif'   => config('eklaim.kode_tarif', 'CS'),
+            'nama_dokter'  => $exam?->doctor?->name,
+            // Vitals (Data Klinis) — default 0 bila tak terekam.
+            'sistole'      => 0,
+            'diastole'     => 0,
+            'berat_lahir'  => 0,
+            'adl_sub_acute' => 0,
+            'adl_chronic'   => 0,
+            // Penjamin & koder.
+            'payor_id'     => config('eklaim.payor_id', '3'), // 3 = JKN
+            'payor_cd'     => config('eklaim.payor_cd', 'JKN'),
+            'cob_cd'       => '0', // COB belum didukung; default bukan-COB
+            'coder_nik'    => config('eklaim.coder_nik', '00001'),
         ];
     }
 
-    /** Map discharge_type Arumed -> kode cara pulang E-Klaim. */
+    /**
+     * Susun objek tarif_rs (18 komponen INA-CBG) dari item billing RS.
+     * Pemetaan item_type/category Arumed -> bucket E-Klaim; sisa tak terpetakan
+     * masuk prosedur_non_bedah agar total tarif RS tetap utuh.
+     */
+    private function buildTarifRsBreakdown(?BillingInvoice $invoice): array
+    {
+        $buckets = [
+            'prosedur_non_bedah' => 0, 'prosedur_bedah' => 0, 'konsultasi' => 0,
+            'tenaga_ahli' => 0, 'keperawatan' => 0, 'penunjang' => 0,
+            'radiologi' => 0, 'laboratorium' => 0, 'pelayanan_darah' => 0,
+            'rehabilitasi' => 0, 'kamar' => 0, 'rawat_intensif' => 0,
+            'obat' => 0, 'obat_kronis' => 0, 'obat_kemoterapi' => 0,
+            'alkes' => 0, 'bmhp' => 0, 'sewa_alat' => 0,
+        ];
+
+        if (! $invoice) {
+            return $buckets;
+        }
+
+        foreach ($invoice->items as $it) {
+            $amount = (float) ($it->net_price ?? $it->total_price ?? 0);
+            if ($amount <= 0) {
+                continue;
+            }
+            $bucket = $this->mapBillingToTarifBucket($it->item_type, (string) $it->category);
+            $buckets[$bucket] = ($buckets[$bucket] ?? 0) + $amount;
+        }
+
+        // Bulatkan ke rupiah (E-Klaim menyimpan integer).
+        return array_map(fn ($v) => (int) round($v), $buckets);
+    }
+
+    /** Map item billing Arumed -> nama bucket tarif_rs E-Klaim. */
+    private function mapBillingToTarifBucket(?string $itemType, string $category): string
+    {
+        $cat = mb_strtolower($category);
+
+        // Pemetaan halus berdasarkan kategori (lebih spesifik) dulu.
+        if (str_contains($cat, 'kamar') || str_contains($cat, 'sewa kamar')) return 'kamar';
+        if (str_contains($cat, 'visite') || str_contains($cat, 'konsul')) return 'konsultasi';
+        if (str_contains($cat, 'administ') || str_contains($cat, 'registr')) return 'konsultasi';
+        if (str_contains($cat, 'sewa peralatan') || str_contains($cat, 'sewa alat')) return 'sewa_alat';
+        if (str_contains($cat, 'cssd') || str_contains($cat, 'habis pakai') || str_contains($cat, 'bmhp')) return 'bmhp';
+        if (str_contains($cat, 'iol') || str_contains($cat, 'lensa') || str_contains($cat, 'implan')) return 'alkes';
+        if (str_contains($cat, 'obat')) return 'obat';
+        if (str_contains($cat, 'rehab')) return 'rehabilitasi';
+        if (str_contains($cat, 'radiolog')) return 'radiologi';
+        if (str_contains($cat, 'lab')) return 'laboratorium';
+
+        // Fallback berdasarkan item_type.
+        return match ($itemType) {
+            'ROOM'              => 'kamar',
+            'VISITE'            => 'konsultasi',
+            'OBAT'              => 'obat',
+            'BHP'               => 'bmhp',
+            'IOL'               => 'alkes',
+            default             => 'prosedur_non_bedah', // TINDAKAN & lainnya
+        };
+    }
+
+    /**
+     * Map cara masuk E-Klaim ('gp' = rujukan FKTP/dokter umum, 'hosp-trans' =
+     * rujukan antar-RS/FKRTL, 'mp' = datang sendiri). Terverifikasi: pasien
+     * rujukan FKTP = 'gp'.
+     */
+    private function mapCaraMasuk(?Visit $visit): string
+    {
+        // Pasien kontrol/rujukan FKRTL (punya surat kontrol) = transfer antar-RS.
+        if (! empty($visit?->no_surat_kontrol)) {
+            return 'hosp-trans';
+        }
+
+        return 'gp';
+    }
+
+    /** Map discharge_type Arumed -> kode cara pulang/discharge_status E-Klaim. */
     private function mapCaraPulang(?string $type): string
     {
         if ($type === null) {
@@ -1199,7 +1438,7 @@ class KlaimService
     /** Guard umum sebelum call WS: klaim ada, SEP & diagnosis utama terisi. */
     private function guardEklaimReady(string $claimId): BpjsClaim
     {
-        $claim = BpjsClaim::with(['visit.patient', 'visit.doctorExamination.doctor', 'visit.billingInvoice'])
+        $claim = BpjsClaim::with(['visit.patient', 'visit.doctorExamination.doctor', 'visit.billingInvoice.items'])
             ->findOrFail($claimId);
 
         if (empty($claim->no_sep)) {

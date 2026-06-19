@@ -73,6 +73,19 @@ class InaCbgsService
         return $this->callWs('get_claim_status', ['nomor_sep' => $nomorSep], $claimId, $visitId);
     }
 
+    /**
+     * Kirim klaim final secara online ke Pusat Data Kemenkes/BPJS
+     * ("Kirim Klaim Online"). Nama method dari config (eklaim.send_method)
+     * karena belum diverifikasi dari WS live. Hanya dipanggil atas aksi
+     * petugas pada klaim yang sudah final (idempoten bila sudah terkirim).
+     */
+    public function sendClaimOnline(string $nomorSep, ?string $claimId = null, ?string $visitId = null): array
+    {
+        $method = (string) config('eklaim.send_method', 'send_claim');
+
+        return $this->callWs($method, ['nomor_sep' => $nomorSep], $claimId, $visitId);
+    }
+
     /** Ambil data klaim utuh dari E-Klaim (sinkron balik). */
     public function getClaimData(string $nomorSep, ?string $claimId = null, ?string $visitId = null): array
     {
