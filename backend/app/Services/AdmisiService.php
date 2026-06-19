@@ -1898,12 +1898,12 @@ class AdmisiService
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
-        // SEP kontrol berbasis surat kontrol (skdp), BUKAN rujukan FKTP. Mengirim
-        // noRujukan + skdp bersamaan membuat "tujuan kunjungan" ambigu → BPJS tolak
-        // "tujuanKunj tidak sesuai" (log VClaim NOVIDA: noRujukan & skdp dua-duanya
-        // terisi). Untuk kunjungan kontrol, kosongkan noRujukan di payload (data
-        // visit tetap utuh; ini hanya nilai yang dikirim ke VClaim).
-        $noRujukanSep = $adaSuratKontrol ? '' : $noRujukan;
+        // noRujukan utk KONTROL = NOMOR SURAT KONTROL (referensi rujukan dari FKRTL),
+        // BUKAN rujukan FKTP. Sejarah error BPJS NOVIDA: noRujukan=rujukan FKTP + skdp →
+        // "tujuanKunj tidak sesuai" (konflik FKTP+kontrol); noRujukan kosong + asalRujukan
+        // '2' → "No.Rujukan harus diisi Dengan Benar". Solusi: noRujukan = surat kontrol.
+        // Normal: noRujukan = rujukan FKTP biasa.
+        $noRujukanSep = $adaSuratKontrol ? $noSuratKontrol : $noRujukan;
         // ppkRujukan: utk kunjungan NORMAL, BPJS menurunkannya dari noRujukan (boleh kosong).
         // Utk KONTROL (noRujukan dikosongkan, berbasis surat kontrol), BPJS tak bisa
         // menurunkannya → minta kode PPK eksplisit ("Kode PPK.Rujukan Tidak Sesuai").
