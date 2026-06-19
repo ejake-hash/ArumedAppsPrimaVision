@@ -11,6 +11,7 @@
 // Item yang gagal diambil / format tak didukung → DILEWATI (dicatat ke `skipped`),
 // tidak menggagalkan seluruh bundel — petugas dapat melengkapi manual sebelum upload.
 import { PDFDocument } from 'pdf-lib'
+import JSZip from 'jszip'
 import api from '@/services/api'
 
 const A4 = [595.28, 841.89] // titik (pt) — A4 potret
@@ -140,6 +141,56 @@ export async function buildVisitBundle(visitId) {
 
   const bytes = await out.save()
   return { bytes, skipped, pages: out.getPageCount() }
+}
+
+/**
+ * Export batch: rakit 1 PDF/pasien untuk banyak kunjungan → ZIP, dipisah folder
+ * RAJAL/RANAP. Sekuensial (aman utk memori browser) dengan callback progres.
+ * @param {Array<{visit_id, jenis_kode, no_sep, no_rm, nama}>} visits
+ * @param {(done:number, total:number, label:string)=>void} onProgress
+ * @returns {Promise<{blob: Blob, ok:number, failed:number, skippedFiles:number}>}
+ */
+export async function buildBatchZip(visits, onProgress) {
+  const zip = new JSZip()
+  let ok = 0
+  let failed = 0
+  let skippedFiles = 0
+  let done = 0
+
+  for (const v of visits) {
+    const label = v.nama || v.no_sep || v.visit_id
+    try {
+      const { bytes, skipped, pages } = await buildVisitBundle(v.visit_id)
+      if (pages > 0) {
+        const folder = v.jenis_kode === 'RANAP' ? 'RANAP' : 'RAJAL'
+        const fname = safeFilename(`${v.no_sep || v.no_rm || v.visit_id}_${v.nama || ''}`) + '.pdf'
+        zip.file(`${folder}/${fname}`, bytes)
+        ok++
+        skippedFiles += skipped.length
+      } else {
+        failed++
+      }
+    } catch (e) {
+      failed++
+    }
+    done++
+    if (onProgress) onProgress(done, visits.length, label)
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+  return { blob, ok, failed, skippedFiles }
+}
+
+/** Unduh Blob sebagai file (mis. ZIP). */
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /** Unduh bytes PDF sebagai file (pola blob — tanpa lib eksternal). */
