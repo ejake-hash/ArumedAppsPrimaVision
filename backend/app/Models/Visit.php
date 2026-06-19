@@ -78,6 +78,11 @@ class Visit extends Model
         'berkas_lengkap_by',
         'berkas_lengkap_at',
         'rekap_keterangan',
+        // --- Pipeline berkas klaim (Rekap → Kirim → Berkas → Kembalikan) ---
+        'klaim_sent_at',
+        'klaim_sent_by',
+        'klaim_returned_at',
+        'klaim_return_note',
     ];
 
     protected $casts = [
@@ -90,6 +95,8 @@ class Visit extends Model
         'planning_follow_up'    => 'boolean',
         'follow_up_date'        => 'date',
         'insurance_verified_at' => 'datetime',
+        'klaim_sent_at'         => 'datetime',
+        'klaim_returned_at'     => 'datetime',
         // --- Rawat Inap (RANAP) + IGD ---
         'admission_at'          => 'datetime',
         'discharge_at'          => 'datetime',

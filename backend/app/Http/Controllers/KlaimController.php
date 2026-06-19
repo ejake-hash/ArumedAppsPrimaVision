@@ -659,6 +659,25 @@ class KlaimController extends Controller
         return $this->ok($data, "{$data['sent']} kunjungan dikirim ke klaim");
     }
 
+    /**
+     * POST /klaim/rekap/{visitId}/kembalikan — kembalikan kunjungan dari Berkas
+     * Klaim (KlaimView) ke Rekap Kunjungan BPJS beserta pesan. Kunjungan hilang
+     * dari tab Berkas, muncul lagi di Rekap dengan badge + pesan + Belum Lengkap.
+     */
+    public function rekapKembalikan(Request $request, string $visitId): JsonResponse
+    {
+        $request->validate(['catatan' => 'nullable|string|max:1000']);
+
+        $user = auth('api')->user();
+        try {
+            $data = $this->service->returnClaimToRekap($visitId, $request->input('catatan'), $user?->id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($data, 'Kunjungan dikembalikan ke Rekap');
+    }
+
     /** POST /klaim/rekap/{visitId}/kelengkapan — set status kelengkapan + KET (manual). */
     public function rekapSetKelengkapan(Request $request, string $visitId): JsonResponse
     {

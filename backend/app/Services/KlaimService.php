@@ -353,6 +353,10 @@ class KlaimService
         if (! empty($filters['jenis'])) {
             $query->where('jenis_pelayanan', $filters['jenis']);
         }
+        // Tab "DIVA & Berkas" KlaimView: HANYA kunjungan yang sudah "Kirim ke Klaim".
+        if (! empty($filters['only_sent'])) {
+            $query->whereNotNull('klaim_sent_at');
+        }
 
         if (! empty($filters['search'])) {
             $kw = $filters['search'];
@@ -440,6 +444,10 @@ class KlaimService
                 // Screening pra-klaim (manual): null=belum dicek, true=Lengkap, false=Belum.
                 'berkas_lengkap'     => $v->berkas_lengkap,
                 'keterangan'         => $v->rekap_keterangan,
+                // Pipeline berkas klaim: penanda terkirim & jejak dikembalikan + pesan.
+                'klaim_sent_at'      => $v->klaim_sent_at?->toIso8601String(),
+                'klaim_returned_at'  => $v->klaim_returned_at?->toIso8601String(),
+                'klaim_return_note'  => $v->klaim_return_note,
             ];
         });
 
@@ -797,9 +805,53 @@ class KlaimService
             return $claim;
         });
 
+        // Tandai kunjungan SUDAH dikirim ke klaim → tab "DIVA & Berkas" KlaimView
+        // hanya menampilkan yang berpenanda ini. Hapus jejak "dikembalikan" bila ada
+        // (kunjungan dikirim ulang setelah dikembalikan).
+        $visit->forceFill([
+            'klaim_sent_at'     => now(),
+            'klaim_sent_by'     => $user?->id,
+            'klaim_returned_at' => null,
+            'klaim_return_note' => null,
+        ])->save();
+
         $this->log($user?->id, 'PREPARE_CLAIM', BpjsClaim::class, $claim->id, "SEP {$visit->no_sep}");
 
         return $claim->fresh(['visit.patient', 'auditLogs.performedBy']);
+    }
+
+    /**
+     * Kembalikan kunjungan dari Berkas Klaim (KlaimView) ke Rekap Kunjungan BPJS
+     * beserta pesan. Mengosongkan penanda kirim → kunjungan hilang dari tab Berkas
+     * dan muncul lagi di Rekap dengan badge "Dikembalikan dari Klaim" + pesan, serta
+     * ditandai Belum Lengkap. Tidak menotifikasi DPJP (murni antrean verifikator).
+     */
+    public function returnClaimToRekap(string $visitId, ?string $note, ?string $userId): array
+    {
+        $visit = Visit::findOrFail($visitId);
+        if ($visit->guarantor_type !== 'BPJS') {
+            throw new \Exception('Kunjungan bukan pasien BPJS.', 422);
+        }
+        if (empty($visit->klaim_sent_at)) {
+            throw new \Exception('Kunjungan ini belum dikirim ke klaim.', 422);
+        }
+
+        $msg = trim((string) $note);
+        $visit->forceFill([
+            'klaim_sent_at'     => null,
+            'klaim_sent_by'     => null,
+            'klaim_returned_at' => now(),
+            'klaim_return_note' => $msg !== '' ? $msg : 'Dikembalikan dari Klaim untuk dilengkapi.',
+            'berkas_lengkap'    => false,
+        ])->save();
+
+        $this->log($userId, 'KLAIM_KEMBALIKAN_REKAP', Visit::class, $visit->id, $msg ?: null);
+
+        return [
+            'visit_id'          => $visit->id,
+            'klaim_returned_at' => $visit->klaim_returned_at?->toIso8601String(),
+            'klaim_return_note' => $visit->klaim_return_note,
+        ];
     }
 
     // =========================================================================

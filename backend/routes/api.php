@@ -841,6 +841,7 @@ Route::prefix('v1')->group(function () {
             // Kirim kunjungan → daftar klaim (KlaimView). Massal (statis) sblm per-visit.
             Route::post('/rekap/kirim-klaim-massal',      [KlaimController::class, 'rekapKirimKlaimMassal'])->middleware('permission:bpjs.write');
             Route::post('/rekap/{visitId}/kirim-klaim',   [KlaimController::class, 'rekapKirimKlaim'])->middleware('permission:bpjs.write');
+            Route::post('/rekap/{visitId}/kembalikan',    [KlaimController::class, 'rekapKembalikan'])->middleware('permission:bpjs.write');
             // Berkas pendukung LIVE (dokumen RM + hasil penunjang + lampiran manual).
             Route::get('/rekap/{visitId}/berkas',         [KlaimController::class, 'rekapBerkas']);
             Route::get('/rekap/{visitId}/lampiran',       [KlaimController::class, 'rekapAttachments']);

@@ -631,6 +631,7 @@ function berkasParams(page) {
   if (berkasFrom.value) p.tanggal_from = berkasFrom.value
   if (berkasTo.value) p.tanggal_to = berkasTo.value
   if (berkasJenis.value) p.jenis = berkasJenis.value
+  p.only_sent = 1   // hanya kunjungan yang sudah "Kirim ke Klaim" dari Rekap
   return p
 }
 
@@ -651,6 +652,25 @@ async function fetchBerkasList() {
 }
 function onBerkasPage(n) { berkasPage.value = n; fetchBerkasList() }
 function onBerkasFilter() { berkasPage.value = 1; fetchBerkasList() }
+
+// Kembalikan kunjungan dari Berkas Klaim ke Rekap Kunjungan BPJS + pesan.
+const returnId = ref(null)
+async function kembalikanKeRekap(r) {
+  const note = window.prompt(
+    `Kembalikan kunjungan "${r.nama || ''}" ke Rekap Kunjungan BPJS.\n\nTulis pesan/alasan (kekurangan berkas, koding, dll):`, '')
+  if (note === null) return   // batal
+  if (!note.trim() && !confirm('Pesan kosong. Tetap kembalikan tanpa pesan?')) return
+  returnId.value = r.visit_id
+  try {
+    await api.post(`/klaim/rekap/${r.visit_id}/kembalikan`, { catatan: note.trim() || null })
+    toast('s', 'Dikembalikan ke Rekap Kunjungan BPJS')
+    fetchBerkasList()   // baris hilang dari Berkas (klaim_sent_at dikosongkan)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengembalikan ke Rekap')
+  } finally {
+    returnId.value = null
+  }
+}
 
 async function unduhBerkas(r) {
   unduhId.value = r.visit_id
@@ -2160,7 +2180,7 @@ function stepIndex(status) {
             </thead>
             <tbody>
               <tr v-if="berkasLoading"><td colspan="6" class="kl-berkas-empty">Memuat…</td></tr>
-              <tr v-else-if="!berkasRows.length"><td colspan="6" class="kl-berkas-empty">Tidak ada kunjungan BPJS pada periode ini.</td></tr>
+              <tr v-else-if="!berkasRows.length"><td colspan="6" class="kl-berkas-empty">Belum ada kunjungan yang dikirim ke klaim pada periode ini. Kirim dari <strong>Rekap Kunjungan BPJS</strong> dulu.</td></tr>
               <tr v-for="(r, i) in berkasRows" :key="r.visit_id">
                 <td class="c-no">{{ (berkasPage - 1) * berkasPerPage + i + 1 }}</td>
                 <td><div class="kl-bk-nama">{{ r.nama || '—' }}</div><small class="kl-bk-rm">{{ r.no_rm || '—' }}</small></td>
@@ -2175,6 +2195,10 @@ function stepIndex(status) {
                   <button class="btn btn-secondary btn-sm" :disabled="unduhId === r.visit_id || !r.no_sep" :title="!r.no_sep ? 'Belum ada SEP' : 'Unduh 1 PDF berkas pasien ini'" @click="unduhBerkas(r)">
                     <div v-if="unduhId === r.visit_id" class="sp" aria-hidden="true"></div>
                     <span v-else>Unduh Berkas</span>
+                  </button>
+                  <button class="btn btn-ghost btn-sm" :disabled="returnId === r.visit_id" title="Kembalikan kunjungan ini ke Rekap Kunjungan BPJS beserta pesan (mis. berkas kurang)" @click="kembalikanKeRekap(r)">
+                    <div v-if="returnId === r.visit_id" class="sp" aria-hidden="true"></div>
+                    <span v-else>↩ Kembalikan ke Rekap</span>
                   </button>
                 </td>
               </tr>

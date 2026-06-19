@@ -349,6 +349,15 @@ async function kirimKlaim(row) {
   kirimBusy.value = row.visit_id
   try {
     await api.post(`/klaim/rekap/${row.visit_id}/kirim-klaim`)
+    // Reflektif lokal: tandai terkirim & bersihkan jejak "dikembalikan".
+    row.klaim_sent_at = new Date().toISOString()
+    row.klaim_returned_at = null
+    row.klaim_return_note = null
+    if (detailRow.value?.visit_id === row.visit_id) {
+      detailRow.value.klaim_sent_at = row.klaim_sent_at
+      detailRow.value.klaim_returned_at = null
+      detailRow.value.klaim_return_note = null
+    }
     toast('s', 'Kunjungan dikirim ke daftar klaim')
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Gagal mengirim ke klaim')
@@ -533,6 +542,11 @@ onMounted(fetchRekap)
               >{{ r.claim_ready ? '✓ Siap klaim' : `Berkas ${r.docs_signed_count}/${r.docs_required_count}` }}</span>
             </td>
             <td class="c-ket" @click.stop>
+              <span v-if="r.klaim_returned_at" class="rk-return-badge" :title="r.klaim_return_note || 'Dikembalikan dari Klaim'">
+                ↩ Dikembalikan dari Klaim
+              </span>
+              <span v-else-if="r.klaim_sent_at" class="rk-sent-badge" title="Sudah dikirim ke daftar klaim">✓ Terkirim ke klaim</span>
+              <div v-if="r.klaim_returned_at && r.klaim_return_note" class="rk-return-note">{{ r.klaim_return_note }}</div>
               <input
                 class="rk-ket-inp"
                 type="text"
@@ -563,6 +577,13 @@ onMounted(fetchRekap)
         </div>
 
         <div class="rk-panel-body">
+          <!-- Banner: dikembalikan dari Klaim (beserta pesan) -->
+          <div v-if="detailRow?.klaim_returned_at" class="rk-return-banner">
+            <strong>↩ Dikembalikan dari Klaim</strong>
+            <p v-if="detailRow?.klaim_return_note">{{ detailRow.klaim_return_note }}</p>
+            <small>Lengkapi/koreksi lalu kirim ulang ke klaim.</small>
+          </div>
+
           <!-- Info klaim -->
           <div class="rk-info">
             <div><span class="rk-lbl">Jenis</span><span class="rk-badge" :class="badge(detailRow).cls">{{ badge(detailRow).text }}</span></div>
@@ -592,10 +613,10 @@ onMounted(fetchRekap)
             <button
               class="rk-btn rk-btn-kirim"
               :disabled="kirimBusy === detailRow?.visit_id || !detailRow?.no_sep"
-              :title="!detailRow?.no_sep ? 'Belum ada SEP' : 'Kirim kunjungan ini ke daftar klaim (KlaimView)'"
+              :title="!detailRow?.no_sep ? 'Belum ada SEP' : (detailRow?.klaim_sent_at ? 'Sudah terkirim — klik untuk kirim ulang data' : 'Kirim kunjungan ini ke daftar klaim (KlaimView)')"
               @click="kirimKlaim(detailRow)"
             >
-              {{ kirimBusy === detailRow?.visit_id ? 'Mengirim…' : 'Kirim ke Klaim' }}
+              {{ kirimBusy === detailRow?.visit_id ? 'Mengirim…' : (detailRow?.klaim_sent_at ? '✓ Terkirim — Kirim Ulang' : 'Kirim ke Klaim') }}
             </button>
           </div>
 
@@ -795,6 +816,13 @@ onMounted(fetchRekap)
 .rk-kel-sel.belum   { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .rk-ket-inp { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 7px; background: var(--bc); color: var(--td); font-size: 12px; }
 .rk-ket-inp:focus { outline: none; border-color: var(--ga); }
+.rk-return-badge { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; background: #fee2e2; color: #991b1b; }
+.rk-sent-badge { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; background: #dcfce7; color: #166534; }
+.rk-return-note { font-size: 11px; color: #991b1b; margin-bottom: 4px; line-height: 1.25; }
+.rk-return-banner { background: #fef2f2; border: 1px solid #fecaca; border-radius: 9px; padding: 10px 12px; margin-bottom: 12px; }
+.rk-return-banner strong { color: #991b1b; font-size: 13px; }
+.rk-return-banner p { margin: 4px 0 2px; color: #7f1d1d; font-size: 12.5px; }
+.rk-return-banner small { color: #b45309; font-size: 11px; }
 
 /* Panel detail (slide-over) */
 .rk-panel-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; justify-content: flex-end; z-index: 1000; }
