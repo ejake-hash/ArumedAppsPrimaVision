@@ -1875,23 +1875,24 @@ class AdmisiService
         $noRujukan      = $data['no_rujukan']       ?? $visit->no_rujukan       ?? '';
         $noSuratKontrol = $data['no_surat_kontrol'] ?? $visit->no_surat_kontrol ?? '';
 
-        // tujuanKunj BPJS VClaim: '0'=Normal (rujukan FKTP biasa), '2'=Konsul/Kontrol
-        // (pakai SKDP/surat kontrol). ATURAN: untuk tujuanKunj '0' blok `skdp` WAJIB
-        // KOSONG (noSurat DAN kodeDPJP) — mengisi skdp.kodeDPJP saat Normal membuat BPJS
-        // menolak "tujuanKunj tidak sesuai". DPJP kunjungan normal dikirim via `dpjpLayan`,
-        // bukan skdp.kodeDPJP. skdp hanya diisi saat ada surat kontrol (kunjungan kontrol).
-        // Aturan VClaim SEP 2.0: untuk tujuanKunj '0' (Normal) SEMUA field bersyarat
-        // WAJIB kosong — flagProcedure, kdPenunjang, assesmentPel, dpjpLayan, DAN skdp.
-        // DPJP kunjungan normal diturunkan BPJS dari poli+rujukan (jangan kirim dpjpLayan;
-        // mengisinya membuat BPJS menuntut assesmentPel → "assesmentPel tidak sesuai").
-        // Hanya kunjungan KONTROL (ada surat kontrol) yang mengisi skdp + dpjpLayan
-        // dengan tujuanKunj '2' (Konsul/Kontrol).
+        // tujuanKunj BPJS VClaim: '0'=Normal, '1'=Prosedur, '2'=Konsul Dokter.
+        // Klinik ini hanya menerbitkan SEP Normal (rujukan FKTP) atau Kontrol (surat
+        // kontrol) — KEDUANYA tujuanKunj '0' ('0'=Normal mencakup kunjungan kontrol;
+        // kontrol ditandai lewat blok `skdp` yang terisi, BUKAN lewat tujuanKunj).
+        // Bukti: log VClaim 19 Jun → tujuanKunj '2' utk pasien surat-kontrol ditolak
+        // "tujuanKunj tidak sesuai" (code 201). '2' (Konsul) = konsultasi antar-spesialis,
+        // beda dari kontrol.
+        //
+        // Aturan VClaim utk tujuanKunj '0': flagProcedure/kdPenunjang/assesmentPel/dpjpLayan
+        // WAJIB kosong (DPJP diturunkan BPJS dari poli+rujukan, atau dari skdp.kodeDPJP saat
+        // kontrol). skdp HANYA diisi saat ada surat kontrol — noSurat & kodeDPJP harus
+        // konsisten (terisi/kosong bersama; kodeDPJP terisi tanpa noSurat → ditolak).
         $adaSuratKontrol = trim((string) $noSuratKontrol) !== '';
-        $tujuanKunj      = $adaSuratKontrol ? '2' : '0';
+        $tujuanKunj      = '0';
+        $dpjpLayan       = '';
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
-        $dpjpLayan       = $adaSuratKontrol ? ($kodeDpjp ?? '') : '';
 
         // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
         // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
