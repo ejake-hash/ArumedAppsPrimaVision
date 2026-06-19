@@ -1330,8 +1330,24 @@ class MasterDataService
         return $query->orderBy('name')->paginate($filters['per_page'] ?? 25);
     }
 
+    /**
+     * Normalisasi field opsional bernilai string KOSONG ('') → null sebelum simpan.
+     * Kolom `date` (mis. expiry_date) menolak '' dgn SQLSTATE[22007] "invalid input
+     * syntax for type date" — form master sering mengirim '' saat field dikosongkan.
+     */
+    private function nullifyBlank(array $data, array $keys = ['expiry_date', 'batch_number']): array
+    {
+        foreach ($keys as $k) {
+            if (array_key_exists($k, $data) && is_string($data[$k]) && trim($data[$k]) === '') {
+                $data[$k] = null;
+            }
+        }
+        return $data;
+    }
+
     public function storeObat(array $data): Medication
     {
+        $data = $this->nullifyBlank($data);
         // Hint pos kwitansi HANYA untuk prefix kode (OBT/OBP/OBI sesuai Buku Tarif) —
         // bukan kolom medications (pos tersimpan di medication_tariffs).
         $posHint = $data['pos_kwitansi'] ?? null;
@@ -1361,6 +1377,7 @@ class MasterDataService
 
     public function updateObat(string $id, array $data): Medication
     {
+        $data = $this->nullifyBlank($data);
         // Jangan tulis kolom legacy stock; bila klien mengirim stok seed ke
         // inventory_stocks (penyesuaian sebenarnya lewat opname/penerimaan).
         $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
@@ -1413,6 +1430,7 @@ class MasterDataService
 
     public function storeBhp(array $data): BhpItem
     {
+        $data = $this->nullifyBlank($data);
         // Stok BUKAN ke kolom legacy bhp_items.stock — seed ke inventory_stocks
         // (INVENTORI). Konsisten dgn storeObat/storeIol; sumber stok tunggal.
         $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
@@ -1493,6 +1511,7 @@ class MasterDataService
 
     public function updateBhp(string $id, array $data): BhpItem
     {
+        $data = $this->nullifyBlank($data);
         $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
         unset($data['stock']);
         $bhp = BhpItem::findOrFail($id);
