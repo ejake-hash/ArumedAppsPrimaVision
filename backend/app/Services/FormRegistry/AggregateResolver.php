@@ -290,11 +290,13 @@ final class AggregateResolver
     {
         $parts = [];
         $rec = $visit->refractionRecord;
-        // RO: utamakan soap_o (sumber tunggal), fallback bangun dari record (visit lama).
-        $ro = trim((string) ($rec?->soap_o ?? ''));
-        if ($ro === '' && $rec !== null) {
-            $ro = (string) $this->buildRefraksiObjektif($rec);
-        }
+        // RO: UTAMAKAN bangun dari KOLOM TERSTRUKTUR (visus/refraksi/Add/IOP/PD) karena
+        // komprehensif & andal. `soap_o` (teks RefraksionisView) dipakai HANYA bila kolom
+        // terstruktur kosong — di produksi soap_o sering tersimpan SEPOTONG (mis. "PD 64
+        // mm" saja) sehingga bila dijadikan sumber utama, visus/TIO/Rx yang ADA di kolom
+        // hilang dari Resume (laporan user 19 Jun: RM 2026060130 & beberapa case serupa).
+        $built = $rec !== null ? trim((string) $this->buildRefraksiObjektif($rec)) : '';
+        $ro = $built !== '' ? $built : trim((string) ($rec?->soap_o ?? ''));
         if ($ro !== '') {
             $parts[] = $ro;
         }
