@@ -1904,6 +1904,11 @@ class AdmisiService
         // terisi). Untuk kunjungan kontrol, kosongkan noRujukan di payload (data
         // visit tetap utuh; ini hanya nilai yang dikirim ke VClaim).
         $noRujukanSep = $adaSuratKontrol ? '' : $noRujukan;
+        // ppkRujukan: utk kunjungan NORMAL, BPJS menurunkannya dari noRujukan (boleh kosong).
+        // Utk KONTROL (noRujukan dikosongkan, berbasis surat kontrol), BPJS tak bisa
+        // menurunkannya → minta kode PPK eksplisit ("Kode PPK.Rujukan Tidak Sesuai").
+        // Surat kontrol diterbitkan RS ini sendiri → ppkRujukan = kode faskes RS.
+        $ppkRujukanSep = $adaSuratKontrol ? $kodeFaskes : ($data['ppk_rujukan'] ?? '');
 
         // noTelp: BPJS wajib ANGKA saja, maksimal 14 digit. Data pasien sering berisi
         // dua nomor ("0813… / 0859…"), spasi, tanda baca, atau >14 digit → BPJS tolak
@@ -1944,7 +1949,7 @@ class AdmisiService
                 'asalRujukan' => $asalRujukan, // 1=FKTP, 2=gawat darurat (IGD)
                 'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
                 'noRujukan'   => $noRujukanSep,
-                'ppkRujukan'  => $data['ppk_rujukan'] ?? '',
+                'ppkRujukan'  => $ppkRujukanSep,
             ],
             'catatan'      => 'SEP dari Arumed',
             'diagAwal'     => $diagAwal,
