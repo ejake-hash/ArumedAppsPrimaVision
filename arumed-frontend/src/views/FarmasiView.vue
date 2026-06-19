@@ -565,11 +565,17 @@ const verSelesaiGroupCount = computed(() => verAllGroups.value.filter((g) => g.p
 const verGroups = computed(() => verAllGroups.value.filter((g) =>
   verPrimaryFilter.value === 'selesai' ? g.pendingCount === 0 : g.pendingCount > 0))
 
-async function fetchVerQueue() {
+async function fetchVerQueue({ fromPoll = false } = {}) {
   verLoading.value = true; verError.value = ''
   try {
     const { data } = await farmasiApi.verifikasiQueue()
     verQueue.value = data.data ?? []
+    // Polling (8 dtk) JANGAN ganggu panel yang sedang dikerjakan: reassign verSel
+    // mengembalikan input qty/kemasan (:value uncontrolled) yang belum di-blur ke
+    // nilai server, dan menutup paksa picker substitusi (verSubItem). Saat ada
+    // seleksi aktif, biarkan panel apa adanya — daftar tetap ter-refresh. Refresh
+    // penuh terjadi lewat pemanggilan manual (pasca-aksi/pickVer/tombol ↻).
+    if (fromPoll && verSel.value) return
     if (verSel.value) verSel.value = verQueue.value.find((r) => r.id === verSel.value.id) ?? null
     verSubItem.value = null   // buang referensi picker substitusi yang bisa basi pasca-refetch
   } catch (err) {
@@ -654,13 +660,22 @@ function verPickKemasan(item, saleUnitId) {
   if (!u) return
   const qty = Number(item.quantity) || 1
   const kemasanQty = Math.max(1, Math.floor(qty / u.isi))
-  const sisa = qty - kemasanQty * u.isi
+  const totalBaru = kemasanQty * u.isi
+  const sisa = qty - totalBaru   // bisa negatif bila qty < isi (dibulatkan NAIK ke 1 kemasan)
+  const unit = item.medication?.unit ?? ''
   let split = false
   if (sisa > 0) {
     split = window.confirm(
-      `${qty} ${item.medication?.unit ?? ''} = ${kemasanQty} ${u.label} (isi ${u.isi}) + sisa ${sisa}.\n` +
-      `OK = pecah sisa jadi item satuan terpisah.\nCancel = jadikan ${kemasanQty} ${u.label} saja (total menjadi ${kemasanQty * u.isi} ${item.medication?.unit ?? ''}).`
+      `${qty} ${unit} = ${kemasanQty} ${u.label} (isi ${u.isi}) + sisa ${sisa}.\n` +
+      `OK = pecah sisa jadi item satuan terpisah.\nCancel = jadikan ${kemasanQty} ${u.label} saja (total menjadi ${totalBaru} ${unit}).`
     )
+  } else if (totalBaru !== qty) {
+    // qty < isi → Math.floor=0 lalu dipaksa min 1 kemasan → jumlah obat NAIK dari
+    // resep tanpa peringatan (over-dispense). Wajib konfirmasi sebelum menaikkan.
+    if (!window.confirm(
+      `${qty} ${unit} kurang dari 1 ${u.label} (isi ${u.isi}).\n` +
+      `Mengubah ke kemasan ini akan MENAIKKAN jumlah menjadi ${totalBaru} ${unit}. Lanjutkan?`
+    )) return   // batal — biarkan satuan kecil seperti semula
   }
   verApplyKemasan(item, { sale_unit_id: u.id, sale_unit_qty: kemasanQty, split_remainder: split })
 }
@@ -973,7 +988,7 @@ function rxAturan(d) {
   return parts.length ? parts.join(' · ') : '-'
 }
 const lowStockCount = computed(
-  () => stokList.value.filter((s) => Number(s.stock) <= Number(s.min_stock ?? 0)).length,
+  () => stokList.value.filter((s) => Number(s.stock || 0) <= Number(s.min_stock ?? 0)).length,
 )
 
 // ─── Request / Retur ke gudang Inventori Farmasi ─────────────────────────────
@@ -1328,14 +1343,16 @@ const lapNilaiStok = computed(
 )
 const lapLowOut = computed(
   () => stokList.value
-    .filter((s) => Number(s.stock) <= Number(s.min_stock ?? 0))
-    .sort((a, b) => Number(a.stock) - Number(b.stock)),
+    .filter((s) => Number(s.stock || 0) <= Number(s.min_stock ?? 0))
+    .sort((a, b) => Number(a.stock || 0) - Number(b.stock || 0)),
 )
 const lapExpiring = computed(
   () => stokList.value
-    .filter((s) => s.expiry_date)
+    // Hanya batch yang MASIH BERSTOK — item stok 0 tak ada barang utk dimusnahkan,
+    // memasukkannya menggelembungkan KPI "mendekati kadaluarsa".
+    .filter((s) => s.expiry_date && Number(s.stock || 0) > 0)
     .map((s) => ({ ...s, _days: daysToExpiry(s.expiry_date) }))
-    .filter((s) => s._days <= 90)
+    .filter((s) => Number.isFinite(s._days) && s._days <= 90)
     .sort((a, b) => a._days - b._days),
 )
 
@@ -1785,7 +1802,7 @@ watch(() => pgTab.value, (t) => {
 function pollFarmasi() {
   fetchQueue()
   if (pgTab.value === 'ranap') fetchRanapQueue()
-  if (pgTab.value === 'verifikasi') fetchVerQueue()
+  if (pgTab.value === 'verifikasi') fetchVerQueue({ fromPoll: true })
 }
 
 onMounted(() => {

@@ -629,11 +629,28 @@ class DokterService
         $visit = Visit::find($visitId);
         $guarantor = $visit?->guarantor_type ?? 'UMUM';
         $insurerId = $visit?->insurer_id;
+
+        // Stok Farmasi terkini per obat → FE menandai baris resep yang obatnya KINI
+        // kosong (badge peringatan), konsisten dgn badge picker. Resep lama tetap
+        // tampil (tak dihapus): transparansi, bukan blokir. Atribut dinamis
+        // `farmasi_stock` ikut terserialisasi ke JSON.
+        $medIds = $prescriptions
+            ->flatMap(fn ($rx) => $rx->items->pluck('medication_id'))
+            ->filter()->unique()->values();
+        $stockMap = $medIds->isEmpty() ? collect() : DB::table('inventory_stocks')
+            ->where('item_type', InventoryStock::TYPE_MEDICATION)
+            ->where('location', InventoryStock::LOC_FARMASI)
+            ->whereIn('item_id', $medIds)
+            ->groupBy('item_id')
+            ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
+            ->pluck('qty', 'item_id');
+
         foreach ($prescriptions as $rx) {
             foreach ($rx->items as $item) {
                 $item->resolved_price = $this->kasirService->getPrice(
                     'medication', $item->medication_id, $guarantor, $insurerId
                 );
+                $item->farmasi_stock = (float) ($stockMap[$item->medication_id] ?? 0);
             }
         }
 

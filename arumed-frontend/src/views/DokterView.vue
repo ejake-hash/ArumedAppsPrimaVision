@@ -764,6 +764,10 @@ function eyeDrawingsPayload() {
 }
 
 // Prefill `exam` + diagnosis dari record backend saat kunjungan dipilih (read-back).
+// true → satu kali abaikan auto-default surgeryDate=hari ini di watcher (saat hidrasi
+// buka-ulang). Deklarasi di sini (sebelum watcher immediate loadTab2 di ~928) agar
+// tak TDZ saat watcher pertama kali fire selama setup.
+let _suppressLocWatch = false
 async function loadTab2() {
   const visitId = selP.value?.visitId
   if (!visitId) { tab2Exists.value = false; examFinalized.value = false; return }
@@ -806,7 +810,13 @@ async function loadTab2() {
     // surgery_schedules.location_type. Tanpa pemulihan ini panel SELALU balik ke
     // "Ruang Bedah" walau dokter memilih Ruang Tindakan (laser) — bug dilaporkan.
     if (e.location_type === 'RUANG_BEDAH' || e.location_type === 'RUANG_TINDAKAN') {
+      // Hidrasi (buka ulang) — JANGAN biarkan watcher surgeryLocation menstempel
+      // surgeryDate=hari ini (loadTab2 tak memuat tanggal jadwal asli; tanpa guard
+      // ini tindakan laser terjadwal tanggal lain tampil/terkirim sbg HARI INI saat
+      // finalisasi ulang). Default hari-ini hanya untuk pilihan baru oleh dokter.
+      _suppressLocWatch = true
       surgeryLocation.value = e.location_type
+      nextTick(() => { _suppressLocWatch = false })
     }
     // Rencana kontrol (Pulang) — pulihkan agar teks Planning (P) tetap memuat
     // "— kontrol …" setelah refresh. Tanpa ini tanggalKontrol kosong → planningText
@@ -1352,7 +1362,9 @@ function pickObat(d) {
   newRx.value.medication_id = d.id
   newRx.value.name = d.name
   newRx.value.form = d.form
+  newRx.value.unit = d.unit ?? ''
   newRx.value.hja  = d.hja
+  newRx.value.stock = Number(d.stock) || 0
   // Kosongkan query TANPA memicu reload (watcher) — biar daftar halaman aktif tetap.
   if (_obatDebounce) clearTimeout(_obatDebounce)
   if (obatSearch.value !== '') _suppressObatWatch = true
@@ -1364,7 +1376,7 @@ const DURASI_OPTS = ['3 hari', '5 hari', '7 hari', '10 hari', '14 hari', '21 har
 // Opsi Signa (frekuensi pakai). Memuat default makeRx '2×/hari'.
 const SIGNA_OPTS = ['1×/hari', '2×/hari', '3×/hari', '4×/hari', '6×/hari', 'tiap 4 jam', 'tiap 6 jam', 'tiap 8 jam', 'tiap jam', 'bila perlu (prn)', 'sebelum tidur', '1 tetes tiap 1 jam']
 function makeRx() {
-  return { medication_id: null, name: '', form: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'ODS' }
+  return { medication_id: null, name: '', form: '', unit: '', hja: 0, qty: 1, jumlah: '1 tetes', signa: '2×/hari', dur: '7 hari', posisi: 'ODS', stock: null }
 }
 function normalizePosisi(v) {
   const s = String(v ?? '').trim().toUpperCase()
@@ -1448,8 +1460,12 @@ async function loadTindakanResep() {
         medication_id: it.medication_id,
         name: it.medication?.name ?? '—',
         form: it.medication?.form_sediaan ?? '',
+        unit: it.medication?.unit ?? '',
         // Harga dari Buku Tarif sesuai penjamin (resolved_price dari backend), bukan 0.
         hja: Number(it.resolved_price) || 0,
+        // Stok Farmasi terkini (backend) → tandai baris yg obatnya kini kosong. Resep
+        // lama tetap tampil (transparansi), tidak diblokir seperti picker obat baru.
+        stock: Number(it.farmasi_stock) || 0,
         qty: it.quantity ?? 1,
         // Fallback field legacy (dosage/instructions — mis. data lama / input modul lain)
         // agar aturan pakai tak hilang saat resep disimpan ulang pasca "Buka Kembali".
@@ -1469,6 +1485,9 @@ async function loadTindakanResep() {
 // `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
 watch(() => selP.value?.visitId, (vid) => {
   loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus()
+  // Refresh daftar obat per pasien → badge stok Farmasi (hard-block stok 0) tak
+  // basi dari sesi sebelumnya (obat habis/restock di tengah hari ikut terbaca).
+  if (vid) loadObat(1)
   // Pasien yang SUDAH dikirim ke kasir sebelumnya (antrean COMPLETED) & belum
   // difinalisasi → tampilkan Tab 3 dalam keadaan terkunci + tombol "Buka Kembali"
   // saat dibuka ulang, supaya dokter bisa revisi obat/tindakan selama kwitansi belum
@@ -2005,7 +2024,8 @@ watch(surgeryDate, (d) => { surgeryTime.value = ''; loadBedahSlot(d) })
 // pasien tak muncul). Ruang Bedah (operasi) sering terjadwal H+1/pre-op → JANGAN
 // di-default; biarkan dokter pilih. Tetap bisa diubah dokter.
 watch(surgeryLocation, (loc) => {
-  if (loc === 'RUANG_TINDAKAN' && !surgeryDate.value) {
+  // Saat hidrasi (buka ulang) jangan stempel hari ini — lihat loadTab2.
+  if (loc === 'RUANG_TINDAKAN' && !surgeryDate.value && !_suppressLocWatch) {
     surgeryDate.value = todayLocalStr()
   }
   if (surgeryDate.value) loadBedahSlot(surgeryDate.value)
@@ -3462,7 +3482,7 @@ function closeResumeRM() {
                           <span v-if="d.is_active === false" class="rx-inactive-badge" title="Obat berstatus nonaktif">nonaktif</span>
                         </span>
                         <span class="rx-drop-meta">
-                          {{ d.form }} ·
+                          {{ d.form }}<template v-if="d.unit"> · {{ d.unit }}</template> ·
                           <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">{{ Number(d.stock) > 0 ? `Farmasi: ${d.stock}` : 'Stok kosong' }}</span>
                         </span>
                         <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
@@ -3485,7 +3505,7 @@ function closeResumeRM() {
                     <label class="rx-fl">Nama Obat/Alkes</label>
                     <div class="rx-picked">
                       <span class="rx-picked-name">{{ newRx.name }}</span>
-                      <span class="rx-picked-meta">{{ newRx.form }} · {{ fmtRp(newRx.hja) }}</span>
+                      <span class="rx-picked-meta">{{ newRx.form }}<template v-if="newRx.unit"> · satuan: {{ newRx.unit }}</template> · {{ fmtRp(newRx.hja) }}</span>
                     </div>
                   </div>
                   <div class="rx-fg rx-fg-qty">
@@ -3535,6 +3555,7 @@ function closeResumeRM() {
                   <div class="rx-thead">
                     <div>Obat / Alkes</div>
                     <div>Qty</div>
+                    <div>Satuan</div>
                     <div>Jumlah</div>
                     <div>Signa</div>
                     <div>Durasi</div>
@@ -3544,8 +3565,12 @@ function closeResumeRM() {
                     <div></div>
                   </div>
                   <div v-for="(r, i) in rxList" :key="`${r.medication_id}-${i}`" class="rx-trow">
-                    <div class="rx-cell-name" :title="r.name">{{ r.name }}</div>
+                    <div class="rx-cell-name" :title="r.name">
+                      {{ r.name }}
+                      <span v-if="Number(r.stock) <= 0" class="rx-stok-warn" title="Stok Farmasi obat ini kosong — pertimbangkan substitusi">stok kosong</span>
+                    </div>
                     <div class="rx-cell">{{ r.qty }}</div>
+                    <div class="rx-cell">{{ r.unit || '—' }}</div>
                     <div class="rx-cell">{{ r.jumlah || '—' }}</div>
                     <div class="rx-cell">{{ r.signa || '—' }}</div>
                     <div class="rx-cell">{{ r.dur || '—' }}</div>
@@ -5257,8 +5282,15 @@ function closeResumeRM() {
 .rx-table { border: 1px solid var(--gb); border-radius: 9px; overflow: hidden; }
 .rx-thead, .rx-trow {
   display: grid;
-  grid-template-columns: 1fr 48px 84px 84px 70px 52px 82px 92px 28px;
+  grid-template-columns: 1fr 48px 64px 84px 84px 70px 52px 82px 92px 28px;
   gap: 0.5rem; align-items: center;
+}
+/* Badge peringatan stok kosong pada baris resep (obat sudah diresepkan tapi stok
+   Farmasi kini 0 — transparansi; tidak memblokir, beda dgn picker obat baru). */
+.rx-stok-warn {
+  display: inline-block; margin-left: 0.35rem; font-size: 8px; font-weight: 700;
+  padding: 1px 5px; border-radius: 3px; background: var(--eb, #fde8e8); color: var(--et, #c0392b);
+  letter-spacing: 0.03em; text-transform: uppercase; vertical-align: middle;
 }
 .rx-num { text-align: right; font-variant-numeric: tabular-nums; }
 .rx-sub { font-weight: 600; color: var(--td); }
