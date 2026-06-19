@@ -849,6 +849,7 @@ const doctorList = computed(() =>
     return {
       id:           s.id,
       name:         s.nama_dokter,
+      serviceType:  s.service_type,          // 'BPJS' | 'EKSEKUTIF' — utk filter per penjamin
       poliklinik:   s.poliklinik || '—',
       room:         s.room,
       queuePrefix:  s.queue_prefix,
@@ -866,6 +867,25 @@ const selectedSchedule = computed(() =>
   doctorList.value.find(d => d.id === form.doctor_schedule_id) ?? null,
 )
 
+/* Filter jadwal per jenis penjamin: BPJS → jadwal layanan BPJS; selain BPJS
+   (Umum/Asuransi/Perusahaan/Sosial) → jadwal Eksekutif. Jadwal tanpa
+   service_type (data lama) tetap ditampilkan agar tak hilang. */
+function schedulesForGuarantor(guarantor) {
+  const wantExec = guarantor && guarantor !== 'BPJS'
+  return doctorList.value.filter(d =>
+    !d.serviceType || d.serviceType === (wantExec ? 'EKSEKUTIF' : 'BPJS'),
+  )
+}
+const wizardDoctorList = computed(() => schedulesForGuarantor(form.guarantor))
+
+// Bila penjamin berganti & dokter terpilih tak lagi sesuai layanannya, reset.
+watch(() => form.guarantor, () => {
+  if (form.doctor_schedule_id &&
+      !wizardDoctorList.value.some(d => d.id === form.doctor_schedule_id)) {
+    form.doctor_schedule_id = ''
+  }
+})
+
 /* ============================================================
    GANTI DOKTER — koreksi salah-pilih saat pendaftaran.
    Aman & ringan: antrean dokter tak menyimpan doctor_id, cukup
@@ -876,7 +896,8 @@ const selectedSchedule = computed(() =>
 const dokterOpen    = ref(false)
 const dokterSaving   = ref(false)
 const dokterVisitId  = ref(null)
-const dokterForm = reactive({ patientName: '', currentDoctor: '', scheduleId: '' })
+const dokterForm = reactive({ patientName: '', currentDoctor: '', scheduleId: '', guarantor: 'BPJS' })
+const editDoctorList = computed(() => schedulesForGuarantor(dokterForm.guarantor))
 
 function openEditDokter(p) {
   if (!p || p.walkIn) { toast('w', 'Pasien walk-in belum terdaftar — daftarkan dulu'); return }
@@ -886,6 +907,7 @@ function openEditDokter(p) {
     patientName:   p.name,
     currentDoctor: p.doctor ?? '—',
     scheduleId:    '',
+    guarantor:     p.guarantor === 'BPJS' ? 'BPJS' : 'EKSEKUTIF',
   })
   if (!jadwalStore.aktifHariIni.length) jadwalStore.fetchAktifHariIni()
   dokterOpen.value = true
@@ -3843,9 +3865,12 @@ onUnmounted(() => {
               <div class="field full">
                 <label class="field-lbl">Dokter Tujuan <span style="color:#ef4444">*</span></label>
                 <select v-model="form.doctor_schedule_id" class="form-select" required>
-                  <option value="" disabled>{{ doctorList.length ? 'Pilih dokter (jadwal aktif hari ini)' : 'Tidak ada dokter aktif hari ini' }}</option>
-                  <option v-for="d in doctorList" :key="d.id" :value="d.id">{{ d.label }}</option>
+                  <option value="" disabled>{{ wizardDoctorList.length ? 'Pilih dokter (jadwal aktif hari ini)' : (form.guarantor === 'BPJS' ? 'Tidak ada jadwal BPJS aktif hari ini' : 'Tidak ada jadwal Eksekutif aktif hari ini') }}</option>
+                  <option v-for="d in wizardDoctorList" :key="d.id" :value="d.id">{{ d.label }}</option>
                 </select>
+                <div class="field-hint">
+                  Menampilkan jadwal <strong>{{ form.guarantor === 'BPJS' ? 'BPJS' : 'Eksekutif' }}</strong> sesuai penjamin.
+                </div>
                 <div v-if="selectedSchedule" class="field-hint">
                   Antrian: <strong>{{ selectedSchedule.queuePrefix }}-XXX</strong> · Poli {{ selectedSchedule.poliklinik }}<span v-if="selectedSchedule.room"> · Ruang {{ selectedSchedule.room }}</span>
                 </div>
@@ -4315,8 +4340,8 @@ onUnmounted(() => {
             <div class="field full">
               <label class="field-lbl">Dokter Tujuan (jadwal aktif hari ini)</label>
               <select v-model="dokterForm.scheduleId" class="form-select">
-                <option value="" disabled>{{ doctorList.length ? '— Pilih dokter —' : 'Tidak ada dokter aktif hari ini' }}</option>
-                <option v-for="d in doctorList" :key="d.id" :value="d.id">{{ d.label }}</option>
+                <option value="" disabled>{{ editDoctorList.length ? '— Pilih dokter —' : (dokterForm.guarantor === 'BPJS' ? 'Tidak ada jadwal BPJS aktif' : 'Tidak ada jadwal Eksekutif aktif') }}</option>
+                <option v-for="d in editDoctorList" :key="d.id" :value="d.id">{{ d.label }}</option>
               </select>
             </div>
           </div>
