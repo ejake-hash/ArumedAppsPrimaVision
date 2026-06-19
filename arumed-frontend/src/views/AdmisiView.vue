@@ -1788,11 +1788,12 @@ async function autoTerbitkanSep({ visitId, name }) {
 }
 
 /* ─── Terbitkan / Batalkan SEP dari panel detail kunjungan ───────────── */
-const sepAction = reactive({ loading: false, printing: false })
+const sepAction = reactive({ loading: false, printing: false, error: '' })
 async function terbitkanSep() {
   const row = visitDetailRow.value
   if (!row?.id) return
   sepAction.loading = true
+  sepAction.error = ''   // bersihkan error percobaan sebelumnya
   try {
     const res = await admisiApi.bpjs.generateSep({ visit_id: row.id })
     const b = res.data?.data ?? {}
@@ -1802,10 +1803,18 @@ async function terbitkanSep() {
       toast('s', `SEP terbit: ${noSep}`)
       admisiStore.fetchVisits?.()
     } else {
-      toast('e', b.metaData?.message || res.data?.message || 'Gagal terbitkan SEP')
+      // Gagal "sukses-tapi-ditolak" (mis. metaData BPJS) — tampilkan di toast DAN
+      // inline modal supaya petugas pasti melihat penyebabnya, bukan toast sekejap.
+      const msg = b.metaData?.message || res.data?.message || 'Gagal terbitkan SEP'
+      sepAction.error = msg
+      toast('e', msg)
     }
   } catch (e) {
-    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal terbitkan SEP'))
+    // Error HTTP (422 pemetaan poli, 503 VClaim off, dll) — pesan backend yang jelas
+    // ditahan di modal sampai percobaan/penutupan berikutnya.
+    const msg = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal terbitkan SEP')
+    sepAction.error = msg
+    toast('e', msg)
   } finally {
     sepAction.loading = false
   }
@@ -2380,6 +2389,7 @@ function openVisitDetail(p) {
   visitDetailOpen.value = true
   sepEdit.open = false
   diagAction.editing = false
+  sepAction.error = ''
   if (p?.guarantor === 'BPJS' && p?.id) loadSuratKontrolDetail(p.id)
   else { skAction.data = null; skAction.editing = false }
 }
@@ -4444,6 +4454,13 @@ onUnmounted(() => {
                 </template>
               </div>
 
+              <!-- Pesan gagal Terbitkan SEP — menetap di modal (toast mudah terlewat).
+                   Contoh: poli belum dipetakan ke BPJS, VClaim off, diagnosa kosong. -->
+              <div v-if="sepAction.error && !visitDetailRow.noSep" class="sep-error-inline">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".6" fill="currentColor"/></svg>
+                <span>{{ sepAction.error }}</span>
+              </div>
+
               <!-- Form Edit SEP (PUT /SEP/2.0/update) — field ringkas -->
               <div v-if="sepEdit.open" class="vd-sep-edit">
                 <div class="vd-sep-grid">
@@ -5535,6 +5552,8 @@ onUnmounted(() => {
 @keyframes modalPop { from { opacity: 0; transform: scale(0.96) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 
 /* TOAST */
+.sep-error-inline { display: flex; align-items: flex-start; gap: 0.5rem; margin-top: 0.6rem; padding: 0.6rem 0.75rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; color: #b91c1c; font-size: 12px; line-height: 1.45; }
+.sep-error-inline svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 2; }
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 1100; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 11px; font-size: 12.5px; font-weight: 500; border: 1px solid; pointer-events: all; min-width: 260px; max-width: 360px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); animation: slideInRight 0.3s ease; }
 .toast svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; flex-shrink: 0; }
