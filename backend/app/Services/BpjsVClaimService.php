@@ -427,7 +427,11 @@ class BpjsVClaimService
     /** GET /Monitoring/Kunjungan/Tanggal/{tgl}/JnsPelayanan/{jns} */
     public function monitoringKunjungan(string $tgl, string $jnsPelayanan = '2'): array
     {
-        return $this->client->request('GET', "/Monitoring/Kunjungan/Tanggal/{$tgl}/JnsPelayanan/{$jnsPelayanan}");
+        $result = $this->client->request('GET', "/Monitoring/Kunjungan/Tanggal/{$tgl}/JnsPelayanan/{$jnsPelayanan}");
+        // Dicatat agar shape respons (nama field SEP) bisa diverifikasi saat sinkron SEP.
+        $this->log(null, 'MONITORING_KUNJUNGAN', compact('tgl', 'jnsPelayanan'), $result);
+
+        return $result;
     }
 
     /** GET /Monitoring/Klaim/Tanggal/{tgl}/JnsPelayanan/{jns}/Status/{status} */

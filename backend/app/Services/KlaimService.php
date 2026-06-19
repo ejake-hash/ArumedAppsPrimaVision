@@ -10,6 +10,7 @@ use App\Models\IntegrationConfig;
 use App\Models\PatientDocument;
 use App\Models\SystemLog;
 use App\Models\Visit;
+use App\Services\BpjsVClaimService;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +20,7 @@ class KlaimService
     public function __construct(
         private readonly Request $request,
         private readonly InaCbgsService $eklaim,
+        private readonly BpjsVClaimService $vclaim,
     ) {}
 
     // =========================================================================
@@ -73,6 +75,158 @@ class KlaimService
     // =========================================================================
     // REKAP KUNJUNGAN BPJS — screening pra-klaim (semua kunjungan BPJS per tgl)
     // =========================================================================
+
+    /**
+     * Sinkron SEP dari BPJS untuk rentang tanggal aktif di rekap. Banyak SEP
+     * diterbitkan langsung di portal VClaim (bukan via app) → `visit.no_sep`
+     * kosong ("–" di tabel). Method ini menarik daftar SEP terbit per tanggal
+     * (Monitoring Kunjungan), mencocokkannya ke kunjungan BPJS lewat No.Kartu +
+     * tanggal, lalu menautkan (`no_sep` + snapshot `sep_data`). Cetak SEP nanti
+     * melengkapi detail kanonik via getSep.
+     *
+     * Pencocokan: kunci "noKartu|tglSep". Satu SEP hanya dipakai sekali (cegah
+     * dua kunjungan pasien yang sama di hari yang sama menyalin SEP yang sama).
+     *
+     * @param array $filters  tanggal | tanggal_from + tanggal_to ; jenis (RAJAL|RANAP)
+     * @return array{linked:int,unmatched:int,sep_found:int,scanned:int,api_errors:int,from:string,to:string}
+     */
+    public function sinkronSepRekap(array $filters): array
+    {
+        $cfg = IntegrationConfig::where('system_name', 'VCLAIM')->first();
+        if (! $cfg || ! $cfg->is_enabled) {
+            throw new \Exception('Integrasi VCLAIM belum diaktifkan.', 503);
+        }
+
+        // Rentang tanggal dari filter rekap (single → from=to).
+        $from = ! empty($filters['tanggal']) ? $filters['tanggal'] : ($filters['tanggal_from'] ?? null);
+        $to   = ! empty($filters['tanggal']) ? $filters['tanggal'] : ($filters['tanggal_to'] ?? null);
+        if (! $from || ! $to) {
+            throw new \Exception('Tentukan tanggal atau rentang terlebih dahulu.', 422);
+        }
+        $start = \Illuminate\Support\Carbon::parse($from)->startOfDay();
+        $end   = \Illuminate\Support\Carbon::parse($to)->startOfDay();
+        if ($end->lt($start)) {
+            [$start, $end] = [$end, $start];
+        }
+        if ($start->diffInDays($end) > 62) {
+            throw new \Exception('Rentang maksimal 62 hari untuk sinkron SEP.', 422);
+        }
+
+        // jnsPelayanan yang ditarik mengikuti tab jenis (1=Inap, 2=Jalan).
+        $jenis   = $filters['jenis'] ?? '';
+        $jnsList = $jenis === 'RANAP' ? ['1'] : ($jenis === 'RAJAL' ? ['2'] : ['1', '2']);
+
+        // 1) Kumpulkan SEP terbit dari BPJS → index "noKartu|tgl" => daftar rec.
+        $index    = [];
+        $sepFound = 0;
+        $apiErr   = 0;
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            $tgl = $d->toDateString();
+            foreach ($jnsList as $jns) {
+                try {
+                    $resp = $this->vclaim->monitoringKunjungan($tgl, $jns);
+                } catch (\Throwable $e) {
+                    $apiErr++;
+                    continue;
+                }
+                foreach ($this->extractMonitoringList($resp) as $item) {
+                    $noSep   = trim((string) ($item['noSep'] ?? ''));
+                    $noKartu = preg_replace('/\D+/', '', (string) ($item['noKartu'] ?? ''));
+                    $tglSep  = substr((string) ($item['tglSep'] ?? $item['tglSEP'] ?? $tgl), 0, 10);
+                    if ($noSep === '' || $noKartu === '') {
+                        continue;
+                    }
+                    $sepFound++;
+                    $index[$noKartu . '|' . $tglSep][] = [
+                        'noSep'  => $noSep,
+                        'tglSep' => $tglSep,
+                        'poli'   => (string) ($item['poli'] ?? $item['namaPoli'] ?? ''),
+                    ];
+                }
+            }
+        }
+
+        // 2) Kunjungan BPJS tanpa SEP dalam rentang → cocokkan & tautkan.
+        $visits = Visit::query()
+            ->where('guarantor_type', 'BPJS')
+            ->whereNull('no_sep')
+            ->whereDate('visit_date', '>=', $start->toDateString())
+            ->whereDate('visit_date', '<=', $end->toDateString())
+            ->when($jenis !== '', fn ($q) => $q->where('jenis_pelayanan', $jenis))
+            ->with('patient:id,name,bpjs_number')
+            ->get();
+
+        $usedSep   = [];   // noSep yang sudah ditaut → tak dipakai ganda
+        $linked    = 0;
+        $unmatched = 0;
+
+        foreach ($visits as $v) {
+            $kartu = preg_replace('/\D+/', '', (string) ($v->patient?->bpjs_number ?? ''));
+            $vtgl  = $v->visit_date?->toDateString();
+            if ($kartu === '' || ! $vtgl) {
+                $unmatched++;
+                continue;
+            }
+
+            // Ambil SEP pertama utk kartu+tgl yang belum terpakai.
+            $rec = null;
+            foreach ($index[$kartu . '|' . $vtgl] ?? [] as $cand) {
+                if (! in_array($cand['noSep'], $usedSep, true)) {
+                    $rec = $cand;
+                    break;
+                }
+            }
+            if (! $rec) {
+                $unmatched++;
+                continue;
+            }
+
+            $usedSep[] = $rec['noSep'];
+            $v->update([
+                'no_sep'   => $rec['noSep'],
+                'sep_data' => array_merge((array) ($v->sep_data ?? []), [
+                    'noSep'       => $rec['noSep'],
+                    'noKartu'     => $kartu,
+                    'tglSep'      => $rec['tglSep'],
+                    'poliTujuan'  => $rec['poli'],
+                    'namaPeserta' => $v->patient?->name,
+                    'sumber'      => 'SINKRON_MONITORING',
+                ]),
+            ]);
+            $linked++;
+        }
+
+        return [
+            'linked'     => $linked,
+            'unmatched'  => $unmatched,
+            'sep_found'  => $sepFound,
+            'scanned'    => $visits->count(),
+            'api_errors' => $apiErr,
+            'from'       => $start->toDateString(),
+            'to'         => $end->toDateString(),
+        ];
+    }
+
+    /**
+     * Ekstrak daftar record dari berbagai bentuk respons Monitoring Kunjungan
+     * VClaim (response.list / response.kunjungan / array langsung / record tunggal).
+     */
+    private function extractMonitoringList(array $resp): array
+    {
+        $r = $resp['response'] ?? null;
+        if (! is_array($r)) {
+            return [];
+        }
+        foreach (['list', 'kunjungan', 'data', 'sep'] as $k) {
+            if (isset($r[$k]) && is_array($r[$k]) && array_is_list($r[$k])) {
+                return $r[$k];
+            }
+        }
+        if (array_is_list($r)) {
+            return $r;
+        }
+        return isset($r['noSep']) ? [$r] : [];
+    }
 
     /**
      * Daftar SEMUA kunjungan pasien BPJS (termasuk yang belum punya klaim),

@@ -33,6 +33,7 @@ const rekapLast = ref(1)
 const rekapTotal = ref(0)
 const rekapLoading = ref(false)
 const rekapExporting = ref(false)
+const rekapSyncing = ref(false)
 const savingId = ref(null)             // visit_id yang sedang simpan kelengkapan/KET
 
 // ── Upload ───────────────────────────────────────────────────────────────────
@@ -312,6 +313,33 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url)
 }
 
+// ── Sinkron SEP dari BPJS ────────────────────────────────────────────────────
+// Banyak SEP diterbitkan langsung di portal VClaim → kolom No SEP "–". Tarik
+// daftar SEP terbit (Monitoring Kunjungan) utk tanggal/rentang aktif lalu tautkan
+// ke kunjungan via No.Kartu + tanggal.
+async function syncSep() {
+  rekapSyncing.value = true
+  try {
+    const params = {}
+    if (rekapMode.value === 'single') {
+      if (rekapDate.value) params.tanggal = rekapDate.value
+    } else {
+      if (rekapFrom.value) params.tanggal_from = rekapFrom.value
+      if (rekapTo.value) params.tanggal_to = rekapTo.value
+    }
+    if (jenisTab.value) params.jenis = jenisTab.value
+    const { data } = await api.post('/klaim/rekap/sinkron-sep', params)
+    const r = data.data ?? {}
+    const extra = r.unmatched ? ` · ${r.unmatched} tak cocok` : ''
+    toast(r.linked ? 's' : 'i', `${r.linked || 0} SEP ditautkan${extra}`)
+    await fetchRekap()
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menyinkronkan SEP')
+  } finally {
+    rekapSyncing.value = false
+  }
+}
+
 async function exportRekap() {
   rekapExporting.value = true
   try {
@@ -401,6 +429,9 @@ onMounted(fetchRekap)
         <option :value="100">100 / hal</option>
         <option :value="200">200 / hal</option>
       </select>
+      <button class="rk-btn rk-btn-sync" :disabled="rekapSyncing" title="Tarik SEP yang terbit di portal VClaim lalu tautkan ke kunjungan" @click="syncSep">
+        {{ rekapSyncing ? 'Menyinkron…' : 'Sinkron SEP' }}
+      </button>
       <button class="rk-btn rk-btn-export" :disabled="rekapExporting" @click="exportRekap">
         {{ rekapExporting ? 'Mengekspor…' : 'Export Excel' }}
       </button>
@@ -670,6 +701,8 @@ onMounted(fetchRekap)
 .rk-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .rk-btn-export { background: var(--ga); color: #fff; border-color: var(--ga); }
 .rk-btn-export:disabled { opacity: 0.6; cursor: not-allowed; }
+.rk-btn-sync { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+.rk-btn-sync:disabled { opacity: 0.6; cursor: not-allowed; }
 .rk-spacer { flex: 1 1 auto; }
 .rk-count { font-size: 12px; color: var(--tu); }
 .rk-pp { height: 36px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bc); color: var(--td); font-size: 12px; cursor: pointer; }

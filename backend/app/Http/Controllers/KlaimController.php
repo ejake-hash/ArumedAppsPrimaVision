@@ -502,6 +502,35 @@ class KlaimController extends Controller
         ));
     }
 
+    /**
+     * POST /klaim/rekap/sinkron-sep — tarik SEP terbit dari BPJS (Monitoring
+     * Kunjungan) untuk tanggal/rentang aktif lalu tautkan ke kunjungan via
+     * No.Kartu + tanggal. Untuk kunjungan yang SEP-nya dibuat di portal VClaim.
+     */
+    public function rekapSinkronSep(Request $request): JsonResponse
+    {
+        $request->validate([
+            'tanggal'      => 'nullable|date',
+            'tanggal_from' => 'nullable|date',
+            'tanggal_to'   => 'nullable|date',
+            'jenis'        => 'nullable|in:RAJAL,RANAP',
+        ]);
+
+        try {
+            $data = $this->service->sinkronSepRekap(
+                $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis'])
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        $msg = $data['linked'] > 0
+            ? "{$data['linked']} SEP ditautkan ke kunjungan"
+            : 'Tidak ada SEP baru untuk ditautkan';
+
+        return $this->ok($data, $msg);
+    }
+
     /** POST /klaim/rekap/{visitId}/kelengkapan — set status kelengkapan + KET (manual). */
     public function rekapSetKelengkapan(Request $request, string $visitId): JsonResponse
     {
