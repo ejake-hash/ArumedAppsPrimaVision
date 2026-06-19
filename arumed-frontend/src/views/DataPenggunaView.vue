@@ -183,20 +183,83 @@ const MODULE_META = {
 }
 const moduleDesc = (id) => MODULE_META[id] || ''
 
-// ─── Modules untuk matrix (dari permissionGroups, urut abjad) ────────────────
+// ─── Pengelompokan modul (mengikuti seksi sidebar AppSidebar.vue) ────────────
+// Backend mengirim modul flat & urut abjad → sulit dipakai. Kelompokkan sesuai
+// navigasi nyata aplikasi agar matriks/role intuitif. Mencakup ke-28 modul; modul
+// di luar daftar ini otomatis masuk bucket "Lainnya" (lihat moduleGroups) agar tak
+// pernah hilang bila backend menambah modul baru.
+const MODULE_GROUPS = [
+  { title: 'Utama',                  modules: ['admisi'] },
+  { title: 'Klinis',                 modules: ['rekam_medis','rme_dokter','perawat','refraksionis','penunjang','ttd_dokumen','bedah','anestesi','ruang_tindakan','rawat_inap','igd'] },
+  { title: 'Operasional & Keuangan', modules: ['farmasi','inventori_farmasi','request_unit','kasir','bpjs','asuransi','keuangan','marketing','laporan'] },
+  { title: 'Sistem & Master',        modules: ['jadwal_dokter','antrian_tv','tarif_paket','master_data','integrasi','role_akses','audit'] },
+]
+
+// ─── Dependensi lintas-modul yang DISENGAJA (ditampilkan, BUKAN digabung) ────
+// Sebagian fitur tampil di modul A tapi di-gate modul B (lihat RolePermissionSeeder).
+// Pemisahan ini sengaja (granularitas). Daftar ini hanya untuk TRANSPARANSI: beri
+// catatan + peringatan kelengkapan saat menyusun role. whenAction mempersempit pemicu.
+const MODULE_DEPS = [
+  { ifMod: 'bedah',             needMod: 'anestesi',     feature: 'Panel & Laporan Anestesi di unit Bedah (menulis butuh Anestesi-W; perawat cukup R)' },
+  { ifMod: 'inventori_farmasi', needMod: 'request_unit', feature: 'Tab Request/Retur dari Unit & Inbox di Inventori' },
+  { ifMod: 'igd',               needMod: 'kasir',        feature: 'Pratinjau billing & self-checkout di IGD' },
+  { ifMod: 'kasir',             needMod: 'asuransi',     feature: 'Peringatan & verifikasi penjamin asuransi (TPA) di Kasir' },
+  { ifMod: 'rme_dokter',        needMod: 'ttd_dokumen',  feature: 'Menu & antrean Tanda Tangan Dokumen (khusus dokter)', whenAction: 'W' },
+]
+// Modul yang dipakai sbg "dependency" → catatan singkat di bawah nama modul.
+const MODULE_DEP_NOTE = Object.fromEntries(
+  MODULE_DEPS.map((d) => [d.needMod, `Mengaktifkan: ${d.feature}`]),
+)
+
+// Peringatan kelengkapan: role punya ifMod (≥1 aksi, atau aksi spesifik whenAction)
+// TAPI belum punya needMod sama sekali. Murni informatif (tidak memblok simpan).
+function depWarnings(perms) {
+  const has = (mod, act) => (perms[mod] || []).length > 0 && (!act || perms[mod].includes(act))
+  return MODULE_DEPS
+    .filter((d) => has(d.ifMod, d.whenAction) && !(perms[d.needMod]?.length))
+    .map((d) => ({
+      ...d,
+      ifLabel:   store.permissionGroups.find((g) => g.module === d.ifMod)?.label || d.ifMod,
+      needLabel: store.permissionGroups.find((g) => g.module === d.needMod)?.label || d.needMod,
+    }))
+}
+
+// ─── Modules untuk matrix (dari permissionGroups, urut abjad sbg dasar) ──────
 const modules = computed(() =>
   store.permissionGroups
     .map((g) => ({ id: g.module, nama: g.label, desc: moduleDesc(g.module), sub: '' }))
     .sort((a, b) => a.nama.localeCompare(b.nama, 'id')),
 )
 
-// Modul yang tampil di matriks (terfilter pencarian)
-const srMod = ref('')
-const matrixModules = computed(() => {
-  const s = srMod.value.trim().toLowerCase()
-  if (! s) return modules.value
-  return modules.value.filter((m) => m.nama.toLowerCase().includes(s))
+// Modul dikelompokkan sesuai MODULE_GROUPS (urutan config dipertahankan) + bucket
+// "Lainnya" untuk modul yang belum terkategori → anti-hilang.
+const moduleGroups = computed(() => {
+  const byId = Object.fromEntries(modules.value.map((m) => [m.id, m]))
+  const used = new Set()
+  const groups = MODULE_GROUPS
+    .map((g) => ({ title: g.title, items: g.modules.map((id) => byId[id]).filter(Boolean) }))
+    .filter((g) => g.items.length)
+  groups.forEach((g) => g.items.forEach((m) => used.add(m.id)))
+  const rest = modules.value.filter((m) => !used.has(m.id))
+  if (rest.length) groups.push({ title: 'Lainnya', items: rest })
+  return groups
 })
+
+// Modul yang tampil di matriks (terfilter pencarian, tetap berkelompok)
+const srMod = ref('')
+const matrixGroups = computed(() => {
+  const s = srMod.value.trim().toLowerCase()
+  if (! s) return moduleGroups.value
+  return moduleGroups.value
+    .map((g) => ({ title: g.title, items: g.items.filter((m) => m.nama.toLowerCase().includes(s)) }))
+    .filter((g) => g.items.length)
+})
+
+// Peringatan kelengkapan dependensi untuk role yang sedang diedit (live, advisory).
+// Superadmin bypass → tak relevan.
+const editRoleWarnings = computed(() =>
+  editRole.value.name === 'superadmin' ? [] : depWarnings(editRole.value.perms),
+)
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 const toasts = ref([])
@@ -250,6 +313,17 @@ async function saveRole() {
   if (! d.name?.trim()) { toast('w', 'Kode role wajib diisi'); return }
   if (! d.display_name?.trim()) d.display_name = d.name
 
+  // Guard kritis cegah HAK AKSES TERHAPUS diam-diam: bila katalog permission belum
+  // termuat (fetchPermissions gagal saat loadAll pakai allSettled, tapi fetchRoles
+  // sukses → tab Role tetap tampil), permissionFlat kosong → permsToIds()/specialPermIds()
+  // memetakan SEMUA permission ke []. Backend sync() me-replace penuh, jadi menyimpan
+  // role di kondisi ini akan menghapus seluruh permission-nya — bahkan saat user hanya
+  // mengubah deskripsi. (Superadmin dikecualikan: permission-nya bypass '*', bukan dari katalog.)
+  if (d.name !== 'superadmin' && ! store.permissionFlat.length) {
+    toast('e', 'Daftar permission belum termuat — muat ulang halaman sebelum menyimpan role (mencegah hak akses role terhapus).')
+    return
+  }
+
   const payload = {
     name: d.name.trim(),
     display_name: d.display_name.trim(),
@@ -293,6 +367,13 @@ async function toggleMatrixPerm(role, modId, code) {
   }
   // Abaikan klik bila sync role ini masih berjalan (anti-race klik beruntun).
   if (syncingRoles.value.has(role.id)) return
+
+  // Guard sama spt saveRole: tanpa katalog permission, mergePermIds() menghasilkan []
+  // → sync() backend akan menghapus seluruh hak akses role. Tolak toggle.
+  if (! store.permissionFlat.length) {
+    toast('e', 'Daftar permission belum termuat — muat ulang halaman.')
+    return
+  }
 
   const perms = keysToPerms(role.permission_keys)
   if (! perms[modId]) perms[modId] = []
@@ -696,19 +777,34 @@ function shortModel(m) {
               Centang akses sesuai tugas role. <b>R</b> = Lihat (buka &amp; baca) · <b>W</b> = Tambah/Ubah (input &amp; edit) · <b>D</b> = Hapus.
               Kosongkan semua = role tak bisa membuka modul itu.
             </div>
-            <div class="g2">
-              <div v-for="mod in modules" :key="mod.id" class="perm-row">
-                <div style="min-width:0">
-                  <div class="perm-mod">{{ mod.nama }}</div>
-                  <div v-if="mod.desc" class="perm-desc">{{ mod.desc }}</div>
-                </div>
-                <div style="display:flex;gap:4px;flex-shrink:0">
-                  <div v-for="p in ['R','W','D']" :key="p"
-                       :class="['perm-toggle', editRole.perms[mod.id]&&editRole.perms[mod.id].includes(p)?'on':'off']"
-                       @click="togglePerm(mod.id,p)"
-                       :title="p==='R'?'Baca':p==='W'?'Tulis':'Hapus'">{{ p }}</div>
+            <template v-for="grp in moduleGroups" :key="grp.title">
+              <div class="grp-subhd">{{ grp.title }}</div>
+              <div class="g2">
+                <div v-for="mod in grp.items" :key="mod.id" class="perm-row">
+                  <div style="min-width:0">
+                    <div class="perm-mod">{{ mod.nama }}</div>
+                    <div v-if="mod.desc" class="perm-desc">{{ mod.desc }}</div>
+                    <div v-if="MODULE_DEP_NOTE[mod.id]" class="perm-dep-note">↳ {{ MODULE_DEP_NOTE[mod.id] }}</div>
+                  </div>
+                  <div style="display:flex;gap:4px;flex-shrink:0">
+                    <div v-for="p in ['R','W','D']" :key="p"
+                         :class="['perm-toggle', editRole.perms[mod.id]&&editRole.perms[mod.id].includes(p)?'on':'off']"
+                         @click="togglePerm(mod.id,p)"
+                         :title="p==='R'?'Baca':p==='W'?'Tulis':'Hapus'">{{ p }}</div>
+                  </div>
                 </div>
               </div>
+            </template>
+            <!-- Peringatan kelengkapan dependensi (advisory — tidak memblok simpan) -->
+            <div v-if="editRoleWarnings.length" class="dep-warn">
+              <div class="dep-warn-hd">
+                <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Perhatikan kelengkapan akses — fitur berikut akan terkunci:
+              </div>
+              <div v-for="w in editRoleWarnings" :key="w.ifMod + w.needMod" class="dep-warn-item">
+                Punya <b>{{ w.ifLabel }}</b> tapi tanpa <b>{{ w.needLabel }}</b> → {{ w.feature }}.
+              </div>
+              <div class="dep-warn-foot">Ini hanya pengingat; Anda tetap bisa menyimpan bila pemisahan ini memang disengaja.</div>
             </div>
           </template>
           <div style="display:flex;gap:.4rem;margin-top:.75rem">
@@ -878,16 +974,19 @@ function shortModel(m) {
           <div v-if="!selUserRole" class="info-msg" style="margin-bottom:.6rem">
             Data hak akses role belum termuat. Muat ulang halaman untuk menampilkannya.
           </div>
-          <div v-else class="g2" style="margin-bottom:.6rem">
-            <div v-for="mod in modules" :key="mod.id" class="perm-view-row">
-              <span class="perm-mod">{{ mod.nama }}</span>
-              <div style="display:flex;gap:3px">
-                <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
-                      :style="{ background: hasPerm(selUserRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
-                                color: hasPerm(selUserRole, mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p }}</span>
+          <template v-else v-for="grp in moduleGroups" :key="grp.title">
+            <div class="grp-subhd">{{ grp.title }}</div>
+            <div class="g2" style="margin-bottom:.6rem">
+              <div v-for="mod in grp.items" :key="mod.id" class="perm-view-row">
+                <span class="perm-mod">{{ mod.nama }}</span>
+                <div style="display:flex;gap:3px">
+                  <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
+                        :style="{ background: hasPerm(selUserRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
+                                  color: hasPerm(selUserRole, mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p }}</span>
+                </div>
               </div>
             </div>
-          </div>
+          </template>
           <div class="sec"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Login Terakhir</div>
           <div class="log-item">
             <div class="log-dot" :style="{ background: 'var(--st)' }"></div>
@@ -1116,15 +1215,27 @@ function shortModel(m) {
             <button class="btn btn-sm btn-o" @click="openEditRole(selRole)"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Edit Role</button>
           </div>
           <div class="cb">
-            <div class="g4-mod">
-              <div v-for="mod in modules" :key="mod.id" class="mod-detail-card">
-                <div class="mod-detail-name">{{ mod.nama }}</div>
-                <div v-if="mod.desc" class="mod-detail-desc">{{ mod.desc }}</div>
-                <div style="display:flex;gap:3px;margin-top:.3rem">
-                  <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
-                        :style="{ background: hasPerm(selRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
-                                  color: hasPerm(selRole, mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p==='R'?'Baca':p==='W'?'Tulis':'Hapus' }}</span>
+            <template v-for="grp in moduleGroups" :key="grp.title">
+              <div class="grp-subhd">{{ grp.title }}</div>
+              <div class="g4-mod">
+                <div v-for="mod in grp.items" :key="mod.id" class="mod-detail-card">
+                  <div class="mod-detail-name">{{ mod.nama }}</div>
+                  <div v-if="mod.desc" class="mod-detail-desc">{{ mod.desc }}</div>
+                  <div style="display:flex;gap:3px;margin-top:.3rem">
+                    <span v-for="p in ['R','W','D']" :key="p" class="perm-badge"
+                          :style="{ background: hasPerm(selRole, mod.id, p) ? 'var(--ga)' : 'var(--gb)',
+                                    color: hasPerm(selRole, mod.id, p) ? '#fff' : 'var(--tu)' }">{{ p==='R'?'Baca':p==='W'?'Tulis':'Hapus' }}</span>
+                  </div>
                 </div>
+              </div>
+            </template>
+            <div v-if="selRole.name !== 'superadmin' && depWarnings(keysToPerms(selRole.permission_keys)).length" class="dep-warn" style="margin-top:.6rem">
+              <div class="dep-warn-hd">
+                <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Kelengkapan akses — fitur berikut terkunci untuk role ini:
+              </div>
+              <div v-for="w in depWarnings(keysToPerms(selRole.permission_keys))" :key="w.ifMod + w.needMod" class="dep-warn-item">
+                Punya <b>{{ w.ifLabel }}</b> tapi tanpa <b>{{ w.needLabel }}</b> → {{ w.feature }}.
               </div>
             </div>
             <div class="divider"></div>
@@ -1169,10 +1280,14 @@ function shortModel(m) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!matrixModules.length">
+                <tr v-if="!matrixGroups.length">
                   <td :colspan="2 + store.roles.length * 3" style="text-align:center;padding:1rem;color:var(--tu);font-size:11px">Tidak ada modul cocok dengan "{{ srMod }}".</td>
                 </tr>
-                <tr v-for="(mod, idx) in matrixModules" :key="mod.id">
+                <template v-for="grp in matrixGroups" :key="grp.title">
+                <tr class="grp-row">
+                  <td class="grp-cell" :colspan="2 + store.roles.length * 3">{{ grp.title }}</td>
+                </tr>
+                <tr v-for="(mod, idx) in grp.items" :key="mod.id">
                   <td class="col-no">{{ idx + 1 }}</td>
                   <td class="sticky">
                     <div v-if="editingMod === mod.id" class="mod-edit">
@@ -1182,8 +1297,9 @@ function shortModel(m) {
                       <button class="mod-edit-btn" @click="resetModLabel(mod)" title="Kembalikan ke default">↺</button>
                       <button class="mod-edit-btn" @click="editingMod = null" title="Batal">✕</button>
                     </div>
-                    <div v-else class="mod-name-cell" @click="startEditMod(mod)" :title="(mod.desc ? mod.desc + ' — ' : '') + 'Klik untuk ubah nama tampilan'">
+                    <div v-else class="mod-name-cell" @click="startEditMod(mod)" :title="(MODULE_DEP_NOTE[mod.id] ? MODULE_DEP_NOTE[mod.id] + ' — ' : (mod.desc ? mod.desc + ' — ' : '')) + 'Klik untuk ubah nama tampilan'">
                       <span>{{ mod.nama }}</span>
+                      <span v-if="MODULE_DEP_NOTE[mod.id]" class="dep-dot" title="Modul ini mengaktifkan fitur di modul lain">↳</span>
                       <svg class="mod-edit-ic" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </div>
                   </td>
@@ -1197,6 +1313,7 @@ function shortModel(m) {
                     </td>
                   </template>
                 </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -1425,6 +1542,25 @@ function shortModel(m) {
 .perm-toggle.off { background: var(--bs); color: var(--th); }
 .perm-toggle.off:hover { background: var(--gl); border-color: var(--ga); }
 .perm-toggle.locked { opacity: .4; cursor: not-allowed; }
+
+/* Header kelompok modul di matriks (mengikuti seksi sidebar) */
+.matrix-tbl tr.grp-row td.grp-cell { position: sticky; left: 0; z-index: 2; text-align: left;
+  background: var(--gl); color: var(--ga); font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; padding: 5px 10px; border-bottom: 1px solid var(--gb); }
+/* Subjudul kelompok di modal Edit Role & panel detail */
+.grp-subhd { grid-column: 1 / -1; font-size: 9.5px; font-weight: 700; color: var(--ga);
+  text-transform: uppercase; letter-spacing: .06em; margin: .6rem 0 .25rem; padding-bottom: 2px;
+  border-bottom: 1px solid var(--gb); }
+.grp-subhd:first-child { margin-top: 0; }
+
+/* Catatan & peringatan dependensi lintas-modul (transparansi RBAC) */
+.perm-dep-note { font-size: 9px; color: var(--it); line-height: 1.35; margin-top: 1px; }
+.dep-dot { color: var(--wt); font-weight: 700; }
+.dep-warn { margin-top: .7rem; background: var(--wb); border: 1px solid var(--wbd); border-radius: 9px; padding: .55rem .75rem; }
+.dep-warn-hd { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--wt); margin-bottom: .35rem; }
+.dep-warn-hd svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+.dep-warn-item { font-size: 10.5px; color: var(--td); line-height: 1.5; padding-left: 19px; }
+.dep-warn-foot { font-size: 9.5px; color: var(--tu); margin-top: .35rem; padding-left: 19px; }
 
 /* Edit nama modul (kolom sticky matriks) */
 .mod-name-cell { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11.5px; font-weight: 500; }

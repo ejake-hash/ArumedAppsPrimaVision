@@ -694,6 +694,24 @@ function cetakLaporanOperasi(b) {
             <!-- ════ RINGKASAN ════ -->
             <div v-if="activeMenu==='ringkasan'" class="ringkasan">
               <div class="rk-grid">
+                <!-- Identitas pasien (lengkap) — tampil paling atas saat buka pasien -->
+                <div class="rk-card span2 rk-ident">
+                  <div class="rk-card-t">Identitas Pasien</div>
+                  <div class="id-grid">
+                    <div class="id-row"><span class="id-k">No. RM</span><span class="id-v mono">{{ val(ringkasan.patient?.no_rm ?? patient.no_rm) }}</span></div>
+                    <div class="id-row"><span class="id-k">Nama</span><span class="id-v">{{ val(ringkasan.patient?.name ?? patient.nama) }}</span></div>
+                    <div class="id-row"><span class="id-k">{{ ringkasan.patient?.identity_type || 'NIK' }}</span><span class="id-v mono">{{ val(ringkasan.patient?.nik ?? patient.nik) }}</span></div>
+                    <div class="id-row"><span class="id-k">Jenis Kelamin</span><span class="id-v">{{ (ringkasan.patient?.gender ?? patient.gender) === 'L' ? 'Laki-laki' : ((ringkasan.patient?.gender ?? patient.gender) === 'P' ? 'Perempuan' : '–') }}</span></div>
+                    <div class="id-row"><span class="id-k">Tgl. Lahir</span><span class="id-v">{{ fmtTgl(ringkasan.patient?.date_of_birth ?? patient.date_of_birth) }}<small v-if="ringkasan.patient?.date_of_birth ?? patient.date_of_birth"> · {{ hitungUsia(ringkasan.patient?.date_of_birth ?? patient.date_of_birth) }} th</small></span></div>
+                    <div class="id-row"><span class="id-k">No. BPJS</span><span class="id-v mono">{{ val(ringkasan.patient?.bpjs_number) }}</span></div>
+                    <div class="id-row"><span class="id-k">No. Telepon</span><span class="id-v">{{ val(ringkasan.patient?.phone) }}<small v-if="ringkasan.patient?.family_phone"> · Kel: {{ ringkasan.patient.family_phone }}</small></span></div>
+                    <div class="id-row"><span class="id-k">Email</span><span class="id-v">{{ val(ringkasan.patient?.email) }}</span></div>
+                    <div class="id-row"><span class="id-k">Gol. Darah</span><span class="id-v">{{ val(ringkasan.patient?.blood_type) }}</span></div>
+                    <div class="id-row"><span class="id-k">Kab/Kota</span><span class="id-v">{{ val(ringkasan.patient?.nama_kab_kota) }}</span></div>
+                    <div class="id-row span2"><span class="id-k">Alamat</span><span class="id-v">{{ val(ringkasan.patient?.address ?? patient.address) }}</span></div>
+                  </div>
+                </div>
+
                 <!-- Alergi & catatan -->
                 <div class="rk-card alert" v-if="ringkasan.patient?.allergy || ringkasan.allergy_latest_assessment">
                   <div class="rk-card-t">⚠ Alergi &amp; Catatan Penting</div>
@@ -1428,6 +1446,14 @@ function cetakLaporanOperasi(b) {
 .rk-card { background: #f8fafc; border: 1px solid #eceef2; border-radius: 10px; padding: .85rem 1rem; color: #000; }
 .rk-card.span2 { grid-column: 1 / -1; }
 .rk-card.alert { background: #fff7ed; border-color: #fed7aa; }
+/* Identitas pasien — grid label/nilai 2 kolom */
+.rk-ident { background: #fff; }
+.id-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 1.5rem; }
+.id-row { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed #eceef2; align-items: baseline; }
+.id-row.span2 { grid-column: 1 / -1; }
+.id-k { color: #6b7280; min-width: 96px; flex-shrink: 0; }
+.id-v { font-weight: 600; color: #000; word-break: break-word; }
+.id-v small { font-weight: 400; color: #6b7280; }
 .rk-card-t { font-size: 11px; font-weight: 700; color: #374151; margin-bottom: .6rem; display: flex; justify-content: space-between; align-items: center; }
 .rk-date { font-size: 10px; font-weight: 600; color: #6b7280; }
 .rk-alert-body { font-size: 12px; line-height: 1.7; }

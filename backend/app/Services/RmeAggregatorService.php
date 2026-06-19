@@ -88,8 +88,24 @@ class RmeAggregatorService
 
         return [
             'patient' => [
-                'allergy'   => $patient->allergy_notes,
-                'blood_type' => $patient->blood_type,
+                'no_rm'          => $patient->no_rm,
+                'name'           => $patient->name,
+                'nik'            => $patient->nik,
+                'identity_type'  => $patient->identity_type,
+                'gender'         => $patient->gender,
+                'date_of_birth'  => $patient->date_of_birth?->toDateString(),
+                'bpjs_number'    => $patient->bpjs_number,
+                'phone'          => $patient->phone,
+                'family_phone'   => $patient->family_phone,
+                'email'          => $patient->email,
+                'address'        => $patient->address,
+                'province'       => $patient->province,
+                'nama_kab_kota'  => $patient->nama_kab_kota,
+                'nama_kecamatan' => $patient->nama_kecamatan,
+                'nama_kelurahan' => $patient->nama_kelurahan,
+                'blood_type'     => $patient->blood_type,
+                'allergy'        => $patient->allergy_notes,   // pertahankan key lama (kartu Alergi)
+                'photo_url'      => $patient->photo_url,
             ],
             'allergy_latest_assessment' => $visits->firstWhere(fn ($v) => $v->nurseAssessment?->allergy_detail)
                 ?->nurseAssessment?->allergy_detail,

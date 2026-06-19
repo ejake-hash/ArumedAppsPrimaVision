@@ -36,6 +36,8 @@ const roleRouteMap = {
   kasir:        '/kasir',
   admisi:       '/admisi',
   verifikator:  '/bpjs',
+  manajemen:    '/dashboard',          // punya marketing.read → Dashboard accessible
+  inventori:    '/inventori-farmasi',  // punya inventori_farmasi.read
 }
 
 function validate() {
@@ -47,6 +49,12 @@ function validate() {
 }
 
 async function login() {
+  // Cegah submit ganda: tombol Masuk di-disable saat loading, TAPI @keydown.enter
+  // pada input password tidak ikut ter-disable → Enter beruntun bisa memicu login()
+  // paralel berkali-kali. Juga blok re-login selama popup sukses (jeda 1.4s sebelum
+  // redirect) agar tak ada request login & router.push ganda.
+  if (auth.loading || successPopup.value) return
+
   alert.value.show = false
   if (!validate()) return
 

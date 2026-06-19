@@ -40,6 +40,10 @@ class RekamMedisService
         $kw = trim($keyword);
 
         $query = Patient::active()
+            // Sembunyikan placeholder anjungan/walk-in belum-terdaftar (no_rm NULL,
+            // name 'Belum Terdaftar') dari hasil pencarian RME.
+            ->whereNotNull('no_rm')
+            ->where('name', '!=', 'Belum Terdaftar')
             ->withCount('visits')
             ->with(['visits' => fn ($q) => $q->orderByDesc('visit_date')->limit(1)]);
 
@@ -102,6 +106,11 @@ class RekamMedisService
         };
 
         $query = Patient::active()
+            // Buang placeholder anjungan/walk-in yang BELUM didaftarkan admisi
+            // (no_rm NULL, name 'Belum Terdaftar'): mereka belum punya rekam medis,
+            // jadi tak boleh muncul di telusur RME. Selaras dgn AdmisiService.
+            ->whereNotNull('no_rm')
+            ->where('name', '!=', 'Belum Terdaftar')
             ->whereHas('visits', $inRange)
             ->withCount(['visits as period_visits_count' => $inRange])
             ->with(['visits' => function ($q) use ($inRange) {
