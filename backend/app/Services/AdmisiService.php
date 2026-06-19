@@ -2227,35 +2227,103 @@ class AdmisiService
     }
 
     /**
-     * Tarik diagnosa awal dari rujukan FKTP pasien lalu simpan ke visit. Dipakai
-     * tombol "Tarik dari BPJS" di Detail Kunjungan. Melempar 422 bila visit tak
-     * punya nomor rujukan atau rujukan tak memuat diagnosa (petugas bisa input manual).
+     * Tarik diagnosa awal pasien dari BPJS lalu simpan ke visit. Dipakai tombol
+     * "Tarik dari BPJS" di Detail Kunjungan. Resolusi berlapis supaya pasien yang
+     * sudah berhasil daftar (pasti punya rujukan/surat kontrol di BPJS) tetap bisa
+     * menarik diagnosa walau No. Rujukan tak ikut tersimpan di kunjungan:
+     *   1. Pakai No. Rujukan yang tersimpan di visit (jalur normal rujukan FKTP).
+     *   2. Bila kosong — tarik daftar rujukan aktif pasien dari BPJS via No. Kartu
+     *      (FKTP + FKRTL), ambil yang memuat diagnosa, lalu persist nomornya ke visit.
+     * Melempar 422 hanya bila benar-benar tak ada sumber diagnosa (petugas isi manual).
      */
     public function tarikDiagnosaVisit(string $visitId): array
     {
         $this->assertBpjsEnabled('VCLAIM');
 
-        $visit = Visit::findOrFail($visitId);
+        $visit = Visit::with('patient')->findOrFail($visitId);
+
+        // 1) Sumber utama: No. Rujukan tersimpan di kunjungan.
         $noRujukan = trim((string) ($visit->no_rujukan ?? ''));
-        if ($noRujukan === '') {
-            throw new \Exception('Kunjungan ini belum punya No. Rujukan — tak ada sumber diagnosa. Isi diagnosa manual atau tarik rujukan dulu.', 422);
+        if ($noRujukan !== '') {
+            $diag = $this->resolveDiagnosaFromRujukan($noRujukan, $visit->id);
+            if ($diag['kode'] !== '') {
+                return $this->persistDiagnosaAwal($visit, $diag['kode'], $diag['nama'], $noRujukan);
+            }
         }
 
-        $diag = $this->resolveDiagnosaFromRujukan($noRujukan, $visit->id);
-        if ($diag['kode'] === '') {
-            throw new \Exception('Rujukan tidak memuat diagnosa (atau BPJS sedang tak bisa diakses). Isi diagnosa manual.', 422);
+        // 2) Tak ada (atau rujukan tersimpan tanpa diagnosa): tarik rujukan aktif
+        //    pasien dari BPJS via No. Kartu — pasien BPJS yang sudah daftar pasti
+        //    punya rujukan/kontrol di sistem BPJS meski nomornya tak ikut tersimpan.
+        $noKartu = trim((string) ($visit->patient?->bpjs_number ?? ''));
+        if ($noKartu !== '') {
+            $found = $this->firstRujukanWithDiagnosaByKartu($noKartu);
+            if ($found) {
+                // Persist nomor rujukan yang ditemukan bila visit belum punya.
+                if (trim((string) ($visit->no_rujukan ?? '')) === '' && $found['no_rujukan'] !== '') {
+                    $visit->no_rujukan = $found['no_rujukan'];
+                }
+                return $this->persistDiagnosaAwal($visit, $found['kode'], $found['nama'], $found['no_rujukan']);
+            }
         }
 
+        throw new \Exception('BPJS tak memuat diagnosa untuk pasien ini (rujukan tak ditemukan / tanpa diagnosa, atau BPJS sedang tak bisa diakses). Isi diagnosa manual.', 422);
+    }
+
+    /** Simpan diagnosa awal hasil resolusi ke visit + kembalikan ringkasannya. */
+    private function persistDiagnosaAwal(Visit $visit, string $kode, string $nama, string $noRujukan): array
+    {
         $visit->forceFill([
-            'diagnosa_awal'      => $diag['kode'],
-            'diagnosa_awal_nama' => $diag['nama'] ?: $visit->diagnosa_awal_nama,
+            'diagnosa_awal'      => $kode,
+            'diagnosa_awal_nama' => $nama ?: $visit->diagnosa_awal_nama,
         ])->save();
 
         return [
             'kode'       => $visit->diagnosa_awal,
             'nama'       => $visit->diagnosa_awal_nama,
-            'no_rujukan' => $noRujukan,
+            'no_rujukan' => $noRujukan ?: ($visit->no_rujukan ?? ''),
         ];
+    }
+
+    /**
+     * Cari rujukan pertama (FKTP lalu FKRTL) milik pasien yang memuat diagnosa,
+     * berdasarkan No. Kartu BPJS. Best-effort — kembalikan null bila BPJS tak bisa
+     * diakses / pasien tak punya rujukan aktif.
+     *
+     * @return array{ no_rujukan: string, kode: string, nama: string }|null
+     */
+    private function firstRujukanWithDiagnosaByKartu(string $noKartu): ?array
+    {
+        foreach (['fktp', 'rs'] as $sumber) {
+            try {
+                $res = $sumber === 'fktp'
+                    ? $this->vclaim->listRujukanFktpByKartu($noKartu)
+                    : $this->vclaim->listRujukanByKartu($noKartu);
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            $rj = $res['response']['rujukan'] ?? null;
+            if ($rj === null) {
+                continue;
+            }
+            // Respons bisa satu objek atau list — normalkan ke array.
+            $items = (is_array($rj) && array_is_list($rj)) ? $rj : [$rj];
+
+            foreach ($items as $r) {
+                $diag = $r['diagnosa'] ?? [];
+                $kode = trim((string) ($diag['kode'] ?? $diag['kdDiag'] ?? ''));
+                if ($kode === '') {
+                    continue;
+                }
+                return [
+                    'no_rujukan' => trim((string) ($r['noKunjungan'] ?? $r['noRujukan'] ?? '')),
+                    'kode'       => $kode,
+                    'nama'       => trim((string) ($diag['nama'] ?? $diag['nmDiag'] ?? '')),
+                ];
+            }
+        }
+
+        return null;
     }
 
     /**

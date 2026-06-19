@@ -1151,12 +1151,13 @@ async function loadIdentityDocs(patientId) {
     const { data } = await admisiApi.identityDocs(patientId)
     identityDocs.value = data.data ?? []
     // Lazy-fetch berkas (blob) tiap dokumen → object URL untuk preview/unduh.
-    for (const doc of identityDocs.value) {
+    // Paralel — berkas independen, tak perlu serial (latensi menumpuk).
+    await Promise.allSettled(identityDocs.value.map(async (doc) => {
       try {
         const res = await admisiApi.identityDocFile(patientId, doc.id)
         identityUrls[doc.id] = URL.createObjectURL(res.data)
       } catch { /* lewati berkas yg gagal dimuat */ }
-    }
+    }))
   } catch (e) {
     toast('e', e.response?.data?.message ?? e.message ?? 'Gagal memuat dokumen identitas')
   } finally {
@@ -1440,6 +1441,9 @@ function choosePreop(schedule) {
 function chooseRegular() {
   preopChoice.value = 'REGULAR'
   selectedPreopSchedule.value = null
+  // Kembalikan klasifikasi bila sempat diset ke 'Pre-Op' oleh choosePreop —
+  // kunjungan reguler tak boleh terdaftar sebagai Pre-Op.
+  if (form.classification === 'Pre-Op') form.classification = 'Baru'
 }
 
 const wizardSteps = [
@@ -1627,8 +1631,9 @@ function _extractKontrol(rawResult) {
   return arr.map((k) => ({
     no:     k.noSuratKontrol || '',
     tgl:    k.tglRencanaKontrol || '',
-    poli:   k.namaPoliTujuan || k.poliTujuan?.nama || k.poliTujuan || '—',
-    dokter: k.namaDokter || k.namaDokterAju || k.dokter || '—',
+    // poliTujuan kadang string, kadang objek {nama} — jangan render objek mentah.
+    poli:   k.namaPoliTujuan || k.poliTujuan?.nama || (typeof k.poliTujuan === 'string' ? k.poliTujuan : '') || '—',
+    dokter: k.namaDokter || k.namaDokterAju || (typeof k.dokter === 'string' ? k.dokter : '') || '—',
     jenis:  k.namaJnsKontrol || k.jnsKontrol || '',
   })).filter((x) => x.no)
 }
@@ -1892,6 +1897,9 @@ async function tarikDiagnosa() {
     const d = res.data?.data ?? {}
     row.diagnosaAwal = d.kode ?? null
     row.diagnosaAwalNama = d.nama ?? null
+    // Backend bisa me-resolve & menyimpan No. Rujukan dari BPJS (via No. Kartu)
+    // saat visit belum punya — refleksikan ke baris agar title tombol akurat.
+    if (d.no_rujukan) row.noRujukan = d.no_rujukan
     toast('s', `Diagnosa: ${d.kode}${d.nama ? ' · ' + d.nama : ''}`)
     admisiStore.fetchVisits?.()
   } catch (e) {
@@ -2077,7 +2085,9 @@ const canProceedStep1 = computed(() => {
   if (form.patientMode === 'existing') {
     // Pasien lama: provinsi tidak wajib di sini — data wilayah yang kosong
     // (mis. hasil migrasi) bisa dilengkapi nanti via kartu Detail Pasien.
-    return !!(form.found && form.name)
+    // Blokir bila pasien masih punya kunjungan aktif (cegah daftar ganda) —
+    // selaras peringatan di selectPatient; backend juga menolaknya.
+    return !!(form.found && form.name) && !selectedActiveVisit.value
   }
   // Pasien baru: identitas + tgl lahir + provinsi wajib.
   return !!(form.name && form.birthDate && idOk && form.province)
@@ -2127,7 +2137,9 @@ function closeWizard() {
 function nextStep() {
   if (wizardStep.value === 1 && !canProceedStep1.value) {
     toast('w', form.patientMode === 'existing'
-      ? 'Pilih pasien dari hasil pencarian terlebih dahulu'
+      ? (selectedActiveVisit.value
+          ? 'Pasien masih punya kunjungan aktif — selesaikan/batalkan dulu'
+          : 'Pilih pasien dari hasil pencarian terlebih dahulu')
       : 'Lengkapi data pasien & provinsi terlebih dahulu')
     return
   }
@@ -2328,54 +2340,6 @@ async function submitRegistration() {
   } finally {
     submitting.value = false
   }
-}
-
-/* ============================================================
-   PRINT THERMAL TIKET ANTREAN (80mm, sama style dgn AnjunganView)
-   ============================================================ */
-function printAdmisiTicket({ queueNo, patientName }) {
-  if (!queueNo || queueNo === '—') return
-  // Setelah admisi, pasien SELALU menuju Triase & Refraksionis (nomor TR-NNN).
-  // Info poliklinik/ruang/dokter baru dicetak di tiket Dokter (D-NNN) setelah TR selesai.
-  const stationDest = 'Triase &amp; Refraksionis'
-  const ticketHtml = `
-    <html><head><title>Antrean ${escHtml(queueNo)}</title>
-    <style>
-      @page { size: 80mm auto; margin: 0; }
-      * { margin:0; padding:0; box-sizing:border-box; font-family:'Helvetica Neue',Arial,sans-serif; color:#000; }
-      body { width:80mm; padding:4mm 0; }
-      .h { text-align:center; padding:2mm 4mm; font-size:13pt; font-weight:700; border-bottom:1px dashed #000; }
-      .sub { text-align:center; font-size:8pt; padding:2mm 4mm 1mm; color:#000; letter-spacing:0.05em; text-transform:uppercase; }
-      .num { text-align:center; font-size:56pt; font-weight:700; padding:2mm 0; line-height:1; }
-      .sep { border-top:1px dashed #000; margin:2mm 4mm; }
-      .b { text-align:center; padding:2mm 4mm; font-size:10pt; line-height:1.5; }
-      .b strong { font-size:11pt; }
-      .ft { text-align:center; padding:2mm 4mm 0; font-size:8pt; color:#000; }
-    </style></head><body>
-      <div class="h">RUMAH SAKIT MATA PRIMA VISION</div>
-      <div class="sub">Tiket Antrean</div>
-      <div class="num">${escHtml(queueNo)}</div>
-      <div class="sep"></div>
-      <div class="b">
-        ${patientName ? `<div style="margin-bottom:2mm">${escHtml(patientName)}</div>` : ''}
-        Menuju <strong>${stationDest}</strong>
-      </div>
-      <div class="ft">Simpan tiket ini sampai dipanggil</div>
-    </body></html>`
-  const w = window.open('', '_blank', 'width=320,height=480')
-  if (!w) {
-    toast('w', 'Popup diblokir browser — izinkan popup untuk cetak tiket')
-    return
-  }
-  w.document.write(ticketHtml)
-  w.document.close()
-  w.focus()
-  // Cetak sekali saja: onload (kalau fire) ATAU fallback timeout — jangan dua-duanya,
-  // kalau tidak printer thermal mencetak tiket dobel.
-  let printed = false
-  const doPrint = () => { if (printed) return; printed = true; try { w.print() } catch {} }
-  w.onload = doPrint
-  setTimeout(doPrint, 400)
 }
 
 function onBirthChange() { form.age = calcAge(form.birthDate) }
@@ -4429,8 +4393,8 @@ onUnmounted(() => {
                 <div v-if="!visitDetailRow.noSep && !diagAction.editing" class="vd-actions vd-diag-actions">
                   <button
                     class="btn btn-sm btn-secondary"
-                    :disabled="diagAction.loading || !visitDetailRow.noRujukan"
-                    :title="visitDetailRow.noRujukan ? 'Tarik diagnosa dari rujukan FKTP BPJS' : 'Kunjungan tanpa No. Rujukan — isi manual'"
+                    :disabled="diagAction.loading"
+                    :title="visitDetailRow.noRujukan ? 'Tarik diagnosa dari rujukan FKTP BPJS' : 'Tarik rujukan & diagnosa pasien dari BPJS via No. Kartu'"
                     @click="tarikDiagnosa"
                   >
                     {{ diagAction.loading ? 'Menarik…' : 'Tarik dari BPJS' }}
