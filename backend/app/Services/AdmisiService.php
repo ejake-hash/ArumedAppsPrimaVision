@@ -2152,15 +2152,18 @@ class AdmisiService
 
         $clinic = ClinicProfile::first();
 
-        // Logo BPJS Kesehatan (base64) — taruh file di backend/public/assets/bpjs-logo.png.
-        // Bila belum ada → blade tampilkan fallback teks bergaya BPJS.
+        // Logo BPJS Kesehatan (base64) — di-embed (baca server-side), jadi tak perlu
+        // URL publik. Disimpan di resources/images (ter-version-control; public/assets
+        // di-gitignore & ditimpa build FE). Bila tak ada → fallback teks di blade.
         $bpjsLogo = null;
-        $logoPath = public_path('assets/bpjs-logo.png');
-        if (is_file($logoPath)) {
-            try {
-                $bpjsLogo = 'data:image/png;base64,' . base64_encode((string) file_get_contents($logoPath));
-            } catch (\Throwable $e) {
-                $bpjsLogo = null;
+        foreach ([resource_path('images/bpjs-logo.png'), public_path('assets/BPJS_Logo.svg.png')] as $logoPath) {
+            if (is_file($logoPath)) {
+                try {
+                    $bpjsLogo = 'data:image/png;base64,' . base64_encode((string) file_get_contents($logoPath));
+                } catch (\Throwable $e) {
+                    $bpjsLogo = null;
+                }
+                break;
             }
         }
 
