@@ -93,8 +93,12 @@ class AdmisiService
     {
         $today = today();
 
-        // Stat cards kunjungan hari ini
-        $totalKunjungan = Visit::whereDate('visit_date', $today)->count();
+        // Stat cards kunjungan hari ini.
+        // Walk-in kiosk yang BELUM didaftarkan (placeholder patient 'Belum Terdaftar')
+        // tidak dihitung — hanya pasien yang sudah teregistrasi.
+        $totalKunjungan = Visit::whereDate('visit_date', $today)
+            ->whereHas('patient', fn ($q) => $q->where('name', '!=', 'Belum Terdaftar'))
+            ->count();
 
         $perKlasifikasi = Visit::whereDate('visit_date', $today)
             ->selectRaw('classification, COUNT(*) as total')
