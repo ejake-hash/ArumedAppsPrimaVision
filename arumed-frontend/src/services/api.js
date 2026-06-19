@@ -891,6 +891,7 @@ export const admisiApi = {
     updateSep:       (data) => api.put('/admisi/bpjs/update-sep', data),
     cancelSep:       (data) => api.post('/admisi/bpjs/cancel-sep', data),
     cetakSep:        (visitId) => api.get(`/admisi/bpjs/cetak-sep/${visitId}`, { responseType: 'blob' }),
+    cetakSepHtml:    (visitId) => api.get(`/admisi/bpjs/cetak-sep-html/${visitId}`, { responseType: 'text' }),
     cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
     cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
     preflightSep:    (data) => api.post('/admisi/bpjs/preflight-sep', data),

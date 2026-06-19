@@ -731,6 +731,27 @@ class AdmisiController extends Controller
         return $pdf->stream("SEP-{$safe}.pdf");
     }
 
+    /**
+     * Cetak SEP via HTML-print. Mengembalikan HTML lembar SEP (blade yang sama)
+     * agar BROWSER yang mencetak — Chrome menghormati @page size 13x21 cm sehingga
+     * dialog cetak otomatis memakai kertas 13x21 (PDF viewer mengabaikan ukuran
+     * media saat memilih kertas). Pasien bisa tetap "Save as PDF" 13x21 dari sini.
+     */
+    public function bpjsCetakSepHtml(string $visitId)
+    {
+        try {
+            $data = $this->service->buildSepPrintData($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        $data['auto_print'] = true;
+
+        return response(view('pdf.sep', $data)->render(), 200, [
+            'Content-Type' => 'text/html; charset=UTF-8',
+        ]);
+    }
+
     public function bpjsCekRujukan(Request $request): JsonResponse
     {
         $request->validate(['no_rujukan' => 'required|string|max:50']);

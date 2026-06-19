@@ -132,5 +132,15 @@
     </tr>
 </table>
 
+@if(!empty($auto_print))
+{{-- Mode HTML-print: browser yang mencetak → Chrome hormati @page size 13x21 cm,
+     dialog cetak otomatis memakai kertas 13x21 (PDF viewer mengabaikannya). --}}
+<script>
+  window.addEventListener('load', function () {
+    setTimeout(function () { window.print(); }, 200);
+  });
+</script>
+@endif
+
 </body>
 </html>

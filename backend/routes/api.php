@@ -255,6 +255,7 @@ Route::prefix('v1')->group(function () {
                 Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep']);
                 Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep']);
                 Route::get('/cetak-sep/{visitId}', [AdmisiController::class, 'bpjsCetakSep']);
+                Route::get('/cetak-sep-html/{visitId}', [AdmisiController::class, 'bpjsCetakSepHtml']);
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);

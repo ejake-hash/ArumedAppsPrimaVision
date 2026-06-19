@@ -1868,13 +1868,15 @@ async function cetakSep() {
   if (!row?.id || !row?.noSep) return
   sepAction.printing = true
   try {
-    const res = await admisiApi.bpjs.cetakSep(row.id)
-    const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
-    window.open(url, '_blank')
-    // Beri waktu tab baru memuat sebelum URL dilepas.
+    // HTML-print: browser yang mencetak → Chrome hormati @page size 13x21 cm,
+    // dialog cetak (& preview) otomatis kertas 13x21. Bisa juga "Save as PDF".
+    const res = await admisiApi.bpjs.cetakSepHtml(row.id)
+    const url = URL.createObjectURL(new Blob([res.data], { type: 'text/html' }))
+    const w = window.open(url, '_blank')
+    if (!w) toast('w', 'Izinkan pop-up untuk mencetak SEP')
+    // Beri waktu tab baru memuat + dialog cetak muncul sebelum URL dilepas.
     setTimeout(() => URL.revokeObjectURL(url), 60000)
   } catch (e) {
-    // Error JSON dikirim sebagai blob → interceptor api.js sudah mem-parse-nya.
     toast('e', e.response?.data?.message || 'Gagal cetak SEP')
   } finally {
     sepAction.printing = false
