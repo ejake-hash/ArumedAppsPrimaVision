@@ -1880,11 +1880,18 @@ class AdmisiService
         // KOSONG (noSurat DAN kodeDPJP) — mengisi skdp.kodeDPJP saat Normal membuat BPJS
         // menolak "tujuanKunj tidak sesuai". DPJP kunjungan normal dikirim via `dpjpLayan`,
         // bukan skdp.kodeDPJP. skdp hanya diisi saat ada surat kontrol (kunjungan kontrol).
+        // Aturan VClaim SEP 2.0: untuk tujuanKunj '0' (Normal) SEMUA field bersyarat
+        // WAJIB kosong — flagProcedure, kdPenunjang, assesmentPel, dpjpLayan, DAN skdp.
+        // DPJP kunjungan normal diturunkan BPJS dari poli+rujukan (jangan kirim dpjpLayan;
+        // mengisinya membuat BPJS menuntut assesmentPel → "assesmentPel tidak sesuai").
+        // Hanya kunjungan KONTROL (ada surat kontrol) yang mengisi skdp + dpjpLayan
+        // dengan tujuanKunj '2' (Konsul/Kontrol).
         $adaSuratKontrol = trim((string) $noSuratKontrol) !== '';
         $tujuanKunj      = $adaSuratKontrol ? '2' : '0';
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
+        $dpjpLayan       = $adaSuratKontrol ? ($kodeDpjp ?? '') : '';
 
         // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
         // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
@@ -1931,7 +1938,7 @@ class AdmisiService
             'kdPenunjang'  => '',
             'assesmentPel' => '',
             'skdp'         => $skdp,
-            'dpjpLayan'    => $kodeDpjp ?? '',
+            'dpjpLayan'    => $dpjpLayan,
             'noTelp'       => $visit->patient?->phone ?? '',
             'user'         => auth('api')->user()?->name ?? 'arumed',
         ];
