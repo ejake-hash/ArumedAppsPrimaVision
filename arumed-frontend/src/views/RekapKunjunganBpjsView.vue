@@ -140,6 +140,31 @@ const checklistRows = computed(() =>
   }))
 )
 
+// "Dokumen Rekam Medis" = kelengkapan otomatis dalam satu daftar: dokumen WAJIB
+// (dengan status TTD/ada) lebih dulu, lalu dokumen RM lain yang ada di luar wajib.
+const claimDocList = computed(() => {
+  const reqKeys = new Set((checklist.value.required ?? []).map((r) => r.key))
+  const required = checklistRows.value.map((req) => ({
+    key: 'req-' + req.key,
+    label: req.label,
+    required: true,
+    present: req.present,
+    signed: req.signed,
+    doc: req.doc,
+  }))
+  const extras = detailDocuments.value
+    .filter((d) => !reqKeys.has(d.template_code))
+    .map((d) => ({
+      key: 'doc-' + d.id,
+      label: d.type_label,
+      required: false,
+      present: true,
+      signed: d.signed,
+      doc: d,
+    }))
+  return [...required, ...extras]
+})
+
 async function openDetail(row) {
   detailRow.value = row
   detailOpen.value = true
@@ -482,7 +507,7 @@ onMounted(fetchRekap)
         {{ rekapSyncing ? 'Menyinkron…' : 'Sinkron SEP' }}
       </button>
       <button class="rk-btn rk-btn-kirim" :disabled="kirimMassalBusy" title="Kirim semua kunjungan siap (SEP + diagnosis) ke daftar klaim" @click="kirimKlaimMassal">
-        {{ kirimMassalBusy ? 'Mengirim…' : 'Kirim ke Klaim' }}
+        {{ kirimMassalBusy ? 'Mengirim…' : 'Kirim, Berkas Siap di Klaim' }}
       </button>
       <button class="rk-btn rk-btn-export" :disabled="rekapExporting" @click="exportRekap">
         {{ rekapExporting ? 'Mengekspor…' : 'Export Excel' }}
@@ -616,58 +641,42 @@ onMounted(fetchRekap)
               :title="!detailRow?.no_sep ? 'Belum ada SEP' : (detailRow?.klaim_sent_at ? 'Sudah terkirim — klik untuk kirim ulang data' : 'Kirim kunjungan ini ke daftar klaim (KlaimView)')"
               @click="kirimKlaim(detailRow)"
             >
-              {{ kirimBusy === detailRow?.visit_id ? 'Mengirim…' : (detailRow?.klaim_sent_at ? '✓ Terkirim — Kirim Ulang' : 'Kirim ke Klaim') }}
+              {{ kirimBusy === detailRow?.visit_id ? 'Mengirim…' : (detailRow?.klaim_sent_at ? '✓ Terkirim — Kirim Ulang' : 'Kirim, Berkas Siap di Klaim') }}
             </button>
           </div>
 
-          <!-- Kelengkapan klaim (otomatis) -->
-          <div class="rk-checklist" :class="checklist.ready ? 'ready' : 'notready'">
-            <div class="rk-cl-head">
-              <span class="rk-cl-title">
+          <!-- Dokumen Rekam Medis = kelengkapan otomatis (satu fungsi) -->
+          <div class="rk-docsec rk-checklist" :class="checklist.ready ? 'ready' : 'notready'">
+            <div class="rk-docsec-head">
+              <h4>
                 <span class="rk-cl-badge" :class="checklist.ready ? 'ok' : 'no'">
                   {{ checklist.ready ? '✓ Siap Klaim' : 'Belum Siap' }}
                 </span>
-                Kelengkapan otomatis
-              </span>
+                Dokumen Rekam Medis
+              </h4>
               <button class="rk-chip rk-chip-warn" :disabled="correctionBusy" @click="requestCorrection">
                 {{ correctionBusy ? '…' : 'Minta Koreksi' }}
               </button>
             </div>
-            <ul class="rk-cl-list">
-              <li v-for="req in checklistRows" :key="req.key" :class="req.signed ? 'done' : (req.present ? 'partial' : 'miss')">
-                <span class="rk-cl-mark">{{ req.signed ? '✓' : (req.present ? '◐' : '✗') }}</span>
-                {{ req.label }}
-                <small>{{ req.signed ? 'sudah TTD' : (req.present ? 'belum TTD' : 'belum ada') }}</small>
-                <button
-                  v-if="req.doc"
-                  class="rk-chip rk-cl-view"
-                  :disabled="printingDocId === req.doc.id"
-                  @click="openDocument(req.doc)"
-                >{{ printingDocId === req.doc.id ? '…' : 'Lihat' }}</button>
-              </li>
-            </ul>
-          </div>
-
-          <!-- Dokumen Rekam Medis (otomatis dari RM) -->
-          <div class="rk-docsec">
-            <div class="rk-docsec-head"><h4>Dokumen Rekam Medis</h4></div>
             <p v-if="detailLoading" class="rk-empty-sm">Memuat…</p>
-            <p v-else-if="!detailDocuments.length" class="rk-empty-sm">Belum ada dokumen RM.</p>
             <ul v-else class="rk-doc-list">
-              <li v-for="d in detailDocuments" :key="d.id">
+              <li v-for="d in claimDocList" :key="d.key" :class="d.signed ? 'done' : (d.present ? 'partial' : 'miss')">
                 <div class="rk-doc-info">
                   <span class="rk-doc-name">
-                    {{ d.type_label }}
-                    <span class="rk-dchip" :class="docChipCls(d)">{{ d.status_label }}</span>
-                    <span v-if="d.coding_synced === false" class="rk-dchip dc-warn">koding berubah</span>
+                    <span class="rk-cl-mark">{{ d.signed ? '✓' : (d.present ? '◐' : '✗') }}</span>
+                    {{ d.label }}
+                    <span v-if="d.required" class="rk-dchip dc-req">wajib</span>
+                    <span v-if="d.present" class="rk-dchip" :class="docChipCls(d.doc)">{{ d.doc.status_label }}</span>
+                    <span v-if="d.doc && d.doc.coding_synced === false" class="rk-dchip dc-warn">koding berubah</span>
                   </span>
-                  <small v-if="d.signed_at">TTD {{ fmtDateTime(d.signed_at) }}<span v-if="d.revision"> · revisi {{ d.revision }}</span></small>
+                  <small v-if="d.doc?.signed_at">TTD {{ fmtDateTime(d.doc.signed_at) }}<span v-if="d.doc.revision"> · revisi {{ d.doc.revision }}</span></small>
+                  <small v-else>{{ d.signed ? 'sudah TTD' : (d.present ? 'belum TTD' : 'belum ada') }}</small>
                 </div>
-                <div class="rk-doc-act">
-                  <button class="rk-chip" :disabled="printingDocId === d.id" @click="openDocument(d, false)">
-                    {{ printingDocId === d.id ? '…' : 'Preview' }}
+                <div v-if="d.present" class="rk-doc-act">
+                  <button class="rk-chip" :disabled="printingDocId === d.doc.id" @click="openDocument(d.doc, false)">
+                    {{ printingDocId === d.doc.id ? '…' : 'Preview' }}
                   </button>
-                  <button class="rk-chip" :disabled="printingDocId === d.id" title="Buka & cetak" @click="openDocument(d, true)">
+                  <button class="rk-chip" :disabled="printingDocId === d.doc.id" title="Buka & cetak" @click="openDocument(d.doc, true)">
                     Cetak
                   </button>
                 </div>
@@ -866,6 +875,11 @@ onMounted(fetchRekap)
 .rk-claimchip { display: inline-block; margin-top: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .rk-claimchip.ok { background: var(--sb); color: var(--st); }
 .rk-claimchip.no { background: var(--wb); color: var(--wt); }
+.rk-dchip.dc-req { background: #eff6ff; color: #1d4ed8; }
+.rk-cl-mark { font-weight: 800; margin-right: 4px; }
+.rk-doc-list li.miss .rk-cl-mark { color: #dc2626; }
+.rk-doc-list li.partial .rk-cl-mark { color: #b45309; }
+.rk-doc-list li.done .rk-cl-mark { color: #16a34a; }
 
 /* Kotak checklist kelengkapan klaim (panel detail) */
 .rk-checklist { border: 1px solid var(--gb); border-radius: 10px; padding: 12px; }
