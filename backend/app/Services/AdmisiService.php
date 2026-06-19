@@ -2044,6 +2044,17 @@ class AdmisiService
      * `sep_data` yang disimpan saat penerbitan; field tampil di-fallback ke data
      * lokal (pasien/jadwal) supaya SEP lama (snapshot null) tetap bisa dicetak.
      */
+    /**
+     * Data cetak SEP — meniru PERSIS luaran SEP resmi portal VClaim BPJS (bukan
+     * format sendiri). BPJS TIDAK mengekspos API "cetak SEP" (PDF jadi di-render
+     * portal web, tak ada endpoint); yang tersedia hanya GET /SEP/{noSep} (data
+     * JSON). Maka tampilan resmi kita bangun ulang dari data itu via blade pdf.sep.
+     *
+     * Sumber data: snapshot tersimpan (visit.sep_data) DILENGKAPI detail kanonik
+     * dari GET SEP (peserta, jnsPeserta, hakKelas, nmDPJP, diagnosa) — dipanggil
+     * sekali lalu di-cache balik ke sep_data, jadi cetak berikutnya tak menyentuh
+     * BPJS. Best-effort: BPJS offline → pakai snapshot apa adanya.
+     */
     public function buildSepPrintData(string $visitId): array
     {
         $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($visitId);
@@ -2052,72 +2063,153 @@ class AdmisiService
             throw new \Exception('Kunjungan ini belum punya SEP — terbitkan SEP dulu.', 422);
         }
 
-        $sep      = (array) ($visit->sep_data ?? []);
+        $sep = (array) ($visit->sep_data ?? []);
+
+        // Lengkapi sekali dgn detail kanonik BPJS bila snapshot belum punya blok
+        // `peserta` (SEP yg diterbitkan via insert hanya menyimpan response minim).
+        if (empty($sep['peserta']) || ! is_array($sep['peserta'])) {
+            try {
+                $detail = $this->vclaim->getSep($visit->no_sep, $visit->id);
+                $live   = $detail['response']['sep'] ?? null;
+                if (is_array($live) && $live) {
+                    $sep = array_merge($sep, $live);
+                    $visit->update(['sep_data' => $sep]);
+                }
+            } catch (\Throwable $e) {
+                // offline / error → lanjut dgn snapshot tersimpan
+            }
+        }
+
+        $peserta  = (array) ($sep['peserta'] ?? []);
         $patient  = $visit->patient;
         $schedule = $visit->doctorSchedule;
+        $jenis    = $visit->jenis_pelayanan ?? 'RAJAL';
 
-        $jenis = $visit->jenis_pelayanan ?? 'RAJAL';
-        $jenisLabel = ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat', 'RAJAL' => 'Rawat Jalan'][$jenis] ?? 'Rawat Jalan';
-
-        $kelasMap = ['1' => 'Kelas 1', '2' => 'Kelas 2', '3' => 'Kelas 3'];
-        $klsHak   = (string) ($sep['klsRawatHak'] ?? $visit->kelas_rawat_hak ?? '');
-
-        // Diagnosa awal: kode ICD-10 → nama (Indonesia bila ada).
-        $diagCode = trim((string) ($sep['diagAwal'] ?? ''));
-        $diagName = null;
-        if ($diagCode !== '') {
-            $row = \App\Models\Icd10Code::where('code', $diagCode)->first();
-            $diagName = $row?->indonesian_description ?: $row?->description;
-        }
-        $diagnosa = $diagCode !== ''
-            ? trim($diagCode . ($diagName ? ' - ' . $diagName : ''))
+        $fmtDate = static fn ($d) => $d
+            ? \Illuminate\Support\Carbon::parse($d)->format('Y-m-d')
             : '—';
 
-        // Poli tujuan: nama poli dari pemetaan BPJS (by poli_code); IGD walk-in
-        // tak punya jadwal → label IGD. Kode BPJS hanya cadangan terakhir.
-        $poliCode = $jenis === 'IGD' ? 'IGD' : $schedule?->poli_code;
-        $poliName = $jenis === 'IGD'
-            ? 'IGD'
-            : (BpjsPoliMapping::where('poli_code', $poliCode)->value('poli_name')
-                ?: ($sep['poliTujuan'] ?? '—'));
+        // Jns.Rawat (jnsPelayanan 1=Inap, 2=Jalan/IGD) & Jns.Kunjungan (tujuanKunj).
+        $jnsPelayanan  = (string) ($sep['jnsPelayanan'] ?? ($jenis === 'RANAP' ? '1' : '2'));
+        $jnsRawatLabel = $jnsPelayanan === '1'
+            ? 'Rawat Inap'
+            : ($jenis === 'IGD' ? 'Gawat Darurat' : 'Rawat Jalan');
+        $tujuanKunj   = (string) ($sep['tujuanKunj'] ?? '0');
+        $jnsKunjLabel = ['0' => 'Normal', '1' => 'Prosedur', '2' => 'Konsultasi'][$tujuanKunj] ?? 'Normal';
 
-        $tglSep = $sep['tglSep'] ?? $visit->visit_date?->toDateString();
+        // Kelas: peserta.hakKelas dari getSep sudah "Kelas X"; klsRawatHak numerik.
+        $kelasMap   = ['1' => 'Kelas 1', '2' => 'Kelas 2', '3' => 'Kelas 3'];
+        $klsHakRaw  = (string) ($peserta['hakKelas'] ?? $sep['klsRawatHak'] ?? $visit->kelas_rawat_hak ?? '');
+        $klsHak     = $kelasMap[$klsHakRaw] ?? ($klsHakRaw !== '' ? $klsHakRaw : '—');
+        $klsRwtRaw  = (string) ($sep['kelasRawat'] ?? $klsHakRaw);
+        $klsRawat   = $kelasMap[$klsRwtRaw] ?? ($klsRwtRaw !== '' ? $klsRwtRaw : '—');
+
+        // Diagnosa: getSep "diagnosa" sudah "KODE - Nama"; else bangun dari kode ICD-10.
+        $diagnosa = trim((string) ($sep['diagnosa'] ?? ''));
+        if ($diagnosa === '') {
+            $diagCode = trim((string) ($sep['diagAwal'] ?? $visit->diagnosa_awal ?? ''));
+            if ($diagCode !== '') {
+                $row = \App\Models\Icd10Code::where('code', $diagCode)->first();
+                $nm  = $row?->indonesian_description ?: $row?->description;
+                $diagnosa = trim($diagCode . ($nm ? ' - ' . $nm : ''));
+            }
+        }
+        if ($diagnosa === '') {
+            $diagnosa = '—';
+        }
+
+        // Sub/Spesialis (poli tujuan): getSep "poli" string; else pemetaan poli BPJS.
+        $poliName = (string) ($sep['poli'] ?? '');
+        if ($poliName === '') {
+            $poliCode = $jenis === 'IGD' ? 'IGD' : $schedule?->poli_code;
+            $poliName = $jenis === 'IGD'
+                ? 'IGD'
+                : (BpjsPoliMapping::where('poli_code', $poliCode)->value('poli_name') ?: (string) ($sep['poliTujuan'] ?? '—'));
+        }
+
+        // Faskes / Poli perujuk — dari blok rujukan getSep bila ada (nama, bukan kode).
+        $prov = (array) ($sep['provPerujuk'] ?? $sep['provperujuk'] ?? []);
+        $faskesPerujuk = trim((string) ($prov['nama'] ?? $sep['faskesPerujuk'] ?? '')) ?: '—';
+        $poliPerujuk   = trim((string) ($sep['poliPerujuk'] ?? $prov['poli'] ?? $poliName)) ?: '—';
+
+        // Kelamin → L/P (getSep peserta.kelamin / patient.gender).
+        $kelaminRaw = (string) ($peserta['kelamin'] ?? $patient?->gender ?? '');
+        $kelamin = ['L' => 'L', 'P' => 'P', 'Laki-laki' => 'L', 'Perempuan' => 'P'][$kelaminRaw] ?? ($kelaminRaw ?: '—');
+
+        // Penanda "*Pasien Operasi Katarak" (flag katarak / catatan).
+        $kat = $sep['katarak'] ?? null;
+        $isKatarak = is_array($kat)
+            ? (($kat['katarak'] ?? '0') === '1')
+            : (in_array((string) $kat, ['1', 'Pasien Operasi Katarak'], true)
+                || stripos((string) ($sep['catatan'] ?? ''), 'katarak') !== false);
+
+        // Informasi PRB.
+        $prb = $sep['informasiPRB'] ?? null;
+        $prbLabel = is_array($prb) ? (string) ($prb['nmprb'] ?? $prb['nama'] ?? '-') : (string) ($prb ?: '-');
+        if (trim($prbLabel) === '') {
+            $prbLabel = '-';
+        }
 
         $clinic = ClinicProfile::first();
-        $print  = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
 
-        $genderLabel = ['L' => 'Laki-laki', 'P' => 'Perempuan'][$patient?->gender] ?? ($patient?->gender ?? '—');
+        // Logo BPJS Kesehatan (base64) — taruh file di backend/public/assets/bpjs-logo.png.
+        // Bila belum ada → blade tampilkan fallback teks bergaya BPJS.
+        $bpjsLogo = null;
+        $logoPath = public_path('assets/bpjs-logo.png');
+        if (is_file($logoPath)) {
+            try {
+                $bpjsLogo = 'data:image/png;base64,' . base64_encode((string) file_get_contents($logoPath));
+            } catch (\Throwable $e) {
+                $bpjsLogo = null;
+            }
+        }
+
+        // QR berisi No.SEP — SVG inline (tanpa GD; aman di server produksi). Catatan:
+        // ini BUKAN QR bertanda-tangan portal BPJS (payload itu tak bisa direplikasi),
+        // hanya untuk pemindaian No.SEP internal.
+        $qr = null;
+        try {
+            $svg = \App\Services\FormRegistry\QrCodeHelper::svg($visit->no_sep, 90);
+            $qr  = 'data:image/svg+xml;base64,' . base64_encode($svg);
+        } catch (\Throwable $e) {
+            $qr = null;
+        }
+
+        $tglSep = $sep['tglSep'] ?? $visit->visit_date?->toDateString();
+        $noKartu = (string) ($peserta['noKartu'] ?? $sep['noKartu'] ?? $patient?->bpjs_number ?? '—');
+        $noMr    = (string) ($peserta['noMr'] ?? $patient?->no_rm ?? '—');
 
         return [
-            'clinic' => [
-                'name'            => $clinic?->clinic_name,
-                'letterhead_html' => $clinic ? $clinic->renderLetterheadHtml((bool) $print['show_logo']) : '',
-                'watermark_type'  => ($print['show_watermark'] && $clinic?->watermark_enabled) ? $clinic?->watermark_type : null,
-            ],
-            'sep' => [
-                'no_sep'        => $visit->no_sep,
-                'tgl_sep'       => $tglSep ? \Illuminate\Support\Carbon::parse($tglSep)->format('d-m-Y') : '—',
-                'jenis_rawat'   => $jenisLabel,
-                'kelas_rawat'   => $kelasMap[$klsHak] ?? ($klsHak !== '' ? $klsHak : '—'),
-                'diagnosa'      => $diagnosa,
-                'poli'          => $poliName,
-                'no_rujukan'    => $sep['noRujukan'] ?? $visit->no_rujukan ?: '—',
-                'catatan'       => $sep['catatan'] ?? '—',
-                'dpjp'          => $schedule?->employee?->name ?? '—',
-                'cob'           => 'Tidak',
-                'penjamin'      => 'BPJS Kesehatan',
-            ],
-            'patient' => [
-                'no_kartu'  => $sep['noKartu'] ?? $patient?->bpjs_number ?? '—',
-                'nama'      => $sep['namaPeserta'] ?? $patient?->name ?? '—',
-                'no_rm'     => $patient?->no_rm ?? '—',
-                'nik'       => $patient?->nik ?? '—',
-                'tgl_lahir' => $patient?->date_of_birth ? \Illuminate\Support\Carbon::parse($patient->date_of_birth)->format('d-m-Y') : '—',
-                'gender'    => $genderLabel,
-                'phone'     => $patient?->phone ?? '—',
-            ],
-            'printed_by' => auth('api')->user()?->name ?? '—',
-            'printed_at' => now('Asia/Jakarta')->format('d-m-Y H:i'),
+            'bpjs_logo'      => $bpjsLogo,
+            'qr'             => $qr,
+            'rs_name'        => mb_strtoupper((string) ($clinic?->clinic_name ?? 'RUMAH SAKIT'), 'UTF-8'),
+            // Kolom kiri
+            'no_sep'         => $visit->no_sep,
+            'tgl_sep'        => $fmtDate($tglSep),
+            'no_kartu'       => $noKartu,
+            'no_mr'          => $noMr,
+            'nama'           => (string) ($peserta['nama'] ?? $sep['namaPeserta'] ?? $patient?->name ?? '—'),
+            'tgl_lahir'      => $fmtDate($peserta['tglLahir'] ?? $patient?->date_of_birth),
+            'kelamin'        => $kelamin,
+            'no_telp'        => trim((string) ($patient?->phone ?? '')) ?: '—',
+            'sub_spesialis'  => $poliName ?: '—',
+            'dokter'         => trim((string) ($sep['nmDPJP'] ?? '')) ?: ($schedule?->employee?->name ?? '—'),
+            'faskes_perujuk' => $faskesPerujuk,
+            'diagnosa'       => $diagnosa,
+            'prb'            => $prbLabel,
+            'catatan'        => (string) ($sep['catatan'] ?? ''),
+            // Kolom kanan
+            'is_katarak'     => $isKatarak,
+            'peserta'        => trim((string) ($peserta['jnsPeserta'] ?? '')) ?: '—',
+            'jns_rawat'      => $jnsRawatLabel,
+            'jns_kunjungan'  => $jnsKunjLabel,
+            'poli_perujuk'   => $poliPerujuk,
+            'kls_hak'        => $klsHak,
+            'kls_rawat'      => $klsRawat,
+            'penjamin'       => trim((string) ($sep['penjamin'] ?? '')) ?: '-',
+            // Footer
+            'printed_at'     => now('Asia/Jakarta')->format('d-m-Y H:i'),
+            'printed_by'     => auth('api')->user()?->name ?? '—',
         ];
     }
 
@@ -2688,6 +2780,17 @@ class AdmisiService
         $kodePoli = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
         $kodeDpjp = $schedule?->employee?->bpjs_dpjp_code;
 
+        // Samakan aturan field BPJS dgn generateSepLocked (terverifikasi log VClaim):
+        // - noTelp WAJIB angka, max 14 digit (data pasien sering "0813.../0859...").
+        // - diagAwal tak boleh kosong → fallback ke yang tersimpan di visit / snapshot SEP.
+        // - dpjpLayan kosong utk kunjungan normal (DPJP diturunkan BPJS); diisi hanya
+        //   bila kontrol (ada surat kontrol).
+        $adaSuratKontrol = trim((string) ($visit->no_surat_kontrol ?? '')) !== '';
+        $noTelpRaw = (string) ($data['no_telp'] ?? $visit->patient?->phone ?? '');
+        $noTelp    = substr(preg_replace('/\D+/', '', preg_split('/[\/,;]/', $noTelpRaw)[0] ?? ''), 0, 14);
+        $sepDiag   = is_array($visit->sep_data) ? ($visit->sep_data['diagAwal'] ?? '') : '';
+        $diagAwal  = trim((string) ($data['diag_awal'] ?? $visit->diagnosa_awal ?? $sepDiag));
+
         $tSep = [
             'noSep'     => $visit->no_sep,
             'klsRawat'  => [
@@ -2698,13 +2801,13 @@ class AdmisiService
             ],
             'noMR'      => $visit->patient?->no_rm ?? '',
             'catatan'   => $data['catatan'] ?? '',
-            'diagAwal'  => $data['diag_awal'] ?? '',
+            'diagAwal'  => $diagAwal,
             'poli'      => ['tujuan' => $kodePoli, 'eksekutif' => '0'],
             'cob'       => ['cob' => '0'],
             'katarak'   => ['katarak' => (string) ($data['katarak'] ?? '0')],
             'jaminan'   => ['lakaLantas' => '0', 'penjamin' => ['tglKejadian' => '', 'keterangan' => '', 'suplesi' => ['suplesi' => '0', 'noSepSuplesi' => '', 'lokasiLaka' => ['kdPropinsi' => '', 'kdKabupaten' => '', 'kdKecamatan' => '']]]],
-            'dpjpLayan' => $kodeDpjp ?? '',
-            'noTelp'    => $data['no_telp'] ?? ($visit->patient?->phone ?? ''),
+            'dpjpLayan' => $adaSuratKontrol ? ($kodeDpjp ?? '') : '',
+            'noTelp'    => $noTelp,
             'user'      => auth('api')->user()?->name ?? 'arumed',
         ];
 

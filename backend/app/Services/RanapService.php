@@ -1314,6 +1314,16 @@ class RanapService
             return $spri; // tetap DRAFT — user terbitkan ulang dari History
         }
 
+        // Poli belum dipetakan → jangan kirim null ke BPJS (error mentah). Tandai gagal
+        // dgn pesan jelas; biarkan DRAFT bila non-blocking agar bisa diulang.
+        if (! $kodePoli) {
+            $spri->update(['status' => BpjsSpri::STATUS_FAILED]);
+            if ($blocking) {
+                throw new \Exception('Poli rawat inap belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.', 422);
+            }
+            return $spri->fresh();
+        }
+
         try {
             $payload = [
                 'noKartu'     => $visit->patient?->bpjs_number ?? '',

@@ -276,6 +276,12 @@ class IntegrasiService
         $kodeDokter = $schedule?->employee?->bpjs_dpjp_code;
         $kodePoli   = BpjsPoliMapping::bpjsCodeFor($schedule?->poli_code);
 
+        // Guard sama dgn DokterService::submitSuratKontrol — cegah kirim poli null ke BPJS
+        // (→ error mentah membingungkan). Beri 422 jelas agar petugas memetakan poli dulu.
+        if (! $kodePoli) {
+            throw new \Exception("Poli '{$schedule?->poli_code}' belum dipetakan ke kode BPJS. Atur di Jadwal Dokter → Pemetaan BPJS.", 422);
+        }
+
         $result = $this->vclaim->postSuratKontrol([
             'noSEP'             => $letter->visit->no_sep,
             'kodeDokter'        => $kodeDokter,
