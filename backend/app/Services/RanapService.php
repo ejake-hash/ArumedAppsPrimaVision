@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Bed;
 use App\Models\BedAssignment;
+use App\Models\BpjsControlLetter;
 use App\Models\BpjsPoliMapping;
 use App\Models\BpjsSpri;
 use App\Models\ClinicProfile;
@@ -178,9 +179,10 @@ class RanapService
         string $bedId,
         string $kelasHak,
         ?string $dpjpId = null,
-        ?string $admissionAt = null
+        ?string $admissionAt = null,
+        ?string $spriTglRencana = null
     ): Visit {
-        return DB::transaction(function () use ($visit, $bedId, $kelasHak, $dpjpId, $admissionAt) {
+        $fresh = DB::transaction(function () use ($visit, $bedId, $kelasHak, $dpjpId, $admissionAt) {
             $bed = Bed::with('room')->lockForUpdate()->findOrFail($bedId);
 
             if ($bed->status !== Bed::STATUS_AVAILABLE) {
@@ -225,6 +227,21 @@ class RanapService
 
             return $visit->fresh(['room', 'bed', 'activeBedAssignment']);
         });
+
+        // SPRI (Surat Perintah Rawat Inap) — regulasi BPJS: perintah rawat inap
+        // diterbitkan di DEPAN (saat keputusan/admit), bukan saat pulang. Non-blocking;
+        // createSpri men-guard SEP & idempotensi. Gagal → row SPRI FAILED/DRAFT,
+        // bisa diulang dari tab Riwayat. SEP ranap tetap berbasis rujukan FKTP yang
+        // sudah diterima BPJS — wiring no_spri sebagai dasar SEP menunggu verifikasi log.
+        if ($spriTglRencana && ($fresh->guarantor_type ?? null) === 'BPJS') {
+            try {
+                $this->createSpri($fresh, $spriTglRencana, blocking: false);
+            } catch (\Throwable $e) {
+                Log::warning('SPRI saat admit gagal: ' . $e->getMessage());
+            }
+        }
+
+        return $fresh;
     }
 
     /**
@@ -964,7 +981,6 @@ class RanapService
         ?string $summary = null,
         ?string $followUpDate = null,
         ?string $followUpReason = null,
-        ?string $spriTglRencana = null,
         array $obatPulang = []
     ): array {
         // 1. Tandai discharge (di luar advance — supaya gate RANAP→KASIR lolos).
@@ -1013,13 +1029,17 @@ class RanapService
         // 3. Lapor tgl pulang ke BPJS (non-blocking) — hanya jika BPJS + ada SEP.
         $this->maybeUpdateTglPulangBpjs($visit->fresh());
 
-        // 4. Terbitkan SPRI ke VClaim (non-blocking) bila diminta saat pulang.
-        //    Gagal → row SPRI tersimpan FAILED/DRAFT, user re-issue dari History.
-        if ($spriTglRencana) {
+        // 4. Terbitkan Surat Kontrol (SKDP) ke VClaim (non-blocking) bila ada rencana
+        //    kontrol pasca-pulang & pasien BPJS. Regulasi BPJS: kontrol ulang pasca
+        //    rawat inap memakai Surat Kontrol (SKDP), BUKAN SPRI — SKDP jadi dasar SEP
+        //    kontrol (rawat jalan) saat pasien kembali. SPRI (perintah rawat inap)
+        //    diterbitkan di DEPAN, saat admit (lihat RanapService::admit).
+        //    Gagal → BpjsControlLetter tersimpan FAILED, bisa diulang dari Bridging.
+        if ($followUpDate) {
             try {
-                $this->createSpri($visit->fresh(), $spriTglRencana, blocking: false);
+                $this->issueControlLetterOnDischarge($visit->fresh(), $followUpDate);
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('SPRI saat discharge gagal: ' . $e->getMessage());
+                Log::warning('SKDP saat discharge gagal: ' . $e->getMessage());
             }
         }
 
@@ -1442,6 +1462,83 @@ class RanapService
             'status'      => $s->status,
             'poli'        => $s->poli_kontrol,
         ];
+    }
+
+    /**
+     * Terbitkan Surat Kontrol (SKDP) untuk pasien RANAP saat pulang.
+     *
+     * Regulasi BPJS: kontrol ulang pasca rawat inap memakai Surat Kontrol (SKDP),
+     * BUKAN SPRI. SKDP menjadi dasar SEP kontrol (rawat jalan) saat pasien kembali.
+     * Pola identik DokterService::submitSuratKontrol (POST /RencanaKontrol/v2/Insert),
+     * tetapi mapping DPJP/poli via resolveRanapDpjpPoli (RANAP tak punya doctor_schedule).
+     *
+     * Non-blocking: dipanggil dari discharge. Gagal → BpjsControlLetter FAILED/DRAFT,
+     * bisa diulang dari Bridging. Idempoten: surat kontrol SUCCESS → tak dibuat dobel.
+     */
+    public function issueControlLetterOnDischarge(Visit $visit, string $tglKontrol): ?BpjsControlLetter
+    {
+        // Hanya pasien BPJS yang sudah punya SEP (prasyarat /RencanaKontrol/v2/Insert).
+        if (($visit->guarantor_type ?? null) !== 'BPJS' || empty($visit->no_sep)) {
+            return null;
+        }
+
+        // Idempoten: sudah ada surat kontrol terbit → kembalikan, jangan dobel.
+        $existing = BpjsControlLetter::where('visit_id', $visit->id)
+            ->where('status', 'SUCCESS')
+            ->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        // Ambil/siapkan DRAFT (dedup non-terbit, samakan dgn handlePlanningFollowUp).
+        $letter = BpjsControlLetter::where('visit_id', $visit->id)
+            ->whereNotIn('status', ['SUBMITTED', 'SUCCESS'])
+            ->first();
+        if ($letter) {
+            $letter->update(['tanggal_rencana_kontrol' => $tglKontrol]);
+        } else {
+            $letter = BpjsControlLetter::create([
+                'visit_id'                => $visit->id,
+                'tanggal_rencana_kontrol' => $tglKontrol,
+                'status'                  => 'DRAFT',
+                'is_notified_expired'     => false,
+            ]);
+        }
+
+        $vclaim = app(\App\Services\BpjsVClaimService::class);
+        if (! $vclaim->isEnabled()) {
+            return $letter; // tetap DRAFT — bisa diterbitkan dari Bridging
+        }
+
+        try {
+            ['kodeDokter' => $kodeDpjp, 'poliKontrol' => $kodePoli] = $this->resolveRanapDpjpPoli($visit);
+
+            $result = $vclaim->postSuratKontrol([
+                'noSEP'             => $visit->no_sep,
+                'kodeDokter'        => $kodeDpjp,
+                'poliKontrol'       => $kodePoli,
+                'tglRencanaKontrol' => $tglKontrol,
+                'user'              => auth('api')->user()?->name ?? 'arumed',
+            ], $visit->id);
+
+            $code           = (string) ($result['metaData']['code'] ?? '');
+            $noSuratKontrol = $result['response']['noSuratKontrol'] ?? null;
+
+            if ($code === '200' && $noSuratKontrol) {
+                $letter->update([
+                    'status'           => 'SUCCESS',
+                    'no_surat_kontrol' => $noSuratKontrol,
+                    'vclaim_response'  => $result,
+                ]);
+            } else {
+                $letter->update(['status' => 'FAILED', 'vclaim_response' => $result]);
+            }
+        } catch (\Throwable $e) {
+            $letter->update(['status' => 'FAILED']);
+            Log::warning('issueControlLetterOnDischarge gagal: ' . $e->getMessage());
+        }
+
+        return $letter->fresh();
     }
 
     /** Guard: pasien harus BPJS + punya SEP (dan opsional VClaim aktif). */

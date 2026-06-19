@@ -43,17 +43,19 @@ class RanapController extends Controller
     public function admit(string $visitId, Request $request): JsonResponse
     {
         $data = $request->validate([
-            'bed_id'       => 'required|uuid',
-            'kelas_hak'    => 'required|string|max:5',
-            'dpjp_id'      => 'nullable|uuid',
-            'admission_at' => 'nullable|date',
+            'bed_id'           => 'required|uuid',
+            'kelas_hak'        => 'required|string|max:5',
+            'dpjp_id'          => 'nullable|uuid',
+            'admission_at'     => 'nullable|date',
+            'spri_tgl_rencana' => 'nullable|date',
         ]);
 
         try {
             $visit = Visit::findOrFail($visitId);
             $result = $this->service->admit(
                 $visit, $data['bed_id'], $data['kelas_hak'],
-                $data['dpjp_id'] ?? null, $data['admission_at'] ?? null
+                $data['dpjp_id'] ?? null, $data['admission_at'] ?? null,
+                $data['spri_tgl_rencana'] ?? null
             );
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
@@ -505,7 +507,6 @@ class RanapController extends Controller
             'summary'                     => 'nullable|string',
             'follow_up_date'              => 'nullable|date',
             'follow_up_reason'            => 'nullable|string',
-            'spri_tgl_rencana'            => 'nullable|date',
             // Obat pulang (opsional) → tagih (inpatient_charges) + resep ke Farmasi.
             'obat_pulang'                 => 'nullable|array',
             'obat_pulang.*.medication_id' => 'required|uuid',
@@ -526,7 +527,6 @@ class RanapController extends Controller
                 $data['summary'] ?? null,
                 $data['follow_up_date'] ?? null,
                 $data['follow_up_reason'] ?? null,
-                $data['spri_tgl_rencana'] ?? null,
                 $data['obat_pulang'] ?? [],
             );
         } catch (\Exception $e) {

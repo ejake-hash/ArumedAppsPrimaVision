@@ -90,11 +90,11 @@ const filteredBoard = computed(() => {
 // ── ADMIT ───────────────────────────────────────────────────────────────────
 const showAdmit = ref(false)
 const admitVisit = ref(null)
-const admitForm = ref({ bed_id: '', kelas_hak: '', admission_at: '' })
+const admitForm = ref({ bed_id: '', kelas_hak: '', admission_at: '', spri_tgl_rencana: '' })
 
 function openAdmit(p) {
   admitVisit.value = p
-  admitForm.value = { bed_id: '', kelas_hak: '', admission_at: '' }
+  admitForm.value = { bed_id: '', kelas_hak: '', admission_at: '', spri_tgl_rencana: '' }
   showAdmit.value = true
 }
 async function submitAdmit() {
@@ -107,8 +107,11 @@ async function submitAdmit() {
   try {
     const payload = { bed_id: admitForm.value.bed_id, kelas_hak: admitForm.value.kelas_hak }
     if (admitForm.value.admission_at) payload.admission_at = admitForm.value.admission_at
+    if (admitForm.value.spri_tgl_rencana) payload.spri_tgl_rencana = admitForm.value.spri_tgl_rencana
     await store.admit(admitVisit.value.visit_id, payload)
-    notify('Pasien dirawat inap'); showAdmit.value = false
+    let msg = 'Pasien dirawat inap'
+    if (admitVisit.value?.guarantor_type === 'BPJS' && admitForm.value.spri_tgl_rencana) msg += ' (SPRI diproses)'
+    notify(msg); showAdmit.value = false
   } catch { notify(store.error || 'Gagal admit', false) } finally { busy.value = false }
 }
 
@@ -134,7 +137,7 @@ async function submitTransfer() {
 // ── DISCHARGE (modal) ─────────────────────────────────────────────────────────
 const showDischarge = ref(false)
 const dischargePt = ref(null)
-const dischargeForm = ref({ discharge_type: 'PULANG_SEHAT', summary: '', follow_up_date: '', follow_up_reason: '', spri_tgl_rencana: '' })
+const dischargeForm = ref({ discharge_type: 'PULANG_SEHAT', summary: '', follow_up_date: '', follow_up_reason: '' })
 
 // Obat pulang (opsional): ditagih via inpatient_charges + diteruskan ke Farmasi.
 const obatPulangList = ref([])           // [{ medication_id, name, quantity, dose, frequency, route, duration_days }]
@@ -149,7 +152,7 @@ const dischargeChecklist = computed(() => {
     { label: 'Rencana kontrol dijadwalkan', ok: !!f.follow_up_date },
   ]
   if (dischargePt.value?.guarantor_type === 'BPJS') {
-    items.push({ label: 'Tgl rencana SPRI (BPJS) diisi', ok: !!f.spri_tgl_rencana })
+    items.push({ label: 'Surat Kontrol (SKDP) BPJS terbit dari tgl kontrol', ok: !!f.follow_up_date })
   }
   return items
 })
@@ -157,7 +160,7 @@ const dischargeReady = computed(() => dischargeChecklist.value.every((i) => i.ok
 
 async function openDischarge(p) {
   dischargePt.value = p
-  dischargeForm.value = { discharge_type: 'PULANG_SEHAT', summary: '', follow_up_date: '', follow_up_reason: '', spri_tgl_rencana: '' }
+  dischargeForm.value = { discharge_type: 'PULANG_SEHAT', summary: '', follow_up_date: '', follow_up_reason: '' }
   obatPulangList.value = []
   obatPulangSearch.value = ''
   obatPulangOptions.value = []
@@ -213,7 +216,7 @@ async function submitDischarge() {
     await store.discharge(dischargedVisitId, payload)
     let msg = 'Pasien dipulangkan → kasir'
     if (obatPulangList.value.length) msg += ' (obat pulang → farmasi)'
-    if (dischargeForm.value.spri_tgl_rencana) msg += ' (SPRI diproses)'
+    if (dischargePt.value?.guarantor_type === 'BPJS' && dischargeForm.value.follow_up_date) msg += ' (Surat Kontrol → BPJS)'
     notify(msg); showDischarge.value = false
     // Auto-buka Resume Medis Rawat Inap (RM 3.5) agar DPJP melengkapi & TTD saat pulang.
     openResumeRanap(dischargedVisitId)
@@ -948,6 +951,11 @@ const statusPill = (s) => ({
         </label>
         <label>Kelas hak (penjamin)<input v-model="admitForm.kelas_hak" placeholder="mis. 2 / 1 / VIP" /></label>
         <label>Tgl masuk (opsional)<input v-model="admitForm.admission_at" type="datetime-local" /></label>
+        <fieldset v-if="admitVisit?.guarantor_type === 'BPJS'" class="discharge-section spri-section">
+          <legend>SPRI (BPJS)</legend>
+          <p class="muted2"><b>Surat Perintah Rawat Inap</b> diterbitkan ke VClaim saat admit (non-blocking; perlu SEP, bila gagal bisa diulang dari tab Riwayat). Kosongkan bila tidak perlu.</p>
+          <label>Tgl rencana SPRI<input v-model="admitForm.spri_tgl_rencana" type="date" /></label>
+        </fieldset>
         <div class="modal-actions">
           <button @click="showAdmit = false">Batal</button>
           <button class="btn-primary" :disabled="busy" @click="submitAdmit">{{ busy ? '…' : 'Admit' }}</button>
@@ -1006,18 +1014,12 @@ const statusPill = (s) => ({
         </label>
         <label>Resume pulang (opsional)<textarea v-model="dischargeForm.summary" rows="3"></textarea></label>
 
-        <!-- Rencana kontrol (SEMUA penjamin) -->
+        <!-- Rencana kontrol (SEMUA penjamin). Untuk BPJS → terbitkan Surat Kontrol (SKDP). -->
         <fieldset class="discharge-section">
           <legend>Rencana Kontrol</legend>
+          <p v-if="dischargePt?.guarantor_type === 'BPJS'" class="muted2">Untuk pasien BPJS, tanggal kontrol ini menerbitkan <b>Surat Kontrol (SKDP)</b> ke VClaim (non-blocking; bila gagal bisa diulang dari Bridging) — agar pasien bisa memperoleh SEP kontrol saat kembali.</p>
           <label>Tgl kontrol<input v-model="dischargeForm.follow_up_date" type="date" /></label>
           <label>Catatan kontrol<input v-model="dischargeForm.follow_up_reason" placeholder="mis. kontrol jahitan / evaluasi pasca-op" /></label>
-        </fieldset>
-
-        <!-- SPRI (BPJS saja) -->
-        <fieldset v-if="dischargePt?.guarantor_type === 'BPJS'" class="discharge-section spri-section">
-          <legend>SPRI (BPJS)</legend>
-          <p class="muted2">Surat Perintah Rawat Inap akan diterbitkan ke VClaim (non-blocking; bila gagal bisa diulang dari tab Riwayat).</p>
-          <label>Tgl rencana SPRI<input v-model="dischargeForm.spri_tgl_rencana" type="date" /></label>
         </fieldset>
 
         <!-- Obat pulang (opsional) → tagih + teruskan ke Farmasi -->
@@ -1468,7 +1470,7 @@ const statusPill = (s) => ({
         <h3>{{ spriModal.mode === 'edit' ? 'Ubah Tanggal SPRI' : 'Terbitkan SPRI' }}</h3>
         <p class="muted2">{{ spriModal.row?.name }} · RM {{ spriModal.row?.no_rm }}</p>
         <label>Tanggal rencana<input v-model="spriModal.tgl" type="date" /></label>
-        <p class="hint">SPRI (Surat Perintah Rawat Inap) dikirim ke VClaim BPJS.</p>
+        <p class="hint">SPRI (Surat Perintah Rawat Inap) dikirim ke VClaim BPJS — untuk <b>rencana rawat inap</b>. Untuk kontrol rawat jalan pasca-pulang gunakan Surat Kontrol (SKDP) dari rencana kontrol saat discharge.</p>
         <div class="modal-actions">
           <button @click="showSpriModal = false">Batal</button>
           <button class="btn-primary" :disabled="busy" @click="confirmSpriModal">{{ busy ? '…' : (spriModal.mode === 'edit' ? 'Simpan' : 'Terbitkan') }}</button>
