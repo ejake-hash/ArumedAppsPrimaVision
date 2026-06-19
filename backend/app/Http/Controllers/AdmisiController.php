@@ -742,6 +742,32 @@ class AdmisiController extends Controller
         return $this->ok($data, 'Data rujukan BPJS');
     }
 
+    /**
+     * Pre-flight SEP — cek kesiapan data BPJS sebelum pasien didaftarkan (dipakai
+     * di langkah Konfirmasi wizard). Mengembalikan laporan (ready/issues/warnings)
+     * agar petugas membetulkan poli/rujukan/diagnosa dulu, bukan dibanjiri notif
+     * SEP gagal pasca-daftar.
+     */
+    public function bpjsPreflightSep(Request $request): JsonResponse
+    {
+        $request->validate([
+            'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
+            'sep_type'           => 'nullable|in:rujukan,kontrol,jkn',
+            'no_rujukan'         => 'nullable|string|max:50',
+            'no_surat_kontrol'   => 'nullable|string|max:50',
+            'bpjs_number'        => 'nullable|string|max:30',
+            'nik'                => 'nullable|string|size:16',
+        ]);
+
+        try {
+            $data = $this->service->bpjsPreflightSep($request->all());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Hasil pemeriksaan kesiapan SEP');
+    }
+
     public function bpjsCekSuratKontrol(Request $request): JsonResponse
     {
         $request->validate(['no_surat_kontrol' => 'required|string|max:50']);
@@ -753,6 +779,41 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($data, 'Data surat kontrol BPJS');
+    }
+
+    /**
+     * POST /admisi/bpjs/tarik-diagnosa/{visitId} — tarik diagnosa awal dari rujukan
+     * FKTP pasien lalu simpan ke visit (untuk SEP). Tombol "Tarik dari BPJS" di Detail.
+     */
+    public function bpjsTarikDiagnosa(string $visitId): JsonResponse
+    {
+        try {
+            $data = $this->service->tarikDiagnosaVisit($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Diagnosa awal tertarik dari rujukan');
+    }
+
+    /**
+     * PUT /admisi/bpjs/diagnosa/{visitId} — set diagnosa awal manual (override/isi
+     * tanpa rujukan) supaya SEP bisa terbit. Kode kosong = bersihkan.
+     */
+    public function bpjsSetDiagnosa(Request $request, string $visitId): JsonResponse
+    {
+        $request->validate([
+            'diag_awal' => 'nullable|string|max:16',
+            'diag_nama' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $data = $this->service->setDiagnosaAwal($visitId, $request->all());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data, 'Diagnosa awal disimpan');
     }
 
     /**

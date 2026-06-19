@@ -258,6 +258,11 @@ Route::prefix('v1')->group(function () {
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
+                // Pre-flight kesiapan SEP sebelum pasien didaftarkan (wizard Konfirmasi).
+                Route::post('/preflight-sep',      [AdmisiController::class, 'bpjsPreflightSep']);
+                // Diagnosa awal SEP: tarik dari rujukan FKTP / set manual (override).
+                Route::post('/tarik-diagnosa/{visitId}', [AdmisiController::class, 'bpjsTarikDiagnosa'])->middleware('permission:admisi.write');
+                Route::put('/diagnosa/{visitId}',        [AdmisiController::class, 'bpjsSetDiagnosa'])->middleware('permission:admisi.write');
                 // Tarik rujukan & surat kontrol by No. Kartu/NIK (pasien kontrol tanpa nomor).
                 Route::post('/rujukan-by-kartu',       [AdmisiController::class, 'bpjsRujukanByKartu']);
                 Route::post('/surat-kontrol-by-kartu', [AdmisiController::class, 'bpjsSuratKontrolByKartu']);

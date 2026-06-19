@@ -891,11 +891,14 @@ export const admisiApi = {
     cetakSep:        (visitId) => api.get(`/admisi/bpjs/cetak-sep/${visitId}`, { responseType: 'blob' }),
     cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
     cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
+    preflightSep:    (data) => api.post('/admisi/bpjs/preflight-sep', data),
     rujukanByKartu:      (data) => api.post('/admisi/bpjs/rujukan-by-kartu', data),
     suratKontrolByKartu: (data) => api.post('/admisi/bpjs/surat-kontrol-by-kartu', data),
     getSuratKontrol: (visitId) => api.get(`/admisi/bpjs/surat-kontrol/${visitId}`),
     editSuratKontrol:(data) => api.put('/admisi/bpjs/edit-surat-kontrol', data),
     validasiBooking: (data) => api.post('/admisi/bpjs/validasi-booking', data),
+    tarikDiagnosa:   (visitId) => api.post(`/admisi/bpjs/tarik-diagnosa/${visitId}`),
+    setDiagnosa:     (visitId, data) => api.put(`/admisi/bpjs/diagnosa/${visitId}`, data),
   },
 }
 

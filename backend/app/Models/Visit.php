@@ -60,6 +60,8 @@ class Visit extends Model
         'bpjs_booking_code',
         'no_rujukan',
         'no_surat_kontrol',
+        'diagnosa_awal',
+        'diagnosa_awal_nama',
         'bpjs_antrean_number',
         'bpjs_referral_in_id',
         'bpjs_control_letter_id',

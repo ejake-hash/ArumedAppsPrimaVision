@@ -1875,6 +1875,25 @@ class AdmisiService
         $noRujukan      = $data['no_rujukan']       ?? $visit->no_rujukan       ?? '';
         $noSuratKontrol = $data['no_surat_kontrol'] ?? $visit->no_surat_kontrol ?? '';
 
+        // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
+        // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
+        // visit (hasil "Tarik dari BPJS"/input petugas) → auto-tarik dari rujukan FKTP
+        // (rujukan.diagnosa.kode). Tombol "Terbitkan SEP" cuma kirim visit_id, jadi
+        // tanpa fallback ini diagAwal selalu kosong → SEP gagal. Untuk IGD (asalRujukan
+        // '2', tanpa rujukan FKTP) diagnosa wajib diisi manual lewat alur IGD.
+        $diagAwal = trim((string) ($data['diag_awal'] ?? $visit->diagnosa_awal ?? ''));
+        if ($diagAwal === '' && $noRujukan !== '' && ! $isIgd) {
+            $resolved = $this->resolveDiagnosaFromRujukan($noRujukan, $visit->id);
+            if ($resolved['kode'] !== '') {
+                $diagAwal = $resolved['kode'];
+                // Persist supaya tampil di Detail Kunjungan & tak perlu tarik ulang.
+                $visit->forceFill([
+                    'diagnosa_awal'      => $resolved['kode'],
+                    'diagnosa_awal_nama' => $resolved['nama'] ?: $visit->diagnosa_awal_nama,
+                ])->save();
+            }
+        }
+
         $tSep = [
             'noKartu'      => $data['bpjs_number'],
             'tglSep'       => $isRanap && $visit->admission_at
@@ -1891,7 +1910,7 @@ class AdmisiService
                 'ppkRujukan'  => $data['ppk_rujukan'] ?? '',
             ],
             'catatan'      => 'SEP dari Arumed',
-            'diagAwal'     => $data['diag_awal'] ?? '',
+            'diagAwal'     => $diagAwal,
             'poli'         => ['tujuan' => $kodePoli, 'eksekutif' => '0'],
             'cob'          => ['cob' => '0'],
             'katarak'      => ['katarak' => $data['katarak'] ?? '0'],
@@ -2047,6 +2066,218 @@ class AdmisiService
         $this->assertBpjsEnabled('VCLAIM');
 
         return $this->vclaim->getSuratKontrol($data['no_surat_kontrol']);
+    }
+
+    /**
+     * Pre-flight SEP: cek kesiapan data BPJS SEBELUM pasien didaftarkan, supaya
+     * petugas memperbaiki masalah di wizard alih-alih dibanjiri notif "asesmen
+     * tidak sesuai"/"Diagnosa Awal Tidak Boleh Kosong" saat auto-SEP berjalan.
+     *
+     * Tidak melempar (selain BPJS dimatikan) — selalu mengembalikan laporan
+     * terstruktur; registrasi tetap boleh lanjut walau belum 100% hijau (BPJS
+     * down ≠ blokir pendaftaran). Memeriksa: kepesertaan aktif, validitas rujukan,
+     * pemetaan poli ke kode BPJS, kecocokan poli rujukan ↔ poli dokter, & diagnosa.
+     *
+     * @param  array  $data  doctor_schedule_id, sep_type(rujukan|kontrol|jkn),
+     *                       no_rujukan, no_surat_kontrol, bpjs_number, nik
+     */
+    public function bpjsPreflightSep(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $issues   = [];   // penghambat: SEP hampir pasti gagal bila tak dibetulkan
+        $warnings = [];   // perlu perhatian, tapi tak selalu menggagalkan SEP
+
+        // ── Poli dokter tujuan → kode BPJS ──────────────────────────────────
+        $schedule = DoctorSchedule::find($data['doctor_schedule_id'] ?? null);
+        $poliNama = $schedule?->poliklinik ?: ($schedule?->poli_code ?? '—');
+        $poliKodeBpjs = $schedule ? BpjsPoliMapping::bpjsCodeFor($schedule->poli_code) : null;
+        $poliMapped   = ! empty($poliKodeBpjs);
+        if ($schedule && ! $poliMapped) {
+            $issues[] = "Poli '{$poliNama}' belum dipetakan ke kode BPJS — atur di Jadwal Dokter → Pemetaan BPJS.";
+        }
+
+        // ── Kepesertaan (Cek Peserta) ───────────────────────────────────────
+        $pesertaOut = null;
+        $identifier = trim((string) ($data['bpjs_number'] ?? '')) ?: trim((string) ($data['nik'] ?? ''));
+        $idType     = ! empty(trim((string) ($data['bpjs_number'] ?? ''))) ? 'nokartu' : 'nik';
+        if ($identifier === '') {
+            $issues[] = 'No. Kartu BPJS / NIK belum diisi — tidak bisa cek kepesertaan.';
+        } else {
+            try {
+                $res = $this->vclaim->checkPeserta($identifier, $idType);
+                $ps  = $res['response']['peserta'] ?? null;
+                if ($ps) {
+                    $statusKet = (string) ($ps['statusPeserta']['keterangan'] ?? '');
+                    $aktif     = ((string) ($ps['statusPeserta']['kode'] ?? '')) === '0'
+                                 || stripos($statusKet, 'aktif') !== false;
+                    $pesertaOut = [
+                        'nama'     => $ps['nama'] ?? null,
+                        'noKartu'  => $ps['noKartu'] ?? null,
+                        'status'   => $statusKet ?: ($aktif ? 'AKTIF' : '—'),
+                        'hakKelas' => $ps['hakKelas']['keterangan'] ?? null,
+                        'aktif'    => $aktif,
+                    ];
+                    if (! $aktif) {
+                        $issues[] = 'Kepesertaan BPJS TIDAK AKTIF' . ($statusKet ? " ({$statusKet})" : '') . ' — SEP akan ditolak.';
+                    }
+                } else {
+                    $issues[] = (string) ($res['metaData']['message'] ?? 'Peserta BPJS tidak ditemukan.');
+                }
+            } catch (\Throwable $e) {
+                $warnings[] = 'Gagal cek peserta ke BPJS (' . $e->getMessage() . ') — coba lagi sebelum daftar.';
+            }
+        }
+
+        // ── Rujukan + kecocokan poli + diagnosa ─────────────────────────────
+        $sepType    = $data['sep_type'] ?? 'rujukan';
+        $rujukanOut = null;
+        $diagOut    = ['ada' => false, 'kode' => '', 'nama' => ''];
+        $noRujukan  = trim((string) ($data['no_rujukan'] ?? ''));
+
+        if ($sepType === 'rujukan') {
+            if ($noRujukan === '') {
+                $issues[] = 'Nomor rujukan belum diisi.';
+            } else {
+                try {
+                    $res = $this->vclaim->checkRujukanFktp($noRujukan);
+                    $rj  = $res['response']['rujukan'] ?? null;
+                    if (is_array($rj) && array_is_list($rj)) {
+                        $rj = $rj[0] ?? null;
+                    }
+                    if ($rj) {
+                        $rPoliKode = trim((string) ($rj['poliRujukan']['kode'] ?? ''));
+                        $rPoliNama = trim((string) ($rj['poliRujukan']['nama'] ?? $rj['poliRujukan']['nmPoli'] ?? ''));
+                        $diagKode  = trim((string) ($rj['diagnosa']['kode'] ?? $rj['diagnosa']['kdDiag'] ?? ''));
+                        $diagNama  = trim((string) ($rj['diagnosa']['nama'] ?? $rj['diagnosa']['nmDiag'] ?? ''));
+                        $rujukanOut = [
+                            'no'           => $rj['noRujukan'] ?? $noRujukan,
+                            'tglKunjungan' => $rj['tglKunjungan'] ?? null,
+                            'poliKode'     => $rPoliKode,
+                            'poliNama'     => $rPoliNama ?: '—',
+                            'diagKode'     => $diagKode,
+                            'diagNama'     => $diagNama ?: '—',
+                        ];
+                        $diagOut = ['ada' => $diagKode !== '', 'kode' => $diagKode, 'nama' => $diagNama];
+
+                        // Kecocokan poli: bandingkan kode BPJS bila keduanya ada.
+                        if ($poliMapped && $rPoliKode !== '' && $rPoliKode !== $poliKodeBpjs) {
+                            $issues[] = "Poli rujukan ({$rPoliNama}) berbeda dari poli dokter dipilih ({$poliNama}) — BPJS menolak SEP karena poli tidak sesuai. Pilih dokter di poli yang sama.";
+                        }
+                        if ($diagKode === '') {
+                            $warnings[] = 'Rujukan tidak memuat diagnosa — diagnosa awal perlu diisi manual agar SEP tidak ditolak.';
+                        }
+                    } else {
+                        $issues[] = (string) ($res['metaData']['message'] ?? 'Rujukan tidak ditemukan / kadaluarsa.');
+                    }
+                } catch (\Throwable $e) {
+                    $warnings[] = 'Gagal cek rujukan ke BPJS (' . $e->getMessage() . ') — coba lagi sebelum daftar.';
+                }
+            }
+        } elseif ($sepType === 'kontrol') {
+            $warnings[] = 'SEP kontrol — diagnosa & poli mengikuti surat kontrol; pastikan poli dokter sesuai surat kontrol.';
+        }
+
+        return [
+            'ready'    => empty($issues),
+            'issues'   => $issues,
+            'warnings' => $warnings,
+            'peserta'  => $pesertaOut,
+            'rujukan'  => $rujukanOut,
+            'diagnosa' => $diagOut,
+            'poli'     => [
+                'nama'         => $poliNama,
+                'bpjsKode'     => $poliKodeBpjs,
+                'mapped'       => $poliMapped,
+                'cocokRujukan' => $rujukanOut && $rujukanOut['poliKode'] !== ''
+                    ? ($poliMapped && $rujukanOut['poliKode'] === $poliKodeBpjs)
+                    : null,
+            ],
+        ];
+    }
+
+    /**
+     * Ambil kode + nama diagnosa dari rujukan FKTP VClaim (rujukan.diagnosa).
+     * Best-effort: kembalikan kode kosong bila rujukan tak ada/BPJS gagal —
+     * pemanggil menentukan apakah jadi error keras (Detail Kunjungan) atau diam
+     * (auto-resolve saat terbit SEP). Tak melempar.
+     */
+    private function resolveDiagnosaFromRujukan(string $noRujukan, ?string $visitId = null): array
+    {
+        $empty = ['kode' => '', 'nama' => ''];
+        if (trim($noRujukan) === '') {
+            return $empty;
+        }
+        try {
+            $res = $this->vclaim->checkRujukanFktp($noRujukan, $visitId);
+            $rj  = $res['response']['rujukan'] ?? null;
+            // Sebagian respons membungkus rujukan dalam array — ambil elemen pertama.
+            if (is_array($rj) && array_is_list($rj)) {
+                $rj = $rj[0] ?? null;
+            }
+            $diag = $rj['diagnosa'] ?? [];
+
+            return [
+                'kode' => trim((string) ($diag['kode'] ?? $diag['kdDiag'] ?? '')),
+                'nama' => trim((string) ($diag['nama'] ?? $diag['nmDiag'] ?? '')),
+            ];
+        } catch (\Throwable $e) {
+            return $empty;
+        }
+    }
+
+    /**
+     * Tarik diagnosa awal dari rujukan FKTP pasien lalu simpan ke visit. Dipakai
+     * tombol "Tarik dari BPJS" di Detail Kunjungan. Melempar 422 bila visit tak
+     * punya nomor rujukan atau rujukan tak memuat diagnosa (petugas bisa input manual).
+     */
+    public function tarikDiagnosaVisit(string $visitId): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $visit = Visit::findOrFail($visitId);
+        $noRujukan = trim((string) ($visit->no_rujukan ?? ''));
+        if ($noRujukan === '') {
+            throw new \Exception('Kunjungan ini belum punya No. Rujukan — tak ada sumber diagnosa. Isi diagnosa manual atau tarik rujukan dulu.', 422);
+        }
+
+        $diag = $this->resolveDiagnosaFromRujukan($noRujukan, $visit->id);
+        if ($diag['kode'] === '') {
+            throw new \Exception('Rujukan tidak memuat diagnosa (atau BPJS sedang tak bisa diakses). Isi diagnosa manual.', 422);
+        }
+
+        $visit->forceFill([
+            'diagnosa_awal'      => $diag['kode'],
+            'diagnosa_awal_nama' => $diag['nama'] ?: $visit->diagnosa_awal_nama,
+        ])->save();
+
+        return [
+            'kode'       => $visit->diagnosa_awal,
+            'nama'       => $visit->diagnosa_awal_nama,
+            'no_rujukan' => $noRujukan,
+        ];
+    }
+
+    /**
+     * Simpan diagnosa awal manual ke visit (override/isi tanpa rujukan). Dipakai
+     * input ICD-10 di Detail Kunjungan supaya SEP bisa terbit walau rujukan tak
+     * memuat diagnosa. Kode kosong = bersihkan.
+     */
+    public function setDiagnosaAwal(string $visitId, array $data): array
+    {
+        $visit = Visit::findOrFail($visitId);
+        $kode  = strtoupper(trim((string) ($data['diag_awal'] ?? '')));
+        $nama  = trim((string) ($data['diag_nama'] ?? ''));
+
+        $visit->forceFill([
+            'diagnosa_awal'      => $kode !== '' ? $kode : null,
+            'diagnosa_awal_nama' => $kode !== '' ? ($nama ?: null) : null,
+        ])->save();
+
+        return [
+            'kode' => $visit->diagnosa_awal,
+            'nama' => $visit->diagnosa_awal_nama,
+        ];
     }
 
     /**

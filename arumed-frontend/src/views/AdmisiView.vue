@@ -306,6 +306,9 @@ function mapVisitRow(v) {
     photo:      walkIn ? null : (v.photo_url ?? p.photo_url ?? null),
     noRegistrasi: v.no_registrasi ?? '—',
     noSep:      v.no_sep ?? null,
+    noRujukan:  v.no_rujukan ?? null,
+    diagnosaAwal:     v.diagnosa_awal ?? null,
+    diagnosaAwalNama: v.diagnosa_awal_nama ?? null,
     controlLetter: v.bpjs_control_letter_id ?? null,
     insurer:    v.insurer?.name ?? null,
     insurerId:  v.insurer_id ?? '',
@@ -1070,10 +1073,13 @@ async function loadRiwayat(page = 1) {
       insurer:        v.insurer?.name ?? null,
       noSep:          v.no_sep ?? null,
       // Field tambahan agar baris ini bisa dibuka di modal Detail Kunjungan
-      // (edit/update SEP & Surat Kontrol). Pasien diambil dari profilePatient.
+      // (edit/update SEP & Surat Kontrol + diagnosa awal). Pasien dari profilePatient.
       noRegistrasi:   v.no_registrasi ?? '—',
       queueNo:        v.no_antrian ?? '—',
       arrivedDate:    fmtDate(v.visit_date ?? v.created_at),
+      noRujukan:        v.no_rujukan ?? null,
+      diagnosaAwal:     v.diagnosa_awal ?? null,
+      diagnosaAwalNama: v.diagnosa_awal_nama ?? null,
       walkIn:         false,
     }))
     riwayatMeta.value = res.meta
@@ -1562,6 +1568,38 @@ async function cekRujukanBpjs() {
   }
 }
 
+/* ─── Pre-flight kesiapan SEP (langkah Konfirmasi) ─────────────────────────
+ * Cek poli/rujukan/diagnosa/kepesertaan SEBELUM daftar, supaya petugas
+ * membetulkan masalah di wizard alih-alih dibanjiri notif "asesmen tidak
+ * sesuai"/"Diagnosa Awal Tidak Boleh Kosong" saat auto-SEP berjalan.
+ * NON-BLOCKING: registrasi tetap boleh lanjut walau belum hijau. */
+const preflight = reactive({ loading: false, ran: false, error: '', report: null })
+function resetPreflight() { preflight.loading = false; preflight.ran = false; preflight.error = ''; preflight.report = null }
+async function jalankanPreflight() {
+  // Hanya relevan untuk BPJS dgn dokter tujuan terpilih; PREOP dikecualikan
+  // (SEP-nya manual di hari operasi, bukan saat daftar — sama spt auto-SEP).
+  if (form.guarantor !== 'BPJS' || !form.doctor_schedule_id || preopChoice.value === 'PREOP') {
+    resetPreflight(); return
+  }
+  preflight.loading = true; preflight.error = ''; preflight.report = null
+  try {
+    const res = await admisiApi.bpjs.preflightSep({
+      doctor_schedule_id: form.doctor_schedule_id,
+      sep_type:           form.sepType,
+      no_rujukan:         form.sepType === 'rujukan' ? (form.referralNo || '').trim() : null,
+      no_surat_kontrol:   form.sepType === 'kontrol' ? (form.controlNo  || '').trim() : null,
+      bpjs_number:        (form.bpjsNo || '').trim() || null,
+      nik:                (form.nik || '').trim() || null,
+    })
+    preflight.report = res.data?.data ?? null
+  } catch (e) {
+    preflight.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal memeriksa kesiapan SEP')
+  } finally {
+    preflight.loading = false
+    preflight.ran = true
+  }
+}
+
 /* ─── Tarik rujukan & surat kontrol pasien dari BPJS by No.Kartu/NIK ───────
  * Untuk pasien (kontrol) yang tidak membawa nomor rujukan/surat kontrol —
  * cukup NIK/No.Kartu, sistem ambil dari BPJS lalu petugas pilih. */
@@ -1835,6 +1873,54 @@ async function saveEditSep() {
   }
 }
 
+/* ─── Diagnosa Awal SEP: tarik dari rujukan / input manual dari panel detail ──
+ * BPJS menolak SEP bila diagnosa awal kosong. Diagnosa diisi otomatis dari
+ * rujukan FKTP (tombol Tarik / saat terbit SEP), atau diketik manual ICD-10. */
+const diagAction = reactive({ loading: false, saving: false, editing: false, kode: '', nama: '' })
+function startEditDiagnosa() {
+  const row = visitDetailRow.value
+  diagAction.editing = true
+  diagAction.kode = row?.diagnosaAwal ?? ''
+  diagAction.nama = row?.diagnosaAwalNama ?? ''
+}
+async function tarikDiagnosa() {
+  const row = visitDetailRow.value
+  if (!row?.id) return
+  diagAction.loading = true
+  try {
+    const res = await admisiApi.bpjs.tarikDiagnosa(row.id)
+    const d = res.data?.data ?? {}
+    row.diagnosaAwal = d.kode ?? null
+    row.diagnosaAwalNama = d.nama ?? null
+    toast('s', `Diagnosa: ${d.kode}${d.nama ? ' · ' + d.nama : ''}`)
+    admisiStore.fetchVisits?.()
+  } catch (e) {
+    toast('e', (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal tarik diagnosa'))
+  } finally {
+    diagAction.loading = false
+  }
+}
+async function simpanDiagnosa() {
+  const row = visitDetailRow.value
+  if (!row?.id) return
+  const kode = diagAction.kode.trim().toUpperCase()
+  if (!kode) { toast('e', 'Isi kode diagnosa (ICD-10) dulu'); return }
+  diagAction.saving = true
+  try {
+    const res = await admisiApi.bpjs.setDiagnosa(row.id, { diag_awal: kode, diag_nama: diagAction.nama.trim() })
+    const d = res.data?.data ?? {}
+    row.diagnosaAwal = d.kode ?? null
+    row.diagnosaAwalNama = d.nama ?? null
+    diagAction.editing = false
+    toast('s', 'Diagnosa awal disimpan')
+    admisiStore.fetchVisits?.()
+  } catch (e) {
+    toast('e', e.response?.data?.message || 'Gagal simpan diagnosa')
+  } finally {
+    diagAction.saving = false
+  }
+}
+
 /* ─── Surat Kontrol BPJS: status + edit tanggal dari panel detail ────── */
 const skAction = reactive({ loading: false, data: null, editing: false, newDate: '' })
 async function loadSuratKontrolDetail(visitId) {
@@ -2027,6 +2113,7 @@ function openWizard() {
   resetPreopState()
   resetConsentState()
   resetBpjsPull()
+  resetPreflight()
 }
 function closeWizard() {
   wizardOpen.value = false
@@ -2045,7 +2132,12 @@ function nextStep() {
     return
   }
   if (wizardStep.value === 2 && !canProceedStep2.value) { toast('w', 'Lengkapi data penjamin & pilih dokter tujuan'); return }
-  if (wizardStep.value < 3) wizardStep.value++
+  if (wizardStep.value < 3) {
+    wizardStep.value++
+    // Masuk ke Konfirmasi → jalankan pre-flight SEP (BPJS) supaya petugas tahu
+    // masalah poli/rujukan/diagnosa sebelum menekan "Daftarkan".
+    if (wizardStep.value === 3) jalankanPreflight()
+  }
 }
 function prevStep() { if (wizardStep.value > 1) wizardStep.value-- }
 
@@ -2323,6 +2415,7 @@ function openVisitDetail(p) {
   visitDetailRow.value = p
   visitDetailOpen.value = true
   sepEdit.open = false
+  diagAction.editing = false
   if (p?.guarantor === 'BPJS' && p?.id) loadSuratKontrolDetail(p.id)
   else { skAction.data = null; skAction.editing = false }
 }
@@ -2440,6 +2533,11 @@ function printLabel(p) {
    ============================================================ */
 function onKeydown(e) {
   if (e.key !== 'Escape') return
+  // Sub-modal yang bisa terbuka DI ATAS wizard harus ditutup lebih dulu — kalau
+  // tidak, ESC akan langsung menutup seluruh wizard & membuang data yang diketik.
+  if (sigCaptureOpen.value)   { sigCaptureOpen.value = false;   return }
+  if (photoModalOpen.value)   { photoModalOpen.value = false;   return }
+  if (consentModalOpen.value) { consentModalOpen.value = false; return }
   if (profileOpen.value)     { closeProfile();                return }
   if (penjaminOpen.value)    { closeEditPenjamin();           return }
   if (dokterOpen.value)      { closeEditDokter();             return }
@@ -3853,6 +3951,57 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <!-- Pre-flight kesiapan SEP (BPJS, bukan PREOP) — cek poli/rujukan/
+                   diagnosa/kepesertaan sebelum daftar agar SEP tak gagal beruntun. -->
+              <div v-if="form.guarantor === 'BPJS' && preopChoice !== 'PREOP'" class="pf-card">
+                <div class="pf-head">
+                  <div class="confirm-sec-title" style="margin:0">Kesiapan SEP BPJS</div>
+                  <button type="button" class="pf-recheck" :disabled="preflight.loading" @click="jalankanPreflight">
+                    {{ preflight.loading ? 'Memeriksa…' : '↻ Periksa ulang' }}
+                  </button>
+                </div>
+
+                <div v-if="preflight.loading" class="pf-loading">Memeriksa kesiapan ke BPJS…</div>
+                <div v-else-if="preflight.error" class="pf-banner pf-warn">{{ preflight.error }} — penerbitan SEP otomatis tetap dicoba saat daftar.</div>
+
+                <template v-else-if="preflight.report">
+                  <div class="pf-banner" :class="preflight.report.ready ? 'pf-ok' : 'pf-block'">
+                    <strong>{{ preflight.report.ready ? '✓ Data SEP siap' : '⚠ Ada yang perlu dibetulkan' }}</strong>
+                    <span v-if="!preflight.report.ready"> — perbaiki dulu agar SEP tidak ditolak BPJS (boleh tetap daftar, SEP bisa diterbitkan manual nanti).</span>
+                  </div>
+
+                  <ul v-if="preflight.report.issues?.length" class="pf-list pf-list-block">
+                    <li v-for="(it, i) in preflight.report.issues" :key="'i'+i">{{ it }}</li>
+                  </ul>
+                  <ul v-if="preflight.report.warnings?.length" class="pf-list pf-list-warn">
+                    <li v-for="(w, i) in preflight.report.warnings" :key="'w'+i">{{ w }}</li>
+                  </ul>
+
+                  <div class="pf-grid">
+                    <div class="cf"><span class="cf-k">Kepesertaan</span><span class="cf-v">
+                      <template v-if="preflight.report.peserta">
+                        <span :class="preflight.report.peserta.aktif ? 'pf-pill pf-pill-ok' : 'pf-pill pf-pill-bad'">{{ preflight.report.peserta.status }}</span>
+                        <span v-if="preflight.report.peserta.hakKelas"> · {{ preflight.report.peserta.hakKelas }}</span>
+                      </template>
+                      <span v-else>—</span>
+                    </span></div>
+                    <div class="cf"><span class="cf-k">Poli dokter</span><span class="cf-v">
+                      {{ preflight.report.poli?.nama || '—' }}
+                      <span v-if="preflight.report.poli && !preflight.report.poli.mapped" class="pf-pill pf-pill-bad">belum dipetakan</span>
+                    </span></div>
+                    <div v-if="preflight.report.rujukan" class="cf"><span class="cf-k">Poli rujukan</span><span class="cf-v">
+                      {{ preflight.report.rujukan.poliNama }}
+                      <span v-if="preflight.report.poli?.cocokRujukan === true" class="pf-pill pf-pill-ok">cocok</span>
+                      <span v-else-if="preflight.report.poli?.cocokRujukan === false" class="pf-pill pf-pill-bad">tidak cocok</span>
+                    </span></div>
+                    <div class="cf"><span class="cf-k">Diagnosa awal</span><span class="cf-v">
+                      <template v-if="preflight.report.diagnosa?.ada">{{ preflight.report.diagnosa.kode }} — {{ preflight.report.diagnosa.nama }}</template>
+                      <span v-else class="pf-pill pf-pill-bad">belum ada</span>
+                    </span></div>
+                  </div>
+                </template>
+              </div>
+
               <!-- General Consent (pasien baru, opsional) -->
               <div v-if="form.patientMode === 'new'" class="gc-card">
                 <div class="gc-card-icon">
@@ -4266,6 +4415,50 @@ onUnmounted(() => {
                 </div>
                 <span v-if="visitDetailRow.noSep" class="badge-soon" style="background:#dcfce7;color:#166534">Terbit</span>
               </div>
+
+              <!-- Diagnosa Awal (wajib BPJS) — auto dari rujukan FKTP / isi manual.
+                   SEP ditolak ("Diagnosa Awal Tidak Boleh Kosong") bila ini kosong. -->
+              <div class="vd-diag">
+                <div class="vd-diag-k">Diagnosa Awal</div>
+                <div class="vd-diag-v" :class="{ empty: !visitDetailRow.diagnosaAwal }">
+                  <template v-if="visitDetailRow.diagnosaAwal">
+                    <b>{{ visitDetailRow.diagnosaAwal }}</b><span v-if="visitDetailRow.diagnosaAwalNama"> · {{ visitDetailRow.diagnosaAwalNama }}</span>
+                  </template>
+                  <template v-else>Belum ada — SEP akan ditolak BPJS</template>
+                </div>
+                <div v-if="!visitDetailRow.noSep && !diagAction.editing" class="vd-actions vd-diag-actions">
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    :disabled="diagAction.loading || !visitDetailRow.noRujukan"
+                    :title="visitDetailRow.noRujukan ? 'Tarik diagnosa dari rujukan FKTP BPJS' : 'Kunjungan tanpa No. Rujukan — isi manual'"
+                    @click="tarikDiagnosa"
+                  >
+                    {{ diagAction.loading ? 'Menarik…' : 'Tarik dari BPJS' }}
+                  </button>
+                  <button class="btn btn-sm btn-secondary" @click="startEditDiagnosa">Isi manual</button>
+                </div>
+
+                <!-- Input manual / override diagnosa -->
+                <div v-if="diagAction.editing && !visitDetailRow.noSep" class="vd-diag-edit">
+                  <div class="vd-sep-grid">
+                    <div class="fg-sm">
+                      <label>Kode ICD-10</label>
+                      <input v-model="diagAction.kode" class="form-input" placeholder="mis. H25.9" />
+                    </div>
+                    <div class="fg-sm fg-wide">
+                      <label>Nama Diagnosa (opsional)</label>
+                      <input v-model="diagAction.nama" class="form-input" placeholder="mis. Katarak senilis" />
+                    </div>
+                  </div>
+                  <div class="vd-actions">
+                    <button class="btn btn-sm btn-primary" :disabled="diagAction.saving" @click="simpanDiagnosa">
+                      {{ diagAction.saving ? 'Menyimpan…' : 'Simpan Diagnosa' }}
+                    </button>
+                    <button class="btn btn-sm btn-secondary" @click="diagAction.editing = false">Batal</button>
+                  </div>
+                </div>
+              </div>
+
               <div class="vd-actions">
                 <button v-if="!visitDetailRow.noSep" class="btn btn-sm btn-primary" :disabled="sepAction.loading" @click="terbitkanSep">
                   <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
@@ -5151,6 +5344,12 @@ onUnmounted(() => {
 .vd-section-val { font-size: 14px; font-weight: 600; color: var(--td); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .vd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .vd-edit-sk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.vd-diag { margin-top: 10px; padding: 0.6rem 0.7rem; border: 1px solid var(--gb); border-radius: 9px; background: var(--bs); }
+.vd-diag-k { font-size: 11px; font-weight: 700; color: var(--tm); text-transform: uppercase; letter-spacing: 0.03em; }
+.vd-diag-v { font-size: 13.5px; font-weight: 600; color: var(--td); margin-top: 2px; }
+.vd-diag-v.empty { color: #b45309; font-weight: 600; }
+.vd-diag-actions { margin-top: 8px; }
+.vd-diag-edit { margin-top: 10px; }
 .vd-sep-edit { margin-top: 10px; padding: 0.7rem; border: 1px dashed var(--gb); border-radius: 9px; background: var(--bs); }
 .vd-sep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fg-sm { display: flex; flex-direction: column; gap: 3px; }
@@ -5280,6 +5479,24 @@ onUnmounted(() => {
 .cf-k { font-size: 10.5px; color: var(--tu); text-transform: uppercase; letter-spacing: 0.03em; }
 .cf-v { font-size: 13px; font-weight: 500; color: var(--td); }
 
+/* PRE-FLIGHT KESIAPAN SEP (langkah Konfirmasi) */
+.pf-card { border: 1px solid var(--gb); border-radius: 11px; padding: 1rem 1.1rem; }
+.pf-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.7rem; }
+.pf-recheck { font-size: 11.5px; font-weight: 600; color: var(--td); background: #f1f5f9; border: 1px solid var(--gb); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.pf-recheck:disabled { opacity: 0.55; cursor: default; }
+.pf-loading { font-size: 12.5px; color: var(--tu); padding: 0.4rem 0; }
+.pf-banner { font-size: 12.5px; border-radius: 8px; padding: 0.55rem 0.75rem; margin-bottom: 0.6rem; }
+.pf-banner.pf-ok    { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.pf-banner.pf-block { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.pf-banner.pf-warn  { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.pf-list { margin: 0 0 0.6rem; padding-left: 1.1rem; font-size: 12.5px; line-height: 1.5; }
+.pf-list-block li { color: #991b1b; }
+.pf-list-warn li { color: #92400e; }
+.pf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem 1.1rem; }
+.pf-pill { display: inline-block; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 1px 7px; margin-left: 4px; }
+.pf-pill-ok  { background: #d1fae5; color: #065f46; }
+.pf-pill-bad { background: #fee2e2; color: #991b1b; }
+
 /* DETAIL MODAL */
 .detail-hero { display: flex; align-items: center; gap: 14px; padding-bottom: 1.1rem; border-bottom: 1px solid var(--gb); margin-bottom: 1.1rem; }
 /* Badge penjamin + tombol Edit di ujung kanan hero, sejajar nama */
@@ -5376,7 +5593,7 @@ onUnmounted(() => {
 }
 @media (max-width: 640px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
-  .form-grid, .confirm-grid, .detail-grid { grid-template-columns: 1fr; }
+  .form-grid, .confirm-grid, .detail-grid, .pf-grid { grid-template-columns: 1fr; }
   .call-row { flex-wrap: wrap; }
   .call-station { display: none; }
   .guarantor-grid { grid-template-columns: repeat(3, 1fr) !important; }
