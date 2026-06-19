@@ -3878,12 +3878,6 @@ onUnmounted(() => {
                   ⚠ Jadwal hampir penuh — sisa BPJS {{ selectedSchedule.sisaJkn ?? '?' }} · Umum {{ selectedSchedule.sisaNonJkn ?? '?' }}. Pertimbangkan dahulukan triase pasien ini.
                 </div>
               </div>
-              <!-- Diagnosis Awal BPJS — Segera Hadir (tunggu bridging VClaim) -->
-              <div v-if="form.guarantor === 'BPJS'" class="field full">
-                <label class="field-lbl">Diagnosis Awal (ICD-10) <span class="badge-soon">Segera Hadir</span></label>
-                <input class="form-input" disabled placeholder="Akan terisi otomatis saat SEP diterbitkan via VClaim" />
-                <div class="hint">Diagnosis untuk SEP akan diisi otomatis setelah bridging BPJS VClaim aktif</div>
-              </div>
             </div>
 
             <!-- ===== STEP 3: KONFIRMASI ===== -->
