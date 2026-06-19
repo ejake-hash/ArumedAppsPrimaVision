@@ -1875,6 +1875,17 @@ class AdmisiService
         $noRujukan      = $data['no_rujukan']       ?? $visit->no_rujukan       ?? '';
         $noSuratKontrol = $data['no_surat_kontrol'] ?? $visit->no_surat_kontrol ?? '';
 
+        // tujuanKunj BPJS VClaim: '0'=Normal (rujukan FKTP biasa), '2'=Konsul/Kontrol
+        // (pakai SKDP/surat kontrol). ATURAN: untuk tujuanKunj '0' blok `skdp` WAJIB
+        // KOSONG (noSurat DAN kodeDPJP) — mengisi skdp.kodeDPJP saat Normal membuat BPJS
+        // menolak "tujuanKunj tidak sesuai". DPJP kunjungan normal dikirim via `dpjpLayan`,
+        // bukan skdp.kodeDPJP. skdp hanya diisi saat ada surat kontrol (kunjungan kontrol).
+        $adaSuratKontrol = trim((string) $noSuratKontrol) !== '';
+        $tujuanKunj      = $adaSuratKontrol ? '2' : '0';
+        $skdp            = $adaSuratKontrol
+            ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
+            : ['noSurat' => '', 'kodeDPJP' => ''];
+
         // Diagnosa awal (kode ICD-10): BPJS menolak SEP bila kosong ("Diagnosa Awal
         // Tidak Boleh Kosong"). Urutan sumber: request eksplisit → yang DISIMPAN di
         // visit (hasil "Tarik dari BPJS"/input petugas) → auto-tarik dari rujukan FKTP
@@ -1915,11 +1926,11 @@ class AdmisiService
             'cob'          => ['cob' => '0'],
             'katarak'      => ['katarak' => $data['katarak'] ?? '0'],
             'jaminan'      => ['lakaLantas' => '0', 'noLP' => '', 'penjamin' => ['tglKejadian' => '', 'keterangan' => '', 'suplesi' => ['suplesi' => '0', 'noSepSuplesi' => '', 'lokasiLaka' => ['kdPropinsi' => '', 'kdKabupaten' => '', 'kdKecamatan' => '']]]],
-            'tujuanKunj'   => '0',
+            'tujuanKunj'   => $tujuanKunj,
             'flagProcedure' => '',
             'kdPenunjang'  => '',
             'assesmentPel' => '',
-            'skdp'         => ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? ''],
+            'skdp'         => $skdp,
             'dpjpLayan'    => $kodeDpjp ?? '',
             'noTelp'       => $visit->patient?->phone ?? '',
             'user'         => auth('api')->user()?->name ?? 'arumed',
