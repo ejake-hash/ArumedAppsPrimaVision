@@ -288,9 +288,9 @@ class FarmasiService
             ])
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'SUBMITTED')
-            // Tahan resep POLI selama pasien MASIH di stasiun bedah/tindakan (operasi belum
-            // selesai) agar resep poli tak nyangkut di Verifikasi sebelum prosedur usai —
-            // pasien hanya mengambil obat SEKALI setelah tindakan. Resep pasca-bedah
+            // Tahan resep POLI selama pasien MASIH menunggu OPERASI (Ruang Bedah) yang belum
+            // selesai agar resep poli tak nyangkut di Verifikasi sebelum prosedur usai —
+            // pasien hanya mengambil obat SEKALI setelah operasi. Resep pasca-bedah
             // (is_post_op=true) DIKECUALIKAN dari penahanan ini: ia memang ditulis SETELAH
             // operasi, jadi harus selalu bisa diverifikasi. Tanpa pengecualian ini, revisi
             // obat pasca-bedah (yang me-reset verified_at) bisa TERJEBAK tak terlihat Farmasi
@@ -298,10 +298,18 @@ class FarmasiService
             // ganda/stale yang dibuat setelah operasi) → obat hilang dari kwitansi & tak bisa
             // dipulihkan. whereDoesntHave lolos otomatis utk visit tanpa surgery_schedule &
             // utk status DONE/CANCELLED (operasi batal → obat poli tetap perlu diverifikasi).
+            // HOLD HANYA utk RUANG_BEDAH (operasi). Tindakan laser (RUANG_TINDAKAN) TIDAK
+            // ditahan: laser same-day & ringan, resep konsultasinya harus langsung bisa
+            // diverifikasi Farmasi seperti resep poli biasa (jadwalnya kini selalu ada krn
+            // default tanggal hari ini → tanpa carve-out ini resep laser ikut terjebak hold).
+            // location_type null (jadwal lama) dianggap RUANG_BEDAH (backward-compat).
             ->where(fn ($q) => $q
                 ->where('is_post_op', true)
                 ->orWhereDoesntHave('visit.surgerySchedule', fn ($s) => $s
-                    ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS'])))
+                    ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS'])
+                    ->where(fn ($w) => $w
+                        ->where('location_type', SurgerySchedule::LOCATION_RUANG_BEDAH)
+                        ->orWhereNull('location_type'))))
             ->when(
                 ! empty($filters['tanggal']),
                 fn ($q) => $q->whereDate('created_at', $filters['tanggal']),

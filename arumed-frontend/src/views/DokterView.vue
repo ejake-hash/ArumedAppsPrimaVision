@@ -1342,6 +1342,13 @@ function obatGoPage(p) {
 const filteredObat = computed(() => obatList.value)
 
 function pickObat(d) {
+  // Stok Farmasi kosong → tak dapat diresepkan (hard block). Klik tetap memberi
+  // umpan-balik toast, bukan diam. Bila stok master telat/akurasi rendah, Farmasi
+  // perlu input penerimaan/opname dulu.
+  if (Number(d.stock) <= 0) {
+    toast('w', `Stok obat "${d.name}" kosong — tidak dapat diresepkan`)
+    return
+  }
   newRx.value.medication_id = d.id
   newRx.value.name = d.name
   newRx.value.form = d.form
@@ -1983,10 +1990,26 @@ const surgeryDateLabel = computed(() => {
     ? surgeryDate.value
     : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
 })
+// Tanggal lokal hari ini (YYYY-MM-DD) — pakai komponen lokal, BUKAN toISOString()
+// yang bergeser ke UTC (bisa salah hari di WIB sore).
+function todayLocalStr() {
+  const n = new Date()
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+}
 // Tanggal berganti → muat preview & reset jam (hindari jam nyangkut dari tanggal lain).
 watch(surgeryDate, (d) => { surgeryTime.value = ''; loadBedahSlot(d) })
 // Ganti lokasi → muat ulang preview (slot Ruang Bedah ≠ slot Ruang Tindakan).
-watch(surgeryLocation, () => { if (surgeryDate.value) loadBedahSlot(surgeryDate.value) })
+// Ruang Tindakan (laser) hampir selalu SAME-DAY → default tanggal ke HARI INI bila
+// kosong, supaya dokter tak perlu memilih manual & pasien langsung masuk papan
+// "Antrean Hari Ini" Ruang Tindakan (papan-nya schedule-driven: tanpa jadwal hari ini
+// pasien tak muncul). Ruang Bedah (operasi) sering terjadwal H+1/pre-op → JANGAN
+// di-default; biarkan dokter pilih. Tetap bisa diubah dokter.
+watch(surgeryLocation, (loc) => {
+  if (loc === 'RUANG_TINDAKAN' && !surgeryDate.value) {
+    surgeryDate.value = todayLocalStr()
+  }
+  if (surgeryDate.value) loadBedahSlot(surgeryDate.value)
+})
 
 // Master paket BEDAH (surgery_packages package_type=BEDAH) — untuk Tab 4 Jadwalkan Bedah.
 const surgeryPackages = ref([])   // {id, code, name, category, price}
@@ -3427,14 +3450,20 @@ function closeResumeRM() {
                   <div v-if="obatComboOpen && (filteredObat.length || obatLoading)" class="rx-drop">
                     <div v-if="obatLoading" class="rx-drop-loading">Memuat daftar obat…</div>
                     <template v-else>
-                      <div v-for="d in filteredObat" :key="d.id" class="rx-drop-item" @mousedown.prevent="pickObat(d)">
+                      <div
+                        v-for="d in filteredObat" :key="d.id"
+                        class="rx-drop-item"
+                        :class="{ 'rx-drop-item-disabled': Number(d.stock) <= 0 }"
+                        :title="Number(d.stock) <= 0 ? 'Stok Farmasi kosong — tidak dapat diresepkan' : ''"
+                        @mousedown.prevent="pickObat(d)"
+                      >
                         <span class="rx-drop-name">
                           {{ d.name }}
                           <span v-if="d.is_active === false" class="rx-inactive-badge" title="Obat berstatus nonaktif">nonaktif</span>
                         </span>
                         <span class="rx-drop-meta">
                           {{ d.form }} ·
-                          <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">Farmasi: {{ d.stock }}</span>
+                          <span :class="['rx-stok', Number(d.stock) > 0 ? 'ok' : 'zero']">{{ Number(d.stock) > 0 ? `Farmasi: ${d.stock}` : 'Stok kosong' }}</span>
                         </span>
                         <span class="rx-drop-price">{{ fmtRp(d.hja) }}</span>
                       </div>
@@ -5504,6 +5533,10 @@ function closeResumeRM() {
 .rx-drop-item { display: flex; align-items: center; gap: 8px; padding: 8px 11px; cursor: pointer; border-bottom: 1px solid var(--gb); transition: background .12s; }
 .rx-drop-item:last-child { border-bottom: none; }
 .rx-drop-item:hover { background: var(--gl); }
+/* Stok kosong → tampak nonaktif (redup, cursor not-allowed). Klik tetap memberi
+   toast peringatan (lihat pickObat), tapi obat tak terpilih. */
+.rx-drop-item-disabled { opacity: 0.55; cursor: not-allowed; }
+.rx-drop-item-disabled:hover { background: #fef2f2; }
 .rx-drop-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--td); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rx-drop-meta { font-size: 10px; color: var(--tu); flex-shrink: 0; }
 .rx-inactive-badge { display: inline-block; margin-left: 5px; font-size: 9px; font-weight: 700; color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; border-radius: 4px; padding: 0 5px; vertical-align: middle; }

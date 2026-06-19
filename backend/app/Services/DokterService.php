@@ -1184,10 +1184,19 @@ class DokterService
             : SurgerySchedule::LOCATION_RUANG_BEDAH;
         $isTindakan = $locationType === SurgerySchedule::LOCATION_RUANG_TINDAKAN;
 
+        // Tindakan laser (RUANG_TINDAKAN) hampir selalu SAME-DAY → default tanggal ke
+        // HARI INI bila tak diisi. Tanpa ini jadwal tak terbuat → pasien tak muncul di
+        // papan Ruang Tindakan (schedule-driven, whereDate today) & routing jatuh ke
+        // KASIR. Jaring pengaman selaras prefill FE. Operasi (RUANG_BEDAH) TIDAK
+        // di-default (sering terjadwal H+1 / pre-op H-1 → tanggal wajib eksplisit).
+        if ($isTindakan && ! $date) {
+            $date = today()->toDateString();
+        }
+
         // Syarat minimal membuat jadwal:
         //   - Operasi (RUANG_BEDAH)      → paket + tanggal WAJIB.
-        //   - Tindakan laser (RUANG_TINDAKAN) → cukup tanggal; paket OPSIONAL
-        //     (laser ditagih via procedure/visit_services, bukan komponen paket).
+        //   - Tindakan laser (RUANG_TINDAKAN) → tanggal kini selalu ada (default hari
+        //     ini); paket OPSIONAL (laser ditagih via procedure/visit_services).
         // Belum lengkap → pertahankan jadwal lama (kalau ada).
         if (! $date || (! $isTindakan && ! $packageId)) {
             return $examination->surgery_schedule_id;
