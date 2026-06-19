@@ -68,11 +68,19 @@ class SurgeryPackage extends Model
         if ($n === '') {
             return null;
         }
+        // INJEKSI diperiksa DULU: paket injeksi anti-VEGF sering memuat nama obat
+        // intravitreal — jangan terjebak ke KATARAK/VITREORETINA.
+        if (preg_match('/anti.?vegf|intravitreal|injeksi|avastin|lucentis|eylea|aflibercept|ranibizumab|bevacizumab/i', $n)) {
+            return 'INJEKSI';
+        }
         if (preg_match('/vitrek|vitrec|vitreous|ppv|pars plana|vitreoretina|retina|buckle|bakel/i', $n)) {
             return 'VITREORETINA';
         }
         if (preg_match('/phaco|fako|katarak|cataract|\biol\b|sics|lensa intraokular/i', $n)) {
             return 'KATARAK';
+        }
+        if (preg_match('/pterygium|pterigium|pterygii/i', $n)) {
+            return 'PTERYGIUM';
         }
         if (preg_match('/glaukoma|glaucoma|trabekulekto|trabeculecto|trabekulo|iridekto|iridecto|ahmed|baerveldt/i', $n)) {
             return 'GLAUKOMA';

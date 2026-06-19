@@ -97,6 +97,15 @@ function transformQueueItem(q) {
     isVitreoretina: (pkg?.surgery_type === 'VITREORETINA') || (!pkg?.surgery_type && VITREK_RE.test(pkg?.name ?? prosedur)),
     // Pemicu RM 2.3 Catatan Operasi (katarak): surgery_type=KATARAK atau fallback IOL_RE.
     isKatarak:      (pkg?.surgery_type === 'KATARAK') || (!pkg?.surgery_type && IOL_RE.test(pkg?.name ?? prosedur)),
+    // Jenis laporan operasi yang DIKONFIRMASI operator (sumber kebenaran selektivitas
+    // dokumen + field subspesialis). Multi-select (kasus gabungan phaco+vitrektomi).
+    // Persist di operation_report.report_types[]. Awalnya kosong — diisi via prefill
+    // saran lalu DIKONFIRMASI manual (medikolegal). Tahan poll (lihat syncAuthoritativeFields).
+    reportTypes:        [],
+    reportTypesConfirmed: false,
+    // Detail injeksi anti-VEGF (RM 8.8) — diisi saat jenis INJEKSI dikonfirmasi.
+    // Persist di operation_report.injection_detail → proyeksi ke template (binding).
+    injectionDetail:    { drug: '', volume_ml: '', quadrant: '', distance_mm: '' },
     recordId:       null,           // surgery_records.id (diisi saat mulai/timeout/pick)
     timIn:          null,
     timOut:         null,
@@ -684,6 +693,63 @@ const hasAnesthesia = computed(() =>
 // vitrektomi tak tampil & vitrectomy_details dikirim null (detail hilang dari laporan).
 const isVitrek = computed(() => !!selP.value?.isVitreoretina)
 
+// ── Jenis Laporan Operasi (kontrol pemersatu 2 sumbu variabilitas) ───────────
+// Operator KONFIRMASI MANUAL jenis prosedur (medikolegal). Konfirmasi menyetir:
+//   (1) dokumen yang "Disarankan" di picker search (via report_types → backend), &
+//   (2) [Fase 1+] field subspesialis yang muncul di tab Intraoperatif.
+const REPORT_TYPE_OPTS = [
+  { v: 'KATARAK',      l: 'Katarak / Phaco' },
+  { v: 'VITREORETINA', l: 'Vitreo Retina' },
+  { v: 'GLAUKOMA',     l: 'Trabekulektomi / Glaukoma' },
+  { v: 'PTERYGIUM',    l: 'Pterygium' },
+  { v: 'INJEKSI',      l: 'Injeksi Anti-VEGF' },
+]
+
+// Saran sistem dari deteksi paket (BUKAN keputusan final) — dipakai utk pre-check
+// kotak sebelum operator konfirmasi.
+const reportTypeSuggestion = computed(() => {
+  const p = selP.value
+  if (!p) return []
+  if (p.surgeryType) return [p.surgeryType]
+  const out = []
+  if (p.isVitreoretina) out.push('VITREORETINA')
+  if (p.isKatarak) out.push('KATARAK')
+  return out
+})
+
+function toggleReportType(v) {
+  const p = selP.value
+  if (!p) return
+  const i = p.reportTypes.indexOf(v)
+  if (i >= 0) p.reportTypes.splice(i, 1)
+  else p.reportTypes.push(v)
+}
+
+// Pre-isi kotak dgn saran (sekali) saat belum dikonfirmasi & masih kosong.
+function prefillReportTypes() {
+  const p = selP.value
+  if (!p || p.reportTypesConfirmed || p.reportTypes.length) return
+  p.reportTypes = [...reportTypeSuggestion.value]
+}
+
+// Konfirmasi manual → persist ke operation_report.report_types (lewat saveOperationReport).
+async function confirmReportTypes() {
+  const p = selP.value
+  if (!p) return
+  if (!p.reportTypes.length) { toast('w', 'Pilih minimal satu jenis laporan operasi'); return }
+  if (!p.recordId) {
+    // Operasi belum dimulai → simpan lokal; akan ikut tersimpan saat laporan disimpan.
+    p.reportTypesConfirmed = true
+    toast('i', 'Jenis dikonfirmasi (tersimpan saat operasi dimulai)')
+    return
+  }
+  const ok = await saveOperationReport(true)
+  if (ok) {
+    p.reportTypesConfirmed = true
+    toast('s', 'Jenis laporan operasi dikonfirmasi')
+  }
+}
+
 // Pasien yang SUDAH rawat inap (bedah = sub-aktivitas) → disposisi kembali ke kamar
 // (LANJUT_RANAP/HCU), BUKAN Pulang/Rawat-Inap-baru. Dipakai utk dropdown adaptif.
 const isFromRanap = computed(() => selP.value?.jenisPelayanan === 'RANAP')
@@ -738,9 +804,11 @@ async function pickPt(p) {
   }
   toast('i', `Membuka data bedah — ${p.name}`)
 
-  // Hidrasi laporan dari backend bila operasi sudah dimulai/selesai (mis. setelah
-  // reload): recordId/timIn/timOut untuk lifecycle + field klinis utk prefill.
-  if (p.scheduleId && p.status !== 'MENUNGGU' && !p.recordId) {
+  // Hidrasi laporan dari backend SETIAP kali pasien dibuka (record ada) — supaya
+  // akun mana pun (operator/asisten/dll, atau setelah reload) melihat laporan yang
+  // SUDAH disimpan akun lain, bukan form kosong. showRecord 404 (belum ada record)
+  // ditangkap try/catch → tak masalah untuk pasien yang belum mulai operasi.
+  if (p.scheduleId && !p.recordId) {
     try {
       const { data } = await bedahApi.showRecord(p.scheduleId)
       const rec = data.data
@@ -773,6 +841,10 @@ async function pickPt(p) {
       }
     } catch { /* record belum ada — abaikan */ }
   }
+
+  // Pre-isi saran Jenis Laporan Operasi (belum dikonfirmasi) bila record belum
+  // pernah menyimpan report_types — operator tinggal konfirmasi/koreksi.
+  prefillReportTypes()
 
   // Muat daftar IOL terpasang (server = sumber kebenaran) bila record sudah ada.
   if (selP.value?.recordId) loadIolUsages()
@@ -996,6 +1068,12 @@ async function saveOperationReport(silent = false) {
       estimated_blood_loss: p.estimatedBloodLoss || null,
       vitrectomy_details:   isVitrek.value ? { ...p.vitrek } : null,
       post_op_disposition:  p.postOpDisposition || 'PULANG',
+      // Jenis laporan dikonfirmasi operator → menyetir selektivitas dokumen (backend).
+      report_types:         Array.isArray(p.reportTypes) ? p.reportTypes : [],
+      // Mata operasi → proyeksi ke laporan subspesialis (sumber: sisi mata sign-in).
+      operative_eye:        p.signIn?.sisi_mata || null,
+      // Detail injeksi anti-VEGF (RM 8.8) — hanya saat jenis INJEKSI dikonfirmasi.
+      injection_detail:     p.reportTypes?.includes('INJEKSI') ? { ...p.injectionDetail } : null,
     })
     if (!silent) toast('s', 'Laporan operasi disimpan')
     return true
@@ -1063,10 +1141,20 @@ function hydratePerioperative(rec) {
   if (ra.aldrete) { s.aldrete = { ...s.aldrete, ...ra.aldrete }; s.recoverySaved = true }
   if (ra.pain_score != null) s.painScore = ra.pain_score
   const or = rec.operation_report || {}
+  // Teknik/temuan/catatan dari sumber terstruktur (guard: jangan timpa edit lokal sesi ini).
+  if (or.technique && !s.teknikOp)    s.teknikOp    = or.technique
+  if (or.findings && !s.temuanIntra)  s.temuanIntra = or.findings
+  if (or.notes && !s.catatanIntra)    s.catatanIntra = or.notes
   if (or.vitrectomy_details) s.vitrek = { ...s.vitrek, ...or.vitrectomy_details }
   if (or.estimated_blood_loss) s.estimatedBloodLoss = or.estimated_blood_loss
   // Jenis anestesi & diagnosa pasca-bedah & tim — pulihkan dari laporan tersimpan
   // (cegah default 'Topikal' menyesatkan + hasAnesthesia salah → panel anestesi hilang).
+  if (Array.isArray(or.report_types) && or.report_types.length) {
+    s.reportTypes = [...or.report_types]; s.reportTypesConfirmed = true
+  }
+  if (or.injection_detail && typeof or.injection_detail === 'object') {
+    s.injectionDetail = { ...s.injectionDetail, ...or.injection_detail }
+  }
   if (or.anesthesia_type) { s.anestesi = or.anesthesia_type; s.anestesiFromServer = true }
   if (or.diagnosis_post && or.diagnosis_post !== '-' && !s.diagnosaPasca) s.diagnosaPasca = or.diagnosis_post
   if (or.diagnosis_post_code && !s.diagnosaPascaKode) s.diagnosaPascaKode = or.diagnosis_post_code
@@ -2162,6 +2250,85 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
+            <!-- Jenis Laporan Operasi — konfirmasi manual operator (medikolegal).
+                 Menyetir dokumen "Disarankan" di picker laporan + [Fase 1] field subspesialis. -->
+            <div class="bd-card bd-card-full bd-reporttype-card">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Jenis Laporan Operasi
+                <span :class="['bd-chk-badge', selP.reportTypesConfirmed ? 'bd-chk-ok' : 'bd-chk-no']">
+                  {{ selP.reportTypesConfirmed ? 'Dikonfirmasi' : 'Perlu konfirmasi' }}
+                </span>
+              </div>
+              <div class="bd-card-bd">
+                <p class="bd-rolehint" style="margin:0 0 8px">
+                  Saran sistem dari paket — <b>konfirmasi/koreksi</b> jenis prosedur. Bisa lebih dari satu (mis. Phaco + Vitrektomi).
+                </p>
+                <div class="bd-reporttype-opts">
+                  <label v-for="o in REPORT_TYPE_OPTS" :key="o.v" class="bd-chk-pill">
+                    <input
+                      type="checkbox"
+                      :checked="selP.reportTypes.includes(o.v)"
+                      :disabled="!canEditReport || selP.laporanFinalized"
+                      @change="toggleReportType(o.v)"
+                    />
+                    <span>{{ o.l }}</span>
+                  </label>
+                </div>
+                <div class="bd-timeout-actions">
+                  <button class="bd-btn-add" :disabled="!canEditReport || selP.laporanFinalized || !selP.reportTypes.length" @click="confirmReportTypes">
+                    {{ selP.reportTypesConfirmed ? 'Perbarui konfirmasi' : 'Konfirmasi jenis' }}
+                  </button>
+                  <span v-if="!selP.reportTypesConfirmed && reportTypeSuggestion.length" class="bd-bypass-note">Saran: {{ reportTypeSuggestion.map(t => (REPORT_TYPE_OPTS.find(o => o.v === t)?.l || t)).join(', ') }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Detail Injeksi Anti-VEGF (RM 8.8) — muncul saat jenis INJEKSI dikonfirmasi.
+                 Field subspesialis terstruktur → operation_report.injection_detail → proyeksi ke laporan. -->
+            <div v-if="selP.reportTypes.includes('INJEKSI')" class="bd-card bd-card-full bd-injeksi-card">
+              <div class="bd-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 2l4 4M17 7l3-3M11 13l5.5-5.5M3 21l5-1 9-9-4-4-9 9-1 5z"/></svg>
+                Detail Injeksi Anti-VEGF
+              </div>
+              <div class="bd-card-bd">
+                <p class="bd-rolehint" style="margin:0 0 8px">Diisi sekali di sini — otomatis muncul di Laporan Injeksi Anti VEGF (RM 8.8).</p>
+                <div class="bd-injeksi-grid">
+                  <label class="bd-field">
+                    <span>Obat Anti-VEGF</span>
+                    <input class="bd-input" list="antivegf-list" v-model="selP.injectionDetail.drug" :disabled="!canEditReport || selP.laporanFinalized" placeholder="mis. Avastin / Lucentis / Eylea" />
+                    <datalist id="antivegf-list"><option value="Avastin (Bevacizumab)"/><option value="Lucentis (Ranibizumab)"/><option value="Eylea (Aflibercept)"/></datalist>
+                  </label>
+                  <label class="bd-field">
+                    <span>Volume (ml)</span>
+                    <input class="bd-input" v-model="selP.injectionDetail.volume_ml" :disabled="!canEditReport || selP.laporanFinalized" placeholder="mis. 0,05" />
+                  </label>
+                  <label class="bd-field">
+                    <span>Kuadran</span>
+                    <select class="bd-select" v-model="selP.injectionDetail.quadrant" :disabled="!canEditReport || selP.laporanFinalized">
+                      <option value="">—</option>
+                      <option value="superior">Superior</option>
+                      <option value="temporal">Temporal</option>
+                      <option value="inferior">Inferior</option>
+                      <option value="nasal">Nasal</option>
+                    </select>
+                  </label>
+                  <label class="bd-field">
+                    <span>Jarak dari Limbus (mm)</span>
+                    <select class="bd-select" v-model="selP.injectionDetail.distance_mm" :disabled="!canEditReport || selP.laporanFinalized">
+                      <option value="">—</option>
+                      <option value="3,5">3,5 mm (fakik)</option>
+                      <option value="4">4 mm (pseudofakik/afakik)</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="bd-timeout-actions">
+                  <button class="bd-btn-add" :disabled="!canEditReport || selP.laporanFinalized || !selP.recordId" @click="saveOperationReport()">Simpan detail injeksi</button>
+                  <span v-if="!selP.recordId" class="bd-bypass-note">Tersimpan otomatis saat laporan operasi disimpan</span>
+                </div>
+              </div>
+            </div>
+
             <!-- 🟡 TIME OUT (WHO gerbang 2 — sebelum insisi) -->
             <div v-if="selP.status === 'BERLANGSUNG' && !selP.timOut" class="bd-card bd-card-full bd-timeout-card">
               <div class="bd-card-hd">
@@ -2939,33 +3106,33 @@ function mulaiBack() { mulaiStep.value = 1 }
         <div class="bd-docs-hd">
           <h3>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            {{ tab === 'prabedah' ? 'Checklist Kesiapan Bedah' : 'Dokumen Laporan Operasi' }}
+            {{ tab === 'prabedah' ? 'Checklist & Keselamatan Operasi' : 'Dokumen Operasi & Anestesi' }}
           </h3>
           <button class="bd-docs-close" @click="showRmDocsModal = false" aria-label="Tutup">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
         <div class="bd-docs-body">
-          <!-- Pra-Bedah → Checklist Kesiapan Bedah (RM 2.0) -->
+          <!-- Pra-Bedah → Checklist Kesiapan (RM 2.0), Site Marking (RM 1.9), WHO SSC
+               (RM 4.9, reuse data sign-in/time-out/sign-out), Peri-operatif (RM 1.10). -->
           <FormDocsBrowser
             v-if="tab === 'prabedah'"
             :visit-id="selP.visitId"
             station="bedah"
-            :sections="[{ key: 'checklist_kesiapan', label: 'Checklist Kesiapan Bedah' }]"
+            :sections="[{ key: 'checklist_kesiapan', label: 'Checklist & Keselamatan Operasi' }]"
           />
 
-          <!-- Laporan → daftar ringkas; user tinggal pilih dokumen yang dipakai.
-               Teknik/temuan/identitas operasi terisi otomatis dari data BedahView. -->
+          <!-- Laporan → satu daftar laporan operasi yang BISA DICARI. Form yang cocok
+               jenis operasi (dikonfirmasi di tab Intraoperatif) di-badge "Disarankan"
+               & dipin ke atas; sisanya tetap muncul dan dapat dicari (mis. kasus
+               gabungan). Identitas/teknik/temuan terisi otomatis dari data BedahView. -->
           <template v-else>
-            <p class="bd-rolehint" style="margin:0 0 10px">Pilih dokumen laporan yang akan diisi. Identitas operasi, teknik &amp; temuan terisi otomatis dari data BedahView.</p>
+            <p class="bd-rolehint" style="margin:0 0 10px">Cari &amp; pilih dokumen operasi/anestesi (laporan, persetujuan &amp; penilaian pra-anestesi). Yang cocok jenis operasi/anestesi ditandai <b>Disarankan</b>. Identitas, teknik &amp; temuan terisi otomatis dari data BedahView.</p>
             <FormDocsBrowser
               :visit-id="selP.visitId"
               station="bedah"
-              :show-toolbar="false"
               :sections="[
-                { key: 'laporan_pembedahan',   label: 'Laporan Pembedahan (RM 2.2) — semua operasi' },
-                { key: 'laporan_vitreoretina', label: 'Laporan Operasi Vitreo Retina (RM 10.1)' },
-                { key: 'catatan_operasi',      label: 'Catatan Operasi Katarak (RM 2.3)' },
+                { key: 'laporan_operasi', label: 'Laporan Operasi' },
               ]"
             />
           </template>
@@ -3584,6 +3751,16 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-anes-hint { font-size: 12px; color: var(--tm); margin: 0; }
 .bd-timeout-card { border-left: 3px solid #eab308; }
 .bd-signout-card { border-left: 3px solid #ef4444; }
+.bd-reporttype-card { border-left: 3px solid #0E3A66; }
+.bd-injeksi-card { border-left: 3px solid #0d9488; }
+.bd-injeksi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.bd-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--td); }
+.bd-field > span { font-weight: 600; color: var(--tu); font-size: 11.5px; }
+.bd-reporttype-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.bd-chk-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--gb); border-radius: 999px; font-size: 12.5px; cursor: pointer; user-select: none; background: var(--bg); }
+.bd-chk-pill:has(input:checked) { background: #e8f0fb; border-color: #0E3A66; color: #0E3A66; font-weight: 600; }
+.bd-chk-pill input { cursor: pointer; }
+.bd-chk-pill:has(input:disabled) { opacity: .55; cursor: not-allowed; }
 .bd-timeout-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .bd-btn-bypass { padding: 6px 12px; background: transparent; border: 1px dashed var(--gb); color: var(--tu); border-radius: 8px; font-size: 12px; cursor: pointer; }
 .bd-btn-bypass:disabled { opacity: .5; cursor: not-allowed; }

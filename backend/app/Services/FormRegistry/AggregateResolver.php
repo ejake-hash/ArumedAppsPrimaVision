@@ -62,6 +62,7 @@ final class AggregateResolver
             'diagnosticResults.summary'           => $this->resolveDiagnosticResults($visit, $format),
             'surgery_iol_usage'                   => $this->resolveIolUsage($visit, $format),
             'surgery_operation_summary'           => $this->resolveOperationSummary($visit, $format),
+            'surgery_safety_checklist'            => $this->resolveSafetyChecklist($visit, $format),
             'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
             'ranap_identity'                      => $this->resolveRanapIdentity($visit, $format),
             'planning_instruction'                => $this->resolvePlanningInstruction($visit),
@@ -874,6 +875,71 @@ final class AggregateResolver
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // surgery_safety_checklist — WHO SSC 3 fase (RM 4.9). REUSE data safety_checklist
+    // JSONB yang diisi di BedahView (sign-in/time-out/sign-out) — tak diinput ulang
+    // (keputusan K6). Render ☑/☐ per item dengan label resmi.
+    // ─────────────────────────────────────────────────────────────────────────
+    private const SSC_LABELS = [
+        'sign_in' => [
+            'identitas'           => 'Identitas pasien, lokasi & prosedur dikonfirmasi',
+            'consent'             => 'Persetujuan tindakan (informed consent) ada',
+            'sisi_mata'           => 'Area operasi sudah diberi tanda',          // value (OD/OS)
+            'anestesi_siap'       => 'Mesin anestesi & obat-obatan lengkap',
+            'alergi_dikonfirmasi' => 'Riwayat alergi pasien dikonfirmasi',
+        ],
+        'time_out' => [
+            'tim_lengkap'        => 'Semua anggota tim memperkenalkan diri (nama & peran)',
+            'identitas_prosedur' => 'Konfirmasi nama pasien, tindakan & area insisi',
+            'sisi_mata'          => 'Sisi/area operasi dikonfirmasi',
+            'antibiotik'         => 'Profilaksis antibiotik diberikan / tidak diindikasikan',
+            'iol_benar'          => 'Antisipasi kejadian kritis dibahas / IOL dikonfirmasi',
+        ],
+        'sign_out' => [
+            'prosedur_dikonfirmasi' => 'Perawat memastikan nama tindakan',
+            'hitung_kasa'           => 'Hitung kasa & jarum lengkap',
+            'hitung_instrumen'      => 'Kelengkapan & hitung instrumen',
+            'spesimen'              => 'Pelabelan spesimen dibacakan (nama pasien)',
+            'iol_dicatat'           => 'IOL/implan dicatat',
+            'rencana_pemulihan'     => 'Catatan khusus recovery & perawatan dibahas',
+        ],
+    ];
+
+    private function resolveSafetyChecklist(Visit $visit, ?string $format): string
+    {
+        if (! in_array($format, ['sign_in', 'time_out', 'sign_out'], true)) {
+            return '';
+        }
+        $rec = \App\Models\SurgeryRecord::query()
+            ->where('visit_id', $visit->id)
+            ->latest('created_at')
+            ->first();
+        if (! $rec) {
+            return '';
+        }
+        $sc    = is_array($rec->safety_checklist) ? $rec->safety_checklist : [];
+        $phase = is_array($sc[$format] ?? null) ? $sc[$format] : [];
+
+        $lines = [];
+        foreach (self::SSC_LABELS[$format] as $key => $label) {
+            $val = $phase[$key] ?? null;
+            // sisi_mata sign_in = nilai (OD/OS), bukan bool.
+            if ($format === 'sign_in' && $key === 'sisi_mata') {
+                $eye = trim((string) $val);
+                $lines[] = ($eye !== '' ? '☑ ' : '☐ ') . $label . ($eye !== '' ? ": {$eye}" : '');
+                continue;
+            }
+            $lines[] = (! empty($val) ? '☑ ' : '☐ ') . $label;
+        }
+        // Catatan bila fase di-bypass (darurat).
+        $bypass = $sc['bypass'][$format] ?? null;
+        if (! empty($bypass)) {
+            $lines[] = '⚠ Dilewati (darurat): ' . trim((string) $bypass);
+        }
+
+        return implode("\n", $lines);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // surgery_identity — identitas operasi (operator/asisten/jam/durasi/anestesi)
     // dipakai prefill form RM (RM 10.1/2.2/2.3) agar TIDAK diketik ulang — sumber
     // tunggal = BedahView (surgery_records). format = field yg diminta.
@@ -906,6 +972,13 @@ final class AggregateResolver
             'time_in'          => $timeStr($rec->time_in),
             'time_out'         => $timeStr($rec->time_out),
             'duration'         => $this->formatDuration($rec->time_in, $rec->time_out),
+            // Mata operasi (RM 8.10/9.0/8.8) — operative_eye dikonfirmasi di BedahView.
+            'operative_eye'    => trim((string) ($r['operative_eye'] ?? '')),
+            // Detail injeksi anti-VEGF (RM 8.8) dari operation_report.injection_detail.
+            'injection_drug'     => trim((string) (($r['injection_detail']['drug'] ?? '') ?: '')),
+            'injection_volume'   => trim((string) (($r['injection_detail']['volume_ml'] ?? '') ?: '')),
+            'injection_quadrant' => trim((string) (($r['injection_detail']['quadrant'] ?? '') ?: '')),
+            'injection_distance' => trim((string) (($r['injection_detail']['distance_mm'] ?? '') ?: '')),
             default            => '',
         };
     }

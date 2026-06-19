@@ -150,9 +150,15 @@ final class FieldRegistry
                 'label'   => 'Ringkasan Operasi (teknik/temuan/komplikasi) — narasi RM 2.2',
                 'formats' => ['narrative'],
             ],
+            'surgery_safety_checklist' => [
+                'label'   => 'WHO Surgical Safety Checklist (3 fase) — dari BedahView (RM 4.9)',
+                'formats' => ['sign_in', 'time_out', 'sign_out'],
+            ],
             'surgery_identity' => [
                 'label'   => 'Identitas Operasi (operator/asisten/jam/durasi/anestesi) — dari BedahView',
-                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration'],
+                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration',
+                    // Laporan operasi subspesialis (Fase 1): mata operasi + detail injeksi anti-VEGF.
+                    'operative_eye', 'injection_drug', 'injection_volume', 'injection_quadrant', 'injection_distance'],
             ],
             'ranap_identity' => [
                 'label'   => 'Identitas Rawat Inap (tgl masuk/keluar/lama rawat/kelas/DPJP/kamar) — dari RawatInapView',

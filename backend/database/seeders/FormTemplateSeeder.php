@@ -39,6 +39,17 @@ class FormTemplateSeeder extends Seeder
         $this->seedCatatanOperasiKatarak();
         // RM 2.2/LP/22 — Laporan Pembedahan generik (universal semua operasi).
         $this->seedLaporanPembedahan();
+        // Fase 1 — laporan operasi subspesialis (section terpadu laporan_operasi).
+        $this->seedLaporanTrabekulektomi();  // RM 8.10/LOT/22 — GLAUKOMA
+        $this->seedLaporanPterygium();       // RM 9.0/LOP/22  — PTERYGIUM
+        $this->seedLaporanInjeksiAntiVegf(); // RM 8.8/LIAV/22 — INJEKSI
+        // Fase 2 — anestesi (INPUT; section laporan_operasi, soft requires_anesthesia).
+        $this->seedPenilaianPraAnestesi();   // RM 4.4/PPA/22 — penilaian pra-anestesi
+        $this->seedPersetujuanAnestesi();    // RM 4.3/PTA/22 — consent anestesi
+        // Fase 3 — safety & peri-operatif (section checklist_kesiapan, modal Pra-Bedah).
+        $this->seedWhoSafetyChecklist();     // RM 4.9/CLKPO/22 — WHO SSC (reuse data, K6)
+        $this->seedSiteMarking();            // RM 1.9/SM(PO)/22 — penandaan operasi (SKP 4)
+        $this->seedProsesPeriOperatif();     // RM 1.10/PPPO/22 — proses peri-operatif (perawat)
 
         // ── RANAP (Rawat Inap) — Phase 1, 3 form nakes-only (TTD pasien ditunda
         // sampai PSrE). Pola HYBRID auto-fill seperti Resume RJ; field ber-`group`
@@ -972,8 +983,12 @@ HTML;
             'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
             'layout_html'           => $layoutHtml,
             'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            // Section terpadu `laporan_operasi` (picker search BedahView). `conditions.
+            // report_type` → di-badge "Disarankan" saat operator konfirmasi jenis VR;
+            // soft (tetap muncul & dapat dipilih untuk kasus gabungan).
             'station_assignments'   => [
-                ['station' => 'bedah', 'section' => 'laporan_vitreoretina', 'mode' => 'HYBRID'],
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['report_type' => ['VITREORETINA']]],
             ],
         ]);
     }
@@ -1152,8 +1167,10 @@ HTML;
             'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
             'layout_html'           => $layoutHtml,
             'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            // Section terpadu `laporan_operasi`; disarankan saat jenis = KATARAK.
             'station_assignments'   => [
-                ['station' => 'bedah', 'section' => 'catatan_operasi', 'mode' => 'HYBRID'],
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['report_type' => ['KATARAK']]],
             ],
         ]);
     }
@@ -1396,8 +1413,888 @@ HTML;
             'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
             'layout_html'           => $layoutHtml,
             'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            // Section terpadu `laporan_operasi`. Laporan GENERIK: tanpa `conditions`
+            // → SELALU 'recommended' (fallback semua jenis operasi).
             'station_assignments'   => [
-                ['station' => 'bedah', 'section' => 'laporan_pembedahan', 'mode' => 'HYBRID'],
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * Kerangka bersama laporan operasi subspesialis (Fase 1) — RM 8.10/9.0/8.8.
+     * Identitas/tim/jam/diagnosis/anestesi PREFILL dari operation_report (binding
+     * surgery_identity) → "isi sekali di BedahView → proyeksi" (tak diketik ulang).
+     * SOP = boilerplate display-only (static layout). $opts: rm_number, title,
+     * sop_html, ttd_mode ('perawat_operator'|'dpjp'), extra_fields[].
+     *
+     * @return array{fields: array, layout: string}
+     */
+    private function buildSurgeryReportTemplate(array $opts): array
+    {
+        $rmNumber = $opts['rm_number'];
+        $title    = $opts['title'];
+        $sopHtml  = $opts['sop_html'];
+        $ttdMode  = $opts['ttd_mode'] ?? 'perawat_operator';
+        $extra    = $opts['extra_fields'] ?? [];
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'display_only' => true, 'binding' => $binding,
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $sid = fn (string $fmt) => ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => $fmt];
+
+        $fields = [
+            $auto('klinik_logo',   'Logo Klinik',   'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 60],
+            $auto('klinik_nama',   'Nama Klinik',   'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik', 'text', ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',   'text', ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            $auto('nama_pasien',   'Nama Pasien',   'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',           'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',        'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+
+            // Meta operasi — prefill dari BedahView (surgery_identity), tetap editable.
+            $editable('tgl_operasi', 'Tgl. Operasi', ['via' => 'db', 'source' => 'visit.visit_date'], 'date'),
+            $editable('mata', 'Mata (OD/OS)', $sid('operative_eye')),
+            $editable('operator', 'Operator', $sid('operator')),
+            $editable('jam_operasi', 'Jam Operasi', $sid('time_in'), 'time'),
+            $editable('lama_operasi', 'Lama Operasi', $sid('duration')),
+            $editable('diagnosis', 'Diagnosis', $sid('diagnosis_post'), 'longtext'),
+            $editable('asisten', 'Asisten', $sid('asisten')),
+            $editable('jenis_operasi', 'Jenis Operasi', $sid('procedure')),
+            $editable('anesthesia', 'Anesthesia', $sid('anesthesia_type')),
+            $editable('anesthesiologist', 'Anesthesiologist', $sid('anesthesiologist')),
+        ];
+        foreach ($extra as $f) {
+            $fields[] = $f;
+        }
+
+        if ($ttdMode === 'dpjp') {
+            $fields[] = ['key' => 'ttd_dpjp', 'label' => 'DPJP / Dokter', 'type' => 'signature_canvas',
+                'signer_type' => 'doctor', 'required' => false, 'binding' => ['kind' => 'static']];
+            $ttdHtml = <<<'HTML'
+<table style="width:100%; margin-top:14px; font-size:11px;"><tr>
+  <td style="width:58%;"></td>
+  <td style="width:42%; text-align:center; vertical-align:top;">
+    <div>Tanda Tangan DPJP / Dokter</div>
+    <div style="min-height:74px; display:flex; align-items:center; justify-content:center;">{{ttd_dpjp}}</div>
+    <div style="border-top:1px solid #333; padding-top:3px; margin:0 24px;">Nama Jelas</div>
+  </td>
+</tr></table>
+HTML;
+        } else {
+            $fields[] = ['key' => 'ttd_perawat', 'label' => 'Perawat', 'type' => 'signature_canvas',
+                'signer_type' => 'nurse', 'required' => false, 'binding' => ['kind' => 'static']];
+            $fields[] = ['key' => 'ttd_operator', 'label' => 'Operator', 'type' => 'signature_canvas',
+                'signer_type' => 'doctor', 'required' => false, 'binding' => ['kind' => 'static']];
+            $ttdHtml = <<<'HTML'
+<table style="width:100%; margin-top:14px; font-size:11px; text-align:center;"><tr>
+  <td style="width:50%; vertical-align:top;">
+    <div>Perawat</div>
+    <div style="min-height:74px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat}}</div>
+    <div style="border-top:1px solid #333; padding-top:3px; margin:0 24px;">Nama Jelas</div>
+  </td>
+  <td style="width:50%; vertical-align:top;">
+    <div>Operator</div>
+    <div style="min-height:74px; display:flex; align-items:center; justify-content:center;">{{ttd_operator}}</div>
+    <div style="border-top:1px solid #333; padding-top:3px; margin:0 24px;">Nama Jelas</div>
+  </td>
+</tr></table>
+HTML;
+        }
+
+        $layout = <<<HTML
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10.5px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:15px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">$rmNumber</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10px;">
+          <tr><td style="padding:2px 5px; width:66px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:13px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:4px 0;">$title</div>
+
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10px;">
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px; width:20%;">Tgl. Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:30%;">{{tgl_operasi}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:20%;">Mata</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:30%;">{{mata}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Operator</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{operator}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Jam Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{jam_operasi}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Lama Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{lama_operasi}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Jenis Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{jenis_operasi}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Diagnosis</td>
+      <td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{diagnosis}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Asisten</td>
+      <td style="border:1px solid #333; padding:3px 6px;" colspan="3">{{asisten}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Anesthesia</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{anesthesia}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Anesthesiologist</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{anesthesiologist}}</td>
+    </tr>
+  </table>
+
+  <div style="border:1px solid #333; border-top:none; padding:6px 10px; font-size:10px;">
+    $sopHtml
+  </div>
+
+  $ttdHtml
+</div>
+HTML;
+
+        return ['fields' => $fields, 'layout' => $layout];
+    }
+
+    /**
+     * RM 8.10/LOT/22 — Laporan Operasi Trabekulektomi (GLAUKOMA). HYBRID; identitas
+     * & tim prefill dari BedahView. SOP boilerplate display-only. TTD perawat+operator.
+     */
+    private function seedLaporanTrabekulektomi(): void
+    {
+        $docType = $this->requireDocType('RM-8.10-LOT');
+        if (!$docType) return;
+
+        $sop = <<<'HTML'
+<div style="font-weight:600; margin-bottom:3px;">Teknik Operasi:</div>
+<ol style="margin:0; padding-left:18px; line-height:1.5;">
+  <li>Pasien dalam posisi supine di tempat tidur</li>
+  <li>Teknik aseptik &amp; antiseptik</li>
+  <li>Pasang drape dan spekulum</li>
+  <li>Dilakukan anestesi subkonjungtiva</li>
+  <li>Peritomi konjungtiva superior, kemudian dibuat flap sklera</li>
+  <li>Buat insisi berbentuk jendela antara sklera dan kornea</li>
+  <li>Dilakukan iridektomi, flap sklera dijahit, lalu dilakukan penjahitan konjungtiva</li>
+  <li>Injeksi antibiotik (Gentamycin), Dexamethason, dan salep</li>
+  <li>Operasi selesai</li>
+</ol>
+HTML;
+
+        $tpl = $this->buildSurgeryReportTemplate([
+            'rm_number' => 'RM 8.10/LOT/22',
+            'title'     => 'LAPORAN OPERASI TRABEKULEKTOMI',
+            'sop_html'  => $sop,
+            'ttd_mode'  => 'perawat_operator',
+        ]);
+
+        $this->upsert('LAPORAN_TRABEKULEKTOMI', [
+            'name'                  => 'Laporan Operasi Trabekulektomi',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $tpl['layout'],
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $tpl['fields']],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['report_type' => ['GLAUKOMA']]],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 9.0/LOP/22 — Laporan Operasi Pterygium (PTERYGIUM). HYBRID; prefill BedahView.
+     */
+    private function seedLaporanPterygium(): void
+    {
+        $docType = $this->requireDocType('RM-9.0-LOP');
+        if (!$docType) return;
+
+        $sop = <<<'HTML'
+<div style="font-weight:600; margin-bottom:3px;">Teknik Operasi:</div>
+<ol style="margin:0; padding-left:18px; line-height:1.5;">
+  <li>Pasien dalam posisi supine di tempat tidur dan anestesi parabulbar</li>
+  <li>Teknik aseptik &amp; antiseptik</li>
+  <li>Tutup duk lubang steril</li>
+  <li>Pasang blefarostat</li>
+  <li>Injeksi Lidocain pada caput dan corpus pterygium</li>
+  <li>Pisahkan dari epitel kornea hingga bersih</li>
+  <li>Atasi perdarahan</li>
+  <li>Gunting corpus pterygium</li>
+  <li>Buat graft dari konjungtiva bagian superior</li>
+  <li>Geser ke medial, jahit tepinya</li>
+  <li>Salep antibiotik</li>
+  <li>Operasi selesai</li>
+</ol>
+HTML;
+
+        $tpl = $this->buildSurgeryReportTemplate([
+            'rm_number' => 'RM 9.0/LOP/22',
+            'title'     => 'LAPORAN OPERASI PTERYGIUM',
+            'sop_html'  => $sop,
+            'ttd_mode'  => 'perawat_operator',
+        ]);
+
+        $this->upsert('LAPORAN_PTERYGIUM', [
+            'name'                  => 'Laporan Operasi Pterygium',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $tpl['layout'],
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $tpl['fields']],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['report_type' => ['PTERYGIUM']]],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 8.8/LIAV/22 — Laporan Injeksi Anti VEGF (INJEKSI). HYBRID. Field isian khusus
+     * (obat/volume/kuadran/jarak limbus) prefill dari operation_report.injection_detail
+     * (diisi sekali di tab Intraoperatif BedahView). TTD DPJP/Dokter.
+     */
+    private function seedLaporanInjeksiAntiVegf(): void
+    {
+        $docType = $this->requireDocType('RM-8.8-LIAV');
+        if (!$docType) return;
+
+        // Field isian khusus injeksi (editable, prefill dari surgery_identity binding).
+        $inj = fn (string $key, string $label, string $fmt) => [
+            'key' => $key, 'label' => $label, 'type' => 'text',
+            'binding' => ['kind' => 'static'],
+            'prefill' => ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => $fmt],
+        ];
+        $extra = [
+            $inj('injection_drug', 'Obat Anti-VEGF', 'injection_drug'),
+            $inj('injection_volume', 'Volume (ml)', 'injection_volume'),
+            $inj('injection_quadrant', 'Kuadran', 'injection_quadrant'),
+            $inj('injection_distance', 'Jarak dari Limbus (mm)', 'injection_distance'),
+        ];
+
+        $sop = <<<'HTML'
+<div style="font-weight:600; margin-bottom:3px;">Teknik Tindakan:</div>
+<ol style="margin:0; padding-left:18px; line-height:1.5;">
+  <li>Pasien berbaring dalam anestesi {{anesthesia}}</li>
+  <li>Tindakan aseptik &amp; antiseptik menggunakan povidone iodine</li>
+  <li>Dipasangkan eye drape</li>
+  <li>Dipasangkan blefarostat</li>
+  <li>Pengukuran menggunakan caliper/trocar dengan jarak {{injection_distance}} mm dari limbus di kuadran {{injection_quadrant}}</li>
+  <li>Dilakukan injeksi {{injection_drug}} intravitreal sebanyak {{injection_volume}} ml</li>
+  <li>Diteteskan antibiotik</li>
+  <li>Mata ditutup kassa &amp; dop</li>
+  <li>Tindakan selesai</li>
+</ol>
+HTML;
+
+        $tpl = $this->buildSurgeryReportTemplate([
+            'rm_number'    => 'RM 8.8/LIAV/22',
+            'title'        => 'LAPORAN INJEKSI ANTI VEGF',
+            'sop_html'     => $sop,
+            'ttd_mode'     => 'dpjp',
+            'extra_fields' => $extra,
+        ]);
+
+        $this->upsert('LAPORAN_INJEKSI_ANTIVEGF', [
+            'name'                  => 'Laporan Injeksi Anti VEGF',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $tpl['layout'],
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $tpl['fields']],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['report_type' => ['INJEKSI']]],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 4.4/PPA/22 — Penilaian Pra Anestesi & Sedasi (diisi pasien + dokter anestesi).
+     * INPUT (HYBRID: identitas auto). Section laporan_operasi, soft requires_anesthesia.
+     */
+    private function seedPenilaianPraAnestesi(): void
+    {
+        $docType = $this->requireDocType('RM-4.4-PPA');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $manual = fn (string $key, string $label, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'],
+        ];
+        $mcheck = fn (string $key, string $label, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'binding' => ['kind' => 'static'], 'options' => $options,
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+
+        $fields = [
+            $auto('klinik_logo',   'Logo Klinik',   'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 56],
+            $auto('klinik_nama',   'Nama Klinik',   'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('nama_pasien',   'Nama Pasien',   'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',           'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',        'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',           'text', ['kind' => 'db', 'source' => 'patient.nik']),
+
+            // ── Diisi pasien/keluarga ──
+            $manual('pekerjaan', 'Pekerjaan'),
+            $mcheck('kebiasaan', 'Kebiasaan', ['Merokok', 'Alkohol', 'Kopi/Teh/Cola', 'Olahraga rutin']),
+            $manual('kebiasaan_detail', 'Kebiasaan — detail/jumlah', 'longtext'),
+            $mcheck('pengobatan', 'Pengobatan & Alergi', ['Aspirin/Plavix rutin', 'Obat anti sakit rutin', 'Alergi obat', 'Alergi makanan', 'Alergi lain']),
+            $manual('pengobatan_detail', 'Pengobatan/Alergi — detail (dosis & lama)', 'longtext'),
+            $mcheck('riwayat_keluarga', 'Riwayat Keluarga', ['Perdarahan tidak normal', 'Diabetes', 'Masalah pembiusan', 'Asma', 'Gangguan irama jantung']),
+            $mcheck('riwayat_penyakit', 'Riwayat Penyakit Pasien', ['Perdarahan tidak normal', 'Mengorok', 'Nyeri dada', 'Hepatitis', 'Sakit maag', 'Hipertensi', 'Anemia', 'Diabetes', 'Serangan jantung', 'Pingsan', 'Asma']),
+            $manual('riwayat_lain', 'Transfusi / HIV / Alat bantu / Riwayat operasi', 'longtext'),
+
+            // ── Diisi dokter anestesi ──
+            $mcheck('kajian_sistem', 'Kajian Sistem (Dokter)', ['Hilangnya gigi', 'Obesitas', 'Masalah mobilisasi leher', 'Sakit dada', 'Leher pendek', 'Stroke', 'Denyut jantung tidak normal', 'Kejang', 'Sesak napas', 'Sedang hamil']),
+            $manual('vital_gcs', 'GCS'),
+            $manual('vital_td', 'Tekanan Darah'),
+            $manual('vital_nadi', 'Nadi'),
+            $manual('vital_suhu', 'Suhu'),
+            $manual('vital_rr', 'RR'),
+            $manual('vital_tb', 'Tinggi (cm)'),
+            $manual('vital_bb', 'Berat (kg)'),
+            $manual('vital_bmi', 'BMI'),
+            $manual('vital_vas', 'VAS'),
+            $mcheck('airway', 'Airway', ['Buka mulut > 2 jari', 'Gigi palsu', 'Jarak thyromental > 3 jari', 'Gerakan leher maksimal']),
+            $mcheck('mallampati', 'Mallampati', ['I', 'II', 'III', 'IV']),
+            $manual('keadaan_umum', 'Keadaan Umum (kepala/sklera/konjungtiva/leher/jantung/paru/abdomen/ekstremitas)', 'longtext'),
+            $manual('lab', 'Laboratorium (Hb/Ht/Plt · SGOT/SGPT · PPT/APTT · Glukosa · EKG · Rontgen)', 'longtext'),
+            $manual('diagnosis', 'Diagnosis (ICD-X)'),
+            $mcheck('asa', 'ASA Classification', ['ASA 1', 'ASA 2', 'ASA 3', 'ASA 4']),
+            $mcheck('teknik', 'Teknik Anestesi & Sedasi', ['Sedasi', 'GA', 'Spinal', 'Epidural', 'Kaudal', 'Blok Perifer']),
+            $mcheck('monitoring', 'Monitoring', ['EKG', 'SpO2', 'NIBP', 'Temp', 'Lain-lain']),
+            $mcheck('perawatan_pasca', 'Perawatan Pasca Anestesi', ['Rawat inap', 'Rawat jalan', 'ICU', 'HDU']),
+            $manual('puasa', 'Puasa mulai (jam / tanggal)'),
+            $manual('rencana_operasi', 'Rencana Operasi (jam / tanggal)'),
+            $manual('catatan', 'Catatan', 'longtext'),
+            $editable('dpjp_anestesi', 'Dokter Anestesi', ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'anesthesiologist']),
+
+            ['key' => 'ttd_pasien',  'label' => 'Pasien/Keluarga', 'type' => 'signature_canvas', 'signer_type' => 'patient', 'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_perawat', 'label' => 'Perawat',         'type' => 'signature_canvas', 'signer_type' => 'nurse',   'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_dokter',  'label' => 'Dokter Anestesi',  'type' => 'signature_canvas', 'signer_type' => 'doctor',  'required' => false, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:middle; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle; font-size:14px; font-weight:700; color:#0E3A66;">{{klinik_nama}}</td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:9px; color:#666;">RM 4.4/PPA/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+          <tr><td style="padding:2px 5px; width:60px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:12px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:3px 0; margin:3px 0;">PENILAIAN PRA-ANESTESI DAN SEDASI</div>
+
+  <div style="font-weight:700; background:#eef3f9; padding:2px 6px; margin-top:4px;">Diisi oleh Pasien / Keluarga</div>
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr><td style="border:1px solid #333; padding:3px 6px; width:24%;">Pekerjaan</td><td style="border:1px solid #333; padding:3px 6px;" colspan="3">{{pekerjaan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Kebiasaan</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{kebiasaan}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top; width:18%;">Detail</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{kebiasaan_detail}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Pengobatan &amp; Alergi</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{pengobatan}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Detail</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{pengobatan_detail}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Riwayat Keluarga</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{riwayat_keluarga}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Riwayat Penyakit</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{riwayat_penyakit}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Lain-lain</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{riwayat_lain}}</td></tr>
+  </table>
+
+  <div style="page-break-before:always; height:4px;"></div>
+  <div style="font-weight:700; background:#eef3f9; padding:2px 6px; margin-top:4px;">Diisi oleh Dokter Anestesi</div>
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr><td style="border:1px solid #333; padding:3px 6px; width:24%; vertical-align:top;">Kajian Sistem</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{kajian_sistem}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;" colspan="4">GCS: {{vital_gcs}} &nbsp;·&nbsp; TD: {{vital_td}} &nbsp;·&nbsp; Nadi: {{vital_nadi}} &nbsp;·&nbsp; Suhu: {{vital_suhu}} &nbsp;·&nbsp; RR: {{vital_rr}} &nbsp;·&nbsp; TB: {{vital_tb}} &nbsp;·&nbsp; BB: {{vital_bb}} &nbsp;·&nbsp; BMI: {{vital_bmi}} &nbsp;·&nbsp; VAS: {{vital_vas}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Airway</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{airway}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top; width:18%;">Mallampati</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{mallampati}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Keadaan Umum</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{keadaan_umum}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Laboratorium</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{lab}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Diagnosis (ICD-X)</td><td style="border:1px solid #333; padding:3px 6px;">{{diagnosis}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">ASA</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{asa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Teknik Anestesi</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{teknik}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Monitoring</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{monitoring}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Perawatan Pasca</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{perawatan_pasca}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Persiapan</td><td style="border:1px solid #333; padding:3px 6px;">Puasa: {{puasa}}<div>Rencana Operasi: {{rencana_operasi}}</div></td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Catatan</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;" colspan="3">{{catatan}}</td></tr>
+  </table>
+
+  <table style="width:100%; margin-top:12px; font-size:10px; text-align:center;"><tr>
+    <td style="width:33%; vertical-align:top;"><div>Pasien/Keluarga</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_pasien}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 16px;">Nama Jelas</div></td>
+    <td style="width:33%; vertical-align:top;"><div>Perawat</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 16px;">Nama Jelas</div></td>
+    <td style="width:34%; vertical-align:top;"><div>Dokter Anestesi</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 16px;">{{dpjp_anestesi}}</div></td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('PENILAIAN_PRA_ANESTESI', [
+            'name'                  => 'Penilaian Pra Anestesi dan Sedasi',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['requires_anesthesia' => true]],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 4.3/PTA/22 — Persetujuan Tindakan Anestesi (consent). HYBRID. Info tindakan/
+     * risiko/komplikasi = boilerplate display-only; TTD dokter + pasien + saksi.
+     */
+    private function seedPersetujuanAnestesi(): void
+    {
+        $docType = $this->requireDocType('RM-4.3-PTA');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $manual = fn (string $key, string $label, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'],
+        ];
+        $mcheck = fn (string $key, string $label, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'binding' => ['kind' => 'static'], 'options' => $options,
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+
+        $fields = [
+            $auto('klinik_logo',   'Logo Klinik',   'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 56],
+            $auto('klinik_nama',   'Nama Klinik',   'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('nama_pasien',   'Nama Pasien',   'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',           'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',        'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+
+            $editable('dokter_pelaksana', 'Dokter Pelaksana Tindakan', ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'anesthesiologist']),
+            $manual('pemberi_informasi', 'Pemberi Informasi'),
+            $manual('penerima_informasi', 'Penerima Informasi / Pemberi Persetujuan'),
+            $manual('diagnosis', 'Diagnosis (WD & DD)'),
+            $mcheck('asa', 'Status Fisik ASA', ['ASA 1', 'ASA 2', 'ASA 3', 'ASA 4']),
+            $mcheck('tindakan_umum', 'Anestesi Umum', ['Intubasi', 'LMA', 'FM', 'TIVA']),
+            $mcheck('tindakan_regional', 'Anestesi Regional', ['Spinal', 'Epidural', 'Blok Perifer']),
+            $mcheck('risiko', 'Risiko', ['Shock', 'Henti Jantung', 'Meninggal dunia di meja operasi']),
+            $manual('prognosis', 'Prognosis'),
+            $manual('alternatif', 'Alternatif Tindakan'),
+            $manual('lain_lain', 'Lain-lain', 'longtext'),
+            // Pernyataan persetujuan.
+            $manual('nama_penanggung', 'Nama Yang Menyatakan'),
+            $manual('hubungan', 'Hubungan dengan Pasien'),
+            $manual('alamat', 'Alamat'),
+            $manual('tempat_tanggal', 'Tempat, Tanggal, Pukul'),
+
+            ['key' => 'ttd_dokter', 'label' => 'Dokter', 'type' => 'signature_canvas', 'signer_type' => 'doctor',  'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_pasien', 'label' => 'Yang Menyatakan', 'type' => 'signature_canvas', 'signer_type' => 'patient', 'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_saksi',  'label' => 'Saksi',  'type' => 'signature_canvas', 'signer_type' => 'witness', 'required' => false, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:middle; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle; font-size:14px; font-weight:700; color:#0E3A66;">{{klinik_nama}}</td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:9px; color:#666;">RM 4.3/PTA/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+          <tr><td style="padding:2px 5px; width:60px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:12px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:3px 0; margin:3px 0;">PERSETUJUAN TINDAKAN ANESTESI</div>
+
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr><td style="border:1px solid #333; padding:3px 6px; width:30%;">Dokter Pelaksana</td><td style="border:1px solid #333; padding:3px 6px;">{{dokter_pelaksana}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Pemberi Informasi</td><td style="border:1px solid #333; padding:3px 6px;">{{pemberi_informasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Penerima Informasi / Pemberi Persetujuan</td><td style="border:1px solid #333; padding:3px 6px;">{{penerima_informasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Diagnosis (WD &amp; DD)</td><td style="border:1px solid #333; padding:3px 6px;">{{diagnosis}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Status Fisik ASA</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{asa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Tindakan — Anestesi Umum</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{tindakan_umum}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Tindakan — Anestesi Regional</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{tindakan_regional}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Indikasi &amp; Tujuan</td><td style="border:1px solid #333; padding:3px 6px;">Memfasilitasi operasi, menghilangkan rasa sakit saat operasi.</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Risiko</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{risiko}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Prognosis</td><td style="border:1px solid #333; padding:3px 6px;">{{prognosis}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Alternatif Tindakan</td><td style="border:1px solid #333; padding:3px 6px;">{{alternatif}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Lain-lain</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{lain_lain}}</td></tr>
+  </table>
+
+  <div style="border:1px solid #333; border-top:none; padding:5px 8px; font-size:8.5px; color:#333; line-height:1.4;">
+    <b>Komplikasi yang mungkin terjadi</b> — <u>Anestesi Umum:</u> gangguan sistem pernafasan (kejang/penyempitan jalan nafas, hipoksia, aspirasi), jantung &amp; pembuluh darah (hipo/hipertensi, aritmia s.d. henti jantung), saraf (kejang, bangun lambat, trauma saraf tepi), trauma laringoskopi-intubasi (gigi patah, luka, perdarahan), perubahan suhu tubuh, efek obat &amp; alergi (s.d. syok anafilaktik), cedera akibat posisi. <u>Anestesi Regional (Spinal/Epidural):</u> penurunan tekanan darah, anestesi spinal total, reaksi toksik/alergi, nyeri kepala/punggung, infeksi, retensi urin, cedera saraf, perdarahan.
+  </div>
+
+  <div style="margin-top:8px; font-size:9px; line-height:1.45; text-align:justify;">
+    Yang bertanda tangan di bawah ini, saya, nama <b>{{nama_penanggung}}</b> ({{hubungan}}), alamat {{alamat}}, dengan ini menyatakan <b>PERSETUJUAN</b> untuk dilakukannya tindakan <b>ANESTESI</b> terhadap pasien <b>{{nama_pasien}}</b> (No. RM {{no_rm}}). Saya telah dijelaskan dan memahami jenis tindakan pembiusan beserta manfaat, risiko dan komplikasi yang mungkin timbul, serta menyadari bahwa keberhasilan tindakan kedokteran bukanlah keniscayaan.
+  </div>
+
+  <table style="width:100%; margin-top:10px; font-size:9.5px; text-align:center;">
+    <tr><td colspan="3" style="text-align:right; padding-right:8px;">{{tempat_tanggal}}</td></tr>
+    <tr>
+      <td style="width:34%; vertical-align:top;"><div>Dokter</div><div style="min-height:62px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama Jelas</div></td>
+      <td style="width:33%; vertical-align:top;"><div>Yang Menyatakan</div><div style="min-height:62px; display:flex; align-items:center; justify-content:center;">{{ttd_pasien}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama Jelas</div></td>
+      <td style="width:33%; vertical-align:top;"><div>Saksi</div><div style="min-height:62px; display:flex; align-items:center; justify-content:center;">{{ttd_saksi}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama Jelas</div></td>
+    </tr>
+  </table>
+</div>
+HTML;
+
+        $this->upsert('PERSETUJUAN_ANESTESI', [
+            'name'                  => 'Persetujuan Tindakan Anestesi',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID',
+                 'conditions' => ['requires_anesthesia' => true]],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 4.9/CLKPO/22 — Checklist Keselamatan Pasien Operasi (WHO SSC 3 fase).
+     * REUSE data sign-in/time-out/sign-out BedahView (K6) via binding
+     * surgery_safety_checklist — TIDAK diinput ulang. HYBRID, section checklist_kesiapan.
+     */
+    private function seedWhoSafetyChecklist(): void
+    {
+        $docType = $this->requireDocType('RM-4.9-SSC');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $ssc = fn (string $fmt) => ['via' => 'aggregate', 'source' => 'surgery_safety_checklist', 'format' => $fmt];
+
+        $fields = [
+            $auto('klinik_logo', 'Logo Klinik', 'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 56],
+            $auto('klinik_nama', 'Nama Klinik', 'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('nama_pasien', 'Nama Pasien', 'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',   'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P', 'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm', 'No. RM', 'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            // 3 fase WHO — prefill dari safety_checklist (editable bila perlu koreksi).
+            $editable('sign_in',  'Sign In (sebelum induksi anestesi)', $ssc('sign_in')),
+            $editable('time_out', 'Time Out (sebelum insisi)', $ssc('time_out')),
+            $editable('sign_out', 'Sign Out (sebelum pasien keluar OK)', $ssc('sign_out')),
+            ['key' => 'ttd_dokter',  'label' => 'Dokter', 'type' => 'signature_canvas', 'signer_type' => 'doctor',  'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_perawat', 'label' => 'Perawat', 'type' => 'signature_canvas', 'signer_type' => 'nurse',  'required' => false, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:middle; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle; font-size:14px; font-weight:700; color:#0E3A66;">{{klinik_nama}}</td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:9px; color:#666;">RM 4.9/CLKPO/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+          <tr><td style="padding:2px 5px; width:60px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:12px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:3px 0; margin:3px 0;">CHECKLIST KESELAMATAN PASIEN OPERASI</div>
+
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr>
+      <td style="border:1px solid #333; padding:4px 6px; width:33.3%; vertical-align:top; background:#eef3f9; font-weight:700;">SIGN IN<div style="font-weight:400; font-size:8.5px;">Sebelum induksi anestesi</div></td>
+      <td style="border:1px solid #333; padding:4px 6px; width:33.3%; vertical-align:top; background:#eef3f9; font-weight:700;">TIME OUT<div style="font-weight:400; font-size:8.5px;">Sebelum insisi</div></td>
+      <td style="border:1px solid #333; padding:4px 6px; width:33.4%; vertical-align:top; background:#eef3f9; font-weight:700;">SIGN OUT<div style="font-weight:400; font-size:8.5px;">Sebelum pasien keluar OK</div></td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:5px 6px; vertical-align:top; white-space:pre-line;">{{sign_in}}</td>
+      <td style="border:1px solid #333; padding:5px 6px; vertical-align:top; white-space:pre-line;">{{time_out}}</td>
+      <td style="border:1px solid #333; padding:5px 6px; vertical-align:top; white-space:pre-line;">{{sign_out}}</td>
+    </tr>
+  </table>
+
+  <table style="width:100%; margin-top:12px; font-size:10px; text-align:center;"><tr>
+    <td style="width:50%; vertical-align:top;"><div>Dokter</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 24px;">Nama &amp; Tanda Tangan</div></td>
+    <td style="width:50%; vertical-align:top;"><div>Perawat</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 24px;">Nama &amp; Tanda Tangan</div></td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('WHO_SAFETY_CHECKLIST', [
+            'name'                  => 'Checklist Keselamatan Pasien Operasi',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'checklist_kesiapan', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 1.9/SM(PO)/22 — Site Marking (Penandaan Operasi, SKP 4). Mata prefill dari
+     * operative_eye (operation_report); editable agar bisa diisi pra-op. TTD pasien+dokter+perawat.
+     */
+    private function seedSiteMarking(): void
+    {
+        $docType = $this->requireDocType('RM-1.9-SM');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $manual = fn (string $key, string $label, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'],
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+
+        $fields = [
+            $auto('klinik_logo', 'Logo Klinik', 'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 56],
+            $auto('klinik_nama', 'Nama Klinik', 'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('nama_pasien', 'Nama Pasien', 'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',   'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('no_rm', 'No. RM', 'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik', 'NIK', 'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            // Mata: OD/OS (prefill dari operation_report.operative_eye; editable pra-op).
+            $editable('mata', 'Mata yang Dioperasi (OD/OS)', ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operative_eye']),
+            $manual('tanggal', 'Tanggal', 'date'),
+            $manual('jam', 'Jam', 'time'),
+            ['key' => 'ttd_pasien',  'label' => 'Pasien/Keluarga', 'type' => 'signature_canvas', 'signer_type' => 'patient', 'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_dokter',  'label' => 'Dokter yang Merawat', 'type' => 'signature_canvas', 'signer_type' => 'doctor', 'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_perawat', 'label' => 'Perawat Penanggung Jawab', 'type' => 'signature_canvas', 'signer_type' => 'nurse', 'required' => false, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10.5px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:middle; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle; font-size:14px; font-weight:700; color:#0E3A66;">{{klinik_nama}}</td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:9px; color:#666;">RM 1.9/SM(PO)/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+          <tr><td style="padding:2px 5px; width:60px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:13px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:4px 0;">SITE MARKING (PENANDAAN OPERASI)</div>
+
+  <p style="margin:6px 0; font-size:10px;">Beri tanda (&#10003;) pada lokasi yang akan dioperasi menggunakan alat penanda/marker.</p>
+
+  <div style="text-align:center; margin:14px 0; font-size:14px; font-weight:700; letter-spacing:1px;">
+    Mata yang dioperasi: <span style="border:2px solid #0E3A66; padding:4px 16px; border-radius:6px;">{{mata}}</span>
+  </div>
+
+  <div style="margin-top:10px; font-size:10px;">Tanggal: {{tanggal}} &nbsp;&nbsp; Jam: {{jam}}</div>
+
+  <table style="width:100%; margin-top:18px; font-size:10px; text-align:center;"><tr>
+    <td style="width:33.3%; vertical-align:top;"><div>Pasien/Keluarga</div><div style="min-height:66px; display:flex; align-items:center; justify-content:center;">{{ttd_pasien}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama &amp; Tanda Tangan</div></td>
+    <td style="width:33.3%; vertical-align:top;"><div>Dokter yang Merawat</div><div style="min-height:66px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama &amp; Tanda Tangan</div></td>
+    <td style="width:33.4%; vertical-align:top;"><div>Perawat Penanggung Jawab</div><div style="min-height:66px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 14px;">Nama &amp; Tanda Tangan</div></td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('SITE_MARKING', [
+            'name'                  => 'Site Marking (Penandaan Operasi)',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'checklist_kesiapan', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 1.10/PPPO/22 — Proses Perawatan Peri-operatif. INPUT (perawat ruangan + kamar
+     * bedah). Identitas/diagnosis/operator prefill; checklist persiapan via mcheck. HYBRID.
+     */
+    private function seedProsesPeriOperatif(): void
+    {
+        $docType = $this->requireDocType('RM-1.10-PPO');
+        if (!$docType) return;
+
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'display_only' => true, 'binding' => $binding,
+        ];
+        $manual = fn (string $key, string $label, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'],
+        ];
+        $mcheck = fn (string $key, string $label, array $options) => [
+            'key' => $key, 'label' => $label, 'type' => 'multi_checkbox', 'binding' => ['kind' => 'static'], 'options' => $options,
+        ];
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'text') => [
+            'key' => $key, 'label' => $label, 'type' => $type, 'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+        $sid = fn (string $fmt) => ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => $fmt];
+
+        $fields = [
+            $auto('klinik_logo', 'Logo Klinik', 'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 56],
+            $auto('klinik_nama', 'Nama Klinik', 'text', ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('nama_pasien', 'Nama Pasien', 'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',   'Tanggal Lahir', 'date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P', 'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm', 'No. RM', 'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik', 'NIK', 'text', ['kind' => 'db', 'source' => 'patient.nik']),
+
+            // ── A: Catatan perawatan sebelum operasi (perawat ruangan) ──
+            $manual('tanggal', 'Tanggal', 'date'),
+            $manual('jam', 'Jam', 'time'),
+            $manual('ruangan', 'Ruangan'),
+            $manual('jenis_pasien', 'Jenis Pasien (Umum/Asuransi/BPJS)'),
+            $editable('diagnosis', 'Diagnosis', $sid('diagnosis_post')),
+            $editable('tindakan_operasi', 'Tindakan Operasi', $sid('procedure')),
+            $editable('dokter_operator', 'Dokter Operator', $sid('operator')),
+            $editable('dokter_anestesi', 'Dokter Anestesi', $sid('anesthesiologist')),
+            $manual('vs_temp', 'Suhu'),
+            $manual('vs_nadi', 'Nadi'),
+            $manual('vs_rr', 'Pernafasan'),
+            $manual('vs_td', 'Tekanan Darah'),
+            $manual('vs_tb', 'Tinggi'),
+            $manual('vs_bb', 'Berat (kg)'),
+            $mcheck('riwayat_penyakit', 'Riwayat Penyakit', ['Hipertensi', 'Diabetes', 'Hepatitis', 'Lain-lain']),
+            $mcheck('alergi', 'Alergi', ['Tidak', 'Tidak Tahu', 'Ya']),
+            $manual('kgd', 'Hasil KGD (+ waktu pengambilan)'),
+
+            // ── B: Checklist persiapan (perawat ruangan & kamar operasi) ──
+            $mcheck('persiapan', 'Checklist Persiapan (centang yang SUDAH dilakukan)', [
+                'Pemeriksaan identitas pasien', 'Pemeriksaan gelang nama',
+                'Formulir persetujuan operasi (TTD)', 'Pemberian premedikasi',
+                'Puasa makan & minum terakhir', 'Lepas alat prothesa (gigi palsu/lensa kontak)',
+                'Lepas penjepit rambut/cat kuku/perhiasan', 'Status pasien terlampir',
+                'X-ray/Scan terlampir', 'Persiapan pencukuran bulu mata',
+                'Pemeriksaan darah (PMI/Lab RS)', 'Site marker terpasang',
+            ]),
+            $manual('catatan', 'Keterangan / Catatan', 'longtext'),
+
+            ['key' => 'ttd_perawat_ruangan', 'label' => 'Perawat Ruangan', 'type' => 'signature_canvas', 'signer_type' => 'nurse', 'required' => false, 'binding' => ['kind' => 'static']],
+            ['key' => 'ttd_perawat_bedah',   'label' => 'Perawat Kamar Bedah', 'type' => 'signature_canvas', 'signer_type' => 'nurse', 'required' => false, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:10px; padding:16px;">
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:middle; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle; font-size:14px; font-weight:700; color:#0E3A66;">{{klinik_nama}}</td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:9px; color:#666;">RM 1.10/PPPO/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+          <tr><td style="padding:2px 5px; width:60px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:12px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:3px 0; margin:3px 0;">PROSES PERAWATAN PERI-OPERATIF</div>
+
+  <div style="font-weight:700; background:#eef3f9; padding:2px 6px; margin-top:4px;">A. Catatan Sebelum Operasi (Perawat Ruangan)</div>
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr><td style="border:1px solid #333; padding:3px 6px; width:18%;">Tanggal / Jam</td><td style="border:1px solid #333; padding:3px 6px; width:32%;">{{tanggal}} &nbsp; {{jam}}</td><td style="border:1px solid #333; padding:3px 6px; width:18%;">Ruangan</td><td style="border:1px solid #333; padding:3px 6px;">{{ruangan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Jenis Pasien</td><td style="border:1px solid #333; padding:3px 6px;">{{jenis_pasien}}</td><td style="border:1px solid #333; padding:3px 6px;">Diagnosis</td><td style="border:1px solid #333; padding:3px 6px;">{{diagnosis}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Tindakan Operasi</td><td style="border:1px solid #333; padding:3px 6px;">{{tindakan_operasi}}</td><td style="border:1px solid #333; padding:3px 6px;">Dokter Operator</td><td style="border:1px solid #333; padding:3px 6px;">{{dokter_operator}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Dokter Anestesi</td><td style="border:1px solid #333; padding:3px 6px;">{{dokter_anestesi}}</td><td style="border:1px solid #333; padding:3px 6px;">Hasil KGD</td><td style="border:1px solid #333; padding:3px 6px;">{{kgd}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Vital Signs</td><td style="border:1px solid #333; padding:3px 6px;" colspan="3">Suhu: {{vs_temp}} &nbsp;·&nbsp; Nadi: {{vs_nadi}} &nbsp;·&nbsp; RR: {{vs_rr}} &nbsp;·&nbsp; TD: {{vs_td}} &nbsp;·&nbsp; TB: {{vs_tb}} &nbsp;·&nbsp; BB: {{vs_bb}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Riwayat Penyakit</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{riwayat_penyakit}}</td><td style="border:1px solid #333; padding:3px 6px; vertical-align:top;">Alergi</td><td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{alergi}}</td></tr>
+  </table>
+
+  <div style="font-weight:700; background:#eef3f9; padding:2px 6px; margin-top:6px;">B. Checklist Persiapan (Perawat Ruangan &amp; Kamar Operasi)</div>
+  <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:9.5px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; white-space:pre-line;">{{persiapan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:3px 6px;">Keterangan: {{catatan}}</td></tr>
+  </table>
+
+  <table style="width:100%; margin-top:12px; font-size:10px; text-align:center;"><tr>
+    <td style="width:50%; vertical-align:top;"><div>Perawat Ruangan</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat_ruangan}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 24px;">Nama &amp; Tanda Tangan</div></td>
+    <td style="width:50%; vertical-align:top;"><div>Perawat Kamar Bedah</div><div style="min-height:64px; display:flex; align-items:center; justify-content:center;">{{ttd_perawat_bedah}}</div><div style="border-top:1px solid #333; padding-top:2px; margin:0 24px;">Nama &amp; Tanda Tangan</div></td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('PROSES_PERI_OPERATIF', [
+            'name'                  => 'Proses Perawatan Peri-Operatif',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'checklist_kesiapan', 'mode' => 'HYBRID'],
             ],
         ]);
     }

@@ -785,7 +785,12 @@ class BedahService
             'gtin'          => $u->gtin,
         ])->values()->all();
 
-        $report = $data;
+        // MERGE (bukan replace) ke operation_report yang sudah ada — supaya saat satu
+        // pasien dikerjakan beberapa akun bergiliran (mis. operator isi laporan, lalu
+        // akun lain melengkapi), key yang TIDAK dikirim payload ini tidak hilang.
+        // FE tetap mengirim payload penuh hasil hidrasi; merge = pertahanan berlapis.
+        $existing = is_array($record->operation_report) ? $record->operation_report : [];
+        $report = array_merge($existing, $data);
         $report['implants']  = $implants;
         $report['signed_by'] = auth('api')->id();
         $report['signed_at'] = now()->toIso8601String();

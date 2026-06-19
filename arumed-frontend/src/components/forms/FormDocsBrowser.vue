@@ -99,11 +99,19 @@ const groupedForms = computed(() => {
     return true
   }
 
+  // Selektivitas per-fungsi (backend `relevance`): 'recommended' di-pin ke atas,
+  // 'optional' menyusul. Stabil (preserve urutan asli dalam tiap bucket).
+  const relRank = (f) => (f.relevance === 'optional' ? 1 : 0)
+
   return props.sections
     .map((s) => ({
       key: s.key,
       label: s.label,
-      items: allForms.value.filter((f) => f._section === s.key && match(f)),
+      items: allForms.value
+        .filter((f) => f._section === s.key && match(f))
+        .map((f, i) => ({ f, i }))
+        .sort((a, b) => (relRank(a.f) - relRank(b.f)) || (a.i - b.i))
+        .map((x) => x.f),
     }))
     .filter((g) => g.items.length > 0)
 })
@@ -186,14 +194,19 @@ function resetFilters() {
       <section v-for="g in groupedForms" :key="g.key" class="fdb-group">
         <h4 class="fdb-group-title">{{ g.label }} <span class="fdb-group-count">{{ g.items.length }}</span></h4>
         <div class="fdb-list">
-          <FormRMRenderer
+          <div
             v-for="t in g.items"
             :key="t.id"
-            :template="t"
-            :visit-id="visitId"
-            :patient-id="patientId"
-            @deleted="load"
-          />
+            :class="['fdb-item', t.relevance === 'optional' && 'fdb-item-optional']"
+          >
+            <span v-if="t.relevance === 'recommended'" class="fdb-rec-badge">Disarankan</span>
+            <FormRMRenderer
+              :template="t"
+              :visit-id="visitId"
+              :patient-id="patientId"
+              @deleted="load"
+            />
+          </div>
         </div>
       </section>
     </div>
@@ -310,4 +323,17 @@ function resetFilters() {
   font-variant-numeric: tabular-nums;
 }
 .fdb-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+/* ── Relevance (selektivitas per-fungsi) ──────────────────────────────────── */
+.fdb-item { position: relative; }
+/* Form tak cocok konteks bedah tapi tetap bisa dipilih via search → diturunkan
+   visualnya, tidak disembunyikan (soft). */
+.fdb-item-optional { opacity: 0.72; }
+.fdb-item-optional:hover, .fdb-item-optional:focus-within { opacity: 1; }
+.fdb-rec-badge {
+  position: absolute; top: 6px; right: 8px; z-index: 1;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em;
+  color: #0a7d3f; background: #e6f7ec; border: 1px solid #b6e6c8;
+  padding: 1px 7px; border-radius: 999px; pointer-events: none;
+}
 </style>

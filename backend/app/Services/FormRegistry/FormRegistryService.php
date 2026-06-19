@@ -4,6 +4,7 @@ namespace App\Services\FormRegistry;
 
 use App\Models\DocumentTemplate;
 use App\Models\PatientDocument;
+use App\Models\SurgeryRecord;
 use App\Models\Visit;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -250,11 +251,24 @@ final class FormRegistryService
             ->whereNotNull('station_assignments')
             ->get();
 
+        // Konteks bedah utk evaluasi `conditions` (selektivitas form per-fungsi).
+        // Dihitung SEKALI per request (bukan per template).
+        $ctx = $this->surgeryContext($visitId);
+
+        // Cocokkan station+section, lalu evaluasi `conditions` assignment terhadap
+        // konteks → tentukan relevance. `hidden` (hard gate, mis. anestesi tanpa
+        // anestesi) dibuang dari daftar; `recommended`/`optional` tetap tampil.
+        $relevanceByCode = [];
         $matched = $templates
-            ->filter(function (DocumentTemplate $t) use ($station, $section) {
+            ->filter(function (DocumentTemplate $t) use ($station, $section, $ctx, &$relevanceByCode) {
                 foreach (($t->station_assignments ?? []) as $assign) {
                     if (($assign['station'] ?? null) === $station
                         && ($assign['section'] ?? null) === $section) {
+                        $rel = $this->evaluateRelevance($assign['conditions'] ?? null, $ctx);
+                        if ($rel === 'hidden') {
+                            return false;
+                        }
+                        $relevanceByCode[$t->code] = $rel;
                         return true;
                     }
                 }
@@ -273,7 +287,7 @@ final class FormRegistryService
             ->keyBy('template_code');
 
         return $matched
-            ->map(function (DocumentTemplate $t) use ($existingByCode) {
+            ->map(function (DocumentTemplate $t) use ($existingByCode, $relevanceByCode) {
                 $existing = $existingByCode->get($t->code);
                 return [
                     'id'              => $t->id,
@@ -281,6 +295,10 @@ final class FormRegistryService
                     'name'            => $t->name,
                     'kind'            => $t->kind,
                     'complexity_kind' => $t->complexity_kind,
+                    // Selektivitas per-fungsi: 'recommended' (cocok konteks bedah) vs
+                    // 'optional' (tak cocok tapi tetap bisa dipilih via search). Form
+                    // 'hidden' sudah dibuang di atas. FE pin recommended ke atas + badge.
+                    'relevance'       => $relevanceByCode[$t->code] ?? 'recommended',
                     // field_schema + custom_component_name WAJIB dikirim: FormRMRenderer
                     // membangun field input (tab "Isi Data") dari sini. Tanpa ini, form
                     // HYBRID/INPUT tampil kosong (hanya tombol Simpan) — user tak bisa isi.
@@ -296,6 +314,94 @@ final class FormRegistryService
                 ];
             })
             ->all();
+    }
+
+    /**
+     * Konteks bedah untuk evaluasi `conditions` (selektivitas form per-fungsi).
+     *
+     * Sumber kebenaran jenis laporan = `operation_report.report_types[]` yang
+     * DIKONFIRMASI operator (persisted). Bila belum ada (operasi belum dimulai /
+     * belum dikonfirmasi), fallback ke tebakan nama paket (SurgeryPackage::
+     * suggestSurgeryType) supaya badge "Disarankan" tetap masuk akal sebelum
+     * konfirmasi. Anestesi dari `operation_report.anesthesia_type`.
+     *
+     * @return array{report_types: string[], requires_anesthesia: bool, has_laterality: bool}
+     */
+    public function surgeryContext(int|string $visitId): array
+    {
+        $record = SurgeryRecord::query()
+            ->where('visit_id', $visitId)
+            ->latest('created_at')
+            ->first();
+
+        $report = (array) ($record?->operation_report ?? []);
+
+        // report_types terkonfirmasi (array of code: KATARAK/VITREORETINA/GLAUKOMA/
+        // PTERYGIUM/INJEKSI). Normalisasi ke UPPERCASE.
+        $reportTypes = array_values(array_filter(array_map(
+            static fn ($v) => is_string($v) ? strtoupper(trim($v)) : null,
+            (array) ($report['report_types'] ?? []),
+        )));
+
+        // Fallback tebakan dari nama paket bila operator belum konfirmasi jenis.
+        if (empty($reportTypes)) {
+            $pkgName = optional(optional($record?->surgerySchedule)->surgeryPackage)->name
+                ?? optional(optional(Visit::find($visitId))->surgerySchedule?->surgeryPackage)->name;
+            $guess = $pkgName ? \App\Models\SurgeryPackage::suggestSurgeryType($pkgName) : null;
+            if ($guess) {
+                $reportTypes = [$guess];
+            }
+        }
+
+        // Anestesi termonitor (selaras ANES_MONITORED di BedahView): selain Topikal/
+        // kosong dianggap butuh dokumentasi anestesi (consent/penilaian/laporan).
+        $anesthesia = strtoupper(trim((string) ($report['anesthesia_type'] ?? '')));
+        $requiresAnesthesia = $anesthesia !== '' && $anesthesia !== 'TOPIKAL';
+
+        $laterality = trim((string) ($report['operative_eye'] ?? ''));
+
+        return [
+            'report_types'        => $reportTypes,
+            'requires_anesthesia' => $requiresAnesthesia,
+            'has_laterality'      => $laterality !== '',
+        ];
+    }
+
+    /**
+     * Evaluasi blok `conditions` sebuah assignment terhadap konteks bedah.
+     *
+     * Aturan (SEMUA soft — tak pernah menyembunyikan, agar tetap bisa dicari):
+     *   - Tanpa conditions → 'recommended' (selalu relevan; mis. RM 2.2 generik).
+     *   - `requires_anesthesia: true` → 'recommended' bila ada anestesi, selain itu
+     *     'optional'. SOFT (bukan hidden): dokumen consent/penilaian pra-anestesi
+     *     diisi PRA-OP saat anesthesia_type belum tersimpan → kalau di-hidden malah
+     *     tak bisa ditemukan. Operator tetap menemukannya via search + badge.
+     *   - `report_type: [..]` → 'recommended' bila irisan dgn report_types konteks,
+     *     selain itu 'optional' (tetap tampil, bisa dicari).
+     *
+     * @param array<string,mixed>|null $conditions
+     * @param array{report_types: string[], requires_anesthesia: bool, has_laterality: bool} $ctx
+     * @return 'recommended'|'optional'
+     */
+    private function evaluateRelevance(?array $conditions, array $ctx): string
+    {
+        if (empty($conditions)) {
+            return 'recommended';
+        }
+
+        // Anestesi (soft): consent/penilaian pra-anestesi relevan saat ada anestesi.
+        if (($conditions['requires_anesthesia'] ?? false) === true) {
+            return $ctx['requires_anesthesia'] ? 'recommended' : 'optional';
+        }
+
+        // Jenis laporan operasi (soft).
+        if (! empty($conditions['report_type'])) {
+            $want = array_map(static fn ($v) => strtoupper(trim((string) $v)), (array) $conditions['report_type']);
+            $hit = array_intersect($want, $ctx['report_types']);
+            return empty($hit) ? 'optional' : 'recommended';
+        }
+
+        return 'recommended';
     }
 
     /**

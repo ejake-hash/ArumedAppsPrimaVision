@@ -329,6 +329,126 @@ class DocumentTypeSeeder extends Seeder
                 'sort_order'          => 12,
             ],
 
+            // ── Laporan operasi subspesialis (Fase 1) — form resmi RS, section
+            // terpadu `laporan_operasi` (picker search BedahView), 'recommended' saat
+            // operator konfirmasi jenis prosedur (operation_report.report_types).
+            // Slug template di FormTemplateSeeder. TTD DPJP/Operator (DOKTER) opsional.
+
+            // RM-8.10-LOT — Laporan Operasi Trabekulektomi (RM 8.10/LOT/22). Jenis GLAUKOMA.
+            [
+                'code'                => 'RM-8.10-LOT',
+                'name'                => 'Laporan Operasi Trabekulektomi',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 13,
+            ],
+            // RM-9.0-LOP — Laporan Operasi Pterygium (RM 9.0/LOP/22). Jenis PTERYGIUM.
+            [
+                'code'                => 'RM-9.0-LOP',
+                'name'                => 'Laporan Operasi Pterygium',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 14,
+            ],
+            // RM-8.8-LIAV — Laporan Injeksi Anti VEGF (RM 8.8/LIAV/22). Jenis INJEKSI.
+            [
+                'code'                => 'RM-8.8-LIAV',
+                'name'                => 'Laporan Injeksi Anti VEGF',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 15,
+            ],
+
+            // ── Anestesi (Fase 2) — consent + penilaian pra-anestesi. INPUT (diisi tim
+            // anestesi/pasien). Section laporan_operasi, conditions requires_anesthesia
+            // (soft: 'recommended' saat ada anestesi). Laporan Anestesi RM 5.2 sendiri =
+            // wizard bespoke (AnesthesiaReportWizard), bukan template Form Registry.
+
+            // RM-4.3-PTA — Persetujuan Tindakan Anestesi (consent). TTD pasien+dokter+saksi.
+            [
+                'code'                => 'RM-4.3-PTA',
+                'name'                => 'Persetujuan Tindakan Anestesi',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [
+                    ['role' => 'PASIEN', 'sign_type' => 'manual', 'is_required' => false],
+                    ['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false],
+                ],
+                'show_in_rme'         => true,
+                'sort_order'          => 16,
+            ],
+            // RM-4.4-PPA — Penilaian Pra Anestesi & Sedasi (diisi pasien + dokter anestesi).
+            [
+                'code'                => 'RM-4.4-PPA',
+                'name'                => 'Penilaian Pra Anestesi dan Sedasi',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [
+                    ['role' => 'PASIEN', 'sign_type' => 'manual', 'is_required' => false],
+                    ['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false],
+                ],
+                'show_in_rme'         => true,
+                'sort_order'          => 17,
+            ],
+
+            // ── Safety & peri-operatif (Fase 3) — section checklist_kesiapan (modal
+            // Pra-Bedah). RM 4.9 WHO SSC = REUSE data sign-in/time-out/sign-out BedahView
+            // (K6). RM 1.9 Site Marking (SKP 4). RM 1.10 Proses Peri-operatif (perawat).
+
+            // RM-1.9-SM — Site Marking / Penandaan Operasi (SKP 4). TTD pasien+dokter+perawat.
+            [
+                'code'                => 'RM-1.9-SM',
+                'name'                => 'Site Marking (Penandaan Operasi)',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [
+                    ['role' => 'PASIEN',  'sign_type' => 'manual',  'is_required' => false],
+                    ['role' => 'DOKTER',  'sign_type' => 'digital', 'is_required' => false],
+                    ['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false],
+                ],
+                'show_in_rme'         => true,
+                'sort_order'          => 18,
+            ],
+            // RM-4.9-SSC — Checklist Keselamatan Pasien Operasi (WHO SSC 3 fase).
+            [
+                'code'                => 'RM-4.9-SSC',
+                'name'                => 'Checklist Keselamatan Pasien Operasi',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [
+                    ['role' => 'DOKTER',  'sign_type' => 'digital', 'is_required' => false],
+                    ['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false],
+                ],
+                'show_in_rme'         => true,
+                'sort_order'          => 19,
+            ],
+            // RM-1.10-PPO — Proses Perawatan Peri-operatif (perawat ruangan + kamar bedah).
+            [
+                'code'                => 'RM-1.10-PPO',
+                'name'                => 'Proses Perawatan Peri-Operatif',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [
+                    ['role' => 'PERAWAT', 'sign_type' => 'digital', 'is_required' => false],
+                ],
+                'show_in_rme'         => true,
+                'sort_order'          => 20,
+            ],
+
             // ── RANAP (Rawat Inap) — Phase 1, 3 form nakes-only/PIN (TTD pasien
             // ditunda sampai PSrE). Kode disambiguasi (-RI/-PAM/-AAKRI) karena nomor
             // resmi RM 3.5/7.7/7.8 bentrok dengan slot kode internal lama. Stasiun
@@ -441,7 +561,11 @@ class DocumentTypeSeeder extends Seeder
         // template RESUME_MEDIS) yang di-seed. Definisi 24 jenis lain DIPERTAHANKAN
         // di array $types sebagai referensi; tambahkan kembali code-nya ke filter
         // ini saat jenisnya dibangun dari PDF resmi.
-        $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, ['RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP', 'RM-3.5-RI', 'RM-7.7-PAM', 'RM-7.8-AAKRI', 'RM-2.9-JTH', 'RM-2.4-EDU', 'RM-2.7-REK', 'RM-2.5-SPD', 'RM-2.6-TRF'], true)));
+        $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, [
+            'RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP', 'RM-3.5-RI', 'RM-7.7-PAM', 'RM-7.8-AAKRI', 'RM-2.9-JTH', 'RM-2.4-EDU', 'RM-2.7-REK', 'RM-2.5-SPD', 'RM-2.6-TRF',
+            // Fase 1-3 laporan operasi subspesialis + anestesi + safety (form resmi RS).
+            'RM-8.10-LOT', 'RM-9.0-LOP', 'RM-8.8-LIAV', 'RM-4.3-PTA', 'RM-4.4-PPA', 'RM-1.9-SM', 'RM-4.9-SSC', 'RM-1.10-PPO',
+        ], true)));
 
         foreach ($types as $type) {
             DocumentType::updateOrCreate(
