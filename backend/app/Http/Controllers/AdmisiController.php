@@ -720,8 +720,10 @@ class AdmisiController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
+        // Kertas custom 13 x 21 cm (368.5 x 595.28 pt) — sesuai lembar SEP resmi,
+        // agar hasil cetak tidak melebar ke A4. Konsisten dgn @page di pdf.sep.blade.
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.sep', $data)
-            ->setPaper('a5')
+            ->setPaper([0, 0, 368.5, 595.28])
             ->setOption('isRemoteEnabled', true);
 
         $safe = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) ($data['no_sep'] ?? 'SEP')) ?: 'SEP';
