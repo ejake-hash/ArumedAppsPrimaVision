@@ -518,6 +518,38 @@ class KlaimController extends Controller
     // jadi 1 PDF gabungan per pasien (siap unggah ke verifikasi digital BPJS).
     // =========================================================================
 
+    /**
+     * Sesuaikan rendered_html (dibuat untuk browser) agar aman dirender dompdf.
+     * dompdf TIDAK andal merender <svg> inline (apalagi di dalam flexbox), sehingga
+     * QR/barcode stempel TTD hilang di berkas Vedika. Solusi: ubah <svg class="rm-qr">
+     * menjadi <img data-URI> (pola yang sama dgn cetak SEP yang sudah jalan di dompdf).
+     * Plus paksa font DejaVu Sans pada glyph centang ✓ (Arial→Helvetica tak punya
+     * U+2713 → tampil "?"). Berlaku untuk dokumen lama maupun baru.
+     */
+    private function dompdfSafeHtml(string $html): string
+    {
+        // (1) QR verifikasi/stempel: <svg class="rm-qr">…</svg> → <img data-URI>.
+        $html = preg_replace_callback(
+            '/<svg\b[^>]*\brm-qr\b[^>]*>.*?<\/svg>/s',
+            function ($m) {
+                $svg = $m[0];
+                $w = preg_match('/\bwidth=["\']?(\d+)/', $svg, $mm) ? (int) $mm[1] : 44;
+                return '<img src="data:image/svg+xml;base64,' . base64_encode($svg)
+                    . '" style="width:' . $w . 'px;height:' . $w . 'px;display:inline-block;vertical-align:middle;" alt="QR" />';
+            },
+            $html
+        ) ?? $html;
+
+        // (2) Glyph centang pada stempel TTD elektronik → paksa DejaVu Sans.
+        $html = str_replace(
+            '✓ DITANDATANGANI SECARA ELEKTRONIK',
+            '<span style="font-family:\'DejaVu Sans\',sans-serif;">&#10003;</span> DITANDATANGANI SECARA ELEKTRONIK',
+            $html
+        );
+
+        return $html;
+    }
+
     /** Bungkus rendered_html dengan shell A4 (selaras printHtml() FE) untuk dompdf. */
     private function wrapPrintHtml(string $html, string $title = 'Dokumen'): string
     {
@@ -544,7 +576,7 @@ class KlaimController extends Controller
             return $this->error('Dokumen belum punya snapshot (belum dirender/ditandatangani).', 422);
         }
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($this->wrapPrintHtml($html, $snap['template_code'] ?? 'Dokumen'))
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($this->wrapPrintHtml($this->dompdfSafeHtml($html), $snap['template_code'] ?? 'Dokumen'))
             ->setPaper('a4')
             ->setOption('isRemoteEnabled', true);
 
