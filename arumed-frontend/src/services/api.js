@@ -537,6 +537,8 @@ export const formTemplateApi = {
 
   // ─── Runtime (station Vue) ─────────────────────────────────────────────
   forms:       (params) => api.get('/rekam-medis/forms', { params }),
+  // Payload satu template (field_schema + existing_document) utk visit — buka editor field (FormRMRenderer) atas draf.
+  formTemplate: (code, visitId) => api.get(`/rekam-medis/form/${code}/template`, { params: { visit_id: visitId } }),
   renderForm:  (code, visitId) => api.get(`/rekam-medis/form/${code}/render`, { params: { visit_id: visitId } }),
   prefillForm: (code, visitId) => api.get(`/rekam-medis/form/${code}/prefill`, { params: { visit_id: visitId } }),
   submitForm:  (code, visitId, data) => api.post(`/rekam-medis/form/${code}/submit`, { visit_id: visitId, data }),

@@ -23,6 +23,10 @@ import { TableHeader } from '@tiptap/extension-table-header'
 const props = defineProps({
   modelValue: { type: String, default: '' },
   placeholders: { type: Array, default: () => [] },
+  // Mode awal: 'visual' (TipTap) | 'source' (HTML mentah). Layout kompleks
+  // (tabel kop bersarang + inline-style, mis. dokumen RM) WAJIB 'source' —
+  // TipTap menormalisasi/membuang struktur itu sehingga edit tak round-trip.
+  defaultMode: { type: String, default: 'visual' },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -32,7 +36,7 @@ const showInsertMenu = ref(false)
 // Mode editor: 'visual' (TipTap WYSIWYG) | 'source' (HTML mentah).
 // WAJIB untuk layout kompleks (tabel kop berkop inline-style) yang DIBUANG/dinormalisasi
 // TipTap — di mode source HTML diedit apa adanya tanpa dirusak.
-const mode = ref('visual')
+const mode = ref(props.defaultMode === 'source' ? 'source' : 'visual')
 const sourceDraft = ref(props.modelValue ?? '')
 const sourceRef = ref(null)   // <textarea> utk insert placeholder di posisi kursor
 

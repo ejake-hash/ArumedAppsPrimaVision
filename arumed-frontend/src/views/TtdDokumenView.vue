@@ -21,6 +21,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { formTemplateApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import LayoutEditor from '@/components/master/form-template/LayoutEditor.vue'
+import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 import BulkTtdReviewModal from '@/components/forms/BulkTtdReviewModal.vue'
 
 // Dokter anestesi melihat antrean TTD-nya sendiri (backend resolve signer_type
@@ -348,6 +349,7 @@ function closeModal() {
   previewHtml.value = ''
   editMode.value = false
   editHtml.value = ''
+  rmEdit.value = { open: false, template: null, visitId: null, patientId: null }
   pinModalOpen.value = false
   pinValue.value = ''
   pinError.value = ''
@@ -394,7 +396,71 @@ async function doDeleteDraft() {
   } finally { deleting.value = false }
 }
 
-function startEdit() {
+// ── Edit isi draf ─────────────────────────────────────────────────────────
+// Utama: editor BERBASIS FIELD (FormRMRenderer, tab "Isi Data" + Cetak) — sama
+// seperti dokter mengisi resume. Edit field → submit → perbarui draf yang SAMA
+// (FormRegistryService::submit dedup per visit+template), lalu re-render dari
+// data RM. Ini menghindari bug editor HTML/TipTap yang menormalisasi tabel kop
+// bersarang sehingga perubahan tak tersimpan.
+//
+// Fallback: template tanpa field editable (OUTPUT / field_schema kosong) atau
+// dokumen lepas-kunjungan → editor HTML lama (LayoutEditor mode 'source' agar
+// layout kompleks tetap utuh).
+const rmEdit = ref({ open: false, template: null, visitId: null, patientId: null })
+const rmEditLoading = ref(false)
+
+async function startEdit() {
+  error.value = ''
+  const doc = currentDoc.value
+  if (!doc) return
+  if (!doc.visit_id || !doc.template_code) { startHtmlEdit(); return }
+
+  rmEditLoading.value = true
+  try {
+    const { data } = await formTemplateApi.formTemplate(doc.template_code, doc.visit_id)
+    const tpl = data.data ?? null
+    const hasFields = tpl
+      && ['INPUT', 'HYBRID'].includes(tpl.kind)
+      && tpl.field_schema && Object.keys(tpl.field_schema).length > 0
+    if (!hasFields) { startHtmlEdit(); return }
+    rmEdit.value = {
+      open: true,
+      template: tpl,
+      visitId: doc.visit_id,
+      patientId: doc.patient?.id ?? null,
+    }
+  } catch (e) {
+    // Gagal ambil template → tetap bisa koreksi via editor HTML.
+    startHtmlEdit()
+  } finally {
+    rmEditLoading.value = false
+  }
+}
+
+// FormRMRenderer ditutup (Simpan Draft / Selesai & TTD / Tutup) → segarkan
+// preview + daftar (isi & status draf bisa berubah).
+async function closeRmEdit() {
+  rmEdit.value = { open: false, template: null, visitId: null, patientId: null }
+  if (currentDoc.value) {
+    try {
+      const { data } = await formTemplateApi.snapshot(currentDoc.value.id)
+      if (data.data?.rendered_html) previewHtml.value = data.data.rendered_html
+      if (data.data?.status) currentDoc.value = { ...currentDoc.value, status: data.data.status }
+    } catch (_) { /* abaikan — preview lama tetap tampil */ }
+  }
+  await loadActive()
+  await refreshCount()
+}
+
+// Draf dihapus dari dalam FormRMRenderer → tutup modal preview & segarkan.
+async function onRmDeleted() {
+  rmEdit.value = { open: false, template: null, visitId: null, patientId: null }
+  closeModal()
+  await loadActive()
+  await refreshCount()
+}
+
+function startHtmlEdit() {
   editHtml.value = previewHtml.value
   editMode.value = true
 }
@@ -737,7 +803,9 @@ onMounted(() => { load(); refreshCount() })
 
     <!-- Preview modal -->
     <Teleport to="body">
-      <div v-if="modalOpen && currentDoc" class="pv-overlay" @click.self="closeModal">
+      <!-- Sembunyikan saat editor field (FormRMRenderer) terbuka — frr-overlay
+           (z-index 1000) di bawah pv-overlay (1200); tanpa ini editor ketutup. -->
+      <div v-if="modalOpen && currentDoc && !rmEdit.open" class="pv-overlay" @click.self="closeModal">
         <div class="pv-modal">
           <header class="pv-head">
             <div>
@@ -752,10 +820,10 @@ onMounted(() => { load(); refreshCount() })
               <div v-if="!editMode" v-html="previewHtml"></div>
               <div v-else class="edit-wrap">
                 <p class="edit-hint">
-                  Edit isi dokumen (DRAFT). Perubahan menimpa isi dokumen ini dan
-                  lepas dari data rekam medis.
+                  Edit isi dokumen (DRAFT) sebagai HTML. Perubahan menimpa isi
+                  dokumen ini dan lepas dari data rekam medis.
                 </p>
-                <LayoutEditor v-model="editHtml" />
+                <LayoutEditor v-model="editHtml" default-mode="source" />
               </div>
             </template>
           </div>
@@ -782,13 +850,29 @@ onMounted(() => { load(); refreshCount() })
                 {{ deleting ? 'Menghapus…' : (confirmDelete ? 'Klik lagi untuk hapus' : '🗑 Hapus Draft') }}
               </button>
               <span v-if="deleteError" class="pv-del-err">{{ deleteError }}</span>
-              <button v-if="isDraft" class="btn btn-ghost" @click="startEdit">Edit isi</button>
+              <button v-if="isDraft" class="btn btn-ghost" :disabled="rmEditLoading" @click="startEdit">
+                {{ rmEditLoading ? 'Membuka…' : 'Edit isi' }}
+              </button>
               <button class="btn btn-blue" @click="openPin">Tanda tangani</button>
             </template>
           </footer>
         </div>
       </div>
     </Teleport>
+
+    <!-- Editor field (FormRMRenderer) untuk draf — meng-Teleport modalnya sendiri
+         ke body (tab "Isi Data" + "Preview/Cetak"). Pemicu disembunyikan; dibuka
+         otomatis via autoOpen saat "Edit isi" diklik. -->
+    <div v-if="rmEdit.open && rmEdit.template" style="display:none">
+      <FormRMRenderer
+        :template="rmEdit.template"
+        :visit-id="rmEdit.visitId"
+        :patient-id="rmEdit.patientId"
+        :auto-open="true"
+        @close="closeRmEdit"
+        @deleted="onRmDeleted"
+      />
+    </div>
 
     <!-- PIN single-sign -->
     <Teleport to="body">

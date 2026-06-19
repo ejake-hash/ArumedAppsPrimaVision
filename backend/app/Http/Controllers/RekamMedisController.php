@@ -413,6 +413,26 @@ class RekamMedisController extends Controller
     }
 
     /**
+     * GET /rekam-medis/form/{code}/template?visit_id=Z
+     * Payload satu template (field_schema + kind + existing_document) untuk visit —
+     * dipakai TtdDokumenView membuka FormRMRenderer (editor field) atas draf.
+     */
+    public function formTemplate(Request $request, string $code): JsonResponse
+    {
+        $validated = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+        ]);
+
+        try {
+            $payload = $this->formRegistry->templatePayloadForVisit($code, $validated['visit_id']);
+        } catch (\Throwable $e) {
+            return $this->error($e->getMessage(), 422);
+        }
+
+        return $this->ok($payload);
+    }
+
+    /**
      * GET /rekam-medis/form/{code}/render?visit_id=Z
      * Render OUTPUT mode → HTML string (dry-run; tidak persist).
      */

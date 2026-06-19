@@ -1177,6 +1177,48 @@ final class FormRegistryService
         return array_values(array_diff($required, $captured));
     }
 
+    /**
+     * Payload SATU template (field_schema + kind + existing_document) untuk sebuah
+     * visit — dipakai TtdDokumenView agar bisa membuka FormRMRenderer (editor field)
+     * tanpa tahu station/section dokumen. Bentuk identik dengan satu entri
+     * listByStationSection() supaya FormRMRenderer menerimanya apa adanya.
+     */
+    public function templatePayloadForVisit(string $code, int|string $visitId): array
+    {
+        if (!Visit::query()->whereKey($visitId)->exists()) {
+            throw new RuntimeException("Visit {$visitId} tidak ditemukan.");
+        }
+
+        $t = $this->findActiveTemplateByCode($code);
+
+        // Dokumen pra-TTD terbaru utk visit+template ini → FormRMRenderer pakai
+        // existing_document.id sebagai sasaran submit (perbarui draf yg sama).
+        $existing = PatientDocument::query()
+            ->where('visit_id', $visitId)
+            ->where('template_code', $code)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->first(['id', 'status', 'finalized_at']);
+
+        return [
+            'id'              => $t->id,
+            'code'            => $t->code,
+            'name'            => $t->name,
+            'kind'            => $t->kind,
+            'complexity_kind' => $t->complexity_kind,
+            'relevance'       => 'recommended',
+            'field_schema'          => $t->field_schema,
+            'custom_component_name' => $t->custom_component_name,
+            'version'         => $t->version,
+            'assignments'     => $t->station_assignments,
+            'existing_document' => $existing ? [
+                'id'           => $existing->id,
+                'status'       => $existing->status,
+                'finalized_at' => optional($existing->finalized_at)?->toIso8601String(),
+            ] : null,
+        ];
+    }
+
     private function findActiveTemplateByCode(string $code): DocumentTemplate
     {
         $template = DocumentTemplate::query()
