@@ -1887,9 +1887,14 @@ class AdmisiService
         // WAJIB kosong (DPJP diturunkan BPJS dari poli+rujukan, atau dari skdp.kodeDPJP saat
         // kontrol). skdp HANYA diisi saat ada surat kontrol — noSurat & kodeDPJP harus
         // konsisten (terisi/kosong bersama; kodeDPJP terisi tanpa noSurat → ditolak).
+        // dpjpLayan & skdp harus KONSISTEN dgn jenis kunjungan (matriks dari log VClaim
+        // 19 Jun): Normal (tanpa surat kontrol) → keduanya KOSONG (mengisi dpjpLayan saat
+        // normal → "assesmentPel tidak sesuai"; DPJP diturunkan BPJS dari poli+rujukan).
+        // Kontrol (ada surat kontrol) → skdp.noSurat+skdp.kodeDPJP DAN dpjpLayan terisi
+        // (mengosongkan dpjpLayan saat skdp terisi → "tujuanKunj tidak sesuai").
         $adaSuratKontrol = trim((string) $noSuratKontrol) !== '';
         $tujuanKunj      = '0';
-        $dpjpLayan       = '';
+        $dpjpLayan       = $adaSuratKontrol ? ($kodeDpjp ?? '') : '';
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
