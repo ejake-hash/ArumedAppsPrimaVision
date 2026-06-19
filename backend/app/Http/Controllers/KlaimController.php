@@ -471,20 +471,67 @@ class KlaimController extends Controller
         return $this->ok(null, 'Lampiran dihapus');
     }
 
-    /**
-     * POST /klaim/{id}/lembar-klaim — buat/perbarui Lembar Klaim (Resume Medis
-     * versi klaim) → masuk antrian TTD dokter. Bila sudah pernah di-TTD lalu
-     * koding berubah, TTD lama dibatalkan & perlu TTD ulang.
-     */
-    public function generateLembarKlaim(string $id): JsonResponse
+    // =========================================================================
+    // BERKAS KLAIM (Vedika) — render dokumen/kwitansi → PDF untuk dirakit FE
+    // jadi 1 PDF gabungan per pasien (siap unggah ke verifikasi digital BPJS).
+    // =========================================================================
+
+    /** Bungkus rendered_html dengan shell A4 (selaras printHtml() FE) untuk dompdf. */
+    private function wrapPrintHtml(string $html, string $title = 'Dokumen'): string
+    {
+        $t = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
+
+        return '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>' . $t . '</title>'
+            . '<style>@page{size:A4;margin:14mm}'
+            . 'body{margin:0;font-family:"DejaVu Sans",Arial,sans-serif;font-size:12px;color:#1a1a1a}'
+            . 'table{border-collapse:collapse}img{max-width:100%}</style></head><body>'
+            . $html . '</body></html>';
+    }
+
+    /** GET /klaim/dokumen/{docId}/pdf — render snapshot dokumen RM (rendered_html) → PDF. */
+    public function dokumenPdf(string $docId)
     {
         try {
-            $lembar = $this->service->generateClaimResume($id);
+            $snap = app(\App\Services\FormRegistry\FormRegistryService::class)->getSnapshot($docId);
+        } catch (\Throwable $e) {
+            return $this->error('Dokumen tidak ditemukan.', 404);
+        }
+
+        $html = $snap['rendered_html'] ?? null;
+        if (! $html) {
+            return $this->error('Dokumen belum punya snapshot (belum dirender/ditandatangani).', 422);
+        }
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($this->wrapPrintHtml($html, $snap['template_code'] ?? 'Dokumen'))
+            ->setPaper('a4')
+            ->setOption('isRemoteEnabled', true);
+
+        return $pdf->stream("DOK-{$docId}.pdf");
+    }
+
+    /**
+     * GET /klaim/kwitansi/{visitId}/pdf — render kwitansi/tagihan kunjungan → PDF.
+     * Pakai blade dompdf-safe `pdf.receipt` (tabel), BUKAN `receipt_print` (flexbox,
+     * untuk browser) yang rusak di dompdf — selaras Mail\ReceiptMail.
+     */
+    public function kwitansiPdf(string $visitId)
+    {
+        $visit = \App\Models\Visit::with('billingInvoice')->find($visitId);
+        if (! $visit?->billingInvoice) {
+            return $this->error('Belum ada kwitansi/tagihan untuk kunjungan ini.', 404);
+        }
+
+        try {
+            $data = app(\App\Services\KasirService::class)->generateReceipt($visit->billingInvoice->id);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
-        return $this->ok($lembar, 'Lembar klaim siap — menunggu tanda tangan dokter.');
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.receipt', $data)
+            ->setPaper('a4')
+            ->setOption('isRemoteEnabled', true);
+
+        return $pdf->stream("KWITANSI-{$visitId}.pdf");
     }
 
     // =========================================================================
@@ -529,6 +576,45 @@ class KlaimController extends Controller
             : 'Tidak ada SEP baru untuk ditautkan';
 
         return $this->ok($data, $msg);
+    }
+
+    /**
+     * POST /klaim/rekap/{visitId}/kirim-klaim — siapkan/kirim 1 kunjungan ke daftar
+     * klaim (KlaimView): salin SEP + diagnosis dari kunjungan → bpjs_claims (DRAFT).
+     */
+    public function rekapKirimKlaim(string $visitId): JsonResponse
+    {
+        try {
+            $claim = $this->service->prepareClaimData($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Kunjungan dikirim ke daftar klaim', 201);
+    }
+
+    /**
+     * POST /klaim/rekap/kirim-klaim-massal — kirim semua kunjungan SIAP (ada SEP +
+     * diagnosis utama) pada tanggal/rentang aktif ke daftar klaim sekaligus.
+     */
+    public function rekapKirimKlaimMassal(Request $request): JsonResponse
+    {
+        $request->validate([
+            'tanggal'      => 'nullable|date',
+            'tanggal_from' => 'nullable|date',
+            'tanggal_to'   => 'nullable|date',
+            'jenis'        => 'nullable|in:RAJAL,RANAP',
+        ]);
+
+        try {
+            $data = $this->service->kirimKlaimMassal(
+                $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis'])
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($data, "{$data['sent']} kunjungan dikirim ke klaim");
     }
 
     /** POST /klaim/rekap/{visitId}/kelengkapan — set status kelengkapan + KET (manual). */

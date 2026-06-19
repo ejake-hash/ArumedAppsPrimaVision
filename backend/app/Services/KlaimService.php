@@ -29,7 +29,7 @@ class KlaimService
 
     public function getClaimList(array $filters = []): LengthAwarePaginator
     {
-        $query = BpjsClaim::with(['visit.patient', 'visit.insurer', 'assignedTo']);
+        $query = BpjsClaim::with(['visit.patient', 'visit.insurer', 'visit.doctorExamination', 'assignedTo']);
 
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -58,18 +58,52 @@ class KlaimService
             $query->whereDate('created_at', '<=', $filters['tanggal_to']);
         }
 
-        return $query->orderByDesc('created_at')->paginate($filters['per_page'] ?? 20);
+        $page = $query->orderByDesc('created_at')->paginate($filters['per_page'] ?? 20);
+
+        // Self-heal: klaim yang auto-dibuat (ensureClaimForVisit) tak menyalin
+        // diagnosa → "Perlu Diagnosis" padahal dokter sudah memilih. Isi dari
+        // pemeriksaan dokter bila kolom klaim kosong (sekali, lalu persist).
+        $page->getCollection()->each(fn ($c) => $this->backfillClaimCodingFromExam($c, $c->visit?->doctorExamination));
+
+        return $page;
     }
 
     public function getClaimById(string $id): BpjsClaim
     {
-        return BpjsClaim::with([
+        $claim = BpjsClaim::with([
             'visit.patient',
             'visit.doctorExamination.doctor',
             'visit.billingInvoice',
             'assignedTo',
             'auditLogs.performedBy',
         ])->findOrFail($id);
+
+        $this->backfillClaimCodingFromExam($claim, $claim->visit?->doctorExamination);
+
+        return $claim;
+    }
+
+    /**
+     * Isi koding klaim dari pemeriksaan dokter bila kolom klaim MASIH KOSONG —
+     * klaim yang auto-dibuat minimal (ensureClaimForVisit, mis. saat resume di-TTD)
+     * tak menyalin diagnosa, jadi tampak "Perlu Diagnosis" walau dokter sudah
+     * memilih di doctor_examinations. TIDAK menimpa bila koder sudah mengisi, dan
+     * tak menyentuh klaim yang sudah dikirim/selesai.
+     */
+    private function backfillClaimCodingFromExam(BpjsClaim $claim, ?\App\Models\DoctorExamination $exam = null): void
+    {
+        if (! empty($claim->diagnosis_utama) || in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            return;
+        }
+        $exam = $exam ?: $claim->visit?->doctorExamination;
+        if (! $exam?->diagnosis_utama) {
+            return;
+        }
+        $claim->forceFill([
+            'diagnosis_utama'    => $exam->diagnosis_utama,
+            'diagnosis_sekunder' => $this->stripToCodes($exam->diagnosis_sekunder) ?: ($claim->diagnosis_sekunder ?? []),
+            'procedure_codes'    => $this->stripToCodes($exam->tindakan_codes) ?: ($claim->procedure_codes ?? []),
+        ])->save();
     }
 
     // =========================================================================
@@ -229,6 +263,50 @@ class KlaimService
     }
 
     /**
+     * Kirim massal kunjungan BPJS → daftar klaim (KlaimView) untuk rentang aktif.
+     * Hanya kunjungan SIAP (ada `no_sep` + `diagnosis_utama` dari Dokter) yang
+     * diproses; sisanya dilewati (skipped), bukan digagalkan. Per kunjungan dibuat
+     * via prepareClaimData (idempoten — updateOrCreate `bpjs_claims`).
+     *
+     * @return array{sent:int,skipped:int,failed:int,scanned:int}
+     */
+    public function kirimKlaimMassal(array $filters): array
+    {
+        $from = ! empty($filters['tanggal']) ? $filters['tanggal'] : ($filters['tanggal_from'] ?? null);
+        $to   = ! empty($filters['tanggal']) ? $filters['tanggal'] : ($filters['tanggal_to'] ?? null);
+        if (! $from || ! $to) {
+            throw new \Exception('Tentukan tanggal atau rentang terlebih dahulu.', 422);
+        }
+
+        $visits = Visit::query()
+            ->where('guarantor_type', 'BPJS')
+            ->whereNotNull('no_sep')
+            ->whereDate('visit_date', '>=', $from)
+            ->whereDate('visit_date', '<=', $to)
+            ->when(! empty($filters['jenis']), fn ($q) => $q->where('jenis_pelayanan', $filters['jenis']))
+            ->with('doctorExamination:id,visit_id,diagnosis_utama')
+            ->get();
+
+        $sent = 0;
+        $skipped = 0;
+        $failed = 0;
+        foreach ($visits as $v) {
+            if (empty($v->doctorExamination?->diagnosis_utama)) {
+                $skipped++;   // belum ada diagnosis utama dari Dokter
+                continue;
+            }
+            try {
+                $this->prepareClaimData($v->id);
+                $sent++;
+            } catch (\Throwable $e) {
+                $failed++;
+            }
+        }
+
+        return ['sent' => $sent, 'skipped' => $skipped, 'failed' => $failed, 'scanned' => $visits->count()];
+    }
+
+    /**
      * Daftar SEMUA kunjungan pasien BPJS (termasuk yang belum punya klaim),
      * difilter tanggal/rentang + pencarian, untuk layar rekap pra-klaim.
      */
@@ -374,7 +452,7 @@ class KlaimService
      */
     public function ensureClaimForVisit(string $visitId): BpjsClaim
     {
-        $visit = Visit::with('patient')->findOrFail($visitId);
+        $visit = Visit::with(['patient', 'doctorExamination'])->findOrFail($visitId);
 
         if ($visit->guarantor_type !== 'BPJS') {
             throw new \Exception('Kunjungan bukan pasien BPJS.', 422);
@@ -385,14 +463,24 @@ class KlaimService
 
         $existing = BpjsClaim::where('visit_id', $visit->id)->first();
         if ($existing) {
+            // Backfill diagnosa dari pemeriksaan dokter bila klaim lama masih kosong.
+            $this->backfillClaimCodingFromExam($existing, $visit->doctorExamination);
+
             return $existing;
         }
 
+        // Default koding klaim = koding dokter (koder bisa menyesuaikan nanti) →
+        // klaim tak lahir "Perlu Diagnosis" padahal dokter sudah memilih.
+        $exam = $visit->doctorExamination;
+
         return BpjsClaim::create([
-            'visit_id'    => $visit->id,
-            'no_sep'      => $visit->no_sep,
-            'patient_nik' => $visit->patient?->nik,
-            'status'      => 'DRAFT',
+            'visit_id'           => $visit->id,
+            'no_sep'             => $visit->no_sep,
+            'patient_nik'        => $visit->patient?->nik,
+            'diagnosis_utama'    => $exam?->diagnosis_utama,
+            'diagnosis_sekunder' => $this->stripToCodes($exam?->diagnosis_sekunder),
+            'procedure_codes'    => $this->stripToCodes($exam?->tindakan_codes),
+            'status'             => 'DRAFT',
         ]);
     }
 
@@ -488,12 +576,8 @@ class KlaimService
         $tplNames = DocumentTemplate::whereIn('code', self::CLAIM_DOC_CODES)->pluck('name', 'code');
         $claim = $visit->bpjsClaim;
 
-        $documents = $docs->map(function (PatientDocument $d) use ($tplNames, $claim) {
+        $documents = $docs->map(function (PatientDocument $d) use ($tplNames) {
             $signed = in_array($d->status, ['FINALIZED', 'FINAL'], true);
-            $codingSynced = null;
-            if ($d->template_code === self::CLAIM_RESUME_CODE && $claim) {
-                $codingSynced = $d->claim_coding_hash === $this->claimCodingHash($claim);
-            }
             return [
                 'id'            => $d->id,
                 'source'        => 'document',
@@ -505,7 +589,7 @@ class KlaimService
                 'claim_ready'   => $signed,
                 'revision'      => $d->revision,
                 'signed_at'     => $d->finalized_at?->toIso8601String(),
-                'coding_synced' => $codingSynced,
+                'coding_synced' => null,
             ];
         })->values()->all();
 
@@ -799,78 +883,24 @@ class KlaimService
         );
         $this->log($user?->id, 'EDIT_CLAIM_CODING', BpjsClaim::class, $claimId);
 
-        // Koding berubah → lembar klaim (bila sudah dibuat) jadi tidak sah:
-        // batalkan TTD & reset ke RENDERED supaya wajib di-TTD ulang oleh dokter.
-        $this->refreshClaimResumeAfterRecoding($claim);
+        // Koding klaim (oleh koder) berubah TIDAK menyentuh resume medis dokter:
+        // resume medis = dokumen klinis milik dokter. Bila perlu disesuaikan, dokter
+        // merevisi resume medisnya sendiri — bukan di-reset otomatis dari sini.
 
         return $claim->fresh(['auditLogs.performedBy']);
     }
 
     // =========================================================================
-    // LEMBAR KLAIM — Resume Medis versi klaim (diagnosa/ICD dari koding koder),
-    // di-TTD dokter via TtdDokumenView. Resume Medis dokter ASLI tetap utuh.
-    // Dokumen pendukung BPJS selalu konsisten dengan angka grouping.
+    // DOKUMEN KLAIM — bukti pendukung BPJS = RESUME MEDIS ber-TTD milik kunjungan
+    // (RM-6.1 / RESUME_MEDIS), yang sudah dokter tandatangani saat pelayanan.
+    // TIDAK ada "lembar klaim" terpisah: dokter cukup TTD resume medis sekali (tak
+    // kerja dua kali). Bila resume tak sesuai koding, dokter merevisi resume medis
+    // itu — bukan menandatangani ulang dokumen klaim khusus.
     // =========================================================================
 
-    private const CLAIM_RESUME_CODE = 'RESUME_KLAIM';
+    private const CLAIM_RESUME_CODE = 'RESUME_MEDIS';
 
-    /**
-     * Buat/refresh "Lembar Klaim" untuk klaim → PatientDocument RESUME_KLAIM
-     * berstatus RENDERED, masuk antrian TTD dokter otomatis. Bila lembar sudah
-     * ada (termasuk yang sudah FINALIZED), di-reset (void TTD lama) + di-stamp
-     * ulang dengan sidik koding terkini.
-     */
-    public function generateClaimResume(string $claimId): array
-    {
-        $claim = BpjsClaim::with(['visit.patient'])->findOrFail($claimId);
-
-        if (in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
-            throw new \Exception('Klaim sudah dikirim ke BPJS — lembar klaim tidak bisa diubah.', 422);
-        }
-        if (empty($claim->diagnosis_utama)) {
-            throw new \Exception('Diagnosis utama klaim belum diisi. Lengkapi koding dulu.', 422);
-        }
-        $visit = $claim->visit;
-        if (! $visit) {
-            throw new \Exception('Klaim tidak tertaut kunjungan.', 422);
-        }
-
-        $tpl = DocumentTemplate::where('code', self::CLAIM_RESUME_CODE)
-            ->where('is_active', true)->whereNull('deprecated_at')->first();
-        if (! $tpl) {
-            throw new \Exception('Template Lembar Klaim (RESUME_KLAIM) belum tersedia — jalankan FormTemplateSeeder.', 500);
-        }
-
-        $hash = $this->claimCodingHash($claim);
-        $user = auth('api')->user();
-
-        $doc = DB::transaction(function () use ($claim, $visit, $tpl, $hash) {
-            $existing = $this->findClaimResumeDoc($claim);
-            if ($existing) {
-                $this->resetClaimResumeDoc($existing, $hash);
-                return $existing->fresh();
-            }
-            return PatientDocument::create([
-                'patient_id'         => $visit->patient_id,
-                'visit_id'           => $visit->id,
-                'bpjs_claim_id'      => $claim->id,
-                'document_type_id'   => $tpl->document_type_id,
-                'template_code'      => $tpl->code,
-                'template_version'   => $tpl->version,
-                'status'             => 'RENDERED',
-                'created_by_station' => 'klaim',
-                'claim_coding_hash'  => $hash,
-            ]);
-        });
-
-        $this->addAuditLog($claim->id, $user?->employee_id, 'LEMBAR_KLAIM',
-            $claim->status, $claim->status, 'Lembar klaim dibuat/diperbarui — menunggu TTD dokter.');
-        $this->log($user?->id, 'GENERATE_CLAIM_RESUME', PatientDocument::class, $doc->id);
-
-        return $this->claimResumeSummary($doc, $claim);
-    }
-
-    /** Status lembar klaim untuk satu klaim (dipakai detail klaim & FE). */
+    /** Status resume medis (bukti klaim) untuk satu klaim (dipakai detail klaim & FE). */
     public function claimResumeStatus(string $claimId): array
     {
         $claim = BpjsClaim::findOrFail($claimId);
@@ -892,79 +922,28 @@ class KlaimService
             'status'        => $doc->status,
             'signed'        => $doc->status === 'FINALIZED',
             'signed_at'     => $doc->finalized_at?->toIso8601String(),
-            // Koding klaim terkini masih sama dengan yang tertanam saat lembar dibuat?
-            'coding_synced' => $doc->claim_coding_hash === $this->claimCodingHash($claim),
+            // Resume medis klinis = bukti klaim; tak distempel koding klaim → selalu sinkron.
+            'coding_synced' => true,
         ];
     }
 
     private function findClaimResumeDoc(BpjsClaim $claim): ?PatientDocument
     {
-        return PatientDocument::where('bpjs_claim_id', $claim->id)
+        // Bukti klaim = RESUME MEDIS ber-TTD milik kunjungan (dibuat dokter saat
+        // pelayanan), bukan dokumen klaim terpisah.
+        return PatientDocument::where('visit_id', $claim->visit_id)
             ->where('template_code', self::CLAIM_RESUME_CODE)
+            ->whereNotIn('status', self::DOC_ARCHIVED_STATUSES)
             ->orderByDesc('created_at')
             ->first();
     }
 
-    /**
-     * Sidik koding klaim (Dx utama + sekunder + prosedur, ternormalisasi & terurut).
-     * Beda hash = koding berubah → lembar wajib TTD ulang.
-     */
-    private function claimCodingHash(BpjsClaim $claim): string
-    {
-        $norm = fn ($arr) => collect($arr ?? [])
-            ->map(fn ($x) => is_array($x) ? ($x['kode'] ?? $x['code'] ?? '') : $x)
-            ->map(fn ($x) => trim((string) $x))
-            ->filter()->unique()->sort()->values()->all();
-
-        return hash('sha256', implode('|', [
-            trim((string) $claim->diagnosis_utama),
-            implode(',', $norm($claim->diagnosis_sekunder)),
-            implode(',', $norm($claim->procedure_codes)),
-        ]));
-    }
-
-    /**
-     * Reset lembar klaim ke RENDERED + void TTD lama. DocumentSignature &
-     * DocumentVerification append-only di model → hapus via raw query.
-     */
-    private function resetClaimResumeDoc(PatientDocument $doc, string $hash): void
-    {
-        DB::table('document_signatures')->where('patient_document_id', $doc->id)->delete();
-        DB::table('document_verifications')->where('patient_document_id', $doc->id)->delete();
-        $doc->update([
-            'status'               => 'RENDERED',
-            'rendered_html'        => null,
-            'rendered_html_gz'     => null,
-            'finalized_at'         => null,
-            'final_integrity_hash' => null,
-            'claim_coding_hash'    => $hash,
-        ]);
-    }
-
-    /** Koding berubah → reset lembar klaim yang ADA (jangan auto-buat bila belum ada). */
-    private function refreshClaimResumeAfterRecoding(BpjsClaim $claim): void
-    {
-        $doc = $this->findClaimResumeDoc($claim);
-        if (! $doc) {
-            return;
-        }
-        $this->resetClaimResumeDoc($doc, $this->claimCodingHash($claim));
-        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'LEMBAR_KLAIM_RESET',
-            $claim->status, $claim->status, 'Koding berubah → TTD lembar klaim dibatalkan; perlu TTD ulang.');
-    }
-
-    /** Guard sebelum finalisasi BPJS: lembar klaim wajib ADA, FINALIZED, & koding sinkron. */
+    /** Guard sebelum finalisasi BPJS: resume medis kunjungan wajib ADA & sudah di-TTD dokter. */
     private function assertClaimResumeReady(BpjsClaim $claim): void
     {
         $doc = $this->findClaimResumeDoc($claim);
-        if (! $doc) {
-            throw new \Exception('Lembar klaim belum dibuat. Buat lembar klaim & minta TTD dokter sebelum finalisasi.', 422);
-        }
-        if ($doc->status !== 'FINALIZED') {
-            throw new \Exception('Lembar klaim belum ditandatangani dokter. Tunggu TTD dokter sebelum finalisasi.', 422);
-        }
-        if ($doc->claim_coding_hash !== $this->claimCodingHash($claim)) {
-            throw new \Exception('Koding klaim berubah setelah lembar di-TTD. Perbarui lembar klaim & minta TTD ulang.', 422);
+        if (! $doc || $doc->status !== 'FINALIZED') {
+            throw new \Exception('Resume medis belum ditandatangani dokter. Minta dokter melengkapi & menandatangani resume medis (RME / Tanda Tangan Dokumen) sebelum finalisasi klaim.', 422);
         }
     }
 

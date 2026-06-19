@@ -340,6 +340,46 @@ async function syncSep() {
   }
 }
 
+// ── Kirim ke Klaim (kunjungan → KlaimView) ───────────────────────────────────
+// Kunjungan baru muncul di KlaimView setelah ada baris klaim. Tombol ini menyalin
+// SEP + diagnosis dari kunjungan → bpjs_claims (butuh No.SEP + diagnosis utama Dokter).
+const kirimBusy = ref(null)         // visit_id yang sedang dikirim
+const kirimMassalBusy = ref(false)
+async function kirimKlaim(row) {
+  kirimBusy.value = row.visit_id
+  try {
+    await api.post(`/klaim/rekap/${row.visit_id}/kirim-klaim`)
+    toast('s', 'Kunjungan dikirim ke daftar klaim')
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengirim ke klaim')
+  } finally {
+    kirimBusy.value = null
+  }
+}
+
+async function kirimKlaimMassal() {
+  if (!confirm('Kirim semua kunjungan yang SIAP (ada SEP + diagnosis utama) pada periode ini ke daftar klaim?')) return
+  kirimMassalBusy.value = true
+  try {
+    const params = {}
+    if (rekapMode.value === 'single') {
+      if (rekapDate.value) params.tanggal = rekapDate.value
+    } else {
+      if (rekapFrom.value) params.tanggal_from = rekapFrom.value
+      if (rekapTo.value) params.tanggal_to = rekapTo.value
+    }
+    if (jenisTab.value) params.jenis = jenisTab.value
+    const { data } = await api.post('/klaim/rekap/kirim-klaim-massal', params)
+    const r = data.data ?? {}
+    const extra = [r.skipped ? `${r.skipped} dilewati (belum siap)` : '', r.failed ? `${r.failed} gagal` : ''].filter(Boolean).join(' · ')
+    toast(r.sent ? 's' : 'i', `${r.sent || 0} kunjungan dikirim ke klaim${extra ? ' · ' + extra : ''}`)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal mengirim massal ke klaim')
+  } finally {
+    kirimMassalBusy.value = false
+  }
+}
+
 async function exportRekap() {
   rekapExporting.value = true
   try {
@@ -431,6 +471,9 @@ onMounted(fetchRekap)
       </select>
       <button class="rk-btn rk-btn-sync" :disabled="rekapSyncing" title="Tarik SEP yang terbit di portal VClaim lalu tautkan ke kunjungan" @click="syncSep">
         {{ rekapSyncing ? 'Menyinkron…' : 'Sinkron SEP' }}
+      </button>
+      <button class="rk-btn rk-btn-kirim" :disabled="kirimMassalBusy" title="Kirim semua kunjungan siap (SEP + diagnosis) ke daftar klaim" @click="kirimKlaimMassal">
+        {{ kirimMassalBusy ? 'Mengirim…' : 'Kirim ke Klaim' }}
       </button>
       <button class="rk-btn rk-btn-export" :disabled="rekapExporting" @click="exportRekap">
         {{ rekapExporting ? 'Mengekspor…' : 'Export Excel' }}
@@ -545,6 +588,14 @@ onMounted(fetchRekap)
             </button>
             <button class="rk-btn" :disabled="!detailRow?.has_invoice" @click="openKwitansi(detailRow, true)">
               Cetak Kwitansi
+            </button>
+            <button
+              class="rk-btn rk-btn-kirim"
+              :disabled="kirimBusy === detailRow?.visit_id || !detailRow?.no_sep"
+              :title="!detailRow?.no_sep ? 'Belum ada SEP' : 'Kirim kunjungan ini ke daftar klaim (KlaimView)'"
+              @click="kirimKlaim(detailRow)"
+            >
+              {{ kirimBusy === detailRow?.visit_id ? 'Mengirim…' : 'Kirim ke Klaim' }}
             </button>
           </div>
 
@@ -703,6 +754,8 @@ onMounted(fetchRekap)
 .rk-btn-export:disabled { opacity: 0.6; cursor: not-allowed; }
 .rk-btn-sync { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .rk-btn-sync:disabled { opacity: 0.6; cursor: not-allowed; }
+.rk-btn-kirim { background: var(--sb); color: var(--st); border-color: var(--sbd); }
+.rk-btn-kirim:disabled { opacity: 0.6; cursor: not-allowed; }
 .rk-spacer { flex: 1 1 auto; }
 .rk-count { font-size: 12px; color: var(--tu); }
 .rk-pp { height: 36px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bc); color: var(--td); font-size: 12px; cursor: pointer; }

@@ -827,12 +827,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
             Route::get('/icd-search',                     [KlaimController::class, 'icdSearch']);
 
+            // Berkas klaim (Vedika): render dokumen RM / kwitansi → PDF (statis, sblm /{id}).
+            Route::get('/dokumen/{docId}/pdf',            [KlaimController::class, 'dokumenPdf']);
+            Route::get('/kwitansi/{visitId}/pdf',         [KlaimController::class, 'kwitansiPdf']);
+
             // Rekap Kunjungan BPJS (screening pra-klaim) — semua kunjungan BPJS per tgl.
             // Statis → WAJIB sebelum `/{id}` agar 'rekap' tak diparse jadi UUID.
             Route::get('/rekap',                          [KlaimController::class, 'rekap']);
             Route::get('/rekap/export',                   [KlaimController::class, 'rekapExport']);
             // Sinkron SEP terbit di portal VClaim → tautkan ke kunjungan (statis, sblm /{id}).
             Route::post('/rekap/sinkron-sep',             [KlaimController::class, 'rekapSinkronSep'])->middleware('permission:bpjs.write');
+            // Kirim kunjungan → daftar klaim (KlaimView). Massal (statis) sblm per-visit.
+            Route::post('/rekap/kirim-klaim-massal',      [KlaimController::class, 'rekapKirimKlaimMassal'])->middleware('permission:bpjs.write');
+            Route::post('/rekap/{visitId}/kirim-klaim',   [KlaimController::class, 'rekapKirimKlaim'])->middleware('permission:bpjs.write');
             // Berkas pendukung LIVE (dokumen RM + hasil penunjang + lampiran manual).
             Route::get('/rekap/{visitId}/berkas',         [KlaimController::class, 'rekapBerkas']);
             Route::get('/rekap/{visitId}/lampiran',       [KlaimController::class, 'rekapAttachments']);
@@ -868,9 +875,6 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/eklaim/reedit',            [KlaimController::class, 'eklaimReedit'])->middleware('permission:bpjs.write');
 
             Route::get('/{id}/audit-log',                 [KlaimController::class, 'auditLog']);
-
-            // Lembar Klaim (Resume Medis versi klaim) → antrian TTD dokter.
-            Route::post('/{id}/lembar-klaim',             [KlaimController::class, 'generateLembarKlaim'])->middleware('permission:bpjs.write');
 
             // Lampiran berkas klaim (upload PDF/gambar: resume RJ, hasil penunjang).
             Route::get('/{id}/lampiran',                  [KlaimController::class, 'attachments']);
@@ -920,6 +924,7 @@ Route::prefix('v1')->group(function () {
             // FORM REGISTRY — Runtime (Fase 1 + 3 + 4)
             // -----------------------------------------------------------------
             Route::get('/forms',                           [RekamMedisController::class, 'indexForms']);
+            Route::get('/form/{code}/template',            [RekamMedisController::class, 'formTemplate']);
             Route::get('/form/{code}/render',              [RekamMedisController::class, 'renderForm']);
             Route::get('/form/{code}/prefill',             [RekamMedisController::class, 'prefillForm']);
             Route::post('/form/{code}/submit',             [RekamMedisController::class, 'submitForm']);

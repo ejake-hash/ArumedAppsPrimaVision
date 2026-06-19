@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import api, { integrasiApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
+import { buildVisitBundle, downloadPdf, safeFilename } from '@/utils/claimBundle'
 
 const auth = useAuthStore()
 
@@ -552,17 +553,90 @@ const showKasirModal  = ref(false)
 const grouping        = ref(false)
 const generatingLupis = ref(false)
 
-// Jalankan INA-CBGs grouping via backend (grouper resmi, bukan map statis).
+// ── DIVA (Digital Validation) ────────────────────────────────────────────────
+// BPJS tak menyediakan API DIVA — validasi resmi (Sesuai/Tidak Sesuai) dilakukan
+// di portal VClaim (unggah txt e-klaim). Yang app ini bisa: PRA-VALIDASI lokal
+// kesiapan koding dari data klaim yang ada, agar minim "Tidak Sesuai" saat di portal.
+const DIVA_MONITORING_URL = 'https://vclaim.bpjs-kesehatan.go.id/VClaim/Diva/MonitoringDiva'
+const VCLAIM_PORTAL_URL = 'https://vclaim.bpjs-kesehatan.go.id/VClaim/'
+function openExt(url) { window.open(url, '_blank', 'noopener') }
+
+// DIVA — pra-cek kesiapan KODING (yang divalidasi BPJS dari txt).
+const divaCodingChecks = computed(() => {
+  const s = selected.value
+  if (!s) return []
+  const dxOk = !!s.diagnosis_utama?.kode && s.diagnosis_utama.kode !== '—'
+  return [
+    { ok: dxOk, req: true, label: 'Diagnosis utama (ICD-10)', hint: 'Wajib & valid.' },
+    { ok: !!s.inacbgs_kode, req: true, label: 'Grouping INA-CBG', hint: 'Jalankan Grouping → dapat kode CBG.' },
+    { ok: Number(s.inacbgs_tarif) > 0, req: true, label: 'Tarif INA-CBG > 0', hint: 'Tarif 0 → koding belum lengkap.' },
+    { ok: (s.tindakan?.length ?? 0) > 0, req: false, label: `Prosedur/tindakan (ICD-9): ${s.tindakan?.length ?? 0}`, hint: 'Lengkapi bila ada tindakan.' },
+    { ok: (s.diagnosis_sekunder?.length ?? 0) > 0, req: false, label: `Diagnosis sekunder: ${s.diagnosis_sekunder?.length ?? 0}`, hint: 'Komorbid/komplikasi mempengaruhi CBG.' },
+  ]
+})
+const divaReady = computed(() => divaCodingChecks.value.filter((c) => c.req).every((c) => c.ok))
+
+// VEDIKA — kesiapan BERKAS (dokumen) untuk dirakit jadi 1 PDF.
+const vedikaChecks = computed(() => {
+  const s = selected.value
+  if (!s) return []
+  return [
+    { ok: !!s.no_sep, req: true, label: 'SEP', hint: 'Surat Eligibilitas Peserta.' },
+    { ok: !!s.lembar_klaim?.signed, req: true, label: 'Resume medis ber-TTD', hint: 'Bukti pelayanan ditandatangani dokter.' },
+    { ok: (s.dokumen_pendukung?.length ?? 0) > 0, req: false, label: `Dokumen pendukung: ${s.dokumen_pendukung?.length ?? 0}`, hint: 'Resume/laporan operasi/checklist.' },
+  ]
+})
+const vedikaReady = computed(() => vedikaChecks.value.filter((c) => c.req).every((c) => c.ok))
+const klaimSiap = computed(() => divaReady.value && vedikaReady.value)
+
+// Rakit 1 PDF berkas klaim per pasien (urutan Vedika) → unduh.
+const bundling = ref(false)
+async function bundleBerkas() {
+  if (!selected.value || bundling.value) return
+  bundling.value = true
+  try {
+    const { bytes, skipped, pages } = await buildVisitBundle(selected.value.visit_id)
+    if (!pages) { toast('w', 'Tak ada berkas yang bisa dirakit'); return }
+    const tag = selected.value.no_sep || selected.value.nik || selected.value.visit_id
+    downloadPdf(bytes, safeFilename(`KLAIM_${tag}_${selected.value.nama_pasien || ''}`) + '.pdf')
+    toast(skipped.length ? 'i' : 's',
+      skipped.length
+        ? `Berkas dirakit (${pages} hlm) — ${skipped.length} dilewati: ${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? '…' : ''}`
+        : `Berkas klaim dirakit (${pages} hlm)`)
+  } catch (e) {
+    toast('w', e.message || 'Gagal merakit berkas klaim')
+  } finally {
+    bundling.value = false
+  }
+}
+
+// Jalankan grouping INA-CBGs resmi = rantai E-Klaim new → set-data → grouper
+// (sesuai catatan UI "Gunakan tombol Jalankan Grouping"). Endpoint /grouping lama
+// = prepareClaimData (siapkan data, BUKAN grouper) → tak set inacbgs_kode; dipakai
+// terpisah oleh "Kirim ke Klaim" di Rekap. Berhenti & laporkan di langkah yg gagal.
 async function runGrouping() {
   if (!selected.value || grouping.value) return
   grouping.value = true
+  const id = selected.value.id
+  const steps = [
+    { m: 'new',      url: `/klaim/${id}/eklaim/new` },
+    { m: 'set-data', url: `/klaim/${id}/eklaim/set-data` },
+    { m: 'grouper',  url: `/klaim/${id}/eklaim/grouper` },
+  ]
   try {
-    await api.post(`/klaim/${selected.value.id}/grouping`)
+    for (const s of steps) {
+      eklaimBusy.value = s.m
+      await api.post(s.url)
+    }
     await refreshSelected()
-    toast('s', `Grouping INA-CBGs selesai → ${selected.value.inacbgs_kode} (${fmtRp(selected.value.inacbgs_tarif)})`)
+    eklaim.value.up = true; eklaim.value.checked = true
+    toast('s', selected.value.inacbgs_kode
+      ? `Grouping INA-CBGs selesai → ${selected.value.inacbgs_kode} (${fmtRp(selected.value.inacbgs_tarif)})`
+      : 'Grouping selesai')
   } catch (e) {
     toast('w', e.response?.data?.message ?? 'Grouping gagal')
   } finally {
+    eklaimBusy.value = ''
     grouping.value = false
   }
 }
@@ -627,33 +701,14 @@ const ATT_CATEGORIES = [
 ]
 const attCanEdit = computed(() => selected.value && !['SUBMITTED', 'SELESAI'].includes(selected.value.status))
 
-// ── Lembar Klaim (Resume Medis versi klaim → antrian TTD dokter) ───────────────
-const lembarBusy = ref(false)
-async function generateLembarKlaim() {
-  if (!selected.value || lembarBusy.value) return
-  const lk = selected.value.lembar_klaim
-  if (lk?.signed && lk?.coding_synced) {
-    if (!confirm('Lembar klaim sudah ditandatangani & sesuai koding. Buat ulang akan MEMBATALKAN tanda tangan dan minta TTD dokter lagi. Lanjut?')) return
-  }
-  const id = selected.value.id
-  lembarBusy.value = true
-  try {
-    const { data } = await api.post(`/klaim/${id}/lembar-klaim`)
-    if (selected.value?.id === id) selected.value.lembar_klaim = data.data
-    toast('s', 'Lembar klaim siap — menunggu TTD dokter di menu Tanda Tangan.')
-  } catch (e) {
-    toast('w', e.response?.data?.message ?? 'Gagal membuat lembar klaim')
-  } finally {
-    lembarBusy.value = false
-  }
-}
-// Label & kelas status lembar klaim untuk badge.
+// ── Resume Medis (bukti klaim) — di-TTD dokter saat pelayanan ──────────────────
+// Tak ada "lembar klaim" terpisah: klaim memakai RESUME MEDIS ber-TTD milik
+// kunjungan. Bila isi tak sesuai, dokter merevisi resume medisnya sendiri (di RME).
 const lembarState = computed(() => {
   const lk = selected.value?.lembar_klaim
-  if (!lk?.exists) return { cls: 'pend', text: 'Belum dibuat' }
-  if (lk.signed && lk.coding_synced) return { cls: 'ok', text: '✓ Ditandatangani dokter' }
-  if (lk.signed && !lk.coding_synced) return { cls: 'warn', text: 'Koding berubah — perlu TTD ulang' }
-  return { cls: 'pend', text: 'Menunggu TTD dokter' }
+  if (!lk?.exists) return { cls: 'pend', text: 'Resume medis belum ada' }
+  if (lk.signed) return { cls: 'ok', text: '✓ Resume medis ditandatangani dokter' }
+  return { cls: 'pend', text: 'Resume medis menunggu TTD dokter' }
 })
 
 async function fetchAttachments() {
@@ -1246,6 +1301,11 @@ function stepIndex(status) {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
               Verifikasi & Aksi
             </button>
+            <button :class="['kl-tab', activeDetailTab === 'diva' ? 'a' : '']" role="tab" :aria-selected="activeDetailTab === 'diva'" @click="activeDetailTab = 'diva'">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4"/><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+              DIVA &amp; Berkas
+              <span class="kl-tab-ct" :class="klaimSiap ? 'ok' : 'no'">{{ klaimSiap ? '✓' : '!' }}</span>
+            </button>
             <button :class="['kl-tab', activeDetailTab === 'audit' ? 'a' : '']" role="tab" :aria-selected="activeDetailTab === 'audit'" @click="activeDetailTab = 'audit'">
               <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
               Riwayat & Audit
@@ -1306,13 +1366,21 @@ function stepIndex(status) {
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
                     Diagnosis & Tindakan
                   </div>
+                  <button v-if="codingEditable" class="btn btn-secondary btn-sm" title="Input/ubah koding ICD-10 & ICD-9 klaim" @click="openCodingEditor">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    {{ (selected.diagnosis_utama && selected.diagnosis_utama.kode && selected.diagnosis_utama.kode !== '—') ? 'Edit Koding' : 'Input Koding' }}
+                  </button>
                 </div>
                 <div class="card-body">
                   <div class="kl-dx-section">
                     <div class="kl-dx-label">Diagnosis Utama (ICD-10)</div>
-                    <div class="kl-dx-row">
+                    <div v-if="selected.diagnosis_utama && selected.diagnosis_utama.kode && selected.diagnosis_utama.kode !== '—'" class="kl-dx-row">
                       <span class="kl-code-pill kl-code-dx">{{ selected.diagnosis_utama.kode }}</span>
                       <span class="kl-dx-name">{{ selected.diagnosis_utama.label }}</span>
+                    </div>
+                    <div v-else class="kl-dx-empty">
+                      Belum ada diagnosis. Klik <strong>Input Koding</strong> untuk mengisi ICD-10
+                      <span v-if="selected.diagnosis_text"> — catatan dokter: "{{ selected.diagnosis_text }}"</span>.
                     </div>
                   </div>
                   <div v-if="selected.diagnosis_sekunder.length" class="kl-dx-section">
@@ -1332,6 +1400,7 @@ function stepIndex(status) {
                       <span class="kl-code-pill kl-code-tn">{{ t.kode }}</span>
                       <span class="kl-dx-name">{{ t.label }}</span>
                     </div>
+                    <div v-if="!selected.tindakan.length" class="kl-dx-empty">Belum ada tindakan (opsional) — tambahkan via Input Koding bila perlu.</div>
                   </div>
                 </div>
               </div>
@@ -1441,7 +1510,7 @@ function stepIndex(status) {
                           <div v-if="eklaimBusy === 'grouper'" class="sp" aria-hidden="true"></div>
                           <span v-else class="kl-eklaim-step">3</span> Grouper
                         </button>
-                        <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || !selected.inacbgs_kode || !(selected.lembar_klaim?.signed && selected.lembar_klaim?.coding_synced)" :title="!selected.inacbgs_kode ? 'Jalankan grouper dulu' : (!(selected.lembar_klaim?.signed && selected.lembar_klaim?.coding_synced) ? 'Lembar klaim harus ditandatangani dokter & sesuai koding' : 'Finalisasi (tidak bisa dibatalkan)')" @click="runEklaim('final', { confirmMsg: 'Finalisasi klaim di E-Klaim? Tindakan ini tidak bisa dibatalkan (hanya bisa dibuka via Re-edit).', successMsg: 'Klaim difinalisasi di E-Klaim' })">
+                        <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || !selected.inacbgs_kode || !selected.lembar_klaim?.signed" :title="!selected.inacbgs_kode ? 'Jalankan grouper dulu' : (!selected.lembar_klaim?.signed ? 'Resume medis harus ditandatangani dokter dulu' : 'Finalisasi (tidak bisa dibatalkan)')" @click="runEklaim('final', { confirmMsg: 'Finalisasi klaim di E-Klaim? Tindakan ini tidak bisa dibatalkan (hanya bisa dibuka via Re-edit).', successMsg: 'Klaim difinalisasi di E-Klaim' })">
                           <div v-if="eklaimBusy === 'final'" class="sp" aria-hidden="true"></div>
                           <span v-else class="kl-eklaim-step">4</span> Finalisasi
                         </button>
@@ -1451,27 +1520,21 @@ function stepIndex(status) {
                 </div>
               </div>
 
-              <!-- Lembar Klaim (Resume Medis versi klaim → TTD dokter) -->
+              <!-- Resume Medis (bukti klaim) — di-TTD dokter saat pelayanan -->
               <div class="card kl-dg-lembar">
                 <div class="card-head">
                   <div class="card-head-title">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13l2 2 4-4"/></svg>
-                    Lembar Klaim (Resume untuk BPJS)
+                    Resume Medis (bukti klaim)
                   </div>
                   <span :class="['doc-status-badge', lembarState.cls]">{{ lembarState.text }}</span>
                 </div>
                 <div class="card-body">
                   <p class="kl-input-hint" style="margin-top:0">
-                    Lembar resume berisi diagnosa/ICD sesuai <strong>koding klaim</strong> (yang Anda setel), lalu dikirim ke dokter untuk ditandatangani. Resume medis asli dokter tidak berubah. Diagnosa pada lembar ini = diagnosa yang di-grouping.
+                    Bukti pendukung klaim = <strong>resume medis ber-TTD dokter</strong> yang dibuat saat pelayanan — tidak ada lembar klaim terpisah. Bila resume belum sesuai, dokter merevisi resume medisnya di <strong>RME</strong>.
                   </p>
-                  <div class="kl-lembar-actions">
-                    <button class="btn btn-secondary btn-sm" :disabled="lembarBusy || ['SUBMITTED','SELESAI'].includes(selected.status)" @click="generateLembarKlaim">
-                      <div v-if="lembarBusy" class="sp" aria-hidden="true"></div>
-                      <span v-else>{{ selected.lembar_klaim?.exists ? 'Perbarui Lembar Klaim' : 'Buat Lembar Klaim' }}</span>
-                    </button>
-                    <span v-if="selected.lembar_klaim?.exists && !selected.lembar_klaim?.signed" class="kl-input-hint" style="margin:0">Menunggu dokter menandatangani di menu <strong>Tanda Tangan Dokumen</strong>.</span>
-                    <span v-else-if="selected.lembar_klaim?.signed && !selected.lembar_klaim?.coding_synced" class="kl-input-hint warn" style="margin:0">Koding berubah sejak TTD — perbarui lalu minta TTD ulang.</span>
-                  </div>
+                  <span v-if="selected.lembar_klaim?.exists && !selected.lembar_klaim?.signed" class="kl-input-hint" style="margin:0">Menunggu dokter menandatangani resume medis di menu <strong>Tanda Tangan Dokumen</strong>.</span>
+                  <span v-else-if="!selected.lembar_klaim?.exists" class="kl-input-hint warn" style="margin:0">Resume medis kunjungan ini belum ada — minta dokter melengkapi sebelum finalisasi klaim.</span>
                 </div>
               </div>
 
@@ -1901,6 +1964,69 @@ function stepIndex(status) {
                   Audit trail ini bersifat permanen dan tidak dapat dihapus sesuai ketentuan PMK No. 24 Tahun 2022
                 </p>
               </div>
+            </div>
+          </div>
+
+          <!-- ── TAB: DIVA (koding) & Berkas (Vedika) ──────────────────────── -->
+          <div v-if="activeDetailTab === 'diva'" class="kl-tab-body" role="tabpanel" aria-label="DIVA dan Berkas Vedika">
+            <div class="kl-diva">
+
+              <!-- ── DIVA: validasi koding (txt) ── -->
+              <div class="kl-diva-sec">
+                <div class="kl-diva-banner" :class="divaReady ? 'ok' : 'no'">
+                  <span class="kl-diva-badge">{{ divaReady ? '✓ Koding siap' : '! Koding belum siap' }}</span>
+                  <span>DIVA — validasi kaidah koding INA-CBG</span>
+                </div>
+                <p class="kl-diva-note">
+                  <strong>DIVA</strong> memvalidasi <strong>koding</strong> klaim Anda dari <strong>file txt</strong> E-Klaim
+                  (Sesuai/Tidak&nbsp;Sesuai), dilakukan di <strong>portal VClaim</strong> — bukan upload berkas. Pra-cek
+                  koding lokal di bawah agar minim "Tidak Sesuai".
+                </p>
+                <ul class="kl-diva-list">
+                  <li v-for="(c, i) in divaCodingChecks" :key="'d'+i" :class="[c.ok ? 'ok' : (c.req ? 'miss' : 'warn')]">
+                    <span class="kl-diva-mark">{{ c.ok ? '✓' : (c.req ? '✗' : '◐') }}</span>
+                    <span class="kl-diva-lbl">{{ c.label }}<span v-if="c.req" class="kl-diva-req">wajib</span><small>{{ c.hint }}</small></span>
+                  </li>
+                </ul>
+                <div class="kl-diva-cbg">
+                  <div><span>Kode INA-CBG</span><strong>{{ selected.inacbgs_kode || '—' }}</strong></div>
+                  <div><span>Tarif INA-CBG</span><strong>{{ fmtRp(selected.inacbgs_tarif) }}</strong></div>
+                  <div><span>Tagihan RS</span><strong>{{ fmtRp(selected.harga_kasir) }}</strong></div>
+                  <div :class="selected.harga_kasir > selected.inacbgs_tarif ? 'neg' : 'pos'">
+                    <span>Selisih</span><strong>{{ selected.harga_kasir >= selected.inacbgs_tarif ? '+' : '' }}{{ fmtRp(selected.harga_kasir - selected.inacbgs_tarif) }}</strong>
+                  </div>
+                </div>
+                <div class="kl-diva-actions">
+                  <button class="btn btn-ghost btn-sm" @click="openExt(DIVA_MONITORING_URL)">Buka Monitoring DIVA</button>
+                </div>
+              </div>
+
+              <!-- ── VEDIKA: berkas dokumen (1 PDF/pasien) ── -->
+              <div class="kl-diva-sec">
+                <div class="kl-diva-banner" :class="vedikaReady ? 'ok' : 'no'">
+                  <span class="kl-diva-badge">{{ vedikaReady ? '✓ Berkas siap' : '! Berkas belum siap' }}</span>
+                  <span>Vedika — berkas dokumen untuk verifikasi digital</span>
+                </div>
+                <p class="kl-diva-note">
+                  <strong>Vedika/Vidi</strong> memverifikasi <strong>dokumen</strong> klaim. Tombol di bawah merakit
+                  <strong>SEP + resume + penunjang + kwitansi + lampiran</strong> jadi <strong>1 PDF</strong> siap diunggah.
+                  Berkas yang belum lengkap/ber-TTD akan dilewati &amp; diberitahu.
+                </p>
+                <ul class="kl-diva-list">
+                  <li v-for="(c, i) in vedikaChecks" :key="'v'+i" :class="[c.ok ? 'ok' : (c.req ? 'miss' : 'warn')]">
+                    <span class="kl-diva-mark">{{ c.ok ? '✓' : (c.req ? '✗' : '◐') }}</span>
+                    <span class="kl-diva-lbl">{{ c.label }}<span v-if="c.req" class="kl-diva-req">wajib</span><small>{{ c.hint }}</small></span>
+                  </li>
+                </ul>
+                <div class="kl-diva-actions">
+                  <button class="btn btn-primary btn-sm" :disabled="bundling || !selected.no_sep" :title="!selected.no_sep ? 'Belum ada SEP' : 'Rakit 1 PDF berkas klaim'" @click="bundleBerkas">
+                    <div v-if="bundling" class="sp" aria-hidden="true"></div>
+                    <span v-else>📄 Unduh Berkas Klaim (1 PDF)</span>
+                  </button>
+                  <button class="btn btn-ghost btn-sm" @click="openExt(VCLAIM_PORTAL_URL)">Buka Portal VClaim</button>
+                </div>
+              </div>
+
             </div>
           </div>
 
@@ -2446,6 +2572,35 @@ function stepIndex(status) {
 .kl-tab svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .kl-tab-ct { font-size: 9.5px; background: var(--gb); color: var(--tu); border-radius: 20px; padding: 1px 6px; font-weight: 700; }
 .kl-tab.a .kl-tab-ct { background: rgba(31,125,74,0.12); color: var(--ga); }
+.kl-tab-ct.ok { background: var(--sb); color: var(--st); }
+.kl-tab-ct.no { background: var(--wb); color: var(--wt); }
+
+/* Tab DIVA & Berkas */
+.kl-diva { display: flex; flex-direction: column; gap: 14px; }
+.kl-diva-sec { display: flex; flex-direction: column; gap: 10px; }
+.kl-diva-sec + .kl-diva-sec { border-top: 1px solid var(--gb); padding-top: 14px; }
+.kl-diva-banner { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; font-weight: 600; border: 1px solid; }
+.kl-diva-banner.ok { background: color-mix(in srgb, var(--sb) 40%, transparent); border-color: var(--sbd); color: var(--st); }
+.kl-diva-banner.no { background: color-mix(in srgb, var(--wb) 40%, transparent); border-color: var(--wbd); color: var(--wt); }
+.kl-diva-badge { padding: 2px 9px; border-radius: 999px; background: var(--bc); font-weight: 700; font-size: 11px; white-space: nowrap; }
+.kl-diva-note { font-size: 11.5px; color: var(--tu); line-height: 1.5; margin: 0; padding: 10px 12px; background: var(--gl); border-radius: 9px; }
+.kl-diva-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.kl-diva-list li { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 9px; }
+.kl-diva-mark { width: 18px; text-align: center; font-weight: 800; flex-shrink: 0; }
+.kl-diva-list li.ok .kl-diva-mark { color: var(--st); }
+.kl-diva-list li.miss .kl-diva-mark { color: var(--et); }
+.kl-diva-list li.warn .kl-diva-mark { color: var(--wt); }
+.kl-diva-lbl { font-size: 12.5px; font-weight: 600; color: var(--td); display: flex; flex-direction: column; gap: 1px; }
+.kl-diva-lbl small { font-weight: 400; color: var(--tu); font-size: 10.5px; }
+.kl-diva-req { display: inline-block; margin-left: 6px; font-size: 9.5px; font-weight: 700; color: var(--et); background: var(--eb); padding: 0 6px; border-radius: 999px; vertical-align: middle; }
+.kl-diva-cbg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.kl-diva-cbg > div { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 9px; }
+.kl-diva-cbg span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--tu); }
+.kl-diva-cbg strong { font-size: 13px; color: var(--td); }
+.kl-diva-cbg .neg strong { color: var(--et); }
+.kl-diva-cbg .pos strong { color: var(--st); }
+.kl-diva-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.kl-diva-hint { font-size: 11px; color: var(--tu); margin: 0; }
 
 .kl-tab-body { display: flex; flex-direction: column; gap: 0.7rem; }
 
@@ -2480,6 +2635,7 @@ function stepIndex(status) {
 .kl-info-val.mono { font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', monospace, 'Inter', sans-serif; }
 
 .kl-dx-section { margin-bottom: 0.75rem; }
+.kl-dx-empty { font-size: 12px; color: var(--th); font-style: italic; padding: 4px 0; }
 .kl-dx-section:last-child { margin-bottom: 0; }
 .kl-dx-label { font-size: 9.5px; font-weight: 600; color: var(--tu); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px; }
 .kl-dx-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
