@@ -12,14 +12,7 @@ const MAIN_TABS = [
 const activeTab = ref('NOTIF')
 const serviceType = ref('RJ') // tab layanan aktif (RJ/RI/BEDAH) saat bukan di Notifikasi
 
-// ─── Sub-filter jenis notifikasi ──────────────────────────────────────────────
-const NOTIF_TYPES = [
-  { val: 'all',         label: 'Semua' },
-  { val: 'ulang_tahun', label: 'Ulang Tahun' },
-  { val: 'kontrol',     label: 'Follow-up Kontrol' },
-  { val: 'tindakan',    label: 'Tindakan Terjadwal' },
-  { val: 'nyeri',       label: 'Follow-up Nyeri' },
-]
+// ─── Sub-filter jenis notifikasi (digerakkan oleh KPI card) ───────────────────
 const notifFilter = ref('all')
 
 // ─── State Notifikasi ─────────────────────────────────────────────────────────
@@ -44,6 +37,31 @@ const filteredNotif = computed(() => {
   return list
 })
 const doneCount = computed(() => Object.values(doneMap.value).filter(Boolean).length)
+
+// ─── KPI cards Notifikasi (juga berfungsi sebagai filter cepat) ───────────────
+const notifCards = computed(() => [
+  { key: 'all',         label: 'Total Pengingat', n: notifCounts.value.total,       tone: 'navy'   },
+  { key: 'kontrol',     label: 'Follow-up Kontrol', n: notifCounts.value.kontrol,   tone: 'sky'    },
+  { key: 'tindakan',    label: 'Tindakan Terjadwal', n: notifCounts.value.tindakan, tone: 'purple' },
+  { key: 'ulang_tahun', label: 'Ulang Tahun', n: notifCounts.value.ulang_tahun,     tone: 'pink'   },
+  { key: 'nyeri',       label: 'Follow-up Nyeri', n: notifCounts.value.nyeri,       tone: 'orange' },
+])
+
+// ─── KPI cards layanan (RJ/RI/Bedah) — ringkasan periode ─────────────────────
+const serviceCards = computed(() => {
+  const total = rows.value.length
+  let bpjs = 0, umum = 0
+  for (const r of rows.value) {
+    const p = (r.penjamin || '').toUpperCase()
+    if (p.includes('BPJS')) bpjs++
+    else if (p) umum++
+  }
+  return [
+    { label: 'Total Pasien', n: total, tone: 'navy' },
+    { label: 'Penjamin BPJS', n: bpjs, tone: 'sky' },
+    { label: 'Umum / Lainnya', n: umum, tone: 'purple' },
+  ]
+})
 
 // ─── Filter periode (default: awal bulan → hari ini) ──────────────────────────
 function isoToday() {
@@ -164,10 +182,17 @@ onMounted(loadNotif)
 <template>
   <div class="lm-page" @click="closeFmt">
     <header class="lm-head">
-      <div>
-        <h1>Laporan Marketing</h1>
-        <p class="sub" v-if="activeTab === 'NOTIF'">Pengingat siap-hubungi: follow-up kontrol, tindakan terjadwal, ulang tahun &amp; nyeri pasca-tindakan.</p>
-        <p class="sub" v-else>Daftar pasien siap-olah untuk campaign (follow-up kontrol &amp; reaktivasi).</p>
+      <div class="lm-head-title">
+        <span class="lm-head-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 11l18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 11-5.8-1.6"/>
+          </svg>
+        </span>
+        <div>
+          <h1>Laporan Marketing</h1>
+          <p class="sub" v-if="activeTab === 'NOTIF'">Pengingat siap-hubungi: follow-up kontrol, tindakan terjadwal, ulang tahun &amp; nyeri pasca-tindakan.</p>
+          <p class="sub" v-else>Daftar pasien siap-olah untuk campaign (follow-up kontrol &amp; reaktivasi).</p>
+        </div>
       </div>
       <!-- Export hanya pada tab layanan (Notifikasi tidak diekspor). -->
       <div class="fmt-wrap" @click.stop v-if="activeTab !== 'NOTIF'">
@@ -201,21 +226,36 @@ onMounted(loadNotif)
 
     <!-- ════════════════ TAB NOTIFIKASI ════════════════ -->
     <template v-if="activeTab === 'NOTIF'">
-      <!-- Sub-filter jenis + ringkasan -->
+      <!-- KPI cards — sekaligus filter cepat jenis notifikasi -->
+      <div class="stat-grid">
+        <button
+          v-for="c in notifCards"
+          :key="c.key"
+          type="button"
+          class="stat-card"
+          :class="['tone-' + c.tone, { active: notifFilter === c.key }]"
+          @click="notifFilter = c.key"
+        >
+          <span class="stat-icon">
+            <svg v-if="c.key === 'all'" viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
+            <svg v-else-if="c.key === 'kontrol'" viewBox="0 0 24 24"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 106 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+            <svg v-else-if="c.key === 'tindakan'" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            <svg v-else-if="c.key === 'ulang_tahun'" viewBox="0 0 24 24"><path d="M20 21v-8H4v8M2 21h20M7 8v3M12 8v3M17 8v3"/><path d="M12 8a2 2 0 002-2c0-1.5-2-4-2-4s-2 2.5-2 4a2 2 0 002 2z"/></svg>
+            <svg v-else viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z"/></svg>
+          </span>
+          <span class="stat-body">
+            <span class="stat-val">{{ c.n }}</span>
+            <span class="stat-lbl">{{ c.label }}</span>
+          </span>
+        </button>
+      </div>
+
+      <!-- Toolbar ringkas -->
       <div class="filter-bar">
-        <div class="chips">
-          <button
-            v-for="ft in NOTIF_TYPES"
-            :key="ft.val"
-            class="chip"
-            :class="{ active: notifFilter === ft.val }"
-            @click="notifFilter = ft.val"
-          >
-            {{ ft.label }}
-            <span v-if="ft.val !== 'all' && notifCounts[ft.val]" class="chip-n">{{ notifCounts[ft.val] }}</span>
-          </button>
-        </div>
-        <button class="btn-soft" @click="loadNotif" :disabled="notifLoading">Muat ulang</button>
+        <button class="btn-soft" @click="loadNotif" :disabled="notifLoading">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1015.5-6.4L21 8"/><path d="M21 3v5h-5"/></svg>
+          Muat ulang
+        </button>
         <span class="count" v-if="!notifLoading">{{ filteredNotif.length }} notifikasi · {{ doneCount }} selesai</span>
       </div>
 
@@ -274,6 +314,24 @@ onMounted(loadNotif)
 
     <!-- ════════════════ TAB LAYANAN (RJ/RI/Bedah) ════════════════ -->
     <template v-else>
+      <!-- KPI ringkasan periode -->
+      <div class="stat-grid stat-grid-3" v-if="!loading && rows.length">
+        <div
+          v-for="c in serviceCards"
+          :key="c.label"
+          class="stat-card"
+          :class="'tone-' + c.tone"
+        >
+          <span class="stat-icon">
+            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+          </span>
+          <span class="stat-body">
+            <span class="stat-val">{{ c.n }}</span>
+            <span class="stat-lbl">{{ c.label }}</span>
+          </span>
+        </div>
+      </div>
+
       <!-- Filter periode -->
       <div class="filter-bar">
         <label>Dari
@@ -282,7 +340,10 @@ onMounted(loadNotif)
         <label>Sampai
           <input type="date" v-model="to" />
         </label>
-        <button class="btn-soft" @click="applyFilter" :disabled="loading">Terapkan</button>
+        <button class="btn-soft accent" @click="applyFilter" :disabled="loading">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          Terapkan
+        </button>
         <span class="count" v-if="!loading">{{ rows.length }} pasien</span>
       </div>
 
@@ -334,38 +395,63 @@ onMounted(loadNotif)
 <style scoped>
 .lm-page { padding: 20px 24px; }
 
-.lm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-.lm-head h1 { font-size: 1.4rem; font-weight: 700; color: #0E3A66; margin: 0; }
-.lm-head .sub { margin: 4px 0 0; color: #64748b; font-size: 0.85rem; }
+/* Header */
+.lm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.lm-head-title { display: flex; align-items: center; gap: 13px; }
+.lm-head-icon {
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: 13px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--gd), var(--ga)); color: #fff;
+  box-shadow: 0 6px 16px rgba(31,170,224,.28);
+}
+.lm-head-icon svg { width: 23px; height: 23px; }
+.lm-head h1 { font-size: 1.35rem; font-weight: 700; color: var(--gd); margin: 0; font-family: var(--font-display); }
+.lm-head .sub { margin: 3px 0 0; color: var(--tu); font-size: 0.84rem; max-width: 640px; }
 
 /* Tabs underline */
-.tabs { display: flex; gap: 4px; border-bottom: 2px solid #e2e8f0; margin-bottom: 16px; }
+.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--gb); margin-bottom: 18px; }
 .tab {
   padding: 9px 18px; background: none; border: none; cursor: pointer;
-  font-size: 0.9rem; font-weight: 600; color: #64748b; border-bottom: 2px solid transparent;
+  font-size: 0.9rem; font-weight: 600; color: var(--tu); border-bottom: 2px solid transparent;
   margin-bottom: -2px; transition: color .15s, border-color .15s;
 }
-.tab:hover { color: #0E3A66; }
-.tab.active { color: #0E3A66; border-bottom-color: #1FAAE0; }
+.tab:hover { color: var(--gd); }
+.tab.active { color: var(--gd); border-bottom-color: var(--ga); }
 .tab-badge {
   display: inline-block; margin-left: 7px; min-width: 18px; padding: 1px 6px;
-  background: #1FAAE0; color: #fff; border-radius: 999px; font-size: 0.7rem; font-weight: 700; line-height: 1.4;
+  background: var(--ga); color: #fff; border-radius: 999px; font-size: 0.7rem; font-weight: 700; line-height: 1.4;
 }
 
-/* Sub-filter chips (Notifikasi) */
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 12px; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff;
-  font-size: 0.8rem; font-weight: 600; color: #475569; cursor: pointer; transition: all .15s;
+/* ── KPI stat cards ────────────────────────────────────────────────── */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px; margin-bottom: 18px;
 }
-.chip:hover { border-color: #94a3b8; background: #f8fafc; }
-.chip.active { background: #0E3A66; border-color: #0E3A66; color: #fff; }
-.chip-n {
-  min-width: 16px; padding: 0 5px; border-radius: 999px; font-size: 0.68rem; font-weight: 700;
-  background: rgba(14,58,102,.12); color: #0E3A66;
+.stat-grid-3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.stat-card {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 14px; padding: 14px 16px;
+  cursor: default; transition: box-shadow .15s, border-color .15s, transform .12s;
+  position: relative; overflow: hidden;
 }
-.chip.active .chip-n { background: rgba(255,255,255,.25); color: #fff; }
+button.stat-card { cursor: pointer; font-family: inherit; }
+button.stat-card:hover { box-shadow: 0 6px 18px rgba(14,58,102,.10); transform: translateY(-1px); }
+.stat-card.active { border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.25); }
+.stat-icon {
+  width: 42px; height: 42px; flex-shrink: 0; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+}
+.stat-icon svg { width: 20px; height: 20px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stat-body { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
+.stat-val { font-size: 1.55rem; font-weight: 800; color: var(--td); font-family: var(--font-display); }
+.stat-lbl { font-size: 0.76rem; color: var(--tu); font-weight: 600; margin-top: 3px; }
+
+/* tones — icon tint per category */
+.tone-navy   .stat-icon { background: var(--gl);  color: var(--gd); }
+.tone-sky    .stat-icon { background: #e0f2fe; color: #0369a1; }
+.tone-purple .stat-icon { background: #ede9fe; color: #6d28d9; }
+.tone-pink   .stat-icon { background: #fce7f3; color: #be185d; }
+.tone-orange .stat-icon { background: #ffedd5; color: #c2410c; }
 
 /* Badge jenis notifikasi */
 .badge {
@@ -377,29 +463,29 @@ onMounted(loadNotif)
 .b-nyeri    { background: #ffedd5; color: #c2410c; }
 
 /* Checkbox selesai */
-.chk { width: 17px; height: 17px; cursor: pointer; accent-color: #16a34a; }
-.row-done td { color: #94a3b8 !important; }
+.chk { width: 17px; height: 17px; cursor: pointer; accent-color: var(--st); }
+.row-done td { color: var(--th) !important; }
 .row-done .strong { text-decoration: line-through; }
 
 /* Filter bar */
 .filter-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
-.filter-bar label { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #475569; font-weight: 600; }
+.filter-bar label { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--tm); font-weight: 600; }
 .filter-bar input[type="date"] {
-  border: 1px solid #cbd5e1; border-radius: 7px; padding: 6px 9px; font-size: 0.85rem; color: #1e293b;
+  border: 1px solid var(--gb); border-radius: 8px; padding: 6px 9px; font-size: 0.85rem; color: var(--td); background: var(--bc);
 }
-.filter-bar input[type="date"]:focus { outline: none; border-color: #1FAAE0; box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
-.count { font-size: 0.82rem; color: #64748b; }
+.filter-bar input[type="date"]:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
+.count { font-size: 0.82rem; color: var(--tu); font-weight: 600; }
 
 /* Buttons */
 .btn-soft {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 14px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;
-  font-size: 0.85rem; font-weight: 600; color: #334155; cursor: pointer; transition: background .15s, border-color .15s;
+  padding: 7px 14px; border: 1px solid var(--gb); border-radius: 9px; background: var(--bc);
+  font-size: 0.85rem; font-weight: 600; color: var(--tm); cursor: pointer; transition: background .15s, border-color .15s;
 }
-.btn-soft:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
+.btn-soft:hover:not(:disabled) { background: var(--bs); border-color: var(--ga); }
 .btn-soft:disabled { opacity: .55; cursor: not-allowed; }
-.btn-soft.accent { background: #0E3A66; border-color: #0E3A66; color: #fff; }
-.btn-soft.accent:hover:not(:disabled) { background: #0c3155; }
+.btn-soft.accent { background: var(--gd); border-color: var(--gd); color: #fff; }
+.btn-soft.accent:hover:not(:disabled) { background: var(--gm); border-color: var(--gm); }
 .btn-soft svg { width: 16px; height: 16px; }
 .btn-soft .caret { width: 13px; height: 13px; }
 
@@ -407,26 +493,28 @@ onMounted(loadNotif)
 .fmt-wrap { position: relative; }
 .fmt-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 9px; box-shadow: 0 8px 24px rgba(15,23,42,.12);
+  background: var(--bc); border: 1px solid var(--gb); border-radius: 10px; box-shadow: 0 8px 24px rgba(15,23,42,.12);
   min-width: 150px; overflow: hidden;
 }
 .fmt-menu button {
   display: block; width: 100%; text-align: left; padding: 9px 14px; background: none; border: none;
-  font-size: 0.85rem; color: #334155; cursor: pointer;
+  font-size: 0.85rem; color: var(--tm); cursor: pointer;
 }
-.fmt-menu button:hover { background: #f1f5f9; }
+.fmt-menu button:hover { background: var(--bs); }
 
 /* Table */
-.table-wrap { border: 1px solid #e2e8f0; border-radius: 10px; overflow: auto; }
+.table-wrap { border: 1px solid var(--gb); border-radius: 14px; overflow: auto; background: var(--bc); box-shadow: 0 1px 3px rgba(14,58,102,.05); }
 .po-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .po-table thead th {
-  background: #f8fafc; text-align: left; padding: 10px 12px; font-weight: 700; color: #0E3A66;
-  border-bottom: 1px solid #e2e8f0; white-space: nowrap; position: sticky; top: 0;
+  background: var(--bs); text-align: left; padding: 11px 13px; font-weight: 700; color: var(--gd);
+  border-bottom: 1px solid var(--gb); white-space: nowrap; position: sticky; top: 0;
+  font-size: 0.78rem; letter-spacing: .01em;
 }
-.po-table tbody td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #1e293b; vertical-align: top; }
-.po-table tbody tr:hover { background: #f8fafc; }
+.po-table tbody td { padding: 10px 13px; border-bottom: 1px solid var(--bi); color: var(--td); vertical-align: top; }
+.po-table tbody tr:last-child td { border-bottom: none; }
+.po-table tbody tr:hover { background: var(--gl); }
 .po-table .strong { font-weight: 600; }
-.po-table .empty { text-align: center; color: #94a3b8; padding: 28px 12px; }
+.po-table .empty { text-align: center; color: var(--th); padding: 32px 12px; }
 
 /* Toast */
 .toast {
@@ -434,8 +522,8 @@ onMounted(loadNotif)
   padding: 11px 20px; border-radius: 9px; color: #fff; font-size: 0.88rem; font-weight: 600;
   box-shadow: 0 8px 24px rgba(15,23,42,.2); z-index: 100;
 }
-.toast.s { background: #16a34a; }
-.toast.e { background: #dc2626; }
+.toast.s { background: var(--st); }
+.toast.e { background: var(--et); }
 .toast-enter-active, .toast-leave-active { transition: opacity .25s, transform .25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>
