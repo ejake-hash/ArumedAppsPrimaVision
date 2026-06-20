@@ -7,6 +7,7 @@ use App\Models\Icd9Code;
 use App\Services\KlaimService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class KlaimController extends Controller
 {
@@ -48,11 +49,18 @@ class KlaimController extends Controller
     {
         $claim = $this->service->getClaimById($id);
 
-        // Lookup label ICD (DB klaim hanya simpan kode). Cache per-request.
-        $icd10 = Icd10Code::pluck('description', 'code');
-        $icd10Id = Icd10Code::pluck('indonesian_description', 'code');
-        $icd9  = Icd9Code::pluck('description', 'code');
-        $icd9Id = Icd9Code::pluck('indonesian_description', 'code');
+        // Label ICD HANYA untuk kode pada klaim ini (DB klaim simpan kode telanjang).
+        // Hindari memuat SELURUH tabel ICD (~14k baris) tiap buka detail / polling 12 dtk.
+        $dxCodes = collect([$claim->diagnosis_utama])
+            ->merge(collect($claim->diagnosis_sekunder ?? [])->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c))
+            ->filter()->unique()->values();
+        $pxCodes = collect($claim->procedure_codes ?? [])
+            ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
+            ->filter()->unique()->values();
+        $icd10   = Icd10Code::whereIn('code', $dxCodes)->pluck('description', 'code');
+        $icd10Id = Icd10Code::whereIn('code', $dxCodes)->pluck('indonesian_description', 'code');
+        $icd9    = Icd9Code::whereIn('code', $pxCodes)->pluck('description', 'code');
+        $icd9Id  = Icd9Code::whereIn('code', $pxCodes)->pluck('indonesian_description', 'code');
 
         // Collection::get() aman bila kode tak ada (hindari "Undefined array key").
         $dx10 = fn ($code) => $code
@@ -80,13 +88,22 @@ class KlaimController extends Controller
             'name' => $claim->assignedTo->name,
         ] : null;
 
+        // Penanda pipeline berkas → mengaktifkan aksi "Kembalikan ke Rekap" di
+        // workspace Berkas Klaim (hanya bila kunjungan sudah dikirim ke klaim).
+        $data['klaim_sent_at']     = $claim->visit?->klaim_sent_at?->toIso8601String();
+        $data['klaim_returned_at'] = $claim->visit?->klaim_returned_at?->toIso8601String();
+
         // Lembar Klaim (Resume Medis versi klaim) — status TTD dokter + sinkron koding.
         $data['lembar_klaim'] = $this->service->claimResumeStatus($id);
 
         // Dokumen pendukung = PatientDocument pada visit klaim (FINAL diutamakan).
+        // Sembunyikan dokumen arsip/void (selaras getBpjsVisitRecap) supaya verifikator
+        // tak salah anggap berkas lengkap. NULLS LAST: dokumen final (punya tgl) di atas,
+        // draft (finalized_at null) di bawah — bukan NULLS FIRST default Postgres.
         $data['dokumen_pendukung'] = \App\Models\PatientDocument::with('documentType')
             ->where('visit_id', $claim->visit_id)
-            ->orderByDesc('finalized_at')
+            ->whereNotIn('status', \App\Services\KlaimService::DOC_ARCHIVED_STATUSES)
+            ->orderByRaw('finalized_at DESC NULLS LAST')
             ->get()
             ->map(fn ($d) => [
                 'id'       => $d->id,
@@ -318,6 +335,8 @@ class KlaimController extends Controller
     /** POST /klaim/{id}/eklaim/grouper — jalankan grouper E-Klaim (body: stage?) */
     public function eklaimGrouper(Request $request, string $id): JsonResponse
     {
+        // Stage WS E-Klaim hanya 1 (grouper) / 2 (special CMG). Tolak nilai liar.
+        $request->validate(['stage' => 'nullable|integer|in:1,2']);
         $stage = (int) $request->input('stage', 1);
 
         try {
@@ -740,7 +759,19 @@ class KlaimController extends Controller
     public function rekapExport(Request $request): \Symfony\Component\HttpFoundation\Response
     {
         $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'jenis']);
-        $filters['per_page'] = 100000; // efektif semua baris yang cocok
+
+        // Wajibkan rentang tanggal & batasi span → cegah ekspor SELURUH riwayat dalam
+        // satu request sinkron (OOM/timeout). Maks 92 hari (≈ 1 triwulan).
+        $from = $filters['tanggal_from'] ?? $filters['tanggal'] ?? null;
+        $to   = $filters['tanggal_to'] ?? $filters['tanggal'] ?? null;
+        if (! $from || ! $to) {
+            return $this->error('Pilih rentang tanggal (dari–sampai) terlebih dahulu sebelum mengekspor.', 422);
+        }
+        if (\Illuminate\Support\Carbon::parse($from)->diffInDays(\Illuminate\Support\Carbon::parse($to)) > 92) {
+            return $this->error('Rentang ekspor maksimal 92 hari. Persempit periode lalu coba lagi.', 422);
+        }
+
+        $filters['per_page'] = 20000; // batas aman; rentang ≤92 hari menjaga jauh di bawah ini
         $page = $this->service->getBpjsVisitRecap($filters);
 
         $out = fopen('php://temp', 'r+');
@@ -882,6 +913,13 @@ class KlaimController extends Controller
     {
         // Coerce non-int status (e.g. PDO SQLSTATE string from QueryException) to a valid HTTP code.
         $status = (is_int($status) && $status >= 400 && $status < 600) ? $status : 500;
+        // Jangan bocorkan detail teknis SQL/koneksi ke klien — pesan QueryException
+        // memuat query + parameter (NIK/No.SEP) & skema DB. Sensor → 500 generik, detail ke log.
+        if (str_contains($message, 'SQLSTATE') || str_contains($message, ' SQL: ')) {
+            Log::error('Klaim error (disensor dari klien): ' . $message);
+            $message = 'Terjadi kesalahan pada server. Silakan coba lagi atau hubungi admin.';
+            $status = 500;
+        }
         return response()->json([
             'success' => false,
             'data'    => null,
@@ -898,6 +936,10 @@ class KlaimController extends Controller
     {
         if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
             return 404;
+        }
+        // QueryException/PDO (mis. {id} non-UUID, konflik unik) = galat server, bukan 422.
+        if ($e instanceof \Illuminate\Database\QueryException || $e instanceof \PDOException) {
+            return 500;
         }
         $code = $e->getCode();
 

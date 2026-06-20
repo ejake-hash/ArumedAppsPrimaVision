@@ -372,9 +372,15 @@ class KlaimService
         $page = $query->orderByRaw('no_sep IS NULL')->orderBy('no_sep')->orderBy('id')
             ->paginate($filters['per_page'] ?? 25);
 
-        // Label ICD-10 (DB hanya simpan kode). Cache per-request (pola show()).
-        $icd10   = \App\Models\Icd10Code::pluck('description', 'code');
-        $icd10Id = \App\Models\Icd10Code::pluck('indonesian_description', 'code');
+        // Label ICD-10 HANYA untuk kode yang muncul di halaman ini — hindari memuat
+        // SELURUH tabel ICD (~14k baris) tiap request (endpoint dipanggil juga oleh
+        // polling/refresh KlaimView). Kode dx: prioritas koding KLAIM (koreksi koder)
+        // atas exam dokter — selaras tampilan diagnosa di baris (lihat $dxCode).
+        $dxCodes = $page->getCollection()->map(fn ($v) =>
+            $v->bpjsClaim?->diagnosis_utama ?? $v->doctorExamination?->diagnosis_utama
+        )->filter()->unique()->values()->all();
+        $icd10   = \App\Models\Icd10Code::whereIn('code', $dxCodes)->pluck('description', 'code');
+        $icd10Id = \App\Models\Icd10Code::whereIn('code', $dxCodes)->pluck('indonesian_description', 'code');
 
         $jenisMap  = ['RANAP' => 'Rawat Inap', 'IGD' => 'Gawat Darurat', 'RAJAL' => 'Rawat Jalan'];
         $kelasMap  = ['1' => 'Kelas 1', '2' => 'Kelas 2', '3' => 'Kelas 3'];
@@ -384,7 +390,7 @@ class KlaimService
             $v->append('dpjp_name');
             $sep = (array) ($v->sep_data ?? []);
 
-            $dxCode = $v->doctorExamination?->diagnosis_utama ?? $v->bpjsClaim?->diagnosis_utama;
+            $dxCode = $v->bpjsClaim?->diagnosis_utama ?? $v->doctorExamination?->diagnosis_utama;
             $diagnosa = $dxCode
                 ? trim($dxCode.' — '.(($icd10Id->get($dxCode) ?: $icd10->get($dxCode)) ?? ''))
                 : null;
@@ -607,6 +613,10 @@ class KlaimService
         $checklist = $this->computeClaimChecklist($visit, $docs);
 
         return [
+            // Lembar INA-CBG (luaran E-Klaim) dirakit ke bundel Vedika & bisa di-preview
+            // via /klaim/{claim_id}/cetak — HANYA bila klaim sudah di-grouping (ada kode).
+            'claim_id'     => $claim?->id,
+            'inacbgs_kode' => $claim?->inacbgs_kode,
             'documents' => $documents,
             'penunjang' => $penunjang,
             'manual'    => $manual,
@@ -779,19 +789,33 @@ class KlaimService
             $existing = BpjsClaim::where('visit_id', $visit->id)->first();
             $oldStatus = $existing?->status;
 
-            $claim = BpjsClaim::updateOrCreate(
-                ['visit_id' => $visit->id],
-                [
+            // Klaim/SEP = KODE kanonik saja (BPJS-safe). Exam menyimpan {code,name}
+            // (sub-diagnosa) → strip ke kode telanjang; nama spesifik hidup di RME.
+            if ($existing) {
+                // Kirim ulang (mis. setelah dikembalikan ke Rekap): JANGAN timpa koding
+                // yang mungkin sudah disesuaikan koder lewat updateClaimCoding — selaras
+                // backfillClaimCodingFromExam yang sengaja tak menimpa koder. Hanya segarkan
+                // identitas, dan isi koding dari dokter HANYA bila klaim masih kosong.
+                $existing->no_sep      = $visit->no_sep;
+                $existing->patient_nik = $visit->patient->nik;
+                if (empty($existing->diagnosis_utama)) {
+                    $existing->diagnosis_utama    = $exam->diagnosis_utama;
+                    $existing->diagnosis_sekunder = $this->stripToCodes($exam->diagnosis_sekunder);
+                    $existing->procedure_codes    = $this->stripToCodes($exam->tindakan_codes);
+                }
+                $existing->save();
+                $claim = $existing;
+            } else {
+                $claim = BpjsClaim::create([
+                    'visit_id'           => $visit->id,
                     'no_sep'             => $visit->no_sep,
                     'patient_nik'        => $visit->patient->nik,
                     'diagnosis_utama'    => $exam->diagnosis_utama,
-                    // Klaim/SEP = KODE kanonik saja (BPJS-safe). Exam menyimpan {code,name}
-                    // (sub-diagnosa) → strip ke kode telanjang; nama spesifik hidup di RME.
                     'diagnosis_sekunder' => $this->stripToCodes($exam->diagnosis_sekunder),
                     'procedure_codes'    => $this->stripToCodes($exam->tindakan_codes),
-                    'status'             => $existing?->status ?? 'DRAFT',
-                ]
-            );
+                    'status'             => 'DRAFT',
+                ]);
+            }
 
             $this->addAuditLog(
                 $claim->id,
@@ -1127,6 +1151,9 @@ class KlaimService
 
         if (! $claim->inacbgs_kode) {
             throw new \Exception('Grouping E-Klaim belum dilakukan sebelum finalisasi.', 422);
+        }
+        if ((float) $claim->inacbgs_tarif <= 0) {
+            throw new \Exception('Tarif INA-CBGs belum valid (Rp 0). Jalankan ulang Grouping sebelum finalisasi.', 422);
         }
 
         // Dokumen pendukung wajib sahih: lembar klaim sudah di-TTD dokter & koding
@@ -1596,6 +1623,12 @@ class KlaimService
 
         if (! $claim->inacbgs_kode) {
             throw new \Exception('Grouping INA-CBGs belum dilakukan.', 422);
+        }
+
+        // Grouper bisa mengembalikan kode tanpa tarif (shape WS tak terduga) → tarif null/0.
+        // Jangan loloskan ke VERIFIED dgn tarif kosong (akan submit & LUPIS bertarif 0).
+        if ((float) $claim->inacbgs_tarif <= 0) {
+            throw new \Exception('Tarif INA-CBGs belum valid (Rp 0). Jalankan ulang Grouping INA-CBGs.', 422);
         }
 
         if (! $claim->lupis_data) {
