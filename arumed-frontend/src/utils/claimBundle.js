@@ -6,7 +6,8 @@
 //  - Dokumen RM     : GET /klaim/dokumen/{docId}/pdf (hanya FINALIZED, via api/Bearer)
 //  - Kwitansi       : GET /klaim/kwitansi/{visitId}/pdf (via api/Bearer)
 //  - Penunjang/lampiran: file storage publik (fetch langsung) — PDF di-merge,
-//    gambar di-embed ke halaman A4.
+//    gambar di-embed ke halaman 13x21.
+// Semua halaman diseragamkan ke 13x21 cm (skala-fit, konten utuh).
 //
 // Item yang gagal diambil / format tak didukung → DILEWATI (dicatat ke `skipped`),
 // tidak menggagalkan seluruh bundel — petugas dapat melengkapi manual sebelum upload.
@@ -14,7 +15,10 @@ import { PDFDocument } from 'pdf-lib'
 import JSZip from 'jszip'
 import api from '@/services/api'
 
-const A4 = [595.28, 841.89] // titik (pt) — A4 potret
+// Bundel Vedika DISERAGAMKAN ke 13 x 21 cm (pt). SEP sudah 13x21 (skala pas);
+// dokumen A4 (resume/INA-CBG/kwitansi) di-skala-fit → utuh tapi mengecil; gambar
+// dipusatkan. (Keputusan: berkas klaim seragam 13x21.)
+const PAGE = [368.5, 595.28] // 13 x 21 cm
 
 async function fetchApiBlob(url) {
   const res = await api.get(url, { responseType: 'blob' })
@@ -25,8 +29,16 @@ async function appendPdf(out, blob, label, skipped) {
   try {
     const buf = await blob.arrayBuffer()
     const src = await PDFDocument.load(buf, { ignoreEncryption: true })
-    const pages = await out.copyPages(src, src.getPageIndices())
-    pages.forEach((p) => out.addPage(p))
+    // Seragamkan ke 13x21: tiap halaman sumber di-embed lalu di-skala-fit ke kanvas
+    // 13x21 (SEP 13x21 → skala 1/pas; A4 → mengecil UTUH, tak terpotong).
+    const embedded = await out.embedPages(src.getPages())
+    for (const ep of embedded) {
+      const scale = Math.min(PAGE[0] / ep.width, PAGE[1] / ep.height, 1)
+      const w = ep.width * scale
+      const h = ep.height * scale
+      const page = out.addPage(PAGE)
+      page.drawPage(ep, { x: (PAGE[0] - w) / 2, y: (PAGE[1] - h) / 2, width: w, height: h })
+    }
     return true
   } catch (e) {
     skipped.push(label)
@@ -40,15 +52,15 @@ async function appendImage(out, blob, label, skipped) {
     const head = new Uint8Array(buf.slice(0, 4))
     const isPng = head[0] === 0x89 && head[1] === 0x50
     const img = isPng ? await out.embedPng(buf) : await out.embedJpg(buf)
-    const maxW = A4[0] - 40
-    const maxH = A4[1] - 40
+    const maxW = PAGE[0] - 28
+    const maxH = PAGE[1] - 28
     const scale = Math.min(maxW / img.width, maxH / img.height, 1)
     const w = img.width * scale
     const h = img.height * scale
-    // addPage SETELAH embed + hitung skala sukses → cegah halaman A4 kosong tertinggal
-    // di output bila embed/akses dimensi gagal (catch hanya skipped.push, tak hapus halaman).
-    const page = out.addPage(A4)
-    page.drawImage(img, { x: (A4[0] - w) / 2, y: (A4[1] - h) / 2, width: w, height: h })
+    // addPage SETELAH embed + hitung skala sukses → cegah halaman kosong tertinggal
+    // bila embed/akses dimensi gagal (catch hanya skipped.push, tak hapus halaman).
+    const page = out.addPage(PAGE)
+    page.drawImage(img, { x: (PAGE[0] - w) / 2, y: (PAGE[1] - h) / 2, width: w, height: h })
     return true
   } catch (e) {
     skipped.push(label)
