@@ -40,12 +40,14 @@ async function appendImage(out, blob, label, skipped) {
     const head = new Uint8Array(buf.slice(0, 4))
     const isPng = head[0] === 0x89 && head[1] === 0x50
     const img = isPng ? await out.embedPng(buf) : await out.embedJpg(buf)
-    const page = out.addPage(A4)
     const maxW = A4[0] - 40
     const maxH = A4[1] - 40
     const scale = Math.min(maxW / img.width, maxH / img.height, 1)
     const w = img.width * scale
     const h = img.height * scale
+    // addPage SETELAH embed + hitung skala sukses → cegah halaman A4 kosong tertinggal
+    // di output bila embed/akses dimensi gagal (catch hanya skipped.push, tak hapus halaman).
+    const page = out.addPage(A4)
     page.drawImage(img, { x: (A4[0] - w) / 2, y: (A4[1] - h) / 2, width: w, height: h })
     return true
   } catch (e) {
@@ -93,6 +95,16 @@ export async function buildVisitBundle(visitId) {
     await appendPdf(out, await fetchApiBlob(`/admisi/bpjs/cetak-sep/${visitId}`), 'SEP', skipped)
   } catch (e) {
     skipped.push('SEP')
+  }
+
+  // 1b) Lembar INA-CBG (luaran E-Klaim) — hanya bila klaim sudah di-grouping.
+  //     Tarik live via /klaim/{claim_id}/cetak (get_claim_data); gagal → dilewati.
+  if (m.claim_id && m.inacbgs_kode) {
+    try {
+      await appendPdf(out, await fetchApiBlob(`/klaim/${m.claim_id}/cetak`), 'Lembar INA-CBG', skipped)
+    } catch (e) {
+      skipped.push('Lembar INA-CBG')
+    }
   }
 
   // 2) Dokumen RM (hanya yang sudah FINALIZED/ber-TTD). Manifest terurut
@@ -163,7 +175,9 @@ export async function buildBatchZip(visits, onProgress) {
       const { bytes, skipped, pages } = await buildVisitBundle(v.visit_id)
       if (pages > 0) {
         const folder = v.jenis_kode === 'RANAP' ? 'RANAP' : 'RAJAL'
-        const fname = safeFilename(`${v.no_sep || v.no_rm || v.visit_id}_${v.nama || ''}`) + '.pdf'
+        // Prefiks visit_id MENJAMIN nama unik → cegah tabrakan (dua kunjungan ber-SEP
+        // sama / SEP kosong + nama sama) yang membuat JSZip menimpa entri senyap → pasien hilang.
+        const fname = safeFilename(`${v.visit_id}_${v.no_sep || v.no_rm || ''}_${v.nama || ''}`) + '.pdf'
         zip.file(`${folder}/${fname}`, bytes)
         ok++
         skippedFiles += skipped.length
