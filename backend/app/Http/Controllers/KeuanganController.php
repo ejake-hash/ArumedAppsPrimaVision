@@ -42,6 +42,32 @@ class KeuanganController extends Controller
         ]);
     }
 
+    // ── Laporan obat farmasi ──────────────────────────────────────────────────
+
+    public function medicationReport(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->medicationReport($this->medReportFilters($request)));
+    }
+
+    public function medicationReportExport(Request $request): Response
+    {
+        $filters = $this->medReportFilters($request);
+        $csv = $this->service->buildMedicationReportCsv($filters);
+        $base = 'laporan-obat-' . ($filters['period'] ?? now()->format('Y-m'));
+
+        if (strtolower((string) $request->query('format')) === 'xlsx') {
+            $xlsx = \App\Support\SpreadsheetHelper::csvToXlsx($csv, 'Laporan Obat');
+            return response($xlsx, 200, [
+                'Content-Type'        => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => "attachment; filename=\"{$base}.xlsx\"",
+            ]);
+        }
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$base}.csv\"",
+        ]);
+    }
+
     // ── Aturan honor (fee rules) ──────────────────────────────────────────────
 
     public function options(): JsonResponse
@@ -83,6 +109,17 @@ class KeuanganController extends Controller
             'bpjs_basis'  => 'nullable|in:finalized,paid',
         ]);
         // format=xlsx (query export) bukan filter — abaikan.
+        return array_filter($validated, fn ($v) => $v !== null);
+    }
+
+    private function medReportFilters(Request $request): array
+    {
+        $validated = $request->validate([
+            'period'      => 'nullable|date_format:Y-m',
+            'payer_group' => 'nullable|in:BPJS,UMUM',
+            'bpjs_basis'  => 'nullable|in:finalized,paid',
+            'category'    => 'nullable|in:rawat_jalan,pasca_bedah,obat_bebas',
+        ]);
         return array_filter($validated, fn ($v) => $v !== null);
     }
 

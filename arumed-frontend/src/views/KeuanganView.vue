@@ -2,6 +2,8 @@
 import { ref, computed, reactive, onMounted } from 'vue'
 import { keuanganApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
+import BarChart from '@/components/common/charts/BarChart.vue'
+import DoughnutChart from '@/components/common/charts/DoughnutChart.vue'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can('keuangan.write'))
@@ -10,6 +12,7 @@ const canDelete = computed(() => auth.can('keuangan.delete'))
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
   { val: 'recap', label: 'Rekap Honor' },
+  { val: 'laporan', label: 'Laporan' },
   { val: 'rules', label: 'Aturan Honor' },
 ]
 const activeTab = ref('recap')
@@ -98,7 +101,74 @@ const payersWithData = (doc) =>
   ['UMUM', 'BPJS'].filter(pg => doc.payers[pg].categories.length || doc.payers[pg].packages.length)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TAB 2 — ATURAN HONOR (fee rules)
+// TAB 2 — LAPORAN OBAT FARMASI (pemakaian + pendapatan)
+// ═══════════════════════════════════════════════════════════════════════════
+const CAT_LABEL = { rawat_jalan: 'Rawat Jalan', pasca_bedah: 'Pasca Bedah', obat_bebas: 'Obat Bebas' }
+const CAT_COLOR = { rawat_jalan: '#0e7490', pasca_bedah: '#9333ea', obat_bebas: '#16a34a' }
+const CAT_KEYS = ['rawat_jalan', 'pasca_bedah', 'obat_bebas']
+
+const labPeriod = ref(thisMonth())
+const labPayer = ref('')
+const labCategory = ref('')
+const report = ref(null)
+const loadingReport = ref(false)
+const openLabFmt = ref(false)
+
+const labParams = computed(() => {
+  const p = { period: labPeriod.value }
+  if (labPayer.value) p.payer_group = labPayer.value
+  if (labCategory.value) p.category = labCategory.value
+  return p
+})
+
+async function loadReport() {
+  loadingReport.value = true
+  try {
+    const res = await keuanganApi.laporanObat(labParams.value)
+    report.value = res.data.data
+  } catch (e) {
+    toast('e', e?.response?.data?.message || 'Gagal memuat laporan obat.')
+  } finally {
+    loadingReport.value = false
+  }
+}
+
+async function exportReport(format = 'csv') {
+  openLabFmt.value = false
+  try {
+    const res = await keuanganApi.laporanObatExport(labParams.value, format === 'xlsx' ? 'xlsx' : undefined)
+    triggerDownload(res.data, `laporan-obat-${labPeriod.value}.${format}`)
+  } catch (e) {
+    toast('e', 'Gagal mengekspor laporan.')
+  }
+}
+
+const trendData = computed(() => ({
+  labels: (report.value?.trend || []).map(t => t.label),
+  datasets: CAT_KEYS.map(k => ({
+    label: CAT_LABEL[k],
+    data: (report.value?.trend || []).map(t => t[k]),
+    backgroundColor: CAT_COLOR[k],
+    borderRadius: 3,
+    stack: 'obat',
+  })),
+}))
+const trendOptions = {
+  plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+  scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+}
+
+const compositionData = computed(() => ({
+  labels: CAT_KEYS.map(k => CAT_LABEL[k]),
+  datasets: [{
+    data: CAT_KEYS.map(k => report.value?.composition?.[k] ?? 0),
+    backgroundColor: CAT_KEYS.map(k => CAT_COLOR[k]),
+    borderWidth: 0,
+  }],
+}))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB 3 — ATURAN HONOR (fee rules)
 // ═══════════════════════════════════════════════════════════════════════════
 const rules = ref([])
 const loadingRules = ref(false)
@@ -198,12 +268,13 @@ const ruleTarget = (r) =>
 onMounted(() => {
   loadOptions()
   loadRecap()
+  loadReport()
   loadRules()
 })
 </script>
 
 <template>
-  <div class="ku-page" @click="openFmt = false">
+  <div class="ku-page" @click="openFmt = false; openLabFmt = false">
     <header class="ku-head">
       <div>
         <h1>Keuangan — Rekap Honor Dokter</h1>
@@ -319,6 +390,92 @@ onMounted(() => {
           </ul>
         </details>
       </div>
+    </section>
+
+    <!-- ══════════════════ TAB LAPORAN ══════════════════ -->
+    <section v-show="activeTab === 'laporan'" class="ku-card">
+      <div class="ku-filters">
+        <label class="fl">
+          <span>Periode</span>
+          <input type="month" v-model="labPeriod" />
+        </label>
+        <label class="fl">
+          <span>Penjamin</span>
+          <select v-model="labPayer">
+            <option value="">BPJS &amp; Umum</option>
+            <option value="UMUM">Umum/Asuransi</option>
+            <option value="BPJS">BPJS</option>
+          </select>
+        </label>
+        <label class="fl">
+          <span>Kategori (tabel)</span>
+          <select v-model="labCategory">
+            <option value="">Semua kategori</option>
+            <option value="rawat_jalan">Rawat Jalan</option>
+            <option value="pasca_bedah">Pasca Bedah</option>
+            <option value="obat_bebas">Obat Bebas</option>
+          </select>
+        </label>
+        <button class="btn primary" :disabled="loadingReport" @click="loadReport">
+          {{ loadingReport ? 'Memuat…' : 'Tampilkan' }}
+        </button>
+        <div class="fmt-wrap" @click.stop>
+          <button class="btn soft" @click="openLabFmt = !openLabFmt">Export ▾</button>
+          <div v-if="openLabFmt" class="fmt-menu">
+            <button @click="exportReport('csv')">CSV (.csv)</button>
+            <button @click="exportReport('xlsx')">Excel (.xlsx)</button>
+          </div>
+        </div>
+      </div>
+
+      <template v-if="report">
+        <div class="ku-summary">
+          <div class="sum-box total"><span>Total Pendapatan Obat — {{ report.period_label }}</span><b>{{ rp(report.kpi.total) }}</b></div>
+          <div class="sum-box umum"><span>Rawat Jalan</span><b>{{ rp(report.kpi.rawat_jalan) }}</b></div>
+          <div class="sum-box pascabedah"><span>Pasca Bedah</span><b>{{ rp(report.kpi.pasca_bedah) }}</b></div>
+          <div class="sum-box bebas"><span>Obat Bebas</span><b>{{ rp(report.kpi.obat_bebas) }}</b></div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="chart-card wide">
+            <h3>Tren Pendapatan Obat — 12 Bulan</h3>
+            <BarChart :data="trendData" :options="trendOptions" height="280px" />
+          </div>
+          <div class="chart-card">
+            <h3>Komposisi {{ report.period_label }}</h3>
+            <DoughnutChart :data="compositionData" height="280px" />
+          </div>
+          <div class="chart-card">
+            <h3>Ringkasan Kategori</h3>
+            <ul class="cat-legend">
+              <li v-for="k in ['rawat_jalan','pasca_bedah','obat_bebas']" :key="k">
+                <span class="dot" :style="{ background: CAT_COLOR[k] }"></span>
+                {{ CAT_LABEL[k] }}
+                <b>{{ rp(report.kpi[k]) }}</b>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 class="lap-tbl-title">Pemakaian Obat Farmasi ({{ report.kpi.item_count }} jenis)</h3>
+        <table class="ku-table">
+          <thead>
+            <tr><th>Obat</th><th>Golongan</th><th>Kategori</th><th class="r">Qty Terpakai</th><th class="r">Transaksi</th><th class="r">Pendapatan</th></tr>
+          </thead>
+          <tbody>
+            <tr v-if="!report.usage.length"><td colspan="6" class="muted ctr">Tidak ada pemakaian obat pada periode ini.</td></tr>
+            <tr v-for="(u, i) in report.usage" :key="i">
+              <td>{{ u.medication }}</td>
+              <td class="muted">{{ u.golongan || '—' }}</td>
+              <td><span class="cat-tag" :style="{ background: CAT_COLOR[u.category] + '22', color: CAT_COLOR[u.category] }">{{ CAT_LABEL[u.category] }}</span></td>
+              <td class="r">{{ u.qty }}</td>
+              <td class="r">{{ u.tx_count }}</td>
+              <td class="r">{{ rp(u.revenue) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+      <div v-else-if="loadingReport" class="ku-empty">Memuat laporan…</div>
     </section>
 
     <!-- ══════════════════ TAB ATURAN ══════════════════ -->
@@ -472,6 +629,19 @@ onMounted(() => {
 .sum-box span { font-size: .75rem; color: #64748b; }
 .sum-box b { font-size: 1.15rem; }
 .sum-box.umum { background: #f0fdfa; } .sum-box.bpjs { background: #eff6ff; } .sum-box.total { background: #fef3c7; }
+.sum-box.pascabedah { background: #faf5ff; } .sum-box.bebas { background: #f0fdf4; }
+
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+.chart-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
+.chart-card.wide { grid-column: 1 / -1; }
+.chart-card h3 { font-size: .82rem; color: #475569; margin: 0 0 10px; font-weight: 600; }
+.cat-legend { list-style: none; margin: 8px 0 0; padding: 0; }
+.cat-legend li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: .85rem; color: #475569; }
+.cat-legend li b { margin-left: auto; color: #0f172a; }
+.cat-legend .dot { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.cat-tag { display: inline-block; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+.lap-tbl-title { font-size: .9rem; color: #334155; margin: 18px 0 8px; }
+@media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
 .sum-warn { flex-basis: 100%; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; padding: 8px 12px; border-radius: 8px; font-size: .82rem; }
 
 .ku-empty { text-align: center; color: #94a3b8; padding: 30px; }

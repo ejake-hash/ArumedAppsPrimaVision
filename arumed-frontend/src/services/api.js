@@ -848,6 +848,11 @@ export const keuanganApi = {
     params: { ...(params || {}), ...(format ? { format } : {}) },
     responseType: 'blob',
   }),
+  laporanObat:       (params)         => api.get('/keuangan/laporan-obat', { params }),
+  laporanObatExport: (params, format) => api.get('/keuangan/laporan-obat/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) },
+    responseType: 'blob',
+  }),
   options:    ()               => api.get('/keuangan/fee-rules/options'),
   listRules:  (params)         => api.get('/keuangan/fee-rules', { params }),
   createRule: (body)           => api.post('/keuangan/fee-rules', body),

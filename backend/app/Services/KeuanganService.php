@@ -311,6 +311,194 @@ class KeuanganService
     }
 
     // =========================================================================
+    // LAPORAN PEMAKAIAN & PENDAPATAN OBAT FARMASI
+    // =========================================================================
+
+    /**
+     * Laporan obat farmasi: pendapatan per kategori (tren 12 bln + komposisi periode)
+     * dan rekap pemakaian agregat per jenis obat. Cakupan = billing item OBAT
+     * (sudah tervalidasi Farmasi) + penjualan OTC walk-in (pharmacy_sales).
+     *
+     * 3 kategori: rawat_jalan (Obat Pulang RAJAL), pasca_bedah (resep is_post_op /
+     * item is_bedah / pos Tindakan-Injeksi), obat_bebas (OTC walk-in + item TAMBAHAN
+     * golongan BEBAS). Pendapatan = net_price (billing) / total_price (OTC).
+     *
+     * @param array{period?:string,payer_group?:string,bpjs_basis?:string,category?:string} $filters
+     */
+    public function medicationReport(array $filters): array
+    {
+        [$start, $end, $period] = $this->resolvePeriod($filters['period'] ?? null);
+        $bpjsBasis = ($filters['bpjs_basis'] ?? 'finalized') === 'paid' ? 'paid' : 'finalized';
+        $payerOnly = in_array($filters['payer_group'] ?? null, ['BPJS', 'UMUM'], true) ? $filters['payer_group'] : null;
+        $catFilter = in_array($filters['category'] ?? null, ['rawat_jalan', 'pasca_bedah', 'obat_bebas'], true) ? $filters['category'] : null;
+
+        // Rentang 12 bulan (periode terpilih di ujung) untuk tren.
+        $trendStart = (clone $start)->subMonthsNoOverflow(11)->startOfMonth();
+
+        $billing = $this->fetchObatRows($trendStart, $end, $bpjsBasis, $payerOnly);
+        // OTC walk-in = penjamin UMUM (tanpa insurer); skip bila filter BPJS.
+        $otc = $payerOnly === 'BPJS' ? [] : $this->fetchOtcSaleRows($trendStart, $end);
+
+        // Inisialisasi 12 bucket bulanan kronologis.
+        $trend = [];
+        $cursor = (clone $trendStart);
+        for ($i = 0; $i < 12; $i++) {
+            $key = $cursor->format('Y-m');
+            $trend[$key] = [
+                'bucket'      => $key,
+                'label'       => $cursor->isoFormat('MMM YY'),
+                'rawat_jalan' => 0.0, 'pasca_bedah' => 0.0, 'obat_bebas' => 0.0,
+            ];
+            $cursor->addMonthNoOverflow();
+        }
+
+        $composition = ['rawat_jalan' => 0.0, 'pasca_bedah' => 0.0, 'obat_bebas' => 0.0];
+        $usage = []; // key "med|cat" => agregat
+
+        $consume = function (string $cat, string $bucket, float $revenue, bool $isCurrent, string $medName, ?string $golongan, int $qty) use (&$trend, &$composition, &$usage) {
+            if (isset($trend[$bucket])) { $trend[$bucket][$cat] += $revenue; }
+            if (! $isCurrent) { return; }
+            $composition[$cat] += $revenue;
+            $key = mb_strtolower($medName) . '|' . $cat;
+            if (! isset($usage[$key])) {
+                $usage[$key] = ['medication' => $medName, 'golongan' => $golongan, 'category' => $cat, 'qty' => 0, 'tx_count' => 0, 'revenue' => 0.0];
+            }
+            $usage[$key]['qty'] += $qty;
+            $usage[$key]['tx_count']++;
+            $usage[$key]['revenue'] += $revenue;
+        };
+
+        foreach ($billing as $r) {
+            $cat    = $this->classifyObat($r);
+            $bucket = $this->bucketMonth($r, $bpjsBasis);
+            $consume($cat, $bucket, (float) $r->net_price, $bucket === $period, $r->med_name ?: ($r->description ?: 'Obat'), $r->golongan, (int) $r->quantity);
+        }
+        foreach ($otc as $r) {
+            $bucket = substr((string) $r->realized_at, 0, 7);
+            $consume('obat_bebas', $bucket, (float) $r->total_price, $bucket === $period, $r->med_name ?: 'Obat (OTC)', $r->golongan, (int) $r->quantity);
+        }
+
+        // Rekap usage periode terpilih → list, filter kategori opsional, urut pendapatan desc.
+        $usageList = array_values($usage);
+        if ($catFilter) {
+            $usageList = array_values(array_filter($usageList, fn ($u) => $u['category'] === $catFilter));
+        }
+        usort($usageList, fn ($a, $b) => $b['revenue'] <=> $a['revenue']);
+        foreach ($usageList as &$u) { $u['qty'] = (int) $u['qty']; $u['revenue'] = round($u['revenue'], 2); }
+        unset($u);
+
+        return [
+            'period'       => $period,
+            'period_label' => $start->isoFormat('MMMM YYYY'),
+            'bpjs_basis'   => $bpjsBasis,
+            'kpi' => [
+                'total'       => round(array_sum($composition), 2),
+                'rawat_jalan' => round($composition['rawat_jalan'], 2),
+                'pasca_bedah' => round($composition['pasca_bedah'], 2),
+                'obat_bebas'  => round($composition['obat_bebas'], 2),
+                'item_count'  => count($usageList),
+            ],
+            'trend'       => array_values($trend),
+            'composition' => array_map(fn ($v) => round($v, 2), $composition),
+            'usage'       => $usageList,
+        ];
+    }
+
+    /** CSV rekap pemakaian obat (agregat per jenis obat) untuk periode. */
+    public function buildMedicationReportCsv(array $filters): string
+    {
+        $rep = $this->medicationReport($filters);
+        $catLabels = ['rawat_jalan' => 'Rawat Jalan', 'pasca_bedah' => 'Pasca Bedah', 'obat_bebas' => 'Obat Bebas'];
+
+        $rows = [];
+        $rows[] = ['Obat', 'Golongan', 'Kategori', 'Qty Terpakai', 'Transaksi', 'Pendapatan'];
+        foreach ($rep['usage'] as $u) {
+            $rows[] = [
+                $u['medication'], $u['golongan'] ?: '', $catLabels[$u['category']] ?? $u['category'],
+                $u['qty'], $u['tx_count'], $this->num($u['revenue']),
+            ];
+        }
+        $k = $rep['kpi'];
+        $rows[] = ['', '', '', '', '', ''];
+        $rows[] = ['SUBTOTAL — Rawat Jalan', '', '', '', '', $this->num($k['rawat_jalan'])];
+        $rows[] = ['SUBTOTAL — Pasca Bedah', '', '', '', '', $this->num($k['pasca_bedah'])];
+        $rows[] = ['SUBTOTAL — Obat Bebas', '', '', '', '', $this->num($k['obat_bebas'])];
+        $rows[] = ['GRAND TOTAL — Pendapatan Obat', '', '', '', '', $this->num($k['total'])];
+
+        return $this->toCsv($rows);
+    }
+
+    /** Klasifikasi 1 baris obat → kategori pendapatan (urutan presedensi: bedah > bebas > RJ). */
+    private function classifyObat($r): string
+    {
+        if (! empty($r->is_post_op) || ! empty($r->is_bedah)
+            || in_array($r->category ?? null, ['Obat Tindakan', 'Obat Injeksi'], true)) {
+            return 'pasca_bedah';
+        }
+        if (($r->source ?? null) === 'TAMBAHAN'
+            && in_array($r->golongan ?? null, \App\Models\Medication::GOLONGAN_OTC, true)) {
+            return 'obat_bebas';
+        }
+        return 'rawat_jalan';
+    }
+
+    /** Bulan realisasi (Y-m) sebuah baris: BPJS-finalized pakai visit_date, sisanya realized_at. */
+    private function bucketMonth($r, string $bpjsBasis): string
+    {
+        $isBpjsFinalized = ($r->payer_group ?? 'UMUM') === 'BPJS' && $bpjsBasis === 'finalized';
+        $date = $isBpjsFinalized ? $r->visit_date : ($r->realized_at ?? $r->visit_date);
+        return substr((string) $date, 0, 7);
+    }
+
+    /** Baris billing OBAT terealisasi + atribut resep/obat utk klasifikasi kategori. */
+    private function fetchObatRows(Carbon $start, Carbon $end, string $bpjsBasis, ?string $payerOnly): array
+    {
+        $payerExpr = "CASE WHEN ins.type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
+
+        $q = DB::table('billing_items as bi')
+            ->join('billing_invoices as inv', 'inv.id', '=', 'bi.billing_invoice_id')
+            ->join('visits as v', 'v.id', '=', 'inv.visit_id')
+            ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
+            ->leftJoin('prescription_items as pit', 'pit.id', '=', 'bi.reference_id')
+            ->leftJoin('prescriptions as pr', 'pr.id', '=', 'pit.prescription_id')
+            ->leftJoin('medications as m', 'm.id', '=', 'pit.medication_id')
+            ->where('bi.item_type', 'OBAT')
+            ->whereNull('bi.deleted_at')
+            ->whereNull('inv.deleted_at')
+            ->where(fn ($w) => $this->applyRealizationFilter($w, $start, $end, $bpjsBasis));
+
+        if ($payerOnly) {
+            $q->whereRaw("$payerExpr = ?", [$payerOnly]);
+        }
+
+        return $q->selectRaw("
+                bi.category, bi.quantity, bi.total_price, bi.net_price, bi.description,
+                inv.paid_at as realized_at, v.visit_date,
+                pr.is_post_op, pit.is_bedah, pit.source,
+                m.name as med_name, m.golongan,
+                $payerExpr as payer_group
+            ")
+            ->get()->all();
+    }
+
+    /** Item penjualan OTC walk-in (pharmacy_sales) LUNAS dalam rentang. */
+    private function fetchOtcSaleRows(Carbon $start, Carbon $end): array
+    {
+        return DB::table('pharmacy_sale_items as psi')
+            ->join('pharmacy_sales as ps', 'ps.id', '=', 'psi.pharmacy_sale_id')
+            ->leftJoin('medications as m', 'm.id', '=', 'psi.medication_id')
+            ->where('ps.status', 'PAID')
+            ->whereNull('ps.deleted_at')
+            ->whereBetween('ps.created_at', [$start, $end])
+            ->selectRaw("
+                psi.quantity, psi.total_price,
+                COALESCE(psi.medication_name, m.name) as med_name, m.golongan,
+                ps.created_at as realized_at
+            ")
+            ->get()->all();
+    }
+
+    // =========================================================================
     // QUERY HELPERS
     // =========================================================================
 

@@ -1001,6 +1001,8 @@ Route::prefix('v1')->group(function () {
         Route::prefix('keuangan')->group(function () {
             Route::get('/honor-recap',        [KeuanganController::class, 'recap'])->middleware('permission:keuangan.read');
             Route::get('/honor-recap/export', [KeuanganController::class, 'export'])->middleware('permission:keuangan.read');
+            Route::get('/laporan-obat',        [KeuanganController::class, 'medicationReport'])->middleware('permission:keuangan.read');
+            Route::get('/laporan-obat/export', [KeuanganController::class, 'medicationReportExport'])->middleware('permission:keuangan.read');
             Route::get('/fee-rules/options',  [KeuanganController::class, 'options'])->middleware('permission:keuangan.read');
             Route::get('/fee-rules',          [KeuanganController::class, 'indexRules'])->middleware('permission:keuangan.read');
             Route::post('/fee-rules',         [KeuanganController::class, 'storeRule'])->middleware('permission:keuangan.write');
