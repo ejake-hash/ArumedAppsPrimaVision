@@ -638,7 +638,10 @@ class KlaimController extends Controller
     public function rekap(Request $request): JsonResponse
     {
         return $this->ok($this->service->getBpjsVisitRecap(
-            $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'jenis', 'per_page'])
+            // 'only_sent' WAJIB diteruskan: tab "DIVA & Berkas" KlaimView kirim
+            // only_sent=1 agar hanya kunjungan yang sudah "Kirim ke Klaim"
+            // (klaim_sent_at) yang tampil. Tanpa ini, semua kunjungan BPJS bocor.
+            $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'search', 'jenis', 'per_page', 'only_sent'])
         ));
     }
 

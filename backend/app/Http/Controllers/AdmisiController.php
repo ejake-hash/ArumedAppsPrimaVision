@@ -737,7 +737,7 @@ class AdmisiController extends Controller
      * dialog cetak otomatis memakai kertas 13x21 (PDF viewer mengabaikan ukuran
      * media saat memilih kertas). Pasien bisa tetap "Save as PDF" 13x21 dari sini.
      */
-    public function bpjsCetakSepHtml(string $visitId)
+    public function bpjsCetakSepHtml(Request $request, string $visitId)
     {
         try {
             $data = $this->service->buildSepPrintData($visitId);
@@ -745,7 +745,9 @@ class AdmisiController extends Controller
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
 
-        $data['auto_print'] = true;
+        // Default auto-print (tombol "Cetak SEP"). Preview (mis. manifest DIVA &
+        // Berkas) kirim ?print=0 → tampil saja, tanpa dialog cetak otomatis.
+        $data['auto_print'] = $request->boolean('print', true);
 
         return response(view('pdf.sep', $data)->render(), 200, [
             'Content-Type' => 'text/html; charset=UTF-8',

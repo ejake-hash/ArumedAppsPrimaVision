@@ -750,16 +750,18 @@ async function toggleBerkasDetail(r) {
 
 // Buka satu berkas di tab baru. PDF dari API (auth-aware via interceptor) ditarik
 // sbg blob; URL storage publik (penunjang/lampiran) dibuka langsung.
-async function previewPdf(key, url, { direct = false } = {}) {
+async function previewPdf(key, url, { direct = false, html = false } = {}) {
   if (!url || previewing.value) return
   if (direct) { window.open(url, '_blank', 'noopener'); return }
   previewing.value = key
   try {
-    const { data } = await api.get(url, { responseType: 'blob' })
-    const blob = new Blob([data], { type: 'application/pdf' })
+    // SEP dirender HTML (bukan PDF): Chrome menghormati @page 13x21 cm saat cetak &
+    // tampil seukuran lembar aslinya (tak melebar A4 seperti viewer PDF).
+    const { data } = await api.get(url, { responseType: html ? 'text' : 'blob' })
+    const blob = new Blob([data], { type: html ? 'text/html' : 'application/pdf' })
     const u = URL.createObjectURL(blob)
     const w = window.open(u, '_blank')
-    if (!w) downloadBlob(blob, 'berkas.pdf')
+    if (!w) { html ? toast('w', 'Izinkan popup untuk membuka SEP') : downloadBlob(blob, 'berkas.pdf') }
     setTimeout(() => URL.revokeObjectURL(u), 60000)
   } catch (e) {
     let msg = 'Gagal membuka berkas'
@@ -2335,7 +2337,7 @@ function stepIndex(status) {
                   <ul v-else class="kl-bk-items">
                     <li class="kl-bk-item">
                       <span class="kl-bk-item-name">SEP</span>
-                      <button class="btn btn-ghost btn-xs" :disabled="!r.no_sep || previewing === `sep-${r.visit_id}`" @click="previewPdf(`sep-${r.visit_id}`, `/admisi/bpjs/cetak-sep/${r.visit_id}`)">{{ previewing === `sep-${r.visit_id}` ? '…' : 'Preview' }}</button>
+                      <button class="btn btn-ghost btn-xs" :disabled="!r.no_sep || previewing === `sep-${r.visit_id}`" @click="previewPdf(`sep-${r.visit_id}`, `/admisi/bpjs/cetak-sep-html/${r.visit_id}?print=0`, { html: true })">{{ previewing === `sep-${r.visit_id}` ? '…' : 'Preview' }}</button>
                     </li>
                     <li v-if="berkasManifest[r.visit_id]?.claim_id && berkasManifest[r.visit_id]?.inacbgs_kode" class="kl-bk-item">
                       <span class="kl-bk-item-name">Lembar INA-CBG <em class="kl-bk-tag ok">{{ berkasManifest[r.visit_id].inacbgs_kode }}</em></span>
