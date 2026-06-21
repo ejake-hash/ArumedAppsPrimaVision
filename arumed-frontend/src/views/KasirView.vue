@@ -140,14 +140,15 @@ function toggleQueue() {
 
 const selQ        = ref(null)    // queue item dipilih
 const selInv      = ref(null)    // full BillingInvoice + items
-// Diskon item default KOSONG (bukan "0,00"): backend mengirim "0.00" (kolom decimal);
-// normalkan 0 → '' tiap invoice dimuat ulang agar field diskon tampil kosong. Watch
-// NON-DEEP (pada ref, bukan isinya) → memutasi field item TIDAK memicu ulang (anti-loop).
+// Diskon item: backend mengirim string decimal "1.00"/"156.00"/"0.00" (kolom decimal:2).
+// Normalkan tiap invoice dimuat: 0 → '' (tampil KOSONG, bukan "0,00") dan non-nol →
+// Number (buang ",00" → tampil bilangan bulat "1"/"156", desimal hanya bila perlu mis.
+// "2.50"→2,5). Watch NON-DEEP (pada ref) → memutasi field item TIDAK memicu ulang (anti-loop).
 watch(selInv, (inv) => {
   if (!inv?.items) return
   for (const it of inv.items) {
-    if (!(Number(it.discount_percent) > 0)) it.discount_percent = ''
-    if (!(Number(it.discount_amount) > 0))  it.discount_amount  = ''
+    const p = Number(it.discount_percent); it.discount_percent = p > 0 ? p : ''
+    const a = Number(it.discount_amount);  it.discount_amount  = a > 0 ? a : ''
   }
 })
 const selInvLoading = ref(false)
