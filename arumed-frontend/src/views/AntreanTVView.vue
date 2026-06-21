@@ -1,7 +1,10 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { antreanTvApi } from '@/services/api'
 import logoPvPutih from '@/assets/images/logo-pv-putih.png'
+
+const route = useRoute()
 
 const clock = ref('')
 const dateStr = ref('')
@@ -307,6 +310,142 @@ const stationView = computed(() => {
   return out
 })
 
+// ─── Mode "Poliklinik" (1 layar dinamis: poli + farmasi + media berputar) ────
+// Aktif via query ?mode=poli. Layout grid 8-stasiun lama tetap dipakai bila tidak.
+const tvMode = computed(() => (route.query.mode === 'poli' ? 'poli' : 'grid'))
+
+// Status yang dianggap "sedang dilayani" (tampil sebagai nomor dipanggil).
+const ACTIVE_CALLED = ['CALLED', 'IN_PROGRESS']
+
+// Antrean poliklinik DIPECAH PER DOKTER (regulasi BPJS): tiap dokter aktif
+// punya nomor yang sedang dipanggil + jumlah menunggu di antreannya sendiri.
+// Diturunkan dari snapshot.DOKTER.rows (di-maintain WS + poll) → realtime.
+const poliklinikView = computed(() => {
+  const rows = snapshot.value.DOKTER?.rows ?? []
+  const groups = {}
+  for (const r of rows) {
+    const p = prefixOf(r.queue_number)
+    if (!p) continue
+    ;(groups[p] ??= []).push(r)
+  }
+  // Tampilkan semua dokter aktif (termasuk yang 0 antrean) + prefix yang ada
+  // antrean walau dokternya tak terjadwal (fallback, mis. jadwal terhapus).
+  const prefixes = new Set([...Object.keys(doctorByPrefix.value), ...Object.keys(groups)])
+  return [...prefixes]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .map((p) => {
+      const doc     = doctorByPrefix.value[p] || null
+      const grp     = groups[p] ?? []
+      const waiting = grp.filter((r) => r.status === 'WAITING')
+      const called  = [...grp].reverse().find((r) => ACTIVE_CALLED.includes(r.status)) || null
+      const poliRaw = (doc?.poliklinik || '').trim()
+      const poli    = poliRaw
+        ? (/^poli\b/i.test(poliRaw) ? poliRaw : `Poli ${poliRaw}`)
+        : 'Poliklinik'
+      return {
+        prefix:       p,
+        dokter:       doc?.nama_dokter ?? null,
+        poli,
+        room:         doc?.room ?? null,
+        serviceType:  doc?.service_type ?? null,
+        calledNum:    called?.queue_number ?? null,
+        calledName:   called?.patient_name ?? null,
+        waitingCount: waiting.length,
+        nextNum:      waiting[0]?.queue_number ?? null,
+      }
+    })
+})
+
+// Jumlah kolom papan poli (auto-fit, maks 4) — untuk class layout.
+const poliCols = computed(() => Math.min(Math.max(poliklinikView.value.length, 1), 4))
+
+// Antrean farmasi (1 stasiun): nomor dipanggil + jumlah menunggu + daftar
+// nomor siap diambil (CALLED terakhir) & antrean berikutnya.
+const farmasiView = computed(() => {
+  const rows    = snapshot.value.FARMASI?.rows ?? []
+  const waiting = rows.filter((r) => r.status === 'WAITING')
+  const called  = [...rows].reverse().find((r) => ACTIVE_CALLED.includes(r.status)) || null
+  const ready   = rows
+    .filter((r) => ACTIVE_CALLED.includes(r.status))
+    .sort((a, b) => String(b.called_at ?? '').localeCompare(String(a.called_at ?? '')))
+    .slice(0, 4)
+    .map((r) => r.queue_number)
+  return {
+    calledNum:    called?.queue_number ?? null,
+    calledName:   called?.patient_name ?? null,
+    waitingCount: waiting.length,
+    nextList:     waiting.slice(0, 6).map((r) => r.queue_number),
+    readyList:    ready,
+  }
+})
+
+// Stasiun alur lainnya — strip ringkas pada scene "Stasiun".
+const STRIP_STATIONS = ['ADMISI', 'TRIASE', 'REFRAKSIONIS', 'PENUNJANG', 'BEDAH', 'KASIR']
+const stationStripView = computed(() =>
+  STRIP_STATIONS.map((key) => ({
+    key,
+    label:        stationLabel[key] ?? key,
+    calledNum:    stationView.value[key]?.called?.num ?? null,
+    waitingCount: stationView.value[key]?.waiting.length ?? 0,
+    nextNum:      stationView.value[key]?.waiting[0]?.num ?? null,
+  }))
+)
+
+// ─── Mesin rotasi scene (mode poli) ─────────────────────────────────────────
+// Panel berputar: Media (lebar dominan) → Poliklinik → Farmasi → Stasiun.
+// Scene kosong di-skip. Lebar media menyusut saat scene antrean aktif.
+const sceneLabel = { media: 'Media', poli: 'Poliklinik', farmasi: 'Farmasi', stasiun: 'Stasiun' }
+const SCENES = [
+  { key: 'media',   dur: 25 },
+  { key: 'poli',    dur: 20 },
+  { key: 'farmasi', dur: 15 },
+  { key: 'stasiun', dur: 12 },
+]
+const activeScene = ref('media')
+let sceneTimer = null
+
+function sceneHasContent(key) {
+  if (key === 'media')   return true
+  if (key === 'poli')    return poliklinikView.value.length > 0
+  if (key === 'farmasi') return !!farmasiView.value.calledNum || farmasiView.value.waitingCount > 0
+  if (key === 'stasiun') return stationStripView.value.some((s) => s.calledNum || s.waitingCount > 0)
+  return false
+}
+function pickNextScene() {
+  const order = SCENES.map((s) => s.key)
+  const idx = order.indexOf(activeScene.value)
+  for (let i = 1; i <= order.length; i++) {
+    const cand = order[(idx + i) % order.length]
+    if (sceneHasContent(cand)) return cand
+  }
+  return 'media'
+}
+function scheduleNextScene() {
+  if (sceneTimer) clearTimeout(sceneTimer)
+  const dur = (SCENES.find((s) => s.key === activeScene.value)?.dur ?? 20) * 1000
+  sceneTimer = setTimeout(() => {
+    activeScene.value = pickNextScene()
+    scheduleNextScene()
+  }, dur)
+}
+function startSceneRotation() {
+  if (!sceneHasContent(activeScene.value)) activeScene.value = pickNextScene()
+  scheduleNextScene()
+}
+function stopSceneRotation() {
+  if (sceneTimer) { clearTimeout(sceneTimer); sceneTimer = null }
+}
+
+// Scene yang punya konten (untuk indikator titik).
+const visibleScenes = computed(() => SCENES.filter((s) => sceneHasContent(s.key)))
+
+// Pindah mode tanpa reload (query ?mode berubah, komponen dipakai ulang oleh
+// router) → start/stop rotasi agar timer tidak bocor atau mati saat dibutuhkan.
+watch(tvMode, (m) => {
+  if (m === 'poli') startSceneRotation()
+  else stopSceneRotation()
+})
+
 // ─── Fetch snapshot ─────────────────────────────────────────────────────────
 function refreshCurrentCalled() {
   // Recompute `currentCalledByStation` dari snapshot setelah fetch ulang.
@@ -549,6 +688,8 @@ onMounted(async () => {
   scheduleMidnightReset()
   // Audio unlock listener — auto-aktif saat user pertama interact
   installUnlockListeners()
+  // Mode poli: mulai rotasi scene (media ⇄ poliklinik ⇄ farmasi ⇄ stasiun)
+  if (tvMode.value === 'poli') startSceneRotation()
 })
 
 onUnmounted(() => {
@@ -557,6 +698,7 @@ onUnmounted(() => {
   if (heartbeatInterval) clearInterval(heartbeatInterval)
   disconnectWs()
   stopSlideshow()
+  stopSceneRotation()
   if (slideIntervalDebounce) clearTimeout(slideIntervalDebounce)
   if (window.speechSynthesis) {
     window.speechSynthesis.cancel()
@@ -1790,8 +1932,8 @@ async function saveAudioDefaults() {
       </div>
     </div>
 
-    <!-- MAIN -->
-    <div class="tv-main">
+    <!-- MAIN — MODE GRID (semua stasiun, layout lama) -->
+    <div v-if="tvMode === 'grid'" class="tv-main">
       <!-- VIDEO/INFO PANEL -->
       <div class="video-panel">
         <!-- Placeholder -->
@@ -1878,6 +2020,127 @@ async function saveAudioDefaults() {
             </template>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- MAIN — MODE POLIKLINIK (1 layar dinamis: media + antrean berputar) -->
+    <div v-else-if="tvMode === 'poli'" class="tv-main poli-main" :class="`scene-${activeScene}`">
+      <!-- MEDIA (lebar dinamis: dominan saat scene media, menyusut saat antrean) -->
+      <div class="poli-media">
+        <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
+          <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+          <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
+          <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
+        </div>
+        <iframe v-else-if="mediaMode === 'youtube'" :src="youtubeEmbedUrl" class="yt-frame"
+                allow="autoplay; encrypted-media" allowfullscreen frameborder="0"></iframe>
+        <div v-else-if="mediaMode === 'slideshow' && slides.length" class="slideshow">
+          <img v-for="(s, i) in slides" :key="i" :src="s.url"
+               :class="['slide-img', { active: i === slideIndex }]" alt="" />
+        </div>
+        <video v-else-if="mediaMode === 'localvideo' && localVideoUrl" :src="localVideoUrl"
+               :loop="videoLoop" :autoplay="videoAutoplay" muted class="local-video"></video>
+        <div v-else class="video-placeholder">
+          <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+        </div>
+      </div>
+
+      <!-- PANEL ANTREAN (scene berputar) -->
+      <div class="poli-queue">
+        <div class="scene-dots">
+          <span v-for="s in visibleScenes" :key="s.key"
+                :class="['scene-dot', { active: s.key === activeScene }]">{{ sceneLabel[s.key] }}</span>
+        </div>
+
+        <Transition name="scene" mode="out-in">
+          <div :key="activeScene" class="scene-body">
+
+            <!-- SCENE: POLIKLINIK -->
+            <div v-if="activeScene === 'poli'" :class="['poli-board', `cols-${poliCols}`]">
+              <div v-for="d in poliklinikView" :key="d.prefix"
+                   :class="['poli-card', d.calledNum ? 'has-called' : '']">
+                <div class="pc-head">
+                  <span class="pc-poli">{{ d.poli }}<span v-if="d.room"> · Ruang {{ d.room }}</span></span>
+                  <span v-if="d.serviceType" :class="['pc-svc', d.serviceType.toLowerCase()]">
+                    {{ d.serviceType === 'EKSEKUTIF' ? 'Eksekutif' : 'BPJS' }}
+                  </span>
+                </div>
+                <div v-if="d.dokter" class="pc-dokter">{{ d.dokter }}</div>
+                <div class="pc-body">
+                  <div class="pc-cell">
+                    <div class="pc-lbl">Dipanggil</div>
+                    <div :class="['pc-num', { muted: !d.calledNum }]">{{ d.calledNum || '—' }}</div>
+                  </div>
+                  <div class="pc-cell">
+                    <div class="pc-lbl">Menunggu</div>
+                    <div class="pc-wait-num">{{ d.waitingCount }}</div>
+                  </div>
+                </div>
+                <div class="pc-next">{{ d.nextNum ? `Berikutnya: ${d.nextNum}` : 'Belum ada antrean berikutnya' }}</div>
+              </div>
+            </div>
+
+            <!-- SCENE: FARMASI -->
+            <div v-else-if="activeScene === 'farmasi'" class="farmasi-board">
+              <div class="board-title">Antrean Farmasi</div>
+              <div class="fb-main">
+                <div :class="['fb-call', { 'has-called': farmasiView.calledNum }]">
+                  <div class="pc-lbl">Sedang Dipanggil</div>
+                  <div :class="['fb-num', { muted: !farmasiView.calledNum }]">{{ farmasiView.calledNum || '—' }}</div>
+                  <div class="fb-wait">{{ farmasiView.waitingCount }} menunggu</div>
+                </div>
+                <div class="fb-side">
+                  <div class="fb-side-lbl">Siap diambil</div>
+                  <div class="fb-chips">
+                    <span v-for="n in farmasiView.readyList" :key="n" class="fb-chip ready">{{ n }}</span>
+                    <span v-if="!farmasiView.readyList.length" class="fb-empty">—</span>
+                  </div>
+                  <div class="fb-side-lbl">Antrean berikutnya</div>
+                  <div class="fb-chips">
+                    <span v-for="n in farmasiView.nextList" :key="n" class="fb-chip">{{ n }}</span>
+                    <span v-if="!farmasiView.nextList.length" class="fb-empty">—</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- SCENE: STASIUN LAIN -->
+            <div v-else-if="activeScene === 'stasiun'" class="strip-board">
+              <div class="board-title">Antrean Stasiun Lain</div>
+              <div class="strip-grid">
+                <div v-for="s in stationStripView" :key="s.key"
+                     :class="['strip-card', s.calledNum ? 'has-called' : '']">
+                  <div class="strip-name">{{ s.label }}</div>
+                  <div :class="['strip-num', { muted: !s.calledNum }]">{{ s.calledNum || '—' }}</div>
+                  <div class="strip-wait">{{ s.waitingCount }} menunggu</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- SCENE: MEDIA → strip ringkas antrean (info tak hilang) -->
+            <div v-else class="media-strip">
+              <div class="board-title">Ringkasan Antrean</div>
+              <div class="ms-sec-lbl">Poliklinik</div>
+              <div class="ms-rows">
+                <div v-for="d in poliklinikView" :key="d.prefix" class="ms-row">
+                  <span class="ms-poli">{{ d.poli }}<span v-if="d.dokter"> — {{ d.dokter }}</span></span>
+                  <span :class="['ms-call', { muted: !d.calledNum }]">{{ d.calledNum || '—' }}</span>
+                  <span class="ms-w">{{ d.waitingCount }} antri</span>
+                </div>
+                <div v-if="!poliklinikView.length" class="fb-empty">Tidak ada dokter aktif</div>
+              </div>
+              <div class="ms-sec-lbl">Farmasi</div>
+              <div class="ms-rows">
+                <div class="ms-row">
+                  <span class="ms-poli">Pengambilan Obat</span>
+                  <span :class="['ms-call', { muted: !farmasiView.calledNum }]">{{ farmasiView.calledNum || '—' }}</span>
+                  <span class="ms-w">{{ farmasiView.waitingCount }} antri</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </Transition>
       </div>
     </div>
 
@@ -4038,5 +4301,339 @@ async function saveAudioDefaults() {
 .media-fullscreen .local-video.fs { object-fit: contain; background: #000; }
 .media-fullscreen .video-placeholder.fs {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODE POLIKLINIK — 1 layar dinamis (media + antrean berputar)
+   Lebar media/antrean bertukar sesuai scene aktif (transisi flex-grow).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.poli-main {
+  display: flex;
+  gap: 1.25rem;
+}
+.poli-media,
+.poli-queue {
+  min-width: 0;
+  min-height: 0;
+  transition: flex-grow 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* Default (scene antrean aktif): antrean dominan 70%, media menyusut 30% */
+.poli-media { flex: 3 1 0; }
+.poli-queue { flex: 7 1 0; }
+/* Scene media aktif: media dominan 70%, strip antrean 30% */
+.poli-main.scene-media .poli-media { flex-grow: 7; }
+.poli-main.scene-media .poli-queue { flex-grow: 3; }
+
+/* Panel media — samakan tampilan dengan .video-panel */
+.poli-media {
+  background: #06182E;
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.poli-media > *:not(.video-placeholder) {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Panel antrean */
+.poli-queue {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 1rem 1.1rem;
+}
+.scene-dots {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+  flex-shrink: 0;
+}
+.scene-dot {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 4px 12px;
+  border-radius: 30px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  transition: all 0.3s;
+}
+.scene-dot.active {
+  color: #06182E;
+  background: var(--lm);
+  border-color: var(--lm);
+}
+.scene-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Transisi antar scene */
+.scene-enter-active,
+.scene-leave-active { transition: opacity 0.4s ease, transform 0.4s ease; }
+.scene-enter-from { opacity: 0; transform: translateY(14px); }
+.scene-leave-to   { opacity: 0; transform: translateY(-14px); }
+
+/* ── Papan poliklinik (kartu per dokter) ── */
+.poli-board {
+  display: grid;
+  gap: 1rem;
+  height: 100%;
+  align-content: start;
+  grid-auto-rows: 1fr;
+  overflow-y: auto;
+}
+.poli-board.cols-1 { grid-template-columns: 1fr; }
+.poli-board.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.poli-board.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.poli-board.cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+.poli-card {
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  border-radius: 16px;
+  padding: 1rem 1.1rem;
+  overflow: hidden;
+}
+.poli-card.has-called {
+  border-color: var(--lm);
+  background: rgba(56, 189, 248, 0.1);
+  box-shadow: 0 0 30px rgba(56, 189, 248, 0.12);
+}
+.pc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.pc-poli {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #7dd3fc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pc-svc {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 20px;
+  text-transform: uppercase;
+}
+.pc-svc.bpjs     { background: rgba(34, 197, 94, 0.18);  color: #4ade80; }
+.pc-svc.eksekutif { background: rgba(252, 211, 77, 0.18); color: #fcd34d; }
+.pc-dokter {
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pc-body {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  margin: 0.7rem 0 0.5rem;
+}
+.pc-cell { display: flex; flex-direction: column; }
+.pc-cell:last-child { margin-left: auto; text-align: right; }
+.pc-lbl {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.2rem;
+}
+.pc-num {
+  font-family: 'Space Grotesk', serif;
+  font-size: clamp(28px, 3.4vw, 64px);
+  line-height: 1;
+  color: #fff;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 22px rgba(56, 189, 248, 0.35);
+}
+.pc-num.muted { color: rgba(255, 255, 255, 0.4); text-shadow: none; }
+.pc-wait-num {
+  font-family: 'Space Grotesk', serif;
+  font-size: clamp(24px, 2.6vw, 48px);
+  line-height: 1;
+  color: var(--lm);
+}
+.pc-next {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: auto;
+  padding-top: 0.4rem;
+  border-top: 1px dashed rgba(56, 189, 248, 0.18);
+}
+/* Kecilkan angka saat kolom rapat */
+.poli-board.cols-3 .pc-num { font-size: clamp(26px, 2.4vw, 48px); }
+.poli-board.cols-4 .pc-num { font-size: clamp(22px, 2vw, 40px); }
+.poli-board.cols-3 .pc-dokter,
+.poli-board.cols-4 .pc-dokter { font-size: 15px; }
+
+/* ── Judul papan (farmasi/stasiun/ringkasan) ── */
+.board-title {
+  font-family: 'Space Grotesk', serif;
+  font-size: 22px;
+  margin-bottom: 1rem;
+  color: #fff;
+}
+
+/* ── Papan farmasi ── */
+.farmasi-board { height: 100%; display: flex; flex-direction: column; }
+.fb-main { flex: 1; display: flex; gap: 1.25rem; min-height: 0; }
+.fb-call {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  border-radius: 18px;
+  padding: 1.5rem;
+}
+.fb-call.has-called {
+  border-color: var(--lm);
+  background: rgba(56, 189, 248, 0.1);
+  box-shadow: 0 0 40px rgba(56, 189, 248, 0.15);
+}
+.fb-num {
+  font-family: 'Space Grotesk', serif;
+  font-size: clamp(60px, 9vw, 160px);
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 0 40px rgba(56, 189, 248, 0.4);
+  margin: 0.4rem 0;
+}
+.fb-num.muted { color: rgba(255, 255, 255, 0.4); text-shadow: none; }
+.fb-wait { font-size: 18px; color: var(--lm); font-weight: 600; }
+.fb-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+}
+.fb-side-lbl {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 0.4rem;
+}
+.fb-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.fb-chip {
+  font-family: 'Space Grotesk', serif;
+  font-size: 24px;
+  padding: 6px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.fb-chip.ready {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+}
+.fb-empty { color: rgba(255, 255, 255, 0.4); font-size: 18px; }
+
+/* ── Strip stasiun lain ── */
+.strip-board { height: 100%; display: flex; flex-direction: column; }
+.strip-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.9rem;
+  align-content: start;
+}
+.strip-card {
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+}
+.strip-card.has-called { border-color: var(--lm); background: rgba(56, 189, 248, 0.1); }
+.strip-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #7dd3fc;
+  letter-spacing: 0.03em;
+}
+.strip-num {
+  font-family: 'Space Grotesk', serif;
+  font-size: clamp(30px, 3vw, 52px);
+  line-height: 1;
+  color: #fff;
+  margin: 0.3rem 0;
+}
+.strip-num.muted { color: rgba(255, 255, 255, 0.4); }
+.strip-wait { font-size: 12px; color: rgba(255, 255, 255, 0.6); }
+
+/* ── Strip ringkas saat scene media ── */
+.media-strip { height: 100%; display: flex; flex-direction: column; overflow-y: auto; }
+.ms-sec-lbl {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lm);
+  margin: 0.6rem 0 0.4rem;
+}
+.ms-rows { display: flex; flex-direction: column; gap: 0.4rem; }
+.ms-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+}
+.ms-poli {
+  flex: 1;
+  font-size: 14px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-call {
+  font-family: 'Space Grotesk', serif;
+  font-size: 22px;
+  color: #fff;
+  min-width: 84px;
+  text-align: right;
+}
+.ms-call.muted { color: rgba(255, 255, 255, 0.4); }
+.ms-w {
+  font-size: 12px;
+  color: var(--lm);
+  font-weight: 600;
+  min-width: 64px;
+  text-align: right;
 }
 </style>
