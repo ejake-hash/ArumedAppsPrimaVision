@@ -446,7 +446,15 @@ HTML;
             'key' => $key, 'label' => $label, 'type' => $type,
             'binding' => ['kind' => 'static'], 'prefill' => $prefill,
         ];
+        // Field MANUAL — editable tanpa prefill (diisi operator; tak ada sumber otomatis).
+        $manual = fn (string $key, string $label, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'binding' => ['kind' => 'static'],
+        ];
 
+        // Struktur MENGIKUTI form resmi "RM 3.5 RESUME MEDIS" (FORMULIR BEDAH):
+        // identitas → meta perawatan/operasi → diagnosa → pemeriksaan & penunjang →
+        // tindakan/operasi → pengobatan → kondisi pulang → instruksi → terapi pulang.
         $fields = [
             // ── Kop klinik ───────────────────────────────────────────────────
             $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
@@ -459,35 +467,46 @@ HTML;
             $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
             $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
             $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
-            // ── Identitas operasi (display_only, dari surgery_records BedahView) ─
-            $auto('tgl_operasi',   'Tanggal Operasi', 'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operation_date']),
-            $auto('operator',      'Operator',        'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operator']),
-            $auto('jenis_operasi', 'Jenis Operasi',   'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'procedure']),
-            $auto('mata_operasi',  'Mata',            'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operative_eye']),
-            $auto('anestesi',      'Jenis Anestesi',  'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'anesthesia_type']),
-            $auto('durasi',        'Durasi Operasi',  'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'duration']),
-            $auto('dokter_nama',   'Dokter / DPJP',   'text', ['kind' => 'db', 'source' => 'visit.doctorExamination.doctor.name']),
-            $auto('penanggung',    'Penanggung Pembayaran', 'text', ['kind' => 'db', 'source' => 'visit.guarantor_type']),
 
-            // ── Isi resume — AUTO-prefill + EDITABLE ─────────────────────────
-            // Diagnosa = kode+nama ICD-10 (utama + sekunder) dari pemeriksaan dokter.
-            $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
-            // Tindakan/Operasi = kode+nama ICD-9 (tindakan_codes dokter).
-            $editable('tindakan_operasi', 'Tindakan / Operasi (ICD-9)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
-            // IOL/Implan terpasang = hasil scan UDI di BedahView (kosong bila tanpa implan).
-            $editable('iol_terpasang',    'IOL / Implan Terpasang', ['via' => 'aggregate', 'source' => 'surgery_iol_usage', 'format' => 'implant_lines']),
-            // Pemeriksaan Fisik PENTING (bedah) = TD+KGD triase & Visus+IOP refraksi
-            // dari data TERAKHIR pasien (bukan TTV/RO lengkap spt Resume RJ).
+            // ── Meta perawatan/operasi (header form RM 3.5) ──────────────────
+            // Day-surgery: Tgl Masuk ≈ Tgl Keluar = tanggal operasi (editable bila beda).
+            $auto('tgl_masuk',     'Tanggal Masuk', 'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operation_date']),
+            $editable('tgl_keluar','Tanggal Keluar / Tanggal Meninggal', ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operation_date'], 'text'),
+            $manual('ruang_rawat', 'Ruang Rawat Terakhir', 'text'),
+            $auto('penanggung',    'Penanggung Pembayaran', 'text', ['kind' => 'db', 'source' => 'visit.guarantor_type']),
+            $auto('dpjp_nama',     'Dokter Penanggung Jawab (DPJP)', 'text', ['kind' => 'db', 'source' => 'visit.doctorExamination.doctor.name']),
+            // Rawat Tim Dokter = operator + asisten dari laporan operasi BedahView.
+            $editable('tim_dokter','Rawat Tim Dokter', ['via' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'team'], 'text'),
+
+            // ── Diagnosa ─────────────────────────────────────────────────────
+            $manual('alasan_dirawat',   'Alasan Dirawat'),
+            $editable('diagnosa_masuk', 'Diagnosa Masuk', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $editable('diagnosa_keluar','Diagnosa Keluar (Diagnosa Utama + Sekunder, ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            $manual('penyebab_kematian','Penyebab Kematian (Secara Klinis)'),
+
+            // ── Pemeriksaan & Penunjang ──────────────────────────────────────
+            // Pemeriksaan Fisik penting bedah: TD+KGD triase & Visus+IOP refraksi
+            // dari data TERAKHIR pasien (ringkas, bukan TTV/RO lengkap).
             $editable('pemeriksaan_fisik','Pemeriksaan Fisik yang Penting', ['via' => 'aggregate', 'source' => 'physical_exam_bedah']),
-            $editable('alergi',           'Alergi Obat',       ['via' => 'aggregate', 'source' => 'allergy']),
-            // Terapi pulang = resep (termasuk resep pasca-bedah) — items_pretty.
-            $editable('terapi_pulang',    'Terapi Pulang (Obat)', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
-            // Instruksi/Anjuran = kalimat siap-pakai dari rencana tatalaksana.
-            $editable('instruksi',        'Instruksi/Anjuran dan Edukasi Lanjutan', ['via' => 'aggregate', 'source' => 'planning_instruction']),
-            $editable('kontrol_tgl',      'Kontrol Tanggal',   ['via' => 'db', 'source' => 'visit.follow_up_date'], 'date'),
-            $editable('kontrol_lokasi',   'Kontrol Di',        ['via' => 'static', 'value' => 'RS Mata Prima Vision'], 'text'),
-            // Kondisi pulang — default editable (operator menyesuaikan bila perlu).
-            $editable('kondisi_pulang',   'Kondisi Pulang',    ['via' => 'static', 'value' => 'Pulang (Sembuh/Membaik) — berobat jalan'], 'text'),
+            $manual('laboratorium',    'Laboratorium yang Penting'),
+            $manual('radiologi',       'Radiologi'),
+            $editable('penunjang_lain','Penunjang Lain', ['via' => 'aggregate', 'source' => 'diagnosticResults.summary', 'format' => 'summary_per_jenis']),
+
+            // ── Tindakan / Operasi & Pengobatan ──────────────────────────────
+            // Tindakan/Operasi = ICD-9 prosedur + IOL/implan terpasang (scan UDI).
+            $editable('tindakan_operasi','Tindakan / Operasi (ICD-9)', ['via' => 'aggregate', 'source' => 'surgery_tindakan', 'format' => 'icd_with_desc_join_newline']),
+            $manual('pengobatan_dirawat','Pengobatan Selama Dirawat'),
+
+            // ── Kondisi Pulang & Tindak Lanjut ───────────────────────────────
+            $editable('kondisi_pulang','Kondisi Pulang', ['via' => 'static', 'value' => 'Sembuh / Membaik — boleh pulang (berobat jalan)'], 'text'),
+            $editable('instruksi',     'Instruksi dan Edukasi Lanjutan (follow up)', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            $editable('kontrol_tgl',   'Kontrol Tanggal', ['via' => 'db', 'source' => 'visit.follow_up_date'], 'date'),
+            $manual('diet',            'Diet', 'text'),
+            $manual('latihan',         'Latihan', 'text'),
+            $manual('tanda_bahaya',    'Segera Kembali ke RS / IGD bila Terjadi'),
+
+            // ── Terapi Pulang ────────────────────────────────────────────────
+            $editable('terapi_pulang', 'Terapi Pulang (Obat)', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
 
             // ── Tanda tangan dokter/operator (PIN → stempel elektronik + QR) ──
             ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter/Operator', 'type' => 'signature_canvas',
@@ -523,47 +542,53 @@ HTML;
 
   <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:6px 0 0;">RESUME MEDIS BEDAH</div>
 
-  <!-- META OPERASI -->
+  <!-- META PERAWATAN / OPERASI -->
   <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
     <tr>
-      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Operasi</td>
-      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_operasi}}</td>
-      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Operator</td>
-      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{operator}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Masuk</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_masuk}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Keluar / Meninggal</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_keluar}}</td>
     </tr>
     <tr>
-      <td style="border:1px solid #333; padding:3px 6px;">Jenis Operasi</td>
-      <td style="border:1px solid #333; padding:3px 6px;">{{jenis_operasi}} &nbsp; {{mata_operasi}}</td>
-      <td style="border:1px solid #333; padding:3px 6px;">Anestesi / Durasi</td>
-      <td style="border:1px solid #333; padding:3px 6px;">{{anestesi}} &nbsp; {{durasi}}</td>
-    </tr>
-    <tr>
-      <td style="border:1px solid #333; padding:3px 6px;">Dokter / DPJP</td>
-      <td style="border:1px solid #333; padding:3px 6px;">{{dokter_nama}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Ruang Rawat Terakhir</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{ruang_rawat}}</td>
       <td style="border:1px solid #333; padding:3px 6px;">Penanggung Pembayaran</td>
       <td style="border:1px solid #333; padding:3px 6px;">{{penanggung}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Dokter Penanggung Jawab (DPJP)</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{dpjp_nama}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Rawat Tim Dokter</td>
+      <td style="border:1px solid #333; padding:3px 6px; white-space:pre-line;">{{tim_dokter}}</td>
     </tr>
   </table>
 
   <!-- ISI RESUME -->
   <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
-    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Diagnosa</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Alasan Dirawat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alasan_dirawat}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Masuk</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_masuk}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Diagnosa Keluar<br><span style="font-weight:400; font-size:9.5px;">(Diagnosa Utama)</span></td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa_keluar}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Penyebab Kematian<br><span style="font-weight:400; font-size:9.5px;">(Secara Klinis)</span></td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{penyebab_kematian}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik yang Penting</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Laboratorium yang Penting</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{laboratorium}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Radiologi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{radiologi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Penunjang Lain</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{penunjang_lain}}</td></tr>
     <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Tindakan / Operasi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tindakan_operasi}}</td></tr>
-    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">IOL / Implan Terpasang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{iol_terpasang}}</td></tr>
-    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
-    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alergi Obat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alergi}}</td></tr>
-    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi Pulang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_pulang}}</td></tr>
-    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Instruksi/Anjuran dan<br>Edukasi Lanjutan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{instruksi}}<br>Kontrol Tanggal: <strong>{{kontrol_tgl}}</strong> &nbsp; Di: {{kontrol_lokasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pengobatan Selama Dirawat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pengobatan_dirawat}}</td></tr>
     <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Kondisi Pulang</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{kondisi_pulang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Instruksi &amp; Edukasi<br>Lanjutan (follow up)</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{instruksi}}<br>Kontrol Tanggal: <strong>{{kontrol_tgl}}</strong><br>Diet: {{diet}}<br>Latihan: {{latihan}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Segera kembali ke RS / IGD<br>bila terjadi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tanda_bahaya}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi Pulang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_pulang}}</td></tr>
   </table>
 
   <!-- TTD -->
   <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
     <td style="width:58%;"></td>
     <td style="width:42%; text-align:center;">
-      <div>Dokter/Operator yang Bertanggung Jawab,</div>
+      <div>Yang Membuat (Dokter/Operator),</div>
       <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div>
-      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dokter_nama}}</strong></div>
+      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dpjp_nama}}</strong></div>
       <div style="font-size:9px; color:#666;">Nama Jelas dan Tandatangan</div>
     </td>
   </tr></table>

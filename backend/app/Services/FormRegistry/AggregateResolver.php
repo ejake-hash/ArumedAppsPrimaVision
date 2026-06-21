@@ -61,6 +61,7 @@ final class AggregateResolver
             'visitServices'                       => $this->resolveVisitServices($visit, $format),
             'diagnosticResults.summary'           => $this->resolveDiagnosticResults($visit, $format),
             'surgery_iol_usage'                   => $this->resolveIolUsage($visit, $format),
+            'surgery_tindakan'                    => $this->resolveSurgeryTindakan($visit, $format),
             'surgery_operation_summary'           => $this->resolveOperationSummary($visit, $format),
             'surgery_safety_checklist'            => $this->resolveSafetyChecklist($visit, $format),
             'surgery_identity'                    => $this->resolveSurgeryIdentity($visit, $format),
@@ -901,6 +902,25 @@ final class AggregateResolver
         return implode("\n", $lines);
     }
 
+    /**
+     * surgery_tindakan — "Tindakan / Operasi" untuk RESUME MEDIS BEDAH (RM 3.5/LB).
+     * Gabungkan prosedur ICD-9 dokter + daftar IOL/implan terpasang (scan UDI) ke
+     * SATU field, sesuai form resmi yang hanya punya satu baris "Tindakan/Operasi".
+     */
+    private function resolveSurgeryTindakan(Visit $visit, ?string $format): string
+    {
+        $out  = [];
+        $icd9 = trim((string) $this->resolveIcd9Procedures($visit, $format ?: 'icd_with_desc_join_newline'));
+        if ($icd9 !== '') {
+            $out[] = $icd9;
+        }
+        $iol = trim((string) $this->resolveIolUsage($visit, 'implant_lines'));
+        if ($iol !== '') {
+            $out[] = 'Implan/IOL terpasang:' . "\n" . $iol;
+        }
+        return implode("\n", $out);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // surgery_operation_summary — narasi "Teknik Operasi & Temuan" RM 2.2
     // ─────────────────────────────────────────────────────────────────────────
@@ -1035,6 +1055,17 @@ final class AggregateResolver
             'anesthesiologist' => trim((string) ($r['anesthesiologist'] ?? '')),
             'anesthesia_type'  => trim((string) ($r['anesthesia_type'] ?? '')),
             'procedure'        => trim((string) ($r['procedure_name'] ?? '')),
+            // Tim bedah (operator + asisten) untuk field "Rawat Tim Dokter" RM 3.5.
+            'team'             => (function () use ($r) {
+                $op = trim((string) ($r['operator'] ?? ''));
+                $as = is_array($r['asisten'] ?? null)
+                    ? implode(', ', array_filter(array_map('trim', $r['asisten'])))
+                    : trim((string) ($r['asisten'] ?? ''));
+                $parts = [];
+                if ($op !== '') $parts[] = 'Operator: ' . $op;
+                if ($as !== '') $parts[] = 'Asisten: ' . $as;
+                return implode(' · ', $parts);
+            })(),
             'diagnosis_post'   => trim((string) ($r['diagnosis_post'] ?? '')),
             'time_in'          => $timeStr($rec->time_in),
             'time_out'         => $timeStr($rec->time_out),

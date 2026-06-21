@@ -146,6 +146,10 @@ final class FieldRegistry
                 'label'   => 'IOL/Implan Terpasang (scan UDI) — Stiker Implant',
                 'formats' => ['implant_lines'],
             ],
+            'surgery_tindakan' => [
+                'label'   => 'Tindakan/Operasi Resume Bedah = ICD-9 prosedur + IOL/implan terpasang',
+                'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
+            ],
             'surgery_operation_summary' => [
                 'label'   => 'Ringkasan Operasi (teknik/temuan/komplikasi) — narasi RM 2.2',
                 'formats' => ['narrative'],
@@ -156,7 +160,7 @@ final class FieldRegistry
             ],
             'surgery_identity' => [
                 'label'   => 'Identitas Operasi (operator/asisten/jam/durasi/anestesi) — dari BedahView',
-                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration', 'operation_date',
+                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration', 'operation_date', 'team',
                     // Laporan operasi subspesialis (Fase 1): mata operasi + detail injeksi anti-VEGF.
                     'operative_eye', 'injection_drug', 'injection_volume', 'injection_quadrant', 'injection_distance'],
             ],
