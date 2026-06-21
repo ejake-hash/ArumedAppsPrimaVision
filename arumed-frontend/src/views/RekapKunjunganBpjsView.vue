@@ -301,10 +301,15 @@ const rekapPrintingSep = ref(null)
 async function printSep(row) {
   if (!row.no_sep) { toast('w', 'Kunjungan ini belum punya SEP'); return }
   rekapPrintingSep.value = row.visit_id
+  // Pakai endpoint HTML (bukan PDF blob): blade lembar SEP punya @page 13x21 cm +
+  // auto-print, dan Chrome MENGHORMATI ukuran @page itu. Viewer PDF mengabaikan
+  // media size → selalu jatuh ke A4. Buka via blob-URL (navigasi nyata) agar event
+  // `load` blade (window.print) jalan — pola yang sama & teruji di AdmisiView.
   try {
-    const res = await api.get(`/admisi/bpjs/cetak-sep/${row.visit_id}`, { responseType: 'blob' })
-    const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
-    window.open(url, '_blank')
+    const res = await api.get(`/admisi/bpjs/cetak-sep-html/${row.visit_id}`, { responseType: 'text' })
+    const url = URL.createObjectURL(new Blob([res.data], { type: 'text/html' }))
+    const w = window.open(url, '_blank')
+    if (!w) toast('w', 'Popup diblokir browser — izinkan popup untuk mencetak SEP')
     setTimeout(() => URL.revokeObjectURL(url), 60000)
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal mencetak SEP')

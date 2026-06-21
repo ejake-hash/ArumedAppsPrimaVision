@@ -42,6 +42,16 @@ class KlaimService
             $query->whereHas('visit', fn ($v) => $v->where('jenis_pelayanan', $jp));
         }
 
+        // Gating workspace: hanya tampilkan klaim yang sudah "Kirim ke Klaim" dari
+        // Rekap Kunjungan (visit.klaim_sent_at). Klaim DRAFT auto-dibuat (resume
+        // di-TTD via FormRegistry / kasir billing) JANGAN muncul sebelum dikirim —
+        // konsisten dgn tab "DIVA & Berkas" (only_sent). Klaim yang sudah bergerak
+        // dari DRAFT (REVIEW/VERIFIED/SUBMITTED/dst) tetap tampil walau penanda kirim
+        // kosong (data lama sebelum fitur klaim_sent_at) agar tak hilang dari daftar.
+        $query->where(fn ($q) => $q
+            ->whereHas('visit', fn ($v) => $v->whereNotNull('klaim_sent_at'))
+            ->orWhere('status', '!=', 'DRAFT'));
+
         if (! empty($filters['search'])) {
             $keyword = $filters['search'];
             $query->where(fn ($q) => $q
