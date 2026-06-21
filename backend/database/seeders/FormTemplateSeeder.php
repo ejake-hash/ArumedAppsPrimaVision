@@ -499,7 +499,10 @@ HTML;
 
             // ── Kondisi Pulang & Tindak Lanjut ───────────────────────────────
             $editable('kondisi_pulang','Kondisi Pulang', ['via' => 'static', 'value' => 'Sembuh / Membaik — boleh pulang (berobat jalan)'], 'text'),
-            $editable('instruksi',     'Instruksi dan Edukasi Lanjutan (follow up)', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            // Instruksi pasca-op DIISI MANUAL — planning_instruction berisi rencana
+            // PRA-operasi ("Rencana operasi ... tanggal ...") yang tak relevan utk
+            // resume pulang. Operator menulis edukasi/instruksi pasca-bedah sendiri.
+            $manual('instruksi',       'Instruksi dan Edukasi Lanjutan (follow up)'),
             $editable('kontrol_tgl',   'Kontrol Tanggal', ['via' => 'db', 'source' => 'visit.follow_up_date'], 'date'),
             $manual('diet',            'Diet', 'text'),
             $manual('latihan',         'Latihan', 'text'),
