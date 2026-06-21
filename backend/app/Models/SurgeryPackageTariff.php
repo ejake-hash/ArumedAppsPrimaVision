@@ -22,14 +22,27 @@ class SurgeryPackageTariff extends Model
         'display_name',      // nama tampil khusus per-penjamin (mis. promo UMUM); null = pakai nama paket master
         'sell_price',
         'discount_percent',  // metadata: bila diisi, sell_price = base × (1 − pct/100). Billing tetap baca sell_price.
+        // Manfaat "kontrol gratis pasca-bedah" (Opsi B) — kini per VARIAN TARIF (per
+        // penjamin), bukan per master paket. NULL procedure = varian tak beri manfaat.
+        'followup_procedure_id',
+        'followup_count',
+        'followup_valid_days',
         'is_active',
     ];
 
     protected $casts = [
-        'sell_price'       => 'decimal:2',
-        'discount_percent' => 'decimal:2',
-        'is_active'        => 'boolean',
+        'sell_price'          => 'decimal:2',
+        'discount_percent'    => 'decimal:2',
+        'followup_count'      => 'integer',
+        'followup_valid_days' => 'integer',
+        'is_active'           => 'boolean',
     ];
+
+    /** Varian tarif ini memberi manfaat "konsultasi kontrol gratis pasca-bedah"? */
+    public function grantsFollowup(): bool
+    {
+        return $this->followup_procedure_id !== null && (int) $this->followup_count > 0;
+    }
 
     public function package(): BelongsTo
     {

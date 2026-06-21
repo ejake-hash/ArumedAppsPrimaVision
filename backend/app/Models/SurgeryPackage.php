@@ -36,25 +36,14 @@ class SurgeryPackage extends Model
         'estimated_duration',
         'price',
         'total_base_price',
-        'followup_procedure_id',
-        'followup_count',
-        'followup_valid_days',
         'is_active',
     ];
 
     protected $casts = [
         'price'               => 'decimal:2',
         'total_base_price'    => 'decimal:2',
-        'followup_count'       => 'integer',
-        'followup_valid_days'  => 'integer',
         'is_active'           => 'boolean',
     ];
-
-    /** Paket memberi manfaat "konsultasi kontrol gratis pasca-bedah"? (kartu Opsi B) */
-    public function grantsFollowup(): bool
-    {
-        return $this->followup_procedure_id !== null && (int) $this->followup_count > 0;
-    }
 
     /**
      * Tebak surgery_type dari nama paket (AUTO-SARAN). Sumber kebenaran tetap

@@ -184,10 +184,6 @@ class TarifPaketController extends Controller
             'estimated_duration' => 'nullable|integer|min:0',
             'price'              => 'nullable|numeric|min:0',
             'is_active'          => 'nullable|boolean',
-            // Manfaat "kontrol gratis pasca-bedah" (Opsi B). followup_procedure_id NULL = hapus manfaat.
-            'followup_procedure_id' => 'sometimes|nullable|uuid|exists:procedures,id',
-            'followup_count'        => 'sometimes|nullable|integer|min:0|max:20',
-            'followup_valid_days'   => 'sometimes|nullable|integer|min:0|max:3650',
         ]);
         return $this->ok($this->service->updatePaket($id, $validated), 'Paket bedah diperbarui');
     }
@@ -300,6 +296,11 @@ class TarifPaketController extends Controller
             'sell_price'       => 'required_if:price_mode,NOMINAL|nullable|numeric|min:0',
             'discount_percent' => 'required_if:price_mode,PERSEN|nullable|numeric|min:0|max:100',
             'is_active'        => 'nullable|boolean',
+            // Manfaat "kontrol gratis pasca-bedah" (Opsi B) — kini per VARIAN tarif
+            // (per penjamin). followup_procedure_id NULL = varian tak beri manfaat.
+            'followup_procedure_id' => 'sometimes|nullable|uuid|exists:procedures,id',
+            'followup_count'        => 'sometimes|nullable|integer|min:0|max:20',
+            'followup_valid_days'   => 'sometimes|nullable|integer|min:0|max:3650',
             // Item OVERRIDE varian (scope: IOL) — mengganti IOL komposisi saat snapshot;
             // array kosong = hapus semua override varian ini (replace-all).
             'override_items'              => 'nullable|array|max:5',

@@ -140,15 +140,10 @@ class TarifPaketService
             // 'override_items' (snake_case) dan MENIMPA atribut enriched ini.
             $t->setAttribute('override_items', $this->tariffOverrideItems($t));
             $t->unsetRelation('overrideItems');
+            // Manfaat "kontrol gratis pasca-bedah" (Opsi B) — kini per varian tarif:
+            // nama prosedur konsultasi utk kartu/modal UI.
+            $t->setAttribute('followup_procedure_name', $this->followupProcedureName($t->followup_procedure_id));
         });
-
-        // Manfaat "kontrol gratis pasca-bedah" (Opsi B): nama prosedur konsultasi untuk kartu UI.
-        if ($pkg->followup_procedure_id) {
-            $pkg->setAttribute(
-                'followup_procedure_name',
-                \App\Models\Procedure::find($pkg->followup_procedure_id)?->name
-            );
-        }
 
         return $pkg;
     }
@@ -163,19 +158,6 @@ class TarifPaketService
     public function updatePaket(string $id, array $data): SurgeryPackage
     {
         $pkg = SurgeryPackage::findOrFail($id);
-
-        // Normalisasi kartu "Manfaat Kontrol Pasca-Bedah" (Opsi B): tanpa prosedur =
-        // tanpa manfaat (count 0, valid null); dengan prosedur = minimal 1 jatah.
-        if (array_key_exists('followup_procedure_id', $data)) {
-            if (empty($data['followup_procedure_id'])) {
-                $data['followup_procedure_id'] = null;
-                $data['followup_count']        = 0;
-                $data['followup_valid_days']   = null;
-            } else {
-                $data['followup_count'] = max(1, (int) ($data['followup_count'] ?? 1));
-            }
-        }
-
         $pkg->update($data);
         $this->log(auth('api')->id(), 'UPDATE_PAKET_BEDAH', SurgeryPackage::class, $id);
         return $pkg->fresh();
@@ -452,8 +434,19 @@ class TarifPaketService
                 'input_discount_pct' => $t->discount_percent,
                 'is_active'         => $t->is_active,
                 'override_items'    => $this->tariffOverrideItems($t),
+                // Manfaat kontrol gratis pasca-bedah (Opsi B) — per varian tarif.
+                'followup_procedure_id'   => $t->followup_procedure_id,
+                'followup_procedure_name' => $this->followupProcedureName($t->followup_procedure_id),
+                'followup_count'          => $t->followup_count,
+                'followup_valid_days'     => $t->followup_valid_days,
             ];
         })->toArray();
+    }
+
+    /** Nama prosedur konsultasi yang digratiskan (manfaat kontrol). Null bila tak diset/terhapus. */
+    private function followupProcedureName(?string $procedureId): ?string
+    {
+        return $procedureId ? Procedure::find($procedureId)?->name : null;
     }
 
     /**
@@ -511,6 +504,23 @@ class TarifPaketService
         }
         $values['display_name'] = $data['display_name'] ?? null;
         $values['is_active']    = $data['is_active'] ?? true;
+
+        // Manfaat "kontrol gratis pasca-bedah" (Opsi B) — kini per varian tarif. Hanya
+        // disentuh bila key dikirim (sebagian alur edit hanya ubah harga). Tanpa prosedur
+        // = tanpa manfaat (count 0, valid null); dengan prosedur = minimal 1 jatah.
+        if (array_key_exists('followup_procedure_id', $data)) {
+            if (empty($data['followup_procedure_id'])) {
+                $values['followup_procedure_id'] = null;
+                $values['followup_count']        = 0;
+                $values['followup_valid_days']   = null;
+            } else {
+                $values['followup_procedure_id'] = $data['followup_procedure_id'];
+                $values['followup_count']        = max(1, (int) ($data['followup_count'] ?? 1));
+                $values['followup_valid_days']   = ($data['followup_valid_days'] ?? null) === null || $data['followup_valid_days'] === ''
+                    ? null
+                    : max(0, (int) $data['followup_valid_days']);
+            }
+        }
 
         $tariff = DB::transaction(function () use ($pkg, $insurerId, $existing, $values, $data) {
             if ($existing) {

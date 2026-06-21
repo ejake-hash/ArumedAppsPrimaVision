@@ -140,6 +140,16 @@ function toggleQueue() {
 
 const selQ        = ref(null)    // queue item dipilih
 const selInv      = ref(null)    // full BillingInvoice + items
+// Diskon item default KOSONG (bukan "0,00"): backend mengirim "0.00" (kolom decimal);
+// normalkan 0 → '' tiap invoice dimuat ulang agar field diskon tampil kosong. Watch
+// NON-DEEP (pada ref, bukan isinya) → memutasi field item TIDAK memicu ulang (anti-loop).
+watch(selInv, (inv) => {
+  if (!inv?.items) return
+  for (const it of inv.items) {
+    if (!(Number(it.discount_percent) > 0)) it.discount_percent = ''
+    if (!(Number(it.discount_amount) > 0))  it.discount_amount  = ''
+  }
+})
 const selInvLoading = ref(false)
 // Tagihan tertahan karena resep belum diverifikasi Farmasi (alur D→K→F).
 const awaitingVerify = ref(false)
@@ -617,8 +627,9 @@ const globalDiscDebounce = ref(null)
 const globalDiscFocusedField = ref(null)
 
 function syncGlobalDiscountFields() {
-  if (globalDiscFocusedField.value !== 'rp') globalDiscRp.value = Number(selInv.value?.discount ?? 0)
-  if (globalDiscFocusedField.value !== 'pc') globalDiscPc.value = Number(selInv.value?.discount_percent ?? 0)
+  // Default KOSONG saat 0 (bukan "0,00") — sama dgn diskon item. Jangan timpa field yg sedang diketik.
+  if (globalDiscFocusedField.value !== 'rp') { const v = Number(selInv.value?.discount ?? 0); globalDiscRp.value = v > 0 ? v : '' }
+  if (globalDiscFocusedField.value !== 'pc') { const v = Number(selInv.value?.discount_percent ?? 0); globalDiscPc.value = v > 0 ? v : '' }
 }
 
 function onGlobalDiscChange(field) {
@@ -1657,7 +1668,7 @@ const groupedPrintItems = computed(() =>
                           <div v-if="!isDiskonPaket(item)" class="disc-cell">
                             <input
                               v-model.number="item.discount_percent"
-                              type="number" min="0" max="100" step="0.01"
+                              type="number" min="0" max="100" step="any" inputmode="decimal"
                               class="fi tbl-fi tbl-disc"
                               placeholder="0"
                               @input="onItemDiscChange(item, 'discount_percent')"
@@ -1670,7 +1681,7 @@ const groupedPrintItems = computed(() =>
                             <span class="disc-unit pre">Rp</span>
                             <input
                               v-model.number="item.discount_amount"
-                              type="number" min="0" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
+                              type="number" min="0" step="any" inputmode="decimal" :max="(Number(item.unit_price)||0)*(Number(item.quantity)||0)"
                               class="fi tbl-fi tbl-disc"
                               placeholder="0"
                               @input="onItemDiscChange(item, 'discount_amount')"
@@ -1712,10 +1723,10 @@ const groupedPrintItems = computed(() =>
                       <div class="row global-disc" v-if="editTagihan && !['PAID','CANCELLED'].includes(selInv.status)">
                         <span>Diskon Global</span>
                         <span class="disc-inputs">
-                          <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="0.01" class="fi disc-pc" placeholder="0"
+                          <input v-model.number="globalDiscPc" type="number" min="0" max="100" step="any" inputmode="decimal" class="fi disc-pc" placeholder="0"
                             @focus="globalDiscFocusedField = 'pc'" @blur="globalDiscFocusedField = null" @input="onGlobalDiscChange('pc')" /><span class="disc-suffix">%</span>
                           <span class="disc-sep">atau</span>
-                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" :max="subtotalNet" class="fi disc-rp" placeholder="0"
+                          <span class="disc-rp-wrap">Rp <input v-model.number="globalDiscRp" type="number" min="0" step="any" inputmode="decimal" :max="subtotalNet" class="fi disc-rp" placeholder="0"
                             @focus="globalDiscFocusedField = 'rp'" @blur="globalDiscFocusedField = null" @input="onGlobalDiscChange('rp')" /></span>
                         </span>
                       </div>

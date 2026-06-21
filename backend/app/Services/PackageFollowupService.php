@@ -4,7 +4,7 @@ namespace App\Services;
 
 use App\Models\BillingInvoice;
 use App\Models\PackageFollowupEntitlement;
-use App\Models\SurgeryPackage;
+use App\Models\SurgeryPackageTariff;
 use App\Models\SurgerySchedule;
 use App\Models\VisitSurgeryPackage;
 use Illuminate\Support\Facades\Log;
@@ -13,7 +13,8 @@ use Illuminate\Support\Facades\Log;
  * "Konsultasi kontrol gratis pasca-bedah" (Opsi B).
  *
  * - issueForOperation(): saat operasi selesai → terbitkan hak per paket pasien yang
- *   punya followup_procedure_id. Idempoten per (operasi, paket, prosedur).
+ *   VARIAN TARIF terpilihnya punya followup_procedure_id. Manfaat kini per tarif jual
+ *   per penjamin (bukan per master paket). Idempoten per (operasi, paket, prosedur).
  * - redeemPaidInvoice(): saat invoice kontrol lunas → tandai hak terpakai utk tiap
  *   baris diskon DISKON_KONTROL (referensi hak). Penerbitan baris diskonnya sendiri
  *   ada di KasirService::buildFollowupConsultLines (agar bisa di-override kasir).
@@ -45,25 +46,29 @@ class PackageFollowupService
                 if (! $snap->source_surgery_package_id) {
                     continue;
                 }
-                $pkg = SurgeryPackage::find($snap->source_surgery_package_id);
-                if (! $pkg || ! $pkg->grantsFollowup()) {
+
+                // Manfaat kini nempel di VARIAN TARIF terpilih (per penjamin). Pakai
+                // varian yang direkam snapshot; bila kosong (snapshot lama), resolve
+                // varian default utk penjamin pasien (TPA-aware) seperti billing.
+                $tariff = $this->resolveTariffForSnapshot($snap, $visit);
+                if (! $tariff || ! $tariff->grantsFollowup()) {
                     continue;
                 }
 
-                $validUntil = $pkg->followup_valid_days
-                    ? today()->addDays((int) $pkg->followup_valid_days)
+                $validUntil = $tariff->followup_valid_days
+                    ? today()->addDays((int) $tariff->followup_valid_days)
                     : null;
 
                 $ent = PackageFollowupEntitlement::firstOrCreate(
                     [
                         'surgery_schedule_id'       => $scheduleId,
-                        'source_surgery_package_id' => $pkg->id,
-                        'procedure_id'              => $pkg->followup_procedure_id,
+                        'source_surgery_package_id' => $snap->source_surgery_package_id,
+                        'procedure_id'              => $tariff->followup_procedure_id,
                     ],
                     [
                         'patient_id'      => $visit->patient_id,
                         'source_visit_id' => $visit->id,
-                        'total_count'     => max(1, (int) $pkg->followup_count),
+                        'total_count'     => max(1, (int) $tariff->followup_count),
                         'used_count'      => 0,
                         'valid_until'     => $validUntil,
                         'is_active'       => true,
@@ -79,6 +84,30 @@ class PackageFollowupService
             Log::warning('[PackageFollowup] issueForOperation gagal: ' . $e->getMessage(), ['schedule_id' => $scheduleId]);
             return 0;
         }
+    }
+
+    /**
+     * Varian tarif yang berlaku untuk satu snapshot paket pasien — sumber manfaat
+     * kontrol pasca-bedah. Utamakan varian yang DIPILIH saat planning (direkam di
+     * snapshot); bila kosong (snapshot lama / belum tercatat), resolve varian default
+     * untuk penjamin pasien lewat logika billing (TPA-aware) lalu muat modelnya.
+     */
+    private function resolveTariffForSnapshot(VisitSurgeryPackage $snap, $visit): ?SurgeryPackageTariff
+    {
+        if ($snap->surgery_package_tariff_id) {
+            $tariff = SurgeryPackageTariff::find($snap->surgery_package_tariff_id);
+            if ($tariff) {
+                return $tariff;
+            }
+        }
+
+        // Lazy resolve KasirService (hindari ketergantungan melingkar: KasirService
+        // memanggil service ini saat pelunasan).
+        $resolved = app(KasirService::class)->resolvePackageTariff(
+            $snap->source_surgery_package_id, $visit->guarantor_type, $visit->insurer_id, null
+        );
+
+        return ($resolved && isset($resolved->id)) ? SurgeryPackageTariff::find($resolved->id) : null;
     }
 
     /**

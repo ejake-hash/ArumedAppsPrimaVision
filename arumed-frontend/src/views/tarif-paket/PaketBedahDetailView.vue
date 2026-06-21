@@ -337,6 +337,11 @@ const tariffModal = ref({
   // Item OVERRIDE varian (scope: IOL) — mengganti IOL komposisi saat snapshot visit;
   // kosong = varian murni harga/label. [{ item_id, label, quantity }]
   overrideItems: [],
+  // Manfaat "kontrol gratis pasca-bedah" (Opsi B) — kini per VARIAN tarif (per
+  // penjamin). procedure_id kosong = varian ini tak beri manfaat kontrol.
+  followup: { procedure_id: '', count: 1, valid_days: '' },
+  followupName: '',        // nama prosedur terpilih (tampilan combobox saat edit)
+  followupSearch: '', followupOpen: false,
   errors: null, submitting: false, editingId: null,
 })
 
@@ -351,9 +356,12 @@ function openAddTariff() {
     open: true,
     payload: { insurer_id: umumInsurerId.value, display_name: '', price_mode: 'NOMINAL', sell_price: paket.value?.total_base_price ?? 0, discount_percent: null, is_active: true },
     overrideItems: [],
+    followup: { procedure_id: '', count: 1, valid_days: '' },
+    followupName: '', followupSearch: '', followupOpen: false,
     errors: null, submitting: false, editingId: null,
   }
   resetIolPicker()
+  followupResults.value = []
 }
 
 function openEditTariff(t) {
@@ -370,9 +378,18 @@ function openEditTariff(t) {
     overrideItems: (t.override_items ?? []).map((o) => ({
       item_id: o.item_id, label: o.item_name ?? '—', quantity: o.quantity ?? 1,
     })),
+    followup: {
+      procedure_id: t.followup_procedure_id ?? '',
+      count: t.followup_count || 1,
+      valid_days: t.followup_valid_days ?? '',
+    },
+    followupName: t.followup_procedure_name ?? '',
+    followupSearch: t.followup_procedure_name ?? '',
+    followupOpen: false,
     errors: null, submitting: false, editingId: t.id,
   }
   resetIolPicker()
+  followupResults.value = []
 }
 
 // ─── Picker IOL varian (cari-server, mirror itemPicker) ──────────────────
@@ -469,6 +486,13 @@ async function onSubmitTariff(payload) {
       override_items: tariffModal.value.overrideItems.map((o) => ({
         item_type: 'IOL', item_id: o.item_id, quantity: Math.max(1, Number(o.quantity) || 1),
       })),
+      // Manfaat kontrol gratis pasca-bedah (Opsi B) — per varian tarif. Tanpa prosedur
+      // = tanpa manfaat (count 0, valid null).
+      followup_procedure_id: tariffModal.value.followup.procedure_id || null,
+      followup_count: tariffModal.value.followup.procedure_id
+        ? Math.max(1, Number(tariffModal.value.followup.count) || 1) : 0,
+      followup_valid_days: tariffModal.value.followup.valid_days === '' || tariffModal.value.followup.valid_days === null
+        ? null : Math.max(0, Number(tariffModal.value.followup.valid_days)),
     }
     await store.upsertTariff(paketId.value, data)
     showToast('s', 'Tarif paket disimpan')
@@ -626,95 +650,46 @@ async function onImportFile(e) {
   } finally { csvBusy.value = false }
 }
 
-// ─── Manfaat Kontrol Pasca-Bedah (Opsi B) ─────────────────────────────────
-// Paket bisa memberi KONSULTASI GRATIS saat pasien kontrol pasca-operasi. Diisi =
-// paket dapat manfaat; dikosongkan = tidak. Tersimpan di kolom followup_* paket.
-const followup = ref({ procedure_id: '', count: 1, valid_days: '' })
-const followupSaving = ref(false)
-// Combobox cari prosedur konsultasi (296 prosedur → dropdown polos tak praktis).
-const followupSearch = ref('')
-const followupOpen = ref(false)
-
-watch(paket, (p) => {
-  if (!p) return
-  followup.value = {
-    procedure_id: p.followup_procedure_id ?? '',
-    count: p.followup_count || 1,
-    valid_days: p.followup_valid_days ?? '',
-  }
-  syncFollowupSearch()
-}, { immediate: true })
-
-const followupDirty = computed(() => {
-  const p = paket.value
-  if (!p) return false
-  const curId = p.followup_procedure_id ?? ''
-  const curCount = p.followup_count || (curId ? 1 : 1)
-  const curDays = p.followup_valid_days ?? ''
-  return followup.value.procedure_id !== curId
-    || (!!followup.value.procedure_id && Number(followup.value.count) !== Number(curCount))
-    || String(followup.value.valid_days ?? '') !== String(curDays)
-})
-
-async function saveFollowup() {
-  followupSaving.value = true
-  try {
-    await store.updatePaket(paketId.value, {
-      followup_procedure_id: followup.value.procedure_id || null,
-      followup_count: followup.value.procedure_id ? Math.max(1, Number(followup.value.count) || 1) : 0,
-      followup_valid_days: followup.value.valid_days === '' || followup.value.valid_days === null
-        ? null : Math.max(0, Number(followup.value.valid_days)),
-    })
-    await store.fetchPaketDetail(paketId.value)
-    showToast('s', 'Manfaat kontrol pasca-bedah disimpan')
-  } catch (e) {
-    showToast('e', e.response?.data?.message ?? 'Gagal menyimpan manfaat')
-  } finally { followupSaving.value = false }
-}
-
-// ─── Combobox prosedur konsultasi: CARI-SERVER + pilih ─────────────────────
-// (dulu filter client atas prefetch 500 — prosedur >500 tak pernah muncul)
-const followupPicked = ref(null)            // {id, name} pilihan sesi ini
+// ─── Manfaat Kontrol Pasca-Bedah (Opsi B) — combobox prosedur di MODAL TARIF ──
+// Manfaat kontrol gratis kini per VARIAN tarif (per penjamin), diatur di modal tarif.
+// Combobox cari-server prosedur konsultasi (296 prosedur → dropdown polos tak praktis).
 const followupResults = ref([])
 let followupTimer = null
 
-function selectedFollowupName() {
-  if (followupPicked.value && followupPicked.value.id === followup.value.procedure_id) {
-    return followupPicked.value.name
-  }
-  // Nama prosedur terpilih dari BE (showPaket enrich followup_procedure_name).
-  return paket.value?.followup_procedure_name ?? ''
-}
-function syncFollowupSearch() { followupSearch.value = selectedFollowupName() }
+function selectedFollowupName() { return tariffModal.value.followupName ?? '' }
 
 async function searchFollowup() {
   try {
-    const q = followupSearch.value.trim()
+    const q = tariffModal.value.followupSearch.trim()
     const res = await masterApi.tindakan.list({ search: q || undefined, per_page: 50, active: 1 })
     followupResults.value = res.data?.data?.data ?? res.data?.data ?? []
   } catch { followupResults.value = [] }
 }
-function onFollowupInput() {
-  followupOpen.value = true
+function onFollowupInput(e) {
+  tariffModal.value.followupSearch = e.target.value
+  tariffModal.value.followupOpen = true
   clearTimeout(followupTimer)
   followupTimer = setTimeout(searchFollowup, 300)
 }
 function onFollowupFocus() {
-  followupOpen.value = true
+  tariffModal.value.followupOpen = true
   if (!followupResults.value.length) searchFollowup()
 }
 
 function pickFollowup(p) {
-  followup.value.procedure_id = p ? p.id : ''
-  followupPicked.value = p ? { id: p.id, name: p.name } : null
-  followupSearch.value = p ? p.name : ''
-  followupOpen.value = false
+  tariffModal.value.followup.procedure_id = p ? p.id : ''
+  tariffModal.value.followupName = p ? p.name : ''
+  tariffModal.value.followupSearch = p ? p.name : ''
+  if (p && !(Number(tariffModal.value.followup.count) > 0)) tariffModal.value.followup.count = 1
+  tariffModal.value.followupOpen = false
 }
 function onFollowupBlur() {
   // jeda agar klik item (mousedown) sempat diproses, lalu samakan teks dgn pilihan.
   setTimeout(() => {
-    followupOpen.value = false
-    if (followupSearch.value !== selectedFollowupName()) syncFollowupSearch()
+    tariffModal.value.followupOpen = false
+    if (tariffModal.value.followupSearch !== selectedFollowupName()) {
+      tariffModal.value.followupSearch = selectedFollowupName()
+    }
   }, 150)
 }
 
@@ -760,63 +735,6 @@ watch(paketId, async (id) => {
           </div>
         </div>
       </header>
-
-      <!-- MANFAAT KONTROL PASCA-BEDAH (Opsi B) — hanya paket BEDAH -->
-      <section v-if="paket.package_type !== 'PEMERIKSAAN'" class="pd-panel pd-followup">
-        <div class="pd-panel-head">
-          <div>
-            <h3>🎁 Manfaat Kontrol Pasca-Bedah</h3>
-            <p>Konsultasi gratis saat pasien <strong>kontrol</strong> setelah operasi. Tebusan otomatis di Kasir (penjamin UMUM). Kosongkan prosedur = paket ini tanpa manfaat.</p>
-          </div>
-        </div>
-        <div class="pd-fu-row">
-          <label class="pd-fu-field pd-fu-grow">
-            <span>Konsultasi gratis</span>
-            <div class="pd-fu-combo">
-              <input
-                v-model="followupSearch"
-                type="text"
-                class="pd-fu-input"
-                placeholder="Cari prosedur… (kosongkan = tanpa manfaat)"
-                autocomplete="off"
-                @focus="onFollowupFocus"
-                @input="onFollowupInput"
-                @blur="onFollowupBlur"
-              />
-              <button v-if="followup.procedure_id" type="button" class="pd-fu-clear"
-                      title="Hapus pilihan" @mousedown.prevent="pickFollowup(null)">×</button>
-              <ul v-if="followupOpen" class="pd-fu-drop">
-                <li v-if="!followupResults.length" class="pd-fu-empty">Tidak ada prosedur cocok</li>
-                <li v-for="p in followupResults" :key="p.id"
-                    :class="{ sel: p.id === followup.procedure_id }"
-                    @mousedown.prevent="pickFollowup(p)">
-                  <span>{{ p.name }}</span>
-                  <small v-if="p.category">{{ p.category }}</small>
-                </li>
-              </ul>
-            </div>
-          </label>
-          <label class="pd-fu-field">
-            <span>Jumlah / operasi</span>
-            <input v-model.number="followup.count" type="number" min="1" max="20"
-                   class="pd-fu-input" :disabled="!followup.procedure_id" />
-          </label>
-          <label class="pd-fu-field">
-            <span>Masa berlaku (hari)</span>
-            <input v-model="followup.valid_days" type="number" min="0" placeholder="tanpa batas"
-                   class="pd-fu-input" :disabled="!followup.procedure_id" />
-          </label>
-          <button class="pd-btn-primary pd-fu-save" :disabled="followupSaving || !followupDirty" @click="saveFollowup">
-            {{ followupSaving ? 'Menyimpan…' : 'Simpan' }}
-          </button>
-        </div>
-        <p v-if="paket.followup_procedure_id" class="pd-fu-active">
-          Aktif: <strong>{{ paket.followup_procedure_name || 'Konsultasi' }}</strong>
-          gratis {{ paket.followup_count }}× per operasi
-          <template v-if="paket.followup_valid_days">· berlaku {{ paket.followup_valid_days }} hari</template>
-          <template v-else>· tanpa batas waktu</template>
-        </p>
-      </section>
 
       <div class="pd-grid">
         <!-- ITEMS PANEL -->
@@ -951,6 +869,11 @@ watch(paketId, async (id) => {
                     class="pd-iol-badge"
                     title="Varian ini mengganti IOL komposisi paket — kwitansi menampilkan IOL varian"
                   >IOL: {{ t.override_items.map((o) => o.item_name).join(', ') }}</span>
+                  <span
+                    v-if="t.followup_procedure_id"
+                    class="pd-fu-badge"
+                    :title="`Kontrol gratis: ${t.followup_procedure_name || 'Konsultasi'} ${t.followup_count}× per operasi` + (t.followup_valid_days ? ` · berlaku ${t.followup_valid_days} hari` : ' · tanpa batas')"
+                  >🎁 {{ t.followup_count }}× kontrol</span>
                 </td>
                 <td class="r">
                   <strong>{{ formatRp(t.sell_price) }}</strong>
@@ -1105,6 +1028,52 @@ watch(paketId, async (id) => {
             </ul>
           </div>
         </div>
+
+        <!-- Manfaat Kontrol Pasca-Bedah (Opsi B) — per VARIAN tarif (per penjamin) -->
+        <div class="pd-ovr pd-fu-modal">
+          <div class="pd-ovr-head">
+            <span class="pd-ovr-title">🎁 Manfaat Kontrol Pasca-Bedah (opsional)</span>
+            <span class="pd-ovr-hint">Konsultasi gratis saat pasien <strong>kontrol</strong> setelah operasi — khusus varian/penjamin ini. Tebusan otomatis di Kasir. Kosongkan prosedur = varian ini tanpa manfaat.</span>
+          </div>
+          <div class="pd-fu-row">
+            <label class="pd-fu-field pd-fu-grow">
+              <span>Konsultasi gratis</span>
+              <div class="pd-fu-combo">
+                <input
+                  :value="tariffModal.followupSearch"
+                  type="text"
+                  class="pd-fu-input"
+                  placeholder="Cari prosedur… (kosongkan = tanpa manfaat)"
+                  autocomplete="off"
+                  @focus="onFollowupFocus"
+                  @input="onFollowupInput"
+                  @blur="onFollowupBlur"
+                />
+                <button v-if="tariffModal.followup.procedure_id" type="button" class="pd-fu-clear"
+                        title="Hapus pilihan" @mousedown.prevent="pickFollowup(null)">×</button>
+                <ul v-if="tariffModal.followupOpen" class="pd-fu-drop">
+                  <li v-if="!followupResults.length" class="pd-fu-empty">Tidak ada prosedur cocok</li>
+                  <li v-for="p in followupResults" :key="p.id"
+                      :class="{ sel: p.id === tariffModal.followup.procedure_id }"
+                      @mousedown.prevent="pickFollowup(p)">
+                    <span>{{ p.name }}</span>
+                    <small v-if="p.category">{{ p.category }}</small>
+                  </li>
+                </ul>
+              </div>
+            </label>
+            <label class="pd-fu-field">
+              <span>Jumlah / operasi</span>
+              <input v-model.number="tariffModal.followup.count" type="number" min="1" max="20"
+                     class="pd-fu-input" :disabled="!tariffModal.followup.procedure_id" />
+            </label>
+            <label class="pd-fu-field">
+              <span>Masa berlaku (hari)</span>
+              <input v-model="tariffModal.followup.valid_days" type="number" min="0" placeholder="tanpa batas"
+                     class="pd-fu-input" :disabled="!tariffModal.followup.procedure_id" />
+            </label>
+          </div>
+        </div>
       </template>
     </MasterFormModal>
 
@@ -1145,8 +1114,8 @@ watch(paketId, async (id) => {
 
 .pd-panel { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.8rem; }
 
-/* Manfaat Kontrol Pasca-Bedah (Opsi B) */
-.pd-followup { margin-bottom: 1rem; border-left: 3px solid var(--ga); }
+/* Manfaat Kontrol Pasca-Bedah (Opsi B) — kini di dalam modal tarif per-penjamin */
+.pd-fu-modal { border-left: 3px solid var(--ga); }
 .pd-fu-row { display: flex; align-items: flex-end; gap: 0.8rem; flex-wrap: wrap; }
 .pd-fu-field { display: flex; flex-direction: column; gap: 4px; }
 .pd-fu-field > span { font-size: 11px; color: var(--tm); font-weight: 500; }
@@ -1166,8 +1135,8 @@ watch(paketId, async (id) => {
 .pd-fu-drop li small { display: block; font-size: 10.5px; color: var(--tm); }
 .pd-fu-drop li:hover small, .pd-fu-drop li.sel small { color: var(--ga); }
 .pd-fu-empty, .pd-fu-empty:hover { color: var(--tm); cursor: default; background: transparent; }
-.pd-fu-save { height: 36px; }
-.pd-fu-active { font-size: 12px; color: var(--ga); margin: 0; background: color-mix(in srgb, var(--ga) 8%, transparent); padding: 6px 10px; border-radius: 8px; }
+/* Badge "kontrol gratis" di baris daftar tarif */
+.pd-fu-badge { display: inline-block; margin-top: 3px; margin-left: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: color-mix(in srgb, var(--ga) 10%, transparent); color: var(--ga); border: 1px solid var(--gb); white-space: nowrap; vertical-align: middle; }
 .pd-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .pd-panel-head h3 { font-family: 'Space Grotesk', serif; font-size: 16px; color: var(--td); margin: 0; }
 .pd-panel-head p { font-size: 12px; color: var(--tm); margin: 2px 0 0; }
