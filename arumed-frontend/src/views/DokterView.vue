@@ -171,6 +171,64 @@ function isNegationAllergy(s) {
     'nihil', 'none', 'no', 'tidak', 'belum ada', 'tidak diketahui', 'na'].includes(t)
 }
 
+// Data Triase Perawat (TTV + antropometri + keluhan) → bentuk `nd` yang dipakai
+// kartu read-only Tab 1. Dipisah agar bisa dipakai ulang oleh pager "kunjungan
+// sebelumnya" (sumber: detail.nurse dari RME aggregator, shape sama dgn antrian).
+function buildNurseData(nurse) {
+  return {
+    td_s:    nurse?.td_sistol  ?? '—',
+    td_d:    nurse?.td_diastol ?? '—',
+    nadi:    nurse?.nadi       ?? '—',
+    spo2:    nurse?.spo2       ?? '—',
+    suhu:    nurse?.suhu       ?? '—',
+    pain:    nurse?.pain_scale ?? 0,
+    kgd:     nurse?.kgd        ?? '—',
+    // Sinkron form Triase (PerawatView) yang sudah diperluas: respirasi + antropometri.
+    resp:    nurse?.respirasi    ?? '—',
+    bb:      nurse?.berat_badan  ?? '—',
+    tb:      nurse?.tinggi_badan ?? '—',
+    bmi:     nurse?.bmi          ?? '—',
+    keluhan: nurse?.chief_complaint ?? '—',
+    rps:     nurse?.rps ?? '',
+    notes:   nurse?.assessment_notes ?? '',
+    examiner: nurse?.assessed_by?.name ?? null,   // pemeriksa triase (Perawat)
+  }
+}
+
+// Data Refraksionis → bentuk `rd` untuk kartu read-only Tab 1. Sama: dipisah agar
+// bisa dipakai ulang oleh pager "kunjungan sebelumnya" (sumber: detail.refraction).
+function buildRefractionData(refr) {
+  return {
+    ucva_od: refr?.visus_awal_od  ?? '—',
+    ucva_os: refr?.visus_awal_os  ?? '—',
+    pinhole_od: refr?.pinhole_od ?? '—',
+    pinhole_os: refr?.pinhole_os ?? '—',
+    bcva_od: refr?.visus_akhir_od ?? '—',
+    bcva_os: refr?.visus_akhir_os ?? '—',
+    autoref_od: fmtRx(refr?.autoref_od_sph, refr?.autoref_od_cyl, refr?.autoref_od_axis),
+    autoref_os: fmtRx(refr?.autoref_os_sph, refr?.autoref_os_cyl, refr?.autoref_os_axis),
+    kerato_od: fmtK(refr?.keratometri1_od, refr?.keratometri2_od, refr?.keratometri_axis_od, refr?.keratometri_axis2_od),
+    kerato_os: fmtK(refr?.keratometri1_os, refr?.keratometri2_os, refr?.keratometri_axis_os, refr?.keratometri_axis2_os),
+    rx_od:   fmtRx(refr?.refraksi_subjektif_od_sph, refr?.refraksi_subjektif_od_cyl, refr?.refraksi_subjektif_od_axis),
+    rx_os:   fmtRx(refr?.refraksi_subjektif_os_sph, refr?.refraksi_subjektif_os_cyl, refr?.refraksi_subjektif_os_axis),
+    add_od:  fmtAdd(refr?.add_power_od),
+    add_os:  fmtAdd(refr?.add_power_os),
+    old_od:  fmtGlasses(refr?.old_glasses_od_sph, refr?.old_glasses_od_cyl, refr?.old_glasses_od_axis, refr?.old_glasses_add_od, refr?.old_glasses_visus_od),
+    old_os:  fmtGlasses(refr?.old_glasses_os_sph, refr?.old_glasses_os_cyl, refr?.old_glasses_os_axis, refr?.old_glasses_add_os, refr?.old_glasses_visus_os),
+    iop_od:  refr?.iop_od ?? '—',
+    iop_os:  refr?.iop_os ?? '—',
+    iop_method: refr?.iop_method ?? '',
+    // Tonometri berulang (manual, dinamis) — ringkas jadi catatan "ulang OD/OS".
+    iop_extra: Array.isArray(refr?.iop_extra_readings) && refr.iop_extra_readings.length
+      ? 'ulang ' + refr.iop_extra_readings.map((x) => `${x?.od ?? '–'}/${x?.os ?? '–'}`).join(', ')
+      : '',
+    pd:      refr?.pd_distance ?? '',
+    perception: refr?.perception_type ?? '',
+    note:    refr?.clinical_notes ?? '',
+    examiner: refr?.examined_by?.name ?? null,   // pemeriksa refraksi (Refraksionis)
+  }
+}
+
 function mapPatient(q) {
   if (!q) return null
   const v     = q.visit ?? {}
@@ -221,53 +279,8 @@ function mapPatient(q) {
       ? nurse.allergy_detail.split(',').map((s) => s.trim()).filter(Boolean)
       : (p.allergy_notes ? [p.allergy_notes] : []))
       .filter((s) => !isNegationAllergy(s)),
-    nd: {
-      td_s:    nurse?.td_sistol  ?? '—',
-      td_d:    nurse?.td_diastol ?? '—',
-      nadi:    nurse?.nadi       ?? '—',
-      spo2:    nurse?.spo2       ?? '—',
-      suhu:    nurse?.suhu       ?? '—',
-      pain:    nurse?.pain_scale ?? 0,
-      kgd:     nurse?.kgd        ?? '—',
-      // Sinkron form Triase (PerawatView) yang sudah diperluas: respirasi + antropometri.
-      resp:    nurse?.respirasi    ?? '—',
-      bb:      nurse?.berat_badan  ?? '—',
-      tb:      nurse?.tinggi_badan ?? '—',
-      bmi:     nurse?.bmi          ?? '—',
-      keluhan: nurse?.chief_complaint ?? '—',
-      rps:     nurse?.rps ?? '',
-      notes:   nurse?.assessment_notes ?? '',
-      examiner: nurse?.assessed_by?.name ?? null,   // pemeriksa triase (Perawat)
-    },
-    rd: {
-      ucva_od: refr?.visus_awal_od  ?? '—',
-      ucva_os: refr?.visus_awal_os  ?? '—',
-      pinhole_od: refr?.pinhole_od ?? '—',
-      pinhole_os: refr?.pinhole_os ?? '—',
-      bcva_od: refr?.visus_akhir_od ?? '—',
-      bcva_os: refr?.visus_akhir_os ?? '—',
-      autoref_od: fmtRx(refr?.autoref_od_sph, refr?.autoref_od_cyl, refr?.autoref_od_axis),
-      autoref_os: fmtRx(refr?.autoref_os_sph, refr?.autoref_os_cyl, refr?.autoref_os_axis),
-      kerato_od: fmtK(refr?.keratometri1_od, refr?.keratometri2_od, refr?.keratometri_axis_od, refr?.keratometri_axis2_od),
-      kerato_os: fmtK(refr?.keratometri1_os, refr?.keratometri2_os, refr?.keratometri_axis_os, refr?.keratometri_axis2_os),
-      rx_od:   fmtRx(refr?.refraksi_subjektif_od_sph, refr?.refraksi_subjektif_od_cyl, refr?.refraksi_subjektif_od_axis),
-      rx_os:   fmtRx(refr?.refraksi_subjektif_os_sph, refr?.refraksi_subjektif_os_cyl, refr?.refraksi_subjektif_os_axis),
-      add_od:  fmtAdd(refr?.add_power_od),
-      add_os:  fmtAdd(refr?.add_power_os),
-      old_od:  fmtGlasses(refr?.old_glasses_od_sph, refr?.old_glasses_od_cyl, refr?.old_glasses_od_axis, refr?.old_glasses_add_od, refr?.old_glasses_visus_od),
-      old_os:  fmtGlasses(refr?.old_glasses_os_sph, refr?.old_glasses_os_cyl, refr?.old_glasses_os_axis, refr?.old_glasses_add_os, refr?.old_glasses_visus_os),
-      iop_od:  refr?.iop_od ?? '—',
-      iop_os:  refr?.iop_os ?? '—',
-      iop_method: refr?.iop_method ?? '',
-      // Tonometri berulang (manual, dinamis) — ringkas jadi catatan "ulang OD/OS".
-      iop_extra: Array.isArray(refr?.iop_extra_readings) && refr.iop_extra_readings.length
-        ? 'ulang ' + refr.iop_extra_readings.map((x) => `${x?.od ?? '–'}/${x?.os ?? '–'}`).join(', ')
-        : '',
-      pd:      refr?.pd_distance ?? '',
-      perception: refr?.perception_type ?? '',
-      note:    refr?.clinical_notes ?? '',
-      examiner: refr?.examined_by?.name ?? null,   // pemeriksa refraksi (Refraksionis)
-    },
+    nd: buildNurseData(nurse),
+    rd: buildRefractionData(refr),
     // List berikut belum di-fetch dari API saat antrian list (perlu separate call ke
     // /dokter/kunjungan/{visitId}). Default kosong supaya template tidak crash.
     // (soapHistory tidak lagi di sini — di-fetch terpisah ke soapHistoryData
@@ -284,7 +297,8 @@ const selP     = computed(() => store.selectedQueue ? mapPatient(store.selectedQ
 // Baris tabel RO untuk Tab 1. Baris non-inti disembunyikan bila kedua mata kosong
 // agar kartu tetap ringkas tapi tetap memuat seluruh data yang ada.
 const roRows = computed(() => {
-  const r = selP.value?.rd
+  // Mengikuti halaman pager refraksi yang sedang dibuka (default: kunjungan ini).
+  const r = currentRefraksi.value?.rd ?? selP.value?.rd
   if (!r) return []
   // Susunan mengikuti formulir RefraksionisView:
   //   Autoref + Keratometri → Tonometri (IOP) → Visus Awal → Pinhole →
@@ -358,6 +372,8 @@ const riwayatPaged = computed(() => {
 })
 async function loadRiwayatKunjungan() {
   riwayatPage.value = 1
+  triasePageIdx.value = 0
+  refraksiPageIdx.value = 0
   const pid = selP.value?.patientId
   if (!pid) { riwayatList.value = []; return }
   try {
@@ -373,10 +389,47 @@ async function loadRiwayatKunjungan() {
         dx:      [v.diagnosis_utama_nama, ...((v.diagnosis_sekunder || []).map((d) => d.nama))].filter(Boolean).join('; '),
         terapi:  v.terapi || [],
         eyeDrawings: v.detail?.eye_drawings ?? null,
+        // Triase & refraksi mentah kunjungan ini → pager read-only Tab 1.
+        hasNurse: !!v.detail?.nurse,
+        hasRO:    !!v.detail?.refraction,
+        nd:       buildNurseData(v.detail?.nurse),
+        rd:       buildRefractionData(v.detail?.refraction),
       }))
   } catch { riwayatList.value = [] }
 }
 watch(() => selP.value?.patientId, loadRiwayatKunjungan, { immediate: true })
+
+// ─── Pager "Data kunjungan sebelumnya" untuk kartu Triase & Refraksionis (Tab 1) ──
+// Halaman 0 = kunjungan saat ini, sisanya riwayat (terbaru → terlama). Pager per-kartu
+// agar tetap tampil walau satu kunjungan hanya punya salah satu data (triase ATAU RO).
+const triasePageIdx = ref(0)
+const refraksiPageIdx = ref(0)
+function fmtPageDate(d) {
+  if (!d) return '—'
+  const dt = new Date(String(d).length <= 10 ? `${d}T00:00:00` : d)
+  if (Number.isNaN(dt.getTime())) return String(d)
+  return dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+const triasePages = computed(() => {
+  const out = []
+  const cur = selP.value
+  if (cur) out.push({ date: fmtPageDate(cur.visitDate), nd: cur.nd, current: true })
+  for (const r of riwayatList.value) {
+    if (r.hasNurse) out.push({ date: fmtPageDate(r.date), nd: r.nd, current: false })
+  }
+  return out
+})
+const refraksiPages = computed(() => {
+  const out = []
+  const cur = selP.value
+  if (cur) out.push({ date: fmtPageDate(cur.visitDate), rd: cur.rd, current: true })
+  for (const r of riwayatList.value) {
+    if (r.hasRO) out.push({ date: fmtPageDate(r.date), rd: r.rd, current: false })
+  }
+  return out
+})
+const currentTriase = computed(() => triasePages.value[triasePageIdx.value] ?? triasePages.value[0] ?? null)
+const currentRefraksi = computed(() => refraksiPages.value[refraksiPageIdx.value] ?? refraksiPages.value[0] ?? null)
 
 // Judul dokumen CPPT terpadu mengikuti episode kunjungan aktif (Pasal 17 STARKES).
 const CPPT_EP_LABEL = { RAJAL: 'Rawat Jalan', RANAP: 'Rawat Inap', IGD: 'IGD' }
@@ -2869,11 +2922,22 @@ function closeResumeRM() {
                 <div class="cht">
                   <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
                   Data Triase Perawat
-                  <span v-if="selP.nd.examiner" class="dw-examiner">· {{ selP.nd.examiner }}</span>
+                  <span v-if="currentTriase?.nd.examiner" class="dw-examiner">· {{ currentTriase.nd.examiner }}</span>
                 </div>
                 <span class="ro-badge">Read-only</span>
               </div>
-              <div class="cb">
+              <div v-if="currentTriase" class="cb">
+                <!-- Pager kunjungan: ‹ lebih baru · › lebih lama. Hal-1 = kunjungan ini. -->
+                <div v-if="triasePages.length > 1" class="soap-pager pj-pager">
+                  <button class="soap-pager-btn" title="Kunjungan lebih baru"
+                    :disabled="triasePageIdx <= 0" @click="triasePageIdx--">‹</button>
+                  <div class="soap-pager-info">
+                    <div class="soap-pager-date">{{ currentTriase.date }}</div>
+                    <div class="soap-pager-count">{{ currentTriase.current ? 'Kunjungan ini' : 'Kunjungan sebelumnya' }} · {{ triasePageIdx + 1 }}/{{ triasePages.length }}</div>
+                  </div>
+                  <button class="soap-pager-btn" title="Kunjungan lebih lama"
+                    :disabled="triasePageIdx >= triasePages.length - 1" @click="triasePageIdx++">›</button>
+                </div>
                 <table class="tr-table">
                   <thead>
                     <tr>
@@ -2888,25 +2952,25 @@ function closeResumeRM() {
                   </thead>
                   <tbody>
                     <tr>
-                      <td :class="{ warn: selP.nd.td_s >= 140 }">{{ selP.nd.td_s }}/{{ selP.nd.td_d }}</td>
-                      <td>{{ selP.nd.nadi }}</td>
-                      <td>{{ selP.nd.resp }}</td>
-                      <td :class="{ warn: selP.nd.spo2 < 95 }">{{ selP.nd.spo2 }}</td>
-                      <td>{{ selP.nd.suhu }}</td>
-                      <td :class="{ warn: selP.nd.kgd > 200 }">{{ toInt(selP.nd.kgd) }}</td>
-                      <td>{{ selP.nd.pain }}<small>/10</small></td>
+                      <td :class="{ warn: currentTriase.nd.td_s >= 140 }">{{ currentTriase.nd.td_s }}/{{ currentTriase.nd.td_d }}</td>
+                      <td>{{ currentTriase.nd.nadi }}</td>
+                      <td>{{ currentTriase.nd.resp }}</td>
+                      <td :class="{ warn: currentTriase.nd.spo2 < 95 }">{{ currentTriase.nd.spo2 }}</td>
+                      <td>{{ currentTriase.nd.suhu }}</td>
+                      <td :class="{ warn: currentTriase.nd.kgd > 200 }">{{ toInt(currentTriase.nd.kgd) }}</td>
+                      <td>{{ currentTriase.nd.pain }}<small>/10</small></td>
                     </tr>
                   </tbody>
                 </table>
                 <!-- Antropometri (sinkron form Triase) — kompak, hanya bila terisi -->
-                <div v-if="selP.nd.bb !== '—' || selP.nd.tb !== '—' || selP.nd.bmi !== '—'" class="tr-anthro">
-                  <span v-if="selP.nd.bb !== '—'">BB <b>{{ selP.nd.bb }} kg</b></span>
-                  <span v-if="selP.nd.tb !== '—'">TB <b>{{ selP.nd.tb }} cm</b></span>
-                  <span v-if="selP.nd.bmi !== '—'">BMI <b>{{ selP.nd.bmi }}</b></span>
+                <div v-if="currentTriase.nd.bb !== '—' || currentTriase.nd.tb !== '—' || currentTriase.nd.bmi !== '—'" class="tr-anthro">
+                  <span v-if="currentTriase.nd.bb !== '—'">BB <b>{{ currentTriase.nd.bb }} kg</b></span>
+                  <span v-if="currentTriase.nd.tb !== '—'">TB <b>{{ currentTriase.nd.tb }} cm</b></span>
+                  <span v-if="currentTriase.nd.bmi !== '—'">BMI <b>{{ currentTriase.nd.bmi }}</b></span>
                 </div>
-                <div class="tr-keluhan"><b>Keluhan Utama:</b> {{ selP.nd.keluhan }}</div>
-                <div v-if="selP.nd.rps" class="tr-keluhan"><b>RPS:</b> {{ selP.nd.rps }}</div>
-                <div v-if="selP.nd.notes" class="tr-keluhan"><b>Catatan Perawat:</b> {{ selP.nd.notes }}</div>
+                <div class="tr-keluhan"><b>Keluhan Utama:</b> {{ currentTriase.nd.keluhan }}</div>
+                <div v-if="currentTriase.nd.rps" class="tr-keluhan"><b>RPS:</b> {{ currentTriase.nd.rps }}</div>
+                <div v-if="currentTriase.nd.notes" class="tr-keluhan"><b>Catatan Perawat:</b> {{ currentTriase.nd.notes }}</div>
               </div>
             </div>
 
@@ -2915,11 +2979,22 @@ function closeResumeRM() {
                 <div class="cht">
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
                   Data Refraksionis
-                  <span v-if="selP.rd.examiner" class="dw-examiner">· {{ selP.rd.examiner }}</span>
+                  <span v-if="currentRefraksi?.rd.examiner" class="dw-examiner">· {{ currentRefraksi.rd.examiner }}</span>
                 </div>
                 <span class="ro-badge">Read-only</span>
               </div>
-              <div class="cb">
+              <div v-if="currentRefraksi" class="cb">
+                <!-- Pager kunjungan: ‹ lebih baru · › lebih lama. Hal-1 = kunjungan ini. -->
+                <div v-if="refraksiPages.length > 1" class="soap-pager pj-pager">
+                  <button class="soap-pager-btn" title="Kunjungan lebih baru"
+                    :disabled="refraksiPageIdx <= 0" @click="refraksiPageIdx--">‹</button>
+                  <div class="soap-pager-info">
+                    <div class="soap-pager-date">{{ currentRefraksi.date }}</div>
+                    <div class="soap-pager-count">{{ currentRefraksi.current ? 'Kunjungan ini' : 'Kunjungan sebelumnya' }} · {{ refraksiPageIdx + 1 }}/{{ refraksiPages.length }}</div>
+                  </div>
+                  <button class="soap-pager-btn" title="Kunjungan lebih lama"
+                    :disabled="refraksiPageIdx >= refraksiPages.length - 1" @click="refraksiPageIdx++">›</button>
+                </div>
                 <table class="ro-table">
                   <thead>
                     <tr>
@@ -2937,11 +3012,11 @@ function closeResumeRM() {
                   </tbody>
                 </table>
 
-                <div v-if="selP.rd.pd || selP.rd.perception" class="ro-foot">
-                  <span v-if="selP.rd.pd">PD <b>{{ toInt(selP.rd.pd) }} mm</b></span>
-                  <span v-if="selP.rd.perception">Persepsi <b>{{ selP.rd.perception }}</b></span>
+                <div v-if="currentRefraksi.rd.pd || currentRefraksi.rd.perception" class="ro-foot">
+                  <span v-if="currentRefraksi.rd.pd">PD <b>{{ toInt(currentRefraksi.rd.pd) }} mm</b></span>
+                  <span v-if="currentRefraksi.rd.perception">Persepsi <b>{{ currentRefraksi.rd.perception }}</b></span>
                 </div>
-                <div v-if="selP.rd.note" class="ro-note"><b>Catatan RO:</b> {{ selP.rd.note }}</div>
+                <div v-if="currentRefraksi.rd.note" class="ro-note"><b>Catatan RO:</b> {{ currentRefraksi.rd.note }}</div>
               </div>
             </div>
 

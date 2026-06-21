@@ -153,7 +153,10 @@ class RmeAggregatorService
     {
         $visits = Visit::with([
             'doctorExamination',
-            'nurseAssessment',
+            // assessedBy/examinedBy → nama pemeriksa utk pager "Data kunjungan sebelumnya"
+            // di Tab 1 DokterView (kartu Triase Perawat & Refraksionis read-only).
+            'nurseAssessment.assessedBy:id,name',
+            'refractionRecord.examinedBy:id,name',
             'doctorSchedule.employee',
             'diagnosticOrders',
             'patientDocuments',
@@ -167,6 +170,7 @@ class RmeAggregatorService
         return $visits->map(function ($v) {
             $de  = $v->doctorExamination;
             $na  = $v->nurseAssessment;
+            $rr  = $v->refractionRecord;
             $inv = $v->billingInvoice;
 
             return [
@@ -216,6 +220,11 @@ class RmeAggregatorService
                 ] : null,
                 // expand
                 'detail' => [
+                    // Triase perawat & refraksi mentah — dipakai pager "Data kunjungan
+                    // sebelumnya" di Tab 1 DokterView. Shape sama dgn antrian dokter
+                    // (nurse_assessment/refraction_record) → mapper FE bisa dipakai ulang.
+                    'nurse'      => $na,
+                    'refraction' => $rr,
                     'keluhan' => $na?->chief_complaint ?? $de?->anamnese,
                     'ttv'     => $na ? [
                         'td'        => ($na->td_sistol && $na->td_diastol) ? "{$na->td_sistol}/{$na->td_diastol}" : null,
