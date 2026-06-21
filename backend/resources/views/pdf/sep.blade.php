@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <style>
     * { box-sizing: border-box; }
-    @page { size: 130mm 210mm; margin: 8mm 9mm; }   /* 13 x 21 cm — sesuai lembar SEP resmi */
+    @page { size: 130mm 148mm; margin: 7mm 9mm; }   /* 13 x 14.8 cm — ringkas, ≤ A5, isi SEP tak menyisakan separuh halaman kosong */
     body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #1a1a1a; margin: 0; }
 
     .head { width: 100%; border-collapse: collapse; border-bottom: 2px solid #16873f; padding-bottom: 3px; }
