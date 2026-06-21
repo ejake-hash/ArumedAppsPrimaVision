@@ -509,7 +509,8 @@ HTML;
             $manual('tanda_bahaya',    'Segera Kembali ke RS / IGD bila Terjadi'),
 
             // ── Terapi Pulang ────────────────────────────────────────────────
-            $editable('terapi_pulang', 'Terapi Pulang (Obat)', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            // Sumber = resep PASCA-BEDAH (BedahView), BUKAN resep dokter Tab 3.
+            $editable('terapi_pulang', 'Terapi Pulang (Obat)', ['via' => 'aggregate', 'source' => 'prescriptions_post_op', 'format' => 'items_pretty']),
 
             // ── Tanda tangan dokter/operator (PIN → stempel elektronik + QR) ──
             ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter/Operator', 'type' => 'signature_canvas',

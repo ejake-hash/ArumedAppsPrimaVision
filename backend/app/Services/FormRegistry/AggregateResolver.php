@@ -51,6 +51,7 @@ final class AggregateResolver
     {
         return match ($source) {
             'prescriptions'                       => $this->resolvePrescriptions($visit, $format),
+            'prescriptions_post_op'               => $this->resolvePrescriptionsPostOp($visit, $format),
             'anamnese_full'                       => $this->resolveAnamneseFull($visit),
             'tindakan_rmrj'                       => $this->resolveTindakanRmrj($visit, $format),
             'penunjang_rmrj'                      => $this->resolvePenunjangRmrj($visit),
@@ -545,13 +546,36 @@ final class AggregateResolver
             ->where('is_post_op', false)
             ->with(['items.medication'])
             ->get();
+
+        return $this->renderPrescriptionsCollection($prescriptions, $format);
+    }
+
+    /**
+     * Terapi Pulang RESUME MEDIS BEDAH = resep PASCA-BEDAH (BedahView storeResepPasca),
+     * BUKAN resep dokter Tab 3 (DokterView). Cocokkan is_post_op=true ATAU notes
+     * 'Obat pasca-bedah' (transisi data pra-kolom is_post_op — pola sama BedahService).
+     */
+    private function resolvePrescriptionsPostOp(Visit $visit, ?string $format): string
+    {
+        $prescriptions = $visit->prescriptions()
+            ->where('status', '!=', 'CANCELLED')
+            ->where(fn ($q) => $q->where('is_post_op', true)->orWhere('notes', 'Obat pasca-bedah'))
+            ->with(['items.medication'])
+            ->get();
+
+        return $this->renderPrescriptionsCollection($prescriptions, $format);
+    }
+
+    /** Bangun item resep + render (items_pretty / items_table_html). Dipakai bersama
+     *  resolvePrescriptions (resep dokter) & resolvePrescriptionsPostOp (pasca-bedah). */
+    private function renderPrescriptionsCollection($prescriptions, ?string $format): string
+    {
         $items = [];
         foreach ($prescriptions as $rx) {
             foreach ($rx->items as $item) {
-                // Aturan pakai: resep dokter menyimpan field granular dose/frequency/
-                // route/duration_days — dosage/instructions legacy hanya fallback
-                // (item TAMBAHAN Farmasi / data lama). Tanpa ini Terapi tampil
-                // "nama | qty" saja tanpa aturan.
+                // Aturan pakai: resep menyimpan field granular dose/frequency/route/
+                // duration_days — dosage/instructions legacy hanya fallback (item
+                // TAMBAHAN Farmasi / data lama). Tanpa ini Terapi tampil "nama | qty".
                 $aturan = implode(' ', array_filter([
                     $item->frequency,
                     $item->route,

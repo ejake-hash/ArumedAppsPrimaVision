@@ -119,7 +119,11 @@ final class FieldRegistry
                 'formats' => ['icd_with_desc_join_newline', 'icd_only_join_comma'],
             ],
             'prescriptions' => [
-                'label'   => 'Daftar Resep Obat',
+                'label'   => 'Daftar Resep Obat (resep DOKTER Tab 3)',
+                'formats' => ['items_pretty', 'items_table_html'],
+            ],
+            'prescriptions_post_op' => [
+                'label'   => 'Terapi Pulang = resep PASCA-BEDAH (BedahView), bukan resep dokter',
                 'formats' => ['items_pretty', 'items_table_html'],
             ],
             'anamnese_full' => [
