@@ -156,7 +156,7 @@ final class FieldRegistry
             ],
             'surgery_identity' => [
                 'label'   => 'Identitas Operasi (operator/asisten/jam/durasi/anestesi) — dari BedahView',
-                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration',
+                'formats' => ['operator', 'asisten', 'asisten1', 'asisten2', 'anesthesiologist', 'anesthesia_type', 'procedure', 'diagnosis_post', 'time_in', 'time_out', 'duration', 'operation_date',
                     // Laporan operasi subspesialis (Fase 1): mata operasi + detail injeksi anti-VEGF.
                     'operative_eye', 'injection_drug', 'injection_volume', 'injection_quadrant', 'injection_distance'],
             ],
@@ -170,6 +170,10 @@ final class FieldRegistry
             ],
             'physical_exam' => [
                 'label'   => 'Pemeriksaan Fisik = TTV triase + refraksi objektif (RO/O Refraksionis, soap_o)',
+                'formats' => ['text'],
+            ],
+            'physical_exam_bedah' => [
+                'label'   => 'Pemeriksaan Fisik Penting (Resume Bedah) = TD+KGD triase & Visus+IOP refraksi TERAKHIR',
                 'formats' => ['text'],
             ],
             'allergy' => [

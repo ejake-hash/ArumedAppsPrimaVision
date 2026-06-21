@@ -1418,13 +1418,27 @@ class DokterService
         // walau dokter melewati/menutup modal "Setuju & Terbitkan" pasca-finalisasi
         // (akar bug "dokumen resume tidak muncul"). Non-blocking: finalisasi sudah final;
         // kegagalan generate hanya dicatat. Idempoten via ensureDraftForVisit().
-        try {
-            app(\App\Services\FormRegistry\FormRegistryService::class)
-                ->ensureDraftForVisit($visitId, 'RESUME_MEDIS');
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning(
-                "ensureDraftForVisit gagal saat finalisasi (visit {$visitId}): " . $e->getMessage()
-            );
+        //
+        // PENGECUALIAN PASIEN BEDAH: pasien bedah TIDAK memakai RM 1.7 (Resume Medis
+        // Rawat Jalan). Mereka memakai RM 3.5 Resume Medis Bedah yang dibuat otomatis
+        // saat finalisasi laporan operasi (BedahService::finalizeRecord). Jadi resume RJ
+        // di-skip bila visit ini menuju/ber-operasi (visit_type PREOP_BEDAH, terjadwal
+        // operasi, atau planning dokter = BEDAH).
+        $visitForResume = Visit::find($visitId);
+        $isSurgical = $visitForResume && (
+            $visitForResume->visit_type === 'PREOP_BEDAH'
+            || $visitForResume->surgerySchedule()->exists()
+            || $examination->planning === 'BEDAH'
+        );
+        if (! $isSurgical) {
+            try {
+                app(\App\Services\FormRegistry\FormRegistryService::class)
+                    ->ensureDraftForVisit($visitId, 'RESUME_MEDIS');
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning(
+                    "ensureDraftForVisit gagal saat finalisasi (visit {$visitId}): " . $e->getMessage()
+                );
+            }
         }
 
         return $examination->fresh(['doctor', 'surgeryPackage']);

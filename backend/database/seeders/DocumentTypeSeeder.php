@@ -467,6 +467,20 @@ class DocumentTypeSeeder extends Seeder
                 'show_in_rme'         => true,
                 'sort_order'          => 40,
             ],
+            // RM-3.5-LB — Resume Medis Bedah (ringkasan pulang pasien BEDAH rawat
+            // jalan / day-surgery). Menggantikan RM 1.7 (RESUME_MEDIS) untuk pasien
+            // bedah. Template RESUME_MEDIS_BEDAH, station bedah:laporan_operasi. Draft
+            // dibuat otomatis saat finalisasi laporan operasi. TTD DPJP/operator wajib.
+            [
+                'code'                => 'RM-3.5-LB',
+                'name'                => 'Resume Medis Bedah',
+                'fill_frequency'      => 'PER_EPISODE',
+                'generate_type'       => 'MANUAL',
+                'category'            => 'BEDAH',
+                'required_signatures' => [['role' => 'DOKTER', 'sign_type' => 'digital', 'is_required' => false]],
+                'show_in_rme'         => true,
+                'sort_order'          => 48,
+            ],
             // RM-7.7-PAM — Pengkajian Awal Medis Rawat Inap (asesmen medis ≤24 jam).
             // DPJP. TTD dokter opsional.
             [
@@ -562,7 +576,7 @@ class DocumentTypeSeeder extends Seeder
         // di array $types sebagai referensi; tambahkan kembali code-nya ke filter
         // ini saat jenisnya dibangun dari PDF resmi.
         $types = array_values(array_filter($types, fn ($t) => in_array($t['code'] ?? null, [
-            'RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP', 'RM-3.5-RI', 'RM-7.7-PAM', 'RM-7.8-AAKRI', 'RM-2.9-JTH', 'RM-2.4-EDU', 'RM-2.7-REK', 'RM-2.5-SPD', 'RM-2.6-TRF',
+            'RM-6.1', 'RM-2.0', 'RM-10.1', 'RM-2.3-COK', 'RM-2.2-LP', 'RM-3.5-RI', 'RM-3.5-LB', 'RM-7.7-PAM', 'RM-7.8-AAKRI', 'RM-2.9-JTH', 'RM-2.4-EDU', 'RM-2.7-REK', 'RM-2.5-SPD', 'RM-2.6-TRF',
             // Fase 1-3 laporan operasi subspesialis + anestesi + safety (form resmi RS).
             'RM-8.10-LOT', 'RM-9.0-LOP', 'RM-8.8-LIAV', 'RM-4.3-PTA', 'RM-4.4-PPA', 'RM-1.9-SM', 'RM-4.9-SSC', 'RM-1.10-PPO',
         ], true)));

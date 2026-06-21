@@ -20,7 +20,9 @@ final class SectionRegistry
             'refraksionis' => ['hasil_refraksi'],
             'dokter'       => ['asesmen_input', 'resume_output', 'surat', 'consent'],
             'penunjang'    => ['hasil_penunjang'],
-            'bedah'        => ['laporan_bedah', 'consent_operasi'],
+            // laporan_operasi = daftar terpadu laporan operasi + Resume Medis Bedah
+            // (picker search BedahView tab Laporan). checklist_kesiapan = modal Pra-Bedah.
+            'bedah'        => ['laporan_operasi', 'checklist_kesiapan', 'laporan_bedah', 'consent_operasi'],
             'kasir'        => ['invoice_dokumen'],
             'farmasi'      => ['resep_dokumen'],
             'ranap'        => ['pengantar_dirawat', 'pengkajian_awal', 'asuhan_keperawatan', 'keselamatan', 'edukasi', 'obat', 'transfer', 'ringkasan_pulang', 'consent_ranap'],

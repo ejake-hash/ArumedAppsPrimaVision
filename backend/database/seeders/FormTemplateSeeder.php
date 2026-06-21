@@ -50,6 +50,10 @@ class FormTemplateSeeder extends Seeder
         $this->seedWhoSafetyChecklist();     // RM 4.9/CLKPO/22 — WHO SSC (reuse data, K6)
         $this->seedSiteMarking();            // RM 1.9/SM(PO)/22 — penandaan operasi (SKP 4)
         $this->seedProsesPeriOperatif();     // RM 1.10/PPPO/22 — proses peri-operatif (perawat)
+        // RM 3.5/LB/22 — Resume Medis Bedah (ringkasan pulang pasien BEDAH rawat jalan /
+        // day-surgery). Menggantikan RM 1.7 untuk pasien bedah; draft dibuat otomatis saat
+        // finalisasi laporan operasi (BedahService::finalizeRecord). Section laporan_operasi.
+        $this->seedResumeMedisBedah();
 
         // ── RANAP (Rawat Inap) — Phase 1, 3 form nakes-only (TTD pasien ditunda
         // sampai PSrE). Pola HYBRID auto-fill seperti Resume RJ; field ber-`group`
@@ -410,6 +414,171 @@ HTML;
             'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
             'station_assignments'   => [
                 ['station' => 'dokter', 'section' => 'resume_output', 'mode' => 'HYBRID'],
+            ],
+        ]);
+    }
+
+    /**
+     * RM 3.5/LB/22 — Resume Medis BEDAH (ringkasan pulang pasien bedah rawat jalan /
+     * day-surgery). MENGGANTIKAN RM 1.7 (RESUME_MEDIS) untuk pasien bedah: rajal-bedah
+     * tidak lagi dapat resume rawat jalan generik, tetapi resume khusus bedah yang
+     * memuat identitas operasi (operator/jenis/mata/anestesi/durasi), tindakan ICD-9,
+     * IOL/implan terpasang (scan UDI), dan terapi pulang. Semua aggregate sudah ada
+     * (surgery_identity, surgery_iol_usage, doctorExamination.icd9_procedures, dst.).
+     *
+     * Station bedah:laporan_operasi → muncul di tab "Laporan" BedahView (FormDocsBrowser).
+     * Draft dibuat otomatis saat finalisasi laporan operasi (BedahService::finalizeRecord)
+     * untuk visit RAJAL. Untuk pasien rawat inap-bedah dipakai RESUME_MEDIS_RANAP
+     * (dokumen pulang ranap yang diwajibkan regulasi; detail operasi di Laporan Operasi).
+     */
+    private function seedResumeMedisBedah(): void
+    {
+        $docType = $this->requireDocType('RM-3.5-LB');
+        if (!$docType) return;
+
+        // Field AUTO display-only (resolve di output, tak muncul di input).
+        $auto = fn (string $key, string $label, string $type, array $binding) => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'display_only' => true, 'binding' => $binding,
+        ];
+        // Field EDITABLE — binding 'static' (tersimpan ke dokumen) + prefill.
+        $editable = fn (string $key, string $label, array $prefill, string $type = 'longtext') => [
+            'key' => $key, 'label' => $label, 'type' => $type,
+            'binding' => ['kind' => 'static'], 'prefill' => $prefill,
+        ];
+
+        $fields = [
+            // ── Kop klinik ───────────────────────────────────────────────────
+            $auto('klinik_logo',   'Logo Klinik',  'image_url', ['kind' => 'clinic', 'source' => 'clinic.logo_path']) + ['max_height_px' => 64],
+            $auto('klinik_nama',   'Nama Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.clinic_name']),
+            $auto('klinik_alamat', 'Alamat Klinik','text',      ['kind' => 'clinic', 'source' => 'clinic.address']),
+            $auto('klinik_telp',   'Telp Klinik',  'text',      ['kind' => 'clinic', 'source' => 'clinic.phone']),
+            // ── Identitas pasien ─────────────────────────────────────────────
+            $auto('nama_pasien',   'Nama Pasien',  'text', ['kind' => 'db', 'source' => 'patient.name']),
+            $auto('tgl_lahir',     'Tanggal Lahir','date', ['kind' => 'db', 'source' => 'patient.date_of_birth']),
+            $auto('jenis_kelamin', 'L/P',          'text', ['kind' => 'db', 'source' => 'patient.gender']),
+            $auto('no_rm',         'No. RM',       'text', ['kind' => 'db', 'source' => 'patient.no_rm']),
+            $auto('nik',           'NIK',          'text', ['kind' => 'db', 'source' => 'patient.nik']),
+            // ── Identitas operasi (display_only, dari surgery_records BedahView) ─
+            $auto('tgl_operasi',   'Tanggal Operasi', 'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operation_date']),
+            $auto('operator',      'Operator',        'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operator']),
+            $auto('jenis_operasi', 'Jenis Operasi',   'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'procedure']),
+            $auto('mata_operasi',  'Mata',            'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'operative_eye']),
+            $auto('anestesi',      'Jenis Anestesi',  'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'anesthesia_type']),
+            $auto('durasi',        'Durasi Operasi',  'text', ['kind' => 'aggregate', 'source' => 'surgery_identity', 'format' => 'duration']),
+            $auto('dokter_nama',   'Dokter / DPJP',   'text', ['kind' => 'db', 'source' => 'visit.doctorExamination.doctor.name']),
+            $auto('penanggung',    'Penanggung Pembayaran', 'text', ['kind' => 'db', 'source' => 'visit.guarantor_type']),
+
+            // ── Isi resume — AUTO-prefill + EDITABLE ─────────────────────────
+            // Diagnosa = kode+nama ICD-10 (utama + sekunder) dari pemeriksaan dokter.
+            $editable('diagnosa',         'Diagnosa (ICD-10)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
+            // Tindakan/Operasi = kode+nama ICD-9 (tindakan_codes dokter).
+            $editable('tindakan_operasi', 'Tindakan / Operasi (ICD-9)', ['via' => 'aggregate', 'source' => 'doctorExamination.icd9_procedures', 'format' => 'icd_with_desc_join_newline']),
+            // IOL/Implan terpasang = hasil scan UDI di BedahView (kosong bila tanpa implan).
+            $editable('iol_terpasang',    'IOL / Implan Terpasang', ['via' => 'aggregate', 'source' => 'surgery_iol_usage', 'format' => 'implant_lines']),
+            // Pemeriksaan Fisik PENTING (bedah) = TD+KGD triase & Visus+IOP refraksi
+            // dari data TERAKHIR pasien (bukan TTV/RO lengkap spt Resume RJ).
+            $editable('pemeriksaan_fisik','Pemeriksaan Fisik yang Penting', ['via' => 'aggregate', 'source' => 'physical_exam_bedah']),
+            $editable('alergi',           'Alergi Obat',       ['via' => 'aggregate', 'source' => 'allergy']),
+            // Terapi pulang = resep (termasuk resep pasca-bedah) — items_pretty.
+            $editable('terapi_pulang',    'Terapi Pulang (Obat)', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            // Instruksi/Anjuran = kalimat siap-pakai dari rencana tatalaksana.
+            $editable('instruksi',        'Instruksi/Anjuran dan Edukasi Lanjutan', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            $editable('kontrol_tgl',      'Kontrol Tanggal',   ['via' => 'db', 'source' => 'visit.follow_up_date'], 'date'),
+            $editable('kontrol_lokasi',   'Kontrol Di',        ['via' => 'static', 'value' => 'RS Mata Prima Vision'], 'text'),
+            // Kondisi pulang — default editable (operator menyesuaikan bila perlu).
+            $editable('kondisi_pulang',   'Kondisi Pulang',    ['via' => 'static', 'value' => 'Pulang (Sembuh/Membaik) — berobat jalan'], 'text'),
+
+            // ── Tanda tangan dokter/operator (PIN → stempel elektronik + QR) ──
+            ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter/Operator', 'type' => 'signature_canvas',
+             'signer_type' => 'doctor', 'required' => true, 'binding' => ['kind' => 'static']],
+        ];
+
+        $layoutHtml = <<<'HTML'
+<div style="font-family: Arial, sans-serif; color:#111; font-size:12px; padding:18px;">
+  <!-- KOP + IDENTITAS -->
+  <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+    <tr>
+      <td style="vertical-align:top; width:58%;">
+        <table style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:middle; padding-right:10px;">{{klinik_logo}}</td>
+          <td style="vertical-align:middle;">
+            <div style="font-size:16px; font-weight:700; color:#0E3A66; letter-spacing:.5px;">{{klinik_nama}}</div>
+            <div style="font-size:9.5px; color:#444;">{{klinik_alamat}}</div>
+            <div style="font-size:9.5px; color:#444;">Telp: {{klinik_telp}}</div>
+          </td>
+        </tr></table>
+      </td>
+      <td style="vertical-align:top; width:42%;">
+        <div style="text-align:right; font-size:10px; color:#666; margin-bottom:2px;">RM 3.5/LB/22</div>
+        <table style="width:100%; border:1px solid #333; border-collapse:collapse; font-size:10.5px;">
+          <tr><td style="padding:2px 5px; width:74px;">Nama</td><td style="padding:2px 5px;">: {{nama_pasien}}</td></tr>
+          <tr><td style="padding:2px 5px;">Tgl. Lahir</td><td style="padding:2px 5px;">: {{tgl_lahir}} &nbsp; {{jenis_kelamin}}</td></tr>
+          <tr><td style="padding:2px 5px;">No. RM</td><td style="padding:2px 5px;">: {{no_rm}}</td></tr>
+          <tr><td style="padding:2px 5px;">NIK</td><td style="padding:2px 5px;">: {{nik}}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="text-align:center; font-weight:700; font-size:14px; border-top:2px solid #0E3A66; border-bottom:2px solid #0E3A66; padding:4px 0; margin:6px 0 0;">RESUME MEDIS BEDAH</div>
+
+  <!-- META OPERASI -->
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Tanggal Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{tgl_operasi}}</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:22%;">Operator</td>
+      <td style="border:1px solid #333; padding:3px 6px; width:28%;">{{operator}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Jenis Operasi</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{jenis_operasi}} &nbsp; {{mata_operasi}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Anestesi / Durasi</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{anestesi}} &nbsp; {{durasi}}</td>
+    </tr>
+    <tr>
+      <td style="border:1px solid #333; padding:3px 6px;">Dokter / DPJP</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{dokter_nama}}</td>
+      <td style="border:1px solid #333; padding:3px 6px;">Penanggung Pembayaran</td>
+      <td style="border:1px solid #333; padding:3px 6px;">{{penanggung}}</td>
+    </tr>
+  </table>
+
+  <!-- ISI RESUME -->
+  <table style="width:100%; border:1px solid #333; border-top:none; border-collapse:collapse; font-size:11px;">
+    <tr><td style="border:1px solid #333; padding:5px 6px; width:30%; vertical-align:top; font-weight:600;">Diagnosa</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{diagnosa}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Tindakan / Operasi</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{tindakan_operasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">IOL / Implan Terpasang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{iol_terpasang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Pemeriksaan Fisik</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{pemeriksaan_fisik}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Alergi Obat</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{alergi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Terapi Pulang</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{terapi_pulang}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Instruksi/Anjuran dan<br>Edukasi Lanjutan</td><td style="border:1px solid #333; padding:5px 6px; white-space:pre-line; vertical-align:top;">{{instruksi}}<br>Kontrol Tanggal: <strong>{{kontrol_tgl}}</strong> &nbsp; Di: {{kontrol_lokasi}}</td></tr>
+    <tr><td style="border:1px solid #333; padding:5px 6px; vertical-align:top; font-weight:600;">Kondisi Pulang</td><td style="border:1px solid #333; padding:5px 6px; vertical-align:top;">{{kondisi_pulang}}</td></tr>
+  </table>
+
+  <!-- TTD -->
+  <table style="width:100%; margin-top:16px; font-size:11px;"><tr>
+    <td style="width:58%;"></td>
+    <td style="width:42%; text-align:center;">
+      <div>Dokter/Operator yang Bertanggung Jawab,</div>
+      <div style="min-height:84px; display:flex; align-items:center; justify-content:center;">{{ttd_dokter}}</div>
+      <div style="border-top:1px solid #333; padding-top:3px;"><strong>{{dokter_nama}}</strong></div>
+      <div style="font-size:9px; color:#666;">Nama Jelas dan Tandatangan</div>
+    </td>
+  </tr></table>
+</div>
+HTML;
+
+        $this->upsert('RESUME_MEDIS_BEDAH', [
+            'name'                  => 'Resume Medis Bedah',
+            'document_type_id'      => $docType->id,
+            'kind'                  => DocumentTemplate::KIND_HYBRID,
+            'complexity_kind'       => DocumentTemplate::COMPLEXITY_SIMPLE_BINDING,
+            'layout_html'           => $layoutHtml,
+            'field_schema'          => ['layout_mode' => 'single_page', 'fields' => $fields],
+            'station_assignments'   => [
+                ['station' => 'bedah', 'section' => 'laporan_operasi', 'mode' => 'HYBRID'],
             ],
         ]);
     }

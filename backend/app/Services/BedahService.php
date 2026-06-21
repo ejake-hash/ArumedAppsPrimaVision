@@ -690,6 +690,27 @@ class BedahService
                 ]);
             }
 
+            // Resume Medis BEDAH (RM 3.5/LB) — ringkasan pulang pasien bedah. Untuk
+            // pasien yang PULANG langsung dari bedah (RAJAL day-surgery & IGD) buat DRAFT
+            // otomatis → masuk antrean TTD dokter (menggantikan RM 1.7 yang sengaja TIDAK
+            // dibuat utk pasien bedah, lihat DokterService::finalize). HANYA pasien RANAP
+            // yang dikecualikan: mereka pakai Resume Medis Rawat Inap (RESUME_MEDIS_RANAP)
+            // via alur RawatInap. Idempoten + non-blocking (pola sama di atas).
+            if ($visitId) {
+                try {
+                    $visitForResume = Visit::find($visitId);
+                    if ($visitForResume && ($visitForResume->jenis_pelayanan ?? 'RAJAL') !== 'RANAP') {
+                        app(\App\Services\FormRegistry\FormRegistryService::class)
+                            ->ensureDraftForVisit($visitId, 'RESUME_MEDIS_BEDAH');
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Finalize bedah: gagal buat draft Resume Medis Bedah — finalisasi tetap dikunci.', [
+                        'visit_id' => $visitId,
+                        'error'    => $e->getMessage(),
+                    ]);
+                }
+            }
+
             $this->log(auth('api')->id(), 'FINALIZE_RECORD', SurgeryRecord::class, $record->id, 'Selesai operasi — pasien diteruskan (laporan belum dikunci; kunci via TTD dokumen)');
 
             return $record->fresh(['surgerySchedule', 'iolUsages.iolItem']);

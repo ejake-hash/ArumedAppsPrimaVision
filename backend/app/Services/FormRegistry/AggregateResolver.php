@@ -67,6 +67,7 @@ final class AggregateResolver
             'ranap_identity'                      => $this->resolveRanapIdentity($visit, $format),
             'planning_instruction'                => $this->resolvePlanningInstruction($visit),
             'physical_exam'                       => $this->resolvePhysicalExam($visit),
+            'physical_exam_bedah'                 => $this->resolvePhysicalExamBedah($visit),
             'allergy'                             => $this->resolveAllergy($visit),
             default                               => null,
         };
@@ -322,6 +323,70 @@ final class AggregateResolver
         }
 
         return $parts ? implode("\n", $parts) : null;
+    }
+
+    /**
+     * Pemeriksaan Fisik versi RESUME MEDIS BEDAH — RINGKAS & terfokus (beda dgn
+     * resolvePhysicalExam yang lengkap). Hanya field penting pra-bedah:
+     *   - Triase: TD + KGD          (skrining anestesi/komorbid)
+     *   - Refraksi: Visus + IOP/TIO (status mata sebelum operasi)
+     * Diambil dari DATA PALING TERAKHIR pasien (lintas-kunjungan), bukan hanya visit
+     * ini — pasien bedah sering tak punya triase/refraksi baru di kunjungan operasi,
+     * jadi nilai terakhir yang relevan (mis. dari poli pra-op) yang dipakai.
+     */
+    private function resolvePhysicalExamBedah(Visit $visit): string
+    {
+        // Placeholder migrasi ("-"/"–"/"/"/"0") → null agar tak tampil sebagai isi semu.
+        $real = function ($x) {
+            $s = trim((string) ($x ?? ''));
+            return ($s === '' || in_array($s, ['-', '–', '—', '/', '0'], true)) ? null : $s;
+        };
+        $pid   = $visit->patient_id;
+        $parts = [];
+
+        // ── TD + KGD dari triase TERAKHIR pasien ────────────────────────────
+        $na = $pid
+            ? \App\Models\NurseAssessment::query()
+                ->whereHas('visit', fn ($q) => $q->where('patient_id', $pid))
+                ->latest('created_at')->first()
+            : $visit->nurseAssessment;
+        $vit = [];
+        if ($na) {
+            if ($na->td_sistol && $na->td_diastol) {
+                $vit[] = "TD {$na->td_sistol}/{$na->td_diastol} mmHg";
+            }
+            if ($real($na->kgd)) {
+                $vit[] = 'KGD ' . rtrim(rtrim((string) $na->kgd, '0'), '.') . ' mg/dL';
+            }
+        }
+        if ($vit) {
+            $parts[] = implode(', ', $vit);
+        }
+
+        // ── Visus + IOP/TIO dari refraksi TERAKHIR pasien ───────────────────
+        $rec = $pid
+            ? \App\Models\RefractionRecord::query()
+                ->whereHas('visit', fn ($q) => $q->where('patient_id', $pid))
+                ->latest('created_at')->first()
+            : $visit->refractionRecord;
+        if ($rec) {
+            // Visus = visus akhir (BCVA); fallback visus awal (UCVA) bila BCVA kosong.
+            $vod = $real($rec->visus_akhir_od) ?? $real($rec->visus_awal_od);
+            $vos = $real($rec->visus_akhir_os) ?? $real($rec->visus_awal_os);
+            if ($vod || $vos) {
+                $parts[] = 'Visus OD ' . ($vod ?? '–') . ' / OS ' . ($vos ?? '–');
+            }
+            $iod = $real($rec->iop_od);
+            $ios = $real($rec->iop_os);
+            if ($iod || $ios) {
+                // Cast decimal:2 → "15.00"; rapikan jadi "15" (buang nol di belakang).
+                $trim = fn ($s) => $s === null ? '–' : rtrim(rtrim((string) $s, '0'), '.');
+                $parts[] = 'TIO OD ' . $trim($iod) . ' / OS ' . $trim($ios) . ' mmHg'
+                    . ($rec->iop_method ? " ({$rec->iop_method})" : '');
+            }
+        }
+
+        return $parts ? implode("\n", $parts) : '';
     }
 
     /** Baris TTV dari asesmen triase — hanya field yang terisi. */
@@ -974,6 +1039,8 @@ final class AggregateResolver
             'time_in'          => $timeStr($rec->time_in),
             'time_out'         => $timeStr($rec->time_out),
             'duration'         => $this->formatDuration($rec->time_in, $rec->time_out),
+            // Tanggal operasi (untuk kop Resume Medis Bedah) — dari time_in operasi.
+            'operation_date'   => $rec->time_in ? $this->idDate($rec->time_in) : '',
             // Mata operasi (RM 8.10/9.0/8.8) — operative_eye dikonfirmasi di BedahView.
             'operative_eye'    => trim((string) ($r['operative_eye'] ?? '')),
             // Detail injeksi anti-VEGF (RM 8.8) dari operation_report.injection_detail.
