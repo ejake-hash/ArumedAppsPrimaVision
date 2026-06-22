@@ -91,11 +91,15 @@ class BedahService
                   ->orWhere(fn ($a) => $a
                       ->whereIn('status', [Queue::STATUS_IN_PROGRESS, Queue::STATUS_CALLED])
                       ->where('created_at', '>=', today()->subDays(7)))   // batasi ≤7 hari agar operasi terbengkalai lama tak menumpuk
-                  // +Pasien "belum tutup kasir": baris ≤7 hari (status apa pun, incl COMPLETED)
-                  // yang visit-nya belum SELESAI & billing belum dikunci → bisa tambah/ubah
+                  // +Pasien "belum tutup kasir" (status apa pun, incl COMPLETED) yang
+                  // visit-nya belum SELESAI & billing belum dikunci → bisa tambah/ubah
                   // paket bedah & obat pasca-bedah selama belum bayar (tab "Masih Aktif").
+                  // TANPA batas umur: selaras KasirService (boardVisibleOpenBilling null) —
+                  // kunjungan yang belum tutup tagihan kasir tak boleh lenyap dari papan
+                  // hanya karena lewat 7 hari (mis. klaim BPJS tertunda). Bound-nya adalah
+                  // status billing (PAID/PARTIALLY_PAID/CANCELLED) + current_station=SELESAI,
+                  // bukan tanggal.
                   ->orWhere(fn ($b) => $b
-                      ->where('created_at', '>=', today()->subDays(7))
                       ->whereHas('visit', fn ($v) => $v
                           ->where('current_station', '!=', 'SELESAI')
                           ->where(fn ($iv) => $iv

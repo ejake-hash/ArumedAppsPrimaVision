@@ -588,6 +588,9 @@ function resetFormState() {
   tindakanList.value = []
   tindakanSearch.value = ''
   showTarifList.value = false
+  bhpUsageList.value = []
+  bhpTarif.value = []
+  bhpSearch.value = ''
   rxList.value = []
   rxTambahan.value = []
   obatSearch.value = ''
@@ -727,12 +730,14 @@ onMounted(async () => {
   loadIcdFavorites()
   // Tutup dropdown pencarian tindakan saat klik di luar
   document.addEventListener('mousedown', _handleTindakanClickOutside)
+  document.addEventListener('mousedown', _handleBhpClickOutside)
 })
 
 onUnmounted(() => {
   store.stopPolling()
   store.clearSelected()
   document.removeEventListener('mousedown', _handleTindakanClickOutside)
+  document.removeEventListener('mousedown', _handleBhpClickOutside)
 })
 
 // ── TAB 2: PEMERIKSAAN MATA ──────────────────────────────────────────────────
@@ -1326,6 +1331,111 @@ function removeTindakan(id) {
 function incTindakan(t) { t.qty++; scheduleSaveTindakan() }
 function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 
+// ── TAB 3: BHP (bahan habis pakai) yang dipakai dokter ───────────────────────
+// Mis. spuit/kasa untuk injeksi/prosedur kecil. Diambil dari master BHP Farmasi
+// (harga per-penjamin + stok unit Farmasi). Saat ditambah, backend MEMOTONG stok
+// FARMASI seketika & menagihkannya (visit_bhp_usages → buildBhpLines). Tidak di-
+// replace seperti tindakan: add/ubah-qty/hapus per-baris (stok disesuaikan tiap aksi).
+const bhpUsageList   = ref([])     // {id, bhp_item_id, name, code, category, quantity, unit_price}
+const bhpTarif       = ref([])     // hasil cari master BHP {id, code, name, category, price, stock}
+const bhpSearch      = ref('')
+const bhpSearchFocus = ref(false)
+const bhpSearchRef   = ref(null)
+const bhpBusyIds     = ref([])     // guard aksi ganda per baris/bhp_item
+let _bhpSearchTimer = null
+function _handleBhpClickOutside(e) {
+  if (!bhpSearchFocus.value) return
+  const el = bhpSearchRef.value
+  if (el && !el.contains(e.target)) bhpSearchFocus.value = false
+}
+
+async function loadBhpUsages(visitId) {
+  if (!visitId) { bhpUsageList.value = []; return }
+  try {
+    const { data } = await dokterApi.indexBhp(visitId)
+    bhpUsageList.value = (data.data ?? []).map((u) => ({
+      id: u.id, bhp_item_id: u.bhp_item_id,
+      name: u.bhp_item?.name ?? 'BHP', code: u.bhp_item?.code ?? '',
+      category: u.bhp_item?.category ?? '',
+      quantity: u.quantity, unit_price: Number(u.unit_price) || 0,
+    }))
+  } catch { bhpUsageList.value = [] }
+}
+
+// Pencarian master BHP (server-side, debounce) — harga per-penjamin + stok Farmasi.
+watch(bhpSearch, () => {
+  clearTimeout(_bhpSearchTimer)
+  _bhpSearchTimer = setTimeout(runBhpSearch, 300)
+})
+async function runBhpSearch() {
+  const visitId = selP.value?.visitId
+  const q = bhpSearch.value.trim()
+  if (!visitId || !q) { bhpTarif.value = []; return }
+  try {
+    const { data } = await dokterApi.tarifBhp(visitId, q)
+    bhpTarif.value = data.data ?? []
+  } catch { bhpTarif.value = [] }
+}
+
+const bhpSubtotal = computed(() =>
+  bhpUsageList.value.reduce((sum, b) => sum + (Number(b.unit_price) || 0) * b.quantity, 0)
+)
+const bhpIdSet = computed(() => new Set(bhpUsageList.value.map((b) => b.bhp_item_id)))
+
+async function addBhp(t) {
+  const visitId = selP.value?.visitId
+  if (!visitId || bhpBusyIds.value.includes(t.id)) return
+  if (Number(t.stock) <= 0) { toast('w', `Stok BHP "${t.name}" kosong di unit Farmasi`); return }
+  bhpBusyIds.value.push(t.id)
+  try {
+    const { data } = await dokterApi.storeBhp(visitId, { bhp_item_id: t.id, quantity: 1 })
+    const u = data.data
+    bhpUsageList.value.push({
+      id: u.id, bhp_item_id: u.bhp_item_id, name: t.name, code: t.code,
+      category: t.category, quantity: u.quantity, unit_price: Number(u.unit_price) || 0,
+    })
+    bhpSearch.value = ''
+    bhpTarif.value = []
+    toast('s', `${t.name} ditambahkan — stok Farmasi dipotong`)
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menambah BHP (stok kurang?)')
+  } finally {
+    bhpBusyIds.value = bhpBusyIds.value.filter((id) => id !== t.id)
+  }
+}
+
+async function setBhpQty(b, qty) {
+  const next = Math.max(1, Number(qty) || 1)
+  if (next === b.quantity || bhpBusyIds.value.includes(b.id)) return
+  bhpBusyIds.value.push(b.id)
+  const prev = b.quantity
+  b.quantity = next   // optimistik
+  try {
+    await dokterApi.updateBhp(b.id, next)
+  } catch (e) {
+    b.quantity = prev   // rollback
+    toast('e', e.response?.data?.message ?? 'Gagal mengubah jumlah BHP (stok kurang?)')
+  } finally {
+    bhpBusyIds.value = bhpBusyIds.value.filter((id) => id !== b.id)
+  }
+}
+function incBhp(b) { setBhpQty(b, b.quantity + 1) }
+function decBhp(b) { if (b.quantity > 1) setBhpQty(b, b.quantity - 1) }
+
+async function removeBhp(b) {
+  if (bhpBusyIds.value.includes(b.id)) return
+  bhpBusyIds.value.push(b.id)
+  try {
+    await dokterApi.deleteBhp(b.id)
+    bhpUsageList.value = bhpUsageList.value.filter((x) => x.id !== b.id)
+    toast('s', 'BHP dihapus — stok dikembalikan')
+  } catch (e) {
+    toast('e', e.response?.data?.message ?? 'Gagal menghapus BHP')
+  } finally {
+    bhpBusyIds.value = bhpBusyIds.value.filter((id) => id !== b.id)
+  }
+}
+
 // ── TAB 3: E-RESEP ──────────────────────────────────────────────────────────
 
 const rxList = ref([])
@@ -1537,7 +1647,7 @@ async function loadTindakanResep() {
 // Ditaruh di sini (bukan di atas dekat watch penunjang) agar `tindakanList` &
 // `rxList` sudah ter-inisialisasi saat `immediate: true` dieksekusi.
 watch(() => selP.value?.visitId, (vid) => {
-  loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus()
+  loadTarifTindakan(vid); loadTindakanResep(); loadBillingStatus(); loadBhpUsages(vid)
   // Refresh daftar obat per pasien → badge stok Farmasi (hard-block stok 0) tak
   // basi dari sesi sebelumnya (obat habis/restock di tengah hari ikut terbaca).
   if (vid) loadObat(1)
@@ -3516,6 +3626,87 @@ function closeResumeRM() {
                   </div>
                 </div>
                 <div v-else class="dx-empty" style="margin-top:0.5rem">Pilih tindakan dari daftar di atas</div>
+              </div>
+            </div>
+
+            <!-- BHP (bahan habis pakai) yang dipakai dokter — diambil dari stok Farmasi,
+                 ditagih & stok unit Farmasi dipotong saat ditambahkan. -->
+            <div class="card">
+              <div class="ch">
+                <div class="cht">
+                  <svg viewBox="0 0 24 24"><path d="M20.42 4.58a5.4 5.4 0 00-7.65 0l-.77.78-.77-.78a5.4 5.4 0 00-7.65 7.65l8.42 8.42 8.42-8.42a5.4 5.4 0 000-7.65z"/></svg>
+                  BHP / Bahan Habis Pakai
+                </div>
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <span :class="['tarif-type-badge', selP?.ptype === 'bpjs' ? 'bpjs' : 'umum']">
+                    Tarif {{ selP?.ptype === 'bpjs' ? 'BPJS' : selP?.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
+                  </span>
+                  <span class="card-counter">{{ bhpUsageList.length }} item</span>
+                </div>
+              </div>
+              <div class="cb">
+                <div class="tindakan-search-wrap" ref="bhpSearchRef">
+                  <div class="tindakan-search-field">
+                    <svg class="tindakan-search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input
+                      v-model="bhpSearch"
+                      class="form-input tindakan-search-input"
+                      placeholder="Cari BHP dari Farmasi (mis. spuit, kasa)…"
+                      @focus="bhpSearchFocus = true"
+                    />
+                    <button v-if="bhpSearch" class="tindakan-search-clear" @click="bhpSearch = ''" title="Hapus pencarian">
+                      <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <span v-if="bhpUsageList.length" class="tarif-sel-count">{{ bhpUsageList.length }} dipakai</span>
+                  </div>
+                  <div v-if="bhpSearchFocus && bhpSearch.trim()" class="tindakan-search-drop">
+                    <div
+                      v-for="t in bhpTarif" :key="t.id"
+                      :class="['tarif-list-item', bhpIdSet.has(t.id) ? 'in-list' : '', Number(t.stock) <= 0 ? 'out-stock' : '']"
+                      @mousedown.prevent="addBhp(t)"
+                    >
+                      <span class="tarif-kode">{{ t.code }}</span>
+                      <span v-if="t.category" class="tarif-kat td">{{ t.category }}</span>
+                      <span class="tarif-list-name">{{ t.name }}</span>
+                      <span :class="['bhp-stok-badge', Number(t.stock) <= 0 ? 'habis' : Number(t.stock) <= 3 ? 'low' : '']">stok {{ Number(t.stock ?? 0) }}</span>
+                      <span class="tarif-list-price">{{ fmtRp(t.price) }}</span>
+                      <svg v-if="bhpIdSet.has(t.id)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                      <svg v-else class="tarif-list-icon add" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    </div>
+                    <div v-if="!bhpTarif.length" class="tarif-empty">Tidak ditemukan di stok Farmasi</div>
+                  </div>
+                </div>
+
+                <div v-if="bhpUsageList.length" class="tindakan-table">
+                  <div class="tindakan-thead">
+                    <div>BHP</div>
+                    <div>Tarif</div>
+                    <div>Qty</div>
+                    <div>Subtotal</div>
+                    <div></div>
+                  </div>
+                  <div v-for="b in bhpUsageList" :key="b.id" class="tindakan-row">
+                    <div class="tindakan-info">
+                      <span class="tarif-kode">{{ b.code }}</span>
+                      <span class="tindakan-nama">{{ b.name }}</span>
+                    </div>
+                    <div class="tindakan-rate">{{ fmtRp(b.unit_price) }}</div>
+                    <div class="tindakan-qty">
+                      <button class="qty-btn" @click="decBhp(b)">−</button>
+                      <span class="qty-val">{{ b.quantity }}</span>
+                      <button class="qty-btn" @click="incBhp(b)">+</button>
+                    </div>
+                    <div class="tindakan-subtotal">{{ fmtRp(b.unit_price * b.quantity) }}</div>
+                    <button class="dx-remove" @click="removeBhp(b)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </div>
+                  <div class="tindakan-total">
+                    <span>Total BHP</span>
+                    <span class="tindakan-total-val">{{ fmtRp(bhpSubtotal) }}</span>
+                  </div>
+                </div>
+                <div v-else class="dx-empty" style="margin-top:0.5rem">Tambah BHP bila pelayanan memakai bahan habis pakai (stok Farmasi langsung terpotong).</div>
               </div>
             </div>
 
@@ -5545,6 +5736,10 @@ function closeResumeRM() {
 .tarif-list-name { flex: 1; font-size: 12px; font-weight: 500; color: var(--td); min-width: 0; }
 .tarif-list-price { font-size: 11.5px; font-weight: 600; color: var(--td); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tarif-list-price em { font-style: normal; font-size: 9.5px; color: var(--tu); font-weight: 400; margin-left: 2px; }
+.bhp-stok-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; white-space: nowrap; background: var(--gl, #e8f5ee); color: var(--ga, #1f7d4a); }
+.bhp-stok-badge.low { background: #fef3c7; color: #92400e; }
+.bhp-stok-badge.habis { background: #fee2e2; color: #b91c1c; }
+.tarif-list-item.out-stock { opacity: 0.6; }
 .tarif-list-icon { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke-width: 2; stroke-linecap: round; }
 .tarif-list-icon.add { stroke: var(--ga); }
 .tarif-list-icon.check { stroke: var(--st); stroke-width: 2.5; }

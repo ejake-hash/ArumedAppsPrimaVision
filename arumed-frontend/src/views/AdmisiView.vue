@@ -1000,7 +1000,10 @@ function selectPatient(pt) {
   wizWilayahTouched.value = false
   selectedActiveVisit.value = pt.active_visit ?? null
   if (selectedActiveVisit.value) {
-    toast('w', `${pt.name} masih punya kunjungan aktif — selesaikan/batalkan dulu`)
+    const av  = selectedActiveVisit.value
+    const stn = av.current_station ? ` (di stasiun ${av.current_station})` : ''
+    const reg = av.no_registrasi ? ` No. ${av.no_registrasi}` : ''
+    toast('w', `${pt.name} masih punya kunjungan aktif${reg}${stn} — selesaikan/batalkan dulu sebelum mendaftar baru`)
   } else {
     toast('s', `Data pasien ${pt.name} ditemukan`)
   }
@@ -1121,7 +1124,12 @@ async function openProfile(pt) {
   identityDocs.value = []
   revokeIdentityUrls()
   try {
-    profilePatient.value = await admisiStore.fetchPasienDetail(pt.id)
+    // Detail dari server TIDAK menyertakan info kunjungan aktif → pertahankan
+    // active_visit dari hasil pencarian (pt) agar peringatan & notif "kunjungan
+    // aktif" tetap muncul saat Daftarkan dari modal Profil (bukan hanya dari
+    // pencarian inline wizard). Tanpa ini, selectPatient kehilangan active_visit.
+    const detail = await admisiStore.fetchPasienDetail(pt.id)
+    profilePatient.value = { ...detail, active_visit: detail.active_visit ?? pt.active_visit ?? null }
     loadRiwayat(1)   // muat riwayat (juga untuk angka badge tab)
     loadIdentityDocs(pt.id)   // muat dokumen identitas (KTP)
   } catch (e) {
@@ -2166,6 +2174,14 @@ function closeWizard() {
   pendingWalkIn.value = null
   resetPreopState()
   resetConsentState()
+}
+
+// Pasien punya kunjungan aktif → registrasi diblok. Tutup wizard & lompat ke daftar
+// "Belum Selesai" supaya petugas menyelesaikan/membatalkan kunjungan itu dulu.
+function lihatKunjunganAktif() {
+  closeWizard()
+  setCareType('AKTIF')
+  toast('i', 'Menampilkan kunjungan yang belum selesai — selesaikan / batalkan dulu')
 }
 
 function nextStep() {
@@ -3362,7 +3378,8 @@ onUnmounted(() => {
                       Stasiun <b>{{ selectedActiveVisit.current_station }}</b>
                       <span v-if="selectedActiveVisit.visit_date"> · tgl {{ formatAvDate(selectedActiveVisit.visit_date) }}</span>
                     </div>
-                    <div class="avb-note">Registrasi baru akan ditolak. Selesaikan alur kunjungan itu atau batalkan dulu di Daftar Kunjungan.</div>
+                    <div class="avb-note">Registrasi baru diblokir. Selesaikan alur kunjungan itu atau batalkan dulu di Daftar Kunjungan.</div>
+                    <button type="button" class="avb-action" @click="lihatKunjunganAktif">Lihat Kunjungan Aktif →</button>
                   </div>
                 </div>
 
@@ -5433,6 +5450,8 @@ onUnmounted(() => {
 .active-visit-banner .avb-meta { font-size: 12px; color: #000; }
 .active-visit-banner .avb-meta b { color: #991b1b; }
 .active-visit-banner .avb-note { font-size: 11.5px; color: #7f1d1d; }
+.active-visit-banner .avb-action { align-self: flex-start; margin-top: 6px; padding: 5px 12px; font-size: 11.5px; font-weight: 600; color: #fff; background: #dc2626; border: none; border-radius: 7px; cursor: pointer; }
+.active-visit-banner .avb-action:hover { background: #b91c1c; }
 /* badge kecil di dropdown hasil cari */
 .combo-av-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600; color: #b91c1c; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 999px; padding: 1px 7px; vertical-align: middle; }
 

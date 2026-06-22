@@ -234,6 +234,12 @@ class Visit extends Model
         return $this->hasMany(VisitService::class);
     }
 
+    /** BHP yang diinput dokter pada kunjungan (sumber tagihan BHP non-bedah). */
+    public function bhpUsages(): HasMany
+    {
+        return $this->hasMany(VisitBhpUsage::class);
+    }
+
     public function medicalResume(): HasOne
     {
         return $this->hasOne(MedicalResume::class);

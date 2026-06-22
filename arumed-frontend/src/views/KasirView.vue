@@ -496,9 +496,9 @@ async function addTindakanFromTarif(t) {
   }
 }
 
-// ── Tambah OBAT dari Kasir (Opsi A): wajib lewat resep TAMBAHAN agar masuk Dispensing
-// Farmasi (stok terpotong + etiket) → butuh Jumlah + Aturan pakai. Obat keras ditolak
-// backend (arahkan ke dokter/Farmasi). Klik hasil OBAT → buka form ini dulu, baru POST.
+// ── Tambah OBAT dari Kasir: obat diserahkan LANGSUNG di loket → stok unit Farmasi
+// dipotong seketika (resep TAMBAHAN status DISPENSED utk riwayat/etiket). Butuh Jumlah +
+// Aturan pakai. Obat keras / stok kurang ditolak backend (422). Klik hasil OBAT → form ini.
 const obatAddTarget = ref(null)   // baris tarif obat yang dipilih
 const obatAddForm   = ref({ quantity: 1, dosage: '', instructions: '' })
 const obatAddSaving = ref(false)
@@ -525,14 +525,51 @@ async function confirmAddObat() {
       instructions: obatAddForm.value.instructions || null,
     })
     await refreshInvoice()
-    toast('s', `${t.name} ditambahkan — obat akan disiapkan & diserahkan di Farmasi`)
+    toast('s', `${t.name} ×${qty} ditambahkan — stok Farmasi dipotong`)
     obatAddTarget.value = null
     tindakanSearch.value = ''
   } catch (err) {
-    // 422 obat keras / tanpa golongan → pesan jelas dari backend (fallback dokter/Farmasi).
+    // 422 obat keras / tanpa golongan / stok kurang → pesan jelas dari backend.
     toast('w', err.response?.data?.message ?? 'Gagal menambahkan obat')
   } finally {
     obatAddSaving.value = false
+  }
+}
+
+// ── Tambah BHP dari Kasir: BHP dianggap sudah dipakai di pelayanan → stok unit Farmasi
+// dipotong seketika. Butuh Jumlah (stok kurang ditolak backend 422). Klik hasil BHP → form ini.
+const bhpAddTarget = ref(null)
+const bhpAddQty    = ref(1)
+const bhpAddSaving = ref(false)
+function pickBhpToAdd(t) {
+  bhpAddTarget.value = t
+  bhpAddQty.value = 1
+  tindakanSearchFocus.value = false
+}
+async function confirmAddBhp() {
+  const t = bhpAddTarget.value
+  if (!t || !selInv.value?.id || bhpAddSaving.value) return
+  const qty = Number(bhpAddQty.value)
+  if (!Number.isFinite(qty) || qty < 1) { toast('w', 'Jumlah minimal 1'); return }
+  bhpAddSaving.value = true
+  try {
+    await kasirApi.storeItem(selInv.value.id, {
+      item_type:    'BHP',
+      category:     t.category || 'BHP',
+      description:  t.name,
+      quantity:     qty,
+      unit_price:   Number(t.price) || 0,
+      reference_id: t.id,
+    })
+    await refreshInvoice()
+    toast('s', `${t.name} ×${qty} ditambahkan — stok Farmasi dipotong`)
+    bhpAddTarget.value = null
+    tindakanSearch.value = ''
+  } catch (err) {
+    // 422 stok kurang → pesan jelas dari backend (minta transfer gudang dulu).
+    toast('w', err.response?.data?.message ?? 'Gagal menambahkan BHP')
+  } finally {
+    bhpAddSaving.value = false
   }
 }
 
@@ -1546,12 +1583,12 @@ const groupedPrintItems = computed(() =>
                     </div>
                   </div>
 
-                  <!-- Tambah OBAT (Opsi A): Jumlah + Aturan pakai → resep TAMBAHAN ke Farmasi. -->
+                  <!-- Tambah OBAT: Jumlah + Aturan pakai → diserahkan langsung di kasir, stok dipotong. -->
                   <div v-if="obatAddTarget" class="cancel-overlay" @click.self="obatAddTarget = null">
                     <div class="cancel-box obat-add-box">
                       <div class="cancel-title">Tambah Obat: {{ obatAddTarget.name }}</div>
                       <div class="obat-add-note">
-                        Obat akan dibuat sebagai <b>resep tambahan</b> dan disiapkan di <b>Farmasi</b> (stok terpotong, etiket dicetak). Pasien diarahkan ke apotek setelah membayar. Hanya obat bebas — obat keras ditolak (lewat dokter/Farmasi).
+                        Obat diserahkan <b>langsung di loket Kasir</b> — <b>stok unit Farmasi dipotong seketika</b> (tercatat di Riwayat Pemberian, etiket bisa dicetak). Hanya obat bebas — obat keras ditolak (lewat dokter/Farmasi). Stok kurang akan ditolak.
                       </div>
                       <div class="obat-add-grid">
                         <label class="obat-add-field obat-add-narrow">
@@ -1572,6 +1609,33 @@ const groupedPrintItems = computed(() =>
                         <button class="btn btn-sm btn-primary" :disabled="obatAddSaving" @click="confirmAddObat">
                           <span v-if="obatAddSaving" class="sp"></span>
                           {{ obatAddSaving ? 'Menambahkan…' : 'Tambahkan Obat' }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Tambah BHP: Jumlah → stok unit Farmasi dipotong seketika (BHP dipakai di pelayanan). -->
+                  <div v-if="bhpAddTarget" class="cancel-overlay" @click.self="bhpAddTarget = null">
+                    <div class="cancel-box obat-add-box">
+                      <div class="cancel-title">Tambah BHP: {{ bhpAddTarget.name }}</div>
+                      <div class="obat-add-note">
+                        BHP dianggap <b>sudah dipakai di pelayanan</b> — <b>stok unit Farmasi dipotong seketika</b> sejumlah yang diinput. Bila baris dihapus, stok dikembalikan. Stok kurang akan ditolak (minta transfer gudang dulu).
+                      </div>
+                      <div class="obat-add-grid">
+                        <label class="obat-add-field obat-add-narrow">
+                          <span>Jumlah</span>
+                          <input v-model.number="bhpAddQty" type="number" min="1" class="fi" />
+                        </label>
+                        <div class="obat-add-field">
+                          <span>Harga satuan</span>
+                          <input :value="fmtRp(bhpAddTarget.price)" class="fi" disabled />
+                        </div>
+                      </div>
+                      <div class="cancel-actions">
+                        <button class="btn btn-sm btn-secondary" :disabled="bhpAddSaving" @click="bhpAddTarget = null">Batal</button>
+                        <button class="btn btn-sm btn-primary" :disabled="bhpAddSaving" @click="confirmAddBhp">
+                          <span v-if="bhpAddSaving" class="sp"></span>
+                          {{ bhpAddSaving ? 'Menambahkan…' : 'Tambahkan BHP' }}
                         </button>
                       </div>
                     </div>
@@ -1605,12 +1669,17 @@ const groupedPrintItems = computed(() =>
                         <div
                           v-for="t in tarifResults" :key="rowKey(t)"
                           :class="['tarif-list-item', tarifInInvoice(t) ? 'in-list' : '', addingTindakanIds.includes(rowKey(t)) ? 'is-adding' : '']"
-                          @mousedown.prevent="t.item_type === 'OBAT' ? pickObatToAdd(t) : addTindakanFromTarif(t)"
+                          @mousedown.prevent="t.item_type === 'OBAT' ? pickObatToAdd(t) : t.item_type === 'BHP' ? pickBhpToAdd(t) : addTindakanFromTarif(t)"
                         >
                           <span :class="['tarif-type-badge', `tt-${(t.item_type || 'lainnya').toLowerCase()}`]">{{ t.item_type }}</span>
                           <span v-if="t.code" class="tarif-kode">{{ t.code }}</span>
                           <span v-if="t.category" class="tarif-kat td">{{ t.category }}</span>
                           <span class="tarif-list-name">{{ t.name }}</span>
+                          <span
+                            v-if="t.item_type === 'OBAT' || t.item_type === 'BHP'"
+                            :class="['tarif-stok', Number(t.stock) <= 0 ? 'habis' : Number(t.stock) <= 3 ? 'low' : '']"
+                            :title="`Stok unit Farmasi: ${Number(t.stock ?? 0)}`"
+                          >stok {{ Number(t.stock ?? 0) }}</span>
                           <span class="tarif-list-price">{{ fmtRp(t.price) }}</span>
                           <svg v-if="tarifInInvoice(t)" class="tarif-list-icon check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
                           <svg v-else class="tarif-list-icon add" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -2537,6 +2606,9 @@ const groupedPrintItems = computed(() =>
 .tarif-kode { font-size: 9.5px; font-weight: 700; color: var(--ga); letter-spacing: 0.03em; white-space: nowrap; }
 .tarif-kat { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.03em; white-space: nowrap; }
 .tarif-kat.td { background: var(--gl); color: var(--td); border: 1px solid rgba(31,125,74,0.2); }
+.tarif-stok { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; white-space: nowrap; background: var(--gl); color: var(--ga); border: 1px solid rgba(31,125,74,0.2); }
+.tarif-stok.low { background: var(--wb); color: var(--wt); border-color: rgba(180,120,10,0.25); }
+.tarif-stok.habis { background: var(--eb); color: var(--et); border-color: rgba(200,50,50,0.25); }
 .tarif-empty { text-align: center; padding: 1rem; font-size: 11px; color: var(--th); }
 
 /* Filter kategori buku tarif (chips) */

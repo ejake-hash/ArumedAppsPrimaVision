@@ -343,6 +343,70 @@ class DokterController extends Controller
         return $this->ok(null, 'Tindakan dihapus');
     }
 
+    /** GET /dokter/tarif-bhp?visit_id=&search= — master BHP ber-harga + stok unit Farmasi. */
+    public function tarifBhp(Request $request): JsonResponse
+    {
+        $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+            'search'   => 'nullable|string|max:100',
+        ]);
+
+        return $this->ok($this->service->getTarifBhp($request->query('visit_id'), $request->query('search')));
+    }
+
+    /** GET /dokter/kunjungan/{visitId}/bhp — daftar BHP yang diinput dokter. */
+    public function indexBhpUsage(string $visitId): JsonResponse
+    {
+        return $this->ok($this->service->getVisitBhpUsages($visitId));
+    }
+
+    /**
+     * POST /dokter/kunjungan/{visitId}/bhp — tambah pemakaian BHP (potong stok FARMASI).
+     * Body: { bhp_item_id, quantity, notes? }
+     */
+    public function storeBhpUsage(Request $request, string $visitId): JsonResponse
+    {
+        $validated = $request->validate([
+            'bhp_item_id' => 'required|uuid|exists:bhp_items,id',
+            'quantity'    => 'nullable|integer|min:1',
+            'notes'       => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $usage = $this->service->storeVisitBhpUsage($visitId, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($usage, 'BHP ditambahkan', 201);
+    }
+
+    /** PUT /dokter/bhp/{id} — ubah qty pemakaian BHP (sesuaikan stok). Body: { quantity } */
+    public function updateBhpUsage(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(['quantity' => 'required|integer|min:1']);
+
+        try {
+            $usage = $this->service->updateVisitBhpUsage($id, (int) $validated['quantity']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($usage, 'BHP diperbarui');
+    }
+
+    /** DELETE /dokter/bhp/{id} — hapus pemakaian BHP (kembalikan stok). */
+    public function deleteBhpUsage(string $id): JsonResponse
+    {
+        try {
+            $this->service->deleteVisitBhpUsage($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'BHP dihapus');
+    }
+
     /**
      * POST /dokter/kunjungan/{visitId}/apply-package
      * Terapkan paket PEMERIKSAAN: merge tindakan paket ke visitServices + snapshot diskon.

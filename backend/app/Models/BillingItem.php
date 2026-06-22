@@ -34,6 +34,12 @@ class BillingItem extends Model
         // true = dikeluarkan kasir → ditagih ekstra di atas harga paket. Sumber kebenaran
         // keputusan serap per-baris (gantikan flag opt-in di tabel sumber).
         'paket_excluded',
+        // Penanda baris input KASIR (Edit Tagihan) — dipertahankan apa adanya saat
+        // tagihan dibangun ulang (tak punya sumber resmi → builder tak meregenerasi).
+        'is_kasir_manual',
+        // Rincian batch stok FARMASI yang dipotong saat input (BHP) → pengembalian
+        // stok presisi saat baris dihapus. Bentuk: [{batch_no,expiry_date,qty}].
+        'consumed_batches',
         'notes',
     ];
 
@@ -46,6 +52,8 @@ class BillingItem extends Model
         'is_absorbable'    => 'boolean',
         'is_absorbed'      => 'boolean',
         'paket_excluded'   => 'boolean',
+        'is_kasir_manual'  => 'boolean',
+        'consumed_batches' => 'array',
     ];
 
     public function billingInvoice(): BelongsTo

@@ -222,6 +222,13 @@ export const dokterApi = {
   storeTindakan:    (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/tindakan`, data),
   deleteTindakan:   (id)                  => api.delete(`/dokter/tindakan/${id}`),
 
+  // BHP yang dipakai dokter (spuit/kasa dll) — ditagih + stok unit Farmasi dipotong.
+  tarifBhp:         (visitId, search)     => api.get('/dokter/tarif-bhp', { params: { visit_id: visitId, search } }),
+  indexBhp:         (visitId)             => api.get(`/dokter/kunjungan/${visitId}/bhp`),
+  storeBhp:         (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/bhp`, data),
+  updateBhp:        (id, quantity)        => api.put(`/dokter/bhp/${id}`, { quantity }),
+  deleteBhp:        (id)                  => api.delete(`/dokter/bhp/${id}`),
+
   // Paket PEMERIKSAAN (poliklinik): terapkan (merge tindakan + snapshot diskon) / lepas.
   applyExaminationPackage:  (visitId, packageId) => api.post(`/dokter/kunjungan/${visitId}/apply-package`, { package_id: packageId }),
   removeExaminationPackage: (visitId)            => api.delete(`/dokter/kunjungan/${visitId}/package`),

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BhpItem;
 use App\Models\BillingInvoice;
 use App\Models\BpjsControlLetter;
 use App\Models\BpjsPoliMapping;
@@ -31,9 +32,11 @@ use App\Models\SurgerySchedule;
 use App\Models\SystemLog;
 use App\Models\SurgeryPackage;
 use App\Models\Visit;
+use App\Models\VisitBhpUsage;
 use App\Models\VisitService;
 use App\Models\VisitSurgeryPackage;
 use App\Models\VisitSurgeryPackageItem;
+use App\Services\InventoryStockService;
 use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
@@ -614,6 +617,146 @@ class DokterService
         $this->authorizeVisitOwnership($service->visit_id);
         $service->delete();
         $this->log(auth('api')->id(), 'DELETE_TINDAKAN', VisitService::class, $id);
+    }
+
+    // ── BHP yang diinput DOKTER (Tab Tindakan) — paralel tindakan, ditagih lewat
+    //    visit_bhp_usages → KasirService::buildBhpLines. Stok unit FARMASI dipotong
+    //    SEKETIKA saat input (BHP dipakai di pelayanan), dikembalikan saat dihapus.
+
+    /** Master BHP ber-harga per-penjamin + stok on-hand unit FARMASI untuk picker dokter. */
+    public function getTarifBhp(string $visitId, ?string $search = null): array
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+
+        $onHand = DB::table('inventory_stocks')
+            ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
+            ->where('item_type', InventoryStock::TYPE_BHP)
+            ->where('location', InventoryStock::LOC_FARMASI)
+            ->groupBy('item_id');
+
+        return BhpItem::query()
+            ->where('is_active', true)
+            ->when($search, fn ($q) => $q->where(fn ($w) => $w
+                ->where('name', 'ilike', "%{$search}%")
+                ->orWhere('code', 'ilike', "%{$search}%")))
+            ->leftJoinSub($onHand, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'bhp_items.id'))
+            ->orderBy('name')
+            ->limit(50)
+            ->get(['bhp_items.id', 'bhp_items.code', 'bhp_items.name', 'bhp_items.category', DB::raw('COALESCE(fs.qty, 0) as stock')])
+            ->map(fn ($b) => [
+                'id'       => $b->id,
+                'code'     => $b->code,
+                'name'     => $b->name,
+                'category' => $b->category,
+                'price'    => $this->kasirService->getPrice('bhp', $b->id, $visit->guarantor_type, $visit->insurer_id),
+                'stock'    => (float) $b->stock,
+            ])
+            ->all();
+    }
+
+    /** Daftar BHP yang sudah diinput dokter pada kunjungan (hidrasi panel). */
+    public function getVisitBhpUsages(string $visitId): Collection
+    {
+        $this->authorizeVisitOwnership($visitId);
+        return VisitBhpUsage::with('bhpItem')->where('visit_id', $visitId)->orderBy('created_at')->get();
+    }
+
+    /** Tambah satu pemakaian BHP → potong stok FARMASI seketika + bangun ulang kwitansi. */
+    public function storeVisitBhpUsage(string $visitId, array $data): VisitBhpUsage
+    {
+        $visit = $this->authorizeVisitOwnership($visitId);
+        $this->assertBillingNotCommitted($visitId);
+
+        $user  = auth('api')->user();
+        $bhpId = $data['bhp_item_id'];
+        $qty   = max(1, (int) ($data['quantity'] ?? 1));
+        $price = (float) $this->kasirService->getPrice('bhp', $bhpId, $visit->guarantor_type, $visit->insurer_id);
+
+        $usage = DB::transaction(function () use ($visitId, $bhpId, $qty, $price, $user, $data) {
+            // Potong stok unit FARMASI (FEFO per-batch; consume() melempar 422 bila stok
+            // kurang → seluruh transaksi rollback).
+            $consumed = app(InventoryStockService::class)
+                ->consume(InventoryStock::TYPE_BHP, $bhpId, $qty, InventoryStock::LOC_FARMASI);
+
+            return VisitBhpUsage::create([
+                'visit_id'         => $visitId,
+                'bhp_item_id'      => $bhpId,
+                'performed_by_id'  => $user->employee_id,
+                'quantity'         => $qty,
+                'unit_price'       => $price,
+                'consumed_batches' => $consumed,
+                'notes'            => $data['notes'] ?? null,
+            ]);
+        });
+
+        $this->log($user->id, 'STORE_BHP_DOKTER', Visit::class, $visitId, "BHP dokter x{$qty} (item {$bhpId})");
+        $this->reconsolidateAfterDoctorRevision($visitId);
+
+        return $usage->load('bhpItem');
+    }
+
+    /** Ubah qty pemakaian BHP → sesuaikan stok (kembalikan lama, potong baru) + rebuild. */
+    public function updateVisitBhpUsage(string $id, int $qty): VisitBhpUsage
+    {
+        $usage = VisitBhpUsage::findOrFail($id);
+        $this->authorizeVisitOwnership($usage->visit_id);
+        $this->assertBillingNotCommitted($usage->visit_id);
+        $qty = max(1, $qty);
+        if ($qty === (int) $usage->quantity) {
+            return $usage->load('bhpItem');
+        }
+
+        DB::transaction(function () use ($usage, $qty) {
+            $svc = app(InventoryStockService::class);
+            // Kembalikan stok lama (presisi batch bila ada), lalu potong qty baru.
+            $batches = is_array($usage->consumed_batches) ? $usage->consumed_batches : [];
+            if ($batches) {
+                foreach ($batches as $b) {
+                    $q = (float) ($b['qty'] ?? 0);
+                    if ($q <= 0) {
+                        continue;
+                    }
+                    $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, $b['batch_no'] ?? null, $q, $b['expiry_date'] ?? null);
+                }
+            } else {
+                $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, null, (float) $usage->quantity, null);
+            }
+            $consumed = $svc->consume(InventoryStock::TYPE_BHP, $usage->bhp_item_id, $qty, InventoryStock::LOC_FARMASI);
+            $usage->update(['quantity' => $qty, 'consumed_batches' => $consumed]);
+        });
+
+        $this->reconsolidateAfterDoctorRevision($usage->visit_id);
+        return $usage->fresh('bhpItem');
+    }
+
+    /** Hapus pemakaian BHP → kembalikan stok FARMASI + bangun ulang kwitansi. */
+    public function deleteVisitBhpUsage(string $id): void
+    {
+        $usage = VisitBhpUsage::findOrFail($id);
+        $this->authorizeVisitOwnership($usage->visit_id);
+        $this->assertBillingNotCommitted($usage->visit_id);
+        $visitId = $usage->visit_id;
+
+        DB::transaction(function () use ($usage) {
+            $svc = app(InventoryStockService::class);
+            $batches = is_array($usage->consumed_batches) ? $usage->consumed_batches : [];
+            if ($batches) {
+                foreach ($batches as $b) {
+                    $qty = (float) ($b['qty'] ?? 0);
+                    if ($qty <= 0) {
+                        continue;
+                    }
+                    $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, $b['batch_no'] ?? null, $qty, $b['expiry_date'] ?? null);
+                }
+            } else {
+                // Tanpa rincian batch → kembalikan total qty ke batch null.
+                $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, null, (float) $usage->quantity, null);
+            }
+            $usage->delete();
+        });
+
+        $this->log(auth('api')->id(), 'DELETE_BHP_DOKTER', Visit::class, $visitId, "BHP dokter dihapus (usage {$id})");
+        $this->reconsolidateAfterDoctorRevision($visitId);
     }
 
     public function getPrescriptions(string $visitId): Collection

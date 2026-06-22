@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\DiagnosticTestType;
 use App\Models\Icd10Code;
 use App\Models\Icd9Code;
+use App\Models\NurseAssessment;
 use App\Models\NurseCpptEntry;
 use App\Models\Patient;
 use App\Models\Procedure;
@@ -362,12 +363,56 @@ class RmeAggregatorService
                 ];
             });
 
+        // 4) Asesmen awal TRIASE (nurse_assessments) lintas-visit — supaya perawat (juga
+        //    dokter/refraksionis) bisa melihat asesmen awal kunjungan SEBELUMNYA di kartu
+        //    CPPT, bukan hanya catatan CPPT. Hanya yang TIDAK dilewati & punya isi
+        //    (keluhan/RPS/catatan/TTV) — asesmen kosong/skip tak menambah noise.
+        $asesmen = NurseAssessment::with(['assessedBy', 'visit'])
+            ->whereHas('visit', fn ($q) => $q->where('patient_id', $patientId))
+            ->where('is_skipped', false)
+            ->where(function ($q) {
+                $q->whereNotNull('chief_complaint')->orWhereNotNull('rps')
+                  ->orWhereNotNull('assessment_notes')->orWhereNotNull('td_sistol')
+                  ->orWhereNotNull('nadi')->orWhereNotNull('suhu')->orWhereNotNull('spo2');
+            })
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(function (NurseAssessment $a) {
+                $v    = $a->visit;
+                $when = $a->finalized_at ?? $a->created_at;
+                $s    = array_filter([$a->chief_complaint, $a->rps]);
+                $notes = array_filter([
+                    $a->pain_scale !== null ? "Skala nyeri {$a->pain_scale}/10" : null,
+                    $a->has_allergy ? ('Alergi: ' . ($a->allergy_detail ?: 'ya')) : null,
+                    ($a->berat_badan || $a->tinggi_badan)
+                        ? trim(($a->berat_badan ? "BB {$a->berat_badan}kg " : '') . ($a->tinggi_badan ? "TB {$a->tinggi_badan}cm" : ''))
+                        : null,
+                ]);
+                return [
+                    'kind'      => 'ASESMEN',
+                    'episode'   => $v?->jenis_pelayanan ?? 'RAJAL',
+                    'visit_id'  => $a->visit_id,
+                    'datetime'  => $when?->toDateTimeString(),
+                    'date'      => $when?->toDateString(),
+                    'ppa_role'  => 'PERAWAT',
+                    'author'    => $a->assessedBy?->name,
+                    'soap'      => ['s' => $s ? implode("\n", $s) : null, 'a' => $a->assessment_notes],
+                    'vitals'    => array_filter([
+                        'td'   => ($a->td_sistol && $a->td_diastol) ? "{$a->td_sistol}/{$a->td_diastol}" : null,
+                        'nadi' => $a->nadi,
+                        'suhu' => $a->suhu,
+                        'spo2' => $a->spo2,
+                    ], fn ($x) => $x !== null && $x !== ''),
+                    'instruksi' => $notes ? implode(' · ', $notes) : null,
+                ];
+            });
+
         // Urutan: tanggal DESCENDING (hari terbaru dulu). Untuk entri di HARI yang SAMA,
         // urutan PPA tetap: Dokter → Refraksionis → Perawat (lalu PPA lain). Tie-break
         // terakhir = datetime desc (entri terbaru dulu) bila PPA sama di hari sama.
         $ppaRank = ['DOKTER' => 0, 'REFRAKSIONIS' => 1, 'PERAWAT' => 2];
 
-        return $cppt->concat($soap)->concat($refr)
+        return $cppt->concat($soap)->concat($refr)->concat($asesmen)
             ->sort(function ($a, $b) use ($ppaRank) {
                 $da = $a['date'] ?? '';
                 $db = $b['date'] ?? '';

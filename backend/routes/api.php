@@ -404,6 +404,14 @@ Route::prefix('v1')->group(function () {
             Route::post('/kunjungan/{visitId}/tindakan',        [DokterController::class, 'storeTindakan']);
             Route::delete('/tindakan/{id}',                     [DokterController::class, 'deleteTindakan']);
 
+            // BHP yang dipakai dokter (mis. spuit/kasa untuk injeksi/prosedur kecil) —
+            // ditagih lewat visit_bhp_usages, stok unit Farmasi dipotong saat input.
+            Route::get('/tarif-bhp',                            [DokterController::class, 'tarifBhp']);
+            Route::get('/kunjungan/{visitId}/bhp',              [DokterController::class, 'indexBhpUsage']);
+            Route::post('/kunjungan/{visitId}/bhp',             [DokterController::class, 'storeBhpUsage']);
+            Route::put('/bhp/{id}',                             [DokterController::class, 'updateBhpUsage']);
+            Route::delete('/bhp/{id}',                          [DokterController::class, 'deleteBhpUsage']);
+
             // Paket PEMERIKSAAN (poliklinik): terapkan/lepas — merge tindakan + snapshot diskon.
             Route::post('/kunjungan/{visitId}/apply-package',   [DokterController::class, 'applyExaminationPackage']);
             Route::delete('/kunjungan/{visitId}/package',       [DokterController::class, 'removeExaminationPackage']);

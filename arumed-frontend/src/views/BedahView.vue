@@ -1869,7 +1869,7 @@ function mulaiBack() { mulaiStep.value = 1 }
               <button
                 :class="['pf-btn', qPrimaryFilter === 'active' ? 'a' : '']"
                 @click="qPrimaryFilter = 'active'"
-                title="Operasi belum selesai dari hari sebelumnya (lintas-hari)"
+                title="Kunjungan bedah lintas-hari yang belum tutup tagihan di kasir (tanpa batas umur — sampai lunas/dibatalkan)"
               >
                 Masih Aktif
                 <span v-if="cActive" class="pf-ct">{{ cActive }}</span>

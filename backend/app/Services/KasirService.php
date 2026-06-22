@@ -11,6 +11,7 @@ use App\Models\ClinicProfile;
 use App\Models\Insurer;
 use App\Models\InpatientCharge;
 use App\Models\InsuranceVerification;
+use App\Models\InventoryStock;
 use App\Models\IolItem;
 use App\Models\Medication;
 use App\Models\MedicationTariff;
@@ -28,6 +29,7 @@ use App\Models\VisitService;
 use App\Models\VisitSurgeryPackage;
 use App\Models\VisitSurgeryPackageItem;
 use App\Services\AsuransiService;
+use App\Services\InventoryStockService;
 use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
@@ -363,7 +365,43 @@ class KasirService
             }
         }
 
-        return array_slice($out, 0, $limit);
+        $out = array_slice($out, 0, $limit);
+
+        // Stok on-hand unit FARMASI untuk OBAT & BHP (item yang dipotong stok saat input
+        // kasir) → kasir lihat sisa stok sebelum menambah. Batch 2 query (hindari N+1).
+        $this->fillFarmasiStock($out);
+
+        return $out;
+    }
+
+    /**
+     * Tempel `stock` (on-hand unit FARMASI) ke baris hasil pencarian buku tarif yang
+     * jenisnya OBAT/BHP. Dua query agregat (per item_type) → tak ada N+1.
+     */
+    private function fillFarmasiStock(array &$rows): void
+    {
+        foreach ([['OBAT', 'MEDICATION'], ['BHP', 'BHP']] as [$itemType, $stockType]) {
+            $ids = array_values(array_unique(array_map(
+                fn ($r) => $r['id'],
+                array_filter($rows, fn ($r) => ($r['item_type'] ?? null) === $itemType),
+            )));
+            if (! $ids) {
+                continue;
+            }
+            $onHand = DB::table('inventory_stocks')
+                ->where('item_type', $stockType)
+                ->where('location', InventoryStock::LOC_FARMASI)
+                ->whereIn('item_id', $ids)
+                ->groupBy('item_id')
+                ->selectRaw('item_id, SUM(qty_on_hand) as total')
+                ->pluck('total', 'item_id');
+            foreach ($rows as &$r) {
+                if (($r['item_type'] ?? null) === $itemType) {
+                    $r['stock'] = (float) ($onHand[$r['id']] ?? 0);
+                }
+            }
+            unset($r);
+        }
     }
 
     // =========================================================================
@@ -428,7 +466,17 @@ class KasirService
             // menanggung lump via coverage. Non-COB → harga penjamin utama (zero-diff).
             [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
 
-            $lines = $this->buildLines($visit, $billInsurerId, $billGuarantor);
+            // Bawa serta baris input KASIR dari invoice yang BARU SAJA dibatalkan untuk
+            // visit ini (alur Batalkan & Susun Ulang) — tindakan/BHP/IOL/alat medis tak
+            // punya sumber yang diregenerasi builder. Stok TIDAK dipotong ulang (baris
+            // disalin apa adanya, stok sudah berkurang saat input awal).
+            $carried  = $this->carriedKasirManualLines($visit);
+            $positive = array_merge($this->buildPositiveLines($visit, $billInsurerId, $billGuarantor), $carried);
+            $lines = array_merge(
+                $positive,
+                $this->computePaketDiscountLines($visit, $billInsurerId, $billGuarantor, $positive),
+                $this->buildFollowupConsultLines($visit, $billInsurerId, $billGuarantor),
+            );
 
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
 
@@ -520,27 +568,14 @@ class KasirService
                 if (in_array($it->item_type, ['DISKON_PAKET', 'DISKON_KONTROL'], true)) {
                     continue;
                 }
-                if ($it->reference_id !== null) {
-                    if ($it->paket_excluded) {
-                        $excludedMap["{$it->item_type}|{$it->reference_id}"] = true;
-                    }
-                } else {
-                    $manualLines[] = [
-                        'item_type'       => $it->item_type,
-                        'category'        => $it->category,
-                        'reference_id'    => null,
-                        'description'     => $it->description,
-                        'quantity'        => $it->quantity,
-                        'unit_price'      => $it->unit_price,
-                        'total_price'     => $it->total_price,
-                        'discount_amount' => $it->discount_amount,
-                        'discount_percent'=> $it->discount_percent,
-                        'net_price'       => $it->net_price,
-                        'is_absorbable'   => (bool) $it->is_absorbable,
-                        'is_absorbed'     => (bool) $it->is_absorbable && ! $it->paket_excluded,
-                        'paket_excluded'  => (bool) $it->paket_excluded,
-                        'notes'           => $it->notes,
-                    ];
+                // Baris input KASIR (is_kasir_manual) ATAU baris manual lama tanpa sumber
+                // (reference_id null) → DIPERTAHANKAN apa adanya (builder tak meregenerasi
+                // karena tak ada sumber, jadi tak dobel). reference_id baris kasir TETAP
+                // dijaga agar tarifInInvoice/repricing & pengembalian stok per-baris jalan.
+                if ($it->is_kasir_manual || $it->reference_id === null) {
+                    $manualLines[] = $this->snapshotManualLine($it);
+                } elseif ($it->paket_excluded) {
+                    $excludedMap["{$it->item_type}|{$it->reference_id}"] = true;
                 }
             }
 
@@ -583,6 +618,58 @@ class KasirService
 
             return $invoice->fresh(['items', 'visit.patient']);
         });
+    }
+
+    /**
+     * Snapshot satu baris tagihan untuk dipertahankan apa adanya saat rebuild
+     * (baris input KASIR / baris manual lama). is_absorbed diturunkan ulang dari
+     * is_absorbable & paket_excluded agar konsisten dengan model opt-out.
+     */
+    private function snapshotManualLine(BillingItem $it): array
+    {
+        return [
+            'item_type'        => $it->item_type,
+            'category'         => $it->category,
+            'reference_id'     => $it->reference_id,
+            'description'      => $it->description,
+            'quantity'         => $it->quantity,
+            'unit_price'       => $it->unit_price,
+            'total_price'      => $it->total_price,
+            'discount_amount'  => $it->discount_amount,
+            'discount_percent' => $it->discount_percent,
+            'net_price'        => $it->net_price,
+            'is_absorbable'    => (bool) $it->is_absorbable,
+            'is_absorbed'      => (bool) $it->is_absorbable && ! $it->paket_excluded,
+            'paket_excluded'   => (bool) $it->paket_excluded,
+            'is_kasir_manual'  => (bool) $it->is_kasir_manual,
+            'consumed_batches' => $it->consumed_batches,
+            'notes'            => $it->notes,
+        ];
+    }
+
+    /**
+     * Baris input KASIR dari invoice yang TERAKHIR dibatalkan untuk visit ybs —
+     * dibawa serta saat menyusun ulang tagihan (consolidateBilling). Stok TIDAK
+     * dipotong ulang: baris hanya disalin (stok sudah berkurang saat input awal,
+     * dikembalikan hanya bila baris dihapus eksplisit). Obat kasir tidak termasuk
+     * di sini — ia diregenerasi buildObatLines via resepnya (DISPENSED).
+     */
+    private function carriedKasirManualLines(Visit $visit): array
+    {
+        $cancelled = BillingInvoice::with('items')
+            ->where('visit_id', $visit->id)
+            ->where('status', 'CANCELLED')
+            ->latest('updated_at')
+            ->first();
+        if (! $cancelled) {
+            return [];
+        }
+
+        return $cancelled->items
+            ->where('is_kasir_manual', true)
+            ->map(fn ($it) => $this->snapshotManualLine($it))
+            ->values()
+            ->all();
     }
 
     /**
@@ -1016,6 +1103,34 @@ class KasirService
                 ];
             }
         }
+
+        // BHP yang diinput DOKTER pada kunjungan (visit_bhp_usages) — sumber tagihan BHP
+        // non-bedah (mis. spuit/kasa untuk injeksi/prosedur kecil). Stok sudah dipotong
+        // saat dokter input (DokterService::storeVisitBhpUsage); di sini hanya ditagih.
+        foreach ($visit->bhpUsages as $usage) {
+            $qty = (int) ($usage->quantity ?? 0);
+            if ($qty <= 0) {
+                continue;
+            }
+            $price = $this->getPrice('bhp', $usage->bhp_item_id, $guarantorType, $insurerId);
+            $total = $price * $qty;
+            $bhpMaster = BhpItem::withTrashed()->find($usage->bhp_item_id);
+            $absorb = $canAbsorb && ! isset($paketBhpIds[$usage->bhp_item_id]);
+            $lines[] = [
+                'item_type'    => 'BHP',
+                'category'     => $this->bhpBillingCategory($bhpMaster?->category),
+                'reference_id' => $usage->id,
+                'description'  => $bhpMaster?->name ?? 'BHP',
+                'quantity'     => $qty,
+                'unit_price'   => $price,
+                'total_price'  => $total,
+                'net_price'    => $total,
+                'is_absorbable'  => $absorb,
+                'is_absorbed'    => $absorb,
+                'paket_excluded' => false,
+            ];
+        }
+
         return $lines;
     }
 
@@ -2724,7 +2839,7 @@ class KasirService
             return $this->addObatTambahanViaResep($invoice, $data);
         }
 
-        $qty       = $data['quantity']   ?? 1;
+        $qty       = max(1, (int) ($data['quantity'] ?? 1));
         $unitPrice = $data['unit_price'] ?? 0;
         $totalPrice = $unitPrice * $qty;
         [$discAmt, $discPc] = $this->computeItemDiscount($totalPrice, $data['discount_amount'] ?? null, $data['discount_percent'] ?? null);
@@ -2735,26 +2850,42 @@ class KasirService
         $visit     = Visit::with('surgeryPackageSnapshots')->find($invoice->visit_id);
         $canAbsorb = $visit ? $this->visitCanAbsorbToPaket($visit) : false;
 
-        $item = BillingItem::create([
-            'billing_invoice_id' => $invoiceId,
-            'item_type'          => $data['item_type'],
-            'category'           => $data['category'] ?? null,
-            'reference_id'       => $data['reference_id'] ?? null,
-            'description'        => $data['description'],
-            'quantity'           => $qty,
-            'unit_price'         => $unitPrice,
-            'total_price'        => $totalPrice,
-            'discount_amount'    => $discAmt,
-            'discount_percent'   => $discPc,
-            'net_price'          => $netPrice,
-            'is_absorbable'      => $canAbsorb,
-            'is_absorbed'        => $canAbsorb,
-            'paket_excluded'     => false,
-            'notes'              => $data['notes'] ?? null,
-        ]);
+        // Atomik: potong stok BHP + buat baris dalam satu transaksi (cegah stok terpotong
+        // tapi baris gagal tersimpan). BHP yang ditambah kasir = sudah dipakai di pelayanan
+        // → potong stok unit FARMASI seketika (FEFO; consume() melempar 422 bila kurang).
+        $item = DB::transaction(function () use ($invoiceId, $invoice, $data, $qty, $unitPrice, $totalPrice, $discAmt, $discPc, $netPrice, $canAbsorb) {
+            $consumedBatches = null;
+            if ($data['item_type'] === 'BHP' && ! empty($data['reference_id'])) {
+                $consumedBatches = app(InventoryStockService::class)
+                    ->consume('BHP', $data['reference_id'], $qty, InventoryStock::LOC_FARMASI);
+            }
 
-        $this->syncPaketDiscount($invoice);
-        $this->recalculateInvoice($invoice);
+            $created = BillingItem::create([
+                'billing_invoice_id' => $invoiceId,
+                'item_type'          => $data['item_type'],
+                'category'           => $data['category'] ?? null,
+                'reference_id'       => $data['reference_id'] ?? null,
+                'description'        => $data['description'],
+                'quantity'           => $qty,
+                'unit_price'         => $unitPrice,
+                'total_price'        => $totalPrice,
+                'discount_amount'    => $discAmt,
+                'discount_percent'   => $discPc,
+                'net_price'          => $netPrice,
+                'is_absorbable'      => $canAbsorb,
+                'is_absorbed'        => $canAbsorb,
+                'paket_excluded'     => false,
+                // Tandai input kasir → dipertahankan saat tagihan dibangun ulang.
+                'is_kasir_manual'    => true,
+                'consumed_batches'   => $consumedBatches,
+                'notes'              => $data['notes'] ?? null,
+            ]);
+
+            $this->syncPaketDiscount($invoice);
+            $this->recalculateInvoice($invoice);
+
+            return $created;
+        });
 
         return $item;
     }
@@ -2763,11 +2894,12 @@ class KasirService
     private const OTC_KASIR_NOTE = 'Obat tambahan apotek (input Kasir)';
 
     /**
-     * Kasir menambah OBAT → buat/append resep TAMBAHAN (OTC) agar obat mengalir ke
-     * Dispensing Farmasi (stok terpotong + etiket + aturan pakai) DAN pasien diarahkan ke
-     * apotek (nextAfterKasir butuh resep DRAFT/SUBMITTED/DISPENSING). Resep dibuat status
-     * DISPENSING + verified_at (1) agar dibilling buildObatLines, (2) tak mencemari antrean
-     * Verifikasi (filter status=SUBMITTED), (3) tampil di langkah "Serah Terima" Farmasi.
+     * Kasir menambah OBAT → diserahkan LANGSUNG di loket Kasir: stok unit FARMASI
+     * dipotong SEKETIKA (consume FEFO) dan resep TAMBAHAN dibuat status DISPENSED +
+     * verified_at + dispensed_at. Tujuan resep: (1) ditagih buildObatLines (status
+     * DISPENSED tetap billable), (2) muncul di Riwayat Pemberian Obat, (3) etiket bisa
+     * dicetak. Status DISPENSED (bukan DISPENSING) → TIDAK masuk worklist Farmasi &
+     * TIDAK dobel-potong stok (consumePrescriptionStock hanya jalan saat DISPENSING→DISPENSED).
      *
      * Baris invoice memakai harga buildObatLines (getPrice) + reference_id = PrescriptionItem.id
      * → CERMIN PERSIS buildObatLines: tak dobel saat reconsolidate/syncVerifiedObatLines, tak
@@ -2795,19 +2927,26 @@ class KasirService
         $employeeId = auth('api')->user()?->employee_id;
 
         return DB::transaction(function () use ($invoice, $visit, $med, $medId, $qty, $data, $employeeId) {
+            // Potong stok unit FARMASI seketika (FEFO per-batch; consume() melempar 422
+            // bila stok kurang → seluruh transaksi rollback). Obat dianggap diserahkan
+            // langsung di loket Kasir.
+            $consumedBatches = app(InventoryStockService::class)
+                ->consume('MEDICATION', $medId, $qty, InventoryStock::LOC_FARMASI);
+
             // Find-or-create satu resep TAMBAHAN-Kasir per visit (append item bila sudah ada).
             $prescription = Prescription::where('visit_id', $visit->id)
                 ->where('type', '!=', Prescription::TYPE_RANAP)
                 ->where('notes', self::OTC_KASIR_NOTE)
-                ->whereIn('status', ['SUBMITTED', 'DISPENSING'])
+                ->whereIn('status', ['DISPENSING', 'DISPENSED'])
                 ->first();
             if (! $prescription) {
                 $prescription = Prescription::create([
                     'visit_id'         => $visit->id,
                     'prescribed_by_id' => $employeeId,
-                    'status'           => 'DISPENSING',
+                    'status'           => 'DISPENSED',
                     'verified_at'      => now(),
                     'verified_by_id'   => $employeeId,
+                    'dispensed_at'     => now(),
                     'notes'            => self::OTC_KASIR_NOTE,
                 ]);
             }
@@ -2846,6 +2985,7 @@ class KasirService
                 'is_absorbable'      => $canAbsorb,
                 'is_absorbed'        => $canAbsorb,
                 'paket_excluded'     => false,
+                'consumed_batches'   => $consumedBatches,
                 'notes'              => $data['dosage'] ?? null,
             ]);
 
@@ -2891,6 +3031,21 @@ class KasirService
         $unitPrice  = $data['unit_price'] ?? $item->unit_price;
         $totalPrice = $unitPrice * $qty;
 
+        // Baris kasir yang memotong stok FARMASI (BHP / obat): bila qty berubah,
+        // kembalikan stok lama lalu potong sejumlah qty baru (consume 422 bila kurang →
+        // batal). consumed_batches & qty resep obat ikut disinkronkan.
+        $stockRef = $this->kasirStockRef($item);
+        $newConsumed = $item->consumed_batches;
+        if ($stockRef && (int) $qty !== (int) $item->quantity) {
+            [$type, $stockId, $rxItem] = $stockRef;
+            $this->restockKasirItem($item);
+            $newConsumed = app(InventoryStockService::class)
+                ->consume($type, $stockId, (int) $qty, InventoryStock::LOC_FARMASI);
+            if ($rxItem) {
+                $rxItem->update(['quantity' => (int) $qty]);
+            }
+        }
+
         // Diskon: jika field dikirim → recompute. Kalau kedua field tidak ada di payload, pertahankan existing.
         $hasDisc = array_key_exists('discount_amount', $data) || array_key_exists('discount_percent', $data);
         if ($hasDisc) {
@@ -2916,6 +3071,7 @@ class KasirService
             'discount_amount'  => $discAmt,
             'discount_percent' => $discPc,
             'net_price'        => $netPrice,
+            'consumed_batches' => $newConsumed,
             'notes'            => $data['notes'] ?? $item->notes,
         ]);
 
@@ -2935,10 +3091,78 @@ class KasirService
             throw new \Exception('Invoice sudah final, tidak bisa hapus item.', 422);
         }
 
-        $item->delete();
+        DB::transaction(function () use ($item) {
+            // Kembalikan stok FARMASI yang dipotong saat input kasir (BHP & obat).
+            $this->restockKasirItem($item);
+            // Obat kasir: hapus juga item resepnya agar tak diregenerasi buildObatLines
+            // saat tagihan dibangun ulang (kalau dibiarkan, baris obat "hidup lagi").
+            $this->detachKasirObatPrescription($item);
+            $item->delete();
+        });
 
         $this->syncPaketDiscount($invoice);
         $this->recalculateInvoice($invoice);
+    }
+
+    /** Identitas stok FARMASI baris kasir: [type, itemId, ?PrescriptionItem] | null. */
+    private function kasirStockRef(BillingItem $item): ?array
+    {
+        if ($item->item_type === 'BHP' && $item->is_kasir_manual && $item->reference_id) {
+            return ['BHP', $item->reference_id, null];
+        }
+        if ($item->item_type === 'OBAT' && $item->reference_id) {
+            $rx = PrescriptionItem::with('prescription')->find($item->reference_id);
+            if ($rx?->prescription && $rx->prescription->notes === self::OTC_KASIR_NOTE) {
+                return ['MEDICATION', $rx->medication_id, $rx];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Kembalikan stok FARMASI yang dipotong baris kasir. BHP & obat (sebelum rebuild)
+     * memakai consumed_batches → restock presisi per batch/expiry. Obat pasca-rebuild
+     * (baris diregenerasi tanpa consumed_batches) → restock per qty (batch null/FEFO).
+     */
+    private function restockKasirItem(BillingItem $item): void
+    {
+        $ref = $this->kasirStockRef($item);
+        if (! $ref) {
+            return;
+        }
+        [$type, $stockId] = $ref;
+        $svc = app(InventoryStockService::class);
+
+        $batches = is_array($item->consumed_batches) ? $item->consumed_batches : [];
+        if ($batches) {
+            foreach ($batches as $b) {
+                $qty = (float) ($b['qty'] ?? 0);
+                if ($qty <= 0) {
+                    continue;
+                }
+                $svc->upsertStock($type, $stockId, InventoryStock::LOC_FARMASI, $b['batch_no'] ?? null, $qty, $b['expiry_date'] ?? null);
+            }
+            return;
+        }
+        // Tanpa rincian batch → kembalikan total qty ke batch null.
+        $svc->upsertStock($type, $stockId, InventoryStock::LOC_FARMASI, null, (float) $item->quantity, null);
+    }
+
+    /** Hapus item resep obat-kasir (+resep bila jadi kosong) saat baris obat dihapus. */
+    private function detachKasirObatPrescription(BillingItem $item): void
+    {
+        if ($item->item_type !== 'OBAT' || ! $item->reference_id) {
+            return;
+        }
+        $rx = PrescriptionItem::with('prescription')->find($item->reference_id);
+        if (! $rx?->prescription || $rx->prescription->notes !== self::OTC_KASIR_NOTE) {
+            return;
+        }
+        $prescription = $rx->prescription;
+        $rx->delete();
+        if ($prescription->items()->count() === 0) {
+            $prescription->delete();
+        }
     }
 
     /**

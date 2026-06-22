@@ -113,6 +113,7 @@ function fmtDate(s) {
         <div v-for="(c, i) in currentPage.items" :key="i" class="cpc-item" :class="ppaClass(c.ppa_role)">
           <div class="cpc-item-head">
             <span class="cpc-ppa" :class="ppaClass(c.ppa_role)">{{ ppaLabel(c.ppa_role) || (c.kind === 'SOAP' ? 'Dokter' : 'PPA') }}</span>
+            <span v-if="c.kind === 'ASESMEN'" class="cpc-kind-tag" title="Asesmen awal triase">Asesmen Awal</span>
             <span class="cpc-ep" :class="'ep-' + c.episode">{{ epLabel(c.episode) }}</span>
             <span class="cpc-when">{{ fmtDT(c.datetime) }}</span>
           </div>
@@ -186,6 +187,7 @@ function fmtDate(s) {
 .cpc-ppa.ppa-perawat { background: #d97706; }
 .cpc-ppa.ppa-refraksionis { background: #0891b2; }
 .cpc-ppa.ppa-apoteker { background: #7c3aed; }
+.cpc-kind-tag { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #fff7ed; color: #b45309; border: 1px solid #fed7aa; }
 .cpc-ep { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #eef2f7; color: #475569; }
 .cpc-when { margin-left: auto; font-size: 10.5px; color: #94a3b8; }
 .cpc-by { font-size: 11px; color: #64748b; margin-top: 2px; }
