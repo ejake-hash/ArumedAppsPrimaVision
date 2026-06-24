@@ -311,8 +311,26 @@ const stationView = computed(() => {
 })
 
 // ─── Mode "Poliklinik" (1 layar dinamis: poli + farmasi + media berputar) ────
-// Aktif via query ?mode=poli. Layout grid 8-stasiun lama tetap dipakai bila tidak.
-const tvMode = computed(() => (route.query.mode === 'poli' ? 'poli' : 'grid'))
+// 'grid' (8 stasiun) atau 'poli' (1 layar dinamis, khusus Poliklinik BPJS).
+// Sumber awal: query ?mode= bila ada; kalau tidak, pakai pilihan tersimpan
+// per-TV (localStorage). Toggle di control panel (tab Antrean) mengubah +
+// menyimpan pilihan ini, jadi tak perlu mengetik query tiap buka.
+const TV_MODE_KEY = 'antreanTvMode'
+function initialTvMode() {
+  const q = route.query.mode
+  if (q === 'poli' || q === 'grid') return q
+  try {
+    const saved = localStorage.getItem(TV_MODE_KEY)
+    if (saved === 'poli' || saved === 'grid') return saved
+  } catch { /* localStorage tak tersedia → default grid */ }
+  return 'grid'
+}
+const tvMode = ref(initialTvMode())
+function setTvMode(m) {
+  if (m !== 'poli' && m !== 'grid') return
+  tvMode.value = m
+  try { localStorage.setItem(TV_MODE_KEY, m) } catch { /* abaikan */ }
+}
 
 // Status yang dianggap "sedang dilayani" (tampil sebagai nomor dipanggil).
 const ACTIVE_CALLED = ['CALLED', 'IN_PROGRESS']
@@ -354,6 +372,9 @@ const poliklinikView = computed(() => {
         nextNum:      waiting[0]?.queue_number ?? null,
       }
     })
+    // Mode poli dikhususkan untuk Poliklinik BPJS: sembunyikan dokter EKSEKUTIF.
+    // Prefix tanpa jadwal (serviceType null) tetap ditampilkan (tak bisa dipastikan).
+    .filter((d) => d.serviceType !== 'EKSEKUTIF')
 })
 
 // Jumlah kolom papan poli (auto-fit, maks 4) — untuk class layout.
@@ -379,71 +400,58 @@ const farmasiView = computed(() => {
   }
 })
 
-// Stasiun alur lainnya — strip ringkas pada scene "Stasiun".
-const STRIP_STATIONS = ['ADMISI', 'TRIASE', 'REFRAKSIONIS', 'PENUNJANG', 'BEDAH', 'KASIR']
-const stationStripView = computed(() =>
-  STRIP_STATIONS.map((key) => ({
-    key,
-    label:        stationLabel[key] ?? key,
-    calledNum:    stationView.value[key]?.called?.num ?? null,
-    waitingCount: stationView.value[key]?.waiting.length ?? 0,
-    nextNum:      stationView.value[key]?.waiting[0]?.num ?? null,
-  }))
-)
-
-// ─── Mesin rotasi scene (mode poli) ─────────────────────────────────────────
-// Panel berputar: Media (lebar dominan) → Poliklinik → Farmasi → Stasiun.
-// Scene kosong di-skip. Lebar media menyusut saat scene antrean aktif.
-const sceneLabel = { media: 'Media', poli: 'Poliklinik', farmasi: 'Farmasi', stasiun: 'Stasiun' }
-const SCENES = [
-  { key: 'media',   dur: 25 },
-  { key: 'poli',    dur: 20 },
-  { key: 'farmasi', dur: 15 },
-  { key: 'stasiun', dur: 12 },
-]
-const activeScene = ref('media')
-let sceneTimer = null
-
-function sceneHasContent(key) {
-  if (key === 'media')   return true
-  if (key === 'poli')    return poliklinikView.value.length > 0
-  if (key === 'farmasi') return !!farmasiView.value.calledNum || farmasiView.value.waitingCount > 0
-  if (key === 'stasiun') return stationStripView.value.some((s) => s.calledNum || s.waitingCount > 0)
-  return false
-}
-function pickNextScene() {
-  const order = SCENES.map((s) => s.key)
-  const idx = order.indexOf(activeScene.value)
-  for (let i = 1; i <= order.length; i++) {
-    const cand = order[(idx + i) % order.length]
-    if (sceneHasContent(cand)) return cand
+// ─── Mode poli: layout always-on ala display antrean BPJS ────────────────────
+// Tidak ada rotasi scene. Atas = panel "Sedang Dipanggil" (panggilan TERBARU
+// lintas dokter BPJS + farmasi, urut called_at) + media. Bawah = strip kartu
+// per-dokter BPJS + 1 kartu Farmasi yang selalu tampil (auto-scroll bila banyak).
+const currentCall = computed(() => {
+  const isBpjsDoc = (r) => {
+    const doc = doctorByPrefix.value[prefixOf(r.queue_number)]
+    return !doc || doc.service_type !== 'EKSEKUTIF'
   }
-  return 'media'
-}
-function scheduleNextScene() {
-  if (sceneTimer) clearTimeout(sceneTimer)
-  const dur = (SCENES.find((s) => s.key === activeScene.value)?.dur ?? 20) * 1000
-  sceneTimer = setTimeout(() => {
-    activeScene.value = pickNextScene()
-    scheduleNextScene()
-  }, dur)
-}
-function startSceneRotation() {
-  if (!sceneHasContent(activeScene.value)) activeScene.value = pickNextScene()
-  scheduleNextScene()
-}
-function stopSceneRotation() {
-  if (sceneTimer) { clearTimeout(sceneTimer); sceneTimer = null }
-}
+  const docRows = (snapshot.value.DOKTER?.rows ?? [])
+    .filter((r) => ACTIVE_CALLED.includes(r.status) && isBpjsDoc(r))
+    .map((r) => ({ r, kind: 'poli' }))
+  const pharmRows = (snapshot.value.FARMASI?.rows ?? [])
+    .filter((r) => ACTIVE_CALLED.includes(r.status))
+    .map((r) => ({ r, kind: 'farmasi' }))
+  const top = [...docRows, ...pharmRows]
+    .sort((a, b) => String(b.r.called_at ?? '').localeCompare(String(a.r.called_at ?? '')))[0]
+  if (!top) return null
+  const r = top.r
+  if (top.kind === 'farmasi') {
+    return { number: r.queue_number, label: 'Farmasi', room: null,
+             patient: r.patient_name ?? null, doctor: 'Pengambilan Obat' }
+  }
+  const doc     = doctorByPrefix.value[prefixOf(r.queue_number)] || null
+  const poliRaw = (doc?.poliklinik || '').trim()
+  const poli    = poliRaw ? (/^poli\b/i.test(poliRaw) ? poliRaw : `Poli ${poliRaw}`) : 'Poliklinik'
+  return { number: r.queue_number, label: poli, room: doc?.room ?? null,
+           patient: r.patient_name ?? null, doctor: doc?.nama_dokter ?? null }
+})
 
-// Scene yang punya konten (untuk indikator titik).
-const visibleScenes = computed(() => SCENES.filter((s) => sceneHasContent(s.key)))
+// Strip bawah auto-scroll (marquee) bila total kartu (dokter BPJS + 1 farmasi) > 4.
+const poliStripMarquee  = computed(() => poliklinikView.value.length + 1 > 4)
+const poliStripDuration = computed(() => `${Math.max(20, (poliklinikView.value.length + 1) * 6)}s`)
 
-// Pindah mode tanpa reload (query ?mode berubah, komponen dipakai ulang oleh
-// router) → start/stop rotasi agar timer tidak bocor atau mati saat dibutuhkan.
-watch(tvMode, (m) => {
-  if (m === 'poli') startSceneRotation()
-  else stopSceneRotation()
+// Kartu strip = dokter poli BPJS + 1 kartu Farmasi. Saat marquee, daftar
+// digandakan agar animasi translateX(-50%) menyambung mulus tanpa jeda.
+const poliStripCards = computed(() => {
+  const cards = poliklinikView.value.map((d) => ({
+    key: `p-${d.prefix}`, type: 'poli',
+    poli: d.poli, room: d.room, dokter: d.dokter,
+    calledNum: d.calledNum, waitingCount: d.waitingCount, nextNum: d.nextNum,
+  }))
+  cards.push({
+    key: 'farmasi', type: 'farmasi',
+    poli: 'Farmasi', room: null, dokter: 'Pengambilan Obat',
+    calledNum: farmasiView.value.calledNum, waitingCount: farmasiView.value.waitingCount, nextNum: null,
+  })
+  if (!poliStripMarquee.value) return cards
+  return [
+    ...cards.map((c) => ({ ...c, key: `a-${c.key}` })),
+    ...cards.map((c) => ({ ...c, key: `b-${c.key}` })),
+  ]
 })
 
 // ─── Fetch snapshot ─────────────────────────────────────────────────────────
@@ -688,8 +696,6 @@ onMounted(async () => {
   scheduleMidnightReset()
   // Audio unlock listener — auto-aktif saat user pertama interact
   installUnlockListeners()
-  // Mode poli: mulai rotasi scene (media ⇄ poliklinik ⇄ farmasi ⇄ stasiun)
-  if (tvMode.value === 'poli') startSceneRotation()
 })
 
 onUnmounted(() => {
@@ -698,7 +704,6 @@ onUnmounted(() => {
   if (heartbeatInterval) clearInterval(heartbeatInterval)
   disconnectWs()
   stopSlideshow()
-  stopSceneRotation()
   if (slideIntervalDebounce) clearTimeout(slideIntervalDebounce)
   if (window.speechSynthesis) {
     window.speechSynthesis.cancel()
@@ -934,6 +939,26 @@ async function renameThisDevice(name) {
   } catch (err) {
     showMediaMsg(err.response?.data?.message ?? 'Gagal menyimpan nama TV ini', 'err')
   }
+}
+
+// Draft nama TV saat diketik. WAJIB: input nama pakai draft ini (bukan langsung
+// :value="d.name"), karena jam re-render komponen tiap detik — bila input one-way
+// `:value`, teks yang sedang diketik ditimpa balik ke nilai server ("TV Baru")
+// tiap detik. Draft menahan ketikan; commit baru menyimpan + refresh.
+const deviceNameEdits  = ref({})    // id baris daftar → teks draft
+const thisDeviceNameEdit = ref(null) // teks draft kotak "TV ini"
+
+function commitDeviceName(d) {
+  const draft = deviceNameEdits.value[d.id]
+  delete deviceNameEdits.value[d.id]
+  if (draft == null || draft === d.name) return
+  renameDevice(d.id, draft)
+}
+function commitThisDeviceName() {
+  const draft = thisDeviceNameEdit.value
+  thisDeviceNameEdit.value = null
+  if (draft == null || draft === (deviceName.value ?? '')) return
+  renameThisDevice(draft)
 }
 
 // Heartbeat ringan: perbarui last_seen di server tanpa menyentuh tampilan
@@ -2024,123 +2049,56 @@ async function saveAudioDefaults() {
     </div>
 
     <!-- MAIN — MODE POLIKLINIK (1 layar dinamis: media + antrean berputar) -->
-    <div v-else-if="tvMode === 'poli'" class="tv-main poli-main" :class="`scene-${activeScene}`">
-      <!-- MEDIA (lebar dinamis: dominan saat scene media, menyusut saat antrean) -->
-      <div class="poli-media">
-        <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
-          <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
-          <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
-          <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
+    <div v-else-if="tvMode === 'poli'" class="tv-main poli-main">
+      <!-- ATAS: Sedang Dipanggil (kiri) + Media (kanan) -->
+      <div class="poli-top">
+        <!-- SEDANG DIPANGGIL -->
+        <div :class="['poli-call', { 'has-called': currentCall }]">
+          <div class="poli-call-head">Antrean Dipanggil</div>
+          <div class="poli-call-body">
+            <div :class="['pcl-num', { muted: !currentCall }]">{{ currentCall ? currentCall.number : '—' }}</div>
+            <template v-if="currentCall">
+              <div class="pcl-poli">{{ currentCall.label }}<span v-if="currentCall.room"> · Ruang {{ currentCall.room }}</span></div>
+              <div v-if="currentCall.patient" class="pcl-name">{{ currentCall.patient }}</div>
+              <div v-if="currentCall.doctor" class="pcl-dokter">{{ currentCall.doctor }}</div>
+            </template>
+            <div v-else class="pcl-idle">Menunggu panggilan…</div>
+          </div>
         </div>
-        <iframe v-else-if="mediaMode === 'youtube'" :src="youtubeEmbedUrl" class="yt-frame"
-                allow="autoplay; encrypted-media" allowfullscreen frameborder="0"></iframe>
-        <div v-else-if="mediaMode === 'slideshow' && slides.length" class="slideshow">
-          <img v-for="(s, i) in slides" :key="i" :src="s.url"
-               :class="['slide-img', { active: i === slideIndex }]" alt="" />
-        </div>
-        <video v-else-if="mediaMode === 'localvideo' && localVideoUrl" :src="localVideoUrl"
-               :loop="videoLoop" :autoplay="videoAutoplay" muted class="local-video"></video>
-        <div v-else class="video-placeholder">
-          <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+
+        <!-- MEDIA -->
+        <div class="poli-media">
+          <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
+            <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+            <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
+            <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
+          </div>
+          <iframe v-else-if="mediaMode === 'youtube'" :src="youtubeEmbedUrl" class="yt-frame"
+                  allow="autoplay; encrypted-media" allowfullscreen frameborder="0"></iframe>
+          <div v-else-if="mediaMode === 'slideshow' && slides.length" class="slideshow">
+            <img v-for="(s, i) in slides" :key="i" :src="s.url"
+                 :class="['slide-img', { active: i === slideIndex }]" alt="" />
+          </div>
+          <video v-else-if="mediaMode === 'localvideo' && localVideoUrl" :src="localVideoUrl"
+                 :loop="videoLoop" :autoplay="videoAutoplay" muted class="local-video"></video>
+          <div v-else class="video-placeholder">
+            <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+          </div>
         </div>
       </div>
 
-      <!-- PANEL ANTREAN (scene berputar) -->
-      <div class="poli-queue">
-        <div class="scene-dots">
-          <span v-for="s in visibleScenes" :key="s.key"
-                :class="['scene-dot', { active: s.key === activeScene }]">{{ sceneLabel[s.key] }}</span>
-        </div>
-
-        <Transition name="scene" mode="out-in">
-          <div :key="activeScene" class="scene-body">
-
-            <!-- SCENE: POLIKLINIK -->
-            <div v-if="activeScene === 'poli'" :class="['poli-board', `cols-${poliCols}`]">
-              <div v-for="d in poliklinikView" :key="d.prefix"
-                   :class="['poli-card', d.calledNum ? 'has-called' : '']">
-                <div class="pc-head">
-                  <span class="pc-poli">{{ d.poli }}<span v-if="d.room"> · Ruang {{ d.room }}</span></span>
-                  <span v-if="d.serviceType" :class="['pc-svc', d.serviceType.toLowerCase()]">
-                    {{ d.serviceType === 'EKSEKUTIF' ? 'Eksekutif' : 'BPJS' }}
-                  </span>
-                </div>
-                <div v-if="d.dokter" class="pc-dokter">{{ d.dokter }}</div>
-                <div class="pc-body">
-                  <div class="pc-cell">
-                    <div class="pc-lbl">Dipanggil</div>
-                    <div :class="['pc-num', { muted: !d.calledNum }]">{{ d.calledNum || '—' }}</div>
-                  </div>
-                  <div class="pc-cell">
-                    <div class="pc-lbl">Menunggu</div>
-                    <div class="pc-wait-num">{{ d.waitingCount }}</div>
-                  </div>
-                </div>
-                <div class="pc-next">{{ d.nextNum ? `Berikutnya: ${d.nextNum}` : 'Belum ada antrean berikutnya' }}</div>
-              </div>
-            </div>
-
-            <!-- SCENE: FARMASI -->
-            <div v-else-if="activeScene === 'farmasi'" class="farmasi-board">
-              <div class="board-title">Antrean Farmasi</div>
-              <div class="fb-main">
-                <div :class="['fb-call', { 'has-called': farmasiView.calledNum }]">
-                  <div class="pc-lbl">Sedang Dipanggil</div>
-                  <div :class="['fb-num', { muted: !farmasiView.calledNum }]">{{ farmasiView.calledNum || '—' }}</div>
-                  <div class="fb-wait">{{ farmasiView.waitingCount }} menunggu</div>
-                </div>
-                <div class="fb-side">
-                  <div class="fb-side-lbl">Siap diambil</div>
-                  <div class="fb-chips">
-                    <span v-for="n in farmasiView.readyList" :key="n" class="fb-chip ready">{{ n }}</span>
-                    <span v-if="!farmasiView.readyList.length" class="fb-empty">—</span>
-                  </div>
-                  <div class="fb-side-lbl">Antrean berikutnya</div>
-                  <div class="fb-chips">
-                    <span v-for="n in farmasiView.nextList" :key="n" class="fb-chip">{{ n }}</span>
-                    <span v-if="!farmasiView.nextList.length" class="fb-empty">—</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- SCENE: STASIUN LAIN -->
-            <div v-else-if="activeScene === 'stasiun'" class="strip-board">
-              <div class="board-title">Antrean Stasiun Lain</div>
-              <div class="strip-grid">
-                <div v-for="s in stationStripView" :key="s.key"
-                     :class="['strip-card', s.calledNum ? 'has-called' : '']">
-                  <div class="strip-name">{{ s.label }}</div>
-                  <div :class="['strip-num', { muted: !s.calledNum }]">{{ s.calledNum || '—' }}</div>
-                  <div class="strip-wait">{{ s.waitingCount }} menunggu</div>
-                </div>
-              </div>
-            </div>
-
-            <!-- SCENE: MEDIA → strip ringkas antrean (info tak hilang) -->
-            <div v-else class="media-strip">
-              <div class="board-title">Ringkasan Antrean</div>
-              <div class="ms-sec-lbl">Poliklinik</div>
-              <div class="ms-rows">
-                <div v-for="d in poliklinikView" :key="d.prefix" class="ms-row">
-                  <span class="ms-poli">{{ d.poli }}<span v-if="d.dokter"> — {{ d.dokter }}</span></span>
-                  <span :class="['ms-call', { muted: !d.calledNum }]">{{ d.calledNum || '—' }}</span>
-                  <span class="ms-w">{{ d.waitingCount }} antri</span>
-                </div>
-                <div v-if="!poliklinikView.length" class="fb-empty">Tidak ada dokter aktif</div>
-              </div>
-              <div class="ms-sec-lbl">Farmasi</div>
-              <div class="ms-rows">
-                <div class="ms-row">
-                  <span class="ms-poli">Pengambilan Obat</span>
-                  <span :class="['ms-call', { muted: !farmasiView.calledNum }]">{{ farmasiView.calledNum || '—' }}</span>
-                  <span class="ms-w">{{ farmasiView.waitingCount }} antri</span>
-                </div>
-              </div>
-            </div>
-
+      <!-- BAWAH: strip per-dokter BPJS + Farmasi, selalu tampil (auto-scroll bila banyak) -->
+      <div class="poli-strip-wrap">
+        <div :class="['poli-strip-track', { marquee: poliStripMarquee }]"
+             :style="poliStripMarquee ? { '--strip-dur': poliStripDuration } : null">
+          <div v-for="c in poliStripCards" :key="c.key"
+               :class="['doc-card', c.type === 'farmasi' ? 'farmasi' : '', c.calledNum ? 'has-called' : '']">
+            <div class="dc-poli">{{ c.poli }}<span v-if="c.room" class="dc-room"> · R{{ c.room }}</span></div>
+            <div :class="['dc-num', { muted: !c.calledNum }]">{{ c.calledNum || '—' }}</div>
+            <div v-if="c.dokter" class="dc-dokter">{{ c.dokter }}</div>
+            <div class="dc-wait">{{ c.waitingCount }} menunggu<span v-if="c.nextNum"> · brkt {{ c.nextNum }}</span></div>
           </div>
-        </Transition>
+        </div>
       </div>
     </div>
 
@@ -2357,10 +2315,11 @@ async function saveAudioDefaults() {
                 <span class="tvdev-dot on" title="TV ini"></span>
                 <input
                   class="ctrl-input tvdev-name"
-                  :value="deviceName"
+                  :value="thisDeviceNameEdit ?? deviceName"
                   placeholder="Nama / lokasi TV ini"
-                  @keydown.enter="renameThisDevice($event.target.value); $event.target.blur()"
-                  @blur="renameThisDevice($event.target.value)"
+                  @input="thisDeviceNameEdit = $event.target.value"
+                  @keydown.enter="$event.target.blur()"
+                  @blur="commitThisDeviceName()"
                 />
                 <span class="tvdev-this">★ TV ini</span>
               </div>
@@ -2392,10 +2351,11 @@ async function saveAudioDefaults() {
                 <span :class="['tvdev-dot', d.online ? 'on' : 'off']" :title="d.online ? 'Online' : 'Offline'"></span>
                 <input
                   class="ctrl-input tvdev-name"
-                  :value="d.name"
+                  :value="deviceNameEdits[d.id] ?? d.name"
                   placeholder="Nama / lokasi TV"
-                  @keydown.enter="renameDevice(d.id, $event.target.value)"
-                  @blur="$event.target.value !== d.name && renameDevice(d.id, $event.target.value)"
+                  @input="deviceNameEdits[d.id] = $event.target.value"
+                  @keydown.enter="$event.target.blur()"
+                  @blur="commitDeviceName(d)"
                 />
                 <span :class="['tvdev-badge', d.media_synced ? 'global' : 'self']">
                   {{ d.media_synced ? 'Global' : 'Mandiri' }}
@@ -2682,6 +2642,23 @@ async function saveAudioDefaults() {
 
           <!-- TAB: ANTREAN — Pengaturan FIFO call queue + audio -->
           <div v-if="activeTab === 'antrean'" class="ctrl-section">
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Mode Layar</p>
+              <div class="mode-seg">
+                <button :class="['mode-seg-btn', { active: tvMode === 'grid' }]" @click="setTvMode('grid')">
+                  Grid 8 Stasiun
+                </button>
+                <button :class="['mode-seg-btn', { active: tvMode === 'poli' }]" @click="setTvMode('poli')">
+                  Poliklinik BPJS
+                </button>
+              </div>
+              <p class="ctrl-lbl" style="opacity:.55; margin-top:6px; font-weight:400">
+                Pilihan disimpan di TV ini & bertahan saat di-reload. Mode Poliklinik
+                menampilkan antrean per-dokter BPJS (rotasi dengan media), Grid menampilkan
+                8 stasiun sekaligus.
+              </p>
+            </div>
+
             <p class="ctrl-lbl">Pengaturan Panggilan</p>
 
             <div class="ctrl-sub-section">
@@ -4307,22 +4284,21 @@ async function saveAudioDefaults() {
    MODE POLIKLINIK — 1 layar dinamis (media + antrean berputar)
    Lebar media/antrean bertukar sesuai scene aktif (transisi flex-grow).
    ═══════════════════════════════════════════════════════════════════════════ */
+/* Layout always-on (skema BPJS): atas = Dipanggil + Media, bawah = strip dokter */
 .poli-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  min-height: 0;
+}
+.poli-top {
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   gap: 1.25rem;
 }
-.poli-media,
-.poli-queue {
-  min-width: 0;
-  min-height: 0;
-  transition: flex-grow 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-}
-/* Default (scene antrean aktif): antrean dominan 70%, media menyusut 30% */
-.poli-media { flex: 3 1 0; }
-.poli-queue { flex: 7 1 0; }
-/* Scene media aktif: media dominan 70%, strip antrean 30% */
-.poli-main.scene-media .poli-media { flex-grow: 7; }
-.poli-main.scene-media .poli-queue { flex-grow: 3; }
+.poli-call  { flex: 40 1 0; min-width: 0; }
+.poli-media { flex: 60 1 0; min-width: 0; min-height: 0; }
 
 /* Panel media — samakan tampilan dengan .video-panel */
 .poli-media {
@@ -4635,5 +4611,165 @@ async function saveAudioDefaults() {
   font-weight: 600;
   min-width: 64px;
   text-align: right;
+}
+.ms-room { color: var(--lm); font-weight: 600; }
+
+/* ── Mode poli always-on: panel "Sedang Dipanggil" ── */
+.poli-call {
+  background: #fff;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(56, 189, 248, 0.15);
+}
+.poli-call-head {
+  background: var(--lm, #16a085);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  font-size: clamp(16px, 1.5vw, 24px);
+  padding: 0.7rem 1rem;
+  flex-shrink: 0;
+}
+.poli-call-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  text-align: center;
+}
+.pcl-num {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: clamp(64px, 11vw, 200px);
+  line-height: 0.95;
+  color: #3a4a5a;
+}
+.pcl-num.muted { color: #c3ccd4; }
+.pcl-poli {
+  font-size: clamp(22px, 2.4vw, 42px);
+  font-weight: 800;
+  color: #2c3a48;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.pcl-name {
+  font-size: clamp(20px, 2.1vw, 38px);
+  font-weight: 700;
+  color: #34434f;
+}
+.pcl-dokter {
+  font-size: clamp(15px, 1.4vw, 24px);
+  color: #7a8794;
+  border-top: 1px solid #e3e8ec;
+  padding-top: 0.5rem;
+  margin-top: 0.2rem;
+}
+.pcl-idle { font-size: clamp(16px, 1.6vw, 26px); color: #aab3bb; font-weight: 600; }
+
+/* ── Mode poli always-on: strip kartu per-dokter (bawah) ── */
+.poli-strip-wrap {
+  flex: 0 0 auto;
+  height: clamp(180px, 27vh, 280px);
+  overflow: hidden;
+  position: relative;
+}
+.poli-strip-track {
+  display: flex;
+  gap: 1rem;
+  height: 100%;
+  align-items: stretch;
+}
+.poli-strip-track.marquee {
+  width: max-content;
+  animation: poliStripScroll var(--strip-dur, 30s) linear infinite;
+}
+@keyframes poliStripScroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.doc-card {
+  flex: 1 0 clamp(220px, 18vw, 320px);
+  min-width: clamp(220px, 18vw, 320px);
+  background: #2ecc71;
+  border-radius: 14px;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.8rem 1rem;
+  text-align: center;
+}
+.doc-card.has-called { background: #16a34a; box-shadow: 0 0 0 3px rgba(255,255,255,0.25) inset; }
+.doc-card.farmasi { background: #2563eb; }
+.doc-card.farmasi.has-called { background: #1d4ed8; }
+.dc-poli {
+  font-size: clamp(15px, 1.4vw, 22px);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+.dc-room { font-weight: 700; opacity: 0.85; }
+.dc-num {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: clamp(40px, 4.5vw, 80px);
+  line-height: 1;
+}
+.dc-num.muted { opacity: 0.55; }
+.dc-dokter {
+  font-size: clamp(13px, 1.1vw, 18px);
+  font-weight: 600;
+  opacity: 0.95;
+  line-height: 1.15;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.dc-wait { font-size: clamp(12px, 1vw, 15px); opacity: 0.85; }
+.doc-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 18px;
+}
+
+/* ── Toggle mode layar (tab Antrean) ── */
+.mode-seg {
+  display: flex;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.3rem;
+  border-radius: 12px;
+}
+.mode-seg-btn {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mode-seg-btn:hover { color: #fff; }
+.mode-seg-btn.active {
+  background: var(--lm);
+  color: #06182E;
 }
 </style>
