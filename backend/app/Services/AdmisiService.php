@@ -2645,30 +2645,49 @@ class AdmisiService
         $this->assertBpjsEnabled('VCLAIM');
 
         $noKartu = $this->resolveNoKartuBpjs($data);
-        $filter  = (string) ($data['filter'] ?? '2'); // 1=tgl entri, 2=tgl rencana kontrol
 
-        // Bila petugas tentukan bulan/tahun → query persis itu. Default: bulan berjalan
-        // + bulan depan, sebab kontrol pasca-bedah ("kontrol kembali tgl X") sering jatuh
-        // di bulan berikutnya — kalau cuma bulan ini, surat kontrolnya tak akan muncul.
+        // VClaim TAK punya endpoint "semua SC per kartu" — ListRencanaKontrol selalu
+        // per Bulan+Tahun+filter (1=tgl entri, 2=tgl rencana kontrol). Maka untuk
+        // menemukan SC otomatis by kartu (tanpa petugas tahu nomornya), sapu beberapa
+        // bulan & dua filter, lalu dedup:
+        //  - filter 2 (tgl RENCANA): bulan lalu .. +2 → tangkap pasien yang telat datang
+        //    & kontrol yang dijadwalkan maju ke depan.
+        //  - filter 1 (tgl ENTRI):   bulan lalu .. ini → tangkap SC yang baru diterbitkan
+        //    (mis. lewat web VClaim) walau tgl rencananya jauh.
+        // Bila petugas tentukan bulan/tahun → query persis itu saja (hormati pilihan).
         if (! empty($data['bulan'])) {
-            $periods = [[
+            $queries = [[
                 str_pad((string) $data['bulan'], 2, '0', STR_PAD_LEFT),
                 (string) ($data['tahun'] ?? now('Asia/Jakarta')->format('Y')),
+                (string) ($data['filter'] ?? '2'),
             ]];
         } else {
-            $now  = now('Asia/Jakarta');
-            $next = $now->copy()->addMonth();
-            $periods = [
-                [$now->format('m'), $now->format('Y')],
-                [$next->format('m'), $next->format('Y')],
-            ];
+            $now     = now('Asia/Jakarta');
+            $queries = [];
+            foreach ([-1, 0, 1, 2] as $off) {
+                $m = $now->copy()->addMonths($off);
+                $queries[] = [$m->format('m'), $m->format('Y'), '2'];
+            }
+            foreach ([-1, 0] as $off) {
+                $m = $now->copy()->addMonths($off);
+                $queries[] = [$m->format('m'), $m->format('Y'), '1'];
+            }
         }
 
         $merged  = [];
         $seen    = [];
         $lastRaw = null;
-        foreach ($periods as [$bulan, $tahun]) {
-            $res     = $this->vclaim->listRencanaKontrolByKartu($bulan, $tahun, $noKartu, $filter);
+        $okCount = 0;
+        $lastErr = null;
+        foreach ($queries as [$bulan, $tahun, $filter]) {
+            // Resilien per-call: 1 bulan error/timeout tak menggagalkan seluruh sapuan.
+            try {
+                $res = $this->vclaim->listRencanaKontrolByKartu($bulan, $tahun, $noKartu, $filter);
+            } catch (\Throwable $e) {
+                $lastErr = $e;
+                continue;
+            }
+            $okCount++;
             $lastRaw = $res;
             $list    = $res['response']['list'] ?? (is_array($res['response'] ?? null) ? $res['response'] : []);
             foreach (($list ?: []) as $item) {
@@ -2681,9 +2700,15 @@ class AdmisiService
             }
         }
 
+        // Semua call gagal (mis. VClaim down) → lempar agar FE tampilkan error, bukan
+        // "tidak ada surat kontrol" yang menyesatkan.
+        if ($okCount === 0 && $lastErr) {
+            throw $lastErr;
+        }
+
         return [
             'no_kartu' => $noKartu,
-            'periods'  => $periods,
+            'periods'  => $queries,
             // Bentuk ulang jadi 1 envelope (response.list gabungan) agar FE memproses seragam.
             'result'   => [
                 'metaData'   => $lastRaw['metaData'] ?? ['code' => '200', 'message' => 'OK'],
