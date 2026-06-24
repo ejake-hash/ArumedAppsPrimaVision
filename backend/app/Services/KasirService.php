@@ -177,6 +177,7 @@ class KasirService
                 ->where('type', '!=', Prescription::TYPE_RANAP)
                 ->whereIn('status', ['DRAFT', 'SUBMITTED'])
                 ->whereNull('verified_at')
+                ->whereHas('items')   // resep kosong tak punya obat utk diverifikasi → bukan pemblokir (selaras assertObatVerified)
                 ->exists());
 
             // Desync diam: bila reconsolidate gagal saat re-verifikasi (revisi qty/substitusi/
@@ -418,10 +419,26 @@ class KasirService
      */
     private function assertObatVerified(string $visitId): void
     {
+        // HEAL deadlock D→K→F: resep rawat jalan yang masih DRAFT (mis. dokter mengedit
+        // resep SETELAH finalisasi, atau jalur yang melewati flip DokterService::finalize)
+        // TIDAK TERLIHAT Farmasi — worklist verifikasi hanya menampilkan status SUBMITTED —
+        // padahal gate ini memblok tagihan untuk resep DRAFT yg belum verified → tagihan
+        // BUNTU tanpa jalan keluar (Kasir bilang "menunggu verifikasi" tapi resep tak pernah
+        // muncul di Farmasi). Promosikan DRAFT→SUBMITTED (HANYA yang ada itemnya) supaya
+        // surat resep masuk worklist Farmasi & bisa dikunci. Selaras DokterService::finalize.
+        Prescription::where('visit_id', $visitId)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
+            ->where('status', 'DRAFT')
+            ->whereHas('items')
+            ->update(['status' => 'SUBMITTED']);
+
+        // Resep KOSONG (tanpa item) tak punya obat utk diverifikasi/ditagih → JANGAN
+        // jadikan pemblokir (cegah header resep kosong mengunci tagihan selamanya).
         $adaBelumVerifikasi = Prescription::where('visit_id', $visitId)
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->whereIn('status', ['DRAFT', 'SUBMITTED'])
             ->whereNull('verified_at')
+            ->whereHas('items')
             ->exists();
         if ($adaBelumVerifikasi) {
             throw new \Exception('Resep belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci resep dulu sebelum membuat/menutup tagihan.', 422);

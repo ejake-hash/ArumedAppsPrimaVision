@@ -68,6 +68,8 @@ function transformQueueItem(q) {
     _schedRoom:     sched?.operation_room ?? '—',    // baseline ruang dr jadwal (deteksi "disentuh" saat poll)
     scheduledTime:  sched?.scheduled_time ?? null,   // null = jam belum ditentukan dokter (opsional)
     scheduledDate:  sched?.scheduled_date,
+    // Tanggal planning bedah dibuat — fallback "tanggal bedah" bila scheduled_date kosong.
+    schedCreatedDate: sched?.created_date ?? null,
     paketBedah:     pkg ? { kode: (pkg.id || '').slice(0, 6), nama: pkg.name } : null,
     prosedur,
 
@@ -333,6 +335,8 @@ watch(selP, (p) => {
     visitPackages.value = []
     vpAddPkgId.value = ''
     vpAddTariffId.value = ''
+    vpAddPkgSearch.value = ''
+    vpConfirmDelId.value = ''
   }
 })
 
@@ -625,13 +629,19 @@ const timOutDisplay = computed(() => {
 })
 
 // ── Computed ───────────────────────────────────────────────────────────────────
-// Baris antrean dibuat hari ini? (operasi lintas-hari yang masih nyangkut → "Masih Aktif")
+// Tanggal bedah pasien = scheduled_date (jadwal dokter), fallback ke tanggal
+// planning bedah dibuat, lalu tanggal baris antrean. Inilah sumber kebenaran
+// "hari ini" — BUKAN created_at antrean (yg bisa hari ini walau operasinya lintas-hari).
+const surgeryDateOf = (p) => p.scheduledDate || p.schedCreatedDate || p.createdAt
+// Tanggal cocok hari ini? (operasi lintas-hari yang masih nyangkut → "Masih Aktif")
 function isTodayRow(c) {
   if (!c) return true
-  const d = new Date(c), n = new Date()
+  const d = new Date(String(c).length <= 10 ? `${c}T00:00:00` : c), n = new Date()
+  if (Number.isNaN(d.getTime())) return true
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
 }
-const isTodayP = (p) => isTodayRow(p.createdAt)
+// Operasi pasien berdasarkan TANGGAL BEDAH-nya jatuh hari ini?
+const isTodayP = (p) => isTodayRow(surgeryDateOf(p))
 const isDoneP  = (p) => p.status === 'SELESAI'
 // "Masih Aktif" = baris lintas-hari yang kunjungannya BELUM ditutup di kasir
 // (operasi terbengkalai / pasca-op belum dibilling). Pasien yang sudah tutup kasir
@@ -1304,6 +1314,35 @@ const vpAvailablePackages = computed(() => {
   return vpAllPackages.value.filter((p) => !used.has(p.id) && !usedNames.has(p.name))
 })
 
+// ── "Tambah Paket": combobox cari-ketik (master paket bisa ratusan baris) ─────
+const vpAddPkgSearch = ref('')
+const vpAddPkgOpen   = ref(false)
+const vpAddPkgFiltered = computed(() => {
+  const q = vpAddPkgSearch.value.trim().toLowerCase()
+  const list = q
+    ? vpAvailablePackages.value.filter((p) => `${p.name ?? ''} ${p.code ?? ''} ${p.package_type ?? ''}`.toLowerCase().includes(q))
+    : vpAvailablePackages.value
+  return list.slice(0, 50)   // cap tampilan; ketik lebih spesifik utk mempersempit
+})
+const vpAddPkgLabel = computed(() => {
+  const p = vpAvailablePackages.value.find((x) => x.id === vpAddPkgId.value)
+  return p ? `${p.code ? `[${p.code}] ` : ''}${p.name}${p.package_type ? ` · ${p.package_type}` : ''}` : ''
+})
+function vpPickAddPkg(p) {
+  vpAddPkgId.value = p.id
+  vpAddPkgSearch.value = ''
+  vpAddPkgOpen.value = false
+}
+function vpClearAddPkg() {
+  vpAddPkgId.value = ''
+  vpAddTariffId.value = ''
+  vpAddPkgSearch.value = ''
+}
+
+// Konfirmasi hapus paket INLINE (2-langkah) — tidak pakai window.confirm() yang bisa
+// disenyapkan browser ("cegah dialog tambahan") → klik "Hapus paket" jadi tak berfungsi.
+const vpConfirmDelId = ref('')
+
 async function vpAddItem(snap) {
   const visitId = selP.value?.visitId
   const form = vpForm(snap.id)
@@ -1370,15 +1409,15 @@ async function vpAddPackage() {
   try {
     const { data } = await bedahApi.addVisitPackage(visitId, vpAddPkgId.value, vpAddTariffId.value || null)
     if (Array.isArray(data.data)) visitPackages.value = data.data
-    vpAddPkgId.value = ''
-    vpAddTariffId.value = ''
+    vpClearAddPkg()
     toast('s', 'Paket ditambahkan')
   } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal tambah paket') }
   finally { vpBusy.value = false }
 }
+// Hapus paket — dipanggil dari konfirmasi inline (vpConfirmDelId). TANPA window.confirm().
 async function vpRemovePackage(snap) {
+  vpConfirmDelId.value = ''
   if (vpBusy.value) return
-  if (!confirm(`Hapus paket "${snap.package_name}" dari pasien ini?`)) return
   vpBusy.value = true
   try {
     const { data } = await bedahApi.removeVisitPackage(snap.id)
@@ -1927,6 +1966,10 @@ function mulaiBack() { mulaiStep.value = 1 }
                   </div>
                   <div class="q-prosedur">{{ p.prosedur }}</div>
                   <div class="q-tags">
+                    <span class="pill pill-tgl-bedah" :title="`Tanggal bedah: ${fmtVisitDate(surgeryDateOf(p)) || '—'}`">
+                      <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ fmtVisitDate(surgeryDateOf(p)) || '—' }}
+                    </span>
                     <span v-if="p.visitType === 'PREOP_BEDAH'" class="pill pill-preop" title="Preop bedah — bypass dokter">PREOP</span>
                     <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : 'pill-umum']">
                       {{ p.ptype.toUpperCase() }}
@@ -2377,7 +2420,14 @@ function mulaiBack() { mulaiStep.value = 1 }
                       <span class="bd-paket-source-pill" :title="snap.label && snap.label !== snap.package_name ? `Paket: ${snap.package_name}` : null">{{ snap.label || snap.package_name }}</span>
                       <span v-if="snap.label && snap.label !== snap.package_name" class="bd-vp-type-tag" :title="`Nama paket master: ${snap.package_name}`">{{ snap.package_name }}</span>
                       <span v-if="snap.package_type" class="bd-vp-type-tag">{{ snap.package_type }}</span>
-                      <button v-if="!selP.laporanFinalized" class="bd-vp-pkg-del" @click="vpRemovePackage(snap)" :disabled="vpBusy" title="Hapus paket ini dari pasien">Hapus paket</button>
+                      <template v-if="!selP.laporanFinalized">
+                        <button v-if="vpConfirmDelId !== snap.id" class="bd-vp-pkg-del" @click="vpConfirmDelId = snap.id" :disabled="vpBusy" title="Hapus paket ini dari pasien">Hapus paket</button>
+                        <span v-else class="bd-vp-pkg-confirm">
+                          <span class="bd-vp-pkg-confirm-q">Hapus paket?</span>
+                          <button class="bd-vp-pkg-del danger" @click="vpRemovePackage(snap)" :disabled="vpBusy">Ya, hapus</button>
+                          <button class="bd-vp-pkg-cancel" @click="vpConfirmDelId = ''" :disabled="vpBusy">Batal</button>
+                        </span>
+                      </template>
                     </div>
 
                     <!-- Ringkasan harga paket & diskon -->
@@ -2465,10 +2515,24 @@ function mulaiBack() { mulaiStep.value = 1 }
 
                   <!-- Tambah paket (mis. paket anestesi TIVA di samping Phaco) -->
                   <div v-if="!selP.laporanFinalized" class="bd-vp-addpkg">
-                    <select class="bd-select bd-select-sm" v-model="vpAddPkgId" style="flex:1">
-                      <option value="">-- Tambah paket ke pasien --</option>
-                      <option v-for="p in vpAvailablePackages" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}{{ p.package_type ? ` · ${p.package_type}` : '' }}</option>
-                    </select>
+                    <div class="bd-combo-wrap" style="flex:1;min-width:200px">
+                      <input
+                        class="bd-input bd-input-sm bd-combo-input"
+                        placeholder="Cari & tambah paket (nama / kode)…"
+                        :value="vpAddPkgId ? vpAddPkgLabel : vpAddPkgSearch"
+                        @focus="vpAddPkgOpen = true"
+                        @input="e => { vpAddPkgSearch = e.target.value; vpAddPkgId = ''; vpAddTariffId = ''; vpAddPkgOpen = true }"
+                        @blur="() => setTimeout(() => { vpAddPkgOpen = false }, 150)"
+                      />
+                      <svg class="bd-combo-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                      <div v-if="vpAddPkgOpen" class="bd-combo-dropdown">
+                        <div v-for="p in vpAddPkgFiltered" :key="p.id" class="bd-combo-option" @mousedown.prevent="vpPickAddPkg(p)">
+                          <span class="bd-combo-name">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}</span>
+                          <span class="bd-combo-role">{{ p.package_type || '' }}</span>
+                        </div>
+                        <div v-if="!vpAddPkgFiltered.length" class="bd-combo-empty">{{ vpAvailablePackages.length ? 'Tidak ada hasil' : 'Semua paket sudah dipakai' }}</div>
+                      </div>
+                    </div>
                     <select v-if="vpSelectedVariants.length > 1" class="bd-select bd-select-sm" v-model="vpAddTariffId" style="flex:1" title="Varian / Nama Paket Penjamin">
                       <option v-for="v in vpSelectedVariants" :key="v.tariff_id" :value="v.tariff_id">{{ v.display_name || 'Varian' }} — {{ fmtRp2(v.sell_price) }}{{ v.iol_label ? ` — IOL ${v.iol_label}` : '' }}</option>
                     </select>
@@ -3459,6 +3523,8 @@ function mulaiBack() { mulaiStep.value = 1 }
 .pill-preop     { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; font-weight: 700; }
 .pill-ruang     { background: var(--bc); color: var(--td); border: 1px solid var(--gb); }
 .pill-time      { background: var(--bi); color: var(--tu); font-variant-numeric: tabular-nums; }
+.pill-tgl-bedah { background: #ccfbf1; color: #0f766e; font-weight: 700; }
+.pill-tgl-bedah .pill-icon { fill: none; stroke: currentColor; stroke-width: 2; }
 .pill-time-na   { background: #fff4e5; color: #9a6700; font-style: italic; }
 
 /* Classification */
@@ -3605,6 +3671,13 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-vp-pkg-del { margin-left: auto; font-size: 11px; font-weight: 600; padding: 4px 10px; border: 1px solid var(--eb); color: var(--et); background: transparent; border-radius: 6px; cursor: pointer; }
 .bd-vp-pkg-del:hover:not(:disabled) { background: var(--eb); }
 .bd-vp-pkg-del:disabled { opacity: .5; cursor: not-allowed; }
+.bd-vp-pkg-del.danger { background: var(--et); color: #fff; border-color: var(--et); }
+.bd-vp-pkg-del.danger:hover:not(:disabled) { filter: brightness(.95); background: var(--et); }
+.bd-vp-pkg-confirm { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.bd-vp-pkg-confirm-q { font-size: 11px; font-weight: 600; color: var(--et); }
+.bd-vp-pkg-cancel { font-size: 11px; font-weight: 600; padding: 4px 10px; border: 1px solid var(--gb); color: var(--tm); background: transparent; border-radius: 6px; cursor: pointer; }
+.bd-vp-pkg-cancel:hover:not(:disabled) { background: var(--bs); }
+.bd-vp-pkg-cancel:disabled { opacity: .5; cursor: not-allowed; }
 .bd-vp-addpkg { display: flex; gap: 8px; align-items: center; margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--gb); }
 
 /* Paket source pill (di header BHP Terpakai) */

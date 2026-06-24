@@ -191,6 +191,9 @@ class BedahService
                 'surgery_schedule' => $schedule ? [
                     'id'             => $schedule->id,
                     'scheduled_date' => $schedule->scheduled_date?->toDateString(),
+                    // Tanggal planning bedah dibuat — fallback "tanggal bedah" di FE
+                    // saat scheduled_date kosong (kartu antrean + klasifikasi hari-ini).
+                    'created_date'   => $schedule->created_at?->toDateString(),
                     'scheduled_time' => $schedule->scheduled_time,
                     'operation_room' => $schedule->operation_room,
                     'status'         => $schedule->status,
