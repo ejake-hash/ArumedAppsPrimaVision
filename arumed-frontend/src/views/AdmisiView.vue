@@ -1631,6 +1631,44 @@ async function cekRujukanBpjs() {
   }
 }
 
+/* Cek Surat Kontrol langsung by NOMOR ke BPJS (VClaim /RencanaKontrol/noSuratKontrol).
+ * Beda dari "Tarik dari BPJS" (list by kartu) yang TERBATAS bulan ini+depan & filter
+ * tgl-rencana → SC dengan tgl rencana di luar jendela / terbit lewat web VClaim tak
+ * muncul. Cek by nomor ini tanpa jendela tanggal → selalu menemukan SC yang valid. */
+const kontrolCheck = reactive({ loading: false, error: '', data: null })
+async function cekSuratKontrol() {
+  const no = (form.controlNo || '').trim()
+  if (!no) { kontrolCheck.error = 'Isi nomor surat kontrol dulu'; kontrolCheck.data = null; return }
+  kontrolCheck.loading = true; kontrolCheck.error = ''; kontrolCheck.data = null
+  try {
+    const res  = await admisiApi.bpjs.cekSuratKontrol({ no_surat_kontrol: no })
+    const env  = res.data?.data ?? {}
+    const meta = env.metaData ?? {}
+    // /noSuratKontrol → response = objek SC tunggal; jaga-jaga bila berbentuk list.
+    const sc = env.response && !Array.isArray(env.response)
+      ? env.response
+      : (Array.isArray(env.response?.list) ? env.response.list[0] : null)
+    const codeOk = String(meta.code ?? '200') === '200'
+    if (sc && (sc.noSuratKontrol || codeOk)) {
+      kontrolCheck.data = {
+        no:     sc.noSuratKontrol || no,
+        tgl:    sc.tglRencanaKontrol || '—',
+        poli:   sc.namaPoliTujuan || sc.poliTujuan?.nama || (typeof sc.poliTujuan === 'string' ? sc.poliTujuan : '') || '—',
+        dokter: sc.namaDokter || sc.namaDokterAju || (typeof sc.dokter === 'string' ? sc.dokter : '') || '—',
+      }
+      form.controlNo = kontrolCheck.data.no   // normalisasi ke nomor resmi BPJS
+      const kartu = sc.noKartu || sc.noKartuPeserta || ''
+      if (kartu && !form.bpjsNo) form.bpjsNo = kartu
+    } else {
+      kontrolCheck.error = meta.message || 'Surat kontrol tidak ditemukan di BPJS'
+    }
+  } catch (e) {
+    kontrolCheck.error = (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message || 'Gagal cek surat kontrol')
+  } finally {
+    kontrolCheck.loading = false
+  }
+}
+
 /* ─── Pre-flight kesiapan SEP (langkah Konfirmasi) ─────────────────────────
  * Cek poli/rujukan/diagnosa/kepesertaan SEBELUM daftar, supaya petugas
  * membetulkan masalah di wizard alih-alih dibanjiri notif "asesmen tidak
@@ -1747,6 +1785,7 @@ function resetBpjsPull() {
   bpjsPull.loading = false
   bpjsPull.error = ''; bpjsPull.rujukanError = ''; bpjsPull.kontrolError = ''
   bpjsPull.rujukan = []; bpjsPull.kontrol = []; bpjsPull.done = false
+  kontrolCheck.loading = false; kontrolCheck.error = ''; kontrolCheck.data = null
 }
 
 /* ─── Aksi Cepat: panel mana yang terbuka ('' | 'rujukan' | 'peserta') ─── */
@@ -3685,7 +3724,7 @@ onUnmounted(() => {
                     <div class="pull-group">
                       <div class="pull-group-lbl">Surat Kontrol <span class="pull-count">{{ bpjsPull.kontrol.length }}</span></div>
                       <div v-if="bpjsPull.kontrolError" class="check-msg err">{{ bpjsPull.kontrolError }}</div>
-                      <div v-else-if="!bpjsPull.kontrol.length" class="pull-empty">Tidak ada surat kontrol terjadwal (bulan ini &amp; bulan depan).</div>
+                      <div v-else-if="!bpjsPull.kontrol.length" class="pull-empty">Tidak ada surat kontrol terjadwal (bulan ini &amp; bulan depan). Jika pasien membawa nomor SC, pilih tipe <strong>Kontrol</strong> lalu <strong>Cek SK</strong> by nomor.</div>
                       <button
                         v-for="k in bpjsPull.kontrol" :key="'sk-' + k.no" type="button"
                         :class="['pull-item', form.sepType === 'kontrol' && form.controlNo === k.no ? 'picked' : '']"
@@ -3726,8 +3765,17 @@ onUnmounted(() => {
                 </div>
                 <div v-else-if="form.sepType === 'kontrol'" class="field full">
                   <label class="field-lbl">No. Surat Kontrol (SC)</label>
-                  <input v-model="form.controlNo" class="form-input" placeholder="Nomor surat kontrol sebelumnya" />
-                  <div class="hint">Diterbitkan pada kunjungan terakhir — lihat <code>bpjs_control_letters</code></div>
+                  <div class="inline-check">
+                    <input v-model="form.controlNo" class="form-input" placeholder="Nomor surat kontrol (SC) dari pasien" />
+                    <button type="button" class="btn-check" :disabled="kontrolCheck.loading" @click="cekSuratKontrol">
+                      {{ kontrolCheck.loading ? 'Mengecek…' : 'Cek SK' }}
+                    </button>
+                  </div>
+                  <div class="hint">Cek langsung ke BPJS dengan nomor SC — tetap berlaku walau terbit lewat web VClaim atau tanggal kontrol di luar bulan ini.</div>
+                  <div v-if="kontrolCheck.error" class="check-msg err">{{ kontrolCheck.error }}</div>
+                  <div v-else-if="kontrolCheck.data" class="check-msg ok">
+                    Poli {{ kontrolCheck.data.poli }} · {{ kontrolCheck.data.dokter }} · Rencana kontrol {{ kontrolCheck.data.tgl }}
+                  </div>
                 </div>
                 <div v-else class="field full">
                   <label class="field-lbl">Kode Booking JKN Mobile</label>
