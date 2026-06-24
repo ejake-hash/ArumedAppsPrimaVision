@@ -1121,6 +1121,42 @@ function groupItemsByCategory(items, categories) {
 
 const groupedItems = computed(() => groupItemsByCategory(selInv.value?.items ?? [], billingCategories.value))
 
+// ─── Konsolidasi rujuk-internal: rincian dikelompokkan per DOKTER (subjudul) ──
+// selInv.source_visits = [{visit_id, is_anchor, doctor_name, poli}] dikirim backend
+// HANYA saat tagihan gabungan (>1 kunjungan). Tiap baris punya source_visit_id.
+const referralDoctors = computed(() => {
+  const sv = selInv.value?.source_visits
+  return Array.isArray(sv) && sv.length > 1 ? sv : null
+})
+const doctorGroups = computed(() => {
+  const sv = referralDoctors.value
+  if (!sv) return null
+  const anchorId = sv.find(d => d.is_anchor)?.visit_id ?? sv[0].visit_id
+  const byVisit = new Map()
+  for (const it of (selInv.value?.items ?? [])) {
+    const k = it.source_visit_id || anchorId   // baris lama/null → kunjungan utama (anchor)
+    if (!byVisit.has(k)) byVisit.set(k, [])
+    byVisit.get(k).push(it)
+  }
+  return sv.map(d => {
+    const rows = byVisit.get(d.visit_id) ?? []
+    return { ...d, groups: groupItemsByCategory(rows, billingCategories.value) }
+  }).filter(d => d.groups.length)
+})
+// Daftar section rincian terurut: per-dokter (header + kategori) atau per-kategori biasa.
+const rincianSections = computed(() => {
+  const dg = doctorGroups.value
+  if (dg) {
+    const out = []
+    for (const doc of dg) {
+      out.push({ type: 'doctor', key: 'doc-' + doc.visit_id, doc })
+      for (const grp of doc.groups) out.push({ type: 'cat', key: doc.visit_id + '-' + grp.name, grp })
+    }
+    return out
+  }
+  return groupedItems.value.map(grp => ({ type: 'cat', key: grp.name, grp }))
+})
+
 // Baris DISKON_PAKET dipisah dari rincian komposisi → ditampilkan di BAWAH total
 // (layout "Bruto → Diskon → Harga Paket"): komponen tampil penuh, Subtotal = bruto,
 // lalu baris Diskon Paket, TOTAL = harga jual paket.
@@ -1279,6 +1315,7 @@ const groupedPrintItems = computed(() =>
                     <span v-if="cobBadge(q)" class="pill pill-cob" :title="`COB — penjamin kedua: ${cobBadge(q)}`">COB: {{ cobBadge(q) }}</span>
                     <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
                     <span v-if="paketBedahLabel(q)" class="pill pill-bedah" :title="`Paket bedah: ${paketBedahLabel(q)}`">{{ paketBedahLabel(q) }}</span>
+                    <span v-if="q.visit?.referral_chain" class="pill pill-referral" :title="`Tagihan gabungan rujuk internal — ${q.visit.referral_chain.map(d => d.doctor_name).join(', ')}`">🔀 Rujuk internal · {{ q.visit.referral_chain.length }} dokter</span>
                     <span
                       v-if="q.visit?.obat_status === 'VERIFIED'"
                       class="pill pill-obat-ok"
@@ -1397,6 +1434,7 @@ const groupedPrintItems = computed(() =>
                   <span v-if="cobBadge(selQ)" class="ptg ptg-cob" :title="`COB — penjamin kedua: ${cobBadge(selQ)}`">COB: {{ cobBadge(selQ) }}</span>
                   <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
                   <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
+                  <span v-if="referralDoctors" class="ptg ptg-referral" :title="`Tagihan gabungan rujuk internal — ${referralDoctors.map(d => d.doctor_name).join(', ')}`">🔀 Rujuk internal · {{ referralDoctors.length }} dokter</span>
                   <span v-if="paketBedahLabel(selQ)" class="ptg ptg-bedah" :title="`Paket bedah: ${paketBedahLabel(selQ)}`">{{ paketBedahLabel(selQ) }}</span>
                   <span v-if="selQ.visit?.obat_status === 'VERIFIED'" class="ptg ptg-obat-ok" title="Ada resep obat — sudah diverifikasi & dikunci Farmasi">Obat ✓ Farmasi</span>
                   <span v-else-if="selQ.visit?.obat_status === 'PENDING'" class="ptg ptg-obat-wait" title="Ada resep obat — BELUM diverifikasi Farmasi">Obat • belum verif</span>
@@ -1706,18 +1744,28 @@ const groupedPrintItems = computed(() =>
                         <th v-if="editTagihan"></th>
                       </tr>
                     </thead>
-                    <!-- Grouped tbody per kategori — urutan section ikut master billingCategories.
-                         Item dengan kategori tidak terdaftar di master → otomatis masuk grup "Lainnya". -->
-                    <tbody v-for="grp in groupedItems" :key="grp.name" class="kat-group">
+                    <!-- Grouped tbody — per-DOKTER (rujuk internal) lalu per-kategori, atau
+                         per-kategori biasa. Urutan kategori ikut master billingCategories;
+                         kategori tak terdaftar → grup "Lainnya". -->
+                    <template v-for="sec in rincianSections" :key="sec.key">
+                    <tbody v-if="sec.type === 'doctor'" class="dokter-group">
+                      <tr class="dokter-group-head">
+                        <td :colspan="editTagihan ? 8 : 5">
+                          <span class="dokter-group-name">▸ {{ sec.doc.doctor_name }}<template v-if="sec.doc.poli"> — {{ sec.doc.poli }}</template></span>
+                          <span class="dokter-group-tag">{{ sec.doc.is_anchor ? 'kunjungan utama' : 'rujukan internal' }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tbody v-else class="kat-group">
                       <tr class="kat-group-head">
                         <td :colspan="editTagihan ? 7 : 4">
-                          <span class="kat-group-name">{{ grp.name }}</span>
-                          <span class="kat-group-count">{{ grp.items.length }} item</span>
+                          <span class="kat-group-name">{{ sec.grp.name }}</span>
+                          <span class="kat-group-count">{{ sec.grp.items.length }} item</span>
                         </td>
-                        <td class="num strong">Rp {{ grp.subtotal.toLocaleString('id-ID') }}</td>
+                        <td class="num strong">Rp {{ sec.grp.subtotal.toLocaleString('id-ID') }}</td>
                         <td v-if="editTagihan"></td>
                       </tr>
-                      <tr v-for="item in grp.items" :key="item.id" :class="{ 'is-diskon': isDiskonPaket(item) }">
+                      <tr v-for="item in sec.grp.items" :key="item.id" :class="{ 'is-diskon': isDiskonPaket(item) }">
                         <td class="desc">
                           <input
                             v-if="editTagihan && isDiskonPaket(item)"
@@ -1779,6 +1827,7 @@ const groupedPrintItems = computed(() =>
                         </td>
                       </tr>
                     </tbody>
+                    </template>
                     <tbody>
                       <tr v-if="!(selInv.items ?? []).length"><td :colspan="editTagihan ? 8 : 5" class="empty-row">Belum ada item</td></tr>
                     </tbody>
@@ -2495,6 +2544,15 @@ const groupedPrintItems = computed(() =>
 .kat-group-name { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--td); }
 .kat-group-count { font-size: 9.5px; color: var(--tu); margin-left: 8px; font-weight: 500; }
 .kat-group-head .num.strong { color: var(--td); font-size: 12px; white-space: nowrap; }
+
+/* ─── Subjudul per-DOKTER (tagihan gabungan rujuk internal) ───────────────── */
+.dokter-group-head td { background: #eef2ff; padding: 9px 14px; border-top: 2px solid #c7d2fe; }
+.dokter-group-head td:first-child { border-left: 3px solid #6366f1; }
+.dokter-group-name { font-weight: 800; font-size: 12px; color: #3730a3; }
+.dokter-group-tag { font-size: 9.5px; font-weight: 600; color: #6366f1; background: #e0e7ff; padding: 1px 8px; border-radius: 20px; margin-left: 9px; text-transform: uppercase; letter-spacing: .03em; }
+
+/* Badge "Rujuk internal" (kartu antrean + header pasien) */
+.pill-referral, .ptg-referral { background: #e0e7ff; color: #4338ca; font-weight: 700; }
 .kat-group:first-of-type .kat-group-head td { border-top: none; }
 .kat-group tr:first-child td { border-top: none; }
 .kat-bpjs { background: #dbeafe; color: #1e40af; }

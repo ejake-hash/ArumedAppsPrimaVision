@@ -19,6 +19,9 @@ class BillingItem extends Model
         'item_type',
         'category',
         'reference_id',
+        // Asal kunjungan/dokter baris ini (rujuk-internal: 1 invoice anchor memuat baris
+        // dari beberapa visit). NULL = milik visit invoice (anchor / tagihan lama).
+        'source_visit_id',
         'description',
         'quantity',
         'unit_price',

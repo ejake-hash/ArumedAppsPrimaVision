@@ -85,6 +85,24 @@ class KasirService
             return $parent && $this->visitDateKey($parent) === $this->visitDateKey($v);
         })->values();
 
+        // Badge "Rujuk internal": tandai kartu anchor yang punya anak same-day (tagihan
+        // gabungan). 1 query batch utk anak; detail dokter hanya utk anchor yang punya.
+        $anchorIds = $queues->pluck('visit.id')->filter()->all();
+        $childrenByParent = $anchorIds
+            ? Visit::whereIn('parent_visit_id', $anchorIds)->get(['id', 'parent_visit_id', 'visit_date'])->groupBy('parent_visit_id')
+            : collect();
+        $queues->each(function ($q) use ($childrenByParent) {
+            $v = $q->visit;
+            if (! $v) {
+                return;
+            }
+            $kids = $childrenByParent->get($v->id, collect())
+                ->filter(fn ($c) => $this->visitDateKey($c) === $this->visitDateKey($v));
+            if ($kids->isNotEmpty()) {
+                $v->setAttribute('referral_chain', $this->chainSourceVisits($v));
+            }
+        });
+
         // Sertakan dpjp_name & obat_status (terhitung dari relasi eager-load) di payload visit.
         $queues->each(fn ($q) => $q->visit?->append(['dpjp_name', 'obat_status']));
 
@@ -203,6 +221,15 @@ class KasirService
             // memperbaiki qty/harga baris yang sudah ada. Flag ini → banner "Susun Ulang"
             // di KasirView agar kasir menyinkronkan sebelum bayar (read-only, tak ubah angka).
             $invoice->setAttribute('obat_lines_stale', $this->obatLinesStale($invoice));
+        }
+
+        // Rantai rujuk-internal: lampirkan asal-dokter tiap visit → FE kelompokkan
+        // rincian per-dokter + tampilkan badge. Hanya saat benar-benar gabungan (>1).
+        if ($invoice) {
+            $src = $this->chainSourceVisits($invoice->visit);
+            if (count($src) > 1) {
+                $invoice->setAttribute('source_visits', $src);
+            }
         }
 
         return $invoice;
@@ -549,16 +576,106 @@ class KasirService
         return collect($ids)->map(fn ($id) => $byId->get($id))->filter()->values();
     }
 
+    /**
+     * Ringkas asal-dokter tiap visit rantai → FE kelompokkan rincian tagihan per-dokter
+     * (subjudul) + badge "Rujuk internal". [{visit_id, is_anchor, doctor_name, poli}].
+     */
+    private function chainSourceVisits(Visit $anchor): array
+    {
+        $ids    = $this->sameDayChainVisitIds($anchor);
+        $visits = Visit::with(['dpjp', 'doctorExamination.doctor', 'doctorSchedule.employee'])
+            ->whereIn('id', $ids)->get()->keyBy('id');
+        return collect($ids)->map(function ($id) use ($visits, $anchor) {
+            $v = $visits->get($id);
+            if (! $v) {
+                return null;
+            }
+            $v->append('dpjp_name');
+            return [
+                'visit_id'    => $id,
+                'is_anchor'   => $id === $anchor->id,
+                'doctor_name' => $v->dpjp_name ?: 'Dokter',
+                'poli'        => $v->doctorSchedule?->poliklinik,
+            ];
+        })->filter()->values()->all();
+    }
+
+    /**
+     * HEAL pasien rujuk-internal same-day yang terlanjur punya >1 invoice (dibuat
+     * sebelum fitur konsolidasi): batalkan invoice-invoice rantai yang BELUM dibayar
+     * lalu bangun ulang SATU invoice gabungan di anchor. Lewati rantai yang sudah ada
+     * pembayaran (PAID/PARTIALLY_PAID) → tangani manual. $apply=false = dry-run (laporan).
+     */
+    public function healInternalReferralBilling(bool $apply = false): array
+    {
+        $report = ['chains' => 0, 'already_ok' => 0, 'would_heal' => 0, 'healed' => 0, 'skipped_paid' => 0, 'errors' => 0, 'details' => []];
+
+        // Kumpulkan anchor unik dari semua visit anak rujuk-internal same-day.
+        $children = Visit::whereNotNull('parent_visit_id')->with('parentVisit:id,visit_date')->get()
+            ->filter(fn ($c) => $c->parentVisit && $this->visitDateKey($c->parentVisit) === $this->visitDateKey($c));
+        $anchorIds = [];
+        foreach ($children as $c) {
+            $anchorIds[$this->billingAnchorVisit($c)->id] = true;
+        }
+
+        foreach (array_keys($anchorIds) as $aid) {
+            $anchor = Visit::find($aid);
+            if (! $anchor) {
+                continue;
+            }
+            $report['chains']++;
+            $chainIds = $this->sameDayChainVisitIds($anchor);
+            $invoices = BillingInvoice::whereIn('visit_id', $chainIds)->whereNotIn('status', ['CANCELLED'])->get();
+
+            // Sudah benar: ≤1 invoice & berada di anchor.
+            if ($invoices->count() <= 1 && ($invoices->isEmpty() || $invoices->first()->visit_id === $anchor->id)) {
+                $report['already_ok']++;
+                continue;
+            }
+            // Ada pembayaran → jangan otak-atik (refund/klaim manual).
+            if ($invoices->contains(fn ($i) => in_array($i->status, ['PAID', 'PARTIALLY_PAID'], true))) {
+                $report['skipped_paid']++;
+                $report['details'][] = "SKIP-paid anchor={$aid} invoices={$invoices->count()}";
+                continue;
+            }
+            if (! $apply) {
+                $report['would_heal']++;
+                $report['details'][] = "WOULD-HEAL anchor={$aid} invoices={$invoices->count()}";
+                continue;
+            }
+            try {
+                DB::transaction(function () use ($invoices, $anchor) {
+                    foreach ($invoices as $inv) {
+                        $this->cancelInvoice($inv->id);
+                    }
+                    $this->consolidateBilling($anchor->id);
+                });
+                $report['healed']++;
+                $report['details'][] = "HEALED anchor={$aid}";
+            } catch (\Throwable $e) {
+                $report['errors']++;
+                $report['details'][] = "ERROR anchor={$aid}: " . $e->getMessage();
+            }
+        }
+        return $report;
+    }
+
     /** Baris tagihan untuk SATU visit (positif + carried manual + diskon paket + konsultasi kontrol). */
     private function buildVisitInvoiceLines(Visit $visit, ?string $insurerId, ?string $guarantorType): array
     {
         $carried  = $this->carriedKasirManualLines($visit);
         $positive = array_merge($this->buildPositiveLines($visit, $insurerId, $guarantorType), $carried);
-        return array_merge(
+        $lines = array_merge(
             $positive,
             $this->computePaketDiscountLines($visit, $insurerId, $guarantorType, $positive),
             $this->buildFollowupConsultLines($visit, $insurerId, $guarantorType),
         );
+        // Tandai asal visit/dokter tiap baris → Kasir kelompokkan rincian per-dokter.
+        foreach ($lines as &$l) {
+            $l['source_visit_id'] = $visit->id;
+        }
+        unset($l);
+        return $lines;
     }
 
     /**
@@ -705,12 +822,16 @@ class KasirService
                 unset($l);
                 // Basis diskon paket: anchor sertakan baris manual (ikut absorpsi); anak tidak.
                 $basis = $v->id === $anchor->id ? array_merge($positive, $manualLines) : $positive;
-                $lines = array_merge(
-                    $lines,
+                $vLines = array_merge(
                     $positive,
                     $this->computePaketDiscountLines($v, $billInsurerId, $billGuarantor, $basis),
                     $this->buildFollowupConsultLines($v, $billInsurerId, $billGuarantor),
                 );
+                foreach ($vLines as &$l) {   // tandai asal visit/dokter
+                    $l['source_visit_id'] = $v->id;
+                }
+                unset($l);
+                $lines = array_merge($lines, $vLines);
             }
             $visit = $anchor;   // alias utk sisa method (isFullCoverBpjs/patch di bawah)
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
@@ -748,6 +869,7 @@ class KasirService
             'item_type'        => $it->item_type,
             'category'         => $it->category,
             'reference_id'     => $it->reference_id,
+            'source_visit_id'  => $it->source_visit_id,   // jaga asal visit/dokter saat rebuild
             'description'      => $it->description,
             'quantity'         => $it->quantity,
             'unit_price'       => $it->unit_price,
