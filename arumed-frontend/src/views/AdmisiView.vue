@@ -467,26 +467,33 @@ async function callPatient(p) {
    Kasir/Bedah/Ranap) atau sudah dipanggil/diproses, pembatalan dikunci untuk
    mencegah admisi tak sengaja menghapus pasien yang sedang dilayani. */
 const RECEPTION_STATIONS = ['ADMISI', 'TRIASE', 'REFRAKSIONIS']
+/* Admisi SENGAJA tetap boleh membatalkan kunjungan walau pasien sudah pindah
+   stasiun / sedang dilayani — yang dikunci hanya kunjungan yang sudah SELESAI atau
+   sudah batal. Proteksi "sedang dilayani" diturunkan jadi PERINGATAN tegas di
+   dialog konfirmasi (confirmCancelKunjungan), bukan tombol di-disable. */
 function canCancelRow(p) {
   if (!p || p.station === 'SELESAI' || p.ui === 'cancel') return false
-  if (p.walkIn) return true   // placeholder kiosk belum didaftarkan → selalu boleh batal
-  return RECEPTION_STATIONS.includes(p.station) && !p.inService
+  return true
 }
 function cancelTitle(p) {
   if (p.station === 'SELESAI' || p.ui === 'cancel') return 'Kunjungan sudah selesai/batal — tidak bisa dibatalkan'
-  if (!canCancelRow(p)) return 'Pasien sudah dalam pelayanan — batalkan dari stasiun terkait'
-  return 'Batalkan kunjungan'
+  if (p.walkIn) return 'Batalkan tiket walk-in'
+  const beyond = !RECEPTION_STATIONS.includes(p.station) || p.inService
+  return beyond ? '⚠ Pasien sudah/sedang dilayani — batalkan dengan hati-hati' : 'Batalkan kunjungan'
 }
 
-/* Batalkan kunjungan (hapus visit + antrean terkait).
-   Hanya selama pasien masih di fase resepsi/skrining & belum dilayani. */
+/* Batalkan kunjungan (hapus visit + antrean terkait). Selalu diizinkan untuk
+   kunjungan aktif; bila pasien sudah di stasiun klinis / sedang dilayani / punya
+   SEP aktif → tampilkan peringatan tegas dulu. SEP TIDAK ikut dibatalkan otomatis. */
 async function confirmCancelKunjungan(p) {
-  if (!canCancelRow(p)) { toast('w', 'Pasien sudah dalam pelayanan — pembatalan dikunci. Batalkan dari stasiun terkait.'); return }
-  const label = p.walkIn ? `antrean ${p.queueNo}` : `${p.name} (${p.queueNo})`
-  const stationWarn = p.station !== 'ADMISI'
-    ? `\n\n⚠ Pasien sudah berada di stasiun ${p.station}. Membatalkan akan menghapus seluruh antrean & kunjungan.`
-    : ''
-  if (!window.confirm(`Batalkan ${label}?\nKunjungan dan nomor antrean akan dihapus dan tidak bisa dikembalikan.${stationWarn}`)) return
+  if (!canCancelRow(p)) { toast('w', 'Kunjungan sudah selesai/batal — tidak bisa dibatalkan.'); return }
+  const label  = p.walkIn ? `antrean ${p.queueNo}` : `${p.name} (${p.queueNo})`
+  const beyond = !p.walkIn && (!RECEPTION_STATIONS.includes(p.station) || p.inService)
+  const warns  = []
+  if (beyond) warns.push(`⚠ Pasien sudah berada di stasiun ${p.station}${p.inService ? ' dan SEDANG DILAYANI' : ''}. Membatalkan akan menghapus seluruh antrean & kunjungan.`)
+  if (p.noSep) warns.push(`⚠ Kunjungan ini punya SEP BPJS aktif (${p.noSep}). SEP TIDAK ikut dibatalkan otomatis — batalkan SEP lebih dulu via Detail Kunjungan agar tidak menggantung di BPJS.`)
+  const warnText = warns.length ? `\n\n${warns.join('\n\n')}` : ''
+  if (!window.confirm(`Batalkan ${label}?\nKunjungan dan nomor antrean akan dihapus dan tidak bisa dikembalikan.${warnText}`)) return
   try {
     await admisiStore.cancelKunjungan(p.visitId)
     toast('s', `Kunjungan ${label} dibatalkan`)
@@ -495,6 +502,27 @@ async function confirmCancelKunjungan(p) {
     admisiStore.fetchVisits()
   } catch (e) {
     toast('e', e.message)
+  }
+}
+
+/* Tandai tiket walk-in TIDAK HADIR — pasien ambil tiket di Anjungan Mandiri tapi
+   tak muncul saat dipanggil berulang. Keluarkan tiket+kunjungan placeholder agar
+   antrean walk-in tidak menumpuk. Mekanisme = cancelKunjungan (backend belum punya
+   status NO_SHOW tersendiri); hanya berlaku utk baris walk-in yang belum didaftarkan. */
+const noShowingId = ref(null)
+async function markWalkInNoShow(p) {
+  if (!p?.walkIn || !p.visitId) return
+  if (!window.confirm(`Tandai antrean ${p.queueNo} TIDAK HADIR?\n\nTiket walk-in akan dikeluarkan dari antrean. Jika pasien datang kembali, mereka perlu mengambil tiket baru di Anjungan Mandiri.`)) return
+  noShowingId.value = p.id
+  try {
+    await admisiStore.cancelKunjungan(p.visitId)
+    toast('s', `Antrean ${p.queueNo} ditandai tidak hadir & dikeluarkan dari antrean`)
+    await Promise.allSettled([admisiStore.fetchAntrian(), admisiStore.fetchDashboard()])
+    admisiStore.fetchVisits()
+  } catch (e) {
+    toast('e', e.message)
+  } finally {
+    noShowingId.value = null
   }
 }
 
@@ -2688,6 +2716,13 @@ onUnmounted(() => {
     </div>
 
     <!-- ===================== DASHBOARD STATS ===================== -->
+    <div v-if="admisiStore.dashboardError" class="dashboard-err">
+      <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16.01"/></svg>
+      <span>Statistik gagal dimuat: {{ admisiStore.dashboardError }} — angka di kartu mungkin tidak akurat.</span>
+      <button class="btn btn-sm btn-secondary" :disabled="admisiStore.dashboardLoading" @click="admisiStore.fetchDashboard()">
+        {{ admisiStore.dashboardLoading ? 'Memuat…' : 'Coba lagi' }}
+      </button>
+    </div>
     <div class="stats-row">
       <div class="stat-card">
         <div class="stat-icon" style="background: var(--gl)">
@@ -2811,6 +2846,7 @@ onUnmounted(() => {
               <span :class="['ptype-tag', p.walkIn ? 'pt-walkin' : ptypeClass(p.guarantor)]">
                 {{ p.walkIn ? 'WALK-IN' : p.guarantor }}
               </span>
+              <span v-if="!p.walkIn && p.noSep" class="sep-badge" :title="`SEP BPJS aktif: ${p.noSep}`">SEP</span>
               <span
                 v-if="['ASURANSI','PERUSAHAAN'].includes(p.guarantor) && p.insuranceVerificationStatus && p.insuranceVerificationStatus !== 'NONE'"
                 :class="['verif-badge', `vb-${p.insuranceVerificationStatus.toLowerCase()}`]"
@@ -2833,6 +2869,16 @@ onUnmounted(() => {
                 </button>
                 <button v-if="!p.walkIn" class="btn btn-secondary btn-icon" title="Cetak label pasien" aria-label="Cetak label pasien" @click="printLabel(p)">
                   <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
+                </button>
+                <button
+                  v-if="p.walkIn"
+                  class="btn btn-secondary btn-danger"
+                  :disabled="noShowingId === p.id"
+                  title="Pasien tidak hadir saat dipanggil — keluarkan tiket dari antrean"
+                  @click="markWalkInNoShow(p)"
+                >
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                  {{ noShowingId === p.id ? 'Memproses…' : 'Tidak Hadir' }}
                 </button>
                 <button
                   v-if="p.walkIn"
@@ -2960,6 +3006,7 @@ onUnmounted(() => {
                         <span :class="['ptype-tag', p.walkIn ? 'pt-walkin' : ptypeClass(p.guarantor)]">
                           {{ p.walkIn ? 'WALK-IN' : p.guarantor }}
                         </span>
+                        <span v-if="p.noSep" class="sep-badge" :title="`SEP BPJS aktif: ${p.noSep}`">SEP</span>
                       </td>
                       <td>
                         <span
@@ -5208,6 +5255,10 @@ onUnmounted(() => {
 .verif-badge.vb-pending  { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
 .verif-badge.vb-verified { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
 .verif-badge.vb-issue    { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.sep-badge { display: inline-flex; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: .03em; padding: 2px 7px; border-radius: 12px; margin-left: 4px; background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+.dashboard-err { display: flex; align-items: center; gap: 8px; margin-bottom: 0.65rem; padding: 8px 12px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; color: #9a3412; font-size: 13px; }
+.dashboard-err svg { stroke: #ea580c; fill: none; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
+.dashboard-err span { flex: 1; }
 
 /* Banner di wizard saat mendaftarkan pasien walk-in dari kiosk */
 .walkin-banner {
