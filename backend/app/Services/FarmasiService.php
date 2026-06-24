@@ -303,8 +303,18 @@ class FarmasiService
             // diverifikasi Farmasi seperti resep poli biasa (jadwalnya kini selalu ada krn
             // default tanggal hari ini → tanpa carve-out ini resep laser ikut terjebak hold).
             // location_type null (jadwal lama) dianggap RUANG_BEDAH (backward-compat).
+            //
+            // RILIS PAKSA bila pasien SUDAH LEWAT Bedah (current_station = FARMASI/KASIR/
+            // SELESAI/MENUNGGU_RANAP/RANAP): operasi pasti sudah usai (pasien dirutekan keluar
+            // OK), jadi tahanan tak boleh berlaku lagi walau status jadwal MASIH SCHEDULED/
+            // IN_PROGRESS karena data jadwal basi (jadwal ganda/stale yang tak ter-set DONE).
+            // Tanpa ini, resep poli pasien yang operasinya selesai TERJEBAK tak terlihat Farmasi
+            // selamanya → gate Kasir (assertObatVerified) buntu "menunggu verifikasi" tanpa
+            // jalan keluar (akar bug: jadwal SCHEDULED basi walau time_out sudah terisi).
             ->where(fn ($q) => $q
                 ->where('is_post_op', true)
+                ->orWhereHas('visit', fn ($vq) => $vq
+                    ->whereIn('current_station', ['FARMASI', 'KASIR', 'SELESAI', 'MENUNGGU_RANAP', 'RANAP']))
                 ->orWhereDoesntHave('visit.surgerySchedule', fn ($s) => $s
                     ->whereIn('status', ['SCHEDULED', 'IN_PROGRESS'])
                     ->where(fn ($w) => $w
