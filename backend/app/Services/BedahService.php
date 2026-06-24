@@ -131,7 +131,28 @@ class BedahService
             ->orderBy('queue_sequence')
             ->get();
 
-        return $queues->map(function (Queue $q) {
+        return $queues->map(fn (Queue $q) => $this->mapBedahQueueRow($q))->all();
+    }
+
+    /** Eager-load relasi baris antrean/riwayat Bedah (dipakai getPatientQueue & getSurgeryHistory). */
+    private function bedahQueueEagerLoads(): array
+    {
+        return [
+            'visit.patient',
+            'visit.insurer',
+            'visit.surgerySchedule.surgeryPackage',
+            'visit.surgerySchedule.leadSurgeon',
+            'visit.doctorExamination.surgeryPackage',
+            'visit.doctorExamination.surgerySchedule.leadSurgeon',
+            'visit.doctorExamination.doctor',
+            'visit.refractionRecord',
+            'visit.billingInvoice',
+        ];
+    }
+
+    /** Map satu baris Queue BEDAH ke shape antrean/riwayat yg dipakai FE (transformQueueItem). */
+    private function mapBedahQueueRow(Queue $q): array
+    {
             $visit   = $q->visit;
             $patient = $visit?->patient;
             $dob     = $patient?->date_of_birth;
@@ -214,7 +235,35 @@ class BedahService
                     'iop_method' => $refr->iop_method ?? null,
                 ] : null,
             ];
-        })->all();
+    }
+
+    /**
+     * Riwayat pasien Bedah pada TANGGAL tertentu (datepicker) — untuk mengerjakan/
+     * melengkapi Laporan Operasi di kemudian hari. Semua baris Queue BEDAH yang TANGGAL
+     * BEDAH-nya = $date (scheduled_date jadwal, jalur visit atau doctor_examination),
+     * apa pun status (incl COMPLETED). Hanya operasi (RUANG_BEDAH; laser dikecualikan).
+     * Shape identik antrean → FE pakai transformQueueItem + pickPt yang sama.
+     */
+    public function getSurgeryHistory(string $date): array
+    {
+        $queues = Queue::with($this->bedahQueueEagerLoads())
+            ->where('station', 'BEDAH')
+            ->whereHas('visit')
+            ->where(function ($q) {
+                $q->whereDoesntHave('visit.surgerySchedule')
+                  ->orWhereHas('visit.surgerySchedule', fn ($s) =>
+                      $s->where('location_type', '!=', SurgerySchedule::LOCATION_RUANG_TINDAKAN)
+                        ->orWhereNull('location_type'));
+            })
+            // Tanggal bedah = scheduled_date jadwal (visit preop ATAU doctor_examination).
+            ->where(function ($q) use ($date) {
+                $q->whereHas('visit.surgerySchedule', fn ($s) => $s->whereDate('scheduled_date', $date))
+                  ->orWhereHas('visit.doctorExamination.surgerySchedule', fn ($s) => $s->whereDate('scheduled_date', $date));
+            })
+            ->orderBy('queue_sequence')
+            ->get();
+
+        return $queues->map(fn (Queue $q) => $this->mapBedahQueueRow($q))->all();
     }
 
     public function panggilAntrian(string $queueId): Queue

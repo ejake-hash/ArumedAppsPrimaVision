@@ -677,6 +677,43 @@ const belumDipanggilCount = computed(() => patients.value.filter(p => isTodayP(p
 const cActive = computed(() => patients.value.filter(isActiveP).length)
 const cToday = computed(() => patients.value.filter(p => isTodayP(p)).length)
 
+// ── Tab HISTORY: pasien bedah per tanggal (mengerjakan Laporan Operasi susulan) ──
+// Sumber data terpisah dari antrean live: GET /bedah/history?tanggal → map shape
+// yang sama (transformQueueItem) → klik pakai pickPt yang sama (laporan editable bila
+// belum dikunci TTD). Tidak ikut polling 15s (snapshot tanggal terpilih).
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const leftMode = ref('live')               // 'live' | 'history'
+const historyDate = ref(localDateStr())
+const historyPatients = ref([])
+const historyLoading = ref(false)
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const { data } = await bedahApi.history(historyDate.value)
+    historyPatients.value = (data.data || []).map(transformQueueItem)
+  } catch { historyPatients.value = [] }
+  finally { historyLoading.value = false }
+}
+function setLeftMode(m) {
+  leftMode.value = m
+  if (m === 'history' && !historyPatients.value.length) loadHistory()
+}
+watch(historyDate, () => { if (leftMode.value === 'history') loadHistory() })
+// Filter sekunder (BPJS/Umum) + search dipakai bersama; primer hanya untuk live.
+const filtHistory = computed(() => {
+  let list = historyPatients.value
+  if (qSecondaryFilter.value === 'bpjs') list = list.filter(p => p.ptype === 'bpjs')
+  else if (qSecondaryFilter.value === 'umum') list = list.filter(p => p.ptype !== 'bpjs')
+  if (qSearch.value) {
+    const s = qSearch.value.toLowerCase()
+    list = list.filter(p => p.name.toLowerCase().includes(s) || p.qNum.toLowerCase().includes(s) || p.rm.toLowerCase().includes(s))
+  }
+  return list
+})
+const displayList = computed(() => leftMode.value === 'history' ? filtHistory.value : filtQ.value)
+
 const classColor = { Baru: 'cls-baru', 'Pre-Op': 'cls-preop', 'Post-Op': 'cls-postop', Kontrol: 'cls-kontrol' }
 function clsCls(c) { return classColor[c] ?? 'cls-baru' }
 
@@ -1857,12 +1894,12 @@ function mulaiBack() { mulaiStep.value = 1 }
             <div>
               <div class="card-head-title">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
-                Antrean Bedah
+                {{ leftMode === 'history' ? 'Riwayat Bedah' : 'Antrean Bedah' }}
               </div>
-              <div class="card-head-sub">{{ cToday }} pasien hari ini</div>
+              <div class="card-head-sub">{{ leftMode === 'history' ? `${filtHistory.length} pasien · ${fmtVisitDate(historyDate)}` : `${cToday} pasien hari ini` }}</div>
             </div>
             <div class="head-actions">
-              <span class="pill-live">LIVE</span>
+              <span v-if="leftMode !== 'history'" class="pill-live">LIVE</span>
               <button class="panel-collapse" @click="toggleQueue" title="Ciutkan antrean" aria-label="Ciutkan antrean">
                 <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
@@ -1871,8 +1908,21 @@ function mulaiBack() { mulaiStep.value = 1 }
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean bedah">
 
-            <!-- Stats bar -->
-            <div class="stats-bar">
+            <!-- Mode: Antrean Live vs Riwayat (datepicker) -->
+            <div class="bd-leftmode" role="tablist" aria-label="Mode daftar">
+              <button :class="['bd-lm-btn', leftMode === 'live' ? 'a' : '']" @click="setLeftMode('live')" role="tab">Antrean Live</button>
+              <button :class="['bd-lm-btn', leftMode === 'history' ? 'a' : '']" @click="setLeftMode('history')" role="tab">Riwayat</button>
+            </div>
+
+            <!-- HISTORY: datepicker -->
+            <div v-if="leftMode === 'history'" class="bd-history-bar">
+              <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              <input type="date" v-model="historyDate" class="bd-history-date" aria-label="Tanggal bedah" />
+              <button class="bd-history-reload" @click="loadHistory" :disabled="historyLoading" title="Muat ulang">↻</button>
+            </div>
+
+            <!-- Stats bar (live) -->
+            <div v-if="leftMode === 'live'" class="stats-bar">
               <div class="stat-item">
                 <span class="stat-label">Menunggu</span>
                 <b class="stat-num stat-waiting">{{ cMenunggu }}</b>
@@ -1889,8 +1939,8 @@ function mulaiBack() { mulaiStep.value = 1 }
               </div>
             </div>
 
-            <!-- Primary filter -->
-            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+            <!-- Primary filter (live only) -->
+            <div v-if="leftMode === 'live'" class="primary-filter" role="group" aria-label="Filter utama antrean">
               <button
                 :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']"
                 @click="qPrimaryFilter = 'waiting'"
@@ -1927,15 +1977,18 @@ function mulaiBack() { mulaiStep.value = 1 }
               <input v-model="qSearch" class="q-search" placeholder="Cari nama / nomor OK / RM…" />
             </div>
 
-            <!-- Empty -->
-            <div v-if="!filtQ.length" class="empty-section" aria-live="polite">
-              Tidak ada pasien dalam filter ini
+            <!-- Loading / Empty -->
+            <div v-if="leftMode === 'history' && historyLoading" class="empty-section" aria-live="polite">
+              Memuat riwayat…
+            </div>
+            <div v-else-if="!displayList.length" class="empty-section" aria-live="polite">
+              {{ leftMode === 'history' ? 'Tidak ada pasien bedah pada tanggal ini' : 'Tidak ada pasien dalam filter ini' }}
             </div>
 
-            <!-- Queue list -->
-            <div v-else role="list" aria-label="Daftar antrean bedah">
+            <!-- Queue / history list -->
+            <div v-else role="list" aria-label="Daftar pasien bedah">
               <div
-                v-for="p in filtQ" :key="p.id"
+                v-for="p in displayList" :key="p.id"
                 role="listitem"
                 :class="['q-item',
                   selP?.id === p.id ? 'active' : '',
@@ -3461,6 +3514,19 @@ function mulaiBack() { mulaiStep.value = 1 }
 .stat-done { color: var(--st); }
 
 /* Primary filter */
+/* Toggle Antrean Live / Riwayat */
+.bd-leftmode { display: flex; gap: 4px; margin-bottom: 0.6rem; background: var(--bc); border: 1.5px solid var(--gb); border-radius: 9px; padding: 3px; }
+.bd-lm-btn { flex: 1; height: 30px; font-size: 11.5px; font-weight: 600; border: none; border-radius: 6px; background: transparent; color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; }
+.bd-lm-btn:hover { color: var(--ga); }
+.bd-lm-btn.a { background: var(--gd); color: #fff; }
+/* Datepicker riwayat */
+.bd-history-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 0.6rem; padding: 6px 9px; background: var(--gl); border: 1.5px solid var(--gb); border-radius: 8px; }
+.bd-history-bar .pill-icon { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: var(--ga); stroke-width: 2; }
+.bd-history-date { flex: 1; height: 28px; font-size: 12px; border: 1.5px solid var(--gb); border-radius: 6px; padding: 0 8px; background: #fff; font-family: 'Inter', sans-serif; color: var(--td); outline: none; }
+.bd-history-reload { height: 28px; width: 30px; font-size: 14px; border: 1.5px solid var(--gb); border-radius: 6px; background: #fff; color: var(--ga); cursor: pointer; flex: 0 0 auto; }
+.bd-history-reload:hover:not(:disabled) { border-color: var(--ga); }
+.bd-history-reload:disabled { opacity: .5; cursor: not-allowed; }
+
 .primary-filter { display: flex; gap: 4px; margin-bottom: 0.5rem; }
 .pf-btn { flex: 1; height: 32px; font-size: 11.5px; font-weight: 500; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); color: var(--tm); cursor: pointer; font-family: 'Inter', sans-serif; transition: all .13s; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .pf-btn:hover { border-color: var(--ga); color: var(--ga); }

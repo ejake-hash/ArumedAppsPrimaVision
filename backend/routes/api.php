@@ -513,6 +513,7 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('bedah')->middleware('permission:bedah.read')->group(function () {
             Route::get('/antrian',                          [BedahController::class, 'indexAntrian']);
+            Route::get('/history',                          [BedahController::class, 'history']);
             Route::put('/antrian/{id}/panggil',             [BedahController::class, 'panggilAntrian'])->middleware('permission:bedah.write');
             Route::put('/antrian/{id}/selesai',             [BedahController::class, 'selesaiAntrian'])->middleware('permission:bedah.write');
 

@@ -1093,6 +1093,7 @@ export const inventoriLaporanApi = {
 /** Bedah — antrian + flow KASIR (action operasi detail belum diwire) */
 export const bedahApi = {
   antrian:        ()    => api.get('/bedah/antrian'),
+  history:        (tanggal) => api.get('/bedah/history', { params: { tanggal } }),
   panggilAntrian: (id)  => api.put(`/bedah/antrian/${id}/panggil`),
   selesaiAntrian: (id)  => api.put(`/bedah/antrian/${id}/selesai`),
 

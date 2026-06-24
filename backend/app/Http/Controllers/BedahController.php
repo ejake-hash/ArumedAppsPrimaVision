@@ -20,6 +20,13 @@ class BedahController extends Controller
         return $this->ok($this->service->getPatientQueue());
     }
 
+    /** GET /bedah/history?tanggal=YYYY-MM-DD — riwayat pasien bedah per tanggal (laporan susulan). */
+    public function history(Request $request): JsonResponse
+    {
+        $tanggal = $request->query('tanggal') ?: now('Asia/Jakarta')->toDateString();
+        return $this->ok($this->service->getSurgeryHistory($tanggal));
+    }
+
     public function panggilAntrian(string $id): JsonResponse
     {
         try {
