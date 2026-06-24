@@ -62,6 +62,9 @@ class KasirService
                 'visit.doctorExamination.surgerySchedule.surgeryPackage',
                 // COB: penjamin-2 utk badge "COB — <insurer>" di antrean & kartu pasien.
                 'visit.visitCob.penjamin2',
+                // Parent utk deteksi visit anak rujuk-internal same-day (disembunyikan;
+                // diwakili kartu anchor — tagihan digabung 1 kwitansi).
+                'visit.parentVisit:id,visit_date',
             ])
             ->where('station', 'KASIR')
             // Kasir = stasiun penagihan terakhir: TANPA batas umur (null). Setiap
@@ -71,6 +74,16 @@ class KasirService
             ->whereHas('visit')   // exclude zombie row (visit soft-deleted)
             ->orderBy('queue_sequence')
             ->get();
+
+        // Sembunyikan kartu KASIR milik visit ANAK rujuk-internal same-day: tagihannya
+        // sudah masuk kwitansi gabungan milik anchor (kartu anchor mewakili). Anak beda-
+        // tanggal TIDAK disembunyikan (kunjungan terpisah). Pembayaran anchor menutup
+        // antrean anak otomatis (cascade di processPayment).
+        $queues = $queues->reject(function ($q) {
+            $v = $q->visit;
+            $parent = $v?->parentVisit;
+            return $parent && $this->visitDateKey($parent) === $this->visitDateKey($v);
+        })->values();
 
         // Sertakan dpjp_name & obat_status (terhitung dari relasi eager-load) di payload visit.
         $queues->each(fn ($q) => $q->visit?->append(['dpjp_name', 'obat_status']));
@@ -146,10 +159,14 @@ class KasirService
 
     public function getInvoiceByVisit(string $visitId): ?BillingInvoice
     {
+        // Rantai rujuk-internal same-day → invoice menempel di ANCHOR. Membuka visit
+        // anak pun mengembalikan kwitansi gabungan anchor (bukan generate invoice ke-2).
+        $anchorId = $this->billingAnchorVisit(Visit::findOrFail($visitId))->id;
+
         // Invoice CANCELLED dikecualikan supaya kasir yang membuka pasien pasca-
         // pembatalan otomatis generate tagihan BARU (alur Batalkan → Susun Ulang).
         $invoice = BillingInvoice::with(['visit.patient', 'items', 'cashier'])
-            ->where('visit_id', $visitId)
+            ->where('visit_id', $anchorId)
             ->whereNotIn('status', ['CANCELLED'])
             ->first();
 
@@ -173,7 +190,7 @@ class KasirService
             // Revisi dokter pasca-tagih: bila masih ada resep rawat jalan belum diverifikasi
             // Farmasi, tagihan ini sedang menunggu verifikasi ulang (obat belum tertagih,
             // pembayaran diblok assertObatVerified). Flag → banner di KasirView.
-            $invoice->setAttribute('pending_obat_verification', Prescription::where('visit_id', $invoice->visit_id)
+            $invoice->setAttribute('pending_obat_verification', Prescription::whereIn('visit_id', $this->sameDayChainVisitIds($invoice->visit))
                 ->where('type', '!=', Prescription::TYPE_RANAP)
                 ->whereIn('status', ['DRAFT', 'SUBMITTED'])
                 ->whereNull('verified_at')
@@ -419,6 +436,10 @@ class KasirService
      */
     private function assertObatVerified(string $visitId): void
     {
+        // Rantai rujuk-internal same-day ditagih 1 invoice → gate obat berlaku utk
+        // SEMUA visit dalam rantai (obat dr dokter rujukan ikut diblok sampai verified).
+        $chainIds = $this->sameDayChainVisitIds($this->billingAnchorVisit(Visit::findOrFail($visitId)));
+
         // HEAL deadlock D→K→F: resep rawat jalan yang masih DRAFT (mis. dokter mengedit
         // resep SETELAH finalisasi, atau jalur yang melewati flip DokterService::finalize)
         // TIDAK TERLIHAT Farmasi — worklist verifikasi hanya menampilkan status SUBMITTED —
@@ -426,7 +447,7 @@ class KasirService
         // BUNTU tanpa jalan keluar (Kasir bilang "menunggu verifikasi" tapi resep tak pernah
         // muncul di Farmasi). Promosikan DRAFT→SUBMITTED (HANYA yang ada itemnya) supaya
         // surat resep masuk worklist Farmasi & bisa dikunci. Selaras DokterService::finalize.
-        Prescription::where('visit_id', $visitId)
+        Prescription::whereIn('visit_id', $chainIds)
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'DRAFT')
             ->whereHas('items')
@@ -434,7 +455,7 @@ class KasirService
 
         // Resep KOSONG (tanpa item) tak punya obat utk diverifikasi/ditagih → JANGAN
         // jadikan pemblokir (cegah header resep kosong mengunci tagihan selamanya).
-        $adaBelumVerifikasi = Prescription::where('visit_id', $visitId)
+        $adaBelumVerifikasi = Prescription::whereIn('visit_id', $chainIds)
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->whereIn('status', ['DRAFT', 'SUBMITTED'])
             ->whereNull('verified_at')
@@ -445,20 +466,22 @@ class KasirService
         }
     }
 
-    /**
-     * Build invoice from all visit sources: tindakan, obat, BHP, IOL (bedah), paket.
-     * Applies tariff lookup with fallback logic.
-     * Applies COB if configured.
-     */
-    public function consolidateBilling(string $visitId): BillingInvoice
+    // =========================================================================
+    // RANTAI RUJUK INTERNAL (same-day) — beberapa kunjungan → 1 invoice (anchor).
+    // Pasien yang dirujuk internal antar-dokter di HARI yang sama ditagih dalam SATU
+    // kwitansi (konsultasi + tindakan tiap dokter masuk semua). Rujukan ke hari lain =
+    // kunjungan terpisah → tagihan sendiri. Visit non-rujukan → helper mengembalikan
+    // visit itu sendiri / rantai 1 elemen (perilaku lama, ZERO-CHANGE).
+    // =========================================================================
+
+    /** Eager-load relasi sumber baris tagihan (dipakai consolidate & reconsolidate). */
+    private function billingEagerLoads(): array
     {
-        $visit = Visit::with([
+        return [
             'patient',
             'visitServices.procedure',
             'prescriptions.items.medication',
             'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
-            // FIX B1: pasien pre-op Admisi & RANAP→Bedah (Fase 8C) set visits.surgery_schedule_id
-            // LANGSUNG tanpa doctorExamination → eager-load jalur visit langsung agar IOL tak hilang & tanpa N+1.
             'surgerySchedule.surgeryRecord.iolUsages.iolItem',
             'doctorExamination.surgeryPackage.items',
             'surgeryRequests.bhpItems.bhpItem',
@@ -466,45 +489,122 @@ class KasirService
             'surgeryPackageSnapshots.items',
             'visitCob.penjamin1',
             'visitCob.penjamin2',
-        ])->findOrFail($visitId);
+        ];
+    }
 
-        if (BillingInvoice::where('visit_id', $visitId)->whereNotIn('status', ['CANCELLED'])->exists()) {
+    private function visitDateKey(Visit $v): string
+    {
+        return \Carbon\Carbon::parse($v->visit_date)->toDateString();
+    }
+
+    /**
+     * Anchor (pemegang invoice) untuk sebuah visit: telusuri parent_visit_id ke ATAS
+     * selama tanggal kunjungannya SAMA (rantai rujuk internal same-day). Berhenti di
+     * parent beda-tanggal / tanpa parent. Non-rujukan → visit itu sendiri.
+     */
+    private function billingAnchorVisit(Visit $visit): Visit
+    {
+        $anchor  = $visit;
+        $dateKey = $this->visitDateKey($visit);
+        $guard   = 0;
+        while ($anchor->parent_visit_id && $guard++ < 20) {
+            $parent = Visit::find($anchor->parent_visit_id);
+            if (! $parent || $this->visitDateKey($parent) !== $dateKey) {
+                break;
+            }
+            $anchor = $parent;
+        }
+        return $anchor;
+    }
+
+    /**
+     * Semua visit_id yang ditagih ke invoice anchor: anchor + keturunan rujuk internal
+     * di tanggal yang sama (BFS). Urut: anchor dulu, lalu turunannya (kronologis).
+     */
+    private function sameDayChainVisitIds(Visit $anchor): array
+    {
+        $dateKey  = $this->visitDateKey($anchor);
+        $ids      = [$anchor->id];
+        $frontier = [$anchor->id];
+        $guard    = 0;
+        while ($frontier && $guard++ < 50) {
+            $children = Visit::whereIn('parent_visit_id', $frontier)->orderBy('created_at')->get();
+            $frontier = [];
+            foreach ($children as $c) {
+                if (in_array($c->id, $ids, true) || $this->visitDateKey($c) !== $dateKey) {
+                    continue;
+                }
+                $ids[]      = $c->id;
+                $frontier[] = $c->id;
+            }
+        }
+        return $ids;
+    }
+
+    /** Collection visit chain (anchor dulu) dengan relasi tagihan ter-eager-load. */
+    private function billingChainVisits(Visit $anchor): \Illuminate\Support\Collection
+    {
+        $ids  = $this->sameDayChainVisitIds($anchor);
+        $byId = Visit::with($this->billingEagerLoads())->whereIn('id', $ids)->get()->keyBy('id');
+        return collect($ids)->map(fn ($id) => $byId->get($id))->filter()->values();
+    }
+
+    /** Baris tagihan untuk SATU visit (positif + carried manual + diskon paket + konsultasi kontrol). */
+    private function buildVisitInvoiceLines(Visit $visit, ?string $insurerId, ?string $guarantorType): array
+    {
+        $carried  = $this->carriedKasirManualLines($visit);
+        $positive = array_merge($this->buildPositiveLines($visit, $insurerId, $guarantorType), $carried);
+        return array_merge(
+            $positive,
+            $this->computePaketDiscountLines($visit, $insurerId, $guarantorType, $positive),
+            $this->buildFollowupConsultLines($visit, $insurerId, $guarantorType),
+        );
+    }
+
+    /**
+     * Build invoice from all visit sources: tindakan, obat, BHP, IOL (bedah), paket.
+     * Applies tariff lookup with fallback logic.
+     * Applies COB if configured.
+     */
+    public function consolidateBilling(string $visitId): BillingInvoice
+    {
+        // Rantai rujuk-internal same-day → tagih ke SATU invoice di anchor (kunjungan
+        // teratas). Membuka/men-generate dari visit anak pun menempel ke anchor.
+        $anchor = $this->billingAnchorVisit(Visit::findOrFail($visitId));
+        $chain  = $this->billingChainVisits($anchor);
+        $anchor = $chain->first() ?: Visit::with($this->billingEagerLoads())->findOrFail($anchor->id);
+
+        if (BillingInvoice::where('visit_id', $anchor->id)->whereNotIn('status', ['CANCELLED'])->exists()) {
             throw new \Exception('Invoice sudah ada untuk kunjungan ini.', 422);
         }
 
-        // GATE alur D→K→F: tagihan tidak boleh dibuat selama masih ada resep rawat
-        // jalan yang BELUM diverifikasi & dikunci Farmasi (verified_at NULL).
-        $this->assertObatVerified($visitId);
+        // GATE alur D→K→F (chain-aware): tagihan tak boleh dibuat selama masih ada resep
+        // rawat jalan di SALAH SATU visit rantai yang belum diverifikasi & dikunci Farmasi.
+        $this->assertObatVerified($anchor->id);
 
-        return DB::transaction(function () use ($visit) {
-            // Insurer yang dipakai untuk MEMBANGUN baris tagihan. Untuk COB, tagihan
-            // pasien & penjamin-2 berhitung di harga penjamin-2 (keputusan bisnis:
-            // "hitung ulang di harga penjamin-2"); penjamin-1 (mis. BPJS INA-CBG)
-            // menanggung lump via coverage. Non-COB → harga penjamin utama (zero-diff).
-            [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+        return DB::transaction(function () use ($anchor, $chain) {
+            // Insurer yang dipakai untuk MEMBANGUN baris tagihan (dari anchor). Untuk COB,
+            // tagihan pasien & penjamin-2 berhitung di harga penjamin-2; penjamin-1 (mis.
+            // BPJS INA-CBG) menanggung lump via coverage. Visit anak mewarisi insurer anchor.
+            [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($anchor);
 
-            // Bawa serta baris input KASIR dari invoice yang BARU SAJA dibatalkan untuk
-            // visit ini (alur Batalkan & Susun Ulang) — tindakan/BHP/IOL/alat medis tak
-            // punya sumber yang diregenerasi builder. Stok TIDAK dipotong ulang (baris
-            // disalin apa adanya, stok sudah berkurang saat input awal).
-            $carried  = $this->carriedKasirManualLines($visit);
-            $positive = array_merge($this->buildPositiveLines($visit, $billInsurerId, $billGuarantor), $carried);
-            $lines = array_merge(
-                $positive,
-                $this->computePaketDiscountLines($visit, $billInsurerId, $billGuarantor, $positive),
-                $this->buildFollowupConsultLines($visit, $billInsurerId, $billGuarantor),
-            );
+            // Agregasi baris dari SETIAP visit dalam rantai (konsultasi + tindakan tiap
+            // dokter, carried manual, diskon paket & konsultasi kontrol — per-visit).
+            $lines = [];
+            foreach ($chain as $v) {
+                $lines = array_merge($lines, $this->buildVisitInvoiceLines($v, $billInsurerId, $billGuarantor));
+            }
 
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
 
             // COB → global discount (placeholder, 0 — split COB lewat coverages, bukan discount)
-            $discount = $this->calculateCOBDiscount($subtotal, $visit->visitCob);
+            $discount = $this->calculateCOBDiscount($subtotal, $anchor->visitCob);
             $total    = max(0, $subtotal - $discount);
 
-            $invoiceNumber = $this->generateInvoiceNumber($visit);
+            $invoiceNumber = $this->generateInvoiceNumber($anchor);
 
             $invoice = BillingInvoice::create([
-                'visit_id'       => $visit->id,
+                'visit_id'       => $anchor->id,
                 'invoice_number' => $invoiceNumber,
                 'subtotal'       => $subtotal,
                 'discount'       => $discount,
@@ -512,7 +612,7 @@ class KasirService
                 'total'          => $total,
                 'status'         => 'DRAFT',
                 // BPJS non-COB: ditanggung penuh INA-CBG → sisa pasien = 0 sejak awal.
-                'covered_amount' => $this->isFullCoverBpjs($visit) ? $total : 0,
+                'covered_amount' => $this->isFullCoverBpjs($anchor) ? $total : 0,
             ]);
 
             foreach ($lines as $line) {
@@ -521,19 +621,21 @@ class KasirService
 
             // COB: rekam porsi tanggungan per penjamin (seq 1 & 2). Idempoten +
             // soft-delete aware → aman saat konsolidasi ulang.
-            if ($visit->visitCob && $visit->visitCob->is_active) {
-                $this->persistCoverages($invoice, $visit);
+            if ($anchor->visitCob && $anchor->visitCob->is_active) {
+                $this->persistCoverages($invoice, $anchor);
             }
 
-            // RANAP/IGD: tandai inpatient_charges yang baru ditagih agar tak dobel saat
-            // (mis.) invoice di-cancel lalu konsolidasi ulang.
-            if ($this->usesInpatientCharges($visit)) {
-                InpatientCharge::where('visit_id', $visit->id)
-                    ->where('is_billed', false)
-                    ->update(['is_billed' => true]);
+            // RANAP/IGD: tandai inpatient_charges (per visit rantai) yang baru ditagih agar
+            // tak dobel saat (mis.) invoice di-cancel lalu konsolidasi ulang.
+            foreach ($chain as $v) {
+                if ($this->usesInpatientCharges($v)) {
+                    InpatientCharge::where('visit_id', $v->id)
+                        ->where('is_billed', false)
+                        ->update(['is_billed' => true]);
+                }
             }
 
-            $this->log(auth('api')->id(), 'CONSOLIDATE_BILLING', BillingInvoice::class, $invoice->id, "Invoice {$invoiceNumber} — total {$total}");
+            $this->log(auth('api')->id(), 'CONSOLIDATE_BILLING', BillingInvoice::class, $invoice->id, "Invoice {$invoiceNumber} — total {$total}" . ($chain->count() > 1 ? " (rantai rujuk internal {$chain->count()} kunjungan)" : ''));
 
             return $invoice->load(['items', 'visit.patient']);
         });
@@ -558,22 +660,13 @@ class KasirService
         }
 
         return DB::transaction(function () use ($invoice) {
-            // Eager-load identik consolidateBilling agar buildLines lengkap.
-            $visit = Visit::with([
-                'patient',
-                'visitServices.procedure',
-                'prescriptions.items.medication',
-                'doctorExamination.surgerySchedule.surgeryRecord.iolUsages.iolItem',
-                'surgerySchedule.surgeryRecord.iolUsages.iolItem',
-                'doctorExamination.surgeryPackage.items',
-                'surgeryRequests.bhpItems.bhpItem',
-                'equipmentUsages.equipment',
-                'surgeryPackageSnapshots.items',
-                'visitCob.penjamin1',
-                'visitCob.penjamin2',
-            ])->findOrFail($invoice->visit_id);
+            // Invoice menempel di ANCHOR → bangun ulang dari SELURUH rantai rujuk-internal
+            // same-day (mirror consolidateBilling). Non-rujukan = rantai 1 elemen (lama).
+            $anchor = Visit::with($this->billingEagerLoads())->findOrFail($invoice->visit_id);
+            $chain  = $this->billingChainVisits($anchor);
+            $anchor = $chain->first() ?: $anchor;
 
-            [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($visit);
+            [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($anchor);
 
             // Snapshot keputusan kasir SEBELUM rebuild agar tak hilang saat delete+recreate:
             // (a) exclude per baris bertarif (paket_excluded), (b) baris MANUAL (reference_id
@@ -596,23 +689,30 @@ class KasirService
                 }
             }
 
-            // Bangun ulang baris positif dari sumber, kembalikan exclude kasir.
-            $positive = $this->buildPositiveLines($visit, $billInsurerId, $billGuarantor);
-            foreach ($positive as &$l) {
-                $key = "{$l['item_type']}|" . ($l['reference_id'] ?? '');
-                if (isset($excludedMap[$key])) {
-                    $l['paket_excluded'] = true;
-                    $l['is_absorbed']    = false;
+            // Bangun ulang baris positif PER VISIT rantai + diskon paket/konsultasi kontrol
+            // per-visit (basis paket = positif visit itu; anchor + manual lines). Baris manual
+            // (carried/kasir) milik invoice anchor → ditambahkan sekali.
+            $lines = $manualLines;
+            foreach ($chain as $v) {
+                $positive = $this->buildPositiveLines($v, $billInsurerId, $billGuarantor);
+                foreach ($positive as &$l) {
+                    $key = "{$l['item_type']}|" . ($l['reference_id'] ?? '');
+                    if (isset($excludedMap[$key])) {
+                        $l['paket_excluded'] = true;
+                        $l['is_absorbed']    = false;
+                    }
                 }
+                unset($l);
+                // Basis diskon paket: anchor sertakan baris manual (ikut absorpsi); anak tidak.
+                $basis = $v->id === $anchor->id ? array_merge($positive, $manualLines) : $positive;
+                $lines = array_merge(
+                    $lines,
+                    $positive,
+                    $this->computePaketDiscountLines($v, $billInsurerId, $billGuarantor, $basis),
+                    $this->buildFollowupConsultLines($v, $billInsurerId, $billGuarantor),
+                );
             }
-            unset($l);
-
-            $allNonDiscount = array_merge($positive, $manualLines);
-            $lines = array_merge(
-                $allNonDiscount,
-                $this->computePaketDiscountLines($visit, $billInsurerId, $billGuarantor, $allNonDiscount),
-                $this->buildFollowupConsultLines($visit, $billInsurerId, $billGuarantor),
-            );
+            $visit = $anchor;   // alias utk sisa method (isFullCoverBpjs/patch di bawah)
             $subtotal = array_sum(array_map(fn ($l) => (float) ($l['total_price'] ?? 0), $lines));
             $discount = $this->calculateCOBDiscount($subtotal, $visit->visitCob); // 0 non-COB
             $total    = max(0, $subtotal - $discount);
@@ -2509,15 +2609,22 @@ class KasirService
                 // Delegate ke QueueService::advanceFromStation supaya routing FARMASI vs SELESAI
                 // di-handle satu tempat (nextAfterKasir cek prescription DRAFT/SUBMITTED/DISPENSING)
                 // + TV broadcast jalan benar.
-                $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
-                    ->where('station', 'KASIR')
-                    ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
-                    ->first();
-                if ($kasirQueue) {
-                    $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
-                } else {
-                    // Tidak ada queue KASIR aktif (pasien dibayar dari non-queue flow) — set manual.
-                    $invoice->visit->update(['current_station' => 'SELESAI']);
+                //
+                // CASCADE rantai rujuk-internal same-day: 1 kwitansi gabungan (anchor) menutup
+                // SEMUA visit rantai. Tiap visit dirutekan SENDIRI sesuai obatnya (dokter dgn
+                // resep → FARMASI ambil obat; tanpa resep → SELESAI). Non-rujukan = rantai 1
+                // elemen → perilaku lama persis.
+                foreach ($this->sameDayChainVisitIds($invoice->visit) as $chainVisitId) {
+                    $kasirQueue = Queue::where('visit_id', $chainVisitId)
+                        ->where('station', 'KASIR')
+                        ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                        ->first();
+                    if ($kasirQueue) {
+                        $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
+                    } else {
+                        // Tidak ada queue KASIR aktif (pasien dibayar dari non-queue flow) — set manual.
+                        Visit::where('id', $chainVisitId)->update(['current_station' => 'SELESAI']);
+                    }
                 }
 
                 // Konsultasi kontrol gratis pasca-bedah (Opsi B): tandai hak terpakai untuk
