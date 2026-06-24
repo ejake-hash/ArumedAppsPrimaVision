@@ -4630,8 +4630,8 @@ async function saveAudioDefaults() {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   text-align: center;
-  font-size: clamp(16px, 1.5vw, 24px);
-  padding: 0.7rem 1rem;
+  font-size: max(15px, min(2.4vh, 2vw));
+  padding: max(6px, 1vh) 1rem;
   flex-shrink: 0;
 }
 .poli-call-body {
@@ -4650,15 +4650,18 @@ async function saveAudioDefaults() {
 .pcl-num {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: clamp(44px, 6vw, 132px);
+  /* Skala mengikuti TINGGI layar (vh) → besar di 4K, kecil di 768p; guard vw
+     supaya tak melebihi lebar panel; floor px utk monitor kecil. nowrap = tak
+     pecah di tanda hubung "D5-008". */
+  font-size: max(40px, min(15vh, 17vw));
   line-height: 1.02;
   color: #3a4a5a;
   max-width: 100%;
-  white-space: nowrap;          /* cegah "D5-008" pecah di tanda hubung */
+  white-space: nowrap;
 }
 .pcl-num.muted { color: #c3ccd4; }
 .pcl-poli {
-  font-size: clamp(16px, 1.8vw, 30px);
+  font-size: max(14px, min(3vh, 2.6vw));
   font-weight: 800;
   color: #2c3a48;
   text-transform: uppercase;
@@ -4667,7 +4670,7 @@ async function saveAudioDefaults() {
   max-width: 100%;
 }
 .pcl-name {
-  font-size: clamp(16px, 1.7vw, 28px);
+  font-size: max(14px, min(2.7vh, 2.4vw));
   font-weight: 700;
   color: #34434f;
   max-width: 100%;
@@ -4676,7 +4679,7 @@ async function saveAudioDefaults() {
   text-overflow: ellipsis;
 }
 .pcl-dokter {
-  font-size: clamp(13px, 1.3vw, 22px);
+  font-size: max(12px, min(2.1vh, 1.9vw));
   color: #7a8794;
   border-top: 1px solid #e3e8ec;
   padding-top: 0.4rem;
@@ -4686,12 +4689,12 @@ async function saveAudioDefaults() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pcl-idle { font-size: clamp(16px, 1.6vw, 26px); color: #aab3bb; font-weight: 600; }
+.pcl-idle { font-size: max(14px, min(2.4vh, 2vw)); color: #aab3bb; font-weight: 600; }
 
 /* ── Mode poli always-on: strip kartu per-dokter (bawah) ── */
 .poli-strip-wrap {
   flex: 0 0 auto;
-  height: clamp(180px, 27vh, 280px);
+  height: max(150px, 26vh);   /* skala dgn tinggi layar; floor 150px utk monitor kecil */
   overflow: hidden;
   position: relative;
 }
@@ -4710,8 +4713,8 @@ async function saveAudioDefaults() {
   to   { transform: translateX(-50%); }
 }
 .doc-card {
-  flex: 1 0 clamp(220px, 18vw, 320px);
-  min-width: clamp(220px, 18vw, 320px);
+  flex: 1 1 clamp(190px, 16vw, 360px);
+  min-width: clamp(190px, 16vw, 360px);
   background: #2ecc71;
   border-radius: 14px;
   color: #fff;
@@ -4719,39 +4722,42 @@ async function saveAudioDefaults() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.25rem;
-  padding: 0.8rem 1rem;
+  gap: 0.2rem;
+  padding: max(8px, 1.2vh) max(10px, 1vw);
   text-align: center;
 }
 .doc-card.has-called { background: #16a34a; box-shadow: 0 0 0 3px rgba(255,255,255,0.25) inset; }
 .doc-card.farmasi { background: #2563eb; }
 .doc-card.farmasi.has-called { background: #1d4ed8; }
 .dc-poli {
-  font-size: clamp(15px, 1.4vw, 22px);
+  font-size: max(13px, min(2.4vh, 1.5vw));
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.02em;
   line-height: 1.1;
+  max-width: 100%;
 }
 .dc-room { font-weight: 700; opacity: 0.85; }
 .dc-num {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: clamp(40px, 4.5vw, 80px);
+  font-size: max(30px, min(8vh, 5vw));
   line-height: 1;
+  white-space: nowrap;
 }
 .dc-num.muted { opacity: 0.55; }
 .dc-dokter {
-  font-size: clamp(13px, 1.1vw, 18px);
+  font-size: max(12px, min(1.9vh, 1.25vw));
   font-weight: 600;
   opacity: 0.95;
   line-height: 1.15;
+  max-width: 100%;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.dc-wait { font-size: clamp(12px, 1vw, 15px); opacity: 0.85; }
+.dc-wait { font-size: max(11px, min(1.6vh, 1vw)); opacity: 0.85; }
 .doc-empty {
   flex: 1;
   display: flex;
