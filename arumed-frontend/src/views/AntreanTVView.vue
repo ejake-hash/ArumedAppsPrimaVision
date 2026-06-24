@@ -4637,40 +4637,54 @@ async function saveAudioDefaults() {
 .poli-call-body {
   flex: 1;
   min-height: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
-  padding: 1rem;
+  gap: 0.25rem;
+  padding: 0.6rem 1rem;
   text-align: center;
+  overflow: hidden;
 }
 .pcl-num {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: clamp(64px, 11vw, 200px);
-  line-height: 0.95;
+  font-size: clamp(44px, 6vw, 132px);
+  line-height: 1.02;
   color: #3a4a5a;
+  max-width: 100%;
+  white-space: nowrap;          /* cegah "D5-008" pecah di tanda hubung */
 }
 .pcl-num.muted { color: #c3ccd4; }
 .pcl-poli {
-  font-size: clamp(22px, 2.4vw, 42px);
+  font-size: clamp(16px, 1.8vw, 30px);
   font-weight: 800;
   color: #2c3a48;
   text-transform: uppercase;
   letter-spacing: 0.02em;
+  line-height: 1.12;
+  max-width: 100%;
 }
 .pcl-name {
-  font-size: clamp(20px, 2.1vw, 38px);
+  font-size: clamp(16px, 1.7vw, 28px);
   font-weight: 700;
   color: #34434f;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pcl-dokter {
-  font-size: clamp(15px, 1.4vw, 24px);
+  font-size: clamp(13px, 1.3vw, 22px);
   color: #7a8794;
   border-top: 1px solid #e3e8ec;
-  padding-top: 0.5rem;
-  margin-top: 0.2rem;
+  padding-top: 0.4rem;
+  margin-top: 0.15rem;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pcl-idle { font-size: clamp(16px, 1.6vw, 26px); color: #aab3bb; font-weight: 600; }
 
