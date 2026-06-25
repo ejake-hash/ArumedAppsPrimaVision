@@ -197,7 +197,13 @@ class Queue extends Model
                           ->where(function ($iv) {
                               $iv->whereDoesntHave('billingInvoice')
                                  ->orWhereHas('billingInvoice', function ($bi) {
-                                     $bi->whereNotIn('status', ['PAID', 'PARTIALLY_PAID', 'CANCELLED']);
+                                     // CANCELLED TIDAK dikecualikan: tagihan batal yg belum
+                                     // disusun ulang berarti visit masih perlu kasir (current_station
+                                     // != SELESAI sudah jadi gerbang di atas). Jika di-exclude, visit
+                                     // lintas-hari pasca-Batalkan lenyap dari papan Kasir (yatim) —
+                                     // padahal getInvoiceByVisit/consolidateBilling skip CANCELLED &
+                                     // auto-generate ulang saat dibuka. Hanya PAID/PARTIALLY_PAID = tutup.
+                                     $bi->whereNotIn('status', ['PAID', 'PARTIALLY_PAID']);
                                  });
                           });
                     });

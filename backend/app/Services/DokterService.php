@@ -73,7 +73,11 @@ class DokterService
             ->where('station', 'DOKTER')
             // hari ini / aktif lintas-hari ≤7 hari, ATAU pasien "belum tutup kasir"
             // (boleh dibuka ulang utk tambah obat/tindakan & revisi SOAP/resume/paket).
-            ->boardVisibleOpenBilling()
+            // null = TANPA cap umur utk klausa "belum tutup kasir": selama tagihan belum
+            // ditutup Kasir, dokter pemiliknya tetap bisa membuka ulang berapa pun umurnya
+            // (sebelumnya cap 7 hari diam-diam menjatuhkan visit lama yg masih nyangkut —
+            // bertentangan dgn janji komentar ini). Selaras dgn papan Kasir.
+            ->boardVisibleOpenBilling(null)
             ->whereHas('visit');   // exclude zombie row (visit soft-deleted)
 
         // Superadmin melihat seluruh antrean DOKTER. Dokter biasa hanya melihat
