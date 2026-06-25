@@ -27,6 +27,15 @@ Schedule::command('satusehat:batch-sync --retry')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
 
+// Rekam Medis BPJS (WS Rekam Medis) — kirim RM kunjungan SELESAI hari ini ke BPJS
+// (mengisi i-Care nasional), 23:59 WIB. Menggantikan tombol manual di DokterView.
+// No-op bila integrasi belum aktif. Tunggakan lama: jalankan manual `rm:batch-sync
+// --backlog` (lihat RmBatchSync).
+Schedule::command('rm:batch-sync')
+    ->dailyAt('23:59')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();
+
 // Jam 17.00 WIB — laporan tunggakan kasir (tagihan belum tutup kasir + umurnya)
 // ke supervisor (env KASIR_BACKLOG_REPORT_TO). No-op aman bila tak ada tunggakan
 // atau penerima belum diset.

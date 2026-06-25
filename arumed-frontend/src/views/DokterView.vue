@@ -12,7 +12,6 @@ import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
 import IolDecisionPanel from '@/components/dokter/IolDecisionPanel.vue'
 import BiometriMesinPanel from '@/components/common/BiometriMesinPanel.vue'
-import IcareModal from '@/components/bpjs/IcareModal.vue'
 
 const store      = useDokterStore()
 const jadwalStore = useJadwalDokterStore()
@@ -295,25 +294,8 @@ function mapPatient(q) {
 const patients = computed(() => store.antrian.map(mapPatient))
 const selP     = computed(() => store.selectedQueue ? mapPatient(store.selectedQueue) : null)
 
-// i-Care JKN viewer (riwayat pelayanan peserta) — modal consent + iframe.
-const icareOpen = ref(false)
-
-// WS Rekam Medis: kirim RM kunjungan ke BPJS (mengisi i-Care).
-const rmBpjsSending = ref(false)
-async function kirimRmBpjs() {
-  const visitId = store.selectedVisitId
-  if (!visitId || rmBpjsSending.value) return
-  if (!window.confirm('Kirim rekam medis kunjungan ini ke BPJS (mengisi i-Care)?')) return
-  rmBpjsSending.value = true
-  try {
-    await dokterApi.kirimRmBpjs(visitId)
-    toast('s', 'Rekam medis terkirim ke BPJS')
-  } catch (e) {
-    toast('e', e.response?.data?.message ?? 'Gagal mengirim rekam medis ke BPJS')
-  } finally {
-    rmBpjsSending.value = false
-  }
-}
+// Pengiriman Rekam Medis ke BPJS (WS Rekam Medis, mengisi i-Care) kini OTOMATIS
+// via scheduler batch 23:59 (artisan rm:batch-sync) — bukan tombol manual lagi.
 
 // Baris tabel RO untuk Tab 1. Baris non-inti disembunyikan bila kedua mata kosong
 // agar kartu tetap ringkas tapi tetap memuat seluruh data yang ada.
@@ -2938,27 +2920,6 @@ function closeResumeRM() {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
               Dokumen RM
             </button>
-            <!-- i-Care JKN: riwayat pelayanan peserta 1 tahun (lintas faskes). Hanya BPJS. -->
-            <button
-              v-if="selP.ptype === 'bpjs' && store.selectedVisitId"
-              class="db db-icare"
-              title="Riwayat pelayanan i-Care JKN (1 tahun terakhir, lintas faskes) — perlu persetujuan pasien"
-              @click="icareOpen = true"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-              Riwayat i-Care
-            </button>
-            <!-- WS Rekam Medis: kirim RM kunjungan ke BPJS (mengisi i-Care). Hanya BPJS. -->
-            <button
-              v-if="selP.ptype === 'bpjs' && store.selectedVisitId"
-              class="db db-rmbpjs"
-              :disabled="rmBpjsSending"
-              title="Kirim rekam medis kunjungan ini ke BPJS (WS Rekam Medis) — mengisi i-Care nasional"
-              @click="kirimRmBpjs"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-              {{ rmBpjsSending ? 'Mengirim…' : 'Kirim RM ke BPJS' }}
-            </button>
             <!-- Aksi Batalkan kunjungan (dipindah dari kartu antrean) — beraksi atas
                  pasien yang sedang dibuka. Pindah dokter setelah di stasiun dokter
                  ditangani via Rujuk Internal (di tab Tindakan), bukan tombol terpisah. -->
@@ -4802,13 +4763,6 @@ function closeResumeRM() {
       :segment="eyePrevSegment"
       title="Sketsa Kunjungan Lalu — hanya lihat"
       @update:open="eyePrevOpen = $event"
-    />
-
-    <!-- i-Care JKN viewer (consent + iframe) -->
-    <IcareModal
-      v-model:open="icareOpen"
-      :patient-name="selP?.name ?? ''"
-      :loader="() => dokterApi.icareRiwayat(store.selectedVisitId)"
     />
 
     <!-- TOASTS -->

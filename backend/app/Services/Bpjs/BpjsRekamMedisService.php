@@ -128,6 +128,49 @@ class BpjsRekamMedisService
         return ['is_success' => true, 'metaData' => $result['metaData'], 'status' => 'SENT'];
     }
 
+    /**
+     * Kirim massal rekam medis ke BPJS. Dipanggil scheduler (23:59 WIB) & manual.
+     * Satu kegagalan kunjungan tidak menghentikan batch (di-catch per-visit);
+     * status & log per-kunjungan ditangani {@see insertForVisit}.
+     *
+     * @param string   $mode  'AUTO' = kunjungan SELESAI hari ini (mirip Satu Sehat);
+     *                         'BACKLOG' = semua kunjungan ber-SEP yang belum/gagal terkirim.
+     * @param int|null $limit Batas jumlah (hanya dipakai mode BACKLOG).
+     * @return array{sent:int, failed:int, total:int}
+     */
+    public function batchSend(string $mode = 'AUTO', ?int $limit = null): array
+    {
+        @set_time_limit(0);
+
+        $query = Visit::query()
+            ->whereNotNull('no_sep')->where('no_sep', '!=', '')
+            ->where(fn ($w) => $w->whereNull('bpjs_rm_status')->orWhere('bpjs_rm_status', 'FAILED'));
+
+        if ($mode === 'AUTO') {
+            // Sehari-hari: kunjungan SELESAI hari ini (sama konsep batch Satu Sehat).
+            $query->whereDate('visit_date', today())->where('current_station', 'SELESAI');
+        } elseif ($limit) {
+            // Drain tunggakan: tertua dulu, dibatasi agar tak membanjiri BPJS sekali jalan.
+            $query->orderBy('visit_date');
+        }
+
+        $ids = ($mode === 'BACKLOG' && $limit) ? $query->limit($limit)->pluck('id') : $query->pluck('id');
+
+        $sent = 0;
+        $failed = 0;
+        foreach ($ids as $visitId) {
+            try {
+                $this->insertForVisit((string) $visitId);
+                $sent++;
+            } catch (\Throwable $e) {
+                // insertForVisit sudah men-set status FAILED + tulis BpjsRmLog.
+                $failed++;
+            }
+        }
+
+        return ['sent' => $sent, 'failed' => $failed, 'total' => $sent + $failed];
+    }
+
     // =========================================================================
     // TRANSPORT — POST text/plain (response JSON polos, TIDAK terenkripsi)
     // =========================================================================
