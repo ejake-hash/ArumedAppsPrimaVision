@@ -55,10 +55,19 @@ class InaCbgsService
         return $this->callWs('set_claim_data', $data, $claimId, $visitId);
     }
 
-    /** Jalankan grouper INA-CBG -> kode CBG + tarif. */
-    public function grouper(string $nomorSep, int $stage = 1, ?string $claimId = null, ?string $visitId = null): array
+    /**
+     * Jalankan grouper INA-CBG -> kode CBG + tarif.
+     * Stage 1 = grouping dasar (mengembalikan special_cmg_option bila ada).
+     * Stage 2 = terapkan special CMG (top-up); kirim $specialCmg (mis. 'YY14').
+     */
+    public function grouper(string $nomorSep, int $stage = 1, ?string $specialCmg = null, ?string $claimId = null, ?string $visitId = null): array
     {
-        return $this->callWs('grouper', ['nomor_sep' => $nomorSep, 'stage' => $stage], $claimId, $visitId);
+        $data = ['nomor_sep' => $nomorSep, 'stage' => $stage];
+        if ($specialCmg !== null && $specialCmg !== '') {
+            $data['special_cmg'] = $specialCmg;
+        }
+
+        return $this->callWs('grouper', $data, $claimId, $visitId);
     }
 
     /** Finalisasi klaim (praktis irreversible — hanya dibuka via reedit_claim). */
@@ -102,6 +111,69 @@ class InaCbgsService
     public function deleteClaim(string $nomorSep, ?string $claimId = null, ?string $visitId = null): array
     {
         return $this->callWs('delete_claim', ['nomor_sep' => $nomorSep], $claimId, $visitId);
+    }
+
+    // =========================================================================
+    // PENGIRIMAN KLAIM (online ke Data Center BPJS) — K2
+    // =========================================================================
+
+    /**
+     * Kirim klaim KOLEKTIF per rentang tanggal ke Data Center (method send_claim).
+     * Param: start_dt/stop_dt (Y-m-d), jenis_rawat (1=inap,2=jalan), date_type
+     * (mis. 'tgl_pulang'). Mengembalikan ringkasan terkirim/gagal dari DC.
+     */
+    public function sendClaimCollective(string $startDt, string $stopDt, int $jenisRawat = 2, string $dateType = 'tgl_pulang', ?string $claimId = null, ?string $visitId = null): array
+    {
+        return $this->callWs('send_claim', [
+            'start_dt'    => $startDt,
+            'stop_dt'     => $stopDt,
+            'jenis_rawat' => $jenisRawat,
+            'date_type'   => $dateType,
+        ], $claimId, $visitId);
+    }
+
+    /**
+     * Kirim klaim INDIVIDUAL per SEP ke Data Center (method send_claim_individual).
+     * Respons membawa kemkes_dc_status / bpjs_dc_status / cob_dc_status.
+     */
+    public function sendClaimIndividual(string $nomorSep, ?string $claimId = null, ?string $visitId = null): array
+    {
+        return $this->callWs('send_claim_individual', ['nomor_sep' => $nomorSep], $claimId, $visitId);
+    }
+
+    // =========================================================================
+    // BERKAS DIGITAL (upload ke DC BPJS via E-Klaim) — K2 (pengganti "Vedika")
+    // =========================================================================
+
+    /**
+     * Unggah berkas pendukung (method file_upload) — diteruskan E-Klaim ke DC BPJS.
+     * $fileClass mis. resume_medis/laboratorium/radiologi/penunjang_lain.
+     * $base64 = isi file ter-encode base64 (tanpa prefix data URI).
+     * Respons: upload_dc_bpjs (1=sukses,0=gagal) + upload_dc_bpjs_response.
+     */
+    public function fileUpload(string $nomorSep, string $fileClass, string $fileName, string $base64, ?string $claimId = null, ?string $visitId = null): array
+    {
+        return $this->callWs('file_upload', [
+            'nomor_sep'  => $nomorSep,
+            'file_class' => $fileClass,
+            'file_name'  => $fileName,
+            'data'       => $base64,
+        ], $claimId, $visitId);
+    }
+
+    /** Hapus berkas terunggah (method file_delete). */
+    public function fileDelete(string $nomorSep, string $fileName, ?string $claimId = null, ?string $visitId = null): array
+    {
+        return $this->callWs('file_delete', [
+            'nomor_sep' => $nomorSep,
+            'file_name' => $fileName,
+        ], $claimId, $visitId);
+    }
+
+    /** Ambil daftar/isi berkas terunggah (method file_get). */
+    public function fileGet(string $nomorSep, ?string $claimId = null, ?string $visitId = null): array
+    {
+        return $this->callWs('file_get', ['nomor_sep' => $nomorSep], $claimId, $visitId);
     }
 
     // =========================================================================

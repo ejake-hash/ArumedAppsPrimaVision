@@ -839,6 +839,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/icare/monitoring',               [KlaimController::class, 'icareMonitoring']);
             Route::get('/grouping-log/{klaimId}',         [KlaimController::class, 'groupingLog']);
             Route::get('/icd-search',                     [KlaimController::class, 'icdSearch']);
+            Route::get('/kedaluwarsa',                    [KlaimController::class, 'kedaluwarsa']); // K3 — pengingat batas 6 bln
 
             // Berkas klaim (Vedika): render dokumen RM / kwitansi → PDF (statis, sblm /{id}).
             Route::get('/dokumen/{docId}/pdf',            [KlaimController::class, 'dokumenPdf']);
@@ -889,6 +890,14 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/eklaim/reedit',            [KlaimController::class, 'eklaimReedit'])->middleware('permission:bpjs.write');
             // Kirim Klaim Online (DC Kemenkes/BPJS) + sinkron status DC + cetak berkas.
             Route::post('/{id}/eklaim/kirim-online',      [KlaimController::class, 'eklaimKirimOnline'])->middleware('permission:bpjs.write');
+            // K2 — kirim individual (per SEP) + kolektif (rentang tgl) + upload berkas digital ke DC.
+            Route::post('/{id}/eklaim/kirim-individual',  [KlaimController::class, 'eklaimKirimIndividual'])->middleware('permission:bpjs.write');
+            Route::post('/eklaim/kirim-kolektif',         [KlaimController::class, 'eklaimKirimKolektif'])->middleware('permission:bpjs.write');
+            Route::post('/lampiran/{attId}/upload-dc',    [KlaimController::class, 'uploadLampiranDc'])->middleware('permission:bpjs.write');
+            // K3 — status verifikasi + dispute/pending + rekonsiliasi pembayaran.
+            Route::post('/{id}/verif-status',             [KlaimController::class, 'refreshVerifStatus'])->middleware('permission:bpjs.write');
+            Route::put('/{id}/dispute',                   [KlaimController::class, 'setDispute'])->middleware('permission:bpjs.write');
+            Route::put('/{id}/pembayaran',                [KlaimController::class, 'setPayment'])->middleware('permission:bpjs.write');
             Route::get('/{id}/eklaim/sync-dc',            [KlaimController::class, 'eklaimSyncDc']);
             Route::get('/{id}/cetak',                     [KlaimController::class, 'cetakKlaim']);
 

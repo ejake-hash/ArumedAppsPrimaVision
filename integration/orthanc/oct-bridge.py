@@ -82,6 +82,24 @@ def pick_file(study_id):
     return t.name, "img"
 
 
+def study_uids(study_id):
+    """UID DICOM (series + instance representatif) untuk ImagingStudy SATUSEHAT.
+    Ambil series pertama + instance pertamanya. Kembalikan ('','','') bila tak ada."""
+    try:
+        series = ojson("/studies/%s/series" % study_id) or []
+        if not series:
+            return "", "", ""
+        s0 = series[0]
+        series_uid = (s0.get("MainDicomTags", {}) or {}).get("SeriesInstanceUID", "")
+        instances = ojson("/series/%s/instances" % s0["ID"]) or []
+        if not instances:
+            return series_uid, "", ""
+        i0 = (instances[0].get("MainDicomTags", {}) or {})
+        return series_uid, i0.get("SOPInstanceUID", ""), i0.get("SOPClassUID", "")
+    except Exception:
+        return "", "", ""
+
+
 def send(study_id):
     tags = (ojson("/studies/%s" % study_id).get("MainDicomTags", {}) or {})
     acc  = tags.get("AccessionNumber", "")
@@ -93,6 +111,7 @@ def send(study_id):
     if not path:
         print("SKIP study %s: tanpa berkas" % study_id, flush=True)
         return
+    series_uid, sop_uid, sop_class = study_uids(study_id)
     try:
         cmd = [
             "curl", "-s", "-S", "-o", "/dev/null", "-w", "%{http_code}",
@@ -103,6 +122,10 @@ def send(study_id):
             "-F", "accession_number=%s" % acc,
             "-F", "source=%s" % SOURCE,
             "-F", "external_ref=%s" % suid,
+            # UID DICOM untuk ImagingStudy SATUSEHAT (backend abaikan bila kosong).
+            "-F", "series_instance_uid=%s" % series_uid,
+            "-F", "sop_instance_uid=%s" % sop_uid,
+            "-F", "sop_class_uid=%s" % sop_class,
         ]
         code = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
         print("INGEST acc=%s study=%s (%s) -> HTTP %s" % (acc, study_id, kind, code), flush=True)

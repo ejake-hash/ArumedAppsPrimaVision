@@ -29,6 +29,10 @@ class PenunjangIngestController extends Controller
             'no_rm'            => 'nullable|string|max:50',
             'source'           => 'nullable|string|in:OCT,USG_WATCHER,QUANTEL_WATCHER',
             'external_ref'     => 'nullable|string|max:191',
+            // UID DICOM (opsional, dari bridge Orthanc) untuk ImagingStudy SATUSEHAT (S4).
+            'series_instance_uid' => 'nullable|string|max:191',
+            'sop_instance_uid'    => 'nullable|string|max:191',
+            'sop_class_uid'       => 'nullable|string|max:191',
         ]);
 
         $result = $this->service->ingest($request->file('file'), [
@@ -36,6 +40,9 @@ class PenunjangIngestController extends Controller
             'no_rm'            => $validated['no_rm'] ?? null,
             'source'           => $validated['source'] ?? 'OCT',
             'external_ref'     => $validated['external_ref'] ?? null,
+            'series_instance_uid' => $validated['series_instance_uid'] ?? null,
+            'sop_instance_uid'    => $validated['sop_instance_uid'] ?? null,
+            'sop_class_uid'       => $validated['sop_class_uid'] ?? null,
             'original_filename' => $request->file('file')->getClientOriginalName(),
             'xml_content'      => $request->hasFile('xml')
                 ? file_get_contents($request->file('xml')->getRealPath())

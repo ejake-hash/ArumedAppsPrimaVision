@@ -850,6 +850,36 @@ class SatusehatService
                 ->whereNotNull('nik')->where('nik', '!=', '')->count(),
         ];
 
+        // ── Rasio kirim 4 minggu (lever kepatuhan Kemenkes ≥50%) ──────────────
+        // Faskes tersambung wajib kirim ≥50% data kunjungan, dinilai 4 minggu
+        // berturut (dipantau Dashboard Aliran Data Kemenkes). Hitung synced/total
+        // SELESAI per minggu kalender.
+        $compliance = [];
+        for ($w = 3; $w >= 0; $w--) {
+            $start = today()->subWeeks($w)->startOfWeek();
+            $end   = today()->subWeeks($w)->endOfWeek();
+            $wb = Visit::whereBetween('visit_date', [$start->toDateString(), $end->toDateString()])
+                ->where('current_station', 'SELESAI');
+            $total  = (clone $wb)->count();
+            $synced = (clone $wb)->where('satusehat_sync_status', 'SYNCED')->count();
+            $compliance[] = [
+                'week_start' => $start->toDateString(),
+                'week_end'   => $end->toDateString(),
+                'total'      => $total,
+                'synced'     => $synced,
+                'ratio'      => $total ? (int) round($synced / $total * 100) : null,
+                'meets'      => $total ? ($synced / $total) >= 0.5 : null,
+            ];
+        }
+        $ratios = array_filter(array_column($compliance, 'ratio'), fn ($r) => $r !== null);
+        $complianceSummary = [
+            'threshold'    => 50,
+            'weeks'        => $compliance,
+            'min_ratio'    => $ratios ? min($ratios) : null,
+            // Memenuhi bila SEMUA minggu ber-kunjungan mencapai ≥50%.
+            'meets_all'    => ! in_array(false, array_column($compliance, 'meets'), true),
+        ];
+
         // ── Riwayat batch terakhir ────────────────────────────────────────────
         $batches = SatusehatSyncLog::latest()->take(10)->get()->map(fn ($l) => [
             'id'           => $l->id,
@@ -871,6 +901,7 @@ class SatusehatService
             'visits'     => $visits,
             'trend'      => $trend,
             'readiness'  => $readiness,
+            'compliance' => $complianceSummary,
             'batches'    => $batches,
         ];
     }
@@ -1102,6 +1133,9 @@ class SatusehatService
             'medicationEntries'    => $this->buildMedicationEntries($visit, 'urn:uuid:PREVIEW-ENC'),
             'medicationItemCount'  => $this->countMedicationItems($visit),
             'dispensedItemCount'   => $this->countMedicationItems($visit, dispensedOnly: true),
+            'observationEntries'   => $this->buildVitalSignEntries($visit, 'urn:uuid:PREVIEW-ENC'),
+            'procedureEntries'     => $this->buildProcedureEntries($visit, 'urn:uuid:PREVIEW-ENC'),
+            'penunjangEntries'     => $this->buildPenunjangEntries($visit, 'urn:uuid:PREVIEW-ENC'),
         ];
     }
 
@@ -1162,6 +1196,23 @@ class SatusehatService
         // Obat: Medication + MedicationRequest + MedicationDispense (saling refer urn:uuid).
         foreach ($this->buildMedicationEntries($visit, $encUuid) as $medEntry) {
             $entries[] = $medEntry;
+        }
+
+        // S2 — Observation (vital sign) + Procedure (ICD-9-CM). Resource OPSIONAL di
+        // Satu Sehat (wajib hanya Encounter+Condition) → kegagalan builder ini tak
+        // boleh menjatuhkan Bundle inti; bungkus defensif.
+        try {
+            foreach ($this->buildVitalSignEntries($visit, $encUuid) as $e) {
+                $entries[] = $e;
+            }
+            foreach ($this->buildProcedureEntries($visit, $encUuid) as $e) {
+                $entries[] = $e;
+            }
+            foreach ($this->buildPenunjangEntries($visit, $encUuid) as $e) {
+                $entries[] = $e;
+            }
+        } catch (\Throwable $e) {
+            report($e);
         }
 
         // Encounter diletakkan TERAKHIR agar urn:uuid resource lain sudah dikenal.
@@ -1717,7 +1768,12 @@ class SatusehatService
                 ];
 
                 // 3. MedicationDispense (hanya bila sudah diserahkan).
-                if ($isDispensed) {
+                //    `Medication.code` untuk Dispense WAJIB KFA Produk Aktual (93xxxxxx);
+                //    Satu Sehat menolak kode virtual (92xxxxxx) di Dispense. Karena 1
+                //    resource Medication dipakai bersama Request+Dispense, bila KFA bukan
+                //    aktual maka Dispense DILEWATI (MedicationRequest tetap terkirim) agar
+                //    Bundle tidak ditolak total dan visit tidak stuck FAILED.
+                if ($isDispensed && $this->kfaIsActual($kfa)) {
                     $performer = $petugasIhs
                         ? [['actor' => ['reference' => "Practitioner/{$petugasIhs}", 'display' => $petugas->name]]]
                         : null;
@@ -1753,6 +1809,358 @@ class SatusehatService
         }
 
         return $entries;
+    }
+
+    /**
+     * KFA Produk Aktual? (kode 93xxxxxx). Disyaratkan untuk MedicationDispense;
+     * MedicationRequest boleh virtual (92) atau aktual (93).
+     */
+    private function kfaIsActual(?string $kfa): bool
+    {
+        return str_starts_with(ltrim((string) $kfa), '93');
+    }
+
+    // =========================================================================
+    // S2 — Observation (vital sign) + Procedure (ICD-9-CM)
+    // =========================================================================
+
+    /** Profil LOINC/UCUM vital sign baku Satu Sehat. */
+    private const VITAL_LOINC = [
+        'nadi'        => ['8867-4',  'Heart rate',         '/min',  '/min'],
+        'suhu'        => ['8310-5',  'Body temperature',   'Cel',   'Cel'],
+        'respirasi'   => ['9279-1',  'Respiratory rate',   '/min',  '/min'],
+        'spo2'        => ['2708-6',  'Oxygen saturation',  '%',     '%'],
+        'berat_badan' => ['29463-7', 'Body weight',        'kg',    'kg'],
+        'tinggi_badan'=> ['8302-2',  'Body height',        'cm',    'cm'],
+        'bmi'         => ['39156-5', 'Body mass index',    'kg/m2', 'kg/m2'],
+    ];
+
+    /**
+     * Observation vital sign dari nurse_assessments (Fase A). Tekanan darah dikirim
+     * sebagai panel 85354-9 (komponen sistol 8480-6 / diastol 8462-4). Tiap
+     * Observation diberi identifier stabil agar idempoten saat re-send.
+     */
+    private function buildVitalSignEntries(Visit $visit, string $encUuid): array
+    {
+        $na = $visit->nurseAssessment;
+        if (! $na) {
+            return [];
+        }
+        $patient    = $visit->patient;
+        $patientIhs = $patient ? $this->resolvePatientIhs($patient) : null;
+        if (! $patientIhs) {
+            return [];
+        }
+
+        $subject   = ['reference' => "Patient/{$patientIhs}", 'display' => $patient->name];
+        $orgId     = $this->client()->organizationId();
+        $effective = $this->toWibIso($na->created_at) ?? $this->toWibIso($visit->visit_date);
+        $entries   = [];
+
+        $vitalCategory = [[
+            'coding' => [[
+                'system'  => 'http://terminology.hl7.org/CodeSystem/observation-category',
+                'code'    => 'vital-signs',
+                'display' => 'Vital Signs',
+            ]],
+        ]];
+
+        $make = function (string $loinc, string $display, $value, ?string $unit, ?string $ucum, string $idKey, ?array $components = null) use ($subject, $encUuid, $orgId, $effective, $vitalCategory) {
+            $res = array_filter([
+                'resourceType' => 'Observation',
+                'identifier'   => [[
+                    'system' => "http://sys-ids.kemkes.go.id/observation/{$orgId}",
+                    'value'  => $idKey,
+                ]],
+                'status'    => 'final',
+                'category'  => $vitalCategory,
+                'code'      => ['coding' => [['system' => 'http://loinc.org', 'code' => $loinc, 'display' => $display]]],
+                'subject'   => $subject,
+                'encounter' => ['reference' => $encUuid],
+                'effectiveDateTime' => $effective,
+                'valueQuantity' => $components ? null : array_filter([
+                    'value'  => (float) $value,
+                    'unit'   => $unit,
+                    'system' => 'http://unitsofmeasure.org',
+                    'code'   => $ucum,
+                ], fn ($v) => $v !== null),
+                'component' => $components,
+            ], fn ($v) => $v !== null && $v !== []);
+
+            return ['fullUrl' => 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString(), 'resource' => $res, 'request' => ['method' => 'POST', 'url' => 'Observation']];
+        };
+
+        // Tekanan darah (panel) — hanya bila sistol & diastol ada.
+        if ($na->td_sistol !== null && $na->td_diastol !== null) {
+            $entries[] = $make('85354-9', 'Blood pressure panel', null, null, null, "vital:{$na->id}:bp", [
+                [
+                    'code' => ['coding' => [['system' => 'http://loinc.org', 'code' => '8480-6', 'display' => 'Systolic blood pressure']]],
+                    'valueQuantity' => ['value' => (float) $na->td_sistol, 'unit' => 'mmHg', 'system' => 'http://unitsofmeasure.org', 'code' => 'mm[Hg]'],
+                ],
+                [
+                    'code' => ['coding' => [['system' => 'http://loinc.org', 'code' => '8462-4', 'display' => 'Diastolic blood pressure']]],
+                    'valueQuantity' => ['value' => (float) $na->td_diastol, 'unit' => 'mmHg', 'system' => 'http://unitsofmeasure.org', 'code' => 'mm[Hg]'],
+                ],
+            ]);
+        }
+
+        foreach (self::VITAL_LOINC as $field => [$loinc, $display, $unit, $ucum]) {
+            $val = $na->{$field} ?? null;
+            if ($val === null || $val === '' || (float) $val <= 0) {
+                continue;
+            }
+            $entries[] = $make($loinc, $display, $val, $unit, $ucum, "vital:{$na->id}:{$field}");
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Procedure (ICD-9-CM) dari doctor_examinations.tindakan_codes (Fase C).
+     * status=completed; code system ICD-9-CM; identifier stabil per (visit, kode).
+     */
+    private function buildProcedureEntries(Visit $visit, string $encUuid): array
+    {
+        $exam = $visit->doctorExamination;
+        $codes = collect($exam?->tindakan_codes ?? [])
+            ->map(fn ($c) => is_array($c) ? ($c['kode'] ?? $c['code'] ?? null) : $c)
+            ->filter()->unique()->values();
+        if ($codes->isEmpty()) {
+            return [];
+        }
+
+        $patient    = $visit->patient;
+        $patientIhs = $patient ? $this->resolvePatientIhs($patient) : null;
+        if (! $patientIhs) {
+            return [];
+        }
+
+        $subject   = ['reference' => "Patient/{$patientIhs}", 'display' => $patient->name];
+        $orgId     = $this->client()->organizationId();
+        $performed = $this->toWibIso($exam?->created_at) ?? $this->toWibIso($visit->visit_date);
+
+        // Nama prosedur (display) dari master Procedure by icd9_code (sekali query).
+        $names = \App\Models\Procedure::whereIn('icd9_code', $codes->all())
+            ->pluck('name', 'icd9_code')->all();
+
+        $doctor    = $exam?->doctor;
+        $doctorIhs = $doctor ? $this->resolvePractitionerIhs($doctor) : null;
+        $performer = $doctorIhs
+            ? [['actor' => ['reference' => "Practitioner/{$doctorIhs}", 'display' => $doctor->name]]]
+            : null;
+
+        $entries = [];
+        foreach ($codes as $code) {
+            $entries[] = [
+                'fullUrl'  => 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString(),
+                'resource' => array_filter([
+                    'resourceType' => 'Procedure',
+                    'identifier'   => [[
+                        'system' => "http://sys-ids.kemkes.go.id/procedure/{$orgId}",
+                        'value'  => "proc:{$visit->id}:{$code}",
+                    ]],
+                    'status'    => 'completed',
+                    'code'      => ['coding' => [[
+                        'system'  => 'http://hl7.org/fhir/sid/icd-9-cm',
+                        'code'    => (string) $code,
+                        'display' => $names[$code] ?? null,
+                    ]]],
+                    'subject'   => $subject,
+                    'encounter' => ['reference' => $encUuid],
+                    'performedDateTime' => $performed,
+                    'performer' => $performer,
+                ], fn ($v) => $v !== null && $v !== []),
+                'request' => ['method' => 'POST', 'url' => 'Procedure'],
+            ];
+        }
+
+        return $entries;
+    }
+
+    /** SNOMED bodySite mata dari eye_side. */
+    private const EYE_SNOMED = [
+        'OD'  => ['18944008', 'Right eye structure'],
+        'OS'  => ['8966001',  'Left eye structure'],
+        'ODS' => ['362503005','Both eyes'],
+    ];
+
+    /**
+     * ServiceRequest (order) + DiagnosticReport (hasil) untuk penunjang OCT/USG/
+     * biometri (Fase D/S3). `code` pakai LOINC dari diagnostic_test_types.loinc_code
+     * bila ada; fallback CodeableConcept lokal (tetap valid, tak memblokir).
+     * Resource OPSIONAL → builder defensif.
+     */
+    private function buildPenunjangEntries(Visit $visit, string $encUuid): array
+    {
+        $orders = $visit->diagnosticOrders()->with('results')->get();
+        if ($orders->isEmpty()) {
+            return [];
+        }
+
+        $patient    = $visit->patient;
+        $patientIhs = $patient ? $this->resolvePatientIhs($patient) : null;
+        if (! $patientIhs) {
+            return [];
+        }
+
+        $subject = ['reference' => "Patient/{$patientIhs}", 'display' => $patient->name];
+        $orgId   = $this->client()->organizationId();
+
+        // Master jenis penunjang (code → {name, loinc_code}) sekali query.
+        $codesUsed = $orders->pluck('test_type')->filter()->unique()->all();
+        $types = \App\Models\DiagnosticTestType::whereIn('code', $codesUsed)
+            ->get(['code', 'name', 'loinc_code'])->keyBy('code');
+
+        $entries = [];
+        foreach ($orders as $order) {
+            $type  = $types[$order->test_type] ?? null;
+            $loinc = $type?->loinc_code;
+            $name  = $type?->name ?? $order->test_type;
+
+            // CodeableConcept: LOINC bila ada, else kode lokal RS (system kustom).
+            $code = ['coding' => [$loinc
+                ? ['system' => 'http://loinc.org', 'code' => $loinc, 'display' => $name]
+                : ['system' => "http://sys-ids.kemkes.go.id/diagnostic-test/{$orgId}", 'code' => (string) $order->test_type, 'display' => $name],
+            ]];
+
+            $bodySite = null;
+            if ($order->eye_side && isset(self::EYE_SNOMED[$order->eye_side])) {
+                [$sCode, $sDisp] = self::EYE_SNOMED[$order->eye_side];
+                $bodySite = [['coding' => [['system' => 'http://snomed.info/sct', 'code' => $sCode, 'display' => $sDisp]]]];
+            }
+
+            $requester = null;
+            if ($order->ordered_by_id) {
+                $reqIhs = $order->orderedBy ? $this->resolvePractitionerIhs($order->orderedBy) : null;
+                $requester = $reqIhs ? ['reference' => "Practitioner/{$reqIhs}", 'display' => $order->orderedBy?->name] : null;
+            }
+
+            $srUuid = 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString();
+            $entries[] = [
+                'fullUrl'  => $srUuid,
+                'resource' => array_filter([
+                    'resourceType' => 'ServiceRequest',
+                    'identifier'   => [[
+                        'system' => "http://sys-ids.kemkes.go.id/servicerequest/{$orgId}",
+                        'value'  => $order->accession_number ?: "sr:{$order->id}",
+                    ]],
+                    'status'    => 'completed',
+                    'intent'    => 'order',
+                    'code'      => $code,
+                    'subject'   => $subject,
+                    'encounter' => ['reference' => $encUuid],
+                    'occurrenceDateTime' => $this->toWibIso($order->created_at),
+                    'requester' => $requester,
+                    'bodySite'  => $bodySite,
+                ], fn ($v) => $v !== null && $v !== []),
+                'request' => ['method' => 'POST', 'url' => 'ServiceRequest'],
+            ];
+
+            // DiagnosticReport per hasil (basedOn ServiceRequest). Wajib: status,
+            // code, subject, encounter.
+            foreach ($order->results as $result) {
+                $interpreter = null;
+                if ($result->reviewed_by_id) {
+                    $rIhs = $result->reviewedBy ? $this->resolvePractitionerIhs($result->reviewedBy) : null;
+                    $interpreter = $rIhs ? [['reference' => "Practitioner/{$rIhs}", 'display' => $result->reviewedBy?->name]] : null;
+                }
+
+                $entries[] = [
+                    'fullUrl'  => 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString(),
+                    'resource' => array_filter([
+                        'resourceType' => 'DiagnosticReport',
+                        'identifier'   => [[
+                            'system' => "http://sys-ids.kemkes.go.id/diagnosticreport/{$orgId}",
+                            'value'  => "dr:{$result->id}",
+                        ]],
+                        'basedOn'   => [['reference' => $srUuid]],
+                        'status'    => 'final',
+                        'code'      => $code,
+                        'subject'   => $subject,
+                        'encounter' => ['reference' => $encUuid],
+                        'issued'    => $this->toWibIso($result->uploaded_at) ?? $this->toWibIso($result->created_at),
+                        'resultsInterpreter' => $interpreter,
+                        'conclusion' => $result->notes ?: null,
+                    ], fn ($v) => $v !== null && $v !== []),
+                    'request' => ['method' => 'POST', 'url' => 'DiagnosticReport'],
+                ];
+
+                // S4 — ImagingStudy DICOM (hanya bila UID lengkap tersedia dari Orthanc).
+                $img = $this->buildImagingStudyEntry($result, $type, $subject, $encUuid, $orgId);
+                if ($img) {
+                    $entries[] = $img;
+                }
+            }
+        }
+
+        return $entries;
+    }
+
+    /** Map modality lokal → kode DICOM (DCM). */
+    private const DICOM_MODALITY = [
+        'OCT' => 'OPT', 'OPT' => 'OPT', 'FUNDUS' => 'OP', 'FP' => 'OP',
+        'USG' => 'US', 'US' => 'US', 'BIOM' => 'US', 'BIOMETRI' => 'US',
+    ];
+
+    /**
+     * S4 — ImagingStudy dari hasil ber-DICOM. Satu Sehat MEWAJIBKAN UID DICOM
+     * lengkap (StudyInstanceUID + series.uid + series.instance.uid + sopClass).
+     * UID dibaca dari `expertise_data` (diisi bridge Orthanc). Bila UID tak lengkap
+     * → null (di-skip) agar Bundle tak ditolak. Key expertise_data dikonfirmasi ke
+     * data Orthanc riil — di sini probing beberapa nama umum.
+     */
+    private function buildImagingStudyEntry(\App\Models\DiagnosticResult $result, $type, array $subject, string $encUuid, string $orgId): ?array
+    {
+        $ed = (array) ($result->expertise_data ?? []);
+
+        // StudyInstanceUID: bridge Orthanc menyimpannya di `expertise_data.ingest_refs`
+        // (ARRAY UID string; dikirim sebagai external_ref oleh oct-bridge.py:105).
+        // Ambil elemen pertama; fallback ke key eksplisit bila bridge diperluas.
+        $ingestRefs = $ed['ingest_refs'] ?? null;
+        $studyUid = $ed['study_instance_uid'] ?? $ed['studyInstanceUID'] ?? $ed['study_uid']
+            ?? (is_array($ingestRefs) ? ($ingestRefs[0] ?? null) : null);
+
+        $seriesUid   = $ed['series_instance_uid'] ?? $ed['series_uid'] ?? null;
+        $instanceUid = $ed['sop_instance_uid'] ?? $ed['instance_uid'] ?? null;
+        $sopClass    = $ed['sop_class_uid'] ?? null;
+
+        // SATUSEHAT MEWAJIBKAN series.uid + series.instance.uid. Bridge saat ini HANYA
+        // mengirim StudyInstanceUID → series/instance belum tersedia. Maka emit
+        // ImagingStudy HANYA bila set UID LENGKAP (study+series+instance) ada; jika
+        // tidak → null (di-skip) agar resource tak-valid TIDAK menjatuhkan Bundle.
+        // ImagingStudy aktif menyusul saat oct-bridge.py diperluas kirim Series/SOP UID.
+        if (! $studyUid || ! $seriesUid || ! $instanceUid) {
+            return null;
+        }
+
+        $modalityCode = self::DICOM_MODALITY[strtoupper((string) ($type?->modality ?? $type?->code ?? ''))] ?? null;
+        $modality = $modalityCode
+            ? ['system' => 'http://dicom.nema.org/resources/ontology/DCM', 'code' => $modalityCode]
+            : null;
+
+        $series = [array_filter([
+            'uid'      => $seriesUid,
+            'modality' => $modality,
+            'instance' => [array_filter([
+                'uid'      => $instanceUid,
+                'sopClass' => $sopClass ? ['system' => 'urn:ietf:rfc:3986', 'code' => "urn:oid:{$sopClass}"] : null,
+            ], fn ($v) => $v !== null)],
+        ], fn ($v) => $v !== null)];
+
+        return [
+            'fullUrl'  => 'urn:uuid:' . \Illuminate\Support\Str::uuid()->toString(),
+            'resource' => array_filter([
+                'resourceType' => 'ImagingStudy',
+                'identifier'   => [['system' => 'urn:dicom:uid', 'value' => "urn:oid:{$studyUid}"]],
+                'status'    => 'available',
+                'modality'  => $modality ? [$modality] : null,
+                'subject'   => $subject,
+                'encounter' => ['reference' => $encUuid],
+                'started'   => $this->toWibIso($result->uploaded_at) ?? $this->toWibIso($result->created_at),
+                'series'    => $series,
+            ], fn ($v) => $v !== null && $v !== []),
+            'request' => ['method' => 'POST', 'url' => 'ImagingStudy'],
+        ];
     }
 
     /** Hitung jumlah obat ber-KFA yg akan dikirim (utk preview/diagnostik). */

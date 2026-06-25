@@ -21,16 +21,41 @@ class ClaimAttachment extends Model
 
     public const CATEGORIES = ['RESUME', 'PENUNJANG', 'SEP', 'SURAT', 'LAINNYA'];
 
+    /** Peta kategori lokal → file_class E-Klaim (method file_upload, K2). */
+    public const FILE_CLASS_MAP = [
+        'RESUME'    => 'resume_medis',
+        'PENUNJANG' => 'penunjang_lain',
+        'SEP'       => 'lain_lain',
+        'SURAT'     => 'lain_lain',
+        'LAINNYA'   => 'lain_lain',
+    ];
+
     protected $fillable = [
         'bpjs_claim_id',
         'category',
+        'file_class',
         'title',
         'file_path',
         'file_name',
         'mime_type',
         'file_size',
+        'dc_upload_status',
+        'dc_upload_response',
+        'dc_uploaded_at',
         'uploaded_by_id',
     ];
+
+    protected $casts = [
+        'dc_upload_status' => 'boolean',
+        'dc_uploaded_at'   => 'datetime',
+    ];
+
+    /** file_class E-Klaim untuk lampiran ini (override kolom → fallback peta kategori). */
+    public function resolveFileClass(): string
+    {
+        return $this->file_class
+            ?: (self::FILE_CLASS_MAP[$this->category] ?? 'lain_lain');
+    }
 
     public function claim(): BelongsTo
     {

@@ -336,16 +336,25 @@ class KlaimController extends Controller
     public function eklaimGrouper(Request $request, string $id): JsonResponse
     {
         // Stage WS E-Klaim hanya 1 (grouper) / 2 (special CMG). Tolak nilai liar.
-        $request->validate(['stage' => 'nullable|integer|in:1,2']);
+        $request->validate([
+            'stage'       => 'nullable|integer|in:1,2',
+            'special_cmg' => 'nullable|string|max:16',
+        ]);
         $stage = (int) $request->input('stage', 1);
+        $specialCmg = $request->input('special_cmg');
 
         try {
-            $claim = $this->service->eklaimGrouper($id, $stage);
+            $claim = $this->service->eklaimGrouper($id, $stage, $specialCmg);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $this->statusFor($e));
         }
 
-        return $this->ok($claim, "Grouper E-Klaim selesai. CBG: {$claim->inacbgs_kode}");
+        $msg = "Grouper E-Klaim selesai. CBG: {$claim->inacbgs_kode}";
+        if ($stage === 2 && $specialCmg) {
+            $msg .= " (Special CMG: {$specialCmg})";
+        }
+
+        return $this->ok($claim, $msg);
     }
 
     /** POST /klaim/{id}/eklaim/final — claim_final (irreversible) */
@@ -394,6 +403,112 @@ class KlaimController extends Controller
         }
 
         return $this->ok($res, $res['message'] ?? 'Klaim dikirim online.');
+    }
+
+    /** POST /klaim/{id}/eklaim/kirim-individual — send_claim_individual (per SEP) */
+    public function eklaimKirimIndividual(string $id): JsonResponse
+    {
+        try {
+            $claim = $this->service->sendClaimIndividual($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Klaim dikirim ke Data Center BPJS.');
+    }
+
+    /** POST /klaim/eklaim/kirim-kolektif — send_claim (rentang tanggal) */
+    public function eklaimKirimKolektif(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'start_dt'    => 'required|date',
+            'stop_dt'     => 'required|date|after_or_equal:start_dt',
+            'jenis_rawat' => 'nullable|integer|in:1,2',
+            'date_type'   => 'nullable|string|max:30',
+        ]);
+
+        try {
+            $res = $this->service->sendClaimCollective(
+                $v['start_dt'], $v['stop_dt'],
+                (int) ($v['jenis_rawat'] ?? 2),
+                $v['date_type'] ?? 'tgl_pulang'
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($res['data'], $res['message']);
+    }
+
+    /** POST /klaim/lampiran/{attachmentId}/upload-dc — file_upload berkas ke DC BPJS */
+    public function uploadLampiranDc(string $attachmentId): JsonResponse
+    {
+        try {
+            $att = $this->service->uploadBerkasToDc($attachmentId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($att, 'Berkas terunggah ke Data Center BPJS.');
+    }
+
+    /** POST /klaim/{id}/verif-status — tarik status verifikasi kasar (get_claim_status) */
+    public function refreshVerifStatus(string $id): JsonResponse
+    {
+        try {
+            $claim = $this->service->refreshVerifStatus($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Status verifikasi diperbarui: ' . ($claim->verif_status_name ?? '-'));
+    }
+
+    /** PUT /klaim/{id}/dispute — set status dispute/pending (kelola internal) */
+    public function setDispute(Request $request, string $id): JsonResponse
+    {
+        $v = $request->validate([
+            'jenis_dispute' => 'nullable|in:medis,koding,obat,cob',
+            'dispute_state' => 'nullable|in:PENDING,DISPUTE,SEPAKAT',
+            'bahv_no'       => 'nullable|string|max:100',
+            'pending_note'  => 'nullable|string',
+        ]);
+
+        try {
+            $claim = $this->service->setDispute($id, $v);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Status dispute/pending tersimpan.');
+    }
+
+    /** PUT /klaim/{id}/pembayaran — catat rekonsiliasi pembayaran (manual/import) */
+    public function setPayment(Request $request, string $id): JsonResponse
+    {
+        $v = $request->validate([
+            'nominal_diajukan'       => 'nullable|numeric|min:0',
+            'nominal_disetujui'      => 'nullable|numeric|min:0',
+            'paid_at'                => 'nullable|date',
+            'berita_acara_bayar_ref' => 'nullable|string|max:100',
+        ]);
+
+        try {
+            $claim = $this->service->setPayment($id, $v);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $this->statusFor($e));
+        }
+
+        return $this->ok($claim, 'Pembayaran tercatat.');
+    }
+
+    /** GET /klaim/kedaluwarsa — klaim mendekati batas 6 bulan (belum terbayar) */
+    public function kedaluwarsa(Request $request): JsonResponse
+    {
+        $days = (int) $request->input('days', 30);
+        $list = $this->service->klaimMendekatiKedaluwarsa($days);
+
+        return $this->ok($list, $list->count() . ' klaim mendekati kedaluwarsa.');
     }
 
     /** GET /klaim/{id}/eklaim/sync-dc — sinkron status pengiriman DC (read-only) */

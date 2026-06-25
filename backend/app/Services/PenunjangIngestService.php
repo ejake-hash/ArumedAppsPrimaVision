@@ -67,6 +67,18 @@ class PenunjangIngestService
 
         $ref = $meta['external_ref'] ?? null;
 
+        // UID DICOM dari bridge (Orthanc) → disisipkan ke expertise_data agar
+        // builder ImagingStudy SATUSEHAT (S4) bisa menyusun series.instance lengkap.
+        // external_ref = StudyInstanceUID (juga tersimpan di ingest_refs).
+        $dicom = array_filter([
+            'series_instance_uid' => $meta['series_instance_uid'] ?? null,
+            'sop_instance_uid'    => $meta['sop_instance_uid'] ?? null,
+            'sop_class_uid'       => $meta['sop_class_uid'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+        if ($dicom) {
+            $expertisePatch = array_merge($expertisePatch ?? [], $dicom);
+        }
+
         // Idempotensi — cek SEBELUM simpan file (hindari file yatim saat retry).
         if ($ref) {
             $inbox = PenunjangIngestInbox::where('external_ref', $ref)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import api, { integrasiApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import Pager from '@/components/common/Pager.vue'
@@ -38,7 +38,7 @@ async function checkEklaim(manual = false) {
 }
 
 // ── Aksi E-Klaim INA-CBG (WS) — new → set-data → grouper → final ────────────────
-async function runEklaim(method, { confirmMsg = null, successMsg } = {}) {
+async function runEklaim(method, { confirmMsg = null, successMsg, body = null } = {}) {
   if (!selected.value || eklaimBusy.value) return
   if (confirmMsg && !confirm(confirmMsg)) return
   eklaimBusy.value = method
@@ -50,9 +50,10 @@ async function runEklaim(method, { confirmMsg = null, successMsg } = {}) {
     final:    `/klaim/${id}/eklaim/final`,
     status:   `/klaim/${id}/eklaim/status`,
     reedit:   `/klaim/${id}/eklaim/reedit`,
+    'kirim-individual': `/klaim/${id}/eklaim/kirim-individual`,
   }[method]
   try {
-    const { data } = method === 'status' ? await api.get(url) : await api.post(url)
+    const { data } = method === 'status' ? await api.get(url) : await api.post(url, body ?? {})
     await refreshSelected()
     const srvMsg = data?.data?.message || data?.message
     toast('s', successMsg ?? srvMsg ?? 'Berhasil')
@@ -63,6 +64,57 @@ async function runEklaim(method, { confirmMsg = null, successMsg } = {}) {
   } finally {
     eklaimBusy.value = ''
   }
+}
+
+// ── K1 Special CMG (top-up) — pilih opsi dari grouper Stage 1, terapkan Stage 2 ──
+const specialCmgPick = ref('')
+async function applySpecialCmg() {
+  if (!specialCmgPick.value) { toast('w', 'Pilih special CMG dulu'); return }
+  await runEklaim('grouper', { body: { stage: 2, special_cmg: specialCmgPick.value }, successMsg: 'Special CMG diterapkan' })
+}
+
+// ── K2 — kirim kolektif (rentang tgl) + upload berkas ke DC BPJS ────────────────
+const kolektif = reactive({ open: false, start_dt: '', stop_dt: '', jenis_rawat: 2, running: false })
+async function kirimKolektif() {
+  if (!kolektif.start_dt || !kolektif.stop_dt) { toast('w', 'Isi rentang tanggal'); return }
+  kolektif.running = true
+  try {
+    const { data } = await api.post('/klaim/eklaim/kirim-kolektif', {
+      start_dt: kolektif.start_dt, stop_dt: kolektif.stop_dt, jenis_rawat: kolektif.jenis_rawat,
+    })
+    toast('s', data?.message ?? 'Klaim kolektif terkirim')
+    kolektif.open = false
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Kirim kolektif gagal')
+  } finally {
+    kolektif.running = false
+  }
+}
+// Lampiran → DC BPJS: lihat uploadBerkasDc() di area Rekap (konteks manifest visit).
+const uploadingDc = ref('')
+
+// ── K3 — status verifikasi + dispute/pending + rekonsiliasi pembayaran ──────────
+async function refreshVerif() {
+  if (!selected.value) return
+  try {
+    const { data } = await api.post(`/klaim/${selected.value.id}/verif-status`)
+    await refreshSelected()
+    toast('s', data?.message ?? 'Status verifikasi diperbarui')
+  } catch (e) { toast('w', e.response?.data?.message ?? 'Gagal tarik status') }
+}
+const disputeForm = reactive({ jenis_dispute: '', dispute_state: '', bahv_no: '', pending_note: '' })
+async function saveDispute() {
+  try {
+    await api.put(`/klaim/${selected.value.id}/dispute`, { ...disputeForm })
+    await refreshSelected(); toast('s', 'Status dispute/pending tersimpan')
+  } catch (e) { toast('w', e.response?.data?.message ?? 'Gagal simpan dispute') }
+}
+const paymentForm = reactive({ nominal_disetujui: '', paid_at: '', berita_acara_bayar_ref: '' })
+async function savePayment() {
+  try {
+    await api.put(`/klaim/${selected.value.id}/pembayaran`, { ...paymentForm })
+    await refreshSelected(); toast('s', 'Pembayaran tercatat')
+  } catch (e) { toast('w', e.response?.data?.message ?? 'Gagal simpan pembayaran') }
 }
 
 // Bentuk objek yang dipakai template (dipertahankan agar template stabil).
@@ -115,6 +167,25 @@ function mapDetail(c) {
     klaim_sent_at: c.klaim_sent_at ?? null,       // penanda pipeline berkas (kirim ke klaim)
     klaim_returned_at: c.klaim_returned_at ?? null,
     bpjs_response: c.bpjs_response ?? null,   // snapshot status DC (kemenkes/bpjs)
+    // K1 Special CMG (top-up)
+    special_cmg_options: c.special_cmg_options ?? [],
+    special_cmg: c.special_cmg ?? null,
+    tarif_top_up: Number(c.tarif_top_up ?? 0),
+    total_cost_weight: c.total_cost_weight ?? null,
+    // K2 status pengiriman DC
+    kemkes_dc_status: c.kemkes_dc_status ?? null,
+    bpjs_dc_status: c.bpjs_dc_status ?? null,
+    // K3 verifikasi / dispute / pembayaran
+    verif_status_name: c.verif_status_name ?? null,
+    verif_status_code: c.verif_status_code ?? null,
+    jenis_dispute: c.jenis_dispute ?? null,
+    dispute_state: c.dispute_state ?? null,
+    bahv_no: c.bahv_no ?? null,
+    pending_note: c.pending_note ?? null,
+    nominal_disetujui: c.nominal_disetujui != null ? Number(c.nominal_disetujui) : null,
+    nominal_diajukan: c.nominal_diajukan != null ? Number(c.nominal_diajukan) : null,
+    paid_at: c.paid_at ?? null,
+    berita_acara_bayar_ref: c.berita_acara_bayar_ref ?? null,
     verified_by: deriveVerifier(c),
     verified_at: deriveVerifiedAt(c),
     verification_notes: deriveRejectNote(c) ?? '',
@@ -745,6 +816,22 @@ async function toggleBerkasDetail(r) {
     } finally {
       manifestLoading.value = null
     }
+  }
+}
+
+// K2 — unggah lampiran ke DC BPJS (konteks Rekap) lalu refresh manifest visit.
+async function uploadBerkasDc(att, visitId) {
+  if (!att?.id || uploadingDc.value) return
+  uploadingDc.value = att.id
+  try {
+    const { data } = await api.post(`/klaim/lampiran/${att.id}/upload-dc`)
+    toast('s', data?.message ?? 'Berkas terunggah ke BPJS')
+    const { data: m } = await api.get(`/klaim/rekap/${visitId}/berkas`)
+    berkasManifest.value = { ...berkasManifest.value, [visitId]: m.data ?? {} }
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Upload ke BPJS gagal')
+  } finally {
+    uploadingDc.value = ''
   }
 }
 
@@ -1767,12 +1854,32 @@ function stepIndex(status) {
                       </button>
                     </div>
 
+                    <!-- K1 — Special CMG (top-up). Muncul bila grouper Stage 1 mengembalikan opsi. -->
+                    <div v-if="selected.special_cmg_options?.length" class="kl-eklaim-row sub kl-cmg">
+                      <span class="kl-cmg-lbl">Special CMG (top-up):</span>
+                      <select v-model="specialCmgPick" class="kl-cmg-sel">
+                        <option value="">— pilih —</option>
+                        <option v-for="o in selected.special_cmg_options" :key="o.code" :value="o.code">
+                          {{ o.code }} — {{ o.description || o.type }}{{ o.tariff ? ' (' + fmtRp(o.tariff) + ')' : '' }}
+                        </option>
+                      </select>
+                      <button class="btn btn-secondary btn-sm" :disabled="!!eklaimBusy || !specialCmgPick" @click="applySpecialCmg">
+                        <div v-if="eklaimBusy === 'grouper'" class="sp" aria-hidden="true"></div>
+                        Terapkan
+                      </button>
+                      <span v-if="selected.special_cmg" class="kl-dc-badge ok">Diterapkan: {{ selected.special_cmg }} · top-up {{ fmtRp(selected.tarif_top_up) }}</span>
+                    </div>
+
                     <!-- Pasca-final: Kirim Online (DC Kemenkes/BPJS), sinkron status, cetak berkas -->
                     <div v-if="['SUBMITTED','SELESAI'].includes(selected.status)" class="kl-eklaim-row sub">
                       <button class="btn btn-primary btn-sm" :disabled="!!eklaimBusy || dcBusy" :title="dcTerkirim ? 'Klaim sudah terkirim ke DC Kemenkes' : 'Kirim klaim final ke Pusat Data Kemenkes/BPJS'" @click="kirimOnline">
                         <div v-if="eklaimBusy === 'kirim-online'" class="sp" aria-hidden="true"></div>
                         <svg v-else viewBox="0 0 24 24" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                         {{ dcTerkirim ? 'Kirim Ulang Online' : 'Kirim Klaim Online' }}
+                      </button>
+                      <button class="btn btn-ghost btn-sm" :disabled="!!eklaimBusy" title="Kirim per SEP (send_claim_individual)" @click="runEklaim('kirim-individual', { successMsg: 'Klaim dikirim ke Data Center' })">
+                        <div v-if="eklaimBusy === 'kirim-individual'" class="sp" aria-hidden="true"></div>
+                        Kirim Individual
                       </button>
                       <button class="btn btn-ghost btn-sm" :disabled="dcBusy" @click="syncDc">
                         <div v-if="dcBusy" class="sp" aria-hidden="true"></div>
@@ -1808,6 +1915,88 @@ function stepIndex(status) {
                         </button>
                       </div>
                     </details>
+                  </div>
+                </div>
+              </div>
+
+              <!-- K3 — Verifikasi · Dispute/Pending · Pembayaran -->
+              <div class="card kl-k3">
+                <div class="card-head">
+                  <div class="card-head-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                    Verifikasi &amp; Pembayaran
+                  </div>
+                  <button class="btn btn-ghost btn-sm" @click="refreshVerif" title="Tarik status verifikasi dari E-Klaim (get_claim_status)">Tarik Status</button>
+                </div>
+                <div class="card-body kl-k3-body">
+                  <div class="kl-k3-row">
+                    <span class="kl-k3-lbl">Status verifikasi BPJS</span>
+                    <span class="kl-k3-val">{{ selected.verif_status_name || '— belum ditarik —' }}</span>
+                  </div>
+
+                  <!-- Dispute / Pending (kelola internal) -->
+                  <div class="kl-k3-grid">
+                    <label>Jenis dispute
+                      <select v-model="disputeForm.jenis_dispute">
+                        <option value="">—</option>
+                        <option value="medis">Medis</option>
+                        <option value="koding">Koding</option>
+                        <option value="obat">Obat</option>
+                        <option value="cob">Koordinasi (COB)</option>
+                      </select>
+                    </label>
+                    <label>Status
+                      <select v-model="disputeForm.dispute_state">
+                        <option value="">—</option>
+                        <option value="PENDING">Pending</option>
+                        <option value="DISPUTE">Dispute</option>
+                        <option value="SEPAKAT">Sepakat</option>
+                      </select>
+                    </label>
+                    <label>No. BAHV
+                      <input v-model="disputeForm.bahv_no" type="text" placeholder="Berita Acara" />
+                    </label>
+                    <label class="kl-k3-wide">Catatan pending
+                      <input v-model="disputeForm.pending_note" type="text" placeholder="Alasan / tindak lanjut" />
+                    </label>
+                  </div>
+                  <div class="kl-k3-cur" v-if="selected.dispute_state">
+                    Tersimpan: <b>{{ selected.dispute_state }}</b> ({{ selected.jenis_dispute || '-' }}) {{ selected.bahv_no ? '· BAHV ' + selected.bahv_no : '' }}
+                  </div>
+                  <button class="btn btn-secondary btn-sm" @click="saveDispute">Simpan Dispute/Pending</button>
+
+                  <!-- Rekonsiliasi pembayaran -->
+                  <div class="kl-k3-grid" style="margin-top:.6rem">
+                    <label>Nominal disetujui
+                      <input v-model="paymentForm.nominal_disetujui" type="number" min="0" placeholder="Rp" />
+                    </label>
+                    <label>Tgl bayar
+                      <input v-model="paymentForm.paid_at" type="date" />
+                    </label>
+                    <label>Ref. Berita Acara Bayar
+                      <input v-model="paymentForm.berita_acara_bayar_ref" type="text" />
+                    </label>
+                  </div>
+                  <div class="kl-k3-cur" v-if="selected.nominal_disetujui != null">
+                    Dibayar: <b>{{ fmtRp(selected.nominal_disetujui) }}</b>
+                    <span v-if="selected.inacbgs_tarif"> · selisih vs ajuan {{ fmtRp(selected.nominal_disetujui - selected.inacbgs_tarif) }}</span>
+                    {{ selected.paid_at ? '· ' + fmtDate(selected.paid_at) : '' }}
+                  </div>
+                  <button class="btn btn-secondary btn-sm" @click="savePayment">Simpan Pembayaran</button>
+
+                  <!-- K2 — Kirim Kolektif (rentang tanggal) -->
+                  <div class="kl-k3-kolektif">
+                    <button class="btn btn-ghost btn-sm" @click="kolektif.open = !kolektif.open">Kirim Klaim Kolektif…</button>
+                    <div v-if="kolektif.open" class="kl-kolektif-box">
+                      <label>Dari <input v-model="kolektif.start_dt" type="date" /></label>
+                      <label>Sampai <input v-model="kolektif.stop_dt" type="date" /></label>
+                      <label>Jenis
+                        <select v-model.number="kolektif.jenis_rawat"><option :value="2">Jalan</option><option :value="1">Inap</option></select>
+                      </label>
+                      <button class="btn btn-primary btn-sm" :disabled="kolektif.running" @click="kirimKolektif">
+                        <div v-if="kolektif.running" class="sp" aria-hidden="true"></div>Kirim
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2357,7 +2546,11 @@ function stepIndex(status) {
                     </li>
                     <li v-for="(a, ai) in berkasManifest[r.visit_id]?.manual || []" :key="'m'+ai" class="kl-bk-item">
                       <span class="kl-bk-item-name">{{ a.title || a.file_name || 'Lampiran' }}</span>
+                      <span v-if="a.dc_upload_status" class="kl-bk-chip ok" title="Sudah diunggah ke Data Center BPJS">✓ DC</span>
                       <button class="btn btn-ghost btn-xs" :disabled="!(a.file_url || a.attachment_url)" @click="previewPdf(`mn-${r.visit_id}-${ai}`, a.file_url || a.attachment_url, { direct: true })">Preview</button>
+                      <button v-if="a.id && !a.dc_upload_status" class="btn btn-ghost btn-xs" :disabled="uploadingDc === a.id" title="Unggah berkas ke Data Center BPJS (file_upload)" @click="uploadBerkasDc(a, r.visit_id)">
+                        {{ uploadingDc === a.id ? '…' : 'Unggah BPJS' }}
+                      </button>
                     </li>
                   </ul>
                 </td>
@@ -3199,4 +3392,21 @@ function stepIndex(status) {
 .kl-bk-chip.ok { background: var(--sb); color: var(--st); }
 .kl-bk-chip.no { background: var(--wb); color: var(--wt); }
 .kl-berkas-empty { text-align: center; color: var(--tu); padding: 26px 12px !important; }
+
+/* ── K1 Special CMG + K3 verifikasi/dispute/pembayaran ─────────────────────── */
+.kl-cmg { align-items: center; flex-wrap: wrap; gap: 8px; }
+.kl-cmg-lbl { font-size: 12px; font-weight: 700; color: var(--tu); }
+.kl-cmg-sel { padding: 5px 8px; border: 1px solid var(--bd); border-radius: 7px; font-size: 12px; max-width: 320px; }
+.kl-k3-body { display: flex; flex-direction: column; gap: .55rem; }
+.kl-k3-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.kl-k3-lbl { color: var(--tu); } .kl-k3-val { font-weight: 700; }
+.kl-k3-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.kl-k3-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--tu); }
+.kl-k3-grid input, .kl-k3-grid select { padding: 6px 8px; border: 1px solid var(--bd); border-radius: 7px; font-size: 12.5px; font-weight: 400; color: var(--tx); }
+.kl-k3-wide { grid-column: 1 / -1; }
+.kl-k3-cur { font-size: 12px; color: var(--tx); background: var(--bs); border-radius: 7px; padding: 6px 9px; }
+.kl-k3-kolektif { border-top: 1px dashed var(--bd); padding-top: .55rem; margin-top: .2rem; }
+.kl-kolektif-box { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
+.kl-kolektif-box label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--tu); }
+.kl-kolektif-box input, .kl-kolektif-box select { padding: 6px 8px; border: 1px solid var(--bd); border-radius: 7px; font-size: 12.5px; }
 </style>

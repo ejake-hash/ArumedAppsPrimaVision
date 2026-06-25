@@ -85,6 +85,8 @@ const cards = computed(() => {
 })
 const visits = computed(() => data.value?.visits ?? {})
 const readiness = computed(() => data.value?.readiness ?? {})
+// Rasio kirim 4 minggu vs ambang 50% (lever kepatuhan Kemenkes).
+const compliance = computed(() => data.value?.compliance ?? {})
 const trend = computed(() => data.value?.trend ?? [])
 const maxTrend = computed(() => Math.max(1, ...trend.value.map((t) => (t.success || 0) + (t.failed || 0))))
 
@@ -340,6 +342,31 @@ onMounted(() => { load(); loadBatches() })
           </ul>
         </section>
       </div>
+
+      <!-- Rasio kepatuhan 4 minggu (≥50% wajib Kemenkes) -->
+      <section class="panel" v-if="compliance.weeks?.length">
+        <div class="panel-head">
+          <h3>Rasio Kirim 4 Minggu</h3>
+          <span class="st" :class="compliance.meets_all ? 's-ok' : 's-fail'">
+            {{ compliance.meets_all ? '✓ Memenuhi ≥50%' : '⚠ Di bawah 50%' }}
+          </span>
+        </div>
+        <p class="muted" style="margin:-2px 0 10px">
+          Kemenkes mensyaratkan ≥{{ compliance.threshold }}% kunjungan terkirim, dinilai 4 minggu berturut.
+        </p>
+        <div class="comp">
+          <div v-for="(w, i) in compliance.weeks" :key="i" class="comp-col">
+            <div class="comp-bar-wrap">
+              <div class="comp-bar" :class="(w.ratio ?? 0) >= 50 ? 'ok' : 'low'"
+                   :style="{ height: Math.max(3, (w.ratio ?? 0) * 0.8) + 'px' }"
+                   :title="(w.synced || 0) + '/' + (w.total || 0)" />
+              <span class="comp-thresh" />
+            </div>
+            <div class="comp-pct">{{ w.ratio === null ? '—' : w.ratio + '%' }}</div>
+            <div class="comp-date">{{ (w.week_start || '').slice(5) }}</div>
+          </div>
+        </div>
+      </section>
 
       <!-- Tren 7 hari -->
       <section class="panel">
@@ -741,6 +768,17 @@ onMounted(() => { load(); loadBatches() })
 .t-bar { width: 10px; border-radius: 3px 3px 0 0; min-height: 3px; transition: height .3s ease; }
 .t-bar.ok { background: var(--green); } .t-bar.fail { background: var(--red); }
 .t-date { font-size: 10px; color: var(--tm); font-variant-numeric: tabular-nums; }
+
+/* ── RASIO KEPATUHAN 4 MINGGU ────────────────────────────────────── */
+.comp { display: flex; gap: 1.2rem; align-items: flex-end; height: 110px; padding-top: 6px; }
+.comp-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.comp-bar-wrap { position: relative; height: 84px; width: 28px; display: flex; align-items: flex-end; }
+.comp-bar { width: 100%; border-radius: 4px 4px 0 0; min-height: 3px; transition: height .3s; }
+.comp-bar.ok { background: var(--green); } .comp-bar.low { background: var(--amber); }
+/* garis ambang 50% (84px tinggi penuh = 100%, jadi 50% = 40px dari bawah) */
+.comp-thresh { position: absolute; left: -4px; right: -4px; bottom: 40px; border-top: 2px dashed var(--red); }
+.comp-pct { font-size: 12px; font-weight: 800; color: var(--td); font-variant-numeric: tabular-nums; }
+.comp-date { font-size: 10px; color: var(--tm); font-variant-numeric: tabular-nums; }
 
 /* ── TABLE ───────────────────────────────────────────────────────── */
 .tbl-wrap { overflow-x: auto; margin: 0 -0.3rem; }

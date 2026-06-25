@@ -1112,15 +1112,16 @@ class KlaimService
     }
 
     /** grouper — jalankan grouper E-Klaim, simpan CBG + tarif balik ke klaim. */
-    public function eklaimGrouper(string $claimId, int $stage = 1): BpjsClaim
+    public function eklaimGrouper(string $claimId, int $stage = 1, ?string $specialCmg = null): BpjsClaim
     {
         $claim = $this->guardEklaimReady($claimId);
 
-        $res = $this->eklaim->grouper($claim->no_sep, $stage, $claim->id, $claim->visit_id);
+        $res = $this->eklaim->grouper($claim->no_sep, $stage, $specialCmg, $claim->id, $claim->visit_id);
 
         // Bentuk respons grouper E-Klaim. Terverifikasi dari get_claim_data:
         // grouper.response_inacbg.cbg.{code,tariff}. Sediakan beberapa fallback
         // karena method grouper langsung bisa membungkus berbeda dari get_claim_data.
+        $resp = $res['raw']['response'] ?? $res['data'] ?? [];
         $cbg = $res['data']['cbg']
             ?? $res['data']['response_inacbg']['cbg']
             ?? $res['raw']['response']['cbg']
@@ -1130,16 +1131,48 @@ class KlaimService
         $code  = $cbg['code']   ?? $cbg['kode']  ?? null;
         $tarif = $cbg['tariff'] ?? $cbg['tarif'] ?? $cbg['base_tariff'] ?? null;
 
+        // Special CMG (top-up): Stage 1 mengembalikan daftar opsi; Stage 2 menerapkan
+        // pilihan sehingga total tarif berubah. Cari di beberapa lokasi pembungkus.
+        $cmgOptions = $resp['special_cmg_option']
+            ?? $resp['response_inacbg']['special_cmg_option']
+            ?? $cbg['special_cmg_option']
+            ?? null;
+
+        $update = [];
         if ($res['success'] && $code) {
-            $claim->update([
-                'inacbgs_kode'  => $code,
-                'inacbgs_tarif' => $tarif,
-            ]);
+            $update['inacbgs_kode']  = $code;
+            $update['inacbgs_tarif'] = $tarif;
+        }
+        if (is_array($cmgOptions)) {
+            // Normalisasi ke [{code,type,description,tariff}] bila bentuknya beragam.
+            $update['special_cmg_options'] = array_values(array_map(fn ($o) => is_array($o) ? [
+                'code'        => $o['code'] ?? $o['special_cmg'] ?? $o['kode'] ?? null,
+                'type'        => $o['type'] ?? $o['special_cmg_type'] ?? null,
+                'description' => $o['description'] ?? $o['name'] ?? $o['deskripsi'] ?? null,
+                'tariff'      => $o['tariff'] ?? $o['tarif'] ?? null,
+            ] : ['code' => (string) $o], $cmgOptions));
+        }
+        if ($stage === 2 && $specialCmg) {
+            $update['special_cmg'] = $specialCmg;
+            // Top-up = total (tarif Stage 2) − tarif dasar tersimpan sebelumnya.
+            $base = (float) ($claim->inacbgs_tarif ?? 0);
+            if ($tarif !== null && $base > 0) {
+                $update['tarif_top_up'] = max(0, (float) $tarif - $base);
+            }
+            $tcw = $cbg['total_cost_weight'] ?? $cbg['total_weight'] ?? $cbg['cost_weight'] ?? null;
+            if ($tcw !== null) {
+                $update['total_cost_weight'] = (float) $tcw;
+            }
         }
 
+        if ($update) {
+            $claim->update($update);
+        }
+
+        $cmgNote = $stage === 2 && $specialCmg ? " — Special CMG: {$specialCmg}" : '';
         $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_GROUPER',
             $claim->status, $claim->status,
-            $code ? "CBG: {$code} — Tarif: " . number_format((float) $tarif) : ($res['message'] ?? 'Grouper gagal'));
+            $code ? "CBG: {$code} — Tarif: " . number_format((float) $tarif) . $cmgNote : ($res['message'] ?? 'Grouper gagal'));
 
         if (! $res['success']) {
             throw new \Exception('Grouper E-Klaim gagal: ' . ($res['message'] ?? 'Unknown'), 422);
@@ -1298,6 +1331,204 @@ class KlaimService
         return array_merge($dc, ['message' => $res['message'] ?? 'Klaim dikirim online.']);
     }
 
+    // =========================================================================
+    // K2 — kirim individual/kolektif + upload berkas digital ke DC BPJS
+    // =========================================================================
+
+    /**
+     * Kirim klaim INDIVIDUAL per SEP (send_claim_individual) + simpan status DC
+     * (kemkes/bpjs/cob). Klaim harus sudah final (SUBMITTED/SELESAI).
+     */
+    public function sendClaimIndividual(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        if (! in_array($claim->status, ['SUBMITTED', 'SELESAI'], true)) {
+            throw new \Exception('Klaim harus difinalisasi dulu sebelum dikirim.', 422);
+        }
+
+        $res  = $this->eklaim->sendClaimIndividual($claim->no_sep, $claim->id, $claim->visit_id);
+        $data = $res['data'] ?? $res['raw']['response'] ?? [];
+
+        $kemkes = $data['kemkes_dc_status'] ?? $data['kemenkes_dc_status'] ?? null;
+        $bpjs   = $data['bpjs_dc_status'] ?? null;
+        $cob    = $data['cob_dc_status'] ?? null;
+
+        $claim->update([
+            'kemkes_dc_status' => $kemkes,
+            'bpjs_dc_status'   => $bpjs,
+            'cob_dc_status'    => $cob,
+            'dc_sent_at'       => now(),
+            'bpjs_status'      => $res['success'] ? 'TERKIRIM' : $claim->bpjs_status,
+        ]);
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'EKLAIM_KIRIM_INDIVIDUAL',
+            $claim->status, $claim->status,
+            $res['success']
+                ? "Klaim dikirim (DC kemkes:{$kemkes} bpjs:{$bpjs})"
+                : 'Kirim individual gagal: ' . ($res['message'] ?? 'Unknown'));
+
+        if (! $res['success']) {
+            throw new \Exception('Kirim klaim individual gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Kirim klaim KOLEKTIF per rentang tanggal (send_claim). Tidak terikat 1 klaim;
+     * mengembalikan ringkasan dari Data Center.
+     */
+    public function sendClaimCollective(string $startDt, string $stopDt, int $jenisRawat = 2, string $dateType = 'tgl_pulang'): array
+    {
+        $res = $this->eklaim->sendClaimCollective($startDt, $stopDt, $jenisRawat, $dateType);
+
+        if (! $res['success']) {
+            throw new \Exception('Kirim klaim kolektif gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        return [
+            'message' => $res['message'] ?? 'Klaim kolektif terkirim.',
+            'data'    => $res['data'] ?? null,
+        ];
+    }
+
+    /**
+     * Unggah satu lampiran (ClaimAttachment) ke DC BPJS via file_upload.
+     * Membaca file dari storage → base64 → kirim; simpan status upload_dc_bpjs.
+     */
+    public function uploadBerkasToDc(string $attachmentId): \App\Models\ClaimAttachment
+    {
+        $att   = \App\Models\ClaimAttachment::with('claim')->findOrFail($attachmentId);
+        $claim = $att->claim;
+
+        if (! $claim || empty($claim->no_sep)) {
+            throw new \Exception('Lampiran tidak terkait klaim ber-SEP.', 422);
+        }
+
+        $disk = \Illuminate\Support\Facades\Storage::disk(config('filesystems.default'));
+        if (! $disk->exists($att->file_path)) {
+            throw new \Exception('File lampiran tidak ditemukan di storage.', 422);
+        }
+        $base64 = base64_encode($disk->get($att->file_path));
+
+        $res = $this->eklaim->fileUpload(
+            $claim->no_sep,
+            $att->resolveFileClass(),
+            $att->file_name,
+            $base64,
+            $claim->id,
+            $claim->visit_id
+        );
+
+        $data = $res['data'] ?? $res['raw']['response'] ?? [];
+        $ok   = ((string) ($data['upload_dc_bpjs'] ?? '')) === '1' || $res['success'];
+
+        $att->update([
+            'dc_upload_status'   => $ok,
+            'dc_upload_response' => $data['upload_dc_bpjs_response'] ?? ($res['message'] ?? null),
+            'dc_uploaded_at'     => $ok ? now() : null,
+        ]);
+
+        if (! $ok) {
+            throw new \Exception('Upload berkas ke DC BPJS gagal: ' . ($res['message'] ?? 'Unknown'), 422);
+        }
+
+        return $att->fresh();
+    }
+
+    // =========================================================================
+    // K3 — verifikasi (status), dispute/pending, rekonsiliasi pembayaran
+    // =========================================================================
+
+    /**
+     * Tarik status verifikasi kasar via get_claim_status (kdStatusSep/nmStatusSep)
+     * lalu simpan. CATATAN: respons tak memuat nominal/BAHV — hanya status proses.
+     */
+    public function refreshVerifStatus(string $claimId): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        $res  = $this->eklaim->getClaimStatus($claim->no_sep, $claim->id, $claim->visit_id);
+        $data = $res['data'] ?? $res['raw']['response'] ?? [];
+
+        $claim->update([
+            'verif_status_code' => $data['kdStatusSep'] ?? $data['status_code'] ?? null,
+            'verif_status_name' => $data['nmStatusSep'] ?? $data['status_name'] ?? null,
+            'verif_checked_at'  => now(),
+        ]);
+
+        return $claim->fresh();
+    }
+
+    /**
+     * Set status dispute/pending klaim (kelola internal — tak ada API BPJS).
+     * $data: jenis_dispute (medis/koding/obat/cob), dispute_state (PENDING/DISPUTE/
+     * SEPAKAT), bahv_no, pending_note.
+     */
+    public function setDispute(string $claimId, array $data): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        $claim->update(array_filter([
+            'jenis_dispute' => $data['jenis_dispute'] ?? null,
+            'dispute_state' => $data['dispute_state'] ?? null,
+            'bahv_no'       => $data['bahv_no'] ?? null,
+            'pending_note'  => $data['pending_note'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'KLAIM_DISPUTE',
+            $claim->status, $claim->status,
+            "Dispute/pending: {$claim->dispute_state} ({$claim->jenis_dispute}) " . ($claim->bahv_no ? "BAHV {$claim->bahv_no}" : ''));
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Catat hasil pembayaran (manual/import Berita Acara Pembayaran). Selisih
+     * ajuan vs disetujui dihitung di FE/laporan dari nominal_diajukan vs disetujui.
+     */
+    public function setPayment(string $claimId, array $data): BpjsClaim
+    {
+        $claim = BpjsClaim::findOrFail($claimId);
+
+        $claim->update(array_filter([
+            'nominal_diajukan'        => $data['nominal_diajukan'] ?? $claim->inacbgs_tarif,
+            'nominal_disetujui'       => $data['nominal_disetujui'] ?? null,
+            'paid_at'                 => $data['paid_at'] ?? null,
+            'berita_acara_bayar_ref'  => $data['berita_acara_bayar_ref'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        $this->addAuditLog($claim->id, auth('api')->user()?->employee_id, 'KLAIM_PEMBAYARAN',
+            $claim->status, $claim->status,
+            'Pembayaran dicatat: Rp ' . number_format((float) $claim->nominal_disetujui) . ($claim->berita_acara_bayar_ref ? " (BA {$claim->berita_acara_bayar_ref})" : ''));
+
+        return $claim->fresh(['auditLogs.performedBy']);
+    }
+
+    /**
+     * Klaim mendekati kedaluwarsa (6 bulan sejak tgl pelayanan, Perpres 82/2018
+     * Pasal 77) yang BELUM terkirim/terbayar — untuk pengingat tindak lanjut.
+     */
+    public function klaimMendekatiKedaluwarsa(int $daysAhead = 30): \Illuminate\Support\Collection
+    {
+        $batas = today()->subMonths(6)->addDays($daysAhead); // tgl layanan <= batas → segera kedaluwarsa
+        return BpjsClaim::with('visit:id,visit_date')
+            ->whereNotIn('status', ['SELESAI'])
+            ->whereNull('paid_at')
+            ->whereHas('visit', fn ($q) => $q->whereDate('visit_date', '<=', $batas->toDateString()))
+            ->get()
+            ->map(fn ($c) => [
+                'id'         => $c->id,
+                'no_sep'     => $c->no_sep,
+                'visit_date' => $c->visit?->visit_date,
+                'kedaluwarsa'=> $c->visit?->visit_date
+                    ? \Illuminate\Support\Carbon::parse($c->visit->visit_date)->addMonths(6)->toDateString()
+                    : null,
+                'status'     => $c->status,
+            ]);
+    }
+
     /**
      * Data "Berkas Klaim Individual Pasien" (replika cetak resmi E-Klaim) dari
      * get_claim_data. BPJS/E-Klaim tak menyediakan API cetak PDF → dibangun ulang
@@ -1453,12 +1684,26 @@ class KlaimService
             return $buckets;
         }
 
+        // Pra-resolve ICD-9-CM untuk item TINDAKAN (reference_id → Procedure) supaya
+        // tindakan BEDAH masuk bucket prosedur_bedah. Kaidah ICD-9-CM: bab 01–86 =
+        // operasi (bedah), 87–99 = diagnostik/terapeutik (non-bedah). Contoh:
+        // trabekulektomi 12.64 → bedah; pemeriksaan mata 95.01 → non-bedah.
+        $tindakanIcd9 = [];
+        $refIds = $invoice->items
+            ->where('item_type', 'TINDAKAN')
+            ->pluck('reference_id')->filter()->unique()->values()->all();
+        if ($refIds) {
+            $tindakanIcd9 = \App\Models\Procedure::whereIn('id', $refIds)
+                ->pluck('icd9_code', 'id')->all();
+        }
+
         foreach ($invoice->items as $it) {
             $amount = (float) ($it->net_price ?? $it->total_price ?? 0);
             if ($amount <= 0) {
                 continue;
             }
-            $bucket = $this->mapBillingToTarifBucket($it->item_type, (string) $it->category);
+            $icd9 = $it->item_type === 'TINDAKAN' ? ($tindakanIcd9[$it->reference_id] ?? null) : null;
+            $bucket = $this->mapBillingToTarifBucket($it->item_type, (string) $it->category, $icd9);
             $buckets[$bucket] = ($buckets[$bucket] ?? 0) + $amount;
         }
 
@@ -1467,7 +1712,7 @@ class KlaimService
     }
 
     /** Map item billing Arumed -> nama bucket tarif_rs E-Klaim. */
-    private function mapBillingToTarifBucket(?string $itemType, string $category): string
+    private function mapBillingToTarifBucket(?string $itemType, string $category, ?string $icd9 = null): string
     {
         $cat = mb_strtolower($category);
 
@@ -1482,16 +1727,43 @@ class KlaimService
         if (str_contains($cat, 'rehab')) return 'rehabilitasi';
         if (str_contains($cat, 'radiolog')) return 'radiologi';
         if (str_contains($cat, 'lab')) return 'laboratorium';
+        // Kategori bedah/operasi eksplisit -> prosedur_bedah (apa pun item_type).
+        if (str_contains($cat, 'bedah') || str_contains($cat, 'operasi') || str_contains($cat, 'operatif')) return 'prosedur_bedah';
+
+        // TINDAKAN: pisahkan bedah vs non-bedah dari kode ICD-9-CM (otoritatif).
+        if ($itemType === 'TINDAKAN') {
+            return $this->isSurgicalIcd9($icd9) ? 'prosedur_bedah' : 'prosedur_non_bedah';
+        }
 
         // Fallback berdasarkan item_type.
         return match ($itemType) {
             'ROOM'              => 'kamar',
             'VISITE'            => 'konsultasi',
-            'OBAT'              => 'obat',
+            'OBAT', 'MEDICATION' => 'obat',
             'BHP'               => 'bmhp',
-            'IOL'               => 'alkes',
-            default             => 'prosedur_non_bedah', // TINDAKAN & lainnya
+            'IOL', 'MEDICAL_EQUIPMENT' => 'alkes',
+            default             => 'prosedur_non_bedah',
         };
+    }
+
+    /**
+     * Apakah kode ICD-9-CM tergolong tindakan BEDAH (operasi)?
+     * Kaidah ICD-9-CM: bab 01–86 = "Operations" (bedah); 87–99 = diagnostik/
+     * terapeutik non-bedah. Bab = angka sebelum titik (mis. '12.64'→12, '95.01'→95).
+     */
+    private function isSurgicalIcd9(?string $code): bool
+    {
+        $code = trim((string) $code);
+        if ($code === '') return false;
+
+        $head = explode('.', $code)[0];
+        if (! ctype_digit($head)) {
+            if (! preg_match('/(\d{1,2})/', $code, $m)) return false;
+            $head = $m[1];
+        }
+        $chapter = (int) $head;
+
+        return $chapter >= 1 && $chapter <= 86;
     }
 
     /**
@@ -1798,6 +2070,9 @@ class KlaimService
                 'file_size' => $d->file_size,
                 'by'        => $d->uploadedBy?->name,
                 'at'        => $d->created_at?->toIso8601String(),
+                // K2 — status unggah ke DC BPJS (file_upload).
+                'dc_upload_status' => $d->dc_upload_status,
+                'dc_uploaded_at'   => $d->dc_uploaded_at?->toIso8601String(),
             ])->all();
     }
 
