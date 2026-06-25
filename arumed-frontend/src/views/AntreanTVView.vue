@@ -3149,16 +3149,15 @@ async function saveAudioDefaults() {
   overflow: hidden;
   position: relative;
 }
-/* Stage 16:9 — kunci rasio konten (YouTube/video/slideshow) ke 1920:1080.
-   Lebar mengisi panel, tinggi dihitung dari aspect-ratio; kalau tinggi panel
-   lebih kecil dari yang dibutuhkan, fallback ke tinggi penuh dengan lebar
-   16:9 (letterbox kiri/kanan, bukan distorsi).
-   Placeholder dikecualikan — mengisi panel penuh agar logo & teks center. */
-.video-panel > *:not(.video-placeholder) {
-  aspect-ratio: 16 / 9;
+/* Media mengisi PENUH panel (cover) — tepi yang berlebih dipotong, tanpa pita
+   kosong. Slideshow/video pakai object-fit: cover; iframe YouTube punya teknik
+   cover tersendiri di .yt-frame (karena object-fit tak berlaku utk iframe), jadi
+   dikecualikan di sini. Placeholder juga dikecualikan agar logo & teks tetap center. */
+.video-panel > *:not(.video-placeholder):not(.yt-frame) {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-width: 100%;
-  max-height: 100%;
+  height: 100%;
 }
 .video-placeholder {
   width: 100%;
@@ -3185,10 +3184,21 @@ async function saveAudioDefaults() {
   line-height: 1.6;
 }
 
-/* YouTube iframe */
+/* YouTube iframe — COVER: iframe diperbesar sampai sisi terpendeknya menutupi
+   panel sambil menjaga 16:9, lalu dipusatkan & kelebihannya dipotong oleh
+   `overflow:hidden` panel. min-width/min-height = lantai ukuran, aspect-ratio
+   mengikat keduanya → kotak 16:9 terkecil yang menutupi panel (cover sejati).
+   Berlaku di .video-panel & .poli-media (keduanya position:relative; overflow:hidden). */
 .yt-frame {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: auto;
+  height: auto;
+  min-width: 100%;
+  min-height: 100%;
+  aspect-ratio: 16 / 9;
   border: none;
   display: block;
 }
@@ -3772,7 +3782,7 @@ async function saveAudioDefaults() {
 }
 
 /* LOCAL VIDEO */
-.local-video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+.local-video { width: 100%; height: 100%; object-fit: cover; background: #000; display: block; }
 
 /* FLASH OVERLAY */
 .flash-overlay {
@@ -4311,11 +4321,11 @@ async function saveAudioDefaults() {
   overflow: hidden;
   position: relative;
 }
-.poli-media > *:not(.video-placeholder) {
-  aspect-ratio: 16 / 9;
+.poli-media > *:not(.video-placeholder):not(.yt-frame) {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-width: 100%;
-  max-height: 100%;
+  height: 100%;
 }
 
 /* Panel antrean */
