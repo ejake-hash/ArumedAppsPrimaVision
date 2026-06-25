@@ -216,6 +216,15 @@ const flashBadgeRendered = computed(() => {
   return renderTemplate(tmpl, flashQueue.value)
 })
 
+// Versi per-item (dipakai sel grid saat >1 panggilan ditampilkan bersamaan).
+function flashItemSettings(q) { return q ? settingsFor(q.station) : {} }
+function flashItemShowName(q) { return flashItemSettings(q).show_name_in_flash !== false }
+function flashItemShowPoly(q) { return flashItemSettings(q).show_poly_in_flash !== false }
+function flashItemBadge(q) {
+  const tmpl = flashItemSettings(q).flash_badge_text || 'Silakan menuju {poli}'
+  return renderTemplate(tmpl, q)
+}
+
 // ─── Active doctors hari ini (untuk panel TV) ───────────────────────────────
 const activeDoctors = ref([])     // [{id, queue_prefix, nama_dokter, poliklinik, room, start_time, end_time}]
 let doctorPollInterval = null
@@ -1263,7 +1272,9 @@ async function setMediaMode(mode) {
 // Setelah TTS selesai (atau timeout fallback), tunggu `callDelay` detik
 // sebelum proses panggilan berikutnya.
 const flashVisible = ref(false)
-const flashQueue = ref(null)
+const flashQueue = ref(null)      // panggilan "primary" (item pertama batch) — utk computed lama
+const flashBatch = ref([])        // 1-4 panggilan ditampilkan bersamaan; >1 = grid
+const MAX_FLASH_BATCH = 4         // maks nomor per 1 flash grid
 const callDelay = ref(7)          // detik antara panggilan (5-10)
 const flashDuration = ref(5)      // durasi minimum flash full-screen (detik, 3-10)
 const callQueue = ref([])         // FIFO antrian panggilan
@@ -1348,8 +1359,11 @@ async function processCallQueue() {
   if (isProcessingCall.value) return
   isProcessingCall.value = true
   while (callQueue.value.length > 0) {
-    const q = callQueue.value.shift()
-    await playCallAnnouncement(q)
+    // Oportunistik: ambil semua panggilan yang SUDAH mengantre saat ini (maks 4)
+    // → 1 flash. 1 panggilan = tampil tunggal besar; >1 = grid. Tanpa menambah
+    // delay: panggilan yang benar-benar berdekatan otomatis terkumpul di sini.
+    const batch = callQueue.value.splice(0, MAX_FLASH_BATCH)
+    await playCallAnnouncement(batch)
     await sleep(callDelay.value * 1000)
   }
   isProcessingCall.value = false
@@ -1359,8 +1373,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function playCallAnnouncement(q) {
-  flashQueue.value = q
+async function playCallAnnouncement(batch) {
+  // `batch` = array 1-4 panggilan. flashQueue tetap diisi item pertama agar
+  // computed lama (flashSettings/flashBadgeRendered/label-top) tetap jalan.
+  flashBatch.value = batch
+  flashQueue.value = batch[0]
   flashVisible.value = true
   const startedAt = Date.now()
 
@@ -1368,11 +1385,12 @@ async function playCallAnnouncement(q) {
   // flash pada selesainya — kalau TTS skip cepat (voice tidak tersedia atau
   // audio belum unlock), flash akan kelihatan sangat singkat. Sebagai
   // gantinya, kita garansi durasi flash minimum `flashDuration` detik.
+  // Untuk grid: chime sekali, lalu TTS membacakan tiap nomor berurutan.
   const audioTask = audioEnabled.value
     ? (async () => {
         const dur = playSound(soundPreset.value)
         await sleep(dur + 200)
-        await speakAnnouncement(q)
+        for (const q of batch) await speakAnnouncement(q)
       })()
     : Promise.resolve()
 
@@ -2175,7 +2193,8 @@ async function saveAudioDefaults() {
   <!-- FULL-SCREEN FLASH OVERLAY (queue called) -->
   <Teleport to="body">
     <div v-if="flashVisible" class="flash-overlay" @click="unlockAudio(); flashVisible = false">
-      <div class="flash-content">
+      <!-- 1 panggilan: tampil tunggal besar (seperti semula) -->
+      <div v-if="flashBatch.length <= 1" class="flash-content">
         <div class="flash-label-top">{{ flashSettings.flash_label_top || 'Nomor Antrean Dipanggil' }}</div>
         <div class="flash-num">{{ flashQueue?.num }}</div>
         <div v-if="flashSettings.show_name_in_flash !== false && flashQueue?.name && flashQueue.name !== '—'" class="flash-name">
@@ -2186,6 +2205,21 @@ async function saveAudioDefaults() {
         <div class="flash-badge">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
           {{ flashBadgeRendered }}
+        </div>
+        <div class="flash-hint">Ketuk untuk tutup</div>
+      </div>
+
+      <!-- >1 panggilan berdekatan: grid maks 4 -->
+      <div v-else class="flash-content flash-content-grid">
+        <div class="flash-label-top">{{ flashSettings.flash_label_top || 'Nomor Antrean Dipanggil' }}</div>
+        <div class="flash-cells" :class="'cols-' + flashBatch.length">
+          <div v-for="q in flashBatch" :key="q.id" class="flash-cell">
+            <div class="flash-cell-num">{{ q.num }}</div>
+            <div v-if="flashItemShowName(q) && q.name && q.name !== '—'" class="flash-cell-name">{{ q.name }}</div>
+            <div v-if="flashItemShowPoly(q)" class="flash-cell-poly">{{ q.poly }}</div>
+            <div v-if="q.dokter" class="flash-cell-dokter">{{ q.dokter }}</div>
+            <div class="flash-cell-badge">{{ flashItemBadge(q) }}</div>
+          </div>
         </div>
         <div class="flash-hint">Ketuk untuk tutup</div>
       </div>
@@ -2740,10 +2774,18 @@ async function saveAudioDefaults() {
               </div>
             </div>
 
-            <div class="ctrl-sub-section">
+            <div class="ctrl-sub-section" style="display:flex; gap:.5rem; flex-wrap:wrap">
               <button class="ctrl-action-btn"
-                      @click="playCallAnnouncement({ num: 'A-001', name: 'Tes Audio', poly: 'Loket Admisi', station: 'ADMISI', id: 'test-' + Date.now() })">
+                      @click="playCallAnnouncement([{ num: 'A-001', name: 'Tes Audio', poly: 'Loket Admisi', station: 'ADMISI', id: 'test-' + Date.now() }])">
                 Tes Panggilan Lengkap (Bunyi + Suara)
+              </button>
+              <button class="ctrl-action-btn"
+                      @click="playCallAnnouncement([
+                        { num: 'A-001', name: 'Tes Satu', poly: 'Loket Admisi', station: 'ADMISI', id: 'g1-' + Date.now() },
+                        { num: 'D1-007', name: 'Tes Dua', poly: 'Poli Mata', dokter: 'dr. Contoh, Sp.M', station: 'DOKTER', id: 'g2-' + Date.now() },
+                        { num: 'F-014', name: 'Tes Tiga', poly: 'Farmasi', station: 'FARMASI', id: 'g3-' + Date.now() },
+                        { num: 'R-003', name: 'Tes Empat', poly: 'Refraksionis', station: 'REFRAKSIONIS', id: 'g4-' + Date.now() }])">
+                Tes Grid (4 Panggilan)
               </button>
             </div>
 
@@ -3824,6 +3866,43 @@ async function saveAudioDefaults() {
 }
 .flash-badge svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .flash-hint { font-size: 12px; color: rgba(255,255,255,.3); margin-top: 2.5rem; font-family: 'Inter', sans-serif; }
+
+/* ─── Flash GRID (2-4 panggilan berdekatan) ───────────────────────────────── */
+.flash-content-grid { width: min(92vw, 1700px); }
+.flash-content-grid .flash-label-top { margin-bottom: 1.5rem; }
+.flash-cells {
+  display: grid;
+  gap: clamp(16px, 2.4vw, 40px);
+  align-items: stretch; justify-items: stretch;
+}
+.flash-cells.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.flash-cells.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.flash-cells.cols-4 { grid-template-columns: repeat(2, 1fr); }  /* 2×2 */
+.flash-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .45rem; padding: clamp(16px, 2vw, 34px);
+  background: rgba(56,189,248,.06);
+  border: 1px solid rgba(56,189,248,.18);
+  border-radius: 22px; min-width: 0;
+}
+.flash-cell-num {
+  font-family: 'Space Grotesk', serif; line-height: 1;
+  font-size: clamp(48px, 8vw, 130px); letter-spacing: .03em;
+  color: #fff;
+  text-shadow: 0 0 50px rgba(255,255,255,.4), 0 0 28px rgba(125,211,252,.3);
+}
+.flash-cells.cols-3 .flash-cell-num,
+.flash-cells.cols-4 .flash-cell-num { font-size: clamp(40px, 6vw, 104px); }
+.flash-cell-name   { font-size: clamp(15px, 1.8vw, 30px); font-weight: 500; color: #fff; text-align: center; }
+.flash-cell-poly   { font-size: clamp(12px, 1.3vw, 20px); color: rgba(255,255,255,.6); text-align: center; }
+.flash-cell-dokter { font-size: clamp(12px, 1.3vw, 20px); font-weight: 600; color: #fff; text-align: center; }
+.flash-cell-badge {
+  margin-top: .35rem;
+  background: rgba(56,189,248,.32); border: 1.5px solid rgba(125,211,252,.9);
+  color: #fff; padding: 6px 16px; border-radius: 24px;
+  font-size: clamp(11px, 1.2vw, 16px); font-weight: 700; font-family: 'Inter', sans-serif;
+  text-align: center;
+}
 
 /* Ctrl toggles */
 .ctrl-toggles { display: flex; flex-direction: column; gap: 10px; }
