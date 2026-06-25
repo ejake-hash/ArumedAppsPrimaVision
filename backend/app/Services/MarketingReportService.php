@@ -381,6 +381,7 @@ class MarketingReportService
         return [
             'no'             => $no,
             'nama'           => $visit->patient->name ?? '-',
+            'nik'            => $visit->patient?->nik,
             'usia'           => $this->ageFromDob($visit->patient?->date_of_birth),
             'no_hp'          => $visit->patient->phone ?? '-',
             'penjamin'       => $this->resolvePenjamin($visit),

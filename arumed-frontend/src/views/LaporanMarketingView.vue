@@ -48,11 +48,26 @@ const notifCards = computed(() => [
   { key: 'nyeri',       label: 'Follow-up Nyeri', n: notifCounts.value.nyeri,       tone: 'orange' },
 ])
 
-// ─── KPI cards layanan (RJ/RI/Bedah) — ringkasan periode ─────────────────────
+// ─── Pencarian layanan (by nama / NIK) — client-side, instan ─────────────────
+const searchQuery = ref('')
+const filteredRows = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return rows.value
+  // NIK dibandingkan hanya digit-nya supaya spasi/tanda baca tidak mengganggu.
+  const qDigits = q.replace(/\D/g, '')
+  return rows.value.filter((r) => {
+    const nama = (r.nama || '').toLowerCase()
+    const nik = String(r.nik || '')
+    return nama.includes(q) || (qDigits && nik.includes(qDigits))
+  })
+})
+
+// ─── KPI cards layanan (RJ/RI/Bedah) — ringkas hasil yang tampil ─────────────
 const serviceCards = computed(() => {
-  const total = rows.value.length
+  const list = filteredRows.value
+  const total = list.length
   let bpjs = 0, umum = 0
-  for (const r of rows.value) {
+  for (const r of list) {
     const p = (r.penjamin || '').toUpperCase()
     if (p.includes('BPJS')) bpjs++
     else if (p) umum++
@@ -135,6 +150,7 @@ async function loadNotif() {
 async function selectTab(tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
+  searchQuery.value = '' // mulai bersih tiap pindah tab
   if (tab === 'NOTIF') {
     if (!notifRows.value.length) await loadNotif()
   } else {
@@ -387,7 +403,19 @@ onMounted(() => {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
           Terapkan
         </button>
-        <span class="count" v-if="!loading">{{ rows.length }} pasien</span>
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input
+            type="search"
+            v-model="searchQuery"
+            placeholder="Cari nama / NIK…"
+            aria-label="Cari pasien berdasarkan nama atau NIK"
+          />
+          <button v-if="searchQuery" class="search-clear" title="Hapus pencarian" @click="searchQuery = ''">×</button>
+        </div>
+        <span class="count" v-if="!loading">
+          {{ filteredRows.length }} pasien<span v-if="searchQuery"> · dari {{ rows.length }}</span>
+        </span>
       </div>
 
       <!-- Tabel -->
@@ -414,7 +442,10 @@ onMounted(() => {
             <tr v-else-if="!rows.length">
               <td colspan="10" class="empty">Tidak ada data pada periode ini.</td>
             </tr>
-            <tr v-else v-for="r in rows" :key="r.no">
+            <tr v-else-if="!filteredRows.length">
+              <td colspan="10" class="empty">Tidak ada pasien cocok dengan "{{ searchQuery }}".</td>
+            </tr>
+            <tr v-else v-for="r in filteredRows" :key="r.no">
               <td>{{ r.no }}</td>
               <td class="strong">{{ r.nama }}</td>
               <td>{{ r.usia != null ? r.usia + ' th' : '-' }}</td>
@@ -534,6 +565,24 @@ button.stat-card:hover { box-shadow: 0 6px 18px rgba(14,58,102,.10); transform: 
 }
 .filter-bar input[type="date"]:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
 .count { font-size: 0.82rem; color: var(--tu); font-weight: 600; }
+
+/* Search by nama / NIK */
+.search-box { position: relative; display: inline-flex; align-items: center; }
+.search-box > svg {
+  position: absolute; left: 9px; width: 14px; height: 14px; color: var(--tu); pointer-events: none;
+}
+.search-box input {
+  border: 1px solid var(--gb); border-radius: 8px; padding: 6px 26px 6px 28px;
+  font-size: 0.85rem; color: var(--td); background: var(--bc); min-width: 200px;
+}
+.search-box input:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
+.search-box input::-webkit-search-cancel-button { display: none; }
+.search-clear {
+  position: absolute; right: 6px; width: 18px; height: 18px; line-height: 1; padding: 0;
+  border: none; background: var(--bs); color: var(--tm); border-radius: 50%; cursor: pointer;
+  font-size: 14px; display: flex; align-items: center; justify-content: center;
+}
+.search-clear:hover { background: var(--gb); color: var(--gd); }
 
 /* Buttons */
 .btn-soft {
