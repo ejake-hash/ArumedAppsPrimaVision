@@ -99,7 +99,12 @@ Route::prefix('v1')->group(function () {
     // 2b. PUBLIC — Anjungan Mandiri (Kiosk Self-Service, no auth)
     // =========================================================================
     Route::prefix('anjungan')->group(function () {
-        Route::post('/tiket-umum', [AdmisiController::class, 'anjunganTiketUmum']);
+        Route::get('/status',              [AdmisiController::class, 'anjunganStatus']);
+        Route::get('/dokter-aktif',        [AdmisiController::class, 'anjunganDokterAktif']);
+        Route::post('/tiket-umum',         [AdmisiController::class, 'anjunganTiketUmum']);
+        Route::post('/checkin-bpjs',       [AdmisiController::class, 'anjunganCheckinBpjs']);
+        Route::post('/ambil-antrean-bpjs', [AdmisiController::class, 'anjunganAmbilAntreanBpjs']);
+        Route::post('/terbitkan-sep',      [AdmisiController::class, 'anjunganTerbitkanSep']);
     });
 
     // =========================================================================
@@ -259,6 +264,8 @@ Route::prefix('v1')->group(function () {
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
+                // i-Care: URL viewer riwayat pelayanan peserta (informed consent di UI).
+                Route::post('/icare-riwayat',      [AdmisiController::class, 'bpjsIcareRiwayat']);
                 // Pre-flight kesiapan SEP sebelum pasien didaftarkan (wizard Konfirmasi).
                 Route::post('/preflight-sep',      [AdmisiController::class, 'bpjsPreflightSep']);
                 // Diagnosa awal SEP: tarik dari rujukan FKTP / set manual (override).
@@ -442,6 +449,11 @@ Route::prefix('v1')->group(function () {
             // Surat Kontrol BPJS (planning Pulang) — baca status + terbitkan ke VClaim
             Route::get('/kunjungan/{visitId}/surat-kontrol',        [DokterController::class, 'getSuratKontrol']);
             Route::post('/kunjungan/{visitId}/surat-kontrol/submit', [DokterController::class, 'submitSuratKontrol']);
+
+            // i-Care BPJS — URL viewer riwayat pelayanan peserta (informed consent di UI).
+            Route::post('/kunjungan/{visitId}/icare-riwayat',       [DokterController::class, 'icareRiwayat']);
+            // WS Rekam Medis BPJS — kirim RM kunjungan ke BPJS (mengisi i-Care).
+            Route::post('/kunjungan/{visitId}/rm-bpjs',             [DokterController::class, 'kirimRekamMedisBpjs']);
 
             // (dihapus) /jadwal-bedah GET+POST — method indexJadwalBedah/storeJadwalBedah
             // tidak pernah ada (selalu 500), tanpa konsumen frontend. Penjadwalan bedah
@@ -1468,6 +1480,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/bpjs/vclaim-log/{id}',             [IntegrasiController::class, 'showVclaimpLog']);
             Route::get('/bpjs/antrean-log',                 [IntegrasiController::class, 'antreanLog']);
             Route::get('/bpjs/icare-log',                   [IntegrasiController::class, 'icareLog']);
+            Route::get('/bpjs/rm-dashboard',                [IntegrasiController::class, 'rekamMedisDashboard']);
+            Route::get('/bpjs/rm-log',                      [IntegrasiController::class, 'rekamMedisLog']);
             Route::get('/bpjs/inacbgs-log',                 [IntegrasiController::class, 'inacbgsLog']);
 
             Route::get('/bpjs/rujukan-masuk',               [IntegrasiController::class, 'indexRujukanMasuk']);
@@ -1517,6 +1531,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/antrean/batal',                   [IntegrasiController::class, 'antreanBatal']);
             Route::get('/antrean/dashboard/{jenis}',        [IntegrasiController::class, 'antreanDashboard']);
             Route::post('/antrean/validate-booking',        [IntegrasiController::class, 'antreanValidateBooking']);
+            Route::post('/antrean/by-booking',              [IntegrasiController::class, 'antreanByBooking']);
+            Route::get('/antrean/ref-poli',                 [IntegrasiController::class, 'antreanRefPoli']);
+            Route::get('/antrean/ref-dokter',               [IntegrasiController::class, 'antreanRefDokter']);
+            Route::get('/antrean/jadwal-hfis/{kodepoli}/{tanggal}', [IntegrasiController::class, 'antreanJadwalHfis']);
+            Route::get('/antrean/ref-pasien-fp/{jenis}/{noidentitas}', [IntegrasiController::class, 'antreanRefPasienFp']);
 
             // ---- Mapping Poli/DPJP BPJS (sinkron Jadwal Dokter) ----
             Route::get('/bpjs/poli-mapping',                [IntegrasiController::class, 'indexPoliMapping']);

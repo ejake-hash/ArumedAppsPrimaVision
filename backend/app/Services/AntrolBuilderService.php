@@ -172,11 +172,17 @@ class AntrolBuilderService
                 return (string) $no;
             }
         }
+        // Fallback surat kontrol yang tersimpan langsung di visit (jalur kiosk/check-in).
+        if (! empty($visit->no_surat_kontrol)) {
+            return (string) $visit->no_surat_kontrol;
+        }
 
         $no = $visit->bpjs_referral_in_id
             ? BpjsReferralIn::whereKey($visit->bpjs_referral_in_id)->value('no_rujukan')
             : BpjsReferralIn::where('visit_id', $visit->id)->value('no_rujukan');
 
-        return (string) ($no ?? '');
+        // Fallback ke no_rujukan yang tersimpan di visit — kiosk/onsite menyimpan
+        // rujukan di kolom visit, bukan membuat baris BpjsReferralIn.
+        return (string) ($no ?: ($visit->no_rujukan ?? ''));
     }
 }

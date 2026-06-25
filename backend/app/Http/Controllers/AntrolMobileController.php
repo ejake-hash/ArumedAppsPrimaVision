@@ -13,7 +13,9 @@ use Illuminate\Support\Str;
  * WS Antrean sisi RS — endpoint yang DIPANGGIL Mobile JKN / server BPJS (Sisi B).
  * Spec: Docs/Antrol.md (bagian "Web Service Antrean - RS (Diakses oleh Mobile JKN)").
  *
- * Semua respon memakai ENVELOPE BPJS { response, metaData:{code,message} }:
+ * Semua respon memakai ENVELOPE BPJS Antrean { response, metadata:{code,message} }:
+ * CATATAN: WS Antrean memakai key `metadata` (huruf kecil), BERBEDA dari VClaim
+ * yang memakai `metaData` (camelCase). Verifikator UAT mencocokkan persis.
  *   200 = sukses, 201 = gagal, 202 = pasien baru (khusus Ambil Antrean).
  * Auth (kecuali token) lewat middleware VerifyAntrolToken (x-token + x-username).
  *
@@ -154,7 +156,7 @@ class AntrolMobileController extends Controller
 
         return response()->json([
             'response' => $response,
-            'metaData' => ['code' => $code, 'message' => $message],
+            'metadata' => ['code' => $code, 'message' => $message],
         ], 200);
     }
 }

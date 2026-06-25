@@ -206,7 +206,10 @@ class BpjsClient
             ];
         }
 
-        $meta     = $json['metaData'] ?? ['code' => (string) $status, 'message' => $resp->reason()];
+        // WS Antrean membalas key `metadata` (huruf kecil), VClaim `metaData` (camelCase).
+        // Terima keduanya supaya error Antrean ber-HTTP-200 (mis. metadata.code 201) tidak
+        // salah-tandai sukses via fallback HTTP status di bawah.
+        $meta     = $json['metaData'] ?? $json['metadata'] ?? ['code' => (string) $status, 'message' => $resp->reason()];
         $response = $json['response'] ?? null;
         $metaCode = (string) ($meta['code'] ?? $status);
 

@@ -135,6 +135,7 @@ const router = createRouter({
             // Antrean Online dipindah ke Jadwal Dokter → Pemetaan BPJS. Redirect link lama.
             { path: 'antrean',     name: 'bridging-antrean',     redirect: '/jadwal-dokter' },
             { path: 'satusehat',   name: 'bridging-satusehat',   component: () => import('@/views/bridging/BridgingSatusehatView.vue'),   meta: { title: 'Satu Sehat' } },
+            { path: 'rekam-medis', name: 'bridging-rekam-medis', component: () => import('@/views/bridging/BridgingRekamMedisView.vue'), meta: { title: 'Rekam Medis BPJS' } },
             { path: 'log',         name: 'bridging-log',         component: () => import('@/views/bridging/BridgingLogView.vue'),         meta: { title: 'Log Integrasi' } },
           ],
         },

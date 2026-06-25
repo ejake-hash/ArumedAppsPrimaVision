@@ -24,6 +24,13 @@ use Illuminate\Support\Str;
  */
 class AntrolMobileService
 {
+    /**
+     * Poli RS Mata ditetapkan WAJIB validasi sidik jari (sesuai setting HFIS faskes
+     * & alur yang berjalan). SEP poli-FP hanya terbit setelah fingerprint tervalidasi.
+     * Set false bila faskes mematikan validasi sidik jari di kiosk.
+     */
+    private const KIOSK_FP_REQUIRED = true;
+
     public function __construct(private readonly AntreanKuotaService $kuota) {}
 
     // =========================================================================
@@ -228,9 +235,25 @@ class AntrolMobileService
             return $this->fail('Data pasien belum lengkap (RM belum ada). Lengkapi via Info Pasien Baru.');
         }
 
-        DB::transaction(function () use ($booking) {
-            // Bawa nomor referensi dari booking Mobile JKN ke visit agar tak hilang saat
-            // terbit SEP. jeniskunjungan BPJS Antrean: '3'=Kontrol → no_surat_kontrol;
+        $visit = $this->materializeVisit($booking);
+
+        // Booking Mobile JKN sudah terdaftar di BPJS (saat ambilAntrean) → cukup lapor
+        // task 3 (mulai tunggu poli). Non-blocking. Dipanggil post-commit.
+        app(QueueService::class)->reportTask($visit, 3);
+
+        return $this->ok(null, 200, 'Ok');
+    }
+
+    /**
+     * Materialisasi booking → Visit + antrean fisik (TRIASE+REFRAKSIONIS). TIDAK
+     * melapor task ke BPJS (caller yang atur urutan: untuk onsite WAJIB add dulu
+     * baru task). Kembalikan Visit yang sudah fresh.
+     */
+    private function materializeVisit(AntreanBooking $booking): Visit
+    {
+        return DB::transaction(function () use ($booking) {
+            // Bawa nomor referensi dari booking ke visit agar tak hilang saat terbit
+            // SEP. jeniskunjungan BPJS Antrean: '3'=Kontrol → no_surat_kontrol;
             // selain itu (rujukan FKTP/antar-RS) → no_rujukan.
             $isKontrol = (string) $booking->jenis_kunjungan === '3';
 
@@ -261,11 +284,293 @@ class AntrolMobileService
                 'visit_id'   => $visit->id,
             ]);
 
-            // Check-in = pasien datang → lapor BPJS task 3 (mulai tunggu poli), non-blocking.
-            $qs->reportTask($visit->fresh(), 3);
+            return $visit->fresh();
         });
+    }
 
-        return $this->ok(null, 200, 'Ok');
+    // =========================================================================
+    // KIOSK — CHECK-IN ONSITE (Anjungan Mandiri). Resolusi booking by kodebooking
+    // atau NIK/kartu untuk hari ini, lalu reuse checkin(). Balikan data siap-cetak.
+    //   Request: { kodebooking? , nik?, nomorkartu? }
+    // =========================================================================
+    public function kioskCheckin(array $data): array
+    {
+        $kode  = trim((string) ($data['kodebooking'] ?? ''));
+        $nik   = trim((string) ($data['nik'] ?? ''));
+        $kartu = trim((string) ($data['nomorkartu'] ?? ''));
+
+        $booking = null;
+        if ($kode !== '') {
+            $booking = $this->findBooking($kode);
+        } elseif ($nik !== '' || $kartu !== '') {
+            $today = now('Asia/Jakarta')->toDateString();
+            $booking = AntreanBooking::with('doctorSchedule.employee')
+                ->whereDate('tanggal_periksa', $today)
+                ->whereIn('status', [AntreanBooking::STATUS_DIBOOK, AntreanBooking::STATUS_CHECKIN])
+                ->where(function ($q) use ($nik, $kartu) {
+                    if ($nik !== '')   { $q->orWhere('nik', $nik); }
+                    if ($kartu !== '') { $q->orWhere('nomorkartu', $kartu); }
+                })
+                ->orderByDesc('created_at')
+                ->first();
+        }
+
+        if (! $booking) {
+            return $this->fail('Booking tidak ditemukan. Pastikan kode booking benar atau ambil antrean via Mobile JKN terlebih dahulu.');
+        }
+        if (! $booking->tanggal_periksa->isToday()) {
+            return $this->fail('Antrean ini untuk tanggal ' . $booking->tanggal_periksa->format('d-m-Y') . '. Check-in hanya pada hari pelayanan.');
+        }
+        // Pasien baru (booking belum tertaut RM) tak bisa self check-in → arahkan ke loket.
+        if (! $booking->patient_id && $booking->status !== AntreanBooking::STATUS_CHECKIN) {
+            return $this->fail('Data rekam medis belum lengkap. Silakan menuju Loket Admisi untuk dilayani petugas.');
+        }
+
+        // Reuse alur check-in inti (buat Visit + antrean + lapor task 3). Idempoten.
+        $res = $this->checkin(['kodebooking' => $booking->kodebooking]);
+        if (($res['code'] ?? 201) !== 200) {
+            return $res; // teruskan pesan (batal / RM belum lengkap → arahkan ke admisi)
+        }
+
+        $booking->refresh();
+        $sched = $booking->doctorSchedule;
+        $queueNumber = $booking->visit_id
+            ? Queue::byStation(Queue::STATION_TRIASE)->where('visit_id', $booking->visit_id)->value('queue_number')
+            : null;
+
+        $sep = $this->attemptAutoSep($booking->visit_id);
+
+        return $this->ok([
+            'kodebooking'  => $booking->kodebooking,
+            'nomorantrean' => $booking->nomor_antrean,
+            'namapoli'     => $sched?->poliklinik,
+            'namadokter'   => $sched?->employee?->name,
+            'queue_number' => $queueNumber,
+            'sep'          => $sep['sep'],
+            'sep_error'    => $sep['error'],
+            'fp_required'  => $sep['fp_required'] ?? false,
+        ], 200, 'Check-in berhasil');
+    }
+
+    /**
+     * KIOSK — terbitkan SEP setelah pasien validasi sidik jari (FRISTA).
+     * Dipanggil saat pasien menekan "Lanjutkan" di langkah fingerprint. Mengulang
+     * gate FP: bila sudah tervalidasi → SEP terbit; bila belum → fp_required lagi.
+     *   Request: { kodebooking }
+     */
+    public function kioskTerbitkanSep(array $data): array
+    {
+        $booking = $this->findBooking(trim((string) ($data['kodebooking'] ?? '')));
+        if (! $booking || ! $booking->visit_id) {
+            return $this->fail('Data kunjungan tidak ditemukan.');
+        }
+
+        $sep = $this->attemptAutoSep($booking->visit_id);
+
+        return $this->ok([
+            'sep'         => $sep['sep'],
+            'sep_error'   => $sep['error'],
+            'fp_required' => $sep['fp_required'] ?? false,
+        ], 200, ! empty($sep['fp_required']) ? 'Menunggu validasi sidik jari.' : ($sep['sep'] ? 'SEP terbit.' : 'Lanjut ke admisi.'));
+    }
+
+    // =========================================================================
+    // KIOSK — AMBIL ANTREAN ONSITE (walk-in BPJS tanpa Mobile JKN).
+    // Pasien LAMA (punya RM) input NIK/kartu + no rujukan + pilih dokter.
+    // Alur: buat booking → materialisasi Visit → WAJIB hit BPJS /antrean/add
+    // (Tambah Antrian Onsite) → baru lapor task 3 (urutan add→task wajib).
+    // Pasien BARU (belum ada RM) diarahkan ke Loket Admisi (alur SEP + task 1-2-3).
+    //   Request: { doctor_schedule_id, nik? | nomorkartu?, nomorreferensi? }
+    // =========================================================================
+    public function kioskAmbilOnsite(array $data): array
+    {
+        $schedId = $data['doctor_schedule_id'] ?? null;
+        $nik     = trim((string) ($data['nik'] ?? ''));
+        $kartu   = trim((string) ($data['nomorkartu'] ?? ''));
+        $noRujuk = trim((string) ($data['nomorreferensi'] ?? ''));
+        $nohp    = trim((string) ($data['nohp'] ?? ''));
+
+        $sched = $schedId ? DoctorSchedule::with('employee')->find($schedId) : null;
+        if (! $sched || ! $sched->is_active) {
+            return $this->fail('Jadwal dokter tidak ditemukan atau tidak aktif hari ini.');
+        }
+        if ($nik === '' && $kartu === '') {
+            return $this->fail('Masukkan NIK atau nomor kartu BPJS.');
+        }
+
+        // Onsite kiosk hanya untuk pasien LAMA (sudah punya RM). Pasien baru → admisi.
+        $patient = $this->matchPatient($nik ?: null, $kartu ?: null);
+        if (! $patient) {
+            return $this->fail('Data pasien belum terdaftar (kemungkinan pasien baru). Silakan menuju Loket Admisi.');
+        }
+
+        // No. HP WAJIB untuk BPJS /antrean/add. Lengkapi data pasien bila masih kosong.
+        if ($nohp !== '' && empty($patient->phone)) {
+            $patient->forceFill(['phone' => $nohp])->save();
+        }
+        if (empty($patient->phone) && $nohp === '') {
+            return $this->fail('No. HP wajib diisi untuk antrean BPJS.');
+        }
+
+        $tanggal = now('Asia/Jakarta')->toDateString();
+        $kuota   = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
+        if ($kuota['sisakuotajkn'] <= 0) {
+            return $this->fail('Kuota JKN untuk dokter ini hari ini sudah penuh.');
+        }
+
+        try {
+            $booking = DB::transaction(function () use ($sched, $tanggal, $patient, $nik, $kartu, $noRujuk) {
+                if ($nik !== '') {
+                    $dup = AntreanBooking::where('nik', $nik)
+                        ->where('doctor_schedule_id', $sched->id)
+                        ->whereDate('tanggal_periksa', $tanggal)
+                        ->whereIn('status', [AntreanBooking::STATUS_DIBOOK, AntreanBooking::STATUS_CHECKIN])
+                        ->first();
+                    if ($dup) {
+                        throw new \RuntimeException('Pasien sudah memiliki antrean aktif untuk dokter ini hari ini.');
+                    }
+                }
+
+                $angka        = $this->nextAngka($sched, $tanggal);
+                $prefix       = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
+                $nomorAntrean = $prefix . '-' . str_pad((string) $angka, 3, '0', STR_PAD_LEFT);
+
+                return AntreanBooking::create([
+                    'kodebooking'        => $this->generateKodebooking($prefix, $tanggal),
+                    'nik'                => $nik ?: ($patient->nik ?? null),
+                    'nomorkartu'         => $kartu ?: ($patient->bpjs_number ?? null),
+                    'nohp'               => $patient->phone ?: ($nohp ?: null),
+                    'norm'               => $patient->no_rm,
+                    'patient_id'         => $patient->id,
+                    'poli_code'          => $sched->poli_code,
+                    'doctor_schedule_id' => $sched->id,
+                    'tanggal_periksa'    => $tanggal,
+                    'jam_praktek'        => $this->jamPraktek($sched),
+                    'jenis_kunjungan'    => 1, // Rujukan FKTP (default onsite RJ)
+                    'nomor_referensi'    => $noRujuk ?: null,
+                    'nomor_antrean'      => $nomorAntrean,
+                    'angka_antrean'      => $angka,
+                    'status'             => AntreanBooking::STATUS_DIBOOK,
+                ]);
+            });
+        } catch (\RuntimeException $e) {
+            return $this->fail($e->getMessage());
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            return $this->fail('Pasien sudah memiliki antrean aktif untuk dokter ini hari ini.');
+        }
+
+        // Materialisasi Visit, lalu lapor BPJS dengan urutan WAJIB: add → task 3.
+        $visit = $this->materializeVisit($booking);
+        $qs    = app(QueueService::class);
+        $qs->reportAntreanAdd($visit); // Tambah Antrian Onsite (WS BPJS /antrean/add)
+        $qs->reportTask($visit, 3);    // pasien lama → mulai waktu tunggu poli
+
+        $booking->refresh();
+        $queueNumber = Queue::byStation(Queue::STATION_TRIASE)->where('visit_id', $visit->id)->value('queue_number');
+
+        $sep = $this->attemptAutoSep($visit->id);
+
+        return $this->ok([
+            'kodebooking'  => $booking->kodebooking,
+            'nomorantrean' => $booking->nomor_antrean,
+            'namapoli'     => $sched->poliklinik,
+            'namadokter'   => $sched->employee?->name,
+            'queue_number' => $queueNumber,
+            'sep'          => $sep['sep'],
+            'sep_error'    => $sep['error'],
+            'fp_required'  => $sep['fp_required'] ?? false,
+        ], 200, 'Antrean berhasil diambil');
+    }
+
+    // =========================================================================
+    // AUTO-SEP KIOSK — terbitkan SEP otomatis setelah Visit BPJS dibuat.
+    // Gate aman: hanya bila ada rujukan/surat kontrol & VClaim aktif. bpjsGenerateSep
+    // sudah menarik diagnosa dari rujukan + kelas dari hak peserta secara otomatis.
+    // Gagal/ada kendala → tidak fatal: pasien diarahkan ke Loket Admisi.
+    // =========================================================================
+    private function attemptAutoSep(?string $visitId): array
+    {
+        if (! $visitId) {
+            return ['sep' => null, 'error' => null];
+        }
+
+        $visit = Visit::with('patient')->find($visitId);
+        if (! $visit) {
+            return ['sep' => null, 'error' => null];
+        }
+        if ($visit->no_sep) {
+            return ['sep' => $this->sepDisplay($visit), 'error' => null]; // sudah ada
+        }
+        // SEP butuh rujukan / surat kontrol. Tanpa itu → diselesaikan admisi.
+        if (empty($visit->no_rujukan) && empty($visit->no_surat_kontrol)) {
+            return ['sep' => null, 'error' => 'SEP diterbitkan di Loket Admisi (tidak ada nomor rujukan/kontrol).'];
+        }
+        if (! app(\App\Services\BpjsVClaimService::class)->isEnabled()) {
+            return ['sep' => null, 'error' => null]; // VClaim nonaktif → lewati diam-diam
+        }
+
+        // Gate fingerprint: poli wajib FP → SEP HANYA boleh terbit setelah sidik jari
+        // tervalidasi di BPJS (lewat aplikasi FRISTA, di luar SIMRS). Urutan resmi:
+        // fingerprint dulu → baru SEP. Kalau belum → tahan, frontend tampilkan langkah FP.
+        if (self::KIOSK_FP_REQUIRED && ! $this->fingerprintValidated($visit)) {
+            return ['sep' => null, 'error' => null, 'fp_required' => true];
+        }
+
+        try {
+            $res   = app(\App\Services\AdmisiService::class)->bpjsGenerateSep(['visit_id' => $visit->id]);
+            $noSep = $res['response']['sep']['noSep'] ?? null;
+            if ($noSep) {
+                return ['sep' => $this->sepDisplay($visit->fresh('patient')), 'error' => null];
+            }
+
+            return ['sep' => null, 'error' => $res['metaData']['message'] ?? 'SEP belum bisa terbit otomatis — silakan ke Loket Admisi.'];
+        } catch (\Throwable $e) {
+            return ['sep' => null, 'error' => 'SEP perlu diproses di Loket Admisi: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * Cek apakah sidik jari peserta SUDAH tervalidasi di BPJS untuk hari ini
+     * (via VClaim getFingerprint). Validasi fisik dilakukan aplikasi FRISTA di luar
+     * SIMRS; di sini kita hanya MEMBACA statusnya dari BPJS sebagai gerbang SEP.
+     *
+     * DEFAULT AMAN: ragu/gagal/non-aktif → anggap BELUM tervalidasi (tahan SEP),
+     * supaya tidak pernah menerbitkan SEP poli-FP tanpa sidik jari (klaim ditolak).
+     */
+    private function fingerprintValidated(Visit $visit): bool
+    {
+        $noKartu = $visit->patient?->bpjs_number;
+        if (! $noKartu) {
+            return false;
+        }
+        try {
+            $tgl = now('Asia/Jakarta')->toDateString();
+            $res = app(\App\Services\BpjsVClaimService::class)->getFingerprint($noKartu, $tgl);
+
+            // BPJS getFingerprint SELALU balas metaData.code 200 (baik sudah/belum).
+            // Status sebenarnya ada di response.kode (terverifikasi di BPJS dev):
+            //   "0" = "Peserta belum melakukan validasi finger print"
+            //   "1" = sudah tervalidasi
+            // DEFAULT AMAN: hanya "1" yang dianggap valid; selain itu tahan SEP.
+            return (($res['is_success'] ?? false) === true)
+                && (string) ($res['response']['kode'] ?? '0') === '1';
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** Ringkasan SEP untuk ditampilkan di layar kiosk (bukan untuk cetak). */
+    private function sepDisplay(Visit $visit): array
+    {
+        $snap = (array) ($visit->sep_data ?? []);
+
+        return [
+            'no_sep'   => $visit->no_sep,
+            'tgl_sep'  => $snap['tglSep'] ?? now('Asia/Jakarta')->toDateString(),
+            'peserta'  => $visit->patient?->name,
+            'diagnosa' => $visit->diagnosa_awal_nama ?: ($snap['diagAwal'] ?? ''),
+            'kelas'    => $snap['klsRawatHak'] ?? '',
+        ];
     }
 
     // =========================================================================

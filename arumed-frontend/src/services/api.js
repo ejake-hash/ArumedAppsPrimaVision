@@ -209,6 +209,8 @@ export const dokterApi = {
   // Surat Kontrol BPJS (planning Pulang) — status + terbitkan ke VClaim
   getSuratKontrol:  (visitId)             => api.get(`/dokter/kunjungan/${visitId}/surat-kontrol`),
   submitSuratKontrol: (visitId)           => api.post(`/dokter/kunjungan/${visitId}/surat-kontrol/submit`),
+  icareRiwayat:     (visitId)             => api.post(`/dokter/kunjungan/${visitId}/icare-riwayat`),
+  kirimRmBpjs:      (visitId, force = false) => api.post(`/dokter/kunjungan/${visitId}/rm-bpjs`, { force }),
 
   showTab2:         (visitId)             => api.get(`/dokter/kunjungan/${visitId}/tab2`),
   storeTab2:        (visitId, data)       => api.post(`/dokter/kunjungan/${visitId}/tab2`, data),
@@ -778,7 +780,15 @@ export const igdApi = {
 
 /** Anjungan Mandiri (Kiosk — public, no auth) */
 export const anjunganApi = {
+  status: () => api.get('/anjungan/status'),
+  dokterAktif: () => api.get('/anjungan/dokter-aktif'),
   tiketUmum: () => api.post('/anjungan/tiket-umum'),
+  // Jalur 1 — kode booking Mobile JKN. payload: { kodebooking? | nik? | nomorkartu? }
+  checkinBpjs: (payload) => api.post('/anjungan/checkin-bpjs', payload),
+  // Jalur 2 — ambil antrean onsite. payload: { doctor_schedule_id, nik?|nomorkartu?, nomorreferensi? }
+  ambilAntreanBpjs: (payload) => api.post('/anjungan/ambil-antrean-bpjs', payload),
+  // Terbitkan SEP setelah validasi sidik jari (FRISTA). payload: { kodebooking }
+  terbitkanSep: (payload) => api.post('/anjungan/terbitkan-sep', payload),
 }
 
 /** Antrean TV (lobby display — public, no auth) */
@@ -907,6 +917,7 @@ export const admisiApi = {
     cetakSepHtml:    (visitId) => api.get(`/admisi/bpjs/cetak-sep-html/${visitId}`, { responseType: 'text' }),
     cekRujukan:      (data) => api.post('/admisi/bpjs/cek-rujukan', data),
     cekSuratKontrol: (data) => api.post('/admisi/bpjs/cek-surat-kontrol', data),
+    icareRiwayat:    (visitId) => api.post('/admisi/bpjs/icare-riwayat', { visit_id: visitId }),
     preflightSep:    (data) => api.post('/admisi/bpjs/preflight-sep', data),
     rujukanByKartu:      (data) => api.post('/admisi/bpjs/rujukan-by-kartu', data),
     suratKontrolByKartu: (data) => api.post('/admisi/bpjs/surat-kontrol-by-kartu', data),
@@ -1373,6 +1384,8 @@ export const integrasiApi = {
   vclaimLog:     (params)        => api.get('/integrasi/bpjs/vclaim-log', { params }),
   antreanLog:    (params)        => api.get('/integrasi/bpjs/antrean-log', { params }),
   icareLog:      (params)        => api.get('/integrasi/bpjs/icare-log', { params }),
+  rmDashboard:   ()              => api.get('/integrasi/bpjs/rm-dashboard'),
+  rmLog:         (params)        => api.get('/integrasi/bpjs/rm-log', { params }),
 
   // VClaim live calls
   cekPeserta:    (data)          => api.post('/integrasi/vclaim/cek-peserta', data),
@@ -1391,6 +1404,10 @@ export const integrasiApi = {
   antreanBatal:      (data)      => api.post('/integrasi/antrean/batal', data),
   antreanDashboard:  (jenis, p)  => api.get(`/integrasi/antrean/dashboard/${jenis}`, { params: p }),
   validateBooking:   (data)      => api.post('/integrasi/antrean/validate-booking', data),
+  // Referensi HFIS-Antrean (didekripsi) untuk picker pemetaan — poli & dokter (kodedokter=DPJP)
+  antreanRefPoli:    ()          => api.get('/integrasi/antrean/ref-poli'),
+  antreanRefDokter:  ()          => api.get('/integrasi/antrean/ref-dokter'),
+  antreanJadwalHfis: (kodepoli, tanggal) => api.get(`/integrasi/antrean/jadwal-hfis/${kodepoli}/${tanggal}`),
 
   // Mapping Poli/DPJP BPJS (sinkron Jadwal Dokter)
   poliMapping:        ()         => api.get('/integrasi/bpjs/poli-mapping'),

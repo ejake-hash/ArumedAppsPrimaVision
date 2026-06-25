@@ -115,6 +115,27 @@ class IntegrasiController extends Controller
     }
 
     // =========================================================================
+    // BPJS — WS REKAM MEDIS (push RM → i-Care)
+    // =========================================================================
+
+    /** GET /integrasi/bpjs/rm-dashboard — statistik pengiriman rekam medis. */
+    public function rekamMedisDashboard(): JsonResponse
+    {
+        return $this->ok($this->service->rekamMedisDashboard());
+    }
+
+    /**
+     * GET /integrasi/bpjs/rm-log
+     * Query: status (SUCCESS|FAILED), tanggal, per_page
+     */
+    public function rekamMedisLog(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getRekamMedisLog(
+            $request->only(['status', 'tanggal', 'per_page'])
+        ));
+    }
+
+    // =========================================================================
     // INA-CBGs LOGS
     // =========================================================================
 
@@ -331,6 +352,40 @@ class IntegrasiController extends Controller
         $v = $request->validate(['booking_code' => 'required|string', 'tgl_periksa' => 'nullable|date_format:Y-m-d']);
 
         return $this->call(fn () => $this->service->antreanValidateBooking($v['booking_code'], $v['tgl_periksa'] ?? ''));
+    }
+
+    /** GET /integrasi/antrean/ref-pasien-fp/{jenis}/{noidentitas}  jenis: nik|noka */
+    public function antreanRefPasienFp(Request $request, string $jenis, string $noidentitas): JsonResponse
+    {
+        abort_unless(in_array($jenis, ['nik', 'noka'], true), 422, 'jenis harus nik atau noka');
+
+        return $this->call(fn () => $this->service->antreanRefPasienFingerprint($jenis, $noidentitas));
+    }
+
+    /** GET /integrasi/antrean/ref-poli — daftar poli HFIS-Antrean (untuk picker pemetaan). */
+    public function antreanRefPoli(): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanRefPoliHfis());
+    }
+
+    /** GET /integrasi/antrean/ref-dokter — daftar dokter HFIS-Antrean faskes ini (kodedokter). */
+    public function antreanRefDokter(): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanRefDokterHfis());
+    }
+
+    /** GET /integrasi/antrean/jadwal-hfis/{kodepoli}/{tanggal} — jadwal terdaftar di HFIS. */
+    public function antreanJadwalHfis(Request $request, string $kodepoli, string $tanggal): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanJadwalHfis($kodepoli, $tanggal));
+    }
+
+    /** POST /integrasi/antrean/by-booking  Body: { booking_code } */
+    public function antreanByBooking(Request $request): JsonResponse
+    {
+        $v = $request->validate(['booking_code' => 'required|string']);
+
+        return $this->call(fn () => $this->service->antreanByKodebooking($v['booking_code']));
     }
 
     // =========================================================================

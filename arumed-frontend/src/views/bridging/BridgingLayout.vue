@@ -16,6 +16,7 @@ const allTabs = [
   { to: '/bridging/vclaim',      label: 'VClaim',               icon: 'card' },
   // Antrean Online dipindah ke modul Jadwal Dokter → Pemetaan BPJS.
   { to: '/bridging/satusehat',   label: 'Satu Sehat',           icon: 'health' },
+  { to: '/bridging/rekam-medis', label: 'Rekam Medis BPJS',     icon: 'health' },
   { to: '/bridging/log',         label: 'Log Integrasi',        icon: 'list' },
 ]
 

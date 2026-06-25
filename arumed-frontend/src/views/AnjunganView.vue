@@ -44,20 +44,80 @@ const statusLabel = computed(() => {
   return 'Memeriksa Koneksi'
 })
 
+// ─── Bridging status (apakah Check-in BPJS/JKN mandiri aktif) ────────────────
+// Kartu BPJS di home aktif HANYA bila bridging Antrean BPJS aktif di backend.
+const bridgingAntrean = ref(false)
+async function fetchBridgingStatus() {
+  try {
+    const { data } = await anjunganApi.status()
+    bridgingAntrean.value = data?.data?.antrean_enabled === true
+  } catch {
+    bridgingAntrean.value = false // gagal cek → kartu tetap nonaktif (aman)
+  }
+}
+
 // ─── Screen state machine ───────────────────────────────────────────────────
 // 'home' | 'umum-loading' | 'umum-error' | 'ticket'
+// BPJS: 'bpjs-choice' | 'bpjs-booking' | 'bpjs-onsite' | 'bpjs-loading'
 const screen = ref('home')
-const ticket = ref(null) // { type, qNum, poli }
+const ticket = ref(null) // { type, qNum, poli, dokter, nomorantrean }
 const countdown = ref(15)
 let cdTimer = null
-const umumError = ref('')
+const umumError = ref('') // dipakai bersama untuk error UMUM & BPJS
 
-// ─── Numpad target (untuk extensibility — saat BPJS aktif, bind ke input) ──
-const activeInputRef = ref(null)
-const activeInputValue = ref('')
+// ─── BPJS input state (2 jalur) ──────────────────────────────────────────────
+// Jalur kode booking (scan/ketik) + jalur onsite (NIK + rujukan + pilih dokter).
+const bookingInput = ref('')      // kode booking / NIK / kartu (scan barcode = ketik+Enter)
+const onsiteNik = ref('')
+const onsiteRujukan = ref('')     // no rujukan (scan/ketik)
+const onsiteHp = ref('')          // no HP (wajib BPJS /antrean/add)
+const onsiteDoctor = ref('')      // doctor_schedule_id terpilih
+const doctors = ref([])
+const doctorsLoading = ref(false)
+const focusedField = ref('booking') // target numpad: 'booking' | 'nik' | 'rujukan'
+const bookingInputEl = ref(null)    // utk autofocus (scanner barcode → input)
+const onsiteNikEl = ref(null)
 
+// Numpad: bantu input digit (NIK/kartu) di kiosk layar-sentuh. Field alfanumerik
+// (kode booking / rujukan) tetap bisa via scanner/keyboard (mengetik ke input).
+function npAppend(s) {
+  if (umumError.value) umumError.value = ''
+  const f = focusedField.value
+  if (f === 'booking' && bookingInput.value.length < 24) bookingInput.value += s
+  else if (f === 'nik' && onsiteNik.value.length < 19) onsiteNik.value += s
+  else if (f === 'rujukan' && onsiteRujukan.value.length < 30) onsiteRujukan.value += s
+  else if (f === 'hp' && onsiteHp.value.length < 15) onsiteHp.value += s
+}
+function npBackspace() {
+  const f = focusedField.value
+  if (f === 'booking') bookingInput.value = bookingInput.value.slice(0, -1)
+  else if (f === 'nik') onsiteNik.value = onsiteNik.value.slice(0, -1)
+  else if (f === 'rujukan') onsiteRujukan.value = onsiteRujukan.value.slice(0, -1)
+  else if (f === 'hp') onsiteHp.value = onsiteHp.value.slice(0, -1)
+}
+function npClear() {
+  const f = focusedField.value
+  if (f === 'booking') bookingInput.value = ''
+  else if (f === 'nik') onsiteNik.value = ''
+  else if (f === 'rujukan') onsiteRujukan.value = ''
+  else if (f === 'hp') onsiteHp.value = ''
+}
+
+async function loadDoctors() {
+  doctorsLoading.value = true
+  try {
+    const { data } = await anjunganApi.dokterAktif()
+    doctors.value = Array.isArray(data?.data) ? data.data : []
+  } catch {
+    doctors.value = []
+  } finally {
+    doctorsLoading.value = false
+  }
+}
+
+const cdTotal = ref(15)
 // 2π × 42 ≈ 264 (stroke-dasharray circumference for r=42 in 100×100 viewBox)
-const arcOffset = computed(() => 264 * (1 - countdown.value / 15))
+const arcOffset = computed(() => 264 * (1 - countdown.value / cdTotal.value))
 
 // ─── UMUM flow ──────────────────────────────────────────────────────────────
 async function goUmum() {
@@ -107,6 +167,157 @@ async function goUmum() {
   }
 }
 
+// ─── BPJS / JKN flow ──────────────────────────────────────────────────────
+// Dua jalur: (1) kode booking Mobile JKN (+ scan), (2) ambil antrean onsite.
+// ONSITE DINONAKTIFKAN SEMENTARA: BPJS menolak WS Tambah Antrean (`add`) dengan
+// "API Versi 2" untuk faskes ini (menunggu klarifikasi/registrasi sisi BPJS).
+// Sampai itu beres, kiosk hanya melayani check-in via Kode Booking (Mobile JKN).
+// Cukup ubah ke true untuk mengaktifkan kembali setelah `add` jalan.
+const ONSITE_ENABLED = false
+
+function goBpjs() {
+  if (!bridgingAntrean.value) return
+  if (backendStatus.value === 'offline') {
+    umumError.value = 'Sistem sedang tidak terhubung. Silakan hubungi petugas loket.'
+    screen.value = 'umum-error'
+    return
+  }
+  umumError.value = ''
+  // Onsite nonaktif → langsung ke jalur Kode Booking (lewati layar pilihan).
+  if (!ONSITE_ENABLED) { chooseBooking(); return }
+  screen.value = 'bpjs-choice'
+}
+
+function chooseBooking() {
+  umumError.value = ''
+  bookingInput.value = ''
+  focusedField.value = 'booking'
+  screen.value = 'bpjs-booking'
+  nextTick(() => bookingInputEl.value?.focus())
+}
+
+// "Kembali" dari layar BPJS: ke layar pilihan bila onsite aktif, selain itu ke home.
+function backFromBpjs() {
+  if (ONSITE_ENABLED) { screen.value = 'bpjs-choice'; umumError.value = '' }
+  else resetHome()
+}
+
+function chooseOnsite() {
+  umumError.value = ''
+  onsiteNik.value = ''
+  onsiteRujukan.value = ''
+  onsiteHp.value = ''
+  onsiteDoctor.value = ''
+  focusedField.value = 'nik'
+  screen.value = 'bpjs-onsite'
+  loadDoctors()
+  nextTick(() => onsiteNikEl.value?.focus())
+}
+
+// Tiket sementara saat menunggu validasi sidik jari (antrean sudah terbit).
+const pendingTicket = ref(null)
+
+// Bungkus pemanggilan API + tampilkan tiket (dipakai kedua jalur).
+async function runBpjs(promise) {
+  umumError.value = ''
+  screen.value = 'bpjs-loading'
+  try {
+    const { data } = await promise
+    if (!data || data.success === false) {
+      throw new Error(data?.message ?? 'Permintaan gagal.')
+    }
+    const p = data.data ?? {}
+    const base = {
+      type: 'bpjs',
+      qNum: p.queue_number ?? p.nomorantrean ?? '—',
+      poli: p.namapoli ?? 'Poliklinik',
+      dokter: p.namadokter ?? '',
+      nomorantrean: p.nomorantrean ?? '',
+      kodebooking: p.kodebooking ?? '',
+    }
+
+    // Poli wajib sidik jari & belum tervalidasi → tahan SEP, minta FRISTA dulu.
+    if (p.fp_required) {
+      pendingTicket.value = base
+      umumError.value = ''
+      screen.value = 'bpjs-fingerprint'
+      return
+    }
+
+    showTicket(base, p)
+  } catch (err) {
+    umumError.value = err?.response?.data?.message
+                   ?? err?.message
+                   ?? 'Gagal memproses. Silakan hubungi petugas loket.'
+    screen.value = 'umum-error'
+  }
+}
+
+function showTicket(base, p) {
+  ticket.value = {
+    ...base,
+    sep: p.sep ?? null,          // { no_sep, tgl_sep, peserta, diagnosa, kelas }
+    sepError: p.sep_error ?? null,
+  }
+  screen.value = 'ticket'
+  nextTick(() => {
+    startCountdown()
+    triggerPrint()
+  })
+}
+
+// Setelah pasien validasi sidik jari di FRISTA → terbitkan SEP.
+async function lanjutFingerprint() {
+  if (!pendingTicket.value?.kodebooking) { resetHome(); return }
+  umumError.value = ''
+  screen.value = 'bpjs-loading'
+  try {
+    const { data } = await anjunganApi.terbitkanSep({ kodebooking: pendingTicket.value.kodebooking })
+    const p = data?.data ?? {}
+    if (p.fp_required) {
+      umumError.value = 'Sidik jari belum terdeteksi. Pastikan sudah berhasil di aplikasi FRISTA, lalu coba lagi.'
+      screen.value = 'bpjs-fingerprint'
+      return
+    }
+    showTicket(pendingTicket.value, p)
+  } catch (err) {
+    umumError.value = err?.response?.data?.message ?? err?.message ?? 'Gagal menerbitkan SEP.'
+    screen.value = 'bpjs-fingerprint'
+  }
+}
+
+// Jalur 1 — kode booking (atau NIK/kartu) dari Mobile JKN.
+function submitBooking() {
+  const val = bookingInput.value.trim()
+  if (val.length < 5) {
+    umumError.value = 'Scan atau ketik kode booking, NIK, atau No. Kartu BPJS.'
+    return
+  }
+  const payload =
+    /^\d{16}$/.test(val) ? { nik: val }
+    : /^\d{13}$/.test(val) ? { nomorkartu: val }
+    : { kodebooking: val }
+  runBpjs(anjunganApi.checkinBpjs(payload))
+}
+
+// Jalur 2 — ambil antrean onsite: NIK/kartu + no rujukan + pilih dokter.
+function submitOnsite() {
+  const nik = onsiteNik.value.trim()
+  const hp = onsiteHp.value.trim()
+  if (nik.length < 5) { umumError.value = 'Masukkan NIK atau No. Kartu BPJS.'; return }
+  if (hp.length < 8) { umumError.value = 'Masukkan No. HP (wajib untuk antrean BPJS).'; return }
+  if (!onsiteDoctor.value) { umumError.value = 'Pilih dokter tujuan terlebih dahulu.'; return }
+
+  // 16 digit → NIK, 13 digit → kartu BPJS (sama seperti backend).
+  const idField = /^\d{13}$/.test(nik) ? { nomorkartu: nik } : { nik }
+  runBpjs(anjunganApi.ambilAntreanBpjs({
+    doctor_schedule_id: onsiteDoctor.value,
+    ...idField,
+    nohp: hp,
+    nomorreferensi: onsiteRujukan.value.trim() || undefined,
+  }))
+}
+
 // ─── Print (thermal 80mm) ───────────────────────────────────────────────────
 function triggerPrint() {
   // window.print() men-trigger printer default OS. CSS @media print di-style
@@ -133,7 +344,9 @@ function reprintTicket() {
 // ─── Countdown auto-reset ───────────────────────────────────────────────────
 function startCountdown() {
   clearInterval(cdTimer) // jaga-jaga bila timer lama belum dibersihkan
-  countdown.value = 15
+  // Tiket BPJS dengan SEP butuh waktu baca lebih lama (data SEP di layar).
+  cdTotal.value = (ticket.value?.type === 'bpjs' && ticket.value?.sep) ? 30 : 15
+  countdown.value = cdTotal.value
   cdTimer = setInterval(() => {
     countdown.value--
     if (countdown.value <= 0) resetHome()
@@ -147,15 +360,21 @@ function resetHome() {
   ticket.value = null
   countdown.value = 15
   umumError.value = ''
-  activeInputValue.value = ''
-  activeInputRef.value = null
+  bookingInput.value = ''
+  onsiteNik.value = ''
+  onsiteRujukan.value = ''
+  onsiteHp.value = ''
+  onsiteDoctor.value = ''
+  pendingTicket.value = null
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(() => {
   clockTimer = setInterval(updateClock, 1000)
   pingBackend()
-  heartbeatTimer = setInterval(pingBackend, 30_000)
+  fetchBridgingStatus()
+  // Heartbeat: ping backend + segarkan status bridging (toggle di admin langsung terlihat).
+  heartbeatTimer = setInterval(() => { pingBackend(); fetchBridgingStatus() }, 30_000)
 })
 onUnmounted(() => {
   clearInterval(clockTimer)
@@ -205,9 +424,16 @@ onUnmounted(() => {
           <p class="welcome-sub">Pilih kategori kunjungan Anda untuk memulai</p>
         </div>
         <div class="choice-grid">
-          <!-- BPJS — disabled sementara, menunggu integrasi VClaim -->
-          <button class="choice-card bpjs-card disabled" disabled aria-disabled="true" title="Segera hadir — integrasi BPJS dalam proses">
-            <span class="cc-coming">Segera Hadir</span>
+          <!-- BPJS — aktif HANYA saat bridging Antrean BPJS aktif di backend -->
+          <button
+            class="choice-card bpjs-card"
+            :class="{ disabled: !bridgingAntrean }"
+            :disabled="!bridgingAntrean || backendStatus === 'offline'"
+            :aria-disabled="!bridgingAntrean"
+            :title="bridgingAntrean ? 'Check-in mandiri BPJS / JKN' : 'Segera hadir — bridging BPJS belum aktif'"
+            @click="goBpjs"
+          >
+            <span v-if="!bridgingAntrean" class="cc-coming">Segera Hadir</span>
             <div class="cc-icon">
               <svg viewBox="0 0 64 64" fill="none">
                 <rect x="6" y="14" width="52" height="36" rx="5" stroke="rgba(255,255,255,0.35)" stroke-width="2.5"/>
@@ -218,7 +444,9 @@ onUnmounted(() => {
             </div>
             <span class="cc-label">BPJS / JKN</span>
             <span class="cc-desc">Check-in mandiri dengan kode booking, kartu BPJS, atau NIK</span>
-            <span class="cc-badge muted">Integrasi VClaim Berjalan</span>
+            <span class="cc-badge" :class="bridgingAntrean ? '' : 'muted'">
+              {{ bridgingAntrean ? 'Check-in Antrean BPJS' : 'Integrasi VClaim Berjalan' }}
+            </span>
           </button>
 
           <button class="choice-card umum-card" @click="goUmum" :disabled="backendStatus === 'offline' || screen === 'umum-loading'">
@@ -235,7 +463,12 @@ onUnmounted(() => {
         </div>
 
         <p class="home-foot-hint">
-          Pasien BPJS sementara silakan menuju <strong>Loket Admisi</strong> untuk diproses petugas.
+          <template v-if="bridgingAntrean">
+            Pasien BPJS yang sudah mengambil antrean di <strong>Mobile JKN</strong> dapat check-in mandiri di sini.
+          </template>
+          <template v-else>
+            Pasien BPJS sementara silakan menuju <strong>Loket Admisi</strong> untuk diproses petugas.
+          </template>
         </p>
       </div>
 
@@ -247,6 +480,165 @@ onUnmounted(() => {
         <div class="load-dots">
           <span></span><span></span><span></span>
         </div>
+      </div>
+
+      <!-- BPJS CHOICE — 2 jalur -->
+      <div v-else-if="screen === 'bpjs-choice'" class="screen bpjs-screen">
+        <div class="bpjs-head">
+          <h2 class="bpjs-title">Check-in BPJS / JKN</h2>
+          <p class="bpjs-sub">Pilih cara pendaftaran Anda</p>
+        </div>
+        <div class="bpjs-choice-grid">
+          <button class="bpjs-opt" @click="chooseBooking">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 21v.01M21 14v.01M14 21v.01"/></svg>
+            <span class="bo-label">Punya Kode Booking</span>
+            <span class="bo-desc">Sudah ambil antrean di Mobile JKN — scan / ketik kode booking</span>
+          </button>
+          <button class="bpjs-opt" @click="chooseOnsite">
+            <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+            <span class="bo-label">Ambil Antrean Baru</span>
+            <span class="bo-desc">Belum punya antrean — masukkan NIK, no. rujukan, lalu pilih dokter</span>
+          </button>
+        </div>
+        <div class="bpjs-actions one">
+          <button class="ksk-btn sec" @click="resetHome">Kembali</button>
+        </div>
+      </div>
+
+      <!-- BPJS BOOKING — kode booking (scan/ketik) -->
+      <div v-else-if="screen === 'bpjs-booking'" class="screen bpjs-screen">
+        <div class="bpjs-head">
+          <h2 class="bpjs-title">Kode Booking</h2>
+          <p class="bpjs-sub"><strong>Scan barcode</strong> tiket atau ketik kode booking / NIK / No. Kartu</p>
+        </div>
+        <input
+          ref="bookingInputEl"
+          v-model="bookingInput"
+          class="np-input"
+          inputmode="text"
+          autocomplete="off"
+          placeholder="Scan / ketik di sini…"
+          @focus="focusedField = 'booking'"
+          @keyup.enter="submitBooking"
+        />
+        <p v-if="umumError" class="np-error">{{ umumError }}</p>
+        <div class="numpad">
+          <button v-for="n in [1,2,3,4,5,6,7,8,9]" :key="n" class="np-key" @click="npAppend(n)">{{ n }}</button>
+          <button class="np-key np-fn" @click="npClear">C</button>
+          <button class="np-key" @click="npAppend(0)">0</button>
+          <button class="np-key np-fn" @click="npBackspace" aria-label="Hapus">⌫</button>
+        </div>
+        <div class="bpjs-actions">
+          <button class="ksk-btn sec" @click="backFromBpjs">Kembali</button>
+          <button class="ksk-btn pri" :disabled="bookingInput.trim().length < 5" @click="submitBooking">Check-in</button>
+        </div>
+      </div>
+
+      <!-- BPJS ONSITE — NIK + rujukan + pilih dokter -->
+      <div v-else-if="screen === 'bpjs-onsite'" class="screen bpjs-screen wide">
+        <div class="bpjs-head">
+          <h2 class="bpjs-title">Ambil Antrean BPJS</h2>
+          <p class="bpjs-sub">Lengkapi data berikut lalu pilih dokter tujuan</p>
+        </div>
+
+        <div class="onsite-fields">
+          <label class="of-row">
+            <span class="of-label">NIK / No. Kartu BPJS</span>
+            <input
+              ref="onsiteNikEl"
+              v-model="onsiteNik"
+              class="np-input sm"
+              inputmode="numeric"
+              autocomplete="off"
+              placeholder="Scan / ketik NIK atau No. Kartu…"
+              @focus="focusedField = 'nik'"
+            />
+          </label>
+          <label class="of-row">
+            <span class="of-label">No. Rujukan <em>(opsional)</em></span>
+            <input
+              v-model="onsiteRujukan"
+              class="np-input sm"
+              inputmode="text"
+              autocomplete="off"
+              placeholder="Scan barcode rujukan / ketik…"
+              @focus="focusedField = 'rujukan'"
+            />
+          </label>
+          <label class="of-row">
+            <span class="of-label">No. HP <em>(wajib)</em></span>
+            <input
+              v-model="onsiteHp"
+              class="np-input sm"
+              inputmode="numeric"
+              autocomplete="off"
+              placeholder="08xxxxxxxxxx"
+              @focus="focusedField = 'hp'"
+            />
+          </label>
+        </div>
+
+        <div class="doctor-pick">
+          <span class="of-label">Pilih Dokter (praktek hari ini)</span>
+          <div v-if="doctorsLoading" class="dp-empty">Memuat jadwal dokter…</div>
+          <div v-else-if="doctors.length === 0" class="dp-empty">Belum ada dokter praktek hari ini.</div>
+          <div v-else class="dp-list">
+            <button
+              v-for="d in doctors"
+              :key="d.id"
+              class="dp-item"
+              :class="{ active: onsiteDoctor === d.id }"
+              :disabled="d.sisa_jkn === 0"
+              @click="onsiteDoctor = d.id"
+            >
+              <span class="dp-name">{{ d.nama_dokter }}</span>
+              <span class="dp-meta">{{ d.poliklinik }}<template v-if="d.room"> · {{ d.room }}</template></span>
+              <span class="dp-quota" :class="{ warn: d.hampir_penuh, full: d.sisa_jkn === 0 }">
+                {{ d.sisa_jkn === 0 ? 'Penuh' : `Sisa JKN: ${d.sisa_jkn ?? '—'}` }}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <p v-if="umumError" class="np-error">{{ umumError }}</p>
+        <div class="bpjs-actions">
+          <button class="ksk-btn sec" @click="backFromBpjs">Kembali</button>
+          <button class="ksk-btn pri" :disabled="onsiteNik.trim().length < 5 || !onsiteDoctor" @click="submitOnsite">Ambil Antrean</button>
+        </div>
+      </div>
+
+      <!-- BPJS FINGERPRINT — validasi sidik jari (FRISTA) sebelum SEP -->
+      <div v-else-if="screen === 'bpjs-fingerprint'" class="screen bpjs-screen">
+        <div class="bpjs-head">
+          <h2 class="bpjs-title">Validasi Sidik Jari</h2>
+          <p class="bpjs-sub">Poli ini wajib validasi sidik jari BPJS sebelum SEP diterbitkan</p>
+        </div>
+
+        <div class="fp-illu">
+          <svg viewBox="0 0 24 24"><path d="M12 11c0 3-1 5-1 7M9 9a3 3 0 015-2M6 12c0-4 3-7 7-6M7 19c1-2 1-4 1-6a4 4 0 018 0M17 19v-7a5 5 0 00-5-5"/></svg>
+        </div>
+
+        <ol class="fp-steps">
+          <li>Buka aplikasi <strong>FRISTA</strong> di komputer ini</li>
+          <li>Tempelkan jari sampai <strong>berhasil tervalidasi</strong></li>
+          <li>Kembali ke layar ini, tekan <strong>Lanjutkan</strong></li>
+        </ol>
+
+        <p v-if="umumError" class="np-error">{{ umumError }}</p>
+        <p class="fp-foot">Nomor antrean Anda sudah aman: <strong>{{ pendingTicket?.qNum }}</strong></p>
+
+        <div class="bpjs-actions">
+          <button class="ksk-btn sec" @click="resetHome">Nanti / ke Admisi</button>
+          <button class="ksk-btn pri" @click="lanjutFingerprint">Lanjutkan</button>
+        </div>
+      </div>
+
+      <!-- BPJS LOADING -->
+      <div v-else-if="screen === 'bpjs-loading'" class="screen center-screen">
+        <div class="load-ring"></div>
+        <h2 class="load-title">Memproses…</h2>
+        <p class="load-sub">Menghubungkan ke BPJS…</p>
+        <div class="load-dots"><span></span><span></span><span></span></div>
       </div>
 
       <!-- UMUM ERROR -->
@@ -271,7 +663,12 @@ onUnmounted(() => {
             <div class="tkt-sep-line"></div>
             <div class="tkt-body umum-body">
               <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
-              <p>Menuju <strong>Loket Admisi</strong><br/>untuk menyelesaikan pendaftaran</p>
+              <p v-if="ticket.type === 'bpjs'">
+                <strong>{{ ticket.poli }}</strong>
+                <template v-if="ticket.dokter"><br/>{{ ticket.dokter }}</template>
+                <template v-if="ticket.nomorantrean"><br/>Antrean BPJS: <strong>{{ ticket.nomorantrean }}</strong></template>
+              </p>
+              <p v-else>Menuju <strong>Loket Admisi</strong><br/>untuk menyelesaikan pendaftaran</p>
             </div>
             <div class="tkt-perf"></div>
           </div>
@@ -283,6 +680,25 @@ onUnmounted(() => {
           </div>
           <p class="ta-msg">Tiket berhasil diterbitkan</p>
           <p class="ta-hint">Silakan duduk — nama Anda akan dipanggil</p>
+
+          <!-- SEP (hanya tampil di layar, tidak dicetak) -->
+          <div v-if="ticket.type === 'bpjs' && ticket.sep" class="sep-card">
+            <div class="sep-head">
+              <span class="sep-badge">SEP Terbit</span>
+              <span class="sep-no">{{ ticket.sep.no_sep }}</span>
+            </div>
+            <div class="sep-rows">
+              <div v-if="ticket.sep.peserta"><span>Peserta</span><strong>{{ ticket.sep.peserta }}</strong></div>
+              <div v-if="ticket.sep.diagnosa"><span>Diagnosa</span><strong>{{ ticket.sep.diagnosa }}</strong></div>
+              <div v-if="ticket.sep.kelas"><span>Kelas</span><strong>Kelas {{ ticket.sep.kelas }}</strong></div>
+              <div v-if="ticket.sep.tgl_sep"><span>Tanggal</span><strong>{{ ticket.sep.tgl_sep }}</strong></div>
+            </div>
+            <p class="sep-note">SEP sudah terbit otomatis — langsung menuju ruang pemeriksaan, tidak perlu ke admisi.</p>
+          </div>
+          <div v-else-if="ticket.type === 'bpjs' && ticket.sepError" class="sep-card warn">
+            <span class="sep-badge warn">Lanjut ke Admisi</span>
+            <p class="sep-note">{{ ticket.sepError }}</p>
+          </div>
 
           <div class="cdown-wrap">
             <div class="cdown-ring">
@@ -334,8 +750,15 @@ onUnmounted(() => {
       <div class="pt-label">NOMOR ANTREAN</div>
       <div class="pt-num">{{ ticket.qNum }}</div>
       <div class="pt-rule"></div>
-      <div class="pt-dest">Menuju <strong>{{ ticket.poli }}</strong></div>
-      <div class="pt-note">untuk menyelesaikan pendaftaran</div>
+      <template v-if="ticket.type === 'bpjs'">
+        <div class="pt-dest"><strong>{{ ticket.poli }}</strong></div>
+        <div v-if="ticket.dokter" class="pt-note">{{ ticket.dokter }}</div>
+        <div v-if="ticket.nomorantrean" class="pt-note">Antrean BPJS: {{ ticket.nomorantrean }}</div>
+      </template>
+      <template v-else>
+        <div class="pt-dest">Menuju <strong>{{ ticket.poli }}</strong></div>
+        <div class="pt-note">untuk menyelesaikan pendaftaran</div>
+      </template>
       <div class="pt-time">{{ dateStr }} · {{ clock }}</div>
     </div>
   </Teleport>
@@ -564,6 +987,136 @@ onUnmounted(() => {
   50% { opacity: 1; }
 }
 
+/* ─── BPJS CHECK-IN SCREEN (numpad) ─── */
+.bpjs-screen {
+  max-width: 460px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1.1rem;
+}
+.bpjs-head { text-align: center; }
+.bpjs-title { font-family: 'Space Grotesk', serif; font-size: 34px; font-weight: 400; }
+.bpjs-sub { font-size: 15px; color: rgba(255, 255, 255, 0.55); margin-top: 0.35rem; }
+.bpjs-sub strong { color: var(--lm); font-weight: 600; }
+
+.np-error { text-align: center; font-size: 13.5px; color: #fca5a5; margin-top: -0.4rem; }
+
+.numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.7rem; }
+.np-key {
+  height: 64px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-family: 'Space Grotesk', serif;
+  font-size: 26px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.np-key:hover { background: rgba(56, 189, 248, 0.16); border-color: var(--lm); }
+.np-key:active { transform: scale(0.96); }
+.np-key.np-fn { font-size: 22px; color: rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.03); }
+
+/* Layar fingerprint (FRISTA) */
+.fp-illu { display: flex; justify-content: center; }
+.fp-illu svg { width: 72px; height: 72px; fill: none; stroke: var(--lm); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.fp-steps {
+  margin: 0 auto;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding-left: 1.4rem;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.fp-steps li { padding-left: 0.2rem; }
+.fp-steps strong { color: #fff; font-weight: 600; }
+.fp-foot { text-align: center; font-size: 13.5px; color: rgba(255, 255, 255, 0.5); }
+.fp-foot strong { color: var(--lm); font-family: 'Space Grotesk', serif; }
+
+.bpjs-actions { display: flex; gap: 0.8rem; margin-top: 0.3rem; }
+.bpjs-actions.one { justify-content: center; }
+.bpjs-actions .ksk-btn { height: 60px; }
+.bpjs-screen.wide { max-width: 620px; }
+
+/* Input teks (scanner barcode mengetik ke sini) */
+.np-input {
+  height: 64px;
+  width: 100%;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-family: 'Space Grotesk', serif;
+  font-size: 26px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.np-input::placeholder { font-family: 'Inter', sans-serif; font-size: 16px; letter-spacing: normal; color: rgba(255, 255, 255, 0.3); }
+.np-input:focus { border-color: var(--lm); }
+.np-input.sm { height: 54px; font-size: 21px; }
+
+/* Pilihan 2 jalur */
+.bpjs-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+.bpjs-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1.75rem 1.25rem;
+  min-height: 200px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  font-family: 'Inter', sans-serif;
+}
+.bpjs-opt:hover { background: rgba(56, 189, 248, 0.13); border-color: var(--lm); transform: translateY(-3px); }
+.bpjs-opt svg { width: 44px; height: 44px; fill: none; stroke: var(--lm); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; margin-bottom: 0.35rem; }
+.bo-label { font-size: 20px; font-weight: 600; }
+.bo-desc { font-size: 13.5px; color: rgba(255, 255, 255, 0.5); line-height: 1.45; }
+
+/* Form onsite */
+.onsite-fields { display: flex; flex-direction: column; gap: 0.85rem; }
+.of-row { display: flex; flex-direction: column; gap: 0.4rem; }
+.of-label { font-size: 13px; font-weight: 600; color: rgba(255, 255, 255, 0.65); letter-spacing: 0.02em; }
+.of-label em { font-style: normal; font-weight: 400; color: rgba(255, 255, 255, 0.4); }
+
+.doctor-pick { display: flex; flex-direction: column; gap: 0.5rem; }
+.dp-empty { font-size: 14px; color: rgba(255, 255, 255, 0.45); padding: 0.75rem; text-align: center; }
+.dp-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; max-height: 210px; overflow-y: auto; padding-right: 2px; }
+.dp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.7rem 0.9rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+  font-family: 'Inter', sans-serif;
+}
+.dp-item:hover:not(:disabled) { border-color: rgba(56, 189, 248, 0.5); }
+.dp-item.active { background: rgba(56, 189, 248, 0.16); border-color: var(--lm); }
+.dp-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.dp-name { font-size: 15px; font-weight: 600; }
+.dp-meta { font-size: 12px; color: rgba(255, 255, 255, 0.5); }
+.dp-quota { font-size: 11px; color: var(--lm); margin-top: 2px; }
+.dp-quota.warn { color: #fbbf24; }
+.dp-quota.full { color: #fca5a5; }
+
 /* ─── BUTTONS ─── */
 .ksk-btn {
   flex: 1;
@@ -670,6 +1223,32 @@ onUnmounted(() => {
 .ta-check.err svg { stroke: #fca5a5; }
 .ta-msg { font-family: 'Space Grotesk', serif; font-size: 28px; font-weight: 400; line-height: 1.2; }
 .ta-hint { font-size: 16px; color: rgba(255, 255, 255, 0.5); max-width: 280px; line-height: 1.5; margin-top: -0.5rem; }
+
+/* Kartu SEP di layar tiket (tidak dicetak) */
+.sep-card {
+  width: 320px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1.5px solid rgba(56, 189, 248, 0.35);
+  border-radius: 14px;
+  padding: 0.9rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.sep-card.warn { background: rgba(251, 191, 36, 0.08); border-color: rgba(251, 191, 36, 0.4); }
+.sep-head { display: flex; align-items: center; gap: 0.6rem; }
+.sep-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 20px;
+  background: rgba(56, 189, 248, 0.2); color: var(--lm); border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.sep-badge.warn { background: rgba(251, 191, 36, 0.18); color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
+.sep-no { font-family: 'Space Grotesk', serif; font-size: 18px; letter-spacing: 0.02em; color: #fff; }
+.sep-rows { display: flex; flex-direction: column; gap: 0.3rem; }
+.sep-rows > div { display: flex; justify-content: space-between; gap: 1rem; font-size: 13px; }
+.sep-rows span { color: rgba(255, 255, 255, 0.45); }
+.sep-rows strong { color: #fff; font-weight: 600; text-align: right; }
+.sep-note { font-size: 12.5px; color: rgba(255, 255, 255, 0.55); line-height: 1.45; }
 
 /* Countdown ring */
 .cdown-wrap { display: flex; align-items: center; gap: 1rem; }

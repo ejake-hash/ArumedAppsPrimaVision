@@ -8,6 +8,7 @@ import PatientAvatar from '@/components/common/PatientAvatar.vue'
 import PhotoCaptureModal from '@/components/common/PhotoCaptureModal.vue'
 import SignatureCaptureModal from '@/components/forms/signature/SignatureCaptureModal.vue'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
+import IcareModal from '@/components/bpjs/IcareModal.vue'
 import { admisiApi, integrasiApi } from '@/services/api'
 import { compressImageToUnder } from '@/utils/imageCompress'
 
@@ -430,6 +431,17 @@ watch(tableSearch, () => {
 /* ============================================================
    TOAST SYSTEM
    ============================================================ */
+
+// i-Care JKN viewer (riwayat pelayanan peserta) — modal consent + iframe.
+const icareOpen = ref(false)
+const icareVisitId = ref(null)
+const icareName = ref('')
+function openIcare(p) {
+  icareVisitId.value = p.visitId
+  icareName.value = p.name ?? ''
+  icareOpen.value = true
+}
+
 const toasts = ref([])
 let toastId = 0
 function toast(type, msg) {
@@ -2909,6 +2921,9 @@ onUnmounted(() => {
                 <button v-if="!p.walkIn" class="btn btn-secondary btn-icon" title="Cetak label pasien" aria-label="Cetak label pasien" @click="printLabel(p)">
                   <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
                 </button>
+                <button v-if="!p.walkIn && p.guarantor === 'BPJS'" class="btn btn-secondary btn-icon" title="Riwayat i-Care JKN (1 tahun, lintas faskes) — perlu persetujuan pasien" aria-label="Riwayat i-Care JKN" @click="openIcare(p)">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+                </button>
                 <button
                   v-if="p.walkIn"
                   class="btn btn-secondary btn-danger"
@@ -3070,6 +3085,9 @@ onUnmounted(() => {
                           </button>
                           <button class="btn btn-sm btn-secondary btn-icon" title="Cetak label pasien" aria-label="Cetak label pasien" @click="printLabel(p)">
                             <svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="6" rx="1"/><path d="M6 8h12v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8z"/><path d="M8 16v4h8v-4"/></svg>
+                          </button>
+                          <button v-if="!p.walkIn && p.guarantor === 'BPJS'" class="btn btn-sm btn-secondary btn-icon" title="Riwayat i-Care JKN (1 tahun, lintas faskes) — perlu persetujuan pasien" aria-label="Riwayat i-Care JKN" @click="openIcare(p)">
+                            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
                           </button>
                           <button
                             v-if="!p.walkIn"
@@ -5020,6 +5038,13 @@ onUnmounted(() => {
 
     <!-- ===================== FOTO PASIEN (kamera/upload) ===================== -->
     <PhotoCaptureModal v-model:open="photoModalOpen" :patient-name="form.name" @captured="onPhotoCaptured" />
+
+    <!-- ===================== i-Care JKN (consent + iframe) ===================== -->
+    <IcareModal
+      v-model:open="icareOpen"
+      :patient-name="icareName"
+      :loader="() => admisiApi.bpjs.icareRiwayat(icareVisitId)"
+    />
 
     <!-- ===================== TOASTS ===================== -->
     <div class="toast-wrap">

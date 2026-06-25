@@ -6,7 +6,9 @@ use App\Models\BpjsControlLetter;
 use App\Models\BpjsPoliMapping;
 use App\Models\BpjsReferralIn;
 use App\Models\BpjsReferralOut;
+use App\Models\BpjsRmLog;
 use App\Models\BpjsVClaimLog;
+use App\Models\Visit;
 use App\Models\DoctorSchedule;
 use App\Models\Icd10Code;
 use App\Models\Icd9Code;
@@ -186,6 +188,45 @@ class IntegrasiService
         }
 
         return $query->paginate($filters['per_page'] ?? 20);
+    }
+
+    // =========================================================================
+    // WS REKAM MEDIS LOGS + DASHBOARD
+    // =========================================================================
+
+    public function getRekamMedisLog(array $filters = []): LengthAwarePaginator
+    {
+        $query = BpjsRmLog::with('visit.patient')->orderByDesc('created_at');
+
+        if (! empty($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+        if (! empty($filters['tanggal'])) {
+            $query->whereDate('created_at', $filters['tanggal']);
+        }
+
+        return $query->paginate($filters['per_page'] ?? 20);
+    }
+
+    /**
+     * Statistik dashboard WS Rekam Medis BPJS:
+     *  - pengiriman sukses/gagal (total + hari ini)
+     *  - kunjungan BPJS terkirim vs belum (punya SEP, status RM null/FAILED).
+     */
+    public function rekamMedisDashboard(): array
+    {
+        $today = now()->toDateString();
+
+        return [
+            'sent_total'    => BpjsRmLog::where('status', 'SUCCESS')->count(),
+            'failed_total'  => BpjsRmLog::where('status', 'FAILED')->count(),
+            'today_sent'    => BpjsRmLog::where('status', 'SUCCESS')->whereDate('created_at', $today)->count(),
+            'today_failed'  => BpjsRmLog::where('status', 'FAILED')->whereDate('created_at', $today)->count(),
+            'visits_sent'   => Visit::where('bpjs_rm_status', 'SENT')->count(),
+            'visits_unsent' => Visit::whereNotNull('no_sep')
+                ->where(fn ($q) => $q->whereNull('bpjs_rm_status')->orWhere('bpjs_rm_status', 'FAILED'))
+                ->count(),
+        ];
     }
 
     // =========================================================================
@@ -662,6 +703,89 @@ class IntegrasiService
     public function antreanValidateBooking(string $bookingCode, string $tglPeriksa = ''): array
     {
         return $this->antrean->validateBookingCode($bookingCode, $tglPeriksa);
+    }
+
+    /** Referensi Pasien Fingerprint — apakah peserta wajib sidik jari. $jenis: nik|noka. */
+    public function antreanRefPasienFingerprint(string $jenis, string $noIdentitas): array
+    {
+        return $this->antrean->refPasienFingerprint($jenis, $noIdentitas);
+    }
+
+    /**
+     * Daftar poli HFIS-Antrean (ternormalisasi {kode,nama,...}) untuk picker Pemetaan.
+     * Sumber resmi yang dipakai antrean/add & jadwaldokter (per kdsubspesialis).
+     */
+    public function antreanRefPoliHfis(): array
+    {
+        $list = $this->extractAntreanList($this->antrean->refPoli());
+
+        return collect($list)->map(fn ($p) => [
+            'kode'           => (string) ($p['kdsubspesialis'] ?? $p['kdpoli'] ?? ''),
+            'nama'           => trim(($p['nmpoli'] ?? '') . (! empty($p['nmsubspesialis']) ? ' — ' . $p['nmsubspesialis'] : '')),
+            'kdpoli'         => (string) ($p['kdpoli'] ?? ''),
+            'kdsubspesialis' => (string) ($p['kdsubspesialis'] ?? ''),
+        ])->filter(fn ($r) => $r['kode'] !== '')->values()->all();
+    }
+
+    /**
+     * Jadwal dokter terdaftar di HFIS untuk satu kodepoli + tanggal (ternormalisasi).
+     * Dipakai admin untuk MEMBANDINGKAN jadwal SIMRS vs HFIS — jam praktek HARUS sama
+     * persis agar antrean/add tidak ditolak ("API Versi 2" = jadwal tak cocok HFIS).
+     */
+    public function antreanJadwalHfis(string $kodepoli, string $tanggal): array
+    {
+        $list = $this->extractAntreanList($this->antrean->refJadwalDokter($kodepoli, $tanggal));
+
+        return collect($list)->map(fn ($j) => [
+            'kodesubspesialis' => (string) ($j['kodesubspesialis'] ?? ''),
+            'namasubspesialis' => (string) ($j['namasubspesialis'] ?? ''),
+            'kodedokter'       => (string) ($j['kodedokter'] ?? ''),
+            'namadokter'       => (string) ($j['namadokter'] ?? ''),
+            'hari'             => $j['hari'] ?? null,
+            'namahari'         => (string) ($j['namahari'] ?? ''),
+            'jam'              => (string) ($j['jadwal'] ?? $j['jampraktek'] ?? ''),
+            'kapasitas'        => $j['kapasitaspasien'] ?? $j['kapasitas'] ?? null,
+            'libur'            => (int) ($j['libur'] ?? 0),
+        ])->values()->all();
+    }
+
+    /** Daftar dokter HFIS-Antrean faskes ini {kode=kodedokter, nama=namadokter}. */
+    public function antreanRefDokterHfis(): array
+    {
+        $list = $this->extractAntreanList($this->antrean->refDokter());
+
+        return collect($list)->map(fn ($d) => [
+            'kode' => (string) ($d['kodedokter'] ?? ''),
+            'nama' => (string) ($d['namadokter'] ?? ''),
+        ])->filter(fn ($r) => $r['kode'] !== '')->values()->all();
+    }
+
+    /** Ambil array list dari response Antrean (langsung list / {list:[]} / cari array pertama). */
+    private function extractAntreanList(array $result): array
+    {
+        $resp = $result['response'] ?? [];
+        if (! is_array($resp)) {
+            return [];
+        }
+        if (array_is_list($resp)) {
+            return $resp;
+        }
+        if (isset($resp['list']) && is_array($resp['list'])) {
+            return $resp['list'];
+        }
+        foreach ($resp as $v) {
+            if (is_array($v) && array_is_list($v)) {
+                return $v;
+            }
+        }
+
+        return [];
+    }
+
+    /** Antrean Per Kode Booking (monitoring) — detail antrean & task satu booking. */
+    public function antreanByKodebooking(string $bookingCode): array
+    {
+        return $this->antrean->getAntreanByKodebooking($bookingCode);
     }
 
     // =========================================================================

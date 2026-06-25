@@ -44,14 +44,28 @@ class BpjsAntreanService
     // REFERENSI ANTREAN
     // =========================================================================
 
-    /** GET /ref/poli */
-    public function refPoli(): array       { return $this->get('/ref/poli'); }
-    /** GET /ref/dokter */
-    public function refDokter(): array     { return $this->get('/ref/dokter'); }
-    /** GET /jadwaldokter/kodepoli/{poli}/tanggal/{tgl} (spec Antrol.md:73 — TANPA prefix /ref) */
-    public function refJadwalDokter(string $kodePoli, string $tanggal): array { return $this->get("/jadwaldokter/kodepoli/{$kodePoli}/tanggal/{$tanggal}"); }
-    /** GET /ref/poligigi */
-    public function refPoliFingerprint(): array { return $this->get('/ref/poli/fp'); }
+    // Referensi HFIS-Antrean balasannya TERENKRIPSI (AES + LZString) — sama seperti
+    // VClaim. Pakai getEnc() agar BpjsClient men-decrypt response ke array.
+    /** GET /ref/poli — daftar poli terdaftar di HFIS Antrean. */
+    public function refPoli(): array       { return $this->getEnc('/ref/poli'); }
+    /** GET /ref/dokter — daftar dokter terdaftar di HFIS Antrean (berikut kodedokter/DPJP). */
+    public function refDokter(): array     { return $this->getEnc('/ref/dokter'); }
+    /** GET /jadwaldokter/kodepoli/{poli}/tanggal/{tgl} — jadwal HFIS (response terenkripsi). */
+    public function refJadwalDokter(string $kodePoli, string $tanggal): array { return $this->getEnc("/jadwaldokter/kodepoli/{$kodePoli}/tanggal/{$tanggal}"); }
+    /** GET /ref/poli/fp — daftar poli yang wajib fingerprint (HFIS). */
+    public function refPoliFingerprint(): array { return $this->getEnc('/ref/poli/fp'); }
+
+    /**
+     * GET /ref/pasien/fp/identitas/{jenisidentitas}/noidentitas/{noidentitas}
+     * Cek apakah peserta termasuk kategori yang wajib perekaman/validasi sidik jari
+     * (Referensi Pasien Fingerprint — katalog Antrean 2.0).
+     *   $jenisIdentitas : 'nik' | 'noka'
+     *   $noIdentitas    : NIK (16) atau no kartu BPJS (13)
+     */
+    public function refPasienFingerprint(string $jenisIdentitas, string $noIdentitas): array
+    {
+        return $this->getEnc("/ref/pasien/fp/identitas/{$jenisIdentitas}/noidentitas/{$noIdentitas}");
+    }
 
     // =========================================================================
     // ANTREAN — ADD / UPDATE WAKTU / BATAL
@@ -132,6 +146,13 @@ class BpjsAntreanService
 
     /** POST /antrean/getlisttask — { kodebooking } daftar task waktu suatu booking. */
     public function getListWaktu(string $kodeBooking): array { return $this->post('/antrean/getlisttask', ['kodebooking' => $kodeBooking]); }
+
+    /**
+     * Antrean Per Kode Booking (monitoring) — detail antrean & alur task satu booking.
+     * Antrean RS BPJS tidak punya endpoint "by-kodebooking" tersendiri; getlisttask
+     * adalah sumber resmi data per-kodebooking (dipakai juga untuk validasi booking).
+     */
+    public function getAntreanByKodebooking(string $kodeBooking): array { return $this->getListWaktu($kodeBooking); }
 
     /** GET /dashboard/waktutunggu/tanggal/{tgl}/waktu/{rs|server} — dashboard wajib lapor harian. */
     public function dashboardWaktuTunggu(string $tanggal, string $waktu = 'rs'): array { return $this->get("/dashboard/waktutunggu/tanggal/{$tanggal}/waktu/{$waktu}"); }
@@ -218,6 +239,12 @@ class BpjsAntreanService
     private function get(string $path): array
     {
         return $this->client->request('GET', $path, null, encrypted: false, successCodes: self::SUCCESS_CODES);
+    }
+
+    /** GET untuk endpoint referensi HFIS yang balasannya TERENKRIPSI (AES + LZString). */
+    private function getEnc(string $path): array
+    {
+        return $this->client->request('GET', $path, null, encrypted: true, successCodes: self::SUCCESS_CODES);
     }
 
     private function post(string $path, array $body): array

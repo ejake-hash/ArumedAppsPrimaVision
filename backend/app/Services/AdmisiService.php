@@ -1888,8 +1888,22 @@ class AdmisiService
         // Kontrol (ada surat kontrol) → skdp.noSurat+skdp.kodeDPJP DAN dpjpLayan terisi
         // (mengosongkan dpjpLayan saat skdp terisi → "tujuanKunj tidak sesuai").
         $adaSuratKontrol = trim((string) $noSuratKontrol) !== '';
+
+        // Detail rujukan FKTP (sekali ambil) untuk jalur NORMAL: diagnosa, tanggal
+        // rujukan, & kode PPK perujuk. VClaim KINI mewajibkan ketiganya untuk SEP
+        // rujukan (dulu diturunkan otomatis dari noRujukan — terbukti via UAT:
+        // tanpa ppkRujukan → "Kode PPK.Rujukan Tidak Sesuai"; tglRujukan ≠ tanggal
+        // rujukan asli → "Tanggal rujukan tidak sesuai"). Kontrol/IGD tak memakainya.
+        $rujDetail = ['diag_kode' => '', 'diag_nama' => '', 'tgl_rujukan' => '', 'ppk_rujukan' => ''];
+        if (! $adaSuratKontrol && ! $isIgd && trim((string) $noRujukan) !== '') {
+            $rujDetail = $this->resolveRujukanDetail($noRujukan, $visit->id);
+        }
+
         $tujuanKunj      = '0';
-        $dpjpLayan       = $adaSuratKontrol ? ($kodeDpjp ?? '') : '';
+        // dpjpLayan: VClaim kini minta DPJP terisi untuk tujuanKunj '0' (normal &
+        // kontrol) — terbukti via UAT: dpjpLayan kosong → "dpjpLayan Tidak Sesuai".
+        // IGD (gawat darurat) tetap kosong.
+        $dpjpLayan       = $isIgd ? '' : ($kodeDpjp ?? '');
         $skdp            = $adaSuratKontrol
             ? ['noSurat' => $noSuratKontrol, 'kodeDPJP' => $kodeDpjp ?? '']
             : ['noSurat' => '', 'kodeDPJP' => ''];
@@ -1903,7 +1917,9 @@ class AdmisiService
         // Utk KONTROL (noRujukan dikosongkan, berbasis surat kontrol), BPJS tak bisa
         // menurunkannya → minta kode PPK eksplisit ("Kode PPK.Rujukan Tidak Sesuai").
         // Surat kontrol diterbitkan RS ini sendiri → ppkRujukan = kode faskes RS.
-        $ppkRujukanSep = $adaSuratKontrol ? $kodeFaskes : ($data['ppk_rujukan'] ?? '');
+        $ppkRujukanSep = $adaSuratKontrol
+            ? $kodeFaskes
+            : ($data['ppk_rujukan'] ?? ($rujDetail['ppk_rujukan'] ?: ''));
         // asalRujukan harus KONSISTEN dgn ppkRujukan: '1'=FKTP, '2'=Faskes Lanjutan (FKRTL).
         // Kontrol berbasis surat kontrol terbitan RS (FKRTL) → asalRujukan '2' (kalau tetap
         // '1'/FKTP sementara ppkRujukan=kode RS → "Kode PPK.Rujukan Tidak Sesuai"). IGD tetap
@@ -1926,14 +1942,15 @@ class AdmisiService
         // tanpa fallback ini diagAwal selalu kosong → SEP gagal. Untuk IGD (asalRujukan
         // '2', tanpa rujukan FKTP) diagnosa wajib diisi manual lewat alur IGD.
         $diagAwal = trim((string) ($data['diag_awal'] ?? $visit->diagnosa_awal ?? ''));
-        if ($diagAwal === '' && $noRujukan !== '' && ! $isIgd) {
-            $resolved = $this->resolveDiagnosaFromRujukan($noRujukan, $visit->id);
-            if ($resolved['kode'] !== '') {
-                $diagAwal = $resolved['kode'];
+        if ($diagAwal === '' && trim((string) $noRujukan) !== '' && ! $isIgd) {
+            // Reuse detail rujukan yang sudah ditarik; bila belum, tarik di sini.
+            $resolved = $rujDetail['diag_kode'] !== '' ? $rujDetail : $this->resolveRujukanDetail($noRujukan, $visit->id);
+            if (($resolved['diag_kode'] ?? '') !== '') {
+                $diagAwal = $resolved['diag_kode'];
                 // Persist supaya tampil di Detail Kunjungan & tak perlu tarik ulang.
                 $visit->forceFill([
-                    'diagnosa_awal'      => $resolved['kode'],
-                    'diagnosa_awal_nama' => $resolved['nama'] ?: $visit->diagnosa_awal_nama,
+                    'diagnosa_awal'      => $resolved['diag_kode'],
+                    'diagnosa_awal_nama' => ($resolved['diag_nama'] ?? '') ?: $visit->diagnosa_awal_nama,
                 ])->save();
             }
         }
@@ -1949,7 +1966,7 @@ class AdmisiService
             'noMR'         => $visit->patient?->no_rm ?? '',
             'rujukan'      => [
                 'asalRujukan' => $asalRujukan, // 1=FKTP, 2=gawat darurat (IGD)
-                'tglRujukan'  => $data['tgl_rujukan'] ?? now('Asia/Jakarta')->toDateString(),
+                'tglRujukan'  => $data['tgl_rujukan'] ?? ($rujDetail['tgl_rujukan'] ?: now('Asia/Jakarta')->toDateString()),
                 'noRujukan'   => $noRujukanSep,
                 'ppkRujukan'  => $ppkRujukanSep,
             ],
@@ -2378,6 +2395,40 @@ class AdmisiService
      * pemanggil menentukan apakah jadi error keras (Detail Kunjungan) atau diam
      * (auto-resolve saat terbit SEP). Tak melempar.
      */
+    /**
+     * Ambil detail rujukan FKTP dari VClaim untuk penyusunan SEP: diagnosa awal,
+     * tanggal rujukan asli (tglKunjungan), & kode PPK perujuk (provPerujuk.kode).
+     * Ketiganya kini wajib di SEP rujukan normal. Best-effort: gagal → field kosong.
+     */
+    private function resolveRujukanDetail(string $noRujukan, ?string $visitId = null): array
+    {
+        $empty = ['diag_kode' => '', 'diag_nama' => '', 'tgl_rujukan' => '', 'ppk_rujukan' => ''];
+        if (trim($noRujukan) === '') {
+            return $empty;
+        }
+        try {
+            $res = $this->vclaim->checkRujukanFktp($noRujukan, $visitId);
+            $rj  = $res['response']['rujukan'] ?? null;
+            if (is_array($rj) && array_is_list($rj)) {
+                $rj = $rj[0] ?? null;
+            }
+            if (! is_array($rj)) {
+                return $empty;
+            }
+            $diag = $rj['diagnosa'] ?? [];
+            $prov = $rj['provPerujuk'] ?? $rj['faskesPerujuk'] ?? [];
+
+            return [
+                'diag_kode'   => trim((string) ($diag['kode'] ?? $diag['kdDiag'] ?? '')),
+                'diag_nama'   => trim((string) ($diag['nama'] ?? $diag['nmDiag'] ?? '')),
+                'tgl_rujukan' => trim((string) ($rj['tglKunjungan'] ?? $rj['tglRujukan'] ?? '')),
+                'ppk_rujukan' => trim((string) ($prov['kode'] ?? '')),
+            ];
+        } catch (\Throwable $e) {
+            return $empty;
+        }
+    }
+
     private function resolveDiagnosaFromRujukan(string $noRujukan, ?string $visitId = null): array
     {
         $empty = ['kode' => '', 'nama' => ''];

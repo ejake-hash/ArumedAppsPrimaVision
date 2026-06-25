@@ -116,30 +116,22 @@ async function ensureSpesialis() {
 const refModal = reactive({ open: false, jenis: 'poli', q: '', loading: false, rows: [], target: null, spesialis: '', jnsPelayanan: '2', tgl: todayWib() })
 function openRef(jenis, target) {
   refModal.open = true; refModal.jenis = jenis; refModal.target = target; refModal.q = ''; refModal.rows = []
-  refModal.spesialis = ''; refModal.jnsPelayanan = '2'; refModal.tgl = todayWib()
-  if (jenis === 'dokter') ensureSpesialis()
+  searchRef() // muat daftar HFIS-Antrean langsung
 }
+// Picker poli/DPJP kini ambil dari referensi HFIS-Antrean (didekripsi di backend):
+//   poli   → /antrean/ref-poli   ({ kode = kdsubspesialis|kdpoli, nama })
+//   dokter → /antrean/ref-dokter ({ kode = kodedokter, nama }) — hanya faskes ini
+// Penyaringan dilakukan di sisi klien (pickerRows) — tak perlu pilih spesialistik lagi.
 async function searchRef() {
   refModal.loading = true; refModal.rows = []
   try {
-    let res
-    if (refModal.jenis === 'dokter') {
-      // Pakai endpoint DPJP resmi (spesialis + jenis pelayanan + tgl), BUKAN
-      // /referensi/dokter/{nama} yang tak ada di VClaim → selalu "data tidak ada".
-      if (!refModal.spesialis) { flash(false, 'Pilih spesialistik dulu'); return }
-      res = await integrasiApi.referensi('dpjp', { jnsPelayanan: refModal.jnsPelayanan, tglPelayanan: refModal.tgl, spesialis: refModal.spesialis })
-    } else {
-      res = await integrasiApi.referensi(refModal.jenis, { q: refModal.q.trim() })
-    }
-    const bpjs = res.data?.data ?? {}
-    if (!bpjs.is_success) { flash(false, bpjs.metaData?.message || 'Pencarian gagal'); return }
-    const d = bpjs.response ?? {}
-    // BPJS membungkus daftar di key berbeda per jenis (poli→response.poli,
-    // dokter→response.dokter/list, dst). Ambil array pertama yg ditemukan
-    // supaya tak bergantung nama key (dulu hanya cek list/poli → dokter kosong).
-    refModal.rows = Array.isArray(d) ? d : (Object.values(d).find((v) => Array.isArray(v)) ?? [])
+    const res = refModal.jenis === 'dokter'
+      ? await integrasiApi.antreanRefDokter()
+      : await integrasiApi.antreanRefPoli()
+    refModal.rows = Array.isArray(res.data?.data) ? res.data.data : []
+    if (!refModal.rows.length) flash(false, 'Referensi HFIS kosong / belum tersetting di HFIS.')
   } catch (e) {
-    flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Referensi gagal'))
+    flash(false, (e.response?.status === 503 ? '⚠ ' : '') + (e.response?.data?.message ?? 'Referensi HFIS gagal'))
   } finally {
     refModal.loading = false
   }
@@ -160,8 +152,12 @@ function isLikelyMatch(it) {
 }
 // Untuk dokter: kandidat yang cocok diangkat ke atas; jenis lain apa adanya.
 const pickerRows = computed(() => {
-  if (refModal.jenis !== 'dokter') return refModal.rows
-  return [...refModal.rows].sort((x, y) => (isLikelyMatch(y) ? 1 : 0) - (isLikelyMatch(x) ? 1 : 0))
+  const q = refModal.q.trim().toLowerCase()
+  let rows = q
+    ? refModal.rows.filter((r) => (r.nama ?? '').toLowerCase().includes(q) || String(r.kode ?? '').toLowerCase().includes(q))
+    : refModal.rows
+  if (refModal.jenis === 'dokter') rows = [...rows].sort((x, y) => (isLikelyMatch(y) ? 1 : 0) - (isLikelyMatch(x) ? 1 : 0))
+  return rows
 })
 
 function pickRef(it) {
@@ -274,6 +270,24 @@ async function doSync() {
   }
 }
 
+// ── Viewer Jadwal HFIS (bandingkan jam SIMRS vs HFIS — cegah "API Versi 2") ──
+// "API Versi 2" pada antrean/add = kombinasi dokter+jam tak ditemukan di jadwal
+// HFIS. Panel ini menampilkan jadwal yang BENAR-BENAR terdaftar di HFIS agar admin
+// menyamakan jam praktek di SIMRS sebelum sinkron.
+const hfis = reactive({ kodepoli: 'MAT', tanggal: todayWib(), loading: false, rows: [], searched: false })
+async function loadHfisJadwal() {
+  if (!hfis.kodepoli.trim()) { flash(false, 'Isi kode poli BPJS (mis. MAT)'); return }
+  hfis.loading = true; hfis.rows = []; hfis.searched = true
+  try {
+    const res = await integrasiApi.antreanJadwalHfis(hfis.kodepoli.trim(), hfis.tanggal)
+    hfis.rows = Array.isArray(res.data?.data) ? res.data.data : []
+  } catch (e) {
+    flash(false, e.response?.data?.message ?? 'Gagal memuat jadwal HFIS')
+  } finally {
+    hfis.loading = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -372,6 +386,33 @@ onMounted(load)
                 </ul>
               </div>
             </div>
+
+            <!-- Viewer jadwal HFIS (read-only) untuk membandingkan jam -->
+            <div class="hfis-view">
+              <p class="hint" style="margin-top:1rem">
+                <strong>Jadwal terdaftar di HFIS.</strong> Pastikan <b>jam praktek di SIMRS sama persis</b> dengan ini —
+                kalau berbeda, antrean onsite ditolak <code>"API Versi 2"</code>.
+              </p>
+              <div class="form-row" style="flex-wrap:wrap">
+                <input v-model="hfis.kodepoli" class="inp" style="flex:0 0 auto;width:110px" placeholder="kodepoli (MAT)" />
+                <input v-model="hfis.tanggal" type="date" class="inp" style="flex:0 0 auto;width:auto" />
+                <button class="btn primary" :disabled="hfis.loading" @click="loadHfisJadwal">{{ hfis.loading ? '…' : 'Lihat Jadwal HFIS' }}</button>
+              </div>
+              <table v-if="hfis.rows.length" class="bm-tbl">
+                <thead><tr><th>Dokter</th><th>Kode</th><th>Subspesialis</th><th>Hari</th><th>Jam (HFIS)</th><th>Kuota</th></tr></thead>
+                <tbody>
+                  <tr v-for="(j, i) in hfis.rows" :key="i">
+                    <td>{{ j.namadokter }}</td>
+                    <td><code>{{ j.kodedokter }}</code></td>
+                    <td>{{ j.kodesubspesialis }} · {{ j.namasubspesialis }}</td>
+                    <td>{{ j.namahari }}</td>
+                    <td><strong>{{ j.jam }}</strong></td>
+                    <td>{{ j.libur ? 'LIBUR' : j.kapasitas }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else-if="hfis.searched && !hfis.loading" class="hint">Tidak ada jadwal di HFIS untuk poli &amp; tanggal itu.</p>
+            </div>
           </template>
 
           <!-- REFERENSI BPJS (lookup kamus kode — dipindah dari tab VClaim) -->
@@ -457,42 +498,34 @@ onMounted(load)
           <button class="bm-close" @click="refModal.open = false">✕</button>
         </div>
         <div class="bm-body">
-          <template v-if="refModal.jenis === 'dokter'">
-            <div v-if="refModal.target" class="match-for">
-              Mencocokkan untuk: <strong>{{ refModal.target.name }}</strong>
-              <span v-if="refModal.target.sip" class="sub">{{ refModal.target.sip }}</span>
-            </div>
-            <p class="hint">VClaim tak punya cari dokter by-nama. Pilih spesialistik → daftar DPJP muncul, lalu klik "Pilih". Baris yang namanya mirip ditandai &amp; diangkat ke atas.</p>
-            <div class="form-row" style="flex-wrap:wrap">
-              <select v-model="refModal.spesialis" class="inp">
-                <option value="">— Pilih Spesialistik —</option>
-                <option v-for="(s, i) in spesialisList" :key="i" :value="speKode(s)">{{ speKode(s) }} — {{ speNama(s) }}</option>
-              </select>
-              <select v-model="refModal.jnsPelayanan" class="inp" style="flex:0 0 auto;width:auto">
-                <option value="2">Rawat Jalan</option>
-                <option value="1">Rawat Inap</option>
-              </select>
-              <input v-model="refModal.tgl" type="date" class="inp" style="flex:0 0 auto;width:auto" />
-              <button class="btn primary" :disabled="refModal.loading || !refModal.spesialis" @click="searchRef">{{ refModal.loading ? '…' : 'Cari DPJP' }}</button>
-            </div>
-          </template>
-          <div v-else class="form-row">
-            <input v-model="refModal.q" class="inp" placeholder="kata kunci…" @keyup.enter="searchRef" autofocus />
-            <button class="btn primary" :disabled="refModal.loading" @click="searchRef">{{ refModal.loading ? '…' : 'Cari' }}</button>
+          <div v-if="refModal.jenis === 'dokter' && refModal.target" class="match-for">
+            Mencocokkan untuk: <strong>{{ refModal.target.name }}</strong>
+            <span v-if="refModal.target.sip" class="sub">{{ refModal.target.sip }}</span>
           </div>
-          <table v-if="refModal.rows.length" class="bm-tbl">
+          <p class="hint">
+            {{ refModal.jenis === 'dokter'
+              ? 'Daftar dokter terdaftar di HFIS faskes ini (kode = DPJP). Baris dengan nama mirip ditandai & diangkat ke atas.'
+              : 'Daftar poli/subspesialis terdaftar di HFIS. Ketik untuk menyaring, lalu klik "Pilih".' }}
+          </p>
+          <div class="form-row">
+            <input v-model="refModal.q" class="inp" placeholder="ketik untuk menyaring…" autofocus />
+            <button class="btn primary" :disabled="refModal.loading" @click="searchRef">{{ refModal.loading ? '…' : 'Muat ulang' }}</button>
+          </div>
+          <p v-if="refModal.loading" class="hint">Memuat dari HFIS…</p>
+          <table v-else-if="pickerRows.length" class="bm-tbl">
             <thead><tr><th>Kode</th><th>Nama</th><th></th></tr></thead>
             <tbody>
               <tr v-for="(it, i) in pickerRows" :key="i" :class="{ 'row-match': isLikelyMatch(it) }">
-                <td><code>{{ it.kode ?? it.kodeDokter ?? it.kodePoli }}</code></td>
+                <td><code>{{ it.kode }}</code></td>
                 <td>
-                  {{ it.nama ?? it.namaDokter ?? it.namaPoli }}
+                  {{ it.nama }}
                   <span v-if="isLikelyMatch(it)" class="match-badge" title="Nama mirip dokter yang dipilih">≈ cocok</span>
                 </td>
                 <td><button class="btn ghost" @click="pickRef(it)">Pilih</button></td>
               </tr>
             </tbody>
           </table>
+          <p v-else class="hint">Tidak ada hasil.</p>
         </div>
       </div>
     </div>

@@ -32,6 +32,14 @@ class IntegrationConfigSeeder extends Seeder
                 'notes'         => 'BPJS iCare — Riwayat pelayanan & utilisasi peserta',
             ],
             [
+                'system_name'   => 'REKAM_MEDIS',
+                'base_url'      => 'https://apijkn-dev.bpjs-kesehatan.go.id',
+                // service family 'ihs' (sama i-Care). kode_faskes (PPK) dipakai sbg
+                // koders saat enkripsi dataMR; kosong → fallback VCLAIM/ClinicProfile.
+                'configuration' => ['service_name' => 'ihs_dev', 'kode_faskes' => '', 'timeout' => 60],
+                'notes'         => 'BPJS WS Rekam Medis — Insert RME (eclaim/rekammedis/insert) → mengisi i-Care',
+            ],
+            [
                 'system_name'   => 'LUPIS',
                 'base_url'      => null,
                 'configuration' => null,

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\Bpjs\BpjsRekamMedisService;
+use App\Services\BpjsIcareService;
 use App\Services\DokterService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -908,6 +910,39 @@ class DokterController extends Controller
         }
 
         return $this->ok($letter, "Surat Kontrol terbit. No: {$letter->no_surat_kontrol}");
+    }
+
+    /**
+     * POST /dokter/kunjungan/{visitId}/icare-riwayat
+     * Ambil URL viewer riwayat pelayanan i-Care peserta (wajib informed consent
+     * pasien di sisi UI). Token URL sekali pakai → generate on-demand.
+     */
+    public function icareRiwayat(string $visitId, BpjsIcareService $icare): JsonResponse
+    {
+        try {
+            $data = $icare->riwayatForVisit($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data, 'Riwayat i-Care siap dibuka');
+    }
+
+    /**
+     * POST /dokter/kunjungan/{visitId}/rm-bpjs  Body: { force?: bool }
+     * Kirim rekam medis kunjungan ke BPJS (WS Rekam Medis → mengisi i-Care).
+     */
+    public function kirimRekamMedisBpjs(string $visitId, Request $request, BpjsRekamMedisService $rm): JsonResponse
+    {
+        try {
+            $data = $rm->insertForVisit($visitId, $request->boolean('force'));
+        } catch (\RuntimeException $e) {
+            return $this->error($e->getMessage(), $e->getCode() === 503 ? 503 : 422);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($data, 'Rekam medis terkirim ke BPJS');
     }
 
     // =========================================================================

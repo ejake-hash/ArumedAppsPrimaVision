@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\DoctorSchedule;
 use App\Models\Patient;
 use App\Services\AdmisiService;
+use App\Services\BpjsIcareService;
 use App\Services\SatusehatService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -460,6 +461,98 @@ class AdmisiController extends Controller
         return $this->ok($result, 'Tiket umum diterbitkan', 201);
     }
 
+    /**
+     * GET /anjungan/status — flag bridging untuk kiosk (publik, non-sensitif).
+     * Dipakai AnjunganView untuk mengaktifkan kartu Check-in BPJS/JKN saat
+     * bridging Antrean BPJS aktif.
+     */
+    public function anjunganStatus(): JsonResponse
+    {
+        return $this->ok([
+            'antrean_enabled' => app(\App\Services\BpjsAntreanService::class)->isEnabled(),
+        ], 'Status anjungan');
+    }
+
+    /**
+     * POST /anjungan/checkin-bpjs — check-in mandiri kiosk (Anjungan Mandiri).
+     * Body: { kodebooking? | nik? | nomorkartu? } (salah satu wajib).
+     * Resolusi booking → buat Visit + antrean + lapor task 3 → balik data cetak.
+     */
+    public function anjunganCheckinBpjs(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'kodebooking' => 'nullable|string|max:32',
+            'nik'         => 'nullable|string|max:20',
+            'nomorkartu'  => 'nullable|string|max:20',
+        ]);
+
+        if (empty($v['kodebooking']) && empty($v['nik']) && empty($v['nomorkartu'])) {
+            return $this->error('Masukkan kode booking, NIK, atau nomor kartu BPJS.', 422);
+        }
+
+        $res = app(\App\Services\AntrolMobileService::class)->kioskCheckin($v);
+        if (($res['code'] ?? 201) !== 200) {
+            return $this->error($res['message'] ?? 'Check-in gagal.', 422);
+        }
+
+        return $this->ok($res['response'], $res['message'] ?? 'Check-in berhasil', 201);
+    }
+
+    /**
+     * POST /anjungan/ambil-antrean-bpjs — ambil antrean onsite (walk-in BPJS).
+     * Body: { doctor_schedule_id, nik? | nomorkartu?, nomorreferensi? }.
+     * Untuk pasien lama; hit BPJS /antrean/add lalu lapor task. Pasien baru → admisi.
+     */
+    public function anjunganAmbilAntreanBpjs(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'doctor_schedule_id' => 'required|uuid',
+            'nik'                => 'nullable|string|max:20',
+            'nomorkartu'         => 'nullable|string|max:20',
+            'nomorreferensi'     => 'nullable|string|max:40',
+            'nohp'               => 'nullable|string|max:20',
+        ]);
+
+        if (empty($v['nik']) && empty($v['nomorkartu'])) {
+            return $this->error('Masukkan NIK atau nomor kartu BPJS.', 422);
+        }
+
+        $res = app(\App\Services\AntrolMobileService::class)->kioskAmbilOnsite($v);
+        if (($res['code'] ?? 201) !== 200) {
+            return $this->error($res['message'] ?? 'Gagal mengambil antrean.', 422);
+        }
+
+        return $this->ok($res['response'], $res['message'] ?? 'Antrean berhasil diambil', 201);
+    }
+
+    /**
+     * POST /anjungan/terbitkan-sep — terbitkan SEP setelah validasi sidik jari (FRISTA).
+     * Body: { kodebooking }. Mengulang gate fingerprint; SEP terbit bila sudah valid.
+     */
+    public function anjunganTerbitkanSep(Request $request): JsonResponse
+    {
+        $v = $request->validate(['kodebooking' => 'required|string|max:32']);
+
+        $res = app(\App\Services\AntrolMobileService::class)->kioskTerbitkanSep($v);
+        if (($res['code'] ?? 201) !== 200) {
+            return $this->error($res['message'] ?? 'Gagal menerbitkan SEP.', 422);
+        }
+
+        return $this->ok($res['response'], $res['message'] ?? 'OK', 200);
+    }
+
+    /**
+     * GET /anjungan/dokter-aktif — daftar dokter praktek hari ini untuk pilihan
+     * onsite di kiosk (publik, non-sensitif — sama dengan panel Antrean TV).
+     */
+    public function anjunganDokterAktif(): JsonResponse
+    {
+        return $this->ok(
+            app(\App\Services\JadwalDokterService::class)->getAktifHariIni(),
+            'Dokter aktif hari ini'
+        );
+    }
+
     // =========================================================================
     // DAFTARKAN WALK-IN
     // =========================================================================
@@ -670,6 +763,26 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($data, 'Data peserta BPJS');
+    }
+
+    /**
+     * POST /admisi/bpjs/icare-riwayat  Body: { visit_id }
+     * Ambil URL viewer riwayat pelayanan i-Care peserta (wajib informed consent
+     * pasien di sisi UI). Token URL sekali pakai → generate on-demand.
+     */
+    public function bpjsIcareRiwayat(Request $request, BpjsIcareService $icare): JsonResponse
+    {
+        $v = $request->validate([
+            'visit_id' => 'required|uuid|exists:visits,id',
+        ]);
+
+        try {
+            $data = $icare->riwayatForVisit($v['visit_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Riwayat i-Care siap dibuka');
     }
 
     public function bpjsGenerateSep(Request $request): JsonResponse
