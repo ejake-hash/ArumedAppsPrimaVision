@@ -2096,7 +2096,7 @@ async function saveAudioDefaults() {
             <div class="dc-poli">{{ c.poli }}<span v-if="c.room" class="dc-room"> · R{{ c.room }}</span></div>
             <div :class="['dc-num', { muted: !c.calledNum }]">{{ c.calledNum || '—' }}</div>
             <div v-if="c.dokter" class="dc-dokter">{{ c.dokter }}</div>
-            <div class="dc-wait">{{ c.waitingCount }} menunggu<span v-if="c.nextNum"> · brkt {{ c.nextNum }}</span></div>
+            <div class="dc-wait">{{ c.waitingCount }} menunggu<span v-if="c.nextNum"> · berikutnya {{ c.nextNum }}</span></div>
           </div>
         </div>
       </div>
