@@ -524,6 +524,9 @@ Route::prefix('v1')->group(function () {
             Route::delete('/jadwal/{id}',                   [BedahController::class, 'deleteJadwal'])->middleware('permission:bedah.write');
             Route::put('/jadwal/{id}/mulai',                [BedahController::class, 'mulaiOperasi'])->middleware('permission:bedah.write');
             Route::put('/jadwal/{id}/selesai',              [BedahController::class, 'selesaiOperasi'])->middleware('permission:bedah.write');
+            // Batal bedah (sebelum operasi mulai) + disposisi POLI/RANAP/KASIR.
+            Route::put('/jadwal/{id}/batal',                [BedahController::class, 'batalBedah'])->middleware('permission:bedah.write');
+            Route::get('/poli-targets',                     [BedahController::class, 'poliTargets']);
 
             // 1-klik request BHP/IOL dari komposisi paket bedah (preview + kirim).
             Route::get('/jadwal/{id}/auto-request/preview', [BedahController::class, 'previewAutoRequest']);

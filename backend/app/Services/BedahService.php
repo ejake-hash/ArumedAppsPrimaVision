@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\BhpItem;
 use App\Models\DoctorExamination;
+use App\Models\DoctorSchedule;
 use App\Models\DocumentTemplate;
 use App\Models\Icd10Code;
 use App\Models\DocumentType;
@@ -428,6 +429,185 @@ class BedahService
                 $this->queueService->releaseUnscheduledBedah($visit);
             }
         }
+    }
+
+    // =========================================================================
+    // BATAL BEDAH — operasi dibatalkan SEBELUM dimulai (status MENUNGGU)
+    // =========================================================================
+
+    /**
+     * Disposisi tujuan saat operasi dibatalkan:
+     *   POLI  — kembali ke antrean DOKTER (konsul ulang / jadwal ulang). Kunjungan
+     *           yang SAMA di-route ulang (1 kunjungan / 1 tagihan).
+     *   RANAP — kembali ke rawat inap. Auto: pasien yang sudah punya bed aktif kembali
+     *           ke kamar (RANAP); pasien baru → papan "Menunggu Kamar" (MENUNGGU_RANAP).
+     *   KASIR — selesaikan tagihan yang sudah ada (tindakan/pra-op) lalu pasien pulang.
+     */
+    public const BATAL_DISPOSITIONS = ['POLI', 'RANAP', 'KASIR'];
+
+    /**
+     * Batal Bedah. Hanya boleh SEBELUM operasi dimulai (jadwal masih SCHEDULED dan
+     * belum ada Time In). Jadwal → CANCELLED, antrean BEDAH ditutup, pasien
+     * didisposisikan sesuai $data['disposition'] (POLI / RANAP / KASIR).
+     *
+     * @param  array  $data  disposition (wajib), reason (wajib),
+     *                       target_doctor_schedule_id (opsional, hanya POLI).
+     */
+    public function batalBedah(string $scheduleId, array $data): array
+    {
+        $disposition = strtoupper((string) ($data['disposition'] ?? ''));
+        if (! in_array($disposition, self::BATAL_DISPOSITIONS, true)) {
+            throw new \Exception('Disposisi batal bedah tidak valid (POLI/RANAP/KASIR).', 422);
+        }
+        $reason = trim((string) ($data['reason'] ?? ''));
+        if ($reason === '') {
+            throw new \Exception('Alasan pembatalan wajib diisi.', 422);
+        }
+
+        $schedule = SurgerySchedule::findOrFail($scheduleId);
+
+        // Hanya boleh batal SEBELUM operasi mulai. Time In sudah tercatat = bukan
+        // "batal" melainkan penghentian operasi (di luar lingkup fitur ini).
+        if (in_array($schedule->status, ['IN_PROGRESS', 'DONE'], true)) {
+            throw new \Exception('Operasi sudah dimulai — tidak bisa dibatalkan dari sini.', 422);
+        }
+        if ($schedule->status === 'CANCELLED') {
+            throw new \Exception('Jadwal operasi ini sudah dibatalkan.', 422);
+        }
+        $record = SurgeryRecord::where('surgery_schedule_id', $scheduleId)->first();
+        if ($record && $record->time_in) {
+            throw new \Exception('Operasi sudah Time In — tidak bisa dibatalkan.', 422);
+        }
+
+        // Kunjungan tertaut (lewat visit langsung ATAU doctor_examination).
+        $visitId = $this->scheduleLinkedVisitIds($scheduleId)->first();
+        if (! $visitId) {
+            throw new \Exception('Kunjungan untuk jadwal operasi ini tidak ditemukan.', 404);
+        }
+        $visit = Visit::with('activeBedAssignment')->findOrFail($visitId);
+        if ($visit->current_station === 'SELESAI') {
+            throw new \Exception('Kunjungan sudah selesai — tidak bisa dibatalkan.', 422);
+        }
+
+        // POLI: tentukan dokter tujuan SEBELUM transaksi (gagal cepat bila tak ada).
+        $targetDoctorScheduleId = null;
+        if ($disposition === 'POLI') {
+            $targetDoctorScheduleId = $data['target_doctor_schedule_id'] ?? $visit->doctor_schedule_id;
+            if (! $targetDoctorScheduleId) {
+                throw new \Exception('Poli/dokter tujuan wajib dipilih untuk disposisi Poliklinik.', 422);
+            }
+            // Validasi keberadaan jadwal dokter.
+            DoctorSchedule::findOrFail($targetDoctorScheduleId);
+        }
+
+        $isRanapPatient = ($visit->jenis_pelayanan ?? 'RAJAL') === 'RANAP'
+            || $visit->activeBedAssignment !== null;
+
+        return DB::transaction(function () use ($schedule, $visit, $disposition, $reason, $targetDoctorScheduleId, $isRanapPatient) {
+            // 1) Jadwal → CANCELLED (+ jejak alasan di notes).
+            $schedule->update([
+                'status' => 'CANCELLED',
+                'notes'  => trim(($schedule->notes ? $schedule->notes . "\n" : '') . '[BATAL BEDAH] ' . $reason),
+            ]);
+
+            // 2) Antrean BEDAH aktif milik kunjungan ini (belum Time In → WAITING/CALLED).
+            $bedahQueue = Queue::byStation(Queue::STATION_BEDAH)
+                ->where('visit_id', $visit->id)
+                ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
+                ->latest('created_at')
+                ->first();
+
+            // 3) Disposisi.
+            if ($disposition === 'KASIR') {
+                // Teruskan ke alur normal BEDAH→KASIR (advanceFromStation menutup baris
+                // bedah & enqueue KASIR). reportBpjs:false — transisi tak punya taskid BPJS.
+                if ($bedahQueue) {
+                    $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH, reportBpjs: false);
+                } else {
+                    $this->queueService->enqueue($visit->id, Queue::STATION_KASIR);
+                    $visit->update(['current_station' => Queue::STATION_KASIR]);
+                }
+                $routedTo = Queue::STATION_KASIR;
+            } elseif ($disposition === 'RANAP') {
+                if ($isRanapPatient) {
+                    // Pasien yang SUDAH RANAP → kembali ke kamar lewat resolveNextRanap
+                    // (returnToLiveRanap menangani anti-duplikat antrean RANAP).
+                    if ($bedahQueue) {
+                        $this->queueService->advanceFromStation($bedahQueue->id, Queue::STATION_BEDAH, reportBpjs: false);
+                    }
+                    $routedTo = Queue::STATION_RANAP;
+                } else {
+                    // Pasien BARU butuh inap → papan "Menunggu Kamar". Petugas RANAP admit
+                    // bed via RanapService::admit (pola sama finalizeRecord toMenungguRanap).
+                    if ($bedahQueue) {
+                        $bedahQueue->update([
+                            'status'       => Queue::STATUS_COMPLETED,
+                            'completed_at' => now(),
+                        ]);
+                    }
+                    $visit->update(['current_station' => 'MENUNGGU_RANAP']);
+                    $routedTo = 'MENUNGGU_RANAP';
+                }
+            } else { // POLI — route ulang kunjungan yang sama ke DOKTER.
+                if ($bedahQueue) {
+                    $bedahQueue->update([
+                        'status'       => Queue::STATUS_COMPLETED,
+                        'completed_at' => now(),
+                    ]);
+                }
+                if ($targetDoctorScheduleId && $targetDoctorScheduleId !== $visit->doctor_schedule_id) {
+                    $visit->update(['doctor_schedule_id' => $targetDoctorScheduleId]);
+                }
+                // Anti-duplikat: jangan enqueue bila sudah ada antrean DOKTER aktif.
+                $alreadyDokter = Queue::byStation(Queue::STATION_DOKTER)
+                    ->where('visit_id', $visit->id)
+                    ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS])
+                    ->exists();
+                if (! $alreadyDokter) {
+                    $this->queueService->enqueue($visit->id, Queue::STATION_DOKTER);
+                }
+                $visit->update(['current_station' => Queue::STATION_DOKTER]);
+                $routedTo = Queue::STATION_DOKTER;
+            }
+
+            $this->log(
+                auth('api')->id(),
+                'BATAL_BEDAH',
+                SurgerySchedule::class,
+                $schedule->id,
+                "Operasi dibatalkan → disposisi {$disposition} ({$routedTo}). Alasan: {$reason}"
+            );
+
+            return [
+                'disposition' => $disposition,
+                'routed_to'   => $routedTo,
+                'visit_id'    => $visit->id,
+                'schedule_id' => $schedule->id,
+            ];
+        });
+    }
+
+    /**
+     * Daftar jadwal dokter aktif untuk dropdown tujuan disposisi POLI (batal bedah).
+     * Read-only; FE mengelompokkan per poliklinik.
+     */
+    public function poliTargets(): array
+    {
+        $dayLabels = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
+
+        return DoctorSchedule::with('employee')
+            ->where('is_active', true)
+            ->orderBy('poliklinik')->orderBy('day_of_week')->orderBy('start_time')
+            ->get()
+            ->map(fn (DoctorSchedule $s) => [
+                'schedule_id' => $s->id,
+                'doctor_name' => $s->employee?->name,
+                'poliklinik'  => $s->poliklinik,
+                'day_of_week' => $s->day_of_week,
+                'day_label'   => $dayLabels[(int) $s->day_of_week] ?? '',
+                'start_time'  => substr((string) $s->start_time, 0, 5),
+                'end_time'    => substr((string) $s->end_time, 0, 5),
+            ])->values()->all();
     }
 
     /**

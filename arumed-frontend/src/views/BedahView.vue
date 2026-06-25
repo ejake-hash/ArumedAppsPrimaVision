@@ -282,6 +282,11 @@ const showFinalModal = ref(false)
 const showRmDocsModal = ref(false)  // dokumen RM (Checklist / Laporan) — dibuka dari tombol pojok tab
 const busyOp = ref(false)          // lock tombol lifecycle (mulai/timeout/finalisasi)
 const mulaiStep = ref(1)
+// Batal bedah (sebelum operasi mulai) + disposisi POLI/RANAP/KASIR
+const showBatalModal = ref(false)
+const batalForm = ref({ disposition: '', reason: '', target_doctor_schedule_id: '' })
+const poliTargets = ref([])
+const poliTargetsLoaded = ref(false)
 const timDropdownOpen = ref({ operator: false, asisten1: false, asisten2: false, scrubNurse: false, circNurse: false, anestesi: false })
 const timSearch = ref({ operator: '', asisten1: '', asisten2: '', scrubNurse: '', circNurse: '', anestesi: '' })
 const pendingCallIds = ref([])
@@ -1873,6 +1878,53 @@ function openMulaiModal() { mulaiStep.value = 1; showMulaiModal.value = true }
 function mulaiNext() { mulaiStep.value = 2 }
 function mulaiBack() { mulaiStep.value = 1 }
 
+// ── Batal Bedah ──────────────────────────────────────────────────────────
+function openBatalModal() {
+  batalForm.value = { disposition: '', reason: '', target_doctor_schedule_id: '' }
+  showBatalModal.value = true
+}
+
+async function selectBatalDispo(code) {
+  batalForm.value.disposition = code
+  // Lazy-load daftar poli/dokter hanya saat disposisi POLI dipilih pertama kali.
+  if (code === 'POLI' && !poliTargetsLoaded.value) {
+    try {
+      const { data } = await bedahApi.poliTargets()
+      poliTargets.value = data.data || []
+      poliTargetsLoaded.value = true
+    } catch (err) {
+      toast('w', err.response?.data?.message ?? 'Gagal memuat daftar poli')
+    }
+  }
+}
+
+async function doBatalBedah() {
+  if (!selP.value?.scheduleId || !batalForm.value.disposition) return
+  if (!batalForm.value.reason.trim()) { toast('w', 'Alasan pembatalan wajib diisi'); return }
+  const f = batalForm.value
+  const payload = { disposition: f.disposition, reason: f.reason.trim() }
+  if (f.disposition === 'POLI' && f.target_doctor_schedule_id) {
+    payload.target_doctor_schedule_id = f.target_doctor_schedule_id
+  }
+  busyOp.value = true
+  try {
+    const { data } = await bedahApi.batalBedah(selP.value.scheduleId, payload)
+    showBatalModal.value = false
+    const where = data.data?.routed_to
+    const label = where === 'DOKTER' ? 'Poliklinik'
+      : where === 'KASIR' ? 'Kasir'
+      : where === 'RANAP' ? 'Rawat Inap'
+      : where === 'MENUNGGU_RANAP' ? 'Menunggu Kamar (Rawat Inap)' : where
+    toast('s', `Operasi dibatalkan — pasien diteruskan ke ${label}`)
+    selP.value = null
+    await loadQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membatalkan operasi')
+  } finally {
+    busyOp.value = false
+  }
+}
+
 </script>
 
 <template>
@@ -2294,6 +2346,15 @@ function mulaiBack() { mulaiStep.value = 1 }
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Mulai Operasi
+              </button>
+              <button
+                v-if="selP.scheduleId"
+                class="bd-btn-batal"
+                :disabled="busyOp"
+                @click="openBatalModal"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                Batal Bedah
               </button>
               <span v-if="!signInComplete" class="bd-mulai-hint">Lengkapi Sign In keselamatan terlebih dahulu</span>
             </div>
@@ -3345,6 +3406,65 @@ function mulaiBack() { mulaiStep.value = 1 }
       </div>
     </div>
 
+    <!-- ── MODAL: Batal Bedah + Disposisi ────────────────────────────── -->
+    <div v-if="showBatalModal" class="bd-overlay" @click.self="showBatalModal = false">
+      <div class="bd-modal bd-modal-wide" style="text-align:left;max-width:560px">
+        <div class="bd-modal-icon bd-modal-icon-warn" style="margin-inline:auto">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </div>
+        <h3 style="text-align:center">Batal Bedah</h3>
+        <p class="bd-modal-sub" style="text-align:center">
+          Operasi <strong>{{ selP?.prosedur || '—' }}</strong> untuk <strong>{{ selP?.name }}</strong> dibatalkan.
+          Jadwal ditandai CANCELLED dan pasien didisposisikan.
+        </p>
+
+        <label class="bd-batal-label">Disposisi tujuan</label>
+        <div class="bd-batal-dispo">
+          <button
+            v-for="d in [
+              { code: 'POLI',  label: 'Kembali ke Poliklinik', hint: 'Konsul ulang / jadwal ulang ke dokter (kunjungan sama).' },
+              { code: 'RANAP', label: 'Kembali ke Rawat Inap',  hint: 'Pasien inap kembali ke kamar; pasien baru → Menunggu Kamar.' },
+              { code: 'KASIR', label: 'Selesai → Kasir',         hint: 'Selesaikan tagihan yang sudah ada lalu pasien pulang.' },
+            ]"
+            :key="d.code"
+            :class="['bd-batal-opt', batalForm.disposition === d.code && 'is-active']"
+            @click="selectBatalDispo(d.code)"
+          >
+            <strong>{{ d.label }}</strong>
+            <span>{{ d.hint }}</span>
+          </button>
+        </div>
+
+        <!-- Tujuan poli/dokter (opsional) untuk disposisi POLI -->
+        <template v-if="batalForm.disposition === 'POLI'">
+          <label class="bd-batal-label">Poli / dokter tujuan</label>
+          <select v-model="batalForm.target_doctor_schedule_id" class="bd-batal-input">
+            <option value="">Dokter perencana (default)</option>
+            <option v-for="t in poliTargets" :key="t.schedule_id" :value="t.schedule_id">
+              {{ t.poliklinik }} — {{ t.doctor_name }} ({{ t.day_label }} {{ t.start_time }})
+            </option>
+          </select>
+        </template>
+
+        <label class="bd-batal-label">Alasan pembatalan <span style="color:#dc2626">*</span></label>
+        <textarea
+          v-model="batalForm.reason"
+          class="bd-batal-input"
+          rows="3"
+          placeholder="mis. tekanan darah tinggi, pasien tidak puasa, batal atas permintaan pasien…"
+        ></textarea>
+
+        <div class="bd-modal-actions">
+          <button class="bd-btn-sec" :disabled="busyOp" @click="showBatalModal = false">Tutup</button>
+          <button
+            class="bd-btn-batal-confirm"
+            :disabled="busyOp || !batalForm.disposition || !batalForm.reason.trim()"
+            @click="doBatalBedah"
+          >{{ busyOp ? 'Memproses…' : 'Batalkan Operasi' }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── MODAL: Kelola Paket Obat Pasca-Bedah ──────────────────────── -->
     <div v-if="showPaketModal" class="bd-overlay" @click.self="showPaketModal = false">
       <div class="bd-modal bd-modal-wide" style="text-align:left;max-width:760px">
@@ -3784,6 +3904,32 @@ function mulaiBack() { mulaiStep.value = 1 }
 .bd-btn-mulai:hover:not(:disabled) { background: var(--gm); }
 .bd-btn-disabled { opacity: .45; cursor: not-allowed; }
 .bd-mulai-hint { font-size: 12px; color: var(--tu); }
+/* Batal bedah */
+.bd-btn-batal {
+  display: flex; align-items: center; gap: 8px; padding: 12px 22px;
+  background: transparent; color: var(--et); border: 1px solid var(--et);
+  border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all .15s;
+}
+.bd-btn-batal svg { width: 16px; height: 16px; }
+.bd-btn-batal:hover:not(:disabled) { background: var(--et); color: #fff; }
+.bd-btn-batal:disabled { opacity: .45; cursor: not-allowed; }
+.bd-batal-label { display: block; margin: 16px 0 6px; font-size: 12px; font-weight: 700; color: var(--tm); }
+.bd-batal-dispo { display: flex; flex-direction: column; gap: 8px; }
+.bd-batal-opt {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 14px;
+  background: var(--bg); border: 1.5px solid var(--gb); border-radius: 10px; cursor: pointer; transition: all .15s;
+}
+.bd-batal-opt strong { font-size: 13px; color: var(--td); }
+.bd-batal-opt span { font-size: 11.5px; color: var(--tu); }
+.bd-batal-opt:hover { border-color: var(--ga); }
+.bd-batal-opt.is-active { border-color: var(--ga); background: var(--sb); }
+.bd-batal-input {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--gb); border-radius: 10px;
+  font-size: 13px; color: var(--td); background: var(--bc); box-sizing: border-box; font-family: inherit;
+}
+.bd-btn-batal-confirm { padding: 10px 20px; background: var(--et); color: #fff; border: none; border-radius: 10px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.bd-btn-batal-confirm:hover:not(:disabled) { filter: brightness(.95); }
+.bd-btn-batal-confirm:disabled { opacity: .5; cursor: not-allowed; }
 .bd-status-info { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 10px; font-size: 13px; font-weight: 600; margin-top: 20px; }
 .bd-status-info svg { width: 16px; height: 16px; }
 .bd-status-live { background: var(--ib); color: var(--it); }

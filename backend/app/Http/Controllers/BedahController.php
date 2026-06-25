@@ -144,6 +144,33 @@ class BedahController extends Controller
     }
 
     /**
+     * PUT /bedah/jadwal/{id}/batal
+     * Batal bedah (sebelum operasi mulai) + disposisi POLI/RANAP/KASIR.
+     */
+    public function batalBedah(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'disposition'               => 'required|in:POLI,RANAP,KASIR',
+            'reason'                    => 'required|string|max:500',
+            'target_doctor_schedule_id' => 'nullable|uuid',
+        ]);
+
+        try {
+            $result = $this->service->batalBedah($id, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Operasi dibatalkan — pasien didisposisikan.');
+    }
+
+    /** GET /bedah/poli-targets — jadwal dokter aktif untuk tujuan disposisi POLI. */
+    public function poliTargets(): JsonResponse
+    {
+        return $this->ok($this->service->poliTargets());
+    }
+
+    /**
      * PUT /bedah/jadwal/{id}/selesai
      * Time Out + laporan operasi.
      */

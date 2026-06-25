@@ -1130,6 +1130,9 @@ export const bedahApi = {
   // Operasi lifecycle (jadwal): Sign In → Time Out
   mulaiOperasi:   (id)       => api.put(`/bedah/jadwal/${id}/mulai`),
   selesaiOperasi: (id, data) => api.put(`/bedah/jadwal/${id}/selesai`, data),
+  // Batal bedah (sebelum operasi mulai) + disposisi POLI/RANAP/KASIR
+  batalBedah:     (id, data) => api.put(`/bedah/jadwal/${id}/batal`, data),
+  poliTargets:    ()         => api.get('/bedah/poli-targets'),
 
   // Laporan operasi (surgery_records): laporan + post-op + finalize
   showRecord:     (scheduleId) => api.get(`/bedah/record/${scheduleId}`),
