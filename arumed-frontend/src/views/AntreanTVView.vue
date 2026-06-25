@@ -3798,28 +3798,29 @@ async function saveAudioDefaults() {
 .flash-content { text-align: center; }
 .flash-label-top {
   font-size: 16px; letter-spacing: .3em; text-transform: uppercase;
-  color: rgba(56,189,248,.7); font-weight: 600; margin-bottom: 1rem;
+  color: rgba(255,255,255,.85); font-weight: 600; margin-bottom: 1rem;
   font-family: 'Inter', sans-serif;
 }
 .flash-num {
   font-family: 'Space Grotesk', serif;
   font-size: clamp(100px, 20vw, 220px); line-height: 1;
-  color: var(--lm); letter-spacing: .04em;
-  text-shadow: 0 0 80px rgba(56,189,248,.6), 0 0 40px rgba(56,189,248,.3);
+  color: #fff; letter-spacing: .04em;
+  text-shadow: 0 0 80px rgba(255,255,255,.5), 0 0 40px rgba(125,211,252,.35);
   animation: flash-pulse 1.5s ease-in-out infinite;
 }
-@keyframes flash-pulse { 0%,100%{text-shadow:0 0 80px rgba(56,189,248,.6),0 0 40px rgba(56,189,248,.3)} 50%{text-shadow:0 0 120px rgba(56,189,248,.9),0 0 60px rgba(56,189,248,.5)} }
+@keyframes flash-pulse { 0%,100%{text-shadow:0 0 80px rgba(255,255,255,.5),0 0 40px rgba(125,211,252,.3)} 50%{text-shadow:0 0 120px rgba(255,255,255,.75),0 0 60px rgba(125,211,252,.5)} }
 .flash-name {
   font-size: clamp(22px, 3vw, 40px); font-weight: 500; margin-top: 1rem; color: #fff;
   font-family: 'Inter', sans-serif;
 }
 .flash-poly { font-size: clamp(14px, 2vw, 24px); color: rgba(255,255,255,.5); margin-top: .4rem; font-family: 'Inter', sans-serif; }
-.flash-dokter { font-size: clamp(16px, 2.2vw, 28px); font-weight: 600; color: #7dd3fc; margin-top: .3rem; font-family: 'Inter', sans-serif; }
+.flash-dokter { font-size: clamp(16px, 2.2vw, 28px); font-weight: 600; color: #fff; margin-top: .3rem; font-family: 'Inter', sans-serif; }
 .flash-badge {
   display: inline-flex; align-items: center; gap: 8px; margin-top: 2rem;
-  background: rgba(56,189,248,.2); border: 1.5px solid rgba(56,189,248,.4);
-  color: var(--lm); padding: 10px 24px; border-radius: 30px;
+  background: rgba(56,189,248,.32); border: 2px solid rgba(125,211,252,.9);
+  color: #fff; padding: 12px 28px; border-radius: 30px;
   font-size: clamp(13px, 1.5vw, 18px); font-weight: 700; font-family: 'Inter', sans-serif;
+  box-shadow: 0 0 24px rgba(56,189,248,.25);
 }
 .flash-badge svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .flash-hint { font-size: 12px; color: rgba(255,255,255,.3); margin-top: 2.5rem; font-family: 'Inter', sans-serif; }
