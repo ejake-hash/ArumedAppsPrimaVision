@@ -373,23 +373,14 @@ class AdmisiService
             throw new \Exception('Kunjungan sudah selesai — tidak bisa dibatalkan.', 422);
         }
 
-        // Hanya boleh dibatalkan dari Admisi selama pasien masih di fase
-        // resepsi/skrining (ADMISI/TRIASE/REFRAKSIONIS) dan BELUM dilayani
-        // (tak ada antrean CALLED/IN_PROGRESS). Begitu pasien diproses di stasiun
-        // klinis, pembatalan dikunci untuk cegah penghapusan kunjungan yang
-        // sedang berjalan. (Guard sisi server — mengiringi penguncian tombol di UI.)
-        $receptionStations = ['ADMISI', 'TRIASE', 'REFRAKSIONIS'];
-        $inService = $visit->queues()
-            ->where('station', '!=', 'ADMISI')   // "dipanggil ke loket" ≠ pelayanan klinis
-            ->whereIn('status', ['CALLED', 'IN_PROGRESS'])
-            ->exists();
-        if (! in_array($visit->current_station, $receptionStations, true) || $inService) {
-            throw new \Exception(
-                "Pasien sudah dalam pelayanan (stasiun {$visit->current_station}) — pembatalan dikunci. "
-                . 'Batalkan dari stasiun terkait bila benar-benar perlu.',
-                422
-            );
-        }
+        // Admisi SENGAJA tetap boleh membatalkan kunjungan walau pasien sudah
+        // pindah ke stasiun klinis (Dokter/Farmasi/Kasir/Bedah/Ranap) atau sedang
+        // dilayani. Yang dikunci hanya kunjungan yang sudah SELESAI (atau sudah
+        // batal — tertangani oleh global soft-delete scope di findOrFail).
+        // Proteksi "sedang dilayani" diturunkan jadi PERINGATAN tegas di dialog
+        // konfirmasi UI (confirmCancelKunjungan), bukan penolakan server — agar
+        // tombol Batalkan di AdmisiView benar-benar bisa membatalkan, bukan hanya
+        // bisa diklik. (Selaras dengan canCancelRow di frontend.)
 
         DB::transaction(function () use ($visit) {
             // Cancel semua antrean aktif (WAITING/CALLED/IN_PROGRESS) di station mana pun
