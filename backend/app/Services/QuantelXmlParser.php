@@ -135,9 +135,26 @@ class QuantelXmlParser
                 continue;
             }
 
+            $biometry = $this->parseBiometry($iolNode, $bioNode);
+            $iolCalc  = $this->parseIolCalc($iolNode);
+
+            // Lewati mata "hantu": saat hanya satu mata diperiksa, Quantel tetap
+            // menulis node ExamBio{side} kosong untuk mata lainnya (tanpa ExamIol).
+            // Tanpa filter ini, mata itu masuk dengan SEMUA nilai null → panel
+            // menampilkan kolom OD/OS penuh "—". Sertakan hanya bila ada minimal
+            // satu nilai biometri inti atau ada hitung IOL.
+            $hasCoreBio = array_filter(
+                [$biometry['axial_length'], $biometry['acd'], $biometry['lens_thickness'],
+                 $biometry['vitreous'], $biometry['k1'], $biometry['k2'], $biometry['kcor']],
+                fn ($v) => $v !== null,
+            );
+            if (! $hasCoreBio && ! $iolCalc) {
+                continue;
+            }
+
             $eyes[$code] = [
-                'biometry' => $this->parseBiometry($iolNode, $bioNode),
-                'iol_calc' => $this->parseIolCalc($iolNode),
+                'biometry' => $biometry,
+                'iol_calc' => $iolCalc,
             ];
         }
 

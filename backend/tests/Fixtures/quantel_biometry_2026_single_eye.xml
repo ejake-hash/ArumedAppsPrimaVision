@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-16"?>
+<C_Exam xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:type="C_ExamBioIol">
+  <ExamDate>2026-06-09T17:09:10.9190739+07:00</ExamDate>
+  <ExamKey>6936c93d-6365-4938-84ee-0628da437fbb</ExamKey>
+  <Patient>
+    <PatientLastName>MAIMASINAGA</PatientLastName>
+    <PatientIdNumber>2026060065</PatientIdNumber>
+    <PatientBirthDate>1969-09-14T00:00:00</PatientBirthDate>
+  </Patient>
+  <Physician><PhysicianLastName>Besta</PhysicianLastName></Physician>
+  <ExamBio>
+    <ExamBioOd>
+      <ModeAcqui>AutoSave</ModeAcqui>
+      <TechniqueAcqui>Immersion</TechniqueAcqui>
+      <MesuresList />
+      <Speed><LDesign>Phakic</LDesign><VDesign>Normal Eye</VDesign></Speed>
+    </ExamBioOd>
+    <ExamBioOs>
+      <ModeAcqui>AutoSave</ModeAcqui>
+      <TechniqueAcqui>Immersion</TechniqueAcqui>
+      <MesuresList>
+        <S_Mesure><MesureName>Avg</MesureName><MesureAc>2.87</MesureAc><MesureL>4.55</MesureL><MesureV>16.97</MesureV><MesureTl>24.39</MesureTl><Selected>false</Selected></S_Mesure>
+        <S_Mesure><MesureName>Stat-2</MesureName><MesureAc>3.18</MesureAc><MesureL>4.27</MesureL><MesureV>16.89</MesureV><MesureTl>24.34</MesureTl><Selected>true</Selected></S_Mesure>
+      </MesuresList>
+      <Speed><LDesign>Phakic</LDesign><VDesign>Normal Eye</VDesign></Speed>
+    </ExamBioOs>
+  </ExamBio>
+  <ExamIol>
+    <ExamIolOs>
+      <LenghtDesignation>Stat-2</LenghtDesignation>
+      <Kerato>
+        <LengthAc>3.18</LengthAc><KCor>45.125</KCor><LenghtLt>24.34</LenghtLt>
+        <KPost>45.125</KPost><K1Post>44.5</K1Post><K2Post>45.75</K2Post>
+      </Kerato>
+      <LengthAc>3.18</LengthAc><LenghtLt>24.34</LenghtLt><LenghtL>4.27</LenghtL><LenghtV>16.89</LenghtV>
+      <ExamIolCalOeilTab>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 118.000</StringCste><IolAme>15.914892</IolAme><Emme>15.914892</Emme>
+          <TabResult>
+            <S_IolResult><Ame>14</Ame><Ref>1.241423</Ref><MedianLine>false</MedianLine></S_IolResult>
+            <S_IolResult><Ame>16</Ame><Ref>-0.056428</Ref><MedianLine>true</MedianLine></S_IolResult>
+            <S_IolResult><Ame>18</Ame><Ref>-1.414637</Ref><MedianLine>false</MedianLine></S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant><ImplantDesignation>IOL 118.00 P</ImplantDesignation><A>118</A><TypeImplant>Post</TypeImplant></Implant>
+        </C_ExamIolCalcOeil>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 118.700</StringCste><IolAme>16.588466</IolAme><Emme>16.588466</Emme>
+          <TabResult>
+            <S_IolResult><Ame>16.5</Ame><Ref>0.056463</Ref><MedianLine>true</MedianLine></S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant><ImplantDesignation>IOL  118.70 P</ImplantDesignation><A>118.7</A><TypeImplant>Post</TypeImplant></Implant>
+        </C_ExamIolCalcOeil>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 118.300</StringCste><IolAme>16.198421</IolAme><Emme>16.198421</Emme>
+          <TabResult>
+            <S_IolResult><Ame>16</Ame><Ref>0.129133</Ref><MedianLine>true</MedianLine></S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant><ImplantDesignation>IOL  118.30 P</ImplantDesignation><A>118.3</A><TypeImplant>Post</TypeImplant></Implant>
+        </C_ExamIolCalcOeil>
+        <C_ExamIolCalcOeil>
+          <StringCste>A= 118.400</StringCste><IolAme>16.294625</IolAme><Emme>16.294625</Emme>
+          <TabResult>
+            <S_IolResult><Ame>16.5</Ame><Ref>-0.133579</Ref><MedianLine>true</MedianLine></S_IolResult>
+          </TabResult>
+          <Formula>IolFormulaSrkT</Formula>
+          <Implant><ImplantDesignation>IOL  118.40 P</ImplantDesignation><A>118.4</A><TypeImplant>Post</TypeImplant></Implant>
+        </C_ExamIolCalcOeil>
+      </ExamIolCalOeilTab>
+    </ExamIolOs>
+  </ExamIol>
+</C_Exam>
