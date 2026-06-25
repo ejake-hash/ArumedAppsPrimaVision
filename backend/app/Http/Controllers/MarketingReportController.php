@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BillingInvoice;
+use App\Services\KasirService;
 use App\Services\MarketingReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,7 +15,10 @@ use Illuminate\Http\Response;
  */
 class MarketingReportController extends Controller
 {
-    public function __construct(private readonly MarketingReportService $service) {}
+    public function __construct(
+        private readonly MarketingReportService $service,
+        private readonly KasirService $kasir,
+    ) {}
 
     // GET /laporan-marketing?service_type=RJ|RI|BEDAH&from=YYYY-MM-DD&to=YYYY-MM-DD
     public function index(Request $request): JsonResponse
@@ -44,6 +49,41 @@ class MarketingReportController extends Controller
             'success' => true,
             'data'    => $this->service->getNotifications(),
             'message' => 'Berhasil',
+            'errors'  => null,
+        ]);
+    }
+
+    // GET /laporan-marketing/kwitansi/{invoiceId}
+    // Payload kwitansi cetak — IDENTIK dgn cetak Kasir (reuse KasirService::generateReceipt).
+    // Hanya untuk invoice LUNAS (PAID); selain itu pasien dianggap masih di Kasir.
+    public function kwitansi(string $invoiceId): JsonResponse
+    {
+        $invoice = BillingInvoice::find($invoiceId);
+
+        if (! $invoice || $invoice->status !== 'PAID') {
+            return response()->json([
+                'success' => false,
+                'data'    => null,
+                'message' => 'Kwitansi belum terbit, Pasien Sedang di Kasir',
+                'errors'  => null,
+            ], 422);
+        }
+
+        try {
+            $receipt = $this->kasir->generateReceipt($invoiceId);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'data'    => null,
+                'message' => $e->getMessage() ?: 'Gagal menyiapkan dokumen kwitansi',
+                'errors'  => null,
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => $receipt,
+            'message' => 'Data kwitansi siap cetak',
             'errors'  => null,
         ]);
     }

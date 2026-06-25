@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { marketingApi } from '@/services/api'
+import { ref, computed, onMounted, nextTick } from 'vue'
+import { marketingApi, masterApi } from '@/services/api'
+import KwitansiPrintDoc from '@/components/common/KwitansiPrintDoc.vue'
 
 // ─── Tab utama: Notifikasi (baru) + tipe layanan (IGD sengaja tidak ada) ───────
 const MAIN_TABS = [
@@ -175,8 +176,50 @@ async function exportData(format = 'csv') {
 
 function closeFmt() { openFmt.value = false }
 
-// Default tab = Notifikasi → muat notifikasi saat awal.
-onMounted(loadNotif)
+// ─── Cetak Kwitansi pasien (identik dgn KasirView) ────────────────────────────
+// Master kategori tagihan utk urutan grouping rincian (sama dgn Kasir).
+const billingCategories = ref([])
+async function fetchBillingCategories() {
+  try {
+    const { data } = await masterApi.kategoriTagihan.list({ active: 1 })
+    billingCategories.value = Array.isArray(data.data) ? data.data : (data.data?.data ?? [])
+  } catch (e) {
+    billingCategories.value = [] // non-fatal; fallback urutan default
+  }
+}
+
+const printData = ref(null)
+const printing = ref(false)
+
+// Lihat & cetak kwitansi pasien dari baris layanan. Kwitansi hanya terbit bila
+// invoice sudah LUNAS; selain itu pasien masih di Kasir → tampilkan notif.
+async function cetakKwitansi(row) {
+  if (!row?.invoice_id || !row?.invoice_paid) {
+    toast('w', 'Kwitansi belum terbit, Pasien Sedang di Kasir')
+    return
+  }
+  if (printing.value) return
+  printing.value = true
+  try {
+    const res = await marketingApi.kwitansi(row.invoice_id)
+    printData.value = res.data?.data || null
+    await nextTick()
+    setTimeout(() => window.print(), 80)
+  } catch (e) {
+    toast(
+      e?.response?.status === 422 ? 'w' : 'e',
+      e?.response?.data?.message || 'Gagal menyiapkan dokumen kwitansi.',
+    )
+  } finally {
+    printing.value = false
+  }
+}
+
+// Default tab = Notifikasi → muat notifikasi + master kategori (utk cetak) saat awal.
+onMounted(() => {
+  loadNotif()
+  fetchBillingCategories()
+})
 </script>
 
 <template>
@@ -361,14 +404,15 @@ onMounted(loadNotif)
               <th>Diagnosa</th>
               <th>Kategori Bedah</th>
               <th>Tgl Kontrol</th>
+              <th style="width:120px; text-align:center">Kwitansi</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="9" class="empty">Memuat…</td>
+              <td colspan="10" class="empty">Memuat…</td>
             </tr>
             <tr v-else-if="!rows.length">
-              <td colspan="9" class="empty">Tidak ada data pada periode ini.</td>
+              <td colspan="10" class="empty">Tidak ada data pada periode ini.</td>
             </tr>
             <tr v-else v-for="r in rows" :key="r.no">
               <td>{{ r.no }}</td>
@@ -380,6 +424,18 @@ onMounted(loadNotif)
               <td>{{ r.diagnosa || '-' }}</td>
               <td>{{ r.kategori_bedah || '-' }}</td>
               <td>{{ r.tgl_kontrol || '-' }}</td>
+              <td style="text-align:center">
+                <button
+                  class="btn-kwitansi"
+                  :class="{ off: !r.invoice_paid }"
+                  :disabled="printing"
+                  :title="r.invoice_paid ? 'Lihat & cetak kwitansi' : 'Kwitansi belum terbit — pasien masih di Kasir'"
+                  @click="cetakKwitansi(r)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  Kwitansi
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -389,6 +445,9 @@ onMounted(loadNotif)
     <transition name="toast">
       <div v-if="toastMsg" class="toast" :class="toastType">{{ toastMsg }}</div>
     </transition>
+
+    <!-- Dokumen cetak kwitansi — IDENTIK dgn Kasir (komponen bersama, Teleport ke body). -->
+    <KwitansiPrintDoc :data="printData" :categories="billingCategories" />
   </div>
 </template>
 
@@ -489,6 +548,19 @@ button.stat-card:hover { box-shadow: 0 6px 18px rgba(14,58,102,.10); transform: 
 .btn-soft svg { width: 16px; height: 16px; }
 .btn-soft .caret { width: 13px; height: 13px; }
 
+/* Tombol cetak kwitansi per-baris */
+.btn-kwitansi {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border: 1px solid var(--gb); border-radius: 8px; background: var(--bc);
+  font-size: 0.78rem; font-weight: 600; color: var(--gd); cursor: pointer; white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.btn-kwitansi:hover:not(:disabled) { background: var(--gl); border-color: var(--ga); }
+.btn-kwitansi:disabled { opacity: .55; cursor: not-allowed; }
+.btn-kwitansi svg { width: 14px; height: 14px; }
+/* Belum LUNAS — tetap bisa diklik (memunculkan notif), tampil meredup. */
+.btn-kwitansi.off { color: var(--tu); border-style: dashed; }
+
 /* Export dropdown */
 .fmt-wrap { position: relative; }
 .fmt-menu {
@@ -524,6 +596,7 @@ button.stat-card:hover { box-shadow: 0 6px 18px rgba(14,58,102,.10); transform: 
 }
 .toast.s { background: var(--st); }
 .toast.e { background: var(--et); }
+.toast.w { background: #b45309; }
 .toast-enter-active, .toast-leave-active { transition: opacity .25s, transform .25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>

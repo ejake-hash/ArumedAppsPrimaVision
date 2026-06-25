@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { kasirApi, masterApi } from '@/services/api'
 import PatientAvatar from '@/components/common/PatientAvatar.vue'
+import KwitansiPrintDoc from '@/components/common/KwitansiPrintDoc.vue'
 
 // ─── Master kategori tagihan (grouping order) ────────────────────────────────
 // Daftar kategori aktif di master billing_categories — dipakai untuk grouping
@@ -1157,21 +1158,8 @@ const rincianSections = computed(() => {
   return groupedItems.value.map(grp => ({ type: 'cat', key: grp.name, grp }))
 })
 
-// Baris DISKON_PAKET dipisah dari rincian komposisi → ditampilkan di BAWAH total
-// (layout "Bruto → Diskon → Harga Paket"): komponen tampil penuh, Subtotal = bruto,
-// lalu baris Diskon Paket, TOTAL = harga jual paket.
-const PAKET_DISCOUNT_TYPE = 'DISKON_PAKET'
-const paketDiscountPrint = computed(() =>
-  (printData.value?.items ?? [])
-    .filter((it) => it.item_type === PAKET_DISCOUNT_TYPE)
-    .reduce((a, it) => a + Math.abs(Number(it.net_price ?? it.total_price ?? 0)), 0),
-)
-const groupedPrintItems = computed(() =>
-  groupItemsByCategory(
-    (printData.value?.items ?? []).filter((it) => it.item_type !== PAKET_DISCOUNT_TYPE),
-    printData.value?.categories ?? billingCategories.value,
-  ),
-)
+// Dokumen cetak kwitansi (Teleport + grouping rincian) dipindah ke komponen
+// bersama KwitansiPrintDoc.vue agar identik dgn cetak di Laporan Marketing.
 </script>
 
 <template>
@@ -2133,147 +2121,8 @@ const groupedPrintItems = computed(() =>
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
     </div>
 
-    <!-- ═══ DOKUMEN CETAK A4 — RINCIAN BIAYA (Teleport ke body supaya @media print global bekerja) ═══ -->
-    <Teleport to="body">
-      <div v-if="printData" class="rincian-print">
-        <div v-if="printData.clinic?.watermark_type" class="rp-watermark">{{ printData.clinic.watermark_type }}</div>
-
-        <!-- Kop kanonik (sumber tunggal) — identik dgn pratinjau Profil Institusi -->
-        <div v-if="printData.clinic?.letterhead_html" class="rp-kop-canon" v-html="printData.clinic.letterhead_html"></div>
-        <header v-else class="rp-kop">
-          <img v-if="printData.clinic?.logo_url" :src="printData.clinic.logo_url" alt="Logo" class="rp-logo" />
-          <div class="rp-kop-text">
-            <div class="rp-clinic">{{ printData.clinic?.name ?? 'Rumah Sakit' }}</div>
-            <div v-if="printData.clinic?.address" class="rp-line">{{ printData.clinic.address }}</div>
-            <div class="rp-line">
-              <span v-if="printData.clinic?.phone">Telp: {{ printData.clinic.phone }}</span>
-              <span v-if="printData.clinic?.email"> · Email: {{ printData.clinic.email }}</span>
-            </div>
-          </div>
-        </header>
-
-        <h1 :class="['rp-title', `rp-svc-${svcCode(printData.service_type).toLowerCase()}`]">{{ svcTitle(printData.service_type) }}</h1>
-        <div class="rp-subtitle">No. {{ printData.invoice?.number ?? '—' }}</div>
-
-        <table class="rp-meta">
-          <tbody>
-            <tr>
-              <td class="k">No. Rekam Medis</td><td class="s">:</td><td class="v">{{ printData.patient?.no_rm ?? '—' }}</td>
-              <td class="k">Tgl Kunjungan</td><td class="s">:</td><td class="v">{{ printData.invoice?.visit_date ?? printData.invoice?.date ?? '—' }}</td>
-            </tr>
-            <tr>
-              <td class="k">Nama Pasien</td><td class="s">:</td><td class="v">{{ printData.patient?.name ?? '—' }}</td>
-              <td class="k">Metode Bayar</td><td class="s">:</td><td class="v">{{ printData.invoice?.payment_method ? metodeLabel(printData.invoice.payment_method) : '—' }}</td>
-            </tr>
-            <tr>
-              <td class="k">NIK</td><td class="s">:</td><td class="v">{{ printData.patient?.nik ?? '—' }}</td>
-              <td class="k">Penjamin</td><td class="s">:</td>
-              <td class="v">{{ penjaminFull(printData.patient) }}</td>
-            </tr>
-            <tr>
-              <td class="k">Dokter (DPJP)</td><td class="s">:</td><td class="v">{{ printData.patient?.dpjp ?? '—' }}</td>
-              <td class="k">Jenis Layanan</td><td class="s">:</td><td class="v">{{ svcLabel(printData.service_type) }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <!-- BLOK RAWAT INAP (hanya untuk kwitansi RI) -->
-        <table v-if="printData.inpatient" class="rp-meta rp-meta-ranap">
-          <tbody>
-            <tr>
-              <td class="k">Ruang / Bed</td><td class="s">:</td>
-              <td class="v">{{ printData.inpatient.room || '—' }}<span v-if="printData.inpatient.bed"> / {{ printData.inpatient.bed }}</span></td>
-              <td class="k">Kelas Hak</td><td class="s">:</td>
-              <td class="v">{{ printData.inpatient.kelas_rawat_hak || '—' }}<span v-if="printData.inpatient.titip_note"> ({{ printData.inpatient.titip_note }})</span></td>
-            </tr>
-            <tr>
-              <td class="k">Tgl Masuk</td><td class="s">:</td><td class="v">{{ printData.inpatient.admission_at || '—' }}</td>
-              <td class="k">Tgl Keluar</td><td class="s">:</td><td class="v">{{ printData.inpatient.discharge_at || '—' }}</td>
-            </tr>
-            <tr>
-              <td class="k">Lama Rawat</td><td class="s">:</td><td class="v"><strong>{{ printData.inpatient.los ?? '—' }} malam</strong></td>
-              <td class="k">Cara Keluar</td><td class="s">:</td><td class="v">{{ printData.inpatient.discharge_type || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div class="rp-items">
-          <div v-for="grp in groupedPrintItems" :key="grp.name" class="rp-group">
-            <div class="rp-group-head">
-              <span class="rp-group-name">{{ grp.name }}</span>
-              <span class="rp-group-sub">{{ rupiah(grp.subtotal) }}</span>
-            </div>
-            <div v-for="(item, i) in grp.items" :key="item.id ?? `${grp.name}-${i}`" class="rp-row">
-              <span class="rp-row-desc">
-                {{ item.description }}<span v-if="Number(item.quantity) > 1" class="rp-row-qty"> ({{ item.quantity }}×)</span>
-                <span v-if="Number(item.discount_amount) > 0" class="rp-row-disc">
-                  diskon −{{ rupiah(item.discount_amount) }}<span v-if="Number(item.discount_percent) > 0"> ({{ Number(item.discount_percent) }}%)</span>
-                </span>
-              </span>
-              <span class="rp-dots"></span>
-              <span class="rp-row-amt">
-                <span v-if="Number(item.discount_amount) > 0" class="rp-row-gross">{{ rupiah(item.total_price) }}</span>
-                {{ rupiah(item.net_price ?? item.total_price) }}
-              </span>
-            </div>
-          </div>
-          <div v-if="!(printData.items ?? []).length" class="rp-empty">Tidak ada item</div>
-        </div>
-
-        <div class="rp-summary">
-          <table>
-            <tbody>
-              <tr><td>Subtotal</td><td class="c-num">{{ rupiah(Number(printData.summary?.subtotal || 0) + paketDiscountPrint) }}</td></tr>
-              <tr v-if="paketDiscountPrint" class="rp-disc-paket"><td>Diskon Paket</td><td class="c-num">− {{ rupiah(paketDiscountPrint) }}</td></tr>
-              <tr v-if="Number(printData.summary?.item_discount)"><td>Diskon Item</td><td class="c-num">− {{ rupiah(printData.summary?.item_discount) }}</td></tr>
-              <tr v-if="Number(printData.summary?.discount)">
-                <td>Diskon Global<span v-if="Number(printData.summary?.discount_percent) > 0"> ({{ Number(printData.summary?.discount_percent) }}%)</span></td>
-                <td class="c-num">− {{ rupiah(printData.summary?.discount) }}</td>
-              </tr>
-              <tr v-if="Number(printData.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(printData.summary?.tax) }}</td></tr>
-              <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(printData.summary?.total) }}</td></tr>
-              <tr v-if="Number(printData.summary?.covered_amount)"><td>{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS Kesehatan (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</td><td class="c-num">{{ (printData.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? '' : '− ' + rupiah(printData.summary?.covered_amount) }}</td></tr>
-              <tr><td>Dibayar Pasien</td><td class="c-num">{{ rupiah(printData.summary?.paid_amount) }}</td></tr>
-              <tr v-if="printData.invoice?.is_paid && Number(printData.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(printData.summary?.change) }}</td></tr>
-              <tr v-if="Number(printData.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(printData.summary?.sisa) }}</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div :class="['rp-status', printData.invoice?.is_paid ? 'lunas' : 'belum']">
-          {{ printData.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS / PRO FORMA' }}
-        </div>
-
-        <div class="rp-sign">
-          <div class="rp-sign-col">
-            <div class="rp-sign-lbl">Kasir</div>
-            <div v-if="printData.print_settings?.show_esign !== false && printData.cashier" class="rp-esign">
-              <span class="rp-esign-badge">✓ Ditandatangani elektronik</span>
-              <div class="rp-esign-name">{{ printData.cashier }}</div>
-              <div class="rp-esign-meta">
-                {{ printData.invoice?.number }}<span v-if="printData.invoice?.paid_at"> · {{ printData.invoice.paid_at }}</span>
-              </div>
-            </div>
-            <template v-else>
-              <div class="rp-sign-space"></div>
-              <div class="rp-sign-name">( ......................................... )</div>
-            </template>
-          </div>
-        </div>
-
-        <footer class="rp-footer">
-          <!-- Tgl Bayar disembunyikan (req kasir); aktifkan kembali bila diminta.
-          <span v-if="printData.invoice?.is_paid && printData.invoice?.paid_at">
-            Tgl Bayar: {{ printData.invoice.paid_at }} ·
-          </span>
-          -->
-          <span v-if="printData.print_settings?.show_footer !== false && printData.clinic?.director_name">
-            Penanggung Jawab Rumah Sakit: {{ printData.clinic.director_name }}<span v-if="printData.clinic?.director_sip"> · SIP: {{ printData.clinic.director_sip }}</span> ·
-          </span>
-          RS. Mata Prima Vision - PT. Karya Sistem Nusantara
-        </footer>
-      </div>
-    </Teleport>
+    <!-- ═══ DOKUMEN CETAK A4 — RINCIAN BIAYA (komponen bersama, Teleport ke body) ═══ -->
+    <KwitansiPrintDoc :data="printData" :categories="billingCategories" />
   </div>
 </template>
 
@@ -2822,100 +2671,4 @@ const groupedPrintItems = computed(() =>
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
-</style>
-
-<!-- ═══ DOKUMEN CETAK A4 — gaya GLOBAL (tidak scoped) supaya rule @media print bekerja ═══ -->
-<style>
-.rincian-print { display: none; }
-
-@media print {
-  @page { size: A4 portrait; margin: 14mm 15mm; }
-
-  /* Reset base.css (body { min-width:1280px } & html,body { height:100% }) yang
-     bikin kanvas raksasa → halaman A4 jadi blank. Tanpa ini print kosong. */
-  html, body {
-    width: auto !important;
-    min-width: 0 !important;
-    height: auto !important;
-    overflow: visible !important;
-    background: #fff !important;
-  }
-
-  /* .rincian-print di-teleport ke <body> (sibling #app). Sembunyikan seluruh
-     app, sisakan node cetak. Pakai #app display:none (bukan body > *:not())
-     karena lebih andal dengan reset di atas. */
-  #app { display: none !important; }
-
-  .rincian-print {
-    display: block !important;
-    position: relative;
-    color: #000;
-    font-family: 'Inter', Arial, sans-serif;
-    font-size: 11px;
-    line-height: 1.5;
-  }
-
-  .rincian-print .rp-watermark {
-    position: fixed; top: 45%; left: 50%;
-    transform: translate(-50%, -50%) rotate(-30deg);
-    font-size: 92px; font-weight: 800; letter-spacing: .12em;
-    color: rgba(0, 0, 0, 0.06); z-index: 0; pointer-events: none;
-  }
-
-  .rincian-print .rp-kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 9px; }
-  .rincian-print .rp-logo { height: 62px; width: auto; object-fit: contain; }
-  .rincian-print .rp-clinic { font-size: 19px; font-weight: 800; letter-spacing: .02em; }
-  .rincian-print .rp-line { font-size: 10.5px; }
-
-  .rincian-print .rp-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: .06em; text-decoration: underline; margin: 12px 0 1px; }
-  .rincian-print .rp-title.rp-svc-ranap { color: #14532d; }
-  .rincian-print .rp-title.rp-svc-igd   { color: #9a3412; }
-  .rincian-print .rp-title.rp-svc-rajal { color: #1e3a8a; }
-  .rincian-print .rp-subtitle { text-align: center; font-size: 11px; margin-bottom: 12px; }
-
-  .rincian-print .rp-meta { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
-  .rincian-print .rp-meta td { padding: 1.5px 0; vertical-align: top; font-size: 11px; }
-  .rincian-print .rp-meta .k { width: 15%; color: #333; }
-  .rincian-print .rp-meta .s { width: 10px; }
-  .rincian-print .rp-meta .v { width: 35%; font-weight: 600; }
-
-  /* Rincian item — daftar tanpa garis/tabel (list style). */
-  .rincian-print .rp-items { margin-bottom: 12px; }
-  .rincian-print .rp-group { margin-bottom: 9px; page-break-inside: avoid; }
-  .rincian-print .rp-group-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
-  .rincian-print .rp-group-sub { font-weight: 700; white-space: nowrap; }
-  .rincian-print .rp-row { display: flex; align-items: baseline; font-size: 10.8px; padding: 1.5px 0 1.5px 12px; }
-  .rincian-print .rp-row-desc { flex: 0 1 auto; }
-  .rincian-print .rp-row-qty { color: #555; }
-  .rincian-print .rp-row-disc { color: #b45309; font-size: 9.5px; margin-left: 6px; }
-  .rincian-print .rp-dots { flex: 1 1 auto; border-bottom: 1px dotted #bbb; margin: 0 6px; transform: translateY(-2px); min-width: 14px; }
-  .rincian-print .rp-row-amt { flex: 0 0 auto; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .rincian-print .rp-row-gross { color: #999; text-decoration: line-through; font-size: 9.5px; margin-right: 5px; }
-  .rincian-print .rp-empty { font-style: italic; color: #777; padding: 4px 12px; }
-
-  .rincian-print .rp-summary { display: flex; justify-content: flex-end; margin-bottom: 16px; }
-  .rincian-print .rp-summary table { border-collapse: collapse; min-width: 280px; }
-  .rincian-print .rp-summary td { padding: 2.5px 7px; font-size: 11px; }
-  .rincian-print .rp-summary td.c-num { text-align: right; white-space: nowrap; }
-  .rincian-print .rp-summary .rp-grand td { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; font-weight: 800; font-size: 12.5px; }
-  .rincian-print .rp-summary .rp-sisa td { font-weight: 700; }
-  .rincian-print .rp-summary .rp-disc-paket td { color: #b45309; }
-
-  .rincian-print .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
-  .rincian-print .rp-status.lunas { color: #15803d; border-color: #15803d; }
-  .rincian-print .rp-status.belum { color: #b45309; border-color: #b45309; }
-
-  .rincian-print .rp-sign { display: flex; justify-content: flex-end; page-break-inside: avoid; }
-  .rincian-print .rp-sign-col { width: 45%; text-align: center; }
-  .rincian-print .rp-sign-lbl { font-size: 11px; margin-bottom: 4px; }
-  .rincian-print .rp-sign-space { height: 62px; }
-  .rincian-print .rp-sign-name { font-size: 11px; }
-  /* E-sign kasir — badge teks ringan (bukan TTD basah). */
-  .rincian-print .rp-esign { display: inline-block; padding-top: 6px; }
-  .rincian-print .rp-esign-badge { display: inline-block; font-size: 9px; font-weight: 700; color: #15803d; border: 1px solid #15803d; border-radius: 4px; padding: 2px 8px; letter-spacing: .02em; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .rincian-print .rp-esign-name { font-size: 11.5px; font-weight: 700; margin-top: 5px; }
-  .rincian-print .rp-esign-meta { font-size: 8.5px; color: #555; margin-top: 1px; }
-
-  .rincian-print .rp-footer { margin-top: 28px; padding-top: 7px; border-top: 1px solid #999; text-align: center; font-size: 9px; color: #444; }
-}
 </style>

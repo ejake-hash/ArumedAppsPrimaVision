@@ -348,7 +348,7 @@ class MarketingReportService
     /** @return array<int,string> */
     private function eagerFor(string $type): array
     {
-        $common = ['patient', 'insurer'];
+        $common = ['patient', 'insurer', 'billingInvoice'];
 
         return match ($type) {
             'BEDAH' => array_merge($common, [
@@ -374,6 +374,10 @@ class MarketingReportService
      */
     private function mapRow(int $no, Visit $visit, string $type, array $icdMap): array
     {
+        // Kwitansi hanya "terbit" bila invoice sudah LUNAS (PAID). Selain itu
+        // pasien dianggap masih di Kasir (FE menampilkan notif, tidak mencetak).
+        $invoice = $visit->billingInvoice;
+
         return [
             'no'             => $no,
             'nama'           => $visit->patient->name ?? '-',
@@ -384,6 +388,9 @@ class MarketingReportService
             'diagnosa'       => $this->resolveDiagnosis($visit, $type, $icdMap),
             'kategori_bedah' => $this->resolveKategoriBedah($visit, $type),
             'tgl_kontrol'    => $this->resolveTglKontrol($visit, $type),
+            'visit_id'       => $visit->id,
+            'invoice_id'     => $invoice?->id,
+            'invoice_paid'   => $invoice !== null && $invoice->status === 'PAID',
         ];
     }
 

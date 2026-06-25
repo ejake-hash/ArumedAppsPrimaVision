@@ -999,9 +999,10 @@ Route::prefix('v1')->group(function () {
         // LAPORAN MARKETING (read-only daftar pasien untuk campaign)
         // -----------------------------------------------------------------
         Route::prefix('laporan-marketing')->middleware('permission:marketing.read')->group(function () {
-            Route::get('/notifications', [MarketingReportController::class, 'notifications']);
-            Route::get('/export-csv',    [MarketingReportController::class, 'export']);
-            Route::get('/',              [MarketingReportController::class, 'index']);
+            Route::get('/notifications',         [MarketingReportController::class, 'notifications']);
+            Route::get('/kwitansi/{invoiceId}',  [MarketingReportController::class, 'kwitansi']);
+            Route::get('/export-csv',            [MarketingReportController::class, 'export']);
+            Route::get('/',                      [MarketingReportController::class, 'index']);
         });
 
         // -----------------------------------------------------------------

@@ -842,6 +842,7 @@ export const jadwalDokterApi = {
 export const marketingApi = {
   list:          (params)         => api.get('/laporan-marketing', { params }),
   notifications: ()               => api.get('/laporan-marketing/notifications'),
+  kwitansi:      (invoiceId)      => api.get(`/laporan-marketing/kwitansi/${invoiceId}`),
   csvExport:     (params, format) => api.get('/laporan-marketing/export-csv', {
     params: { ...(params || {}), ...(format ? { format } : {}) },
     responseType: 'blob',
