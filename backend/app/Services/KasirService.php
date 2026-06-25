@@ -205,6 +205,17 @@ class KasirService
                 $invoice->setAttribute('obat_synced', $obatSynced);
             }
 
+            // Rujuk-internal: susulkan baris kunjungan anak rantai yang BELUM terwakili
+            // sama sekali (invoice ter-generate sebelum kunjungan anak terbentuk / mengisi
+            // tindakan → consolidateBilling hanya memotret rantai saat itu). Add-only,
+            // idempoten. Tanpa ini rincian hanya menampilkan dokter anchor walau badge
+            // "Rujuk internal · N dokter" muncul (source_visits dihitung live).
+            $chainSynced = $this->syncMissingChainLines($invoice);
+            if ($chainSynced > 0) {
+                $invoice->load('items');
+                $invoice->setAttribute('chain_synced', $chainSynced);
+            }
+
             // Revisi dokter pasca-tagih: bila masih ada resep rawat jalan belum diverifikasi
             // Farmasi, tagihan ini sedang menunggu verifikasi ulang (obat belum tertagih,
             // pembayaran diblok assertObatVerified). Flag → banner di KasirView.
@@ -3917,6 +3928,78 @@ class KasirService
             });
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('syncVerifiedObatLines gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
+            return 0;
+        }
+    }
+
+    /**
+     * Susulkan baris tagihan untuk kunjungan rantai rujuk-internal same-day yang BELUM
+     * terwakili sama sekali di invoice gabungan (anchor). Terjadi bila invoice di-generate
+     * SEBELUM kunjungan anak terbentuk / mengisi tindakan: consolidateBilling hanya memotret
+     * rantai pada saat itu, dan tak ada jalur lain yang menarik TINDAKAN kunjungan anak
+     * (syncVerifiedObatLines & resyncTarifPrices hanya menyentuh visit anchor). Gejalanya:
+     * rincian hanya menampilkan dokter anchor padahal badge "Rujuk internal · N dokter" muncul.
+     *
+     * ADD-ONLY & idempoten: hanya menambah baris untuk visit yang source_visit_id-nya TAK ADA
+     * di invoice — visit yang sudah punya baris tak disentuh (tak ada reprice/dedupe per-item).
+     * Non-rujukan (rantai 1 elemen) → no-op (zero-change). DRAFT only. Total/diskon/cover
+     * diselaraskan via recalculateInvoice (BPJS full-cover & clamp COB). Catatan: split
+     * coverage COB seq-1/seq-2 TIDAK dihitung ulang (sama batasannya dgn syncVerifiedObatLines)
+     * — pakai Susun Ulang (cancel→generate) bila perlu konsolidasi penuh COB. Lihat
+     * [[rujuk-internal-billing]].
+     */
+    public function syncMissingChainLines(BillingInvoice $invoice): int
+    {
+        if ($invoice->status !== 'DRAFT') {
+            return 0;
+        }
+
+        try {
+            return DB::transaction(function () use ($invoice) {
+                $anchor = Visit::with($this->billingEagerLoads())->find($invoice->visit_id);
+                if (! $anchor) {
+                    return 0;
+                }
+                $chain = $this->billingChainVisits($anchor);
+                if ($chain->count() <= 1) {
+                    return 0;   // bukan rujuk-internal same-day → perilaku lama.
+                }
+
+                // Visit yang SUDAH terwakili (punya ≥1 baris). Baris legacy ber-source NULL
+                // (pra-migration 2026_08_05) dianggap milik anchor — cegah dobel-tambah anchor.
+                $presentVisitIds = $invoice->items()
+                    ->whereNotNull('source_visit_id')
+                    ->distinct()
+                    ->pluck('source_visit_id')
+                    ->flip();
+                if ($invoice->items()->whereNull('source_visit_id')->exists()) {
+                    $presentVisitIds->put($anchor->id, true);
+                }
+
+                [$billInsurerId, $billGuarantor] = $this->billingInsurerFor($anchor);
+
+                $added = 0;
+                foreach ($chain as $v) {
+                    if ($presentVisitIds->has($v->id)) {
+                        continue;   // sudah ada barisnya — jangan disentuh.
+                    }
+                    foreach ($this->buildVisitInvoiceLines($v, $billInsurerId, $billGuarantor) as $line) {
+                        BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
+                        $added++;
+                    }
+                }
+
+                if ($added === 0) {
+                    return 0;
+                }
+
+                $this->recalculateInvoice($invoice);
+                $this->log(auth('api')->id(), 'SYNC_CHAIN_KWITANSI', BillingInvoice::class, $invoice->id, "{$added} baris dokter rujukan internal menyusul ditambahkan ke tagihan gabungan DRAFT");
+
+                return $added;
+            });
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('syncMissingChainLines gagal: ' . $e->getMessage(), ['invoice_id' => $invoice->id]);
             return 0;
         }
     }
