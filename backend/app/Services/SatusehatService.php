@@ -20,12 +20,16 @@ use Illuminate\Support\Facades\DB;
  *   Retry auto: setiap 01:00 jika batch sebelumnya PARTIAL/FAILED
  *   Manual:     POST /integrasi/satusehat/sync-manual
  *
- * 5 FHIR R4 resources wajib per kunjungan:
+ * FHIR R4 resources per kunjungan (kondisional sesuai data yang ada):
  *   1. Encounter          — data kunjungan
  *   2. Condition          — diagnosis (ICD-10)
- *   3. MedicationRequest  — resep obat
- *   4. MedicationDispense — pemberian obat (farmasi)
- *   5. ImagingStudy       — hasil penunjang (OCT, USG, dll)
+ *   3. Procedure          — tindakan
+ *   4. Observation        — observasi klinis (refraksi/vital)
+ *   5. MedicationRequest  — resep obat
+ *   6. MedicationDispense — pemberian obat (farmasi)
+ *   7. ServiceRequest     — order penunjang
+ *   8. DiagnosticReport   — hasil penunjang
+ *   9. ImagingStudy       — pencitraan (OCT, USG, dll)
  *
  * @see https://dev.satusehat.kemkes.go.id/
  */
@@ -793,8 +797,21 @@ class SatusehatService
             'last_tested_at'   => $this->config?->last_tested_at?->toIso8601String(),
         ];
 
-        // ── 4 kartu resource (SUCCESS/FAILED dari resource_logs) ──────────────
-        $resourceTypes = ['Encounter', 'Condition', 'MedicationRequest', 'MedicationDispense'];
+        // ── Kartu per-resource (SUCCESS/FAILED dari resource_logs) ────────────
+        // Daftar kanonik urut klinis + tipe lain yang BENAR-BENAR muncul di log
+        // rentang ini → kartu otomatis ikut saat resource Satu Sehat bertambah
+        // (Observation/Procedure/DiagnosticReport/ImagingStudy/ServiceRequest).
+        // 'Bundle' = pembungkus transaksi; 'Medication'/'Location' = resource
+        // penunjang (definisi obat / ruang), bukan event klinis → dikecualikan.
+        $canonical = [
+            'Encounter', 'Condition', 'Procedure', 'Observation',
+            'MedicationRequest', 'MedicationDispense',
+            'ServiceRequest', 'DiagnosticReport', 'ImagingStudy',
+        ];
+        $seen = SatusehatResourceLog::whereBetween('created_at', [$fromDt, $toDt])
+            ->whereNotIn('resource_type', ['Bundle', 'Medication', 'Location'])
+            ->distinct()->pluck('resource_type')->all();
+        $resourceTypes = array_values(array_unique([...$canonical, ...$seen]));
         $cards = [];
         foreach ($resourceTypes as $rt) {
             $base = SatusehatResourceLog::where('resource_type', $rt)

@@ -16,18 +16,22 @@ const rows      = ref([])     // gabungan status + config
 const toast     = reactive({ show: false, ok: true, msg: '' })
 
 // Sistem yang punya form credential BPJS lengkap (cons_id/secret/user_key).
-const BPJS_SYSTEMS = ['VCLAIM', 'ANTREAN', 'ICARE']
+// REKAM_MEDIS = keluarga service 'ihs' (sama iCare): cons_id/secret sama VClaim,
+// user_key ikut layanan iCare/ihs.
+const BPJS_SYSTEMS = ['VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS']
 
-// Urutan tampil kartu: SATUSEHAT · VCLAIM · ANTREAN, lalu ICARE · INACBGS.
-// Sistem di luar daftar ini disembunyikan (mis. LUPIS).
-const ORDER = ['SATUSEHAT', 'VCLAIM', 'ANTREAN', 'ICARE', 'INACBGS']
+// Urutan tampil kartu: baris 1 = SATUSEHAT · VCLAIM · ANTREAN,
+// baris 2 = ICARE · REKAM_MEDIS · INACBGS. Sistem di luar daftar ini
+// disembunyikan (mis. LUPIS).
+const ORDER = ['SATUSEHAT', 'VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS', 'INACBGS']
 
 const LABELS = {
-  VCLAIM:    'BPJS VClaim',
-  ANTREAN:   'BPJS Antrean Online',
-  ICARE:     'BPJS iCare',
-  SATUSEHAT: 'Satu Sehat',
-  INACBGS:   'E-Klaim INA-CBG (WS)',
+  VCLAIM:      'BPJS VClaim',
+  ANTREAN:     'BPJS Antrean Online',
+  ICARE:       'BPJS iCare',
+  REKAM_MEDIS: 'Rekam Medis BPJS',
+  SATUSEHAT:   'Satu Sehat',
+  INACBGS:     'E-Klaim INA-CBG (WS)',
 }
 
 // Draft input per-sistem (tidak ikut load dari server untuk field rahasia).
@@ -208,6 +212,7 @@ function statusBadge(s) {
 const isBpjs = (name) => BPJS_SYSTEMS.includes(name)
 const isSatusehat = (name) => name === 'SATUSEHAT'
 const isEklaim = (name) => name === 'INACBGS'
+const isRekamMedis = (name) => name === 'REKAM_MEDIS'
 
 // ── Kelola Lokasi Satu Sehat ─────────────────────────────────────────────────
 const loc = reactive({
@@ -325,13 +330,16 @@ onMounted(load)
           </label>
 
           <template v-if="isBpjs(sys.system_name)">
+            <p v-if="isRekamMedis(sys.system_name)" class="ek-hint">
+              Service family <code>ihs</code> (sama iCare). <strong>Cons ID &amp; Consumer Secret sama dengan VClaim</strong>; User Key ikut layanan iCare/ihs. Kode Faskes = PPK (mis. <code>0038R137</code>) — dipakai sebagai kunci enkripsi data RME.
+            </p>
             <label class="fld">
               <span>Service Name</span>
-              <input v-model="drafts[sys.system_name].service_name" type="text" placeholder="vclaim-rest-dev" />
+              <input v-model="drafts[sys.system_name].service_name" type="text" :placeholder="isRekamMedis(sys.system_name) ? 'ihs' : 'vclaim-rest-dev'" />
             </label>
             <label class="fld">
               <span>Kode Faskes (PPK)</span>
-              <input v-model="drafts[sys.system_name].kode_faskes" type="text" placeholder="0301Rxxx" />
+              <input v-model="drafts[sys.system_name].kode_faskes" type="text" :placeholder="isRekamMedis(sys.system_name) ? '0038R137' : '0301Rxxx'" />
             </label>
 
             <div class="cred-grp">

@@ -67,15 +67,25 @@ const conn = computed(() => data.value?.connection ?? {})
 const connOk = computed(() => conn.value.is_enabled && conn.value.last_test_status === 'SUCCESS')
 
 // Meta per kartu resource: ikon + warna aksen (chip ikon) — selaras gaya dashboard.
+// Urut mengikuti alur klinis Bundle Satu Sehat. Tipe baru yang muncul di data
+// tapi belum terdaftar di sini tetap tampil (label = nama resource, ikon generik).
 const CARD_META = {
-  Encounter:          { label: 'Kunjungan',   icon: 'visit', tone: 'navy' },
-  Condition:          { label: 'Diagnosis',   icon: 'diag',  tone: 'cyan' },
-  MedicationRequest:  { label: 'Peresepan',   icon: 'rx',    tone: 'green' },
-  MedicationDispense: { label: 'Obat Pulang', icon: 'pill',  tone: 'amber' },
+  Encounter:          { label: 'Kunjungan',      icon: 'visit',  tone: 'navy' },
+  Condition:          { label: 'Diagnosis',      icon: 'diag',   tone: 'cyan' },
+  Procedure:          { label: 'Tindakan',       icon: 'proc',   tone: 'navy' },
+  Observation:        { label: 'Observasi',      icon: 'eye',    tone: 'cyan' },
+  MedicationRequest:  { label: 'Peresepan',      icon: 'rx',     tone: 'green' },
+  MedicationDispense: { label: 'Obat Pulang',    icon: 'pill',   tone: 'amber' },
+  ServiceRequest:     { label: 'Order Penunjang',icon: 'order',  tone: 'amber' },
+  DiagnosticReport:   { label: 'Hasil Penunjang',icon: 'report', tone: 'green' },
+  ImagingStudy:       { label: 'Pencitraan',     icon: 'scan',   tone: 'cyan' },
 }
 const cards = computed(() => {
   const c = data.value?.cards ?? {}
-  return Object.entries(CARD_META).map(([key, meta]) => {
+  // Kartu terdaftar (urut klinis) + tipe lain dari data yang belum dipetakan.
+  const keys = [...Object.keys(CARD_META), ...Object.keys(c).filter((k) => !CARD_META[k])]
+  return keys.map((key) => {
+    const meta = CARD_META[key] ?? { label: key, icon: 'generic', tone: 'navy' }
     const v = c[key] ?? {}
     const success = v.success || 0
     const failed = v.failed || 0
@@ -279,7 +289,7 @@ onMounted(() => { load(); loadBatches() })
     </section>
 
     <div v-if="loading" class="skeleton-wrap">
-      <div v-for="n in 4" :key="n" class="sk-card" />
+      <div v-for="n in 8" :key="n" class="sk-card" />
     </div>
 
     <template v-else>
@@ -301,6 +311,11 @@ onMounted(() => { load(); loadBatches() })
               <svg v-if="c.icon === 'visit'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
               <svg v-else-if="c.icon === 'diag'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
               <svg v-else-if="c.icon === 'rx'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="13" x2="15" y2="13" /><line x1="9" y1="17" x2="13" y2="17" /></svg>
+              <svg v-else-if="c.icon === 'proc'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5a2.1 2.1 0 0 1 3 3L7 16l-4 1 1-4Z" /><line x1="12.5" y1="4.5" x2="15.5" y2="7.5" /></svg>
+              <svg v-else-if="c.icon === 'eye'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" /><circle cx="12" cy="12" r="3" /></svg>
+              <svg v-else-if="c.icon === 'order'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8" /><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" /></svg>
+              <svg v-else-if="c.icon === 'report'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><path d="M8 16l2.5-3 2 2L15 12" /></svg>
+              <svg v-else-if="c.icon === 'scan'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" /><circle cx="12" cy="12" r="3" /></svg>
               <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 20.5 3.5 13.5a5 5 0 0 1 7-7l7 7a5 5 0 0 1-7 7Z" /><line x1="8.5" y1="8.5" x2="15.5" y2="15.5" /></svg>
             </span>
             <span v-if="c.rate !== null" class="card-rate" :class="c.rate >= 90 ? 'r-good' : c.rate >= 60 ? 'r-mid' : 'r-low'">{{ c.rate }}%</span>
@@ -686,8 +701,10 @@ onMounted(() => { load(); loadBatches() })
 .range input:focus { outline: none; border-color: var(--cyan); }
 
 /* ── STAT CARDS ──────────────────────────────────────────────────── */
-.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; }
-@media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+/* Auto-fit: kartu membungkus rapi berapa pun jumlah resource (≥9 sejak Bundle
+   diperluas) tanpa perlu ubah jumlah kolom manual. */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; }
+@media (max-width: 560px) { .cards { grid-template-columns: repeat(2, 1fr); } }
 .card {
   background: var(--bc); border: 1px solid var(--gb); border-radius: 16px;
   padding: 1.1rem 1.15rem; position: relative; overflow: hidden;
@@ -802,8 +819,8 @@ onMounted(() => { load(); loadBatches() })
 .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 2rem 1rem; color: var(--tm); text-align: center; }
 .empty svg { width: 34px; height: 34px; color: #c3ccd6; }
 .empty p { margin: 0; font-size: 13px; }
-.skeleton-wrap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; }
-@media (max-width: 900px) { .skeleton-wrap { grid-template-columns: repeat(2, 1fr); } }
+.skeleton-wrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; }
+@media (max-width: 560px) { .skeleton-wrap { grid-template-columns: repeat(2, 1fr); } }
 .sk-card { height: 132px; border-radius: 16px; background: linear-gradient(100deg, var(--bs) 30%, #eef2f6 50%, var(--bs) 70%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 

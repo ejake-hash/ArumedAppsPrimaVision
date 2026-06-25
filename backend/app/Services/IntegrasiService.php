@@ -66,6 +66,7 @@ class IntegrasiService
                 'SATUSEHAT'  => $this->satusehat->testConnection(),
                 'INACBGS'    => $this->inacbgs->testConnection(),
                 'ICARE'      => ['success' => false, 'message' => 'iCare test — placeholder.', 'system' => 'ICARE'],
+                'REKAM_MEDIS'=> ['success' => false, 'message' => 'WS Rekam Medis tak punya endpoint ping — verifikasi dgn kirim 1 RME ber-SEP.', 'system' => 'REKAM_MEDIS'],
                 'LUPIS'      => ['success' => false, 'message' => 'LUPIS test — placeholder.', 'system' => 'LUPIS'],
                 default      => throw new \Exception("Sistem tidak dikenal: {$system}", 422),
             };
