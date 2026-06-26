@@ -2977,6 +2977,24 @@ class DokterService
 
         $isToday = $date->isSameDay($today);
 
+        // Cegah rujuk GANDA: pasien sudah punya kunjungan aktif (belum dibatalkan —
+        // visit batal = soft-deleted, otomatis terkecuali) ke poli/dokter tujuan pada
+        // tanggal rujukan yang sama. Tanpa ini, klik "Rujuk" dua kali atau dua sumber
+        // merujuk ke dokter yang sama membuat visit anak duplikat → tampil sebagai
+        // konsultasi/tindakan ganda di kwitansi Kasir (lihat kasir source_visit grouping).
+        $dup = Visit::where('patient_id', $visit->patient_id)
+            ->where('doctor_schedule_id', $target->id)
+            ->whereDate('visit_date', $date->toDateString())
+            ->where('id', '!=', $visit->id)
+            ->exists();
+        if ($dup) {
+            throw new \Exception(
+                'Pasien sudah dirujuk ke ' . ($target->employee?->name ?: 'dokter/poli ini')
+                . ' pada ' . $date->locale('id')->isoFormat('D MMM Y') . '. Rujukan ganda tidak diperbolehkan.',
+                422
+            );
+        }
+
         return DB::transaction(function () use ($visit, $target, $reason, $user, $isToday, $date) {
             $child = Visit::create([
                 'parent_visit_id'                    => $visit->id,
