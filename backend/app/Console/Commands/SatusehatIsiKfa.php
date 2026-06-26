@@ -227,9 +227,12 @@ class SatusehatIsiKfa extends Command
                 return null;
             }
             if ($ans === 'c') {
-                $kw = trim((string) $this->ask('  Keyword baru'));
-                if ($kw === '') {
-                    continue;
+                $kw = trim((string) $this->ask('  Keyword baru (kosong/s = skip obat ini, q = quit)'));
+                if ($kw === '' || strtolower($kw) === 's') {
+                    return null;
+                }
+                if (strtolower($kw) === 'q') {
+                    return 'QUIT';
                 }
                 $res = $satusehat->searchKfa($kw);
                 if (! ($res['success'] ?? false)) {

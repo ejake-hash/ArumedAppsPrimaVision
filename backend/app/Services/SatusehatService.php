@@ -850,7 +850,10 @@ class SatusehatService
         $doctorsNoNikQ = \App\Models\Employee::where('is_active', true)
             ->where('profession', 'like', '%okter%')
             ->where(fn ($q) => $q->whereNull('nik')->orWhere('nik', ''));
-        $medsNoKfaQ = \App\Models\Medication::where(fn ($q) => $q->whereNull('kfa_code')->orWhere('kfa_code', ''));
+        // Hanya obat AKTIF yang relevan — obat non-aktif takkan diresepkan/dikirim
+        // ke Satu Sehat, jadi tak dihitung sebagai "belum siap".
+        $medsNoKfaQ = \App\Models\Medication::where('is_active', true)
+            ->where(fn ($q) => $q->whereNull('kfa_code')->orWhere('kfa_code', ''));
 
         $readiness = [
             // Hanya dokter AKTIF yang relevan utk Satu Sehat (dokter lama/inactive — mis. atribusi
