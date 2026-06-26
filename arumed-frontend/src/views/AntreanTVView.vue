@@ -873,9 +873,9 @@ watch(mediaRotateSec, (v) => { try { localStorage.setItem(MEDIA_ROTATE_SEC_KEY, 
 // Mode Loket Admisi — panel kanan: 'rotate' (media↔papan bed bergantian) atau
 // 'bed' (papan bed saja). Persist per-TV.
 const ADMISI_RIGHT_KEY = 'antreanTvAdmisiRight'
-const admisiRight = ref((() => { try { const v = localStorage.getItem(ADMISI_RIGHT_KEY); return v === 'bed' ? 'bed' : 'rotate' } catch { return 'rotate' } })())
+const admisiRight = ref((() => { try { const v = localStorage.getItem(ADMISI_RIGHT_KEY); return ['bed', 'media'].includes(v) ? v : 'rotate' } catch { return 'rotate' } })())
 function setAdmisiRight(v) {
-  admisiRight.value = v === 'bed' ? 'bed' : 'rotate'
+  admisiRight.value = ['bed', 'media', 'rotate'].includes(v) ? v : 'rotate'
   try { localStorage.setItem(ADMISI_RIGHT_KEY, admisiRight.value) } catch { /* abaikan */ }
 }
 
@@ -2233,7 +2233,7 @@ async function saveAudioDefaults() {
       <div class="stasiun-media">
         <BedAvailabilityBoard v-if="admisiRight === 'bed'" variant="full" :rooms="bedRooms" />
         <template v-else>
-          <BedAvailabilityBoard v-if="mediaSlot === 'bed'" variant="compact" :rooms="bedRooms" />
+          <BedAvailabilityBoard v-if="admisiRight === 'rotate' && mediaSlot === 'bed'" variant="compact" :rooms="bedRooms" />
           <template v-else>
             <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
               <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
@@ -2842,6 +2842,9 @@ async function saveAudioDefaults() {
                 <button :class="['mode-seg-btn', { active: admisiRight === 'rotate' }]" @click="setAdmisiRight('rotate')">
                   Dinamis + Media
                 </button>
+                <button :class="['mode-seg-btn', { active: admisiRight === 'media' }]" @click="setAdmisiRight('media')">
+                  Media Saja
+                </button>
                 <button :class="['mode-seg-btn', { active: admisiRight === 'bed' }]" @click="setAdmisiRight('bed')">
                   Papan Bed Saja
                 </button>
@@ -2860,7 +2863,8 @@ async function saveAudioDefaults() {
               </template>
               <p class="ctrl-lbl" style="opacity:.55; margin-top:6px; font-weight:400">
                 Dinamis + Media = video/slideshow bergantian dengan papan bed (durasi memakai
-                pengaturan yang sama). Papan Bed Saja = panel kanan hanya papan ketersediaan bed.
+                pengaturan yang sama). Media Saja = panel kanan hanya video/slideshow.
+                Papan Bed Saja = panel kanan hanya papan ketersediaan bed.
               </p>
             </div>
 

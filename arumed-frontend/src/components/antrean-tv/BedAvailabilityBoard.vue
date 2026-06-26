@@ -155,14 +155,15 @@ function cellClass(status) {
 
 /* ── Daftar kamar (mengisi ruang vertikal) ── */
 .bb-rooms {
-  flex: 1 1 auto; overflow-y: auto; display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  grid-auto-rows: minmax(min-content, 1fr);
-  align-content: stretch; gap: .9rem;
+  flex: 1 1 auto; min-height: 0; overflow: hidden; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-auto-rows: minmax(130px, 1fr);
+  gap: .9rem;
 }
 .compact .bb-rooms { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); grid-auto-rows: min-content; align-content: start; gap: .5rem; }
 
-.bb-room { display: flex; flex-direction: column; background: rgba(255,255,255,.04); border: 1px solid #1e2d45; border-radius: 12px; padding: .8rem .9rem; }
+.bb-room { height: 100%; display: flex; flex-direction: column; background: rgba(255,255,255,.04); border: 1px solid #1e2d45; border-radius: 12px; padding: .9rem 1rem; }
+.compact .bb-room { height: auto; }
 .compact .bb-room { padding: .5rem .55rem; border-radius: 9px; }
 .bb-room-head { display: flex; align-items: baseline; gap: .5rem; margin-bottom: .6rem; flex: 0 0 auto; }
 .bb-room-name { font-weight: 800; color: #fff; font-size: 1.3rem; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -174,11 +175,11 @@ function cellClass(status) {
 .bb-room-avail b { color: #34d27b; font-weight: 800; }
 .bb-room-avail b.zero { color: #ff6b6b; }
 
-.bb-cells { display: flex; flex-wrap: wrap; gap: .5rem; flex: 1 1 auto; align-content: center; }
+.bb-cells { display: flex; flex-wrap: wrap; gap: .6rem; flex: 1 1 auto; align-content: center; }
 .compact .bb-cells { gap: .3rem; align-content: flex-start; }
 .bb-cell {
-  min-width: 3rem; padding: .5rem .7rem; border-radius: 9px;
-  font-size: 1.05rem; font-weight: 800; text-align: center; color: #06210f;
+  min-width: 4rem; padding: .7rem 1rem; border-radius: 10px;
+  font-size: 1.35rem; font-weight: 800; text-align: center; color: #06210f;
   white-space: nowrap; display: flex; align-items: center; justify-content: center;
 }
 .compact .bb-cell { min-width: 1.7rem; padding: .18rem .32rem; font-size: .66rem; border-radius: 5px; }
