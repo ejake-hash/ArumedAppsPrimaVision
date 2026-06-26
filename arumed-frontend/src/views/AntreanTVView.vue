@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import { useRoute } from 'vue-router'
 import { antreanTvApi } from '@/services/api'
 import logoPvPutih from '@/assets/images/logo-pv-putih.png'
+import BedAvailabilityBoard from '@/components/antrean-tv/BedAvailabilityBoard.vue'
 
 const route = useRoute()
 
@@ -325,18 +326,19 @@ const stationView = computed(() => {
 // per-TV (localStorage). Toggle di control panel (tab Antrean) mengubah +
 // menyimpan pilihan ini, jadi tak perlu mengetik query tiap buka.
 const TV_MODE_KEY = 'antreanTvMode'
+const TV_MODES = ['grid', 'poli', 'bed', 'admisi']
 function initialTvMode() {
   const q = route.query.mode
-  if (q === 'poli' || q === 'grid') return q
+  if (TV_MODES.includes(q)) return q
   try {
     const saved = localStorage.getItem(TV_MODE_KEY)
-    if (saved === 'poli' || saved === 'grid') return saved
+    if (TV_MODES.includes(saved)) return saved
   } catch { /* localStorage tak tersedia → default grid */ }
   return 'grid'
 }
 const tvMode = ref(initialTvMode())
 function setTvMode(m) {
-  if (m !== 'poli' && m !== 'grid') return
+  if (!TV_MODES.includes(m)) return
   tvMode.value = m
   try { localStorage.setItem(TV_MODE_KEY, m) } catch { /* abaikan */ }
 }
@@ -690,10 +692,13 @@ function disconnectWs() {
 
 onMounted(async () => {
   timer = setInterval(updateClock, 1000)
-  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings(), registerDevice()])
+  await Promise.all([fetchSnapshot(), fetchActiveDoctors(), fetchDisplaySettings(), fetchAudioDefaults(), fetchBrandingSettings(), fetchBedAvailability(), registerDevice()])
   connectWs()
   // Refresh dokter aktif tiap 2 menit (toggle aktif/non-aktif dari menu dokter)
   doctorPollInterval = setInterval(fetchActiveDoctors, 120_000)
+  // Papan bed jarang berubah → poll lambat 60 dtk; mulai rotasi bila aktif
+  bedPollInterval = setInterval(fetchBedAvailability, 60_000)
+  if (rotateEligible.value) scheduleBedRotate()
   // Heartbeat status TV tiap 60 detik (last_seen → indikator online di panel)
   heartbeatInterval = setInterval(heartbeat, 60_000)
   // TTS voices: load awal + listen perubahan (Chrome lazy-load voice list)
@@ -711,6 +716,8 @@ onUnmounted(() => {
   clearInterval(timer)
   if (doctorPollInterval) clearInterval(doctorPollInterval)
   if (heartbeatInterval) clearInterval(heartbeatInterval)
+  if (bedPollInterval) clearInterval(bedPollInterval)
+  stopBedRotate()
   disconnectWs()
   stopSlideshow()
   if (slideIntervalDebounce) clearTimeout(slideIntervalDebounce)
@@ -833,6 +840,71 @@ const videoAutoplay = ref(true)
 const slideScope = ref('panel')
 const flashOverFullscreen = ref(true)
 
+// ─── Papan ketersediaan tempat tidur (publik, TANPA PII) ────────────────────
+// Sumber: antreanTvApi.bedAvailability() = agregat kamar+status bed saja (tak ada
+// nama/No. RM). Dipakai mode 'bed' (layar khusus) DAN rotasi panel media di mode
+// grid/poli. Bed jarang berubah → poll lambat 60 dtk cukup.
+const bedRooms = ref([])
+async function fetchBedAvailability() {
+  try {
+    const { data } = await antreanTvApi.bedAvailability()
+    bedRooms.value = data?.data ?? []
+  } catch { /* pertahankan data lama bila gagal */ }
+}
+let bedPollInterval = null
+
+// Rotasi: selipkan papan bed bergantian dengan media di panel (grid/poli).
+// Persist per-TV (localStorage), diatur dari control panel tab Antrean.
+const BED_ROTATE_KEY = 'antreanTvBedRotate'
+const BED_ROTATE_SEC_KEY = 'antreanTvBedRotateSec'
+const MEDIA_ROTATE_SEC_KEY = 'antreanTvMediaRotateSec'
+function lsBool(key, def) { try { const v = localStorage.getItem(key); return v === null ? def : v === '1' } catch { return def } }
+function lsNum(key, def) { try { const v = Number(localStorage.getItem(key)); return Number.isFinite(v) && v > 0 ? v : def } catch { return def } }
+const bedRotateEnabled = ref(lsBool(BED_ROTATE_KEY, false))
+const bedRotateSec = ref(lsNum(BED_ROTATE_SEC_KEY, 15))    // lama papan bed tampil
+const mediaRotateSec = ref(lsNum(MEDIA_ROTATE_SEC_KEY, 30)) // lama media tampil
+function setBedRotate(v) {
+  bedRotateEnabled.value = !!v
+  try { localStorage.setItem(BED_ROTATE_KEY, v ? '1' : '0') } catch { /* abaikan */ }
+}
+watch(bedRotateSec, (v) => { try { localStorage.setItem(BED_ROTATE_SEC_KEY, String(v)) } catch { /* abaikan */ } })
+watch(mediaRotateSec, (v) => { try { localStorage.setItem(MEDIA_ROTATE_SEC_KEY, String(v)) } catch { /* abaikan */ } })
+
+// Mode Loket Admisi — panel kanan: 'rotate' (media↔papan bed bergantian) atau
+// 'bed' (papan bed saja). Persist per-TV.
+const ADMISI_RIGHT_KEY = 'antreanTvAdmisiRight'
+const admisiRight = ref((() => { try { const v = localStorage.getItem(ADMISI_RIGHT_KEY); return v === 'bed' ? 'bed' : 'rotate' } catch { return 'rotate' } })())
+function setAdmisiRight(v) {
+  admisiRight.value = v === 'bed' ? 'bed' : 'rotate'
+  try { localStorage.setItem(ADMISI_RIGHT_KEY, admisiRight.value) } catch { /* abaikan */ }
+}
+
+// Slot panel media: 'media' | 'bed'. Berotasi bila: (a) mode grid/poli dgn toggle
+// rotasi aktif & media scope panel, atau (b) mode admisi dgn panel kanan 'rotate'.
+const mediaSlot = ref('media')
+const rotateEligible = computed(() => {
+  if (tvMode.value === 'admisi') return admisiRight.value === 'rotate'
+  return bedRotateEnabled.value && (tvMode.value === 'grid' || tvMode.value === 'poli') && slideScope.value === 'panel'
+})
+
+// Ringkasan stasiun ADMISI utk mode Loket Admisi (nomor dipanggil + menunggu).
+const admisiView = computed(() => stationView.value?.ADMISI ?? { called: null, waiting: [] })
+let bedRotateTimer = null
+function scheduleBedRotate() {
+  clearTimeout(bedRotateTimer)
+  if (!rotateEligible.value) { mediaSlot.value = 'media'; return }
+  const dur = (mediaSlot.value === 'bed' ? bedRotateSec.value : mediaRotateSec.value) * 1000
+  bedRotateTimer = setTimeout(() => {
+    mediaSlot.value = mediaSlot.value === 'bed' ? 'media' : 'bed'
+    scheduleBedRotate()
+  }, dur)
+}
+function stopBedRotate() { clearTimeout(bedRotateTimer); bedRotateTimer = null }
+watch(rotateEligible, (ok) => {
+  if (ok) { mediaSlot.value = 'media'; scheduleBedRotate() }
+  else { stopBedRotate(); mediaSlot.value = 'media' }
+})
+
 // Identitas perangkat (per-TV) — token unik persist di localStorage supaya TV
 // ini dikenali server walau di-reload (termasuk auto-reload tengah malam).
 const DEVICE_KEY_STORAGE = 'av_tv_device_key'
@@ -872,8 +944,10 @@ const editorLoading = ref(false)
 let lastEditorInterval = null   // guard agar load tidak memicu write-back interval
 
 // Saat fullscreen + flash dimatikan → TV jadi papan iklan murni: jangan
-// umumkan panggilan sama sekali (tanpa flash & tanpa TTS).
-const suppressCalls = computed(() => slideScope.value === 'fullscreen' && !flashOverFullscreen.value)
+// umumkan panggilan sama sekali (tanpa flash & tanpa TTS). Mode 'bed' juga:
+// layar khusus ketersediaan tempat tidur, tanpa antrean & tanpa pemanggilan.
+const suppressCalls = computed(() =>
+  tvMode.value === 'bed' || (slideScope.value === 'fullscreen' && !flashOverFullscreen.value))
 
 function showMediaMsg(msg, type) {
   mediaSaveMsg.value = msg
@@ -1979,6 +2053,9 @@ async function saveAudioDefaults() {
     <div v-if="tvMode === 'grid'" class="tv-main">
       <!-- VIDEO/INFO PANEL -->
       <div class="video-panel">
+        <!-- Rotasi: papan bed menggantikan media sementara -->
+        <BedAvailabilityBoard v-if="mediaSlot === 'bed'" variant="compact" :rooms="bedRooms" />
+        <template v-else>
         <!-- Placeholder -->
         <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
           <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
@@ -2024,6 +2101,7 @@ async function saveAudioDefaults() {
           controls
           class="local-video"
         ></video>
+        </template>
       </div>
 
       <!-- QUEUE PANEL -->
@@ -2086,6 +2164,8 @@ async function saveAudioDefaults() {
 
         <!-- MEDIA -->
         <div class="poli-media">
+          <BedAvailabilityBoard v-if="mediaSlot === 'bed'" variant="compact" :rooms="bedRooms" />
+          <template v-else>
           <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
             <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
             <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
@@ -2102,6 +2182,7 @@ async function saveAudioDefaults() {
           <div v-else class="video-placeholder">
             <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
           </div>
+          </template>
         </div>
       </div>
 
@@ -2117,6 +2198,61 @@ async function saveAudioDefaults() {
             <div class="dc-wait">{{ c.waitingCount }} menunggu<span v-if="c.nextNum"> · berikutnya {{ c.nextNum }}</span></div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- MAIN — MODE PAPAN BED (layar khusus penuh: tanpa antrean & pemanggilan) -->
+    <div v-else-if="tvMode === 'bed'" class="tv-main bed-main">
+      <div class="bed-hero">
+        <BedAvailabilityBoard variant="full" :rooms="bedRooms" />
+      </div>
+    </div>
+
+    <!-- MAIN — MODE LOKET ADMISI (hero antrean Admisi + panel kanan dinamis) -->
+    <div v-else-if="tvMode === 'admisi'" class="tv-main stasiun-main">
+      <!-- HERO: nomor dipanggil besar + daftar antrean berikutnya -->
+      <div :class="['stasiun-hero', { 'has-called': admisiView.called }]">
+        <div class="sh-head">{{ stationLabel['ADMISI'] || 'Admisi' }}</div>
+        <div class="sh-call">
+          <div class="sh-call-lbl">Sedang Dipanggil</div>
+          <div :class="['sh-num', { muted: !admisiView.called }]">{{ admisiView.called ? admisiView.called.num : '—' }}</div>
+          <div v-if="admisiView.called && settingsFor('ADMISI').show_name_in_card !== false && admisiView.called.name && admisiView.called.name !== '—'"
+               class="sh-name">{{ admisiView.called.name }}</div>
+        </div>
+        <div class="sh-next">
+          <div class="sh-next-lbl">Antrean Berikutnya</div>
+          <div v-if="admisiView.waiting.length" class="sh-next-list">
+            <span v-for="(w, i) in admisiView.waiting.slice(0, 15)" :key="i"
+                  :class="['sh-next-num', { up: i === 0 }]">{{ w.num }}</span>
+          </div>
+          <div v-else class="sh-next-empty">Tidak ada antrean menunggu</div>
+        </div>
+      </div>
+
+      <!-- KANAN: dinamis (media↔papan bed) atau papan bed saja -->
+      <div class="stasiun-media">
+        <BedAvailabilityBoard v-if="admisiRight === 'bed'" variant="full" :rooms="bedRooms" />
+        <template v-else>
+          <BedAvailabilityBoard v-if="mediaSlot === 'bed'" variant="compact" :rooms="bedRooms" />
+          <template v-else>
+            <div v-if="mediaMode === 'placeholder'" class="video-placeholder">
+              <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+              <h2 v-if="branding.placeholder_title" class="video-title">{{ branding.placeholder_title }}</h2>
+              <p v-if="branding.placeholder_tagline" class="video-tagline">{{ branding.placeholder_tagline }}</p>
+            </div>
+            <iframe v-else-if="mediaMode === 'youtube'" :src="youtubeEmbedUrl" class="yt-frame"
+                    allow="autoplay; encrypted-media" allowfullscreen frameborder="0"></iframe>
+            <div v-else-if="mediaMode === 'slideshow' && slides.length" class="slideshow">
+              <img v-for="(s, i) in slides" :key="i" :src="s.url"
+                   :class="['slide-img', { active: i === slideIndex }]" alt="" />
+            </div>
+            <video v-else-if="mediaMode === 'localvideo' && localVideoUrl" :src="localVideoUrl"
+                   :loop="videoLoop" :autoplay="videoAutoplay" muted class="local-video"></video>
+            <div v-else class="video-placeholder">
+              <img :src="branding.logo_data || logoPvPutih" alt="Logo rumah sakit" class="video-logo-img" />
+            </div>
+          </template>
+        </template>
       </div>
     </div>
 
@@ -2685,11 +2821,74 @@ async function saveAudioDefaults() {
                 <button :class="['mode-seg-btn', { active: tvMode === 'poli' }]" @click="setTvMode('poli')">
                   Poliklinik BPJS
                 </button>
+                <button :class="['mode-seg-btn', { active: tvMode === 'bed' }]" @click="setTvMode('bed')">
+                  Papan Bed
+                </button>
+                <button :class="['mode-seg-btn', { active: tvMode === 'admisi' }]" @click="setTvMode('admisi')">
+                  Loket Admisi
+                </button>
               </div>
               <p class="ctrl-lbl" style="opacity:.55; margin-top:6px; font-weight:400">
-                Pilihan disimpan di TV ini & bertahan saat di-reload. Mode Poliklinik
-                menampilkan antrean per-dokter BPJS (rotasi dengan media), Grid menampilkan
-                8 stasiun sekaligus.
+                Pilihan disimpan di TV ini & bertahan saat di-reload. Poliklinik =
+                antrean per-dokter BPJS, Grid = 8 stasiun sekaligus, Papan Bed = layar
+                khusus ketersediaan tempat tidur, Loket Admisi = antrean Admisi besar +
+                panel kanan dinamis (semua tanpa data pasien selain nama bila diaktifkan).
+              </p>
+            </div>
+
+            <div v-if="tvMode === 'admisi'" class="ctrl-sub-section">
+              <p class="ctrl-lbl">Panel Kanan (Loket Admisi)</p>
+              <div class="mode-seg">
+                <button :class="['mode-seg-btn', { active: admisiRight === 'rotate' }]" @click="setAdmisiRight('rotate')">
+                  Dinamis + Media
+                </button>
+                <button :class="['mode-seg-btn', { active: admisiRight === 'bed' }]" @click="setAdmisiRight('bed')">
+                  Papan Bed Saja
+                </button>
+              </div>
+              <template v-if="admisiRight === 'rotate'">
+                <div class="ctrl-row" style="align-items:center; gap:1rem; margin-top:8px">
+                  <p class="ctrl-lbl" style="margin:0; min-width:170px">Lama Papan Bed Tampil</p>
+                  <input type="range" v-model.number="bedRotateSec" min="5" max="60" step="5" class="ctrl-range" />
+                  <span class="ctrl-dur-val">{{ bedRotateSec }}s</span>
+                </div>
+                <div class="ctrl-row" style="align-items:center; gap:1rem">
+                  <p class="ctrl-lbl" style="margin:0; min-width:170px">Lama Media Tampil</p>
+                  <input type="range" v-model.number="mediaRotateSec" min="5" max="120" step="5" class="ctrl-range" />
+                  <span class="ctrl-dur-val">{{ mediaRotateSec }}s</span>
+                </div>
+              </template>
+              <p class="ctrl-lbl" style="opacity:.55; margin-top:6px; font-weight:400">
+                Dinamis + Media = video/slideshow bergantian dengan papan bed (durasi memakai
+                pengaturan yang sama). Papan Bed Saja = panel kanan hanya papan ketersediaan bed.
+              </p>
+            </div>
+
+            <div class="ctrl-sub-section">
+              <p class="ctrl-lbl">Papan Ketersediaan Tempat Tidur</p>
+              <div class="ctrl-toggles">
+                <label class="ctrl-toggle">
+                  <input type="checkbox" :checked="bedRotateEnabled" @change="setBedRotate($event.target.checked)" />
+                  <span class="toggle-track"></span>
+                  <span class="toggle-label">Selipkan papan bed di panel media (rotasi) — mode Grid &amp; Poliklinik</span>
+                </label>
+              </div>
+              <template v-if="bedRotateEnabled">
+                <div class="ctrl-row" style="align-items:center; gap:1rem; margin-top:8px">
+                  <p class="ctrl-lbl" style="margin:0; min-width:170px">Lama Papan Bed Tampil</p>
+                  <input type="range" v-model.number="bedRotateSec" min="5" max="60" step="5" class="ctrl-range" />
+                  <span class="ctrl-dur-val">{{ bedRotateSec }}s</span>
+                </div>
+                <div class="ctrl-row" style="align-items:center; gap:1rem">
+                  <p class="ctrl-lbl" style="margin:0; min-width:170px">Lama Media Tampil</p>
+                  <input type="range" v-model.number="mediaRotateSec" min="5" max="120" step="5" class="ctrl-range" />
+                  <span class="ctrl-dur-val">{{ mediaRotateSec }}s</span>
+                </div>
+              </template>
+              <p class="ctrl-lbl" style="opacity:.55; margin-top:6px; font-weight:400">
+                Papan bed bergantian dengan video/slideshow di panel media. Hanya berlaku
+                saat media ber-scope panel (tidak saat media layar penuh). Untuk layar khusus
+                bed permanen, pilih mode "Papan Bed" di atas.
               </p>
             </div>
 
@@ -4389,6 +4588,57 @@ async function saveAudioDefaults() {
 }
 .poli-call  { flex: 40 1 0; min-width: 0; }
 .poli-media { flex: 60 1 0; min-width: 0; min-height: 0; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODE PAPAN BED — layar khusus ketersediaan tempat tidur (kiri: Dipanggil,
+   kanan: papan bed penuh). Panggilan tetap tampil & flash tetap menyela.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.bed-main {
+  display: flex;
+  gap: 1.25rem;
+  min-height: 0;
+}
+.bed-side { flex: 30 1 0; min-width: 0; display: flex; flex-direction: column; }
+.bed-side .poli-call { flex: 1 1 auto; }
+.bed-hero { flex: 70 1 0; min-width: 0; min-height: 0; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODE LOKET ADMISI — hero antrean Admisi (kiri) + panel kanan dinamis
+   (media↔papan bed, atau papan bed saja). Panggilan/flash tetap menyela.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.stasiun-main { display: flex; gap: 1.25rem; min-height: 0; }
+.stasiun-hero {
+  flex: 42 1 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 1rem;
+  background: #fff; color: #06182E; border-radius: 18px; padding: 1.5rem 1.75rem;
+}
+.stasiun-hero .sh-head { font-size: 1.6rem; font-weight: 800; letter-spacing: .04em; color: #0b74c4; text-transform: uppercase; }
+.stasiun-hero .sh-call { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1 1 auto; gap: .3rem; }
+.sh-call-lbl { font-size: 1.2rem; font-weight: 600; color: #5a708c; letter-spacing: .03em; }
+.sh-num {
+  font-family: 'Space Grotesk', serif; font-variant-numeric: tabular-nums;
+  font-size: clamp(5rem, 12vw, 11rem); line-height: 1; font-weight: 700; color: #0b74c4;
+}
+.sh-num.muted { color: #c2cede; }
+.sh-name { font-size: 1.8rem; font-weight: 700; color: #06182E; text-align: center; }
+.sh-next { flex: 0 0 auto; border-top: 2px solid #e6edf5; padding-top: 1rem; }
+.sh-next-lbl { font-size: 1.1rem; font-weight: 700; color: #5a708c; margin-bottom: .6rem; }
+.sh-next-list { display: flex; flex-wrap: wrap; gap: .5rem; }
+.sh-next-num {
+  font-family: 'Space Grotesk', serif; font-variant-numeric: tabular-nums;
+  font-size: 1.5rem; font-weight: 700; color: #0b3a5c;
+  background: #eef4fa; border: 1px solid #d6e4f1; border-radius: 10px; padding: .25rem .7rem;
+}
+.sh-next-num.up { background: #0b74c4; color: #fff; border-color: #0b74c4; }
+.sh-next-empty { font-size: 1.2rem; color: #9fb0c4; font-style: italic; }
+
+.stasiun-media {
+  flex: 58 1 0; min-width: 0; min-height: 0;
+  background: #06182E; border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; position: relative;
+}
+.stasiun-media > *:not(.video-placeholder):not(.yt-frame) { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /* Panel media — samakan tampilan dengan .video-panel */
 .poli-media {

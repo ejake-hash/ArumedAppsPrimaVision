@@ -45,6 +45,7 @@ use App\Http\Controllers\TvAudioSettingController;
 use App\Http\Controllers\TvMediaSettingController;
 use App\Http\Controllers\TvDeviceController;
 use App\Http\Controllers\TvBrandingSettingController;
+use App\Http\Controllers\TvBedAvailabilityController;
 use App\Http\Controllers\AsuransiController;
 use App\Http\Controllers\IgdController;
 use App\Http\Controllers\AntrolMobileController;
@@ -123,6 +124,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/branding-settings', [TvBrandingSettingController::class, 'show']);
         // Media (mode, YouTube URL, video lokal, slideshow) — public read
         Route::get('/media-settings',    [TvMediaSettingController::class, 'show']);
+        // Papan ketersediaan tempat tidur (agregat tanpa PII) — transparansi publik
+        Route::get('/bed-availability',  [TvBedAvailabilityController::class, 'index']);
         // Registry TV per-perangkat — TV lapor diri & ambil media efektifnya (public)
         Route::post('/device/register',  [TvDeviceController::class, 'register']);
         Route::get('/device/{deviceKey}', [TvDeviceController::class, 'show']);

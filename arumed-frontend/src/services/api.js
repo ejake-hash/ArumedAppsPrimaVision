@@ -794,6 +794,7 @@ export const anjunganApi = {
 /** Antrean TV (lobby display — public, no auth) */
 export const antreanTvApi = {
   snapshot:            () => api.get('/antrean-tv/snapshot'),
+  bedAvailability:     () => api.get('/antrean-tv/bed-availability'),
   dokterAktif:         () => api.get('/antrean-tv/dokter-aktif'),
   displaySettings:     () => api.get('/antrean-tv/display-settings'),
   updateDisplay:       (station, payload) => api.put(`/antrean-tv/display-settings/${station}`, payload),
