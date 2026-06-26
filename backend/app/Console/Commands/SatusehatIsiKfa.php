@@ -25,6 +25,7 @@ class SatusehatIsiKfa extends Command
                             {--all : Proses SEMUA obat aktif tanpa KFA (default: hanya yg pernah diresepkan)}
                             {--apply : Tulis kfa_code ke DB (default: dry-run, tidak menulis apa pun)}
                             {--first : Pakai hasil pertama saat ambigu (TIDAK disarankan, bisa salah kode)}
+                            {--pick : Mode interaktif: untuk obat ambigu/nihil, tampilkan kandidat & pilih manual di terminal}
                             {--limit=0 : Batasi jumlah obat yang diproses (0 = tanpa batas)}';
 
     protected $description = 'Isi kfa_code master obat dari KFA Satu Sehat (match aman: tunggal/nama-persis). Default dry-run.';
@@ -33,6 +34,7 @@ class SatusehatIsiKfa extends Command
     {
         $apply = (bool) $this->option('apply');
         $useFirst = (bool) $this->option('first');
+        $pick = (bool) $this->option('pick');
         $limit = (int) $this->option('limit');
 
         $medications = $this->targetMedications((bool) $this->option('all'), $limit);
@@ -46,11 +48,15 @@ class SatusehatIsiKfa extends Command
             '%s %d obat tanpa KFA%s.',
             $apply ? 'MENGISI' : '[DRY-RUN] Memindai',
             $medications->count(),
-            $useFirst ? ' (mode --first: pakai hasil teratas)' : ''
+            $useFirst ? ' (mode --first: pakai hasil teratas)' : ($pick ? ' (mode --pick: pilih manual interaktif)' : '')
         ));
+        if ($pick && ! $apply) {
+            $this->comment('Catatan: tanpa --apply pilihan TIDAK ditulis ke DB (dry-run). Tambah --apply untuk menyimpan.');
+        }
         $this->newLine();
 
         $filled = 0;
+        $manualPicks = 0;
         $ambiguous = [];
         $notFound = [];
         $errors = [];
@@ -77,6 +83,19 @@ class SatusehatIsiKfa extends Command
             $items = $res['items'] ?? [];
             $chosen = $this->pickKfa($items, $med->name, $useFirst);
 
+            if (! $chosen && $pick) {
+                $picked = $this->pickInteractive($satusehat, $med, $items, $keyword);
+                if ($picked === 'QUIT') {
+                    $this->newLine();
+                    $this->warn('Dihentikan oleh pengguna — sisanya dilewati.');
+                    break;
+                }
+                if (is_array($picked)) {
+                    $chosen = $picked;
+                    $manualPicks++;
+                }
+            }
+
             if (! $chosen) {
                 if (empty($items)) {
                     $notFound[] = [$med->code, $med->name, "0 hasil utk '{$keyword}'"];
@@ -101,7 +120,7 @@ class SatusehatIsiKfa extends Command
             $filled++;
         }
 
-        $this->renderSummary($apply, $filled, $ambiguous, $notFound, $errors);
+        $this->renderSummary($apply, $filled, $manualPicks, $ambiguous, $notFound, $errors);
 
         return self::SUCCESS;
     }
@@ -156,16 +175,106 @@ class SatusehatIsiKfa extends Command
         return $useFirst ? $valid[0] : null;
     }
 
+    /**
+     * Mode interaktif: tampilkan kandidat KFA bernomor untuk satu obat & minta
+     * pengguna memilih. Produk Aktual (93xxxxxx) diurut di atas + ditandai karena
+     * MedicationDispense WAJIB kode 93 (non-93 dikonfirmasi ulang sebelum dipakai).
+     *
+     * @param  array<int,array>  $items  kandidat awal (boleh kosong)
+     * @return array|string|null  array kandidat terpilih, 'QUIT' untuk berhenti, atau null bila di-skip
+     */
+    private function pickInteractive(SatusehatService $satusehat, Medication $med, array $items, string $keyword)
+    {
+        while (true) {
+            // Produk Aktual (93) lebih relevan untuk dispense → tampil paling atas.
+            usort($items, fn ($a, $b) => $this->aktualRank($b) <=> $this->aktualRank($a));
+
+            $this->newLine();
+            $this->line(sprintf(
+                '  <fg=cyan>%s</>  <options=bold>%s</>%s',
+                $med->code ?? '-',
+                $med->name,
+                $med->generic_name ? "  <fg=gray>(generic: {$med->generic_name})</>" : ''
+            ));
+
+            if (empty($items)) {
+                $this->warn("  0 hasil utk '{$keyword}'.");
+            } else {
+                $rows = [];
+                foreach ($items as $idx => $it) {
+                    $rows[] = [
+                        $idx + 1,
+                        $it['kfa_code'] ?? '-',
+                        str_starts_with((string) ($it['kfa_code'] ?? ''), '93') ? '✓ aktual' : 'virtual',
+                        Str::limit((string) ($it['name'] ?? ''), 40),
+                        Str::limit((string) ($it['nama_dagang'] ?? ''), 16),
+                        Str::limit((string) ($it['dosage_form'] ?? ''), 14),
+                    ];
+                }
+                $this->table(['#', 'KFA', 'Tipe', 'Nama', 'Merek', 'Sediaan'], $rows);
+            }
+
+            $range = empty($items) ? '' : '1-' . count($items) . ', ';
+            $ans = strtolower(trim((string) $this->ask(
+                "  Pilih [{$range}c=cari ulang, s=skip, q=quit]",
+                's'
+            )));
+
+            if ($ans === 'q') {
+                return 'QUIT';
+            }
+            if ($ans === '' || $ans === 's') {
+                return null;
+            }
+            if ($ans === 'c') {
+                $kw = trim((string) $this->ask('  Keyword baru'));
+                if ($kw === '') {
+                    continue;
+                }
+                $res = $satusehat->searchKfa($kw);
+                if (! ($res['success'] ?? false)) {
+                    $this->warn('  Pencarian gagal: ' . ($res['message'] ?? '-'));
+                    continue;
+                }
+                $items = $res['items'] ?? [];
+                $keyword = $kw;
+                continue;
+            }
+            if (ctype_digit($ans)) {
+                $n = (int) $ans;
+                if ($n >= 1 && $n <= count($items)) {
+                    $chosen = $items[$n - 1];
+                    if (empty($chosen['kfa_code'])) {
+                        $this->warn('  Kandidat tanpa kfa_code — pilih lain.');
+                        continue;
+                    }
+                    if (! str_starts_with((string) $chosen['kfa_code'], '93')
+                        && ! $this->confirm("  KFA {$chosen['kfa_code']} bukan Produk Aktual (93) — MedicationDispense bisa ditolak audit. Tetap pakai?", false)) {
+                        continue;
+                    }
+                    return $chosen;
+                }
+            }
+            $this->warn('  Input tak dikenal — coba lagi.');
+        }
+    }
+
+    private function aktualRank(array $item): int
+    {
+        return str_starts_with((string) ($item['kfa_code'] ?? ''), '93') ? 1 : 0;
+    }
+
     private function normalize(string $s): string
     {
         return preg_replace('/\s+/', ' ', strtolower(trim($s)));
     }
 
-    private function renderSummary(bool $apply, int $filled, array $ambiguous, array $notFound, array $errors): void
+    private function renderSummary(bool $apply, int $filled, int $manualPicks, array $ambiguous, array $notFound, array $errors): void
     {
         $this->newLine();
         $verb = $apply ? 'Diisi' : 'Cocok (dry-run, belum ditulis)';
-        $this->info("{$verb}: {$filled} obat.");
+        $manualNote = $manualPicks > 0 ? " (termasuk {$manualPicks} pilihan manual)" : '';
+        $this->info("{$verb}: {$filled} obat{$manualNote}.");
 
         if ($ambiguous) {
             $this->newLine();
