@@ -468,8 +468,19 @@ class AdmisiController extends Controller
      */
     public function anjunganStatus(): JsonResponse
     {
+        $antreanEnabled = app(\App\Services\BpjsAntreanService::class)->isEnabled();
+
+        // Walk-in/onsite (ambil antrean di kiosk via BPJS WS /antrean/add) di-gate
+        // flag konfigurasi ANTREAN `configuration.onsite_enabled` — default OFF
+        // karena BPJS masih menolak WS Tambah Antrean "API Versi 2" utk faskes ini.
+        // Aktifkan TANPA deploy: set flag=true di config ANTREAN setelah BPJS approve
+        // (lihat memory bpjs-antrean-add-versi2). Tetap butuh antrean bridging aktif.
+        $antreanCfg = \App\Models\IntegrationConfig::where('system_name', 'ANTREAN')->first();
+        $onsiteFlag = (bool) ($antreanCfg?->configuration['onsite_enabled'] ?? false);
+
         return $this->ok([
-            'antrean_enabled' => app(\App\Services\BpjsAntreanService::class)->isEnabled(),
+            'antrean_enabled' => $antreanEnabled,
+            'onsite_enabled'  => $antreanEnabled && $onsiteFlag,
         ], 'Status anjungan');
     }
 

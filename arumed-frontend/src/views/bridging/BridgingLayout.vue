@@ -33,7 +33,7 @@ const currentLabel = computed(
 <template>
   <div class="br-wrap">
     <header class="br-header">
-      <h1>Bridging BPJS</h1>
+      <h1>Bridging BPJS, SATU SEHAT dan E-KLAIM INA-CBG</h1>
       <p class="br-sub">Integrasi VClaim &amp; Satu Sehat — {{ currentLabel }}</p>
     </header>
 

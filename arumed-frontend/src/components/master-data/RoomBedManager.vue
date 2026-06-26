@@ -6,16 +6,29 @@
  * Kelas melekat di Room; admin atur jumlah bed per room.
  */
 import { ref, onMounted } from 'vue'
-import { roomApi } from '@/services/api'
+import { roomApi, integrasiApi } from '@/services/api'
 
 const rooms = ref([])
 const loading = ref(false)
 const err = ref(null)
 const toast = ref(null)
+const syncing = ref(null) // room.id yang sedang disinkron ke Aplicare
 
-// Form tambah/edit room.
+// Form tambah/edit room. bpjs_kelas_code/bpjs_ruang_code = mapping BPJS Aplicare;
+// gender_policy = kebijakan gender ruang (dipakai juga oleh guard admit RANAP).
 const editingId = ref(null)
-const roomForm = ref({ code: '', name: '', kelas_rawat: '', type: 'KAMAR' })
+const roomForm = ref({ code: '', name: '', kelas_rawat: '', type: 'KAMAR', bpjs_kelas_code: '', bpjs_ruang_code: '', gender_policy: '' })
+
+// Opsi kode kelas BPJS untuk datalist (best-effort; kosong bila Aplicare belum aktif).
+const kelasOptions = ref([])
+async function loadKelasOptions() {
+  try {
+    const res = await integrasiApi.aplicareRefKelas()
+    kelasOptions.value = res.data?.data ?? []
+  } catch {
+    kelasOptions.value = [] // Aplicare belum aktif → tetap bisa isi manual.
+  }
+}
 
 function notify(msg, ok = true) {
   toast.value = { msg, ok }
@@ -35,16 +48,34 @@ async function load() {
   }
 }
 
-onMounted(() => { load() })
+onMounted(() => { load(); loadKelasOptions() })
 
 function resetForm() {
   editingId.value = null
-  roomForm.value = { code: '', name: '', kelas_rawat: '', type: 'KAMAR' }
+  roomForm.value = { code: '', name: '', kelas_rawat: '', type: 'KAMAR', bpjs_kelas_code: '', bpjs_ruang_code: '', gender_policy: '' }
 }
 
 function editRoom(r) {
   editingId.value = r.id
-  roomForm.value = { code: r.code, name: r.name, kelas_rawat: r.kelas_rawat, type: r.type }
+  roomForm.value = {
+    code: r.code, name: r.name, kelas_rawat: r.kelas_rawat, type: r.type,
+    bpjs_kelas_code: r.bpjs_kelas_code ?? '', bpjs_ruang_code: r.bpjs_ruang_code ?? '',
+    gender_policy: r.gender_policy ?? '',
+  }
+}
+
+/** Sinkron ketersediaan satu ruang ke BPJS Aplicare (manual, on-demand). */
+async function syncRoom(room) {
+  if (!room.bpjs_kelas_code) { notify('Petakan Kode Kelas BPJS dulu sebelum sinkron', false); return }
+  syncing.value = room.id
+  try {
+    await integrasiApi.aplicareSync({ room_id: room.id })
+    notify(`Ketersediaan ${room.name} dikirim ke Aplicare`)
+  } catch (e) {
+    notify(e.response?.data?.message ?? 'Gagal sinkron ke Aplicare', false)
+  } finally {
+    syncing.value = null
+  }
 }
 
 async function saveRoom() {
@@ -142,6 +173,25 @@ const bedStatusColor = {
           <option value="HCU">HCU</option>
         </select>
       </label>
+      <label class="rb-field">
+        <span class="rb-flabel">Kode Kelas BPJS</span>
+        <input v-model="roomForm.bpjs_kelas_code" list="aplicare-kelas" placeholder="mis. VIP / 1 / 2 / 3" maxlength="10" />
+        <datalist id="aplicare-kelas">
+          <option v-for="k in kelasOptions" :key="k.kode" :value="k.kode">{{ k.kode }} — {{ k.nama }}</option>
+        </datalist>
+      </label>
+      <label class="rb-field">
+        <span class="rb-flabel">Kode Ruang BPJS</span>
+        <input v-model="roomForm.bpjs_ruang_code" placeholder="opsional (default = kode ruangan)" maxlength="20" />
+      </label>
+      <label class="rb-field">
+        <span class="rb-flabel">Kebijakan Gender</span>
+        <select v-model="roomForm.gender_policy">
+          <option value="">Campur / bebas</option>
+          <option value="L">Khusus Laki-laki</option>
+          <option value="P">Khusus Perempuan</option>
+        </select>
+      </label>
       <button type="button" class="pk-btn-primary rb-fbtn" @click="saveRoom">
         {{ editingId ? 'Simpan' : '+ Tambah Ruangan' }}
       </button>
@@ -156,9 +206,14 @@ const bedStatusColor = {
         <div>
           <strong>{{ room.name }}</strong>
           <span class="rb-kelas">Kelas {{ room.kelas_rawat }} · {{ room.type }}</span>
+          <span v-if="room.bpjs_kelas_code" class="rb-bpjs" title="Kode kelas BPJS Aplicare">BPJS: {{ room.bpjs_kelas_code }}</span>
+          <span v-else class="rb-bpjs rb-bpjs-off" title="Belum dipetakan ke BPJS Aplicare">BPJS: —</span>
         </div>
         <div class="rb-room-meta">
           <span>{{ room.occupied_count }}/{{ room.beds_count }} terisi</span>
+          <button type="button" class="rb-link" :disabled="syncing === room.id" @click="syncRoom(room)">
+            {{ syncing === room.id ? 'Sinkron…' : 'Sinkron Aplicare' }}
+          </button>
           <button type="button" class="rb-link" @click="editRoom(room)">Edit</button>
           <button type="button" class="rb-link rb-del" @click="deleteRoom(room)">Hapus</button>
         </div>
@@ -212,6 +267,9 @@ const bedStatusColor = {
 .rb-room { border: 1px solid var(--gb, #e5e7eb); border-radius: 10px; padding: 0.7rem 0.9rem; }
 .rb-room-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
 .rb-kelas { color: var(--tm, #6b7280); font-size: 12px; margin-left: 0.5rem; }
+.rb-bpjs { font-size: 11px; font-weight: 600; color: #166534; background: #dcfce7; padding: 1px 7px; border-radius: 10px; margin-left: 0.5rem; }
+.rb-bpjs-off { color: #92400e; background: #fef3c7; }
+.rb-link:disabled { opacity: 0.55; cursor: not-allowed; }
 .rb-room-meta { display: flex; gap: 0.6rem; align-items: center; font-size: 12px; color: #1763d4; }
 .rb-link { background: none; border: none; color: #1763d4; cursor: pointer; font-size: 12px; padding: 0; }
 .rb-link.rb-del { color: #ef4444; }

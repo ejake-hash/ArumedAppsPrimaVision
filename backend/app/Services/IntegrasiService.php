@@ -8,6 +8,8 @@ use App\Models\BpjsReferralIn;
 use App\Models\BpjsReferralOut;
 use App\Models\BpjsRmLog;
 use App\Models\BpjsVClaimLog;
+use App\Models\ClinicProfile;
+use App\Models\Medication;
 use App\Models\Visit;
 use App\Models\DoctorSchedule;
 use App\Models\Icd10Code;
@@ -25,11 +27,13 @@ use Illuminate\Support\Facades\DB;
 class IntegrasiService
 {
     public function __construct(
-        private readonly Request             $request,
-        private readonly BpjsVClaimService  $vclaim,
-        private readonly BpjsAntreanService $antrean,
-        private readonly SatusehatService   $satusehat,
-        private readonly InaCbgsService     $inacbgs,
+        private readonly Request                 $request,
+        private readonly BpjsVClaimService       $vclaim,
+        private readonly BpjsAntreanService      $antrean,
+        private readonly SatusehatService        $satusehat,
+        private readonly InaCbgsService          $inacbgs,
+        private readonly BpjsAplicareService     $aplicare,
+        private readonly BpjsApotekOnlineService $apotekOnline,
     ) {}
 
     // =========================================================================
@@ -65,6 +69,8 @@ class IntegrasiService
                 'ANTREAN'    => $this->antrean->testConnection(),
                 'SATUSEHAT'  => $this->satusehat->testConnection(),
                 'INACBGS'    => $this->inacbgs->testConnection(),
+                'APLICARE'   => $this->aplicare->testConnection(),
+                'APOTEK_ONLINE' => $this->apotekOnline->testConnection(),
                 'ICARE'      => ['success' => false, 'message' => 'iCare test — placeholder.', 'system' => 'ICARE'],
                 'REKAM_MEDIS'=> ['success' => false, 'message' => 'WS Rekam Medis tak punya endpoint ping — verifikasi dgn kirim 1 RME ber-SEP.', 'system' => 'REKAM_MEDIS'],
                 'LUPIS'      => ['success' => false, 'message' => 'LUPIS test — placeholder.', 'system' => 'LUPIS'],
@@ -205,29 +211,173 @@ class IntegrasiService
         if (! empty($filters['tanggal'])) {
             $query->whereDate('created_at', $filters['tanggal']);
         }
+        // Cari per No. SEP / nama / No. RM pasien.
+        if (! empty($filters['q'])) {
+            $q = trim($filters['q']);
+            $query->where(fn ($w) => $w
+                ->where('no_sep', 'like', "%{$q}%")
+                ->orWhereHas('visit.patient', fn ($p) => $p
+                    ->where('name', 'like', "%{$q}%")->orWhere('no_rm', 'like', "%{$q}%")));
+        }
 
         return $query->paginate($filters['per_page'] ?? 20);
     }
 
     /**
-     * Statistik dashboard WS Rekam Medis BPJS:
-     *  - pengiriman sukses/gagal (total + hari ini)
-     *  - kunjungan BPJS terkirim vs belum (punya SEP, status RM null/FAILED).
+     * Dashboard WS Rekam Medis BPJS (parity dgn Satu Sehat, disesuaikan konteks RM):
+     *  - connection: status konfigurasi REKAM_MEDIS (aktif/PPK/service/last test)
+     *  - cards: kirim sukses/gagal (rentang + hari ini) + backlog kunjungan ber-SEP
+     *  - range: kunjungan ber-SEP pada rentang (total/terkirim/belum/gagal)
+     *  - resource_breakdown: jumlah tiap resource FHIR terkirim (parse Bundle sukses)
+     *  - trend: 7 hari kirim sukses/gagal
+     *  - readiness: prasyarat bundle RM (dokter SIP/NIK, kode obat, kode faskes Kemenkes, diagnosis)
+     * CATATAN: rasio kepatuhan 4-minggu Kemenkes TIDAK relevan utk WS Rekam Medis
+     * (hanya Satu Sehat) → sengaja tidak disertakan.
      */
-    public function rekamMedisDashboard(): array
+    public function rekamMedisDashboard(?string $from = null, ?string $to = null): array
     {
-        $today = now()->toDateString();
+        $today  = now()->toDateString();
+        $from   = $from ?: $today;
+        $to     = $to ?: $today;
+        $fromDt = \Illuminate\Support\Carbon::parse($from)->startOfDay();
+        $toDt   = \Illuminate\Support\Carbon::parse($to)->endOfDay();
 
-        return [
-            'sent_total'    => BpjsRmLog::where('status', 'SUCCESS')->count(),
-            'failed_total'  => BpjsRmLog::where('status', 'FAILED')->count(),
+        // ── Connection (config REKAM_MEDIS; fallback PPK ke VCLAIM) ───────────
+        $cfg = IntegrationConfig::where('system_name', 'REKAM_MEDIS')->first();
+        $ppk = (string) ($cfg?->configuration['kode_faskes'] ?? '');
+        if ($ppk === '') {
+            $vclaim = IntegrationConfig::where('system_name', 'VCLAIM')->first();
+            $ppk = (string) ($vclaim?->configuration['kode_faskes'] ?? '');
+        }
+        $connection = [
+            'is_enabled'       => ($cfg?->is_enabled ?? false) && ! empty($cfg?->credentials),
+            'has_credentials'  => ! empty($cfg?->credentials),
+            'service_name'     => $cfg?->configuration['service_name'] ?? null,
+            'kode_faskes'      => $ppk ?: null,
+            'base_url'         => $cfg?->base_url,
+            'last_test_status' => $cfg?->last_test_status,
+            'last_tested_at'   => $cfg?->last_tested_at?->toIso8601String(),
+        ];
+
+        // ── Cards ─────────────────────────────────────────────────────────────
+        $cards = [
+            'sent_range'    => BpjsRmLog::where('status', 'SUCCESS')->whereBetween('created_at', [$fromDt, $toDt])->count(),
+            'failed_range'  => BpjsRmLog::where('status', 'FAILED')->whereBetween('created_at', [$fromDt, $toDt])->count(),
             'today_sent'    => BpjsRmLog::where('status', 'SUCCESS')->whereDate('created_at', $today)->count(),
             'today_failed'  => BpjsRmLog::where('status', 'FAILED')->whereDate('created_at', $today)->count(),
             'visits_sent'   => Visit::where('bpjs_rm_status', 'SENT')->count(),
-            'visits_unsent' => Visit::whereNotNull('no_sep')
-                ->where(fn ($q) => $q->whereNull('bpjs_rm_status')->orWhere('bpjs_rm_status', 'FAILED'))
-                ->count(),
+            'visits_unsent' => Visit::whereNotNull('no_sep')->where('no_sep', '!=', '')
+                ->where(fn ($q) => $q->whereNull('bpjs_rm_status')->orWhere('bpjs_rm_status', 'FAILED'))->count(),
         ];
+
+        // ── Kunjungan ber-SEP pada rentang ────────────────────────────────────
+        $rangeBase = Visit::whereNotNull('no_sep')->where('no_sep', '!=', '')
+            ->whereBetween('visit_date', [$fromDt->toDateString(), $toDt->toDateString()]);
+        $range = [
+            'total'   => (clone $rangeBase)->count(),
+            'sent'    => (clone $rangeBase)->where('bpjs_rm_status', 'SENT')->count(),
+            'failed'  => (clone $rangeBase)->where('bpjs_rm_status', 'FAILED')->count(),
+            'pending' => (clone $rangeBase)->where(fn ($q) => $q->whereNull('bpjs_rm_status'))->count(),
+        ];
+
+        // ── Breakdown resource FHIR yang benar-benar terkirim (rentang) ───────
+        // Resource = OBJECT (Composition/Patient/Encounter/…) atau ARRAY of objek
+        // (MedicationRequest/Procedure/Device) → keduanya ditally per resourceType.
+        $breakdown = [];
+        BpjsRmLog::where('status', 'SUCCESS')->whereBetween('created_at', [$fromDt, $toDt])
+            ->orderBy('id')->select(['id', 'fhir_payload'])->chunk(200, function ($logs) use (&$breakdown) {
+                foreach ($logs as $log) {
+                    foreach (($log->fhir_payload['entry'] ?? []) as $entry) {
+                        $res = $entry['resource'] ?? null;
+                        if (! is_array($res)) {
+                            continue;
+                        }
+                        if (isset($res['resourceType'])) {
+                            $rt = $res['resourceType'];
+                            $breakdown[$rt] = ($breakdown[$rt] ?? 0) + 1;
+                        } else {
+                            foreach ($res as $sub) {
+                                if (is_array($sub) && isset($sub['resourceType'])) {
+                                    $rt = $sub['resourceType'];
+                                    $breakdown[$rt] = ($breakdown[$rt] ?? 0) + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+        // ── Tren 7 hari ───────────────────────────────────────────────────────
+        $trend = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $d = now()->subDays($i)->toDateString();
+            $trend[] = [
+                'date'    => $d,
+                'success' => BpjsRmLog::where('status', 'SUCCESS')->whereDate('created_at', $d)->count(),
+                'failed'  => BpjsRmLog::where('status', 'FAILED')->whereDate('created_at', $d)->count(),
+            ];
+        }
+
+        // ── Kesiapan data (prasyarat bundle RM diterima BPJS) ─────────────────
+        $docQ = Employee::where('is_active', true)->where('profession', 'like', '%okter%')
+            ->where(fn ($q) => $q->whereNull('sip')->orWhere('sip', '')->orWhereNull('nik')->orWhere('nik', ''));
+        $medQ = Medication::where(fn ($q) => $q->whereNull('code')->orWhere('code', ''));
+        $visitNoDxQ = Visit::whereNotNull('no_sep')->where('no_sep', '!=', '')
+            ->where(fn ($q) => $q->whereNull('bpjs_rm_status')->orWhere('bpjs_rm_status', 'FAILED'))
+            ->where(fn ($q) => $q->whereDoesntHave('doctorExamination')
+                ->orWhereHas('doctorExamination', fn ($e) => $e
+                    ->where(fn ($x) => $x->whereNull('diagnosis_utama')->orWhere('diagnosis_utama', ''))));
+
+        $readiness = [
+            'doctors_without_sip_nik'      => (clone $docQ)->count(),
+            'doctors_without_sip_nik_list' => (clone $docQ)->orderBy('name')->limit(50)->get(['id', 'name', 'sip', 'nik'])->all(),
+            'medications_without_code'     => (clone $medQ)->count(),
+            'medications_without_code_list'=> (clone $medQ)->orderBy('name')->limit(50)->get(['id', 'name'])->all(),
+            'clinic_has_kemenkes_code'     => ! empty(ClinicProfile::query()->value('kemenkes_code')),
+            'visits_without_diagnosis'     => $visitNoDxQ->count(),
+        ];
+
+        return [
+            'connection'         => $connection,
+            'cards'              => $cards,
+            'range'              => $range,
+            'resource_breakdown' => $breakdown,
+            'trend'              => $trend,
+            'readiness'          => $readiness,
+            'from'               => $from,
+            'to'                 => $to,
+        ];
+    }
+
+    /**
+     * Trigger batch kirim RM ke BPJS dari UI (memakai command service yg sama dgn
+     * scheduler 23:59). mode AUTO = kunjungan SELESAI hari ini; BACKLOG = tunggakan.
+     *
+     * @return array{sent:int, failed:int, total:int}
+     */
+    public function rmSendBatch(string $mode = 'AUTO', ?int $limit = null): array
+    {
+        /** @var \App\Services\Bpjs\BpjsRekamMedisService $rm */
+        $rm = app(\App\Services\Bpjs\BpjsRekamMedisService::class);
+        if (! $rm->isEnabled()) {
+            throw new \Exception('Integrasi WS Rekam Medis BPJS belum aktif. Lengkapi & aktifkan kredensial di Konfigurasi.', 503);
+        }
+        $mode = strtoupper($mode) === 'BACKLOG' ? 'BACKLOG' : 'AUTO';
+        $result = $rm->batchSend($mode, $limit);
+        $this->log(auth('api')->id(), 'RM_BATCH_SEND', null, null, "mode={$mode} sent={$result['sent']} failed={$result['failed']}");
+
+        return $result;
+    }
+
+    /** Kirim ulang RM 1 kunjungan (force) — dipakai tombol Retry baris log gagal. */
+    public function rmResend(string $visitId): array
+    {
+        /** @var \App\Services\Bpjs\BpjsRekamMedisService $rm */
+        $rm = app(\App\Services\Bpjs\BpjsRekamMedisService::class);
+        $result = $rm->insertForVisit($visitId, true);
+        $this->log(auth('api')->id(), 'RM_RESEND', Visit::class, $visitId, $result['status'] ?? '');
+
+        return $result;
     }
 
     // =========================================================================
@@ -948,6 +1098,70 @@ class IntegrasiService
         $this->log(auth('api')->id(), 'SYNC_JADWAL_DOKTER_BPJS', null, null, "week:{$weekStart} sent:" . count($sent) . " skipped:" . count($skipped));
 
         return ['week_start' => $weekStart, 'sent' => $sent, 'skipped' => $skipped];
+    }
+
+    // =========================================================================
+    // APLICARE — referensi kelas, sinkron bed, rekonsiliasi, log
+    // =========================================================================
+
+    /** Daftar kode kelas BPJS {kode,nama} untuk picker master kamar. */
+    public function aplicareRefKelas(): array
+    {
+        return $this->aplicare->refKelasOptions();
+    }
+
+    /** Sinkron ketersediaan SEMUA ruang ke Aplicare (rekonsiliasi manual dari UI). */
+    public function aplicareSyncAll(): array
+    {
+        $result = $this->aplicare->syncAll();
+        $this->log(auth('api')->id(), 'APLICARE_SYNC_ALL', null, null,
+            "sent={$result['sent']} failed={$result['failed']} skipped={$result['skipped']}");
+
+        return $result;
+    }
+
+    /** Sinkron satu ruang (dipakai Job event-driven & tombol per-ruang). */
+    public function aplicarePushRoom(string $roomId): array
+    {
+        $room = \App\Models\Room::with('activeBeds')->findOrFail($roomId);
+
+        return $this->aplicare->pushRoom($room);
+    }
+
+    /** Data ketersediaan dari BPJS (rekonsiliasi). */
+    public function aplicareRead(int $start = 1, int $limit = 100): array
+    {
+        return $this->aplicare->readBeds($start, $limit);
+    }
+
+    public function getAplicareLog(array $filters = []): LengthAwarePaginator
+    {
+        $query = \App\Models\BpjsAplicareLog::with('room:id,code,name')->orderByDesc('created_at');
+
+        if (! empty($filters['action'])) {
+            $query->where('action', $filters['action']);
+        }
+        if (isset($filters['is_success'])) {
+            $query->where('is_success', (bool) $filters['is_success']);
+        }
+
+        return $query->paginate($filters['per_page'] ?? 20);
+    }
+
+    // =========================================================================
+    // APOTEK ONLINE (fase 0) — referensi DPHO + daftar resep (monitoring)
+    // =========================================================================
+
+    /** GET referensi DPHO (master kode obat BPJS Apotek). */
+    public function apotekRefDpho(): array
+    {
+        return $this->apotekOnline->refDpho();
+    }
+
+    /** POST daftar resep apotek pada rentang tanggal (monitoring). */
+    public function apotekDaftarResep(array $body): array
+    {
+        return $this->apotekOnline->daftarResep($body);
     }
 
     // =========================================================================

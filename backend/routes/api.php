@@ -1482,6 +1482,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/bpjs/icare-log',                   [IntegrasiController::class, 'icareLog']);
             Route::get('/bpjs/rm-dashboard',                [IntegrasiController::class, 'rekamMedisDashboard']);
             Route::get('/bpjs/rm-log',                      [IntegrasiController::class, 'rekamMedisLog']);
+            // Kirim RM ke BPJS dari UI (batch + retry per-kunjungan) → integrasi.write.
+            Route::post('/bpjs/rm-send-batch',              [IntegrasiController::class, 'rekamMedisSendBatch'])->middleware('permission:integrasi.write');
+            Route::post('/bpjs/rm-resend/{visitId}',        [IntegrasiController::class, 'rekamMedisResend'])->middleware('permission:integrasi.write');
             Route::get('/bpjs/inacbgs-log',                 [IntegrasiController::class, 'inacbgsLog']);
 
             Route::get('/bpjs/rujukan-masuk',               [IntegrasiController::class, 'indexRujukanMasuk']);
@@ -1547,6 +1550,16 @@ Route::prefix('v1')->group(function () {
 
             // Sinkron master ICD-10/ICD-9 dari referensi VClaim (cakupan oftalmologi)
             Route::post('/bpjs/sync-icd',                   [IntegrasiController::class, 'syncIcdFromVclaim'])->middleware('permission:integrasi.write');
+
+            // APLICARE — ketersediaan tempat tidur (read = ref/read/log; write = sync push).
+            Route::get('/bpjs/aplicare/ref-kelas',          [IntegrasiController::class, 'aplicareRefKelas']);
+            Route::get('/bpjs/aplicare/read',               [IntegrasiController::class, 'aplicareRead']);
+            Route::get('/bpjs/aplicare-log',                [IntegrasiController::class, 'aplicareLog']);
+            Route::post('/bpjs/aplicare/sync',              [IntegrasiController::class, 'aplicareSync'])->middleware('permission:integrasi.write');
+
+            // APOTEK ONLINE (fase 0) — referensi DPHO + monitoring daftar resep.
+            Route::get('/bpjs/apotek/ref-dpho',             [IntegrasiController::class, 'apotekRefDpho']);
+            Route::post('/bpjs/apotek/daftar-resep',        [IntegrasiController::class, 'apotekDaftarResep']);
         });
 
         // -----------------------------------------------------------------

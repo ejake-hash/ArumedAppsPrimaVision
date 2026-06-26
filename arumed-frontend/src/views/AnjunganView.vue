@@ -47,12 +47,18 @@ const statusLabel = computed(() => {
 // ─── Bridging status (apakah Check-in BPJS/JKN mandiri aktif) ────────────────
 // Kartu BPJS di home aktif HANYA bila bridging Antrean BPJS aktif di backend.
 const bridgingAntrean = ref(false)
+// Walk-in/onsite di-gate flag backend (config ANTREAN.onsite_enabled). Default OFF
+// selama BPJS menolak WS Tambah Antrean "API Versi 2". Begitu BPJS approve, admin
+// flip flag di konfigurasi → onsite aktif TANPA rebuild/deploy FE.
+const onsiteEnabled = ref(false)
 async function fetchBridgingStatus() {
   try {
     const { data } = await anjunganApi.status()
     bridgingAntrean.value = data?.data?.antrean_enabled === true
+    onsiteEnabled.value   = data?.data?.onsite_enabled === true
   } catch {
     bridgingAntrean.value = false // gagal cek → kartu tetap nonaktif (aman)
+    onsiteEnabled.value   = false
   }
 }
 
@@ -169,11 +175,10 @@ async function goUmum() {
 
 // ─── BPJS / JKN flow ──────────────────────────────────────────────────────
 // Dua jalur: (1) kode booking Mobile JKN (+ scan), (2) ambil antrean onsite.
-// ONSITE DINONAKTIFKAN SEMENTARA: BPJS menolak WS Tambah Antrean (`add`) dengan
-// "API Versi 2" untuk faskes ini (menunggu klarifikasi/registrasi sisi BPJS).
-// Sampai itu beres, kiosk hanya melayani check-in via Kode Booking (Mobile JKN).
-// Cukup ubah ke true untuk mengaktifkan kembali setelah `add` jalan.
-const ONSITE_ENABLED = false
+// ONSITE di-gate flag backend `onsiteEnabled` (config ANTREAN.onsite_enabled).
+// DINONAKTIFKAN SEMENTARA: BPJS menolak WS Tambah Antrean (`add`) dengan "API
+// Versi 2" untuk faskes ini. Aktifkan kembali = flip flag di konfigurasi (tanpa
+// deploy) setelah BPJS approve & UAT 1 transaksi.
 
 function goBpjs() {
   if (!bridgingAntrean.value) return
@@ -184,7 +189,7 @@ function goBpjs() {
   }
   umumError.value = ''
   // Onsite nonaktif → langsung ke jalur Kode Booking (lewati layar pilihan).
-  if (!ONSITE_ENABLED) { chooseBooking(); return }
+  if (!onsiteEnabled.value) { chooseBooking(); return }
   screen.value = 'bpjs-choice'
 }
 
@@ -198,7 +203,7 @@ function chooseBooking() {
 
 // "Kembali" dari layar BPJS: ke layar pilihan bila onsite aktif, selain itu ke home.
 function backFromBpjs() {
-  if (ONSITE_ENABLED) { screen.value = 'bpjs-choice'; umumError.value = '' }
+  if (onsiteEnabled.value) { screen.value = 'bpjs-choice'; umumError.value = '' }
   else resetHome()
 }
 

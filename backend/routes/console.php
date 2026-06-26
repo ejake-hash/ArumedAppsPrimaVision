@@ -36,6 +36,13 @@ Schedule::command('rm:batch-sync')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
 
+// BPJS Aplicare — rekonsiliasi ketersediaan tempat tidur tiap 30 menit (jaring
+// pengaman; push utama event-driven dari RanapService). No-op bila integrasi off.
+Schedule::command('aplicare:sync')
+    ->everyThirtyMinutes()
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();
+
 // Jam 17.00 WIB — laporan tunggakan kasir (tagihan belum tutup kasir + umurnya)
 // ke supervisor (env KASIR_BACKLOG_REPORT_TO). No-op aman bila tak ada tunggakan
 // atau penerima belum diset.

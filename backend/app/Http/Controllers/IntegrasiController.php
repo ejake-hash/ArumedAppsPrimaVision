@@ -118,21 +118,54 @@ class IntegrasiController extends Controller
     // BPJS — WS REKAM MEDIS (push RM → i-Care)
     // =========================================================================
 
-    /** GET /integrasi/bpjs/rm-dashboard — statistik pengiriman rekam medis. */
-    public function rekamMedisDashboard(): JsonResponse
+    /** GET /integrasi/bpjs/rm-dashboard?from=&to= — dashboard pengiriman rekam medis. */
+    public function rekamMedisDashboard(Request $request): JsonResponse
     {
-        return $this->ok($this->service->rekamMedisDashboard());
+        return $this->ok($this->service->rekamMedisDashboard(
+            $request->query('from'),
+            $request->query('to'),
+        ));
     }
 
     /**
      * GET /integrasi/bpjs/rm-log
-     * Query: status (SUCCESS|FAILED), tanggal, per_page
+     * Query: status (SUCCESS|FAILED), tanggal, q (cari SEP/nama/RM), per_page
      */
     public function rekamMedisLog(Request $request): JsonResponse
     {
         return $this->ok($this->service->getRekamMedisLog(
-            $request->only(['status', 'tanggal', 'per_page'])
+            $request->only(['status', 'tanggal', 'q', 'per_page'])
         ));
+    }
+
+    /**
+     * POST /integrasi/bpjs/rm-send-batch  Body: { mode: AUTO|BACKLOG, limit }
+     * Trigger batch kirim RM ke BPJS dari UI (= scheduler 23:59).
+     */
+    public function rekamMedisSendBatch(Request $request): JsonResponse
+    {
+        try {
+            $result = $this->service->rmSendBatch(
+                (string) $request->input('mode', 'AUTO'),
+                $request->filled('limit') ? (int) $request->input('limit') : null,
+            );
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($result, "Batch RM selesai: terkirim {$result['sent']}, gagal {$result['failed']}");
+    }
+
+    /** POST /integrasi/bpjs/rm-resend/{visitId} — kirim ulang RM 1 kunjungan (force). */
+    public function rekamMedisResend(string $visitId): JsonResponse
+    {
+        try {
+            $result = $this->service->rmResend($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($result, 'Rekam medis terkirim ke BPJS');
     }
 
     // =========================================================================
@@ -669,6 +702,73 @@ class IntegrasiController extends Controller
         }
 
         return $this->ok($syncLog, 'Backfill Satu Sehat selesai');
+    }
+
+    // =========================================================================
+    // APLICARE — ketersediaan tempat tidur
+    // =========================================================================
+
+    /** GET /integrasi/bpjs/aplicare/ref-kelas — daftar kode kelas BPJS (picker master kamar). */
+    public function aplicareRefKelas(): JsonResponse
+    {
+        return $this->call(fn () => $this->service->aplicareRefKelas());
+    }
+
+    /** POST /integrasi/bpjs/aplicare/sync  Body: { room_id? } — sinkron semua / satu ruang. */
+    public function aplicareSync(Request $request): JsonResponse
+    {
+        $roomId = $request->input('room_id');
+
+        return $this->call(
+            fn () => $roomId
+                ? $this->service->aplicarePushRoom($roomId)
+                : $this->service->aplicareSyncAll(),
+            'Sinkron ketersediaan tempat tidur ke Aplicare selesai',
+        );
+    }
+
+    /** GET /integrasi/bpjs/aplicare/read  Query: start, limit — data ketersediaan dari BPJS. */
+    public function aplicareRead(Request $request): JsonResponse
+    {
+        return $this->call(fn () => $this->service->aplicareRead(
+            (int) $request->query('start', 1),
+            (int) $request->query('limit', 100),
+        ));
+    }
+
+    /** GET /integrasi/bpjs/aplicare-log  Query: action, is_success, per_page. */
+    public function aplicareLog(Request $request): JsonResponse
+    {
+        return $this->ok($this->service->getAplicareLog(
+            $request->only(['action', 'is_success', 'per_page'])
+        ));
+    }
+
+    // =========================================================================
+    // APOTEK ONLINE (fase 0)
+    // =========================================================================
+
+    /** GET /integrasi/bpjs/apotek/ref-dpho — referensi DPHO (master obat BPJS Apotek). */
+    public function apotekRefDpho(): JsonResponse
+    {
+        return $this->call(fn () => $this->service->apotekRefDpho());
+    }
+
+    /**
+     * POST /integrasi/bpjs/apotek/daftar-resep
+     * Body: { kdppk, KdJnsObat, JnsTgl, TglMulai, TglAkhir } — monitoring resep apotek.
+     */
+    public function apotekDaftarResep(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'kdppk'     => 'required|string',
+            'KdJnsObat' => 'required|string',
+            'JnsTgl'    => 'required|string',
+            'TglMulai'  => 'required|string',
+            'TglAkhir'  => 'required|string',
+        ]);
+
+        return $this->call(fn () => $this->service->apotekDaftarResep($v));
     }
 
     // =========================================================================

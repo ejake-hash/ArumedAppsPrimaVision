@@ -1384,8 +1384,10 @@ export const integrasiApi = {
   vclaimLog:     (params)        => api.get('/integrasi/bpjs/vclaim-log', { params }),
   antreanLog:    (params)        => api.get('/integrasi/bpjs/antrean-log', { params }),
   icareLog:      (params)        => api.get('/integrasi/bpjs/icare-log', { params }),
-  rmDashboard:   ()              => api.get('/integrasi/bpjs/rm-dashboard'),
+  rmDashboard:   (params)        => api.get('/integrasi/bpjs/rm-dashboard', { params }),
   rmLog:         (params)        => api.get('/integrasi/bpjs/rm-log', { params }),
+  rmSendBatch:   (body)          => api.post('/integrasi/bpjs/rm-send-batch', body),
+  rmResend:      (visitId)       => api.post(`/integrasi/bpjs/rm-resend/${visitId}`),
 
   // VClaim live calls
   cekPeserta:    (data)          => api.post('/integrasi/vclaim/cek-peserta', data),
@@ -1441,6 +1443,16 @@ export const integrasiApi = {
   satusehatUpdateLocation:  (id, d)  => api.put(`/integrasi/satusehat/location/${id}`, d),
   satusehatDeleteLocation:  (id, p)  => api.delete(`/integrasi/satusehat/location/${id}`, { params: p }),
   satusehatSetActiveLocation:(id)    => api.put(`/integrasi/satusehat/location/${id}/active`),
+
+  // BPJS Aplicare — ketersediaan tempat tidur
+  aplicareRefKelas: ()        => api.get('/integrasi/bpjs/aplicare/ref-kelas'),
+  aplicareSync:     (body)    => api.post('/integrasi/bpjs/aplicare/sync', body || {}),
+  aplicareRead:     (params)  => api.get('/integrasi/bpjs/aplicare/read', { params }),
+  aplicareLog:      (params)  => api.get('/integrasi/bpjs/aplicare-log', { params }),
+
+  // BPJS Apotek Online (fase 0)
+  apotekRefDpho:      ()      => api.get('/integrasi/bpjs/apotek/ref-dpho'),
+  apotekDaftarResep:  (body)  => api.post('/integrasi/bpjs/apotek/daftar-resep', body),
 }
 
 export default api

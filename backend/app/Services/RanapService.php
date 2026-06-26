@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\PushAplicareRoom;
 use App\Models\Bed;
 use App\Models\BedAssignment;
 use App\Models\BpjsControlLetter;
@@ -37,6 +38,18 @@ class RanapService
         private readonly QueueService $queue,
         private readonly KasirService $kasir,
     ) {}
+
+    /**
+     * Lapor ketersediaan ruang ke BPJS Aplicare setelah okupansi bed berubah.
+     * Non-blocking (queued Job, no-op bila integrasi off / ruang belum dipetakan).
+     * Dipanggil SETELAH transaksi commit agar Job membaca status bed terbaru.
+     */
+    private function syncAplicare(?string ...$roomIds): void
+    {
+        foreach (array_unique(array_filter($roomIds)) as $roomId) {
+            PushAplicareRoom::dispatch($roomId);
+        }
+    }
 
     // =========================================================================
     // QUERY (papan room, menunggu kamar, detail pasien, running bill)
@@ -241,6 +254,9 @@ class RanapService
             }
         }
 
+        // Bed terisi → lapor ketersediaan ruang ke Aplicare (non-blocking).
+        $this->syncAplicare($fresh->ranap_room_id);
+
         return $fresh;
     }
 
@@ -255,7 +271,9 @@ class RanapService
      */
     public function transferBed(Visit $visit, string $newBedId, string $reason): Visit
     {
-        return DB::transaction(function () use ($visit, $newBedId, $reason) {
+        $affected = [];
+
+        $fresh = DB::transaction(function () use ($visit, $newBedId, $reason, &$affected) {
             $active = $visit->activeBedAssignment()->lockForUpdate()->first();
             if (! $active) {
                 throw new \Exception('Pasien tidak punya penempatan bed aktif.', 422);
@@ -268,6 +286,9 @@ class RanapService
 
             $now     = now();
             $newRoom = $newBed->room;
+
+            // Ruang lama & baru sama-sama berubah okupansinya → keduanya disinkron.
+            $affected = [$active->room_id, $newRoom->id];
 
             // Guard kebijakan gender room tujuan vs gender pasien.
             $this->assertGenderPolicy($newRoom, $visit);
@@ -309,6 +330,11 @@ class RanapService
 
             return $visit->fresh(['room', 'bed', 'activeBedAssignment']);
         });
+
+        // Lapor kedua ruang (asal & tujuan) ke Aplicare (non-blocking).
+        $this->syncAplicare(...$affected);
+
+        return $fresh;
     }
 
     /**
@@ -317,14 +343,19 @@ class RanapService
      */
     public function markBedAvailable(string $bedId): array
     {
-        return DB::transaction(function () use ($bedId) {
+        $result = DB::transaction(function () use ($bedId) {
             $bed = Bed::lockForUpdate()->findOrFail($bedId);
             if ($bed->status === Bed::STATUS_OCCUPIED) {
                 throw new \Exception("Bed {$bed->label} sedang ditempati — tidak bisa ditandai siap.", 422);
             }
             $bed->update(['status' => Bed::STATUS_AVAILABLE]);
-            return ['id' => $bed->id, 'label' => $bed->label, 'status' => $bed->status];
+            return ['id' => $bed->id, 'label' => $bed->label, 'status' => $bed->status, 'room_id' => $bed->room_id];
         });
+
+        // Bed kembali tersedia → tersedia bertambah → lapor Aplicare (non-blocking).
+        $this->syncAplicare($result['room_id']);
+
+        return $result;
     }
 
     /**
@@ -983,6 +1014,8 @@ class RanapService
         ?string $followUpReason = null,
         array $obatPulang = []
     ): array {
+        $dischargedRoomId = $visit->ranap_room_id;
+
         // 1. Tandai discharge (di luar advance — supaya gate RANAP→KASIR lolos).
         DB::transaction(function () use ($visit, $dischargeType, $summary, $followUpDate, $followUpReason, $obatPulang) {
             $dischargeAt = now();
@@ -1026,10 +1059,13 @@ class RanapService
 
         $result = $this->queue->advanceFromStation($ranapQueue->id, Queue::STATION_RANAP);
 
-        // 3. Lapor tgl pulang ke BPJS (non-blocking) — hanya jika BPJS + ada SEP.
+        // 3. Bed dilepas (→ CLEANING) → tersedia ruang berubah → lapor Aplicare.
+        $this->syncAplicare($dischargedRoomId);
+
+        // 4. Lapor tgl pulang ke BPJS (non-blocking) — hanya jika BPJS + ada SEP.
         $this->maybeUpdateTglPulangBpjs($visit->fresh());
 
-        // 4. Terbitkan Surat Kontrol (SKDP) ke VClaim (non-blocking) bila ada rencana
+        // 5. Terbitkan Surat Kontrol (SKDP) ke VClaim (non-blocking) bila ada rencana
         //    kontrol pasca-pulang & pasien BPJS. Regulasi BPJS: kontrol ulang pasca
         //    rawat inap memakai Surat Kontrol (SKDP), BUKAN SPRI — SKDP jadi dasar SEP
         //    kontrol (rawat jalan) saat pasien kembali. SPRI (perintah rawat inap)

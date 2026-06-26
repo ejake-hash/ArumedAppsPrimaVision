@@ -52,6 +52,23 @@ class IntegrationConfigSeeder extends Seeder
                 'notes'         => 'INA-CBGs Grouper — Pengelompokan kode tarif klaim',
             ],
             [
+                'system_name'   => 'APLICARE',
+                'base_url'      => 'https://apijkn-dev.bpjs-kesehatan.go.id',
+                // service_name = path layanan Aplicares (Docs/Briding Aplicare dan Apotek.docx
+                // → {Base URL}/aplicaresws/rest/...). cons_id/secret_key boleh sama VClaim,
+                // user_key Aplicare TERPISAH (key layanan Aplicare dari BPJS).
+                'configuration' => ['service_name' => 'aplicaresws/rest', 'kode_faskes' => '', 'timeout' => 30],
+                'notes'         => 'BPJS Aplicare — Ketersediaan Tempat Tidur (sinkron bed rawat inap per kelas).',
+            ],
+            [
+                'system_name'   => 'APOTEK_ONLINE',
+                'base_url'      => 'https://apijkn-dev.bpjs-kesehatan.go.id',
+                // service_name = path layanan Apotek Online (DPHO, resep, pelayanan obat PRB/
+                // kronis/kemo). user_key Apotek Online TERPISAH dari VClaim.
+                'configuration' => ['service_name' => 'apotek-rest-dev', 'kode_faskes' => '', 'timeout' => 30],
+                'notes'         => 'BPJS Apotek Online — Klaim obat PRB/Kronis/Kemoterapi (referensi DPHO, resep, pelayanan obat). Fase 0: referensi & test koneksi.',
+            ],
+            [
                 'system_name'   => 'SATUSEHAT',
                 // Base URL Sandbox/Staging Kemenkes (non-secret). Production:
                 // https://api-satusehat.kemkes.go.id — diganti admin lewat UI.

@@ -18,20 +18,24 @@ const toast     = reactive({ show: false, ok: true, msg: '' })
 // Sistem yang punya form credential BPJS lengkap (cons_id/secret/user_key).
 // REKAM_MEDIS = keluarga service 'ihs' (sama iCare): cons_id/secret sama VClaim,
 // user_key ikut layanan iCare/ihs.
-const BPJS_SYSTEMS = ['VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS']
+// Aplicare & Apotek Online = keluarga VClaim (cons_id/secret/user_key + service_name
+// + kode_faskes), JSON polos. Form credential-nya identik dengan BPJS lain.
+const BPJS_SYSTEMS = ['VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS', 'APLICARE', 'APOTEK_ONLINE']
 
 // Urutan tampil kartu: baris 1 = SATUSEHAT · VCLAIM · ANTREAN,
-// baris 2 = ICARE · REKAM_MEDIS · INACBGS. Sistem di luar daftar ini
-// disembunyikan (mis. LUPIS).
-const ORDER = ['SATUSEHAT', 'VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS', 'INACBGS']
+// baris 2 = ICARE · REKAM_MEDIS · INACBGS, baris 3 = APLICARE · APOTEK_ONLINE.
+// Sistem di luar daftar ini disembunyikan (mis. LUPIS).
+const ORDER = ['SATUSEHAT', 'VCLAIM', 'ANTREAN', 'ICARE', 'REKAM_MEDIS', 'INACBGS', 'APLICARE', 'APOTEK_ONLINE']
 
 const LABELS = {
-  VCLAIM:      'BPJS VClaim',
-  ANTREAN:     'BPJS Antrean Online',
-  ICARE:       'BPJS iCare',
-  REKAM_MEDIS: 'Rekam Medis BPJS',
-  SATUSEHAT:   'Satu Sehat',
-  INACBGS:     'E-Klaim INA-CBG (WS)',
+  VCLAIM:        'BPJS VClaim',
+  ANTREAN:       'BPJS Antrean Online',
+  ICARE:         'BPJS iCare',
+  REKAM_MEDIS:   'Rekam Medis BPJS',
+  SATUSEHAT:     'Satu Sehat',
+  INACBGS:       'E-Klaim INA-CBG (WS)',
+  APLICARE:      'BPJS Aplicare (Tempat Tidur)',
+  APOTEK_ONLINE: 'BPJS Apotek Online',
 }
 
 // Draft input per-sistem (tidak ikut load dari server untuk field rahasia).
