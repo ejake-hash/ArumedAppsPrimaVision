@@ -98,7 +98,7 @@ async function exportData(format = 'csv') {
 }
 
 const payersWithData = (doc) =>
-  ['UMUM', 'BPJS'].filter(pg => doc.payers[pg].categories.length || doc.payers[pg].packages.length)
+  ['UMUM', 'BPJS'].filter(pg => doc.payers[pg]?.categories?.length || doc.payers[pg]?.packages?.length)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TAB 2 — LAPORAN OBAT FARMASI (pemakaian + pendapatan)

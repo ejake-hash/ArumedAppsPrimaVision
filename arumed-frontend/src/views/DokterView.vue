@@ -554,7 +554,7 @@ const filtQ = computed(() => {
   else if (ptypeFilter.value === 'UmumAsn')  list = list.filter((p) => p.ptype === 'umum' || p.ptype === 'asn')
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter((p) => p.name.toLowerCase().includes(s) || p.qNum.toLowerCase().includes(s))
+    list = list.filter((p) => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s))
   }
   return list
 })
@@ -1868,7 +1868,13 @@ watch(dxSearchSek, (v) => {
   filteredIcd10Sek.value = localIcd10(s)
   dxSekTimer = setTimeout(async () => { if ((dxSearchSek.value || '').trim().toLowerCase() === s) filteredIcd10Sek.value = await searchIcd10Master(s) }, 300)
 })
-function setDxUtama(d) { diagnosisUtama.value = { ...d }; dxSearch.value = ''; toast('s', `Dx utama: ${d.code}`) }
+function setDxUtama(d) {
+  diagnosisUtama.value = { ...d }; dxSearch.value = ''
+  // Bila kode ini sudah ada di dx sekunder, lepas dari sana → cegah tersimpan
+  // ganda (utama + sekunder) di payload. addDxSekunder sudah menjaga arah sebaliknya.
+  diagnosisSekunder.value = diagnosisSekunder.value.filter((x) => x.code !== d.code)
+  toast('s', `Dx utama: ${d.code}`)
+}
 function addDxSekunder(d) {
   if (diagnosisUtama.value?.code === d.code) { toast('w', 'Sudah menjadi dx utama'); return }
   if (diagnosisSekunder.value.find((x) => x.code === d.code)) return

@@ -197,7 +197,9 @@ async function saveRow(row) {
 }
 
 // ─── Simpan sebagai SESI + Berita Acara (jalur utama) ────────────────────────
-const opnameDate = ref(new Date().toISOString().slice(0, 10))
+// 'sv-SE' = YYYY-MM-DD zona perangkat (WIB). toISOString() = UTC → jam 00:00–07:00
+// mundur 1 hari, Berita Acara opname salah tanggal.
+const opnameDate = ref(new Date().toLocaleDateString('sv-SE'))
 const sessionNotes = ref('')
 
 async function saveSession() {

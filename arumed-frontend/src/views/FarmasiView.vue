@@ -400,14 +400,17 @@ async function serahkanRx() {
     for (const rx of selRxList.value) {
       if (rx.status === 'DISPENSED') continue
       let cur = rx
+      // Persist qty teredit DULU — startDispensing→hydrateRx (di bawah) menimpa
+      // quantity & _origQty dgn nilai server, sehingga diff jadi kosong & edit
+      // hilang diam-diam (stok/tagihan pakai qty awal). Mirror serahRanap.
+      if (!cur.verified_at) {
+        const changed = (cur.items ?? []).filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
+        for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+      }
       // selesaiDispensing butuh status DISPENSING — siapkan dulu bila terlewat.
       if (!['DISPENSING', 'DISPENSED'].includes(cur.status)) {
         const { data } = await farmasiApi.startDispensing(cur.id)
         cur = hydrateRx(data.data, cur); replaceSelRx(cur)
-      }
-      if (!cur.verified_at) {
-        const changed = (cur.items ?? []).filter((d) => d.id && Number(d.quantity) !== Number(d._origQty))
-        for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
       }
       // DISPENSING → DISPENSED: backend consume() kurangi stok inventory_stocks
       // lokasi FARMASI (FEFO per-batch) sesuai quantity tiap item.

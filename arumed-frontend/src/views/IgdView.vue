@@ -515,8 +515,12 @@ const flaccTotal = computed(() => {
   return FLACC_PARAMS.reduce((s, p) => s + (Number(f[p.key]) || 0), 0)
 })
 const painInterp = computed(() => {
-  const s = triaseForm.value?.pain_scale_type === 'FLACC' ? flaccTotal.value : Number(triaseForm.value?.pain_score)
-  if (s === null || Number.isNaN(s)) return ''
+  // NRS: pain_score null/'' = belum diskor → kosong. Number(null)===0 akan keliru
+  // menampilkan "Tidak nyeri" untuk pasien yang nyerinya belum dinilai.
+  const raw = triaseForm.value?.pain_scale_type === 'FLACC' ? flaccTotal.value : triaseForm.value?.pain_score
+  if (raw === null || raw === undefined || raw === '') return ''
+  const s = Number(raw)
+  if (Number.isNaN(s)) return ''
   if (s === 0) return 'Tidak nyeri'
   if (s <= 3) return 'Nyeri ringan'
   if (s <= 6) return 'Nyeri sedang'

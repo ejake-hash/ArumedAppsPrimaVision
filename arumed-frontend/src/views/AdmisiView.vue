@@ -197,12 +197,21 @@ function uiStatus(p) {
   }
   if (p.status === 'CALLED') return 'called'
   if (p.status === 'IN_PROGRESS') return p.station === 'DOKTER' ? 'doctor' : 'triage'
+  // Sentinel WAITING (tabel "Seluruh Kunjungan"): derive dari current_station.
   if (p.station === 'REFRAKSIONIS' || p.station === 'TRIASE') return 'triage'
   if (p.station === 'DOKTER') return 'doctor'
+  if (p.station === 'SELESAI') return 'done'
+  // Station hilir (pasien sudah lewat admisi & lanjut ke proses lain): jangan
+  // tampilkan "Menunggu" — itu menyesatkan petugas pendaftaran.
+  if (['KASIR','FARMASI','BEDAH','RANAP','MENUNGGU_RANAP'].includes(p.station)) return 'process'
   return 'waiting'
 }
 
-const statusLabel = (s) => ({ waiting:'Menunggu', called:'Dipanggil', triage:'Triase', doctor:'Dokter', done:'Selesai', cancel:'Batal' }[s] ?? s)
+const STATION_LABEL = { KASIR:'Kasir', FARMASI:'Farmasi', BEDAH:'Bedah', RANAP:'Rawat Inap', MENUNGGU_RANAP:'Menunggu Ranap' }
+const statusLabel = (s, station) => {
+  if (s === 'process') return STATION_LABEL[station] ?? 'Proses'
+  return ({ waiting:'Menunggu', called:'Dipanggil', triage:'Triase', doctor:'Dokter', done:'Selesai', cancel:'Batal' }[s] ?? s)
+}
 
 /* ============================================================
    STATS (from dashboard API)
@@ -3070,10 +3079,11 @@ onUnmounted(() => {
                             p.ui === 'called'  ? 'sp-called' :
                             p.ui === 'triage'  ? 'sp-triage' :
                             p.ui === 'doctor'  ? 'sp-doctor' :
+                            p.ui === 'process' ? 'sp-process' :
                             p.ui === 'done'    ? 'sp-done' : 'sp-cancel',
                           ]"
                         >
-                          {{ statusLabel(p.ui) }}
+                          {{ statusLabel(p.ui, p.station) }}
                         </span>
                       </td>
                       <td class="td-date">{{ p.arrivedDate }}</td>
@@ -5309,6 +5319,7 @@ onUnmounted(() => {
 .sp-called { background: #fff4d6; color: #8a5a00; border-color: #f0b429; }
 .sp-triage { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
 .sp-doctor { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.sp-process { background: #e0f2fe; color: #075985; border-color: #7dd3fc; }
 .sp-done { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .sp-cancel { background: var(--eb); color: var(--et); border-color: var(--ebd); }
 .ptype-tag { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }

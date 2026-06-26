@@ -218,6 +218,10 @@ async function submitDischarge() {
     if (obatPulangList.value.length) msg += ' (obat pulang → farmasi)'
     if (dischargePt.value?.guarantor_type === 'BPJS' && dischargeForm.value.follow_up_date) msg += ' (Surat Kontrol → BPJS)'
     notify(msg); showDischarge.value = false
+    // Tutup panel detail: pasien sudah keluar dari `aktif`, tapi `detailVisitId`/
+    // `store.detail` yang tertinggal membuat form CPPT/order/tindakan tetap aktif
+    // → staf bisa posting biaya/order ke visit yg sudah pulang. Kembali ke daftar.
+    detailVisitId.value = null
     // Auto-buka Resume Medis Rawat Inap (RM 3.5) agar DPJP melengkapi & TTD saat pulang.
     openResumeRanap(dischargedVisitId)
   } catch { notify(store.error || 'Gagal discharge', false) } finally { busy.value = false }

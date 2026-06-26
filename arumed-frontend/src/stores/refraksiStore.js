@@ -124,6 +124,10 @@ export const useRefraksiStore = defineStore('refraksi', () => {
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
     doctorTicket.value  = null   // reset tiket dari pasien sebelumnya
+    // Token seleksi: bila petugas keburu pindah pasien sebelum respons async tiba,
+    // respons lama yang telat datang JANGAN menimpa data pasien baru (race → hasil
+    // pemeriksaan pasien A tampil di header pasien B).
+    const sel = queueItem?.id
 
     if (queueItem.status === 'CALLED') {
       try {
@@ -147,6 +151,7 @@ export const useRefraksiStore = defineStore('refraksi', () => {
     try {
       if (queueItem.visit?.id) {
         const { data } = await refraksiApi.showPemeriksaan(queueItem.visit.id)
+        if (selectedQueue.value?.id !== sel) return   // pasien sudah ganti → buang
         pemeriksaan.value = data.data
         // Backend load('prescription') saat showPemeriksaan, jadi prescription
         // sudah ikut dalam payload kalau ada.
@@ -156,10 +161,9 @@ export const useRefraksiStore = defineStore('refraksi', () => {
         doctorTicket.value = data.data?.doctor_ticket ?? null
       }
     } catch {
-      pemeriksaan.value  = null
-      prescription.value = null
+      if (selectedQueue.value?.id === sel) { pemeriksaan.value = null; prescription.value = null }
     } finally {
-      pemeriksaanLoading.value = false
+      if (selectedQueue.value?.id === sel) pemeriksaanLoading.value = false
     }
   }
 

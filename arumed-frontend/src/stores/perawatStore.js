@@ -111,6 +111,10 @@ export const usePerawatStore = defineStore('perawat', () => {
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
     doctorTicket.value  = null   // reset tiket dari pasien sebelumnya
+    // Token seleksi: bila petugas keburu pindah pasien sebelum respons async tiba,
+    // respons lama yang telat datang JANGAN menimpa data pasien baru (race → data
+    // klinis pasien A tampil di header pasien B). Dipakai di semua loader di bawah.
+    const sel = queueItem?.id
 
     // CALLED → IN_PROGRESS via /mulai endpoint (bukan /selesai — itu finalize+advance)
     if (queueItem.status === 'CALLED') {
@@ -122,16 +126,18 @@ export const usePerawatStore = defineStore('perawat', () => {
     try {
       if (queueItem.visit?.id) {
         const { data } = await perawatApi.showAsesmen(queueItem.visit.id)
+        if (selectedQueue.value?.id !== sel) return   // pasien sudah ganti → buang
         asesmen.value      = data.data
         // Repopulate tiket dokter bila pasien sudah finalized (cetak ulang). Backend
         // hanya menyertakan doctor_ticket bila gate TR lolos; null selama belum.
         doctorTicket.value = data.data?.doctor_ticket ?? null
       }
     } catch {
-      asesmen.value = null
+      if (selectedQueue.value?.id === sel) asesmen.value = null
     } finally {
-      asesmenLoading.value = false
+      if (selectedQueue.value?.id === sel) asesmenLoading.value = false
     }
+    if (selectedQueue.value?.id !== sel) return   // pasien sudah ganti saat await
 
     // Load vital history in background
     if (queueItem.patient?.id) {
@@ -302,11 +308,12 @@ export const usePerawatStore = defineStore('perawat', () => {
     preopResepLoading.value = true
     try {
       const { data } = await perawatApi.preopResep(visitId)
+      if (selectedQueue.value?.visit?.id !== visitId) return   // pasien sudah ganti
       preopResep.value = data.data ?? null
     } catch {
-      preopResep.value = null
+      if (selectedQueue.value?.visit?.id === visitId) preopResep.value = null
     } finally {
-      preopResepLoading.value = false
+      if (selectedQueue.value?.visit?.id === visitId) preopResepLoading.value = false
     }
   }
   async function savePreopResep(items, opts = {}) {
@@ -372,11 +379,12 @@ export const usePerawatStore = defineStore('perawat', () => {
     vitalHistoryLoading.value = true
     try {
       const { data } = await perawatApi.vitalHistory(patientId)
+      if (selectedQueue.value?.patient?.id !== patientId) return   // pasien sudah ganti
       vitalHistory.value = data.data ?? []
     } catch {
-      vitalHistory.value = []
+      if (selectedQueue.value?.patient?.id === patientId) vitalHistory.value = []
     } finally {
-      vitalHistoryLoading.value = false
+      if (selectedQueue.value?.patient?.id === patientId) vitalHistoryLoading.value = false
     }
   }
 
@@ -386,11 +394,12 @@ export const usePerawatStore = defineStore('perawat', () => {
     cpptLoading.value = true
     try {
       const { data } = await perawatApi.cpptList(visitId)
+      if (selectedQueue.value?.visit?.id !== visitId) return   // pasien sudah ganti
       cpptEntries.value = data.data ?? []
     } catch {
-      cpptEntries.value = []
+      if (selectedQueue.value?.visit?.id === visitId) cpptEntries.value = []
     } finally {
-      cpptLoading.value = false
+      if (selectedQueue.value?.visit?.id === visitId) cpptLoading.value = false
     }
   }
 

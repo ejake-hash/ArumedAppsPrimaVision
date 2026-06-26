@@ -429,7 +429,11 @@ export const useAdmisiStore = defineStore('admisi', () => {
         _channel = _pusher.subscribe('admisi-queue')
         _channel.bind('queue-updated', ({ action, queue }) => {
           if (action === 'added') {
-            antrian.value.push(queue)
+            // Cegah duplikat: re-broadcast / reconnect-replay / 'added' yang tiba
+            // setelah fetchAntrian sudah memuat baris ini → push ganda (key v-for
+            // duplikat, antrianCount over-count). Patch bila id sudah ada.
+            if (antrian.value.some((q) => q.id === queue.id)) _updateAntrianItem(queue)
+            else antrian.value.push(queue)
           } else {
             _updateAntrianItem(queue)
           }

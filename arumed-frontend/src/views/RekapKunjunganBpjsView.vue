@@ -114,7 +114,7 @@ function onKelengkapanChange(row, e) {
 function onKetChange(row, e) {
   const ket = e.target.value.trim()
   if ((row.keterangan ?? '') === ket) return
-  const lengkap = row.berkas_lengkap === null ? null : !!row.berkas_lengkap
+  const lengkap = row.berkas_lengkap == null ? null : !!row.berkas_lengkap
   saveKelengkapan(row, { lengkap, keterangan: ket || null })
 }
 

@@ -669,7 +669,7 @@ const filtQ = computed(() => {
   }
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter(p => p.name.toLowerCase().includes(s) || p.qNum.toLowerCase().includes(s) || p.rm.toLowerCase().includes(s))
+    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s))
   }
   return list
 })
@@ -713,7 +713,7 @@ const filtHistory = computed(() => {
   else if (qSecondaryFilter.value === 'umum') list = list.filter(p => p.ptype !== 'bpjs')
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter(p => p.name.toLowerCase().includes(s) || p.qNum.toLowerCase().includes(s) || p.rm.toLowerCase().includes(s))
+    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s))
   }
   return list
 })

@@ -115,6 +115,10 @@ export const usePenunjangStore = defineStore('penunjang', () => {
 
   async function pickPatient(queueItem) {
     selectedQueue.value = queueItem
+    // Token seleksi: bila petugas keburu pindah pasien sebelum respons tiba,
+    // respons lama yang telat datang JANGAN menimpa data pasien baru (race →
+    // hasil pasien A muncul di header pasien B). Lihat perawatStore/refraksiStore.
+    const sel = queueItem?.id
     // Auto-load hasil semua order existing untuk visit ini.
     const orders = queueItem.visit?.diagnostic_orders ?? []
     resultsByOrderId.value = {}
@@ -122,8 +126,10 @@ export const usePenunjangStore = defineStore('penunjang', () => {
       orders.map(async (o) => {
         try {
           const { data } = await penunjangApi.showHasil(o.id)
+          if (selectedQueue.value?.id !== sel) return
           resultsByOrderId.value[o.id] = data.data ?? null
         } catch {
+          if (selectedQueue.value?.id !== sel) return
           resultsByOrderId.value[o.id] = null
         }
       }),
