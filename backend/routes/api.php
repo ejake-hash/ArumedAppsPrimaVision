@@ -864,6 +864,9 @@ Route::prefix('v1')->group(function () {
             // Statis → WAJIB sebelum `/{id}` agar 'rekap' tak diparse jadi UUID.
             Route::get('/rekap',                          [KlaimController::class, 'rekap']);
             Route::get('/rekap/export',                   [KlaimController::class, 'rekapExport']);
+            // Tab History: bundel semua kwitansi / resume+laporan operasi (PDF) → ZIP.
+            Route::get('/rekap/zip-kwitansi',             [KlaimController::class, 'rekapZipKwitansi']);
+            Route::get('/rekap/zip-resume',               [KlaimController::class, 'rekapZipResume']);
             // Sinkron SEP terbit di portal VClaim → tautkan ke kunjungan (statis, sblm /{id}).
             Route::post('/rekap/sinkron-sep',             [KlaimController::class, 'rekapSinkronSep'])->middleware('permission:bpjs.write');
             // Kirim kunjungan → daftar klaim (KlaimView). Massal (statis) sblm per-visit.

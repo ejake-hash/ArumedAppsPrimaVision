@@ -742,6 +742,179 @@ class KlaimController extends Controller
         return $pdf->stream("KWITANSI-{$visitId}.pdf");
     }
 
+    /**
+     * GET /klaim/rekap/zip-kwitansi — unduh SEMUA kwitansi (PDF) kunjungan BPJS
+     * pd tanggal/rentang aktif sbg satu file ZIP (tab History RekapKunjunganBpjs).
+     */
+    public function rekapZipKwitansi(Request $request)
+    {
+        return $this->streamRekapBundle($request, 'kwitansi');
+    }
+
+    /**
+     * GET /klaim/rekap/zip-resume — unduh SEMUA resume medis + laporan operasi (PDF)
+     * kunjungan BPJS pd tanggal/rentang aktif sbg satu file ZIP.
+     */
+    public function rekapZipResume(Request $request)
+    {
+        return $this->streamRekapBundle($request, 'resume');
+    }
+
+    /**
+     * Bangun ZIP berisi PDF kwitansi/resume untuk semua kunjungan BPJS pd periode
+     * aktif. Render sinkron via dompdf (pakai ulang helper wrap/safe yg sama dgn
+     * cetak per-dokumen). Kunjungan tanpa berkas terkait dilewati. Rentang dibatasi
+     * 7 hari → cegah timeout/OOM (render PDF jauh lebih berat dari ekspor Excel).
+     */
+    private function streamRekapBundle(Request $request, string $kind)
+    {
+        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis', 'search']);
+
+        $from = $filters['tanggal_from'] ?? $filters['tanggal'] ?? null;
+        $to   = $filters['tanggal_to'] ?? $filters['tanggal'] ?? null;
+        if (! $from || ! $to) {
+            return $this->error('Pilih tanggal terlebih dahulu sebelum mengunduh.', 422);
+        }
+        if (\Illuminate\Support\Carbon::parse($from)->diffInDays(\Illuminate\Support\Carbon::parse($to)) > 7) {
+            return $this->error('Rentang unduhan ZIP maksimal 7 hari. Persempit periode lalu coba lagi.', 422);
+        }
+
+        $visits = $this->service->getRecapVisitsForBundle($filters);
+        if ($visits->isEmpty()) {
+            return $this->error('Tidak ada kunjungan BPJS pada periode ini.', 404);
+        }
+
+        // Render PDF massal bisa lama → naikkan batas waktu untuk request ini saja.
+        @set_time_limit(300);
+
+        $tmp = tempnam(sys_get_temp_dir(), 'rekapzip_');
+        $zip = new \ZipArchive();
+        if ($zip->open($tmp, \ZipArchive::OVERWRITE) !== true) {
+            @unlink($tmp);
+
+            return $this->error('Gagal membuat arsip ZIP.', 500);
+        }
+
+        $used  = [];   // dedup nama entri dalam ZIP
+        $added = 0;
+        foreach ($visits as $v) {
+            if ($kind === 'kwitansi') {
+                $pdf = $this->renderKwitansiPdfBytes($v);
+                if ($pdf === null) {
+                    continue;
+                }
+                $name = $this->uniqueZipName($used, $this->bundleFileBase($v, 'KWITANSI'));
+                $zip->addFromString($name, $pdf);
+                $added++;
+            } else {
+                foreach ($this->service->resumeBundleDocCodes($v) as $code) {
+                    $pdf = $this->renderDocPdfBytes($v->id, $code);
+                    if ($pdf === null) {
+                        continue;
+                    }
+                    $label = $code === 'RESUME_MEDIS' ? 'RESUME' : 'LAP-OPERASI';
+                    $name  = $this->uniqueZipName($used, $this->bundleFileBase($v, $label));
+                    $zip->addFromString($name, $pdf);
+                    $added++;
+                }
+            }
+        }
+        $zip->close();
+
+        if ($added === 0) {
+            @unlink($tmp);
+
+            return $this->error($kind === 'kwitansi'
+                ? 'Tidak ada kwitansi yang bisa diunduh pada periode ini.'
+                : 'Tidak ada resume/laporan operasi yang bisa diunduh pada periode ini.', 404);
+        }
+
+        $tag  = $from === $to
+            ? str_replace('-', '', $from)
+            : str_replace('-', '', $from).'_'.str_replace('-', '', $to);
+        $base = ($kind === 'kwitansi' ? 'kwitansi-bpjs-' : 'resume-bpjs-').$tag;
+
+        return response()->download($tmp, $base.'.zip', [
+            'Content-Type' => 'application/zip',
+        ])->deleteFileAfterSend(true);
+    }
+
+    /** Render PDF kwitansi 1 kunjungan → bytes (null bila tak ada tagihan / gagal). */
+    private function renderKwitansiPdfBytes(\App\Models\Visit $visit): ?string
+    {
+        if (! $visit->billingInvoice) {
+            return null;
+        }
+        try {
+            $data = app(\App\Services\KasirService::class)->generateReceipt($visit->billingInvoice->id);
+
+            return \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.receipt', $data)
+                ->setPaper('a4')->setOption('isRemoteEnabled', true)->output();
+        } catch (\Throwable $e) {
+            \Log::warning('ZIP kwitansi: gagal render', ['visit' => $visit->id, 'err' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    /** Render PDF 1 dokumen RM (by template_code) utk kunjungan → bytes (snapshot bila ada, else live). */
+    private function renderDocPdfBytes(string $visitId, string $code): ?string
+    {
+        try {
+            $doc = \App\Models\PatientDocument::query()
+                ->where('visit_id', $visitId)
+                ->where('template_code', $code)
+                ->whereNotIn('status', \App\Services\KlaimService::DOC_ARCHIVED_STATUSES)
+                ->orderByDesc('created_at')
+                ->first();
+            if (! $doc) {
+                return null;
+            }
+
+            $registry = app(\App\Services\FormRegistry\FormRegistryService::class);
+            $html = $registry->getSnapshot($doc->id)['rendered_html'] ?? null;
+            if (! $html) {
+                // Belum ada snapshot (mis. DRAFT) → render live dari template.
+                $html = $registry->render($code, $visitId);
+            }
+            if (! $html) {
+                return null;
+            }
+
+            return \Barryvdh\DomPDF\Facade\Pdf::loadHTML(
+                $this->wrapPrintHtml($this->dompdfSafeHtml($html), $code)
+            )->setPaper('a4')->setOption('isRemoteEnabled', true)->output();
+        } catch (\Throwable $e) {
+            \Log::warning('ZIP resume: gagal render', ['visit' => $visitId, 'code' => $code, 'err' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    /** Basis nama entri ZIP: <PREFIX>_<NoSEP|NoRM>_<Nama>, hanya alfanumerik + dash. */
+    private function bundleFileBase(\App\Models\Visit $visit, string $prefix): string
+    {
+        $id   = $visit->no_sep ?: ($visit->patient?->no_rm ?: $visit->id);
+        $nama = $visit->patient?->name ?: 'Pasien';
+        $slug = preg_replace('/[^A-Za-z0-9]+/', '-', $prefix.'_'.$id.'_'.$nama);
+
+        return trim((string) $slug, '-');
+    }
+
+    /** Pastikan nama .pdf unik dalam ZIP (hindari satu entri menimpa entri lain). */
+    private function uniqueZipName(array &$used, string $base): string
+    {
+        $name = $base.'.pdf';
+        $n    = 2;
+        while (isset($used[$name])) {
+            $name = $base.'-'.$n.'.pdf';
+            $n++;
+        }
+        $used[$name] = true;
+
+        return $name;
+    }
+
     // =========================================================================
     // REKAP KUNJUNGAN BPJS — screening pra-klaim
     // =========================================================================

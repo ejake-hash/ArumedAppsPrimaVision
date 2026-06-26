@@ -457,6 +457,9 @@ class KlaimService
                 'has_invoice'        => (bool) $v->billingInvoice,
                 'invoice_status'     => $v->billingInvoice?->status,
                 'is_paid'            => $v->billingInvoice?->status === 'PAID',
+                // Resume medis (tab History): ada dokumen RESUME_MEDIS? sudah TTD?
+                'has_resume'         => $v->patientDocuments->contains(fn ($d) => $d->template_code === 'RESUME_MEDIS'),
+                'resume_signed'      => in_array('RESUME_MEDIS', $signedCodes, true),
                 // Screening pra-klaim (manual): null=belum dicek, true=Lengkap, false=Belum.
                 'berkas_lengkap'     => $v->berkas_lengkap,
                 'keterangan'         => $v->rekap_keterangan,
@@ -468,6 +471,65 @@ class KlaimService
         });
 
         return $page;
+    }
+
+    /**
+     * Kunjungan BPJS untuk bundel berkas (ZIP kwitansi/resume) di tab History.
+     * Mengembalikan model Visit (bukan array rekap) berikut relasi yang diperlukan
+     * untuk render PDF. Filter identik dgn getBpjsVisitRecap (tanggal/rentang +
+     * jenis + search), tanpa paginasi. Urut No SEP menaik.
+     */
+    public function getRecapVisitsForBundle(array $filters = []): \Illuminate\Support\Collection
+    {
+        $query = Visit::query()
+            ->where('guarantor_type', 'BPJS')
+            ->with([
+                'patient:id,name,no_rm,bpjs_number',
+                'billingInvoice:id,visit_id,status',
+                'surgerySchedule:id,surgery_package_id',
+                'surgerySchedule.surgeryPackage:id,surgery_type,name',
+            ]);
+
+        if (! empty($filters['tanggal'])) {
+            $query->whereDate('visit_date', $filters['tanggal']);
+        }
+        if (! empty($filters['tanggal_from'])) {
+            $query->whereDate('visit_date', '>=', $filters['tanggal_from']);
+        }
+        if (! empty($filters['tanggal_to'])) {
+            $query->whereDate('visit_date', '<=', $filters['tanggal_to']);
+        }
+        if (! empty($filters['jenis'])) {
+            $query->where('jenis_pelayanan', $filters['jenis']);
+        }
+        if (! empty($filters['search'])) {
+            $kw = $filters['search'];
+            $query->where(fn ($q) => $q
+                ->where('no_sep', 'like', "%{$kw}%")
+                ->orWhereHas('patient', fn ($p) => $p
+                    ->where('name', 'ilike', "%{$kw}%")
+                    ->orWhere('bpjs_number', 'like', "%{$kw}%"))
+            );
+        }
+
+        return $query->orderByRaw('no_sep IS NULL')->orderBy('no_sep')->orderBy('id')->get();
+    }
+
+    /**
+     * Kode dokumen RM untuk bundel ZIP Resume: resume medis + laporan operasi
+     * (untuk kunjungan bedah, sesuai tipe operasi). TANPA checklist kesiapan bedah
+     * (bukan resume). Bandingkan requiredDocCodes() yang dipakai untuk siap-klaim.
+     */
+    public function resumeBundleDocCodes(Visit $visit): array
+    {
+        $codes = ['RESUME_MEDIS'];
+        if ($visit->surgery_schedule_id !== null) {
+            $type = strtoupper((string) ($visit->surgerySchedule?->surgeryPackage?->surgery_type ?? ''));
+            $codes[] = str_contains($type, 'KATARAK') ? 'CATATAN_OPERASI_KATARAK'
+                : (str_contains($type, 'VITREO') ? 'LAPORAN_OPERASI_VITREO_RETINA' : 'LAPORAN_PEMBEDAHAN');
+        }
+
+        return $codes;
     }
 
     /**

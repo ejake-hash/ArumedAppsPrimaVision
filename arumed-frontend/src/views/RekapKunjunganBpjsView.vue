@@ -18,6 +18,10 @@ import { localDateStr } from '@/stores/admisiStore'
 // kemarin pada 00:00–07:00 WIB → default rekap salah hari bagi verifikator pagi.
 const today = localDateStr()
 
+// ── Tab utama: screening klaim vs History (arsip kwitansi/resume) ───────────
+const mainTab = ref('rekap')           // 'rekap' | 'history'
+function setMainTab(t) { if (mainTab.value === t) return; mainTab.value = t }
+
 // ── Filter & data ──────────────────────────────────────────────────────────
 const jenisTab  = ref('')              // '' = Semua | 'RAJAL' | 'RANAP'
 const rekapMode = ref('single')        // 'single' | 'range'
@@ -434,6 +438,52 @@ async function exportRekap() {
   }
 }
 
+// ── History: unduh ZIP + preview resume per baris ───────────────────────────
+const zipKwitansiBusy = ref(false)
+const zipResumeBusy = ref(false)
+const resumeBusyId = ref(null)
+
+// Error muncul sbg blob (responseType blob) → coba baca pesan JSON di dalamnya.
+async function blobErrMsg(e) {
+  try {
+    const txt = await e.response?.data?.text?.()
+    if (txt) return JSON.parse(txt)?.message
+  } catch (_) { /* abaikan */ }
+  return e.response?.data?.message
+}
+
+async function downloadZip(kind) {
+  const busy = kind === 'kwitansi' ? zipKwitansiBusy : zipResumeBusy
+  busy.value = true
+  try {
+    const url = kind === 'kwitansi' ? '/klaim/rekap/zip-kwitansi' : '/klaim/rekap/zip-resume'
+    const res = await api.get(url, { params: dateParams(), responseType: 'blob' })
+    const tag = rekapMode.value === 'single'
+      ? rekapDate.value.replace(/-/g, '')
+      : `${rekapFrom.value}_${rekapTo.value}`.replace(/-/g, '')
+    triggerDownload(res.data, `${kind}-bpjs-${tag}.zip`)
+  } catch (e) {
+    toast('w', (await blobErrMsg(e)) ?? 'Gagal mengunduh ZIP')
+  } finally {
+    busy.value = false
+  }
+}
+
+// Preview resume medis 1 pasien (form RESUME_MEDIS) di jendela cetak.
+async function openResumeRow(row) {
+  resumeBusyId.value = row.visit_id
+  try {
+    const { data } = await api.get('/rekam-medis/form/RESUME_MEDIS/render', { params: { visit_id: row.visit_id } })
+    const html = data?.data?.html
+    if (!html) { toast('w', 'Resume belum tersedia'); return }
+    printHtml(html, 'Resume Medis', false)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal membuka resume')
+  } finally {
+    resumeBusyId.value = null
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtDateTime(d) {
   if (!d) return '—'
@@ -467,6 +517,12 @@ onMounted(fetchRekap)
         <p class="rk-sub">Screening kelengkapan berkas kunjungan pasien BPJS sebelum klaim.</p>
       </div>
     </header>
+
+    <!-- Tab utama: Screening Klaim vs History -->
+    <div class="rk-maintabs">
+      <button :class="['rk-mtab', mainTab === 'rekap' ? 'a' : '']" @click="setMainTab('rekap')">Screening Klaim</button>
+      <button :class="['rk-mtab', mainTab === 'history' ? 'a' : '']" @click="setMainTab('history')">History</button>
+    </div>
 
     <!-- Tab jenis pelayanan -->
     <div class="rk-tabs">
@@ -508,11 +564,17 @@ onMounted(fetchRekap)
         <option :value="100">100 / hal</option>
         <option :value="200">200 / hal</option>
       </select>
-      <button class="rk-btn rk-btn-sync" :disabled="rekapSyncing" title="Tarik SEP yang terbit di portal VClaim lalu tautkan ke kunjungan" @click="syncSep">
+      <button v-if="mainTab === 'rekap'" class="rk-btn rk-btn-sync" :disabled="rekapSyncing" title="Tarik SEP yang terbit di portal VClaim lalu tautkan ke kunjungan" @click="syncSep">
         {{ rekapSyncing ? 'Menyinkron…' : 'Sinkron SEP' }}
       </button>
-      <button class="rk-btn rk-btn-kirim" :disabled="kirimMassalBusy" title="Kirim semua kunjungan siap (SEP + diagnosis) ke daftar klaim" @click="kirimKlaimMassal">
+      <button v-if="mainTab === 'rekap'" class="rk-btn rk-btn-kirim" :disabled="kirimMassalBusy" title="Kirim semua kunjungan siap (SEP + diagnosis) ke daftar klaim" @click="kirimKlaimMassal">
         {{ kirimMassalBusy ? 'Mengirim…' : 'Kirim, Berkas Siap di Klaim' }}
+      </button>
+      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-kirim" :disabled="zipKwitansiBusy" title="Unduh semua kwitansi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('kwitansi')">
+        {{ zipKwitansiBusy ? 'Menyiapkan…' : 'ZIP Kwitansi' }}
+      </button>
+      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-sync" :disabled="zipResumeBusy" title="Unduh semua resume medis + laporan operasi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('resume')">
+        {{ zipResumeBusy ? 'Menyiapkan…' : 'ZIP Resume' }}
       </button>
       <button class="rk-btn rk-btn-export" :disabled="rekapExporting" @click="exportRekap">
         {{ rekapExporting ? 'Mengekspor…' : 'Export Excel' }}
@@ -524,7 +586,7 @@ onMounted(fetchRekap)
 
     <!-- Tabel -->
     <div class="rk-table-wrap">
-      <table class="rk-table">
+      <table v-if="mainTab === 'rekap'" class="rk-table">
         <thead>
           <tr>
             <th class="c-no">No.</th>
@@ -588,6 +650,49 @@ onMounted(fetchRekap)
               />
             </td>
             <td>{{ r.dpjp || '-' }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Tabel History: arsip kwitansi & resume per pasien -->
+      <table v-else class="rk-table">
+        <thead>
+          <tr>
+            <th class="c-no">No.</th>
+            <th class="c-sep">No SEP</th>
+            <th class="c-mr">MR</th>
+            <th>Nama Peserta</th>
+            <th class="c-jenis">Jenis / Bedah</th>
+            <th class="c-hist">Kwitansi</th>
+            <th class="c-hist">Resume</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="rekapLoading"><td colspan="7" class="rk-empty">Memuat…</td></tr>
+          <tr v-else-if="!rekapRows.length"><td colspan="7" class="rk-empty">Tidak ada kunjungan BPJS pada periode ini.</td></tr>
+          <tr v-for="(r, i) in rekapRows" :key="r.visit_id" class="rk-row" @click="openDetail(r)">
+            <td class="rk-no">{{ (rekapPage - 1) * rekapPerPage + i + 1 }}</td>
+            <td class="rk-sep">{{ r.no_sep || '—' }}</td>
+            <td>{{ r.no_rm || '—' }}</td>
+            <td>
+              <div class="rk-nama">{{ r.nama || '-' }}</div>
+              <small class="rk-rm">{{ r.bpjs_number || '—' }}</small>
+            </td>
+            <td><span class="rk-badge" :class="badge(r).cls">{{ badge(r).text }}</span></td>
+            <td class="c-hist" @click.stop>
+              <div class="rk-hist-cell">
+                <span class="rk-claimchip" :class="r.is_paid ? 'ok' : 'no'">{{ r.has_invoice ? (r.is_paid ? 'Lunas' : 'Belum lunas') : 'Tidak ada' }}</span>
+                <button class="rk-chip" :disabled="!r.has_invoice" @click="openKwitansi(r, false)">Lihat</button>
+              </div>
+            </td>
+            <td class="c-hist" @click.stop>
+              <div class="rk-hist-cell">
+                <span class="rk-claimchip" :class="r.resume_signed ? 'ok' : 'no'">{{ r.has_resume ? (r.resume_signed ? 'TTD' : 'Draf') : 'Belum ada' }}</span>
+                <button class="rk-chip" :disabled="resumeBusyId === r.visit_id || !r.has_resume" @click="openResumeRow(r)">
+                  {{ resumeBusyId === r.visit_id ? '…' : 'Lihat' }}
+                </button>
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -764,6 +869,11 @@ onMounted(fetchRekap)
 .rk-head h1 { font-size: 19px; font-weight: 700; color: var(--td); margin: 0; }
 .rk-sub { font-size: 12.5px; color: var(--tu); margin: 4px 0 0; }
 
+/* Tab utama (Screening / History) */
+.rk-maintabs { display: inline-flex; gap: 4px; margin-bottom: 12px; padding: 3px; border: 1px solid var(--gb); border-radius: 10px; background: var(--gl); }
+.rk-mtab { padding: 7px 18px; border: 0; background: none; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--tu); border-radius: 7px; }
+.rk-mtab.a { background: var(--bc); color: var(--ga); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
 /* Tabs */
 .rk-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--gb); }
 .rk-tab { padding: 8px 16px; border: 0; background: none; cursor: pointer; font-size: 13px; color: var(--tu); border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -809,6 +919,8 @@ onMounted(fetchRekap)
 .c-tgl { width: 92px; }
 .c-kel { width: 130px; }
 .c-ket { width: 150px; }
+.c-hist { width: 150px; }
+.rk-hist-cell { display: flex; align-items: center; gap: 7px; }
 .rk-no { color: var(--tu); text-align: center; font-variant-numeric: tabular-nums; }
 .rk-sep { font-family: ui-monospace, monospace; font-size: 11.5px; }
 .rk-nama { font-weight: 600; color: var(--td); white-space: normal; }
