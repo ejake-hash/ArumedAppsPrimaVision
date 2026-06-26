@@ -849,15 +849,46 @@ export const jadwalDokterApi = {
   },
 }
 
-/** Laporan Marketing — daftar pasien siap-olah untuk campaign (read-only + export) */
+/** Laporan Marketing — pusat kerja marketing (daftar campaign, dashboard, survei, kerjasama, event) */
 export const marketingApi = {
   list:          (params)         => api.get('/laporan-marketing', { params }),
-  notifications: ()               => api.get('/laporan-marketing/notifications'),
+  notifications: (params)         => api.get('/laporan-marketing/notifications', { params }),
   kwitansi:      (invoiceId)      => api.get(`/laporan-marketing/kwitansi/${invoiceId}`),
   csvExport:     (params, format) => api.get('/laporan-marketing/export-csv', {
     params: { ...(params || {}), ...(format ? { format } : {}) },
     responseType: 'blob',
   }),
+
+  // Dashboard & analitik
+  dashboardPenjamin:       (params)         => api.get('/laporan-marketing/dashboard-penjamin', { params }),
+  dashboardPenjaminExport: (params, format) => api.get('/laporan-marketing/dashboard-penjamin/export', {
+    params: { ...(params || {}), ...(format ? { format } : {}) },
+    responseType: 'blob',
+  }),
+  topWilayah:        (params) => api.get('/laporan-marketing/top-wilayah', { params }),
+
+  // Survei kepuasan
+  survei:        (params) => api.get('/laporan-marketing/survei', { params }),
+  surveiConfig:  (body)   => api.put('/laporan-marketing/survei/config', body),
+  surveiSync:    ()       => api.post('/laporan-marketing/survei/sync'),
+
+  // Monitoring Kerjasama (CRUD)
+  kerjasama: {
+    list:   (params)   => api.get('/laporan-marketing/kerjasama', { params }),
+    create: (body)     => api.post('/laporan-marketing/kerjasama', body),
+    update: (id, body) => api.put(`/laporan-marketing/kerjasama/${id}`, body),
+    remove: (id)       => api.delete(`/laporan-marketing/kerjasama/${id}`),
+  },
+
+  // Program & Event (CRUD + peserta dari Google Sheet)
+  events: {
+    list:         (params)   => api.get('/laporan-marketing/events', { params }),
+    create:       (body)     => api.post('/laporan-marketing/events', body),
+    update:       (id, body) => api.put(`/laporan-marketing/events/${id}`, body),
+    remove:       (id)       => api.delete(`/laporan-marketing/events/${id}`),
+    participants: (id)       => api.get(`/laporan-marketing/events/${id}/participants`),
+    sync:         (id)       => api.post(`/laporan-marketing/events/${id}/sync`),
+  },
 }
 
 /** Keuangan — rekap honor (jasa medis) dokter per periode + aturan honor (PKS/edaran) */

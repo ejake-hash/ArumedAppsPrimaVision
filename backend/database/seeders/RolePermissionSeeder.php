@@ -172,7 +172,9 @@ class RolePermissionSeeder extends Seeder
                 'master_data'       => ['R'],
                 'integrasi'         => ['R'],
                 'laporan'           => ['R','W'],
-                'marketing'         => ['R'],
+                // Marketing: oversight kini boleh kelola Monitoring Kerjasama & Program/Event
+                // (CRUD) + sinkron Google Sheet → butuh write & delete.
+                'marketing'         => ['R','W','D'],
                 'audit'             => ['R'],
             ],
             // Inventori — rantai gudang/inventori farmasi penuh (1 key) + buku tarif.

@@ -50,3 +50,10 @@ Schedule::command('kasir:report-backlog')
     ->dailyAt('17:00')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
+
+// Jam 05.00 WIB — tarik data marketing dari Google Sheet (survei kepuasan + peserta
+// event). Aman bila Sheet belum dibagikan / URL kosong (di-log & dilewati).
+Schedule::command('marketing:sync-google')
+    ->dailyAt('05:00')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();

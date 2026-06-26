@@ -1032,6 +1032,31 @@ Route::prefix('v1')->group(function () {
             Route::get('/notifications',         [MarketingReportController::class, 'notifications']);
             Route::get('/kwitansi/{invoiceId}',  [MarketingReportController::class, 'kwitansi']);
             Route::get('/export-csv',            [MarketingReportController::class, 'export']);
+
+            // Dashboard & analitik (read)
+            Route::get('/dashboard-penjamin',        [MarketingReportController::class, 'dashboardPenjamin']);
+            Route::get('/dashboard-penjamin/export', [MarketingReportController::class, 'dashboardPenjaminExport']);
+            Route::get('/top-wilayah',               [MarketingReportController::class, 'topWilayah']);
+
+            // Survei Kepuasan (read + konfigurasi URL + sync manual)
+            Route::get('/survei',                [MarketingReportController::class, 'survei']);
+            Route::put('/survei/config',         [MarketingReportController::class, 'surveiConfig'])->middleware('permission:marketing.write');
+            Route::post('/survei/sync',          [MarketingReportController::class, 'syncSurvei'])->middleware('permission:marketing.write');
+
+            // Monitoring Kerjasama (CRUD)
+            Route::get('/kerjasama',             [MarketingReportController::class, 'kerjasamaIndex']);
+            Route::post('/kerjasama',            [MarketingReportController::class, 'kerjasamaStore'])->middleware('permission:marketing.write');
+            Route::put('/kerjasama/{id}',        [MarketingReportController::class, 'kerjasamaUpdate'])->middleware('permission:marketing.write');
+            Route::delete('/kerjasama/{id}',     [MarketingReportController::class, 'kerjasamaDestroy'])->middleware('permission:marketing.write');
+
+            // Program & Event (CRUD + peserta dari Google Sheet)
+            Route::get('/events',                    [MarketingReportController::class, 'eventIndex']);
+            Route::post('/events',                   [MarketingReportController::class, 'eventStore'])->middleware('permission:marketing.write');
+            Route::put('/events/{id}',               [MarketingReportController::class, 'eventUpdate'])->middleware('permission:marketing.write');
+            Route::delete('/events/{id}',            [MarketingReportController::class, 'eventDestroy'])->middleware('permission:marketing.write');
+            Route::get('/events/{id}/participants',  [MarketingReportController::class, 'eventParticipants']);
+            Route::post('/events/{id}/sync',         [MarketingReportController::class, 'eventSync'])->middleware('permission:marketing.write');
+
             Route::get('/',                      [MarketingReportController::class, 'index']);
         });
 

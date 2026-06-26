@@ -2,19 +2,46 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { marketingApi, masterApi } from '@/services/api'
 import KwitansiPrintDoc from '@/components/common/KwitansiPrintDoc.vue'
+import MarketingDashboardPanel from '@/components/marketing/MarketingDashboardPanel.vue'
+import MarketingSurveiPanel from '@/components/marketing/MarketingSurveiPanel.vue'
+import MarketingKerjasamaPanel from '@/components/marketing/MarketingKerjasamaPanel.vue'
+import MarketingEventPanel from '@/components/marketing/MarketingEventPanel.vue'
 
-// ─── Tab utama: Notifikasi (baru) + tipe layanan (IGD sengaja tidak ada) ───────
+// ─── Tab utama: Notifikasi + layanan (RJ/RI/BEDAH) + modul baru ───────────────
 const MAIN_TABS = [
-  { val: 'NOTIF', label: 'Notifikasi' },
-  { val: 'RJ',    label: 'Rawat Jalan' },
-  { val: 'RI',    label: 'Rawat Inap' },
-  { val: 'BEDAH', label: 'Bedah' },
+  { val: 'DASHBOARD', label: 'Dashboard' },
+  { val: 'NOTIF',     label: 'Notifikasi' },
+  { val: 'RJ',        label: 'Rawat Jalan' },
+  { val: 'RI',        label: 'Rawat Inap' },
+  { val: 'BEDAH',     label: 'Bedah' },
+  { val: 'SURVEI',    label: 'Survei Kepuasan' },
+  { val: 'KERJASAMA', label: 'Kerjasama' },
+  { val: 'EVENT',     label: 'Program & Event' },
 ]
-const activeTab = ref('NOTIF')
+const SERVICE_TABS = ['RJ', 'RI', 'BEDAH']
+const activeTab = ref('DASHBOARD')
 const serviceType = ref('RJ') // tab layanan aktif (RJ/RI/BEDAH) saat bukan di Notifikasi
+const isServiceTab = computed(() => SERVICE_TABS.includes(activeTab.value))
 
 // ─── Sub-filter jenis notifikasi (digerakkan oleh KPI card) ───────────────────
 const notifFilter = ref('all')
+
+// ─── Filter tanggal Notifikasi (terpisah dari periode tab layanan) ────────────
+const notifFrom = ref('')
+const notifTo = ref('')
+
+// ─── Filter penjamin tab layanan (parent TPA otomatis mencakup anak) ──────────
+const penjaminList = ref([])
+const penjaminId = ref('')
+async function loadPenjamin() {
+  try {
+    const { data } = await masterApi.penjamin.list({ per_page: 200 })
+    const rows = data.data?.data ?? data.data ?? []
+    penjaminList.value = Array.isArray(rows) ? rows : (rows.data ?? [])
+  } catch {
+    penjaminList.value = []
+  }
+}
 
 // ─── State Notifikasi ─────────────────────────────────────────────────────────
 const notifRows = ref([])
@@ -119,6 +146,7 @@ async function load() {
   loading.value = true
   try {
     const params = { service_type: serviceType.value, from: from.value, to: to.value }
+    if (penjaminId.value) params.insurer_id = penjaminId.value
     const res = await marketingApi.list(params)
     rows.value = res.data?.data?.rows || []
   } catch (e) {
@@ -133,7 +161,10 @@ async function load() {
 async function loadNotif() {
   notifLoading.value = true
   try {
-    const res = await marketingApi.notifications()
+    const params = {}
+    if (notifFrom.value) params.from = notifFrom.value
+    if (notifTo.value) params.to = notifTo.value
+    const res = await marketingApi.notifications(params)
     const data = res.data?.data || {}
     notifRows.value = data.rows || []
     notifCounts.value = data.counts || { kontrol: 0, tindakan: 0, ulang_tahun: 0, nyeri: 0, total: 0 }
@@ -153,10 +184,16 @@ async function selectTab(tab) {
   searchQuery.value = '' // mulai bersih tiap pindah tab
   if (tab === 'NOTIF') {
     if (!notifRows.value.length) await loadNotif()
-  } else {
+  } else if (SERVICE_TABS.includes(tab)) {
     serviceType.value = tab
+    if (!penjaminList.value.length) loadPenjamin()
     await load()
   }
+  // Tab DASHBOARD/SURVEI/KERJASAMA/EVENT memuat sendiri di komponen anak.
+}
+
+function applyNotifFilter() {
+  loadNotif()
 }
 
 function toggleDone(refId) {
@@ -183,6 +220,7 @@ async function exportData(format = 'csv') {
   openFmt.value = false
   try {
     const params = { service_type: serviceType.value, from: from.value, to: to.value }
+    if (penjaminId.value) params.insurer_id = penjaminId.value
     const res = await marketingApi.csvExport(params, format === 'xlsx' ? 'xlsx' : undefined)
     triggerDownload(res.data, `laporan-marketing-${serviceType.value.toLowerCase()}.${format}`)
   } catch (e) {
@@ -250,11 +288,12 @@ onMounted(() => {
         <div>
           <h1>Laporan Marketing</h1>
           <p class="sub" v-if="activeTab === 'NOTIF'">Pengingat siap-hubungi: follow-up kontrol, tindakan terjadwal, ulang tahun &amp; nyeri pasca-tindakan.</p>
-          <p class="sub" v-else>Daftar pasien siap-olah untuk campaign (follow-up kontrol &amp; reaktivasi).</p>
+          <p class="sub" v-else-if="isServiceTab">Daftar pasien siap-olah untuk campaign (follow-up kontrol &amp; reaktivasi).</p>
+          <p class="sub" v-else>Pusat kerja marketing: analitik kunjungan, survei kepuasan, monitoring kerjasama &amp; program/event.</p>
         </div>
       </div>
       <!-- Export hanya pada tab layanan (Notifikasi tidak diekspor). -->
-      <div class="fmt-wrap" @click.stop v-if="activeTab !== 'NOTIF'">
+      <div class="fmt-wrap" @click.stop v-if="isServiceTab">
         <button class="btn-soft accent" title="Ekspor daftar — pilih format" @click="openFmt = !openFmt">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -309,8 +348,19 @@ onMounted(() => {
         </button>
       </div>
 
-      <!-- Toolbar ringkas -->
+      <!-- Toolbar ringkas + filter tanggal -->
       <div class="filter-bar">
+        <label>Dari
+          <input type="date" v-model="notifFrom" />
+        </label>
+        <label>Sampai
+          <input type="date" v-model="notifTo" />
+        </label>
+        <button class="btn-soft accent" @click="applyNotifFilter" :disabled="notifLoading">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          Terapkan
+        </button>
+        <button v-if="notifFrom || notifTo" class="btn-soft" title="Kembali ke pengingat 7 hari" @click="notifFrom = ''; notifTo = ''; loadNotif()">Reset</button>
         <button class="btn-soft" @click="loadNotif" :disabled="notifLoading">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1015.5-6.4L21 8"/><path d="M21 3v5h-5"/></svg>
           Muat ulang
@@ -372,7 +422,7 @@ onMounted(() => {
     </template>
 
     <!-- ════════════════ TAB LAYANAN (RJ/RI/Bedah) ════════════════ -->
-    <template v-else>
+    <template v-else-if="isServiceTab">
       <!-- KPI ringkasan periode -->
       <div class="stat-grid stat-grid-3" v-if="!loading && rows.length">
         <div
@@ -398,6 +448,12 @@ onMounted(() => {
         </label>
         <label>Sampai
           <input type="date" v-model="to" />
+        </label>
+        <label>Penjamin
+          <select v-model="penjaminId" @change="load()" class="penjamin-select">
+            <option value="">Semua penjamin</option>
+            <option v-for="p in penjaminList" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
         </label>
         <button class="btn-soft accent" @click="applyFilter" :disabled="loading">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -473,6 +529,18 @@ onMounted(() => {
       </div>
     </template>
 
+    <!-- ════════════════ DASHBOARD (penjamin + top wilayah) ════════════════ -->
+    <MarketingDashboardPanel v-else-if="activeTab === 'DASHBOARD'" />
+
+    <!-- ════════════════ SURVEI KEPUASAN ════════════════ -->
+    <MarketingSurveiPanel v-else-if="activeTab === 'SURVEI'" />
+
+    <!-- ════════════════ MONITORING KERJASAMA ════════════════ -->
+    <MarketingKerjasamaPanel v-else-if="activeTab === 'KERJASAMA'" />
+
+    <!-- ════════════════ PROGRAM & EVENT ════════════════ -->
+    <MarketingEventPanel v-else-if="activeTab === 'EVENT'" />
+
     <transition name="toast">
       <div v-if="toastMsg" class="toast" :class="toastType">{{ toastMsg }}</div>
     </transition>
@@ -499,7 +567,7 @@ onMounted(() => {
 .lm-head .sub { margin: 3px 0 0; color: var(--tu); font-size: 0.84rem; max-width: 640px; }
 
 /* Tabs underline */
-.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--gb); margin-bottom: 18px; }
+.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--gb); margin-bottom: 18px; flex-wrap: wrap; }
 .tab {
   padding: 9px 18px; background: none; border: none; cursor: pointer;
   font-size: 0.9rem; font-weight: 600; color: var(--tu); border-bottom: 2px solid transparent;
@@ -564,6 +632,11 @@ button.stat-card:hover { box-shadow: 0 6px 18px rgba(14,58,102,.10); transform: 
   border: 1px solid var(--gb); border-radius: 8px; padding: 6px 9px; font-size: 0.85rem; color: var(--td); background: var(--bc);
 }
 .filter-bar input[type="date"]:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
+.penjamin-select {
+  border: 1px solid var(--gb); border-radius: 8px; padding: 6px 9px; font-size: 0.85rem;
+  color: var(--td); background: var(--bc); max-width: 220px;
+}
+.penjamin-select:focus { outline: none; border-color: var(--ga); box-shadow: 0 0 0 2px rgba(31,170,224,.15); }
 .count { font-size: 0.82rem; color: var(--tu); font-weight: 600; }
 
 /* Search by nama / NIK */

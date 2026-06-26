@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Icd10Code;
+use App\Models\Insurer;
 use App\Models\Patient;
 use App\Models\SurgerySchedule;
 use App\Models\Visit;
@@ -31,17 +32,27 @@ class MarketingReportService
         'ASURANSI' => 'Asuransi',
     ];
 
+    /** Label jenis penjamin (dashboard mode "per jenis") — cakup semua enum guarantor_type. */
+    private const JENIS_LABELS = [
+        'UMUM'       => 'Umum',
+        'BPJS'       => 'BPJS',
+        'ASURANSI'   => 'Asuransi',
+        'PERUSAHAAN' => 'Perusahaan',
+        'SOSIAL'     => 'Sosial',
+    ];
+
     /**
-     * @param array{service_type?:string,from?:?string,to?:?string} $filters
+     * @param array{service_type?:string,from?:?string,to?:?string,insurer_id?:?string} $filters
      * @return array{service_type:string,periode:array{from:?string,to:?string},rows:array<int,array<string,mixed>>}
      */
     public function getList(array $filters): array
     {
-        $type = $this->normalizeType($filters['service_type'] ?? 'RJ');
-        $from = $filters['from'] ?? null;
-        $to   = $filters['to'] ?? null;
+        $type      = $this->normalizeType($filters['service_type'] ?? 'RJ');
+        $from      = $filters['from'] ?? null;
+        $to        = $filters['to'] ?? null;
+        $insurerId = $filters['insurer_id'] ?? null;
 
-        $visits = $this->baseQuery($type, $from, $to)->get();
+        $visits = $this->baseQuery($type, $from, $to, $insurerId)->get();
         $icdMap = $this->icdDescriptionMap($visits);
 
         $rows = [];
@@ -90,6 +101,164 @@ class MarketingReportService
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // DASHBOARD ANALITIK — kunjungan per penjamin + top wilayah pasien (READ-ONLY).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Dashboard kunjungan per penjamin dalam periode.
+     *
+     * $groupBy:
+     *  - 'jenis'   (default): kelompokkan per jenis penjamin (guarantor_type) — semua
+     *               pasien asuransi terhitung sebagai satu "Asuransi", dst. (BPJS/Umum/
+     *               Asuransi/Perusahaan/Sosial). Pandangan ringkas.
+     *  - 'penjamin': breakdown detail per penjamin (insurer.name), child TPA tampil
+     *               sebagai dirinya. Untuk yang butuh rincian per perusahaan/asuransi.
+     *
+     * $insurerId opsional memfokuskan ke satu penjamin (+anak TPA-nya).
+     *
+     * @return array{group_by:string,rows:array<int,array<string,mixed>>,totals:array<string,int>,periode:array{from:?string,to:?string}}
+     */
+    public function getPayerDashboard(?string $from, ?string $to, string $groupBy = 'jenis', ?string $insurerId = null): array
+    {
+        $groupBy = $groupBy === 'penjamin' ? 'penjamin' : 'jenis';
+
+        $counts = "count(*) as total_kunjungan,
+             count(distinct patient_id) as total_pasien,
+             count(*) filter (where jenis_pelayanan = 'RAJAL') as rj,
+             count(*) filter (where jenis_pelayanan = 'RANAP') as ri,
+             count(*) filter (where visit_type = 'PREOP_BEDAH' or surgery_schedule_id is not null) as bedah";
+
+        $base = Visit::query()
+            ->when($from, fn ($q) => $q->whereDate('visit_date', '>=', $from))
+            ->when($to, fn ($q) => $q->whereDate('visit_date', '<=', $to))
+            ->when($insurerId, fn ($q) => $q->whereIn('insurer_id', $this->insurerIdWithChildren($insurerId)));
+
+        if ($groupBy === 'penjamin') {
+            $grouped = $base->selectRaw("insurer_id, guarantor_type, {$counts}")
+                ->groupBy('insurer_id', 'guarantor_type')
+                ->get();
+
+            $names = Insurer::whereIn('id', $grouped->pluck('insurer_id')->filter()->unique())
+                ->pluck('name', 'id');
+
+            $labelFor = fn ($r) => $r->insurer_id
+                ? ($names[$r->insurer_id] ?? '-')
+                : $this->jenisLabel($r->guarantor_type);
+        } else { // jenis
+            $grouped = $base->selectRaw("guarantor_type, {$counts}")
+                ->groupBy('guarantor_type')
+                ->get();
+
+            $labelFor = fn ($r) => $this->jenisLabel($r->guarantor_type);
+        }
+
+        // Gabungkan baris berdasarkan label (mis. di mode jenis, insurer berbeda
+        // dengan guarantor_type sama → satu bucket "Asuransi").
+        $agg = [];
+        foreach ($grouped as $r) {
+            $label = $labelFor($r);
+            $agg[$label] ??= [
+                'penjamin' => $label, 'total_kunjungan' => 0, 'total_pasien' => 0,
+                'rj' => 0, 'ri' => 0, 'bedah' => 0,
+            ];
+            $agg[$label]['total_kunjungan'] += (int) $r->total_kunjungan;
+            $agg[$label]['total_pasien']    += (int) $r->total_pasien;
+            $agg[$label]['rj']              += (int) $r->rj;
+            $agg[$label]['ri']              += (int) $r->ri;
+            $agg[$label]['bedah']           += (int) $r->bedah;
+        }
+
+        $rows = array_values($agg);
+        usort($rows, fn ($a, $b) => $b['total_kunjungan'] <=> $a['total_kunjungan']);
+
+        $totals = [
+            'total_kunjungan' => array_sum(array_column($rows, 'total_kunjungan')),
+            'total_pasien'    => array_sum(array_column($rows, 'total_pasien')),
+            'penjamin_unik'   => count($rows),
+        ];
+
+        return ['group_by' => $groupBy, 'rows' => $rows, 'totals' => $totals, 'periode' => ['from' => $from, 'to' => $to]];
+    }
+
+    /** Label jenis penjamin dari guarantor_type (semua asuransi → satu "Asuransi"). */
+    private function jenisLabel(?string $g): string
+    {
+        $g = strtoupper(trim((string) $g));
+
+        return self::JENIS_LABELS[$g] ?? ($g ?: 'Lainnya');
+    }
+
+    /**
+     * CSV dashboard penjamin (header + baris dari getPayerDashboard) untuk export.
+     */
+    public function getPayerDashboardCsv(?string $from, ?string $to, string $groupBy = 'jenis', ?string $insurerId = null): string
+    {
+        $data = $this->getPayerDashboard($from, $to, $groupBy, $insurerId);
+
+        $fh = fopen('php://temp', 'r+');
+        $head = $groupBy === 'penjamin' ? 'Penjamin' : 'Jenis Penjamin';
+        fputcsv($fh, [$head, 'Kunjungan', 'Pasien', 'Rawat Jalan', 'Rawat Inap', 'Bedah'], ',', '"', '\\');
+        foreach ($data['rows'] as $r) {
+            fputcsv($fh, [
+                $r['penjamin'], $r['total_kunjungan'], $r['total_pasien'], $r['rj'], $r['ri'], $r['bedah'],
+            ], ',', '"', '\\');
+        }
+        rewind($fh);
+        $csv = stream_get_contents($fh);
+        fclose($fh);
+
+        return $csv;
+    }
+
+    /**
+     * Top wilayah asal pasien (kota/kabupaten atau kecamatan) dalam periode.
+     * Kolom alamat = string legacy (nama_kab_kota / nama_kecamatan); dinormalisasi
+     * UPPER(TRIM) agar variasi ejaan/spasi tidak terpecah.
+     *
+     * @return array{level:string,rows:array<int,array<string,mixed>>,periode:array{from:?string,to:?string}}
+     */
+    public function getTopWilayah(?string $from, ?string $to, string $level = 'kota', int $limit = 15): array
+    {
+        $col = $level === 'kecamatan' ? 'patients.nama_kecamatan' : 'patients.nama_kab_kota';
+
+        $rows = Visit::query()
+            ->join('patients', 'patients.id', '=', 'visits.patient_id')
+            ->when($from, fn ($q) => $q->whereDate('visits.visit_date', '>=', $from))
+            ->when($to, fn ($q) => $q->whereDate('visits.visit_date', '<=', $to))
+            ->whereNotNull($col)
+            ->whereRaw("trim({$col}) <> ''")
+            ->selectRaw(
+                "upper(trim({$col})) as wilayah,
+                 count(*) as total_kunjungan,
+                 count(distinct visits.patient_id) as total_pasien"
+            )
+            ->groupByRaw("upper(trim({$col}))")
+            ->orderByDesc('total_kunjungan')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($r) => [
+                'wilayah'         => $r->wilayah,
+                'total_kunjungan' => (int) $r->total_kunjungan,
+                'total_pasien'    => (int) $r->total_pasien,
+            ])
+            ->all();
+
+        return [
+            'level'   => $level === 'kecamatan' ? 'kecamatan' : 'kota',
+            'rows'    => $rows,
+            'periode' => ['from' => $from, 'to' => $to],
+        ];
+    }
+
+    /** Daftar id insurer + semua anak TPA-nya (untuk filter penjamin parent-aware). */
+    private function insurerIdWithChildren(string $insurerId): array
+    {
+        $children = Insurer::where('parent_id', $insurerId)->pluck('id')->all();
+
+        return array_merge([$insurerId], $children);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // NOTIFIKASI (Tab 1) — daftar pengingat siap-hubungi untuk tim marketing.
     // 4 jenis: follow-up kontrol, tindakan terjadwal, ulang tahun, follow-up nyeri.
     // READ-ONLY (tanpa migrasi). Ceklis "selesai" dikelola SEMENTARA di FE.
@@ -109,13 +278,16 @@ class MarketingReportService
      *   counts:array{kontrol:int,tindakan:int,ulang_tahun:int,nyeri:int,total:int}
      * }
      */
-    public function getNotifications(): array
+    public function getNotifications(array $filters = []): array
     {
+        $from = $filters['from'] ?? null;
+        $to   = $filters['to'] ?? null;
+
         $items = array_merge(
-            $this->notifKontrol(),
-            $this->notifTindakan(),
-            $this->notifUlangTahun(),
-            $this->notifNyeri(),
+            $this->notifKontrol($from, $to),
+            $this->notifTindakan($from, $to),
+            $this->notifUlangTahun($from, $to),
+            $this->notifNyeri($from, $to),
         );
 
         // Urut menaik berdasarkan tanggal jatuh tempo (string Y-m-d / Y-m-d H:i aman dibandingkan leksikografis).
@@ -136,18 +308,31 @@ class MarketingReportService
         return ['rows' => $rows, 'counts' => $counts];
     }
 
-    /** Follow-up kontrol: planning_follow_up + follow_up_date dalam [hari ini .. +7]. */
-    private function notifKontrol(): array
+    /**
+     * Window "ke depan" untuk kontrol/tindakan/ulang tahun. Tanpa filter = [hari ini .. +7];
+     * dengan from/to eksplisit pakai rentang itu.
+     *
+     * @return array{0:Carbon,1:Carbon}
+     */
+    private function upcomingWindow(?string $from, ?string $to): array
     {
-        $today = Carbon::today();
-        $until = $today->copy()->addDays(self::UPCOMING_DAYS);
+        $start = $from ? Carbon::parse($from)->startOfDay() : Carbon::today();
+        $end   = $to ? Carbon::parse($to)->startOfDay() : Carbon::today()->addDays(self::UPCOMING_DAYS);
+
+        return [$start, $end];
+    }
+
+    /** Follow-up kontrol: planning_follow_up + follow_up_date dalam window. */
+    private function notifKontrol(?string $from = null, ?string $to = null): array
+    {
+        [$start, $end] = $this->upcomingWindow($from, $to);
 
         $visits = Visit::query()
             ->with(['patient', 'doctorExamination.doctor'])
             ->where('planning_follow_up', true)
             ->whereNotNull('follow_up_date')
-            ->whereDate('follow_up_date', '>=', $today)
-            ->whereDate('follow_up_date', '<=', $until)
+            ->whereDate('follow_up_date', '>=', $start)
+            ->whereDate('follow_up_date', '<=', $end)
             ->orderBy('follow_up_date')
             ->get();
 
@@ -164,17 +349,16 @@ class MarketingReportService
         ))->all();
     }
 
-    /** Tindakan terjadwal: surgery_schedules.scheduled_date dalam [hari ini .. +7], belum dibatalkan/selesai. */
-    private function notifTindakan(): array
+    /** Tindakan terjadwal: surgery_schedules.scheduled_date dalam window, belum dibatalkan/selesai. */
+    private function notifTindakan(?string $from = null, ?string $to = null): array
     {
-        $today = Carbon::today();
-        $until = $today->copy()->addDays(self::UPCOMING_DAYS);
+        [$start, $end] = $this->upcomingWindow($from, $to);
 
         $schedules = SurgerySchedule::query()
             ->with(['visit.patient', 'leadSurgeon', 'surgeryPackage'])
             ->whereNotNull('scheduled_date')
-            ->whereDate('scheduled_date', '>=', $today)
-            ->whereDate('scheduled_date', '<=', $until)
+            ->whereDate('scheduled_date', '>=', $start)
+            ->whereDate('scheduled_date', '<=', $end)
             ->whereNotIn('status', ['CANCELLED', 'SELESAI', 'COMPLETED', 'DONE'])
             ->orderBy('scheduled_date')
             ->get();
@@ -201,17 +385,23 @@ class MarketingReportService
             ->all();
     }
 
-    /** Ulang tahun: pasien aktif yang berulang tahun dalam [hari ini .. +7]. */
-    private function notifUlangTahun(): array
+    /** Ulang tahun: pasien aktif yang berulang tahun dalam window. */
+    private function notifUlangTahun(?string $from = null, ?string $to = null): array
     {
-        $today = Carbon::today();
+        [$start, $end] = $this->upcomingWindow($from, $to);
+
+        // Bangun peta MM-DD → tanggal due. Batasi maksimum 366 hari (cegah loop besar
+        // bila rentang dipaksa lebih dari setahun).
         $window = [];
-        for ($i = 0; $i <= self::UPCOMING_DAYS; $i++) {
-            $d = $today->copy()->addDays($i);
-            $window[$d->format('m-d')] = $d->toDateString();
+        $cursor = $start->copy();
+        $guard = 0;
+        while ($cursor->lte($end) && $guard <= 366) {
+            $window[$cursor->format('m-d')] = $cursor->toDateString();
+            $cursor->addDay();
+            $guard++;
         }
 
-        // Filter di DB pakai bulan-tanggal (cocok lintas-tahun) lalu pasangkan ke tanggal due tahun ini.
+        // Filter di DB pakai bulan-tanggal (cocok lintas-tahun) lalu pasangkan ke tanggal due.
         $monthDays = array_keys($window);
 
         $patients = Patient::query()
@@ -243,19 +433,20 @@ class MarketingReportService
      * jatuh tempo = paid_at + 6 jam. Tampilkan yang due dari 7 hari lalu s/d sekarang
      * (reminder retrospektif — pasien sudah pulang, perlu ditelepon cek nyeri).
      */
-    private function notifNyeri(): array
+    private function notifNyeri(?string $from = null, ?string $to = null): array
     {
-        $now   = Carbon::now();
-        $since = $now->copy()->subDays(self::UPCOMING_DAYS);
+        // Tanpa filter = retrospektif [now-7d .. now]; dengan from/to pakai rentang harian itu.
+        $since = $from ? Carbon::parse($from)->startOfDay() : Carbon::now()->subDays(self::UPCOMING_DAYS);
+        $until = $to ? Carbon::parse($to)->endOfDay() : Carbon::now();
 
         $visits = Visit::query()
             ->with(['patient', 'surgerySchedule.surgeryPackage', 'billingInvoice'])
             ->whereNotNull('surgery_schedule_id')
-            ->whereHas('billingInvoice', function ($q) use ($now, $since) {
+            ->whereHas('billingInvoice', function ($q) use ($until, $since) {
                 $q->where('status', 'PAID')
                   ->whereNotNull('paid_at')
-                  // paid_at + 6 jam berada di rentang [since .. now] → due sekarang/baru lewat.
-                  ->whereRaw("paid_at + interval '" . self::NYERI_DELAY_HOURS . " hours' <= ?", [$now])
+                  // paid_at + 6 jam berada di rentang [since .. until] → due dalam window.
+                  ->whereRaw("paid_at + interval '" . self::NYERI_DELAY_HOURS . " hours' <= ?", [$until])
                   ->whereRaw("paid_at + interval '" . self::NYERI_DELAY_HOURS . " hours' >= ?", [$since]);
             })
             ->get();
@@ -322,12 +513,13 @@ class MarketingReportService
      * Visit::query() (Eloquent → soft-delete & eager-load aman) difilter periode,
      * dengan eager-load per tab.
      */
-    private function baseQuery(string $type, ?string $from, ?string $to)
+    private function baseQuery(string $type, ?string $from, ?string $to, ?string $insurerId = null)
     {
         $query = Visit::query()
             ->with($this->eagerFor($type))
             ->when($from, fn ($q) => $q->whereDate('visit_date', '>=', $from))
             ->when($to, fn ($q) => $q->whereDate('visit_date', '<=', $to))
+            ->when($insurerId, fn ($q) => $q->whereIn('insurer_id', $this->insurerIdWithChildren($insurerId)))
             ->orderBy('visit_date', 'desc');
 
         if ($type === 'BEDAH') {
