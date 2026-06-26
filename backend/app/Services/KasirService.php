@@ -3945,7 +3945,13 @@ class KasirService
      * Non-rujukan (rantai 1 elemen) → no-op (zero-change). DRAFT only. Total/diskon/cover
      * diselaraskan via recalculateInvoice (BPJS full-cover & clamp COB). Catatan: split
      * coverage COB seq-1/seq-2 TIDAK dihitung ulang (sama batasannya dgn syncVerifiedObatLines)
-     * — pakai Susun Ulang (cancel→generate) bila perlu konsolidasi penuh COB. Lihat
+     * — pakai Susun Ulang (cancel→generate) bila perlu konsolidasi penuh COB.
+     *
+     * GUARD created_at: HANYA menyusulkan kunjungan yang TERBENTUK SETELAH invoice dibuat
+     * (justru kondisi penyebab bug asli: anak rujuk-internal lahir belakangan). Kunjungan yang
+     * sudah ada saat invoice di-generate tapi barisnya kosong = SENGAJA dikosongkan/dihapus
+     * kasir (mis. duplikat rujuk ke dokter yang sama same-day) → JANGAN ditambah ulang, supaya
+     * penghapusan baris oleh kasir tidak "hidup lagi" tiap buka/refresh tagihan. Lihat
      * [[rujuk-internal-billing]].
      */
     public function syncMissingChainLines(BillingInvoice $invoice): int
@@ -3982,6 +3988,12 @@ class KasirService
                 foreach ($chain as $v) {
                     if ($presentVisitIds->has($v->id)) {
                         continue;   // sudah ada barisnya — jangan disentuh.
+                    }
+                    // Hanya kunjungan yang lahir SETELAH invoice (anak rujuk menyusul). Visit
+                    // yang sudah ada saat generate tapi kosong = baris sengaja dihapus kasir →
+                    // jangan dibangkitkan ulang (kalau tidak, hapus baris tak pernah "nyangkut").
+                    if (! ($invoice->created_at && $v->created_at && $v->created_at->gt($invoice->created_at))) {
+                        continue;
                     }
                     foreach ($this->buildVisitInvoiceLines($v, $billInsurerId, $billGuarantor) as $line) {
                         BillingItem::create(array_merge($line, ['billing_invoice_id' => $invoice->id]));
