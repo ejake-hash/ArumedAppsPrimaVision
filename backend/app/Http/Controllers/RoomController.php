@@ -35,6 +35,19 @@ class RoomController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $this->validateRoom($request);
+
+        // Soft-delete aware: rooms.code UNIQUE plain (termasuk baris trashed). Bila room
+        // dgn code sama pernah DIHAPUS → restore + update, bukan insert (cegah 23505
+        // "duplicate" yg muncul saat user menambah kembali kamar yg sudah dihapus).
+        // Validasi sudah mem-block duplikat AKTIF, jadi $existing di sini pasti trashed.
+        $existing = Room::withTrashed()->where('code', $data['code'])->first();
+        if ($existing && $existing->trashed()) {
+            $existing->restore();
+            $existing->update($data);
+
+            return $this->ok($existing->fresh('beds'), 'Room dipulihkan & diperbarui');
+        }
+
         $room = Room::create($data);
 
         return $this->ok($room->fresh('beds'), 'Room dibuat');
@@ -79,10 +92,27 @@ class RoomController extends Controller
             'code' => 'required|string|max:20',
         ]);
 
-        // Cegah duplikat code dalam room (unique sudah di DB; beri pesan ramah).
-        $exists = Bed::where('room_id', $room->id)->where('code', $data['code'])->exists();
-        if ($exists) {
+        // Soft-delete aware: unique(room_id, code) di DB termasuk baris trashed.
+        // Cegah duplikat AKTIF (pesan ramah); bila bed dgn code sama pernah dihapus
+        // → restore + reset, bukan insert (cegah 23505 saat menambah kembali bed).
+        $existing = Bed::withTrashed()
+            ->where('room_id', $room->id)
+            ->where('code', $data['code'])
+            ->first();
+
+        if ($existing && ! $existing->trashed()) {
             return $this->error("Bed dengan kode {$data['code']} sudah ada di room ini.", 422);
+        }
+
+        if ($existing) {
+            $existing->restore();
+            $existing->update([
+                'label'     => "{$room->code}.{$data['code']}",
+                'status'    => Bed::STATUS_AVAILABLE,
+                'is_active' => true,
+            ]);
+
+            return $this->ok($existing->fresh(), 'Bed dipulihkan');
         }
 
         $bed = Bed::create([
@@ -192,9 +222,15 @@ class RoomController extends Controller
 
     private function validateRoom(Request $request, ?string $ignoreId = null): array
     {
-        // code UNIQUE di DB (rooms.code). Validasi di sini agar duplikat → 422 ramah,
-        // bukan 500 bocor SQLSTATE 23505. ignore $ignoreId saat update.
-        $uniqueCode = 'unique:rooms,code' . ($ignoreId ? ",{$ignoreId},id" : '');
+        // rooms.code UNIQUE di DB (termasuk baris soft-deleted). Validasi di sini agar
+        // duplikat → 422 ramah, bukan 500 bocor SQLSTATE 23505.
+        // CREATE: abaikan baris trashed (deleted_at NULL) → store() yang me-restore
+        //   kamar lama yg pernah dihapus dgn code sama (alih-alih insert duplikat).
+        // UPDATE: tetap strict (hitung trashed) supaya code yg masih dipegang baris
+        //   trashed tak bisa dipakai ulang lewat update → hindari unique violation.
+        $uniqueCode = $ignoreId
+            ? "unique:rooms,code,{$ignoreId},id"
+            : 'unique:rooms,code,NULL,id,deleted_at,NULL';
 
         return $request->validate([
             'code'            => "required|string|max:20|{$uniqueCode}",
