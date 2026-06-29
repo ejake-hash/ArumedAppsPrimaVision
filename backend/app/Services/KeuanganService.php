@@ -453,12 +453,11 @@ class KeuanganService
     /** Baris billing OBAT terealisasi + atribut resep/obat utk klasifikasi kategori. */
     private function fetchObatRows(Carbon $start, Carbon $end, string $bpjsBasis, ?string $payerOnly): array
     {
-        $payerExpr = "CASE WHEN ins.type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
+        $payerExpr = "CASE WHEN v.guarantor_type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
 
         $q = DB::table('billing_items as bi')
             ->join('billing_invoices as inv', 'inv.id', '=', 'bi.billing_invoice_id')
             ->join('visits as v', 'v.id', '=', 'inv.visit_id')
-            ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
             ->leftJoin('prescription_items as pit', 'pit.id', '=', 'bi.reference_id')
             ->leftJoin('prescriptions as pr', 'pr.id', '=', 'pit.prescription_id')
             ->leftJoin('medications as m', 'm.id', '=', 'pit.medication_id')
@@ -506,13 +505,12 @@ class KeuanganService
     private function fetchDetailRows(Carbon $start, Carbon $end, string $bpjsBasis, ?string $payerOnly, ?string $employeeId): array
     {
         $dpjpExpr = 'COALESCE(vs.performed_by_id, v.dpjp_employee_id, de.doctor_id, ds.employee_id)';
-        $payerExpr = "CASE WHEN ins.type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
+        $payerExpr = "CASE WHEN v.guarantor_type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
 
         $q = DB::table('billing_items as bi')
             ->join('billing_invoices as inv', 'inv.id', '=', 'bi.billing_invoice_id')
             ->join('visits as v', 'v.id', '=', 'inv.visit_id')
             ->leftJoin('patients as p', 'p.id', '=', 'v.patient_id')
-            ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
             ->leftJoin('doctor_schedules as ds', 'ds.id', '=', 'v.doctor_schedule_id')
             ->leftJoin('doctor_examinations as de', 'de.visit_id', '=', 'v.id')
             ->leftJoin('visit_services as vs', 'vs.id', '=', 'bi.reference_id')
@@ -545,12 +543,11 @@ class KeuanganService
     /** Visit ber-paket-bedah yang terealisasi dlm periode (utk honor nominal per kasus). */
     private function fetchPackageCases(Carbon $start, Carbon $end, string $bpjsBasis): array
     {
-        $payerExpr = "CASE WHEN ins.type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
+        $payerExpr = "CASE WHEN v.guarantor_type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
 
         return DB::table('visits as v')
             ->join('billing_invoices as inv', 'inv.visit_id', '=', 'v.id')
             ->join('surgery_schedules as ss', 'ss.id', '=', 'v.surgery_schedule_id')
-            ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
             ->whereNull('inv.deleted_at')
             ->whereNotNull('ss.surgery_package_id')
             ->whereNotNull('ss.lead_surgeon_id')
@@ -569,14 +566,14 @@ class KeuanganService
     {
         // UMUM (semua selain BPJS): tagihan LUNAS dalam bulan.
         $w->where(function ($u) use ($start, $end) {
-            $u->whereRaw("(ins.type IS NULL OR ins.type <> 'BPJS')")
+            $u->where('v.guarantor_type', '<>', 'BPJS')
               ->where('inv.status', 'PAID')
               ->whereBetween('inv.paid_at', [$start, $end]);
         });
 
         // BPJS.
         $w->orWhere(function ($b) use ($start, $end, $bpjsBasis) {
-            $b->where('ins.type', 'BPJS');
+            $b->where('v.guarantor_type', 'BPJS');
             if ($bpjsBasis === 'paid') {
                 $b->where('inv.status', 'PAID')->whereBetween('inv.paid_at', [$start, $end]);
             } else {
