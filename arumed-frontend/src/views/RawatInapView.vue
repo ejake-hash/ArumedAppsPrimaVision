@@ -770,7 +770,8 @@ async function loadPenunjangTypes() {
   if (penunjangTypes.value.length) return
   try {
     const { data } = await masterApi.diagnosticTestType.list({ active: 1, per_page: 200 })
-    const rows = data?.data ?? data ?? []
+    // Response paginator dlm envelope: data.data = paginator, data.data.data = baris.
+    const rows = data.data?.data ?? data.data ?? []
     penunjangTypes.value = rows.map((r) => ({ code: r.code, name: r.name, category: r.category ?? '' }))
   } catch { penunjangTypes.value = [] }
 }
