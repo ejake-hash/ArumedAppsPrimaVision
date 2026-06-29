@@ -227,6 +227,111 @@ class RanapController extends Controller
     }
 
     // =========================================================================
+    // PERMINTAAN BHP KE FARMASI (visit_bhp_usages) — masuk kwitansi setelah verif
+    // =========================================================================
+
+    /** GET /rawat-inap/{visitId}/tarif-bhp — picker BHP + stok Farmasi + harga. */
+    public function tarifBhp(string $visitId, Request $request): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->tarifBhp($visit, $request->query('search')));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** GET /rawat-inap/{visitId}/bhp — daftar BHP yang diminta + status verifikasi. */
+    public function listBhp(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->listBhpUsages($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** POST /rawat-inap/{visitId}/bhp — minta BHP ke Farmasi (tagih setelah verif). */
+    public function addBhp(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'bhp_item_id' => 'required|uuid|exists:bhp_items,id',
+            'quantity'    => 'nullable|integer|min:1',
+            'notes'       => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $usage = $this->service->addBhp($visit, $data['bhp_item_id'], $data['quantity'] ?? 1, $data['notes'] ?? null);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($usage, 'BHP diminta ke Farmasi', 201);
+    }
+
+    /** DELETE /rawat-inap/{visitId}/bhp/{id} — hapus permintaan BHP (sebelum serah). */
+    public function deleteBhp(string $visitId, string $id): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $this->service->deleteBhp($visit, $id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Permintaan BHP dihapus');
+    }
+
+    // =========================================================================
+    // ORDER PENUNJANG (lab/radiologi) — mirror Dokter; tagihan via tindakan terpisah
+    // =========================================================================
+
+    /** GET /rawat-inap/{visitId}/order-penunjang — daftar order + hasil. */
+    public function listOrderPenunjang(string $visitId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            return $this->ok($this->service->listOrderPenunjang($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** POST /rawat-inap/{visitId}/order-penunjang — buat order + antrean penunjang. */
+    public function storeOrderPenunjang(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'test_type' => 'required|string|max:100',
+            'eye_side'  => 'nullable|string|max:20',
+            'notes'     => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $order = $this->service->storeOrderPenunjang($visit, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($order, 'Order penunjang dibuat', 201);
+    }
+
+    /** DELETE /rawat-inap/{visitId}/order-penunjang/{id} — batalkan order (pre-proses). */
+    public function cancelOrderPenunjang(string $visitId, string $id): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $this->service->cancelOrderPenunjang($visit, $id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'Order penunjang dibatalkan');
+    }
+
+    // =========================================================================
     // eMAR — pemberian obat ke pasien (PKPO 4.3)
     // =========================================================================
 

@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRawatInapStore } from '@/stores/rawatInapStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ranapApi, tarifPaketApi, formTemplateApi } from '@/services/api'
+import { ranapApi, tarifPaketApi, formTemplateApi, masterApi } from '@/services/api'
 import UnitStockActions from '@/components/inventori-farmasi/UnitStockActions.vue'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 import FormRMRenderer from '@/components/forms/FormRMRenderer.vue'
@@ -505,20 +505,31 @@ async function openDetail(visitId) {
   permintaanList.value = []
   reqCart.value = []
   docList.value = []
+  bhpUsages.value = []
+  bhpPick.value = null
+  bhpSearch.value = ''
+  bhpDropList.value = []
+  penunjangOrders.value = []
+  penunjangPick.value = { test_type: '', eye_side: '', notes: '' }
+  loadPenunjangTypes()   // master jenis penunjang (cache; tak blokir)
   await store.fetchDetail(visitId)
   try {
-    const [t, o, c, p, d] = await Promise.all([
+    const [t, o, c, p, d, b, pen] = await Promise.all([
       ranapApi.tarifTindakan(visitId),
       ranapApi.daftarObat(visitId, ''),
       ranapApi.cpptList(visitId),
       ranapApi.permintaanObatList(visitId),
       ranapApi.documents(visitId),   // hitung untuk badge chip "Hasil Eksternal (N)"
+      ranapApi.bhpList(visitId),
+      ranapApi.orderPenunjangList(visitId),
     ])
     tindakanList.value = t.data?.data ?? []
     obatList.value = o.data?.data ?? []
     cpptList.value = c.data?.data ?? []
     permintaanList.value = p.data?.data ?? []
     docList.value = d.data?.data ?? []
+    bhpUsages.value = b.data?.data ?? []
+    penunjangOrders.value = pen.data?.data ?? []
   } catch { /* abaikan */ }
 }
 
@@ -681,6 +692,129 @@ function reqStatusLabel(s) {
 }
 function reqStatusPill(s) {
   return { DISPENSED: 'pill-success', DISPENSING: 'pill-info', SUBMITTED: 'pill-warning', CANCELLED: 'pill-danger' }[s] ?? 'pill-gray'
+}
+
+// ── Permintaan BHP ke Farmasi (visit_bhp_usages) ──────────────────────────────
+// BHP yang diminta MASUK KWITANSI setelah Farmasi memverifikasi (gate verified_at),
+// stok unit Farmasi dipotong saat serah. Mirror alur BHP dokter (D→K→F).
+const bhpUsages = ref([])         // BHP yang sudah diminta pada visit ini
+const bhpDropList = ref([])       // hasil pencarian master BHP (server)
+const bhpComboOpen = ref(false)
+const bhpSearch = ref('')
+const bhpPick = ref(null)         // objek BHP terpilih { id, name, price, stock, ... }
+const bhpQty = ref(1)
+
+async function loadBhp() {
+  if (!detailVisitId.value) { bhpUsages.value = []; return }
+  try {
+    const r = await ranapApi.bhpList(detailVisitId.value)
+    bhpUsages.value = r.data?.data ?? []
+  } catch { bhpUsages.value = [] }
+}
+async function searchBhp() {
+  if (!detailVisitId.value) return
+  try {
+    const r = await ranapApi.tarifBhp(detailVisitId.value, bhpSearch.value)
+    bhpDropList.value = r.data?.data ?? []
+  } catch { bhpDropList.value = [] }
+}
+function pickBhp(b) { bhpPick.value = b; bhpComboOpen.value = false }
+function clearBhp() { bhpPick.value = null; bhpQty.value = 1 }
+function closeBhpComboSoon() { setTimeout(() => { bhpComboOpen.value = false }, 150) }
+
+async function submitBhp() {
+  if (!bhpPick.value) { notify('Pilih BHP dulu', false); return }
+  const qty = Number(bhpQty.value)
+  if (!Number.isFinite(qty) || qty < 1) { notify('Jumlah minimal 1', false); return }
+  busy.value = true
+  try {
+    await ranapApi.addBhp(detailVisitId.value, { bhp_item_id: bhpPick.value.id, quantity: qty })
+    notify('BHP diminta ke Farmasi')
+    clearBhp()
+    bhpSearch.value = ''
+    bhpDropList.value = []
+    await loadBhp()
+  } catch (e) {
+    notify(e.response?.data?.message ?? 'Gagal meminta BHP', false)
+  } finally { busy.value = false }
+}
+async function removeBhp(u) {
+  if (u.consumed_batches) { notify('BHP sudah diserahkan Farmasi — tak bisa dihapus', false); return }
+  if (!(await askConfirm(`Hapus permintaan BHP "${u.bhp_item?.name ?? '—'}"?`, { title: 'Hapus BHP', okLabel: 'Hapus' }))) return
+  try {
+    await ranapApi.deleteBhp(detailVisitId.value, u.id)
+    notify('Permintaan BHP dihapus')
+    await loadBhp()
+  } catch (e) { notify(e.response?.data?.message ?? 'Gagal hapus BHP', false) }
+}
+// Status verifikasi BHP: belum-verif → menunggu Farmasi; verified_at → tertagih.
+function bhpStatusLabel(u) {
+  if (u.consumed_batches) return 'Diserahkan'
+  if (u.verified_at) return 'Terverifikasi'
+  return 'Menunggu verifikasi'
+}
+function bhpStatusPill(u) {
+  if (u.consumed_batches) return 'pill-success'
+  if (u.verified_at) return 'pill-info'
+  return 'pill-warning'
+}
+
+// ── Order Penunjang (lab/radiologi/diagnostik) ────────────────────────────────
+// Operasional: buat DiagnosticOrder + pasien masuk antrean PENUNJANG. Tagihan
+// pemeriksaan ditambahkan terpisah sebagai Tindakan (Buku Tarif), selaras Dokter.
+const penunjangTypes = ref([])    // master jenis penunjang { code, name, category }
+const penunjangOrders = ref([])   // order pada visit ini
+const penunjangPick = ref({ test_type: '', eye_side: '', notes: '' })
+
+async function loadPenunjangTypes() {
+  if (penunjangTypes.value.length) return
+  try {
+    const { data } = await masterApi.diagnosticTestType.list({ active: 1, per_page: 200 })
+    const rows = data?.data ?? data ?? []
+    penunjangTypes.value = rows.map((r) => ({ code: r.code, name: r.name, category: r.category ?? '' }))
+  } catch { penunjangTypes.value = [] }
+}
+async function loadPenunjang() {
+  if (!detailVisitId.value) { penunjangOrders.value = []; return }
+  try {
+    const r = await ranapApi.orderPenunjangList(detailVisitId.value)
+    penunjangOrders.value = r.data?.data ?? []
+  } catch { penunjangOrders.value = [] }
+}
+function penunjangTypeName(code) {
+  return penunjangTypes.value.find((t) => t.code === code)?.name ?? code
+}
+async function submitOrderPenunjang() {
+  const f = penunjangPick.value
+  if (!f.test_type) { notify('Pilih jenis penunjang', false); return }
+  busy.value = true
+  try {
+    await ranapApi.createOrderPenunjang(detailVisitId.value, {
+      test_type: f.test_type,
+      eye_side:  f.eye_side || null,
+      notes:     f.notes || null,
+    })
+    notify('Order penunjang dibuat — pasien masuk antrean Penunjang')
+    penunjangPick.value = { test_type: '', eye_side: '', notes: '' }
+    await loadPenunjang()
+  } catch (e) {
+    notify(e.response?.data?.message ?? 'Gagal membuat order penunjang', false)
+  } finally { busy.value = false }
+}
+async function cancelPenunjang(o) {
+  if (o.status !== 'REQUESTED') { notify('Order sudah diproses — tak bisa dibatalkan', false); return }
+  if (!(await askConfirm(`Batalkan order "${penunjangTypeName(o.test_type)}"?`, { title: 'Batalkan Order', okLabel: 'Batalkan' }))) return
+  try {
+    await ranapApi.cancelOrderPenunjang(detailVisitId.value, o.id)
+    notify('Order penunjang dibatalkan')
+    await loadPenunjang()
+  } catch (e) { notify(e.response?.data?.message ?? 'Gagal batalkan order', false) }
+}
+function penunjangStatusLabel(s) {
+  return { REQUESTED: 'Diminta', IN_PROGRESS: 'Dikerjakan', COMPLETED: 'Selesai', CANCELLED: 'Dibatalkan' }[s] ?? s
+}
+function penunjangStatusPill(s) {
+  return { COMPLETED: 'pill-success', IN_PROGRESS: 'pill-info', REQUESTED: 'pill-warning', CANCELLED: 'pill-danger' }[s] ?? 'pill-gray'
 }
 
 const bedStatusColor = { AVAILABLE: '#16a34a', OCCUPIED: '#1763d4', CLEANING: '#d97706', MAINTENANCE: '#6b7280', RESERVED: '#7c3aed' }
@@ -1365,6 +1499,92 @@ const statusPill = (s) => ({
                     <td>{{ p.dispensed_by?.name || '—' }}</td>
                   </tr>
                   <tr v-if="!permintaanList.length"><td colspan="4" class="muted">Belum ada permintaan obat</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Permintaan BHP ke Farmasi (visit_bhp_usages → kwitansi setelah verif) -->
+            <div class="req-obat">
+              <h4>Permintaan BHP ke Farmasi</h4>
+              <p class="req-hint">Minta bahan habis pakai (spuit, kasa, infus set, dll) ke Farmasi. <strong>Masuk kwitansi setelah Farmasi memverifikasi</strong>; stok unit Farmasi dipotong saat diserahkan.</p>
+              <div class="add-box">
+                <!-- Terpilih → chip -->
+                <div v-if="bhpPick" class="picked-chip">
+                  <span class="picked-name">{{ bhpPick.name }} — {{ rupiah(bhpPick.price) }} <small class="muted">(stok Farmasi: {{ bhpPick.stock }})</small></span>
+                  <button class="picked-x" @click="clearBhp" title="Ganti BHP">×</button>
+                </div>
+                <!-- Belum → typeahead picker (server search via searchBhp) -->
+                <div v-else class="combo">
+                  <input
+                    v-model="bhpSearch" class="add-search"
+                    placeholder="Ketik nama / kode BHP, atau klik untuk lihat semua…"
+                    @input="searchBhp" @focus="bhpComboOpen = true; searchBhp()" @blur="closeBhpComboSoon"
+                  />
+                  <div v-if="bhpComboOpen && bhpDropList.length" class="combo-drop">
+                    <div v-for="b in bhpDropList" :key="b.id" class="combo-item" @mousedown.prevent="pickBhp(b)">
+                      <span class="combo-name">{{ b.name }} <small class="muted">stok {{ b.stock }}</small></span>
+                      <span class="combo-price">{{ rupiah(b.price) }}</span>
+                    </div>
+                  </div>
+                  <div v-else-if="bhpComboOpen && bhpSearch.trim()" class="combo-empty">BHP tidak ditemukan</div>
+                </div>
+                <div class="req-fields">
+                  <input v-model.number="bhpQty" type="number" min="1" placeholder="Qty" style="width:64px" title="Jumlah" />
+                  <button class="btn btn-sm btn-primary btn-add" :disabled="busy || !bhpPick" @click="submitBhp">+ Minta ke Farmasi</button>
+                </div>
+              </div>
+
+              <h4 style="margin-top:1rem">Daftar Permintaan BHP</h4>
+              <table class="bill">
+                <thead><tr><th>Waktu</th><th>BHP</th><th>Qty</th><th>Harga</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  <tr v-for="u in bhpUsages" :key="u.id">
+                    <td>{{ fmt(u.created_at) }}</td>
+                    <td>{{ u.bhp_item?.name ?? '—' }}</td>
+                    <td>{{ u.quantity }}</td>
+                    <td>{{ rupiah(u.unit_price) }}</td>
+                    <td><span class="pill" :class="bhpStatusPill(u)">{{ bhpStatusLabel(u) }}</span></td>
+                    <td><button v-if="!u.consumed_batches" class="del-x" @click="removeBhp(u)" title="Hapus">×</button></td>
+                  </tr>
+                  <tr v-if="!bhpUsages.length"><td colspan="6" class="muted">Belum ada permintaan BHP</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Order Penunjang (lab/radiologi/diagnostik) -->
+            <div class="req-obat">
+              <h4>Order Penunjang</h4>
+              <p class="req-hint">Pesan pemeriksaan penunjang (lab/radiologi/diagnostik) → pasien masuk antrean <strong>Penunjang</strong>. Biaya pemeriksaan ditambahkan terpisah sebagai Tindakan.</p>
+              <div class="add-box">
+                <div class="req-fields">
+                  <select v-model="penunjangPick.test_type" style="min-width:180px" title="Jenis penunjang">
+                    <option value="">— pilih jenis penunjang —</option>
+                    <option v-for="t in penunjangTypes" :key="t.code" :value="t.code">{{ t.name }}{{ t.category ? ` (${t.category})` : '' }}</option>
+                  </select>
+                  <select v-model="penunjangPick.eye_side" style="min-width:110px" title="Sisi mata (opsional)">
+                    <option value="">— sisi —</option>
+                    <option value="OD">OD (kanan)</option>
+                    <option value="OS">OS (kiri)</option>
+                    <option value="ODS">ODS (keduanya)</option>
+                  </select>
+                  <input v-model="penunjangPick.notes" placeholder="catatan (opsional)" style="min-width:140px" title="Catatan" />
+                  <button class="btn btn-sm btn-primary btn-add" :disabled="busy || !penunjangPick.test_type" @click="submitOrderPenunjang">+ Order</button>
+                </div>
+                <p v-if="!penunjangTypes.length" class="req-hint" style="margin:.4rem 0 0">Belum ada master jenis penunjang. Tambahkan di modul Penunjang → tab "Jenis Penunjang".</p>
+              </div>
+
+              <h4 style="margin-top:1rem">Daftar Order Penunjang</h4>
+              <table class="bill">
+                <thead><tr><th>Waktu</th><th>Pemeriksaan</th><th>Sisi</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  <tr v-for="o in penunjangOrders" :key="o.id">
+                    <td>{{ fmt(o.created_at) }}</td>
+                    <td>{{ penunjangTypeName(o.test_type) }}<small v-if="o.notes" class="muted"> · {{ o.notes }}</small></td>
+                    <td>{{ o.eye_side || '—' }}</td>
+                    <td><span class="pill" :class="penunjangStatusPill(o.status)">{{ penunjangStatusLabel(o.status) }}</span></td>
+                    <td><button v-if="o.status === 'REQUESTED'" class="del-x" @click="cancelPenunjang(o)" title="Batalkan">×</button></td>
+                  </tr>
+                  <tr v-if="!penunjangOrders.length"><td colspan="5" class="muted">Belum ada order penunjang</td></tr>
                 </tbody>
               </table>
             </div>

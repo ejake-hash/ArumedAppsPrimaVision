@@ -710,6 +710,17 @@ export const ranapApi = {
   permintaanObatList:   (visitId)          => api.get(`/rawat-inap/${visitId}/permintaan-obat`),
   createPermintaanObat: (visitId, payload) => api.post(`/rawat-inap/${visitId}/permintaan-obat`, payload),
 
+  // Permintaan BHP ke Farmasi (masuk kwitansi setelah verif Farmasi).
+  tarifBhp:      (visitId, search)   => api.get(`/rawat-inap/${visitId}/tarif-bhp`, { params: { search } }),
+  bhpList:       (visitId)           => api.get(`/rawat-inap/${visitId}/bhp`),
+  addBhp:        (visitId, payload)  => api.post(`/rawat-inap/${visitId}/bhp`, payload),
+  deleteBhp:     (visitId, id)       => api.delete(`/rawat-inap/${visitId}/bhp/${id}`),
+
+  // Order penunjang (lab/radiologi/diagnostik) — antrean PENUNJANG + hasil.
+  orderPenunjangList:   (visitId)          => api.get(`/rawat-inap/${visitId}/order-penunjang`),
+  createOrderPenunjang: (visitId, payload) => api.post(`/rawat-inap/${visitId}/order-penunjang`, payload),
+  cancelOrderPenunjang: (visitId, id)      => api.delete(`/rawat-inap/${visitId}/order-penunjang/${id}`),
+
   // eMAR — pemberian obat ke pasien (PKPO 4.3)
   marBoard:            (visitId)          => api.get(`/rawat-inap/${visitId}/mar`),
   recordAdministration:(visitId, payload) => api.post(`/rawat-inap/${visitId}/mar`, payload),

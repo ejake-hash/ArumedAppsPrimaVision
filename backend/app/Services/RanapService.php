@@ -579,6 +579,162 @@ class RanapService
     }
 
     // =========================================================================
+    // PERMINTAAN BHP KE FARMASI (pasien dirawat) — mirror jalur BHP dokter
+    // (visit_bhp_usages). BHP yang diminta MASUK KWITANSI lewat
+    // KasirService::buildBhpLines SETELAH Farmasi memverifikasi (gate verified_at)
+    // → konsisten dengan alur BHP dokter (D→K→F). Stok unit FARMASI dipotong saat
+    // Farmasi serah (consumed_batches terisi). Beda dari permintaan OBAT (resep
+    // RANAP, dispensing penuh): BHP cukup diverifikasi, tanpa resep.
+    // =========================================================================
+
+    /** Daftar BHP master (Farmasi) + stok unit FARMASI + harga ter-resolve penjamin. */
+    public function tarifBhp(Visit $visit, ?string $search = null): array
+    {
+        $onHand = DB::table('inventory_stocks')
+            ->select('item_id', DB::raw('SUM(qty_on_hand) as qty'))
+            ->where('item_type', \App\Models\InventoryStock::TYPE_BHP)
+            ->where('location', \App\Models\InventoryStock::LOC_FARMASI)
+            ->groupBy('item_id');
+
+        return \App\Models\BhpItem::query()
+            ->where('is_active', true)
+            ->when($search, fn ($q) => $q->where(fn ($w) => $w
+                ->where('name', 'ilike', "%{$search}%")
+                ->orWhere('code', 'ilike', "%{$search}%")))
+            ->leftJoinSub($onHand, 'fs', fn ($j) => $j->on('fs.item_id', '=', 'bhp_items.id'))
+            ->orderBy('name')
+            ->limit(50)
+            ->get(['bhp_items.id', 'bhp_items.code', 'bhp_items.name', 'bhp_items.category', DB::raw('COALESCE(fs.qty, 0) as stock')])
+            ->map(fn ($b) => [
+                'id'       => $b->id,
+                'code'     => $b->code,
+                'name'     => $b->name,
+                'category' => $b->category,
+                'price'    => $this->kasir->getPrice('bhp', $b->id, $visit->guarantor_type, $visit->insurer_id),
+                'stock'    => (float) $b->stock,
+            ])
+            ->all();
+    }
+
+    /** Daftar BHP yang sudah diminta pada kunjungan ini (hidrasi panel + status verif). */
+    public function listBhpUsages(Visit $visit): \Illuminate\Support\Collection
+    {
+        return \App\Models\VisitBhpUsage::with('bhpItem')
+            ->where('visit_id', $visit->id)
+            ->orderBy('created_at')
+            ->get();
+    }
+
+    /**
+     * Minta satu BHP ke Farmasi. Buat VisitBhpUsage (consumed_batches NULL = belum
+     * diserahkan). Tagihan terbit di kwitansi setelah Farmasi verifikasi; stok
+     * unit FARMASI dipotong saat serah.
+     */
+    public function addBhp(Visit $visit, string $bhpItemId, int $qty = 1, ?string $notes = null): \App\Models\VisitBhpUsage
+    {
+        if ($visit->discharge_at) {
+            throw new \Exception('Pasien sudah dipulangkan — tidak bisa meminta BHP.', 422);
+        }
+
+        $qty   = max(1, $qty);
+        $price = (float) $this->kasir->getPrice('bhp', $bhpItemId, $visit->guarantor_type, $visit->insurer_id);
+
+        $usage = \App\Models\VisitBhpUsage::create([
+            'visit_id'         => $visit->id,
+            'bhp_item_id'      => $bhpItemId,
+            'performed_by_id'  => auth('api')->user()?->employee_id,
+            'quantity'         => $qty,
+            'unit_price'       => $price,
+            'consumed_batches' => null,   // belum diserahkan FARMASI → stok belum dipotong
+            'notes'            => $notes,
+        ]);
+
+        return $usage->load('bhpItem');
+    }
+
+    /**
+     * Hapus permintaan BHP. Hanya boleh selama BELUM diserahkan FARMASI
+     * (consumed_batches NULL) — stok belum dipotong, koreksi aman.
+     */
+    public function deleteBhp(Visit $visit, string $usageId): void
+    {
+        $usage = \App\Models\VisitBhpUsage::where('visit_id', $visit->id)->findOrFail($usageId);
+        if ($usage->consumed_batches) {
+            throw new \Exception('BHP sudah diserahkan Farmasi (stok terpotong) — tidak bisa dihapus.', 422);
+        }
+        $usage->delete();
+    }
+
+    // =========================================================================
+    // ORDER PENUNJANG (lab/radiologi/diagnostik) — mirror DokterService. Murni
+    // operasional: buat DiagnosticOrder + routing antrean PENUNJANG (1 baris/pasien
+    // /hari). Tagihan pemeriksaan ditambahkan terpisah sbg TINDAKAN (Buku Tarif),
+    // selaras alur dokter (diagnostic_orders TIDAK ditagih langsung).
+    // =========================================================================
+
+    /** Daftar order penunjang (semua status) untuk satu visit + hasil. */
+    public function listOrderPenunjang(Visit $visit): \Illuminate\Support\Collection
+    {
+        return \App\Models\DiagnosticOrder::with(['orderedBy', 'results'])
+            ->where('visit_id', $visit->id)
+            ->orderByDesc('created_at')
+            ->get();
+    }
+
+    /** Buat order penunjang + arahkan pasien ke stasiun PENUNJANG (antrean). */
+    public function storeOrderPenunjang(Visit $visit, array $data): \App\Models\DiagnosticOrder
+    {
+        if ($visit->discharge_at) {
+            throw new \Exception('Pasien sudah dipulangkan — tidak bisa membuat order penunjang.', 422);
+        }
+
+        $user  = auth('api')->user();
+        $order = \App\Models\DiagnosticOrder::create([
+            'visit_id'         => $visit->id,
+            'ordered_by_id'    => $user?->employee_id,
+            'test_type'        => $data['test_type'],
+            'accession_number' => app(\App\Services\AccessionService::class)->next(),
+            'eye_side'         => $data['eye_side'] ?? null,
+            'notes'            => $data['notes'] ?? null,
+            'status'           => 'REQUESTED',
+        ]);
+
+        // Routing antrean PENUNJANG: 1 baris per pasien per hari (order ke-2/3 menumpang
+        // baris yang ada). Selaras DokterService::storeOrderPenunjang.
+        $alreadyQueued = Queue::where('visit_id', $visit->id)
+            ->where('station', 'PENUNJANG')
+            ->whereDate('created_at', today())
+            ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+            ->exists();
+
+        if (! $alreadyQueued) {
+            $lastSeq  = Queue::where('station', 'PENUNJANG')->whereDate('created_at', today())->max('queue_sequence') ?? 0;
+            $sequence = $lastSeq + 1;
+
+            Queue::create([
+                'visit_id'       => $visit->id,
+                'station'        => 'PENUNJANG',
+                'queue_prefix'   => 'P',
+                'queue_sequence' => $sequence,
+                'queue_number'   => 'P-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
+                'status'         => 'WAITING',
+            ]);
+        }
+
+        return $order->load('orderedBy');
+    }
+
+    /** Batalkan order penunjang (hanya selama belum diproses). */
+    public function cancelOrderPenunjang(Visit $visit, string $orderId): void
+    {
+        $order = \App\Models\DiagnosticOrder::where('visit_id', $visit->id)->findOrFail($orderId);
+        if ($order->status !== 'REQUESTED') {
+            throw new \Exception('Order tidak bisa dibatalkan — sudah diproses.', 422);
+        }
+        $order->update(['status' => 'CANCELLED']);
+    }
+
+    // =========================================================================
     // eMAR — pemberian obat ke pasien (PKPO 4.3). Order = item resep RANAP yang
     // sudah DISPENSED; pemberian dicatat per-event (jam + perawat + status).
     // Bukan tagihan — billing tetap terjadi saat dispensing Farmasi.

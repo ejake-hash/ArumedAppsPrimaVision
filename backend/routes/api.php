@@ -679,6 +679,17 @@ Route::prefix('v1')->group(function () {
             Route::get('/{visitId}/permintaan-obat',  [RanapController::class, 'listPermintaanObat'])->middleware('permission:rawat_inap.read');
             Route::post('/{visitId}/permintaan-obat', [RanapController::class, 'createPermintaanObat'])->middleware('permission:rawat_inap.write');
 
+            // Permintaan BHP ke Farmasi (visit_bhp_usages) — masuk kwitansi setelah verif Farmasi.
+            Route::get('/{visitId}/tarif-bhp',        [RanapController::class, 'tarifBhp'])->middleware('permission:rawat_inap.read');
+            Route::get('/{visitId}/bhp',              [RanapController::class, 'listBhp'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/bhp',             [RanapController::class, 'addBhp'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/bhp/{id}',      [RanapController::class, 'deleteBhp'])->middleware('permission:rawat_inap.write');
+
+            // Order penunjang (lab/radiologi/diagnostik) — antrean PENUNJANG + hasil.
+            Route::get('/{visitId}/order-penunjang',         [RanapController::class, 'listOrderPenunjang'])->middleware('permission:rawat_inap.read');
+            Route::post('/{visitId}/order-penunjang',        [RanapController::class, 'storeOrderPenunjang'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/order-penunjang/{id}', [RanapController::class, 'cancelOrderPenunjang'])->middleware('permission:rawat_inap.write');
+
             // eMAR — pemberian obat ke pasien (PKPO 4.3).
             Route::get('/{visitId}/mar',         [RanapController::class, 'marBoard'])->middleware('permission:rawat_inap.read');
             Route::post('/{visitId}/mar',        [RanapController::class, 'recordAdministration'])->middleware('permission:rawat_inap.write');
