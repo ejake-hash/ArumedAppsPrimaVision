@@ -1487,7 +1487,7 @@ const rincianSections = computed(() => {
               </div>
               <div class="pt-total">
                 <div class="pt-total-v">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</div>
-                <div class="pt-total-l">Sisa Bayar</div>
+                <div class="pt-total-l">{{ isCob ? (sisaTagihan > 0 ? 'Ekses Pasien' : 'Pasien Rp 0 (COB)') : 'Sisa Bayar' }}</div>
               </div>
             </div>
 
@@ -1899,13 +1899,13 @@ const rincianSections = computed(() => {
                            Sembunyikan baris bernilai Rp 0 — rancu (belum ada nilai tanggungan). -->
                       <template v-if="cobSplit && cobSplit.is_cob">
                         <div v-for="p in cobSplit.penjamin.filter((x) => Number(x.covered_amount) > 0)" :key="p.sequence" class="row green">
-                          <span>Ditanggung Penjamin {{ p.sequence }} ({{ p.guarantor_type }})</span>
+                          <span>{{ p.sequence === 1 ? 'Ditanggung BPJS (INA-CBG)' : `Ditanggung Penjamin-2 (${p.guarantor_type})` }}</span>
                           <span class="num">−Rp {{ Number(p.covered_amount).toLocaleString('id-ID') }}</span>
                         </div>
                       </template>
                       <div v-else-if="coveredAmount" class="row green"><span>{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</span><span class="num">{{ (selQ?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? '' : '−Rp ' + coveredAmount.toLocaleString('id-ID') }}</span></div>
                       <div v-if="paidAmount" class="row blue"><span>Sudah Dibayar</span><span class="num">−Rp {{ paidAmount.toLocaleString('id-ID') }}</span></div>
-                      <div class="row grand"><span>{{ coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar' }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
+                      <div class="row grand"><span>{{ isCob ? (sisaTagihan > 0 ? 'Ekses — ditagih ke pasien' : 'Pasien tidak membayar') : (coveredAmount ? 'Sisa Bayar Pasien' : 'Sisa Bayar') }}</span><span class="num">Rp {{ sisaTagihan.toLocaleString('id-ID') }}</span></div>
                     </div>
                   </div>
                 </div>
@@ -1918,8 +1918,9 @@ const rincianSections = computed(() => {
                     <div class="card-head-title">
                       <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
                       {{ bpjsConfirmMode ? 'Tanggungan BPJS'
-                         : (isFullCover && selInv.status !== 'PAID') ? 'Tanggungan Asuransi'
+                         : (isFullCover && selInv.status !== 'PAID') ? (isCob ? 'Ditanggung BPJS + Penjamin-2' : 'Tanggungan Asuransi')
                          : (isZeroDue) ? 'Tagihan Rp 0'
+                         : (isCob && selInv.status !== 'PAID') ? 'Bayar Ekses Pasien'
                          : 'Metode Pembayaran' }}
                     </div>
                     <button v-if="!bpjsConfirmMode && !(isFullCover && selInv.status !== 'PAID') && !isZeroDue" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
@@ -1928,6 +1929,11 @@ const rincianSections = computed(() => {
                     </button>
                   </div>
                   <div class="card-body">
+                    <!-- COB dgn ekses: perjelas bahwa yg ditagih ke pasien hanya selisih tak tertanggung -->
+                    <div v-if="isCob && !isFullCover && !bpjsConfirmMode && !isZeroDue && selInv.status !== 'PAID' && sisaTagihan > 0" class="cob-ekses-note">
+                      Pasien <b>COB</b> — BPJS (INA-CBG) + Penjamin-2 sudah menanggung sebagian. Yang ditagih ke pasien hanya <b>ekses</b> (selisih tak tertanggung) di bawah ini.
+                    </div>
+
                     <!-- BPJS MURNI (non-COB): pasien tidak membayar di kasir (ditagih via klaim INA-CBG) — kasir cukup konfirmasi -->
                     <template v-if="bpjsConfirmMode">
                       <div class="cover-confirm-box cover-bpjs">
@@ -1949,16 +1955,16 @@ const rincianSections = computed(() => {
                     <template v-else-if="isFullCover && selInv.status !== 'PAID'">
                       <div class="cover-confirm-box">
                         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
-                        <div class="cover-confirm-title">Ditanggung Penuh Asuransi</div>
+                        <div class="cover-confirm-title">{{ isCob ? 'Ditanggung BPJS + Penjamin-2' : 'Ditanggung Penuh Asuransi' }}</div>
                         <div class="cover-confirm-amount">Rp {{ coveredAmount.toLocaleString('id-ID') }}</div>
-                        <div class="cover-confirm-sub">Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.</div>
+                        <div class="cover-confirm-sub">{{ isCob ? 'COB: BPJS (INA-CBG) + Penjamin-2 menanggung seluruh tagihan. Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.' : 'Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.' }}</div>
                       </div>
                       <button class="btn btn-success btn-full btn-lg"
                         :disabled="paying"
                         @click="prosesKonfirmasiCover">
                         <div v-if="paying" class="sp"></div>
                         <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                        {{ paying ? 'Memproses...' : 'Konfirmasi Lunas (Ditanggung Asuransi)' }}
+                        {{ paying ? 'Memproses...' : (isCob ? 'Konfirmasi (Ditanggung BPJS + Penjamin-2)' : 'Konfirmasi Lunas (Ditanggung Asuransi)') }}
                       </button>
                     </template>
 
@@ -2629,6 +2635,9 @@ const rincianSections = computed(() => {
 .cover-confirm-box.cover-bpjs svg { stroke: #1e40af; }
 .cover-confirm-box.cover-bpjs .cover-confirm-title,
 .cover-confirm-box.cover-bpjs .cover-confirm-amount { color: #1e40af; }
+
+/* COB ekses — info bahwa yg ditagih ke pasien hanya selisih tak tertanggung */
+.cob-ekses-note { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); border-radius: 8px; padding: .5rem .7rem; font-size: 11.5px; line-height: 1.45; margin-bottom: .6rem; }
 
 /* ── Setting Print: popover toggle elemen kwitansi ──────────────────────────── */
 .print-set-wrap { position: relative; display: inline-flex; }
