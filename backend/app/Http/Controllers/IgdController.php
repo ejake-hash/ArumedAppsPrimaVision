@@ -38,6 +38,7 @@ class IgdController extends Controller
             'patient_id'      => 'required|uuid',
             'guarantor_type'  => 'required|string|max:20',
             'insurer_id'      => 'nullable|uuid',
+            'dpjp_employee_id' => 'nullable|uuid|exists:employees,id',
             'classification'  => 'nullable|string|max:20',
             'chief_complaint' => 'nullable|string|max:500',
             'triage_color'    => 'nullable|in:MERAH,KUNING,HIJAU,HITAM',
@@ -79,6 +80,7 @@ class IgdController extends Controller
             // Data IGD.
             'guarantor_type'  => 'required|string|max:20',
             'insurer_id'      => 'nullable|uuid',
+            'dpjp_employee_id' => 'nullable|uuid|exists:employees,id',
             'chief_complaint' => 'nullable|string|max:500',
             'triage_color'    => 'nullable|in:MERAH,KUNING,HIJAU,HITAM',
             'triage_level'    => 'nullable|in:1,2,3,4,5',
@@ -249,6 +251,12 @@ class IgdController extends Controller
         }
 
         return $this->ok($result, 'Disposisi IGD diproses');
+    }
+
+    /** GET /igd/dokter-jaga — daftar dokter jaga IGD (dokter umum) untuk picker pendaftaran. */
+    public function dokterJaga(): JsonResponse
+    {
+        return $this->ok($this->service->dokterJaga());
     }
 
     /** GET /igd/{visitId}/bedah-options — paket bedah + operator + anestesiologis (modal disposisi BEDAH). */

@@ -191,6 +191,7 @@ class IgdService
             $visit = Visit::create([
                 'patient_id'       => $patient->id,
                 'insurer_id'       => $data['insurer_id'] ?? null,
+                'dpjp_employee_id' => $data['dpjp_employee_id'] ?? null,
                 'registered_by_id' => auth('api')->user()?->employee_id,
                 'no_registrasi'    => $this->generateNoRegistrasi(),
                 'visit_date'       => today(),
@@ -690,6 +691,18 @@ class IgdService
                 ['code' => SurgerySchedule::LOCATION_RUANG_TINDAKAN, 'label' => 'Ruang Tindakan (Laser)'],
             ],
         ];
+    }
+
+    /**
+     * Daftar dokter jaga IGD untuk picker pendaftaran. Dokter IGD = dokter umum
+     * (Employee::DT_UMUM) — tanpa jadwal poli. Dipakai mengisi visits.dpjp_employee_id
+     * agar nama dokter tampil di kwitansi (accessor Visit::dpjp_name → resolveDpjpName).
+     */
+    public function dokterJaga(): array
+    {
+        return Employee::where('doctor_type', Employee::DT_UMUM)
+            ->where('is_active', true)->orderBy('name')
+            ->get(['id', 'name', 'profession'])->all();
     }
 
     /**

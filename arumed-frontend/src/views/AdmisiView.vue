@@ -2692,7 +2692,12 @@ function onKeydown(e) {
 /* ============================================================
    LIFECYCLE — parallel fetch on mount
    ============================================================ */
+// Tunda render <Teleport to="#topbar-action-slot"> sampai mount: pada hard-refresh
+// langsung di /admisi, slot topbar bisa belum ada saat Teleport dievaluasi → crash
+// patch Vue "emitsOptions of null" (lihat IgdView). Set sebelum await apa pun.
+const topbarSlotReady = ref(false)
 onMounted(async () => {
+  topbarSlotReady.value = true
   updateDate()
   dateTimer = setInterval(updateDate, 1000)
   window.addEventListener('keydown', onKeydown)
@@ -2722,7 +2727,7 @@ onUnmounted(() => {
 <template>
   <div class="admisi">
     <!-- Tombol "Pesan Barang ke Gudang" kecil di topbar (samping Realtime aktif). Admisi = BHP saja. -->
-    <Teleport to="#topbar-action-slot">
+    <Teleport v-if="topbarSlotReady" to="#topbar-action-slot">
       <UnitStockActions station="ADMISI" label="Pesan Barang" variant="soft" :item-types="['BHP']" />
     </Teleport>
 

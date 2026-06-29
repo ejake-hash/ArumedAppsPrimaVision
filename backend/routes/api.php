@@ -717,6 +717,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/board',                          [IgdController::class, 'board'])->middleware('permission:igd.read');
             Route::post('/register',                      [IgdController::class, 'register'])->middleware('permission:igd.write');
             Route::post('/register-baru',                 [IgdController::class, 'registerNew'])->middleware('permission:igd.write');
+            // Dokter jaga IGD (dokter umum) untuk picker pendaftaran. WAJIB sebelum /{visitId}.
+            Route::get('/dokter-jaga',                     [IgdController::class, 'dokterJaga'])->middleware('permission:igd.read');
             Route::get('/{visitId}',                      [IgdController::class, 'detail'])->middleware('permission:igd.read');
 
             Route::post('/{visitId}/triase',              [IgdController::class, 'triase'])->middleware('permission:igd.write');

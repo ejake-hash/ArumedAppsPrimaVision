@@ -40,6 +40,7 @@ const regForm = ref(emptyRegForm())
 const newForm = ref(emptyNewForm())
 const patientResults = ref([])
 const patientSearch = ref('')
+const dokterJagaList = ref([])   // dokter umum/jaga IGD → dpjp_employee_id (tampil di kwitansi)
 
 // Modal triase
 const showTriase = ref(false)
@@ -120,6 +121,7 @@ const FLACC_PARAMS = [
 function emptyRegForm() {
   return {
     patient_id: '', patient_name: '', guarantor_type: 'UMUM', insurer_id: '',
+    dpjp_employee_id: '',
     chief_complaint: '', triage_level: '', arrival_mode: '',
   }
 }
@@ -129,6 +131,7 @@ function emptyNewForm() {
     name: '', gender: 'L', dob_display: '', identity_type: 'KTP', nik: '',
     phone: '', province: '', address: '',
     guarantor_type: 'UMUM', bpjs_number: '',
+    dpjp_employee_id: '',
     chief_complaint: '', triage_level: '', arrival_mode: '',
   }
 }
@@ -235,7 +238,18 @@ function openRegister() {
   patientSearch.value = ''
   bpjsCheck.value = null
   bpjsMode.value = 'nokartu'
+  loadDokterJaga()
   showRegister.value = true
+}
+
+async function loadDokterJaga() {
+  if (dokterJagaList.value.length) return   // cache sesi; dokter jaga jarang berubah
+  try {
+    const { data } = await igdApi.dokterJaga()
+    dokterJagaList.value = data.data || []
+  } catch (e) {
+    notify(errMsg(e, 'Gagal memuat daftar dokter jaga'), false)
+  }
 }
 
 async function cariPasien() {
@@ -262,6 +276,7 @@ async function submitRegister() {
       patient_id: regForm.value.patient_id,
       guarantor_type: regForm.value.guarantor_type,
       insurer_id: regForm.value.insurer_id || null,
+      dpjp_employee_id: regForm.value.dpjp_employee_id || null,
       chief_complaint: regForm.value.chief_complaint || null,
       triage_level: regForm.value.triage_level || null,
       arrival_mode: regForm.value.arrival_mode || null,
@@ -367,6 +382,7 @@ async function submitRegisterNew() {
       phone: f.phone || null, province: f.province || null, address: f.address || null,
       guarantor_type: f.guarantor_type,
       bpjs_number: f.guarantor_type === 'BPJS' ? (f.bpjs_number || null) : null,
+      dpjp_employee_id: f.dpjp_employee_id || null,
       chief_complaint: f.chief_complaint || null,
       triage_level: f.triage_level || null,
       arrival_mode: f.arrival_mode || null,
@@ -786,13 +802,21 @@ function fmtRp(n) {
   return 'Rp ' + Number(n || 0).toLocaleString('id-ID')
 }
 
-onMounted(loadBoard)
+// Teleport ke #topbar-action-slot baru aman setelah komponen mount: pada hard-refresh
+// langsung di /igd, slot topbar (AppTopbar) bisa belum ada saat <Teleport> dievaluasi →
+// "Invalid Teleport target null" → crash patch Vue "emitsOptions of null" yang membatalkan
+// render (modal Daftar tak terbuka). Tunda render Teleport sampai onMounted (slot pasti ada).
+const topbarSlotReady = ref(false)
+onMounted(() => {
+  topbarSlotReady.value = true
+  loadBoard()
+})
 </script>
 
 <template>
   <div class="igd-view">
     <!-- Tombol "Pesan Barang ke Gudang" kecil di topbar (samping Realtime aktif). -->
-    <Teleport to="#topbar-action-slot">
+    <Teleport v-if="topbarSlotReady" to="#topbar-action-slot">
       <UnitStockActions station="IGD" label="Pesan Barang" variant="soft" />
     </Teleport>
 
@@ -1041,6 +1065,15 @@ onMounted(loadBoard)
             </select>
           </div>
 
+          <div class="field">
+            <label>Dokter Jaga IGD</label>
+            <select v-model="regForm.dpjp_employee_id">
+              <option value="">— pilih dokter jaga —</option>
+              <option v-for="d in dokterJagaList" :key="d.id" :value="d.id">{{ d.name }}<span v-if="d.profession"> · {{ d.profession }}</span></option>
+            </select>
+            <p class="muted" style="margin:4px 0 0; font-size:10.5px;">Dokter penanggung jawab IGD — tampil di kwitansi sebagai DPJP.</p>
+          </div>
+
           <div class="grid2">
             <div class="field">
               <label>Keluhan Utama</label>
@@ -1158,6 +1191,15 @@ onMounted(loadBoard)
             <p class="muted" style="margin:6px 0 0; font-size:10.5px;">
               SEP gawat darurat diterbitkan terpisah setelah dokter mengisi diagnosa awal (bukan saat pendaftaran).
             </p>
+          </div>
+
+          <div class="field">
+            <label>Dokter Jaga IGD</label>
+            <select v-model="newForm.dpjp_employee_id">
+              <option value="">— pilih dokter jaga —</option>
+              <option v-for="d in dokterJagaList" :key="d.id" :value="d.id">{{ d.name }}<span v-if="d.profession"> · {{ d.profession }}</span></option>
+            </select>
+            <p class="muted" style="margin:4px 0 0; font-size:10.5px;">Dokter penanggung jawab IGD — tampil di kwitansi sebagai DPJP.</p>
           </div>
 
           <div class="grid2">
@@ -1468,11 +1510,8 @@ onMounted(loadBoard)
       @edit-triase="asesmenEditTriase"
     />
 
-    <!-- KWITANSI CETAK (sama persis dgn KasirView) -->
-    <!-- v-if: jangan biarkan <Teleport to="body"> KwitansiPrint ter-mount permanen.
-         Teleport-ke-body kosong yang selalu hadir + teleport UnitStockActions (menu/
-         toast) memicu crash patch Vue "Cannot read properties of null (emitsOptions)"
-         saat IgdView re-render → modal Daftar gagal terbuka. Mount on-demand saat cetak. -->
+    <!-- KWITANSI CETAK (sama persis dgn KasirView). v-if: mount komponen cetak hanya
+         saat ada data (on-demand), tak perlu <Teleport to="body"> permanen saat idle. -->
     <KwitansiPrint v-if="kwitansiData" :data="kwitansiData" />
 
     <!-- TOAST -->

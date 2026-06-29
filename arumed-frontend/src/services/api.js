@@ -756,6 +756,8 @@ export const igdApi = {
   // Registrasi darurat
   register:      (payload)           => api.post('/igd/register', payload),
   registerNew:   (payload)           => api.post('/igd/register-baru', payload),
+  // Dokter jaga IGD (dokter umum) untuk picker pendaftaran → visits.dpjp_employee_id.
+  dokterJaga:    ()                  => api.get('/igd/dokter-jaga'),
 
   // Triase + charge/tindakan/obat
   triase:        (visitId, payload)  => api.post(`/igd/${visitId}/triase`, payload),
