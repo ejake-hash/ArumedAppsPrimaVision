@@ -178,6 +178,10 @@ class KeuanganService
             $details[] = [
                 'doctor_name'  => $doctors[$empId]['doctor_name'],
                 'payer_group'  => $payer,
+                'insurer'      => $r->insurer_name
+                                    ?: ($r->guarantor_type === 'BPJS' ? 'BPJS Kesehatan'
+                                        : ($r->guarantor_type === 'UMUM' ? 'Umum' : ($r->guarantor_type ?: ''))),
+                'cob'          => $r->cob_insurer_name ?: '',
                 'category'     => $r->category ?: $r->item_type,
                 'date'         => $payer === 'BPJS' && $bpjsBasis === 'finalized'
                                     ? (string) $r->visit_date
@@ -249,7 +253,7 @@ class KeuanganService
     {
         $recap = $this->buildHonorRecap($filters);
         $rows = [];
-        $rows[] = ['Dokter', 'Penjamin', 'Kategori', 'Tanggal', 'Pasien', 'Prosedur', 'Qty', 'Harga', 'Total', 'Net', 'Honor', 'Aturan'];
+        $rows[] = ['Dokter', 'Penjamin', 'Nama Asuransi', 'Penjamin Kedua (COB)', 'Kategori', 'Tanggal', 'Pasien', 'Prosedur', 'Qty', 'Harga', 'Total', 'Net', 'Honor', 'Aturan'];
 
         // Indeks detail per (dokter,penjamin) utk baris rincian di bawah subtotal.
         $detailsByKey = [];
@@ -270,7 +274,8 @@ class KeuanganService
                 foreach ($bucket['categories'] as $cat) {
                     foreach (($byCat[$cat['category']] ?? []) as $d) {
                         $rows[] = [
-                            $doc['doctor_name'], $pg, $cat['category'], $d['date'], $d['patient'],
+                            $doc['doctor_name'], $pg, ($d['insurer'] ?? ''), ($d['cob'] ?? ''),
+                            $cat['category'], $d['date'], $d['patient'],
                             $d['procedure'], $d['quantity'], $this->num($d['unit_price']),
                             $this->num($d['total_price']), $this->num($d['net_price']),
                             $d['honor'] !== null ? $this->num($d['honor']) : '', $d['rule'],
@@ -278,7 +283,7 @@ class KeuanganService
                     }
                     $pctLabel = $cat['percent'] !== null ? " {$cat['percent']}%" : '';
                     $rows[] = [
-                        $doc['doctor_name'], $pg, 'SUBTOTAL ' . $cat['category'] . " ({$pg}{$pctLabel})",
+                        $doc['doctor_name'], $pg, '', '', 'SUBTOTAL ' . $cat['category'] . " ({$pg}{$pctLabel})",
                         '', '', '', $cat['count'], '', $this->num($cat['amount_gross']),
                         $this->num($cat['amount_net']), $this->num($cat['honor']),
                         $cat['rule_matched'] === false ? 'TANPA ATURAN' : (string) $cat['rule_label'],
@@ -286,26 +291,26 @@ class KeuanganService
                 }
                 foreach ($bucket['packages'] as $pk) {
                     $rows[] = [
-                        $doc['doctor_name'], $pg, 'PAKET ' . $pk['package_name'] . " × {$pk['case_count']} kasus",
+                        $doc['doctor_name'], $pg, '', '', 'PAKET ' . $pk['package_name'] . " × {$pk['case_count']} kasus",
                         '', '', '', $pk['case_count'], $this->num($pk['nominal']), '', '',
                         $this->num($pk['honor']), (string) $pk['rule_label'],
                     ];
                 }
                 $rows[] = [
-                    $doc['doctor_name'], $pg, "SUBTOTAL {$pg}", '', '', '', '', '',
+                    $doc['doctor_name'], $pg, '', '', "SUBTOTAL {$pg}", '', '', '', '', '',
                     $this->num($bucket['subtotal_amount']), '', $this->num($bucket['subtotal_honor']), '',
                 ];
             }
             $rows[] = [
-                $doc['doctor_name'], '', 'TOTAL ' . $doc['doctor_name'], '', '', '', '', '',
+                $doc['doctor_name'], '', '', '', 'TOTAL ' . $doc['doctor_name'], '', '', '', '', '',
                 $this->num($doc['total_amount']), '', $this->num($doc['total_honor']), '',
             ];
         }
 
         $g = $recap['grand_total'];
-        $rows[] = ['', '', 'GRAND TOTAL — Honor UMUM', '', '', '', '', '', $this->num($g['amount_umum']), '', $this->num($g['honor_umum']), ''];
-        $rows[] = ['', '', 'GRAND TOTAL — Honor BPJS', '', '', '', '', '', $this->num($g['amount_bpjs']), '', $this->num($g['honor_bpjs']), ''];
-        $rows[] = ['', '', 'GRAND TOTAL — Honor SEMUA', '', '', '', '', '', '', '', $this->num($g['honor']), ''];
+        $rows[] = ['', '', '', '', 'GRAND TOTAL — Honor UMUM', '', '', '', '', '', $this->num($g['amount_umum']), '', $this->num($g['honor_umum']), ''];
+        $rows[] = ['', '', '', '', 'GRAND TOTAL — Honor BPJS', '', '', '', '', '', $this->num($g['amount_bpjs']), '', $this->num($g['honor_bpjs']), ''];
+        $rows[] = ['', '', '', '', 'GRAND TOTAL — Honor SEMUA', '', '', '', '', '', '', '', $this->num($g['honor']), ''];
 
         return $this->toCsv($rows);
     }
@@ -514,6 +519,13 @@ class KeuanganService
             ->leftJoin('doctor_schedules as ds', 'ds.id', '=', 'v.doctor_schedule_id')
             ->leftJoin('doctor_examinations as de', 'de.visit_id', '=', 'v.id')
             ->leftJoin('visit_services as vs', 'vs.id', '=', 'bi.reference_id')
+            ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
+            ->leftJoin('visit_cob as vc', function ($j) {
+                $j->on('vc.visit_id', '=', 'v.id')
+                  ->whereNull('vc.deleted_at')
+                  ->where('vc.is_active', true);
+            })
+            ->leftJoin('insurers as ins2', 'ins2.id', '=', 'vc.penjamin2_insurer_id')
             ->whereNull('bi.deleted_at')
             ->whereNull('inv.deleted_at')
             ->where(fn ($w) => $this->applyRealizationFilter($w, $start, $end, $bpjsBasis));
@@ -529,8 +541,10 @@ class KeuanganService
                 bi.id, bi.item_type, bi.category, bi.description, bi.quantity,
                 bi.unit_price, bi.total_price, bi.net_price,
                 inv.status, inv.paid_at as realized_at,
-                v.id as visit_id, v.visit_date,
+                v.id as visit_id, v.visit_date, v.guarantor_type,
                 p.name as patient_name,
+                ins.name as insurer_name,
+                ins2.name as cob_insurer_name,
                 $payerExpr as payer_group,
                 $dpjpExpr as attributed_employee_id
             ")
