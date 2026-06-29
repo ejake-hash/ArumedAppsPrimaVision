@@ -154,7 +154,9 @@ class FarmasiService
             return;
         }
 
-        DB::transaction(function () use ($pending) {
+        $employeeId = auth('api')->user()?->employee_id;
+
+        DB::transaction(function () use ($pending, $employeeId) {
             foreach ($pending as $usage) {
                 $qty = max(1, (int) $usage->quantity);
                 try {
@@ -177,7 +179,19 @@ class FarmasiService
                 }
                 // Tandai sudah diserahkan: consumed_batches terisi (sentinel bila tanpa
                 // rincian batch) → tak akan dipotong ulang pada panggilan berikutnya.
-                $usage->update(['consumed_batches' => $consumed ?: [['qty' => $qty]]]);
+                //
+                // Serah fisik = de-facto verifikasi: stamp verified_at bila petugas tak
+                // sempat "Verifikasi & Kunci BHP" sebelum menutup antrean. WAJIB, sebab
+                // worklist verifikasi memfilter consumed_batches NULL — BHP yang sudah
+                // diserah TAK akan pernah bisa diverifikasi lewat UI lagi. Tanpa stamp ini,
+                // BHP consumed+belum-verif (a) tak ditagih (buildBhpLines hanya menagih
+                // verified → kebocoran) dan (b) memblok gate Kasir assertObatVerified secara
+                // tak-terlihat → tagihan DEADLOCK tanpa jalan keluar.
+                $usage->update([
+                    'consumed_batches' => $consumed ?: [['qty' => $qty]],
+                    'verified_at'      => $usage->verified_at ?? now(),
+                    'verified_by_id'   => $usage->verified_by_id ?? $employeeId,
+                ]);
             }
         });
 
