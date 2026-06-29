@@ -37,7 +37,7 @@ class AdmisiController extends Controller
     public function indexKunjungan(Request $request): JsonResponse
     {
         $data = $this->service->getKunjungan($request->only([
-            'tanggal', 'care_type', 'station', 'guarantor_type', 'classification', 'search', 'per_page', 'page', 'unfinished',
+            'tanggal', 'care_type', 'station', 'guarantor_type', 'classification', 'search', 'doctor', 'per_page', 'page', 'unfinished',
         ]));
 
         return $this->ok($data);

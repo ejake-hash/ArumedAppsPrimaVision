@@ -280,6 +280,13 @@ class AdmisiService
             $query->where('guarantor_type', $filters['guarantor_type']);
         }
 
+        // Filter dokter penanggung (nama dokter dari jadwal). 1 dokter bisa punya
+        // beberapa jadwal → cocokkan via relasi doctorSchedule.employee.name.
+        if (! empty($filters['doctor'])) {
+            $query->whereHas('doctorSchedule.employee',
+                fn ($q) => $q->where('name', $filters['doctor']));
+        }
+
         if (! empty($filters['classification'])) {
             $query->where('classification', $filters['classification']);
         }

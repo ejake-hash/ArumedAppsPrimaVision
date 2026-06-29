@@ -358,6 +358,7 @@ function jenisKunjunganClass(code) { return { RAJAL:'care-rajal', RANAP:'care-ra
    ============================================================ */
 const filterStation   = ref('all')
 const filterGuarantor = ref('all')
+const filterDoctor    = ref('all')   // nama dokter (cocok doctorSchedule.employee.name) | 'all'
 const tableSearch     = ref('')
 const tableExpanded   = ref(false)
 
@@ -421,6 +422,7 @@ const visitTableTitle = computed(() =>
 function applyVisitFilters() {
   admisiStore.visitsFilter.station   = filterStation.value === 'all' ? 'SEMUA' : filterStation.value
   admisiStore.visitsFilter.guarantor = filterGuarantor.value === 'all' ? '' : filterGuarantor.value
+  admisiStore.visitsFilter.doctor    = filterDoctor.value === 'all' ? '' : filterDoctor.value
   admisiStore.visitsFilter.search    = tableSearch.value.trim()
   admisiStore.fetchVisits({ page: 1 })
 }
@@ -432,7 +434,7 @@ function goPage(n) {
 }
 
 let _visitSearchTimer = null
-watch([filterStation, filterGuarantor], applyVisitFilters)
+watch([filterStation, filterGuarantor, filterDoctor], applyVisitFilters)
 watch(tableSearch, () => {
   clearTimeout(_visitSearchTimer)
   _visitSearchTimer = setTimeout(applyVisitFilters, 350)
@@ -915,6 +917,13 @@ const doctorList = computed(() =>
 )
 const selectedSchedule = computed(() =>
   doctorList.value.find(d => d.id === form.doctor_schedule_id) ?? null,
+)
+
+// Opsi filter dokter di tabel kunjungan: nama dokter unik dari jadwal aktif hari
+// ini (1 dokter bisa punya beberapa jadwal → dedup by nama). Filter server-side
+// mencocokkan doctorSchedule.employee.name.
+const doctorFilterOptions = computed(() =>
+  [...new Set(doctorList.value.map(d => d.name).filter(Boolean))].sort(),
 )
 
 /* Filter jadwal per jenis penjamin: BPJS → jadwal layanan BPJS; selain BPJS
@@ -3059,6 +3068,10 @@ onUnmounted(() => {
                 </select>
                 <select v-model="filterStation" class="form-select compact" aria-label="Filter stasiun">
                   <option v-for="s in stationOptions" :key="s.key" :value="s.key">{{ s.label }}</option>
+                </select>
+                <select v-model="filterDoctor" class="form-select compact" aria-label="Filter dokter">
+                  <option value="all">Semua Dokter</option>
+                  <option v-for="nm in doctorFilterOptions" :key="nm" :value="nm">{{ nm }}</option>
                 </select>
                 <div class="input-wrap">
                   <div class="input-pfx"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>

@@ -31,7 +31,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
   const visitsMeta = ref({ total: 0, current_page: 1, last_page: 1 })
   const visitsLoading = ref(false)
   const visitsError = ref(null)
-  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '', unfinished: false, careType: 'RAJAL' })
+  const visitsFilter = ref({ station: 'SEMUA', search: '', guarantor: '', doctor: '', unfinished: false, careType: 'RAJAL' })
   const visitsPerPage = ref(15)
 
   // ─── Visit Detail Modal ───────────────────────────────────────────────────────
@@ -155,6 +155,7 @@ export const useAdmisiStore = defineStore('admisi', () => {
       }
       if (visitsFilter.value.search) params.search = visitsFilter.value.search
       if (visitsFilter.value.guarantor) params.guarantor_type = visitsFilter.value.guarantor
+      if (visitsFilter.value.doctor) params.doctor = visitsFilter.value.doctor
       // Pisah Rawat Jalan (RAJAL/IGD) vs Rawat Inap (RANAP). 'SEMUA' → tak dikirim.
       if (visitsFilter.value.careType && visitsFilter.value.careType !== 'SEMUA') {
         params.care_type = visitsFilter.value.careType
