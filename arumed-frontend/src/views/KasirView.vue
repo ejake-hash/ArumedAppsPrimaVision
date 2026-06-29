@@ -953,6 +953,27 @@ function cobBadge(q) {
   if (!cob || cob.is_active === false || !cob.penjamin2_insurer_id) return null
   return cobName(cob.penjamin2?.name, cob.penjamin2_type)
 }
+// Nama insurer pasien ASURANSI/PERUSAHAAN (utk tag nama asuransi di bilah pasien).
+// null bila bukan asuransi / nama tak ada. Sumber: visit.insurer (eager-load Kasir).
+function insurerNameOf(q) {
+  const g = (q?.visit?.guarantor_type ?? '').toUpperCase()
+  if (g !== 'ASURANSI' && g !== 'PERUSAHAAN') return null
+  return (q?.visit?.insurer?.name ?? '').trim() || null
+}
+// Label penjamin LENGKAP dari objek visit (insurer/visit_cob ter-nest) — reuse penjaminFull
+// agar konsisten dgn kwitansi cetak. COB → "BPJS Kesehatan — COB <penjamin-2>" (kedua
+// penjamin); Asuransi → "Asuransi — <nama>"; BPJS → "BPJS Kesehatan"; lainnya → "Umum".
+function penjaminVisit(v) {
+  if (!v) return '—'
+  const cob = v.visit_cob
+  return penjaminFull({
+    guarantor_type: v.guarantor_type,
+    insurer: v.insurer?.name,
+    cob: (cob && cob.is_active !== false && cob.penjamin2_insurer_id)
+      ? { guarantor_type: cob.penjamin2_type, insurer: cob.penjamin2?.name }
+      : null,
+  })
+}
 // Jenis layanan kunjungan (judul kwitansi + label/badge).
 function svcCode(t)  { return (t ?? 'RAJAL').toUpperCase() }
 function svcTitle(t) { return ({ RANAP: 'KWITANSI RAWAT INAP', IGD: 'KWITANSI GAWAT DARURAT (IGD)', RAJAL: 'KWITANSI RAWAT JALAN' })[svcCode(t)] ?? 'RINCIAN BIAYA PELAYANAN' }
@@ -1473,6 +1494,7 @@ const rincianSections = computed(() => {
                   <span :class="['ptg', ptypeOf(selQ) === 'bpjs' ? 'ptg-b' : ptypeOf(selQ) === 'asn' ? 'ptg-a' : 'ptg-u']">
                     {{ ptypeOf(selQ) === 'bpjs' ? 'BPJS' : ptypeOf(selQ) === 'asn' ? 'Asuransi' : 'Umum' }}
                   </span>
+                  <span v-if="insurerNameOf(selQ)" class="ptg ptg-a" :title="`Penjamin: ${insurerNameOf(selQ)}`">{{ insurerNameOf(selQ) }}</span>
                   <span v-if="cobBadge(selQ)" class="ptg ptg-cob" :title="`COB — penjamin kedua: ${cobBadge(selQ)}`">COB: {{ cobBadge(selQ) }}</span>
                   <span :class="['ptg', `ptg-care care-${svcCode(selQ.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(selQ.visit?.jenis_pelayanan) }}</span>
                   <span v-if="selQ.visit?.dpjp_name" class="ptg ptg-dpjp" :title="`DPJP: ${selQ.visit.dpjp_name}`">DPJP: {{ selQ.visit.dpjp_name }}</span>
@@ -2138,6 +2160,7 @@ const rincianSections = computed(() => {
                   <th>No. Invoice</th>
                   <th>Pasien</th>
                   <th>Jenis</th>
+                  <th>Penjamin</th>
                   <th>Metode</th>
                   <th class="num">Total</th>
                   <th>Jam</th>
@@ -2145,7 +2168,7 @@ const rincianSections = computed(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="historyLoading && !history.length"><td colspan="8" class="empty-row">Memuat history…</td></tr>
+                <tr v-if="historyLoading && !history.length"><td colspan="9" class="empty-row">Memuat history…</td></tr>
                 <tr v-for="(h, i) in histFiltered" :key="h.id">
                   <td class="num muted">{{ i + 1 }}</td>
                   <td class="strong">{{ h.invoice_number }}</td>
@@ -2154,6 +2177,7 @@ const rincianSections = computed(() => {
                     <span :class="['kat-pill', `kat-${ptypeOfHistory(h)}`]">{{ ptypeOfHistory(h).toUpperCase() }}</span>
                     <span :class="['care-pill', `care-${careTypeOf(h).toLowerCase()}`]">{{ careTypeLabelOf(h) }}</span>
                   </td>
+                  <td class="hist-penjamin">{{ penjaminVisit(h.visit) }}</td>
                   <td>{{ metodeLabel(h.payment_method) }}</td>
                   <td class="num strong">Rp {{ Number(h.paid_amount ?? h.total).toLocaleString('id-ID') }}</td>
                   <td class="muted">{{ formatTime(h.paid_at ?? h.updated_at) }}</td>
@@ -2169,7 +2193,7 @@ const rincianSections = computed(() => {
                     </button>
                   </td>
                 </tr>
-                <tr v-if="!historyLoading && !histFiltered.length"><td colspan="8" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
+                <tr v-if="!historyLoading && !histFiltered.length"><td colspan="9" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
               </tbody>
             </table>
             <div v-if="hMeta.total > 0" class="hist-pager">
@@ -2741,6 +2765,7 @@ const rincianSections = computed(() => {
 .hist-pager-info { font-size: .8rem; color: var(--tu); }
 .hist-pager-nav { display: flex; align-items: center; gap: .5rem; }
 .hist-pager-page { font-size: .8rem; color: var(--td); font-weight: 600; min-width: 110px; text-align: center; }
+.hist-penjamin { font-size: 11px; color: var(--td); max-width: 190px; }
 
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 999; display: flex; flex-direction: column; gap: 6px; }
 .toast { padding: 9px 13px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); min-width: 230px; }

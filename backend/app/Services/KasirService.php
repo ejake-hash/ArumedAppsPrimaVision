@@ -61,8 +61,10 @@ class KasirService
                 // Paket bedah utk badge "Kategori — Nama Paket" di antrean & banner pasien.
                 'visit.surgerySchedule.surgeryPackage',
                 'visit.doctorExamination.surgerySchedule.surgeryPackage',
-                // COB: penjamin-2 utk badge "COB — <insurer>" di antrean & kartu pasien.
-                'visit.visitCob.penjamin2',
+                // Penjamin: nama insurer (pasien ASURANSI/PERUSAHAAN) + COB penjamin-2 utk
+                // tampilan "Asuransi — <nama>" / "BPJS Kesehatan — COB <penjamin-2>".
+                'visit.insurer:id,name',
+                'visit.visitCob.penjamin2:id,name',
                 // Parent utk deteksi visit anak rujuk-internal same-day (disembunyikan;
                 // diwakili kartu anchor — tagihan digabung 1 kwitansi).
                 'visit.parentVisit:id,visit_date',
@@ -149,7 +151,12 @@ class KasirService
         // Pengaturan→Kwitansi), filter berdasar TANGGAL INVOICE dibuat → menampilkan
         // SELURUH invoice tanggal itu termasuk yang belum dibayar (paid_at NULL).
         $dateField = ($filters['date_field'] ?? 'paid_at') === 'created_at' ? 'created_at' : 'paid_at';
-        $query = BillingInvoice::with(['visit.patient', 'cashier'])
+        $query = BillingInvoice::with([
+                'visit.patient', 'cashier',
+                // Penjamin utk kolom "Penjamin" di Riwayat: nama insurer + COB penjamin-2.
+                'visit.insurer:id,name',
+                'visit.visitCob.penjamin2:id,name',
+            ])
             ->whereDate($dateField, $filters['tanggal'] ?? today());
 
         if (! empty($filters['status'])) {
