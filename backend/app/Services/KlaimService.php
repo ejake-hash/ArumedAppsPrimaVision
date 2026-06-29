@@ -499,6 +499,11 @@ class KlaimService
         if (! empty($filters['tanggal_to'])) {
             $query->whereDate('visit_date', '<=', $filters['tanggal_to']);
         }
+        if (! empty($filters['ids'])) {
+            // Subset eksplisit (dipakai unduh ZIP per-potongan dari FE). Filter
+            // tanggal/jenis/search di atas tetap berlaku sebagai pengaman.
+            $query->whereIn('id', (array) $filters['ids']);
+        }
         if (! empty($filters['jenis'])) {
             $query->where('jenis_pelayanan', $filters['jenis']);
         }

@@ -743,6 +743,24 @@ class KlaimController extends Controller
     }
 
     /**
+     * GET /klaim/rekap/bundle-manifest — daftar visit_id (TANPA render PDF) untuk
+     * periode aktif. Dipakai FE memecah unduhan ZIP jadi potongan kecil agar tiap
+     * request render < batas timeout proxy (Cloudflare 524). Ringan & cepat.
+     */
+    public function rekapBundleManifest(Request $request)
+    {
+        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis', 'search']);
+        $visits  = $this->service->getRecapVisitsForBundle($filters);
+
+        return $this->ok($visits->map(fn ($v) => [
+            'visit_id' => $v->id,
+            'no_sep'   => $v->no_sep,
+            'no_rm'    => $v->patient?->no_rm,
+            'name'     => $v->patient?->name,
+        ])->values());
+    }
+
+    /**
      * GET /klaim/rekap/zip-kwitansi — unduh SEMUA kwitansi (PDF) kunjungan BPJS
      * pd tanggal/rentang aktif sbg satu file ZIP (tab History RekapKunjunganBpjs).
      */
@@ -768,7 +786,7 @@ class KlaimController extends Controller
      */
     private function streamRekapBundle(Request $request, string $kind)
     {
-        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis', 'search']);
+        $filters = $request->only(['tanggal', 'tanggal_from', 'tanggal_to', 'jenis', 'search', 'ids']);
 
         $from = $filters['tanggal_from'] ?? $filters['tanggal'] ?? null;
         $to   = $filters['tanggal_to'] ?? $filters['tanggal'] ?? null;

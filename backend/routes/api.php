@@ -881,6 +881,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/rekap',                          [KlaimController::class, 'rekap']);
             Route::get('/rekap/export',                   [KlaimController::class, 'rekapExport']);
             // Tab History: bundel semua kwitansi / resume+laporan operasi (PDF) → ZIP.
+            // Manifest (daftar visit_id, tanpa render) → FE pecah unduhan per-potongan.
+            Route::get('/rekap/bundle-manifest',          [KlaimController::class, 'rekapBundleManifest']);
             Route::get('/rekap/zip-kwitansi',             [KlaimController::class, 'rekapZipKwitansi']);
             Route::get('/rekap/zip-resume',               [KlaimController::class, 'rekapZipResume']);
             // Sinkron SEP terbit di portal VClaim → tautkan ke kunjungan (statis, sblm /{id}).

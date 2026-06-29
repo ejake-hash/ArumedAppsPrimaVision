@@ -10,6 +10,7 @@
  * Akses: permission bpjs.read/write (role verifikator).
  */
 import { ref, computed, onMounted } from 'vue'
+import JSZip from 'jszip'
 import api from '@/services/api'
 import Pager from '@/components/common/Pager.vue'
 import { localDateStr } from '@/stores/admisiStore'
@@ -441,7 +442,15 @@ async function exportRekap() {
 // ── History: unduh ZIP + preview resume per baris ───────────────────────────
 const zipKwitansiBusy = ref(false)
 const zipResumeBusy = ref(false)
+const zipProgress = ref({ done: 0, total: 0 })   // progres unduh ZIP per-potongan
 const resumeBusyId = ref(null)
+
+// Banyaknya kunjungan per request render ZIP. Kecil supaya tiap request selesai
+// jauh di bawah batas timeout proxy/Cloudflare (~100 dtk) walau hari sangat sibuk.
+const ZIP_CHUNK = 8
+const zipBtnLabel = computed(() => zipProgress.value.total
+  ? `Menyiapkan… ${zipProgress.value.done}/${zipProgress.value.total}`
+  : 'Menyiapkan…')
 
 // Error muncul sbg blob (responseType blob) → coba baca pesan JSON di dalamnya.
 async function blobErrMsg(e) {
@@ -452,20 +461,74 @@ async function blobErrMsg(e) {
   return e.response?.data?.message
 }
 
+// Unduh ZIP kwitansi/resume. Render PDF massal dalam SATU request bisa tembus
+// timeout proxy (Cloudflare 524) pada hari sibuk → di sini dipecah: ambil daftar
+// kunjungan (manifest, tanpa render), render per-potongan kecil, lalu gabungkan
+// semua ZIP potongan jadi SATU file via JSZip. Hasil & UX identik (1 file).
 async function downloadZip(kind) {
   const busy = kind === 'kwitansi' ? zipKwitansiBusy : zipResumeBusy
   busy.value = true
+  zipProgress.value = { done: 0, total: 0 }
   try {
+    // 1) Manifest: daftar visit_id periode aktif (cepat, tanpa render PDF).
+    const { data } = await api.get('/klaim/rekap/bundle-manifest', { params: dateParams() })
+    const ids = (data.data ?? []).map((v) => v.visit_id).filter(Boolean)
+    if (!ids.length) { toast('w', 'Tidak ada kunjungan BPJS pada periode ini.'); return }
+
+    // 2) Pecah jadi potongan kecil, render tiap potongan, gabung ke 1 ZIP.
     const url = kind === 'kwitansi' ? '/klaim/rekap/zip-kwitansi' : '/klaim/rekap/zip-resume'
-    const res = await api.get(url, { params: dateParams(), responseType: 'blob' })
+    const master = new JSZip()
+    const used = new Set()
+    const chunks = []
+    for (let i = 0; i < ids.length; i += ZIP_CHUNK) chunks.push(ids.slice(i, i + ZIP_CHUNK))
+    zipProgress.value.total = chunks.length
+
+    let lastErr = null
+    for (const chunk of chunks) {
+      try {
+        const res = await api.get(url, { params: { ...dateParams(), ids: chunk }, responseType: 'blob' })
+        const part = await JSZip.loadAsync(res.data)
+        const entries = Object.values(part.files).filter((f) => !f.dir)
+        for (const f of entries) {
+          let name = f.name
+          if (used.has(name)) {                     // hindari bentrok antar-potongan
+            const dot = name.lastIndexOf('.')
+            const base = dot > 0 ? name.slice(0, dot) : name
+            const ext = dot > 0 ? name.slice(dot) : ''
+            let n = 2
+            while (used.has(`${base}-${n}${ext}`)) n++
+            name = `${base}-${n}${ext}`
+          }
+          used.add(name)
+          master.file(name, await f.async('uint8array'))
+        }
+      } catch (e) {
+        // 404 = potongan tanpa berkas (mis. semua resume belum ada) → lewati, bukan fatal.
+        if (e.response?.status !== 404) lastErr = e
+      } finally {
+        zipProgress.value.done++
+      }
+    }
+
+    if (!used.size) {
+      toast('w', (lastErr && await blobErrMsg(lastErr))
+        ?? (kind === 'kwitansi' ? 'Tidak ada kwitansi yang bisa diunduh pada periode ini.'
+                                : 'Tidak ada resume/laporan operasi yang bisa diunduh pada periode ini.'))
+      return
+    }
+
+    // 3) Rakit & unduh satu file ZIP.
     const tag = rekapMode.value === 'single'
       ? rekapDate.value.replace(/-/g, '')
       : `${rekapFrom.value}_${rekapTo.value}`.replace(/-/g, '')
-    triggerDownload(res.data, `${kind}-bpjs-${tag}.zip`)
+    const blob = await master.generateAsync({ type: 'blob' })
+    triggerDownload(blob, `${kind}-bpjs-${tag}.zip`)
+    if (lastErr) toast('w', 'Sebagian dokumen gagal diunduh; file ZIP berisi yang berhasil saja.')
   } catch (e) {
-    toast('w', (await blobErrMsg(e)) ?? 'Gagal mengunduh ZIP')
+    toast('w', e.response?.data?.message ?? 'Gagal mengunduh ZIP')
   } finally {
     busy.value = false
+    zipProgress.value = { done: 0, total: 0 }
   }
 }
 
@@ -570,11 +633,11 @@ onMounted(fetchRekap)
       <button v-if="mainTab === 'rekap'" class="rk-btn rk-btn-kirim" :disabled="kirimMassalBusy" title="Kirim semua kunjungan siap (SEP + diagnosis) ke daftar klaim" @click="kirimKlaimMassal">
         {{ kirimMassalBusy ? 'Mengirim…' : 'Kirim, Berkas Siap di Klaim' }}
       </button>
-      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-kirim" :disabled="zipKwitansiBusy" title="Unduh semua kwitansi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('kwitansi')">
-        {{ zipKwitansiBusy ? 'Menyiapkan…' : 'ZIP Kwitansi' }}
+      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-kirim" :disabled="zipKwitansiBusy || zipResumeBusy" title="Unduh semua kwitansi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('kwitansi')">
+        {{ zipKwitansiBusy ? zipBtnLabel : 'ZIP Kwitansi' }}
       </button>
-      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-sync" :disabled="zipResumeBusy" title="Unduh semua resume medis + laporan operasi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('resume')">
-        {{ zipResumeBusy ? 'Menyiapkan…' : 'ZIP Resume' }}
+      <button v-if="mainTab === 'history'" class="rk-btn rk-btn-sync" :disabled="zipKwitansiBusy || zipResumeBusy" title="Unduh semua resume medis + laporan operasi (PDF) pada periode ini sebagai ZIP" @click="downloadZip('resume')">
+        {{ zipResumeBusy ? zipBtnLabel : 'ZIP Resume' }}
       </button>
       <button class="rk-btn rk-btn-export" :disabled="rekapExporting" @click="exportRekap">
         {{ rekapExporting ? 'Mengekspor…' : 'Export Excel' }}
