@@ -26,12 +26,15 @@ class VisitBhpUsage extends Model
         'unit_price',
         'consumed_batches',
         'notes',
+        'verified_at',
+        'verified_by_id',
     ];
 
     protected $casts = [
         'quantity'         => 'integer',
         'unit_price'       => 'decimal:2',
         'consumed_batches' => 'array',
+        'verified_at'      => 'datetime',
     ];
 
     public function visit(): BelongsTo
@@ -42,5 +45,10 @@ class VisitBhpUsage extends Model
     public function bhpItem(): BelongsTo
     {
         return $this->belongsTo(BhpItem::class);
+    }
+
+    public function verifiedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'verified_by_id');
     }
 }

@@ -20,6 +20,7 @@ use App\Models\PrescriptionItem;
 use App\Models\Procedure;
 use App\Models\Queue;
 use App\Models\SurgeryIolUsage;
+use App\Models\SurgerySchedule;
 use App\Models\SurgeryRequest;
 use App\Models\SurgeryRequestBhp;
 use App\Models\SystemLog;
@@ -501,6 +502,16 @@ class KasirService
             ->exists();
         if ($adaBelumVerifikasi) {
             throw new \Exception('Resep belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci resep dulu sebelum membuat/menutup tagihan.', 422);
+        }
+
+        // BHP dokter (visit_bhp_usages) juga lewat verifikasi Farmasi: blok tagihan bila
+        // masih ada BHP belum-verif di rantai (selaras hold buildBhpLines). Baris yang
+        // dihapus Farmasi saat verifikasi (soft-delete) otomatis terkecuali.
+        $adaBhpBelumVerif = \App\Models\VisitBhpUsage::whereIn('visit_id', $chainIds)
+            ->whereNull('verified_at')
+            ->exists();
+        if ($adaBhpBelumVerif) {
+            throw new \Exception('BHP belum diverifikasi Farmasi — minta Farmasi verifikasi & kunci BHP dulu sebelum membuat/menutup tagihan.', 422);
         }
     }
 
@@ -1010,17 +1021,87 @@ class KasirService
     }
 
     /**
+     * Snapshot paket yang BOLEH ditagih di kunjungan INI (basis seluruh builder paket).
+     *
+     * Aturan: snapshot paket BEDAH yang jadwal operasinya masih di MASA DEPAN
+     * DIKECUALIKAN — pasien pulang berobat jalan pada kunjungan perencanaan; paketnya
+     * baru ditagih di kunjungan hari operasi (snapshot dipindah ke visit pre-op oleh
+     * AdmisiService::resolvePreopSchedule). Snapshot PEMERIKSAAN (poliklinik), BEDAH
+     * same-day (laser/operasi hari ini), BEDAH yang sudah berlangsung/lampau, atau BEDAH
+     * tanpa jadwal (legacy) tetap ditagih seperti biasa.
+     *
+     * Tanggal jadwal di-batch query sekali (hindari N+1 / lazy-load) — snapshot menyimpan
+     * surgery_schedule_id, tanggal hidup di surgery_schedules.scheduled_date.
+     */
+    private function billablePaketSnapshots(Visit $visit): \Illuminate\Support\Collection
+    {
+        $snaps = $visit->surgeryPackageSnapshots;
+
+        $bedahScheduleIds = $snaps
+            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+            ->pluck('surgery_schedule_id')
+            ->filter()
+            ->unique();
+
+        $futureScheduleIds = $bedahScheduleIds->isEmpty()
+            ? collect()
+            : SurgerySchedule::whereIn('id', $bedahScheduleIds->all())
+                ->whereDate('scheduled_date', '>', today())
+                ->pluck('id')
+                ->flip();
+
+        return $snaps->reject(fn ($s) =>
+            $s->package_type === VisitSurgeryPackage::TYPE_BEDAH
+            && $s->surgery_schedule_id
+            && isset($futureScheduleIds[$s->surgery_schedule_id])
+        )->values();
+    }
+
+    /**
+     * Legacy (pasien lama TANPA snapshot): bolehkah paket master doctorExamination
+     * ditagih di kunjungan INI? Hanya bila operasinya benar-benar konteks kunjungan ini:
+     *   - jadwalnya TIDAK di masa depan (selaras billablePaketSnapshots), DAN
+     *   - snapshot paket BEDAH untuk jadwal itu BELUM dipindah ke kunjungan lain
+     *     (mis. kunjungan hari operasi pre-op) — cegah resurrect paket dari master di
+     *     kunjungan perencanaan setelah snapshot-nya pindah.
+     * Tanpa paket terencana → false.
+     */
+    private function examPaketBillableHere(Visit $visit): bool
+    {
+        $exam = $visit->doctorExamination;
+        if (! $exam || ! $exam->surgery_package_id) {
+            return false;
+        }
+        $schedule = $exam->surgerySchedule; // eager-loaded di billingEagerLoads
+        if ($schedule?->scheduled_date && $schedule->scheduled_date->isFuture()) {
+            return false;
+        }
+        if ($exam->surgery_schedule_id) {
+            $movedElsewhere = VisitSurgeryPackage::where('surgery_schedule_id', $exam->surgery_schedule_id)
+                ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+                ->where('visit_id', '!=', $visit->id)
+                ->exists();
+            if ($movedElsewhere) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Apakah baris obat/BHP tambahan visit ini BOLEH "diserap ke paket" oleh Kasir?
      * Syarat: bukan BPJS full-cover (tak relevan — pasien sudah Rp 0) DAN ada minimal
      * satu snapshot paket BEDAH bertarif (sell_price > 0) tempat diskonnya menempel.
      * Tanpa paket bertarif, penyerapan tak berefek (mirror perilaku preop) → tolak dini.
+     * Paket BEDAH terjadwal masa depan TAK dihitung (billablePaketSnapshots) — belum
+     * ditagih di kunjungan ini → tak ada tempat diskon menempel.
      */
     private function visitCanAbsorbToPaket(Visit $visit): bool
     {
         if ($this->isFullCoverBpjs($visit)) {
             return false;
         }
-        return $visit->surgeryPackageSnapshots->contains(
+        return $this->billablePaketSnapshots($visit)->contains(
             fn ($s) => $s->package_type === \App\Models\VisitSurgeryPackage::TYPE_BEDAH
                 && (float) $s->sell_price > 0
         );
@@ -1034,7 +1115,7 @@ class KasirService
     private function paketBhpCompositionIds(Visit $visit): array
     {
         $ids = [];
-        foreach ($visit->surgeryPackageSnapshots as $snap) {
+        foreach ($this->billablePaketSnapshots($visit) as $snap) {
             if ($snap->package_type !== \App\Models\VisitSurgeryPackage::TYPE_BEDAH) {
                 continue;
             }
@@ -1286,7 +1367,7 @@ class KasirService
      */
     public function paketObatMedIds(Visit $visit): array
     {
-        return $visit->surgeryPackageSnapshots
+        return $this->billablePaketSnapshots($visit)
             ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
             ->flatMap(fn ($s) => $s->items->where('item_type', 'MEDICATION')->pluck('item_id'))
             ->filter()
@@ -1355,9 +1436,15 @@ class KasirService
         }
 
         // BHP yang diinput DOKTER pada kunjungan (visit_bhp_usages) — sumber tagihan BHP
-        // non-bedah (mis. spuit/kasa untuk injeksi/prosedur kecil). Stok sudah dipotong
-        // saat dokter input (DokterService::storeVisitBhpUsage); di sini hanya ditagih.
+        // non-bedah (mis. spuit/kasa untuk injeksi/prosedur kecil). Mirror alur resep
+        // obat (D→K→F): HANYA BHP yang sudah DIVERIFIKASI & DIKUNCI Farmasi (verified_at
+        // != null) yang ditagih; BHP belum-verif ditahan dari kwitansi (gate
+        // assertObatVerified juga memblok tutup tagihan sampai diverifikasi). Stok unit
+        // FARMASI dipotong belakangan saat serah (FarmasiService::selesaiAntrian).
         foreach ($visit->bhpUsages as $usage) {
+            if (is_null($usage->verified_at)) {
+                continue;   // belum diverifikasi Farmasi → tak masuk kwitansi
+            }
             $qty = (int) ($usage->quantity ?? 0);
             if ($qty <= 0) {
                 continue;
@@ -1399,13 +1486,18 @@ class KasirService
     {
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
-        // Multi-paket: kumpulkan komponen BHP dari SEMUA snapshot paket pasien.
-        // Fallback ke package master bila belum ada snapshot (pasien lama).
-        $snaps = $visit->surgeryPackageSnapshots;
-        if ($snaps->isNotEmpty()) {
+        // Multi-paket: kumpulkan komponen BHP dari snapshot paket pasien yang BILLABLE di
+        // kunjungan ini (paket BEDAH terjadwal masa depan dikecualikan — ditagih hari operasi).
+        // Fallback ke package master HANYA bila benar-benar TAK ada snapshot (pasien lama) —
+        // deteksi via snapshot MENTAH agar visit modern yg snapshot-nya tersaring (future
+        // bedah) tidak salah jatuh ke fallback master (re-introduce paket yang harusnya nanti).
+        $snaps = $this->billablePaketSnapshots($visit);
+        if ($visit->surgeryPackageSnapshots->isNotEmpty()) {
             $items = $snaps->flatMap(fn ($s) => $s->items->where('item_type', 'BHP'));
-        } else {
+        } elseif ($this->examPaketBillableHere($visit)) {
             $items = $visit->doctorExamination?->surgeryPackage?->items?->where('item_type', 'BHP');
+        } else {
+            $items = collect();
         }
         if (! $items || $items->isEmpty()) {
             return [];
@@ -1464,7 +1556,7 @@ class KasirService
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
 
-        $snaps = $visit->surgeryPackageSnapshots;
+        $snaps = $this->billablePaketSnapshots($visit);
         if ($snaps->isEmpty()) {
             return [];
         }
@@ -1515,7 +1607,7 @@ class KasirService
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
 
-        $items = $visit->surgeryPackageSnapshots
+        $items = $this->billablePaketSnapshots($visit)
             ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
             ->flatMap(fn ($s) => $s->items->where('item_type', 'MEDICATION'));
         if ($items->isEmpty()) {
@@ -1581,7 +1673,7 @@ class KasirService
         $insurerId    ??= $visit->insurer_id;
         $guarantorType ??= $visit->guarantor_type;
 
-        $snaps = $visit->surgeryPackageSnapshots;
+        $snaps = $this->billablePaketSnapshots($visit);
         if ($snaps->isEmpty()) {
             return [];
         }
@@ -1851,9 +1943,11 @@ class KasirService
             }
         }
 
-        // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah).
+        // Multi-paket: 1 baris diskon PER paket (mis. Phaco + TIVA terpisah). Paket BEDAH
+        // terjadwal masa depan dikecualikan (billablePaketSnapshots) → tak ada baris diskon
+        // hantu untuk paket yang baris positifnya pun belum ditagih di kunjungan ini.
         $lines = [];
-        foreach ($visit->surgeryPackageSnapshots as $snap) {
+        foreach ($this->billablePaketSnapshots($visit) as $snap) {
             $isPemeriksaan = ($snap->package_type === \App\Models\VisitSurgeryPackage::TYPE_PEMERIKSAAN);
             // Basis = Σ harga Buku Tarif komponen snapshot (yang sudah disesuaikan operator).
             $basis = 0.0;

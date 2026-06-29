@@ -42,6 +42,7 @@ class RmeAggregatorService
 
         $visits = Visit::with([
             'doctorExamination',
+            'doctorExamination.surgerySchedule',
             'refractionRecord',
             'nurseAssessment',
             'doctorSchedule',
@@ -135,6 +136,8 @@ class RmeAggregatorService
                     $lastVisit->doctorExamination?->planning,
                     $lastVisit->follow_up_date,
                     $lastVisit->follow_up_reason,
+                    $lastVisit->doctorExamination?->surgerySchedule?->scheduled_date,
+                    $lastVisit->visit_date,
                 ),
                 'follow_up_date' => $lastVisit->follow_up_date?->toDateString(),
             ] : null,
@@ -154,6 +157,7 @@ class RmeAggregatorService
     {
         $visits = Visit::with([
             'doctorExamination',
+            'doctorExamination.surgerySchedule',
             // assessedBy/examinedBy → nama pemeriksa utk pager "Data kunjungan sebelumnya"
             // di Tab 1 DokterView (kartu Triase Perawat & Refraksionis read-only).
             'nurseAssessment.assessedBy:id,name',
@@ -245,7 +249,7 @@ class RmeAggregatorService
                     // jadi "sketsa sebelumnya" di DokterView kunjungan berikutnya.
                     'eye_drawings'   => $de?->eye_drawings,
                     'planning'       => $de?->planning,
-                    'planning_text'  => $this->planningText($de?->planning, $v->follow_up_date, $v->follow_up_reason),
+                    'planning_text'  => $this->planningText($de?->planning, $v->follow_up_date, $v->follow_up_reason, $de?->surgerySchedule?->scheduled_date, $v->visit_date),
                     'follow_up_date' => $v->follow_up_date?->toDateString(),
                     'follow_up_reason' => $v->follow_up_reason,
                 ],
@@ -734,7 +738,7 @@ class RmeAggregatorService
 
     public function diagnosis(string $patientId): array
     {
-        $visits = Visit::with(['doctorExamination'])
+        $visits = Visit::with(['doctorExamination', 'doctorExamination.surgerySchedule'])
             ->whereHas('doctorExamination', fn ($q) => $q->whereNotNull('diagnosis_utama'))
             ->where('patient_id', $patientId)
             ->orderByDesc('visit_date')
@@ -760,7 +764,7 @@ class RmeAggregatorService
                 'sekunder'   => $sekunder,
                 'tindakan'   => $tindakan,
                 'planning'   => $de->planning,
-                'planning_text' => $this->planningText($de->planning, $v->follow_up_date, $v->follow_up_reason),
+                'planning_text' => $this->planningText($de->planning, $v->follow_up_date, $v->follow_up_reason, $de->surgerySchedule?->scheduled_date, $v->visit_date),
             ];
         })->all();
     }
@@ -823,7 +827,7 @@ class RmeAggregatorService
      * Menggabungkan enum planning dokter dengan jadwal kontrol (follow_up) bila ada.
      * Null bila tak ada keduanya.
      */
-    private function planningText(?string $planning, $followUpDate = null, ?string $followUpReason = null): ?string
+    private function planningText(?string $planning, $followUpDate = null, ?string $followUpReason = null, $surgeryDate = null, $visitDate = null): ?string
     {
         $label = $planning ? ([
             'PULANG_BEROBAT_JALAN' => 'Pulang berobat jalan',
@@ -831,6 +835,19 @@ class RmeAggregatorService
             'RAWAT_INAP'           => 'Rawat inap (observasi)',
             'RUJUK'                => 'Rujuk',
         ][$planning] ?? ucfirst(strtolower(str_replace('_', ' ', $planning)))) : null;
+
+        // BEDAH terjadwal pada hari LAIN (setelah tanggal kunjungan) → pasien pulang
+        // berobat jalan pada kunjungan ini; operasinya di kunjungan hari operasi. Selaras
+        // disposisi Resume Medis (DokterService::planningDisposisiText) & routing KASIR.
+        if ($planning === 'BEDAH' && $surgeryDate) {
+            $sd = $surgeryDate instanceof \Carbon\Carbon ? $surgeryDate : \Carbon\Carbon::parse($surgeryDate);
+            $base = $visitDate
+                ? ($visitDate instanceof \Carbon\Carbon ? $visitDate : \Carbon\Carbon::parse($visitDate))->copy()->startOfDay()
+                : today();
+            if ($sd->copy()->startOfDay()->greaterThan($base)) {
+                $label = 'Pulang berobat jalan — Rencana operasi: ' . $this->fmtTanggalId($sd);
+            }
+        }
 
         $parts = [];
         if ($label) {

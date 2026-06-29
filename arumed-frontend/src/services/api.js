@@ -921,6 +921,7 @@ export const admisiApi = {
   cancelKunjungan: (id)         => api.put(`/admisi/kunjungan/${id}/cancel`),
   updatePenjamin: (id, data)    => api.put(`/admisi/kunjungan/${id}/penjamin`, data),
   gantiDokter:    (id, doctorScheduleId) => api.put(`/admisi/kunjungan/${id}/dokter`, { doctor_schedule_id: doctorScheduleId }),
+  updateAntreanJkn: (id, number) => api.put(`/admisi/kunjungan/${id}/antrean-jkn`, { bpjs_antrean_number: number }),
   cariPasien:    (keyword)      => api.get('/admisi/pasien', { params: { keyword } }),
   showPasien:    (id)           => api.get(`/admisi/pasien/${id}`),
   kunjunganPasien: (id, params) => api.get(`/admisi/pasien/${id}/kunjungan`, { params }),
@@ -976,6 +977,11 @@ export const farmasiApi = {
   verifikasiQueue:   (params)     => api.get('/farmasi/verifikasi', { params }),
   verifikasiResep:   (id)         => api.put(`/farmasi/resep/${id}/verifikasi`),
   bukaVerifikasi:    (id)         => api.put(`/farmasi/resep/${id}/buka-verifikasi`),
+  // Verifikasi BHP dokter (per kunjungan) + koreksi qty/hapus saat verifikasi.
+  verifikasiBhp:     (visitId)    => api.put(`/farmasi/visit/${visitId}/bhp/verifikasi`),
+  bukaVerifikasiBhp: (visitId)    => api.put(`/farmasi/visit/${visitId}/bhp/buka-verifikasi`),
+  updateBhpUsage:    (id, qty)    => api.put(`/farmasi/bhp-usage/${id}`, { quantity: qty }),
+  deleteBhpUsage:    (id, reason) => api.delete(`/farmasi/bhp-usage/${id}`, { data: reason ? { change_reason: reason } : {} }),
 
   // Resep
   resep:             (params)     => api.get('/farmasi/resep', { params }),

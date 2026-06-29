@@ -317,6 +317,7 @@ function mapVisitRow(v) {
     noRegistrasi: v.no_registrasi ?? '—',
     noSep:      v.no_sep ?? null,
     noRujukan:  v.no_rujukan ?? null,
+    bpjsAntreanNumber: v.bpjs_antrean_number ?? null,
     diagnosaAwal:     v.diagnosa_awal ?? null,
     diagnosaAwalNama: v.diagnosa_awal_nama ?? null,
     controlLetter: v.bpjs_control_letter_id ?? null,
@@ -1036,6 +1037,7 @@ function selectPatient(pt) {
     sepType:       'rujukan',
     referralNo:    '',
     controlNo:     '',
+    bpjsAntreanNumber: '',
     insurer_id:    '',
     insuranceName: '',
     insuranceNo:   '',
@@ -1144,6 +1146,7 @@ async function loadRiwayat(page = 1) {
       queueNo:        v.no_antrian ?? '—',
       arrivedDate:    fmtDate(v.visit_date ?? v.created_at),
       noRujukan:        v.no_rujukan ?? null,
+      bpjsAntreanNumber: v.bpjs_antrean_number ?? null,
       diagnosaAwal:     v.diagnosa_awal ?? null,
       diagnosaAwalNama: v.diagnosa_awal_nama ?? null,
       walkIn:         false,
@@ -1556,6 +1559,8 @@ const blankForm = () => ({
   referralNo:    '',
   controlNo:     '',
   bookingCode:   '',
+  // No. antrean JKN (Mobile JKN) — diinput manual selama belum bridging Antrol.
+  bpjsAntreanNumber: '',
   insurer_id:    '',
   insuranceName: '',
   insuranceNo:   '',
@@ -2059,6 +2064,30 @@ async function simpanDiagnosa() {
   }
 }
 
+/* ─── No. Antrean JKN (Mobile JKN): isi/koreksi dari panel detail ─────── */
+const jknAction = reactive({ saving: false, editing: false, value: '' })
+function startEditJkn() {
+  jknAction.editing = true
+  jknAction.value = visitDetailRow.value?.bpjsAntreanNumber ?? ''
+}
+async function simpanJkn() {
+  const row = visitDetailRow.value
+  if (!row?.id) return
+  jknAction.saving = true
+  try {
+    const num = jknAction.value.trim()
+    const res = await admisiApi.updateAntreanJkn(row.id, num || null)
+    row.bpjsAntreanNumber = res.data?.data?.bpjs_antrean_number ?? (num || null)
+    jknAction.editing = false
+    toast('s', 'No. Antrean JKN disimpan')
+    admisiStore.fetchVisits?.()
+  } catch (e) {
+    toast('e', e.response?.data?.message || 'Gagal simpan No. Antrean JKN')
+  } finally {
+    jknAction.saving = false
+  }
+}
+
 /* ─── Surat Kontrol BPJS: status + edit tanggal dari panel detail ────── */
 const skAction = reactive({ loading: false, data: null, editing: false, newDate: '' })
 async function loadSuratKontrolDetail(visitId) {
@@ -2336,6 +2365,7 @@ async function submitRegistration() {
       payload.bpjs_booking_code = form.sepType === 'jkn'     ? form.bookingCode : null
       payload.bpjs_referral_no  = form.sepType === 'rujukan' ? form.referralNo  : null
       payload.bpjs_control_no   = form.sepType === 'kontrol' ? form.controlNo   : null
+      payload.bpjs_antrean_number = form.bpjsAntreanNumber?.trim() || null
     }
     if (['ASURANSI','PERUSAHAAN','SOSIAL'].includes(form.guarantor)) {
       payload.insurer_id = form.insurer_id
@@ -2518,6 +2548,7 @@ function openVisitDetail(p) {
   visitDetailOpen.value = true
   sepEdit.open = false
   diagAction.editing = false
+  jknAction.editing = false
   sepAction.error = ''
   if (p?.guarantor === 'BPJS' && p?.id) loadSuratKontrolDetail(p.id)
   else { skAction.data = null; skAction.editing = false }
@@ -3829,6 +3860,11 @@ onUnmounted(() => {
                     <template v-if="bpjsCheck.peserta.cob?.nmAsuransi"> · COB: {{ bpjsCheck.peserta.cob.nmAsuransi }}</template>
                   </div>
                 </div>
+                <div class="field full">
+                  <label class="field-lbl">No. Antrean JKN <span class="field-opt">(Mobile JKN — opsional)</span></label>
+                  <input v-model="form.bpjsAntreanNumber" class="form-input" maxlength="20" placeholder="mis. A-23 — nomor dari tiket Mobile JKN pasien" />
+                  <div class="hint">Selama belum bridging Antrol, isi nomor antrean JKN pasien agar stasiun lain bisa mencocokkan & mendahulukan dengan tepat.</div>
+                </div>
                 <div class="info-box full">
                   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".6" fill="currentColor"/></svg>
                   <span>SEP diterbitkan otomatis via <strong>VClaim</strong> setelah konfirmasi. Pastikan status kepesertaan aktif.</span>
@@ -4066,6 +4102,7 @@ onUnmounted(() => {
                   <div v-if="form.guarantor === 'BPJS' && form.sepType === 'rujukan'" class="cf"><span class="cf-k">No. Rujukan</span><span class="cf-v">{{ form.referralNo || '—' }}</span></div>
                   <div v-if="form.guarantor === 'BPJS' && form.sepType === 'kontrol'" class="cf"><span class="cf-k">No. Surat Kontrol</span><span class="cf-v">{{ form.controlNo || '—' }}</span></div>
                   <div v-if="form.guarantor === 'BPJS' && form.sepType === 'jkn'" class="cf"><span class="cf-k">Kode Booking JKN</span><span class="cf-v">{{ form.bookingCode || '—' }}</span></div>
+                  <div v-if="form.guarantor === 'BPJS' && form.bpjsAntreanNumber" class="cf"><span class="cf-k">No. Antrean JKN</span><span class="cf-v">{{ form.bpjsAntreanNumber }}</span></div>
                   <div v-if="form.guarantor === 'ASURANSI'" class="cf"><span class="cf-k">Asuransi</span><span class="cf-v">{{ form.insuranceName || '—' }}</span></div>
                   <div v-if="form.guarantor === 'ASURANSI'" class="cf"><span class="cf-k">No. Polis</span><span class="cf-v">{{ form.insuranceNo || '—' }}</span></div>
                   <div v-if="['PERUSAHAAN','SOSIAL'].includes(form.guarantor)" class="cf"><span class="cf-k">{{ form.guarantor === 'PERUSAHAAN' ? 'Rekanan' : 'Lembaga Sosial' }}</span><span class="cf-v">{{ form.insuranceName || '—' }}</span></div>
@@ -4550,6 +4587,32 @@ onUnmounted(() => {
                   <div class="vd-section-val">{{ visitDetailRow.noSep ?? 'Belum terbit' }}</div>
                 </div>
                 <span v-if="visitDetailRow.noSep" class="badge-soon" style="background:#dcfce7;color:#166534">Terbit</span>
+              </div>
+
+              <!-- No. Antrean JKN (Mobile JKN) — manual selama belum bridging Antrol.
+                   Display-only; dipakai stasiun lain untuk mencocokkan tiket pasien. -->
+              <div class="vd-diag">
+                <div class="vd-diag-k">No. Antrean JKN</div>
+                <template v-if="!jknAction.editing">
+                  <div class="vd-diag-v" :class="{ empty: !visitDetailRow.bpjsAntreanNumber }">
+                    <b v-if="visitDetailRow.bpjsAntreanNumber">{{ visitDetailRow.bpjsAntreanNumber }}</b>
+                    <template v-else>Belum diisi</template>
+                  </div>
+                  <div class="vd-actions vd-diag-actions">
+                    <button class="btn btn-sm btn-secondary" @click="startEditJkn">
+                      {{ visitDetailRow.bpjsAntreanNumber ? 'Ubah' : 'Isi' }}
+                    </button>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="inline-check">
+                    <input v-model="jknAction.value" class="form-input" maxlength="20" placeholder="mis. A-23" @keyup.enter="simpanJkn" />
+                    <button class="btn btn-sm btn-primary" :disabled="jknAction.saving" @click="simpanJkn">
+                      {{ jknAction.saving ? 'Menyimpan…' : 'Simpan' }}
+                    </button>
+                    <button class="btn btn-sm btn-secondary" :disabled="jknAction.saving" @click="jknAction.editing = false">Batal</button>
+                  </div>
+                </template>
               </div>
 
               <!-- Diagnosa Awal (wajib BPJS) — auto dari rujukan FKTP / isi manual.

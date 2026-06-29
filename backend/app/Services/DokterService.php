@@ -665,7 +665,15 @@ class DokterService
         return VisitBhpUsage::with('bhpItem')->where('visit_id', $visitId)->orderBy('created_at')->get();
     }
 
-    /** Tambah satu pemakaian BHP → potong stok FARMASI seketika + bangun ulang kwitansi. */
+    /**
+     * Tambah satu pemakaian BHP yang dipakai dokter pada kunjungan.
+     *
+     * Stok unit FARMASI TIDAK dipotong di sini — pemotongan DITUNDA sampai petugas
+     * FARMASI menyerahkan pasien (FarmasiService::selesaiAntrian), sejajar alur obat
+     * (verifikasi → bayar → serah/potong stok). BHP tetap LANGSUNG ditagih
+     * (KasirService::buildBhpLines) agar muncul di kwitansi. Penanda "belum diserahkan"
+     * = consumed_batches NULL (terisi saat FARMASI memotong stok).
+     */
     public function storeVisitBhpUsage(string $visitId, array $data): VisitBhpUsage
     {
         $visit = $this->authorizeVisitOwnership($visitId);
@@ -676,22 +684,15 @@ class DokterService
         $qty   = max(1, (int) ($data['quantity'] ?? 1));
         $price = (float) $this->kasirService->getPrice('bhp', $bhpId, $visit->guarantor_type, $visit->insurer_id);
 
-        $usage = DB::transaction(function () use ($visitId, $bhpId, $qty, $price, $user, $data) {
-            // Potong stok unit FARMASI (FEFO per-batch; consume() melempar 422 bila stok
-            // kurang → seluruh transaksi rollback).
-            $consumed = app(InventoryStockService::class)
-                ->consume(InventoryStock::TYPE_BHP, $bhpId, $qty, InventoryStock::LOC_FARMASI);
-
-            return VisitBhpUsage::create([
-                'visit_id'         => $visitId,
-                'bhp_item_id'      => $bhpId,
-                'performed_by_id'  => $user->employee_id,
-                'quantity'         => $qty,
-                'unit_price'       => $price,
-                'consumed_batches' => $consumed,
-                'notes'            => $data['notes'] ?? null,
-            ]);
-        });
+        $usage = VisitBhpUsage::create([
+            'visit_id'         => $visitId,
+            'bhp_item_id'      => $bhpId,
+            'performed_by_id'  => $user->employee_id,
+            'quantity'         => $qty,
+            'unit_price'       => $price,
+            'consumed_batches' => null,   // belum diserahkan FARMASI → stok belum dipotong
+            'notes'            => $data['notes'] ?? null,
+        ]);
 
         $this->log($user->id, 'STORE_BHP_DOKTER', Visit::class, $visitId, "BHP dokter x{$qty} (item {$bhpId})");
         $this->reconsolidateAfterDoctorRevision($visitId);
@@ -699,7 +700,10 @@ class DokterService
         return $usage->load('bhpItem');
     }
 
-    /** Ubah qty pemakaian BHP → sesuaikan stok (kembalikan lama, potong baru) + rebuild. */
+    /**
+     * Ubah qty pemakaian BHP. Selama BELUM diserahkan FARMASI (consumed_batches NULL)
+     * stok belum dipotong → cukup ubah qty + rebuild tagihan, tanpa sentuh stok.
+     */
     public function updateVisitBhpUsage(string $id, int $qty): VisitBhpUsage
     {
         $usage = VisitBhpUsage::findOrFail($id);
@@ -711,29 +715,36 @@ class DokterService
         }
 
         DB::transaction(function () use ($usage, $qty) {
-            $svc = app(InventoryStockService::class);
-            // Kembalikan stok lama (presisi batch bila ada), lalu potong qty baru.
-            $batches = is_array($usage->consumed_batches) ? $usage->consumed_batches : [];
-            if ($batches) {
-                foreach ($batches as $b) {
+            // Kasus normal: BHP belum diserahkan → tak ada stok yang perlu disesuaikan.
+            // Defensif (consumed_batches terisi → sudah terlanjur dipotong, mestinya
+            // terblokir assertBillingNotCommitted): kembalikan stok lama lalu potong baru.
+            if ($usage->consumed_batches) {
+                $svc = app(InventoryStockService::class);
+                foreach ($usage->consumed_batches as $b) {
                     $q = (float) ($b['qty'] ?? 0);
                     if ($q <= 0) {
                         continue;
                     }
                     $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, $b['batch_no'] ?? null, $q, $b['expiry_date'] ?? null);
                 }
+                $consumed = $svc->consume(InventoryStock::TYPE_BHP, $usage->bhp_item_id, $qty, InventoryStock::LOC_FARMASI);
+                $usage->update(['quantity' => $qty, 'consumed_batches' => $consumed]);
             } else {
-                $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, null, (float) $usage->quantity, null);
+                // Revisi dokter me-RESET verifikasi (mirror resep): bila Farmasi sudah
+                // mengunci BHP ini, perubahan qty menuntut verifikasi ulang → BHP keluar
+                // dari kwitansi sampai dikunci lagi & muncul lagi di worklist Verifikasi.
+                $usage->update(['quantity' => $qty, 'verified_at' => null, 'verified_by_id' => null]);
             }
-            $consumed = $svc->consume(InventoryStock::TYPE_BHP, $usage->bhp_item_id, $qty, InventoryStock::LOC_FARMASI);
-            $usage->update(['quantity' => $qty, 'consumed_batches' => $consumed]);
         });
 
         $this->reconsolidateAfterDoctorRevision($usage->visit_id);
         return $usage->fresh('bhpItem');
     }
 
-    /** Hapus pemakaian BHP → kembalikan stok FARMASI + bangun ulang kwitansi. */
+    /**
+     * Hapus pemakaian BHP. Selama BELUM diserahkan FARMASI stok belum dipotong → cukup
+     * hapus + rebuild tagihan. Hanya kembalikan stok bila terlanjur dipotong (defensif).
+     */
     public function deleteVisitBhpUsage(string $id): void
     {
         $usage = VisitBhpUsage::findOrFail($id);
@@ -742,19 +753,15 @@ class DokterService
         $visitId = $usage->visit_id;
 
         DB::transaction(function () use ($usage) {
-            $svc = app(InventoryStockService::class);
-            $batches = is_array($usage->consumed_batches) ? $usage->consumed_batches : [];
-            if ($batches) {
-                foreach ($batches as $b) {
+            if ($usage->consumed_batches) {
+                $svc = app(InventoryStockService::class);
+                foreach ($usage->consumed_batches as $b) {
                     $qty = (float) ($b['qty'] ?? 0);
                     if ($qty <= 0) {
                         continue;
                     }
                     $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, $b['batch_no'] ?? null, $qty, $b['expiry_date'] ?? null);
                 }
-            } else {
-                // Tanpa rincian batch → kembalikan total qty ke batch null.
-                $svc->upsertStock(InventoryStock::TYPE_BHP, $usage->bhp_item_id, InventoryStock::LOC_FARMASI, null, (float) $usage->quantity, null);
             }
             $usage->delete();
         });
@@ -2036,7 +2043,17 @@ class DokterService
             $pParts[] = $this->labelIcd9($kode);
         }
         if ($doctor?->planning) {
-            $pParts[] = "Planning: {$doctor->planning}";
+            // Disposisi (cara keluar) kunjungan ini. BEDAH terjadwal hari lain → pasien
+            // pulang berobat jalan di kunjungan ini; operasinya di kunjungan hari operasi.
+            $disposisi = $this->planningDisposisiText($doctor, $visit);
+            if ($disposisi) {
+                $pParts[] = "Disposisi: {$disposisi}";
+            }
+            // Rencana operasi (paket + jadwal) bila planning BEDAH — tetap tercatat di resume.
+            $rencanaOperasi = $this->surgeryPlanText($doctor);
+            if ($rencanaOperasi) {
+                $pParts[] = $rencanaOperasi;
+            }
         }
         $pParts = array_filter($pParts);
 
@@ -2093,6 +2110,96 @@ class DokterService
         $this->log($user->id, 'GENERATE_RESUME', MedicalResume::class, $resume->id);
 
         return $resume->fresh();
+    }
+
+    /** Resolusi SurgerySchedule dari examination (pakai relasi eager bila ada, else find). */
+    private function resolveExamSchedule(?DoctorExamination $doctor): ?SurgerySchedule
+    {
+        if (! $doctor?->surgery_schedule_id) {
+            return null;
+        }
+        return $doctor->relationLoaded('surgerySchedule')
+            ? $doctor->surgerySchedule
+            : SurgerySchedule::find($doctor->surgery_schedule_id);
+    }
+
+    /**
+     * Apakah operasi (planning BEDAH) dijadwalkan pada hari LAIN — setelah tanggal
+     * kunjungan ini? Bila ya, pasien pulang berobat jalan pada kunjungan ini dan baru
+     * dioperasi di kunjungan hari operasi (selaras routing KASIR & billing). Same-day → false.
+     */
+    private function surgeryScheduledLater(?DoctorExamination $doctor, Visit $visit): bool
+    {
+        if ($doctor?->planning !== 'BEDAH') {
+            return false;
+        }
+        $sched = $this->resolveExamSchedule($doctor);
+        if (! $sched?->scheduled_date) {
+            return false;
+        }
+        $encounter = $visit->visit_date
+            ? \Carbon\Carbon::parse($visit->visit_date)->startOfDay()
+            : today();
+        return $sched->scheduled_date->copy()->startOfDay()->greaterThan($encounter);
+    }
+
+    /**
+     * Disposisi (cara keluar) kunjungan untuk Resume Medis, diturunkan dari planning dokter.
+     * BEDAH terjadwal hari LAIN → "Pulang berobat jalan" (operasi di kunjungan hari operasi);
+     * BEDAH same-day → "Bedah". Enum lain dipetakan ke label baca-manusia. Null tanpa planning.
+     */
+    private function planningDisposisiText(?DoctorExamination $doctor, Visit $visit): ?string
+    {
+        $planning = $doctor?->planning;
+        if (! $planning) {
+            return null;
+        }
+        if ($planning === 'BEDAH') {
+            return $this->surgeryScheduledLater($doctor, $visit) ? 'Pulang berobat jalan' : 'Bedah';
+        }
+        return [
+            'PULANG_BEROBAT_JALAN' => 'Pulang berobat jalan',
+            'RAWAT_INAP'           => 'Rawat inap (observasi)',
+            'RUJUK'                => 'Rujuk',
+        ][$planning] ?? ucfirst(strtolower(str_replace('_', ' ', $planning)));
+    }
+
+    /**
+     * Teks "Rencana operasi" untuk Resume bila planning BEDAH:
+     * "Rencana operasi: {paket} — {dd-mm-YYYY HH:MM} — {Ruang Bedah/Tindakan}".
+     * Null bila bukan BEDAH atau tak ada data jadwal/paket.
+     */
+    private function surgeryPlanText(?DoctorExamination $doctor): ?string
+    {
+        if ($doctor?->planning !== 'BEDAH') {
+            return null;
+        }
+        $sched   = $this->resolveExamSchedule($doctor);
+        $pkgName = $doctor->surgery_package_id
+            ? SurgeryPackage::find($doctor->surgery_package_id)?->name
+            : null;
+
+        $bits = [];
+        if ($pkgName) {
+            $bits[] = $pkgName;
+        }
+        if ($sched?->scheduled_date) {
+            $tgl = $sched->scheduled_date->format('d-m-Y');
+            if ($sched->scheduled_time) {
+                $tgl .= ' ' . substr((string) $sched->scheduled_time, 0, 5);
+            }
+            $bits[] = $tgl;
+        }
+        $loc = match ($sched?->location_type) {
+            SurgerySchedule::LOCATION_RUANG_TINDAKAN => 'Ruang Tindakan',
+            SurgerySchedule::LOCATION_RUANG_BEDAH    => 'Ruang Bedah',
+            default                                  => null,
+        };
+        if ($loc) {
+            $bits[] = $loc;
+        }
+
+        return $bits ? 'Rencana operasi: ' . implode(' — ', $bits) : null;
     }
 
     /**
@@ -2221,7 +2328,9 @@ class DokterService
             'diagnosa'             => $diagnosa,
             'tindakan'             => $tindakan,   // prosedur ICD-9 (kode + nama)
             'terapi'               => $terapi,
-            'riwayat_inap_operasi' => '',   // diisi dokter
+            // Rencana operasi (paket + jadwal) auto-isi bila planning BEDAH; dokter dapat
+            // menyunting di modal preview. Selain BEDAH → kosong (diisi dokter).
+            'riwayat_inap_operasi' => $this->surgeryPlanText($doctor) ?? '',
             'instruksi_edukasi'    => '',   // diisi dokter
             // Kontrol
             'kontrol_tanggal'      => $kontrolTanggal,

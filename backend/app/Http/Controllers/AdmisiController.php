@@ -138,6 +138,31 @@ class AdmisiController extends Controller
         return $this->ok($visit, 'Dokter kunjungan diperbarui');
     }
 
+    /**
+     * PUT /admisi/kunjungan/{id}/antrean-jkn
+     * Koreksi/isi No. Antrean JKN (Mobile JKN) dari modal Detail Kunjungan.
+     * Display-only — tidak memengaruhi antrean internal. Kirim string kosong/null
+     * untuk menghapus.
+     */
+    public function updateAntreanJkn(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'bpjs_antrean_number' => 'nullable|string|max:20',
+        ]);
+
+        try {
+            $visit = $this->service->updateAntreanJkn($id, $validated['bpjs_antrean_number'] ?? null);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return $this->error('Kunjungan tidak ditemukan.', 404);
+        } catch (\Throwable $e) {
+            $code = (int) $e->getCode();
+            $http = ($code >= 100 && $code <= 599) ? $code : 500;
+            return $this->error($e->getMessage(), $http);
+        }
+
+        return $this->ok($visit, 'No. Antrean JKN diperbarui');
+    }
+
     // =========================================================================
     // PASIEN
     // =========================================================================
@@ -344,6 +369,9 @@ class AdmisiController extends Controller
             'bpjs_booking_code'  => 'nullable|string|max:50',
             'bpjs_referral_no'   => 'nullable|string|max:50',
             'bpjs_control_no'    => 'nullable|string|max:50',
+            // No. antrean JKN (Mobile JKN) — diinput manual petugas selama belum bridging
+            // Antrol, agar stasiun lain bisa mencocokkan tiket fisik pasien.
+            'bpjs_antrean_number' => 'nullable|string|max:20',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
 
@@ -609,6 +637,9 @@ class AdmisiController extends Controller
             'bpjs_booking_code'  => 'nullable|string|max:50',
             'bpjs_referral_no'   => 'nullable|string|max:50',
             'bpjs_control_no'    => 'nullable|string|max:50',
+            // No. antrean JKN (Mobile JKN) — diinput manual petugas selama belum bridging
+            // Antrol, agar stasiun lain bisa mencocokkan tiket fisik pasien.
+            'bpjs_antrean_number' => 'nullable|string|max:20',
             // Wajib pilih dokter saat admisi
             'doctor_schedule_id' => 'required|uuid|exists:doctor_schedules,id',
 

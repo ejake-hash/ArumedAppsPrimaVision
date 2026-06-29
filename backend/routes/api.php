@@ -231,6 +231,7 @@ Route::prefix('v1')->group(function () {
             Route::put('/kunjungan/{id}/cancel',  [AdmisiController::class, 'cancelKunjungan']);
             Route::put('/kunjungan/{id}/penjamin', [AdmisiController::class, 'updateGuarantor']);
             Route::put('/kunjungan/{id}/dokter',   [AdmisiController::class, 'gantiDokter']);
+            Route::put('/kunjungan/{id}/antrean-jkn', [AdmisiController::class, 'updateAntreanJkn'])->middleware('permission:admisi.write');
             Route::put('/kunjungan/{visitId}/daftarkan-walkin', [AdmisiController::class, 'daftarkanWalkIn']);
 
             Route::get('/pasien',                 [AdmisiController::class, 'cariPasien']);
@@ -262,8 +263,8 @@ Route::prefix('v1')->group(function () {
                 Route::post('/cek-peserta',        [AdmisiController::class, 'bpjsCekPeserta']);
                 Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep']);
                 Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep']);
-                Route::get('/cetak-sep/{visitId}', [AdmisiController::class, 'bpjsCetakSep']);
-                Route::get('/cetak-sep-html/{visitId}', [AdmisiController::class, 'bpjsCetakSepHtml']);
+                // Cetak/lihat SEP (read-only) DIPINDAH ke luar grup admisi.read agar
+                // bisa di-gate OR (admisi|perawat|dokter|bpjs) — lihat blok di bawah.
                 Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
@@ -282,6 +283,16 @@ Route::prefix('v1')->group(function () {
                 Route::post('/validasi-booking',   [AdmisiController::class, 'bpjsValidasiBooking']);
             });
         });
+
+        // Cetak/lihat SEP (read-only): SENGAJA di luar grup admisi.read. SEP dipakai
+        // lintas peran — perawat & dokter (klinis) + verifikator BPJS (Rekap/Klaim,
+        // tab History) sama-sama perlu mencetak SEP. Gate OR; auth:api tetap dari grup
+        // induk. PermissionMiddleware memecah "a|b|c" jadi OR (lolos bila salah satu).
+        Route::middleware('permission:admisi.read|perawat.read|rme_dokter.read|bpjs.read')
+            ->prefix('admisi/bpjs')->group(function () {
+                Route::get('/cetak-sep/{visitId}',      [AdmisiController::class, 'bpjsCetakSep']);
+                Route::get('/cetak-sep-html/{visitId}', [AdmisiController::class, 'bpjsCetakSepHtml']);
+            });
 
         // -----------------------------------------------------------------
         // PERAWAT / TRIASE
@@ -744,6 +755,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/verifikasi',                        [FarmasiController::class, 'indexVerifikasi']);
             Route::put('/resep/{id}/verifikasi',             [FarmasiController::class, 'verifikasiResep']);
             Route::put('/resep/{id}/buka-verifikasi',        [FarmasiController::class, 'bukaVerifikasiResep']);
+            // Verifikasi BHP dokter (per kunjungan) + koreksi qty/hapus saat verifikasi.
+            Route::put('/visit/{visitId}/bhp/verifikasi',      [FarmasiController::class, 'verifikasiBhp']);
+            Route::put('/visit/{visitId}/bhp/buka-verifikasi', [FarmasiController::class, 'bukaVerifikasiBhp']);
+            Route::put('/bhp-usage/{id}',                       [FarmasiController::class, 'updateBhpUsage']);
+            Route::delete('/bhp-usage/{id}',                   [FarmasiController::class, 'deleteBhpUsage']);
 
             Route::get('/resep',                             [FarmasiController::class, 'indexResep']);
             Route::get('/resep/{id}',                        [FarmasiController::class, 'showResep']);

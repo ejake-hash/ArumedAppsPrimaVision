@@ -303,7 +303,8 @@ const filteredQueue = computed(() => {
       (q) =>
         q.patient?.name?.toLowerCase().includes(s) ||
         q.queue_number?.toLowerCase().includes(s) ||
-        q.patient?.no_rm?.toLowerCase().includes(s),
+        q.patient?.no_rm?.toLowerCase().includes(s) ||
+        q.visit?.bpjs_antrean_number?.toLowerCase().includes(s),
     )
   }
 
@@ -875,6 +876,7 @@ onUnmounted(() => {
                     <span :class="['pill', q.visit?.guarantor_type === 'BPJS' ? 'pill-bpjs' : 'pill-umum']">
                       {{ q.visit?.guarantor_type === 'BPJS' ? 'BPJS' : q.visit?.guarantor_type ?? 'Umum' }}
                     </span>
+                    <span v-if="q.visit?.bpjs_antrean_number" class="pill" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${q.visit.bpjs_antrean_number}`">JKN {{ q.visit.bpjs_antrean_number }}</span>
                     <span :class="['pill', clsCls(q.visit?.classification)]" v-if="q.visit?.classification">
                       {{ q.visit.classification }}
                     </span>

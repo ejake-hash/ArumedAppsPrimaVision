@@ -267,6 +267,7 @@ function mapPatient(q) {
            : 'Poli Umum',
     ptype,
     bpjsNo:  p.bpjs_number ?? '',
+    jknNo:   v.bpjs_antrean_number ?? null,
     sepNo:   v.no_sep ?? '—',
     status:  uiStatus(q.status),
     rawStatus: q.status,
@@ -554,7 +555,7 @@ const filtQ = computed(() => {
   else if (ptypeFilter.value === 'UmumAsn')  list = list.filter((p) => p.ptype === 'umum' || p.ptype === 'asn')
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter((p) => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s))
+    list = list.filter((p) => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.jknNo ?? '').toLowerCase().includes(s))
   }
   return list
 })
@@ -1336,9 +1337,10 @@ function decTindakan(t) { if (t.qty > 1) { t.qty--; scheduleSaveTindakan() } }
 
 // ── TAB 3: BHP (bahan habis pakai) yang dipakai dokter ───────────────────────
 // Mis. spuit/kasa untuk injeksi/prosedur kecil. Diambil dari master BHP Farmasi
-// (harga per-penjamin + stok unit Farmasi). Saat ditambah, backend MEMOTONG stok
-// FARMASI seketika & menagihkannya (visit_bhp_usages → buildBhpLines). Tidak di-
-// replace seperti tindakan: add/ubah-qty/hapus per-baris (stok disesuaikan tiap aksi).
+// (harga per-penjamin + stok unit Farmasi). Saat ditambah, backend MENCATAT &
+// MENAGIHKANNYA (visit_bhp_usages → buildBhpLines), tapi stok FARMASI BARU dipotong
+// saat petugas Farmasi MENYERAHKAN (sejajar alur obat). Tidak di-replace seperti
+// tindakan: add/ubah-qty/hapus per-baris (selama belum diserahkan, stok tak berubah).
 const bhpUsageList   = ref([])     // {id, bhp_item_id, name, code, category, quantity, unit_price}
 const bhpTarif       = ref([])     // hasil cari master BHP {id, code, name, category, price, stock}
 const bhpSearch      = ref('')
@@ -1399,7 +1401,7 @@ async function addBhp(t) {
     })
     bhpSearch.value = ''
     bhpTarif.value = []
-    toast('s', `${t.name} ditambahkan — stok Farmasi dipotong`)
+    toast('s', `${t.name} ditambahkan — stok dipotong saat diserahkan Farmasi`)
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal menambah BHP (stok kurang?)')
   } finally {
@@ -1431,7 +1433,7 @@ async function removeBhp(b) {
   try {
     await dokterApi.deleteBhp(b.id)
     bhpUsageList.value = bhpUsageList.value.filter((x) => x.id !== b.id)
-    toast('s', 'BHP dihapus — stok dikembalikan')
+    toast('s', 'BHP dihapus')
   } catch (e) {
     toast('e', e.response?.data?.message ?? 'Gagal menghapus BHP')
   } finally {
@@ -2820,6 +2822,7 @@ function closeResumeRM() {
                 <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : p.ptype === 'asn' ? 'pill-asn' : 'pill-umum']">
                   {{ p.ptype === 'bpjs' ? 'BPJS' : p.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
                 </span>
+                <span v-if="p.jknNo" class="pill" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${p.jknNo}`">JKN {{ p.jknNo }}</span>
                 <span v-if="p.hasNurse" class="pill pill-done">
                   <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                   Triase

@@ -135,12 +135,18 @@ class FarmasiController extends Controller
     // -------------------------------------------------------------------------
     // Verifikasi Farmasi (gate sebelum tagihan Kasir) — alur D→K→F
 
-    /** GET /farmasi/verifikasi — worklist resep yang perlu/siap diverifikasi */
+    /** GET /farmasi/verifikasi — worklist resep + BHP dokter yang perlu/siap diverifikasi */
     public function indexVerifikasi(Request $request): JsonResponse
     {
-        return $this->ok($this->service->getVerificationQueue(
-            $request->only(['tanggal', 'search'])
-        ));
+        $filters = $request->only(['tanggal', 'search']);
+        $prescriptions = $this->service->getVerificationQueue($filters);
+        // BHP-only: pasien dgn BHP belum-verif TANPA resep di worklist (mis. injeksi).
+        $bhpOnly = $this->service->getBhpOnlyVerificationVisits(
+            $prescriptions->pluck('visit_id')->filter()->unique()->values()->all(),
+            $filters
+        );
+
+        return $this->ok(['prescriptions' => $prescriptions, 'bhp_only' => $bhpOnly]);
     }
 
     /** PUT /farmasi/resep/{id}/verifikasi — kunci resep (Kasir baru bisa menagih) */
@@ -165,6 +171,55 @@ class FarmasiController extends Controller
         }
 
         return $this->ok($prescription, 'Kunci verifikasi dibuka');
+    }
+
+    /** PUT /farmasi/visit/{visitId}/bhp/verifikasi — kunci SEMUA BHP dokter pada kunjungan */
+    public function verifikasiBhp(string $visitId): JsonResponse
+    {
+        try {
+            $bhp = $this->service->verifyVisitBhp($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($bhp, 'BHP diverifikasi & dikunci. Kasir dapat membuat tagihan.');
+    }
+
+    /** PUT /farmasi/visit/{visitId}/bhp/buka-verifikasi — buka kunci BHP (koreksi sebelum bayar) */
+    public function bukaVerifikasiBhp(string $visitId): JsonResponse
+    {
+        try {
+            $bhp = $this->service->unverifyVisitBhp($visitId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($bhp, 'Kunci verifikasi BHP dibuka');
+    }
+
+    /** PUT /farmasi/bhp-usage/{id} — Farmasi ubah qty BHP saat verifikasi */
+    public function updateBhpUsage(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(['quantity' => 'required|integer|min:1']);
+        try {
+            $usage = $this->service->updateBhpUsageQty($id, (int) $validated['quantity']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($usage, 'Jumlah BHP diperbarui');
+    }
+
+    /** DELETE /farmasi/bhp-usage/{id} — Farmasi hapus BHP saat verifikasi (wajib alasan) */
+    public function deleteBhpUsage(Request $request, string $id): JsonResponse
+    {
+        try {
+            $this->service->removeBhpUsage($id, $request->input('change_reason'));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok(null, 'BHP dihapus');
     }
 
     // -------------------------------------------------------------------------

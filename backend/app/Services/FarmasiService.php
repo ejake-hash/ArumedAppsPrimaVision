@@ -17,6 +17,7 @@ use App\Models\SurgeryRequestIol;
 use App\Models\SystemLog;
 use App\Models\SurgerySchedule;
 use App\Models\Visit;
+use App\Models\VisitBhpUsage;
 use App\Services\QueueService;
 use App\Services\InventoryStockService;
 use Illuminate\Database\Eloquent\Collection;
@@ -50,6 +51,9 @@ class FarmasiService
                 // tab "Dispensing Rawat Inap", BUKAN antrean loket ini — jangan ikut load
                 // agar pickActiveRx FE tak salah mengangkatnya saat pasien RANAP discharge.
                 ->where('type', '!=', Prescription::TYPE_RANAP),
+            // BHP dipakai dokter yang BELUM diserahkan (consumed_batches NULL) → tampil di
+            // kartu dispensing; stoknya dipotong saat petugas menyerahkan (selesaiAntrian).
+            'visit.bhpUsages' => fn ($q) => $q->whereNull('consumed_batches')->with('bhpItem'),
         ])
             ->where('station', 'FARMASI')
             ->boardVisibleOpenBilling()   // +pasien belum tutup kasir (Masih Aktif)
@@ -121,7 +125,63 @@ class FarmasiService
     public function selesaiAntrian(string $queueId): array
     {
         $queue = Queue::byStation(Queue::STATION_FARMASI)->findOrFail($queueId);
+
+        // Saat pasien meninggalkan FARMASI: potong stok BHP yang dipakai dokter pada
+        // kunjungan ini (ditunda dari saat input dokter → "serah" di sini, sejajar obat).
+        // Dijalankan SEBELUM advance — bila stok BHP kurang, penutupan antrean batal
+        // (422) dan pasien tetap di antrean sampai stok dicukupi.
+        if ($queue->visit_id) {
+            $this->consumePendingVisitBhp($queue->visit_id);
+        }
+
         return $this->queueService->advanceFromStation($queue->id, Queue::STATION_FARMASI);
+    }
+
+    /**
+     * Potong stok unit FARMASI untuk seluruh BHP dokter pada kunjungan yang BELUM
+     * diserahkan (consumed_batches NULL). Idempoten — BHP yang sudah dipotong dilewati,
+     * jadi aman bila selesaiAntrian terpanggil ulang. consume() melempar 422 bila stok
+     * kurang (mirror serah obat) → tandai 422 agar penutupan antrean batal & petugas
+     * diminta transfer stok dari gudang dulu.
+     */
+    private function consumePendingVisitBhp(string $visitId): void
+    {
+        $pending = VisitBhpUsage::with('bhpItem')
+            ->where('visit_id', $visitId)
+            ->whereNull('consumed_batches')
+            ->get();
+        if ($pending->isEmpty()) {
+            return;
+        }
+
+        DB::transaction(function () use ($pending) {
+            foreach ($pending as $usage) {
+                $qty = max(1, (int) $usage->quantity);
+                try {
+                    $consumed = $this->stockService->consume(
+                        InventoryStock::TYPE_BHP, $usage->bhp_item_id, (float) $qty, InventoryStock::LOC_FARMASI
+                    );
+                } catch (\Throwable $e) {
+                    // Perhalus HANYA kasus kurang-stok (422) → tampilkan NAMA BHP, bukan
+                    // sekadar "item BHP". Error lain (mis. kegagalan DB) diteruskan apa adanya.
+                    $code = $e instanceof \Symfony\Component\HttpKernel\Exception\HttpException
+                        ? $e->getStatusCode() : (int) $e->getCode();
+                    if ($code !== 422) {
+                        throw $e;
+                    }
+                    $name = $usage->bhpItem?->name ?? $usage->bhp_item_id;
+                    throw new \Exception(
+                        "Stok BHP \"{$name}\" di unit FARMASI tidak mencukupi untuk diserahkan (butuh {$qty}). Minta transfer dari gudang dulu.",
+                        422
+                    );
+                }
+                // Tandai sudah diserahkan: consumed_batches terisi (sentinel bila tanpa
+                // rincian batch) → tak akan dipotong ulang pada panggilan berikutnya.
+                $usage->update(['consumed_batches' => $consumed ?: [['qty' => $qty]]]);
+            }
+        });
+
+        $this->log(auth('api')->id(), 'SERAH_BHP_FARMASI', Visit::class, $visitId, "Serah BHP dokter — {$pending->count()} item, stok FARMASI dipotong");
     }
 
     // =========================================================================
@@ -430,7 +490,159 @@ class FarmasiService
             $rx->visit?->append('dpjp_name');
         });
 
+        // Lampirkan BHP dokter (belum diserahkan) ke visit tiap kartu → Farmasi verifikasi
+        // BHP berbarengan dgn resep. Batch 1 query (hindari N+1).
+        $this->attachVisitBhpUsages($rows);
+
         return $rows;
+    }
+
+    /** Tempel BHP dokter belum-diserahkan ke visit tiap resep (utk verifikasi BHP di kartu). */
+    private function attachVisitBhpUsages(Collection $rows): void
+    {
+        $visitIds = $rows->pluck('visit_id')->filter()->unique()->values();
+        if ($visitIds->isEmpty()) {
+            return;
+        }
+        $byVisit = VisitBhpUsage::with('bhpItem')
+            ->whereIn('visit_id', $visitIds)
+            ->whereNull('consumed_batches')   // belum diserahkan
+            ->orderBy('created_at')
+            ->get()
+            ->groupBy('visit_id');
+        $rows->each(function ($rx) use ($byVisit) {
+            if ($rx->visit) {
+                $rx->visit->setRelation('bhpUsages', $byVisit->get($rx->visit_id, collect())->values());
+            }
+        });
+    }
+
+    /**
+     * Visit dengan BHP dokter BELUM-VERIF & belum diserahkan yang TIDAK punya resep di
+     * worklist verifikasi → kartu BHP-only. Tanpa ini, pasien injeksi/prosedur tanpa
+     * resep obat tak bisa diverifikasi & gate tagihan BHP (assertObatVerified) buntu.
+     */
+    public function getBhpOnlyVerificationVisits(array $excludeVisitIds = [], array $filters = []): Collection
+    {
+        $visitIds = VisitBhpUsage::whereNull('consumed_batches')
+            ->whereNull('verified_at')
+            ->when($excludeVisitIds, fn ($q) => $q->whereNotIn('visit_id', $excludeVisitIds))
+            ->distinct()->pluck('visit_id');
+        if ($visitIds->isEmpty()) {
+            return new Collection();
+        }
+
+        $visits = Visit::with([
+                'patient', 'dpjp', 'doctorExamination.doctor', 'doctorSchedule.employee',
+                'surgerySchedule:id,location_type',
+                'bhpUsages' => fn ($q) => $q->whereNull('consumed_batches')->with('bhpItem')->orderBy('created_at'),
+            ])
+            ->whereIn('id', $visitIds)
+            // Hanya tampilkan setelah dokter MENGIRIM pasien (di/melewati KASIR) — cegah BHP
+            // muncul saat dokter masih konsultasi. KASIR = titik gate tagihan, jadi tetap
+            // aman dari buntu (pasien BHP-only yang akan ditagih pasti melewati KASIR).
+            ->whereIn('current_station', ['FARMASI', 'KASIR', 'SELESAI', 'MENUNGGU_RANAP', 'RANAP'])
+            ->when(! empty($filters['search']), fn ($q) => $q->whereHas('patient', fn ($p) => $p
+                ->where('name', 'ilike', "%{$filters['search']}%")
+                ->orWhere('no_rm', 'ilike', "%{$filters['search']}%")))
+            ->get();
+        $visits->each(fn ($v) => $v->append('dpjp_name'));
+
+        return $visits;
+    }
+
+    /** Verifikasi & kunci SEMUA BHP dokter belum-verif pada kunjungan (mirror verifyPrescription). Idempoten. */
+    public function verifyVisitBhp(string $visitId): Collection
+    {
+        $user = auth('api')->user();
+        $pending = VisitBhpUsage::where('visit_id', $visitId)
+            ->whereNull('consumed_batches')
+            ->whereNull('verified_at')
+            ->get();
+        if ($pending->isNotEmpty()) {
+            VisitBhpUsage::whereIn('id', $pending->pluck('id'))
+                ->update(['verified_at' => now(), 'verified_by_id' => $user?->employee_id]);
+            $this->log($user?->id, 'VERIFY_BHP', Visit::class, $visitId, "Verifikasi & kunci {$pending->count()} BHP dokter");
+            // Pasca-verif: bila invoice belum-bayar sudah ada, rebuild agar BHP masuk kwitansi.
+            $this->reconsolidateVisitInvoiceIfAny($visitId);
+        }
+        return $this->visitBhpUndispensed($visitId);
+    }
+
+    /** Buka kunci verifikasi BHP (koreksi sebelum bayar). Tolak bila invoice sudah dibuat. */
+    public function unverifyVisitBhp(string $visitId): Collection
+    {
+        $adaInvoice = \App\Models\BillingInvoice::where('visit_id', $visitId)
+            ->whereNotIn('status', ['CANCELLED'])->exists();
+        if ($adaInvoice) {
+            throw new \Exception('Tagihan sudah dibuat di Kasir — batalkan invoice dulu sebelum membuka kunci verifikasi BHP.', 422);
+        }
+        $user = auth('api')->user();
+        VisitBhpUsage::where('visit_id', $visitId)
+            ->whereNull('consumed_batches')
+            ->whereNotNull('verified_at')
+            ->update(['verified_at' => null, 'verified_by_id' => null]);
+        $this->log($user?->id, 'UNVERIFY_BHP', Visit::class, $visitId, 'Buka kunci verifikasi BHP (koreksi sebelum bayar)');
+        return $this->visitBhpUndispensed($visitId);
+    }
+
+    /** Farmasi ubah qty satu BHP saat verifikasi (belum dikunci & belum diserahkan). */
+    public function updateBhpUsageQty(string $id, int $qty): VisitBhpUsage
+    {
+        $usage = VisitBhpUsage::with('bhpItem')->findOrFail($id);
+        $this->assertBhpEditable($usage);
+        $usage->update(['quantity' => max(1, $qty)]);
+        $this->log(auth('api')->id(), 'UPDATE_BHP_FARMASI', Visit::class, $usage->visit_id, "Farmasi ubah qty BHP {$usage->bhp_item_id} → " . max(1, $qty));
+        $this->reconsolidateVisitInvoiceIfAny($usage->visit_id);
+        return $usage->fresh('bhpItem');
+    }
+
+    /** Farmasi hapus satu BHP saat verifikasi (wajib alasan). Stok belum dipotong → soft-delete. */
+    public function removeBhpUsage(string $id, ?string $reason = null): void
+    {
+        $usage = VisitBhpUsage::findOrFail($id);
+        $this->assertBhpEditable($usage);
+        $visitId = $usage->visit_id;
+        $note = $reason ? mb_substr($reason, 0, 200) : null;
+        if ($note) {
+            $usage->update(['notes' => $note]);
+        }
+        $usage->delete();
+        $this->log(auth('api')->id(), 'DELETE_BHP_FARMASI', Visit::class, $visitId, 'Farmasi hapus BHP saat verifikasi' . ($note ? " — {$note}" : ''));
+        $this->reconsolidateVisitInvoiceIfAny($visitId);
+    }
+
+    /** BHP boleh disunting/dihapus Farmasi HANYA saat fase verifikasi: belum dikunci & belum diserahkan. */
+    private function assertBhpEditable(VisitBhpUsage $usage): void
+    {
+        if ($usage->consumed_batches) {
+            throw new \Exception('BHP sudah diserahkan — tak bisa diubah/dihapus.', 422);
+        }
+        if (! is_null($usage->verified_at)) {
+            throw new \Exception('BHP sudah dikunci — buka kunci verifikasi dulu sebelum mengubah/menghapus.', 422);
+        }
+    }
+
+    private function visitBhpUndispensed(string $visitId): Collection
+    {
+        return VisitBhpUsage::with('bhpItem')
+            ->where('visit_id', $visitId)
+            ->whereNull('consumed_batches')
+            ->orderBy('created_at')
+            ->get();
+    }
+
+    private function reconsolidateVisitInvoiceIfAny(string $visitId): void
+    {
+        try {
+            $invoice = \App\Models\BillingInvoice::where('visit_id', $visitId)
+                ->whereIn('status', ['DRAFT', 'FINALIZED'])->first();
+            if ($invoice) {
+                app(KasirService::class)->reconsolidateInvoice($invoice->id);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('reconsolidate invoice pasca aksi BHP gagal: ' . $e->getMessage(), ['visit_id' => $visitId]);
+        }
     }
 
     /** SUBMITTED (belum verified) → set verified_at/by. Idempoten (dobel-klik aman). */

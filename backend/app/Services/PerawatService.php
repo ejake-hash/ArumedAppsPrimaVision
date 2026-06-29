@@ -1235,6 +1235,7 @@ class PerawatService
                 'inpatient_reason' => $visit->inpatient_reason,  // PRE_OP/OBSERVASI — gate tombol "Kirim ke Rawat Inap"
                 'guarantor_type' => $visit->guarantor_type,
                 'no_sep'         => $visit->no_sep,
+                'bpjs_antrean_number' => $visit->bpjs_antrean_number,
                 'insurer_name'   => $visit->insurer?->name,
                 'has_assessment' => (bool) $visit->nurseAssessment,
                 'assessment_finalized' => (bool) $visit->nurseAssessment?->is_finalized,

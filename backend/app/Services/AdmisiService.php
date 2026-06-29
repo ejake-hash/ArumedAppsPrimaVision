@@ -19,6 +19,7 @@ use App\Models\SurgeryScheduleAuditLog;
 use App\Models\SystemLog;
 use App\Models\Visit;
 use App\Models\VisitCob;
+use App\Models\VisitSurgeryPackage;
 use App\Services\FormRegistry\DocumentRenderer;
 use App\Services\FormRegistry\SignatureService;
 use App\Services\QueueService;
@@ -627,6 +628,29 @@ class AdmisiService
         });
     }
 
+    /**
+     * Set/koreksi No. Antrean JKN (Mobile JKN) sebuah kunjungan. Display-only —
+     * tidak memengaruhi antrean internal. String kosong/null → dihapus.
+     */
+    public function updateAntreanJkn(string $visitId, ?string $number): Visit
+    {
+        $visit = Visit::findOrFail($visitId);
+
+        $clean = trim((string) $number);
+        $visit->bpjs_antrean_number = $clean === '' ? null : $clean;
+        $visit->save();
+
+        $this->log(
+            auth('api')->id(),
+            'UPDATE_ANTREAN_JKN',
+            Visit::class,
+            $visit->id,
+            "No. Antrean JKN diset: {$visit->bpjs_antrean_number}"
+        );
+
+        return $visit->fresh();
+    }
+
     // =========================================================================
     // PASIEN
     // =========================================================================
@@ -1069,6 +1093,31 @@ class AdmisiService
         ];
     }
 
+    /**
+     * Pre-op bedah: pindahkan kepemilikan snapshot paket BEDAH dari kunjungan
+     * PERENCANAAN ke kunjungan hari operasi INI.
+     *
+     * Saat dokter merencanakan bedah untuk tanggal lain (planning Tab 3), snapshot paket
+     * dibuat di kunjungan perencanaan dengan jadwal MASA DEPAN. Kunjungan perencanaan itu
+     * ditagih sebagai "pulang berobat jalan" — paket bedah SENGAJA dikecualikan dari
+     * kwitansinya (KasirService::billablePaketSnapshots). Paket baru ditagih di sini, pada
+     * kunjungan hari operasi (scheduled_date kini = hari ini setelah auto-shift/H-asli).
+     *
+     * Snapshot di-key oleh surgery_schedule_id; cukup pindah visit_id header — item snapshot
+     * mengikuti (FK ke header), varian tarif & komponen pilihan dokter terjaga. Idempoten:
+     * bila sudah di kunjungan ini, kondisi visit_id != membuatnya no-op.
+     */
+    private function movePreopPackageSnapshot(Visit $visit, ?string $visitType, ?string $surgeryScheduleId): void
+    {
+        if ($visitType !== 'PREOP_BEDAH' || ! $surgeryScheduleId) {
+            return;
+        }
+        VisitSurgeryPackage::where('surgery_schedule_id', $surgeryScheduleId)
+            ->where('package_type', VisitSurgeryPackage::TYPE_BEDAH)
+            ->where('visit_id', '!=', $visit->id)
+            ->update(['visit_id' => $visit->id]);
+    }
+
     public function registerVisit(array $data): Visit
     {
         $visit = DB::transaction(function () use ($data) {
@@ -1149,11 +1198,15 @@ class AdmisiService
                 'current_station'    => 'TRIASE',       // skip ADMISI, langsung ke TR
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
+                'bpjs_antrean_number' => $data['bpjs_antrean_number'] ?? null,
                 'no_rujukan'         => $data['bpjs_referral_no'] ?? null,
                 'no_surat_kontrol'   => $data['bpjs_control_no'] ?? null,
                 'satusehat_sync_status' => 'PENDING',
                 'insurance_verification_status' => $needsTpaVerification ? 'PENDING' : 'NONE',
             ]);
+
+            // Pre-op bedah: pindahkan snapshot paket BEDAH ke kunjungan hari operasi ini.
+            $this->movePreopPackageSnapshot($visit, $visitType, $surgeryScheduleId);
 
             // Buat insurance_verifications awal (status PENDING) supaya billing langsung
             // bisa lihat row-nya di tab "Verifikasi Pending". Data kartu fisik (policy_number,
@@ -1439,10 +1492,14 @@ class AdmisiService
                 'inpatient_reason'    => $preop['inpatient_reason'],
                 'guarantor_type'     => $data['guarantor_type'],
                 'bpjs_booking_code'  => $data['bpjs_booking_code'] ?? null,
+                'bpjs_antrean_number' => $data['bpjs_antrean_number'] ?? null,
                 'no_rujukan'         => $data['bpjs_referral_no'] ?? null,
                 'no_surat_kontrol'   => $data['bpjs_control_no'] ?? null,
                 'insurance_verification_status' => $needsTpaVerificationWalkin ? 'PENDING' : 'NONE',
             ]);
+
+            // Pre-op bedah (walk-in): pindahkan snapshot paket BEDAH ke kunjungan operasi ini.
+            $this->movePreopPackageSnapshot($visit, $preop['visit_type'], $preop['surgery_schedule_id']);
 
             if ($needsTpaVerificationWalkin && ! empty($data['insurer_id'])) {
                 \App\Models\InsuranceVerification::create([

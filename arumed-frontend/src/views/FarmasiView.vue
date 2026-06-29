@@ -94,7 +94,8 @@ const filtRx = computed(() => {
     l = l.filter((q) =>
       (q.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
       String(q.queue_number ?? '').toLowerCase().includes(s) ||
-      (q.visit?.patient?.no_rm ?? '').toLowerCase().includes(s),
+      (q.visit?.patient?.no_rm ?? '').toLowerCase().includes(s) ||
+      (q.visit?.bpjs_antrean_number ?? '').toLowerCase().includes(s),
     )
   }
   return l
@@ -432,6 +433,12 @@ async function serahkanRx() {
       }
     }
     toast('s', 'Obat diserahkan ke pasien, stok Farmasi diperbarui')
+    // BHP visit ikut terpotong stoknya di selesaiAntrian → bersihkan daftar (tak basi)
+    // & segarkan stok BHP bila ada.
+    if (pendingBhp.value.length) {
+      if (selQ.value?.visit) selQ.value.visit.bhp_usages = []
+      fetchStokBhp()
+    }
     // Refresh stok unit Farmasi supaya tampilan stok ikut turun.
     fetchStok()
   } catch (err) {
@@ -491,6 +498,38 @@ function refreshQueueForRx(rx) {
   if (idx !== -1) prescriptions[idx] = { ...prescriptions[idx], status: rx.status }
 }
 
+// ─── BHP dipakai dokter (tampil di kartu dispensing) ─────────────────────────
+// Eager-loaded di antrean sbg `q.visit.bhpUsages` — HANYA yang belum diserahkan
+// (consumed_batches NULL). Stok BHP DITUNDA & dipotong backend saat antrean ditutup
+// (selesaiAntrian): untuk pasien dengan resep ikut serahkanRx; untuk pasien BHP-only
+// (tanpa resep) lewat tombol "Serahkan BHP" di bawah.
+// Relasi bhpUsages → diserialisasi snake_case oleh Laravel jadi `bhp_usages`.
+const pendingBhp = computed(() => selQ.value?.visit?.bhp_usages ?? [])
+const pendingBhpTotal = computed(() =>
+  pendingBhp.value.reduce((s, b) => s + (Number(b.unit_price) || 0) * (Number(b.quantity) || 0), 0)
+)
+
+const bhpOnlyLoading = ref(false)
+async function serahBhpOnly() {
+  if (!selQ.value?.id || bhpOnlyLoading.value) return
+  bhpOnlyLoading.value = true
+  try {
+    // selesaiAntrian: backend memotong stok BHP kunjungan ini lalu menutup antrean.
+    // Bila stok BHP kurang → 422 (antrean tak ditutup), tampilkan pesannya.
+    const { data: qData } = await farmasiApi.selesaiAntrian(selQ.value.id)
+    const updated = qData.data?.queue ?? qData.data
+    if (updated?.id) Object.assign(selQ.value, updated)
+    toast('s', 'BHP diserahkan, stok Farmasi diperbarui')
+    fetchStokBhp()
+    fetchQueue()
+    selQ.value = null
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menyerahkan BHP')
+  } finally {
+    bhpOnlyLoading.value = false
+  }
+}
+
 // ─── VERIFIKASI FARMASI (gate sebelum tagihan Kasir) — alur D→K→F ────────────
 // Resep dokter (SUBMITTED) muncul di sini. Farmasi substitusi/ubah qty/hapus/tambah
 // (wajib alasan) lalu "Verifikasi & Kunci" → Kasir baru bisa membuat tagihan.
@@ -544,21 +583,41 @@ function verClearDates() { verFrom.value = ''; verTo.value = '' }
 const verSelTotal = computed(() =>
   (verSel.value?.items ?? []).reduce((sum, it) => sum + Number(it.est_total_price ?? 0), 0))
 
+// Pasien BHP-only (BHP dokter belum-verif TANPA resep di worklist) — daftar terpisah
+// dari backend (data.bhp_only). Difilter pencarian sama spt resep (klien-saja).
+const bhpOnlyVisits = ref([])
+const filtBhpOnly = computed(() => {
+  const s = verSearch.value.toLowerCase().trim()
+  if (!s) return bhpOnlyVisits.value
+  return bhpOnlyVisits.value.filter((v) =>
+    (v.patient?.name ?? '').toLowerCase().includes(s) ||
+    (v.patient?.no_rm ?? '').toLowerCase().includes(s))
+})
+
 // Kelompokkan antrean per PASIEN/visit: 1 visit bisa punya >1 resep (poli + pasca
 // bedah/tindakan) yang realitanya diambil SEKALI. Kartu = 1 pasien; tiap resep
 // jadi chip terpisah (pill POLI/Pasca tetap terlihat). Resep tetap record terpisah
-// di backend — verifikasi tetap per-resep, hanya tampilan yang digabung.
+// di backend — verifikasi tetap per-resep, hanya tampilan yang digabung. BHP dokter
+// (visit.bhp_usages) ikut per-kartu; pasien BHP-only jadi kartu tanpa chip resep.
 const verAllGroups = computed(() => {
   const m = new Map()
   for (const rx of filtVerQueue.value) {
     const vid = rx.visit?.id ?? rx.id
-    if (!m.has(vid)) m.set(vid, { vid, visit: rx.visit, items: [] })
+    if (!m.has(vid)) m.set(vid, { vid, visit: rx.visit, items: [], bhp: rx.visit?.bhp_usages ?? [] })
     m.get(vid).items.push(rx)
   }
-  return [...m.values()].map((g) => ({
-    ...g,
-    pendingCount: g.items.filter((rx) => !rx.verified_at).length,
-  }))
+  for (const v of filtBhpOnly.value) {
+    if (!m.has(v.id)) m.set(v.id, { vid: v.id, visit: v, items: [], bhp: v.bhp_usages ?? [] })
+  }
+  return [...m.values()].map((g) => {
+    const bhpPending = g.bhp.filter((b) => !b.verified_at).length
+    return {
+      ...g,
+      isBhpOnly: g.items.length === 0,
+      bhpPending,
+      pendingCount: g.items.filter((rx) => !rx.verified_at).length + bhpPending,
+    }
+  })
 })
 // Jumlah grup per status (untuk badge filter) — basis = setelah cari/tanggal.
 const verBelumGroupCount   = computed(() => verAllGroups.value.filter((g) => g.pendingCount > 0).length)
@@ -572,7 +631,9 @@ async function fetchVerQueue({ fromPoll = false } = {}) {
   verLoading.value = true; verError.value = ''
   try {
     const { data } = await farmasiApi.verifikasiQueue()
-    verQueue.value = data.data ?? []
+    // Respons kini gabungan: { prescriptions, bhp_only }.
+    verQueue.value = data.data?.prescriptions ?? []
+    bhpOnlyVisits.value = data.data?.bhp_only ?? []
     // Polling (8 dtk) JANGAN ganggu panel yang sedang dikerjakan: reassign verSel
     // mengembalikan input qty/kemasan (:value uncontrolled) yang belum di-blur ke
     // nilai server, dan menutup paksa picker substitusi (verSubItem). Saat ada
@@ -790,6 +851,56 @@ async function verUnlock(rx) {
     toast('s', 'Kunci verifikasi dibuka — silakan koreksi')
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal membuka kunci verifikasi')
+  } finally { verBusy.value = false }
+}
+
+// ─── Verifikasi BHP dokter (per KUNJUNGAN, terpisah dari kunci resep) ─────────
+async function verLockBhp(group) {
+  if (verBusy.value || !group?.vid) return
+  verBusy.value = true
+  try {
+    await farmasiApi.verifikasiBhp(group.vid)
+    await fetchVerQueue()
+    toast('s', 'BHP diverifikasi & dikunci. Kasir dapat membuat tagihan.')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memverifikasi BHP')
+  } finally { verBusy.value = false }
+}
+async function verUnlockBhp(group) {
+  if (verBusy.value || !group?.vid) return
+  verBusy.value = true
+  try {
+    await farmasiApi.bukaVerifikasiBhp(group.vid)
+    await fetchVerQueue()
+    toast('s', 'Kunci verifikasi BHP dibuka — silakan koreksi')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal membuka kunci BHP')
+  } finally { verBusy.value = false }
+}
+async function verUpdateBhp(b, qty) {
+  const n = Math.max(1, Number(qty) || 1)
+  if (verBusy.value || n === Number(b.quantity)) return
+  verBusy.value = true
+  try {
+    await farmasiApi.updateBhpUsage(b.id, n)
+    await fetchVerQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengubah jumlah BHP')
+    await fetchVerQueue()   // pulihkan nilai input ke server
+  } finally { verBusy.value = false }
+}
+async function verRemoveBhp(b) {
+  if (verBusy.value) return
+  const reason = window.prompt(`Alasan menghapus BHP "${b.bhp_item?.name ?? 'BHP'}" (wajib):`, '')
+  if (reason === null) return                 // batal
+  if (!reason.trim()) { toast('w', 'Alasan wajib diisi'); return }
+  verBusy.value = true
+  try {
+    await farmasiApi.deleteBhpUsage(b.id, reason.trim())
+    await fetchVerQueue()
+    toast('s', 'BHP dihapus')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menghapus BHP')
   } finally { verBusy.value = false }
 }
 
@@ -1970,6 +2081,7 @@ function toast(type, msg) {
                 </div>
                 <div class="rx-tags">
                   <span :class="['rxt', guarantorType(q) === 'bpjs' ? 'rxt-b' : 'rxt-u']">{{ guarantorType(q) === 'bpjs' ? 'BPJS' : 'Umum' }}</span>
+                  <span v-if="q.visit?.bpjs_antrean_number" class="rxt" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${q.visit.bpjs_antrean_number}`">JKN {{ q.visit.bpjs_antrean_number }}</span>
                   <span v-if="q.visit?.visit_type === 'RAWAT_INAP'" class="rxt rxt-ranap">Rawat Inap (Pulang)</span>
                   <span :class="['rxt', `rxt-${rxStatusOf(q)}`]">{{ rxStatusOf(q) }}</span>
                 </div>
@@ -2004,6 +2116,28 @@ function toast(type, msg) {
             <p>Memuat resep…</p>
           </div>
           <div v-else-if="!selRx" class="disp-empty">
+            <!-- BHP-only: pasien tanpa resep obat tapi ada BHP dokter → serahkan di sini
+                 (backend memotong stok BHP lalu menutup antrean). -->
+            <div v-if="pendingBhp.length" class="bhp-only-card">
+              <div class="bhp-only-head">
+                <div class="disp-title">{{ selQ.visit?.patient?.name ?? '—' }} — {{ selQ.queue_number }}</div>
+                <div class="disp-sub">{{ selQ.visit?.patient?.no_rm ?? '—' }} · BHP dipakai dokter</div>
+              </div>
+              <div class="sec-title">BHP Dipakai Dokter</div>
+              <div v-for="b in pendingBhp" :key="b.id" class="bhp-disp-row">
+                <div class="bhp-disp-info">
+                  <div class="bhp-disp-name">{{ b.bhp_item?.name ?? 'BHP' }}</div>
+                  <div class="bhp-disp-meta">{{ b.bhp_item?.code ?? '' }}<span v-if="b.bhp_item?.category"> · {{ b.bhp_item.category }}</span></div>
+                </div>
+                <div class="bhp-disp-qty">×{{ b.quantity }}</div>
+              </div>
+              <button class="btn btn-success btn-lg bhp-only-serah" :disabled="bhpOnlyLoading" @click="serahBhpOnly">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                {{ bhpOnlyLoading ? 'Memproses…' : 'Serahkan BHP & Selesai' }}
+              </button>
+              <div class="bhp-disp-note">Stok BHP dipotong saat diserahkan.</div>
+              <div class="bhp-only-sep"><span>atau buat penjualan obat bebas</span></div>
+            </div>
             <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
             <p>Pasien ini belum punya resep dokter.<br/>Bisa buat <b>penjualan obat tambahan</b> (obat bebas) langsung di apotek.</p>
             <button class="btn btn-primary btn-sm" @click="toggleAddObat">
@@ -2139,6 +2273,20 @@ function toast(type, msg) {
               </div>
             </template>
             <div v-if="!selAllItems.length" class="empty-rx">Resep tidak memiliki item obat (obat dibatalkan / tidak diresepkan). Klik <b>“Selesaikan tanpa obat”</b> di bawah untuk menutup antrean pasien.</div>
+
+            <!-- BHP dipakai dokter pada kunjungan ini. Read-only di sini (dikelola dokter);
+                 stok BHP dipotong saat tombol Serahkan ditekan (ikut selesaiAntrian). -->
+            <div v-if="pendingBhp.length" class="bhp-disp-sec">
+              <div class="sec-title">BHP Dipakai Dokter</div>
+              <div v-for="b in pendingBhp" :key="b.id" class="bhp-disp-row">
+                <div class="bhp-disp-info">
+                  <div class="bhp-disp-name">{{ b.bhp_item?.name ?? 'BHP' }}</div>
+                  <div class="bhp-disp-meta">{{ b.bhp_item?.code ?? '' }}<span v-if="b.bhp_item?.category"> · {{ b.bhp_item.category }}</span></div>
+                </div>
+                <div class="bhp-disp-qty">×{{ b.quantity }}</div>
+              </div>
+              <div class="bhp-disp-note">Stok BHP dipotong saat <b>Serahkan</b> (bukan saat dokter input).</div>
+            </div>
 
             <!-- Tambah obat di luar resep: hanya untuk resep BELUM dikunci (mis. OTC
                  tanpa resep dokter). Resep terverifikasi sudah ditagih → perubahan
@@ -2286,7 +2434,8 @@ function toast(type, msg) {
                   <span :class="['ver-badge', g.pendingCount === 0 ? 'ok' : 'wait']">{{ g.pendingCount === 0 ? '🔒 Terkunci' : (g.items.length > 1 ? `${g.pendingCount}/${g.items.length} perlu verifikasi` : 'Perlu verifikasi') }}</span>
                 </div>
                 <div class="rx-meta">RM {{ g.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(g.visit?.patient?.date_of_birth) }} · {{ (g.visit?.guarantor_type ?? 'UMUM').toUpperCase() }}</div>
-                <div class="rx-meta">{{ verTgl(g.items[0]).label }}: {{ verTgl(g.items[0]).value }}</div>
+                <div class="rx-meta" v-if="g.items.length">{{ verTgl(g.items[0]).label }}: {{ verTgl(g.items[0]).value }}</div>
+                <div class="rx-meta" v-else>Tgl kunjungan: {{ fmtDateId(g.visit?.visit_date) }} · <b>BHP saja</b> (tanpa resep obat)</div>
                 <div v-if="g.visit?.dpjp_name" class="rx-meta">DPJP: {{ g.visit.dpjp_name }}</div>
                 <!-- Chip per resep: klik untuk pilih & lihat detail; pill sumber tetap tampil. -->
                 <div class="ver-rx-chips">
@@ -2300,6 +2449,30 @@ function toast(type, msg) {
                 </div>
                 <div v-if="g.pendingCount > 0 && g.items.length > 1" class="ver-group-actions">
                   <button class="btn btn-primary btn-sm" :disabled="verBusy" @click="verLockAll(g)">Verifikasi semua ({{ g.pendingCount }})</button>
+                </div>
+
+                <!-- BHP dipakai dokter (verifikasi per KUNJUNGAN; bisa koreksi qty/hapus
+                     selama belum dikunci). Stok BHP dipotong nanti saat serah. -->
+                <div v-if="g.bhp.length" class="ver-bhp">
+                  <div class="ver-bhp-head">
+                    <span>BHP dipakai dokter</span>
+                    <span :class="['ver-badge', g.bhpPending ? 'wait' : 'ok']">{{ g.bhpPending ? `${g.bhpPending} perlu verifikasi` : '🔒 Terkunci' }}</span>
+                  </div>
+                  <div v-for="b in g.bhp" :key="b.id" class="ver-bhp-row">
+                    <span class="ver-bhp-name">{{ b.bhp_item?.name ?? 'BHP' }}</span>
+                    <template v-if="!b.verified_at">
+                      <input :value="b.quantity" type="number" min="1" class="ver-bhp-qty" :disabled="verBusy"
+                             title="Ubah jumlah BHP" @change="verUpdateBhp(b, $event.target.value)" />
+                      <button class="ver-lnk danger" :disabled="verBusy" @click="verRemoveBhp(b)">Hapus</button>
+                    </template>
+                    <span v-else class="ver-bhp-locked">×{{ b.quantity }} 🔒</span>
+                  </div>
+                  <div class="ver-bhp-actions">
+                    <button v-if="g.bhpPending" class="btn btn-success btn-sm" :disabled="verBusy" @click="verLockBhp(g)">
+                      Verifikasi &amp; Kunci BHP ({{ g.bhpPending }})
+                    </button>
+                    <button v-else class="btn btn-secondary btn-sm" :disabled="verBusy" @click="verUnlockBhp(g)">Buka Kunci BHP</button>
+                  </div>
                 </div>
                 </div>
                 </div>
@@ -3626,4 +3799,27 @@ function toast(type, msg) {
 .stok-notif-title code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--td); }
 .stok-notif-time { font-size: 11px; color: var(--tu); }
 .stok-notif-msg { font-size: 12px; color: var(--td); margin-top: 3px; line-height: 1.4; }
+
+/* ── BHP dipakai dokter (kartu dispensing) ── */
+.bhp-disp-sec { margin-top: 1rem; padding-top: .85rem; border-top: 1px dashed var(--gb); }
+.bhp-disp-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--gb); border-radius: 10px; background: var(--bs); margin-bottom: 6px; }
+.bhp-disp-info { flex: 1; min-width: 0; }
+.bhp-disp-name { font-size: 13px; font-weight: 600; color: var(--td); }
+.bhp-disp-meta { font-size: 11.5px; color: var(--tu); margin-top: 1px; }
+.bhp-disp-qty { flex-shrink: 0; font-size: 13px; font-weight: 700; color: var(--td); }
+.bhp-disp-note { font-size: 11.5px; color: var(--tm); margin-top: 4px; }
+.bhp-only-card { width: 100%; max-width: 440px; text-align: left; margin-bottom: 1.1rem; }
+.bhp-only-head { margin-bottom: .6rem; }
+.bhp-only-serah { width: 100%; margin-top: .8rem; justify-content: center; }
+.bhp-only-sep { display: flex; align-items: center; gap: 10px; margin: 1.1rem 0 .2rem; color: var(--tu); font-size: 11.5px; }
+.bhp-only-sep::before, .bhp-only-sep::after { content: ''; flex: 1; height: 1px; background: var(--gb); }
+
+/* ── BHP di tab Verifikasi (inline kartu worklist) ── */
+.ver-bhp { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--gb); }
+.ver-bhp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; font-weight: 700; color: var(--td); margin-bottom: 5px; }
+.ver-bhp-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.ver-bhp-name { flex: 1; min-width: 0; font-size: 12px; color: var(--td); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ver-bhp-qty { width: 56px; padding: 2px 6px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12px; text-align: center; }
+.ver-bhp-locked { font-size: 12px; font-weight: 700; color: var(--tm); white-space: nowrap; }
+.ver-bhp-actions { margin-top: 6px; }
 </style>

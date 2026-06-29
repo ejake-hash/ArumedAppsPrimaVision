@@ -7,6 +7,7 @@ use App\Events\AntreanTvUpdated;
 use App\Events\TriaseQueueUpdated;
 use App\Models\DiagnosticOrder;
 use App\Models\Prescription;
+use App\Models\VisitBhpUsage;
 use App\Models\Queue;
 use App\Models\SurgerySchedule;
 use App\Models\SystemLog;
@@ -943,7 +944,8 @@ class QueueService
     }
 
     /**
-     * KASIR selesai → FARMASI jika ada resep, else SELESAI.
+     * KASIR selesai → FARMASI jika ada resep ATAU BHP dokter yang belum diserahkan,
+     * else SELESAI.
      */
     private function nextAfterKasir(Visit $visit): string
     {
@@ -951,7 +953,15 @@ class QueueService
             ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING'])
             ->exists();
 
-        return $hasPrescription ? Queue::STATION_FARMASI : self::END_OF_FLOW;
+        // BHP yang dipakai dokter & BELUM diserahkan FARMASI (consumed_batches NULL) juga
+        // mengharuskan pasien mampir FARMASI agar stoknya dipotong saat serah — walau
+        // tanpa resep obat. Tanpa ini, pasien BHP-only langsung SELESAI & stok tak pernah
+        // terpotong (stok dipotong ditunda sampai serah FARMASI).
+        $hasPendingBhp = VisitBhpUsage::where('visit_id', $visit->id)
+            ->whereNull('consumed_batches')
+            ->exists();
+
+        return ($hasPrescription || $hasPendingBhp) ? Queue::STATION_FARMASI : self::END_OF_FLOW;
     }
 
     // =========================================================================

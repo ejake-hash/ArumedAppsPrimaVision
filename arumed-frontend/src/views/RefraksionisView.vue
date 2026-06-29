@@ -95,6 +95,7 @@ function mapQueueRow(q) {
     classification: visit.classification ?? null,
     poli:         visit.guarantor_type === 'BPJS' ? 'Poli BPJS' : 'Poli Umum',
     ptype:        ptypeOf(visit),
+    jknNo:        visit.bpjs_antrean_number ?? null,
     status:       uiStatus(q.status),
     hasNurse:     !!(nurse?.is_finalized || visit.assessment_finalized),
     allergies:    nurse?.allergy_detail ? nurse.allergy_detail.split(',').map((s) => s.trim()).filter(Boolean) : [],
@@ -138,7 +139,8 @@ const filtQ = computed(() => {
     list = list.filter((p) =>
       p.name.toLowerCase().includes(s) ||
       p.qNum?.toLowerCase().includes(s) ||
-      p.rm?.toLowerCase().includes(s)
+      p.rm?.toLowerCase().includes(s) ||
+      p.jknNo?.toLowerCase().includes(s)
     )
   }
   return list
@@ -999,6 +1001,7 @@ function toast(type, msg) {
                     <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : p.ptype === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ p.ptype === 'bpjs' ? 'BPJS' : p.ptype === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
+                    <span v-if="p.jknNo" class="pill" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${p.jknNo}`">JKN {{ p.jknNo }}</span>
                     <span v-if="p.hasNurse" class="pill pill-done" :title="`Sudah selesai diperiksa di ${p.siblingLabel}`">
                       <svg viewBox="0 0 24 24" class="pill-icon"><polyline points="20 6 9 17 4 12"/></svg>
                       Selesai {{ p.siblingLabel }}

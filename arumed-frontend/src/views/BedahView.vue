@@ -64,6 +64,7 @@ function transformQueueItem(q) {
     age:            q.patient?.age ?? '—',
     gender:         q.patient?.gender === 'L' ? 'Laki-laki' : (q.patient?.gender === 'P' ? 'Perempuan' : '—'),
     ptype:          q.visit?.guarantor_type === 'BPJS' ? 'bpjs' : 'umum',
+    jknNo:          q.visit?.bpjs_antrean_number ?? null,
     ruang:          sched?.operation_room ?? '—',
     _schedRoom:     sched?.operation_room ?? '—',    // baseline ruang dr jadwal (deteksi "disentuh" saat poll)
     scheduledTime:  sched?.scheduled_time ?? null,   // null = jam belum ditentukan dokter (opsional)
@@ -669,7 +670,7 @@ const filtQ = computed(() => {
   }
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s))
+    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s) || (p.jknNo ?? '').toLowerCase().includes(s))
   }
   return list
 })
@@ -713,7 +714,7 @@ const filtHistory = computed(() => {
   else if (qSecondaryFilter.value === 'umum') list = list.filter(p => p.ptype !== 'bpjs')
   if (qSearch.value) {
     const s = qSearch.value.toLowerCase()
-    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s))
+    list = list.filter(p => (p.name ?? '').toLowerCase().includes(s) || (p.qNum ?? '').toLowerCase().includes(s) || (p.rm ?? '').toLowerCase().includes(s) || (p.jknNo ?? '').toLowerCase().includes(s))
   }
   return list
 })
@@ -2079,6 +2080,7 @@ async function doBatalBedah() {
                     <span :class="['pill', p.ptype === 'bpjs' ? 'pill-bpjs' : 'pill-umum']">
                       {{ p.ptype.toUpperCase() }}
                     </span>
+                    <span v-if="p.jknNo" class="pill" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${p.jknNo}`">JKN {{ p.jknNo }}</span>
                     <span v-if="p.classification" :class="['pill', clsCls(p.classification)]">{{ p.classification }}</span>
                     <span class="pill pill-ruang">{{ p.ruang }}</span>
                     <span v-if="p.scheduledTime" class="pill pill-time">{{ fmtJamJadwal(p.scheduledTime) }}</span>

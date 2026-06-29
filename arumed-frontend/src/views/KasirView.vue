@@ -106,7 +106,8 @@ const filtQ = computed(() => {
     l = l.filter((q) =>
       (q.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
       (q.queue_number ?? '').toLowerCase().includes(s) ||
-      (q.visit?.patient?.no_rm ?? '').toLowerCase().includes(s),
+      (q.visit?.patient?.no_rm ?? '').toLowerCase().includes(s) ||
+      (q.visit?.bpjs_antrean_number ?? '').toLowerCase().includes(s),
     )
   }
   return l
@@ -880,6 +881,21 @@ const isBpjsSelected = computed(() =>
   (selQ.value?.visit?.guarantor_type ?? '').toUpperCase() === 'BPJS',
 )
 
+// Kunjungan COB (penjamin-2 aktif). Untuk BPJS+COB, BPJS hanya menanggung INA-CBG;
+// sisanya ditanggung penjamin-2 / pasien → backend MENOLAK "Konfirmasi BPJS"
+// (confirmBpjsCoverage 422). Penutupan lewat konfirmasi coverage (full cover) atau
+// pembayaran sisa biasa. Sumber sama dgn cobBadge: visit.visit_cob.
+const isCob = computed(() => {
+  const cob = selQ.value?.visit?.visit_cob
+  return !!(cob && cob.is_active !== false && cob.penjamin2_insurer_id)
+})
+
+// Panel "Konfirmasi (Ditanggung BPJS)" — pasien tak bayar di kasir — HANYA untuk BPJS
+// MURNI (non-COB) yang belum lunas. BPJS+COB jatuh ke alur cover/pembayaran biasa.
+const bpjsConfirmMode = computed(() =>
+  isBpjsSelected.value && !isCob.value && !!selInv.value && selInv.value.status !== 'PAID',
+)
+
 async function cetakRincian() {
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   printing.value = true
@@ -959,6 +975,11 @@ const hSearch       = ref('')
 const hFilterPtype  = ref('')
 const hFilterMetode = ref('')
 const hCareType     = ref('')   // '' = semua | 'RAJAL' | 'RANAP' | 'IGD'
+// Paginasi riwayat — backend getInvoiceList sudah paginate; dulu FE cuma ambil 1 halaman
+// (per_page 50) → transaksi ke-51+ tak pernah tampil. Kini navigasi halaman tampilkan semua.
+const HIST_PER_PAGE = 50
+const hPage = ref(1)
+const hMeta = ref({ current_page: 1, last_page: 1, total: 0, from: 0, to: 0 })
 
 const CARE_TABS = [
   { key: '',      label: 'Semua' },
@@ -975,23 +996,54 @@ function setHCareType(t) {
 function careTypeOf(h)      { return (h.visit?.jenis_pelayanan ?? 'RAJAL').toUpperCase() }
 function careTypeLabelOf(h) { return ({ RANAP: 'Rawat Inap', IGD: 'IGD', RAJAL: 'Rawat Jalan' })[careTypeOf(h)] ?? 'Rawat Jalan' }
 
-async function fetchHistory() {
+async function fetchHistory(page = 1) {
+  hPage.value = Math.max(1, Number(page) || 1)
   historyLoading.value = true
   try {
     const { data } = await kasirApi.invoiceList({
       status: 'PAID',
-      per_page: 50,
+      per_page: HIST_PER_PAGE,
+      page: hPage.value,
       tanggal: hDate.value || todayStr(),
       jenis_pelayanan: hCareType.value || undefined,
+      // Cari ke BACKEND (lintas halaman) agar pencarian menemukan transaksi di halaman
+      // mana pun, bukan cuma yang sedang tampil. ptype/metode tetap saring di halaman aktif.
+      search: hSearch.value?.trim() || undefined,
     })
-    const payload  = data.data
-    history.value  = Array.isArray(payload) ? payload : (payload?.data ?? [])
+    const payload = data.data
+    if (Array.isArray(payload)) {
+      history.value = payload
+      hMeta.value = { current_page: 1, last_page: 1, total: payload.length, from: payload.length ? 1 : 0, to: payload.length }
+    } else {
+      history.value = payload?.data ?? []
+      hMeta.value = {
+        current_page: payload?.current_page ?? 1,
+        last_page:    payload?.last_page ?? 1,
+        total:        payload?.total ?? history.value.length,
+        from:         payload?.from ?? 0,
+        to:           payload?.to ?? 0,
+      }
+    }
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal memuat history')
   } finally {
     historyLoading.value = false
   }
 }
+
+// Navigasi halaman riwayat (clamp 1..last_page).
+function goHistoryPage(n) {
+  const target = Math.min(Math.max(1, n), hMeta.value.last_page || 1)
+  if (target === hPage.value || historyLoading.value) return
+  fetchHistory(target)
+}
+
+// Pencarian riwayat → backend (debounce), selalu balik ke halaman 1.
+let _histSearchTimer = null
+watch(hSearch, () => {
+  clearTimeout(_histSearchTimer)
+  _histSearchTimer = setTimeout(() => fetchHistory(1), 350)
+})
 
 // Cetak kwitansi/rincian dari baris history (reuse Teleport print template + printData).
 // Setiap baris (termasuk BPJS) bisa dicetak: pasien BPJS menghasilkan RINCIAN biaya
@@ -1046,6 +1098,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (_poll) clearInterval(_poll)
+  clearTimeout(_histSearchTimer)
   document.removeEventListener('mousedown', onClickOutsideTindakan)
 })
 
@@ -1300,6 +1353,7 @@ const rincianSections = computed(() => {
                     <span :class="['pill', ptypeOf(q) === 'bpjs' ? 'pill-bpjs' : ptypeOf(q) === 'asn' ? 'pill-asn' : 'pill-umum']">
                       {{ ptypeOf(q) === 'bpjs' ? 'BPJS' : ptypeOf(q) === 'asn' ? 'Asuransi' : 'Umum' }}
                     </span>
+                    <span v-if="q.visit?.bpjs_antrean_number" class="pill" style="background:#e0f2fe;color:#075985" :title="`No. Antrean JKN (Mobile JKN): ${q.visit.bpjs_antrean_number}`">JKN {{ q.visit.bpjs_antrean_number }}</span>
                     <span v-if="cobBadge(q)" class="pill pill-cob" :title="`COB — penjamin kedua: ${cobBadge(q)}`">COB: {{ cobBadge(q) }}</span>
                     <span :class="['pill', `pill-care care-${svcCode(q.visit?.jenis_pelayanan).toLowerCase()}`]">{{ svcShort(q.visit?.jenis_pelayanan) }}</span>
                     <span v-if="paketBedahLabel(q)" class="pill pill-bedah" :title="`Paket bedah: ${paketBedahLabel(q)}`">{{ paketBedahLabel(q) }}</span>
@@ -1863,19 +1917,19 @@ const rincianSections = computed(() => {
                   <div class="card-head">
                     <div class="card-head-title">
                       <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-                      {{ (isBpjsSelected && selInv.status !== 'PAID') ? 'Tanggungan BPJS'
+                      {{ bpjsConfirmMode ? 'Tanggungan BPJS'
                          : (isFullCover && selInv.status !== 'PAID') ? 'Tanggungan Asuransi'
                          : (isZeroDue) ? 'Tagihan Rp 0'
                          : 'Metode Pembayaran' }}
                     </div>
-                    <button v-if="!(isBpjsSelected && selInv.status !== 'PAID') && !(isFullCover && selInv.status !== 'PAID') && !isZeroDue" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
+                    <button v-if="!bpjsConfirmMode && !(isFullCover && selInv.status !== 'PAID') && !isZeroDue" :class="['btn btn-sm', showMixed ? 'btn-primary' : 'btn-secondary']" @click="toggleMixed">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg>
                       Campuran
                     </button>
                   </div>
                   <div class="card-body">
-                    <!-- BPJS: pasien tidak membayar di kasir (ditagih via klaim INA-CBG) — kasir cukup konfirmasi -->
-                    <template v-if="isBpjsSelected && selInv.status !== 'PAID'">
+                    <!-- BPJS MURNI (non-COB): pasien tidak membayar di kasir (ditagih via klaim INA-CBG) — kasir cukup konfirmasi -->
+                    <template v-if="bpjsConfirmMode">
                       <div class="cover-confirm-box cover-bpjs">
                         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
                         <div class="cover-confirm-title">Ditanggung BPJS Kesehatan</div>
@@ -1965,7 +2019,7 @@ const rincianSections = computed(() => {
                       </div>
                     </template>
 
-                    <button v-if="!(isFullCover && selInv.status !== 'PAID') && !(isBpjsSelected && selInv.status !== 'PAID') && !isZeroDue" class="btn btn-success btn-full btn-lg"
+                    <button v-if="!(isFullCover && selInv.status !== 'PAID') && !bpjsConfirmMode && !isZeroDue" class="btn btn-success btn-full btn-lg"
                       :disabled="paying || !selPM || (selPM === 1 && uangDibayar < bayar()) || (selPM === 99 && mixedTotal < bayar()) || selInv.status === 'PAID' || selInv.status === 'CANCELLED'"
                       @click="prosesBayar">
                       <div v-if="paying" class="sp"></div>
@@ -2057,7 +2111,7 @@ const rincianSections = computed(() => {
                 >{{ t.label }}</button>
               </div>
               <div class="filter-row">
-                <input v-model="hDate" type="date" class="fi" title="Tanggal transaksi" @change="fetchHistory" />
+                <input v-model="hDate" type="date" class="fi" title="Tanggal transaksi" @change="fetchHistory(1)" />
                 <input v-model="hSearch" class="fi" placeholder="Cari pasien/no invoice..." />
                 <select v-model="hFilterPtype" class="fi">
                   <option value="">Semua jenis</option>
@@ -2112,6 +2166,14 @@ const rincianSections = computed(() => {
                 <tr v-if="!historyLoading && !histFiltered.length"><td colspan="8" class="empty-row">Tidak ada transaksi yang cocok</td></tr>
               </tbody>
             </table>
+            <div v-if="hMeta.total > 0" class="hist-pager">
+              <span class="hist-pager-info">Menampilkan {{ hMeta.from }}–{{ hMeta.to }} dari {{ hMeta.total }} transaksi</span>
+              <div class="hist-pager-nav">
+                <button class="btn btn-sm btn-secondary" :disabled="hPage <= 1 || historyLoading" @click="goHistoryPage(hPage - 1)">‹ Sebelumnya</button>
+                <span class="hist-pager-page">Halaman {{ hMeta.current_page }} / {{ hMeta.last_page }}</span>
+                <button class="btn btn-sm btn-secondary" :disabled="hPage >= hMeta.last_page || historyLoading" @click="goHistoryPage(hPage + 1)">Berikutnya ›</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -2665,6 +2727,11 @@ const rincianSections = computed(() => {
 .hist-print-btn svg { width: 13px; height: 13px; }
 .hist-print-btn:hover:not(:disabled) { border-color: var(--ga); color: var(--ga); background: var(--gl); }
 .hist-print-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.hist-pager { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; padding: .6rem .85rem; border-top: 1px solid var(--gb); }
+.hist-pager-info { font-size: .8rem; color: var(--tu); }
+.hist-pager-nav { display: flex; align-items: center; gap: .5rem; }
+.hist-pager-page { font-size: .8rem; color: var(--td); font-weight: 600; min-width: 110px; text-align: center; }
 
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 999; display: flex; flex-direction: column; gap: 6px; }
 .toast { padding: 9px 13px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); min-width: 230px; }

@@ -188,6 +188,7 @@ class BedahService
                     'classification'  => $visit->classification,
                     'visit_type'      => $visit->visit_type,
                     'guarantor_type'  => $visit->guarantor_type,
+                    'bpjs_antrean_number' => $visit->bpjs_antrean_number,
                     'insurer_name'    => $visit->insurer?->name,
                     // jenis_pelayanan dipakai FE utk dropdown disposisi adaptif:
                     // RANAP → pasien dari kamar (kembali ke RANAP/HCU), else PULANG/RAWAT_INAP.
