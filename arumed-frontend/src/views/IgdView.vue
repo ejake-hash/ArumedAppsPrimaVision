@@ -1469,7 +1469,11 @@ onMounted(loadBoard)
     />
 
     <!-- KWITANSI CETAK (sama persis dgn KasirView) -->
-    <KwitansiPrint :data="kwitansiData" />
+    <!-- v-if: jangan biarkan <Teleport to="body"> KwitansiPrint ter-mount permanen.
+         Teleport-ke-body kosong yang selalu hadir + teleport UnitStockActions (menu/
+         toast) memicu crash patch Vue "Cannot read properties of null (emitsOptions)"
+         saat IgdView re-render → modal Daftar gagal terbuka. Mount on-demand saat cetak. -->
+    <KwitansiPrint v-if="kwitansiData" :data="kwitansiData" />
 
     <!-- TOAST -->
     <div v-if="toast" class="toast" :class="{ err: !toast.ok }">{{ toast.msg }}</div>
