@@ -3,6 +3,9 @@
 namespace Tests\Feature\FormRegistry;
 
 use App\Models\DocumentSignature;
+use App\Models\DocumentType;
+use App\Models\Patient;
+use App\Models\PatientDocument;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -47,12 +50,33 @@ class PMK24ComplianceTest extends TestCase
 
     private function makeSignature(): DocumentSignature
     {
+        // Rantai FK riil (PG menegakkan FK; sqlite tidak — itu sebab test lama
+        // memakai UUID yatim). Patient → DocumentType → PatientDocument.
+        $patient = new Patient();
+        $patient->forceFill(['name' => 'Pasien Uji'])->save();
+
+        $docType = new DocumentType();
+        $docType->forceFill([
+            'code'           => 'TEST',
+            'name'           => 'Dokumen Uji',
+            'fill_frequency' => 'ONCE',
+        ])->save();
+
+        $doc = new PatientDocument();
+        $doc->forceFill([
+            'patient_id'       => $patient->id,
+            'document_type_id' => $docType->id,
+        ])->save();
+
         return DocumentSignature::create([
-            'patient_document_id' => '550e8400-e29b-41d4-a716-446655440001',
-            'signer_type'         => 'patient',
-            'signature_svg'       => '<svg/>',
-            'captured_at'         => now(),
-            'integrity_hash'      => str_repeat('a', 64),
+            'signature_id'         => 'SIG-TEST-0001',
+            'patient_document_id'  => $doc->id,
+            'signer_type'          => 'patient',
+            'signature_svg'        => '<svg/>',
+            'captured_at'          => now(),
+            'captured_device_info' => ['ua' => 'phpunit'],
+            'audit_log'            => [],
+            'integrity_hash'       => str_repeat('a', 64),
         ]);
     }
 }
