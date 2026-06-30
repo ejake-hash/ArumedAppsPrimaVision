@@ -590,10 +590,15 @@ class FarmasiController extends Controller
     // DISPENSING RAWAT INAP (permintaan obat pasien dirawat — type RANAP)
     // =========================================================================
 
-    /** GET /farmasi/ranap/permintaan */
-    public function indexRanapRequest(): JsonResponse
+    /** GET /farmasi/ranap/permintaan — gabungan permintaan obat + BHP ranap belum-verif */
+    public function indexRanapRequest(Request $request): JsonResponse
     {
-        return $this->ok($this->service->getRanapRequests());
+        $filters = $request->only(['search']);
+
+        return $this->ok([
+            'prescriptions' => $this->service->getRanapRequests(),
+            'bhp_only'      => $this->service->getRanapBhpVisits($filters),
+        ]);
     }
 
     /** PUT /farmasi/ranap/permintaan/{id}/siapkan */

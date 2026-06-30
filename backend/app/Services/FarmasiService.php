@@ -535,8 +535,34 @@ class FarmasiService
      * Visit dengan BHP dokter BELUM-VERIF & belum diserahkan yang TIDAK punya resep di
      * worklist verifikasi → kartu BHP-only. Tanpa ini, pasien injeksi/prosedur tanpa
      * resep obat tak bisa diverifikasi & gate tagihan BHP (assertObatVerified) buntu.
+     *
+     * Tab Verifikasi = HANYA rawat jalan/IGD (FARMASI/KASIR/SELESAI). BHP pasien RAWAT
+     * INAP (MENUNGGU_RANAP/RANAP) SENGAJA dikecualikan dari sini dan dipindah ke tab
+     * "Dispensing Rawat Inap" (getRanapBhpVisits) → satu pintu Farmasi per pasien ranap,
+     * tak lagi tercampur antrean pra-Kasir rajal.
      */
     public function getBhpOnlyVerificationVisits(array $excludeVisitIds = [], array $filters = []): Collection
+    {
+        return $this->bhpVisitsByStations(['FARMASI', 'KASIR', 'SELESAI'], $excludeVisitIds, $filters);
+    }
+
+    /**
+     * BHP pasien RAWAT INAP (station MENUNGGU_RANAP/RANAP) yang belum diverifikasi —
+     * ditampilkan di tab "Dispensing Rawat Inap" bersama permintaan obat ranap pasien
+     * yang sama. Tagihan tetap lewat jalur kwitansi BHP (verified_at gate); di sini
+     * Farmasi cukup verifikasi+serah dalam konteks ranap.
+     */
+    public function getRanapBhpVisits(array $filters = []): Collection
+    {
+        return $this->bhpVisitsByStations(['MENUNGGU_RANAP', 'RANAP'], [], $filters);
+    }
+
+    /**
+     * Helper bersama: visit dengan BHP belum-verif & belum diserahkan pada station
+     * tertentu. KASIR/SELESAI = titik gate tagihan rajal (aman dari buntu); RANAP =
+     * konteks rawat inap. Lihat getBhpOnlyVerificationVisits & getRanapBhpVisits.
+     */
+    private function bhpVisitsByStations(array $stations, array $excludeVisitIds, array $filters): Collection
     {
         $visitIds = VisitBhpUsage::whereNull('consumed_batches')
             ->whereNull('verified_at')
@@ -552,10 +578,7 @@ class FarmasiService
                 'bhpUsages' => fn ($q) => $q->whereNull('consumed_batches')->with('bhpItem')->orderBy('created_at'),
             ])
             ->whereIn('id', $visitIds)
-            // Hanya tampilkan setelah dokter MENGIRIM pasien (di/melewati KASIR) — cegah BHP
-            // muncul saat dokter masih konsultasi. KASIR = titik gate tagihan, jadi tetap
-            // aman dari buntu (pasien BHP-only yang akan ditagih pasti melewati KASIR).
-            ->whereIn('current_station', ['FARMASI', 'KASIR', 'SELESAI', 'MENUNGGU_RANAP', 'RANAP'])
+            ->whereIn('current_station', $stations)
             ->when(! empty($filters['search']), fn ($q) => $q->whereHas('patient', fn ($p) => $p
                 ->where('name', 'ilike', "%{$filters['search']}%")
                 ->orWhere('no_rm', 'ilike', "%{$filters['search']}%")))
@@ -795,12 +818,16 @@ class FarmasiService
      */
     public function getRanapRequests(): Collection
     {
-        return Prescription::with([
+        $rows = Prescription::with([
             'visit.patient',
             'visit.room',
             'visit.bed',
+            // Pengkajian klinis: sumber alergi pasien (allergy_notes persisten + asesmen
+            // perawat bila ada triase). Untuk inap tanpa triase, andalkan allergy_notes.
+            'visit.nurseAssessment:id,visit_id,has_allergy,allergy_detail',
             'prescribedBy',
             'dispensedBy',
+            'verifiedBy',
             'items.medication',
         ])
             ->where('type', Prescription::TYPE_RANAP)
@@ -811,9 +838,32 @@ class FarmasiService
             ->orderByRaw("CASE status WHEN 'DISPENSING' THEN 0 WHEN 'SUBMITTED' THEN 1 ELSE 2 END")
             ->orderBy('created_at')
             ->get();
+
+        // Flag DUPLIKASI obat: medication_id yang muncul di >1 permintaan AKTIF
+        // (SUBMITTED/DISPENSING) pada kunjungan yang sama → bantu apoteker mendeteksi
+        // peresepan ganda lintas-permintaan. Disisipkan sbg atribut transien per resep.
+        foreach ($rows->groupBy('visit_id') as $group) {
+            $active = $group->whereIn('status', ['SUBMITTED', 'DISPENSING']);
+            $counts = $active->flatMap(fn ($p) => $p->items->pluck('medication_id'))
+                ->countBy();
+            $dupIds = $counts->filter(fn ($c) => $c > 1)->keys()->values();
+            foreach ($group as $p) {
+                $p->setAttribute('duplicate_medication_ids', $dupIds->all());
+            }
+        }
+
+        return $rows;
     }
 
-    /** SUBMITTED → DISPENSING (mulai siapkan). Tanpa lapor Antrol — tak ada antrean Farmasi. */
+    /**
+     * SUBMITTED → DISPENSING (mulai siapkan). Tanpa lapor Antrol — tak ada antrean Farmasi.
+     *
+     * Titik PENGKAJIAN RESEP (Permenkes 72/2016 & PKPO 5.1): obat ranap tidak melewati
+     * tab Verifikasi pra-Kasir, jadi telaah resep (administratif/farmasetik/klinis) oleh
+     * apoteker dilakukan DI SINI sebelum obat disiapkan. Jejak audit direkam dengan
+     * MENGISI verified_at/verified_by_id (kolom yang sama dengan gate rajal; untuk RANAP
+     * maknanya "apoteker telah mengkaji resep"). Idempoten bila sudah terisi.
+     */
     public function startRanapDispensing(string $prescriptionId): Prescription
     {
         $prescription = Prescription::where('type', Prescription::TYPE_RANAP)->findOrFail($prescriptionId);
@@ -822,10 +872,14 @@ class FarmasiService
             throw new \Exception('Permintaan tidak dalam status yang bisa disiapkan.', 422);
         }
 
-        $prescription->update(['status' => 'DISPENSING']);
-        $this->log(auth('api')->id(), 'START_RANAP_DISPENSING', Prescription::class, $prescriptionId);
+        $prescription->update([
+            'status'         => 'DISPENSING',
+            'verified_at'    => $prescription->verified_at ?? now(),
+            'verified_by_id' => $prescription->verified_by_id ?? auth('api')->user()?->employee_id,
+        ]);
+        $this->log(auth('api')->id(), 'START_RANAP_DISPENSING', Prescription::class, $prescriptionId, 'Pengkajian resep ranap oleh apoteker → mulai siapkan');
 
-        return $prescription->fresh(['items.medication']);
+        return $prescription->fresh(['items.medication', 'verifiedBy', 'visit.patient', 'visit.room', 'visit.bed']);
     }
 
     /**
@@ -876,7 +930,7 @@ class FarmasiService
             "Obat rawat inap diserahkan ke ruangan — {$prescription->items->count()} item"
         );
 
-        return $prescription->fresh(['items.medication', 'dispensedBy']);
+        return $prescription->fresh(['items.medication', 'dispensedBy', 'visit.patient', 'visit.room', 'visit.bed']);
     }
 
     /** Tolak/batal permintaan rawat inap (sebelum serah). Tanpa stok/charge. */

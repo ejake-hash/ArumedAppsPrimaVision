@@ -909,6 +909,10 @@ const ranapQueue   = ref([])
 const ranapLoading = ref(false)
 const selRanap     = ref(null)   // permintaan terpilih (hydrate _origQty utk diff qty)
 const ranapBusy    = ref(false)
+// BHP pasien rawat inap (belum-verif) — dipindah ke sini dari tab Verifikasi agar
+// Farmasi mengurus 1 pasien ranap (obat + BHP) di satu tempat. visit.bhp_usages snake_case.
+const ranapBhpVisits = ref([])
+const ranapBhpBusy   = ref(false)
 
 const ranapSteps = ['Disiapkan', 'Serah ke Ruangan']
 const ranapStep = computed(() => {
@@ -934,7 +938,10 @@ async function fetchRanapQueue() {
   ranapLoading.value = true
   try {
     const { data } = await farmasiApi.ranapList()
-    ranapQueue.value = data.data ?? []
+    // Respons kini gabungan { prescriptions, bhp_only }; fallback array lama utk aman.
+    const payload = data.data ?? {}
+    ranapQueue.value     = payload.prescriptions ?? (Array.isArray(payload) ? payload : [])
+    ranapBhpVisits.value = payload.bhp_only ?? []
     // Sinkron status panel terpilih bila berubah dari sisi lain (tanpa hapus edit qty).
     if (selRanap.value) {
       const fresh = ranapQueue.value.find((r) => r.id === selRanap.value.id)
@@ -999,6 +1006,67 @@ async function tolakRanap() {
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal membatalkan permintaan')
   }
+}
+
+// Verifikasi & kunci BHP pasien rawat inap (set verified_at) — masuk kwitansi saat
+// pasien pulang. Endpoint sama dengan BHP dokter; perilaku identik, hanya pindah konteks.
+async function verifRanapBhp(v) {
+  if (ranapBhpBusy.value || !v?.id) return
+  ranapBhpBusy.value = true
+  try {
+    await farmasiApi.verifikasiBhp(v.id)
+    toast('s', 'BHP rawat inap diverifikasi & dikunci — masuk tagihan saat pasien pulang.')
+    fetchRanapQueue()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memverifikasi BHP')
+  } finally {
+    ranapBhpBusy.value = false
+  }
+}
+
+// ─── Pengkajian resep ranap (Permenkes 72/2016 · PKPO 5.1) ───────────────────
+// Obat ranap tak lewat tab Verifikasi pra-Kasir, jadi telaah resep apoteker
+// (administratif/farmasetik/klinis) dilakukan SEBELUM Siapkan via modal di bawah.
+const showPengkajian   = ref(false)
+const pengkajianChecks = ref({ adm: false, farmasetik: false, klinis: false })
+
+// Sumber alergi pasien terpilih: allergy_notes persisten + asesmen perawat (bila triase).
+const selRanapAllergy = computed(() => {
+  const p  = selRanap.value?.visit?.patient
+  const na = selRanap.value?.visit?.nurse_assessment
+  const parts = []
+  if (p?.allergy_notes) parts.push(p.allergy_notes)
+  if (na?.has_allergy && na?.allergy_detail) parts.push(na.allergy_detail)
+  return parts.join(' · ').trim()
+})
+const selRanapDupIds = computed(() => selRanap.value?.duplicate_medication_ids ?? [])
+// Soft-match (BUKAN deteksi pasti): token pertama nama obat muncul di teks alergi.
+function itemAllergyHit(d) {
+  const a = selRanapAllergy.value.toLowerCase()
+  const name = (d.medication?.name ?? '').toLowerCase()
+  if (!a || !name) return false
+  const token = name.split(/[\s\-(/]/)[0]
+  return token.length >= 4 && a.includes(token)
+}
+function itemIsDup(d) {
+  return selRanapDupIds.value.includes(d.medication_id ?? d.medication?.id)
+}
+const ranapHasAllergyHit = computed(() => (selRanap.value?.items ?? []).some(itemAllergyHit))
+const ranapHasDup        = computed(() => (selRanap.value?.items ?? []).some(itemIsDup))
+
+function openPengkajian() {
+  if (!selRanap.value) return
+  pengkajianChecks.value = { adm: false, farmasetik: false, klinis: false }
+  showPengkajian.value = true
+}
+async function confirmPengkajianSiapkan() {
+  const c = pengkajianChecks.value
+  if (!c.adm || !c.farmasetik || !c.klinis) {
+    toast('w', 'Lengkapi telaah administratif, farmasetik, dan klinis dulu')
+    return
+  }
+  showPengkajian.value = false
+  await siapkanRanap()
 }
 
 // ─── Stok Obat ──────────────────────────────────────────────────────────────
@@ -2693,6 +2761,39 @@ function toast(type, msg) {
               </div>
             </div>
           </div>
+
+          <!-- BHP rawat inap (dipindah dari tab Verifikasi) — verifikasi dalam konteks ranap -->
+          <div v-if="ranapBhpVisits.length" class="card" style="margin-top:12px">
+            <div class="card-head">
+              <div>
+                <div class="card-head-title">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M12 11v4M10 13h4"/></svg>
+                  BHP Rawat Inap
+                </div>
+                <div class="card-head-sub">{{ ranapBhpVisits.length }} pasien menunggu verifikasi</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div v-for="v in ranapBhpVisits" :key="v.id" class="bhp-ranap-card">
+                <div class="bhp-ranap-head">
+                  <div class="bhp-ranap-name">{{ v.patient?.name ?? '—' }}</div>
+                  <div class="bhp-ranap-meta">{{ v.patient?.no_rm ?? '—' }} · BHP belum diverifikasi</div>
+                </div>
+                <div v-for="b in (v.bhp_usages ?? [])" :key="b.id" class="bhp-disp-row">
+                  <div class="bhp-disp-info">
+                    <div class="bhp-disp-name">{{ b.bhp_item?.name ?? 'BHP' }}</div>
+                    <div class="bhp-disp-meta">{{ b.bhp_item?.code ?? '' }}<span v-if="b.bhp_item?.category"> · {{ b.bhp_item.category }}</span></div>
+                  </div>
+                  <div class="bhp-disp-qty">×{{ b.quantity }}</div>
+                </div>
+                <button class="btn btn-success btn-sm" style="width:100%;margin-top:8px" :disabled="ranapBhpBusy" @click="verifRanapBhp(v)">
+                  <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                  {{ ranapBhpBusy ? 'Memproses…' : `Verifikasi & Kunci BHP (${(v.bhp_usages ?? []).length})` }}
+                </button>
+                <div class="bhp-disp-note">Stok dipotong &amp; biaya masuk tagihan saat pasien pulang.</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Detail / serah -->
@@ -2724,10 +2825,23 @@ function toast(type, msg) {
               </div>
             </div>
 
+            <!-- Pengkajian klinis: panel alergi pasien (allergy_notes + asesmen perawat) -->
+            <div v-if="selRanapAllergy" class="allergy-banner">
+              <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span><b>Alergi pasien:</b> {{ selRanapAllergy }}</span>
+            </div>
+            <div v-else class="allergy-banner ok">
+              <span>Tidak ada catatan alergi pada profil pasien. Tetap konfirmasi lisan saat pengkajian.</span>
+            </div>
+
             <div class="sec-title">Item Obat Diminta</div>
-            <div v-for="(d, i) in selRanap.items" :key="d.id ?? i" class="dd">
+            <div v-for="(d, i) in selRanap.items" :key="d.id ?? i" :class="['dd', itemAllergyHit(d) ? 'dd-alert' : '']">
               <div class="dd-info">
-                <div class="dd-name">{{ d.medication?.name ?? '—' }}</div>
+                <div class="dd-name">
+                  {{ d.medication?.name ?? '—' }}
+                  <span v-if="itemAllergyHit(d)" class="dd-flag flag-allergy" title="Nama obat cocok dengan catatan alergi — telaah ulang">⚠ cocok alergi</span>
+                  <span v-if="itemIsDup(d)" class="dd-flag flag-dup" title="Obat sama ada di permintaan ranap aktif lain">⧉ duplikasi</span>
+                </div>
                 <div class="dd-dose">{{ d.dose ?? '-' }} · {{ d.frequency ?? '-' }}<span v-if="d.route"> · {{ d.route }}</span></div>
                 <div :class="['dd-stock', itemStok(d) > 10 ? 'ok' : itemStok(d) > 0 ? 'low' : 'out']">
                   Stok Farmasi: {{ itemStok(d) }} {{ d.medication?.unit ?? '' }}{{ itemStok(d) === 0 ? ' — HABIS' : itemStok(d) <= 3 ? ' — LOW' : '' }}
@@ -2745,9 +2859,9 @@ function toast(type, msg) {
             <div v-if="selRanap.pharmacy_note" class="doc-note"><b>Catatan untuk Farmasi:</b> {{ selRanap.pharmacy_note }}</div>
 
             <div class="disp-actions">
-              <button v-if="ranapStep === 0" class="btn btn-warning btn-lg" @click="siapkanRanap">
-                <svg viewBox="0 0 24 24"><path d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/></svg>
-                Siapkan Obat
+              <button v-if="ranapStep === 0" class="btn btn-warning btn-lg" @click="openPengkajian">
+                <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                Kaji &amp; Siapkan Obat
               </button>
               <button v-if="ranapStep === 1" class="btn btn-success btn-lg" :disabled="ranapBusy || !(selRanap.items ?? []).length" @click="serahRanap">
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
@@ -3344,6 +3458,44 @@ function toast(type, msg) {
       </div>
     </div>
 
+    <!-- Modal Pengkajian Resep Ranap (Permenkes 72/2016 · PKPO 5.1) -->
+    <div v-if="showPengkajian" class="pk-overlay" @click.self="showPengkajian = false">
+      <div class="pk-modal">
+        <div class="pk-head">
+          <div class="pk-title">Pengkajian Resep — {{ selRanap?.visit?.patient?.name ?? '—' }}</div>
+          <button class="pk-x" @click="showPengkajian = false">×</button>
+        </div>
+        <div class="pk-body">
+          <div v-if="selRanapAllergy" class="allergy-banner">
+            <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span><b>Alergi pasien:</b> {{ selRanapAllergy }}</span>
+          </div>
+          <div v-if="ranapHasAllergyHit" class="pk-warn">⚠ Ada obat yang namanya cocok dengan catatan alergi — telaah ulang sebelum lanjut.</div>
+          <div v-if="ranapHasDup" class="pk-warn">⧉ Ada obat duplikat di permintaan ranap aktif lain — pastikan bukan peresepan ganda.</div>
+
+          <div class="pk-list">
+            <div v-for="(d, i) in (selRanap?.items ?? [])" :key="d.id ?? i" class="pk-item">
+              <span class="pk-item-name">{{ d.medication?.name ?? '—' }}</span>
+              <span class="pk-item-dose">{{ d.dose ?? '-' }} · {{ d.frequency ?? '-' }}<span v-if="d.route"> · {{ d.route }}</span> · ×{{ d.quantity }}</span>
+              <span v-if="itemAllergyHit(d)" class="dd-flag flag-allergy">⚠ alergi</span>
+              <span v-if="itemIsDup(d)" class="dd-flag flag-dup">⧉ duplikasi</span>
+            </div>
+          </div>
+
+          <div class="pk-checks">
+            <div class="pk-checks-title">Konfirmasi telaah apoteker:</div>
+            <label class="pk-check"><input type="checkbox" v-model="pengkajianChecks.adm" /> <b>Administratif</b> — identitas pasien, ruang rawat, penjamin, dokter</label>
+            <label class="pk-check"><input type="checkbox" v-model="pengkajianChecks.farmasetik" /> <b>Farmasetik</b> — nama/bentuk/kekuatan/jumlah, stabilitas, inkompatibilitas</label>
+            <label class="pk-check"><input type="checkbox" v-model="pengkajianChecks.klinis" /> <b>Klinis</b> — ketepatan dosis, duplikasi, alergi, interaksi, kontraindikasi</label>
+          </div>
+        </div>
+        <div class="pk-foot">
+          <button class="btn btn-secondary btn-sm" @click="showPengkajian = false">Batal</button>
+          <button class="btn btn-warning btn-lg" :disabled="ranapBusy" @click="confirmPengkajianSiapkan">Sudah Dikaji — Siapkan Obat</button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast-wrap">
       <div v-for="t in toasts" :key="t.id" :class="['toast', `toast-${t.type}`]">{{ t.msg }}</div>
     </div>
@@ -3822,4 +3974,35 @@ function toast(type, msg) {
 .ver-bhp-qty { width: 56px; padding: 2px 6px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12px; text-align: center; }
 .ver-bhp-locked { font-size: 12px; font-weight: 700; color: var(--tm); white-space: nowrap; }
 .ver-bhp-actions { margin-top: 6px; }
+
+/* ── Pengkajian resep ranap: banner alergi, flag item, BHP ranap, modal ── */
+.allergy-banner { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.allergy-banner svg { width: 16px; height: 16px; flex: none; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 2; }
+.allergy-banner.ok { background: #f1f5f9; border-color: #e2e8f0; color: var(--tm); }
+.dd-alert { border-color: #fecaca !important; background: #fef2f2; }
+.dd-flag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; vertical-align: middle; }
+.flag-allergy { background: #fee2e2; color: #b91c1c; }
+.flag-dup { background: #fef3c7; color: #92400e; }
+.bhp-ranap-card { padding: 10px; border: 1px solid var(--gb); border-radius: 10px; margin-bottom: 8px; background: #fff; }
+.bhp-ranap-head { margin-bottom: 6px; }
+.bhp-ranap-name { font-size: 13px; font-weight: 700; color: var(--td); }
+.bhp-ranap-meta { font-size: 11.5px; color: var(--tm); }
+
+.pk-overlay { position: fixed; inset: 0; z-index: 9000; background: rgba(15,23,42,.5); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.pk-modal { width: 100%; max-width: 560px; max-height: 88vh; display: flex; flex-direction: column; background: #fff; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
+.pk-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--gb); }
+.pk-title { font-size: 15px; font-weight: 800; color: var(--td); }
+.pk-x { border: none; background: none; font-size: 24px; line-height: 1; color: var(--tm); cursor: pointer; }
+.pk-body { padding: 14px 16px; overflow-y: auto; }
+.pk-warn { margin: 6px 0; padding: 7px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+.pk-list { margin: 10px 0; border: 1px solid var(--gb); border-radius: 8px; overflow: hidden; }
+.pk-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; border-bottom: 1px solid var(--gl, #f1f5f9); }
+.pk-item:last-child { border-bottom: none; }
+.pk-item-name { font-size: 12.5px; font-weight: 700; color: var(--td); }
+.pk-item-dose { font-size: 11.5px; color: var(--tm); }
+.pk-checks { margin-top: 12px; }
+.pk-checks-title { font-size: 12.5px; font-weight: 700; color: var(--td); margin-bottom: 6px; }
+.pk-check { display: block; font-size: 12.5px; color: var(--td); padding: 6px 0; cursor: pointer; }
+.pk-check input { margin-right: 6px; }
+.pk-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--gb); }
 </style>
