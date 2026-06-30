@@ -1167,11 +1167,17 @@ class IgdService
      */
     private function generateNoRegistrasi(): string
     {
-        $prefix = 'REG-' . today()->format('Ymd') . '-';
+        $ymd    = today()->format('Ymd');
+        $prefix = 'REG-' . $ymd . '-';
+
+        // Lihat AdmisiService::generateNoRegistrasi — fix sama: advisory xact lock
+        // (serialisasi registrasi konkuren, dilepas saat commit transaksi) + ordering
+        // NUMERIK (string bikin "...-999" > "...-1000" → nomor ke-1000+ kembar).
+        DB::statement('SELECT pg_advisory_xact_lock(hashtext(?))', ['no_registrasi:' . $ymd]);
 
         $last = Visit::withTrashed()
             ->where('no_registrasi', 'like', $prefix . '%')
-            ->orderByDesc('no_registrasi')
+            ->orderByRaw("CAST(substring(no_registrasi from '[0-9]+$') AS INTEGER) DESC")
             ->value('no_registrasi');
 
         $next = $last ? ((int) substr($last, strrpos($last, '-') + 1)) + 1 : 1;

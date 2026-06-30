@@ -1266,7 +1266,21 @@ class AdmisiService
 
         // Lapor antrean/add ke BPJS SETELAH commit — non-blocking (skip diam-diam bila
         // bukan BPJS / ANTREAN nonaktif / poli belum dipetakan). TIDAK pernah melempar.
+        // ensureKodebooking() di dalamnya men-set visits.bpjs_booking_code → prasyarat reportTask.
         $this->queueService->reportAntreanAdd($visit);
+
+        // Lengkapi taskid admisi ONSITE (loket reguler) agar urutan ke BPJS BENAR
+        // (Docs/Antrol.md: pasien baru 1-2-3-4-5, pasien lama 3-4-5). Tanpa ini, task 4
+        // (dipanggil dokter) terkirim lebih dulu → langgar "berurutan dari awal".
+        // Non-blocking: reportTask skip diam-diam bila bukan BPJS / ANTREAN nonaktif /
+        // belum ada kodebooking; guard monoton bpjs_last_taskid cegah dobel.
+        if (($visit->guarantor_type ?? null) === 'BPJS') {
+            if (strcasecmp((string) $visit->classification, 'Baru') === 0) {
+                $this->queueService->reportTask($visit, 1); // mulai tunggu admisi
+                $this->queueService->reportTask($visit, 2); // mulai layan admisi
+            }
+            $this->queueService->reportTask($visit, 3);     // selesai admisi / mulai tunggu poli
+        }
 
         return $visit;
     }
@@ -2996,15 +3010,25 @@ class AdmisiService
      */
     private function generateNoRegistrasi(): string
     {
-        $prefix = 'REG-' . today()->format('Ymd') . '-';
+        $ymd    = today()->format('Ymd');
+        $prefix = 'REG-' . $ymd . '-';
 
+        // Serialize registrasi konkuren pada hari yang sama. Dipanggil DI DALAM
+        // transaksi registerVisit/daftarkanWalkIn → advisory xact lock dilepas
+        // otomatis saat commit/rollback. Tanpa ini, dua registrasi bisa membaca
+        // $last yang sama lalu menghasilkan no_registrasi kembar (race).
+        DB::statement('SELECT pg_advisory_xact_lock(hashtext(?))', ['no_registrasi:' . $ymd]);
+
+        // Urut berdasarkan NILAI NUMERIK suffix, BUKAN string. Ordering string bikin
+        // "REG-...-999" > "REG-...-1000" secara leksikal → nomor ke-1000+ kembar.
         $last = Visit::withTrashed()
             ->where('no_registrasi', 'like', $prefix . '%')
-            ->orderByDesc('no_registrasi')
+            ->orderByRaw("CAST(substring(no_registrasi from '[0-9]+$') AS INTEGER) DESC")
             ->value('no_registrasi');
 
         $next = $last ? ((int) substr($last, strrpos($last, '-') + 1)) + 1 : 1;
 
+        // str_pad minimal 3 digit; angka >999 tampil apa adanya (REG-...-1000).
         return $prefix . str_pad((string) $next, 3, '0', STR_PAD_LEFT);
     }
 
