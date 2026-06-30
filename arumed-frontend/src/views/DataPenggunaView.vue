@@ -740,6 +740,125 @@ function shortModel(m) {
   const parts = String(m).split('\\')
   return parts[parts.length - 1]
 }
+
+// ─── Legenda kode aksi (kode mentah → bahasa awam) ─────────────────────────
+// Action di system_logs berupa kode SCREAMING_SNAKE yang ditulis tiap service
+// (mis. DAFTAR_KUNJUNGAN). Petugas tak perlu hafal — peta ini menerjemahkan ke
+// label Indonesia untuk dropdown filter & kolom Aksi. Kode mentah tetap tampil
+// kecil di bawahnya (transparansi + itulah nilai yang difilter). Action baru
+// yang belum ada di peta otomatis ditampilkan via prettifyAction() (fallback).
+const ACTION_LABELS = {
+  // Auth & akun
+  LOGIN: 'Login', LOGOUT: 'Logout', LOGIN_FAILED: 'Login Gagal', LOGIN_BLOCKED: 'Login Diblokir',
+  PASSWORD_CHANGED: 'Password Diubah', PIN_CHANGED: 'PIN Diubah', RESET_PASSWORD: 'Reset Password',
+  CREDENTIALS_RESET_DEFAULT: 'Reset Kredensial ke Default',
+  // Admisi / pendaftaran
+  DAFTAR_KUNJUNGAN: 'Daftar Kunjungan', DAFTAR_WALKIN: 'Daftar Walk-in (Kiosk)',
+  CREATE_PASIEN: 'Buat Pasien', UPDATE_PASIEN: 'Ubah Data Pasien',
+  CANCEL_ANTRIAN: 'Batal Antrean', FINALIZE_KUNJUNGAN: 'Selesaikan Kunjungan',
+  MONITORING_KUNJUNGAN: 'Monitoring Kunjungan (BPJS)', PURGE_LEGACY_REGISTRASI: 'Hapus Registrasi Lama',
+  // Klinis — perawat/triase/refraksi/dokter
+  STORE_ASESMEN: 'Simpan Asesmen (Triase)', UPDATE_ASESMEN: 'Ubah Asesmen', FINALIZE_ASESMEN: 'Finalisasi Asesmen',
+  REOPEN_TRIASE: 'Buka Ulang Triase', SKIP_TRIASE: 'Lewati Triase', SKIP_REFRAKSI: 'Lewati Refraksi',
+  READY_FOR_DOCTOR: 'Siap ke Dokter', REQUEUE_DOKTER: 'Antre Ulang ke Dokter',
+  UPDATE_REFRAKSI: 'Ubah Refraksi', UPDATE_RESEP_KACAMATA: 'Ubah Resep Kacamata',
+  STORE_RECORD: 'Simpan Rekam Medis (Dokter)', UPDATE_RECORD: 'Ubah Rekam Medis (Dokter)', FINALIZE_RECORD: 'Finalisasi Rekam Medis',
+  STORE_MEDICAL_RECORD: 'Simpan Rekam Medis', UPDATE_MEDICAL_RECORD: 'Ubah Rekam Medis',
+  STORE_TINDAKAN: 'Simpan Tindakan (RME)',
+  CREATE_CPPT: 'Buat CPPT', UPDATE_CPPT: 'Ubah CPPT', SIGN_CPPT: 'Tanda Tangan CPPT',
+  STORE_RESEP: 'Simpan Resep', CANCEL_RESEP: 'Batal Resep', UPDATE_ITEM_RESEP: 'Ubah Item Resep', DELETE_ITEM_RESEP: 'Hapus Item Resep',
+  CREATE_OTC_PRESCRIPTION: 'Buat Resep OTC/Tambahan',
+  GENERATE_RESUME: 'Generate Resume Medis', UPDATE_RESUME: 'Ubah Resume Medis', FINALIZE_RESUME: 'Finalisasi Resume Medis',
+  // TTD dokumen
+  SIGN_DOCUMENT: 'Tanda Tangan Dokumen', REJECT_DOCUMENT: 'Tolak Dokumen (TTD)', VOID_DOCUMENT: 'Batalkan Dokumen', UPDATE_DOCUMENT: 'Ubah Dokumen',
+  // Bedah / anestesi / IOL
+  START_OPERATION: 'Mulai Operasi', COMPLETE_OPERATION: 'Selesai Operasi',
+  SAVE_OPERATION_REPORT: 'Simpan Laporan Operasi', SAVE_ANESTHESIA_REPORT: 'Simpan Laporan Anestesi', SAVE_RECOVERY_ASSESSMENT: 'Simpan Asesmen Pemulihan',
+  STORE_PREOP_RESEP: 'Simpan Resep Pra-Operasi', STORE_POSTOP_RESEP: 'Simpan Resep Pasca-Operasi', STORE_POST_OP: 'Simpan Data Pasca-Operasi',
+  GENERATE_IOL_REKOMENDASI: 'Generate Rekomendasi IOL', STORE_IOL_REKOMENDASI: 'Simpan Rekomendasi IOL', UPDATE_IOL_REKOMENDASI: 'Ubah Rekomendasi IOL',
+  DECIDE_IOL: 'Putuskan IOL', NOTIFY_BEDAH_IOL: 'Notifikasi IOL ke Bedah', UPDATE_IOL_USAGE: 'Ubah Pemakaian IOL', DELETE_IOL_USAGE: 'Hapus Pemakaian IOL',
+  // Penunjang
+  CREATE_ORDER: 'Buat Order', PROSES_ORDER: 'Proses Order', CANCEL_ORDER: 'Batal Order',
+  ORDER_PENUNJANG: 'Order Penunjang', CANCEL_ORDER_PENUNJANG: 'Batal Order Penunjang', UPDATE_HASIL: 'Ubah Hasil Penunjang',
+  // Farmasi
+  VERIFY_RESEP: 'Verifikasi Resep (Farmasi)', UNVERIFY_RESEP: 'Batal Verifikasi Resep',
+  START_DISPENSING: 'Mulai Dispensing', START_RANAP_DISPENSING: 'Mulai Dispensing Ranap',
+  VERIFY_BHP: 'Verifikasi BHP (Farmasi)', UNVERIFY_BHP: 'Batal Verifikasi BHP', SERAH_BHP_FARMASI: 'Serah BHP (Farmasi)',
+  STORE_BHP_DOKTER: 'Simpan BHP Dokter', DELETE_BHP_DOKTER: 'Hapus BHP Dokter',
+  UPDATE_BHP_FARMASI: 'Ubah BHP Farmasi', DELETE_BHP_FARMASI: 'Hapus BHP Farmasi',
+  CREATE_BHP: 'Buat BHP', UPDATE_BHP: 'Ubah BHP', DELETE_BHP: 'Hapus BHP',
+  PHARMACY_SALE: 'Penjualan Farmasi (OTC)', PHARMACY_SALE_CANCEL: 'Batal Penjualan Farmasi',
+  TOLAK_RANAP_OBAT: 'Tolak Obat Ranap',
+  // Kasir / tagihan
+  ADD_ITEM_TAMBAHAN: 'Tambah Item Tagihan', ADD_OBAT_TAMBAHAN_KASIR: 'Tambah Obat (Kasir)',
+  CONSOLIDATE_BILLING: 'Konsolidasi Tagihan', RECONSOLIDATE_BILLING: 'Rekonsolidasi Tagihan',
+  FINALIZE_INVOICE: 'Finalisasi Kwitansi', UPDATE_INVOICE: 'Ubah Kwitansi', CANCEL_INVOICE: 'Batal Kwitansi',
+  REFRESH_TARIF_KWITANSI: 'Sinkron Harga Kwitansi', SYNC_OBAT_KWITANSI: 'Sinkron Obat ke Kwitansi', SYNC_CHAIN_KWITANSI: 'Sinkron Berantai Kwitansi',
+  ADD_VISIT_PACKAGE: 'Tambah Paket ke Kunjungan', REMOVE_VISIT_PACKAGE: 'Hapus Paket dari Kunjungan',
+  ADD_VISIT_PACKAGE_ITEM: 'Tambah Item Paket Kunjungan', UPDATE_VISIT_PACKAGE_ITEM: 'Ubah Item Paket Kunjungan', REMOVE_VISIT_PACKAGE_ITEM: 'Hapus Item Paket Kunjungan',
+  SNAPSHOT_VISIT_PACKAGE: 'Snapshot Paket Kunjungan',
+  UPDATE_RECEIPT_PRINT_SETTINGS: 'Ubah Setelan Cetak Kwitansi', UPDATE_WATERMARK: 'Ubah Watermark',
+  // Rawat inap
+  UPDATE_TGL_PULANG: 'Ubah Tanggal Pulang',
+  // Kontrol / rujukan / SPRI
+  INSERT_RENCANA_KONTROL: 'Buat Rencana Kontrol', UPDATE_RENCANA_KONTROL: 'Ubah Rencana Kontrol', DELETE_RENCANA_KONTROL: 'Hapus Rencana Kontrol',
+  STORE_FOLLOW_UP: 'Simpan Kontrol/Follow-up', DELETE_FOLLOW_UP: 'Hapus Kontrol/Follow-up',
+  INSERT_RUJUKAN: 'Buat Rujukan', UPDATE_RUJUKAN: 'Ubah Rujukan', DELETE_RUJUKAN: 'Hapus Rujukan', STORE_RUJUKAN_KELUAR: 'Simpan Rujukan Keluar',
+  INSERT_SPRI: 'Buat SPRI', UPDATE_SPRI: 'Ubah SPRI', SUBMIT_SURAT_KONTROL: 'Terbitkan Surat Kontrol',
+  INSERT_LPK: 'Buat LPK', UPDATE_LPK: 'Ubah LPK', DELETE_LPK: 'Hapus LPK',
+  // BPJS / VClaim / klaim
+  GENERATE_SEP: 'Terbitkan SEP', UPDATE_SEP: 'Ubah SEP', CANCEL_SEP: 'Batal SEP', GET_SEP: 'Ambil/Lihat SEP', DELETE_SEP_INTERNAL: 'Hapus SEP (Internal)',
+  CHECK_PESERTA: 'Cek Peserta BPJS', CHECK_RUJUKAN: 'Cek Rujukan BPJS', CHECK_RUJUKAN_FKTP: 'Cek Rujukan FKTP', GET_RIWAYAT: 'Lihat Riwayat (i-Care/HFIS)',
+  APLICARE_SYNC_ALL: 'Sinkron Aplicares (Ketersediaan TT)', SYNC_JADWAL_DOKTER_BPJS: 'Sinkron Jadwal Dokter ke BPJS', SET_BPJS_DPJP_CODE: 'Set Kode DPJP BPJS',
+  UPSERT_BPJS_POLI_MAPPING: 'Simpan Pemetaan Poli BPJS', DELETE_BPJS_POLI_MAPPING: 'Hapus Pemetaan Poli BPJS', UPDATE_STATION_MAPPING: 'Ubah Pemetaan Stasiun',
+  FINGERPRINT_ANSWER: 'Sidik Jari (Fingerprint BPJS)', GENERATE_QR: 'Generate QR',
+  PREPARE_CLAIM: 'Siapkan Berkas Klaim', EDIT_CLAIM_CODING: 'Edit Koding Klaim', EKLAIM_FINAL: 'Finalisasi E-Klaim', GENERATE_LUPIS: 'Generate LUPIS',
+  RESUBMIT_CLAIM: 'Kirim Ulang Klaim', RETURN_CLAIM: 'Kembalikan Klaim', REJECT_BPJS_CLAIM: 'Tolak Klaim BPJS',
+  KLAIM_KEMBALIKAN_REKAP: 'Kembalikan Rekap Klaim', KLAIM_MINTA_KOREKSI: 'Minta Koreksi Klaim',
+  // Satu Sehat
+  RM_BATCH_SEND: 'Kirim Batch Satu Sehat', RM_RESEND: 'Kirim Ulang Satu Sehat', RESEND_NOTIF: 'Kirim Ulang Notifikasi', SET_EMPLOYEE_NIK: 'Set NIK Pegawai (Satu Sehat)',
+  // Request/retur antar unit
+  KIRIM_REQUEST: 'Kirim Permintaan Stok', UPDATE_SUPPLY_REQUEST: 'Ubah Permintaan Stok', ASSIGN_INBOX: 'Tetapkan Inbox Request', DISCARD_INBOX: 'Buang Inbox Request',
+  // Jadwal dokter
+  STORE_JADWAL: 'Simpan Jadwal Dokter', UPDATE_JADWAL: 'Ubah Jadwal Dokter', DELETE_JADWAL: 'Hapus Jadwal Dokter',
+  // RBAC
+  CREATE_ROLE: 'Buat Role', UPDATE_ROLE: 'Ubah Role', DELETE_ROLE: 'Hapus Role',
+  CREATE_PEGAWAI: 'Buat Pegawai', UPDATE_PEGAWAI: 'Ubah Pegawai', DELETE_PEGAWAI: 'Hapus Pegawai',
+  // Master data — penjamin/TPA/COB
+  CREATE_PENJAMIN: 'Buat Penjamin', UPDATE_PENJAMIN: 'Ubah Penjamin', DELETE_PENJAMIN: 'Hapus Penjamin', IMPORT_PENJAMIN_CSV: 'Import Penjamin (CSV)',
+  ADD_TPA_MEMBER: 'Tambah Peserta TPA', ADD_TPA_MEMBER_NEW: 'Tambah Peserta TPA (Baru)', REMOVE_TPA_MEMBER: 'Hapus Peserta TPA', UPDATE_COB: 'Ubah COB (Penjamin Kedua)',
+  // Master data — tarif/tindakan/paket/obat/BHP/IOL
+  CREATE_TINDAKAN: 'Buat Tindakan', UPDATE_TINDAKAN: 'Ubah Tindakan', DELETE_TINDAKAN: 'Hapus Tindakan', STORE_TINDAKAN_MASTER: 'Simpan Tindakan',
+  CREATE_TARIF: 'Buat Tarif', UPDATE_TARIF: 'Ubah Tarif', DELETE_TARIF: 'Hapus Tarif', UPSERT_TARIF: 'Simpan Tarif',
+  CREATE_PROC_CATEGORY: 'Buat Kategori Tindakan', UPDATE_PROC_CATEGORY: 'Ubah Kategori Tindakan', DELETE_PROC_CATEGORY: 'Hapus Kategori Tindakan', IMPORT_PROC_CATEGORY_CSV: 'Import Kategori Tindakan (CSV)',
+  CREATE_BILLING_CATEGORY: 'Buat Kategori Tagihan', UPDATE_BILLING_CATEGORY: 'Ubah Kategori Tagihan', DELETE_BILLING_CATEGORY: 'Hapus Kategori Tagihan', REORDER_BILLING_CATEGORY: 'Urut Ulang Kategori Tagihan',
+  CREATE_PAKET_BEDAH: 'Buat Paket Bedah', UPDATE_PAKET_BEDAH: 'Ubah Paket Bedah', DELETE_PAKET_BEDAH: 'Hapus Paket Bedah',
+  ADD_PAKET_ITEM: 'Tambah Item Paket', DELETE_PAKET_ITEM: 'Hapus Item Paket', UPSERT_PAKET_TARIFF: 'Simpan Tarif Paket', DELETE_PAKET_TARIFF: 'Hapus Tarif Paket',
+  CREATE_OBAT: 'Buat Obat', UPDATE_OBAT: 'Ubah Obat', DELETE_OBAT: 'Hapus Obat',
+  UPSERT_KEMASAN_OBAT: 'Simpan Kemasan Obat', UPDATE_KEMASAN_OBAT: 'Ubah Kemasan Obat', DELETE_KEMASAN_OBAT: 'Hapus Kemasan Obat', SET_KEMASAN_ITEM: 'Set Kemasan Item',
+  CREATE_IOL: 'Buat Data IOL (Lensa)', UPDATE_IOL: 'Ubah IOL', DELETE_IOL: 'Hapus IOL', UPDATE_STOK_IOL: 'Ubah Stok IOL',
+  CREATE_DIAGNOSTIC_TEST_TYPE: 'Buat Jenis Pemeriksaan Penunjang', UPDATE_DIAGNOSTIC_TEST_TYPE: 'Ubah Jenis Pemeriksaan Penunjang', DELETE_DIAGNOSTIC_TEST_TYPE: 'Hapus Jenis Pemeriksaan Penunjang',
+  // Master data — dokumen/template/profil/integrasi
+  CREATE_TEMPLATE: 'Buat Template Form RM', UPDATE_TEMPLATE: 'Ubah Template Form RM', DELETE_TEMPLATE: 'Hapus Template Form RM',
+  CREATE_DOC_TYPE: 'Buat Jenis Dokumen', UPDATE_DOC_TYPE: 'Ubah Jenis Dokumen', DELETE_DOC_TYPE: 'Hapus Jenis Dokumen',
+  CREATE_DOC_NUMBER_CONFIG: 'Buat Konfigurasi No. Dokumen', UPDATE_DOC_NUMBER_CONFIG: 'Ubah Konfigurasi No. Dokumen', DELETE_DOC_NUMBER_CONFIG: 'Hapus Konfigurasi No. Dokumen',
+  UPDATE_CLINIC_PROFILE: 'Ubah Profil Klinik', UPDATE_INTEGRASI_CONFIG: 'Ubah Konfigurasi Integrasi',
+  // Import massal
+  IMPORT_TARIF_CSV: 'Import Tarif (CSV)', IMPORT_TINDAKAN_CSV: 'Import Tindakan (CSV)', IMPORT_BUKU_TARIF_CSV: 'Import Buku Tarif (CSV)',
+  IMPORT_PAKET_BEDAH_CSV: 'Import Paket Bedah (CSV)', IMPORT_RESOURCE_CSV: 'Import Data (CSV)',
+}
+// Prettify fallback: "STORE_ANY_NEW" → "Store Any New" (untuk action yang belum
+// dipetakan — mis. action baru ditambah backend). Aman & tetap terbaca.
+function prettifyAction(code) {
+  return String(code || '')
+    .toLowerCase()
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+function actionLabel(code) {
+  return ACTION_LABELS[code] || prettifyAction(code)
+}
 </script>
 
 <template>
@@ -1402,9 +1521,9 @@ function shortModel(m) {
     <div v-if="pgTab === 'audit'" class="pg">
       <div class="tb-row">
         <input v-model="store.auditFilter.search" class="fi" style="width:210px" placeholder="Cari deskripsi / objek..." @keyup.enter="applyAuditFilter"/>
-        <select v-model="store.auditFilter.action" class="fs" style="width:185px" @change="applyAuditFilter">
+        <select v-model="store.auditFilter.action" class="fs" style="width:220px" @change="applyAuditFilter">
           <option value="">Semua Aksi</option>
-          <option v-for="a in store.auditActions" :key="a" :value="a">{{ a }}</option>
+          <option v-for="a in store.auditActions" :key="a" :value="a">{{ actionLabel(a) }}</option>
         </select>
         <select v-model="store.auditFilter.user_id" class="fs" style="width:165px" @change="applyAuditFilter">
           <option value="">Semua Pengguna</option>
@@ -1431,7 +1550,10 @@ function shortModel(m) {
                   </template>
                   <span v-else style="font-size:10.5px;color:var(--tu)">Sistem</span>
                 </td>
-                <td><span :class="['al-pill', auditActionClass(l.action)]">{{ l.action }}</span></td>
+                <td>
+                  <span :class="['al-pill', auditActionClass(l.action)]" :title="l.action">{{ actionLabel(l.action) }}</span>
+                  <div class="al-code">{{ l.action }}</div>
+                </td>
                 <td style="font-size:10.5px;color:var(--tu)">
                   <template v-if="l.model">
                     <span>{{ shortModel(l.model) }}</span>
@@ -1604,7 +1726,8 @@ function shortModel(m) {
 .log-who { font-size: 9.5px; color: var(--tu); }
 
 /* Audit log — pill action, pager, catatan */
-.al-pill { display: inline-block; font-family: monospace; font-size: 9px; font-weight: 700; letter-spacing: .02em; padding: 2px 6px; border-radius: 6px; border: 1px solid; white-space: nowrap; }
+.al-pill { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .01em; padding: 2px 7px; border-radius: 6px; border: 1px solid; line-height: 1.35; }
+.al-code { font-family: monospace; font-size: 8px; color: var(--tu); margin-top: 2px; letter-spacing: .02em; }
 .al-create { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .al-update { background: var(--ib); color: var(--it); border-color: var(--ibd); }
 .al-del    { background: var(--eb); color: var(--et); border-color: var(--ebd); }
