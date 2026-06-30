@@ -50,6 +50,22 @@ class Medication extends Model
         'is_active'   => 'boolean',
     ];
 
+    protected static function booted(): void
+    {
+        // Kolom `unit` (lama, satuan tunggal) adalah satuan yang DITAMPILKAN di seluruh
+        // modul Farmasi (dispensing/verifikasi/ranap/POS/stok/opname & resep DokterView).
+        // Form master obat hanya mengedit `unit_kecil`, jadi cerminkan unit_kecil → unit
+        // pada setiap simpan (store/update/import-csv) agar perubahan satuan di master
+        // ikut tampil di seluruh modul. Bila unit_kecil kosong, kolom `unit` dibiarkan
+        // (fallback nilai lama). Sejalan konvensi `unit_kecil ?? unit` di Data Stock.
+        static::saving(function (self $m): void {
+            $kecil = trim((string) ($m->unit_kecil ?? ''));
+            if ($kecil !== '') {
+                $m->unit = $kecil;
+            }
+        });
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
