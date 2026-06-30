@@ -8,6 +8,7 @@ use App\Models\DiagnosticTestType;
 use App\Models\Patient;
 use App\Models\PenunjangIngestInbox;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Otak pencocokan hasil penunjang yang dikirim bridge/watcher alat → order yang benar.
@@ -79,8 +80,50 @@ class PenunjangIngestService
             $expertisePatch = array_merge($expertisePatch ?? [], $dicom);
         }
 
-        // Idempotensi — cek SEBELUM simpan file (hindari file yatim saat retry).
-        if ($ref) {
+        // Operasi inti: simpan file → cocokkan order → attach hasil / kirim ke Inbox.
+        $persist = function () use ($file, $meta, $ref, $expertisePatch): array {
+            // Simpan file ke disk public (folder sama dgn upload manual → attachment_url jalan).
+            $path = $file->store('penunjang-hasil', 'public');
+
+            $order = $this->matchOrder($meta);
+
+            if ($order) {
+                $result = $this->penunjang->attachAttachmentToOrder($order, $path, null, $ref, $expertisePatch);
+                return [
+                    'matched'          => true,
+                    'order_id'         => $order->id,
+                    'accession_number' => $order->accession_number,
+                    'patient_name'     => $order->visit?->patient?->name,
+                    'result_id'        => $result->id,
+                ];
+            }
+
+            // Tak match → Inbox (jangan drop diam-diam).
+            $inbox = PenunjangIngestInbox::create([
+                'attachment_path'   => $path,
+                'source'            => $meta['source'] ?? 'OCT',
+                'accession_number'  => $meta['accession_number'] ?? null,
+                'claimed_no_rm'     => $meta['no_rm'] ?? null,
+                'original_filename' => $meta['original_filename'] ?? null,
+                'external_ref'      => $ref,
+                'status'            => 'UNMATCHED',
+            ]);
+
+            return ['matched' => false, 'inbox_id' => $inbox->id];
+        };
+
+        // Tanpa external_ref tak ada dasar idempotensi → langsung proses.
+        if (! $ref) {
+            return $persist();
+        }
+
+        // Dengan external_ref: serialize ingest ber-ref SAMA (retry bridge konkuren) via
+        // advisory xact lock + bungkus cek-duplikat & create dalam SATU transaksi, agar
+        // cek-lalu-create jadi ATOMIK (cegah duplikat Inbox/DiagnosticResult saat race).
+        // Lock dilepas otomatis saat commit/rollback.
+        return DB::transaction(function () use ($ref, $persist) {
+            DB::statement('SELECT pg_advisory_xact_lock(hashtext(?))', ['penunjang_ingest:' . $ref]);
+
             $inbox = PenunjangIngestInbox::where('external_ref', $ref)
                 ->whereIn('status', ['UNMATCHED', 'ASSIGNED'])->first();
             if ($inbox) {
@@ -90,36 +133,9 @@ class PenunjangIngestService
             if ($existing) {
                 return ['matched' => true, 'order_id' => $existing->diagnostic_order_id, 'duplicate' => true];
             }
-        }
 
-        // Simpan file ke disk public (folder sama dgn upload manual → attachment_url jalan).
-        $path = $file->store('penunjang-hasil', 'public');
-
-        $order = $this->matchOrder($meta);
-
-        if ($order) {
-            $result = $this->penunjang->attachAttachmentToOrder($order, $path, null, $ref, $expertisePatch);
-            return [
-                'matched'          => true,
-                'order_id'         => $order->id,
-                'accession_number' => $order->accession_number,
-                'patient_name'     => $order->visit?->patient?->name,
-                'result_id'        => $result->id,
-            ];
-        }
-
-        // Tak match → Inbox (jangan drop diam-diam).
-        $inbox = PenunjangIngestInbox::create([
-            'attachment_path'   => $path,
-            'source'            => $meta['source'] ?? 'OCT',
-            'accession_number'  => $meta['accession_number'] ?? null,
-            'claimed_no_rm'     => $meta['no_rm'] ?? null,
-            'original_filename' => $meta['original_filename'] ?? null,
-            'external_ref'      => $ref,
-            'status'            => 'UNMATCHED',
-        ]);
-
-        return ['matched' => false, 'inbox_id' => $inbox->id];
+            return $persist();
+        });
     }
 
     /** Resolusi order target dari meta. Null = tak ada/ambigu → caller kirim ke Inbox. */
