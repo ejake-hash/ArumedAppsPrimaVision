@@ -486,7 +486,11 @@ class AdmisiService
             }
 
             // Verifikasi asuransi (TPA): ASURANSI/PERUSAHAAN butuh PENDING; lainnya NONE.
-            $needsTpa = in_array($newType, ['ASURANSI', 'PERUSAHAAN'], true);
+            // COB juga butuh PENDING walau penjamin-1 BPJS — penjamin-2 (asuransi/
+            // perusahaan) wajib diverifikasi coverage-nya di modul Asuransi, kalau tidak
+            // covered_amount tetap 0 dan kasir keliru menagih ekses = seluruh tagihan.
+            $hasCob   = ! empty($data['cob']['penjamin2_insurer_id']);
+            $needsTpa = in_array($newType, ['ASURANSI', 'PERUSAHAAN'], true) || $hasCob;
             if ($needsTpa) {
                 $visit->insurance_verification_status = 'PENDING';
             } else {
@@ -1184,11 +1188,13 @@ class AdmisiService
 
             // Asuransi/Perusahaan non-BPJS → flag PENDING untuk diverifikasi billing
             // ke portal TPA secara paralel. UMUM/BPJS/SOSIAL → NONE (skip alur TPA).
+            // COB ikut PENDING walau penjamin-1 BPJS — penjamin-2 wajib diverifikasi
+            // coverage-nya di modul Asuransi (lihat catatan di updateGuarantor).
             $needsTpaVerification = in_array(
                 $data['guarantor_type'] ?? null,
                 ['ASURANSI', 'PERUSAHAAN'],
                 true
-            );
+            ) || ! empty($data['cob']['penjamin2_insurer_id']);
 
             $visit = Visit::create([
                 'patient_id'         => $patient->id,
@@ -1489,11 +1495,12 @@ class AdmisiService
             }
 
             // Asuransi/Perusahaan non-BPJS → flag PENDING (lihat catatan di registerVisit)
+            // COB ikut PENDING walau penjamin-1 BPJS (lihat catatan di updateGuarantor).
             $needsTpaVerificationWalkin = in_array(
                 $data['guarantor_type'] ?? null,
                 ['ASURANSI', 'PERUSAHAAN'],
                 true
-            );
+            ) || ! empty($data['cob']['penjamin2_insurer_id']);
 
             // Pre-op bedah (pasien pre-op via Anjungan/walk-in). Konsisten dgn
             // registerVisit — tanpa ini pasien pre-op kehilangan routing & PRE_OP inap.
@@ -1875,10 +1882,132 @@ class AdmisiService
     {
         $this->assertBpjsEnabled('VCLAIM');
 
-        // Lock baris visit (anti-race): auto-SEP saat registrasi + klik "Terbitkan SEP"
-        // manual bisa nyaris bersamaan → tanpa lock keduanya lolos guard no_sep lalu
-        // generate SEP DOBEL di BPJS. Serialize per-visit; re-cek no_sep di dalam lock.
-        return DB::transaction(fn () => $this->generateSepLocked($data));
+        // Feature flag (IntegrationConfig VCLAIM.configuration.sep_state_machine, default OFF).
+        // OFF → jalur LAMA (transaksi tunggal, masih LIVE & teruji) sebagai fallback aman.
+        if (! $this->sepStateMachineEnabled()) {
+            return DB::transaction(fn () => $this->generateSepLocked($data));
+        }
+
+        // ON → state-machine: HTTP BPJS keluar dari transaksi (cegah pool exhaustion);
+        // anti-race via klaim ISSUING (SELECT FOR UPDATE, TX-mikro). Rancangan:
+        // design_sep_out_of_transaction.
+        $visit = $this->claimSepIssuing($data['visit_id']); // throw 422 (sudah ada) / 409 (sedang terbit)
+
+        try {
+            $result = $this->issueSep($visit, $data); // HTTP BPJS DI LUAR transaksi
+        } catch (\Throwable $e) {
+            // Throw = error SEBELUM SEP terbit (validasi data 422) pada mayoritas kasus —
+            // timeout BPJS TIDAK throw (return code '0'). Lepaskan klaim HANYA bila no_sep
+            // masih kosong, agar retry menampilkan error asli (bukan 409).
+            $this->releaseIssuingIfNoSep($data['visit_id']);
+            throw $e;
+        }
+
+        if (! ($result['response']['sep']['noSep'] ?? null)) {
+            // Tak ada nomor → gagal sejati. code '0'/'' (koneksi/timeout) = SEP MUNGKIN terbit
+            // diam-diam → BIARKAN ISSUING (reconcile/klik-ulang menyisir via recovery duplikat).
+            $this->markFailedOrKeepIssuing($data['visit_id'], $result);
+        }
+
+        return $result;
+    }
+
+    /** Flag state-machine SEP (IntegrationConfig VCLAIM.configuration.sep_state_machine). Default OFF. */
+    private function sepStateMachineEnabled(): bool
+    {
+        $cfg = IntegrationConfig::where('system_name', 'VCLAIM')->first()?->configuration ?? [];
+        return (bool) ($cfg['sep_state_machine'] ?? false);
+    }
+
+    /** TTL klaim ISSUING (detik). Dihitung dari timeout VClaim agar aman saat config dinaikkan. */
+    private function sepIssuingTtl(): int
+    {
+        $cfg     = IntegrationConfig::where('system_name', 'VCLAIM')->first()?->configuration ?? [];
+        $timeout = (int) ($cfg['timeout'] ?? 30);
+        // 1 penerbitan bisa s.d. 4 HTTP sekuensial (checkPeserta+resolveRujukan+generateSep+getSep).
+        return max(150, $timeout * 5);
+    }
+
+    /**
+     * FASE 1 — klaim penerbitan SEP (anti-race, TX-mikro). SELECT FOR UPDATE per-visit
+     * menggantikan lock lama, ditahan HANYA selama TX-mikro ini (BUKAN selama HTTP BPJS).
+     *
+     * @throws \Exception 422 bila sudah punya SEP; 409 bila penerbit lain sedang aktif.
+     */
+    private function claimSepIssuing(string $visitId): Visit
+    {
+        return DB::transaction(function () use ($visitId) {
+            $v = Visit::with(['patient', 'doctorSchedule.employee'])
+                ->lockForUpdate()
+                ->findOrFail($visitId);
+
+            if ($v->no_sep) {
+                throw new \Exception("Kunjungan ini sudah punya SEP: {$v->no_sep}", 422);
+            }
+            if ($v->sep_status === 'ISSUING'
+                && $v->sep_issuing_at
+                && $v->sep_issuing_at->gt(now()->subSeconds($this->sepIssuingTtl()))) {
+                throw new \Exception('SEP sedang diterbitkan untuk kunjungan ini, coba lagi sebentar.', 409);
+            }
+            // Klaim — menimpa NULL, FAILED, atau ISSUING-BASI (TTL lewat). Aman: re-claim basi
+            // terjadi di dalam FOR UPDATE yang sama → terserialisasi (yg kedua lihat sep_issuing_at
+            // sudah di-refresh → jatuh ke cabang 409).
+            $v->forceFill(['sep_status' => 'ISSUING', 'sep_issuing_at' => now()])->save();
+
+            return $v;
+        }); // COMMIT → lock baris LEPAS, koneksi kembali ke pool. BPJS belum dipanggil.
+    }
+
+    /** Persist no_sep + sep_data + status ISSUED. Idempoten thd UNIQUE no_sep (23505 = sudah tertaut). */
+    private function persistNoSepIdempotent(Visit $visit, string $noSep, array $snapshot): void
+    {
+        try {
+            // Savepoint (nested transaction) bila dipanggil DI DALAM transaksi (jalur lama):
+            // 23505 hanya rollback bagian ini, transaksi induk selamat (tanpa savepoint, error
+            // Postgres membatalkan SELURUH transaksi). Di jalur state-machine (di luar
+            // transaksi) ini transaksi pendek biasa. Pola sama backfillPatientBpjsNumber.
+            DB::transaction(function () use ($visit, $noSep, $snapshot) {
+                $visit->forceFill([
+                    'no_sep'         => $noSep,
+                    'sep_data'       => $snapshot,
+                    'sep_status'     => 'ISSUED',
+                    'sep_issuing_at' => null,
+                ])->save();
+            });
+        } catch (\Illuminate\Database\QueryException $e) {
+            // UNIQUE no_sep (create_visits:17) = correctness-floor: nomor sama sudah tertaut
+            // proses lain → perlakukan idempoten (sukses), jangan bocor 500.
+            if (($e->errorInfo[0] ?? null) === '23505') {
+                return;
+            }
+            throw $e;
+        }
+    }
+
+    /** Lepaskan klaim ISSUING HANYA bila no_sep masih kosong (SEP belum terbit). */
+    private function releaseIssuingIfNoSep(string $visitId): void
+    {
+        Visit::whereKey($visitId)
+            ->whereNull('no_sep')
+            ->where('sep_status', 'ISSUING')
+            ->update(['sep_status' => null, 'sep_issuing_at' => null]);
+    }
+
+    /**
+     * Gagal sejati (tanpa nomor SEP). code '0'/'' (koneksi/timeout) AMBIGU — SEP mungkin
+     * sudah terbit diam-diam → BIARKAN ISSUING (reconcile/klik-ulang menyisir). Penolakan
+     * validasi BPJS deterministik (code lain) → FAILED (boleh retry; claim baru menimpa FAILED).
+     */
+    private function markFailedOrKeepIssuing(string $visitId, array $result): void
+    {
+        $code = (string) ($result['metaData']['code'] ?? '');
+        if ($code === '0' || $code === '') {
+            return; // ambigu → biarkan ISSUING
+        }
+        Visit::whereKey($visitId)
+            ->whereNull('no_sep')
+            ->where('sep_status', 'ISSUING')
+            ->update(['sep_status' => 'FAILED', 'sep_issuing_at' => null]);
     }
 
     /** Inti penerbitan SEP — WAJIB dijalankan dalam DB::transaction + lockForUpdate. */
@@ -1892,6 +2021,18 @@ class AdmisiService
             throw new \Exception("Kunjungan ini sudah punya SEP: {$visit->no_sep}", 422);
         }
 
+        return $this->issueSep($visit, $data);
+    }
+
+    /**
+     * Inti penerbitan SEP: build payload + HTTP BPJS (checkPeserta/resolveRujukanDetail/
+     * generateSep/getSep) + persist hasil. $visit WAJIB sudah dimuat (relasi patient +
+     * doctorSchedule.employee) & di-guard (no_sep null). TIDAK mengunci/transaksi sendiri:
+     *   - jalur lama (flag OFF): dipanggil generateSepLocked DI DALAM DB::transaction.
+     *   - jalur state-machine (flag ON): dipanggil DI LUAR transaksi (HTTP BPJS tak menahan koneksi DB).
+     */
+    private function issueSep(Visit $visit, array $data): array
+    {
         // No. kartu: dari request → data pasien → (fallback) resolve dari NIK via Cek
         // Peserta. Pasien BPJS sering tersimpan TANPA No. Kartu (petugas isi NIK saja,
         // atau kartu di-blank saat BPJS offline → normalizeBpjsNumber jadikan NULL).
@@ -2086,7 +2227,7 @@ class AdmisiService
                     'namaPeserta'  => $visit->patient?->name,
                 ]
             );
-            $visit->update(['no_sep' => $noSep, 'sep_data' => $sepSnapshot]);
+            $this->persistNoSepIdempotent($visit, $noSep, $sepSnapshot);
 
             return $result;
         }
@@ -2117,7 +2258,7 @@ class AdmisiService
             } catch (\Throwable $e) {
                 // detail tak tertarik (BPJS error/format) — tetap tautkan nomornya.
             }
-            $visit->update(['no_sep' => $existing, 'sep_data' => $snapshot]);
+            $this->persistNoSepIdempotent($visit, $existing, $snapshot);
 
             // Bentuk respons seperti sukses insert → FE menampilkan SEP tertaut, bukan error.
             return [

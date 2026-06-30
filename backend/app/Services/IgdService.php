@@ -18,6 +18,7 @@ use App\Models\Queue;
 use App\Models\SurgeryPackage;
 use App\Models\SurgerySchedule;
 use App\Models\Visit;
+use App\Models\VisitCob;
 use App\Models\VisitSurgeryPackage;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -597,6 +598,13 @@ class IgdService
                 // 1) Selesaikan encounter IGD → KASIR (invoice biaya gawat darurat).
                 $advance = $this->queue->advanceFromStation($igdQueue->id, Queue::STATION_IGD);
 
+                // Verifikasi asuransi anak: ASURANSI/PERUSAHAAN, atau COB warisan induk,
+                // butuh PENDING agar masuk antrean Asuransi (tanpa ini covered_amount=0 →
+                // kasir keliru menagih ekses = seluruh tagihan). COB induk disalin ke anak.
+                $parentCob   = VisitCob::activeForVisit($visit->id);
+                $childNeedsTpa = in_array($visit->guarantor_type, ['ASURANSI', 'PERUSAHAAN'], true)
+                    || $parentCob !== null;
+
                 // 2) Kunjungan ANAK rawat jalan ke poli tujuan (pola rujukan internal).
                 $child = Visit::create([
                     'parent_visit_id'               => $visit->id,
@@ -614,8 +622,11 @@ class IgdService
                     'current_station'               => $isToday ? Queue::STATION_DOKTER : Queue::STATION_ADMISI,
                     'guarantor_type'                => $visit->guarantor_type,
                     'satusehat_sync_status'         => 'PENDING',
-                    'insurance_verification_status' => 'NONE',
+                    'insurance_verification_status' => $childNeedsTpa ? 'PENDING' : 'NONE',
                 ]);
+                if ($parentCob) {
+                    $parentCob->replicateTo($child->id);
+                }
                 if ($isToday) {
                     $this->queue->enqueue($child->id, Queue::STATION_DOKTER);
                 }

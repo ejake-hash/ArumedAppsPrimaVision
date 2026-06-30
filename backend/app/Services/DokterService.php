@@ -32,6 +32,7 @@ use App\Models\SurgerySchedule;
 use App\Models\SystemLog;
 use App\Models\SurgeryPackage;
 use App\Models\Visit;
+use App\Models\VisitCob;
 use App\Models\VisitBhpUsage;
 use App\Models\VisitService;
 use App\Models\VisitSurgeryPackage;
@@ -3106,6 +3107,13 @@ class DokterService
         }
 
         return DB::transaction(function () use ($visit, $target, $reason, $user, $isToday, $date) {
+            // Verifikasi asuransi anak: ASURANSI/PERUSAHAAN, atau COB warisan induk, butuh
+            // PENDING agar masuk antrean Asuransi (tanpa ini covered_amount=0 → kasir keliru
+            // menagih ekses = seluruh tagihan). COB induk disalin ke anak.
+            $parentCob     = VisitCob::activeForVisit($visit->id);
+            $childNeedsTpa = in_array($visit->guarantor_type, ['ASURANSI', 'PERUSAHAAN'], true)
+                || $parentCob !== null;
+
             $child = Visit::create([
                 'parent_visit_id'                    => $visit->id,
                 'patient_id'                         => $visit->patient_id,
@@ -3125,8 +3133,11 @@ class DokterService
                 'current_station'                    => $isToday ? 'DOKTER' : 'ADMISI',
                 'guarantor_type'                     => $visit->guarantor_type,
                 'satusehat_sync_status'              => 'PENDING',
-                'insurance_verification_status'      => 'NONE',
+                'insurance_verification_status'      => $childNeedsTpa ? 'PENDING' : 'NONE',
             ]);
+            if ($parentCob) {
+                $parentCob->replicateTo($child->id);
+            }
 
             if ($isToday) {
                 $this->queueService->enqueue($child->id, 'DOKTER');

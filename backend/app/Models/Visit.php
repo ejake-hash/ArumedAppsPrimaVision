@@ -27,6 +27,8 @@ class Visit extends Model
         'no_registrasi',
         'no_sep',
         'sep_data',
+        'sep_status',
+        'sep_issuing_at',
         'photo_path',
         'visit_date',
         'classification',
@@ -88,6 +90,7 @@ class Visit extends Model
     protected $casts = [
         'visit_date'            => 'date',
         'sep_data'              => 'array',
+        'sep_issuing_at'        => 'datetime',
         'triase_completed_at'   => 'datetime',
         'refraksi_completed_at' => 'datetime',
         'satusehat_synced_at'   => 'datetime',

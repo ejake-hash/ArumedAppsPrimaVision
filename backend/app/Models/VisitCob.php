@@ -35,6 +35,32 @@ class VisitCob extends Model
         return $query->where('is_active', true);
     }
 
+    /** COB aktif (punya penjamin-2) untuk satu visit, atau null. */
+    public static function activeForVisit(string $visitId): ?self
+    {
+        return static::where('visit_id', $visitId)
+            ->where('is_active', true)
+            ->whereNotNull('penjamin2_insurer_id')
+            ->first();
+    }
+
+    /**
+     * Salin pengaturan COB ini ke visit anak (rujukan internal IGD/Dokter → poli),
+     * agar tagihan anak juga di-split BPJS + penjamin-2 dan masuk Verifikasi Asuransi.
+     */
+    public function replicateTo(string $childVisitId): self
+    {
+        return static::create([
+            'visit_id'             => $childVisitId,
+            'penjamin1_type'       => $this->penjamin1_type,
+            'penjamin1_insurer_id' => $this->penjamin1_insurer_id,
+            'penjamin2_type'       => $this->penjamin2_type,
+            'penjamin2_insurer_id' => $this->penjamin2_insurer_id,
+            'is_active'            => true,
+            'notes'                => $this->notes,
+        ]);
+    }
+
     public function visit(): BelongsTo
     {
         return $this->belongsTo(Visit::class);
