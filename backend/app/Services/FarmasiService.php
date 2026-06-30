@@ -362,6 +362,12 @@ class FarmasiService
             ])
             ->where('type', '!=', Prescription::TYPE_RANAP)
             ->where('status', 'SUBMITTED')
+            // Sembunyikan resep YATIM (visit tanpa pasien — patient_id null / pasien
+            // ter-soft-delete). Worklist menahan semua resep belum-terverifikasi tanpa
+            // batas tanggal (orWhereNull verified_at di bawah), jadi resep uji/seed lama
+            // yang pasiennya kosong menumpuk selamanya & muncul "tanpa nama". Tanpa pasien,
+            // resep tak bisa diverifikasi/dispense secara bermakna → keluarkan dari antrean.
+            ->whereHas('visit.patient')
             // Tahan resep POLI selama pasien MASIH menunggu OPERASI (Ruang Bedah) yang belum
             // selesai agar resep poli tak nyangkut di Verifikasi sebelum prosedur usai —
             // pasien hanya mengambil obat SEKALI setelah operasi. Resep pasca-bedah
