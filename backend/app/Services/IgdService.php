@@ -424,6 +424,34 @@ class IgdService
             ->get(['id', 'name', 'profession', 'doctor_type'])->all();
     }
 
+    /**
+     * Ganti dokter pada baris KONSULTASI yang belum ditagih (koreksi pilih dokter,
+     * mis. konsultasi umum tertukar spesialis). Deskripsi diperbarui (nama tarif +
+     * nama dokter baru) & performed_by_id → honor mengikuti dokter yang benar.
+     */
+    public function updateKonsultasiDokter(Visit $visit, string $chargeId, string $doctorId): InpatientCharge
+    {
+        $charge = InpatientCharge::where('visit_id', $visit->id)->findOrFail($chargeId);
+        if ($charge->charge_type !== InpatientCharge::TYPE_KONSUL) {
+            throw new \Exception('Baris ini bukan konsultasi dokter.', 422);
+        }
+        if ($charge->is_billed) {
+            throw new \Exception('Konsultasi sudah masuk invoice — dokter tidak bisa diganti.', 422);
+        }
+
+        $doctor = Employee::whereIn('doctor_type', [Employee::DT_UMUM, Employee::DT_SPESIALIS_MATA])
+            ->where('is_active', true)->findOrFail($doctorId);
+        $proc = $charge->reference_id ? Procedure::find($charge->reference_id) : null;
+        $procName = $proc?->name ?: preg_replace('/\s+—\s+.*$/u', '', $charge->description);
+
+        $charge->update([
+            'performed_by_id' => $doctor->id,
+            'description'     => $procName . ' — ' . $doctor->name,
+        ]);
+
+        return $charge->fresh();
+    }
+
     /** Catat TINDAKAN IGD — harga resolve OTOMATIS via getPrice. */
     public function addTindakan(Visit $visit, string $procedureId, float $qty = 1): InpatientCharge
     {

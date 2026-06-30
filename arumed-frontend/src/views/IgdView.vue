@@ -79,6 +79,20 @@ const obatSearch = ref('')
 const selTindakan = ref('')
 const selObat = ref('')
 
+// Konsultasi dokter (umum jaga / spesialis mata) — dokter tampil di kwitansi & honor.
+const konsultasiDokterList = ref([])
+const selKonsulTarif = ref('')
+const selKonsulDokter = ref('')
+// Tarif konsultasi = procedure berkategori "Konsultasi …" (fallback: semua tindakan).
+const konsultasiTarifList = computed(() => {
+  const k = tindakanList.value.filter(t => /konsul/i.test(t.category || ''))
+  return k.length ? k : tindakanList.value
+})
+function dokterLabel(d) {
+  const tag = d.doctor_type === 'SPESIALIS_MATA' ? 'Sp.M' : (d.doctor_type === 'UMUM' ? 'Umum' : d.doctor_type)
+  return `${d.name} (${tag})`
+}
+
 const TRIAGE_COLORS = [
   { code: 'MERAH',  label: 'Merah — Resusitasi', hex: '#dc2626' },
   { code: 'KUNING', label: 'Kuning — Gawat',     hex: '#d97706' },
@@ -216,6 +230,10 @@ async function loadPickers(visitId) {
     ])
     tindakanList.value = t.data.data || []
     obatList.value = o.data.data || []
+    if (!konsultasiDokterList.value.length) {
+      const d = await igdApi.konsultasiDokter()
+      konsultasiDokterList.value = d.data.data || []
+    }
   } catch { /* non-fatal */ }
 }
 
@@ -629,6 +647,31 @@ async function addObat() {
   }
 }
 
+async function addKonsultasi() {
+  if (!selKonsulTarif.value || !selKonsulDokter.value || !detail.value) return
+  try {
+    await igdApi.addKonsultasi(detail.value.id, { procedure_id: selKonsulTarif.value, doctor_id: selKonsulDokter.value })
+    selKonsulTarif.value = ''
+    selKonsulDokter.value = ''
+    notify('Konsultasi dicatat')
+    await openDetail(detail.value.id)
+  } catch (e) {
+    notify(errMsg(e, 'Gagal mencatat konsultasi'), false)
+  }
+}
+
+// Ganti dokter pada baris konsultasi (koreksi pilih dokter) — untuk kwitansi & honor.
+async function changeKonsulDokter(charge, doctorId) {
+  if (!detail.value || !doctorId || doctorId === charge.performed_by_id) return
+  try {
+    await igdApi.updateKonsultasiDokter(detail.value.id, charge.id, { doctor_id: doctorId })
+    notify('Dokter konsultasi diperbarui')
+    await openDetail(detail.value.id)
+  } catch (e) {
+    notify(errMsg(e, 'Gagal mengganti dokter'), false)
+  }
+}
+
 async function deleteCharge(chargeId) {
   if (!detail.value) return
   try {
@@ -942,6 +985,24 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- KONSULTASI DOKTER (nama dokter tampil di kwitansi + honor) -->
+          <div v-if="auth.can('igd.write')" class="det-section">
+            <div class="ds-title">Tambah Konsultasi Dokter</div>
+            <div class="picker-row">
+              <select v-model="selKonsulTarif">
+                <option value="">— pilih konsultasi —</option>
+                <option v-for="t in konsultasiTarifList" :key="t.id" :value="t.id">{{ t.name }} · {{ fmtRp(t.price) }}</option>
+              </select>
+            </div>
+            <div class="picker-row">
+              <select v-model="selKonsulDokter">
+                <option value="">— pilih dokter —</option>
+                <option v-for="d in konsultasiDokterList" :key="d.id" :value="d.id">{{ dokterLabel(d) }}</option>
+              </select>
+              <button class="btn btn-primary btn-press btn-sm" @click="addKonsultasi">+ Konsultasi</button>
+            </div>
+          </div>
+
           <!-- OBAT -->
           <div v-if="auth.can('igd.write')" class="det-section">
             <div class="ds-title">Tambah Obat</div>
@@ -965,7 +1026,15 @@ onMounted(() => {
               <tbody>
                 <tr v-if="!charges.length"><td colspan="4" class="muted" style="text-align:center;">Belum ada biaya.</td></tr>
                 <tr v-for="c in charges" :key="c.id">
-                  <td>{{ c.description }}</td>
+                  <td>
+                    {{ c.description }}
+                    <div v-if="c.charge_type === 'KONSUL' && auth.can('igd.write') && !c.is_billed" class="konsul-ganti">
+                      <span class="muted">Ganti dokter:</span>
+                      <select :value="c.performed_by_id || ''" @change="changeKonsulDokter(c, $event.target.value)">
+                        <option v-for="d in konsultasiDokterList" :key="d.id" :value="d.id">{{ dokterLabel(d) }}</option>
+                      </select>
+                    </div>
+                  </td>
                   <td>{{ c.quantity }}</td>
                   <td>{{ fmtRp(c.total_price) }}</td>
                   <td>
@@ -1573,6 +1642,8 @@ onMounted(() => {
 .charge-tbl th { text-align: left; color: var(--tu); font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--gb); }
 .charge-tbl td { padding: 4px; border-bottom: 1px solid var(--gl); color: var(--td); }
 .btn-del { background: none; border: none; color: #dc2626; font-size: 16px; cursor: pointer; line-height: 1; }
+.konsul-ganti { display: flex; align-items: center; gap: 4px; margin-top: 3px; font-size: 10.5px; }
+.konsul-ganti select { flex: 1; min-width: 0; font-size: 10.5px; padding: 1px 3px; }
 
 select, input, textarea { width: 100%; padding: 6px 9px; border: 1px solid var(--gb); border-radius: 7px; font-family: inherit; font-size: 12px; background: var(--bc); color: var(--td); box-sizing: border-box; }
 select:focus, input:focus, textarea:focus { outline: none; border-color: var(--ga); }

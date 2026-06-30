@@ -765,6 +765,10 @@ export const igdApi = {
   daftarObat:    (visitId, search)   => api.get(`/igd/${visitId}/daftar-obat`, { params: { search } }),
   addTindakan:   (visitId, payload)  => api.post(`/igd/${visitId}/tindakan`, payload),
   addObat:       (visitId, payload)  => api.post(`/igd/${visitId}/obat`, payload),
+  // Konsultasi dokter (umum jaga / spesialis mata) → honor & nama dokter di kwitansi.
+  konsultasiDokter:       ()                           => api.get('/igd/konsultasi-dokter'),
+  addKonsultasi:          (visitId, payload)           => api.post(`/igd/${visitId}/konsultasi`, payload),
+  updateKonsultasiDokter: (visitId, chargeId, payload) => api.patch(`/igd/${visitId}/konsultasi/${chargeId}`, payload),
   deleteCharge:  (visitId, chargeId) => api.delete(`/igd/${visitId}/charge/${chargeId}`),
   disposisi:     (visitId, payload)  => api.post(`/igd/${visitId}/disposisi`, payload),
   // Opsi modal disposisi: BEDAH (paket/operator/anestesi) & RAJAL (poli tujuan).

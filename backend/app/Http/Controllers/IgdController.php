@@ -215,6 +215,23 @@ class IgdController extends Controller
         return $this->ok($charge, 'Konsultasi dicatat');
     }
 
+    /** PATCH /igd/{visitId}/konsultasi/{chargeId} — ganti dokter pada baris konsultasi. */
+    public function updateKonsultasiDokter(string $visitId, string $chargeId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'doctor_id' => 'required|uuid|exists:employees,id',
+        ]);
+
+        try {
+            $visit  = Visit::findOrFail($visitId);
+            $charge = $this->service->updateKonsultasiDokter($visit, $chargeId, $data['doctor_id']);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($charge, 'Dokter konsultasi diperbarui');
+    }
+
     /** DELETE /igd/{visitId}/charge/{chargeId} */
     public function deleteCharge(string $visitId, string $chargeId): JsonResponse
     {

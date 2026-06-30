@@ -730,6 +730,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{visitId}/daftar-obat',          [IgdController::class, 'daftarObat'])->middleware('permission:igd.read');
             Route::post('/{visitId}/tindakan',            [IgdController::class, 'addTindakan'])->middleware('permission:igd.write');
             Route::post('/{visitId}/konsultasi',          [IgdController::class, 'addKonsultasi'])->middleware('permission:igd.write');
+            Route::patch('/{visitId}/konsultasi/{chargeId}', [IgdController::class, 'updateKonsultasiDokter'])->middleware('permission:igd.write');
             Route::post('/{visitId}/obat',                [IgdController::class, 'addObat'])->middleware('permission:igd.write');
             Route::delete('/{visitId}/charge/{chargeId}', [IgdController::class, 'deleteCharge'])->middleware('permission:igd.write');
             // Opsi modal disposisi: BEDAH (paket/operator/anestesi) & RAJAL (poli tujuan).
