@@ -2284,16 +2284,30 @@ class KasirService
      * Resolve insurer_id untuk lookup tarif. Mengembalikan parent_id bila child TPA,
      * atau insurer sistem (UMUM/BPJS/SOSIAL) bila visit belum di-link ke insurer eksplisit.
      */
+    /** Memo per-request: insurer_id sama berulang per baris tagihan satu invoice. */
+    private array $tariffInsurerCache = [];
+
     private function resolveTariffInsurerId(?string $insurerId, string $guarantorType): ?string
     {
-        if ($insurerId) {
-            $insurer = Insurer::find($insurerId);
-            if ($insurer) {
-                return $insurer->tariffInsurerId();
-            }
+        $key = ($insurerId ?? '') . '|' . $guarantorType;
+        if (array_key_exists($key, $this->tariffInsurerCache)) {
+            return $this->tariffInsurerCache[$key];
         }
 
-        return $this->systemInsurerId(in_array($guarantorType, ['UMUM', 'BPJS', 'SOSIAL'], true) ? $guarantorType : 'UMUM');
+        $resolved = null;
+        if ($insurerId) {
+            // Insurer::find berulang per baris (puluhan/invoice) → memoize. tariffInsurerId()
+            // murni (parent_id ?? id), tak menambah query.
+            $insurer = Insurer::find($insurerId);
+            if ($insurer) {
+                $resolved = $insurer->tariffInsurerId();
+            }
+        }
+        if ($resolved === null) {
+            $resolved = $this->systemInsurerId(in_array($guarantorType, ['UMUM', 'BPJS', 'SOSIAL'], true) ? $guarantorType : 'UMUM');
+        }
+
+        return $this->tariffInsurerCache[$key] = $resolved;
     }
 
     /** Cache id insurer sistem (UMUM/BPJS/SOSIAL) untuk hindari query berulang. */
@@ -2753,7 +2767,7 @@ class KasirService
 
     public function cancelInvoice(string $id): BillingInvoice
     {
-        $invoice = BillingInvoice::with('visit')->findOrFail($id);
+        $invoice = BillingInvoice::with(['visit', 'items'])->findOrFail($id);
 
         if (in_array($invoice->status, ['PAID', 'PARTIALLY_PAID'], true)) {
             throw new \Exception('Invoice yang sudah dibayar (penuh/sebagian) tidak bisa dibatalkan.', 422);
@@ -2764,6 +2778,17 @@ class KasirService
 
         return DB::transaction(function () use ($invoice, $id) {
             $invoice->update(['status' => 'CANCELLED']);
+
+            // Kembalikan stok FARMASI yang dipotong saat kasir menambah BHP/obat manual.
+            // Tanpa ini, pembatalan terminal membocorkan stok (item sudah consume saat
+            // input, tak pernah dikembalikan). Sejajar dgn deleteItemInvoice yang juga
+            // restock. Aman dari double-restock: setelah CANCELLED, deleteItemInvoice
+            // menolak (status final), jadi item tak bisa dihapus lalu restock lagi.
+            foreach ($invoice->items as $item) {
+                if ($this->kasirStockRef($item)) {
+                    $this->restockKasirItem($item);
+                }
+            }
 
             // Buka kembali biaya inap yang ditandai tertagih agar konsolidasi ulang
             // memuatnya lagi — builder RANAP/IGD hanya mengambil is_billed=false,
