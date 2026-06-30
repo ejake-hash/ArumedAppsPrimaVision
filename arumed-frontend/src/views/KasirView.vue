@@ -896,6 +896,57 @@ const bpjsConfirmMode = computed(() =>
   isBpjsSelected.value && !isCob.value && !!selInv.value && selInv.value.status !== 'PAID',
 )
 
+// ─── Kasir input manual tanggungan penjamin ─────────────────────────────────
+// Fallback bila pasien tak terjangkau antrean Verifikasi Asuransi (tagihan H+N —
+// queue Asuransi terkunci visit_date hari ini). HANYA pasien berpenjamin & belum lunas.
+// BPJS murni (non-COB) dikecualikan: pakai "Konfirmasi (Ditanggung BPJS)".
+const showCoverEdit = ref(false)
+const coverSaving   = ref(false)
+const coverForm     = ref({ p1: 0, p2: 0, single: 0 })
+const canEditCover  = computed(() => {
+  if (!selInv.value || ['PAID', 'CANCELLED'].includes(selInv.value.status)) return false
+  if (isCob.value) return true
+  const g = (selQ.value?.visit?.guarantor_type ?? '').toUpperCase()
+  return g === 'ASURANSI' || g === 'PERUSAHAAN'
+})
+// Sinkron field form dgn nilai tanggungan terkini (cobSplit datang async setelah invoice).
+watch([cobSplit, () => selInv.value?.id], () => {
+  if (isCob.value && cobSplit.value?.penjamin) {
+    const p1 = cobSplit.value.penjamin.find((p) => p.sequence === 1)
+    const p2 = cobSplit.value.penjamin.find((p) => p.sequence === 2)
+    coverForm.value.p1 = Number(p1?.covered_amount || 0)
+    coverForm.value.p2 = Number(p2?.covered_amount || 0)
+  } else {
+    coverForm.value.single = Number(selInv.value?.covered_amount || 0)
+  }
+})
+
+async function simpanCover() {
+  if (!selInv.value?.id) return
+  coverSaving.value = true
+  try {
+    const payload = isCob.value
+      ? { p1_covered: Math.max(0, Number(coverForm.value.p1) || 0), p2_covered: Math.max(0, Number(coverForm.value.p2) || 0) }
+      : { covered_amount: Math.max(0, Number(coverForm.value.single) || 0) }
+    const { data } = await kasirApi.setCover(selInv.value.id, payload)
+    if (data.data) selInv.value = data.data
+    // Segarkan split COB agar rincian tanggungan per penjamin ikut terbarui.
+    if (selInv.value?.id) {
+      try {
+        const { data: cd } = await kasirApi.invoiceCoverages(selInv.value.id)
+        const s = cd.data ?? cd
+        cobSplit.value = s?.is_cob ? s : null
+      } catch { cobSplit.value = null }
+    }
+    showCoverEdit.value = false
+    toast('s', 'Jumlah tanggungan penjamin disimpan.')
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyimpan tanggungan.')
+  } finally {
+    coverSaving.value = false
+  }
+}
+
 async function cetakRincian() {
   if (!selInv.value?.id) { toast('w', 'Tagihan belum siap'); return }
   printing.value = true
@@ -1951,6 +2002,43 @@ const rincianSections = computed(() => {
                     </button>
                   </div>
                   <div class="card-body">
+                    <!-- Kasir input MANUAL tanggungan penjamin — fallback bila tagihan tak muncul
+                         di modul Asuransi (mis. tagihan H+N / visit_date ≠ hari ini). -->
+                    <div v-if="canEditCover" class="cover-edit">
+                      <div class="cover-edit-head">
+                        <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg>
+                        <span class="ce-title">Tanggungan Penjamin</span>
+                        <button class="ce-toggle" @click="showCoverEdit = !showCoverEdit">{{ showCoverEdit ? 'Tutup' : 'Atur' }}</button>
+                      </div>
+                      <div v-if="showCoverEdit" class="cover-edit-body">
+                        <p class="ce-hint">Isi jumlah yang ditanggung penjamin. Sisa = ekses yang dibayar pasien. Berguna bila tagihan tak muncul di modul Asuransi (mis. tagihan H+N).</p>
+                        <template v-if="isCob">
+                          <label class="ce-field">
+                            <span>Ditanggung BPJS (INA-CBG)</span>
+                            <span class="ce-rp">Rp <input v-model.number="coverForm.p1" type="number" min="0" step="any" inputmode="numeric" class="fi" placeholder="0" /></span>
+                          </label>
+                          <label class="ce-field">
+                            <span>Ditanggung Penjamin-2 ({{ cobName(selQ?.visit?.visit_cob?.penjamin2?.name, selQ?.visit?.visit_cob?.penjamin2_type) }})</span>
+                            <span class="ce-rp">Rp <input v-model.number="coverForm.p2" type="number" min="0" step="any" inputmode="numeric" class="fi" placeholder="0" /></span>
+                          </label>
+                          <div class="ce-quick"><button class="btn btn-xs btn-secondary" @click="coverForm.p1 = totalTagihan; coverForm.p2 = 0">BPJS tanggung penuh</button></div>
+                          <div class="ce-summary"><span>Total ditanggung</span><b>Rp {{ (Number(coverForm.p1 || 0) + Number(coverForm.p2 || 0)).toLocaleString('id-ID') }}</b></div>
+                          <div class="ce-summary ekses"><span>Ekses pasien</span><b>Rp {{ Math.max(0, totalTagihan - (Number(coverForm.p1 || 0) + Number(coverForm.p2 || 0))).toLocaleString('id-ID') }}</b></div>
+                        </template>
+                        <template v-else>
+                          <label class="ce-field">
+                            <span>Ditanggung {{ insurerNameOf(selQ?.visit) || 'Asuransi' }}</span>
+                            <span class="ce-rp">Rp <input v-model.number="coverForm.single" type="number" min="0" step="any" inputmode="numeric" class="fi" placeholder="0" /></span>
+                          </label>
+                          <div class="ce-quick"><button class="btn btn-xs btn-secondary" @click="coverForm.single = totalTagihan">Tanggung penuh</button></div>
+                          <div class="ce-summary ekses"><span>Sisa pasien</span><b>Rp {{ Math.max(0, totalTagihan - Number(coverForm.single || 0)).toLocaleString('id-ID') }}</b></div>
+                        </template>
+                        <button class="btn btn-primary btn-full" :disabled="coverSaving" @click="simpanCover">
+                          {{ coverSaving ? 'Menyimpan…' : 'Simpan Tanggungan' }}
+                        </button>
+                      </div>
+                    </div>
+
                     <!-- COB dgn ekses: perjelas bahwa yg ditagih ke pasien hanya selisih tak tertanggung -->
                     <div v-if="isCob && !isFullCover && !bpjsConfirmMode && !isZeroDue && selInv.status !== 'PAID' && sisaTagihan > 0" class="cob-ekses-note">
                       Pasien <b>COB</b> — BPJS (INA-CBG) + Penjamin-2 sudah menanggung sebagian. Yang ditagih ke pasien hanya <b>ekses</b> (selisih tak tertanggung) di bawah ini.
@@ -2662,6 +2750,24 @@ const rincianSections = computed(() => {
 
 /* COB ekses — info bahwa yg ditagih ke pasien hanya selisih tak tertanggung */
 .cob-ekses-note { background: var(--wb); color: var(--wt); border: 1px solid var(--wbd); border-radius: 8px; padding: .5rem .7rem; font-size: 11.5px; line-height: 1.45; margin-bottom: .6rem; }
+
+/* Kasir input manual tanggungan penjamin */
+.cover-edit { border: 1px solid var(--gb); border-radius: 8px; margin-bottom: .7rem; overflow: hidden; }
+.cover-edit-head { display: flex; align-items: center; gap: .4rem; padding: .5rem .7rem; background: #eef4fb; color: #1763d4; font-weight: 700; font-size: 12.5px; }
+.cover-edit-head svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+.cover-edit-head .ce-title { flex: 1; }
+.ce-toggle { background: #1763d4; color: #fff; border: 0; border-radius: 6px; padding: .22rem .6rem; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.cover-edit-body { padding: .6rem .7rem; display: flex; flex-direction: column; gap: .5rem; }
+.ce-hint { margin: 0; font-size: 11px; line-height: 1.4; color: var(--tu); }
+.ce-field { display: flex; flex-direction: column; gap: .2rem; font-size: 11.5px; color: var(--td); font-weight: 600; }
+.ce-rp { display: flex; align-items: center; gap: .3rem; font-weight: 500; color: var(--tu); }
+.ce-rp .fi { flex: 1; border: 1px solid var(--gb); border-radius: 6px; padding: .35rem .5rem; font-size: 13px; text-align: right; }
+.ce-quick { display: flex; gap: .4rem; }
+.btn-xs { padding: .2rem .55rem; font-size: 11px; line-height: 1.2; }
+.ce-summary { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--td); padding-top: .3rem; border-top: 1px dashed var(--gb); }
+.ce-summary b { font-weight: 700; }
+.ce-summary.ekses { color: #b45309; }
+.ce-summary.ekses b { color: #b45309; }
 
 /* ── Setting Print: popover toggle elemen kwitansi ──────────────────────────── */
 .print-set-wrap { position: relative; display: inline-flex; }

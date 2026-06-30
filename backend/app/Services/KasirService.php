@@ -2636,6 +2636,105 @@ class KasirService
         $invoice->update(['covered_amount' => $covered]);
     }
 
+    /**
+     * Kasir input MANUAL jumlah tanggungan penjamin. Fallback bila pasien tak
+     * terjangkau antrean Verifikasi Asuransi (tagihan H+N — queue Asuransi terkunci
+     * visit_date hari ini; atau insurance_verification_status='NONE').
+     *
+     * - COB (visit_cob aktif): tulis ke baris coverages per penjamin (seq 1 = BPJS/INA-CBG,
+     *   seq 2 = penjamin-2) → covered_amount = Σ coverages (clamp ≤ total). Split per-insurer
+     *   dipertahankan agar draft klaim penjamin-2 tetap terbentuk saat penutupan.
+     * - Non-COB (ASURANSI/PERUSAHAAN/BPJS): set langsung billing_invoices.covered_amount.
+     *
+     * Pasien UMUM ditolak (tak punya penjamin). Invoice PAID/CANCELLED tak bisa diubah.
+     *
+     * @param array{covered_amount?:float|int|string, p1_covered?:float|int|string, p2_covered?:float|int|string} $data
+     */
+    public function setManualCoverage(string $invoiceId, array $data): BillingInvoice
+    {
+        return DB::transaction(function () use ($invoiceId, $data) {
+            $invoice = BillingInvoice::with('visit.visitCob')->lockForUpdate()->findOrFail($invoiceId);
+
+            if (in_array($invoice->status, ['PAID', 'CANCELLED'])) {
+                throw new \Exception("Tagihan sudah {$invoice->status} — jumlah tanggungan tidak bisa diubah.", 422);
+            }
+
+            $visit = $invoice->visit;
+            $gtype = strtoupper((string) ($visit->guarantor_type ?? ''));
+            $cob   = $visit?->visitCob;
+            $isCob = $cob && $cob->is_active && $cob->penjamin2_insurer_id;
+
+            if (! $isCob && ! in_array($gtype, ['ASURANSI', 'PERUSAHAAN', 'BPJS'])) {
+                throw new \Exception('Pasien umum tidak memiliki penjamin — jumlah tanggungan tidak berlaku.', 422);
+            }
+
+            $total = (float) $invoice->total;
+            $user  = auth('api')->user();
+
+            if ($isCob) {
+                $defs = [
+                    1 => ['insurer_id' => $cob->penjamin1_insurer_id, 'guarantor_type' => $cob->penjamin1_type, 'basis' => null,
+                          'amount' => max(0.0, (float) ($data['p1_covered'] ?? 0))],
+                    // Penjamin-2 = basis tagihan (invoice dibangun di harganya).
+                    2 => ['insurer_id' => $cob->penjamin2_insurer_id, 'guarantor_type' => $cob->penjamin2_type, 'basis' => $total,
+                          'amount' => max(0.0, (float) ($data['p2_covered'] ?? 0))],
+                ];
+
+                foreach ($defs as $seq => $def) {
+                    if (! $def['insurer_id']) {
+                        continue;
+                    }
+                    // Soft-delete aware upsert keyed (billing_invoice_id, sequence) — selaras persistCoverages.
+                    $existing = BillingInvoiceCoverage::withTrashed()
+                        ->where('billing_invoice_id', $invoice->id)
+                        ->where('sequence', $seq)
+                        ->first();
+
+                    $values = [
+                        'insurer_id'     => $def['insurer_id'],
+                        'guarantor_type' => $def['guarantor_type'],
+                        'covered_amount' => $def['amount'],
+                        'basis_amount'   => $def['basis'],
+                        'notes'          => 'Diisi manual oleh kasir',
+                    ];
+
+                    if ($existing) {
+                        if ($existing->trashed()) {
+                            $existing->restore();
+                        }
+                        $existing->update($values);
+                    } else {
+                        BillingInvoiceCoverage::create($values + [
+                            'billing_invoice_id' => $invoice->id,
+                            'sequence'           => $seq,
+                        ]);
+                    }
+                }
+
+                $this->recalcInvoiceCovered($invoice);
+                $invoice->update(['covered_by' => $user?->id, 'covered_at' => now()]);
+            } else {
+                $covered = min(max(0.0, (float) ($data['covered_amount'] ?? 0)), $total);
+                $invoice->update([
+                    'covered_amount' => $covered,
+                    'covered_by'     => $user?->id,
+                    'covered_at'     => now(),
+                ]);
+            }
+
+            $fresh = $invoice->fresh();
+            $this->log(
+                $user?->id,
+                'SET_MANUAL_COVERAGE',
+                BillingInvoice::class,
+                $invoice->id,
+                'Kasir set tanggungan manual — covered_amount = Rp ' . number_format((float) $fresh->covered_amount, 0, ',', '.')
+            );
+
+            return $invoice->fresh(['items', 'visit.patient', 'coverages.insurer']);
+        });
+    }
+
     /** Verifikasi asuransi terbaru untuk satu (visit, insurer). Null bila belum ada. */
     public function getVerifikasiForInsurer(string $visitId, ?string $insurerId): ?InsuranceVerification
     {

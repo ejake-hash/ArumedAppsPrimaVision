@@ -1313,6 +1313,7 @@ export const kasirApi = {
   resyncTarif:       (id)                 => api.post(`/kasir/invoice/${id}/resync-tarif`),
   bayarInvoice:      (id, data)           => api.post(`/kasir/invoice/${id}/bayar`, data),
   confirmCoverage:   (id, data)           => api.post(`/kasir/invoice/${id}/confirm-coverage`, data),
+  setCover:          (id, data)           => api.post(`/kasir/invoice/${id}/set-cover`, data),
   confirmBpjs:       (id, data)           => api.post(`/kasir/invoice/${id}/confirm-bpjs`, data ?? {}),
   settleZero:        (id, data)           => api.post(`/kasir/invoice/${id}/settle-zero`, data ?? {}),
   cancelInvoice:     (id)                 => api.post(`/kasir/invoice/${id}/cancel`),

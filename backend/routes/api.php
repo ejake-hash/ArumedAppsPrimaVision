@@ -848,6 +848,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/invoice/{id}/resync-tarif',      [KasirController::class, 'resyncTarif']);
             Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
             Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
+            // Kasir input manual jumlah ditanggung penjamin (fallback bila pasien tak
+            // terjangkau antrean Verifikasi Asuransi — mis. tagihan H+N / visit_date ≠ hari ini).
+            Route::post('/invoice/{id}/set-cover',         [KasirController::class, 'setCover']);
             Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);
             Route::post('/invoice/{id}/settle-zero',       [KasirController::class, 'settleZero']);
             Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);

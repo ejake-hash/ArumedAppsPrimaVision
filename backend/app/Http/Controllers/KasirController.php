@@ -225,6 +225,31 @@ class KasirController extends Controller
     }
 
     /**
+     * POST /kasir/invoice/{id}/set-cover
+     * Kasir input MANUAL jumlah ditanggung penjamin — fallback bila pasien tak
+     * terjangkau antrean Verifikasi Asuransi (tagihan H+N / visit_date ≠ hari ini /
+     * status verifikasi NONE). Hanya untuk pasien berpenjamin (BPJS-COB / ASURANSI / PERUSAHAAN).
+     * Body COB:     { p1_covered, p2_covered }
+     * Body non-COB: { covered_amount }
+     */
+    public function setCover(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'covered_amount' => 'nullable|numeric|min:0',
+            'p1_covered'     => 'nullable|numeric|min:0',
+            'p2_covered'     => 'nullable|numeric|min:0',
+        ]);
+
+        try {
+            $invoice = $this->service->setManualCoverage($id, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($invoice, 'Jumlah ditanggung penjamin diperbarui.');
+    }
+
+    /**
      * POST /kasir/invoice/{id}/confirm-bpjs
      * Konfirmasi kunjungan BPJS — pasien tidak membayar (ditagih via klaim INA-CBG).
      * Body: { notes? }
