@@ -1058,18 +1058,18 @@ const statusPill = (s) => ({
         </div>
 
         <template v-else>
-          <h4>Jadwal Operasi (opsional)</h4>
+          <h4>Paket Bedah (opsional)</h4>
           <label>Paket bedah
             <input v-model="paketSearch" placeholder="cari paket bedah…" class="add-search" />
             <select v-model="kirimBedahForm.surgery_package_id">
-              <option value="">— Tanpa jadwal (langsung antrean bedah) —</option>
+              <option value="">— Tanpa paket (tetapkan nanti di Bedah) —</option>
               <option v-for="pk in filteredPaketBedah" :key="pk.id" :value="pk.id">{{ pk.name }}{{ pk.code ? ' · ' + pk.code : '' }}</option>
             </select>
           </label>
           <label v-if="kirimBedahForm.surgery_package_id">Tgl rencana
             <input v-model="kirimBedahForm.scheduled_date" type="date" />
           </label>
-          <p class="hint">Pilih paket untuk membuat jadwal otomatis → pasien tampil di papan Bedah Terjadwal. Dikosongkan = pasien langsung masuk antrean bedah.</p>
+          <p class="hint">Pasien selalu masuk papan Bedah. Pilih paket bila sudah pasti — atau kosongkan dan tetapkan paket nanti di stasiun Bedah.</p>
         </template>
         <div class="modal-actions">
           <button @click="showKirimBedah = false">Batal</button>

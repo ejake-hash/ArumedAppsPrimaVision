@@ -1112,7 +1112,7 @@ class RanapService
             //   2. $visit->surgery_schedule_id yang SUDAH ADA — pasien pre-op rawat inap
             //      jadwalnya dibuat dokter di planning (8A) & dibawa lewat admisi (8B),
             //      jadi RANAP→Bedah TIDAK perlu input paket ulang;
-            //   3. else → maybeCreateSurgerySchedule (butuh options.surgery_package_id).
+            //   3. else → maybeCreateSurgerySchedule (selalu buat jadwal; paket opsional).
             $scheduleId = $surgeryScheduleId
                 ?: $visit->surgery_schedule_id
                 ?: $this->maybeCreateSurgerySchedule($visit, $options);
@@ -1128,23 +1128,26 @@ class RanapService
 
     /**
      * Auto-buat SurgerySchedule untuk pasien RANAP yang dikirim ke bedah, supaya
-     * tampil di papan "Bedah Terjadwal" (yang melisting via visits.surgery_schedule_id).
-     * Mengembalikan null bila tak ada paket (surgery_package_id NOT NULL — tak bisa
-     * dibuat tanpa paket; pasien tetap masuk antrean Bedah lewat enqueue).
+     * pasien tampil di papan Bedah & operasi bisa dimulai (startOperation berporos
+     * pada surgery_schedule_id). Papan Bedah MENSYARATKAN adanya jadwal — baris
+     * antrean BEDAH tanpa jadwal disaring keluar (guard whereHas surgerySchedule),
+     * jadi jadwal SELALU dibuat, dengan ATAU tanpa paket.
+     *
+     * surgery_package_id NULLABLE sejak migrasi laser 2026_06_20_000001 → boleh
+     * null (paket bisa ditetapkan kemudian di stasiun Bedah lewat VisitSurgeryPackage).
+     * location_type=RUANG_BEDAH eksplisit agar masuk papan Bedah (bukan Ruang Tindakan).
      */
     private function maybeCreateSurgerySchedule(Visit $visit, array $options): ?string
     {
         $packageId = $options['surgery_package_id'] ?? null;
-        if (! $packageId) {
-            return null; // tanpa paket → tak buat jadwal (kolom NOT NULL)
-        }
 
         // Ruang OK default dari Profil Klinik (ambil yang pertama bila ada).
         $defaultRoom = ClinicProfile::query()->value('operating_rooms');
         $defaultRoom = is_array($defaultRoom) ? ($defaultRoom[0] ?? null) : null;
 
         $schedule = SurgerySchedule::create([
-            'surgery_package_id' => $packageId,
+            'surgery_package_id' => $packageId,                       // boleh null (tanpa paket)
+            'location_type'      => SurgerySchedule::LOCATION_RUANG_BEDAH,
             'lead_surgeon_id'    => $visit->dpjp_employee_id,
             'scheduled_date'     => $options['scheduled_date'] ?? today()->toDateString(),
             'scheduled_time'     => $options['scheduled_time'] ?? null,
