@@ -33,8 +33,9 @@ function resolveConfirm(val) { confirmState.value?.resolve(val); confirmState.va
 const allAvailableBeds = computed(() => {
   const out = []
   for (const room of store.bedBoard) {
-    for (const bed of room.beds) {
-      if (bed.status === 'AVAILABLE') {
+    if (!room) continue
+    for (const bed of (room.beds || [])) {
+      if (bed && bed.status === 'AVAILABLE') {
         out.push({ id: bed.id, label: bed.label, room: room.name, kelas: room.kelas_rawat })
       }
     }
@@ -450,7 +451,7 @@ const tindakanOverflow = computed(() => Math.max(0, filteredTindakanAll.value.le
 // Dropdown obat juga dibatasi 50 (obatList server max 100).
 const obatDropList = computed(() => obatList.value.slice(0, PICK_LIMIT))
 const obatOverflow = computed(() => Math.max(0, obatList.value.length - PICK_LIMIT))
-const selectedTindakan = computed(() => tindakanList.value.find((t) => t.id === pickTindakan.value.procedure_id) || null)
+const selectedTindakan = computed(() => tindakanList.value.find((t) => t && t.id === pickTindakan.value.procedure_id) || null)
 function pickTindakanItem(t) { pickTindakan.value.procedure_id = t.id; tindakanSearch.value = ''; tindakanComboOpen.value = false }
 function clearTindakan() { pickTindakan.value.procedure_id = '' }
 function closeTindakanComboSoon() { setTimeout(() => { tindakanComboOpen.value = false }, 150) }
@@ -469,7 +470,17 @@ function closeObatComboSoon() { setTimeout(() => { obatComboOpen.value = false }
 
 // CPPT terintegrasi multi-PPA (SOAP + TTV opsional)
 const cpptList = ref([])
-const cpptUnverifiedCount = computed(() => cpptList.value.filter((e) => !e.verified_at).length)
+// Hanya CPPT kunjungan INI yang bisa diverifikasi DPJP (entri riwayat/visit lain &
+// pemeriksaan dokter = read-only, tak dihitung sebagai "belum diverifikasi").
+const cpptUnverifiedCount = computed(() => cpptList.value.filter((e) => e.editable && !e.verified_at).length)
+
+// Pagination CPPT (klien) — timeline kini lintas-episode (RJ/IGD/Ranap + pemeriksaan
+// dokter) bisa panjang; dokter tak kehilangan riwayat. Default ke halaman 1 (terbaru).
+const CPPT_PER_PAGE = 12
+const cpptPage = ref(1)
+const cpptTotalPages = computed(() => Math.max(1, Math.ceil(cpptList.value.length / CPPT_PER_PAGE)))
+const cpptPaged = computed(() => cpptList.value.slice((cpptPage.value - 1) * CPPT_PER_PAGE, cpptPage.value * CPPT_PER_PAGE))
+const CPPT_SRC_CLS = { IGD: 'src-igd', 'Rawat Jalan': 'src-rj', 'Rawat Inap': 'src-ri' }
 const emptyCppt = () => ({
   soap_s: '', soap_o: '', soap_a: '', soap_p: '', instruksi: '',
   td_sistol: null, td_diastol: null, nadi: null, suhu: null, respirasi: null, spo2: null, kgd: null, pain_scale: null,
@@ -502,6 +513,7 @@ async function openDetail(visitId) {
   tindakanList.value = []
   obatList.value = []
   cpptList.value = []
+  cpptPage.value = 1
   permintaanList.value = []
   reqCart.value = []
   docList.value = []
@@ -523,19 +535,22 @@ async function openDetail(visitId) {
       ranapApi.bhpList(visitId),
       ranapApi.orderPenunjangList(visitId),
     ])
-    tindakanList.value = t.data?.data ?? []
-    obatList.value = o.data?.data ?? []
-    cpptList.value = c.data?.data ?? []
-    permintaanList.value = p.data?.data ?? []
-    docList.value = d.data?.data ?? []
-    bhpUsages.value = b.data?.data ?? []
-    penunjangOrders.value = pen.data?.data ?? []
+    // .filter(Boolean): tahan elemen null dari API agar `:key="x.id"` / computed
+    // (mis. pendingFarmasiItems) tak crash "reading 'id' of null" → blank seluruh view.
+    tindakanList.value = (t.data?.data ?? []).filter(Boolean)
+    obatList.value = (o.data?.data ?? []).filter(Boolean)
+    cpptList.value = (c.data?.data ?? []).filter(Boolean)
+    permintaanList.value = (p.data?.data ?? []).filter(Boolean)
+    docList.value = (d.data?.data ?? []).filter(Boolean)
+    bhpUsages.value = (b.data?.data ?? []).filter(Boolean)
+    penunjangOrders.value = (pen.data?.data ?? []).filter(Boolean)
   } catch { /* abaikan */ }
 }
 
 async function reloadCppt() {
   const c = await ranapApi.cpptList(detailVisitId.value)
-  cpptList.value = c.data?.data ?? []
+  cpptList.value = (c.data?.data ?? []).filter(Boolean)
+  cpptPage.value = 1
 }
 
 async function submitCppt() {
@@ -682,6 +697,7 @@ const pendingFarmasiItems = computed(() => {
   for (const p of permintaanList.value) {
     if (['DISPENSED', 'CANCELLED'].includes(p.status)) continue
     for (const it of (p.items || [])) {
+      if (!it) continue
       out.push({ id: `${p.id}-${it.id}`, name: it.medication?.name ?? '—', quantity: it.quantity, status: p.status })
     }
   }
@@ -1344,11 +1360,14 @@ const statusPill = (s) => ({
             </div>
 
             <div class="cppt-timeline">
-              <div v-for="e in cpptList" :key="e.id" class="cppt-item" :class="'ppa-edge-' + (e.ppa_role || 'LAINNYA')">
+              <div v-for="e in cpptPaged" :key="e.id" class="cppt-item" :class="['ppa-edge-' + (e.ppa_role || 'LAINNYA'), { 'cppt-history': e.is_current === false }]">
                 <div class="cppt-meta">
+                  <span class="cppt-src" :class="CPPT_SRC_CLS[e.source] || 'src-other'">{{ e.source || '—' }}</span>
+                  <span v-if="e.entry_type === 'EXAM'" class="cppt-src src-exam" title="Catatan pemeriksaan dokter (read-only)">Pemeriksaan Dokter</span>
                   <span class="ppa-badge" :class="'ppa-' + (e.ppa_role || 'LAINNYA')">{{ PPA_LABEL[e.ppa_role] || 'PPA Lain' }}</span>
                   <strong>{{ e.by || '—' }}</strong>
                   <span class="cppt-time">{{ fmt(e.at) }}</span>
+                  <span v-if="e.is_current === false && e.visit_date" class="cppt-vdate" title="Kunjungan lain (riwayat)">📅 {{ e.visit_date }}</span>
                   <span v-if="e.edited_at" class="cppt-edited">(diedit)</span>
                   <span v-if="e.ews_level" class="ews-badge" :class="'ews-' + e.ews_level.toLowerCase()" :title="`EWS ${e.ews_score} (${e.ews_params} parameter)`">EWS {{ e.ews_score }} · {{ e.ews_label }}</span>
                 </div>
@@ -1377,15 +1396,24 @@ const statusPill = (s) => ({
                   {{ cpptExpanded[e.id] ? '▲ Lebih sedikit' : '▼ Selengkapnya' }}
                 </button>
                 <div class="cppt-foot">
-                  <span v-if="e.verified_at" class="cppt-verified">✓ Diverifikasi DPJP {{ e.verified_by }} · {{ fmt(e.verified_at) }}</span>
-                  <span v-else class="cppt-unverified">Belum diverifikasi DPJP</span>
-                  <span class="cppt-foot-actions">
-                    <button class="btn-link" @click="editCppt(e)">Edit</button>
-                    <button v-if="isDokter && !e.verified_at" class="btn-link btn-verify" @click="verifyCppt(e)">Verifikasi</button>
-                  </span>
+                  <template v-if="e.editable">
+                    <span v-if="e.verified_at" class="cppt-verified">✓ Diverifikasi DPJP {{ e.verified_by }} · {{ fmt(e.verified_at) }}</span>
+                    <span v-else class="cppt-unverified">Belum diverifikasi DPJP</span>
+                    <span class="cppt-foot-actions">
+                      <button class="btn-link" @click="editCppt(e)">Edit</button>
+                      <button v-if="isDokter && !e.verified_at" class="btn-link btn-verify" @click="verifyCppt(e)">Verifikasi</button>
+                    </span>
+                  </template>
+                  <span v-else-if="e.verified_at" class="cppt-verified">✓ Diverifikasi {{ e.verified_by }} · {{ fmt(e.verified_at) }}</span>
+                  <span v-else class="cppt-readonly">Riwayat · read-only</span>
                 </div>
               </div>
               <p v-if="!cpptList.length" class="muted">Belum ada catatan CPPT.</p>
+              <div v-if="cpptTotalPages > 1" class="cppt-pager">
+                <button class="btn btn-sm btn-secondary" :disabled="cpptPage <= 1" @click="cpptPage--">‹ Sebelumnya</button>
+                <span class="cppt-pager-info">Hal {{ cpptPage }} / {{ cpptTotalPages }} · {{ cpptList.length }} entri (RJ/IGD + Ranap)</span>
+                <button class="btn btn-sm btn-secondary" :disabled="cpptPage >= cpptTotalPages" @click="cpptPage++">Berikutnya ›</button>
+              </div>
             </div>
           </div>
 
@@ -1608,10 +1636,23 @@ const statusPill = (s) => ({
                   <td>{{ c.quantity }}</td><td>{{ rupiah(c.unit_price) }}</td><td>{{ rupiah(c.total_price) }}</td>
                   <td><button v-if="!c.is_billed" class="del-x" @click="removeCharge(c)" title="Hapus">×</button></td>
                 </tr>
-                <tr v-if="!store.detail.charges?.length && !pendingFarmasiItems.length"><td colspan="7" class="muted">Belum ada biaya</td></tr>
+                <!-- BHP diminta ke Farmasi (visit_bhp_usages) — masuk Rincian Biaya & kwitansi (setelah verif) -->
+                <tr v-for="u in (store.detail.bhp_usages || [])" :key="'bhp-' + u.id" :class="{ 'row-pending': !u.verified_at }">
+                  <td>{{ fmt(u.created_at) }}</td>
+                  <td><span class="pill" :class="u.verified_at ? 'pill-success' : 'pill-warning'">BHP{{ u.verified_at ? '' : ' · belum verif' }}</span></td>
+                  <td>{{ u.bhp_item?.name ?? 'BHP' }}</td>
+                  <td>{{ u.quantity }}</td>
+                  <td>{{ rupiah(u.unit_price) }}</td>
+                  <td>{{ rupiah((u.unit_price || 0) * (u.quantity || 0)) }}</td>
+                  <td></td>
+                </tr>
+                <tr v-if="!store.detail.charges?.length && !pendingFarmasiItems.length && !(store.detail.bhp_usages?.length)"><td colspan="7" class="muted">Belum ada biaya</td></tr>
               </tbody>
             </table>
-            <p class="total">Total berjalan: <strong>{{ rupiah(store.detail.running_bill?.total) }}</strong></p>
+            <p class="total">
+              Total berjalan: <strong>{{ rupiah(store.detail.running_bill?.total) }}</strong>
+              <small v-if="store.detail.running_bill?.bhp_total" class="muted"> (termasuk BHP {{ rupiah(store.detail.running_bill.bhp_total) }})</small>
+            </p>
           </div>
 
           </template>
@@ -2010,6 +2051,19 @@ const statusPill = (s) => ({
 .cppt-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .78rem; color: var(--tm); }
 .cppt-meta strong { color: var(--td); }
 .cppt-time { color: var(--tu); }
+/* Badge sumber CPPT (asal layanan/episode) + status read-only riwayat */
+.cppt-src { font-size: .66rem; font-weight: 700; padding: .08rem .4rem; border-radius: 8px; white-space: nowrap; border: 1px solid transparent; }
+.src-igd { background: #fef2f2; color: #b42318; border-color: #fca5a5; }
+.src-rj  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+.src-ri  { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.src-other { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
+.src-exam { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+.cppt-vdate { color: var(--tu); font-size: .72rem; }
+.cppt-history { opacity: .94; }
+.cppt-history .cppt-soap { background: #fafafa; border-radius: 6px; padding: .35rem .5rem; }
+.cppt-readonly { color: var(--tu); font-style: italic; font-size: .76rem; }
+.cppt-pager { display: flex; align-items: center; justify-content: center; gap: .75rem; margin-top: .75rem; padding-top: .6rem; border-top: 1px dashed var(--gb); }
+.cppt-pager-info { font-size: .78rem; color: var(--tm); font-variant-numeric: tabular-nums; }
 .cppt-edited { color: var(--wt); font-style: italic; }
 .cppt-ttv { display: flex; flex-wrap: wrap; gap: .6rem; font-size: .78rem; color: var(--ga); margin: .25rem 0; }
 .cppt-mata { display: flex; flex-wrap: wrap; gap: .8rem; font-size: .78rem; color: var(--pt); margin: .15rem 0 .3rem; font-weight: 600; }

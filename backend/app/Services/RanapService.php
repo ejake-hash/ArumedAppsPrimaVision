@@ -9,6 +9,7 @@ use App\Models\BpjsControlLetter;
 use App\Models\BpjsPoliMapping;
 use App\Models\BpjsSpri;
 use App\Models\ClinicProfile;
+use App\Models\DoctorExamination;
 use App\Models\Employee;
 use App\Models\InpatientCharge;
 use App\Models\Medication;
@@ -169,12 +170,26 @@ class RanapService
 
         $charges = $visit->inpatientCharges;
 
+        // BHP yang diminta ke Farmasi (visit_bhp_usages) — punya unit_price tersnapshot
+        // saat permintaan → ikut masuk Rincian Biaya Berjalan & total (sebelumnya hanya
+        // inpatient_charges). Tagihan final tetap di kwitansi Kasir (BHP terverifikasi).
+        $bhpUsages = \App\Models\VisitBhpUsage::with('bhpItem:id,name,code')
+            ->where('visit_id', $visit->id)
+            ->orderBy('created_at')
+            ->get();
+
+        $chargesTotal = (float) $charges->sum('total_price');
+        $bhpTotal = (float) $bhpUsages->sum(fn ($u) => (float) ($u->unit_price ?? 0) * (int) ($u->quantity ?? 0));
+
         return [
-            'visit'   => $visit,
-            'charges' => $charges,
+            'visit'      => $visit,
+            'charges'    => $charges,
+            'bhp_usages' => $bhpUsages,   // baris BHP utk Rincian Biaya Berjalan
             'running_bill' => [
-                'total'  => (float) $charges->sum('total_price'),
-                'billed' => (float) $charges->where('is_billed', true)->sum('total_price'),
+                'charges_total' => $chargesTotal,
+                'bhp_total'     => $bhpTotal,
+                'total'         => $chargesTotal + $bhpTotal,
+                'billed'        => (float) $charges->where('is_billed', true)->sum('total_price'),
             ],
         ];
     }
@@ -935,14 +950,92 @@ class RanapService
     // =========================================================================
 
     /** Daftar CPPT pasien inap (terbaru dulu). Terintegrasi multi-PPA. */
+    /**
+     * Timeline CPPT TERINTEGRASI lintas-episode pasien (bukan cuma visit RANAP ini):
+     *  - NurseCpptEntry (perawat/triase/ranap) dari SEMUA kunjungan pasien, dan
+     *  - DoctorExamination (SOAP dokter RJ/IGD) dipetakan ke bentuk CPPT (read-only).
+     * Tiap entri diberi `source` (IGD / Rawat Jalan / Rawat Inap) + `visit_date` agar
+     * dokter ranap melihat riwayat lengkap tanpa kehilangan data; `editable` hanya
+     * untuk CPPT kunjungan ini (entri visit lain & pemeriksaan dokter = read-only).
+     * Terurut terbaru→lama; pagination dilakukan di sisi FE (klien).
+     */
     public function cpptEntries(Visit $visit): array
     {
-        return NurseCpptEntry::with(['createdBy:id,name,profession', 'verifiedBy:id,name'])
-            ->where('visit_id', $visit->id)
-            ->orderByDesc('created_at')
+        $visits = Visit::where('patient_id', $visit->patient_id)
+            ->get(['id', 'jenis_pelayanan', 'admission_at', 'igd_arrival_at', 'visit_date'])
+            ->keyBy('id');
+        $visitIds = $visits->keys()->all();
+
+        $cppt = NurseCpptEntry::with(['createdBy:id,name,profession', 'verifiedBy:id,name'])
+            ->whereIn('visit_id', $visitIds)
             ->get()
-            ->map(fn ($e) => $this->formatCpptEntry($e))
+            ->map(function (NurseCpptEntry $e) use ($visit, $visits) {
+                $v = $visits->get($e->visit_id);
+                return array_merge($this->formatCpptEntry($e), [
+                    'entry_type' => 'CPPT',
+                    'visit_id'   => $e->visit_id,
+                    'visit_date' => $v?->visit_date?->toDateString(),
+                    'source'     => $this->careSettingLabel($v, $e->created_at),
+                    'is_current' => $e->visit_id === $visit->id,
+                    'editable'   => $e->visit_id === $visit->id,
+                ]);
+            });
+
+        $exams = DoctorExamination::with(['doctor:id,name,profession'])
+            ->whereIn('visit_id', $visitIds)
+            ->get()
+            ->map(fn (DoctorExamination $x) => $this->formatExamAsCppt($x, $visits->get($x->visit_id), $visit->id));
+
+        return $cppt->concat($exams)
+            ->sortByDesc(fn ($r) => $r['at'])
+            ->values()
             ->all();
+    }
+
+    /** Label setting layanan untuk satu entri (berdasar kunjungan + waktu entri). */
+    private function careSettingLabel(?Visit $v, $entryAt = null): string
+    {
+        if (! $v) return 'Lainnya';
+        if ($v->igd_arrival_at) return 'IGD';
+        if (($v->jenis_pelayanan ?? null) === 'RANAP') {
+            // Pada visit yang sama (RJ/IGD→RANAP, admit di tempat), entri SEBELUM
+            // admission_at = fase rawat jalan/asesmen awal; sesudah = rawat inap.
+            if ($entryAt && $v->admission_at && $entryAt < $v->admission_at) return 'Rawat Jalan';
+            return 'Rawat Inap';
+        }
+        return 'Rawat Jalan';
+    }
+
+    /** Petakan DoctorExamination (SOAP dokter) ke bentuk entri CPPT read-only. */
+    private function formatExamAsCppt(DoctorExamination $x, ?Visit $v, string $currentVisitId): array
+    {
+        $a = $x->soap_assessment ?: trim(($x->diagnosis_utama_name ?? '') . ' ' . ($x->diagnosis_text ?? '')) ?: null;
+        return [
+            'id'            => 'exam-' . $x->id,   // prefix agar key FE tak bentrok dgn NurseCppt
+            'ppa_role'      => 'DOKTER',
+            'ews_score' => null, 'ews_level' => null, 'ews_label' => null, 'ews_params' => null,
+            'td_sistol' => null, 'td_diastol' => null, 'nadi' => null, 'suhu' => null,
+            'respirasi' => null, 'spo2' => null, 'kgd' => null, 'pain_scale' => null,
+            'visus_od' => null, 'visus_os' => null, 'iop_od' => null, 'iop_os' => null, 'iop_method' => null,
+            'notes'  => null,
+            'soap_s' => $x->soap_subjective ?: $x->anamnese,
+            'soap_o' => $x->soap_objective,
+            'soap_a' => $a,
+            'soap_p' => $x->soap_plan,
+            'instruksi' => null,
+            'by'            => $x->doctor?->name,
+            'by_profession' => $x->doctor?->profession,
+            'at'            => $x->created_at,
+            'edited_at'     => null,
+            'verified_by'   => null,
+            'verified_at'   => null,
+            'entry_type'    => 'EXAM',
+            'visit_id'      => $x->visit_id,
+            'visit_date'    => $v?->visit_date?->toDateString(),
+            'source'        => $this->careSettingLabel($v, $x->created_at),
+            'is_current'    => $x->visit_id === $currentVisitId,
+            'editable'      => false,
+        ];
     }
 
     private function formatCpptEntry(NurseCpptEntry $e): array

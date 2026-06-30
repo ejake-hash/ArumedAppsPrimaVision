@@ -52,7 +52,11 @@ export const useRawatInapStore = defineStore('rawatInap', () => {
     error.value = null
     try {
       const res = await ranapApi.detail(visitId)
-      detail.value = res.data?.data ?? null
+      const d = res.data?.data ?? null
+      // Tahan elemen null pada charges (dirender `:key="c.id"`) agar tak crash
+      // "reading 'id' of null" yang mem-blank seluruh RawatInapView.
+      if (d && Array.isArray(d.charges)) d.charges = d.charges.filter(Boolean)
+      detail.value = d
     } catch (e) {
       error.value = e.response?.data?.message ?? 'Gagal memuat detail pasien'
     } finally {
