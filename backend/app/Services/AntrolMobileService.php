@@ -39,12 +39,17 @@ class AntrolMobileService
     // =========================================================================
     public function statusAntrean(array $data): array
     {
-        $sched = $this->resolveSchedule($data['kodepoli'] ?? null, $data['kodedokter'] ?? null, $data['jampraktek'] ?? null);
-        if (! $sched) {
-            return $this->fail('Poli/dokter tidak ditemukan atau belum dipetakan.');
+        if ($err = $this->validateDateInput($data['tanggalperiksa'] ?? null)) {
+            return $this->fail($err);
         }
-
         $tanggal = $this->normalizeDate($data['tanggalperiksa'] ?? null);
+
+        $res = $this->resolveScheduleDiagnosed($data['kodepoli'] ?? null, $data['kodedokter'] ?? null, $data['jampraktek'] ?? null, $tanggal);
+        if ($res['error']) {
+            return $this->fail($res['error']);
+        }
+        $sched = $res['schedule'];
+
         $stat    = $this->statistik($sched, $tanggal);
         $kuota   = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
 
@@ -69,12 +74,21 @@ class AntrolMobileService
     // =========================================================================
     public function ambilAntrean(array $data): array
     {
-        $sched = $this->resolveSchedule($data['kodepoli'] ?? null, $data['kodedokter'] ?? null, $data['jampraktek'] ?? null);
-        if (! $sched) {
-            return $this->fail('Poli/dokter tidak ditemukan atau belum dipetakan.');
+        if ($err = $this->validateDateInput($data['tanggalperiksa'] ?? null)) {
+            return $this->fail($err);
         }
-
         $tanggal = $this->normalizeDate($data['tanggalperiksa'] ?? null);
+
+        $res = $this->resolveScheduleDiagnosed($data['kodepoli'] ?? null, $data['kodedokter'] ?? null, $data['jampraktek'] ?? null, $tanggal);
+        if ($res['error']) {
+            return $this->fail($res['error']);
+        }
+        $sched = $res['schedule'];
+
+        // Validasi jam tutup pendaftaran (hanya untuk hari H).
+        if ($closed = $this->registrationClosedMessage($sched, $tanggal)) {
+            return $this->fail($closed);
+        }
 
         // Cek kuota JKN sebelum menerbitkan antrean.
         $kuota = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
@@ -102,10 +116,15 @@ class AntrolMobileService
                 }
             }
 
-            $angka       = $this->nextAngka($sched, $tanggal);
-            $prefix      = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
-            $nomorAntrean = $prefix . '-' . str_pad((string) $angka, 3, '0', STR_PAD_LEFT);
-            $kodebooking = $this->generateKodebooking($prefix, $tanggal);
+            // Reservasi nomor DOKTER (D{room}-NNN) lewat sumber TERPADU — nomor yang
+            // sama dipakai papan dokter & ditampilkan di Mobile JKN (anti-bingung,
+            // aman utk poli ber-banyak dokter). Dipakai-ulang saat masuk stasiun DOKTER.
+            $dok          = app(QueueService::class)->nextDoctorSequence($sched->room, $tanggal);
+            $angka        = $dok['queue_sequence'];
+            $nomorAntrean = $dok['queue_number'];
+            // kodebooking tetap pakai prefix poli BPJS (kode booking ≠ nomor antrean).
+            $bookingPrefix = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
+            $kodebooking  = $this->generateKodebooking($bookingPrefix, $tanggal);
 
             $booking = AntreanBooking::create([
                 'kodebooking'        => $kodebooking,
@@ -793,6 +812,117 @@ class AntrolMobileService
     // =========================================================================
 
     /** Resolve DoctorSchedule dari kode poli BPJS + kode DPJP BPJS (+ jam praktek). */
+    /**
+     * Validasi input tanggalperiksa sesuai UAT BPJS:
+     *   - Format wajib yyyy-mm-dd → "Format Tanggal Tidak Sesuai..."
+     *   - Tidak boleh mundur dari hari ini (WIB) → "Tanggal Periksa Tidak Berlaku"
+     * Mengembalikan pesan error (untuk fail()) atau null bila valid.
+     */
+    private function validateDateInput($raw): ?string
+    {
+        $s = trim((string) ($raw ?? ''));
+        if ($s === '' || ! preg_match('/^\d{4}-\d{2}-\d{2}$/', $s)) {
+            return 'Format Tanggal Tidak Sesuai, format yang benar adalah yyyy-mm-dd';
+        }
+        try {
+            $d = Carbon::createFromFormat('Y-m-d', $s, 'Asia/Jakarta')->startOfDay();
+        } catch (\Throwable $e) {
+            return 'Format Tanggal Tidak Sesuai, format yang benar adalah yyyy-mm-dd';
+        }
+        if ($d->lt(now('Asia/Jakarta')->startOfDay())) {
+            return 'Tanggal Periksa Tidak Berlaku';
+        }
+        return null;
+    }
+
+    /**
+     * Resolusi jadwal dengan diagnosa kegagalan berlapis (membaca hari praktek),
+     * selaras skenario UAT BPJS:
+     *   - poli tak dipetakan        → "Poli Tidak Ditemukan"
+     *   - poli tak praktek hari itu → "Pendaftaran ke Poli Ini Sedang Tutup"
+     *   - dokter tak praktek hari itu → "Jadwal Dokter {nama} Tersebut Belum Tersedia, ..."
+     * @return array{schedule: ?DoctorSchedule, error: ?string}
+     */
+    private function resolveScheduleDiagnosed(?string $kodePoli, $kodeDokter, ?string $jamPraktek, string $tanggal): array
+    {
+        $poliCode = BpjsPoliMapping::localCodeFor($kodePoli);
+        if (! $poliCode) {
+            return ['schedule' => null, 'error' => 'Poli Tidak Ditemukan'];
+        }
+
+        $dow = (int) Carbon::parse($tanggal, 'Asia/Jakarta')->format('N'); // 1=Sen..7=Min
+
+        $poliOpen = DoctorSchedule::where('poli_code', $poliCode)
+            ->where('is_active', true)
+            ->where('day_of_week', $dow)
+            ->exists();
+        if (! $poliOpen) {
+            return ['schedule' => null, 'error' => 'Pendaftaran ke Poli Ini Sedang Tutup'];
+        }
+
+        $q = DoctorSchedule::with('employee')
+            ->where('poli_code', $poliCode)
+            ->where('is_active', true)
+            ->where('day_of_week', $dow);
+
+        $employee = null;
+        if ($kodeDokter !== null && $kodeDokter !== '') {
+            $employee = Employee::where('bpjs_dpjp_code', (string) $kodeDokter)->first();
+            if ($employee) {
+                $q->where('employee_id', $employee->id);
+            }
+        }
+
+        if ($jamPraktek) {
+            [$buka] = array_pad(explode('-', $jamPraktek), 1, null);
+            if ($buka) {
+                $q->where('start_time', 'like', trim($buka) . '%');
+            }
+        }
+
+        $sched = $q->orderByDesc('week_start')->first();
+        if (! $sched) {
+            $nama = $employee?->name
+                ?? ($kodeDokter !== null && $kodeDokter !== '' ? (string) $kodeDokter : '');
+            $msg = $nama !== ''
+                ? "Jadwal Dokter {$nama} Tersebut Belum Tersedia, Silahkan Reschedule Tanggal dan Jam Praktek Lainnya"
+                : 'Jadwal Dokter Tersebut Belum Tersedia, Silahkan Reschedule Tanggal dan Jam Praktek Lainnya';
+            return ['schedule' => null, 'error' => $msg];
+        }
+
+        return ['schedule' => $sched, 'error' => null];
+    }
+
+    /**
+     * Validasi jam tutup pendaftaran (hanya untuk hari H). Bila waktu kini sudah
+     * melewati end_time terakhir jadwal poli/dokter hari itu → pesan tutup.
+     */
+    private function registrationClosedMessage(DoctorSchedule $sched, string $tanggal): ?string
+    {
+        if ($tanggal !== now('Asia/Jakarta')->toDateString()) {
+            return null; // hanya berlaku saat pengambilan di hari H
+        }
+
+        $dow     = (int) Carbon::parse($tanggal, 'Asia/Jakarta')->format('N');
+        $lastEnd = DoctorSchedule::where('poli_code', $sched->poli_code)
+            ->where('is_active', true)
+            ->where('day_of_week', $dow)
+            ->when($sched->employee_id, fn ($q) => $q->where('employee_id', $sched->employee_id))
+            ->max('end_time');
+
+        if (! $lastEnd) {
+            return null;
+        }
+
+        $closeAt = Carbon::parse($tanggal . ' ' . $lastEnd, 'Asia/Jakarta');
+        if (now('Asia/Jakarta')->gt($closeAt)) {
+            $jam = Carbon::parse($lastEnd)->format('H.i');
+            return "Pendaftaran Ke Poli {$sched->poliklinik} Sudah Tutup Jam {$jam}";
+        }
+
+        return null;
+    }
+
     private function resolveSchedule(?string $kodePoli, $kodeDokter, ?string $jamPraktek): ?DoctorSchedule
     {
         $poliCode = BpjsPoliMapping::localCodeFor($kodePoli);
@@ -853,26 +983,25 @@ class AntrolMobileService
             return ['total' => 0, 'sisa' => 0, 'panggil' => 0];
         }
 
-        $total = AntreanBooking::where('doctor_schedule_id', $sched->id)
-            ->whereDate('tanggal_periksa', $tanggal)
-            ->whereIn('status', [AntreanBooking::STATUS_DIBOOK, AntreanBooking::STATUS_CHECKIN, AntreanBooking::STATUS_SELESAI])
-            ->count();
+        $prefix = ($sched->room !== null && $sched->room !== '')
+            ? 'D' . $sched->room
+            : Queue::prefixFor(Queue::STATION_DOKTER);
 
-        $selesai = AntreanBooking::where('doctor_schedule_id', $sched->id)
-            ->whereDate('tanggal_periksa', $tanggal)
-            ->where('status', AntreanBooking::STATUS_SELESAI)
-            ->count();
+        // total = nomor antrean terbesar yang sudah dikeluarkan untuk ruang+tanggal
+        // (gabungan reservasi Mobile JKN + pasien yang dapat nomor saat tiba dokter).
+        $next  = app(QueueService::class)->nextDoctorSequence($sched->room, $tanggal);
+        $total = max(0, $next['queue_sequence'] - 1);
 
-        // Angka antrean DOKTER yang sedang/terakhir dipanggil hari ini (dari Queue nyata).
+        // panggil = nomor DOKTER yang sedang/terakhir dipanggil hari itu (ruang ini).
         $panggil = Queue::byStation(Queue::STATION_DOKTER)
+            ->where('queue_prefix', $prefix)
             ->whereDate('created_at', $tanggal)
             ->whereIn('status', [Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS, Queue::STATUS_COMPLETED])
-            ->whereHas('visit', fn ($v) => $v->where('doctor_schedule_id', $sched->id))
             ->max('queue_sequence') ?? 0;
 
         return [
             'total'   => $total,
-            'sisa'    => max(0, $total - $selesai),
+            'sisa'    => max(0, $total - (int) $panggil),
             'panggil' => (int) $panggil,
         ];
     }
@@ -882,7 +1011,9 @@ class AntrolMobileService
         if (! $sched || $angka <= 0) {
             return '';
         }
-        $prefix = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
+        $prefix = ($sched->room !== null && $sched->room !== '')
+            ? 'D' . $sched->room
+            : Queue::prefixFor(Queue::STATION_DOKTER);
 
         return $prefix . '-' . str_pad((string) $angka, 3, '0', STR_PAD_LEFT);
     }

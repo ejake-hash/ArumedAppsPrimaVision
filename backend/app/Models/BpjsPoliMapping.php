@@ -38,4 +38,14 @@ class BpjsPoliMapping extends Model
 
         return static::where('poli_code', $poliCode)->where('is_active', true)->value('bpjs_poli_code');
     }
+
+    /** Resolve poli_code lokal dari kode poli BPJS (null bila belum dipetakan). */
+    public static function localCodeFor(?string $bpjsPoliCode): ?string
+    {
+        if (! $bpjsPoliCode) {
+            return null;
+        }
+
+        return static::where('bpjs_poli_code', $bpjsPoliCode)->where('is_active', true)->value('poli_code');
+    }
 }

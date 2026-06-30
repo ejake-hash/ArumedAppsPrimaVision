@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Events\AdmisiQueueUpdated;
 use App\Events\AntreanTvUpdated;
 use App\Events\TriaseQueueUpdated;
+use App\Models\AntreanBooking;
 use App\Models\DiagnosticOrder;
 use App\Models\Prescription;
 use App\Models\VisitBhpUsage;
@@ -58,33 +59,108 @@ class QueueService
      */
     public function generateQueueNumber(string $station, ?string $room = null): array
     {
-        if ($station === Queue::STATION_DOKTER && $room !== null && $room !== '') {
-            $prefix = 'D' . $room;
-
-            $lastSeq = Queue::where('station', Queue::STATION_DOKTER)
-                ->where('queue_prefix', $prefix)
-                ->whereDate('created_at', today())
-                ->max('queue_sequence') ?? 0;
-
-            $sequence = $lastSeq + 1;
-        } else {
-            $prefix = Queue::prefixFor($station);
-
-            // Stasiun yang share prefix (mis. TRIASE + REFRAKSIONIS = "TR")
-            // perlu sequence yang juga shared supaya nomor tidak collision.
-            $stationsForSeq = Queue::SHARED_PREFIX_GROUPS[$prefix] ?? [$station];
-
-            $lastSeq = Queue::whereIn('station', $stationsForSeq)
-                ->whereDate('created_at', today())
-                ->max('queue_sequence') ?? 0;
-
-            $sequence = $lastSeq + 1;
+        if ($station === Queue::STATION_DOKTER) {
+            // Nomor DOKTER (D{room}-NNN) via sumber TERPADU yang juga menghitung
+            // reservasi AntreanBooking (Mobile JKN) → tak tabrakan antar-jalur.
+            return $this->nextDoctorSequence(($room !== null && $room !== '') ? $room : null, today()->toDateString());
         }
+
+        $prefix = Queue::prefixFor($station);
+
+        // Stasiun yang share prefix (mis. TRIASE + REFRAKSIONIS = "TR")
+        // perlu sequence yang juga shared supaya nomor tidak collision.
+        $stationsForSeq = Queue::SHARED_PREFIX_GROUPS[$prefix] ?? [$station];
+
+        $lastSeq = Queue::whereIn('station', $stationsForSeq)
+            ->whereDate('created_at', today())
+            ->max('queue_sequence') ?? 0;
+
+        $sequence = $lastSeq + 1;
 
         return [
             'queue_prefix'   => $prefix,
             'queue_sequence' => $sequence,
             'queue_number'   => $prefix . '-' . str_pad($sequence, 3, '0', STR_PAD_LEFT),
+        ];
+    }
+
+    /**
+     * Nomor antrean DOKTER (D{room}-NNN) BERIKUTNYA untuk satu ruang+tanggal —
+     * SATU sumber kebenaran untuk semua jalur: Mobile JKN "ambil" (reservasi),
+     * walk-in loket, dan enqueue saat pasien tiba di dokter.
+     *
+     * Menghitung MAX dari DUA sumber agar nomor tak pernah tabrakan antar-jalur:
+     *   1. baris Queue DOKTER (pasien yang dapat nomor saat tiba di dokter), dan
+     *   2. reservasi AntreanBooking (Mobile JKN yang memesan nomor lebih awal).
+     *
+     * Dipakai juga sebagai nomor yang ditampilkan di Mobile JKN supaya pasien
+     * melihat nomor yang SAMA dengan papan dokter (D{room}-NNN).
+     */
+    public function nextDoctorSequence(?string $room, string $date): array
+    {
+        $prefix = ($room !== null && $room !== '')
+            ? 'D' . $room
+            : Queue::prefixFor(Queue::STATION_DOKTER);
+
+        $maxQueue = Queue::where('station', Queue::STATION_DOKTER)
+            ->where('queue_prefix', $prefix)
+            ->whereDate('created_at', $date)
+            ->max('queue_sequence') ?? 0;
+
+        $maxBooking = AntreanBooking::query()
+            ->whereDate('tanggal_periksa', $date)
+            ->whereIn('status', [
+                AntreanBooking::STATUS_DIBOOK,
+                AntreanBooking::STATUS_CHECKIN,
+                AntreanBooking::STATUS_SELESAI,
+            ])
+            ->whereHas('doctorSchedule', function ($q) use ($room) {
+                if ($room !== null && $room !== '') {
+                    $q->where('room', $room);
+                } else {
+                    $q->where(fn ($w) => $w->whereNull('room')->orWhere('room', ''));
+                }
+            })
+            ->max('angka_antrean') ?? 0;
+
+        $sequence = max((int) $maxQueue, (int) $maxBooking) + 1;
+
+        return [
+            'queue_prefix'   => $prefix,
+            'queue_sequence' => $sequence,
+            'queue_number'   => $prefix . '-' . str_pad((string) $sequence, 3, '0', STR_PAD_LEFT),
+        ];
+    }
+
+    /**
+     * Nomor DOKTER yang sudah DIRESERVASI lewat AntreanBooking (Mobile JKN) untuk
+     * sebuah visit. Saat enqueue DOKTER, nomor ini DIPAKAI ULANG agar nomor di
+     * papan dokter == nomor yang dilihat pasien di Mobile JKN. Null bila tak ada.
+     */
+    private function reservedDoctorNumber(?Visit $visit): ?array
+    {
+        if (! $visit) {
+            return null;
+        }
+
+        $booking = AntreanBooking::where('visit_id', $visit->id)
+            ->whereNotNull('nomor_antrean')
+            ->whereIn('status', [
+                AntreanBooking::STATUS_DIBOOK,
+                AntreanBooking::STATUS_CHECKIN,
+                AntreanBooking::STATUS_SELESAI,
+            ])
+            ->orderByDesc('created_at')
+            ->first();
+
+        if (! $booking || ! $booking->nomor_antrean) {
+            return null;
+        }
+
+        return [
+            'queue_prefix'   => explode('-', (string) $booking->nomor_antrean)[0] ?: 'D',
+            'queue_sequence' => (int) ($booking->angka_antrean ?? 0),
+            'queue_number'   => (string) $booking->nomor_antrean,
         ];
     }
 
@@ -123,8 +199,9 @@ class QueueService
                 $data = $sharedNumber;
             } elseif ($station === Queue::STATION_DOKTER) {
                 $visit = \App\Models\Visit::with('doctorSchedule')->find($visitId);
-                $room  = $visit?->doctorSchedule?->room;
-                $data  = $this->generateQueueNumber($station, $room);
+                // Pakai-ulang nomor reservasi Mobile JKN bila ada → nomor papan == nomor di JKN.
+                $data  = $this->reservedDoctorNumber($visit)
+                    ?? $this->generateQueueNumber($station, $visit?->doctorSchedule?->room);
             } else {
                 $data = $this->generateQueueNumber($station);
             }
