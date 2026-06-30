@@ -142,19 +142,38 @@ class DashboardService
 
     public function getWeeklyVisits(): array
     {
+        $start = today()->subDays(6);
+        $end   = today();
+
+        // SATU query GROUP BY (mengganti 21 query COUNT terpisah: 7 hari × 3 hitungan).
+        // CAST(visit_date AS DATE) menyamai semantik whereDate lama — aman baik kolom
+        // bertipe date maupun timestamp (kalau pakai perbandingan date-string polos,
+        // baris hari ini setelah tengah malam bisa terlewat).
+        $rows = Visit::query()
+            ->whereRaw('CAST(visit_date AS DATE) BETWEEN ? AND ?', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw('CAST(visit_date AS DATE) AS d, guarantor_type, COUNT(*) AS c')
+            ->groupByRaw('CAST(visit_date AS DATE), guarantor_type')
+            ->get();
+
+        // Index hasil: [YYYY-MM-DD][guarantor_type] = count.
+        $map = [];
+        foreach ($rows as $r) {
+            $dkey = substr((string) $r->d, 0, 10);
+            $map[$dkey][$r->guarantor_type ?? ''] = (int) $r->c;
+        }
+
         $days = collect();
-
         for ($i = 6; $i >= 0; $i--) {
-            $date  = today()->subDays($i);
-            $label = $date->format('D d/m');
-
-            $total = Visit::whereDate('visit_date', $date)->count();
-            $bpjs  = Visit::whereDate('visit_date', $date)->where('guarantor_type', 'BPJS')->count();
-            $umum  = Visit::whereDate('visit_date', $date)->where('guarantor_type', 'UMUM')->count();
+            $date   = today()->subDays($i);
+            $dkey   = $date->toDateString();
+            $byType = $map[$dkey] ?? [];
+            $total  = array_sum($byType);
+            $bpjs   = $byType['BPJS'] ?? 0;
+            $umum   = $byType['UMUM'] ?? 0;
 
             $days->push([
-                'date'  => $date->toDateString(),
-                'label' => $label,
+                'date'  => $dkey,
+                'label' => $date->format('D d/m'),
                 'total' => $total,
                 'bpjs'  => $bpjs,
                 'umum'  => $umum,
@@ -172,18 +191,32 @@ class DashboardService
      */
     public function getWeeklyRevenue(): array
     {
-        $days = collect();
+        $start = today()->subDays(6);
+        $end   = today();
 
+        // SATU query GROUP BY (mengganti 7 query SUM terpisah). CAST(created_at AS DATE)
+        // menyamai semantik whereDate lama (aman untuk kolom timestamp).
+        $rows = BillingInvoice::query()
+            ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
+            ->whereRaw('CAST(created_at AS DATE) BETWEEN ? AND ?', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw('CAST(created_at AS DATE) AS d, SUM(paid_amount) AS amount')
+            ->groupByRaw('CAST(created_at AS DATE)')
+            ->get();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $map[substr((string) $r->d, 0, 10)] = (float) $r->amount;
+        }
+
+        $days = collect();
         for ($i = 6; $i >= 0; $i--) {
-            $date   = today()->subDays($i);
-            $amount = BillingInvoice::whereDate('created_at', $date)
-                ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
-                ->sum('paid_amount');
+            $date = today()->subDays($i);
+            $dkey = $date->toDateString();
 
             $days->push([
-                'date'   => $date->toDateString(),
+                'date'   => $dkey,
                 'label'  => $date->format('D d/m'),
-                'amount' => (float) $amount,
+                'amount' => $map[$dkey] ?? 0.0,
             ]);
         }
 
