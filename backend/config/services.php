@@ -42,4 +42,10 @@ return [
         'token' => env('PENUNJANG_BRIDGE_TOKEN'),
     ],
 
+    // Gemini API (generator template RM dari dokumen fisik). Dibaca via config()
+    // bukan env() langsung agar tetap berfungsi saat config:cache di produksi.
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+    ],
+
 ];

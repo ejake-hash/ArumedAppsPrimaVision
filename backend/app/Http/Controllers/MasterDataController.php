@@ -69,7 +69,10 @@ class MasterDataController extends Controller
     public function uploadProfilKlinikLogo(Request $request): JsonResponse
     {
         $request->validate([
-            'file' => 'required|file|mimes:png,jpg,jpeg,svg,webp|max:2048', // max 2MB
+            // SVG SENGAJA TIDAK diizinkan: file SVG bisa memuat <script>/handler event dan
+            // disajikan same-origin via /storage → stored XSS. Raster (png/jpg/webp) cukup
+            // untuk logo & aman. Lihat audit 30 Jun 2026.
+            'file' => 'required|file|mimes:png,jpg,jpeg,webp|max:2048', // max 2MB
         ]);
 
         $file = $request->file('file');

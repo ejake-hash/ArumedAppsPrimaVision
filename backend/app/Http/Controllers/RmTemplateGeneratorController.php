@@ -26,7 +26,7 @@ class RmTemplateGeneratorController extends Controller
             return response()->json(['status' => 'error', 'message' => $validator->errors()->first()], 422);
         }
 
-        $apiKey = env('GEMINI_API_KEY');
+        $apiKey = config('services.gemini.api_key');
         try {
             $file = $request->file('rm_file');
             $fileData = base64_encode(file_get_contents($file->getRealPath()));
@@ -48,8 +48,7 @@ class RmTemplateGeneratorController extends Controller
 
             $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" . $apiKey;
 
-            $response = Http::withoutVerifying()
-                ->timeout(120) 
+            $response = Http::timeout(120)
                 ->withHeaders([
                     'Content-Type' => 'application/json',
                 ])
@@ -86,11 +85,15 @@ class RmTemplateGeneratorController extends Controller
                 'data' => $parsedStructure
             ], 200);
 
-       } catch (\Exception $e) {
-            Log::error('RM Generator Exception: ' . $e->getMessage());
+       } catch (\Throwable $e) {
+            // Jangan bocorkan path/line/pesan internal ke klien (info disclosure).
+            // Detail penuh ke log; klien dapat pesan generik (atau pesan saat debug lokal).
+            Log::error('RM Generator Exception: ' . $e->getMessage(), ['exception' => $e]);
             return response()->json([
-                'status' => 'error',
-                'message' => 'DEBUG ERROR: ' . $e->getMessage() . ' | File: ' . $e->getFile() . ' Line: ' . $e->getLine()
+                'status'  => 'error',
+                'message' => config('app.debug')
+                    ? ('DEBUG: ' . $e->getMessage())
+                    : 'Gagal memproses dokumen. Coba lagi atau hubungi admin.',
             ], 500);
         }
     }
