@@ -148,8 +148,8 @@ class AuthService
 
     /**
      * Ubah PIN tanda tangan milik dokter yang sedang login.
-     * PIN disimpan PLAIN agar konsisten dengan DokterController::verifyPin
-     * (hash_equals plain) dan UserService::resetPin.
+     * PIN di-hash otomatis oleh cast 'pin' => 'hashed' pada model User (sama seperti
+     * password). Verifikasi di semua gate memakai Hash::check.
      *
      * @throws \Exception bila bukan dokter atau password salah
      */

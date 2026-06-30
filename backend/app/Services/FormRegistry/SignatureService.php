@@ -6,6 +6,7 @@ use App\Models\DocumentSignature;
 use App\Models\PatientDocument;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -70,11 +71,9 @@ final class SignatureService
         $roleSnapshot = null;
 
         if ($usePin) {
-            // Verifikasi PIN akun nakes.
-            // PENTING: di proyek ini PIN disimpan PLAINTEXT (kolom varchar(6)),
-            // bukan hash — bandingkan timing-safe dengan hash_equals, sesuai pola
-            // kanonik DokterController::verifyPin. (DokterService::signDocument
-            // memakai Hash::check → itu bug lama yang membuat TTD PIN selalu gagal.)
+            // Verifikasi PIN akun nakes. PIN di-hash (cast 'pin' => 'hashed' di model
+            // User) — verifikasi via Hash::check (timing-safe bawaan). Migrasi
+            // 2026_06_30 sudah meng-hash PIN plaintext lama di tempat.
             $user = User::query()->with('employee')->find($data['signer_user_id'] ?? null);
             if ($user === null) {
                 throw new RuntimeException('User penandatangan tidak ditemukan.');
@@ -82,7 +81,7 @@ final class SignatureService
             if (empty($user->pin)) {
                 throw new RuntimeException('Akun ini belum mengatur PIN tanda tangan.');
             }
-            if (!hash_equals((string) $user->pin, (string) $data['signature_pin'])) {
+            if (!Hash::check((string) $data['signature_pin'], (string) $user->pin)) {
                 // 401 — dipakai controller untuk status code.
                 throw new RuntimeException('PIN tidak sesuai.', 401);
             }
@@ -489,8 +488,8 @@ final class SignatureService
      */
     public function bulkSignAsDoctor(string $userId, array $documentIds, string $pin, string $signerType = 'doctor'): array
     {
-        // Verifikasi PIN SEKALI di awal (fail-fast). PIN PLAINTEXT → hash_equals,
-        // BUKAN Hash::check (pola kanonik DokterController::verifyPin).
+        // Verifikasi PIN SEKALI di awal (fail-fast). PIN di-hash (cast model User) →
+        // Hash::check (timing-safe).
         $user = User::query()->find($userId);
         if ($user === null) {
             throw new RuntimeException('User penandatangan tidak ditemukan.', 404);
@@ -498,7 +497,7 @@ final class SignatureService
         if (empty($user->pin)) {
             throw new RuntimeException('Akun ini belum mengatur PIN tanda tangan.', 422);
         }
-        if (!hash_equals((string) $user->pin, (string) $pin)) {
+        if (!Hash::check((string) $pin, (string) $user->pin)) {
             throw new RuntimeException('PIN tidak sesuai.', 401);
         }
 

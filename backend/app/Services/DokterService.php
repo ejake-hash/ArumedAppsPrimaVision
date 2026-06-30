@@ -2827,10 +2827,11 @@ class DokterService
             throw new \Exception('Dokumen tidak dalam status menunggu TTD.', 422);
         }
 
-        // Verify PIN. PIN disimpan PLAINTEXT (kolom tanpa cast 'hashed') — konsisten
-        // dgn DokterController::verifyPin, SignatureService, AuthService::changePin.
-        // Pakai hash_equals (timing-safe), BUKAN Hash::check (bug lama: TTD selalu 401).
-        if (empty($user->pin) || ! hash_equals((string) $user->pin, (string) $pin)) {
+        // Verify PIN. PIN di-hash (cast 'pin' => 'hashed' di model User) — verifikasi
+        // via Hash::check. Migrasi 2026_06_30 meng-hash PIN plaintext lama di tempat,
+        // jadi PIN yang sama tetap valid (root cause "bug lama TTD 401" = PIN plaintext,
+        // kini hilang).
+        if (empty($user->pin) || ! Hash::check((string) $pin, (string) $user->pin)) {
             throw new \Exception('PIN tidak sesuai.', 401);
         }
 

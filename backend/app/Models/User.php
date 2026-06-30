@@ -40,6 +40,11 @@ class User extends Authenticatable implements JWTSubject
         'last_login_at'     => 'datetime',
         'is_active'         => 'boolean',
         'password'          => 'hashed',
+        // PIN tanda tangan digital (e-sign legal dokumen RM): di-hash sama seperti
+        // password. Cast 'hashed' otomatis Hash::make saat di-set (tidak re-hash
+        // nilai yang sudah ter-hash). Verifikasi via Hash::check di SEMUA gate PIN
+        // (DokterController/DokterService/Refraksi/Perawat/SignatureService).
+        'pin'               => 'hashed',
     ];
 
     public function getJWTIdentifier(): mixed

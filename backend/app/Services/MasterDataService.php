@@ -140,10 +140,11 @@ class MasterDataService
                     // password: model User punya cast 'hashed' → biarkan plain, JANGAN
                     // Hash::make di sini (kalau di-hash dulu jadi double-hash & login gagal).
                     'password'    => $data['password'],
-                    // pin: DISIMPAN PLAINTEXT (model TIDAK punya cast 'pin'; verifikasi
-                    // pakai hash_equals mentah di DokterController). Konsisten dgn
-                    // UserService — kalau Hash::make di sini, verify-pin/TTD selalu gagal.
-                    'pin'         => $data['pin'] ?? '123456',
+                    // pin: model User punya cast 'hashed' → biarkan plain, jangan
+                    // Hash::make di sini (cast yang meng-hash; verifikasi via Hash::check).
+                    // JANGAN beri default lemah — bila tak diisi, biarkan NULL (dokter
+                    // wajib set PIN sendiri di Data Pengguna sebelum bisa tanda tangan).
+                    'pin'         => $data['pin'] ?? null,
                     'is_active'   => true,
                 ]);
             }

@@ -82,7 +82,10 @@ Route::prefix('v1')->group(function () {
     // 1. PUBLIC — Auth (no middleware)
     // =========================================================================
     Route::prefix('auth')->group(function () {
-        Route::post('/login',   [AuthController::class, 'login']);
+        // Rate-limit brute-force: maks 5 percobaan login / menit per username+IP.
+        // Penting karena password default akun stasiun ('888888') diketahui publik.
+        // Limiter 'login' didefinisikan di App\Providers\AppServiceProvider.
+        Route::post('/login',   [AuthController::class, 'login'])->middleware('throttle:login');
     });
 
     // =========================================================================
@@ -1036,11 +1039,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/statistik',                        [DashboardController::class, 'statistik']);
             Route::get('/kunjungan-hari-ini',               [DashboardController::class, 'kunjunganHariIni']);
             Route::get('/antrian-aktif',                    [DashboardController::class, 'antrianAktif']);
-            Route::get('/pendapatan',                       [DashboardController::class, 'pendapatan']);
+            Route::get('/pendapatan',                       [DashboardController::class, 'pendapatan'])->middleware('permission:keuangan.read|marketing.read');
             Route::get('/kunjungan-chart',                  [DashboardController::class, 'getVisitChart']);
-            Route::get('/pendapatan-chart',                 [DashboardController::class, 'getRevenueChart']);
+            Route::get('/pendapatan-chart',                 [DashboardController::class, 'getRevenueChart'])->middleware('permission:keuangan.read|marketing.read');
             Route::get('/diagnosis-stats',                  [DashboardController::class, 'getDiagnosisStats']);
-            Route::get('/distribusi-penjamin',              [DashboardController::class, 'distribusiPenjamin']);
+            Route::get('/distribusi-penjamin',              [DashboardController::class, 'distribusiPenjamin'])->middleware('permission:keuangan.read|marketing.read');
             Route::get('/jam-tersibuk',                     [DashboardController::class, 'jamTersibuk']);
 
             Route::get('/follow-up/hari-ini',               [DashboardController::class, 'followUpHariIni']);
@@ -1051,9 +1054,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/bpjs-expired',                     [DashboardController::class, 'bpjsExpiredAlert']);
             Route::get('/satusehat-status',                 [DashboardController::class, 'satusehatStatus']);
 
-            Route::get('/laporan/kunjungan',                [DashboardController::class, 'laporanKunjungan']);
-            Route::get('/laporan/pendapatan',               [DashboardController::class, 'laporanPendapatan']);
-            Route::get('/laporan/klaim',                    [DashboardController::class, 'laporanKlaim']);
+            Route::get('/laporan/kunjungan',                [DashboardController::class, 'laporanKunjungan'])->middleware('permission:keuangan.read|marketing.read');
+            Route::get('/laporan/pendapatan',               [DashboardController::class, 'laporanPendapatan'])->middleware('permission:keuangan.read|marketing.read');
+            Route::get('/laporan/klaim',                    [DashboardController::class, 'laporanKlaim'])->middleware('permission:keuangan.read|marketing.read');
         });
 
         // -----------------------------------------------------------------
@@ -1265,53 +1268,53 @@ Route::prefix('v1')->group(function () {
 
             // Buku Tarif terpadu (Tindakan+Obat+BHP+IOL satu daftar berkategori).
             Route::get('/buku-tarif',                       [MasterDataController::class, 'indexBukuTarif']);
-            Route::put('/buku-tarif/harga',                 [MasterDataController::class, 'setBukuTarifPrice']);
+            Route::put('/buku-tarif/harga',                 [MasterDataController::class, 'setBukuTarifPrice'])->middleware('permission:tarif_paket.write');
             // CSV/Excel terpadu — 1 file lintas-tipe (kolom `tipe`), roundtrip harga UMUM.
             Route::get('/buku-tarif/template-csv',          [MasterDataController::class, 'templateBukuTarifCsv']);
             Route::get('/buku-tarif/export-csv',            [MasterDataController::class, 'exportBukuTarifCsv']);
             Route::post('/buku-tarif/import-csv',           [MasterDataController::class, 'importBukuTarifCsv'])->middleware('permission:tarif_paket.write');
 
             Route::get('/tarif/tindakan',                   [MasterDataController::class, 'indexTarifTindakan']);
-            Route::post('/tarif/tindakan',                  [MasterDataController::class, 'storeTarifTindakan']);
-            Route::put('/tarif/tindakan/{id}',              [MasterDataController::class, 'updateTarifTindakan']);
-            Route::delete('/tarif/tindakan/{id}',           [MasterDataController::class, 'deleteTarifTindakan']);
+            Route::post('/tarif/tindakan',                  [MasterDataController::class, 'storeTarifTindakan'])->middleware('permission:tarif_paket.write');
+            Route::put('/tarif/tindakan/{id}',              [MasterDataController::class, 'updateTarifTindakan'])->middleware('permission:tarif_paket.write');
+            Route::delete('/tarif/tindakan/{id}',           [MasterDataController::class, 'deleteTarifTindakan'])->middleware('permission:tarif_paket.delete');
             Route::get('/tarif/tindakan/export-csv',        [MasterDataController::class, 'exportTarifCsv'])->defaults('type', 'tindakan');
-            Route::post('/tarif/tindakan/import-csv',       [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'tindakan');
+            Route::post('/tarif/tindakan/import-csv',       [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'tindakan')->middleware('permission:tarif_paket.write');
 
             Route::get('/tarif/obat',                       [MasterDataController::class, 'indexTarifObat']);
-            Route::post('/tarif/obat',                      [MasterDataController::class, 'storeTarifObat']);
-            Route::put('/tarif/obat/{id}',                  [MasterDataController::class, 'updateTarifObat']);
-            Route::delete('/tarif/obat/{id}',               [MasterDataController::class, 'deleteTarifObat']);
+            Route::post('/tarif/obat',                      [MasterDataController::class, 'storeTarifObat'])->middleware('permission:tarif_paket.write');
+            Route::put('/tarif/obat/{id}',                  [MasterDataController::class, 'updateTarifObat'])->middleware('permission:tarif_paket.write');
+            Route::delete('/tarif/obat/{id}',               [MasterDataController::class, 'deleteTarifObat'])->middleware('permission:tarif_paket.delete');
             Route::get('/tarif/obat/export-csv',            [MasterDataController::class, 'exportTarifCsv'])->defaults('type', 'obat');
-            Route::post('/tarif/obat/import-csv',           [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'obat');
+            Route::post('/tarif/obat/import-csv',           [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'obat')->middleware('permission:tarif_paket.write');
 
             Route::get('/tarif/bhp',                        [MasterDataController::class, 'indexTarifBhp']);
-            Route::post('/tarif/bhp',                       [MasterDataController::class, 'storeTarifBhp']);
-            Route::put('/tarif/bhp/{id}',                   [MasterDataController::class, 'updateTarifBhp']);
-            Route::delete('/tarif/bhp/{id}',                [MasterDataController::class, 'deleteTarifBhp']);
+            Route::post('/tarif/bhp',                       [MasterDataController::class, 'storeTarifBhp'])->middleware('permission:tarif_paket.write');
+            Route::put('/tarif/bhp/{id}',                   [MasterDataController::class, 'updateTarifBhp'])->middleware('permission:tarif_paket.write');
+            Route::delete('/tarif/bhp/{id}',                [MasterDataController::class, 'deleteTarifBhp'])->middleware('permission:tarif_paket.delete');
             Route::get('/tarif/bhp/export-csv',             [MasterDataController::class, 'exportTarifCsv'])->defaults('type', 'bhp');
-            Route::post('/tarif/bhp/import-csv',            [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'bhp');
+            Route::post('/tarif/bhp/import-csv',            [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'bhp')->middleware('permission:tarif_paket.write');
 
             Route::get('/tarif/iol',                        [MasterDataController::class, 'indexTarifIol']);
-            Route::post('/tarif/iol',                       [MasterDataController::class, 'storeTarifIol']);
-            Route::put('/tarif/iol/{id}',                   [MasterDataController::class, 'updateTarifIol']);
-            Route::delete('/tarif/iol/{id}',                [MasterDataController::class, 'deleteTarifIol']);
+            Route::post('/tarif/iol',                       [MasterDataController::class, 'storeTarifIol'])->middleware('permission:tarif_paket.write');
+            Route::put('/tarif/iol/{id}',                   [MasterDataController::class, 'updateTarifIol'])->middleware('permission:tarif_paket.write');
+            Route::delete('/tarif/iol/{id}',                [MasterDataController::class, 'deleteTarifIol'])->middleware('permission:tarif_paket.delete');
             Route::get('/tarif/iol/export-csv',             [MasterDataController::class, 'exportTarifCsv'])->defaults('type', 'iol');
-            Route::post('/tarif/iol/import-csv',            [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'iol');
+            Route::post('/tarif/iol/import-csv',            [MasterDataController::class, 'importTarifCsv'])->defaults('type', 'iol')->middleware('permission:tarif_paket.write');
 
             Route::get('/jenis-dokumen',                    [MasterDataController::class, 'indexJenisDokumen']);
-            Route::post('/jenis-dokumen',                   [MasterDataController::class, 'storeJenisDokumen']);
-            Route::put('/jenis-dokumen/{id}',               [MasterDataController::class, 'updateJenisDokumen']);
-            Route::delete('/jenis-dokumen/{id}',            [MasterDataController::class, 'deleteJenisDokumen']);
+            Route::post('/jenis-dokumen',                   [MasterDataController::class, 'storeJenisDokumen'])->middleware('permission:master_data.write');
+            Route::put('/jenis-dokumen/{id}',               [MasterDataController::class, 'updateJenisDokumen'])->middleware('permission:master_data.write');
+            Route::delete('/jenis-dokumen/{id}',            [MasterDataController::class, 'deleteJenisDokumen'])->middleware('permission:master_data.write');
 
             Route::get('/template-dokumen',                 [MasterDataController::class, 'indexTemplateDokumen']);
             Route::get('/template-dokumen/{id}',            [MasterDataController::class, 'showTemplateDokumen']);
-            Route::post('/template-dokumen',                [MasterDataController::class, 'storeTemplateDokumen']);
-            Route::put('/template-dokumen/{id}',            [MasterDataController::class, 'updateTemplateDokumen']);
-            Route::delete('/template-dokumen/{id}',         [MasterDataController::class, 'deleteTemplateDokumen']);
+            Route::post('/template-dokumen',                [MasterDataController::class, 'storeTemplateDokumen'])->middleware('permission:master_data.write');
+            Route::put('/template-dokumen/{id}',            [MasterDataController::class, 'updateTemplateDokumen'])->middleware('permission:master_data.write');
+            Route::delete('/template-dokumen/{id}',         [MasterDataController::class, 'deleteTemplateDokumen'])->middleware('permission:master_data.write');
 
             Route::get('/stasiun-dokumen',                  [MasterDataController::class, 'indexStasiunDokumen']);
-            Route::put('/stasiun-dokumen/{id}',             [MasterDataController::class, 'updateStasiunDokumen']);
+            Route::put('/stasiun-dokumen/{id}',             [MasterDataController::class, 'updateStasiunDokumen'])->middleware('permission:master_data.write');
 
             // -----------------------------------------------------------------
             // FORM REGISTRY — Master Form Template (Fase 1 + Fase 2)

@@ -13,6 +13,7 @@ use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class RefraksiService
 {
@@ -261,7 +262,7 @@ class RefraksiService
      * Lock refraction record → update visit timestamps → trigger parallel check.
      * Finalisasi = tanda tangan refraksionis (paraf PIN): mengisi digital_signature
      * + signature_timestamp. PIN diverifikasi sejajar pola DokterController::verifyPin
-     * (users.pin plaintext, hash_equals).
+     * (users.pin di-hash, Hash::check).
      */
     public function finalizeRefraction(string $recordId, ?string $pin = null): RefractionRecord
     {
@@ -282,7 +283,7 @@ class RefraksiService
         if (! $expected) {
             throw new \Exception('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
         }
-        if (! is_string($pin) || ! hash_equals((string) $expected, (string) $pin)) {
+        if (! is_string($pin) || ! Hash::check((string) $pin, (string) $expected)) {
             throw new \Exception('PIN salah.', 422);
         }
 

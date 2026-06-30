@@ -7,6 +7,7 @@ use App\Services\BpjsIcareService;
 use App\Services\DokterService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 
 class DokterController extends Controller
 {
@@ -39,7 +40,7 @@ class DokterController extends Controller
             return $this->error('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
         }
 
-        if (! hash_equals((string) $pin, (string) $validated['pin'])) {
+        if (! Hash::check((string) $validated['pin'], (string) $pin)) {
             return $this->error('PIN salah.', 422);
         }
 

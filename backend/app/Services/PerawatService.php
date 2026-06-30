@@ -16,6 +16,7 @@ use App\Models\Visit;
 use App\Models\VisitSurgeryPackage;
 use App\Services\QueueService;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -1102,7 +1103,7 @@ class PerawatService
         if (! $expected) {
             throw new \Exception('PIN belum diatur. Hubungi admin untuk mengatur PIN di Data Pengguna.', 422);
         }
-        if (! is_string($pin) || ! hash_equals((string) $expected, (string) $pin)) {
+        if (! is_string($pin) || ! Hash::check((string) $pin, (string) $expected)) {
             throw new \Exception('PIN salah.', 422);
         }
 
