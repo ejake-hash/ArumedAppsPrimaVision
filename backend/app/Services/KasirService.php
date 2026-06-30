@@ -1830,6 +1830,7 @@ class KasirService
         $map = [
             InpatientCharge::TYPE_ROOM      => ['ROOM',      'Kamar Rawat Inap'],
             InpatientCharge::TYPE_VISITE    => ['VISITE',    'Visite Dokter'],
+            InpatientCharge::TYPE_KONSUL    => ['VISITE',    'Konsultasi Dokter'],
             InpatientCharge::TYPE_TINDAKAN  => ['TINDAKAN',  'Tindakan'],
             InpatientCharge::TYPE_OBAT      => ['OBAT',      'Obat'],
             InpatientCharge::TYPE_BHP       => ['BHP',       'BHP'],

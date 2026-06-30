@@ -16,6 +16,7 @@ class InpatientCharge extends Model
     // Jenis biaya.
     public const TYPE_ROOM      = 'ROOM';
     public const TYPE_VISITE    = 'VISITE';
+    public const TYPE_KONSUL    = 'KONSUL';    // konsultasi dokter spesialis (punya performed_by_id)
     public const TYPE_TINDAKAN  = 'TINDAKAN';
     public const TYPE_OBAT      = 'OBAT';
     public const TYPE_BHP       = 'BHP';
@@ -34,6 +35,7 @@ class InpatientCharge extends Model
         'total_price',
         'is_billed',
         'created_by_id',
+        'performed_by_id',
     ];
 
     protected $casts = [
@@ -52,5 +54,11 @@ class InpatientCharge extends Model
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'created_by_id');
+    }
+
+    /** Dokter pelaksana (konsultasi/tindakan spesialis) — sumber atribusi honor. */
+    public function performedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'performed_by_id');
     }
 }

@@ -196,6 +196,25 @@ class IgdController extends Controller
         return $this->ok($charge, 'Obat dicatat');
     }
 
+    /** POST /igd/{visitId}/konsultasi — konsultasi dokter spesialis (honor ke spesialis). */
+    public function addKonsultasi(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'procedure_id' => 'required|uuid|exists:procedures,id',
+            'doctor_id'    => 'required|uuid|exists:employees,id',
+            'quantity'     => 'nullable|numeric|min:0.01',
+        ]);
+
+        try {
+            $visit  = Visit::findOrFail($visitId);
+            $charge = $this->service->addKonsultasi($visit, $data['procedure_id'], $data['doctor_id'], $data['quantity'] ?? 1);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($charge, 'Konsultasi dicatat');
+    }
+
     /** DELETE /igd/{visitId}/charge/{chargeId} */
     public function deleteCharge(string $visitId, string $chargeId): JsonResponse
     {
@@ -257,6 +276,12 @@ class IgdController extends Controller
     public function dokterJaga(): JsonResponse
     {
         return $this->ok($this->service->dokterJaga());
+    }
+
+    /** GET /igd/konsultasi-dokter — dokter umum (jaga) + spesialis mata (picker konsultasi). */
+    public function konsultasiDokter(): JsonResponse
+    {
+        return $this->ok($this->service->konsultasiDokter());
     }
 
     /** GET /igd/{visitId}/bedah-options — paket bedah + operator + anestesiologis (modal disposisi BEDAH). */

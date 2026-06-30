@@ -381,7 +381,47 @@ class IgdService
             'total_price'    => $qty * $price,
             'is_billed'      => false,
             'created_by_id'  => auth('api')->user()?->employee_id,
+            'performed_by_id' => $data['performed_by_id'] ?? null,
         ]);
+    }
+
+    /**
+     * Catat KONSULTASI dokter spesialis IGD. Beda dari tindakan biasa: membawa
+     * dokter pelaksana (performed_by_id) → honor jasa medis mengalir ke spesialis
+     * yang dikonsultasikan, bukan ke Dokter Jaga IGD (DPJP kunjungan). Tarif
+     * resolve via getPrice('procedure') — item konsultasi diambil dari buku tarif.
+     */
+    public function addKonsultasi(Visit $visit, string $procedureId, string $doctorId, float $qty = 1): InpatientCharge
+    {
+        $proc   = Procedure::findOrFail($procedureId);
+        // Dokter konsultasi = dokter umum (jaga IGD) ATAU spesialis mata.
+        $doctor = Employee::whereIn('doctor_type', [Employee::DT_UMUM, Employee::DT_SPESIALIS_MATA])
+            ->where('is_active', true)->findOrFail($doctorId);
+        $price = $this->kasir->getPrice('procedure', $procedureId, $visit->guarantor_type, $visit->insurer_id);
+
+        return $this->addCharge($visit, [
+            'charge_type'     => InpatientCharge::TYPE_KONSUL,
+            'reference_type'  => 'procedure',
+            'reference_id'    => $proc->id,
+            'description'     => $proc->name . ' — ' . $doctor->name,
+            'quantity'        => $qty,
+            'unit_price'      => $price,
+            'performed_by_id' => $doctor->id,
+        ]);
+    }
+
+    /**
+     * Daftar dokter untuk picker konsultasi IGD: dokter umum (jaga IGD) +
+     * spesialis mata. doctor_type disertakan agar FE bisa melabeli/mengelompokkan
+     * (Umum vs Spesialis). Umum diurut lebih dulu (konsultasi umum paling sering).
+     */
+    public function konsultasiDokter(): array
+    {
+        return Employee::whereIn('doctor_type', [Employee::DT_UMUM, Employee::DT_SPESIALIS_MATA])
+            ->where('is_active', true)
+            ->orderByRaw("CASE doctor_type WHEN 'UMUM' THEN 0 ELSE 1 END")
+            ->orderBy('name')
+            ->get(['id', 'name', 'profession', 'doctor_type'])->all();
     }
 
     /** Catat TINDAKAN IGD — harga resolve OTOMATIS via getPrice. */

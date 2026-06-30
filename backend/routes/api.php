@@ -722,12 +722,14 @@ Route::prefix('v1')->group(function () {
             Route::post('/register-baru',                 [IgdController::class, 'registerNew'])->middleware('permission:igd.write');
             // Dokter jaga IGD (dokter umum) untuk picker pendaftaran. WAJIB sebelum /{visitId}.
             Route::get('/dokter-jaga',                     [IgdController::class, 'dokterJaga'])->middleware('permission:igd.read');
+            Route::get('/konsultasi-dokter',               [IgdController::class, 'konsultasiDokter'])->middleware('permission:igd.read');
             Route::get('/{visitId}',                      [IgdController::class, 'detail'])->middleware('permission:igd.read');
 
             Route::post('/{visitId}/triase',              [IgdController::class, 'triase'])->middleware('permission:igd.write');
             Route::get('/{visitId}/tarif-tindakan',       [IgdController::class, 'tarifTindakan'])->middleware('permission:igd.read');
             Route::get('/{visitId}/daftar-obat',          [IgdController::class, 'daftarObat'])->middleware('permission:igd.read');
             Route::post('/{visitId}/tindakan',            [IgdController::class, 'addTindakan'])->middleware('permission:igd.write');
+            Route::post('/{visitId}/konsultasi',          [IgdController::class, 'addKonsultasi'])->middleware('permission:igd.write');
             Route::post('/{visitId}/obat',                [IgdController::class, 'addObat'])->middleware('permission:igd.write');
             Route::delete('/{visitId}/charge/{chargeId}', [IgdController::class, 'deleteCharge'])->middleware('permission:igd.write');
             // Opsi modal disposisi: BEDAH (paket/operator/anestesi) & RAJAL (poli tujuan).
