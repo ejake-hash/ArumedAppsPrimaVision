@@ -169,7 +169,7 @@ async function openDischarge(p) {
   // Prefetch obat awal (tanpa keyword) supaya dropdown tidak kosong.
   try {
     const o = await ranapApi.daftarObat(p.visit_id, '')
-    obatPulangOptions.value = o.data?.data ?? []
+    obatPulangOptions.value = (o.data?.data ?? []).filter(Boolean)
   } catch { obatPulangOptions.value = [] }
 }
 
@@ -177,7 +177,7 @@ async function searchObatPulang() {
   if (!dischargePt.value) return
   try {
     const o = await ranapApi.daftarObat(dischargePt.value.visit_id, obatPulangSearch.value)
-    obatPulangOptions.value = o.data?.data ?? []
+    obatPulangOptions.value = (o.data?.data ?? []).filter(Boolean)
   } catch { obatPulangOptions.value = [] }
 }
 
@@ -291,7 +291,7 @@ const histTo = ref(new Date().toISOString().slice(0, 10))
 async function loadHistory() {
   try {
     const r = await ranapApi.history(histFrom.value, histTo.value)
-    histList.value = r.data?.data ?? []
+    histList.value = (r.data?.data ?? []).filter(Boolean)
   } catch (e) { notify(e.response?.data?.message ?? 'Gagal muat riwayat', false) }
 }
 // SPRI: terbit/ubah lewat modal + date-picker (ganti prompt YYYY-MM-DD).
@@ -337,8 +337,9 @@ const paketBedahOptions = ref([])
 const paketSearch = ref('')
 const filteredPaketBedah = computed(() => {
   const q = paketSearch.value.trim().toLowerCase()
-  if (!q) return paketBedahOptions.value
-  return paketBedahOptions.value.filter((p) =>
+  const list = paketBedahOptions.value.filter(Boolean)   // tahan elemen null → cegah pk.id crash
+  if (!q) return list
+  return list.filter((p) =>
     `${p.name ?? ''} ${p.code ?? ''}`.toLowerCase().includes(q))
 })
 
@@ -349,8 +350,12 @@ async function doKirimBedah(p) {
   // Muat daftar paket bedah untuk opsi auto-jadwal (boleh dikosongkan).
   if (!paketBedahOptions.value.length) {
     try {
-      const res = await tarifPaketApi.paket.list({ active: 1 })
-      paketBedahOptions.value = res.data?.data ?? []
+      const res = await tarifPaketApi.paket.list({ active: 1, per_page: 500 })
+      // /tarif-paket/paket-bedah PAGINATED → ok() bungkus {data: paginator}, jadi
+      // res.data.data = OBJEK paginator {data:[...], next_page_url:null,...}, BUKAN array.
+      // Ambil items-nya; v-for objek (mengiterasi nilai termasuk null) → pk.id crash.
+      const raw = res.data?.data
+      paketBedahOptions.value = (Array.isArray(raw) ? raw : (raw?.data ?? [])).filter(Boolean)
     } catch { paketBedahOptions.value = [] }
   }
 }
@@ -403,7 +408,7 @@ async function loadDocuments() {
   if (!detailVisitId.value) return
   try {
     const r = await ranapApi.documents(detailVisitId.value)
-    docList.value = r.data?.data ?? []
+    docList.value = (r.data?.data ?? []).filter(Boolean)
   } catch { docList.value = [] }
 }
 function onDocFile(e) {
@@ -474,13 +479,25 @@ const cpptList = ref([])
 // pemeriksaan dokter = read-only, tak dihitung sebagai "belum diverifikasi").
 const cpptUnverifiedCount = computed(() => cpptList.value.filter((e) => e.editable && !e.verified_at).length)
 
-// Pagination CPPT (klien) — timeline kini lintas-episode (RJ/IGD/Ranap + pemeriksaan
-// dokter) bisa panjang; dokter tak kehilangan riwayat. Default ke halaman 1 (terbaru).
-const CPPT_PER_PAGE = 12
-const cpptPage = ref(1)
-const cpptTotalPages = computed(() => Math.max(1, Math.ceil(cpptList.value.length / CPPT_PER_PAGE)))
-const cpptPaged = computed(() => cpptList.value.slice((cpptPage.value - 1) * CPPT_PER_PAGE, cpptPage.value * CPPT_PER_PAGE))
 const CPPT_SRC_CLS = { IGD: 'src-igd', 'Rawat Jalan': 'src-rj', 'Rawat Inap': 'src-ri' }
+// Pagination CPPT per STASIUN + TANGGAL: 1 halaman = 1 (sumber, tanggal) → rapi & mudah
+// dibaca. Grup diurut tanggal terbaru→lama lalu sumber; entri dalam grup ikut urutan
+// backend (terbaru dulu). Halaman 1 = grup terbaru.
+const cpptPage = ref(1)
+const cpptGroups = computed(() => {
+  const map = new Map()
+  for (const e of cpptList.value) {
+    const date = e.at_date || (e.at ? String(e.at).slice(0, 10) : '—')
+    const key = `${e.source || 'Lainnya'}|${date}`
+    if (!map.has(key)) map.set(key, { key, source: e.source || 'Lainnya', date, entries: [] })
+    map.get(key).entries.push(e)
+  }
+  return [...map.values()].sort((a, b) =>
+    String(b.date).localeCompare(String(a.date)) || String(a.source).localeCompare(String(b.source)))
+})
+const cpptTotalPages = computed(() => Math.max(1, cpptGroups.value.length))
+const cpptCurrentGroup = computed(() => cpptGroups.value[Math.min(cpptPage.value, cpptTotalPages.value) - 1] || null)
+const cpptPaged = computed(() => cpptCurrentGroup.value?.entries || [])
 const emptyCppt = () => ({
   soap_s: '', soap_o: '', soap_a: '', soap_p: '', instruksi: '',
   td_sistol: null, td_diastol: null, nadi: null, suhu: null, respirasi: null, spo2: null, kgd: null, pain_scale: null,
@@ -607,7 +624,7 @@ async function verifyCppt(e) {
 async function searchObat() {
   try {
     const o = await ranapApi.daftarObat(detailVisitId.value, obatSearch.value)
-    obatList.value = o.data?.data ?? []
+    obatList.value = (o.data?.data ?? []).filter(Boolean)
   } catch { /* */ }
 }
 
@@ -637,7 +654,7 @@ async function loadPermintaan() {
   if (!detailVisitId.value) return
   try {
     const r = await ranapApi.permintaanObatList(detailVisitId.value)
-    permintaanList.value = r.data?.data ?? []
+    permintaanList.value = (r.data?.data ?? []).filter(Boolean)
   } catch { permintaanList.value = [] }
 }
 
@@ -724,14 +741,14 @@ async function loadBhp() {
   if (!detailVisitId.value) { bhpUsages.value = []; return }
   try {
     const r = await ranapApi.bhpList(detailVisitId.value)
-    bhpUsages.value = r.data?.data ?? []
+    bhpUsages.value = (r.data?.data ?? []).filter(Boolean)
   } catch { bhpUsages.value = [] }
 }
 async function searchBhp() {
   if (!detailVisitId.value) return
   try {
     const r = await ranapApi.tarifBhp(detailVisitId.value, bhpSearch.value)
-    bhpDropList.value = r.data?.data ?? []
+    bhpDropList.value = (r.data?.data ?? []).filter(Boolean)
   } catch { bhpDropList.value = [] }
 }
 function pickBhp(b) { bhpPick.value = b; bhpComboOpen.value = false }
@@ -795,7 +812,7 @@ async function loadPenunjang() {
   if (!detailVisitId.value) { penunjangOrders.value = []; return }
   try {
     const r = await ranapApi.orderPenunjangList(detailVisitId.value)
-    penunjangOrders.value = r.data?.data ?? []
+    penunjangOrders.value = (r.data?.data ?? []).filter(Boolean)
   } catch { penunjangOrders.value = [] }
 }
 function penunjangTypeName(code) {
@@ -836,6 +853,8 @@ function penunjangStatusPill(s) {
 
 const bedStatusColor = { AVAILABLE: '#16a34a', OCCUPIED: '#1763d4', CLEANING: '#d97706', MAINTENANCE: '#6b7280', RESERVED: '#7c3aed' }
 function fmt(dt) { return dt ? new Date(dt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' }) : '—' }
+function fmtDate(d) { return d ? new Date(String(d).length <= 10 ? d + 'T00:00:00' : d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '—' }
+function fmtTime(dt) { return dt ? new Date(dt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '—' }
 // Lama rawat (LOS) inklusif: hari masuk = Hari ke-1.
 function losText(admissionAt) {
   if (!admissionAt) return '—'
@@ -1360,14 +1379,18 @@ const statusPill = (s) => ({
             </div>
 
             <div class="cppt-timeline">
+              <!-- Header grup: 1 halaman = 1 stasiun + 1 tanggal (sumber+tanggal di header, tak diulang per-entri) -->
+              <div v-if="cpptCurrentGroup" class="cppt-group-head" :class="CPPT_SRC_CLS[cpptCurrentGroup.source] || 'src-other'">
+                <span class="cgh-src">{{ cpptCurrentGroup.source }}</span>
+                <span class="cgh-date">{{ fmtDate(cpptCurrentGroup.date) }}</span>
+                <span class="cgh-count">{{ cpptCurrentGroup.entries.length }} catatan</span>
+              </div>
               <div v-for="e in cpptPaged" :key="e.id" class="cppt-item" :class="['ppa-edge-' + (e.ppa_role || 'LAINNYA'), { 'cppt-history': e.is_current === false }]">
                 <div class="cppt-meta">
-                  <span class="cppt-src" :class="CPPT_SRC_CLS[e.source] || 'src-other'">{{ e.source || '—' }}</span>
                   <span v-if="e.entry_type === 'EXAM'" class="cppt-src src-exam" title="Catatan pemeriksaan dokter (read-only)">Pemeriksaan Dokter</span>
                   <span class="ppa-badge" :class="'ppa-' + (e.ppa_role || 'LAINNYA')">{{ PPA_LABEL[e.ppa_role] || 'PPA Lain' }}</span>
                   <strong>{{ e.by || '—' }}</strong>
-                  <span class="cppt-time">{{ fmt(e.at) }}</span>
-                  <span v-if="e.is_current === false && e.visit_date" class="cppt-vdate" title="Kunjungan lain (riwayat)">📅 {{ e.visit_date }}</span>
+                  <span class="cppt-time">{{ fmtTime(e.at) }}</span>
                   <span v-if="e.edited_at" class="cppt-edited">(diedit)</span>
                   <span v-if="e.ews_level" class="ews-badge" :class="'ews-' + e.ews_level.toLowerCase()" :title="`EWS ${e.ews_score} (${e.ews_params} parameter)`">EWS {{ e.ews_score }} · {{ e.ews_label }}</span>
                 </div>
@@ -1411,7 +1434,7 @@ const statusPill = (s) => ({
               <p v-if="!cpptList.length" class="muted">Belum ada catatan CPPT.</p>
               <div v-if="cpptTotalPages > 1" class="cppt-pager">
                 <button class="btn btn-sm btn-secondary" :disabled="cpptPage <= 1" @click="cpptPage--">‹ Sebelumnya</button>
-                <span class="cppt-pager-info">Hal {{ cpptPage }} / {{ cpptTotalPages }} · {{ cpptList.length }} entri (RJ/IGD + Ranap)</span>
+                <span class="cppt-pager-info">Stasiun·tanggal {{ cpptPage }} / {{ cpptTotalPages }} · total {{ cpptList.length }} catatan</span>
                 <button class="btn btn-sm btn-secondary" :disabled="cpptPage >= cpptTotalPages" @click="cpptPage++">Berikutnya ›</button>
               </div>
             </div>
@@ -2064,6 +2087,11 @@ const statusPill = (s) => ({
 .cppt-readonly { color: var(--tu); font-style: italic; font-size: .76rem; }
 .cppt-pager { display: flex; align-items: center; justify-content: center; gap: .75rem; margin-top: .75rem; padding-top: .6rem; border-top: 1px dashed var(--gb); }
 .cppt-pager-info { font-size: .78rem; color: var(--tm); font-variant-numeric: tabular-nums; }
+/* Header grup CPPT (stasiun + tanggal) — warna mengikuti kelas sumber (.src-*) */
+.cppt-group-head { display: flex; align-items: center; gap: .6rem; padding: .4rem .6rem; border-radius: 8px; margin-bottom: .25rem; font-size: .82rem; border: 1px solid transparent; }
+.cppt-group-head .cgh-src { font-weight: 800; }
+.cppt-group-head .cgh-date { font-weight: 700; color: var(--td); }
+.cppt-group-head .cgh-count { margin-left: auto; font-size: .72rem; color: var(--tm); font-variant-numeric: tabular-nums; }
 .cppt-edited { color: var(--wt); font-style: italic; }
 .cppt-ttv { display: flex; flex-wrap: wrap; gap: .6rem; font-size: .78rem; color: var(--ga); margin: .25rem 0; }
 .cppt-mata { display: flex; flex-wrap: wrap; gap: .8rem; font-size: .78rem; color: var(--pt); margin: .15rem 0 .3rem; font-weight: 600; }

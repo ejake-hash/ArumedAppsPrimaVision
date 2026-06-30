@@ -1026,6 +1026,7 @@ class RanapService
             'by'            => $x->doctor?->name,
             'by_profession' => $x->doctor?->profession,
             'at'            => $x->created_at,
+            'at_date'       => $x->created_at?->toDateString(),
             'edited_at'     => null,
             'verified_by'   => null,
             'verified_at'   => null,
@@ -1078,6 +1079,7 @@ class RanapService
             'by'          => $e->createdBy?->name,
             'by_profession' => $e->createdBy?->profession,
             'at'          => $e->created_at,
+            'at_date'     => $e->created_at?->toDateString(),   // tanggal lokal utk grup CPPT per-stasiun-per-tanggal
             'edited_at'   => $e->edited_at,
             'verified_by' => $e->verifiedBy?->name,
             'verified_at' => $e->verified_at,
