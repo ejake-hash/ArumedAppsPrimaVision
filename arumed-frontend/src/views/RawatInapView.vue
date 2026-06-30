@@ -331,7 +331,7 @@ async function removeSpri(row) {
 // ── KIRIM BEDAH ───────────────────────────────────────────────────────────────
 const showKirimBedah = ref(false)
 const kirimBedahPt = ref(null)
-const kirimBedahForm = ref({ surgery_package_id: '', scheduled_date: '' })
+const kirimBedahForm = ref({ surgery_package_id: '' })
 const paketBedahOptions = ref([])
 // Cari paket bedah (client-side; daftar paket aktif dari master Tarif & Paket).
 const paketSearch = ref('')
@@ -345,7 +345,7 @@ const filteredPaketBedah = computed(() => {
 
 async function doKirimBedah(p) {
   kirimBedahPt.value = p
-  kirimBedahForm.value = { surgery_package_id: '', scheduled_date: '' }
+  kirimBedahForm.value = { surgery_package_id: '' }
   showKirimBedah.value = true
   // Muat daftar paket bedah untuk opsi auto-jadwal (boleh dikosongkan).
   if (!paketBedahOptions.value.length) {
@@ -365,7 +365,6 @@ async function confirmKirimBedah () {
   const payload = {}
   if (kirimBedahForm.value.surgery_package_id) {
     payload.surgery_package_id = kirimBedahForm.value.surgery_package_id
-    if (kirimBedahForm.value.scheduled_date) payload.scheduled_date = kirimBedahForm.value.scheduled_date
   }
   try {
     await store.kirimBedah(p.visit_id, payload)
@@ -1101,10 +1100,7 @@ const statusPill = (s) => ({
               <option v-for="pk in filteredPaketBedah" :key="pk.id" :value="pk.id">{{ pk.name }}{{ pk.code ? ' · ' + pk.code : '' }}</option>
             </select>
           </label>
-          <label v-if="kirimBedahForm.surgery_package_id">Tgl rencana
-            <input v-model="kirimBedahForm.scheduled_date" type="date" />
-          </label>
-          <p class="hint">Pasien selalu masuk papan Bedah. Pilih paket bila sudah pasti — atau kosongkan dan tetapkan paket nanti di stasiun Bedah.</p>
+          <p class="hint">Pasien langsung masuk papan Bedah (jadwal otomatis hari ini, seperti disposisi). Pilih paket bila sudah pasti — atau kosongkan dan tetapkan paket nanti di stasiun Bedah.</p>
         </template>
         <div class="modal-actions">
           <button @click="showKirimBedah = false">Batal</button>
