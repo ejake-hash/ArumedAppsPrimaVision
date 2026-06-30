@@ -574,6 +574,38 @@ class KasirService
     }
 
     /**
+     * Rutekan SEMUA visit dalam rantai rujuk-internal same-day setelah invoice gabungan
+     * DITUTUP (tunai/asuransi/BPJS/WAIVED). Tiap visit dirutekan SENDIRI lewat
+     * advanceFromStation: dokter dgn resep/BHP pending → FARMASI (ambil obat), tanpa →
+     * SELESAI. Non-rujukan = rantai 1 elemen → perilaku lama persis.
+     *
+     * KRITIS: invoice gabungan hanya bertaut ke visit ANCHOR. Tanpa loop rantai ini,
+     * leg rujukan (yang justru sering memegang resep "Obat Pulang") nyangkut di
+     * KASIR/WAITING dan TAK PERNAH muncul di Dispensing Farmasi — akar bug "sudah bayar
+     * tapi tak muncul di dispensing" pada pasien rujuk-internal yang ditutup lewat
+     * konfirmasi coverage (BPJS/asuransi/WAIVED), karena ketiga jalur itu dulunya hanya
+     * meng-advance anchor. Jalur tunai sudah benar; helper ini menyatukan keempatnya.
+     */
+    private function routeChainAfterKasirClose(BillingInvoice $invoice): void
+    {
+        if (! $invoice->visit) {
+            return;
+        }
+        foreach ($this->sameDayChainVisitIds($invoice->visit) as $chainVisitId) {
+            $kasirQueue = Queue::where('visit_id', $chainVisitId)
+                ->where('station', 'KASIR')
+                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
+                ->first();
+            if ($kasirQueue) {
+                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
+            } else {
+                // Tidak ada queue KASIR aktif (pasien dibayar dari non-queue flow) — set manual.
+                Visit::where('id', $chainVisitId)->update(['current_station' => 'SELESAI']);
+            }
+        }
+    }
+
+    /**
      * Semua visit_id yang ditagih ke invoice anchor: anchor + keturunan rujuk internal
      * di tanggal yang sama (BFS). Urut: anchor dulu, lalu turunannya (kronologis).
      */
@@ -2973,18 +3005,7 @@ class KasirService
                 // SEMUA visit rantai. Tiap visit dirutekan SENDIRI sesuai obatnya (dokter dgn
                 // resep → FARMASI ambil obat; tanpa resep → SELESAI). Non-rujukan = rantai 1
                 // elemen → perilaku lama persis.
-                foreach ($this->sameDayChainVisitIds($invoice->visit) as $chainVisitId) {
-                    $kasirQueue = Queue::where('visit_id', $chainVisitId)
-                        ->where('station', 'KASIR')
-                        ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
-                        ->first();
-                    if ($kasirQueue) {
-                        $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
-                    } else {
-                        // Tidak ada queue KASIR aktif (pasien dibayar dari non-queue flow) — set manual.
-                        Visit::where('id', $chainVisitId)->update(['current_station' => 'SELESAI']);
-                    }
-                }
+                $this->routeChainAfterKasirClose($invoice);
 
                 // Konsultasi kontrol gratis pasca-bedah (Opsi B): tandai hak terpakai untuk
                 // tiap baris DISKON_KONTROL yang masih ada (kasir tak meng-override). Idempoten.
@@ -3128,15 +3149,10 @@ class KasirService
                 'notes'          => $data['notes'] ?? $invoice->notes,
             ]);
 
-            $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
-                ->where('station', 'KASIR')
-                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
-                ->first();
-            if ($kasirQueue) {
-                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
-            } else {
-                $invoice->visit->update(['current_station' => 'SELESAI']);
-            }
+            // Rutekan SEMUA leg rantai rujuk-internal (bukan hanya anchor) — leg rujukan
+            // sering memegang resep "Obat Pulang"; tanpa ini ia nyangkut KASIR & hilang
+            // dari Dispensing Farmasi walau invoice sudah PAID.
+            $this->routeChainAfterKasirClose($invoice);
 
             $this->maybeCreateInsuranceClaimDraft($invoice);
             // COB BPJS+asuransi: penjamin-1 BPJS juga perlu draft klaim INA-CBG (self-guarded).
@@ -3205,15 +3221,10 @@ class KasirService
                 'notes'          => $data['notes'] ?? $invoice->notes,
             ]);
 
-            $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
-                ->where('station', 'KASIR')
-                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
-                ->first();
-            if ($kasirQueue) {
-                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
-            } else {
-                $invoice->visit->update(['current_station' => 'SELESAI']);
-            }
+            // Rutekan SEMUA leg rantai rujuk-internal (bukan hanya anchor) — leg rujukan
+            // sering memegang resep "Obat Pulang"; tanpa ini ia nyangkut KASIR & hilang
+            // dari Dispensing Farmasi walau invoice sudah PAID.
+            $this->routeChainAfterKasirClose($invoice);
 
             $this->log(
                 $user->id,
@@ -3276,15 +3287,10 @@ class KasirService
             ]);
 
             // Routing FARMASI vs SELESAI + TV broadcast (sama seperti pembayaran lunas).
-            $kasirQueue = Queue::where('visit_id', $invoice->visit_id)
-                ->where('station', 'KASIR')
-                ->whereIn('status', ['WAITING', 'CALLED', 'IN_PROGRESS'])
-                ->first();
-            if ($kasirQueue) {
-                $this->queueService->advanceFromStation($kasirQueue->id, Queue::STATION_KASIR);
-            } else {
-                $invoice->visit->update(['current_station' => 'SELESAI']);
-            }
+            // Rutekan SEMUA leg rantai rujuk-internal (bukan hanya anchor) — leg rujukan
+            // sering memegang resep "Obat Pulang"; tanpa ini ia nyangkut KASIR & hilang
+            // dari Dispensing Farmasi walau invoice sudah PAID.
+            $this->routeChainAfterKasirClose($invoice);
 
             // Hak konsultasi kontrol gratis pasca-bedah (idempoten; aman utk invoice nol).
             app(\App\Services\PackageFollowupService::class)->redeemPaidInvoice($invoice);
