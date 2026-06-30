@@ -3130,7 +3130,10 @@ async function doBatalBedah() {
               </div>
 
               <!-- Obat Pasca Bedah -->
-              <div class="bd-card">
+              <!-- bd-card-combo: izinkan dropdown picker obat (absolute) keluar kartu
+                   (bd-card default overflow:hidden → dropdown terpotong, hasil di bawah
+                   cutoff spt "Moxifloxacine" yg ter-sort sesudah "Molcin" jadi tak terlihat). -->
+              <div class="bd-card bd-card-combo">
                 <div class="bd-card-hd">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>
                   Obat Pasca Bedah
