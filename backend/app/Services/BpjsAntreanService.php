@@ -125,15 +125,6 @@ class BpjsAntreanService
         return $result;
     }
 
-    /** POST /antrean/panggil — { kodebooking } (panggil pasien, opsional). */
-    public function panggilAntrean(array $data, ?string $visitId = null): array
-    {
-        $result = $this->post('/antrean/panggil', $data);
-        $this->log('PANGGIL_ANTREAN', $data, $result, $visitId);
-
-        return $result;
-    }
-
     // =========================================================================
     // SISA ANTREAN / DASHBOARD / LIST WAKTU (monitoring wajib)
     // =========================================================================
@@ -194,16 +185,6 @@ class BpjsAntreanService
     public function checkQuota(string $kodePoli, string $tglPeriksa): array
     {
         return $this->refJadwalDokter($kodePoli, $tglPeriksa);
-    }
-
-    /** Backward-compat: konfirmasi kehadiran = updatewaktu taskid mulai layan. */
-    public function confirmBooking(string $bookingCode, string $visitId): array
-    {
-        return $this->updateWaktuAntrean([
-            'kodebooking' => $bookingCode,
-            'taskid'      => 3,
-            'waktu'       => (int) (microtime(true) * 1000),
-        ], $visitId);
     }
 
     // =========================================================================

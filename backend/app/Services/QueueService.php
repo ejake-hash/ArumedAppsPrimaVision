@@ -735,7 +735,7 @@ class QueueService
             $antrean->addAntreanFarmasi([
                 'kodebooking'  => $visit->bpjs_booking_code,
                 'jenisresep'   => app(\App\Services\AntrolMobileService::class)->resolveJenisResep($visit->id),
-                'nomorantrean' => (string) $fq->queue_number,
+                'nomorantrean' => (int) $fq->queue_sequence,
                 'keterangan'   => '',
             ], $visit->id);
         } catch (\Throwable $e) {

@@ -374,9 +374,14 @@ class IntegrasiController extends Controller
     /** GET /integrasi/antrean/dashboard/{jenis}  Query: tanggal | bulan,tahun ; waktu(rs|server) */
     public function antreanDashboard(Request $request, string $jenis): JsonResponse
     {
-        return $this->call(fn () => $this->service->antreanDashboard(
-            $jenis, $request->only(['tanggal', 'bulan', 'tahun', 'waktu'])
-        ));
+        abort_unless(in_array($jenis, ['tanggal', 'bulan'], true), 422, 'jenis harus tanggal atau bulan');
+
+        $rules = $jenis === 'bulan'
+            ? ['bulan' => 'required|integer|min:1|max:12', 'tahun' => 'required|integer|min:2020|max:2100', 'waktu' => 'nullable|in:rs,server']
+            : ['tanggal' => 'required|date_format:Y-m-d', 'waktu' => 'nullable|in:rs,server'];
+        $v = $request->validate($rules);
+
+        return $this->call(fn () => $this->service->antreanDashboard($jenis, $v));
     }
 
     /** POST /integrasi/antrean/validate-booking  Body: { booking_code, tgl_periksa? } */

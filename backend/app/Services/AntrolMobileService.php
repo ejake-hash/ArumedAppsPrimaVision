@@ -58,7 +58,7 @@ class AntrolMobileService
             'namadokter'      => $sched->employee?->name,
             'totalantrean'    => $stat['total'],
             'sisaantrean'     => $stat['sisa'],
-            'antreanpanggil'  => $stat['panggil'],
+            'antreanpanggil'  => $this->labelPanggil($sched, $stat['panggil']),
             'sisakuotajkn'    => $kuota['sisakuotajkn'],
             'kuotajkn'        => $kuota['kuotajkn'],
             'sisakuotanonjkn' => $kuota['sisakuotanonjkn'],
@@ -112,7 +112,7 @@ class AntrolMobileService
                     ->whereIn('status', [AntreanBooking::STATUS_DIBOOK, AntreanBooking::STATUS_CHECKIN])
                     ->first();
                 if ($dup) {
-                    return $this->fail('Pasien sudah memiliki antrean aktif untuk dokter & tanggal ini.');
+                    return $this->fail('Nomor Antrean Hanya Dapat Diambil 1 Kali Pada Tanggal Yang Sama');
                 }
             }
 
@@ -164,14 +164,14 @@ class AntrolMobileService
 
             // Pasien belum punya RM → code 202 (Mobile JKN lanjut hit B7 Info Pasien Baru).
             $code = $patient ? 200 : 202;
-            $msg  = $patient ? 'Ok' : 'Silahkan lengkapi data pasien baru.';
+            $msg  = $patient ? 'Ok' : 'Data pasien ini tidak ditemukan, silahkan Melakukan Registrasi Pasien Baru';
 
             return $this->ok($response, $code, $msg);
             });
         } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
             // Race: dua request paralel utk NIK sama lolos cek eksplisit lalu sama-sama
             // create → partial unique index DB menolak yang kedua. Balas ramah ke BPJS.
-            return $this->fail('Pasien sudah memiliki antrean aktif untuk dokter & tanggal ini.');
+            return $this->fail('Nomor Antrean Hanya Dapat Diambil 1 Kali Pada Tanggal Yang Sama');
         }
     }
 
@@ -183,7 +183,7 @@ class AntrolMobileService
     {
         $booking = $this->findBooking($data['kodebooking'] ?? null);
         if (! $booking) {
-            return $this->fail('Kode booking tidak ditemukan.');
+            return $this->fail('Antrean Tidak Ditemukan');
         }
 
         $sched = $booking->doctorSchedule;
@@ -212,13 +212,13 @@ class AntrolMobileService
     {
         $booking = $this->findBooking($data['kodebooking'] ?? null);
         if (! $booking) {
-            return $this->fail('Kode booking tidak ditemukan.');
+            return $this->fail('Antrean Tidak Ditemukan');
         }
         if ($booking->status === AntreanBooking::STATUS_BATAL) {
-            return $this->fail('Antrean sudah dibatalkan sebelumnya.');
+            return $this->fail('Antrean Tidak Ditemukan atau Sudah Dibatalkan');
         }
         if ($booking->status === AntreanBooking::STATUS_SELESAI) {
-            return $this->fail('Antrean sudah selesai dilayani, tidak bisa dibatalkan.');
+            return $this->fail('Pasien Sudah Dilayani, Antrean Tidak Dapat Dibatalkan');
         }
 
         $booking->update([
@@ -667,6 +667,9 @@ class AntrolMobileService
 
         $awal  = $this->normalizeDate($data['tanggalawal']);
         $akhir = $this->normalizeDate($data['tanggalakhir']);
+        if ($akhir < $awal) {
+            return $this->fail('Tanggal Akhir Tidak Boleh Lebih Kecil dari Tanggal Awal');
+        }
 
         $schedules = \App\Models\SurgerySchedule::with([
                 'surgeryPackage',
@@ -689,8 +692,8 @@ class AntrolMobileService
     public function jadwalOperasiPasien(array $data): array
     {
         $nopeserta = trim((string) ($data['nopeserta'] ?? ''));
-        if ($nopeserta === '') {
-            return $this->fail('nopeserta wajib diisi.');
+        if (! preg_match('/^\d{13}$/', $nopeserta)) {
+            return $this->fail('Nomor Kartu Tidak Valid');
         }
 
         $schedules = \App\Models\SurgerySchedule::with(['surgeryPackage', 'visit.patient', 'visit.doctorSchedule'])
@@ -735,7 +738,10 @@ class AntrolMobileService
     public function farmasiAmbil(array $data): array
     {
         $booking = $this->findBooking($data['kodebooking'] ?? null);
-        if (! $booking || ! $booking->visit_id) {
+        if (! $booking) {
+            return $this->fail('Kode Booking tidak ditemukan');
+        }
+        if (! $booking->visit_id) {
             return $this->fail('Antrean farmasi belum tersedia untuk kode booking ini.');
         }
 
@@ -758,7 +764,10 @@ class AntrolMobileService
     public function farmasiStatus(array $data): array
     {
         $booking = $this->findBooking($data['kodebooking'] ?? null);
-        if (! $booking || ! $booking->visit_id) {
+        if (! $booking) {
+            return $this->fail('kodebooking Tidak Ditemukan');
+        }
+        if (! $booking->visit_id) {
             return $this->fail('Antrean farmasi belum tersedia untuk kode booking ini.');
         }
 
@@ -1009,7 +1018,7 @@ class AntrolMobileService
     private function labelPanggil(?DoctorSchedule $sched, int $angka): string
     {
         if (! $sched || $angka <= 0) {
-            return '';
+            return '-';
         }
         $prefix = ($sched->room !== null && $sched->room !== '')
             ? 'D' . $sched->room

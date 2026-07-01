@@ -30,7 +30,7 @@ class VerifyAntrolToken
         if (! $this->tokens->validate($token, $username)) {
             return response()->json([
                 'response' => null,
-                'metadata' => ['code' => 201, 'message' => 'Token tidak valid atau kedaluwarsa.'],
+                'metadata' => ['code' => 201, 'message' => 'Token Expired'],
             ], 200); // HTTP 200, status bisnis di metadata.code (pola BPJS)
         }
 

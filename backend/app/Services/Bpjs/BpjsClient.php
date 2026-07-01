@@ -195,13 +195,16 @@ class BpjsClient
         $status = $resp->status();
         $json   = json_decode($raw, true);
 
-        // Antrean / response yang non-JSON-envelope: kembalikan apa adanya.
+        // Body BPJS BUKAN envelope JSON (mis. halaman HTML ".NET Request Error" dari
+        // WCF yang ber-HTTP-200). Sukses BPJS SELALU berupa {metaData/metadata,...},
+        // jadi body non-JSON = kegagalan transport/deserialisasi. JANGAN percaya status
+        // HTTP saja: tandai gagal agar add/updatewaktu/batal/SEP tak salah-tandai sukses.
         if (! is_array($json)) {
             return [
-                'metaData'    => ['code' => (string) $status, 'message' => $raw],
+                'metaData'    => ['code' => '0', 'message' => 'Respon BPJS non-JSON (HTTP ' . $status . '): ' . mb_substr($raw, 0, 200)],
                 'response'    => null,
                 'http_status' => $status,
-                'is_success'  => $resp->successful(),
+                'is_success'  => false,
                 'raw'         => $raw,
             ];
         }

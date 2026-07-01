@@ -1074,10 +1074,21 @@ class IntegrasiService
                 continue;
             }
 
+            // Kapasitas (kuota JKN) dari master antrean_kuota via AntreanKuotaService —
+            // DoctorSchedule tak punya kolom kuota; fallback default 30. Spec
+            // updatejadwaldokter mewajibkan 'kapasitas' & 'libur' per item jadwal.
+            $kapasitas = (int) (app(\App\Services\AntreanKuotaService::class)
+                ->kuota($first->poli_code, $first->employee_id, $weekStart)['jkn'] ?? 30);
+            if ($kapasitas <= 0) {
+                $kapasitas = 30;
+            }
+
             $jadwal = $rows->map(fn ($s) => [
-                'hari'      => $s->day_of_week % 7, // BPJS: 0=Minggu..6=Sabtu; lokal 1=Senin..7=Minggu
+                'hari'      => (int) $s->day_of_week, // BPJS hari 1-7 (Senin=1) — TERVERIFIKASI refJadwalDokter: Kamis=4. Lokal DoctorSchedule sudah ISO 1-7.
                 'buka'      => substr($s->start_time, 0, 5),
                 'tutup'     => substr($s->end_time, 0, 5),
+                'kapasitas' => $kapasitas,
+                'libur'     => $s->is_active ? 0 : 1, // rows sudah difilter is_active=true → 0
             ])->values()->toArray();
 
             $result = $this->antrean->updateJadwalDokter([

@@ -38,7 +38,7 @@ class AntrolMobileController extends Controller
         $password = $request->header('x-password');
 
         if (! $this->tokens->verifyCredentials($username, $password)) {
-            return $this->bpjs(null, 201, 'Username atau password salah.', 'TOKEN', $request);
+            return $this->bpjs(null, 201, 'Username atau Password Tidak Sesuai', 'TOKEN', $request);
         }
 
         $token = $this->tokens->issue($username);
