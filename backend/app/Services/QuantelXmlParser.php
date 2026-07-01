@@ -164,21 +164,98 @@ class QuantelXmlParser
     /**
      * Nilai biometri inti. Sumber utama = ExamIol{side} (sudah dikonsolidasi:
      * AL=LenghtLt, ACD=LengthAc, lens=LenghtL, vitreous=LenghtV, K dari <Kerato>).
+     *
+     * Sumbu K (K1/K2 @ derajat) & data refraksi (Sphere/Cylinder) ditarik secara
+     * DEFENSIF: nama elemen-nya tidak muncul di sampel XML yang kita punya (alat
+     * mungkin tak mengekspornya), jadi parser mencoba beberapa nama yang masuk akal
+     * dan mengembalikan null bila tak ada — panel menyembunyikannya saat kosong.
      */
     private function parseBiometry(?\SimpleXMLElement $iol, ?\SimpleXMLElement $bio): array
     {
         $k = $iol->Kerato ?? null;
 
         return [
-            'axial_length'   => $this->num($iol->LenghtLt ?? null),   // AL (mm)
+            'axial_length'   => $this->num($iol->LenghtLt ?? null),   // AL / T.L. (mm)
             'acd'            => $this->num($iol->LengthAc ?? null),    // anterior chamber depth (mm)
-            'lens_thickness' => $this->num($iol->LenghtL ?? null),    // (mm)
-            'vitreous'       => $this->num($iol->LenghtV ?? null),    // (mm)
+            'lens_thickness' => $this->num($iol->LenghtL ?? null),    // L. (mm)
+            'vitreous'       => $this->num($iol->LenghtV ?? null),    // V. (mm)
             'k1'             => $this->num($k->K1Post ?? null),       // dioptri
             'k2'             => $this->num($k->K2Post ?? null),
             'kcor'           => $this->num($k->KCor ?? null),
+            'k1_axis'        => $this->firstNum($k, ['K1PostAxis', 'K1Axis']),   // derajat
+            'k2_axis'        => $this->firstNum($k, ['K2PostAxis', 'K2Axis']),
+            'refraction'     => $this->parseRefraction($k),
             'technique'      => $this->str($bio->ExamComment ?? null) ?: $this->str($bio->ProbeName ?? null),
+            'acqui_technique' => $this->str($bio->TechniqueAcqui ?? null),  // mis. "Immersion"
+            'lens_status'    => $this->str($bio->Speed->LDesign ?? null),   // mis. "Phakic"
+            'eye_status'     => $this->str($bio->Speed->VDesign ?? null),   // mis. "Normal Eye"
+            'measurements'   => $this->parseMeasurements($bio),
         ];
+    }
+
+    /**
+     * Tabel ukur mentah per pemeriksaan (#1..#n, Avg, Stat-2, Std-Dev) dari
+     * <ExamBio{side}><MesuresList><S_Mesure>. Tiap baris = A.C./L./V./T.L.
+     * Baris dengan <Selected>true</Selected> = yang dipakai untuk hitung IOL.
+     *
+     * @return array<int,array>
+     */
+    private function parseMeasurements(?\SimpleXMLElement $bio): array
+    {
+        $list = $bio->MesuresList ?? null;
+        if ($list === null) {
+            return [];
+        }
+
+        $out = [];
+        foreach (($list->S_Mesure ?? []) as $m) {
+            $out[] = [
+                'name'     => $this->str($m->MesureName),   // "#1" | "Avg" | "Stat-2" | "Std-Dev"
+                'acd'      => $this->num($m->MesureAc ?? null),
+                'lens'     => $this->num($m->MesureL ?? null),
+                'vitreous' => $this->num($m->MesureV ?? null),
+                'total'    => $this->num($m->MesureTl ?? null),
+                'selected' => $this->bool($m->Selected ?? null),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Data refraksi (Sphere/Cylinder/Axis) — di Quantel tersimpan LANGSUNG di dalam
+     * <Kerato> sebagai KpostSphere/KpostCylinder/KpostCylinderAxis, ditandai flag
+     * <RefractionData>true</RefractionData>. Hanya kembalikan blok ini bila flag aktif
+     * (nilai bisa 0.00 yang valid, mis. refraksi plano) — null bila tak ada/flag mati,
+     * supaya panel menyembunyikannya. Disertakan beberapa nama alternatif utk jaga-jaga
+     * variasi firmware.
+     */
+    private function parseRefraction(?\SimpleXMLElement $k): ?array
+    {
+        if ($k === null || $this->str($k->RefractionData) !== 'true') {
+            return null;
+        }
+
+        return [
+            'sphere'   => $this->firstNum($k, ['KpostSphere', 'Sphere', 'Sph']),
+            'cylinder' => $this->firstNum($k, ['KpostCylinder', 'Cylinder', 'Cyl']),
+            'axis'     => $this->firstNum($k, ['KpostCylinderAxis', 'CylinderAxis', 'Axis']),
+        ];
+    }
+
+    /** Ambil nilai numerik pertama yang ada dari beberapa kandidat nama child. */
+    private function firstNum(?\SimpleXMLElement $parent, array $names): ?float
+    {
+        if ($parent === null) {
+            return null;
+        }
+        foreach ($names as $name) {
+            $v = $this->num($parent->{$name} ?? null);
+            if ($v !== null) {
+                return $v;
+            }
+        }
+        return null;
     }
 
     /**
@@ -213,6 +290,7 @@ class QuantelXmlParser
                 'implant_type'        => $this->str($implant->TypeImplant ?? null),
                 'formula'             => $this->normalizeFormula($this->str($calc->Formula)),
                 'emmetropia_power'    => $this->num($calc->Emme ?? $calc->IolAme ?? null),
+                'target_ametropia'    => $this->num($calc->DesiredAme ?? null),  // PDF "Ame: x D"
                 'results'             => $results,
             ];
         }

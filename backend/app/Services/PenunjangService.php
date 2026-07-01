@@ -37,7 +37,7 @@ class PenunjangService
         // memilih hari LAIN dari hari ini, jadi default tetap papan live.
         $tanggal = $this->normalizeDate($tanggal);
 
-        $queues = Queue::with(['visit.patient', 'visit.diagnosticOrders'])
+        $queues = Queue::with(['visit.patient', 'visit.diagnosticOrders.orderedBy'])
             ->where('station', 'PENUNJANG')
             ->when(
                 $tanggal,
@@ -57,6 +57,8 @@ class PenunjangService
         foreach ($queues as $q) {
             foreach ($q->visit?->diagnosticOrders ?? [] as $o) {
                 $o->test_name = $names[$o->test_type] ?? $o->test_type;
+                // Nama dokter pemesan order → ditampilkan di kartu antrean + identitas pasien.
+                $o->ordered_by_name = $o->orderedBy?->name;
             }
         }
 
@@ -655,7 +657,16 @@ class PenunjangService
         $user = auth('api')->user();
 
         return DB::transaction(function () use ($inbox, $order, $user) {
-            $this->attachAttachmentToOrder($order, $inbox->attachment_path, $user->employee_id, $inbox->external_ref);
+            // Terapkan kembali data terstruktur parser alat (mis. biometri Quantel) yang
+            // ikut tersimpan saat item masuk Inbox → blok biometri/IOL muncul di panel,
+            // bukan hanya gambar. Null untuk item lama (sebelum kolom ini ada) — aman.
+            $this->attachAttachmentToOrder(
+                $order,
+                $inbox->attachment_path,
+                $user->employee_id,
+                $inbox->external_ref,
+                $inbox->parsed_expertise,
+            );
             $inbox->update([
                 'status'            => 'ASSIGNED',
                 'assigned_order_id' => $order->id,

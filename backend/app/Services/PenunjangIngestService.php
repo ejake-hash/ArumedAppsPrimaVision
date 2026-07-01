@@ -98,7 +98,9 @@ class PenunjangIngestService
                 ];
             }
 
-            // Tak match → Inbox (jangan drop diam-diam).
+            // Tak match → Inbox (jangan drop diam-diam). Simpan SEKALIAN data terstruktur
+            // parser alat (biometri Quantel dll) supaya saat operator menautkan manual,
+            // blok biometri ikut terpasang ke order — bukan hanya gambar .jpg.
             $inbox = PenunjangIngestInbox::create([
                 'attachment_path'   => $path,
                 'source'            => $meta['source'] ?? 'OCT',
@@ -106,6 +108,7 @@ class PenunjangIngestService
                 'claimed_no_rm'     => $meta['no_rm'] ?? null,
                 'original_filename' => $meta['original_filename'] ?? null,
                 'external_ref'      => $ref,
+                'parsed_expertise'  => $expertisePatch,
                 'status'            => 'UNMATCHED',
             ]);
 

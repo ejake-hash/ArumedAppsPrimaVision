@@ -178,6 +178,12 @@ const statusLabel = { WAITING: 'Menunggu', CALLED: 'Dipanggil', IN_PROGRESS: 'Pr
 // ─── Diagnostic orders (delegated to store) ─────────────────────────────────
 const selectedOrders = computed(() => store.selectedOrders)
 
+// Dokter pemesan penunjang (unik) untuk pasien terpilih — bisa >1 bila order
+// berasal dari beberapa dokter. Ditampilkan di kartu identitas pasien.
+const orderingDoctors = computed(() =>
+  [...new Set(selectedOrders.value.map((o) => o.ordered_by_name).filter(Boolean))]
+)
+
 const orderStatusLabel = { REQUESTED: 'Menunggu', IN_PROGRESS: 'Berlangsung', COMPLETED: 'Selesai', CANCELLED: 'Dibatalkan' }
 const orderStatusCls   = { REQUESTED: 'req', IN_PROGRESS: 'prg', COMPLETED: 'don', CANCELLED: 'cnc' }
 
@@ -618,6 +624,11 @@ onUnmounted(() => {
               <div v-if="store.selectedQueue.visit?.patient?.address" class="pt-addr">
                 {{ store.selectedQueue.visit.patient.address }}
               </div>
+              <div v-if="orderingDoctors.length" class="pt-doctor">
+                <svg viewBox="0 0 24 24" class="pt-doctor-icon" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <span class="pt-doctor-label">Dokter pemesan:</span>
+                <span class="pt-doctor-name">{{ orderingDoctors.map(d => `dr. ${d}`).join(', ') }}</span>
+              </div>
               <div class="pt-badges">
                 <span v-if="store.selectedQueue.visit?.classification"
                   :class="['ptg', clsCls(store.selectedQueue.visit.classification)]">
@@ -1047,6 +1058,10 @@ onUnmounted(() => {
 .pt-name { font-family: 'Space Grotesk', serif; font-size: 18px; color: var(--td); font-weight: 400; line-height: 1.1; }
 .pt-meta { font-size: 11px; color: var(--tu); margin-top: 3px; }
 .pt-addr { font-size: 11px; color: var(--tu); margin-top: 3px; line-height: 1.4; }
+.pt-doctor { display: flex; align-items: center; gap: 5px; margin-top: 5px; font-size: 11.5px; color: #075985; background: #e0f2fe; border-radius: 6px; padding: 3px 8px; width: fit-content; max-width: 100%; }
+.pt-doctor-icon { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pt-doctor-label { color: #0c4a6e; opacity: .8; }
+.pt-doctor-name { font-weight: 600; }
 .pt-badges { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
 .ptg { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
 .ptg-b { background: #dbeafe; color: #1e40af; }

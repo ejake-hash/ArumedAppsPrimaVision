@@ -15,6 +15,17 @@ const eyesPresent = computed(() =>
   EYES.filter((e) => props.biometry?.eyes?.[e]),
 )
 
+// Nilai biometri inti satu mata (akses ringkas dari template).
+function bio(eye) {
+  return props.biometry?.eyes?.[eye]?.biometry ?? null
+}
+
+// Tag metode akuisisi: teknik (Immersion) · status lensa (Phakic) · status mata.
+function acqui(eye) {
+  const b = bio(eye)
+  return [b?.acqui_technique, b?.lens_status, b?.eye_status].filter(Boolean)
+}
+
 function n(v, d = 2) {
   if (v === null || v === undefined || v === '') return '—'
   const num = Number(v)
@@ -40,19 +51,47 @@ function fmtDate(d) {
       <div v-for="eye in eyesPresent" :key="eye" class="bm-eye">
         <div class="bm-eye-title">{{ eye === 'OD' ? 'OD (Mata Kanan)' : 'OS (Mata Kiri)' }}</div>
 
-        <!-- Biometri inti -->
+        <!-- Metode akuisisi (mis. Immersion · Phakic · Normal Eye) -->
+        <div v-if="acqui(eye).length" class="bm-acqui">
+          <span v-for="(a, ai) in acqui(eye)" :key="ai" class="bm-acqui-tag">{{ a }}</span>
+        </div>
+
+        <!-- Biometri inti (nilai terpilih untuk hitung IOL) -->
         <table class="bm-table">
           <tbody>
-            <tr><td>Axial Length (mm)</td><td>{{ n(biometry.eyes[eye].biometry?.axial_length) }}</td></tr>
-            <tr><td>ACD (mm)</td><td>{{ n(biometry.eyes[eye].biometry?.acd) }}</td></tr>
-            <tr><td>Lens Thickness (mm)</td><td>{{ n(biometry.eyes[eye].biometry?.lens_thickness) }}</td></tr>
-            <tr><td>Vitreous (mm)</td><td>{{ n(biometry.eyes[eye].biometry?.vitreous) }}</td></tr>
-            <tr><td>K1 (D)</td><td>{{ n(biometry.eyes[eye].biometry?.k1) }}</td></tr>
-            <tr><td>K2 (D)</td><td>{{ n(biometry.eyes[eye].biometry?.k2) }}</td></tr>
-            <tr><td>K rata-rata (D)</td><td>{{ n(biometry.eyes[eye].biometry?.kcor) }}</td></tr>
-            <tr v-if="biometry.eyes[eye].biometry?.technique"><td>Teknik</td><td>{{ biometry.eyes[eye].biometry.technique }}</td></tr>
+            <tr><td>Axial Length / T.L. (mm)</td><td>{{ n(bio(eye)?.axial_length) }}</td></tr>
+            <tr><td>ACD (mm)</td><td>{{ n(bio(eye)?.acd) }}</td></tr>
+            <tr><td>Lens Thickness (mm)</td><td>{{ n(bio(eye)?.lens_thickness) }}</td></tr>
+            <tr><td>Vitreous (mm)</td><td>{{ n(bio(eye)?.vitreous) }}</td></tr>
+            <tr><td>K1 (D)</td><td>{{ n(bio(eye)?.k1) }}<span v-if="bio(eye)?.k1_axis != null" class="bm-axis"> @ {{ n(bio(eye).k1_axis, 0) }}°</span></td></tr>
+            <tr><td>K2 (D)</td><td>{{ n(bio(eye)?.k2) }}<span v-if="bio(eye)?.k2_axis != null" class="bm-axis"> @ {{ n(bio(eye).k2_axis, 0) }}°</span></td></tr>
+            <tr><td>K rata-rata (D)</td><td>{{ n(bio(eye)?.kcor) }}</td></tr>
+            <template v-if="bio(eye)?.refraction">
+              <tr><td>Refraksi — Sphere (D)</td><td>{{ n(bio(eye).refraction.sphere) }}</td></tr>
+              <tr><td>Refraksi — Cylinder (D)</td><td>{{ n(bio(eye).refraction.cylinder) }}<span v-if="bio(eye).refraction.axis != null" class="bm-axis"> @ {{ n(bio(eye).refraction.axis, 0) }}°</span></td></tr>
+            </template>
+            <tr v-if="bio(eye)?.technique"><td>Probe / Catatan</td><td>{{ bio(eye).technique }}</td></tr>
           </tbody>
         </table>
+
+        <!-- Tabel ukur mentah per pemeriksaan (#1..#n + Avg/Stat/Std-Dev) -->
+        <template v-if="bio(eye)?.measurements?.length">
+          <div class="bm-calc-title">Ukuran per Pemeriksaan</div>
+          <table class="bm-table bm-meas">
+            <thead>
+              <tr><th>#</th><th>A.C.</th><th>L.</th><th>V.</th><th>T.L.</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(m, mi) in bio(eye).measurements" :key="mi" :class="{ 'bm-median': m.selected }">
+                <td class="bm-meas-name">{{ m.name || '—' }}</td>
+                <td>{{ n(m.acd) }}</td>
+                <td>{{ n(m.lens) }}</td>
+                <td>{{ n(m.vitreous) }}</td>
+                <td>{{ n(m.total) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
 
         <!-- Hitung IOL per formula / implan -->
         <template v-if="biometry.eyes[eye].iol_calc?.length">
@@ -62,7 +101,10 @@ function fmtDate(d) {
               <b>{{ calc.formula || 'Formula —' }}</b>
               <span v-if="calc.implant_designation">· {{ calc.implant_designation }}</span>
               <span v-if="calc.a_constant != null" class="bm-a">A {{ n(calc.a_constant, 1) }}</span>
-              <span class="bm-emme">Emetropia: <b>{{ n(calc.emmetropia_power, 1) }} D</b></span>
+              <span class="bm-emme">
+                Emetropia: <b>{{ n(calc.emmetropia_power, 1) }} D</b>
+                <template v-if="calc.target_ametropia != null"> · Target: <b>{{ n(calc.target_ametropia) }} D</b></template>
+              </span>
             </div>
             <table v-if="calc.results?.length" class="bm-table bm-results">
               <thead><tr><th>Power (D)</th><th>Prediksi Refraksi</th></tr></thead>
@@ -99,6 +141,14 @@ function fmtDate(d) {
 .bm-results { margin-top: 2px; }
 .bm-results thead th { font-size: 10px; }
 .bm-median td { background: #ecfdf5; font-weight: 700; color: #047857; }
+.bm-acqui { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.bm-acqui-tag { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #f1f5f9; color: #475569; }
+.bm-axis { color: var(--tu, #64748b); font-weight: 400; }
+.bm-meas { margin-top: 2px; }
+.bm-meas thead th { font-size: 10px; text-align: right; }
+.bm-meas thead th:first-child { text-align: left; }
+.bm-meas td { text-align: right; }
+.bm-meas .bm-meas-name { text-align: left; color: var(--tu, #64748b); }
 
 @media (max-width: 640px) {
   .bm-eyes { grid-template-columns: 1fr; }

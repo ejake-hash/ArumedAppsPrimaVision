@@ -29,6 +29,7 @@ class PenunjangIngestInbox extends Model
         'claimed_no_rm',
         'original_filename',
         'external_ref',
+        'parsed_expertise',
         'status',
         'assigned_order_id',
         'assigned_by_id',
@@ -37,7 +38,8 @@ class PenunjangIngestInbox extends Model
     ];
 
     protected $casts = [
-        'assigned_at' => 'datetime',
+        'assigned_at'      => 'datetime',
+        'parsed_expertise' => 'array',
     ];
 
     public function getAttachmentUrlAttribute(): ?string
