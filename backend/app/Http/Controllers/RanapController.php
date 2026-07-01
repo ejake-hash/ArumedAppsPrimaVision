@@ -228,6 +228,19 @@ class RanapController extends Controller
         return $this->ok($prescription, 'Permintaan obat dikirim ke Farmasi', 201);
     }
 
+    /** DELETE /rawat-inap/{visitId}/permintaan-obat/{id} — batalkan sebelum diserahkan Farmasi. */
+    public function cancelPermintaanObat(string $visitId, string $prescriptionId): JsonResponse
+    {
+        try {
+            $visit = Visit::findOrFail($visitId);
+            $rx    = $this->service->cancelMedicationRequest($visit, $prescriptionId);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($rx, 'Permintaan obat dibatalkan');
+    }
+
     // =========================================================================
     // PERMINTAAN BHP KE FARMASI (visit_bhp_usages) — masuk kwitansi setelah verif
     // =========================================================================

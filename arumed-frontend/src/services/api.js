@@ -709,6 +709,7 @@ export const ranapApi = {
   // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
   permintaanObatList:   (visitId)          => api.get(`/rawat-inap/${visitId}/permintaan-obat`),
   createPermintaanObat: (visitId, payload) => api.post(`/rawat-inap/${visitId}/permintaan-obat`, payload),
+  cancelPermintaanObat: (visitId, id)      => api.delete(`/rawat-inap/${visitId}/permintaan-obat/${id}`),
 
   // Permintaan BHP ke Farmasi (masuk kwitansi setelah verif Farmasi).
   tarifBhp:      (visitId, search)   => api.get(`/rawat-inap/${visitId}/tarif-bhp`, { params: { search } }),

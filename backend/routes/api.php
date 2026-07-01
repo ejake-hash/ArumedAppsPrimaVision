@@ -687,6 +687,7 @@ Route::prefix('v1')->group(function () {
             // Permintaan obat ke Farmasi (dispensing rawat inap ke ruangan).
             Route::get('/{visitId}/permintaan-obat',  [RanapController::class, 'listPermintaanObat'])->middleware('permission:rawat_inap.read');
             Route::post('/{visitId}/permintaan-obat', [RanapController::class, 'createPermintaanObat'])->middleware('permission:rawat_inap.write');
+            Route::delete('/{visitId}/permintaan-obat/{id}', [RanapController::class, 'cancelPermintaanObat'])->middleware('permission:rawat_inap.write');
 
             // Permintaan BHP ke Farmasi (visit_bhp_usages) — masuk kwitansi setelah verif Farmasi.
             Route::get('/{visitId}/tarif-bhp',        [RanapController::class, 'tarifBhp'])->middleware('permission:rawat_inap.read');
@@ -872,6 +873,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/obat-bebas',                      [PharmacySaleController::class, 'pendingIndex']);
             Route::post('/obat-bebas/{id}/bayar',          [PharmacySaleController::class, 'settle'])->middleware('permission:kasir.write');
             Route::get('/obat-bebas/{id}/kwitansi',        [PharmacySaleController::class, 'receipt']);
+
+            // Uang muka / deposit rawat inap (Fase 1) — diterima Kasir sebelum discharge,
+            // dikreditkan ke invoice saat discharge (Fase 4).
+            Route::get('/visit/{visitId}/deposit',         [KasirController::class, 'listDeposits']);
+            Route::post('/visit/{visitId}/deposit',        [KasirController::class, 'recordDeposit'])->middleware('permission:kasir.write');
 
             Route::post('/invoice/{invoiceId}/item',       [KasirController::class, 'storeItemInvoice'])->middleware('permission:kasir.write');
             Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice'])->middleware('permission:kasir.write');

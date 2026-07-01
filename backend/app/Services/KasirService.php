@@ -26,6 +26,7 @@ use App\Models\SurgeryRequestBhp;
 use App\Models\SystemLog;
 use App\Models\Visit;
 use App\Models\VisitCob;
+use App\Models\VisitDeposit;
 use App\Models\VisitService;
 use App\Models\VisitSurgeryPackage;
 use App\Models\VisitSurgeryPackageItem;
@@ -4796,6 +4797,80 @@ class KasirService
         if ($covered > $total) {
             $invoice->update(['covered_amount' => $total]);
         }
+    }
+
+    // =========================================================================
+    // UANG MUKA / DEPOSIT RAWAT INAP (Fase 1) — diterima Kasir SEBELUM discharge.
+    // Belum ada invoice (invoice dibuat saat discharge). Saat discharge, deposit HELD
+    // dikreditkan ke invoice (Fase 4, consolidateBilling). Lihat VisitDeposit.
+    // =========================================================================
+
+    /**
+     * Terima uang muka rawat inap. Simpan baris HELD (belum ada invoice). Eligible:
+     * pasien RANAP masih dirawat (belum discharge), BUKAN BPJS full-cover (UMUM/COB) —
+     * BPJS INA-CBG ditanggung penuh, tak perlu uang muka.
+     */
+    public function recordDeposit(Visit $visit, array $data): VisitDeposit
+    {
+        if (($visit->jenis_pelayanan ?? null) !== 'RANAP') {
+            throw new \Exception('Uang muka hanya untuk pasien rawat inap.', 422);
+        }
+        if ($visit->discharge_at) {
+            throw new \Exception('Pasien sudah dipulangkan — pakai pembayaran invoice, bukan uang muka.', 422);
+        }
+        if ($this->isFullCoverBpjs($visit)) {
+            throw new \Exception('Pasien BPJS ditanggung penuh (INA-CBG) — tidak perlu uang muka.', 422);
+        }
+        $amount = round((float) ($data['amount'] ?? 0), 2);
+        if ($amount <= 0) {
+            throw new \Exception('Nominal uang muka harus lebih dari 0.', 422);
+        }
+        $method = in_array($data['payment_method'] ?? null, ['CASH', 'TRANSFER', 'DEBIT', 'QRIS'], true)
+            ? $data['payment_method'] : 'CASH';
+
+        return DB::transaction(fn () => VisitDeposit::create([
+            'visit_id'       => $visit->id,
+            'amount'         => $amount,
+            'payment_method' => $method,
+            'status'         => VisitDeposit::STATUS_HELD,
+            'receipt_number' => $this->generateDepositReceiptNumber(),
+            'cashier_id'     => auth('api')->user()?->employee_id,
+            'notes'          => $data['notes'] ?? null,
+            'received_at'    => now(),
+        ]));
+    }
+
+    /** Daftar uang muka satu visit + ringkasan (total HELD = yang masih menggantung). */
+    public function listDeposits(Visit $visit): array
+    {
+        $deposits = VisitDeposit::with('cashier:id,name')
+            ->where('visit_id', $visit->id)
+            ->orderByDesc('received_at')
+            ->get();
+
+        return [
+            'deposits'      => $deposits,
+            'held_total'    => (float) $deposits->where('status', VisitDeposit::STATUS_HELD)->sum('amount'),
+            'applied_total' => (float) $deposits->where('status', VisitDeposit::STATUS_APPLIED)->sum('amount'),
+        ];
+    }
+
+    /** Nomor kwitansi uang muka: "UM/{code}/{Ym}/{seq}". lockForUpdate anti-tabrakan. */
+    private function generateDepositReceiptNumber(): string
+    {
+        $clinic = ClinicProfile::first();
+        $code   = $clinic?->clinic_code ?? 'KMA';
+        $prefix = "UM/{$code}/" . now()->format('Ym') . '/';
+
+        $maxSeq = VisitDeposit::whereYear('created_at', now()->year)
+            ->whereMonth('created_at', now()->month)
+            ->where('receipt_number', 'like', $prefix . '%')
+            ->lockForUpdate()
+            ->pluck('receipt_number')
+            ->map(fn ($n) => (int) substr((string) $n, strrpos((string) $n, '/') + 1))
+            ->max() ?? 0;
+
+        return $prefix . str_pad((string) ($maxSeq + 1), 4, '0', STR_PAD_LEFT);
     }
 
     /**

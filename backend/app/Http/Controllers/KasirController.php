@@ -576,6 +576,40 @@ class KasirController extends Controller
     }
 
     // =========================================================================
+    // UANG MUKA / DEPOSIT RAWAT INAP (Fase 1)
+    // =========================================================================
+
+    /** GET /kasir/visit/{visitId}/deposit — daftar uang muka + ringkasan (held/applied). */
+    public function listDeposits(string $visitId): JsonResponse
+    {
+        try {
+            $visit = \App\Models\Visit::findOrFail($visitId);
+            return $this->ok($this->service->listDeposits($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    /** POST /kasir/visit/{visitId}/deposit — terima uang muka rawat inap (status HELD). */
+    public function recordDeposit(string $visitId, Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'amount'         => 'required|numeric|min:1',
+            'payment_method' => 'nullable|in:CASH,TRANSFER,DEBIT,QRIS',
+            'notes'          => 'nullable|string|max:500',
+        ]);
+
+        try {
+            $visit   = \App\Models\Visit::findOrFail($visitId);
+            $deposit = $this->service->recordDeposit($visit, $data);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($deposit, 'Uang muka diterima', 201);
+    }
+
+    // =========================================================================
     // RESPONSE HELPERS
     // =========================================================================
 

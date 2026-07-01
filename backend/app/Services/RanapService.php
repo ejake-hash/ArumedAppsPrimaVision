@@ -610,6 +610,35 @@ class RanapService
             ->get();
     }
 
+    /**
+     * Batalkan permintaan obat rawat inap SEBELUM diserahkan Farmasi. Stok dipotong &
+     * inpatient_charges dibuat baru SAAT SERAH (FarmasiService::serahRanapRequest →
+     * DISPENSED), jadi membatalkan status SUBMITTED/DISPENSING cukup set CANCELLED —
+     * tanpa restock/un-charge. Guard: DISPENSED (sudah diserahkan) tak bisa dibatalkan;
+     * lockForUpdate + recheck utk idempotensi (anti balapan dgn serahRanapRequest).
+     */
+    public function cancelMedicationRequest(Visit $visit, string $prescriptionId): \App\Models\Prescription
+    {
+        return DB::transaction(function () use ($visit, $prescriptionId) {
+            $rx = \App\Models\Prescription::whereKey($prescriptionId)
+                ->where('visit_id', $visit->id)
+                ->where('type', \App\Models\Prescription::TYPE_RANAP)
+                ->lockForUpdate()
+                ->first();
+            if (! $rx) {
+                throw new \Exception('Permintaan obat tidak ditemukan untuk pasien ini.', 404);
+            }
+            if ($rx->status === 'DISPENSED') {
+                throw new \Exception('Obat sudah diserahkan Farmasi (stok terpotong) — tidak bisa dibatalkan.', 422);
+            }
+            if ($rx->status === 'CANCELLED') {
+                throw new \Exception('Permintaan ini sudah dibatalkan.', 422);
+            }
+            $rx->update(['status' => 'CANCELLED']);
+            return $rx->fresh(['items.medication']);
+        });
+    }
+
     // =========================================================================
     // PERMINTAAN BHP KE FARMASI (pasien dirawat) — mirror jalur BHP dokter
     // (visit_bhp_usages). BHP yang diminta MASUK KWITANSI lewat

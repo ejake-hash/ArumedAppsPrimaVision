@@ -688,6 +688,21 @@ async function loadPermintaan() {
   } catch { permintaanList.value = [] }
 }
 
+// Batalkan permintaan obat ke Farmasi SEBELUM diserahkan (status SUBMITTED/DISPENSING).
+// Setelah DISPENSED (diserahkan) tak bisa dibatalkan (stok terpotong + sudah ditagih).
+function canCancelPermintaan(p) { return p && !['DISPENSED', 'CANCELLED'].includes(p.status) }
+async function cancelPermintaan(p) {
+  if (!canCancelPermintaan(p)) return
+  const names = (p.items || []).map((it) => it.medication?.name).filter(Boolean).join(', ') || '—'
+  if (!(await askConfirm(`Batalkan permintaan obat ini?\n${names}`, { title: 'Batalkan Permintaan Obat', okLabel: 'Batalkan' }))) return
+  busy.value = true
+  try {
+    await ranapApi.cancelPermintaanObat(detailVisitId.value, p.id)
+    notify('Permintaan obat dibatalkan')
+    await loadPermintaan()
+  } catch (e) { notify(e.response?.data?.message ?? 'Gagal membatalkan permintaan', false) } finally { busy.value = false }
+}
+
 function addToReqCart() {
   const f = reqPick.value
   if (!f.medication_id) { notify('Pilih obat dulu', false); return }
@@ -1609,15 +1624,19 @@ const statusPill = (s) => ({
 
               <h4 style="margin-top:1rem">Riwayat Permintaan</h4>
               <table class="bill">
-                <thead><tr><th>Waktu</th><th>Obat</th><th>Status</th><th>Diserahkan oleh</th></tr></thead>
+                <thead><tr><th>Waktu</th><th>Obat</th><th>Status</th><th>Diserahkan oleh</th><th class="c">Aksi</th></tr></thead>
                 <tbody>
                   <tr v-for="p in permintaanList" :key="p.id">
                     <td>{{ fmt(p.created_at) }}</td>
                     <td>{{ (p.items || []).map(it => `${it.medication?.name ?? '—'} ×${it.quantity}`).join(', ') }}</td>
                     <td><span class="pill" :class="reqStatusPill(p.status)">{{ reqStatusLabel(p.status) }}</span></td>
                     <td>{{ p.dispensed_by?.name || '—' }}</td>
+                    <td class="c">
+                      <button v-if="canCancelPermintaan(p)" class="btn btn-sm btn-warning" :disabled="busy" @click="cancelPermintaan(p)" title="Batalkan sebelum diserahkan Farmasi">Batalkan</button>
+                      <span v-else class="muted">—</span>
+                    </td>
                   </tr>
-                  <tr v-if="!permintaanList.length"><td colspan="4" class="muted">Belum ada permintaan obat</td></tr>
+                  <tr v-if="!permintaanList.length"><td colspan="5" class="muted">Belum ada permintaan obat</td></tr>
                 </tbody>
               </table>
             </div>
