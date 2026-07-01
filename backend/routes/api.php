@@ -877,6 +877,7 @@ Route::prefix('v1')->group(function () {
             // Tab Rawat Inap Kasir (Fase 2) — pasien masih dirawat + running bill + deposit.
             Route::get('/rawat-inap',                      [KasirController::class, 'inpatientList']);
             Route::get('/rawat-inap/{visitId}',            [KasirController::class, 'inpatientDetail']);
+            Route::get('/rawat-inap/{visitId}/tagihan-sementara', [KasirController::class, 'inpatientProforma']);
 
             // Uang muka / deposit rawat inap (Fase 1) — diterima Kasir sebelum discharge,
             // dikreditkan ke invoice saat discharge (Fase 4).

@@ -1731,6 +1731,16 @@ const statusPill = (s) => ({
             <table class="bill">
               <thead><tr><th>Tgl</th><th>Jenis</th><th>Deskripsi</th><th>Qty</th><th>Harga</th><th>Total</th><th></th></tr></thead>
               <tbody>
+                <!-- Estimasi kamar berjalan (display-only): baris ROOM riil baru dibuat saat pulang. -->
+                <tr v-for="(rl, i) in (store.detail.room_estimate_lines || [])" :key="'room-' + i" class="row-pending">
+                  <td>—</td>
+                  <td><span class="pill pill-info">Estimasi Kamar</span></td>
+                  <td>{{ rl.description }}</td>
+                  <td>{{ rl.quantity }}</td>
+                  <td>{{ rupiah(rl.unit_price) }}</td>
+                  <td>{{ rupiah(rl.total_price) }}</td>
+                  <td></td>
+                </tr>
                 <!-- Provisional: obat diminta ke Farmasi, belum diserahkan (belum ditagih) -->
                 <tr v-for="x in pendingFarmasiItems" :key="x.id" class="row-pending">
                   <td>—</td>
@@ -1755,12 +1765,13 @@ const statusPill = (s) => ({
                   <td>{{ rupiah((u.unit_price || 0) * (u.quantity || 0)) }}</td>
                   <td></td>
                 </tr>
-                <tr v-if="!store.detail.charges?.length && !pendingFarmasiItems.length && !(store.detail.bhp_usages?.length)"><td colspan="7" class="muted">Belum ada biaya</td></tr>
+                <tr v-if="!store.detail.charges?.length && !pendingFarmasiItems.length && !(store.detail.bhp_usages?.length) && !(store.detail.room_estimate_lines?.length)"><td colspan="7" class="muted">Belum ada biaya</td></tr>
               </tbody>
             </table>
             <p class="total">
               Total berjalan: <strong>{{ rupiah(store.detail.running_bill?.total) }}</strong>
               <small v-if="store.detail.running_bill?.bhp_total" class="muted"> (termasuk BHP {{ rupiah(store.detail.running_bill.bhp_total) }})</small>
+              <small v-if="store.detail.running_bill?.room_estimate" class="muted"> · termasuk estimasi kamar {{ rupiah(store.detail.running_bill.room_estimate) }}</small>
             </p>
           </div>
 

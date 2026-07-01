@@ -804,6 +804,9 @@ class KasirService
                 $this->persistCoverages($invoice, $anchor);
             }
 
+            // Fase 5 — Rekonsiliasi uang muka: kredit deposit HELD (seluruh rantai) ke invoice.
+            $this->applyDepositsToInvoice($invoice, $chain);
+
             // RANAP/IGD: tandai inpatient_charges (per visit rantai) yang baru ditagih agar
             // tak dobel saat (mis.) invoice di-cancel lalu konsolidasi ulang.
             foreach ($chain as $v) {
@@ -3334,8 +3337,15 @@ class KasirService
                 );
             }
 
+            // Sisa 0 bisa karena (a) gratis/diskon 100% (paid_amount 0) atau (b) sudah
+            // tertutup UANG MUKA (deposit di-pre-credit ke paid_amount saat discharge,
+            // lihat applyDepositsToInvoice). Bedakan metode: DEPOSIT bila ada pembayaran,
+            // WAIVED bila benar-benar nol → label kwitansi & rekap kas tak salah "gratis".
+            $paidAlready = (float) $invoice->paid_amount;
+            $method      = $paidAlready > 0.009 ? 'DEPOSIT' : 'WAIVED';
+
             $invoice->update([
-                'payment_method' => 'WAIVED',
+                'payment_method' => $method,
                 'status'         => 'PAID',
                 'paid_at'        => now(),
                 'cashier_id'     => $user->employee_id,
@@ -3356,7 +3366,9 @@ class KasirService
                 'SETTLE_ZERO_INVOICE',
                 BillingInvoice::class,
                 $invoice->id,
-                'Tagihan Rp 0 (diskon/penghapusan 100%) — status: PAID (WAIVED)'
+                $method === 'DEPOSIT'
+                    ? "Tagihan lunas via uang muka (deposit {$paidAlready}) — status: PAID (DEPOSIT)"
+                    : 'Tagihan Rp 0 (diskon/penghapusan 100%) — status: PAID (WAIVED)'
             );
 
             return $invoice->fresh(['items', 'visit.patient', 'cashier']);
@@ -4453,6 +4465,13 @@ class KasirService
             ? max(0, ($cashReceived + $covered) - $total)
             : max(0, ($paid + $covered) - $total);
 
+        // Fase 5 — porsi uang muka (deposit) yang sudah dikreditkan ke invoice ini
+        // (sudah termasuk dalam paid_amount). Ditampilkan sebagai sub-rincian "termasuk
+        // Uang Muka" di kwitansi final. 0 bila tak ada deposit.
+        $depositApplied = (float) VisitDeposit::where('applied_invoice_id', $invoice->id)
+            ->where('status', VisitDeposit::STATUS_APPLIED)
+            ->sum('amount');
+
         // Toggle elemen cetak (logo/stempel/e-sign/footer/watermark) — admin atur via UI.
         $print = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
 
@@ -4520,6 +4539,7 @@ class KasirService
                 'tax'              => $invoice->tax,
                 'total'            => $invoice->total,
                 'paid_amount'      => $invoice->paid_amount,
+                'deposit_applied'  => $depositApplied,
                 'cash_received'    => $cashReceived,
                 'covered_amount'   => $covered,
                 'change'           => $change,
@@ -4856,6 +4876,53 @@ class KasirService
     }
 
     /**
+     * Fase 5 — Rekonsiliasi uang muka saat discharge/konsolidasi: kredit deposit HELD
+     * (seluruh rantai rujuk-internal) ke invoice. paid_amount bersifat ADITIF di
+     * processPayment (baca sisa lalu tambah), jadi pre-credit deposit = sisa pasien
+     * otomatis berkurang; bila deposit ≥ sisa → invoice tinggal ditutup lewat
+     * settleZeroInvoice (sisa 0). Kelebihan (deposit > tagihan pasien) dicatat sebagai
+     * refunded_amount di baris deposit terakhir → kembalian ke pasien saat penutupan.
+     * Idempoten via transisi HELD→APPLIED (lockForUpdate); dipanggil DALAM transaksi
+     * consolidateBilling. Full-cover BPJS tak punya deposit (recordDeposit menolak).
+     */
+    private function applyDepositsToInvoice(BillingInvoice $invoice, \Illuminate\Support\Collection $chain): void
+    {
+        $deposits = VisitDeposit::whereIn('visit_id', $chain->pluck('id'))
+            ->where('status', VisitDeposit::STATUS_HELD)
+            ->lockForUpdate()
+            ->get();
+        if ($deposits->isEmpty()) {
+            return;
+        }
+
+        $depositTotal = round((float) $deposits->sum('amount'), 2);
+        $patientDue   = max(0.0, (float) $invoice->total - (float) $invoice->covered_amount);
+        $applied      = min($depositTotal, $patientDue);
+        $excess       = round($depositTotal - $applied, 2);
+
+        $invoice->update(['paid_amount' => (float) $invoice->paid_amount + $applied]);
+
+        $last = $deposits->last();
+        foreach ($deposits as $d) {
+            $d->update([
+                'status'             => VisitDeposit::STATUS_APPLIED,
+                'applied_invoice_id' => $invoice->id,
+                'applied_at'         => now(),
+                // Kelebihan uang muka (kembalian) dicatat di baris terakhir; refund fisik di Kasir.
+                'refunded_amount'    => ($excess > 0 && $d->is($last)) ? $excess : $d->refunded_amount,
+            ]);
+        }
+
+        $this->log(
+            auth('api')->id(),
+            'APPLY_DEPOSIT',
+            BillingInvoice::class,
+            $invoice->id,
+            "Uang muka {$depositTotal} dikreditkan (terpakai {$applied}" . ($excess > 0 ? ", kembalian {$excess}" : '') . ')'
+        );
+    }
+
+    /**
      * Daftar pasien rawat inap AKTIF untuk tab Kasir "Rawat Inap": basis penghuni bed
      * (konsisten Papan Room & RanapService::activeInpatients) + running total
      * (inpatient_charges belum ditagih + BHP) + uang muka tertahan (deposit HELD) per
@@ -4863,7 +4930,7 @@ class KasirService
      */
     public function inpatientBillingList(): array
     {
-        $visits = Visit::with(['patient:id,name,no_rm', 'room:id,name', 'bed:id,label'])
+        $visits = Visit::with(['patient:id,name,no_rm', 'room:id,name', 'bed:id,label', 'bedAssignments'])
             ->whereHas('activeBedAssignment')
             ->whereNull('discharge_at')
             ->where('jenis_pelayanan', 'RANAP')
@@ -4878,19 +4945,27 @@ class KasirService
         $deposit = VisitDeposit::whereIn('visit_id', $ids)->where('status', VisitDeposit::STATUS_HELD)
             ->selectRaw('visit_id, COALESCE(SUM(amount),0) t')->groupBy('visit_id')->pluck('t', 'visit_id');
 
-        return $visits->map(fn (Visit $v) => [
-            'visit_id'         => $v->id,
-            'name'             => $v->patient?->name,
-            'no_rm'            => $v->patient?->no_rm,
-            'room'             => $v->room?->name,
-            'bed'              => $v->bed?->label,
-            'kelas_rawat_hak'  => $v->kelas_rawat_hak,
-            'guarantor_type'   => $v->guarantor_type,
-            'admission_at'     => $v->admission_at,
-            'running_total'    => (float) ($charge[$v->id] ?? 0) + (float) ($bhp[$v->id] ?? 0),
-            'deposit_held'     => (float) ($deposit[$v->id] ?? 0),
-            'deposit_eligible' => ! $this->isFullCoverBpjs($v),
-        ])->all();
+        // Estimasi kamar berjalan per pasien (display-only) agar total di list selaras
+        // dengan detail/tagihan sementara. Aktif → belum ada baris ROOM riil, jadi estimasi.
+        $ranap = app(\App\Services\RanapService::class);
+
+        return $visits->map(function (Visit $v) use ($charge, $bhp, $deposit, $ranap) {
+            $roomEst = (float) array_sum(array_map(fn ($l) => (float) $l['total_price'], $ranap->estimatedRoomLines($v)));
+
+            return [
+                'visit_id'         => $v->id,
+                'name'             => $v->patient?->name,
+                'no_rm'            => $v->patient?->no_rm,
+                'room'             => $v->room?->name,
+                'bed'              => $v->bed?->label,
+                'kelas_rawat_hak'  => $v->kelas_rawat_hak,
+                'guarantor_type'   => $v->guarantor_type,
+                'admission_at'     => $v->admission_at,
+                'running_total'    => (float) ($charge[$v->id] ?? 0) + (float) ($bhp[$v->id] ?? 0) + $roomEst,
+                'deposit_held'     => (float) ($deposit[$v->id] ?? 0),
+                'deposit_eligible' => ! $this->isFullCoverBpjs($v),
+            ];
+        })->all();
     }
 
     /**
@@ -4907,6 +4982,152 @@ class KasirService
             'deposit_held'     => $dep['held_total'],
             'deposit_eligible' => ! $this->isFullCoverBpjs($visit),
         ]);
+    }
+
+    /**
+     * Payload kwitansi TAGIHAN SEMENTARA (proforma) pasien inap — bentuk SAMA persis
+     * dengan generateReceipt agar dirender komponen KwitansiPrintDoc yang sama (kop,
+     * kategori, blok inap, e-sign). TANPA BillingInvoice: item dirakit dari running bill
+     * (estimasi kamar + inpatient_charges + BHP), status PRO FORMA, uang muka HELD
+     * ditampilkan sebagai "dibayar". Display-only; TIDAK menyentuh billing.
+     */
+    public function inpatientProformaReceipt(Visit $visit): array
+    {
+        if (($visit->jenis_pelayanan ?? null) !== 'RANAP') {
+            throw new \Exception('Tagihan sementara hanya untuk pasien rawat inap.', 422);
+        }
+
+        $visit->loadMissing(['patient', 'room', 'bed', 'dpjp', 'insurer', 'visitCob.penjamin2', 'bedAssignments']);
+
+        $detail = app(\App\Services\RanapService::class)->detail($visit->id);
+
+        // Peta charge_type RANAP → kategori kwitansi (selaras buildInpatientChargeLines).
+        $catMap = [
+            InpatientCharge::TYPE_ROOM      => 'Kamar Rawat Inap',
+            InpatientCharge::TYPE_VISITE    => 'Visite Dokter',
+            InpatientCharge::TYPE_KONSUL    => 'Konsultasi Dokter',
+            InpatientCharge::TYPE_TINDAKAN  => 'Tindakan',
+            InpatientCharge::TYPE_OBAT      => 'Obat',
+            InpatientCharge::TYPE_BHP       => 'BHP',
+            InpatientCharge::TYPE_PENUNJANG => 'Penunjang',
+            InpatientCharge::TYPE_LAINNYA   => 'Lainnya',
+        ];
+
+        $items = [];
+        // Estimasi kamar paling atas (biar tampil menonjol di kwitansi).
+        foreach (($detail['room_estimate_lines'] ?? []) as $rl) {
+            $items[] = [
+                'id'              => null,
+                'description'     => $rl['description'],
+                'quantity'        => (float) $rl['quantity'],
+                'total_price'     => (float) $rl['total_price'],
+                'net_price'       => (float) $rl['net_price'],
+                'discount_amount' => 0,
+                'discount_percent' => 0,
+                'category'        => $rl['category'],
+                'item_type'       => InpatientCharge::TYPE_ROOM,
+            ];
+        }
+        foreach ($detail['charges'] as $c) {
+            $total = (float) $c->total_price;
+            $items[] = [
+                'id'              => $c->id,
+                'description'     => $c->description ?? $c->charge_type,
+                'quantity'        => (float) $c->quantity,
+                'total_price'     => $total,
+                'net_price'       => $total,
+                'discount_amount' => 0,
+                'discount_percent' => 0,
+                'category'        => $catMap[$c->charge_type] ?? 'Lainnya',
+                'item_type'       => $c->charge_type,
+            ];
+        }
+        foreach ($detail['bhp_usages'] as $u) {
+            $qty  = (int) ($u->quantity ?? 0);
+            $unit = (float) ($u->unit_price ?? 0);
+            $items[] = [
+                'id'              => $u->id,
+                'description'     => ($u->bhpItem?->name ?? 'BHP') . ($qty > 1 ? " ({$qty}×)" : ''),
+                'quantity'        => (float) $qty,
+                'total_price'     => $unit * $qty,
+                'net_price'       => $unit * $qty,
+                'discount_amount' => 0,
+                'discount_percent' => 0,
+                'category'        => 'BHP',
+                'item_type'       => InpatientCharge::TYPE_BHP,
+            ];
+        }
+
+        $subtotal    = (float) array_sum(array_map(fn ($i) => (float) $i['net_price'], $items));
+        $dep         = $this->listDeposits($visit);
+        $depositHeld = (float) $dep['held_total'];
+        $sisa        = max(0, $subtotal - $depositHeld);
+
+        $clinic = ClinicProfile::first();
+        $print  = $clinic ? $clinic->receiptPrintSettings() : ClinicProfile::RECEIPT_PRINT_DEFAULTS;
+
+        $cob = ($c2 = $visit->visitCob) && $c2->is_active && $c2->penjamin2_insurer_id
+            ? ['guarantor_type' => $c2->penjamin2_type, 'insurer' => $c2->penjamin2?->name]
+            : null;
+
+        return [
+            'clinic' => [
+                'name'            => $clinic?->clinic_name,
+                'address'         => $clinic?->address,
+                'phone'           => $clinic?->phone,
+                'email'           => $clinic?->email,
+                'director_name'   => $clinic?->director_name,
+                'director_sip'    => $clinic?->director_sip,
+                'logo_path'       => $print['show_logo'] ? $clinic?->logo_path : null,
+                'logo_url'        => $print['show_logo'] ? $this->resolveAssetUrl($clinic?->logo_path) : null,
+                'letterhead_html' => $clinic ? $clinic->renderLetterheadHtml((bool) $print['show_logo']) : '',
+                'stamp_path'      => null,   // proforma: tanpa stempel lunas
+                'stamp_url'       => null,
+                // Watermark dipaksa "TAGIHAN SEMENTARA" (bukan setelan klinik) — penanda proforma.
+                'watermark_type'  => 'TAGIHAN SEMENTARA',
+            ],
+            'print_settings' => $print,
+            'invoice' => [
+                'number'         => 'PROFORMA',
+                'date'           => now()->format('d/m/Y'),
+                'visit_date'     => $visit->visit_date?->format('d/m/Y'),
+                'status'         => 'PROFORMA',
+                'is_paid'        => false,
+                'payment_method' => null,
+                'paid_at'        => null,
+            ],
+            'patient' => [
+                'no_rm'          => $visit->patient?->no_rm,
+                'name'           => $visit->patient?->name,
+                'nik'            => $visit->patient?->nik,
+                'guarantor_type' => $visit->guarantor_type,
+                'insurer'        => $visit->insurer?->name,
+                'cob'            => $cob,
+                'dpjp'           => $this->resolveDpjpName($visit),
+            ],
+            'service_type' => 'RANAP',
+            'inpatient'    => $this->receiptInpatientBlock($visit),
+            'items'        => $items,
+            'categories'   => \App\Models\BillingCategory::where('is_active', true)
+                ->orderBy('sort_order')->orderBy('name')
+                ->get(['id', 'name', 'sort_order'])->toArray(),
+            'summary' => [
+                'subtotal'         => $subtotal,
+                'item_discount'    => 0,
+                'discount'         => 0,
+                'discount_percent' => 0,
+                'tax'              => 0,
+                'total'            => $subtotal,
+                'paid_amount'      => $depositHeld,
+                'deposit_applied'  => $depositHeld,
+                'cash_received'    => null,
+                'covered_amount'   => 0,
+                'change'           => 0,
+                'sisa'             => $sisa,
+            ],
+            'is_proforma' => true,
+            'cashier'     => auth('api')->user()?->employee?->name ?? auth('api')->user()?->name,
+        ];
     }
 
     /** Nomor kwitansi uang muka: "UM/{code}/{Ym}/{seq}". lockForUpdate anti-tabrakan. */

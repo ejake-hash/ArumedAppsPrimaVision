@@ -183,17 +183,75 @@ class RanapService
         $chargesTotal = (float) $charges->sum('total_price');
         $bhpTotal = (float) $bhpUsages->sum(fn ($u) => (float) ($u->unit_price ?? 0) * (int) ($u->quantity ?? 0));
 
+        // Estimasi biaya kamar SAMPAI SAAT INI (display-only). Baris ROOM riil baru
+        // dibuat saat discharge (generateRoomCharges); selama dirawat belum ada, jadi
+        // running bill tanpa ini understate. Estimasi = malam berjalan × tarif kelas hak.
+        $roomLines = $this->estimatedRoomLines($visit);
+        $roomTotal = (float) array_sum(array_map(fn ($l) => (float) $l['total_price'], $roomLines));
+
         return [
             'visit'      => $visit,
             'charges'    => $charges,
             'bhp_usages' => $bhpUsages,   // baris BHP utk Rincian Biaya Berjalan
+            'room_estimate_lines' => $roomLines,   // baris estimasi kamar (bentuk baris kwitansi)
             'running_bill' => [
                 'charges_total' => $chargesTotal,
                 'bhp_total'     => $bhpTotal,
-                'total'         => $chargesTotal + $bhpTotal,
+                'room_estimate' => $roomTotal,
+                'total'         => $chargesTotal + $bhpTotal + $roomTotal,
                 'billed'        => (float) $charges->where('is_billed', true)->sum('total_price'),
             ],
         ];
+    }
+
+    /**
+     * Estimasi baris biaya kamar SAMPAI SAAT INI untuk tagihan berjalan / tagihan
+     * sementara (display-only, TIDAK persist). Mirror generateRoomCharges tapi end =
+     * now() (bukan discharge). Kosong bila pasien sudah pulang atau baris ROOM riil
+     * sudah dibuat (biar angka final yang dipakai, tak dobel). Baris berbentuk baris
+     * kwitansi (item_type ROOM, kategori 'Kamar Rawat Inap') agar bisa dikategorikan.
+     */
+    public function estimatedRoomLines(Visit $visit): array
+    {
+        if ($visit->discharge_at) {
+            return [];
+        }
+        $hasFinalRoom = InpatientCharge::where('visit_id', $visit->id)
+            ->where('charge_type', InpatientCharge::TYPE_ROOM)
+            ->exists();
+        if ($hasFinalRoom) {
+            return [];
+        }
+
+        $now   = now();
+        $lines = [];
+        foreach ($visit->bedAssignments()->orderBy('assigned_at')->get() as $p) {
+            $start  = \Illuminate\Support\Carbon::parse($p->assigned_at);
+            $end    = \Illuminate\Support\Carbon::parse($p->released_at ?? $now);
+            $nights = max(1, $start->copy()->startOfDay()->diffInDays($end->copy()->startOfDay()));
+
+            $price = $this->kasir->getPrice('room', $p->kelas_rawat_hak, $visit->guarantor_type, $visit->insurer_id);
+            if ($price <= 0) {
+                continue;
+            }
+
+            $label = "Estimasi Kamar Kelas {$p->kelas_rawat_hak} — {$nights} malam berjalan";
+            if ($p->kelas_rawat_room && $p->kelas_rawat_room !== $p->kelas_rawat_hak) {
+                $label .= " (dititip di Kelas {$p->kelas_rawat_room})";
+            }
+            $total = (float) $price * $nights;
+            $lines[] = [
+                'item_type'   => InpatientCharge::TYPE_ROOM,
+                'category'    => 'Kamar Rawat Inap',
+                'description' => $label,
+                'quantity'    => (float) $nights,
+                'unit_price'  => (float) $price,
+                'total_price' => $total,
+                'net_price'   => $total,
+                'is_estimate' => true,
+            ];
+        }
+        return $lines;
     }
 
     /**

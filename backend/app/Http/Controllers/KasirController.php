@@ -596,6 +596,20 @@ class KasirController extends Controller
         }
     }
 
+    /**
+     * GET /kasir/rawat-inap/{visitId}/tagihan-sementara — payload kwitansi TAGIHAN
+     * SEMENTARA (proforma), bentuk sama generateReceipt untuk dirender KwitansiPrintDoc.
+     */
+    public function inpatientProforma(string $visitId): JsonResponse
+    {
+        try {
+            $visit = \App\Models\Visit::findOrFail($visitId);
+            return $this->ok($this->service->inpatientProformaReceipt($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
     // =========================================================================
     // UANG MUKA / DEPOSIT RAWAT INAP (Fase 1)
     // =========================================================================

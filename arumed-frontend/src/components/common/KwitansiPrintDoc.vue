@@ -57,7 +57,7 @@ function svcTitle(t) { return ({ RANAP: 'KWITANSI RAWAT INAP', IGD: 'KWITANSI GA
 function svcLabel(t) { return ({ RANAP: 'Rawat Inap', IGD: 'Gawat Darurat (IGD)', RAJAL: 'Rawat Jalan' })[svcCode(t)] ?? 'Rawat Jalan' }
 
 function metodeLabel(code) {
-  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi', WAIVED: 'Gratis / Diskon 100%' })[code] ?? (code ?? '—')
+  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi', DEPOSIT: 'Uang Muka', WAIVED: 'Gratis / Diskon 100%' })[code] ?? (code ?? '—')
 }
 
 // ─── Grouping rincian tagihan per kategori ───────────────────────────────────
@@ -213,7 +213,8 @@ const groupedPrintItems = computed(() =>
             <tr v-if="Number(data.summary?.tax)"><td>Pajak</td><td class="c-num">{{ rupiah(data.summary?.tax) }}</td></tr>
             <tr class="rp-grand"><td>TOTAL TAGIHAN</td><td class="c-num">{{ rupiah(data.summary?.total) }}</td></tr>
             <tr v-if="Number(data.summary?.covered_amount)"><td>{{ (data.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? 'Ditanggung BPJS Kesehatan (klaim INA-CBG)' : 'Ditanggung Asuransi' }}</td><td class="c-num">{{ (data.patient?.guarantor_type ?? '').toUpperCase() === 'BPJS' ? '' : '− ' + rupiah(data.summary?.covered_amount) }}</td></tr>
-            <tr><td>Dibayar Pasien</td><td class="c-num">{{ rupiah(data.summary?.paid_amount) }}</td></tr>
+            <tr><td>{{ data.is_proforma ? 'Uang Muka (deposit)' : 'Dibayar Pasien' }}</td><td class="c-num">{{ rupiah(data.summary?.paid_amount) }}</td></tr>
+            <tr v-if="!data.is_proforma && Number(data.summary?.deposit_applied)" class="rp-dep-sub"><td>— termasuk Uang Muka</td><td class="c-num">{{ rupiah(data.summary?.deposit_applied) }}</td></tr>
             <tr v-if="data.invoice?.is_paid && Number(data.summary?.change)"><td>Kembalian</td><td class="c-num">{{ rupiah(data.summary?.change) }}</td></tr>
             <tr v-if="Number(data.summary?.sisa)" class="rp-sisa"><td>Sisa Tagihan</td><td class="c-num">{{ rupiah(data.summary?.sisa) }}</td></tr>
           </tbody>
@@ -221,7 +222,12 @@ const groupedPrintItems = computed(() =>
       </div>
 
       <div :class="['rp-status', data.invoice?.is_paid ? 'lunas' : 'belum']">
-        {{ data.invoice?.is_paid ? 'LUNAS' : 'BELUM LUNAS / PRO FORMA' }}
+        {{ data.invoice?.is_paid ? 'LUNAS' : (data.is_proforma ? 'TAGIHAN SEMENTARA' : 'BELUM LUNAS / PRO FORMA') }}
+      </div>
+
+      <div v-if="data.is_proforma" class="rp-proforma-note">
+        *Dokumen ini <strong>TAGIHAN SEMENTARA</strong> — BUKAN bukti pembayaran. Nilai belum final;
+        tagihan resmi diterbitkan saat pasien pulang. Biaya kamar bersifat estimasi berjalan.
       </div>
 
       <div class="rp-sign">
@@ -336,6 +342,8 @@ const groupedPrintItems = computed(() =>
   .rincian-print .rp-status { display: inline-block; border: 2px solid #000; padding: 3px 14px; font-weight: 800; letter-spacing: .08em; font-size: 12px; margin-bottom: 24px; }
   .rincian-print .rp-status.lunas { color: #15803d; border-color: #15803d; }
   .rincian-print .rp-status.belum { color: #b45309; border-color: #b45309; }
+  .rincian-print .rp-summary .rp-dep-sub td { color: #555; font-size: 9.5px; padding-top: 0; padding-bottom: 0; }
+  .rincian-print .rp-proforma-note { margin: 8px 0 20px; font-size: 9.5px; font-style: italic; color: #444; max-width: 60%; }
 
   .rincian-print .rp-sign { display: flex; justify-content: flex-end; page-break-inside: avoid; }
   .rincian-print .rp-sign-col { width: 45%; text-align: center; }

@@ -1330,6 +1330,8 @@ export const kasirApi = {
   // Tab Rawat Inap (Fase 2): daftar pasien inap + running bill + uang muka/deposit.
   ranapList:         ()                   => api.get('/kasir/rawat-inap'),
   ranapDetail:       (visitId)            => api.get(`/kasir/rawat-inap/${visitId}`),
+  // Payload kwitansi TAGIHAN SEMENTARA (proforma) — bentuk sama generateReceipt.
+  ranapProforma:     (visitId)            => api.get(`/kasir/rawat-inap/${visitId}/tagihan-sementara`),
   depositRecord:     (visitId, data)      => api.post(`/kasir/visit/${visitId}/deposit`, data),
 
   // Billing items (override saat edit tagihan)

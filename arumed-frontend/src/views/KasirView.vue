@@ -367,6 +367,9 @@ const isZeroDue      = computed(() =>
   && !isFullCover.value
   && sisaTagihan.value === 0,
 )
+// Sisa Rp 0 karena UANG MUKA/deposit sudah menutup tagihan (bukan gratis/diskon 100%).
+// paid_amount > 0 saat sisa 0 & belum PAID = tagihan terlunasi uang muka → beda pesan/metode.
+const isPrepaidByDeposit = computed(() => isZeroDue.value && paidAmount.value > 0)
 
 function bayar() { return sisaTagihan.value }
 
@@ -781,7 +784,7 @@ async function prosesSettleNol() {
     selInv.value = data.data
     const localQ = queue.value.find((q) => q.id === selQ.value?.id)
     if (localQ) localQ.status = 'COMPLETED'
-    toast('s', `Tagihan Rp 0 diselesaikan — invoice ${selInv.value.invoice_number}`)
+    toast('s', `${data.data.payment_method === 'DEPOSIT' ? 'Tagihan lunas via uang muka' : 'Tagihan Rp 0 diselesaikan'} — invoice ${selInv.value.invoice_number}`)
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menyelesaikan tagihan Rp 0')
   } finally {
@@ -1114,38 +1117,45 @@ async function submitDeposit() {
   } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan uang muka') } finally { depSaving.value = false }
 }
 
-// Cetak Tagihan Sementara (proforma) — BUKAN bukti pembayaran. Reuse pola print window.
-function cetakTagihanSementara() {
-  const d = riSel.value
-  if (!d) return
-  const esc = (s) => String(s ?? '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))
-  const rows = []
-  for (const c of (d.charges || [])) if (c) rows.push([esc(c.description || c.charge_type), fmtRp(c.total_price)])
-  for (const u of (d.bhp_usages || [])) if (u) rows.push([esc((u.bhp_item?.name ?? 'BHP') + ' ×' + (u.quantity ?? 1)), fmtRp((u.unit_price ?? 0) * (u.quantity ?? 0))])
-  const body = rows.map((r) => `<tr><td>${r[0]}</td><td style="text-align:right">${r[1]}</td></tr>`).join('')
-  const held = Number(d.deposit_held || 0)
-  const total = Number(d.running_bill?.total || 0)
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Tagihan Sementara</title>
-  <style>body{font-family:Arial,sans-serif;font-size:12px;padding:18px;color:#111}h2{margin:0 0 2px}.wm{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:40px;color:#f2f2f2;transform:rotate(-20deg);z-index:-1;font-weight:800}table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #ddd;padding:4px 6px}tfoot td{font-weight:700;border-top:2px solid #333}</style>
-  </head><body>
-  <div class="wm">TAGIHAN SEMENTARA</div>
-  <h2>TAGIHAN SEMENTARA</h2>
-  <div>Pasien: <b>${esc(d.visit?.patient?.name)}</b> · RM ${esc(d.visit?.patient?.no_rm)}</div>
-  <div>Kamar: ${esc(d.visit?.room?.name)} / ${esc(d.visit?.bed?.label)}</div>
-  <table><thead><tr><th style="text-align:left">Rincian Biaya Berjalan</th><th style="text-align:right">Jumlah</th></tr></thead>
-  <tbody>${body || '<tr><td colspan="2">Belum ada biaya tercatat</td></tr>'}</tbody>
-  <tfoot>
-    <tr><td>Total Berjalan</td><td style="text-align:right">${fmtRp(total)}</td></tr>
-    <tr><td>Uang Muka (deposit)</td><td style="text-align:right">- ${fmtRp(held)}</td></tr>
-    <tr><td>Estimasi Sisa</td><td style="text-align:right">${fmtRp(Math.max(0, total - held))}</td></tr>
-  </tfoot></table>
-  <p style="margin-top:14px;font-style:italic">*Dokumen ini TAGIHAN SEMENTARA — BUKAN BUKTI PEMBAYARAN. Nilai belum final; tagihan resmi diterbitkan saat pasien pulang.</p>
-  </body></html>`
-  const w = window.open('', '_blank', 'width=640,height=840')
-  if (!w) { toast('w', 'Popup diblokir — izinkan popup untuk mencetak.'); return }
-  w.document.write(html); w.document.close(); w.focus()
-  setTimeout(() => w.print(), 300)
+// Cetak Tagihan Sementara (proforma) — BUKAN bukti pembayaran. Payload dari backend
+// berbentuk sama dengan kwitansi resmi (generateReceipt) → dirender KwitansiPrintDoc
+// (kop, kategori, blok inap, estimasi kamar) via printData + @media print.
+async function cetakTagihanSementara() {
+  const vid = riSel.value?.visit?.id
+  if (!vid) return
+  printing.value = true
+  try {
+    const { data } = await kasirApi.ranapProforma(vid)
+    printData.value = data.data           // payload bentuk generateReceipt (is_proforma:true)
+    await nextTick()
+    setTimeout(() => window.print(), 80)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal menyiapkan tagihan sementara')
+  } finally {
+    printing.value = false
+  }
 }
+
+// Rincian biaya berjalan dikelompokkan per kategori (sama seperti tagihan aktif):
+// estimasi kamar + inpatient_charges + BHP → groupItemsByCategory.
+const RI_CHARGE_CAT = { ROOM: 'Kamar Rawat Inap', VISITE: 'Visite Dokter', KONSUL: 'Konsultasi Dokter', TINDAKAN: 'Tindakan', OBAT: 'Obat', BHP: 'BHP', PENUNJANG: 'Penunjang', LAINNYA: 'Lainnya' }
+const riGroupedItems = computed(() => {
+  const d = riSel.value
+  if (!d) return []
+  const items = []
+  for (const rl of (d.room_estimate_lines || [])) {
+    items.push({ description: rl.description, net_price: Number(rl.net_price ?? rl.total_price ?? 0), category: rl.category })
+  }
+  for (const c of (d.charges || [])) {
+    if (!c) continue
+    items.push({ description: c.description || c.charge_type, net_price: Number(c.total_price ?? 0), category: RI_CHARGE_CAT[c.charge_type] ?? 'Lainnya' })
+  }
+  for (const u of (d.bhp_usages || [])) {
+    if (!u) continue
+    items.push({ description: (u.bhp_item?.name ?? 'BHP') + ' ×' + (u.quantity ?? 1), net_price: Number(u.unit_price || 0) * Number(u.quantity || 0), category: 'BHP' })
+  }
+  return groupItemsByCategory(items, billingCategories.value)
+})
 
 function penjaminLabel(g) {
   const t = (g ?? '').toUpperCase()
@@ -1320,7 +1330,7 @@ async function cetakKwitansiHistory(h) {
 }
 
 function metodeLabel(code) {
-  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi', WAIVED: 'Gratis / Diskon 100%' })[code] ?? (code ?? '—')
+  return ({ CASH: 'Tunai', CREDIT_CARD: 'Debit/Kredit', TRANSFER: 'Transfer', BPJS: 'BPJS', INSURANCE: 'Ditanggung Asuransi', DEPOSIT: 'Uang Muka', WAIVED: 'Gratis / Diskon 100%' })[code] ?? (code ?? '—')
 }
 function ptypeOfHistory(h) {
   const g = (h.visit?.guarantor_type ?? '').toUpperCase()
@@ -2273,20 +2283,20 @@ const rincianSections = computed(() => {
                       </button>
                     </template>
 
-                    <!-- TAGIHAN Rp 0: diskon/penghapusan 100% RS/dokter — pasien tidak membayar -->
+                    <!-- SISA Rp 0: lunas via UANG MUKA (deposit) ATAU gratis/diskon 100% RS/dokter -->
                     <template v-else-if="isZeroDue">
                       <div class="cover-confirm-box">
                         <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/><polyline points="9 12 11 14 15 10"/></svg>
-                        <div class="cover-confirm-title">Tagihan Rp 0 — Gratis / Diskon 100%</div>
-                        <div class="cover-confirm-amount">Rp 0</div>
-                        <div class="cover-confirm-sub">Seluruh tagihan didiskon/dihapus RS atau dokter. Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.</div>
+                        <div class="cover-confirm-title">{{ isPrepaidByDeposit ? 'Lunas via Uang Muka (Deposit)' : 'Tagihan Rp 0 — Gratis / Diskon 100%' }}</div>
+                        <div class="cover-confirm-amount">{{ isPrepaidByDeposit ? fmtRp(paidAmount) : 'Rp 0' }}</div>
+                        <div class="cover-confirm-sub">{{ isPrepaidByDeposit ? 'Uang muka pasien telah menutup seluruh tagihan. Klik konfirmasi untuk melunasi & menyelesaikan kunjungan.' : 'Seluruh tagihan didiskon/dihapus RS atau dokter. Pasien tidak membayar. Klik konfirmasi untuk menyelesaikan kunjungan.' }}</div>
                       </div>
                       <button class="btn btn-success btn-full btn-lg"
                         :disabled="paying"
                         @click="prosesSettleNol">
                         <div v-if="paying" class="sp"></div>
                         <svg v-else viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                        {{ paying ? 'Memproses...' : 'Konfirmasi Lunas (Rp 0)' }}
+                        {{ paying ? 'Memproses...' : (isPrepaidByDeposit ? 'Konfirmasi Lunas (Uang Muka)' : 'Konfirmasi Lunas (Rp 0)') }}
                       </button>
                     </template>
 
@@ -2595,15 +2605,17 @@ const rincianSections = computed(() => {
                   <h3 style="margin:0">{{ riSel.visit && riSel.visit.patient ? riSel.visit.patient.name : '—' }}</h3>
                   <p class="ri-muted" style="margin:.15rem 0 0">RM {{ riSel.visit && riSel.visit.patient ? riSel.visit.patient.no_rm : '' }} · {{ riSel.visit && riSel.visit.room ? riSel.visit.room.name : '' }}/{{ riSel.visit && riSel.visit.bed ? riSel.visit.bed.label : '' }} · {{ penjaminLabel(riSel.visit ? riSel.visit.guarantor_type : '') }}</p>
                 </div>
-                <button class="btn btn-sm btn-secondary" @click="cetakTagihanSementara">🖨 Cetak Tagihan Sementara</button>
+                <button class="btn btn-sm btn-secondary" :disabled="printing" @click="cetakTagihanSementara">🖨 Cetak Tagihan Sementara</button>
               </div>
 
               <h4>Rincian Biaya Berjalan</h4>
               <table class="ri-bill">
                 <tbody>
-                  <tr v-for="c in (riSel.charges || [])" :key="c.id"><td>{{ c.description || c.charge_type }}</td><td class="r">{{ fmtRp(c.total_price) }}</td></tr>
-                  <tr v-for="u in (riSel.bhp_usages || [])" :key="u.id"><td>{{ u.bhp_item ? u.bhp_item.name : 'BHP' }} ×{{ u.quantity }}</td><td class="r">{{ fmtRp((u.unit_price || 0) * (u.quantity || 0)) }}</td></tr>
-                  <tr v-if="!(riSel.charges || []).length && !(riSel.bhp_usages || []).length"><td colspan="2" class="ri-muted">Belum ada biaya tercatat</td></tr>
+                  <template v-for="grp in riGroupedItems" :key="grp.name">
+                    <tr class="ri-cat"><td colspan="2">{{ grp.name }}</td></tr>
+                    <tr v-for="(it, i) in grp.items" :key="grp.name + '-' + i"><td>{{ it.description }}</td><td class="r">{{ fmtRp(it.net_price) }}</td></tr>
+                  </template>
+                  <tr v-if="!riGroupedItems.length"><td colspan="2" class="ri-muted">Belum ada biaya tercatat</td></tr>
                 </tbody>
                 <tfoot>
                   <tr><td>Total Berjalan</td><td class="r"><b>{{ fmtRp(riSel.running_bill ? riSel.running_bill.total : 0) }}</b></td></tr>
@@ -3267,6 +3279,8 @@ const rincianSections = computed(() => {
 .ri-bill { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ri-bill td { border-bottom: 1px solid #eef2f7; padding: 5px 6px; }
 .ri-bill .r { text-align: right; white-space: nowrap; }
+.ri-bill .ri-cat td { background: #f1f5f9; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: #475569; padding-top: 7px; }
+.ri-bill tbody tr:not(.ri-cat) td:first-child { padding-left: 16px; }
 .ri-bill tfoot td { border-top: 2px solid #334155; border-bottom: none; }
 .ri-dep-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #e2e8f0; }
 .ri-status { font-size: 10px; font-weight: 700; border-radius: 6px; padding: 1px 6px; background: #e0f2fe; color: #075985; }
