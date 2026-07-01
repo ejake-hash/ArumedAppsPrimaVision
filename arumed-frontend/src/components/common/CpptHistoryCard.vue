@@ -83,6 +83,12 @@ function fmtDate(s) {
   if (isNaN(d)) return s
   return d.toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
 }
+
+// Sketsa mata (OD/OS) — thumbnail read-only di timeline; klik → perbesar (lightbox).
+function hasSketsa(d) { return !!(d && (d.od?.png_base64 || d.os?.png_base64)) }
+const lightbox = ref(null)   // { src, label } | null
+function openLightbox(src, label) { if (src) lightbox.value = { src, label } }
+function closeLightbox() { lightbox.value = null }
 </script>
 
 <template>
@@ -145,10 +151,38 @@ function fmtDate(s) {
 
             <div v-if="c.diagnosis" class="cpc-dx"><b>Dx:</b> {{ c.diagnosis }} {{ c.diagnosis_nama }}</div>
             <div v-if="c.instruksi" class="cpc-dx"><b>Instruksi:</b> {{ c.instruksi }}</div>
+
+            <!-- Sketsa mata dari Pemeriksaan dokter — thumbnail read-only, klik utk perbesar. -->
+            <div v-if="hasSketsa(c.eye_drawings)" class="cpc-sketsa span-all">
+              <span class="cpc-sketsa-lbl">Sketsa</span>
+              <img
+                v-if="c.eye_drawings.od?.png_base64" class="cpc-sketsa-img"
+                :src="c.eye_drawings.od.png_base64" alt="Sketsa OD" title="OD — klik perbesar"
+                @click="openLightbox(c.eye_drawings.od.png_base64, 'OD (Kanan)')"
+              />
+              <img
+                v-if="c.eye_drawings.os?.png_base64" class="cpc-sketsa-img"
+                :src="c.eye_drawings.os.png_base64" alt="Sketsa OS" title="OS — klik perbesar"
+                @click="openLightbox(c.eye_drawings.os.png_base64, 'OS (Kiri)')"
+              />
+            </div>
           </div>
         </div>
       </div>
     </template>
+
+    <!-- Lightbox perbesar sketsa (read-only). -->
+    <Teleport to="body">
+      <div v-if="lightbox" class="cpc-lb-overlay" @click.self="closeLightbox">
+        <div class="cpc-lb">
+          <div class="cpc-lb-head">
+            <span>Sketsa Mata — {{ lightbox.label }}</span>
+            <button class="cpc-lb-x" aria-label="Tutup" @click="closeLightbox">×</button>
+          </div>
+          <img :src="lightbox.src" :alt="'Sketsa ' + lightbox.label" class="cpc-lb-img" />
+        </div>
+      </div>
+    </Teleport>
 
     <slot name="footer" />
   </div>
@@ -213,4 +247,23 @@ function fmtDate(s) {
 .cpc-soap b.p { color: #b45309; }
 .cpc-dx { font-size: 11px; color: #475569; }
 .cpc-dx b { color: #1e293b; }
+
+/* Sketsa mata: baris thumbnail OD|OS (klik → lightbox). */
+.cpc-sketsa { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cpc-sketsa-lbl { font-size: 10.5px; font-weight: 700; color: #64748b; }
+.cpc-sketsa-img {
+  width: 84px; height: 70px; object-fit: contain;
+  border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; cursor: zoom-in;
+}
+.cpc-sketsa-img:hover { border-color: #94a3b8; }
+
+/* Lightbox */
+.cpc-lb-overlay {
+  position: fixed; inset: 0; z-index: 1200; background: rgba(15, 23, 42, 0.72);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.cpc-lb { background: #fff; border-radius: 10px; overflow: hidden; max-width: 96vw; max-height: 92vh; display: flex; flex-direction: column; }
+.cpc-lb-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.7rem 1rem; border-bottom: 1px solid #eef0f3; font-size: 13px; font-weight: 700; color: #1e293b; }
+.cpc-lb-x { background: 0; border: 0; font-size: 22px; line-height: 1; color: #64748b; cursor: pointer; }
+.cpc-lb-img { max-width: 90vw; max-height: 80vh; object-fit: contain; background: #fff; display: block; }
 </style>

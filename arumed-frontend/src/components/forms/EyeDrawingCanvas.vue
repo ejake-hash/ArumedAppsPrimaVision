@@ -61,9 +61,80 @@ const SVG_ANTERIOR = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 3
   </g>
 </svg>`
 
+// Fundus dengan panduan kuadran + jam (peta ablasio/robekan retina).
+const SVG_FUNDUS4 = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 300'>
+  <rect width='360' height='300' fill='#fff'/>
+  <ellipse cx='180' cy='150' rx='140' ry='134' fill='#fdf1e9' stroke='#d8b39a' stroke-width='2'/>
+  <g stroke='#e6c9b6' stroke-width='1' stroke-dasharray='4 4'>
+    <line x1='40' y1='150' x2='320' y2='150'/>
+    <line x1='180' y1='16' x2='180' y2='284'/>
+    <line x1='81' y1='51' x2='279' y2='249'/>
+    <line x1='279' y1='51' x2='81' y2='249'/>
+  </g>
+  <circle cx='180' cy='150' r='70' fill='none' stroke='#e6c9b6' stroke-width='1' stroke-dasharray='3 3'/>
+  <ellipse cx='232' cy='150' rx='19' ry='23' fill='#ffe2c4' stroke='#c8895a' stroke-width='1.5'/>
+  <circle cx='150' cy='150' r='15' fill='none' stroke='#b06a4a' stroke-width='1' stroke-dasharray='3 3'/>
+  <circle cx='150' cy='150' r='2.5' fill='#9c4f30'/>
+  <g font-family='Arial' font-size='11' fill='#b98a6e' text-anchor='middle'>
+    <text x='180' y='31'>12</text><text x='180' y='278'>6</text>
+    <text x='311' y='154'>3</text><text x='49' y='154'>9</text>
+  </g>
+</svg>`
+
+// Kelopak mata (tampak depan) — lesi kelopak/kalazion/entropion, kanalikuli & pungtum.
+const SVG_EYELID = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 300'>
+  <rect width='360' height='300' fill='#fff'/>
+  <path d='M44 150 Q180 66 316 150 Q180 234 44 150 Z' fill='#fdf6f4' stroke='#cf9f9a' stroke-width='2'/>
+  <path d='M70 128 Q180 74 290 128' fill='none' stroke='#e6bdb8' stroke-width='1.2'/>
+  <path d='M74 172 Q180 208 286 172' fill='none' stroke='#e6bdb8' stroke-width='1'/>
+  <circle cx='180' cy='150' r='44' fill='#eef4f7' stroke='#8fb0c0' stroke-width='1.5'/>
+  <circle cx='180' cy='150' r='17' fill='#dbe6ec' stroke='#5d7a89' stroke-width='1.2'/>
+  <path d='M44 150 q16 -4 22 0 q-6 4 -22 0 Z' fill='#f6dcd6' stroke='#cf9f9a' stroke-width='1'/>
+  <circle cx='68' cy='140' r='1.8' fill='#c99'/>
+  <circle cx='68' cy='160' r='1.8' fill='#c99'/>
+  <g stroke='#cf9f9a' stroke-width='1'>
+    <line x1='110' y1='97' x2='106' y2='86'/><line x1='140' y1='85' x2='137' y2='73'/>
+    <line x1='180' y1='80' x2='180' y2='67'/><line x1='220' y1='85' x2='223' y2='73'/>
+    <line x1='250' y1='97' x2='254' y2='86'/>
+  </g>
+</svg>`
+
+// Kornea (potongan sagital) — kedalaman lesi: epitel → stroma → endotel + BMD & lensa.
+const SVG_CORNEA = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 300'>
+  <rect width='360' height='300' fill='#fff'/>
+  <path d='M50 152 Q180 42 310 152' fill='none' stroke='#8fb0c0' stroke-width='2'/>
+  <path d='M56 152 Q180 58 304 152' fill='none' stroke='#c4d6df' stroke-width='1'/>
+  <path d='M64 152 Q180 78 296 152' fill='none' stroke='#c4d6df' stroke-width='1'/>
+  <path d='M70 152 Q180 92 290 152' fill='none' stroke='#8fb0c0' stroke-width='1.3'/>
+  <line x1='60' y1='154' x2='150' y2='154' stroke='#7fa0b0' stroke-width='2'/>
+  <line x1='210' y1='154' x2='300' y2='154' stroke='#7fa0b0' stroke-width='2'/>
+  <path d='M150 154 Q180 134 210 154 Q180 176 150 154 Z' fill='#eef4f7' stroke='#5d7a89' stroke-width='1.3'/>
+  <g font-family='Arial' font-size='8.5' fill='#8fb0c0'>
+    <text x='300' y='146'>epitel</text><text x='300' y='168'>endotel</text>
+  </g>
+</svg>`
+
+// Gonioskopi (sudut bilik mata depan) — struktur sudut untuk glaukoma.
+const SVG_GONIO = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 300'>
+  <rect width='360' height='300' fill='#fff'/>
+  <path d='M40 66 L300 150 L40 120 Z' fill='#f4f9fb' stroke='#9bb7c4' stroke-width='1.5'/>
+  <path d='M40 234 L300 150 L40 180 Z' fill='#eef2f0' stroke='#a9b7ab' stroke-width='1.5'/>
+  <line x1='150' y1='130' x2='300' y2='150' stroke='#7fa0b0' stroke-width='1' stroke-dasharray='3 3'/>
+  <line x1='206' y1='140' x2='300' y2='150' stroke='#cfe0e8' stroke-width='6' stroke-linecap='round'/>
+  <line x1='240' y1='158' x2='300' y2='150' stroke='#c8a06a' stroke-width='2.5'/>
+  <g font-family='Arial' font-size='9'>
+    <text x='118' y='95' fill='#8fb0c0'>Kornea</text>
+    <text x='118' y='214' fill='#9aa89c'>Iris</text>
+    <text x='196' y='150' fill='#6b8b9b' text-anchor='end'>sudut</text>
+  </g>
+</svg>`
+
 const SVG_BLANK = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 300'><rect width='360' height='300' fill='#fff'/></svg>`
 
-const TEMPLATES = { fundus: SVG_FUNDUS, anterior: SVG_ANTERIOR, blank: SVG_BLANK }
+const TEMPLATES = {
+  fundus: SVG_FUNDUS, fundus4: SVG_FUNDUS4, anterior: SVG_ANTERIOR,
+  eyelid: SVG_EYELID, cornea: SVG_CORNEA, gonio: SVG_GONIO, blank: SVG_BLANK,
+}
 
 function bgUri(tpl) {
   const svg = TEMPLATES[tpl] ?? SVG_BLANK
@@ -185,7 +256,11 @@ defineExpose({ clear, undo, isEmpty, capture, setTemplate })
       <span class="edc-eye">{{ eyeLabel }}</span>
       <select v-if="!disabled" class="edc-tpl" :value="curTemplate" @change="setTemplate($event.target.value)">
         <option value="fundus">Fundus</option>
+        <option value="fundus4">Fundus (Kuadran/Jam)</option>
         <option value="anterior">Segmen Anterior</option>
+        <option value="eyelid">Kelopak Mata</option>
+        <option value="cornea">Kornea (Potongan)</option>
+        <option value="gonio">Gonioskopi</option>
         <option value="blank">Kosong</option>
       </select>
     </div>

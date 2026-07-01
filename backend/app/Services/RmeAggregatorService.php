@@ -299,7 +299,9 @@ class RmeAggregatorService
         $soap = Visit::with(['doctorExamination', 'doctorSchedule.employee'])
             ->whereHas('doctorExamination', fn ($q) => $q->where(function ($w) {
                 $w->whereNotNull('soap_subjective')->orWhereNotNull('soap_objective')
-                  ->orWhereNotNull('soap_assessment')->orWhereNotNull('soap_plan');
+                  ->orWhereNotNull('soap_assessment')->orWhereNotNull('soap_plan')
+                  // Sketsa mata = temuan tersendiri: tampilkan di timeline walau SOAP kosong.
+                  ->orWhereNotNull('eye_drawings');
             }))
             ->where('patient_id', $patientId)
             ->get()
@@ -322,6 +324,9 @@ class RmeAggregatorService
                     ],
                     'diagnosis'      => $de->diagnosis_utama,
                     'diagnosis_nama' => $de->diagnosis_utama ? $this->icd10Name($de->diagnosis_utama) : null,
+                    // Thumbnail sketsa mata (OD/OS) di timeline CPPT — hanya png_base64
+                    // (vektor `strokes` yang berat dibuang; hanya perlu display).
+                    'eye_drawings'   => $this->eyeDrawingThumbs($de->eye_drawings),
                     'is_finalized'   => (bool) $de->is_finalized,
                 ];
             });
@@ -777,6 +782,24 @@ class RmeAggregatorService
     {
         return $v->doctorExamination?->doctor?->name
             ?? $v->doctorSchedule?->employee?->name;
+    }
+
+    /**
+     * Ramping-kan sketsa mata untuk THUMBNAIL timeline CPPT: pertahankan hanya
+     * `png_base64` per mata (buang vektor `strokes` yang berat — hanya diperlukan
+     * saat edit di Tab Pemeriksaan, bukan untuk tampil). null bila kedua mata kosong.
+     */
+    private function eyeDrawingThumbs($raw): ?array
+    {
+        if (!is_array($raw)) {
+            return null;
+        }
+        $pick = fn ($eye) => (is_array($eye) && !empty($eye['png_base64']))
+            ? ['png_base64' => $eye['png_base64']]
+            : null;
+        $od = $pick($raw['od'] ?? null);
+        $os = $pick($raw['os'] ?? null);
+        return ($od || $os) ? ['od' => $od, 'os' => $os] : null;
     }
 
     /** Format resep kacamata: "-1.50 / -0.75 x 180 Add +2.00" (kosong → null). */
