@@ -214,11 +214,13 @@ class RanapController extends Controller
             'items.*.route'         => 'nullable|string|max:100',
             'items.*.instructions'  => 'nullable|string|max:255',
             'pharmacy_note'         => 'nullable|string|max:500',
+            // Cara serah: DELIVER=antar ke kamar (default) / PICKUP=ambil di farmasi.
+            'fulfillment_mode'      => 'nullable|in:DELIVER,PICKUP',
         ]);
 
         try {
             $visit        = Visit::findOrFail($visitId);
-            $prescription = $this->service->createMedicationRequest($visit, $data['items'], $data['pharmacy_note'] ?? null);
+            $prescription = $this->service->createMedicationRequest($visit, $data['items'], $data['pharmacy_note'] ?? null, $data['fulfillment_mode'] ?? null);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }
@@ -622,6 +624,8 @@ class RanapController extends Controller
             'obat_pulang.*.duration_days' => 'nullable|integer|min:1',
             'obat_pulang.*.instructions'  => 'nullable|string',
             'obat_pulang.*.notes'         => 'nullable|string',
+            // Cara serah obat pulang: DELIVER=antar ke kamar / PICKUP=ambil di loket.
+            'obat_pulang_delivery'        => 'nullable|in:DELIVER,PICKUP',
         ]);
 
         try {
@@ -633,6 +637,7 @@ class RanapController extends Controller
                 $data['follow_up_date'] ?? null,
                 $data['follow_up_reason'] ?? null,
                 $data['obat_pulang'] ?? [],
+                $data['obat_pulang_delivery'] ?? null,
             );
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);

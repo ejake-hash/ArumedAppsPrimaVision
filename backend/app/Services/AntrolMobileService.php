@@ -101,6 +101,16 @@ class AntrolMobileService
 
         try {
             return DB::transaction(function () use ($data, $sched, $tanggal, $patient) {
+            // Serialize penomoran antrean per (room, tanggal) via advisory lock scoped
+            // transaksi: nextDoctorSequence membaca MAX(angka) TANPA lock, sehingga dua
+            // booking konkuren (endpoint publik BPJS) bisa dapat nomor KEMBAR. Lock ini
+            // membuat pembacaan MAX + INSERT atomik lintas request (juga aman utk booking
+            // pertama hari itu, beda dgn range-lock baris yang butuh baris eksisting).
+            // Hanya di Postgres (prod); no-op di SQLite (test) yang tak punya advisory lock.
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                DB::selectOne('SELECT pg_advisory_xact_lock(hashtext(?)) AS l', ["antrol_daftar:{$sched->room}:{$tanggal}"]);
+            }
+
             // Cegah double-booking aktif untuk NIK + dokter + tanggal yang sama.
             // Cek eksplisit ini memberi pesan ramah pada kasus normal; jaring pengaman
             // ATOMIK terhadap race ada di partial unique index DB (antrean_bookings_
@@ -271,6 +281,17 @@ class AntrolMobileService
     private function materializeVisit(AntreanBooking $booking): Visit
     {
         return DB::transaction(function () use ($booking) {
+            // Idempotensi: /checkin dipanggil BPJS Mobile JKN yang RETRY saat timeout.
+            // Kunci booking & cek ulang di bawah lock — bila sudah ter-materialize,
+            // kembalikan Visit yang ADA (jangan buat Visit + antrean + reportTask ganda).
+            $booking = AntreanBooking::whereKey($booking->getKey())->lockForUpdate()->first() ?? $booking;
+            if ($booking->visit_id) {
+                $existing = Visit::find($booking->visit_id);
+                if ($existing) {
+                    return $existing;
+                }
+            }
+
             // Bawa nomor referensi dari booking ke visit agar tak hilang saat terbit
             // SEP. jeniskunjungan BPJS Antrean: '3'=Kontrol → no_surat_kontrol;
             // selain itu (rujukan FKTP/antar-RS) → no_rujukan.
@@ -446,6 +467,12 @@ class AntrolMobileService
 
         try {
             $booking = DB::transaction(function () use ($sched, $tanggal, $patient, $nik, $kartu, $noRujuk) {
+                // Serialize penomoran per (room, tanggal) — lihat catatan di ambilAntrean.
+                // Cegah nomor kembar antar booking onsite/Mobile-JKN konkuren.
+                if (DB::connection()->getDriverName() === 'pgsql') {
+                    DB::selectOne('SELECT pg_advisory_xact_lock(hashtext(?)) AS l', ["antrol_daftar:{$sched->room}:{$tanggal}"]);
+                }
+
                 if ($nik !== '') {
                     $dup = AntreanBooking::where('nik', $nik)
                         ->where('doctor_schedule_id', $sched->id)

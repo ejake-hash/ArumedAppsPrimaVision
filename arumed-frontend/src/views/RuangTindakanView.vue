@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ruangTindakanApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
+import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can('ruang_tindakan.write'))
@@ -14,6 +15,11 @@ const board = ref([])
 const loading = ref(false)
 const selId = ref(null)
 const sel = computed(() => board.value.find(p => p.id === selId.value) || null)
+
+// Dokumen RM (Form Registry, station "bedah" — RuangTindakan reuse infra Bedah).
+// Tombol di header detail → modal FormDocsBrowser (pola BedahView/RawatInapView).
+const showRmDocs = ref(false)
+function openRmDocs() { if (sel.value?.visit?.id) showRmDocs.value = true }
 
 // ─── Filter antrean (gaya BedahView/PerawatView) ───────────────────────────────
 const qPrimaryFilter   = ref('waiting')   // 'waiting' | 'active' | 'done'
@@ -489,6 +495,10 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             <div class="dt-tags">
               <span class="tag">{{ sel.schedule?.package?.name || 'Tindakan Laser' }}</span>
               <span v-if="sel.visit?.diagnosa" class="tag tag-dx">{{ sel.visit.diagnosa }}</span>
+              <button v-if="sel.visit?.id" class="rt-docbtn" @click="openRmDocs" title="Dokumen Rekam Medis (laporan tindakan, persetujuan)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Dokumen RM
+              </button>
             </div>
           </div>
 
@@ -559,9 +569,27 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
               Tagihan diteruskan otomatis ke Kasir saat tindakan selesai.
             </div>
 
+            <!-- Obat yang SUDAH diresepkan dokter (read-only) → cegah input dobel -->
+            <div v-if="sel.resep_dokter?.length" class="fg">
+              <label>Sudah Diresepkan Dokter <span class="opt">(otomatis diverifikasi Farmasi — jangan input ulang)</span></label>
+              <table class="resep-tbl ro">
+                <thead><tr><th>Obat</th><th>Jml</th><th>Dosis</th><th>Frekuensi</th><th>Hari</th></tr></thead>
+                <tbody>
+                  <tr v-for="(it, i) in sel.resep_dokter" :key="'rd' + i">
+                    <td class="nm">{{ it.name }}</td>
+                    <td>{{ it.quantity ?? '—' }}</td>
+                    <td>{{ it.dose || '—' }}</td>
+                    <td>{{ it.frequency || '—' }}</td>
+                    <td>{{ it.duration_days ?? '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="rd-note">Obat di atas ditulis dokter &amp; akan masuk Verifikasi Farmasi otomatis saat tindakan selesai. Isi kotak di bawah <b>hanya bila ada obat tambahan</b>.</p>
+            </div>
+
             <!-- Resep obat pulang → Farmasi (setelah Kasir) -->
             <div class="fg">
-              <label>Resep Obat Pulang <span class="opt">(opsional → Farmasi setelah Kasir)</span></label>
+              <label>{{ sel.resep_dokter?.length ? 'Obat Tambahan' : 'Resep Obat Pulang' }} <span class="opt">(opsional → Farmasi setelah Kasir)</span></label>
               <div class="obat-search">
                 <input v-model="obatSearch" class="inp" placeholder="Cari obat (nama/kode)…" @input="searchObat" />
                 <div v-if="obatOptions.length" class="obat-drop">
@@ -648,6 +676,33 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- MODAL DOKUMEN RM (Form Registry, station "bedah") — laporan tindakan & persetujuan -->
+    <div v-if="showRmDocs && sel?.visit?.id" class="rt-docs-bg" @click.self="showRmDocs = false">
+      <div class="rt-docs-modal">
+        <div class="rt-docs-hd">
+          <h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Dokumen Rekam Medis — {{ sel.patient?.name }}
+          </h3>
+          <button class="rt-docs-close" @click="showRmDocs = false" aria-label="Tutup">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="rt-docs-body">
+          <p class="rt-docs-hint">Persetujuan tindakan &amp; laporan tindakan (laser). Diisi via UI → dokumen resmi ber-TTD, ditinjau di TTD Dokumen. Identitas & temuan terisi otomatis dari data tindakan.</p>
+          <FormDocsBrowser
+            :visit-id="sel.visit.id"
+            :patient-id="sel.patient?.id || null"
+            station="bedah"
+            :sections="[
+              { key: 'consent_operasi', label: 'Persetujuan Tindakan' },
+              { key: 'laporan_operasi', label: 'Laporan Tindakan' },
+            ]"
+          />
+        </div>
       </div>
     </div>
 
@@ -752,6 +807,22 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .dt-tags { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; }
 .tag { background: #f1f5f9; color: #334155; font-size: 0.72rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
 .tag-dx { background: #e0f2fe; color: #0369a1; }
+/* Tombol Dokumen RM di header detail (pola BedahView "Dokumen RM"). */
+.rt-docbtn { display: inline-flex; align-items: center; gap: 6px; margin-top: 2px; padding: 5px 11px; border: 1px solid #bae6fd; border-radius: 8px; background: #f0f9ff; color: #0369a1; font-size: 0.76rem; font-weight: 700; cursor: pointer; transition: background .15s, border-color .15s; }
+.rt-docbtn:hover { background: #e0f2fe; border-color: #7dd3fc; }
+.rt-docbtn svg { width: 14px; height: 14px; }
+
+/* Modal Dokumen RM — z-index < 1000 agar editor FormRMRenderer (Teleport, z 1000) di atas. */
+.rt-docs-bg { position: fixed; inset: 0; z-index: 900; background: rgba(15, 23, 42, 0.5); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.rt-docs-modal { background: #fff; border-radius: 14px; width: min(760px, 100%); max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25); overflow: hidden; }
+.rt-docs-hd { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #f1f5f9; }
+.rt-docs-hd h3 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 1rem; font-weight: 700; color: #0E3A66; }
+.rt-docs-hd svg { width: 18px; height: 18px; color: #1FAAE0; }
+.rt-docs-close { border: none; background: none; color: #94a3b8; cursor: pointer; padding: 4px; border-radius: 6px; display: inline-flex; }
+.rt-docs-close:hover { background: #f1f5f9; color: #334155; }
+.rt-docs-close svg { width: 18px; height: 18px; }
+.rt-docs-body { padding: 16px 18px 20px; overflow-y: auto; }
+.rt-docs-hint { margin: 0 0 12px; font-size: 0.78rem; color: #64748b; line-height: 1.5; }
 
 .preop-box { display: flex; gap: 16px; flex-wrap: wrap; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 12px; font-size: 0.8rem; color: #475569; margin-bottom: 14px; }
 
@@ -796,6 +867,11 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .resep-tbl td:nth-child(5) { width: 64px; }
 .rm-btn { border: none; background: none; color: #dc2626; cursor: pointer; font-size: 0.85rem; padding: 2px 6px; }
 .rm-btn:hover { color: #b91c1c; }
+/* Panel resep dokter (read-only): dibedakan visual dari kotak input tambahan. */
+.resep-tbl.ro { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; }
+.resep-tbl.ro th { padding-left: 10px; padding-right: 10px; }
+.resep-tbl.ro td { padding-left: 10px; padding-right: 10px; color: #334155; }
+.rd-note { margin: 7px 2px 0; font-size: 0.74rem; color: #64748b; line-height: 1.45; }
 
 /* Tabs */
 .rt-tabs { display: flex; gap: 4px; border-bottom: 1px solid #e2e8f0; margin-bottom: 16px; }

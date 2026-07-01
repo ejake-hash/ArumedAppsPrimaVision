@@ -133,14 +133,20 @@ class InventoryStockService
      *
      * @return list<array{batch_no:?string,expiry_date:mixed,qty:float}> batch yg dipakai
      */
-    public function consume(string $type, string $itemId, float $qty, string $location = InventoryStock::LOC_INVENTORI): array
+    /**
+     * @param bool $excludeExpired  TRUE (default) untuk jalur DISPENSING/konsumsi ke
+     *   pasien: batch kedaluwarsa dilewati (keselamatan pasien). FALSE untuk jalur
+     *   pergerakan stok murni yang WAJIB memotong batch apa pun kondisinya — mis.
+     *   terima retur unit barang rusak/kedaluwarsa (UnitReturnService::removeUnitStock).
+     */
+    public function consume(string $type, string $itemId, float $qty, string $location = InventoryStock::LOC_INVENTORI, bool $excludeExpired = true): array
     {
         if ($qty <= 0) return [];
 
         // Bungkus transaksi sendiri agar lockForUpdate atomik walau dipanggil
         // standalone (di luar transfer()). DB::transaction nested = savepoint,
         // jadi aman dipanggil dari dalam transaksi pemanggil juga.
-        return DB::transaction(function () use ($type, $itemId, $qty, $location) {
+        return DB::transaction(function () use ($type, $itemId, $qty, $location, $excludeExpired) {
             $remaining = $qty;
             $used = [];
 
@@ -148,6 +154,17 @@ class InventoryStockService
                 ->where('item_id', $itemId)
                 ->where('location', $location)
                 ->where('qty_on_hand', '>', 0)
+                // Keselamatan pasien: JANGAN dispensing batch yang sudah kedaluwarsa.
+                // FEFO mengurutkan expiry paling awal duluan → tanpa filter ini justru
+                // batch kedaluwarsa yang keluar lebih dulu. Batch tanpa tanggal (NULL)
+                // tetap boleh; batch kedaluwarsa harus di-quarantine/transfer fresh dulu.
+                // Dilewati saat $excludeExpired=false (jalur retur barang rusak/expired).
+                ->when($excludeExpired, function ($query) {
+                    $query->where(function ($q) {
+                        $q->whereNull('expiry_date')
+                          ->orWhereDate('expiry_date', '>=', now('Asia/Jakarta')->toDateString());
+                    });
+                })
                 ->orderByRaw('expiry_date IS NULL, expiry_date ASC')
                 ->lockForUpdate()
                 ->get();

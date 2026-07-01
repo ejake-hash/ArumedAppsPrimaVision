@@ -144,6 +144,8 @@ const dischargeForm = ref({ discharge_type: 'PULANG_SEHAT', summary: '', follow_
 const obatPulangList = ref([])           // [{ medication_id, name, quantity, dose, frequency, route, duration_days }]
 const obatPulangSearch = ref('')
 const obatPulangOptions = ref([])        // hasil pencarian obat + harga
+// Cara serah obat pulang: DELIVER=antar ke kamar (tab Dispensing Ranap) / PICKUP=ambil di loket Farmasi.
+const obatPulangDelivery = ref('DELIVER')
 
 // Checklist kesiapan pulang (advisory, mengikuti isian form discharge — bukan blokir keras).
 const dischargeChecklist = computed(() => {
@@ -165,6 +167,7 @@ async function openDischarge(p) {
   obatPulangList.value = []
   obatPulangSearch.value = ''
   obatPulangOptions.value = []
+  obatPulangDelivery.value = 'DELIVER'
   showDischarge.value = true
   // Prefetch obat awal (tanpa keyword) supaya dropdown tidak kosong.
   try {
@@ -212,11 +215,12 @@ async function submitDischarge() {
         route: o.route || null,
         duration_days: o.duration_days || null,
       }))
+      payload.obat_pulang_delivery = obatPulangDelivery.value
     }
     const dischargedVisitId = dischargePt.value.visit_id
     await store.discharge(dischargedVisitId, payload)
     let msg = 'Pasien dipulangkan → kasir'
-    if (obatPulangList.value.length) msg += ' (obat pulang → farmasi)'
+    if (obatPulangList.value.length) msg += obatPulangDelivery.value === 'DELIVER' ? ' (obat pulang → antar ke kamar)' : ' (obat pulang → ambil di farmasi)'
     if (dischargePt.value?.guarantor_type === 'BPJS' && dischargeForm.value.follow_up_date) msg += ' (Surat Kontrol → BPJS)'
     notify(msg); showDischarge.value = false
     // Tutup panel detail: pasien sudah keluar dari `aktif`, tapi `detailVisitId`/
@@ -673,6 +677,8 @@ async function removeCharge(c) {
 const permintaanList = ref([])
 const reqPick = ref({ medication_id: '', quantity: 1, dose: '', frequency: '2×/hari', route: 'Oral', duration: '', instructions: '' })
 const reqCart = ref([])
+// Cara serah permintaan obat harian: DELIVER=antar ke kamar (default) / PICKUP=keluarga ambil di loket Farmasi.
+const reqDelivery = ref('DELIVER')
 
 async function loadPermintaan() {
   if (!detailVisitId.value) return
@@ -718,9 +724,11 @@ async function submitPermintaan() {
         // Durasi digabung ke instructions (backend simpan dose/frequency/route/instructions).
         instructions:  [x.duration ? `Selama ${x.duration}` : '', x.instructions || ''].filter(Boolean).join(' · ') || null,
       })),
+      fulfillment_mode: reqDelivery.value,
     })
-    notify('Permintaan obat dikirim ke Farmasi')
+    notify(reqDelivery.value === 'DELIVER' ? 'Permintaan obat dikirim ke Farmasi (antar ke kamar)' : 'Permintaan obat dikirim ke Farmasi (ambil di loket)')
     reqCart.value = []
+    reqDelivery.value = 'DELIVER'
     await loadPermintaan()
   } catch (e) {
     notify(e.response?.data?.message ?? 'Gagal mengirim permintaan', false)
@@ -1244,6 +1252,26 @@ const statusPill = (s) => ({
             </tbody>
           </table>
           <p v-else class="muted">Belum ada obat pulang.</p>
+
+          <!-- Cara serah obat pulang (hanya bila ada obat) -->
+          <div v-if="obatPulangList.length" class="serah-mode">
+            <span class="serah-mode-label">Cara serah obat pulang</span>
+            <div class="serah-mode-opts">
+              <label :class="['serah-opt', obatPulangDelivery === 'DELIVER' ? 'on' : '']">
+                <input type="radio" value="DELIVER" v-model="obatPulangDelivery" />
+                <span>🛏️ Antar ke Kamar</span>
+              </label>
+              <label :class="['serah-opt', obatPulangDelivery === 'PICKUP' ? 'on' : '']">
+                <input type="radio" value="PICKUP" v-model="obatPulangDelivery" />
+                <span>🏪 Ambil di Farmasi</span>
+              </label>
+            </div>
+            <p class="muted2" style="margin-top:6px">
+              {{ obatPulangDelivery === 'DELIVER'
+                ? 'Obat masuk tab Dispensing Rawat Inap Farmasi lalu diantar ke kamar (pasien tak mampir loket).'
+                : 'Obat masuk antrean loket Farmasi — pasien/keluarga mengambil setelah kasir.' }}
+            </p>
+          </div>
         </fieldset>
 
         <div class="modal-actions">
@@ -1266,12 +1294,12 @@ const statusPill = (s) => ({
             <thead>
               <tr>
                 <th style="width:46px">No.</th><th>Pasien</th><th>No. RM</th><th>Penjamin</th>
-                <th>Kamar / Bed</th><th>Kelas</th><th>Masuk</th><th>Lama Rawat</th><th class="c">Aksi</th>
+                <th>Kamar / Bed</th><th>Kelas</th><th>Paket Bedah</th><th>Masuk</th><th>Lama Rawat</th><th class="c">Aksi</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!store.aktif.length"><td colspan="9" class="po-state">Tidak ada pasien rawat inap aktif.</td></tr>
-              <tr v-else-if="!filteredAktif.length"><td colspan="9" class="po-state">Tak ada pasien cocok “{{ aktifSearch }}”.</td></tr>
+              <tr v-if="!store.aktif.length"><td colspan="10" class="po-state">Tidak ada pasien rawat inap aktif.</td></tr>
+              <tr v-else-if="!filteredAktif.length"><td colspan="10" class="po-state">Tak ada pasien cocok “{{ aktifSearch }}”.</td></tr>
               <tr v-for="(p, i) in filteredAktif" :key="p.visit_id" class="ri-row" @click="openDetail(p.visit_id)">
                 <td class="muted">{{ i + 1 }}</td>
                 <td>
@@ -1283,6 +1311,11 @@ const statusPill = (s) => ({
                 <td><span class="pill pill-gray">{{ p.guarantor_type }}</span></td>
                 <td>{{ p.room }} / {{ p.bed }}</td>
                 <td>{{ p.kelas_rawat_hak }}</td>
+                <td>
+                  <span v-if="p.surgery_package" :title="p.surgery_package_code ? ('Kode: ' + p.surgery_package_code) : ''">{{ p.surgery_package }}</span>
+                  <span v-else-if="p.has_surgery_schedule" class="pill pill-warning" title="Terjadwal operasi — paket belum dipilih">Belum ada paket</span>
+                  <span v-else class="muted">—</span>
+                </td>
                 <td class="muted">{{ fmt(p.admission_at) }}</td>
                 <td class="muted">{{ losText(p.admission_at) }}</td>
                 <td class="c"><button class="btn btn-sm btn-primary" @click.stop="openDetail(p.visit_id)">Buka</button></td>
@@ -1557,6 +1590,19 @@ const statusPill = (s) => ({
                   </tr>
                 </tbody>
               </table>
+              <div v-if="reqCart.length" class="serah-mode">
+                <span class="serah-mode-label">Cara serah</span>
+                <div class="serah-mode-opts">
+                  <label :class="['serah-opt', reqDelivery === 'DELIVER' ? 'on' : '']">
+                    <input type="radio" value="DELIVER" v-model="reqDelivery" />
+                    <span>🛏️ Antar ke Kamar</span>
+                  </label>
+                  <label :class="['serah-opt', reqDelivery === 'PICKUP' ? 'on' : '']">
+                    <input type="radio" value="PICKUP" v-model="reqDelivery" />
+                    <span>🏪 Ambil di Farmasi</span>
+                  </label>
+                </div>
+              </div>
               <div class="req-actions">
                 <button class="btn btn-sm btn-primary" :disabled="busy || !reqCart.length" @click="submitPermintaan">Kirim ke Farmasi</button>
               </div>
@@ -2005,6 +2051,13 @@ const statusPill = (s) => ({
 .req-fields input { height: 30px; padding: 0 8px; border: 1px solid var(--gb); border-radius: 6px; font-size: 12px; font-family: inherit; color: var(--td); background: var(--bc); flex: 1; min-width: 90px; }
 .req-fields input:focus { outline: none; border-color: var(--ga); }
 .req-actions { margin-top: .5rem; }
+/* Segmented toggle "Cara serah" (Antar ke Kamar / Ambil di Farmasi) */
+.serah-mode { margin-top: .6rem; }
+.serah-mode-label { display: block; font-size: .74rem; font-weight: 600; color: var(--tm); margin-bottom: .3rem; }
+.serah-mode-opts { display: inline-flex; gap: .4rem; flex-wrap: wrap; }
+.serah-opt { display: inline-flex; align-items: center; gap: .35rem; padding: .32rem .6rem; border: 1px solid var(--gb); border-radius: 8px; font-size: .8rem; color: var(--td); cursor: pointer; background: var(--cb, #fff); transition: all .12s; }
+.serah-opt input { accent-color: #1FAAE0; margin: 0; }
+.serah-opt.on { border-color: #1FAAE0; background: rgba(31,170,224,.1); color: #0E3A66; font-weight: 600; }
 .bill { width: 100%; border-collapse: collapse; margin: .5rem 0; }
 .bill th, .bill td { border-bottom: 1px solid var(--gb); padding: .4rem; font-size: .8rem; color: var(--td); text-align: left; }
 .bill th { background: var(--bs); color: var(--tm); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: .03em; }

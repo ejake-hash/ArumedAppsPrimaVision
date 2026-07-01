@@ -963,6 +963,113 @@ async function cetakRincian() {
 }
 
 function rupiah(v) { return 'Rp ' + Number(v ?? 0).toLocaleString('id-ID') }
+
+// ═══ OBAT BEBAS — pembayaran di Kasir (handoff dari Farmasi) ═══════════════════
+// PharmacySale berdiri sendiri (tanpa Visit). Kasir menutup pembayaran → kwitansi
+// A5 dicetak lewat window terpisah (tak memakai KwitansiPrintDoc yg berbasis visit).
+const obList    = ref([])
+const obLoading = ref(false)
+const obSel     = ref(null)
+const obPay     = ref('CASH')
+const obPaid    = ref(0)
+const obSaving  = ref(false)
+const obChange  = computed(() => Math.max(0, Number(obPaid.value || 0) - Number(obSel.value?.total || 0)))
+const obCount   = computed(() => obList.value.length)
+
+async function loadObatBebas() {
+  obLoading.value = true
+  try {
+    const { data } = await kasirApi.obatBebasList()
+    obList.value = data.data ?? []
+    if (obSel.value) obSel.value = obList.value.find((s) => s.id === obSel.value.id) || null
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat tagihan obat bebas')
+  } finally { obLoading.value = false }
+}
+
+function obPick(s) {
+  obSel.value = s
+  obPay.value = 'CASH'
+  obPaid.value = Number(s.total || 0)   // prefill uang pas
+}
+
+async function obSettle() {
+  if (!obSel.value || obSaving.value) return
+  if (Number(obPaid.value || 0) < Number(obSel.value.total || 0)) { toast('w', 'Uang dibayar kurang dari total'); return }
+  obSaving.value = true
+  try {
+    await kasirApi.obatBebasBayar(obSel.value.id, { payment_method: obPay.value, paid_amount: Number(obPaid.value || 0) })
+    toast('s', `Pembayaran ${obSel.value.sale_number} berhasil`)
+    await printKwitansiObatBebas(obSel.value.id)
+    obSel.value = null
+    loadObatBebas()
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memproses pembayaran')
+  } finally { obSaving.value = false }
+}
+
+async function printKwitansiObatBebas(id) {
+  try {
+    const { data } = await kasirApi.obatBebasKwitansi(id)
+    renderKwitansiObatBebas(data.data)
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat data kwitansi')
+  }
+}
+
+function renderKwitansiObatBebas(d) {
+  if (!d?.sale) return
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  const rpv = (v) => 'Rp ' + Number(v ?? 0).toLocaleString('id-ID')
+  const s = d.sale, c = d.clinic || {}
+  const rows = (d.items || []).map((it) =>
+    `<tr><td>${esc(it.medication_name)}</td><td class="c">${it.quantity}</td><td class="r">${rpv(it.unit_price)}</td><td class="r">${rpv(it.total_price)}</td></tr>`).join('')
+  const dt = s.settled_at || s.created_at
+  const dtStr = dt ? new Date(dt).toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
+  const html = `<html><head><title>Kwitansi ${esc(s.sale_number)}</title><style>
+    @page { size: A5; margin: 10mm; }
+    * { font-family: Arial, Helvetica, sans-serif; color:#000; box-sizing:border-box; }
+    body { font-size: 11px; margin:0; }
+    .kop { text-align:center; border-bottom:2px solid #0E3A66; padding-bottom:6px; margin-bottom:10px; }
+    .kop h1 { font-size:15px; color:#0E3A66; margin:0; }
+    .kop div { font-size:9px; color:#333; }
+    .title { text-align:center; font-weight:700; font-size:13px; letter-spacing:.05em; margin:8px 0; }
+    .meta { display:flex; justify-content:space-between; font-size:10px; margin-bottom:4px; }
+    table { width:100%; border-collapse:collapse; margin-top:6px; }
+    th,td { border-bottom:1px solid #ccc; padding:3px 4px; text-align:left; }
+    th { background:#f0f4f8; font-size:9.5px; text-transform:uppercase; }
+    td.r,th.r { text-align:right; } td.c,th.c { text-align:center; }
+    .sum { margin-top:8px; margin-left:auto; width:58%; }
+    .sum .row { display:flex; justify-content:space-between; padding:2px 0; }
+    .sum .grand { border-top:1px solid #000; font-weight:700; font-size:12px; padding-top:3px; }
+    .ttd { margin-top:26px; text-align:right; font-size:10px; }
+    .ft { margin-top:14px; text-align:center; font-size:8.5px; color:#666; }
+  </style></head><body>
+    <div class="kop"><h1>${esc(c.name || 'RS Mata Prima Vision')}</h1>
+      ${c.address ? `<div>${esc(c.address)}</div>` : ''}${c.phone ? `<div>Telp: ${esc(c.phone)}</div>` : ''}</div>
+    <div class="title">KWITANSI PENJUALAN OBAT BEBAS</div>
+    <div class="meta"><div>No: <b>${esc(s.sale_number)}</b></div><div>${dtStr}</div></div>
+    <div class="meta"><div>Pembeli: ${esc(s.buyer_name || 'Umum')}${s.buyer_phone ? ' · ' + esc(s.buyer_phone) : ''}</div><div>Kasir: ${esc(s.settled_by || '—')}</div></div>
+    <table><thead><tr><th>Obat</th><th class="c">Qty</th><th class="r">Harga</th><th class="r">Subtotal</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="sum">
+      <div class="row"><span>Subtotal</span><span>${rpv(s.subtotal)}</span></div>
+      ${Number(s.discount) > 0 ? `<div class="row"><span>Diskon</span><span>- ${rpv(s.discount)}</span></div>` : ''}
+      <div class="row grand"><span>TOTAL</span><span>${rpv(s.total)}</span></div>
+      <div class="row"><span>Bayar (${esc(s.payment_method)})</span><span>${rpv(s.paid_amount)}</span></div>
+      <div class="row"><span>Kembalian</span><span>${rpv(s.change_amount)}</span></div>
+    </div>
+    <div class="ttd">Kasir,<br/><br/><br/>( ${esc(s.settled_by || '.................')} )</div>
+    <div class="ft">Kwitansi ini adalah bukti pembayaran yang sah. Terima kasih.</div>
+  </body></html>`
+  const w = window.open('', '_blank', 'width=620,height=820')
+  if (!w) { toast('w', 'Popup diblokir — izinkan popup untuk mencetak kwitansi.'); return }
+  w.document.write(html); w.document.close(); w.focus()
+  setTimeout(() => w.print(), 300)
+}
+
+// Muat antrean obat bebas saat tab dibuka.
+watch(pg, (v) => { if (v === 'obat-bebas') loadObatBebas() })
+
 function penjaminLabel(g) {
   const t = (g ?? '').toUpperCase()
   if (t === 'BPJS') return 'BPJS Kesehatan'
@@ -1165,7 +1272,9 @@ onMounted(() => {
   fetchHistory()
   fetchBillingCategories()
   fetchPrintSettings()
-  _poll = setInterval(fetchQueue, 8_000)
+  loadObatBebas()   // badge jumlah tagihan obat bebas terisi tanpa harus buka tabnya
+  // Poll antrean tagihan + antrean obat bebas → handoff Farmasi baru langsung terlihat.
+  _poll = setInterval(() => { fetchQueue(); loadObatBebas() }, 8_000)
   document.addEventListener('mousedown', onClickOutsideTindakan)
 })
 onUnmounted(() => {
@@ -1495,6 +1604,11 @@ const rincianSections = computed(() => {
           <button :class="['nt', pg === 'history' ? 'a' : '']" @click="pg = 'history'">
             <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
             History
+          </button>
+          <button :class="['nt', pg === 'obat-bebas' ? 'a' : '']" @click="pg = 'obat-bebas'">
+            <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+            Obat Bebas
+            <span v-if="obCount" class="nt-badge">{{ obCount }}</span>
           </button>
         </div>
 
@@ -2294,6 +2408,83 @@ const rincianSections = computed(() => {
             </div>
           </div>
         </div>
+
+        <!-- OBAT BEBAS (handoff Farmasi → Kasir) -->
+        <div v-if="pg === 'obat-bebas'" class="ob-wrap">
+          <div class="ob-head">
+            <div>
+              <div class="ob-title">Obat Bebas — Menunggu Pembayaran</div>
+              <div class="ob-subnote">Tagihan obat bebas yang dikirim Farmasi. Terima pembayaran lalu terbitkan kwitansi.</div>
+            </div>
+            <button class="btn btn-sm btn-secondary" :disabled="obLoading" @click="loadObatBebas">↻ Muat ulang</button>
+          </div>
+
+          <div class="ob-grid">
+            <!-- Daftar tagihan pending -->
+            <div class="ob-list">
+              <div v-if="obLoading && !obList.length" class="ob-empty">Memuat…</div>
+              <div v-for="s in obList" :key="s.id" :class="['ob-card', obSel && obSel.id === s.id ? 'a' : '']" @click="obPick(s)">
+                <div class="ob-card-top"><b>{{ s.sale_number }}</b><span>{{ fmtRp(s.total) }}</span></div>
+                <div class="ob-card-sub">{{ s.buyer_name || 'Umum' }} · {{ (s.items?.length || 0) }} item</div>
+                <div class="ob-card-meta">Petugas: {{ s.sold_by?.name || '—' }}</div>
+              </div>
+              <div v-if="!obLoading && !obList.length" class="ob-empty">Tidak ada tagihan obat bebas.</div>
+            </div>
+
+            <!-- Detail + pembayaran -->
+            <div class="ob-detail">
+              <div v-if="!obSel" class="empty-state">
+                <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+                <p>Pilih tagihan obat bebas untuk memproses pembayaran</p>
+              </div>
+              <div v-else class="ob-panel">
+                <div class="ob-panel-head">
+                  <div class="ob-panel-title">{{ obSel.sale_number }}</div>
+                  <div class="ob-panel-sub">{{ obSel.buyer_name || 'Umum' }}<span v-if="obSel.buyer_phone"> · {{ obSel.buyer_phone }}</span></div>
+                </div>
+
+                <table class="ob-items">
+                  <thead><tr><th>Obat</th><th class="r">Harga</th><th class="c">Qty</th><th class="r">Subtotal</th></tr></thead>
+                  <tbody>
+                    <tr v-for="it in obSel.items" :key="it.id">
+                      <td>{{ it.medication_name }}</td>
+                      <td class="r">{{ fmtRp(it.unit_price) }}</td>
+                      <td class="c">{{ it.quantity }}</td>
+                      <td class="r">{{ fmtRp(it.total_price) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div class="ob-sum">
+                  <div class="ob-row"><span>Subtotal</span><b>{{ fmtRp(obSel.subtotal) }}</b></div>
+                  <div v-if="Number(obSel.discount) > 0" class="ob-row"><span>Diskon</span><b>- {{ fmtRp(obSel.discount) }}</b></div>
+                  <div class="ob-row ob-grand"><span>Total</span><b>{{ fmtRp(obSel.total) }}</b></div>
+                </div>
+
+                <div class="ob-pay">
+                  <div class="ob-pay-field">
+                    <label>Metode Bayar</label>
+                    <select v-model="obPay" class="fi">
+                      <option value="CASH">Tunai</option>
+                      <option value="CARD">Kartu (Debit/Kredit)</option>
+                      <option value="TRANSFER">Transfer</option>
+                    </select>
+                  </div>
+                  <div class="ob-pay-field">
+                    <label>Uang Dibayar</label>
+                    <input v-model.number="obPaid" type="number" min="0" class="fi" />
+                  </div>
+                  <div class="ob-row ob-change"><span>Kembalian</span><b>{{ fmtRp(obChange) }}</b></div>
+                </div>
+
+                <button class="btn btn-success btn-full btn-lg" :disabled="obSaving || Number(obPaid) < Number(obSel.total)" @click="obSettle">
+                  <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  {{ obSaving ? 'Memproses…' : 'Bayar & Terbitkan Kwitansi' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -2440,6 +2631,42 @@ const rincianSections = computed(() => {
 .nt:hover { color: var(--td); }
 .nt.a { color: var(--ga); border-bottom-color: var(--ga); font-weight: 600; }
 .nt svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.nt-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: #f59e0b; color: #fff; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+
+/* ── Obat Bebas (handoff Farmasi → Kasir) ─────────────────────────────────── */
+.ob-wrap { padding: .25rem 0; }
+.ob-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+.ob-title { font-size: 15px; font-weight: 700; color: var(--td); }
+.ob-subnote { font-size: 11px; color: var(--tu); margin-top: 2px; }
+.ob-grid { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; align-items: start; }
+.ob-list { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+.ob-empty { padding: 2rem 1rem; text-align: center; color: var(--tu); font-size: 12px; background: var(--bc); border: 1px dashed var(--gb); border-radius: 10px; }
+.ob-card { background: var(--bc); border: 1px solid var(--gb); border-left: 3px solid #f59e0b; border-radius: 10px; padding: .6rem .7rem; cursor: pointer; transition: all .12s; }
+.ob-card:hover { border-color: var(--ga); }
+.ob-card.a { border-color: var(--ga); border-left-color: var(--ga); background: var(--gl); }
+.ob-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; color: var(--td); }
+.ob-card-top span { font-weight: 700; color: var(--ga); }
+.ob-card-sub { font-size: 11px; color: var(--td); margin-top: 2px; }
+.ob-card-meta { font-size: 10px; color: var(--tu); margin-top: 1px; }
+.ob-detail { min-height: 200px; }
+.ob-panel { background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; padding: 1rem 1.1rem; }
+.ob-panel-head { border-bottom: 1px solid var(--gb); padding-bottom: .6rem; margin-bottom: .6rem; }
+.ob-panel-title { font-size: 15px; font-weight: 700; color: var(--td); }
+.ob-panel-sub { font-size: 12px; color: var(--tu); margin-top: 2px; }
+.ob-items { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ob-items th, .ob-items td { border-bottom: 1px solid var(--gb); padding: .35rem .4rem; text-align: left; color: var(--td); }
+.ob-items th { color: var(--tu); font-weight: 600; font-size: 11px; }
+.ob-items .r { text-align: right; } .ob-items .c { text-align: center; }
+.ob-sum { margin: .8rem 0; }
+.ob-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; color: var(--td); }
+.ob-grand { border-top: 1px solid var(--gb); margin-top: 4px; padding-top: 6px; font-size: 15px; font-weight: 700; }
+.ob-grand b { color: var(--ga); }
+.ob-pay { background: var(--gl); border-radius: 10px; padding: .7rem .8rem; margin-bottom: .8rem; }
+.ob-pay-field { margin-bottom: .5rem; }
+.ob-pay-field label { display: block; font-size: 11px; font-weight: 600; color: var(--tu); margin-bottom: 3px; }
+.ob-change { font-weight: 700; }
+.ob-change b { color: #16a34a; }
+@media (max-width: 900px) { .ob-grid { grid-template-columns: 1fr; } }
 
 .empty-state { padding: 4rem 2rem; background: var(--bc); border: 1px solid var(--gb); border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 0.85rem; color: var(--th); text-align: center; }
 .empty-state svg { width: 56px; height: 56px; fill: none; stroke: var(--gb); stroke-width: 1.5; stroke-linecap: round; }

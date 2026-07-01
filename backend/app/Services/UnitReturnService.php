@@ -302,7 +302,10 @@ class UnitReturnService
     private function removeUnitStock(string $type, string $itemId, float $qty, string $location): void
     {
         if ($qty <= 0) return;
-        $this->stockService->consume($type, $itemId, $qty, $location);
+        // Retur unit memotong batch APA PUN KONDISINYA (termasuk rusak/kedaluwarsa) —
+        // excludeExpired=false. Bila dibiarkan default true, batch kedaluwarsa dilewati
+        // → consume() bisa 422 "stok tidak cukup" & pembatalan seluruh terima-retur.
+        $this->stockService->consume($type, $itemId, $qty, $location, excludeExpired: false);
     }
 
     /**

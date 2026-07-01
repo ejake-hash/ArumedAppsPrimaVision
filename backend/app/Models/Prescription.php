@@ -19,12 +19,20 @@ class Prescription extends Model
     public const TYPE_RAJAL = 'RAJAL';   // rawat jalan + obat pulang (lewat antrean Farmasi)
     public const TYPE_RANAP = 'RANAP';   // permintaan obat rawat inap (dispensing ke ruangan)
 
+    // Cara serah obat (lihat migrasi add_fulfillment_mode_to_prescriptions).
+    public const MODE_DELIVER = 'DELIVER'; // Antar ke Kamar (tab Dispensing Rawat Inap)
+    public const MODE_PICKUP  = 'PICKUP';  // Ambil di Farmasi (loket)
+
     protected $fillable = [
         'legacy_uuid',
         'visit_id',
         'prescribed_by_id',
         'status',
         'type',
+        // Cara serah (DELIVER=antar ke kamar / PICKUP=ambil di farmasi) + penanda
+        // obat sudah ditagih di muka (discharge) agar serah ranap tak menagih ulang.
+        'fulfillment_mode',
+        'charged_upfront',
         // Penanda resep PASCA-BEDAH (dibuat di BedahView) → revisi "Buka Kembali"
         // hanya mengganti resep ini, bukan resep dokter pada visit yang sama.
         'is_post_op',
@@ -46,6 +54,7 @@ class Prescription extends Model
         'verified_at'  => 'datetime',
         'is_post_op'   => 'boolean',
         'is_pre_op'    => 'boolean',
+        'charged_upfront' => 'boolean',
     ];
 
     public function visit(): BelongsTo

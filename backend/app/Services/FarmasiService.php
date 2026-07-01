@@ -289,9 +289,17 @@ class FarmasiService
         $user = auth('api')->user();
 
         DB::transaction(function () use ($prescription, $user) {
+            // Idempotensi: kunci baris & cek ulang status di dalam txn. Guard di atas
+            // (di luar txn) bisa dilewati dua request konkuren (double-click/retry) →
+            // stok terpotong 2x. Request kedua blokir lalu batal di sini.
+            $locked = Prescription::whereKey($prescription->getKey())->lockForUpdate()->first();
+            if (! $locked || $locked->status !== 'DISPENSING') {
+                throw new \Exception('Resep sudah diselesaikan sebelumnya.', 422);
+            }
+
             $this->consumePrescriptionStock($prescription);
 
-            $prescription->update([
+            $locked->update([
                 'status'          => 'DISPENSED',
                 'dispensed_by_id' => $user->employee_id,
                 'dispensed_at'    => now(),
@@ -452,7 +460,11 @@ class FarmasiService
                 ->groupBy('medication_id');
 
         $kasir = app(KasirService::class);
-        $rows->each(function ($rx) use ($kasir, $visitsWithInvoice, $saleUnitsByMed) {
+        // Memo harga per (medication_id|guarantor|insurer) sepanjang render worklist:
+        // hindari N+1 getPrice() per-item (mis. 50 resep × 3 item ≈ 150-300 query).
+        // Harga master stabil dalam 1 request → aman di-cache lokal.
+        $priceMemo = [];
+        $rows->each(function ($rx) use ($kasir, $visitsWithInvoice, $saleUnitsByMed, &$priceMemo) {
             $guarantor = $rx->visit?->guarantor_type ?: 'UMUM';
             $insurerId = $rx->visit?->insurer_id;
 
@@ -476,12 +488,15 @@ class FarmasiService
                     $it->est_unit_price  = $kemasanPrices[$key] ?? 0.0;
                     $it->est_total_price = $it->est_unit_price * (int) $it->sale_unit_qty;
                 } else {
-                    $price = 0.0;
-                    try {
-                        $price = (float) $kasir->getPrice('medication', $it->medication_id, $guarantor, $insurerId);
-                    } catch (\Throwable $e) {
-                        $price = 0.0;
+                    $memoKey = $it->medication_id . '|' . $guarantor . '|' . $insurerId;
+                    if (! array_key_exists($memoKey, $priceMemo)) {
+                        try {
+                            $priceMemo[$memoKey] = (float) $kasir->getPrice('medication', $it->medication_id, $guarantor, $insurerId);
+                        } catch (\Throwable $e) {
+                            $priceMemo[$memoKey] = 0.0;
+                        }
                     }
+                    $price = $priceMemo[$memoKey];
                     $it->est_unit_price  = $price;
                     $it->est_total_price = $price * (float) $it->quantity;
                 }
@@ -828,6 +843,13 @@ class FarmasiService
             'visit.patient',
             'visit.room',
             'visit.bed',
+            // Identitas untuk kartu Dispensing Ranap: DPJP (RANAP=dpjp) + penjamin.
+            // dpjp_name accessor fallback ke doctorExamination/doctorSchedule bila dpjp
+            // null → eager-load ketiganya (samakan getVerificationQueue) agar bebas N+1.
+            'visit.dpjp',
+            'visit.doctorExamination.doctor',
+            'visit.doctorSchedule.employee',
+            'visit.insurer',
             // Pengkajian klinis: sumber alergi pasien (allergy_notes persisten + asesmen
             // perawat bila ada triase). Untuk inap tanpa triase, andalkan allergy_notes.
             'visit.nurseAssessment:id,visit_id,has_allergy,allergy_detail',
@@ -857,6 +879,9 @@ class FarmasiService
                 $p->setAttribute('duplicate_medication_ids', $dupIds->all());
             }
         }
+
+        // Nama DPJP terpadu untuk kartu (RANAP=dpjp; bebas N+1 krn visit.dpjp di-eager-load).
+        $rows->each(fn ($p) => $p->visit?->append('dpjp_name'));
 
         return $rows;
     }
@@ -911,17 +936,31 @@ class FarmasiService
         $ranap = app(RanapService::class);
 
         DB::transaction(function () use ($prescription, $user, $ranap) {
+            // Idempotensi: kunci baris resep DI DALAM transaksi & cek ulang status.
+            // Guard status di atas berada di luar txn (TOCTOU) — double-submit
+            // (double-click / retry jaringan) bisa lolos berdua, memotong stok 2x
+            // DAN menagih pasien 2x. Request kedua blokir di lock lalu batal di sini.
+            $locked = Prescription::whereKey($prescription->getKey())->lockForUpdate()->first();
+            if (! $locked || $locked->status !== 'DISPENSING') {
+                throw new \Exception('Permintaan sudah diproses (diserahkan sebelumnya).', 422);
+            }
+
             // 1. Potong stok unit FARMASI (FEFO per-batch).
             $this->consumePrescriptionStock($prescription);
 
             // 2. Tagih tiap item ke inpatient_charges OBAT (qty aktual = qty item).
-            foreach ($prescription->items as $item) {
-                if ($item->medication) {
-                    $ranap->addObat($prescription->visit, $item->medication_id, (float) $item->quantity);
+            //    KECUALI obat pulang mode Antar (charged_upfront) yang SUDAH ditagih saat
+            //    discharge (RanapService::createObatPulang) — di sini cukup potong stok,
+            //    jangan tagih ulang → anti-dobel.
+            if (! $prescription->charged_upfront) {
+                foreach ($prescription->items as $item) {
+                    if ($item->medication) {
+                        $ranap->addObat($prescription->visit, $item->medication_id, (float) $item->quantity);
+                    }
                 }
             }
 
-            $prescription->update([
+            $locked->update([
                 'status'          => 'DISPENSED',
                 'dispensed_by_id' => $user->employee_id,
                 'dispensed_at'    => now(),
@@ -1643,6 +1682,14 @@ class FarmasiService
         }
 
         DB::transaction(function () use ($surgeryRequest) {
+            // Idempotensi: kunci baris & cek ulang status di dalam txn. Guard status
+            // di atas (di luar txn) bisa dilewati dua request konkuren (double-click/
+            // retry) → BHP unit BEDAH terpotong 2x. Request kedua blokir lalu batal.
+            $locked = SurgeryRequest::whereKey($surgeryRequest->getKey())->lockForUpdate()->first();
+            if (! $locked || $locked->status !== 'REQUESTED') {
+                throw new \Exception('Request sudah dikirim sebelumnya.', 422);
+            }
+
             // Deduct BHP dari inventory_stocks lokasi UNIT BEDAH (FEFO, per-batch,
             // strict) — bukan kolom legacy bhp_items.stock. Kalau stok unit BEDAH
             // kurang → minta transfer dari gudang dulu.

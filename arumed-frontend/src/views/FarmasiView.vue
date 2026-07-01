@@ -545,6 +545,9 @@ const verBusy    = ref(false)
 // 'selesai' = grup yang seluruh resepnya sudah terkunci. Default sembunyikan yang
 // selesai (kurangi keramaian) — yang terkunci tetap bisa dilihat via tab "Selesai".
 const verPrimaryFilter = ref('belum')
+// Pisahkan pasien Rawat Jalan vs Rawat Inap (obat pulang) di antrean Verifikasi.
+// 'rajal' = semua non-RANAP (poli/IGD/bedah/tindakan); 'ranap' = obat pulang (jenis_kode RANAP).
+const verServiceFilter = ref('rajal')
 
 const VER_REASONS = [
   { v: 'STOK_HABIS',        t: 'Stok habis' },
@@ -619,13 +622,20 @@ const verAllGroups = computed(() => {
     }
   })
 })
-// Jumlah grup per status (untuk badge filter) — basis = setelah cari/tanggal.
-const verBelumGroupCount   = computed(() => verAllGroups.value.filter((g) => g.pendingCount > 0).length)
-const verSelesaiGroupCount = computed(() => verAllGroups.value.filter((g) => g.pendingCount === 0).length)
-// Grup yang ditampilkan sesuai filter utama: 'belum' = masih ada yg perlu verifikasi,
-// 'selesai' = seluruh resep grup sudah terkunci.
+// Grup Rawat Inap = ada resep obat pulang (jenis_kode RANAP). BHP-only ranap tak masuk
+// tab Verifikasi (dipindah ke Dispensing Ranap), jadi cukup cek jenis_kode item resep.
+function groupIsRanap(g) { return (g.items ?? []).some((rx) => rx.jenis_kode === 'RANAP') }
+function verMatchService(g) { return verServiceFilter.value === 'ranap' ? groupIsRanap(g) : !groupIsRanap(g) }
+// Badge jenis layanan (jumlah grup yg PERLU verifikasi per jenis).
+const verRajalCount = computed(() => verAllGroups.value.filter((g) => !groupIsRanap(g) && g.pendingCount > 0).length)
+const verRanapCount = computed(() => verAllGroups.value.filter((g) => groupIsRanap(g) && g.pendingCount > 0).length)
+// Jumlah grup per status (badge filter) — basis = setelah cari/tanggal + jenis layanan aktif.
+const verBelumGroupCount   = computed(() => verAllGroups.value.filter((g) => verMatchService(g) && g.pendingCount > 0).length)
+const verSelesaiGroupCount = computed(() => verAllGroups.value.filter((g) => verMatchService(g) && g.pendingCount === 0).length)
+// Grup yang ditampilkan sesuai filter jenis layanan + status.
 const verGroups = computed(() => verAllGroups.value.filter((g) =>
-  verPrimaryFilter.value === 'selesai' ? g.pendingCount === 0 : g.pendingCount > 0))
+  verMatchService(g) &&
+  (verPrimaryFilter.value === 'selesai' ? g.pendingCount === 0 : g.pendingCount > 0)))
 
 async function fetchVerQueue({ fromPoll = false } = {}) {
   verLoading.value = true; verError.value = ''
@@ -914,7 +924,7 @@ const ranapBusy    = ref(false)
 const ranapBhpVisits = ref([])
 const ranapBhpBusy   = ref(false)
 
-const ranapSteps = ['Disiapkan', 'Serah ke Ruangan']
+const ranapSteps = computed(() => ['Disiapkan', selRanap.value ? ranapSerahLabel(selRanap.value) : 'Serah ke Ruangan'])
 const ranapStep = computed(() => {
   if (!selRanap.value) return 0
   if (selRanap.value.status === 'DISPENSED') return 2
@@ -925,6 +935,72 @@ const ranapWaitingCount = computed(
   () => ranapQueue.value.filter((p) => ['SUBMITTED', 'DISPENSING'].includes(p.status)).length,
 )
 
+// Filter status + pencarian pasien untuk antrean Dispensing Ranap.
+// 'belum' = belum diserahkan (SUBMITTED/DISPENSING); 'selesai' = sudah diserahkan (DISPENSED).
+const ranapPrimaryFilter = ref('belum')
+const ranapSearch = ref('')
+const ranapBelumCount   = computed(() => ranapQueue.value.filter((p) => ['SUBMITTED', 'DISPENSING'].includes(p.status)).length)
+const ranapSelesaiCount = computed(() => ranapQueue.value.filter((p) => p.status === 'DISPENSED').length)
+
+// ── Antrean BERBASIS PASIEN ──────────────────────────────────────────────────
+// Pasien inap bisa order obat berkali-kali → 1 kartu = 1 PASIEN (visit), tiap
+// permintaan jadi sub-item di panel kanan. Kurangi keramaian & beri konteks penuh.
+const RANAP_STATUS_ORDER = { DISPENSING: 0, SUBMITTED: 1, DISPENSED: 2 }
+function sortRanapRequests(reqs) {
+  return [...reqs].sort((a, b) =>
+    (RANAP_STATUS_ORDER[a.status] - RANAP_STATUS_ORDER[b.status]) ||
+    String(a.created_at).localeCompare(String(b.created_at)))
+}
+// Daftar kartu kiri: grup per pasien, difilter status (belum/selesai) + pencarian.
+const ranapGroups = computed(() => {
+  const s = ranapSearch.value.toLowerCase().trim()
+  const m = new Map()
+  for (const p of ranapQueue.value) {
+    const vid = p.visit?.id ?? p.id
+    if (!m.has(vid)) m.set(vid, { vid, visit: p.visit, requests: [] })
+    m.get(vid).requests.push(p)
+  }
+  return [...m.values()].map((g) => {
+    g.requests = sortRanapRequests(g.requests)
+    g.pendingCount = g.requests.filter((r) => ['SUBMITTED', 'DISPENSING'].includes(r.status)).length
+    g.doneCount    = g.requests.filter((r) => r.status === 'DISPENSED').length
+    g.readyCount   = g.requests.filter((r) => r.status === 'DISPENSING').length
+    return g
+  }).filter((g) => {
+    const okStatus = ranapPrimaryFilter.value === 'selesai' ? g.pendingCount === 0 : g.pendingCount > 0
+    if (!okStatus) return false
+    if (s && !(
+      (g.visit?.patient?.name ?? '').toLowerCase().includes(s) ||
+      (g.visit?.patient?.no_rm ?? '').toLowerCase().includes(s))) return false
+    return true
+  }).sort((a, b) => b.pendingCount - a.pendingCount)
+})
+
+// Pasien terpilih (vid). Panel kanan dibangun dari ranapQueue MENTAH agar tetap
+// tampil walau grup keluar dari filter kiri (mis. semua permintaan sudah diserahkan).
+const selRanapVisit = ref(null)
+const selRanapGroup = computed(() => {
+  if (!selRanapVisit.value) return null
+  const reqs = ranapQueue.value.filter((p) => (p.visit?.id ?? p.id) === selRanapVisit.value)
+  if (!reqs.length) return null
+  const sorted = sortRanapRequests(reqs)
+  return {
+    vid: selRanapVisit.value,
+    visit: sorted[0].visit,
+    requests: sorted,
+    pendingCount: sorted.filter((r) => ['SUBMITTED', 'DISPENSING'].includes(r.status)).length,
+    readyCount:   sorted.filter((r) => r.status === 'DISPENSING').length,
+  }
+})
+
+// Pilih pasien → otomatis buka permintaan pertama yang belum diserahkan.
+function pickRanapGroup(g) {
+  selRanapVisit.value = g.vid
+  const first = g.requests.find((r) => r.status !== 'DISPENSED') ?? g.requests[0]
+  if (first) pickRanap(first)
+  else selRanap.value = null
+}
+
 function ranapStatusLabel(s) {
   return s === 'DISPENSED' ? 'diserahkan' : s === 'DISPENSING' ? 'disiapkan' : 'diminta'
 }
@@ -933,6 +1009,19 @@ function ranapRoomLabel(p) {
   const bed  = p.visit?.bed?.label ?? p.visit?.bed?.code ?? ''
   return [room, bed].filter(Boolean).join(' · ') || 'Rawat Inap'
 }
+// Label penjamin: BPJS/UMUM/ASURANSI + nama insurer bila ada (selaras verifikasi).
+function ranapPenjamin(p) {
+  const g = (p.visit?.guarantor_type ?? 'UMUM').toUpperCase()
+  const ins = p.visit?.insurer?.name
+  return ins && g !== 'UMUM' ? `${g} · ${ins}` : g
+}
+// Cara serah: PICKUP = keluarga ambil di loket; selain itu (DELIVER/legacy) = antar ke kamar.
+function ranapIsPickup(p) { return p?.fulfillment_mode === 'PICKUP' }
+function ranapModeLabel(p) { return ranapIsPickup(p) ? 'Ambil di Farmasi' : 'Antar ke Kamar' }
+// Obat pulang (dibuat saat discharge) vs permintaan obat harian — bedakan dari notes.
+function ranapIsDischarge(p) { return /obat pulang/i.test(p?.notes ?? '') }
+// Tombol/langkah "serah": antar ke ruangan vs serahkan ke pengambil.
+function ranapSerahLabel(p) { return ranapIsPickup(p) ? 'Serah ke Pengambil' : 'Serah ke Ruangan' }
 
 async function fetchRanapQueue() {
   ranapLoading.value = true
@@ -990,6 +1079,45 @@ async function serahRanap() {
     fetchStok()
   } catch (err) {
     toast('w', err.response?.data?.message ?? 'Gagal menyerahkan obat')
+  } finally {
+    ranapBusy.value = false
+  }
+}
+
+// Serah SEMUA permintaan pasien yang sudah DISIAPKAN (status DISPENSING) sekaligus.
+// Efisiensi utk pasien dgn banyak order siap-serah. Penyiapan/pengkajian TETAP
+// per-permintaan (gate klinis Permenkes), jadi hanya yang sudah 'Disiapkan' yang di-serah.
+async function serahSemuaSiap() {
+  const g = selRanapGroup.value
+  if (!g || ranapBusy.value) return
+  const ready = g.requests.filter((r) => r.status === 'DISPENSING')
+  if (!ready.length) { toast('i', 'Tidak ada permintaan yang sudah disiapkan.'); return }
+  // Permintaan yg SEDANG dibuka dipegang oleh salinan teredit `selRanap` (punya edit
+  // qty + _origQty); item di `ranapQueue` mentah TAK memuat edit. Pakai salinan itu
+  // agar koreksi qty ikut tersimpan; permintaan lain pakai qty server (tak bisa diedit
+  // tanpa dibuka). Tanpa ini, edit qty pada permintaan terbuka hilang diam-diam.
+  const sourceFor = (r) => (selRanap.value && selRanap.value.id === r.id) ? selRanap.value : r
+  // Validasi qty (samakan dgn serah tunggal) — cegah serah qty < 1 / tak valid.
+  for (const r of ready) {
+    const bad = (sourceFor(r).items ?? []).find((d) => !Number.isFinite(Number(d.quantity)) || Number(d.quantity) < 1)
+    if (bad) { toast('w', `Jumlah obat ${bad.medication?.name ?? ''} tidak valid (min. 1) pada permintaan ${formatTime(r.created_at)}`); return }
+  }
+  if (!confirm(`Serahkan ${ready.length} permintaan yang sudah disiapkan ke ruangan?`)) return
+  ranapBusy.value = true
+  try {
+    for (const r of ready) {
+      const items = sourceFor(r).items ?? []
+      // Persist qty teredit (permintaan terbuka punya _origQty; lainnya tak ada → skip).
+      const changed = items.filter((d) => d.id && d._origQty !== undefined && Number(d.quantity) !== Number(d._origQty))
+      for (const d of changed) await farmasiApi.updateItem(d.id, { quantity: Number(d.quantity) })
+      await farmasiApi.ranapSerah(r.id)
+    }
+    toast('s', `${ready.length} permintaan diserahkan ke ruangan`)
+    await fetchRanapQueue()
+    fetchStok()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal menyerahkan sebagian permintaan')
+    fetchRanapQueue()
   } finally {
     ranapBusy.value = false
   }
@@ -1859,6 +1987,31 @@ async function posCheckout() {
   }
 }
 
+// Tagih ke Kasir (handoff): kirim keranjang sbg penjualan PENDING (belum bayar).
+// Stok tetap dipotong (reserve) di server; Kasir yang menutup pembayaran + kwitansi.
+async function posTagihKasir() {
+  if (!posCart.value.length) { toast('w', 'Keranjang masih kosong'); return }
+  posSaving.value = true
+  try {
+    const payload = {
+      buyer_name:  posBuyer.value || null,
+      buyer_phone: posPhone.value || null,
+      discount:    Number(posDisc.value || 0),
+      items: posCart.value.map((it) => ({ medication_id: it.medication_id, quantity: it.quantity })),
+    }
+    const { data } = await farmasiApi.penjualanTagihKasir(payload)
+    const sale = data.data
+    toast('s', `Tagihan ${sale.sale_number} dikirim ke Kasir`)
+    resetPos()
+    fetchStok()
+    if (pgTab.value === 'penjualan') loadPosHistory()
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal mengirim ke kasir')
+  } finally {
+    posSaving.value = false
+  }
+}
+
 // ─── Riwayat penjualan ───
 const posHistory = ref([])
 const posHistoryLoading = ref(false)
@@ -2462,6 +2615,17 @@ function toast(type, msg) {
             </div>
 
             <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean verifikasi">
+              <!-- Pisah jenis layanan: Rawat Jalan vs Rawat Inap (obat pulang) -->
+              <div class="primary-filter" role="group" aria-label="Filter jenis layanan verifikasi">
+                <button :class="['pf-btn', verServiceFilter === 'rajal' ? 'a' : '']" @click="verServiceFilter = 'rajal'">
+                  Rawat Jalan
+                  <span v-if="verRajalCount" class="pf-ct">{{ verRajalCount }}</span>
+                </button>
+                <button :class="['pf-btn', verServiceFilter === 'ranap' ? 'a' : '']" @click="verServiceFilter = 'ranap'" title="Obat pulang pasien rawat inap (diambil di loket)">
+                  Rawat Inap
+                  <span v-if="verRanapCount" class="pf-ct">{{ verRanapCount }}</span>
+                </button>
+              </div>
               <!-- Filter utama: belum vs sudah terkunci -->
               <div class="primary-filter" role="group" aria-label="Filter status verifikasi">
                 <button :class="['pf-btn', verPrimaryFilter === 'belum' ? 'a' : '']" @click="verPrimaryFilter = 'belum'">
@@ -2717,7 +2881,7 @@ function toast(type, msg) {
     <div v-if="pgTab === 'ranap'" class="tab-pane">
       <div class="loc-note">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        <span>Permintaan obat pasien <b>rawat inap</b> dari ruangan. Siapkan lalu <b>serah ke ruangan</b> — stok unit Farmasi dipotong &amp; biaya obat masuk tagihan rawat inap saat serah.</span>
+        <span>Permintaan obat pasien <b>rawat inap</b> &amp; <b>obat pulang</b>. Siapkan lalu serah sesuai badge: <b>🛏️ Antar</b> = diantar ke kamar, <b>🏪 Ambil</b> = keluarga ambil di loket. Stok unit Farmasi dipotong saat serah; biaya obat harian masuk tagihan saat serah, obat pulang sudah ditagih di kasir.</span>
       </div>
 
       <div class="disp-grid">
@@ -2735,29 +2899,45 @@ function toast(type, msg) {
               <span class="pill-live">LIVE</span>
             </div>
             <div class="card-body queue-scroll" role="region" aria-label="Daftar permintaan obat rawat inap">
+              <!-- Filter status: belum diserahkan vs selesai -->
+              <div class="primary-filter" role="group" aria-label="Filter status dispensing rawat inap">
+                <button :class="['pf-btn', ranapPrimaryFilter === 'belum' ? 'a' : '']" @click="ranapPrimaryFilter = 'belum'">
+                  Belum Diserahkan
+                  <span v-if="ranapBelumCount" class="pf-ct">{{ ranapBelumCount }}</span>
+                </button>
+                <button :class="['pf-btn', ranapPrimaryFilter === 'selesai' ? 'a' : '']" @click="ranapPrimaryFilter = 'selesai'" title="Obat yang sudah diserahkan hari ini">
+                  Selesai
+                  <span v-if="ranapSelesaiCount" class="pf-ct">{{ ranapSelesaiCount }}</span>
+                </button>
+              </div>
+              <!-- Pencarian pasien -->
+              <div class="ver-searchbar">
+                <input v-model="ranapSearch" class="fi ver-search" placeholder="Cari nama / no. RM pasien…" />
+                <button class="btn btn-secondary btn-sm" :disabled="ranapLoading" title="Muat ulang" @click="fetchRanapQueue">↻</button>
+              </div>
               <div class="rx-list">
                 <div v-if="ranapLoading && !ranapQueue.length" class="empty-rx">Memuat permintaan…</div>
-                <div v-for="p in ranapQueue" :key="p.id"
-                  :class="['rx-card', selRanap && selRanap.id === p.id ? 'active' : '', p.status === 'DISPENSED' ? 'done' : '']"
-                  @click="pickRanap(p)">
-                  <div :class="['rx-bar', p.status === 'DISPENSED' ? 'bar-done' : p.status === 'DISPENSING' ? 'bar-disiapkan' : 'bar-menunggu']"></div>
+                <!-- Kartu per PASIEN: 1 pasien bisa punya banyak permintaan obat -->
+                <div v-for="g in ranapGroups" :key="g.vid"
+                  :class="['rx-card', selRanapVisit === g.vid ? 'active' : '', g.pendingCount === 0 ? 'done' : '']"
+                  @click="pickRanapGroup(g)">
+                  <div :class="['rx-bar', g.pendingCount === 0 ? 'bar-done' : g.readyCount ? 'bar-disiapkan' : 'bar-menunggu']"></div>
                   <div class="rx-body">
                     <div class="rx-top">
-                      <div class="rx-num">{{ ranapRoomLabel(p) }}</div>
-                      <div class="rx-time">{{ formatTime(p.created_at) }}</div>
+                      <div class="rx-num">{{ ranapRoomLabel(g.requests[0]) }}</div>
+                      <div class="rx-time">{{ g.requests.length }} order</div>
                     </div>
-                    <div class="rx-name">{{ p.visit?.patient?.name ?? '—' }}</div>
-                    <div class="rx-meta">{{ p.visit?.patient?.no_rm ?? '—' }}</div>
+                    <div class="rx-name">{{ g.visit?.patient?.name ?? '—' }}</div>
+                    <div class="rx-meta">RM {{ g.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(g.visit?.patient?.date_of_birth) }} · {{ ranapPenjamin(g.requests[0]) }}</div>
+                    <div v-if="g.visit?.dpjp_name" class="rx-meta">DPJP: {{ g.visit.dpjp_name }}</div>
                     <div class="rx-tags">
-                      <span class="rxt rxt-ranap">Rawat Inap</span>
-                      <span :class="['rxt', p.status === 'DISPENSED' ? 'rxt-done' : p.status === 'DISPENSING' ? 'rxt-disiapkan' : 'rxt-menunggu']">{{ ranapStatusLabel(p.status) }}</span>
-                    </div>
-                    <div class="rx-items">
-                      <div class="rx-item muted">{{ (p.items?.length ?? 0) }} item obat</div>
+                      <span v-if="g.pendingCount" class="rxt rxt-menunggu">⏳ {{ g.pendingCount }} menunggu</span>
+                      <span v-if="g.readyCount" class="rxt rxt-disiapkan">🔧 {{ g.readyCount }} siap serah</span>
+                      <span v-if="g.doneCount" class="rxt rxt-done">✔ {{ g.doneCount }} diserahkan</span>
                     </div>
                   </div>
                 </div>
-                <div v-if="!ranapLoading && !ranapQueue.length" class="empty-rx">Tidak ada permintaan obat rawat inap.</div>
+                <div v-if="!ranapLoading && !ranapGroups.length" class="empty-rx">{{ ranapSearch ? 'Tidak ada pasien cocok.' : (ranapPrimaryFilter === 'selesai' ? 'Belum ada obat yang diserahkan.' : 'Tidak ada permintaan obat rawat inap.') }}</div>
               </div>
             </div>
           </div>
@@ -2798,21 +2978,46 @@ function toast(type, msg) {
 
         <!-- Detail / serah -->
         <div class="disp-col">
-          <div v-if="!selRanap" class="disp-empty">
+          <div v-if="!selRanapGroup" class="disp-empty">
             <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg>
-            <p>Pilih permintaan obat dari daftar untuk menyiapkan</p>
+            <p>Pilih pasien dari daftar untuk melihat &amp; melayani permintaan obatnya</p>
           </div>
           <div v-else class="disp-panel">
+            <!-- Identitas pasien (sekali) + aksi massal serah -->
             <div class="disp-head">
               <div>
-                <div class="disp-title">{{ selRanap.visit?.patient?.name ?? '—' }}</div>
-                <div class="disp-sub">{{ selRanap.visit?.patient?.no_rm ?? '—' }} · {{ ranapRoomLabel(selRanap) }} · {{ selRanap.items?.length ?? 0 }} item</div>
+                <div class="disp-title">{{ selRanapGroup.visit?.patient?.name ?? '—' }}</div>
+                <div class="disp-sub">RM {{ selRanapGroup.visit?.patient?.no_rm ?? '—' }} · Lahir {{ fmtDateId(selRanapGroup.visit?.patient?.date_of_birth) }} · {{ ranapPenjamin(selRanapGroup.requests[0]) }}</div>
+                <div class="disp-sub">{{ ranapRoomLabel(selRanapGroup.requests[0]) }}<span v-if="selRanapGroup.visit?.dpjp_name"> · DPJP: {{ selRanapGroup.visit.dpjp_name }}</span></div>
               </div>
-              <button class="btn btn-etiket btn-sm" :disabled="!(selRanap.items ?? []).length" @click="printRanapEtiket">
-                <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                Etiket
+              <button v-if="selRanapGroup.readyCount > 1" class="btn btn-success btn-sm" :disabled="ranapBusy" @click="serahSemuaSiap" title="Serahkan semua permintaan yang sudah disiapkan ke ruangan">
+                <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+                Serah semua siap ({{ selRanapGroup.readyCount }})
               </button>
             </div>
+
+            <!-- Switcher: semua permintaan obat pasien ini (menunggu dulu, lalu diserahkan) -->
+            <div class="ranap-req-switch">
+              <button v-for="r in selRanapGroup.requests" :key="r.id"
+                :class="['rq-chip', selRanap && selRanap.id === r.id ? 'a' : '', 'rq-' + r.status.toLowerCase()]"
+                @click="pickRanap(r)">
+                <span class="rq-time">{{ formatTime(r.created_at) }}</span>
+                <span class="rq-n">{{ r.items?.length ?? 0 }} obat</span>
+                <span class="rq-st">{{ ranapStatusLabel(r.status) }}</span>
+                <span v-if="ranapIsDischarge(r)" class="rq-pulang">pulang</span>
+              </button>
+            </div>
+
+            <div v-if="!selRanap" class="empty-rx" style="margin-top:10px">Pilih permintaan di atas untuk menyiapkan / menyerahkan.</div>
+            <!-- Detail permintaan terpilih (dipakai ulang: pengkajian, item, serah) -->
+            <div v-else class="ranap-req-detail">
+              <div class="req-subhead">
+                <span class="req-subhead-t"><b>Permintaan {{ formatTime(selRanap.created_at) }}</b> · {{ selRanap.items?.length ?? 0 }} item · <b>{{ ranapModeLabel(selRanap) }}</b>{{ ranapIsDischarge(selRanap) ? ' · Obat Pulang' : '' }}</span>
+                <button class="btn btn-etiket btn-sm" :disabled="!(selRanap.items ?? []).length" @click="printRanapEtiket">
+                  <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  Etiket
+                </button>
+              </div>
 
             <div class="disp-steps">
               <div v-for="(s, i) in ranapSteps" :key="s" :class="['ds', ranapStep > i ? 'done' : ranapStep === i ? 'a' : '']">
@@ -2865,14 +3070,15 @@ function toast(type, msg) {
               </button>
               <button v-if="ranapStep === 1" class="btn btn-success btn-lg" :disabled="ranapBusy || !(selRanap.items ?? []).length" @click="serahRanap">
                 <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-                {{ ranapBusy ? 'Memproses…' : 'Serah ke Ruangan' }}
+                {{ ranapBusy ? 'Memproses…' : ranapSerahLabel(selRanap) }}
               </button>
               <span v-if="ranapStep === 2" class="done-pill">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                Obat sudah diserahkan ke ruangan
+                {{ ranapIsPickup(selRanap) ? 'Obat sudah diserahkan ke pengambil' : 'Obat sudah diserahkan ke ruangan' }}
               </span>
               <button v-if="ranapStep < 2" class="btn btn-secondary btn-sm" @click="tolakRanap">Batalkan</button>
             </div>
+            </div><!-- /ranap-req-detail -->
           </div>
         </div>
       </div>
@@ -3104,7 +3310,7 @@ function toast(type, msg) {
     <div v-if="pgTab === 'penjualan'" class="tab-pane">
       <div class="loc-note">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        <span>Penjualan <b>obat bebas</b> untuk pembeli walk-in (tanpa resep dokter). Hanya obat golongan bebas/bebas terbatas/suplemen/jamu yang punya <b>harga jual (HJA)</b>. Stok dipotong dari unit Farmasi.</span>
+        <span>Penjualan <b>obat bebas</b> untuk pembeli walk-in (tanpa resep dokter). Bayar langsung di apotek (<b>Bayar &amp; Cetak Struk</b>) atau kirim ke kasir (<b>Tagih ke Kasir</b> → pembayaran &amp; kwitansi di Kasir). Stok dipotong dari unit Farmasi saat transaksi dibuat.</span>
       </div>
 
       <div class="pos-grid">
@@ -3195,6 +3401,11 @@ function toast(type, msg) {
               <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
               {{ posSaving ? 'Memproses…' : 'Bayar & Cetak Struk' }}
             </button>
+            <button class="btn btn-primary btn-lg" style="width:100%; justify-content:center; margin-top:.5rem"
+              :disabled="posSaving || !posCart.length" @click="posTagihKasir" title="Kirim tagihan ke Kasir — pembayaran & kwitansi diterbitkan Kasir">
+              <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+              {{ posSaving ? 'Memproses…' : 'Tagih ke Kasir' }}
+            </button>
             <button v-if="posCart.length" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center; margin-top:.4rem" @click="resetPos">Kosongkan</button>
           </div>
         </div>
@@ -3226,15 +3437,16 @@ function toast(type, msg) {
                 <td><strong>{{ s.sale_number }}</strong></td>
                 <td>{{ s.buyer_name || '—' }}</td>
                 <td class="r"><strong>{{ rp(s.total) }}</strong></td>
-                <td class="muted">{{ s.payment_method }}</td>
+                <td class="muted">{{ s.status === 'PENDING' ? '— (di kasir)' : s.payment_method }}</td>
                 <td class="muted">{{ fmtDateTime(s.created_at) }}</td>
                 <td class="muted">{{ s.sold_by?.name || '—' }}</td>
                 <td class="c">
-                  <span class="lap-badge" :class="s.status === 'CANCELLED' ? 'b-out' : 'b-low'" style="background:var(--sb);color:var(--st)" v-if="s.status !== 'CANCELLED'">PAID</span>
-                  <span class="lap-badge b-out" v-else>BATAL</span>
+                  <span v-if="s.status === 'CANCELLED'" class="lap-badge b-out">BATAL</span>
+                  <span v-else-if="s.status === 'PENDING'" class="lap-badge b-mid" style="background:#fef3c7;color:#92400e">MENUNGGU KASIR</span>
+                  <span v-else class="lap-badge b-low" style="background:var(--sb);color:var(--st)">PAID</span>
                 </td>
                 <td class="c">
-                  <button class="po-icon-btn" title="Cetak ulang struk" @click="posReprint(s.id)">
+                  <button v-if="s.status === 'PAID'" class="po-icon-btn" title="Cetak ulang struk" @click="posReprint(s.id)">
                     <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                   </button>
                   <button v-if="s.status !== 'CANCELLED'" class="po-icon-btn" title="Batalkan" @click="posCancel(s)">
@@ -3615,6 +3827,8 @@ function toast(type, msg) {
 .rxt-b { background: #dbeafe; color: #1e40af; }
 .rxt-u { background: var(--gl); color: var(--ga); }
 .rxt-ranap { background: #e0e7ff; color: #3730a3; }
+.rxt-deliver { background: #dcfce7; color: #166534; }
+.rxt-pickup { background: #fef9c3; color: #854d0e; }
 .rxt-racik { background: var(--wb); color: var(--wt); }
 .rxt-menunggu { background: #fef3c7; color: #92400e; }
 .rxt-verifikasi { background: #dbeafe; color: #1e40af; }
@@ -3643,6 +3857,23 @@ function toast(type, msg) {
 .disp-head { padding: 0.85rem 1.1rem; background: linear-gradient(135deg, var(--gm), var(--gd)); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 0.85rem; }
 .disp-title { font-family: 'Space Grotesk', serif; font-size: 16px; line-height: 1.1; }
 .disp-sub { font-size: 11px; color: rgba(255, 255, 255, 0.65); margin-top: 3px; }
+
+/* Switcher permintaan obat pasien — 1 pasien inap bisa order berkali-kali */
+.ranap-req-switch { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 1.1rem 2px; background: var(--bc); }
+.rq-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1.5px solid var(--gb); border-radius: 8px; background: var(--bs); cursor: pointer; font-size: 11px; color: var(--td); font-family: 'Inter', sans-serif; transition: all .12s; }
+.rq-chip:hover { border-color: var(--ga); }
+.rq-chip.a { border-color: var(--gd); background: var(--gl); font-weight: 600; }
+.rq-chip .rq-time { font-weight: 700; }
+.rq-chip .rq-n { color: var(--tu); }
+.rq-chip .rq-st { font-size: 9.5px; padding: 1px 6px; border-radius: 10px; text-transform: capitalize; }
+.rq-chip.rq-submitted .rq-st { background: #fef3c7; color: #92400e; }
+.rq-chip.rq-dispensing .rq-st { background: #ede9fe; color: #5b21b6; }
+.rq-chip.rq-dispensed .rq-st { background: var(--sb); color: var(--st); }
+.rq-chip.rq-dispensed { opacity: .7; }
+.rq-pulang { font-size: 9px; background: #dcfce7; color: #166534; padding: 1px 5px; border-radius: 8px; }
+/* Sub-header per-permintaan di dalam panel pasien */
+.req-subhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 1.1rem; border-bottom: 1px solid var(--gb); }
+.req-subhead-t { font-size: 12px; color: var(--td); }
 
 /* Kartu identitas pasien: badge DPJP + tanggal lahir + alamat */
 .ident-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }

@@ -1041,6 +1041,7 @@ export const farmasiApi = {
   // Penjualan obat bebas (POS apotek) — walk-in tanpa resep/kunjungan.
   penjualanList:     (params)     => api.get('/farmasi/penjualan', { params }),
   penjualanCreate:   (data)       => api.post('/farmasi/penjualan', data),
+  penjualanTagihKasir: (data)     => api.post('/farmasi/penjualan/tagih-kasir', data),
   penjualanShow:     (id)         => api.get(`/farmasi/penjualan/${id}`),
   penjualanBatal:    (id, data)   => api.post(`/farmasi/penjualan/${id}/batal`, data),
 }
@@ -1320,6 +1321,11 @@ export const kasirApi = {
   cetakInvoice:      (id)                 => api.get(`/kasir/invoice/${id}/cetak`),
   // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik)
   emailInvoice:      (id, email)          => api.post(`/kasir/invoice/${id}/email`, { email }),
+
+  // Obat bebas dibayar di Kasir (handoff dari Farmasi)
+  obatBebasList:     ()                   => api.get('/kasir/obat-bebas'),
+  obatBebasBayar:    (id, data)           => api.post(`/kasir/obat-bebas/${id}/bayar`, data),
+  obatBebasKwitansi: (id)                 => api.get(`/kasir/obat-bebas/${id}/kwitansi`),
 
   // Billing items (override saat edit tagihan)
   storeItem:         (invoiceId, data)    => api.post(`/kasir/invoice/${invoiceId}/item`, data),

@@ -989,24 +989,42 @@ class DokterService
                 'external_referral_reason'   => $planning === 'RUJUK' ? ($data['external_referral_reason'] ?? null) : null,
             ]);
 
+            // PREOP_BEDAH continuation (Jalur B): visit ini dibawa dari Admisi hari-operasi
+            // membawa surgery_schedule_id + snapshot paket BEDAH sendiri (movePreopPackageSnapshot).
+            // Dikirim Triase → Dokter untuk periksa-ulang operator; dokter TIDAK mengisi planning
+            // (planning=null). Tanpa guard, blok di bawah meng-null-kan visit.surgery_schedule_id
+            // & MENGHAPUS snapshot paket → paket HILANG dari kwitansi (under-billing berat) DAN
+            // pasien salah-rute ke KASIR (nextAfterDokter cabang 2d gagal). Maka: bila planning
+            // null & visit preop yang sudah terjadwal → PERTAHANKAN state bawaan Admisi apa adanya.
+            // (Jika dokter EKSPLISIT memilih PULANG/RUJUK/dll, operasi memang dibatalkan → guard
+            // tak berlaku, snapshot & jadwal dibersihkan seperti biasa.)
+            $isPreopBedahContinuation = $planning === null
+                && $visit->visit_type === 'PREOP_BEDAH'
+                && ! empty($visit->surgery_schedule_id);
+
             // HIGH: propagasi surgery_schedule_id ke VISIT. BedahService::startOperation
             // me-resolve visit via Visit::where('surgery_schedule_id', ...). Tanpa baris
             // ini, bedah hari-ini langsung dari dokter (tanpa surgery_request) → visit
             // tak punya schedule → SurgeryRecord orphan, startOperation gagal update antrean.
             // Planning bukan BEDAH → bersihkan agar tak nyangkut jadwal lama.
             $visit->update([
-                'surgery_schedule_id' => $planning === 'BEDAH' ? $scheduleId : null,
+                'surgery_schedule_id' => $planning === 'BEDAH'
+                    ? $scheduleId
+                    : ($isPreopBedahContinuation ? $visit->surgery_schedule_id : null),
             ]);
 
             // Snapshot paket BEDAH pasien (komponen BHP/IOL/PROCEDURE → dasar diskon
-            // paket di kwitansi). Planning bukan BEDAH / tanpa paket → snapshot dibuang.
-            $this->syncVisitPackageSnapshot(
-                $visit,
-                $planning === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
-                $scheduleId,
-                VisitSurgeryPackage::TYPE_BEDAH,
-                $planning === 'BEDAH' ? ($data['surgery_package_tariff_id'] ?? null) : null,
-            );
+            // paket di kwitansi). Planning bukan BEDAH / tanpa paket → snapshot dibuang,
+            // KECUALI preop-continuation (snapshot bawaan Admisi WAJIB dipertahankan).
+            if (! $isPreopBedahContinuation) {
+                $this->syncVisitPackageSnapshot(
+                    $visit,
+                    $planning === 'BEDAH' ? ($data['surgery_package_id'] ?? null) : null,
+                    $scheduleId,
+                    VisitSurgeryPackage::TYPE_BEDAH,
+                    $planning === 'BEDAH' ? ($data['surgery_package_tariff_id'] ?? null) : null,
+                );
+            }
 
             // Fase 8 — tandai alasan inap di visit (dibaca admisi & papan RANAP):
             //   RAWAT_INAP            → OBSERVASI (inap pemeriksaan tanpa operasi).

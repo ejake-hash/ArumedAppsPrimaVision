@@ -182,8 +182,8 @@ class QuantelXmlParser
             'k1'             => $this->num($k->K1Post ?? null),       // dioptri
             'k2'             => $this->num($k->K2Post ?? null),
             'kcor'           => $this->num($k->KCor ?? null),
-            'k1_axis'        => $this->firstNum($k, ['K1PostAxis', 'K1Axis']),   // derajat
-            'k2_axis'        => $this->firstNum($k, ['K2PostAxis', 'K2Axis']),
+            'k1_axis'        => $this->axisOrNull($this->firstNum($k, ['K1PostAxis', 'K1Axis'])),   // derajat
+            'k2_axis'        => $this->axisOrNull($this->firstNum($k, ['K2PostAxis', 'K2Axis'])),
             'refraction'     => $this->parseRefraction($k),
             'technique'      => $this->str($bio->ExamComment ?? null) ?: $this->str($bio->ProbeName ?? null),
             'acqui_technique' => $this->str($bio->TechniqueAcqui ?? null),  // mis. "Immersion"
@@ -237,10 +237,22 @@ class QuantelXmlParser
         }
 
         return [
-            'sphere'   => $this->firstNum($k, ['KpostSphere', 'Sphere', 'Sph']),
+            'sphere'   => $this->firstNum($k, ['KpostSphere', 'Sphere', 'Sph']),   // 0.00 = plano valid
             'cylinder' => $this->firstNum($k, ['KpostCylinder', 'Cylinder', 'Cyl']),
-            'axis'     => $this->firstNum($k, ['KpostCylinderAxis', 'CylinderAxis', 'Axis']),
+            'axis'     => $this->axisOrNull($this->firstNum($k, ['KpostCylinderAxis', 'CylinderAxis', 'Axis'])),
         ];
+    }
+
+    /**
+     * Sumbu (axis) 0° dari perangkat = penanda "TIDAK diekspor" (placeholder), BUKAN
+     * pengukuran nyata: secara optik 0°≡180° (nilai nyata biasanya dilaporkan 180),
+     * dan MUSTAHIL kedua sumbu K1/K2 = 0° saat K1≠K2 (astigmatisma). Perlakukan 0/absen
+     * sebagai null agar panel biometri tak menampilkan sumbu keratometri/refraksi palsu
+     * yang bisa menyesatkan perencanaan IOL/toric. (Sphere/cylinder 0 tetap valid — plano.)
+     */
+    private function axisOrNull(?float $v): ?float
+    {
+        return ($v === null || abs($v) < 0.0001) ? null : $v;
     }
 
     /** Ambil nilai numerik pertama yang ada dari beberapa kandidat nama child. */

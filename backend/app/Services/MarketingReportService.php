@@ -52,6 +52,14 @@ class MarketingReportService
         $to        = $filters['to'] ?? null;
         $insurerId = $filters['insurer_id'] ?? null;
 
+        // Batas aman: TANPA rentang tanggal, jangan muat seluruh riwayat visits ke
+        // memori (OOM/timeout di produksi dgn puluhan/ratusan ribu kunjungan). Default
+        // ke bulan berjalan bila keduanya kosong; periode dikembalikan agar UI jelas.
+        if (empty($from) && empty($to)) {
+            $from = now('Asia/Jakarta')->startOfMonth()->toDateString();
+            $to   = now('Asia/Jakarta')->toDateString();
+        }
+
         $visits = $this->baseQuery($type, $from, $to, $insurerId)->get();
         $icdMap = $this->icdDescriptionMap($visits);
 
@@ -80,15 +88,17 @@ class MarketingReportService
         fputcsv($fh, self::CSV_HEADER, ',', '"', '\\');
 
         foreach ($list['rows'] as $r) {
+            // Teks berasal-user (nama/penjamin/dokter/diagnosa/no_hp) di-guard terhadap
+            // CSV formula injection — lihat App\Support\CsvGuard.
             fputcsv($fh, [
                 $r['no'],
-                $r['nama'],
+                \App\Support\CsvGuard::cell($r['nama']),
                 $r['usia'] !== null ? (string) $r['usia'] : '',
-                $r['no_hp'],
-                $r['penjamin'],
-                $r['dokter'],
-                $r['diagnosa'],
-                $r['kategori_bedah'],
+                \App\Support\CsvGuard::cell($r['no_hp']),
+                \App\Support\CsvGuard::cell($r['penjamin']),
+                \App\Support\CsvGuard::cell($r['dokter']),
+                \App\Support\CsvGuard::cell($r['diagnosa']),
+                \App\Support\CsvGuard::cell($r['kategori_bedah']),
                 $r['tgl_kontrol'],
             ], ',', '"', '\\');
         }

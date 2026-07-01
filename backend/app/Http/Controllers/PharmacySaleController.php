@@ -44,6 +44,69 @@ class PharmacySaleController extends Controller
         return $this->ok($sale, 'Penjualan berhasil', 201);
     }
 
+    /**
+     * POST /farmasi/penjualan/tagih-kasir — Farmasi menyiapkan keranjang lalu
+     * mengirim tagihan ke Kasir (status PENDING, stok direserve). Tanpa nilai bayar.
+     */
+    public function toKasir(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'buyer_name'               => 'nullable|string|max:120',
+            'buyer_phone'              => 'nullable|string|max:30',
+            'discount'                 => 'nullable|numeric|min:0',
+            'discount_percent'         => 'nullable|numeric|min:0|max:100',
+            'notes'                    => 'nullable|string|max:255',
+            'items'                    => 'required|array|min:1',
+            'items.*.medication_id'    => 'required|uuid|exists:medications,id',
+            'items.*.quantity'         => 'required|integer|min:1',
+            'items.*.discount_amount'  => 'nullable|numeric|min:0',
+            'items.*.discount_percent' => 'nullable|numeric|min:0|max:100',
+        ]);
+
+        try {
+            $sale = $this->service->createPending($validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($sale, 'Tagihan obat bebas dikirim ke Kasir', 201);
+    }
+
+    /** GET /kasir/obat-bebas — antrean penjualan obat bebas menunggu pembayaran. */
+    public function pendingIndex(): JsonResponse
+    {
+        return $this->ok($this->service->listPending());
+    }
+
+    /** POST /kasir/obat-bebas/{id}/bayar — Kasir menutup pembayaran → PAID. */
+    public function settle(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'payment_method' => 'nullable|in:CASH,CARD,TRANSFER',
+            'paid_amount'    => 'required|numeric|min:0',
+        ]);
+
+        try {
+            $sale = $this->service->settlePayment($id, $validated);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 422);
+        }
+
+        return $this->ok($sale, 'Pembayaran obat bebas berhasil');
+    }
+
+    /** GET /kasir/obat-bebas/{id}/kwitansi — data kwitansi obat bebas untuk cetak. */
+    public function receipt(string $id): JsonResponse
+    {
+        try {
+            $data = $this->service->saleReceipt($id);
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+
+        return $this->ok($data, 'Data kwitansi siap cetak');
+    }
+
     /** GET /farmasi/penjualan/{id} */
     public function show(string $id): JsonResponse
     {

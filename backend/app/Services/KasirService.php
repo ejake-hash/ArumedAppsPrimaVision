@@ -1858,6 +1858,24 @@ class KasirService
             ->orderBy('charge_date')
             ->get();
 
+        // Cross-dedup anti dobel-tagih: prosedur (TINDAKAN) yang dicatat MANUAL perawat via
+        // addTindakan (reference_type='procedure', reference_id=Procedure.id) TAPI juga menjadi
+        // komponen paket BEDAH billable → JANGAN ditagih lagi di sini. Prosedur itu sudah
+        // terwakili baris buildPaketProcedureLines + tercakup harga paket (computePaketDiscountLines).
+        // Tanpa guard ini prosedur tertagih 2× (baris manual full-price + paket). Basis diskon
+        // paket ikut benar otomatis karena dihitung dari baris yang BENAR-BENAR terbentuk.
+        $paketProcIds = [];
+        foreach ($this->billablePaketSnapshots($visit) as $snap) {
+            if ($snap->package_type !== VisitSurgeryPackage::TYPE_BEDAH) {
+                continue;
+            }
+            foreach ($snap->items as $it) {
+                if ($it->item_type === VisitSurgeryPackageItem::TYPE_PROCEDURE && $it->item_id) {
+                    $paketProcIds[$it->item_id] = true;
+                }
+            }
+        }
+
         // Map charge_type RANAP → item_type/category invoice (label tetap informatif).
         $map = [
             InpatientCharge::TYPE_ROOM      => ['ROOM',      'Kamar Rawat Inap'],
@@ -1872,6 +1890,13 @@ class KasirService
 
         $lines = [];
         foreach ($charges as $c) {
+            // Skip prosedur manual yang duplikat komponen paket BEDAH billable (anti dobel-tagih).
+            if ($c->charge_type === InpatientCharge::TYPE_TINDAKAN
+                && $c->reference_type === 'procedure'
+                && $c->reference_id
+                && isset($paketProcIds[$c->reference_id])) {
+                continue;
+            }
             [$itemType, $category] = $map[$c->charge_type] ?? ['LAINNYA', 'Lainnya'];
             $total = (float) $c->total_price;
             $lines[] = [
@@ -2909,7 +2934,15 @@ class KasirService
         }
 
         return DB::transaction(function () use ($invoice, $id) {
-            $invoice->update(['status' => 'CANCELLED']);
+            // Kunci baris & cek ulang status di dalam txn: dua cancelInvoice konkuren
+            // (atau cancel vs delete-item) bisa lolos guard di luar txn dan restock
+            // stok DUA KALI. Request kedua blokir lalu batal di sini.
+            $locked = BillingInvoice::whereKey($id)->lockForUpdate()->first();
+            if (! $locked || in_array($locked->status, ['PAID', 'PARTIALLY_PAID', 'CANCELLED'], true)) {
+                throw new \Exception('Invoice sudah dibatalkan/dibayar (status berubah). Muat ulang data lalu coba lagi.', 422);
+            }
+
+            $locked->update(['status' => 'CANCELLED']);
 
             // Kembalikan stok FARMASI yang dipotong saat kasir menambah BHP/obat manual.
             // Tanpa ini, pembatalan terminal membocorkan stok (item sudah consume saat
@@ -3135,38 +3168,52 @@ class KasirService
         $user = auth('api')->user();
 
         return DB::transaction(function () use ($invoice, $data, $user) {
-            // covered_amount minimal harus menutup total (full cover). Naikkan bila perlu.
-            $covered = max((float) $invoice->covered_amount, (float) $invoice->total - (float) $invoice->paid_amount);
+            // Kunci baris & validasi ulang DI DALAM txn: findOrFail + cek status di atas
+            // berada di luar transaksi (TOCTOU). Tanpa lock, pembayaran tunai konkuren
+            // atau double-confirm bisa menimpa paid_amount jadi "INSURANCE" (kas hilang
+            // dari rekonsiliasi) atau menggandakan draft klaim. Request kedua blokir
+            // di lock lalu batal di sini.
+            $locked = BillingInvoice::whereKey($invoice->getKey())->lockForUpdate()->first();
+            if (! $locked || ! in_array($locked->status, ['FINALIZED', 'PARTIALLY_PAID'])) {
+                throw new \Exception('Invoice sudah diproses (status berubah). Muat ulang data lalu coba lagi.', 422);
+            }
+            $patientDueLocked = (float) $locked->total - (float) $locked->covered_amount - (float) $locked->paid_amount;
+            if ($patientDueLocked > 0.009) {
+                throw new \Exception('Tagihan berubah — masih ada sisa yang harus dibayar pasien. Muat ulang lalu gunakan proses pembayaran biasa.', 422);
+            }
 
-            $invoice->update([
+            // covered_amount minimal harus menutup total (full cover). Naikkan bila perlu.
+            $covered = max((float) $locked->covered_amount, (float) $locked->total - (float) $locked->paid_amount);
+
+            $locked->update([
                 'covered_amount' => $covered,
                 'covered_by'     => $user->id,
-                'covered_at'     => $invoice->covered_at ?? now(),
+                'covered_at'     => $locked->covered_at ?? now(),
                 'payment_method' => 'INSURANCE',
                 'status'         => 'PAID',
                 'paid_at'        => now(),
                 'cashier_id'     => $user->employee_id,
-                'notes'          => $data['notes'] ?? $invoice->notes,
+                'notes'          => $data['notes'] ?? $locked->notes,
             ]);
 
             // Rutekan SEMUA leg rantai rujuk-internal (bukan hanya anchor) — leg rujukan
             // sering memegang resep "Obat Pulang"; tanpa ini ia nyangkut KASIR & hilang
             // dari Dispensing Farmasi walau invoice sudah PAID.
-            $this->routeChainAfterKasirClose($invoice);
+            $this->routeChainAfterKasirClose($locked);
 
-            $this->maybeCreateInsuranceClaimDraft($invoice);
+            $this->maybeCreateInsuranceClaimDraft($locked);
             // COB BPJS+asuransi: penjamin-1 BPJS juga perlu draft klaim INA-CBG (self-guarded).
-            $this->maybeCreateBpjsClaimDraft($invoice);
+            $this->maybeCreateBpjsClaimDraft($locked);
 
             $this->log(
                 $user->id,
                 'CONFIRM_INSURANCE_COVERAGE',
                 BillingInvoice::class,
-                $invoice->id,
+                $locked->id,
                 "Ditanggung asuransi Rp {$covered} — status: PAID (INSURANCE)"
             );
 
-            return $invoice->fresh(['items', 'visit.patient', 'cashier']);
+            return $locked->fresh(['items', 'visit.patient', 'cashier']);
         });
     }
 
@@ -3204,37 +3251,45 @@ class KasirService
         $user = auth('api')->user();
 
         return DB::transaction(function () use ($invoice, $data, $user) {
-            // Finalize dulu kalau masih DRAFT (kasir konfirmasi langsung tanpa step terpisah).
-            if ($invoice->status === 'DRAFT') {
-                $invoice->update(['status' => 'FINALIZED']);
+            // Kunci baris & validasi ulang DI DALAM txn (guard di atas di luar txn):
+            // cegah double-confirm / balapan dengan pembayaran tunai yang menandai
+            // PAID→BPJS (kas hilang) atau menggandakan LPK. Request kedua batal di sini.
+            $locked = BillingInvoice::whereKey($invoice->getKey())->lockForUpdate()->first();
+            if (! $locked || in_array($locked->status, ['PAID', 'CANCELLED'], true)) {
+                throw new \Exception('Invoice sudah lunas/dibatalkan (status berubah). Muat ulang data lalu coba lagi.', 422);
             }
 
-            $invoice->update([
+            // Finalize dulu kalau masih DRAFT (kasir konfirmasi langsung tanpa step terpisah).
+            if ($locked->status === 'DRAFT') {
+                $locked->update(['status' => 'FINALIZED']);
+            }
+
+            $locked->update([
                 'payment_method' => 'BPJS',
                 'status'         => 'PAID',
                 'paid_amount'    => 0,
                 // Ditanggung penuh INA-CBG → sisa pasien = 0 (juga benahi invoice
                 // lama yang dikonsolidasi sebelum fix covered_amount BPJS).
-                'covered_amount' => (float) $invoice->total,
+                'covered_amount' => (float) $locked->total,
                 'paid_at'        => now(),
                 'cashier_id'     => $user->employee_id,
-                'notes'          => $data['notes'] ?? $invoice->notes,
+                'notes'          => $data['notes'] ?? $locked->notes,
             ]);
 
             // Rutekan SEMUA leg rantai rujuk-internal (bukan hanya anchor) — leg rujukan
             // sering memegang resep "Obat Pulang"; tanpa ini ia nyangkut KASIR & hilang
             // dari Dispensing Farmasi walau invoice sudah PAID.
-            $this->routeChainAfterKasirClose($invoice);
+            $this->routeChainAfterKasirClose($locked);
 
             $this->log(
                 $user->id,
                 'CONFIRM_BPJS_COVERAGE',
                 BillingInvoice::class,
-                $invoice->id,
+                $locked->id,
                 "Kunjungan BPJS dikonfirmasi — status: PAID (BPJS), ditagih via klaim INA-CBG"
             );
 
-            return $invoice->fresh(['items', 'visit.patient', 'cashier']);
+            return $locked->fresh(['items', 'visit.patient', 'cashier']);
         });
     }
 
@@ -3580,7 +3635,18 @@ class KasirService
             throw new \Exception('Invoice sudah final, tidak bisa hapus item.', 422);
         }
 
-        DB::transaction(function () use ($item) {
+        DB::transaction(function () use ($id, $invoice) {
+            // Kunci invoice → serialize dgn cancelInvoice & delete-item konkuren agar
+            // stok tak dikembalikan DUA KALI (over-credit FEFO). Ambil ulang item di
+            // bawah lock; bila sudah terhapus/invoice jadi final, batalkan idempoten.
+            $lockedInv = BillingInvoice::whereKey($invoice->getKey())->lockForUpdate()->first();
+            if (! $lockedInv || in_array($lockedInv->status, ['PAID', 'CANCELLED'], true)) {
+                throw new \Exception('Invoice sudah final (status berubah). Muat ulang data lalu coba lagi.', 422);
+            }
+            $item = BillingItem::whereKey($id)->lockForUpdate()->first();
+            if (! $item) {
+                return; // sudah dihapus request lain — idempoten, jangan restock lagi
+            }
             // Kembalikan stok FARMASI yang dipotong saat input kasir (BHP & obat).
             $this->restockKasirItem($item);
             // Obat kasir: hapus juga item resepnya agar tak diregenerasi buildObatLines
@@ -4591,20 +4657,26 @@ class KasirService
     {
         $tanggal = $filters['tanggal'] ?? today()->toDateString();
 
-        $invoices = BillingInvoice::whereDate('created_at', $tanggal)
+        // Laporan KAS: kaitkan pendapatan ke TANGGAL PEMBAYARAN (paid_at), bukan tanggal
+        // invoice DIBUAT (created_at). Tagihan sering dibayar di hari berbeda (mis.
+        // bedah/tagihan H+N) → memakai created_at membuat rekonsiliasi laci salah
+        // (phantom shortfall/overage). Fallback ke created_at utk data lama tanpa paid_at.
+        $invoices = BillingInvoice::whereRaw('DATE(COALESCE(paid_at, created_at)) = ?', [$tanggal])
             ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
             ->get();
 
-        $totalPendapatan  = $invoices->sum('paid_amount');
+        $totalPendapatan  = $invoices->sum('paid_amount');      // tunai/nyata diterima
+        $totalDitanggung  = $invoices->sum('covered_amount');   // asuransi/BPJS (bukan kas)
         $perMetodeBayar   = $invoices->groupBy('payment_method')
             ->map(fn ($g) => ['count' => $g->count(), 'total' => $g->sum('paid_amount')]);
 
         return [
             'tanggal'          => $tanggal,
-            'total_invoice'    => BillingInvoice::whereDate('created_at', $tanggal)->count(),
+            'total_invoice'    => $invoices->count(),            // invoice yang di-settle pd tgl ini
             'total_lunas'      => $invoices->where('status', 'PAID')->count(),
             'total_sebagian'   => $invoices->where('status', 'PARTIALLY_PAID')->count(),
             'total_pendapatan' => $totalPendapatan,
+            'total_ditanggung_asuransi' => $totalDitanggung,
             'per_metode_bayar' => $perMetodeBayar,
         ];
     }
@@ -4614,7 +4686,10 @@ class KasirService
         $from = $filters['from'] ?? today()->startOfMonth()->toDateString();
         $to   = $filters['to']   ?? today()->toDateString();
 
-        $invoices = BillingInvoice::whereBetween(DB::raw('DATE(created_at)'), [$from, $to])
+        // Rekap pendapatan by TANGGAL PEMBAYARAN (paid_at), bukan created_at — lihat
+        // catatan di getLaporanHarian. Sertakan total ditanggung asuransi/BPJS agar
+        // pendapatan tertanggung tidak "hilang" (selama ini terhitung 0 di rekap).
+        $invoices = BillingInvoice::whereBetween(DB::raw('DATE(COALESCE(paid_at, created_at))'), [$from, $to])
             ->whereIn('status', ['PAID', 'PARTIALLY_PAID'])
             ->get();
 
@@ -4622,6 +4697,7 @@ class KasirService
             'periode'          => ['from' => $from, 'to' => $to],
             'total_invoice'    => $invoices->count(),
             'total_pendapatan' => $invoices->sum('paid_amount'),
+            'total_ditanggung_asuransi' => $invoices->sum('covered_amount'),
             'per_metode_bayar' => $invoices->groupBy('payment_method')
                 ->map(fn ($g) => ['count' => $g->count(), 'total' => $g->sum('paid_amount')]),
         ];

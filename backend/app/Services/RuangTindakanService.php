@@ -46,6 +46,17 @@ class RuangTindakanService
         // belum "Kirim ke Kasir"). Queue station BEDAH hanya pelengkap (tombol Panggil
         // + nomor antrean). Ini mencegah pasien laser same-day "hilang" dari papan dan
         // hanya muncul di tab Terjadwal.
+        // Resep DOKTER (Tab 3 rawat jalan) yang masih aktif → ditampilkan read-only di
+        // stasiun ini agar operator tak mengetik ulang obat yang sama (cegah dobel).
+        // is_post_op/is_pre_op dikecualikan (resep pasca-/pra-tindakan bukan resep dokter).
+        $resepDokterWith = function ($q) {
+            $q->where('type', '!=', Prescription::TYPE_RANAP)
+                ->where('is_post_op', false)
+                ->where('is_pre_op', false)
+                ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING'])
+                ->with('items.medication');
+        };
+
         $schedules = SurgerySchedule::with([
             'surgeryPackage',
             'leadSurgeon',
@@ -54,6 +65,7 @@ class RuangTindakanService
             'visit.insurer',
             'visit.doctorExamination.doctor',
             'visit.refractionRecord',
+            'visit.prescriptions' => $resepDokterWith,
             'visit.queues' => fn ($q) => $q->where('station', 'BEDAH')
                 ->orderByDesc('created_at'),
         ])
@@ -65,9 +77,10 @@ class RuangTindakanService
 
         $activeStatuses = [Queue::STATUS_WAITING, Queue::STATUS_CALLED, Queue::STATUS_IN_PROGRESS];
 
-        $rows = $schedules->map(function (SurgerySchedule $s) use ($activeStatuses) {
+        $rows = $schedules->map(function (SurgerySchedule $s) use ($activeStatuses, $resepDokterWith) {
             $visit   = $s->visit
-                ?? Visit::with(['patient', 'insurer', 'doctorExamination.doctor', 'refractionRecord', 'queues'])
+                ?? Visit::with(['patient', 'insurer', 'doctorExamination.doctor', 'refractionRecord', 'queues',
+                    'prescriptions' => $resepDokterWith])
                     ->whereHas('doctorExamination', fn ($q) => $q->where('surgery_schedule_id', $s->id))
                     ->first();
             $patient = $visit?->patient;
@@ -78,6 +91,20 @@ class RuangTindakanService
             $operator = $s->leadSurgeon?->name ?? $exam?->doctor?->name ?? null;
             $record   = $s->surgeryRecord;
             $refr     = $visit?->refractionRecord;
+
+            // Obat yang SUDAH diresepkan dokter (Tab 3) — read-only di FE agar operator
+            // tak menulis ulang → cegah dobel resep di Farmasi.
+            $resepDokter = ($visit?->prescriptions ?? collect())
+                ->flatMap(fn ($rx) => $rx->items->map(fn ($it) => [
+                    'name'          => $it->medication?->name ?? '—',
+                    'quantity'      => $it->quantity,
+                    'dose'          => $it->dose,
+                    'frequency'     => $it->frequency,
+                    'duration_days' => $it->duration_days,
+                    'status'        => $rx->status,
+                ]))
+                ->values()
+                ->all();
 
             // Queue station BEDAH terkait (opsional): pilih yang masih aktif, else terbaru.
             $queues = $visit?->queues?->where('station', 'BEDAH') ?? collect();
@@ -135,6 +162,9 @@ class RuangTindakanService
                     'followup_date'       => $record->followup_date?->toDateString(),
                     'post_op_disposition' => $record->post_op_disposition,
                 ] : null,
+
+                // Resep dokter (Tab 3) yang sudah ada — ditampilkan read-only (anti-dobel).
+                'resep_dokter' => $resepDokter,
 
                 // Pra-tindakan (visus/IOP) bila pasien lewat refraksi.
                 'preop' => $refr ? [
@@ -251,6 +281,20 @@ class RuangTindakanService
             $visit = Visit::where('surgery_schedule_id', $schedule->id)->first()
                 ?? Visit::whereHas('doctorExamination',
                     fn ($q) => $q->where('surgery_schedule_id', $schedule->id))->first();
+
+            // Resep DOKTER (Tab 3) yang masih DRAFT (dokter belum "Kirim ke Kasir"/
+            // finalisasi saat merutekan ke Ruang Tindakan) → promosikan ke SUBMITTED saat
+            // tindakan selesai agar MASUK antrean Verifikasi Farmasi (getVerificationQueue
+            // hanya menampilkan status SUBMITTED). Idempoten: SUBMITTED/DISPENSING/DISPENSED
+            // tak tersentuh. Pola sama DokterService::finalizeKunjungan/kirimKeKasir.
+            if ($visit) {
+                Prescription::where('visit_id', $visit->id)
+                    ->where('type', '!=', Prescription::TYPE_RANAP)
+                    ->where('is_post_op', false)
+                    ->where('is_pre_op', false)
+                    ->where('status', 'DRAFT')
+                    ->update(['status' => 'SUBMITTED']);
+            }
 
             // Catat tindakan laser ke visit_services agar tertagih di Kasir
             // (KasirService::buildTindakanLines → procedure_tariffs per penjamin).

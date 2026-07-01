@@ -80,10 +80,15 @@ class PenunjangIngestService
             $expertisePatch = array_merge($expertisePatch ?? [], $dicom);
         }
 
+        // Path file tersimpan diekspos ke luar closure agar bisa DIBERSIHKAN bila
+        // transaksi ROLLBACK (Storage TIDAK transaksional → file yatim di disk).
+        $storedPath = null;
+
         // Operasi inti: simpan file → cocokkan order → attach hasil / kirim ke Inbox.
-        $persist = function () use ($file, $meta, $ref, $expertisePatch): array {
+        $persist = function () use ($file, $meta, $ref, $expertisePatch, &$storedPath): array {
             // Simpan file ke disk public (folder sama dgn upload manual → attachment_url jalan).
             $path = $file->store('penunjang-hasil', 'public');
+            $storedPath = $path;
 
             $order = $this->matchOrder($meta);
 
@@ -117,28 +122,39 @@ class PenunjangIngestService
 
         // Tanpa external_ref tak ada dasar idempotensi → langsung proses.
         if (! $ref) {
-            return $persist();
+            try {
+                return $persist();
+            } catch (\Throwable $e) {
+                if ($storedPath) { \Illuminate\Support\Facades\Storage::disk('public')->delete($storedPath); }
+                throw $e;
+            }
         }
 
         // Dengan external_ref: serialize ingest ber-ref SAMA (retry bridge konkuren) via
         // advisory xact lock + bungkus cek-duplikat & create dalam SATU transaksi, agar
         // cek-lalu-create jadi ATOMIK (cegah duplikat Inbox/DiagnosticResult saat race).
         // Lock dilepas otomatis saat commit/rollback.
-        return DB::transaction(function () use ($ref, $persist) {
-            DB::statement('SELECT pg_advisory_xact_lock(hashtext(?))', ['penunjang_ingest:' . $ref]);
+        try {
+            return DB::transaction(function () use ($ref, $persist) {
+                DB::statement('SELECT pg_advisory_xact_lock(hashtext(?))', ['penunjang_ingest:' . $ref]);
 
-            $inbox = PenunjangIngestInbox::where('external_ref', $ref)
-                ->whereIn('status', ['UNMATCHED', 'ASSIGNED'])->first();
-            if ($inbox) {
-                return ['matched' => $inbox->status === 'ASSIGNED', 'inbox_id' => $inbox->id, 'duplicate' => true];
-            }
-            $existing = DiagnosticResult::whereJsonContains('expertise_data->ingest_refs', $ref)->first();
-            if ($existing) {
-                return ['matched' => true, 'order_id' => $existing->diagnostic_order_id, 'duplicate' => true];
-            }
+                $inbox = PenunjangIngestInbox::where('external_ref', $ref)
+                    ->whereIn('status', ['UNMATCHED', 'ASSIGNED'])->first();
+                if ($inbox) {
+                    return ['matched' => $inbox->status === 'ASSIGNED', 'inbox_id' => $inbox->id, 'duplicate' => true];
+                }
+                $existing = DiagnosticResult::whereJsonContains('expertise_data->ingest_refs', $ref)->first();
+                if ($existing) {
+                    return ['matched' => true, 'order_id' => $existing->diagnostic_order_id, 'duplicate' => true];
+                }
 
-            return $persist();
-        });
+                return $persist();
+            });
+        } catch (\Throwable $e) {
+            // Transaksi batal setelah file tersimpan → hapus file yatim di disk.
+            if ($storedPath) { \Illuminate\Support\Facades\Storage::disk('public')->delete($storedPath); }
+            throw $e;
+        }
     }
 
     /** Resolusi order target dari meta. Null = tak ada/ambigu → caller kirim ke Inbox. */

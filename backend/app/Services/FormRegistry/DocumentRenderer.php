@@ -57,6 +57,11 @@ final class DocumentRenderer
         // replace dengan SVG. Kalau substitute di sini, SVG akan diganti string
         // kosong duluan.
         $values = [];
+        // Kunci yang nilainya MEMANG HTML (mis. <img> dari image_url) — dikecualikan
+        // dari HTML-escaping di substitute(). Field lain (teks bebas klinis, nama
+        // pasien) WAJIB di-escape agar tidak jadi vektor stored-XSS di v-html FE
+        // maupun SSRF via <img>/<style url()> saat dompdf me-render PDF.
+        $rawHtmlKeys = [];
         foreach ($fields as $field) {
             $key = $field['key'] ?? null;
             if (!is_string($key) || $key === '') continue;
@@ -131,13 +136,14 @@ final class DocumentRenderer
                 $maxH = $field['max_height_px'] ?? 80;
                 $values[$key] = '<img src="' . htmlspecialchars($resolved, ENT_QUOTES)
                     . '" alt="' . $alt . '" style="max-height:' . (int) $maxH . 'px;height:auto;display:inline-block;"/>';
+                $rawHtmlKeys[] = $key; // nilai sudah berupa <img> tersanitasi → jangan di-escape lagi
                 continue;
             }
 
             $values[$key] = $resolved === null ? '' : (string) $resolved;
         }
 
-        return $this->substitute($layout, $values, /* keepUnknown */ true);
+        return $this->substitute($layout, $values, /* keepUnknown */ true, $rawHtmlKeys);
     }
 
     /**
@@ -374,6 +380,20 @@ HTML;
     {
         // Strip outer XML declaration kalau ada.
         $svg = preg_replace('/<\?xml[^>]*\?>/', '', $svg) ?? $svg;
+
+        // SANITASI (defense-in-depth): signature_svg dikirim klien & hanya
+        // divalidasi `nullable|string`, lalu di-embed apa adanya ke HTML dokumen
+        // yang dirender via v-html di FE (layar TTD/bulk-sign). Buang vektor XSS.
+        $svg = preg_replace('#<\s*script\b[^>]*>.*?<\s*/\s*script\s*>#is', '', $svg) ?? $svg;
+        $svg = preg_replace('#<\s*script\b[^>]*/?>#is', '', $svg) ?? $svg;
+        // <foreignObject>/<iframe>/<use> bisa menyisipkan HTML/JS atau external ref.
+        $svg = preg_replace('#<\s*(foreignObject|iframe|use)\b[^>]*>.*?<\s*/\s*\1\s*>#is', '', $svg) ?? $svg;
+        $svg = preg_replace('#<\s*(foreignObject|iframe|use)\b[^>]*/?>#is', '', $svg) ?? $svg;
+        // Atribut event handler on*="..." (onload/onclick/dst).
+        $svg = preg_replace('#\son[a-zA-Z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#is', '', $svg) ?? $svg;
+        // href/xlink:href berskema javascript: (SVG <a>).
+        $svg = preg_replace('#\s(?:xlink:)?href\s*=\s*("|\')?\s*javascript:[^"\'>\s]*("|\')?#is', '', $svg) ?? $svg;
+
         // Tambah/replace width="100%" + height="auto" di tag <svg>.
         $svg = preg_replace(
             '/<svg([^>]*)>/',
@@ -428,13 +448,22 @@ HTML;
      *                           dibiarkan utuh (untuk pipeline render → embedSignatures).
      *                           false → di-replace dengan string kosong (default lama).
      */
-    private function substitute(string $template, array $values, bool $keepUnknown = false): string
+    private function substitute(string $template, array $values, bool $keepUnknown = false, array $rawHtmlKeys = []): string
     {
+        $rawSet = array_flip($rawHtmlKeys);
         return preg_replace_callback(
             '/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/',
-            static function (array $m) use ($values, $keepUnknown): string {
+            static function (array $m) use ($values, $keepUnknown, $rawSet): string {
                 $key = $m[1];
-                if (array_key_exists($key, $values)) return (string) $values[$key];
+                if (array_key_exists($key, $values)) {
+                    $val = (string) $values[$key];
+                    // Nilai HTML sengaja (image_url) lolos; teks bebas di-escape agar
+                    // markup yang diketik user tidak dieksekusi (XSS di v-html / SSRF
+                    // via <img> saat dompdf render). \n dipertahankan (white-space:pre-line).
+                    return array_key_exists($key, $rawSet)
+                        ? $val
+                        : htmlspecialchars($val, ENT_QUOTES, 'UTF-8');
+                }
                 return $keepUnknown ? $m[0] : '';
             },
             $template

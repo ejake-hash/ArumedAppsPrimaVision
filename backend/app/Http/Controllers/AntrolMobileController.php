@@ -128,7 +128,12 @@ class AntrolMobileController extends Controller
             // Skeleton belum diimplementasi.
             return $this->bpjs(null, 201, 'Belum diimplementasi.', $action, $request);
         } catch (\Throwable $e) {
-            return $this->bpjs(null, 201, $e->getMessage(), $action, $request);
+            // JANGAN bocorkan pesan internal (skema DB / infra) ke sistem eksternal BPJS.
+            // Kegagalan bisnis normal memakai return $this->fail(...) (array code 201),
+            // BUKAN exception — jadi exception di sini = tak terduga. Log lengkap di
+            // server (sebelumnya hilang) + balikan pesan generik.
+            \Illuminate\Support\Facades\Log::error("Antrol {$action} error: " . $e->getMessage(), ['exception' => $e]);
+            return $this->bpjs(null, 201, 'Terjadi kesalahan pada layanan antrean. Silakan coba lagi.', $action, $request);
         }
     }
 

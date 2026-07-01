@@ -105,10 +105,14 @@ Route::prefix('v1')->group(function () {
     Route::prefix('anjungan')->group(function () {
         Route::get('/status',              [AdmisiController::class, 'anjunganStatus']);
         Route::get('/dokter-aktif',        [AdmisiController::class, 'anjunganDokterAktif']);
-        Route::post('/tiket-umum',         [AdmisiController::class, 'anjunganTiketUmum']);
-        Route::post('/checkin-bpjs',       [AdmisiController::class, 'anjunganCheckinBpjs']);
-        Route::post('/ambil-antrean-bpjs', [AdmisiController::class, 'anjunganAmbilAntreanBpjs']);
-        Route::post('/terbitkan-sep',      [AdmisiController::class, 'anjunganTerbitkanSep']);
+        // Rate-limit endpoint TULIS kiosk: limiter 'kiosk' dikunci per (PATH+IP) agar
+        // tiap aksi punya bucket sendiri (bare 'throttle:N' berbagi 1 bucket/IP lintas
+        // endpoint → pasien sah bisa 429 di tengah alur saat banyak kiosk 1 IP). Menahan
+        // enumerasi NIK & DoS anonim; read polling TIDAK dibatasi. Lih. AppServiceProvider.
+        Route::post('/tiket-umum',         [AdmisiController::class, 'anjunganTiketUmum'])->middleware('throttle:kiosk');
+        Route::post('/checkin-bpjs',       [AdmisiController::class, 'anjunganCheckinBpjs'])->middleware('throttle:kiosk');
+        Route::post('/ambil-antrean-bpjs', [AdmisiController::class, 'anjunganAmbilAntreanBpjs'])->middleware('throttle:kiosk');
+        Route::post('/terbitkan-sep',      [AdmisiController::class, 'anjunganTerbitkanSep'])->middleware('throttle:kiosk');
     });
 
     // =========================================================================
@@ -116,7 +120,7 @@ Route::prefix('v1')->group(function () {
     //     di layar publik, jadi tidak ada privacy regression)
     // =========================================================================
     Route::prefix('antrean-tv')->group(function () {
-        Route::get('/snapshot',          [QueueController::class, 'index']);
+        Route::get('/snapshot',          [QueueController::class, 'snapshotPublic']);
         // Dokter aktif hari ini — untuk panel TV display (public, data non-sensitif)
         Route::get('/dokter-aktif',      [JadwalDokterController::class, 'aktifHariIni']);
         // Display settings (TTS template, flash text, badge, toggle kartu) — public read
@@ -130,7 +134,7 @@ Route::prefix('v1')->group(function () {
         // Papan ketersediaan tempat tidur (agregat tanpa PII) — transparansi publik
         Route::get('/bed-availability',  [TvBedAvailabilityController::class, 'index']);
         // Registry TV per-perangkat — TV lapor diri & ambil media efektifnya (public)
-        Route::post('/device/register',  [TvDeviceController::class, 'register']);
+        Route::post('/device/register',  [TvDeviceController::class, 'register'])->middleware('throttle:tv-register');
         Route::get('/device/{deviceKey}', [TvDeviceController::class, 'show']);
     });
 
@@ -140,7 +144,9 @@ Route::prefix('v1')->group(function () {
     //     /token PUBLIC tanpa middleware (terbitkan token via x-username+x-password).
     // =========================================================================
     Route::prefix('antrol')->group(function () {
-        Route::get('/token', [AntrolMobileController::class, 'token']);
+        // Rate-limit penerbitan token (limiter 'antrol-token', per-IP): tahan brute-force
+        // kredensial Mobile-JKN. Lih. AppServiceProvider.
+        Route::get('/token', [AntrolMobileController::class, 'token'])->middleware('throttle:antrol-token');
 
         Route::middleware('verify-antrol-token')->group(function () {
             Route::post('/status',                 [AntrolMobileController::class, 'status']);
@@ -217,11 +223,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/',                          [QueueController::class, 'index']);          // snapshot semua station
             Route::get('/station/{station}',         [QueueController::class, 'byStation']);      // per station
             Route::get('/{id}',                      [QueueController::class, 'show']);
-            Route::put('/{id}/panggil',              [QueueController::class, 'panggil']);
-            Route::put('/{id}/mulai',                [QueueController::class, 'mulai']);
-            Route::put('/{id}/lewati',               [QueueController::class, 'lewati']);
-            Route::put('/{id}/selesai',              [QueueController::class, 'selesai']);        // advance ke next station
-            Route::put('/{id}/batal',                [QueueController::class, 'batal']);
+            Route::put('/{id}/panggil',              [QueueController::class, 'panggil'])->middleware('role:superadmin');
+            Route::put('/{id}/mulai',                [QueueController::class, 'mulai'])->middleware('role:superadmin');
+            Route::put('/{id}/lewati',               [QueueController::class, 'lewati'])->middleware('role:superadmin');
+            Route::put('/{id}/selesai',              [QueueController::class, 'selesai'])->middleware('role:superadmin');        // advance ke next station
+            Route::put('/{id}/batal',                [QueueController::class, 'batal'])->middleware('role:superadmin');
         });
 
         // -----------------------------------------------------------------
@@ -763,34 +769,34 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('farmasi')->middleware('permission:farmasi.read')->group(function () {
             Route::get('/antrian',                           [FarmasiController::class, 'indexAntrian']);
-            Route::put('/antrian/{id}/panggil',              [FarmasiController::class, 'panggilAntrian']);
-            Route::put('/antrian/{id}/lewati',               [FarmasiController::class, 'lewatiAntrian']);
-            Route::put('/antrian/{id}/selesai',              [FarmasiController::class, 'selesaiAntrian']);
+            Route::put('/antrian/{id}/panggil',              [FarmasiController::class, 'panggilAntrian'])->middleware('permission:farmasi.write');
+            Route::put('/antrian/{id}/lewati',               [FarmasiController::class, 'lewatiAntrian'])->middleware('permission:farmasi.write');
+            Route::put('/antrian/{id}/selesai',              [FarmasiController::class, 'selesaiAntrian'])->middleware('permission:farmasi.write');
 
             // Preview harga obat tambahan sesuai penjamin (harga yang ditagih kasir).
             Route::get('/harga-obat',                        [FarmasiController::class, 'previewHargaObat']);
 
             // Verifikasi Farmasi (gate sebelum tagihan Kasir, alur D→K→F).
             Route::get('/verifikasi',                        [FarmasiController::class, 'indexVerifikasi']);
-            Route::put('/resep/{id}/verifikasi',             [FarmasiController::class, 'verifikasiResep']);
-            Route::put('/resep/{id}/buka-verifikasi',        [FarmasiController::class, 'bukaVerifikasiResep']);
+            Route::put('/resep/{id}/verifikasi',             [FarmasiController::class, 'verifikasiResep'])->middleware('permission:farmasi.write');
+            Route::put('/resep/{id}/buka-verifikasi',        [FarmasiController::class, 'bukaVerifikasiResep'])->middleware('permission:farmasi.write');
             // Verifikasi BHP dokter (per kunjungan) + koreksi qty/hapus saat verifikasi.
-            Route::put('/visit/{visitId}/bhp/verifikasi',      [FarmasiController::class, 'verifikasiBhp']);
-            Route::put('/visit/{visitId}/bhp/buka-verifikasi', [FarmasiController::class, 'bukaVerifikasiBhp']);
-            Route::put('/bhp-usage/{id}',                       [FarmasiController::class, 'updateBhpUsage']);
-            Route::delete('/bhp-usage/{id}',                   [FarmasiController::class, 'deleteBhpUsage']);
+            Route::put('/visit/{visitId}/bhp/verifikasi',      [FarmasiController::class, 'verifikasiBhp'])->middleware('permission:farmasi.write');
+            Route::put('/visit/{visitId}/bhp/buka-verifikasi', [FarmasiController::class, 'bukaVerifikasiBhp'])->middleware('permission:farmasi.write');
+            Route::put('/bhp-usage/{id}',                       [FarmasiController::class, 'updateBhpUsage'])->middleware('permission:farmasi.write');
+            Route::delete('/bhp-usage/{id}',                   [FarmasiController::class, 'deleteBhpUsage'])->middleware('permission:farmasi.write');
 
             Route::get('/resep',                             [FarmasiController::class, 'indexResep']);
             Route::get('/resep/{id}',                        [FarmasiController::class, 'showResep']);
-            Route::put('/resep/{id}/dispensing',             [FarmasiController::class, 'startDispensing']);
-            Route::put('/resep/{id}/selesai',                [FarmasiController::class, 'selesaiDispensing']);
-            Route::put('/resep/{id}/cancel',                 [FarmasiController::class, 'cancelResep']);
+            Route::put('/resep/{id}/dispensing',             [FarmasiController::class, 'startDispensing'])->middleware('permission:farmasi.write');
+            Route::put('/resep/{id}/selesai',                [FarmasiController::class, 'selesaiDispensing'])->middleware('permission:farmasi.write');
+            Route::put('/resep/{id}/cancel',                 [FarmasiController::class, 'cancelResep'])->middleware('permission:farmasi.write');
 
             // Dispensing rawat inap — permintaan obat pasien dirawat (type RANAP).
             Route::get('/ranap/permintaan',                  [FarmasiController::class, 'indexRanapRequest']);
-            Route::put('/ranap/permintaan/{id}/siapkan',     [FarmasiController::class, 'siapkanRanapRequest']);
-            Route::put('/ranap/permintaan/{id}/serah',       [FarmasiController::class, 'serahRanapRequest']);
-            Route::put('/ranap/permintaan/{id}/tolak',       [FarmasiController::class, 'tolakRanapRequest']);
+            Route::put('/ranap/permintaan/{id}/siapkan',     [FarmasiController::class, 'siapkanRanapRequest'])->middleware('permission:farmasi.write');
+            Route::put('/ranap/permintaan/{id}/serah',       [FarmasiController::class, 'serahRanapRequest'])->middleware('permission:farmasi.write');
+            Route::put('/ranap/permintaan/{id}/tolak',       [FarmasiController::class, 'tolakRanapRequest'])->middleware('permission:farmasi.write');
 
             // Riwayat pemberian satu obat (laporan "diberikan ke siapa").
             Route::get('/obat/{medicationId}/riwayat-pemberian', [FarmasiController::class, 'riwayatPemberianObat']);
@@ -798,34 +804,37 @@ Route::prefix('v1')->group(function () {
             Route::get('/riwayat-pemberian/export',              [FarmasiController::class, 'exportRiwayatPemberian']);
             Route::get('/riwayat-pemberian',                     [FarmasiController::class, 'indexRiwayatPemberian']);
 
-            Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing']);
-            Route::put('/resep-item/{id}/kemasan',           [FarmasiController::class, 'setKemasanItem']);
-            Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing']);
-            Route::delete('/resep-item/{id}',                [FarmasiController::class, 'deleteItemDispensing']);
-            Route::post('/kunjungan/{visitId}/resep-otc',    [FarmasiController::class, 'storeOtcPrescription']);
+            Route::post('/resep/{resepId}/item',             [FarmasiController::class, 'storeItemDispensing'])->middleware('permission:farmasi.write');
+            Route::put('/resep-item/{id}/kemasan',           [FarmasiController::class, 'setKemasanItem'])->middleware('permission:farmasi.write');
+            Route::put('/resep-item/{id}',                   [FarmasiController::class, 'updateItemDispensing'])->middleware('permission:farmasi.write');
+            Route::delete('/resep-item/{id}',                [FarmasiController::class, 'deleteItemDispensing'])->middleware('permission:farmasi.write');
+            Route::post('/kunjungan/{visitId}/resep-otc',    [FarmasiController::class, 'storeOtcPrescription'])->middleware('permission:farmasi.write');
 
             // Penjualan obat bebas lepas (POS apotek) — tanpa Visit/RME.
             Route::get('/penjualan',                         [PharmacySaleController::class, 'index']);
-            Route::post('/penjualan',                        [PharmacySaleController::class, 'checkout']);
+            Route::post('/penjualan',                        [PharmacySaleController::class, 'checkout'])->middleware('permission:farmasi.write');
+            // Handoff Farmasi → Kasir (obat bebas dibayar di kasir). Definisikan SEBELUM
+            // /penjualan/{id} agar 'tagih-kasir' tak tertangkap sbg {id}.
+            Route::post('/penjualan/tagih-kasir',            [PharmacySaleController::class, 'toKasir'])->middleware('permission:farmasi.write');
             Route::get('/penjualan/{id}',                    [PharmacySaleController::class, 'show']);
-            Route::post('/penjualan/{id}/batal',             [PharmacySaleController::class, 'cancel']);
+            Route::post('/penjualan/{id}/batal',             [PharmacySaleController::class, 'cancel'])->middleware('permission:farmasi.write');
 
             Route::get('/surgery-request',                   [FarmasiController::class, 'indexSurgeryRequest']);
             Route::get('/surgery-request/{id}',              [FarmasiController::class, 'showSurgeryRequest']);
-            Route::put('/surgery-request/{id}/siapkan',      [FarmasiController::class, 'siapkanSurgeryRequest']);
-            Route::post('/surgery-request/{id}/kirim',       [FarmasiController::class, 'kirimSurgeryRequest']);
-            Route::post('/surgery-request/{id}/assign-iol',  [FarmasiController::class, 'assignIol']);
+            Route::put('/surgery-request/{id}/siapkan',      [FarmasiController::class, 'siapkanSurgeryRequest'])->middleware('permission:farmasi.write');
+            Route::post('/surgery-request/{id}/kirim',       [FarmasiController::class, 'kirimSurgeryRequest'])->middleware('permission:farmasi.write');
+            Route::post('/surgery-request/{id}/assign-iol',  [FarmasiController::class, 'assignIol'])->middleware('permission:farmasi.write');
 
             Route::get('/stok/obat',                         [FarmasiController::class, 'indexStokObat']);
             Route::get('/stok/opname/export',                [FarmasiController::class, 'exportOpname']);
             Route::get('/stok/obat/{id}',                    [FarmasiController::class, 'showStokObat']);
-            Route::put('/stok/obat/{id}',                    [FarmasiController::class, 'updateStokObat']);
+            Route::put('/stok/obat/{id}',                    [FarmasiController::class, 'updateStokObat'])->middleware('permission:farmasi.write');
 
             Route::get('/stok/bhp',                          [FarmasiController::class, 'indexStokBhp']);
-            Route::put('/stok/bhp/{id}',                     [FarmasiController::class, 'updateStokBhp']);
+            Route::put('/stok/bhp/{id}',                     [FarmasiController::class, 'updateStokBhp'])->middleware('permission:farmasi.write');
 
             Route::get('/stok/iol',                          [FarmasiController::class, 'indexStokIol']);
-            Route::put('/stok/iol/{id}',                     [FarmasiController::class, 'updateStokIol']);
+            Route::put('/stok/iol/{id}',                     [FarmasiController::class, 'updateStokIol'])->middleware('permission:farmasi.write');
             Route::get('/stok/alert',                        [FarmasiController::class, 'stokAlert']);
         });
 
@@ -834,35 +843,41 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('kasir')->middleware('permission:kasir.read')->group(function () {
             Route::get('/antrian',                         [KasirController::class, 'indexAntrian']);
-            Route::put('/antrian/{id}/panggil',            [KasirController::class, 'panggilAntrian']);
-            Route::put('/antrian/{id}/lewati',             [KasirController::class, 'lewatiAntrian']);
-            Route::put('/antrian/{id}/selesai',            [KasirController::class, 'selesaiAntrian']);
+            Route::put('/antrian/{id}/panggil',            [KasirController::class, 'panggilAntrian'])->middleware('permission:kasir.write');
+            Route::put('/antrian/{id}/lewati',             [KasirController::class, 'lewatiAntrian'])->middleware('permission:kasir.write');
+            Route::put('/antrian/{id}/selesai',            [KasirController::class, 'selesaiAntrian'])->middleware('permission:kasir.write');
 
             Route::get('/invoice',                         [KasirController::class, 'indexInvoice']);
             Route::get('/invoice/{visitId}',               [KasirController::class, 'showInvoice']);
             Route::get('/insurance-warning/{visitId}',     [KasirController::class, 'insuranceWarning']);
             Route::get('/invoice/{id}/coverages',          [KasirController::class, 'invoiceCoverages']);
-            Route::post('/invoice/{visitId}/generate',     [KasirController::class, 'generateInvoice']);
-            Route::put('/invoice/{id}',                    [KasirController::class, 'updateInvoice']);
-            Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice']);
-            Route::post('/invoice/{id}/resync-tarif',      [KasirController::class, 'resyncTarif']);
-            Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice']);
-            Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage']);
+            Route::post('/invoice/{visitId}/generate',     [KasirController::class, 'generateInvoice'])->middleware('permission:kasir.write');
+            Route::put('/invoice/{id}',                    [KasirController::class, 'updateInvoice'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/finalize',          [KasirController::class, 'finalizeInvoice'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/resync-tarif',      [KasirController::class, 'resyncTarif'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/bayar',             [KasirController::class, 'bayarInvoice'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/confirm-coverage',  [KasirController::class, 'confirmCoverage'])->middleware('permission:kasir.write');
             // Kasir input manual jumlah ditanggung penjamin (fallback bila pasien tak
             // terjangkau antrean Verifikasi Asuransi — mis. tagihan H+N / visit_date ≠ hari ini).
-            Route::post('/invoice/{id}/set-cover',         [KasirController::class, 'setCover']);
-            Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs']);
-            Route::post('/invoice/{id}/settle-zero',       [KasirController::class, 'settleZero']);
-            Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice']);
+            Route::post('/invoice/{id}/set-cover',         [KasirController::class, 'setCover'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/confirm-bpjs',      [KasirController::class, 'confirmBpjs'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/settle-zero',       [KasirController::class, 'settleZero'])->middleware('permission:kasir.write');
+            Route::post('/invoice/{id}/cancel',            [KasirController::class, 'cancelInvoice'])->middleware('permission:kasir.write');
             Route::get('/invoice/{id}/cetak',              [KasirController::class, 'cetakInvoice']);
             // Kirim kwitansi PDF ke email pasien (alternatif cetak fisik) — di-queue.
-            Route::post('/invoice/{id}/email',             [KasirController::class, 'emailReceipt']);
+            Route::post('/invoice/{id}/email',             [KasirController::class, 'emailReceipt'])->middleware('permission:kasir.write');
 
-            Route::post('/invoice/{invoiceId}/item',       [KasirController::class, 'storeItemInvoice']);
-            Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice']);
-            Route::delete('/invoice-item/{id}',            [KasirController::class, 'deleteItemInvoice']);
+            // Penjualan OBAT BEBAS dibayar di Kasir (handoff dari Farmasi). PharmacySale
+            // berdiri sendiri (tanpa Visit) → controller khusus, permission kasir.
+            Route::get('/obat-bebas',                      [PharmacySaleController::class, 'pendingIndex']);
+            Route::post('/obat-bebas/{id}/bayar',          [PharmacySaleController::class, 'settle'])->middleware('permission:kasir.write');
+            Route::get('/obat-bebas/{id}/kwitansi',        [PharmacySaleController::class, 'receipt']);
+
+            Route::post('/invoice/{invoiceId}/item',       [KasirController::class, 'storeItemInvoice'])->middleware('permission:kasir.write');
+            Route::put('/invoice-item/{id}',               [KasirController::class, 'updateItemInvoice'])->middleware('permission:kasir.write');
+            Route::delete('/invoice-item/{id}',            [KasirController::class, 'deleteItemInvoice'])->middleware('permission:kasir.write');
             // Toggle "terserap ke paket" baris obat/BHP tambahan (DISKON_PAKET ikut membesar).
-            Route::post('/invoice/{visitId}/absorb-item',  [KasirController::class, 'absorbItem']);
+            Route::post('/invoice/{visitId}/absorb-item',  [KasirController::class, 'absorbItem'])->middleware('permission:kasir.write');
 
             // Tarif tindakan per-penjamin (Edit Tagihan — pilih dari master, bukan ketik manual).
             Route::get('/tarif-tindakan',                  [KasirController::class, 'tarifTindakan']);
@@ -870,11 +885,11 @@ Route::prefix('v1')->group(function () {
             Route::get('/tarif-buku',                      [KasirController::class, 'tarifBuku']);
 
             Route::get('/cob/{visitId}',                   [KasirController::class, 'showCob']);
-            Route::put('/cob/{visitId}',                   [KasirController::class, 'updateCob']);
+            Route::put('/cob/{visitId}',                   [KasirController::class, 'updateCob'])->middleware('permission:kasir.write');
 
-            Route::put('/watermark',                       [KasirController::class, 'updateWatermark']);
+            Route::put('/watermark',                       [KasirController::class, 'updateWatermark'])->middleware('permission:kasir.write');
             Route::get('/print-settings',                  [KasirController::class, 'getPrintSettings']);
-            Route::put('/print-settings',                  [KasirController::class, 'updatePrintSettings']);
+            Route::put('/print-settings',                  [KasirController::class, 'updatePrintSettings'])->middleware('permission:kasir.write');
 
             Route::get('/laporan',                         [KasirController::class, 'laporanHarian']);
             Route::get('/laporan/rekap',                   [KasirController::class, 'laporanRekap']);
@@ -988,18 +1003,18 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/dokumen',                         [RekamMedisController::class, 'indexDokumen']);
             Route::get('/dokumen/{id}',                    [RekamMedisController::class, 'showDokumen']);
-            Route::post('/dokumen',                        [RekamMedisController::class, 'storeDokumen']);
-            Route::put('/dokumen/{id}',                    [RekamMedisController::class, 'updateDokumen']);
-            Route::post('/dokumen/{id}/submit',            [RekamMedisController::class, 'submitDokumen']);
-            Route::post('/dokumen/{id}/void',              [RekamMedisController::class, 'voidDokumen']);
+            Route::post('/dokumen',                        [RekamMedisController::class, 'storeDokumen'])->middleware('permission:rekam_medis.write');
+            Route::put('/dokumen/{id}',                    [RekamMedisController::class, 'updateDokumen'])->middleware('permission:rekam_medis.write');
+            Route::post('/dokumen/{id}/submit',            [RekamMedisController::class, 'submitDokumen'])->middleware('permission:rekam_medis.write');
+            Route::post('/dokumen/{id}/void',              [RekamMedisController::class, 'voidDokumen'])->middleware('permission:rekam_medis.write');
             Route::get('/dokumen/{id}/cetak',              [RekamMedisController::class, 'cetakDokumen']);
             Route::post('/dokumen/{id}/resend-notif',      [RekamMedisController::class, 'resendNotifDokumen']);
 
             Route::get('/verifikasi/{token}',              [RekamMedisController::class, 'verifikasiDokumen']);
 
             Route::get('/medical-record/{visitId}',        [RekamMedisController::class, 'showMedicalRecord']);
-            Route::post('/medical-record',                 [RekamMedisController::class, 'storeMedicalRecord']);
-            Route::put('/medical-record/{id}',             [RekamMedisController::class, 'updateMedicalRecord']);
+            Route::post('/medical-record',                 [RekamMedisController::class, 'storeMedicalRecord'])->middleware('permission:rekam_medis.write');
+            Route::put('/medical-record/{id}',             [RekamMedisController::class, 'updateMedicalRecord'])->middleware('permission:rekam_medis.write');
             Route::get('/medical-record/{id}/versions',    [RekamMedisController::class, 'versionsMedicalRecord']);
 
             Route::get('/notifikasi',                      [RekamMedisController::class, 'indexNotifikasi']);
@@ -1017,13 +1032,19 @@ Route::prefix('v1')->group(function () {
             Route::post('/document/{id}/finalize',         [RekamMedisController::class, 'finalizeDocument']);
             Route::get('/document/{id}/render',            [RekamMedisController::class, 'showDocumentSnapshot']);
             Route::put('/document/{id}/draft-content',     [RekamMedisController::class, 'saveDraftContent']);
+            // discardDraft dari FormRMRenderer — bagian alur AUTHORING klinis yang dipakai
+            // peran RME read-only (perawat/refraksionis mengisi form). Biarkan di grup
+            // rekam_medis.read (sejajar submit/finalize/draft-content) agar author bisa
+            // mengelola draft sendiri; guard state-machine di service menolak dokumen final.
             Route::delete('/document/{id}',                [RekamMedisController::class, 'deleteDocument']);
 
             // Fase 4 — Signature flow
             Route::post('/document/{id}/sign',             [RekamMedisController::class, 'signDocument']);
             Route::get('/document/{id}/signatures',        [RekamMedisController::class, 'listDocumentSignatures']);
+            // createAddendum juga dipicu dari FormRMRenderer (alur authoring) → biarkan
+            // di rekam_medis.read agar author read-only bisa menambah addendum sendiri.
             Route::post('/document/{id}/addendum',         [RekamMedisController::class, 'createAddendum']);
-            Route::post('/document/{id}/revisi',           [RekamMedisController::class, 'reviseDocument']);
+            Route::post('/document/{id}/revisi',           [RekamMedisController::class, 'reviseDocument'])->middleware('permission:rekam_medis.write');
             Route::get('/signature/{signatureId}/verify',  [RekamMedisController::class, 'verifySignature']);
             Route::get('/signature/{signatureId}/audit',   [RekamMedisController::class, 'auditSignature']);
             // Antrean TTD dokter dipisah ke key ttd_dokumen (hanya dokter lihat menu).

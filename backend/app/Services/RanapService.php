@@ -135,7 +135,7 @@ class RanapService
      */
     public function activeInpatients(): array
     {
-        return Visit::with(['patient', 'room', 'bed', 'activeBedAssignment'])
+        return Visit::with(['patient', 'room', 'bed', 'activeBedAssignment', 'surgerySchedule.surgeryPackage:id,name,code'])
             ->whereHas('activeBedAssignment')
             ->whereNull('discharge_at')
             ->orderBy('admission_at')
@@ -153,6 +153,9 @@ class RanapService
                 'inpatient_reason' => $v->inpatient_reason,
                 // Fase 8C — penanda pasien punya jadwal operasi (pre-op) untuk badge.
                 'has_surgery_schedule' => ! empty($v->surgery_schedule_id),
+                // Paket bedah pre-op (bila jadwal & paket sudah dipilih) → kolom di list Aktif.
+                'surgery_package'      => $v->surgerySchedule?->surgeryPackage?->name,
+                'surgery_package_code' => $v->surgerySchedule?->surgeryPackage?->code,
             ])->all();
     }
 
@@ -214,6 +217,14 @@ class RanapService
 
             if ($bed->status !== Bed::STATUS_AVAILABLE) {
                 throw new \Exception("Bed {$bed->label} tidak tersedia (status: {$bed->status}).", 422);
+            }
+
+            // Kunci baris visit & tolak admit-GANDA: mengunci bed saja tak cukup — dua
+            // admit konkuren utk pasien SAMA ke bed BERBEDA mengunci bed berbeda (tanpa
+            // kontensi) sehingga keduanya lolos → pasien menempati 2 bed. Re-cek di lock.
+            $lockedVisit = Visit::whereKey($visit->id)->lockForUpdate()->first();
+            if ($lockedVisit && $lockedVisit->ranap_bed_id && ($lockedVisit->jenis_pelayanan ?? null) === 'RANAP') {
+                throw new \Exception('Pasien sudah dirawat inap (sudah menempati bed). Muat ulang data lalu coba lagi.', 422);
             }
 
             $room    = $bed->room;
@@ -540,7 +551,7 @@ class RanapService
      * @param  array<array{medication_id:string,quantity?:float,dose?:string,
      *                      frequency?:string,route?:string,instructions?:string}>  $items
      */
-    public function createMedicationRequest(Visit $visit, array $items, ?string $pharmacyNote = null): \App\Models\Prescription
+    public function createMedicationRequest(Visit $visit, array $items, ?string $pharmacyNote = null, ?string $fulfillmentMode = null): \App\Models\Prescription
     {
         if ($visit->discharge_at) {
             throw new \Exception('Pasien sudah dipulangkan — tidak bisa membuat permintaan obat.', 422);
@@ -556,12 +567,19 @@ class RanapService
             throw new \Exception('Akun tanpa data pegawai tidak bisa membuat permintaan obat.', 422);
         }
 
-        return DB::transaction(function () use ($visit, $items, $employeeId, $pharmacyNote) {
+        // Cara serah: default Antar ke Kamar. PICKUP = keluarga ambil di loket Farmasi
+        // (efek stok/tagihan identik; hanya label & badge di tab Dispensing Ranap).
+        $mode = $fulfillmentMode === \App\Models\Prescription::MODE_PICKUP
+            ? \App\Models\Prescription::MODE_PICKUP
+            : \App\Models\Prescription::MODE_DELIVER;
+
+        return DB::transaction(function () use ($visit, $items, $employeeId, $pharmacyNote, $mode) {
             $prescription = \App\Models\Prescription::create([
                 'visit_id'         => $visit->id,
                 'prescribed_by_id' => $employeeId,
                 'status'           => 'SUBMITTED',
                 'type'             => \App\Models\Prescription::TYPE_RANAP,
+                'fulfillment_mode' => $mode,
                 'notes'            => 'Permintaan obat rawat inap',
                 'pharmacy_note'    => $pharmacyNote,
             ]);
@@ -1201,6 +1219,23 @@ class RanapService
         }
 
         return DB::transaction(function () use ($visit, $surgeryScheduleId, $options) {
+            // Kunci baris visit → serialisasi "Kirim ke Bedah" ganda-konkuren (double-click /
+            // retry). Tanpa ini dua transaksi bisa sama-sama baca surgery_schedule_id=null lalu
+            // maybeCreateSurgerySchedule 2× (SurgerySchedule yatim) + enqueue baris BEDAH duplikat.
+            $locked = Visit::whereKey($visit->id)->lockForUpdate()->first() ?? $visit;
+
+            // Idempoten: pasien SUDAH punya baris BEDAH aktif → kembalikan baris itu (jangan
+            // enqueue duplikat / buat jadwal yatim). Selaras guard PerawatService::kirimKeBedah
+            // & nextAfterDokter cabang 2d.
+            $existingBedah = Queue::byStation(Queue::STATION_BEDAH)
+                ->where('visit_id', $locked->id)
+                ->whereNotIn('status', [Queue::STATUS_COMPLETED, Queue::STATUS_CANCELLED])
+                ->latest('created_at')
+                ->first();
+            if ($existingBedah) {
+                return $existingBedah;
+            }
+
             // Prioritas sumber jadwal operasi (Fase 8C — otomatis dari jadwal dokter):
             //   1. $surgeryScheduleId eksplisit (jika petugas memilih jadwal tertentu);
             //   2. $visit->surgery_schedule_id yang SUDAH ADA — pasien pre-op rawat inap
@@ -1208,15 +1243,15 @@ class RanapService
             //      jadi RANAP→Bedah TIDAK perlu input paket ulang;
             //   3. else → maybeCreateSurgerySchedule (selalu buat jadwal; paket opsional).
             $scheduleId = $surgeryScheduleId
-                ?: $visit->surgery_schedule_id
-                ?: $this->maybeCreateSurgerySchedule($visit, $options);
+                ?: $locked->surgery_schedule_id
+                ?: $this->maybeCreateSurgerySchedule($locked, $options);
 
-            if ($scheduleId && $scheduleId !== $visit->surgery_schedule_id) {
-                $visit->update(['surgery_schedule_id' => $scheduleId]);
+            if ($scheduleId && $scheduleId !== $locked->surgery_schedule_id) {
+                $locked->update(['surgery_schedule_id' => $scheduleId]);
             }
 
             // Enqueue baris BEDAH (baris RANAP tetap hidup = bed ditahan).
-            return $this->queue->enqueue($visit->id, Queue::STATION_BEDAH);
+            return $this->queue->enqueue($locked->id, Queue::STATION_BEDAH);
         });
     }
 
@@ -1265,12 +1300,13 @@ class RanapService
         ?string $summary = null,
         ?string $followUpDate = null,
         ?string $followUpReason = null,
-        array $obatPulang = []
+        array $obatPulang = [],
+        ?string $obatPulangMode = null
     ): array {
         $dischargedRoomId = $visit->ranap_room_id;
 
         // 1. Tandai discharge (di luar advance — supaya gate RANAP→KASIR lolos).
-        DB::transaction(function () use ($visit, $dischargeType, $summary, $followUpDate, $followUpReason, $obatPulang) {
+        DB::transaction(function () use ($visit, $dischargeType, $summary, $followUpDate, $followUpReason, $obatPulang, $obatPulangMode) {
             $dischargeAt = now();
 
             $visit->update(array_merge([
@@ -1299,7 +1335,7 @@ class RanapService
             // Obat pulang (opsional): tagih via inpatient_charges OBAT + buat resep
             // SUBMITTED supaya pasien lanjut ke Farmasi (serah obat + potong stok).
             if (! empty($obatPulang)) {
-                $this->createObatPulang($visit, $obatPulang);
+                $this->createObatPulang($visit, $obatPulang, $obatPulangMode);
             }
         });
 
@@ -1351,9 +1387,18 @@ class RanapService
      *                      frequency?:string,route?:string,duration_days?:int,
      *                      instructions?:string,notes?:string}>  $items
      */
-    private function createObatPulang(Visit $visit, array $items): void
+    private function createObatPulang(Visit $visit, array $items, ?string $mode = null): void
     {
         $employeeId = auth('api')->user()?->employee_id;
+
+        // Cara serah obat pulang:
+        //   PICKUP  → resep type RAJAL (default) → loket Farmasi; pasien KASIR→FARMASI
+        //             mengambil obat (perilaku lama).
+        //   DELIVER → resep type RANAP + mode DELIVER → muncul di tab Dispensing Ranap,
+        //             diantar ke kamar. nextAfterKasir mengecualikan mode DELIVER agar
+        //             pasien tak diseret ke loket. Penagihan TETAP di sini (charged_upfront),
+        //             jadi serahRanapRequest MELEWATI addObat → anti-dobel.
+        $deliver = $mode === \App\Models\Prescription::MODE_DELIVER;
 
         // 1. Tagihan per item → inpatient_charges OBAT (harga resolve via getPrice).
         foreach ($items as $item) {
@@ -1379,6 +1424,12 @@ class RanapService
             'visit_id'         => $visit->id,
             'prescribed_by_id' => $employeeId,
             'status'           => 'SUBMITTED',
+            // DELIVER → type RANAP (tab Dispensing Ranap); PICKUP → RAJAL (loket).
+            'type'             => $deliver ? \App\Models\Prescription::TYPE_RANAP : \App\Models\Prescription::TYPE_RAJAL,
+            'fulfillment_mode' => $deliver ? \App\Models\Prescription::MODE_DELIVER : \App\Models\Prescription::MODE_PICKUP,
+            // Obat pulang selalu ditagih di muka (langkah 1) → tandai agar serah ranap
+            // tidak menagih ulang saat mode DELIVER diserahkan ke ruangan.
+            'charged_upfront'  => true,
             'notes'            => 'Obat pulang rawat inap',
         ]);
 

@@ -608,10 +608,19 @@ class RekamMedisController extends Controller
         ];
         $validated['captured_by_facilitator_user_id'] = auth('api')->id();
 
-        // Nakes TTD via PIN: signer_user_id default ke user yang login bila kosong.
-        if (in_array($validated['signer_type'], \App\Services\FormRegistry\SignatureService::INTERNAL_SIGNER_TYPES, true)
-            && empty($validated['signer_user_id'])) {
-            $validated['signer_user_id'] = auth('api')->id();
+        // Nakes TTD: signer_user_id default ke user yang login bila kosong.
+        if (in_array($validated['signer_type'], \App\Services\FormRegistry\SignatureService::INTERNAL_SIGNER_TYPES, true)) {
+            if (empty($validated['signer_user_id'])) {
+                $validated['signer_user_id'] = auth('api')->id();
+            }
+            // Cegah atribusi TTD ke nakes LAIN tanpa verifikasi (mode DRAW tak cek PIN):
+            // menandatangani atas nama user yang BUKAN user login WAJIB via PIN akun tsb
+            // (diverifikasi Hash::check di SignatureService::capture). TTD sendiri via
+            // goresan tetap boleh; jalur fasilitator+PIN tetap jalan.
+            if ((string) $validated['signer_user_id'] !== (string) auth('api')->id()
+                && empty($validated['signature_pin'])) {
+                return $this->error('Tanda tangan atas nama nakes lain wajib memakai PIN akun yang bersangkutan.', 422);
+            }
         }
 
         try {

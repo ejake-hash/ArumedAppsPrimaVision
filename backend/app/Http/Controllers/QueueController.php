@@ -15,10 +15,19 @@ class QueueController extends Controller
 {
     public function __construct(private readonly QueueService $service) {}
 
-    /** GET /antrian — snapshot semua station hari ini (Antrean TV / Dashboard). */
+    /** GET /antrian — snapshot semua station hari ini (staff terautentikasi). */
     public function index(): JsonResponse
     {
         return $this->ok($this->service->getAllActive());
+    }
+
+    /**
+     * GET /antrean-tv/snapshot — versi PUBLIK (tanpa auth) untuk papan lobi.
+     * Payload tersedak: tanpa no_rm, nama hanya untuk pasien yang sedang dipanggil.
+     */
+    public function snapshotPublic(): JsonResponse
+    {
+        return $this->ok($this->service->getAllActive(publicSafe: true));
     }
 
     /** GET /antrian/station/{station} — antrian per station. */

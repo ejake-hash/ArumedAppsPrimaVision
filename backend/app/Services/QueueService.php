@@ -479,7 +479,10 @@ class QueueService
     public function advanceFromStation(string $queueId, string $expectedStation, bool $reportBpjs = true): array
     {
         $result = DB::transaction(function () use ($queueId, $expectedStation) {
-            $queue = Queue::with('visit')->findOrFail($queueId);
+            // lockForUpdate: cegah double-advance konkuren (double-click/retry) yang
+            // membuat baris antrean ganda di station berikutnya. Request kedua blokir
+            // di sini lalu melihat STATUS_COMPLETED & batal di guard bawah.
+            $queue = Queue::with('visit')->lockForUpdate()->findOrFail($queueId);
 
             if ($queue->station !== $expectedStation) {
                 throw new \Exception(
@@ -817,11 +820,18 @@ class QueueService
      * Disposisi RANAP/BEDAH/MENINGGAL ditangani langsung di IgdService (set
      * current_station / enqueue BEDAH), tidak lewat sini. Tail KASIR→FARMASI/SELESAI
      * = reuse nextAfterKasir (obat IGD via resep → Farmasi, else pulang).
+     *
+     * BEDAH→KASIR: pasien IGD operasi CITO (jenis_pelayanan tetap 'IGD') difinalisasi
+     * dari papan Bedah via BedahService::finalizeRecord → advanceFromStation(BEDAH).
+     * Tanpa arm ini pasien nyangkut permanen di papan Bedah (default null → 422 →
+     * rollback finalisasi). Selaras resolveNextRajal (BEDAH→KASIR); biaya IGD+operasi
+     * dikonsolidasi di Kasir (inpatient_charges).
      */
     private function resolveNextIgd(Visit $visit, string $fromStation): string|array|null
     {
         return match ($fromStation) {
             Queue::STATION_IGD     => Queue::STATION_KASIR,
+            Queue::STATION_BEDAH   => Queue::STATION_KASIR,
             Queue::STATION_KASIR   => $this->nextAfterKasir($visit),
             Queue::STATION_FARMASI => self::END_OF_FLOW,
             default                => null,
@@ -1026,7 +1036,12 @@ class QueueService
      */
     private function nextAfterKasir(Visit $visit): string
     {
+        // Hanya resep yang benar-benar tampil di ANTREAN LOKET (type != RANAP) yang
+        // mengharuskan pasien mampir Farmasi. Resep type RANAP di-dispense lewat tab
+        // "Dispensing Rawat Inap" (termasuk obat pulang mode Antar) → JANGAN seret
+        // pasien ke loket. Selaras filter getPrescriptions/antrian (type != RANAP).
         $hasPrescription = Prescription::where('visit_id', $visit->id)
+            ->where('type', '!=', Prescription::TYPE_RANAP)
             ->whereIn('status', ['DRAFT', 'SUBMITTED', 'DISPENSING'])
             ->exists();
 
@@ -1059,7 +1074,13 @@ class QueueService
     /**
      * Snapshot semua antrean aktif per station — untuk Antrean TV / Dashboard.
      */
-    public function getAllActive(): array
+    /**
+     * @param bool $publicSafe  TRUE untuk endpoint TV publik tanpa auth (/antrean-tv/
+     *                          snapshot): buang no_rm dan sembunyikan nama pasien
+     *                          KECUALI yang sedang DIPANGGIL (untuk announcement).
+     *                          Cegah scraping roster pasien lengkap oleh anonim.
+     */
+    public function getAllActive(bool $publicSafe = false): array
     {
         $result = [];
 
@@ -1077,9 +1098,9 @@ class QueueService
                 'prefix'   => Queue::prefixFor($station),
                 'total'    => $rows->count(),
                 'waiting'  => $rows->where('status', Queue::STATUS_WAITING)->count(),
-                'called'   => $called ? $this->formatLite($called) : null,
-                'next'     => $next ? $this->formatLite($next) : null,
-                'rows'     => $rows->map(fn ($r) => $this->formatLite($r))->values(),
+                'called'   => $called ? $this->formatLite($called, $publicSafe) : null,
+                'next'     => $next ? $this->formatLite($next, $publicSafe) : null,
+                'rows'     => $rows->map(fn ($r) => $this->formatLite($r, $publicSafe))->values(),
             ];
         }
 
@@ -1131,20 +1152,42 @@ class QueueService
         // berautentikasi, jadi nama+no_rm pasien rawat inap/IGD JANGAN dibroadcast ke
         // layar lobi. (Read path getAllActive/getByStation sudah pakai STATIONS.)
         if (in_array($queue->station, Queue::STATIONS, true)) {
-            broadcast(new AntreanTvUpdated($payload, $action))->toOthers();
+            // Channel antrean-tv PUBLIK (tanpa auth): payload TERSEDAK — buang no_rm,
+            // dan sertakan nama HANYA saat status CALLED (untuk announcement). Baris
+            // lain cukup nomor antrean. Selaras dengan read path getAllActive(publicSafe).
+            $publicPayload = [
+                'id'             => $queue->id,
+                'visit_id'       => $queue->visit_id,
+                'station'        => $queue->station,
+                'queue_number'   => $queue->queue_number,
+                'queue_sequence' => $queue->queue_sequence,
+                'status'         => $queue->status,
+                'called_at'      => $queue->called_at?->toIso8601String(),
+                'patient'        => ($queue->status === Queue::STATUS_CALLED && $queue->visit?->patient)
+                    ? ['name' => $queue->visit->patient->name]
+                    : null,
+            ];
+            broadcast(new AntreanTvUpdated($publicPayload, $action))->toOthers();
         }
     }
 
-    private function formatLite(Queue $q): array
+    private function formatLite(Queue $q, bool $publicSafe = false): array
     {
+        // Papan TV publik: JANGAN bocorkan roster lengkap. Buang no_rm (identifier
+        // rekam medis unik) selalu, dan tampilkan nama HANYA untuk pasien yang sedang
+        // DIPANGGIL (yang memang diumumkan). Baris menunggu → hanya nomor antrean.
+        $isCalled = $q->status === Queue::STATUS_CALLED;
+
         return [
             'id'             => $q->id,
             'queue_number'   => $q->queue_number,
             'queue_sequence' => $q->queue_sequence,
             'status'         => $q->status,
             'visit_id'       => $q->visit_id,
-            'patient_name'   => $q->visit?->patient?->name,
-            'no_rm'          => $q->visit?->patient?->no_rm,
+            'patient_name'   => $publicSafe
+                ? ($isCalled ? $q->visit?->patient?->name : null)
+                : $q->visit?->patient?->name,
+            'no_rm'          => $publicSafe ? null : $q->visit?->patient?->no_rm,
             'called_at'      => $q->called_at?->toIso8601String(),
         ];
     }
