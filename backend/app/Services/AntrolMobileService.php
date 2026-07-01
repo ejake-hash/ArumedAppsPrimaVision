@@ -431,6 +431,13 @@ class AntrolMobileService
             return $this->fail('No. HP wajib diisi untuk antrean BPJS.');
         }
 
+        // Rujukan WAJIB untuk RJ JKN (jeniskunjungan Rujukan FKTP). Tanpa referensi,
+        // BPJS menolak /antrean/add & SEP tak bisa terbit. Pasien surat-kontrol / tanpa
+        // rujukan diarahkan ke Loket Admisi (alur khusus di sana).
+        if ($noRujuk === '') {
+            return $this->fail('Nomor rujukan wajib untuk antrean BPJS onsite. Silakan menuju Loket Admisi bila membawa surat kontrol.');
+        }
+
         $tanggal = now('Asia/Jakarta')->toDateString();
         $kuota   = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
         if ($kuota['sisakuotajkn'] <= 0) {
@@ -450,12 +457,16 @@ class AntrolMobileService
                     }
                 }
 
-                $angka        = $this->nextAngka($sched, $tanggal);
-                $prefix       = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
-                $nomorAntrean = $prefix . '-' . str_pad((string) $angka, 3, '0', STR_PAD_LEFT);
+                // Nomor DOKTER kanonik D{room}-NNN via sumber TERPADU — sama dengan
+                // Mobile JKN & papan dokter (anti-bingung utk poli ber-banyak dokter),
+                // dipakai-ulang saat masuk stasiun DOKTER.
+                $dok           = app(QueueService::class)->nextDoctorSequence($sched->room, $tanggal);
+                $angka         = $dok['queue_sequence'];
+                $nomorAntrean  = $dok['queue_number'];
+                $bookingPrefix = BpjsPoliMapping::bpjsCodeFor($sched->poli_code) ?: 'RS';
 
                 return AntreanBooking::create([
-                    'kodebooking'        => $this->generateKodebooking($prefix, $tanggal),
+                    'kodebooking'        => $this->generateKodebooking($bookingPrefix, $tanggal),
                     'nik'                => $nik ?: ($patient->nik ?? null),
                     'nomorkartu'         => $kartu ?: ($patient->bpjs_number ?? null),
                     'nohp'               => $patient->phone ?: ($nohp ?: null),
@@ -466,7 +477,7 @@ class AntrolMobileService
                     'tanggal_periksa'    => $tanggal,
                     'jam_praktek'        => $this->jamPraktek($sched),
                     'jenis_kunjungan'    => 1, // Rujukan FKTP (default onsite RJ)
-                    'nomor_referensi'    => $noRujuk ?: null,
+                    'nomor_referensi'    => $noRujuk,
                     'nomor_antrean'      => $nomorAntrean,
                     'angka_antrean'      => $angka,
                     'status'             => AntreanBooking::STATUS_DIBOOK,

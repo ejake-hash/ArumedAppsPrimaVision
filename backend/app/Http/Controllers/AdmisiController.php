@@ -548,7 +548,7 @@ class AdmisiController extends Controller
             'doctor_schedule_id' => 'required|uuid',
             'nik'                => 'nullable|string|max:20',
             'nomorkartu'         => 'nullable|string|max:20',
-            'nomorreferensi'     => 'nullable|string|max:40',
+            'nomorreferensi'     => 'required|string|max:40',
             'nohp'               => 'nullable|string|max:20',
         ]);
 

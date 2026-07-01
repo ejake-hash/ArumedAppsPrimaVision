@@ -312,6 +312,8 @@ function submitOnsite() {
   if (nik.length < 5) { umumError.value = 'Masukkan NIK atau No. Kartu BPJS.'; return }
   if (hp.length < 8) { umumError.value = 'Masukkan No. HP (wajib untuk antrean BPJS).'; return }
   if (!onsiteDoctor.value) { umumError.value = 'Pilih dokter tujuan terlebih dahulu.'; return }
+  const rujukan = onsiteRujukan.value.trim()
+  if (!rujukan) { umumError.value = 'Masukkan No. Rujukan (wajib untuk antrean BPJS).'; return }
 
   // 16 digit → NIK, 13 digit → kartu BPJS (sama seperti backend).
   const idField = /^\d{13}$/.test(nik) ? { nomorkartu: nik } : { nik }
@@ -319,7 +321,7 @@ function submitOnsite() {
     doctor_schedule_id: onsiteDoctor.value,
     ...idField,
     nohp: hp,
-    nomorreferensi: onsiteRujukan.value.trim() || undefined,
+    nomorreferensi: rujukan,
   }))
 }
 
@@ -560,7 +562,7 @@ onUnmounted(() => {
             />
           </label>
           <label class="of-row">
-            <span class="of-label">No. Rujukan <em>(opsional)</em></span>
+            <span class="of-label">No. Rujukan <em>(wajib)</em></span>
             <input
               v-model="onsiteRujukan"
               class="np-input sm"
