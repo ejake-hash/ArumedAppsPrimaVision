@@ -1067,8 +1067,85 @@ function renderKwitansiObatBebas(d) {
   setTimeout(() => w.print(), 300)
 }
 
-// Muat antrean obat bebas saat tab dibuka.
-watch(pg, (v) => { if (v === 'obat-bebas') loadObatBebas() })
+// Muat data saat tab dibuka.
+watch(pg, (v) => { if (v === 'obat-bebas') loadObatBebas(); if (v === 'rawat-inap') loadRanapList() })
+
+// ── Tab Rawat Inap (Fase 2): running bill + uang muka/deposit ─────────────────
+const riList       = ref([])
+const riLoading    = ref(false)
+const riSel        = ref(null)   // detail: { visit, charges, bhp_usages, running_bill, deposits, deposit_held, deposit_eligible }
+const riSelLoading = ref(false)
+const depForm      = ref({ amount: null, payment_method: 'CASH', notes: '' })
+const depSaving    = ref(false)
+
+async function loadRanapList() {
+  riLoading.value = true
+  try {
+    const { data } = await kasirApi.ranapList()
+    riList.value = data.data ?? []
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat pasien rawat inap')
+  } finally { riLoading.value = false }
+}
+
+async function openRanapDetail(visitId) {
+  riSelLoading.value = true
+  try {
+    const { data } = await kasirApi.ranapDetail(visitId)
+    riSel.value = data.data
+    depForm.value = { amount: null, payment_method: 'CASH', notes: '' }
+  } catch (e) {
+    toast('w', e.response?.data?.message ?? 'Gagal memuat detail tagihan')
+    riSel.value = null
+  } finally { riSelLoading.value = false }
+}
+
+async function submitDeposit() {
+  if (!riSel.value || depSaving.value) return
+  const amt = Number(depForm.value.amount || 0)
+  if (amt <= 0) { toast('w', 'Nominal uang muka harus lebih dari 0'); return }
+  depSaving.value = true
+  try {
+    const vid = riSel.value.visit?.id
+    await kasirApi.depositRecord(vid, { amount: amt, payment_method: depForm.value.payment_method, notes: depForm.value.notes || null })
+    toast('s', 'Uang muka diterima')
+    await openRanapDetail(vid)
+    await loadRanapList()
+  } catch (e) { toast('e', e.response?.data?.message ?? 'Gagal menyimpan uang muka') } finally { depSaving.value = false }
+}
+
+// Cetak Tagihan Sementara (proforma) — BUKAN bukti pembayaran. Reuse pola print window.
+function cetakTagihanSementara() {
+  const d = riSel.value
+  if (!d) return
+  const esc = (s) => String(s ?? '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))
+  const rows = []
+  for (const c of (d.charges || [])) if (c) rows.push([esc(c.description || c.charge_type), fmtRp(c.total_price)])
+  for (const u of (d.bhp_usages || [])) if (u) rows.push([esc((u.bhp_item?.name ?? 'BHP') + ' ×' + (u.quantity ?? 1)), fmtRp((u.unit_price ?? 0) * (u.quantity ?? 0))])
+  const body = rows.map((r) => `<tr><td>${r[0]}</td><td style="text-align:right">${r[1]}</td></tr>`).join('')
+  const held = Number(d.deposit_held || 0)
+  const total = Number(d.running_bill?.total || 0)
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Tagihan Sementara</title>
+  <style>body{font-family:Arial,sans-serif;font-size:12px;padding:18px;color:#111}h2{margin:0 0 2px}.wm{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:40px;color:#f2f2f2;transform:rotate(-20deg);z-index:-1;font-weight:800}table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #ddd;padding:4px 6px}tfoot td{font-weight:700;border-top:2px solid #333}</style>
+  </head><body>
+  <div class="wm">TAGIHAN SEMENTARA</div>
+  <h2>TAGIHAN SEMENTARA</h2>
+  <div>Pasien: <b>${esc(d.visit?.patient?.name)}</b> · RM ${esc(d.visit?.patient?.no_rm)}</div>
+  <div>Kamar: ${esc(d.visit?.room?.name)} / ${esc(d.visit?.bed?.label)}</div>
+  <table><thead><tr><th style="text-align:left">Rincian Biaya Berjalan</th><th style="text-align:right">Jumlah</th></tr></thead>
+  <tbody>${body || '<tr><td colspan="2">Belum ada biaya tercatat</td></tr>'}</tbody>
+  <tfoot>
+    <tr><td>Total Berjalan</td><td style="text-align:right">${fmtRp(total)}</td></tr>
+    <tr><td>Uang Muka (deposit)</td><td style="text-align:right">- ${fmtRp(held)}</td></tr>
+    <tr><td>Estimasi Sisa</td><td style="text-align:right">${fmtRp(Math.max(0, total - held))}</td></tr>
+  </tfoot></table>
+  <p style="margin-top:14px;font-style:italic">*Dokumen ini TAGIHAN SEMENTARA — BUKAN BUKTI PEMBAYARAN. Nilai belum final; tagihan resmi diterbitkan saat pasien pulang.</p>
+  </body></html>`
+  const w = window.open('', '_blank', 'width=640,height=840')
+  if (!w) { toast('w', 'Popup diblokir — izinkan popup untuk mencetak.'); return }
+  w.document.write(html); w.document.close(); w.focus()
+  setTimeout(() => w.print(), 300)
+}
 
 function penjaminLabel(g) {
   const t = (g ?? '').toUpperCase()
@@ -1609,6 +1686,10 @@ const rincianSections = computed(() => {
             <svg viewBox="0 0 24 24"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
             Obat Bebas
             <span v-if="obCount" class="nt-badge">{{ obCount }}</span>
+          </button>
+          <button :class="['nt', pg === 'rawat-inap' ? 'a' : '']" @click="pg = 'rawat-inap'">
+            <svg viewBox="0 0 24 24"><path d="M2 4v16M2 10h16a3 3 0 013 3v5M2 18h19M7 10V7h4v3"/></svg>
+            Rawat Inap
           </button>
         </div>
 
@@ -2485,6 +2566,69 @@ const rincianSections = computed(() => {
             </div>
           </div>
         </div>
+
+        <!-- RAWAT INAP — tagihan berjalan + uang muka/deposit (Fase 2) -->
+        <div v-if="pg === 'rawat-inap'" class="ri-grid">
+          <div class="ri-col-list">
+            <div class="ri-list-head">
+              <span>Pasien Dirawat</span>
+              <button class="btn btn-sm btn-secondary" :disabled="riLoading" @click="loadRanapList">↻ Muat ulang</button>
+            </div>
+            <p v-if="riLoading" class="ri-muted">Memuat…</p>
+            <p v-else-if="!riList.length" class="ri-muted">Tidak ada pasien rawat inap aktif.</p>
+            <button v-for="p in riList" :key="p.visit_id" :class="['ri-card', riSel && riSel.visit && riSel.visit.id === p.visit_id ? 'sel' : '']" @click="openRanapDetail(p.visit_id)">
+              <div class="ri-card-top"><b>{{ p.name }}</b><span class="ri-tag">{{ p.guarantor_type }}</span></div>
+              <div class="ri-muted">RM {{ p.no_rm }} · {{ p.room }}/{{ p.bed }} · Kls {{ p.kelas_rawat_hak }}</div>
+              <div class="ri-card-money">
+                <span>Berjalan: <b>{{ fmtRp(p.running_total) }}</b></span>
+                <span v-if="p.deposit_held" class="ri-dep-badge">DP {{ fmtRp(p.deposit_held) }}</span>
+              </div>
+            </button>
+          </div>
+
+          <div class="ri-col-detail">
+            <p v-if="!riSel && !riSelLoading" class="empty-state">Pilih pasien untuk lihat tagihan berjalan &amp; terima uang muka.</p>
+            <p v-else-if="riSelLoading" class="ri-muted">Memuat detail…</p>
+            <template v-else-if="riSel">
+              <div class="ri-det-head">
+                <div>
+                  <h3 style="margin:0">{{ riSel.visit && riSel.visit.patient ? riSel.visit.patient.name : '—' }}</h3>
+                  <p class="ri-muted" style="margin:.15rem 0 0">RM {{ riSel.visit && riSel.visit.patient ? riSel.visit.patient.no_rm : '' }} · {{ riSel.visit && riSel.visit.room ? riSel.visit.room.name : '' }}/{{ riSel.visit && riSel.visit.bed ? riSel.visit.bed.label : '' }} · {{ penjaminLabel(riSel.visit ? riSel.visit.guarantor_type : '') }}</p>
+                </div>
+                <button class="btn btn-sm btn-secondary" @click="cetakTagihanSementara">🖨 Cetak Tagihan Sementara</button>
+              </div>
+
+              <h4>Rincian Biaya Berjalan</h4>
+              <table class="ri-bill">
+                <tbody>
+                  <tr v-for="c in (riSel.charges || [])" :key="c.id"><td>{{ c.description || c.charge_type }}</td><td class="r">{{ fmtRp(c.total_price) }}</td></tr>
+                  <tr v-for="u in (riSel.bhp_usages || [])" :key="u.id"><td>{{ u.bhp_item ? u.bhp_item.name : 'BHP' }} ×{{ u.quantity }}</td><td class="r">{{ fmtRp((u.unit_price || 0) * (u.quantity || 0)) }}</td></tr>
+                  <tr v-if="!(riSel.charges || []).length && !(riSel.bhp_usages || []).length"><td colspan="2" class="ri-muted">Belum ada biaya tercatat</td></tr>
+                </tbody>
+                <tfoot>
+                  <tr><td>Total Berjalan</td><td class="r"><b>{{ fmtRp(riSel.running_bill ? riSel.running_bill.total : 0) }}</b></td></tr>
+                  <tr v-if="riSel.deposit_held"><td>Uang Muka (deposit)</td><td class="r">- {{ fmtRp(riSel.deposit_held) }}</td></tr>
+                  <tr v-if="riSel.deposit_held"><td>Estimasi Sisa</td><td class="r"><b>{{ fmtRp(Math.max(0, (riSel.running_bill ? riSel.running_bill.total : 0) - (riSel.deposit_held || 0))) }}</b></td></tr>
+                </tfoot>
+              </table>
+
+              <h4 style="margin-top:1rem">Uang Muka / Deposit</h4>
+              <div v-for="d in (riSel.deposits || [])" :key="d.id" class="ri-dep-row">
+                <span>{{ (d.received_at || '').slice(0, 16).replace('T', ' ') }} · {{ d.payment_method }} · <small class="ri-muted">{{ d.receipt_number }}</small></span>
+                <span><b>{{ fmtRp(d.amount) }}</b> <span class="ri-status" :data-s="d.status">{{ d.status }}</span></span>
+              </div>
+              <p v-if="!(riSel.deposits || []).length" class="ri-muted">Belum ada uang muka.</p>
+
+              <div v-if="riSel.deposit_eligible" class="ri-dep-form">
+                <input v-model.number="depForm.amount" type="number" min="0" placeholder="Nominal uang muka (Rp)" />
+                <select v-model="depForm.payment_method"><option>CASH</option><option>TRANSFER</option><option>DEBIT</option><option>QRIS</option></select>
+                <input v-model="depForm.notes" placeholder="Catatan (opsional)" />
+                <button class="btn btn-primary" :disabled="depSaving" @click="submitDeposit">{{ depSaving ? '…' : 'Terima Uang Muka' }}</button>
+              </div>
+              <p v-else class="ri-muted">Pasien BPJS ditanggung penuh (INA-CBG) — uang muka tidak diperlukan.</p>
+            </template>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -3105,4 +3249,30 @@ const rincianSections = computed(() => {
 .toast-s { background: var(--sb); color: var(--st); border-color: var(--sbd); }
 .toast-w { background: var(--wb); color: var(--wt); border-color: var(--wbd); }
 .toast-i { background: var(--ib); color: var(--it); border-color: var(--ibd); }
+
+/* ── Tab Rawat Inap (Fase 2) ─────────────────────────────────────────────── */
+.ri-grid { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; padding: .25rem 0; align-items: start; }
+.ri-muted { color: #64748b; font-size: 12px; }
+.ri-list-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; font-weight: 700; font-size: 13px; }
+.ri-col-list { display: flex; flex-direction: column; gap: .5rem; max-height: 70vh; overflow-y: auto; }
+.ri-card { text-align: left; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: .6rem .7rem; cursor: pointer; display: flex; flex-direction: column; gap: .2rem; }
+.ri-card:hover { border-color: #1FAAE0; }
+.ri-card.sel { border-color: #0E3A66; box-shadow: 0 0 0 2px rgba(31,170,224,.25); }
+.ri-card-top { display: flex; justify-content: space-between; align-items: center; }
+.ri-tag { font-size: 10px; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 6px; padding: 1px 6px; }
+.ri-card-money { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-top: .15rem; }
+.ri-dep-badge { font-size: 10px; font-weight: 700; background: #e0f2fe; color: #075985; border-radius: 6px; padding: 1px 6px; }
+.ri-col-detail { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1rem; min-height: 200px; }
+.ri-det-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: .5rem; }
+.ri-bill { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ri-bill td { border-bottom: 1px solid #eef2f7; padding: 5px 6px; }
+.ri-bill .r { text-align: right; white-space: nowrap; }
+.ri-bill tfoot td { border-top: 2px solid #334155; border-bottom: none; }
+.ri-dep-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #e2e8f0; }
+.ri-status { font-size: 10px; font-weight: 700; border-radius: 6px; padding: 1px 6px; background: #e0f2fe; color: #075985; }
+.ri-status[data-s="APPLIED"] { background: #dcfce7; color: #166534; }
+.ri-status[data-s="REFUNDED"] { background: #fef3c7; color: #92400e; }
+.ri-dep-form { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; }
+.ri-dep-form input, .ri-dep-form select { border: 1px solid #cbd5e1; border-radius: 8px; padding: .45rem .6rem; font-size: 13px; }
+.ri-dep-form input[type="number"] { width: 180px; }
 </style>

@@ -4855,6 +4855,60 @@ class KasirService
         ];
     }
 
+    /**
+     * Daftar pasien rawat inap AKTIF untuk tab Kasir "Rawat Inap": basis penghuni bed
+     * (konsisten Papan Room & RanapService::activeInpatients) + running total
+     * (inpatient_charges belum ditagih + BHP) + uang muka tertahan (deposit HELD) per
+     * pasien. Agregat batch (anti N+1).
+     */
+    public function inpatientBillingList(): array
+    {
+        $visits = Visit::with(['patient:id,name,no_rm', 'room:id,name', 'bed:id,label'])
+            ->whereHas('activeBedAssignment')
+            ->whereNull('discharge_at')
+            ->where('jenis_pelayanan', 'RANAP')
+            ->orderBy('admission_at')
+            ->get();
+
+        $ids     = $visits->pluck('id');
+        $charge  = InpatientCharge::whereIn('visit_id', $ids)->where('is_billed', false)
+            ->selectRaw('visit_id, COALESCE(SUM(total_price),0) t')->groupBy('visit_id')->pluck('t', 'visit_id');
+        $bhp     = \App\Models\VisitBhpUsage::whereIn('visit_id', $ids)
+            ->selectRaw('visit_id, COALESCE(SUM(unit_price * quantity),0) t')->groupBy('visit_id')->pluck('t', 'visit_id');
+        $deposit = VisitDeposit::whereIn('visit_id', $ids)->where('status', VisitDeposit::STATUS_HELD)
+            ->selectRaw('visit_id, COALESCE(SUM(amount),0) t')->groupBy('visit_id')->pluck('t', 'visit_id');
+
+        return $visits->map(fn (Visit $v) => [
+            'visit_id'         => $v->id,
+            'name'             => $v->patient?->name,
+            'no_rm'            => $v->patient?->no_rm,
+            'room'             => $v->room?->name,
+            'bed'              => $v->bed?->label,
+            'kelas_rawat_hak'  => $v->kelas_rawat_hak,
+            'guarantor_type'   => $v->guarantor_type,
+            'admission_at'     => $v->admission_at,
+            'running_total'    => (float) ($charge[$v->id] ?? 0) + (float) ($bhp[$v->id] ?? 0),
+            'deposit_held'     => (float) ($deposit[$v->id] ?? 0),
+            'deposit_eligible' => ! $this->isFullCoverBpjs($v),
+        ])->all();
+    }
+
+    /**
+     * Detail tagihan berjalan pasien inap untuk Kasir: reuse RanapService::detail
+     * (visit + charges + bhp_usages + running_bill) + daftar uang muka.
+     */
+    public function inpatientBillingDetail(Visit $visit): array
+    {
+        $detail = app(\App\Services\RanapService::class)->detail($visit->id);
+        $dep    = $this->listDeposits($visit);
+
+        return array_merge($detail, [
+            'deposits'         => $dep['deposits'],
+            'deposit_held'     => $dep['held_total'],
+            'deposit_eligible' => ! $this->isFullCoverBpjs($visit),
+        ]);
+    }
+
     /** Nomor kwitansi uang muka: "UM/{code}/{Ym}/{seq}". lockForUpdate anti-tabrakan. */
     private function generateDepositReceiptNumber(): string
     {

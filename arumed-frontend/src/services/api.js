@@ -1327,6 +1327,10 @@ export const kasirApi = {
   obatBebasList:     ()                   => api.get('/kasir/obat-bebas'),
   obatBebasBayar:    (id, data)           => api.post(`/kasir/obat-bebas/${id}/bayar`, data),
   obatBebasKwitansi: (id)                 => api.get(`/kasir/obat-bebas/${id}/kwitansi`),
+  // Tab Rawat Inap (Fase 2): daftar pasien inap + running bill + uang muka/deposit.
+  ranapList:         ()                   => api.get('/kasir/rawat-inap'),
+  ranapDetail:       (visitId)            => api.get(`/kasir/rawat-inap/${visitId}`),
+  depositRecord:     (visitId, data)      => api.post(`/kasir/visit/${visitId}/deposit`, data),
 
   // Billing items (override saat edit tagihan)
   storeItem:         (invoiceId, data)    => api.post(`/kasir/invoice/${invoiceId}/item`, data),

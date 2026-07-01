@@ -576,6 +576,27 @@ class KasirController extends Controller
     }
 
     // =========================================================================
+    // TAB RAWAT INAP KASIR (Fase 2) — pasien masih dirawat + running bill + deposit.
+    // =========================================================================
+
+    /** GET /kasir/rawat-inap — daftar pasien inap aktif + running total + deposit HELD. */
+    public function inpatientList(): JsonResponse
+    {
+        return $this->ok($this->service->inpatientBillingList());
+    }
+
+    /** GET /kasir/rawat-inap/{visitId} — detail tagihan berjalan + daftar uang muka. */
+    public function inpatientDetail(string $visitId): JsonResponse
+    {
+        try {
+            $visit = \App\Models\Visit::findOrFail($visitId);
+            return $this->ok($this->service->inpatientBillingDetail($visit));
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 404);
+        }
+    }
+
+    // =========================================================================
     // UANG MUKA / DEPOSIT RAWAT INAP (Fase 1)
     // =========================================================================
 

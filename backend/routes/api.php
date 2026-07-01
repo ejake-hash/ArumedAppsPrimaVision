@@ -874,6 +874,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/obat-bebas/{id}/bayar',          [PharmacySaleController::class, 'settle'])->middleware('permission:kasir.write');
             Route::get('/obat-bebas/{id}/kwitansi',        [PharmacySaleController::class, 'receipt']);
 
+            // Tab Rawat Inap Kasir (Fase 2) — pasien masih dirawat + running bill + deposit.
+            Route::get('/rawat-inap',                      [KasirController::class, 'inpatientList']);
+            Route::get('/rawat-inap/{visitId}',            [KasirController::class, 'inpatientDetail']);
+
             // Uang muka / deposit rawat inap (Fase 1) — diterima Kasir sebelum discharge,
             // dikreditkan ke invoice saat discharge (Fase 4).
             Route::get('/visit/{visitId}/deposit',         [KasirController::class, 'listDeposits']);
