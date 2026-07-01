@@ -122,24 +122,19 @@ class RanapService
     /**
      * Pasien rawat inap aktif (current_station=RANAP).
      *
-     * Filter per-DPJP: HANYA dokter spesialis (DT_SPESIALIS_MATA = DPJP poliklinik)
-     * yang dibatasi melihat pasiennya sendiri (dpjp_employee_id = employee-nya).
-     * Perawat, dokter umum, dokter anestesi, dan akun non-dokter (admin/superadmin)
-     * tetap melihat SELURUH pasien bangsal — model bangsal bersama, sesuai
-     * keputusan user. Dasar pembeda = Employee::doctor_type (bukan profession bebas).
+     * Model BANGSAL BERSAMA (keputusan user 1 Jul 2026): SEMUA role — termasuk dokter
+     * spesialis mata — melihat SELURUH pasien inap aktif, konsisten dengan Papan Room
+     * (bedBoard) yang memang tak memfilter DPJP. Sebelumnya spesialis dibatasi hanya ke
+     * pasien ber-DPJP dirinya; efeknya list Aktif KOSONG padahal papan penuh, sehingga
+     * pasien ber-DPJP dokter lain (mis. DPJP dokter umum/IGD) tak bisa dipulangkan.
+     * Filter per-DPJP DIBUANG agar bangsal bisa dikelola & dipulangkan lintas-DPJP.
      */
     public function activeInpatients(): array
     {
-        $employee = auth('api')->user()?->employee;
-        $onlyOwnDpjp = $employee
-            && $employee->id
-            && $employee->doctor_type === Employee::DT_SPESIALIS_MATA;
-
         return Visit::with(['patient', 'room', 'bed', 'activeBedAssignment'])
             ->where('jenis_pelayanan', 'RANAP')
             ->where('current_station', Queue::STATION_RANAP)
             ->whereNull('discharge_at')
-            ->when($onlyOwnDpjp, fn ($q) => $q->where('dpjp_employee_id', $employee->id))
             ->get()
             ->map(fn (Visit $v) => [
                 'visit_id'        => $v->id,

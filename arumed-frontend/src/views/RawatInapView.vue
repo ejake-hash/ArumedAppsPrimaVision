@@ -387,7 +387,32 @@ async function markBedAvailable(bed) {
 const detailTab = ref('cppt') // 'cppt' | 'biaya' (Hasil Eksternal → modal kecil di CPPT)
 const detailVisitId = ref(null)
 // Pasien terpilih (dari store.aktif) — untuk tombol aksi Pindah/Bedah/Pulang.
-const selectedPt = computed(() => store.aktif.find((p) => p.visit_id === detailVisitId.value) || null)
+// Baris ringkas pasien untuk toolbar detail (Pulang / Pindah / SEP / → Bedah).
+// Utamakan dari store.aktif; bila tak ketemu di sana (mis. pasien dibuka dari Papan
+// Room, atau current_station sempat bergeser ke Bedah/Penunjang) fallback ke
+// store.detail agar tombol aksi — terutama "Pulang" — tetap muncul. Dinormalisasi ke
+// bentuk baris aktif supaya handler openDischarge/openTransfer/openSep tetap kompatibel.
+const selectedPt = computed(() => {
+  const inList = store.aktif.find((p) => p.visit_id === detailVisitId.value)
+  if (inList) return inList
+  const v = store.detail?.visit
+  if (v && v.id === detailVisitId.value) {
+    return {
+      visit_id: v.id,
+      name: v.patient?.name,
+      no_rm: v.patient?.no_rm,
+      guarantor_type: v.guarantor_type,
+      no_sep: v.no_sep,
+      room: v.room?.name,
+      bed: v.bed?.label,
+      kelas_rawat_hak: v.kelas_rawat_hak,
+      admission_at: v.admission_at,
+      discharge_at: v.discharge_at,
+      inpatient_reason: v.inpatient_reason,
+    }
+  }
+  return null
+})
 // Dokumen RM — tombol di header kartu → modal kecil (pola IgdView "Pengkajian RM 3.7").
 const showDocModal = ref(false)
 function openDocModal() { if (detailVisitId.value) showDocModal.value = true }
