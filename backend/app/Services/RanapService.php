@@ -120,21 +120,25 @@ class RanapService
     }
 
     /**
-     * Pasien rawat inap aktif (current_station=RANAP).
+     * Pasien rawat inap aktif = pasien yang SEDANG MENEMPATI BED (bed_assignment
+     * aktif, released_at NULL) dan belum discharge. Basis SAMA dengan Papan Room
+     * (bedBoard) sehingga keduanya SELALU konsisten.
      *
-     * Model BANGSAL BERSAMA (keputusan user 1 Jul 2026): SEMUA role — termasuk dokter
-     * spesialis mata — melihat SELURUH pasien inap aktif, konsisten dengan Papan Room
-     * (bedBoard) yang memang tak memfilter DPJP. Sebelumnya spesialis dibatasi hanya ke
-     * pasien ber-DPJP dirinya; efeknya list Aktif KOSONG padahal papan penuh, sehingga
-     * pasien ber-DPJP dokter lain (mis. DPJP dokter umum/IGD) tak bisa dipulangkan.
-     * Filter per-DPJP DIBUANG agar bangsal bisa dikelola & dipulangkan lintas-DPJP.
+     * ⚠️ JANGAN filter `current_station='RANAP'`: pasien inap yang dikirim ke Bedah
+     * (pre-op), Penunjang, atau Farmasi TETAP menempati bed, tetapi current_station-nya
+     * bergeser (mis. 'BEDAH'). Filter current_station bikin list Aktif KOSONG padahal
+     * Papan Room penuh — RS mata: mayoritas pasien inap = pre-op bedah. Terbukti PROD
+     * 1 Jul 2026: 9 bed terisi, SEMUA current_station=BEDAH → activeInpatients()=0.
+     *
+     * Model BANGSAL BERSAMA (keputusan user): TANPA filter per-DPJP — semua role melihat
+     * seluruh pasien inap, konsisten dgn bedBoard.
      */
     public function activeInpatients(): array
     {
         return Visit::with(['patient', 'room', 'bed', 'activeBedAssignment'])
-            ->where('jenis_pelayanan', 'RANAP')
-            ->where('current_station', Queue::STATION_RANAP)
+            ->whereHas('activeBedAssignment')
             ->whereNull('discharge_at')
+            ->orderBy('admission_at')
             ->get()
             ->map(fn (Visit $v) => [
                 'visit_id'        => $v->id,
