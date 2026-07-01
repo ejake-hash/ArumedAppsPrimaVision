@@ -3104,7 +3104,9 @@ HTML;
             $manual('tanda_bahaya',    'Segera Kembali ke RS / IGD bila Terjadi', 'Kondisi Pulang'),
 
             // ── Terapi Pulang ────────────────────────────────────────────────
-            $ed('terapi_pulang',       'Terapi Pulang (Obat)',            'Terapi Pulang', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
+            // Dikosongkan (keputusan user): DPJP mengisi terapi pulang manual, tidak
+            // auto-isi dari resep. Tanpa `prefill`, renderer juga tak me-refill saat TTD.
+            $manual('terapi_pulang',   'Terapi Pulang (Obat)',            'Terapi Pulang'),
 
             // ── TTD DPJP (PIN → stempel + QR; opsional fase transisi) ────────
             ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan DPJP', 'type' => 'signature_canvas',
@@ -3268,8 +3270,10 @@ HTML;
             // ── Diagnosa & Rencana ───────────────────────────────────────────
             $ed('diagnosa_kerja', 'Diagnosa Kerja (ICD-10)',       'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
             $manual('diagnosa_diferensial','Diagnosa Diferensial', 'Diagnosa & Rencana'),
-            $ed('terapi',         'Terapi',                        'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
-            $ed('rencana_kerja',  'Rencana Kerja',                 'Diagnosa & Rencana', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            // Dikosongkan (keputusan user): Terapi & Rencana Kerja diisi manual DPJP,
+            // tidak auto-isi dari resep / planning. Tanpa `prefill` tak ada refill saat TTD.
+            $manual('terapi',         'Terapi',                     'Diagnosa & Rencana'),
+            $manual('rencana_kerja',  'Rencana Kerja',              'Diagnosa & Rencana'),
 
             // ── TTD DPJP ─────────────────────────────────────────────────────
             ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan DPJP', 'type' => 'signature_canvas',
@@ -3911,8 +3915,10 @@ HTML;
              'group' => 'Pengantar', 'options' => ['IGD', 'Poliklinik'], 'binding' => ['kind' => 'static']],
             $manual('rencana_perawatan', 'Rencana Perawatan Di (ruang/kelas)', 'Pengantar', 'text'),
             $ed('alasan_dirawat', 'Karena Menderita (alasan dirawat / diagnosa)', 'Klinis', ['via' => 'aggregate', 'source' => 'doctorExamination.icd10_diagnoses', 'format' => 'icd_with_desc_join_newline']),
-            $ed('saran_terapi', 'Saran Terapi', 'Klinis', ['via' => 'aggregate', 'source' => 'prescriptions', 'format' => 'items_pretty']),
-            $ed('rencana_tindakan', 'Rencana Tindakan', 'Klinis', ['via' => 'aggregate', 'source' => 'planning_instruction']),
+            // Dikosongkan (keputusan user): Saran Terapi & Rencana Tindakan diisi manual
+            // dokter, tidak auto-isi dari resep / planning. Tanpa `prefill` tak ada refill saat TTD.
+            $manual('saran_terapi', 'Saran Terapi', 'Klinis'),
+            $manual('rencana_tindakan', 'Rencana Tindakan', 'Klinis'),
             ['key' => 'ttd_dokter', 'label' => 'Tanda Tangan Dokter', 'type' => 'signature_canvas',
              'signer_type' => 'doctor', 'required' => false, 'group' => 'Pengesahan', 'binding' => ['kind' => 'static']],
         ]);
