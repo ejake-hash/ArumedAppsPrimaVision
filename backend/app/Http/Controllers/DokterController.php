@@ -918,10 +918,19 @@ class DokterController extends Controller
      * Ambil URL viewer riwayat pelayanan i-Care peserta (wajib informed consent
      * pasien di sisi UI). Token URL sekali pakai → generate on-demand.
      */
-    public function icareRiwayat(string $visitId, BpjsIcareService $icare): JsonResponse
+    public function icareRiwayat(string $visitId, Request $request, BpjsIcareService $icare): JsonResponse
     {
+        // Jejak audit akses PHI + bukti informed consent (siapa dokter yg membuka, kapan).
+        $auditMeta = [
+            'consent'        => (bool) $request->boolean('consent'),
+            'accessed_by_id' => auth('api')->id(),
+            'accessed_by'    => auth('api')->user()?->name,
+            'accessed_ip'    => $request->ip(),
+            'accessed_at'    => now('Asia/Jakarta')->toIso8601String(),
+        ];
+
         try {
-            $data = $icare->riwayatForVisit($visitId);
+            $data = $icare->riwayatForVisit($visitId, $auditMeta);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 422);
         }

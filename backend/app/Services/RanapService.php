@@ -223,12 +223,17 @@ class RanapService
             return [];
         }
 
-        $now   = now();
-        $lines = [];
-        foreach ($visit->bedAssignments()->orderBy('assigned_at')->get() as $p) {
-            $start  = \Illuminate\Support\Carbon::parse($p->assigned_at);
-            $end    = \Illuminate\Support\Carbon::parse($p->released_at ?? $now);
-            $nights = max(1, $start->copy()->startOfDay()->diffInDays($end->copy()->startOfDay()));
+        $now       = now();
+        $lines     = [];
+        $periods   = $visit->bedAssignments()->orderBy('assigned_at')->get()->values();
+        $nightsPer = $this->roomNightsPerPeriod($periods, $now);
+        foreach ($periods as $i => $p) {
+            // Sinkron dgn generateRoomCharges: periode transisi same-day (0 malam) dilewati
+            // supaya estimasi berjalan tidak dobel-hitung malam saat pindah/upgrade sehari.
+            $nights = $nightsPer[$i] ?? 0;
+            if ($nights <= 0) {
+                continue;
+            }
 
             $price = $this->kasir->getPrice('room', $p->kelas_rawat_hak, $visit->guarantor_type, $visit->insurer_id);
             if ($price <= 0) {
@@ -904,7 +909,9 @@ class RanapService
     /** Catat pemberian obat (default jam = sekarang, perawat = user login). */
     public function recordAdministration(Visit $visit, array $data): \App\Models\MedicationAdministration
     {
-        $employeeId = auth('api')->user()?->employee?->id;
+        // FK langsung (employee_id), bukan relasi ?->employee?->id yang null bila
+        // employee soft-deleted → atribusi eMAR (legal) hilang & +1 query.
+        $employeeId = auth('api')->user()?->employee_id;
 
         return \App\Models\MedicationAdministration::create([
             'visit_id'             => $visit->id,
@@ -981,7 +988,7 @@ class RanapService
             'direction'      => $data['direction'],
             'category'       => $data['category'] ?? null,
             'volume_ml'      => $data['volume_ml'],
-            'recorded_by_id' => auth('api')->user()?->employee?->id,
+            'recorded_by_id' => auth('api')->user()?->employee_id, // FK langsung (robust thd soft-delete)
             'notes'          => $data['notes'] ?? null,
         ]);
     }
@@ -1230,7 +1237,21 @@ class RanapService
     /** Soft-edit CPPT — catat jejak editor (versi lama tidak disimpan). */
     public function updateCppt(string $entryId, array $data): NurseCpptEntry
     {
-        $entry = NurseCpptEntry::findOrFail($entryId);
+        $entry = NurseCpptEntry::with('visit')->findOrFail($entryId);
+
+        // Integritas RM (SNARS): entri yang sudah diverifikasi DPJP terkunci dari edit.
+        if ($entry->verified_at !== null) {
+            throw new \Exception('Entri CPPT sudah diverifikasi — tidak bisa diedit.', 422);
+        }
+        // Cegah IDOR: route hanya menerima {id} tanpa konteks visit → tanpa scoping, user
+        // bisa mengedit CPPT pasien bangsal lain dgn menebak UUID. Batasi ke penulis entri
+        // atau DPJP visit tsb.
+        $employee = auth('api')->user()?->employee;
+        $isAuthor = $employee && $entry->created_by_id === $employee->id;
+        $isDpjp   = $employee && $entry->visit && $entry->visit->dpjp_employee_id === $employee->id;
+        if (! $isAuthor && ! $isDpjp) {
+            throw new \Exception('Anda hanya dapat mengedit entri CPPT yang Anda tulis atau pada pasien yang Anda tangani (DPJP).', 403);
+        }
 
         $entry->fill(array_merge(
             array_intersect_key($data, array_flip([
@@ -1260,7 +1281,12 @@ class RanapService
             throw new \Exception('Hanya dokter (DPJP) yang dapat memverifikasi CPPT.', 403);
         }
 
-        $entry = NurseCpptEntry::findOrFail($entryId);
+        $entry = NurseCpptEntry::with('visit')->findOrFail($entryId);
+        // Cegah IDOR + kaidah SNARS: hanya DPJP pasien ini yang boleh memverifikasi CPPT-nya
+        // (bukan sembarang dokter yang menebak UUID entri lintas-bangsal).
+        if (! $entry->visit || $entry->visit->dpjp_employee_id !== $employee->id) {
+            throw new \Exception('Hanya DPJP pasien ini yang dapat memverifikasi CPPT-nya.', 403);
+        }
         $entry->forceFill([
             'verified_by_id' => $employee->id,
             'verified_at'    => now(),
@@ -1572,6 +1598,31 @@ class RanapService
      * Idempotent-ish: hanya membuat ROOM charge bila belum ada untuk visit
      * (cegah dobel saat discharge dipanggil ulang).
      */
+    /**
+     * Malam per-periode bed_assignments TANPA over-charge saat transfer/upgrade SAME-DAY.
+     * Floor per-periode (dulu max(1,...)) menghitung TIAP potongan same-day sebagai 1 malam
+     * → 1 hari kalender bisa tertagih 2 malam. Di sini: malam per periode = beda hari
+     * kalender assigned..released (tanpa floor); bila SELURUH stay < 1 hari kalender
+     * (total 0) → 1 malam pada periode pertama (kaidah minimum 1 malam). Total malam =
+     * jumlah hari kalender terpakai apa pun jumlah transfer.
+     *
+     * @param  \Illuminate\Support\Collection  $periods  bed_assignments urut assigned_at (0-based)
+     * @return array<int,int>  index periode => malam
+     */
+    private function roomNightsPerPeriod($periods, \DateTimeInterface $end): array
+    {
+        $nights = [];
+        foreach ($periods->values() as $i => $p) {
+            $s = \Illuminate\Support\Carbon::parse($p->assigned_at)->startOfDay();
+            $e = \Illuminate\Support\Carbon::parse($p->released_at ?? $end)->startOfDay();
+            $nights[$i] = (int) $s->diffInDays($e);
+        }
+        if (! empty($nights) && array_sum($nights) === 0) {
+            $nights[0] = 1; // seluruh stay dalam 1 hari kalender → tetap 1 malam
+        }
+        return $nights;
+    }
+
     private function generateRoomCharges(Visit $visit, \DateTimeInterface $dischargeAt): void
     {
         $alreadyHasRoom = InpatientCharge::where('visit_id', $visit->id)
@@ -1581,17 +1632,33 @@ class RanapService
             return;
         }
 
-        $periods = $visit->bedAssignments()->orderBy('assigned_at')->get();
+        $periods   = $visit->bedAssignments()->orderBy('assigned_at')->get()->values();
+        $nightsPer = $this->roomNightsPerPeriod($periods, $dischargeAt);
 
-        foreach ($periods as $p) {
-            $start = \Illuminate\Support\Carbon::parse($p->assigned_at);
-            $end   = \Illuminate\Support\Carbon::parse($p->released_at ?? $dischargeAt);
-
-            // Malam = beda hari kalender (masuk dihitung, pulang tidak), minimum 1.
-            $nights = max(1, $start->copy()->startOfDay()->diffInDays($end->copy()->startOfDay()));
+        foreach ($periods as $i => $p) {
+            // Periode transisi SAME-DAY (0 malam) tak ditagih terpisah — cegah 1 hari
+            // kalender jadi 2 malam saat transfer/upgrade di hari yang sama.
+            $nights = $nightsPer[$i] ?? 0;
+            if ($nights <= 0) {
+                continue;
+            }
 
             $price = $this->kasir->getPrice('room', $p->kelas_rawat_hak, $visit->guarantor_type, $visit->insurer_id);
+            // JANGAN membuat ROOM charge Rp0 saat tarif kelas hilang: charge 0 tetap "ada"
+            // sehingga guard idempotensi & estimasi menekan koreksi → kamar hilang dari
+            // revenue diam-diam. Skip + log agar re-run (setelah tarif dibetulkan) membuatnya.
+            if ($price <= 0) {
+                \Illuminate\Support\Facades\Log::warning('Ranap discharge: tarif kamar 0/tidak ada — ROOM charge dilewati', [
+                    'visit_id'          => $visit->id,
+                    'bed_assignment_id' => $p->id,
+                    'kelas_hak'         => $p->kelas_rawat_hak,
+                    'guarantor_type'    => $visit->guarantor_type,
+                    'insurer_id'        => $visit->insurer_id,
+                ]);
+                continue;
+            }
 
+            $start = \Illuminate\Support\Carbon::parse($p->assigned_at);
             $label = "Kamar Kelas {$p->kelas_rawat_hak}";
             if ($p->kelas_rawat_room !== $p->kelas_rawat_hak) {
                 // Titip kelas: tagih kelas hak, catat room aktual untuk transparansi.

@@ -450,23 +450,28 @@ class RmeAggregatorService
         if ($r->visus_awal_od || $r->visus_awal_os) {
             $parts[] = 'Visus awal OD ' . ($r->visus_awal_od ?? '–') . ' / OS ' . ($r->visus_awal_os ?? '–');
         }
-        // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
+        // 2. Pinhole (deteksi amblyopia)
+        if ($r->pinhole_od || $r->pinhole_os) {
+            $parts[] = 'Pinhole OD ' . ($r->pinhole_od ?? '–') . ' / OS ' . ($r->pinhole_os ?? '–');
+        }
+        // 3. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri).
+        // SELALU tampil: kedua mata kosong → "(Kosong / Error)". JANGAN ambil dari autoref.
         $rxOd = $this->fmtRx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis, null);
         $rxOs = $this->fmtRx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis, null);
-        if ($rxOd || $rxOs) {
-            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
-        }
-        // 3. Visus akhir (BCVA)
+        $parts[] = ($rxOd || $rxOs)
+            ? 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–')
+            : 'Refraksi subjektif (Kosong / Error)';
+        // 4. Visus akhir (BCVA)
         if ($r->visus_akhir_od || $r->visus_akhir_os) {
             $parts[] = 'Visus akhir OD ' . ($r->visus_akhir_od ?? '–') . ' / OS ' . ($r->visus_akhir_os ?? '–');
         }
-        // 4. ADD (adisi baca)
+        // 5. ADD (adisi baca)
         $hasAdd = ($r->add_power_od !== null && (float) $r->add_power_od != 0.0)
             || ($r->add_power_os !== null && (float) $r->add_power_os != 0.0);
         if ($hasAdd) {
             $parts[] = 'Add OD ' . ($this->signed($r->add_power_od) ?? '–') . ' / OS ' . ($this->signed($r->add_power_os) ?? '–');
         }
-        // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
+        // 6. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
         if ($r->iop_od || $r->iop_os) {
             $parts[] = 'TIO OD ' . ($r->iop_od ?? '–') . ' / OS ' . ($r->iop_os ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
         }
@@ -477,10 +482,23 @@ class RmeAggregatorService
                 $parts[] = 'TIO #' . ($i + 2) . ' OD ' . ($od ?? '–') . ' / OS ' . ($os ?? '–') . ' mmHg';
             }
         }
-        // 6. PD (pupillary distance) — paling bawah
+        // 7. PD (pupillary distance)
         if ($r->pd_distance !== null && $r->pd_distance !== '') {
             $pd = rtrim(rtrim((string) $r->pd_distance, '0'), '.');
             $parts[] = 'PD ' . $pd . ' mm';
+        }
+        // 8. Kacamata lama (S/C/X + ADD) + visus dengan kacamata lama
+        $ogOd = $this->fmtRx($r->old_glasses_od_sph, $r->old_glasses_od_cyl, $r->old_glasses_od_axis, $r->old_glasses_add_od);
+        $ogOs = $this->fmtRx($r->old_glasses_os_sph, $r->old_glasses_os_cyl, $r->old_glasses_os_axis, $r->old_glasses_add_os);
+        if ($ogOd || $ogOs) {
+            $parts[] = 'Kacamata lama OD ' . ($ogOd ?: '–') . ' | OS ' . ($ogOs ?: '–');
+        }
+        if ($r->old_glasses_visus_od || $r->old_glasses_visus_os) {
+            $parts[] = 'Visus dgn kacamata lama OD ' . ($r->old_glasses_visus_od ?? '–') . ' / OS ' . ($r->old_glasses_visus_os ?? '–');
+        }
+        // 9. Catatan klinis (teks bebas) — paling bawah
+        if ($r->clinical_notes !== null && trim((string) $r->clinical_notes) !== '') {
+            $parts[] = 'Catatan: ' . trim((string) $r->clinical_notes);
         }
         return $parts ? implode("\n", $parts) : null;
     }

@@ -440,11 +440,18 @@ final class AggregateResolver
         if ($vaOd || $vaOs) {
             $parts[] = 'Visus awal OD ' . ($vaOd ?? '–') . ' / OS ' . ($vaOs ?? '–');
         }
+        // Pinhole (deteksi amblyopia)
+        $phOd = $real($r->pinhole_od); $phOs = $real($r->pinhole_os);
+        if ($phOd || $phOs) {
+            $parts[] = 'Pinhole OD ' . ($phOd ?? '–') . ' / OS ' . ($phOs ?? '–');
+        }
+        // Refraksi subjektif — SELALU tampil: kedua mata kosong → "(Kosong / Error)".
+        // JANGAN ambil dari autoref.
         $rxOd = $scx($r->refraksi_subjektif_od_sph, $r->refraksi_subjektif_od_cyl, $r->refraksi_subjektif_od_axis);
         $rxOs = $scx($r->refraksi_subjektif_os_sph, $r->refraksi_subjektif_os_cyl, $r->refraksi_subjektif_os_axis);
-        if ($rxOd || $rxOs) {
-            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–');
-        }
+        $parts[] = ($rxOd || $rxOs)
+            ? 'Refraksi subjektif OD ' . ($rxOd ?: '–') . ' | OS ' . ($rxOs ?: '–')
+            : 'Refraksi subjektif (Kosong / Error)';
         $vkOd = $real($r->visus_akhir_od); $vkOs = $real($r->visus_akhir_os);
         if ($vkOd || $vkOs) {
             $parts[] = 'Visus akhir OD ' . ($vkOd ?? '–') . ' / OS ' . ($vkOs ?? '–');
@@ -458,9 +465,36 @@ final class AggregateResolver
         if ($iopOd || $iopOs) {
             $parts[] = 'TIO OD ' . ($iopOd ?? '–') . ' / OS ' . ($iopOs ?? '–') . ' mmHg' . ($r->iop_method ? " ({$r->iop_method})" : '');
         }
+        foreach (array_values((array) ($r->iop_extra_readings ?? [])) as $i => $x) {
+            $eod = $real($x['od'] ?? null); $eos = $real($x['os'] ?? null);
+            if ($eod || $eos) {
+                $parts[] = 'TIO #' . ($i + 2) . ' OD ' . ($eod ?? '–') . ' / OS ' . ($eos ?? '–') . ' mmHg';
+            }
+        }
         if ($r->pd_distance !== null && $r->pd_distance !== '') {
             $pd = rtrim(rtrim((string) $r->pd_distance, '0'), '.');
             $parts[] = 'PD ' . $pd . ' mm';
+        }
+        // Kacamata lama (S/C/X + ADD) + visus dengan kacamata lama
+        $ogFmt = function ($sph, $cyl, $axis, $add) use ($scx, $sg) {
+            $base = $scx($sph, $cyl, $axis);
+            if ($add !== null && (float) $add != 0.0) {
+                $base = ($base !== '' ? $base . ' / ' : '') . 'Add ' . $sg($add);
+            }
+            return $base;
+        };
+        $ogOd = $ogFmt($r->old_glasses_od_sph, $r->old_glasses_od_cyl, $r->old_glasses_od_axis, $r->old_glasses_add_od);
+        $ogOs = $ogFmt($r->old_glasses_os_sph, $r->old_glasses_os_cyl, $r->old_glasses_os_axis, $r->old_glasses_add_os);
+        if ($ogOd || $ogOs) {
+            $parts[] = 'Kacamata lama OD ' . ($ogOd ?: '–') . ' | OS ' . ($ogOs ?: '–');
+        }
+        $ogvOd = $real($r->old_glasses_visus_od); $ogvOs = $real($r->old_glasses_visus_os);
+        if ($ogvOd || $ogvOs) {
+            $parts[] = 'Visus dgn kacamata lama OD ' . ($ogvOd ?? '–') . ' / OS ' . ($ogvOs ?? '–');
+        }
+        // Catatan klinis (teks bebas) — paling bawah
+        if ($r->clinical_notes !== null && trim((string) $r->clinical_notes) !== '') {
+            $parts[] = 'Catatan: ' . trim((string) $r->clinical_notes);
         }
         return $parts ? implode("\n", $parts) : '';
     }

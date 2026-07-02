@@ -2320,9 +2320,15 @@ class KasirService
             return 0;
         }
 
+        // whereNull(deleted_at): tarif memakai SoftDeletes, tapi query DB::table mentah
+        // (bukan Eloquent) TAK otomatis memfilter soft-deleted. Tanpa ini, tarif yang
+        // sudah DIHAPUS admin (deleted_at terisi) tetap terbaca (is_active & deleted_at
+        // ortogonal) → pasien/penjamin ditagih harga tarif terhapus, dan basis diskon
+        // paket ikut salah. Semua 6 tabel tarif punya kolom deleted_at.
         $baseQuery = DB::table($table)
             ->where($fkColumn, $itemId)
-            ->where('is_active', true);
+            ->where('is_active', true)
+            ->whereNull('deleted_at');
 
         // Level 1: insurer terpilih (sudah di-resolve TPA parent).
         $tariff = (clone $baseQuery)->where('insurer_id', $resolvedInsurerId)->value('price');
@@ -2968,6 +2974,24 @@ class KasirService
                     ->update(['is_billed' => false]);
             }
 
+            // Kembalikan uang muka (deposit) yang sudah DIKREDITKAN ke invoice ini ke
+            // status HELD. applyDepositsToInvoice membalik deposit HELD→APPLIED +
+            // pre-credit paid_amount saat konsolidasi; bila invoice lalu dibatalkan
+            // tanpa reset ini, deposit tersangkut APPLIED di invoice mati sementara
+            // "Susun Ulang" hanya mencari HELD → tak ditemukan → invoice baru
+            // paid_amount=0 dan pasien DITAGIH PENUH LAGI (uang muka hilang; tak ada
+            // transisi APPLIED→HELD lain di codebase). cancelInvoice hanya untuk invoice
+            // non-PAID (guard di atas) → belum ada refund fisik, reset refunded_amount=0
+            // aman. Simetris dgn HELD→APPLIED; idempoten (hanya baris APPLIED ke invoice ini).
+            VisitDeposit::where('applied_invoice_id', $id)
+                ->where('status', VisitDeposit::STATUS_APPLIED)
+                ->update([
+                    'status'             => VisitDeposit::STATUS_HELD,
+                    'applied_invoice_id' => null,
+                    'applied_at'         => null,
+                    'refunded_amount'    => 0,
+                ]);
+
             $this->log(auth('api')->id(), 'CANCEL_INVOICE', BillingInvoice::class, $id, "Invoice {$invoice->invoice_number} dibatalkan");
 
             return $invoice->fresh();
@@ -3335,6 +3359,23 @@ class KasirService
                     'Masih ada sisa Rp ' . number_format($sisaDue, 0, ',', '.') . ' yang harus dibayar — gunakan proses pembayaran biasa.',
                     422
                 );
+            }
+
+            // Over-credit: deposit/cover MELEBIHI tagihan (mis. baris dihapus/qty diturunkan
+            // SETELAH deposit di-pre-credit → total turun di bawah paid_amount). Kelebihan =
+            // kembalian ke pasien. refunded_amount di applyDepositsToInvoice dihitung dari
+            // total LAMA; recalculateInvoice tak menyetel ulang → tanpa ini pasien kurang
+            // terima kembalian & kwitansi salah. Setel ulang refunded_amount deposit APPLIED
+            // invoice ini ke over-credit final (sumber kebenaran saat penutupan).
+            $overCredit = round(-$sisaDue, 2);
+            if ($overCredit > 0.009) {
+                $lastDeposit = VisitDeposit::where('applied_invoice_id', $invoice->id)
+                    ->where('status', VisitDeposit::STATUS_APPLIED)
+                    ->orderByDesc('applied_at')
+                    ->first();
+                if ($lastDeposit) {
+                    $lastDeposit->update(['refunded_amount' => $overCredit]);
+                }
             }
 
             // Sisa 0 bisa karena (a) gratis/diskon 100% (paid_amount 0) atau (b) sudah

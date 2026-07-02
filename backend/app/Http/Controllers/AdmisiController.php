@@ -816,10 +816,21 @@ class AdmisiController extends Controller
     {
         $v = $request->validate([
             'visit_id' => 'required|uuid|exists:visits,id',
+            'consent'  => 'nullable|boolean', // bukti informed consent dari UI (IcareModal)
         ]);
 
+        // Jejak audit akses PHI + bukti persetujuan: siapa membuka riwayat i-Care, kapan,
+        // dan apakah consent dikonfirmasi. Tercatat di bpjs_icare_logs.request_payload.
+        $auditMeta = [
+            'consent'         => (bool) ($v['consent'] ?? false),
+            'accessed_by_id'  => auth('api')->id(),
+            'accessed_by'     => auth('api')->user()?->name,
+            'accessed_ip'     => $request->ip(),
+            'accessed_at'     => now('Asia/Jakarta')->toIso8601String(),
+        ];
+
         try {
-            $data = $icare->riwayatForVisit($v['visit_id']);
+            $data = $icare->riwayatForVisit($v['visit_id'], $auditMeta);
         } catch (\Exception $e) {
             return $this->error($e->getMessage(), $e->getCode() ?: 503);
         }
@@ -947,6 +958,26 @@ class AdmisiController extends Controller
         }
 
         return $this->ok($data, 'Hasil pemeriksaan kesiapan SEP');
+    }
+
+    /**
+     * POST /admisi/bpjs/finger-status — cek status sidik jari peserta untuk SEP hari ini
+     * (tombol "Cek Sidik Jari" sebelum Terbitkan SEP, poli wajib-FP). UAT VClaim #16.
+     */
+    public function bpjsFingerStatus(Request $request): JsonResponse
+    {
+        $request->validate([
+            'visit_id'    => 'required|uuid|exists:visits,id',
+            'bpjs_number' => 'nullable|string|max:30',
+        ]);
+
+        try {
+            $data = $this->service->bpjsFingerStatus($request->all());
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), $e->getCode() ?: 503);
+        }
+
+        return $this->ok($data, 'Status sidik jari peserta');
     }
 
     public function bpjsCekSuratKontrol(Request $request): JsonResponse

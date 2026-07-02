@@ -62,6 +62,27 @@ final class SignatureService
         }
         $this->assertSignerIdentity($signerType, $data);
 
+        // H12 — TTD pasien HARUS milik pasien dokumen. Tanpa cek ini, fasilitator bisa
+        // merekam signer_patient_id pasien X pada dokumen consent/RM pasien Y (controller
+        // hanya memvalidasi 'exists') → consent medico-legal salah-atribusi pasien.
+        if ($signerType === 'patient'
+            && (string) ($data['signer_patient_id'] ?? '') !== (string) $doc->patient_id) {
+            throw new RuntimeException('signer_patient_id tidak cocok dengan pasien pemilik dokumen.', 422);
+        }
+
+        // H11 — IDOR TTD dokter: dokter (DPJP) hanya boleh menandatangani dokumen pada
+        // kunjungan yang menjadi tanggung jawabnya — CERMIN filter read-path ttdQueueBuilder.
+        // Tanpa ini, akun ber-izin ttd_dokumen.write bisa memfinalisasi Resume Medis/Laporan
+        // Pembedahan milik DPJP lain (via single-sign & bulkSignAsDoctor yang keduanya lewat
+        // capture ini). Hanya utk signerType 'doctor' + akun ber-employee_id (akun tanpa
+        // employee_id / supervisor tetap tak difilter, sama seperti read-path).
+        if ($signerType === 'doctor' && ! empty($data['signer_user_id'])) {
+            $signerEmpId = User::whereKey($data['signer_user_id'])->value('employee_id');
+            if ($signerEmpId && ! $this->isInDoctorScope($signerEmpId, $doc)) {
+                throw new RuntimeException('Anda bukan DPJP dokumen ini — tidak berhak menandatangani.', 403);
+            }
+        }
+
         // Tentukan metode TTD: nakes + ada signature_pin → mode PIN (stempel),
         // selain itu mode DRAW (goresan SVG) seperti perilaku lama.
         $usePin = in_array($signerType, self::INTERNAL_SIGNER_TYPES, true)
@@ -567,6 +588,23 @@ final class SignatureService
             return 'ext:' . json_encode($arr, JSON_UNESCAPED_UNICODE);
         }
         return 'anon';
+    }
+
+    /**
+     * Apakah dokter (employee) adalah DPJP dokumen ini? Cermin predikat DPJP di
+     * ttdQueueBuilder (read-path), dipakai untuk enforce di write-path (capture).
+     * Dua jalur DPJP di-OR: pemeriksa poli/RME, operator bedah, atau dokter jaga IGD.
+     */
+    private function isInDoctorScope(string $employeeId, PatientDocument $doc): bool
+    {
+        $visit = $doc->visit;
+        if (! $visit) {
+            return false;
+        }
+
+        return $visit->doctorExamination()->where('doctor_id', $employeeId)->exists()
+            || $visit->surgerySchedule()->where('lead_surgeon_id', $employeeId)->exists()
+            || $visit->igdAssessment()->where('doctor_id', $employeeId)->exists();
     }
 
     private function assertSignerIdentity(string $signerType, array $data): void

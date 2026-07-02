@@ -674,6 +674,74 @@ class IntegrasiService
         };
     }
 
+    // ---- Rujukan keluar: edit + lookup spesialistik/sarana (UAT #13.2–13.4) ----
+
+    public function vclaimUpdateRujukan(array $tRujukan, ?string $visitId = null): array
+    {
+        return $this->vclaim->updateRujukanKeluar($tRujukan, $visitId);
+    }
+
+    public function vclaimListSpesialistikRujukan(string $ppk, string $tglRujukan): array
+    {
+        return $this->vclaim->listSpesialistikRujukan($ppk, $tglRujukan);
+    }
+
+    public function vclaimListSaranaRujukan(string $ppk): array
+    {
+        return $this->vclaim->listSaranaRujukan($ppk);
+    }
+
+    // ---- SEP internal (rujukan internal antar poli) — cari + hapus (UAT #14.2, #10) ----
+
+    public function vclaimGetSepInternal(string $noSep): array
+    {
+        return $this->vclaim->getSepInternal($noSep);
+    }
+
+    public function vclaimDeleteSepInternal(array $tSep, ?string $visitId = null): array
+    {
+        return $this->vclaim->deleteSepInternal($tSep, $visitId);
+    }
+
+    // ---- Rencana Kontrol / SPRI: hapus + lookup jadwal + list (UAT #17.3–17.6) ----
+
+    public function vclaimDeleteRencanaKontrol(string $noSuratKontrol, string $user, ?string $visitId = null): array
+    {
+        return $this->vclaim->deleteRencanaKontrol($noSuratKontrol, $user, $visitId);
+    }
+
+    public function vclaimListSpesialistikKontrol(string $jnsKontrol, string $nomor, string $tgl): array
+    {
+        return $this->vclaim->listSpesialistikKontrol($jnsKontrol, $nomor, $tgl);
+    }
+
+    public function vclaimJadwalDokterKontrol(string $jnsKontrol, string $kdPoli, string $tgl): array
+    {
+        return $this->vclaim->jadwalDokterKontrol($jnsKontrol, $kdPoli, $tgl);
+    }
+
+    public function vclaimListRencanaKontrol(string $tglAwal, string $tglAkhir, string $filter = '1'): array
+    {
+        return $this->vclaim->listRencanaKontrolByTgl($tglAwal, $tglAkhir, $filter);
+    }
+
+    // ---- SEP KLL Suplesi + Pengajuan/Approval Penjaminan (UAT #6.2, #11) ----
+
+    public function vclaimGetSepSuplesi(string $noKartu, string $tglPelayanan): array
+    {
+        return $this->vclaim->getSepSuplesi($noKartu, $tglPelayanan);
+    }
+
+    public function vclaimPengajuanSep(array $data, ?string $visitId = null): array
+    {
+        return $this->vclaim->pengajuanSep($data, $visitId);
+    }
+
+    public function vclaimAprovalSep(array $data, ?string $visitId = null): array
+    {
+        return $this->vclaim->aprovalSep($data, $visitId);
+    }
+
     // =========================================================================
     // SINKRON MASTER ICD DARI REFERENSI VCLAIM (cakupan oftalmologi)
     // =========================================================================
@@ -939,6 +1007,29 @@ class IntegrasiService
         return $this->antrean->getAntreanByKodebooking($bookingCode);
     }
 
+    /** Daftar poli wajib fingerprint (HFIS) — ternormalisasi {kode,nama}. UAT Antrol Ref Poli FP. */
+    public function antreanRefPoliFingerprint(): array
+    {
+        $list = $this->extractAntreanList($this->antrean->refPoliFingerprint());
+
+        return collect($list)->map(fn ($p) => [
+            'kode' => (string) ($p['kdsubspesialis'] ?? $p['kdpoli'] ?? ''),
+            'nama' => trim(($p['nmpoli'] ?? '') . (! empty($p['nmsubspesialis']) ? ' — ' . $p['nmsubspesialis'] : '')),
+        ])->filter(fn ($r) => $r['kode'] !== '')->values()->all();
+    }
+
+    /** Antrean per tanggal / belum dilayani (WSBPJS getlistantrean). $p={kodepoli,kodedokter,hari,jampraktek,tanggalperiksa}. */
+    public function antreanList(array $p): array
+    {
+        return $this->antrean->getListAntrean($p);
+    }
+
+    /** Sisa antrean per poli/dokter dari sisi WSBPJS (/antrean/sisa). */
+    public function antreanSisa(array $p): array
+    {
+        return $this->antrean->getSisaAntrean($p);
+    }
+
     // =========================================================================
     // MAPPING POLI BPJS  (sinkron menu Jadwal Dokter)
     // =========================================================================
@@ -1077,19 +1168,26 @@ class IntegrasiService
             // Kapasitas (kuota JKN) dari master antrean_kuota via AntreanKuotaService —
             // DoctorSchedule tak punya kolom kuota; fallback default 30. Spec
             // updatejadwaldokter mewajibkan 'kapasitas' & 'libur' per item jadwal.
-            $kapasitas = (int) (app(\App\Services\AntreanKuotaService::class)
-                ->kuota($first->poli_code, $first->employee_id, $weekStart)['jkn'] ?? 30);
-            if ($kapasitas <= 0) {
-                $kapasitas = 30;
-            }
+            // Kuota bersifat PER-TANGGAL → hitung per baris pakai tanggal kalender hari itu
+            // (Senin minggu + offset day_of_week). Dulu dihitung SEKALI dgn weekStart (Senin)
+            // → kuota per-hari (mis. Kamis=10) tak pernah terpakai (semua hari dapat kuota Senin).
+            $kuotaSvc   = app(\App\Services\AntreanKuotaService::class);
+            $weekMonday = \Carbon\Carbon::parse($weekStart)->startOfWeek(\Carbon\Carbon::MONDAY);
 
-            $jadwal = $rows->map(fn ($s) => [
-                'hari'      => (int) $s->day_of_week, // BPJS hari 1-7 (Senin=1) — TERVERIFIKASI refJadwalDokter: Kamis=4. Lokal DoctorSchedule sudah ISO 1-7.
-                'buka'      => substr($s->start_time, 0, 5),
-                'tutup'     => substr($s->end_time, 0, 5),
-                'kapasitas' => $kapasitas,
-                'libur'     => $s->is_active ? 0 : 1, // rows sudah difilter is_active=true → 0
-            ])->values()->toArray();
+            $jadwal = $rows->map(function ($s) use ($kuotaSvc, $first, $weekMonday) {
+                $rowDate = $weekMonday->copy()->addDays(((int) $s->day_of_week) - 1)->toDateString();
+                $cap     = (int) ($kuotaSvc->kuota($first->poli_code, $first->employee_id, $rowDate)['jkn'] ?? 30);
+                if ($cap <= 0) {
+                    $cap = 30;
+                }
+                return [
+                    'hari'      => (int) $s->day_of_week, // BPJS hari 1-7 (Senin=1) — TERVERIFIKASI refJadwalDokter: Kamis=4. Lokal DoctorSchedule sudah ISO 1-7.
+                    'buka'      => substr($s->start_time, 0, 5),
+                    'tutup'     => substr($s->end_time, 0, 5),
+                    'kapasitas' => $cap,
+                    'libur'     => $s->is_active ? 0 : 1, // rows sudah difilter is_active=true → 0
+                ];
+            })->values()->toArray();
 
             $result = $this->antrean->updateJadwalDokter([
                 'kodepoli'         => $bpjsPoli,

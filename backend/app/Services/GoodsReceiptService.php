@@ -139,6 +139,17 @@ class GoodsReceiptService
                 abort(422, 'Supplier GRN tidak sama dengan supplier PO.');
             }
             $this->validateAgainstPo($po, $items);
+        } else {
+            // GRN "bebas" (tanpa po_id): TOLAK po_item_id apa pun. Tanpa PO,
+            // validateAgainstPo dilewati (po_item_id tak diverifikasi kepemilikannya),
+            // tetapi createItemAndApplyStock tetap meng-increment qty_received PO item
+            // tsb → GRN bebas bisa MENGGELEMBUNGKAN qty_received PO arbitrer (bukan
+            // miliknya) & mendesync tracking penerimaan PO secara permanen.
+            foreach ($items as $idx => $row) {
+                if (! empty($row['po_item_id'])) {
+                    abort(422, "Item baris #" . ($idx + 1) . ": po_item_id hanya boleh diisi saat 'Terima dari PO'.");
+                }
+            }
         }
 
         // Nomor GRN via MAX+1 bisa tabrakan saat 2 request berbarengan → retry

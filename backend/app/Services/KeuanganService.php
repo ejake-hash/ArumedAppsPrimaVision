@@ -46,6 +46,16 @@ class KeuanganService
         'Tindakan Dokter',
     ];
 
+    /**
+     * Kategori laporan obat farmasi menurut ASAL OBAT DI ORDER (urut tampilan).
+     *  - rawat_jalan : resep RAJAL (loket Farmasi).
+     *  - rawat_inap  : permintaan/obat pulang rawat inap (via inpatient_charges).
+     *  - igd         : obat IGD (via inpatient_charges, jenis_pelayanan IGD).
+     *  - pasca_bedah : resep is_post_op / item is_bedah / pos Obat Tindakan-Injeksi.
+     *  - obat_bebas  : OTC walk-in (pharmacy_sales) + item TAMBAHAN golongan bebas.
+     */
+    public const MED_CATEGORIES = ['rawat_jalan', 'rawat_inap', 'igd', 'pasca_bedah', 'obat_bebas'];
+
     // =========================================================================
     // REKAP HONOR
     // =========================================================================
@@ -78,7 +88,10 @@ class KeuanganService
             $rule = $this->resolveNominalRule($rules, $operator, $pc->surgery_package_id, $payer, $date);
             if (! $rule) { continue; } // tanpa aturan nominal → bukan kasus tertutup paket
 
-            $coveredVisits[$pc->visit_id] = true;
+            // Simpan OPERATOR paket (bukan sekadar true): supresi honor hanya berlaku utk
+            // baris dokter operator (honornya sudah tercakup nominal paket), BUKAN dokter
+            // konsul/kedua di visit yang sama — mereka tetap berhak honor persen atas barisnya.
+            $coveredVisits[$pc->visit_id][] = $operator;
             $key = "{$operator}|{$pc->surgery_package_id}|{$payer}";
             if (! isset($packageBuckets[$key])) {
                 $packageBuckets[$key] = [
@@ -129,7 +142,10 @@ class KeuanganService
             $empId   = $r->attributed_employee_id;
             $payer   = $r->payer_group;
             $honorOk = in_array($r->category, self::HONOR_CATEGORIES, true);
-            $covered = isset($coveredVisits[$r->visit_id]); // tertutup paket nominal
+            // Tertutup paket HANYA bila baris ini diatribusikan ke OPERATOR paket — bukan
+            // seluruh baris pada visit. Dokter konsul/kedua tetap dapat honor persen.
+            $covered = isset($coveredVisits[$r->visit_id])
+                && in_array($r->attributed_employee_id, $coveredVisits[$r->visit_id], true);
             $amountGross = (float) $r->total_price;
             $amountNet   = (float) $r->net_price;
 
@@ -324,9 +340,9 @@ class KeuanganService
      * dan rekap pemakaian agregat per jenis obat. Cakupan = billing item OBAT
      * (sudah tervalidasi Farmasi) + penjualan OTC walk-in (pharmacy_sales).
      *
-     * 3 kategori: rawat_jalan (Obat Pulang RAJAL), pasca_bedah (resep is_post_op /
-     * item is_bedah / pos Tindakan-Injeksi), obat_bebas (OTC walk-in + item TAMBAHAN
-     * golongan BEBAS). Pendapatan = net_price (billing) / total_price (OTC).
+     * Kategori dipisah menurut ASAL OBAT DI ORDER (self::MED_CATEGORIES): rawat_jalan,
+     * rawat_inap & igd (keduanya via inpatient_charges), pasca_bedah, obat_bebas.
+     * Pendapatan = net_price (billing) / total_price (OTC).
      *
      * @param array{period?:string,payer_group?:string,bpjs_basis?:string,category?:string} $filters
      */
@@ -335,7 +351,7 @@ class KeuanganService
         [$start, $end, $period] = $this->resolvePeriod($filters['period'] ?? null);
         $bpjsBasis = ($filters['bpjs_basis'] ?? 'finalized') === 'paid' ? 'paid' : 'finalized';
         $payerOnly = in_array($filters['payer_group'] ?? null, ['BPJS', 'UMUM'], true) ? $filters['payer_group'] : null;
-        $catFilter = in_array($filters['category'] ?? null, ['rawat_jalan', 'pasca_bedah', 'obat_bebas'], true) ? $filters['category'] : null;
+        $catFilter = in_array($filters['category'] ?? null, self::MED_CATEGORIES, true) ? $filters['category'] : null;
 
         // Rentang 12 bulan (periode terpilih di ujung) untuk tren.
         $trendStart = (clone $start)->subMonthsNoOverflow(11)->startOfMonth();
@@ -349,15 +365,14 @@ class KeuanganService
         $cursor = (clone $trendStart);
         for ($i = 0; $i < 12; $i++) {
             $key = $cursor->format('Y-m');
-            $trend[$key] = [
-                'bucket'      => $key,
-                'label'       => $cursor->isoFormat('MMM YY'),
-                'rawat_jalan' => 0.0, 'pasca_bedah' => 0.0, 'obat_bebas' => 0.0,
-            ];
+            $trend[$key] = array_merge(
+                ['bucket' => $key, 'label' => $cursor->isoFormat('MMM YY')],
+                array_fill_keys(self::MED_CATEGORIES, 0.0),
+            );
             $cursor->addMonthNoOverflow();
         }
 
-        $composition = ['rawat_jalan' => 0.0, 'pasca_bedah' => 0.0, 'obat_bebas' => 0.0];
+        $composition = array_fill_keys(self::MED_CATEGORIES, 0.0);
         $usage = []; // key "med|cat" => agregat
 
         $consume = function (string $cat, string $bucket, float $revenue, bool $isCurrent, string $medName, ?string $golongan, int $qty) use (&$trend, &$composition, &$usage) {
@@ -396,13 +411,11 @@ class KeuanganService
             'period'       => $period,
             'period_label' => $start->isoFormat('MMMM YYYY'),
             'bpjs_basis'   => $bpjsBasis,
-            'kpi' => [
-                'total'       => round(array_sum($composition), 2),
-                'rawat_jalan' => round($composition['rawat_jalan'], 2),
-                'pasca_bedah' => round($composition['pasca_bedah'], 2),
-                'obat_bebas'  => round($composition['obat_bebas'], 2),
-                'item_count'  => count($usageList),
-            ],
+            'kpi' => array_merge(
+                ['total' => round(array_sum($composition), 2)],
+                array_map(fn ($v) => round($v, 2), $composition),
+                ['item_count' => count($usageList)],
+            ),
             'trend'       => array_values($trend),
             'composition' => array_map(fn ($v) => round($v, 2), $composition),
             'usage'       => $usageList,
@@ -413,7 +426,10 @@ class KeuanganService
     public function buildMedicationReportCsv(array $filters): string
     {
         $rep = $this->medicationReport($filters);
-        $catLabels = ['rawat_jalan' => 'Rawat Jalan', 'pasca_bedah' => 'Pasca Bedah', 'obat_bebas' => 'Obat Bebas'];
+        $catLabels = [
+            'rawat_jalan' => 'Rawat Jalan', 'rawat_inap' => 'Rawat Inap', 'igd' => 'IGD',
+            'pasca_bedah' => 'Pasca Bedah', 'obat_bebas' => 'Obat Bebas',
+        ];
 
         $rows = [];
         $rows[] = ['Obat', 'Golongan', 'Kategori', 'Qty Terpakai', 'Transaksi', 'Pendapatan'];
@@ -425,17 +441,25 @@ class KeuanganService
         }
         $k = $rep['kpi'];
         $rows[] = ['', '', '', '', '', ''];
-        $rows[] = ['SUBTOTAL — Rawat Jalan', '', '', '', '', $this->num($k['rawat_jalan'])];
-        $rows[] = ['SUBTOTAL — Pasca Bedah', '', '', '', '', $this->num($k['pasca_bedah'])];
-        $rows[] = ['SUBTOTAL — Obat Bebas', '', '', '', '', $this->num($k['obat_bebas'])];
+        foreach (self::MED_CATEGORIES as $cat) {
+            $rows[] = ['SUBTOTAL — ' . $catLabels[$cat], '', '', '', '', $this->num($k[$cat])];
+        }
         $rows[] = ['GRAND TOTAL — Pendapatan Obat', '', '', '', '', $this->num($k['total'])];
 
         return $this->toCsv($rows);
     }
 
-    /** Klasifikasi 1 baris obat → kategori pendapatan (urutan presedensi: bedah > bebas > RJ). */
+    /**
+     * Klasifikasi 1 baris obat → kategori pendapatan berdasar ASAL OBAT DI ORDER.
+     * Presedensi: rawat inap/IGD (inpatient_charges) > bedah > obat bebas > rawat jalan.
+     */
     private function classifyObat($r): string
     {
+        // Obat via inpatient_charges = order rawat inap / IGD. jenis_pelayanan (RANAP/IGD/
+        // RAJAL) adalah diskriminator layanan otoritatif (dipakai KasirService billing).
+        if (! empty($r->ic_id)) {
+            return ($r->jenis_pelayanan ?? null) === 'IGD' ? 'igd' : 'rawat_inap';
+        }
         if (! empty($r->is_post_op) || ! empty($r->is_bedah)
             || in_array($r->category ?? null, ['Obat Tindakan', 'Obat Injeksi'], true)) {
             return 'pasca_bedah';
@@ -466,6 +490,16 @@ class KeuanganService
             ->leftJoin('prescription_items as pit', 'pit.id', '=', 'bi.reference_id')
             ->leftJoin('prescriptions as pr', 'pr.id', '=', 'pit.prescription_id')
             ->leftJoin('medications as m', 'm.id', '=', 'pit.medication_id')
+            // Obat rawat inap / IGD ditagih via inpatient_charges (charge_type OBAT):
+            // billing_item.reference_id menunjuk InpatientCharge, BUKAN prescription_item,
+            // sehingga join resep di atas NULL. Join ic + medication asalnya utk klasifikasi
+            // "asal obat di order" (rawat_inap vs igd) & nama/golongan obat.
+            ->leftJoin('inpatient_charges as ic', function ($j) {
+                $j->on('ic.id', '=', 'bi.reference_id')->where('ic.charge_type', '=', 'OBAT');
+            })
+            ->leftJoin('medications as m2', function ($j) {
+                $j->on('m2.id', '=', 'ic.reference_id')->where('ic.reference_type', '=', 'medication');
+            })
             ->where('bi.item_type', 'OBAT')
             ->whereNull('bi.deleted_at')
             ->whereNull('inv.deleted_at')
@@ -477,9 +511,11 @@ class KeuanganService
 
         return $q->selectRaw("
                 bi.category, bi.quantity, bi.total_price, bi.net_price, bi.description,
-                inv.paid_at as realized_at, v.visit_date,
+                inv.paid_at as realized_at, v.visit_date, v.jenis_pelayanan,
                 pr.is_post_op, pit.is_bedah, pit.source,
-                m.name as med_name, m.golongan,
+                COALESCE(m.name, m2.name) as med_name,
+                COALESCE(m.golongan, m2.golongan) as golongan,
+                ic.id as ic_id,
                 $payerExpr as payer_group
             ")
             ->get()->all();
@@ -509,7 +545,12 @@ class KeuanganService
     /** Baris detail per billing item (honor-eligible & info), sudah teratribusi dokter. */
     private function fetchDetailRows(Carbon $start, Carbon $end, string $bpjsBasis, ?string $payerOnly, ?string $employeeId): array
     {
-        $dpjpExpr = 'COALESCE(vs.performed_by_id, v.dpjp_employee_id, de.doctor_id, ds.employee_id)';
+        // Atribusi dokter honor. Baris RAJAL (tindakan) menunjuk visit_services →
+        // vs.performed_by_id. Baris RANAP/IGD (VISITE/KONSUL/TINDAKAN) menunjuk
+        // inpatient_charges → ic.performed_by_id (mis. konsul spesialis IgdService::
+        // addKonsultasi). Tanpa ic.performed_by_id di COALESCE, honor konsul jatuh ke
+        // v.dpjp_employee_id (dokter jaga) — bukan spesialis yang benar-benar dikonsul.
+        $dpjpExpr = 'COALESCE(vs.performed_by_id, ic.performed_by_id, v.dpjp_employee_id, de.doctor_id, ds.employee_id)';
         $payerExpr = "CASE WHEN v.guarantor_type = 'BPJS' THEN 'BPJS' ELSE 'UMUM' END";
 
         $q = DB::table('billing_items as bi')
@@ -519,6 +560,11 @@ class KeuanganService
             ->leftJoin('doctor_schedules as ds', 'ds.id', '=', 'v.doctor_schedule_id')
             ->leftJoin('doctor_examinations as de', 'de.visit_id', '=', 'v.id')
             ->leftJoin('visit_services as vs', 'vs.id', '=', 'bi.reference_id')
+            // Baris RANAP/IGD ditagih via inpatient_charges → reference_id menunjuk
+            // InpatientCharge (bukan visit_services), jadi vs NULL. Join ic agar
+            // performed_by_id (dokter pelaksana/konsul) ikut teratribusi. UUID unik lintas
+            // tabel → tak ada false-match dgn vs. inpatient_charges tanpa soft-delete.
+            ->leftJoin('inpatient_charges as ic', 'ic.id', '=', 'bi.reference_id')
             ->leftJoin('insurers as ins', 'ins.id', '=', 'v.insurer_id')
             ->leftJoin('visit_cob as vc', function ($j) {
                 $j->on('vc.visit_id', '=', 'v.id')

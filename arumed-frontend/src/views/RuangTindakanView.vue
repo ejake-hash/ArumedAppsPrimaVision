@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ruangTindakanApi } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import FormDocsBrowser from '@/components/forms/FormDocsBrowser.vue'
@@ -14,7 +14,22 @@ const activeTab = ref('antrean')   // 'antrean' | 'terjadwal'
 const board = ref([])
 const loading = ref(false)
 const selId = ref(null)
-const sel = computed(() => board.value.find(p => p.id === selId.value) || null)
+
+// ─── Mode daftar kiri: Antrean Live vs Riwayat (datepicker) — pola BedahView ───
+const leftMode = ref('live')                 // 'live' | 'history'
+const historyDate = ref(localDateStr())
+const historyBoard = ref([])
+const historyLoading = ref(false)
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Pasien terpilih bisa dari papan live ATAU riwayat — agar polling live (yang
+// hanya memuat papan hari ini) tak menghapus pilihan saat menelusuri riwayat.
+const sel = computed(() =>
+  board.value.find(p => p.id === selId.value)
+  || historyBoard.value.find(p => p.id === selId.value)
+  || null)
 
 // Dokumen RM (Form Registry, station "bedah" — RuangTindakan reuse infra Bedah).
 // Tombol di header detail → modal FormDocsBrowser (pola BedahView/RawatInapView).
@@ -74,14 +89,36 @@ async function loadBoard() {
     const res = await ruangTindakanApi.antrian()
     board.value = res.data?.data || []
     // Pertahankan pilihan bila masih ada; else pilih pertama (utamakan yang terlihat di filter).
-    if (selId.value && !board.value.some(p => p.id === selId.value)) selId.value = null
-    if (!selId.value && board.value.length) selectPatient(filtBoard.value[0] || board.value[0])
+    // Hanya di mode live — jangan hapus/geser pilihan saat menelusuri Riwayat.
+    if (leftMode.value === 'live') {
+      if (selId.value && !board.value.some(p => p.id === selId.value)) selId.value = null
+      if (!selId.value && board.value.length) selectPatient(filtBoard.value[0] || board.value[0])
+    }
   } catch (e) {
     toast('e', e?.response?.data?.message || 'Gagal memuat antrean.')
   } finally {
     loading.value = false
   }
 }
+
+// ─── Riwayat tindakan (snapshot tanggal terpilih, tak ikut polling) ────────────
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const res = await ruangTindakanApi.history(historyDate.value)
+    historyBoard.value = res.data?.data || []
+  } catch (e) {
+    toast('e', e?.response?.data?.message || 'Gagal memuat riwayat.')
+    historyBoard.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+function setLeftMode(m) {
+  leftMode.value = m
+  if (m === 'history' && !historyBoard.value.length) loadHistory()
+}
+watch(historyDate, () => { if (leftMode.value === 'history') loadHistory() })
 
 function selectPatient(p) {
   // Klik pada pasien yang SUDAH terpilih: jangan re-hydrate — kalau tidak,
@@ -229,6 +266,27 @@ const filtBoard = computed(() => {
   return list
 })
 
+// Riwayat tersaring: hanya penjamin + pencarian (filter primer khusus mode live).
+const filtHistory = computed(() => {
+  let list = historyBoard.value
+  if (qSecondaryFilter.value === 'bpjs') {
+    list = list.filter(p => isBpjs(p))
+  } else if (qSecondaryFilter.value === 'umum') {
+    list = list.filter(p => !isBpjs(p))
+  }
+  if (qSearch.value) {
+    const s = qSearch.value.toLowerCase()
+    list = list.filter(p =>
+      (p.patient?.name || '').toLowerCase().includes(s)
+      || String(p.queue_number || '').toLowerCase().includes(s)
+      || (p.patient?.no_rm || '').toLowerCase().includes(s))
+  }
+  return list
+})
+
+// Daftar yang ditampilkan di papan: live vs riwayat.
+const displayList = computed(() => leftMode.value === 'history' ? filtHistory.value : filtBoard.value)
+
 // ─── Aksi lifecycle ───────────────────────────────────────────────────────────
 // Panggil / Panggil Ulang (per-kartu antrean, gaya PerawatView). Panggil beroperasi
 // pada antrean (queue). Pasien terjadwal yang belum punya baris antrean belum bisa
@@ -368,16 +426,29 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
             <div>
               <div class="card-head-title">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
-                Antrean Tindakan
+                {{ leftMode === 'history' ? 'Riwayat Tindakan' : 'Antrean Tindakan' }}
               </div>
-              <div class="card-head-sub">{{ board.length }} pasien hari ini</div>
+              <div class="card-head-sub">{{ leftMode === 'history' ? `${filtHistory.length} pasien · ${fmtDate(historyDate)}` : `${board.length} pasien hari ini` }}</div>
             </div>
-            <span class="pill-live">LIVE</span>
+            <span v-if="leftMode === 'live'" class="pill-live">LIVE</span>
           </div>
 
           <div class="card-body queue-scroll" role="region" aria-label="Daftar antrean tindakan">
-            <!-- Stats bar -->
-            <div class="stats-bar">
+            <!-- Mode: Antrean Live vs Riwayat (datepicker) -->
+            <div class="rt-leftmode" role="tablist" aria-label="Mode daftar">
+              <button :class="['rt-lm-btn', leftMode === 'live' ? 'a' : '']" @click="setLeftMode('live')" role="tab">Antrean Live</button>
+              <button :class="['rt-lm-btn', leftMode === 'history' ? 'a' : '']" @click="setLeftMode('history')" role="tab">Riwayat</button>
+            </div>
+
+            <!-- Riwayat: datepicker -->
+            <div v-if="leftMode === 'history'" class="rt-history-bar">
+              <svg viewBox="0 0 24 24" class="pill-icon" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              <input type="date" v-model="historyDate" class="rt-history-date" aria-label="Tanggal tindakan" />
+              <button class="rt-history-reload" @click="loadHistory" :disabled="historyLoading" title="Muat ulang">↻</button>
+            </div>
+
+            <!-- Stats bar (live) -->
+            <div v-if="leftMode === 'live'" class="stats-bar">
               <div class="stat-item">
                 <span class="stat-label">Menunggu</span>
                 <b class="stat-num stat-waiting">{{ cMenunggu }}</b>
@@ -394,8 +465,8 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
               </div>
             </div>
 
-            <!-- Primary filter -->
-            <div class="primary-filter" role="group" aria-label="Filter utama antrean">
+            <!-- Primary filter (live) -->
+            <div v-if="leftMode === 'live'" class="primary-filter" role="group" aria-label="Filter utama antrean">
               <button :class="['pf-btn', qPrimaryFilter === 'waiting' ? 'a' : '']" @click="qPrimaryFilter = 'waiting'">
                 Belum Dipanggil
                 <span v-if="cMenunggu" class="pf-ct">{{ cMenunggu }}</span>
@@ -422,15 +493,20 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
               <input v-model="qSearch" class="q-search" placeholder="Cari nama / no. antrean / RM…" />
             </div>
 
-            <!-- Empty -->
-            <div v-if="!filtBoard.length" class="empty-section" aria-live="polite">
-              {{ board.length ? 'Tidak ada pasien dalam filter ini' : 'Tidak ada pasien tindakan hari ini.' }}
+            <!-- Loading / Empty -->
+            <div v-if="leftMode === 'history' && historyLoading" class="empty-section" aria-live="polite">
+              Memuat riwayat…
+            </div>
+            <div v-else-if="!displayList.length" class="empty-section" aria-live="polite">
+              {{ leftMode === 'history'
+                  ? 'Tidak ada pasien tindakan pada tanggal ini'
+                  : (board.length ? 'Tidak ada pasien dalam filter ini' : 'Tidak ada pasien tindakan hari ini.') }}
             </div>
 
-            <!-- Queue list -->
+            <!-- Queue / history list -->
             <div v-else role="list" aria-label="Daftar antrean tindakan">
               <div
-                v-for="p in filtBoard" :key="p.id"
+                v-for="p in displayList" :key="p.id"
                 role="listitem"
                 :class="['q-item',
                   p.id === selId ? 'active' : '',
@@ -730,6 +806,19 @@ onUnmounted(() => { clearInterval(pollTimer); clearTimeout(toastTimer) })
 .pill-live { font-size: 9.5px; font-weight: 700; padding: 2px 8px; background: #dcfce7; color: #15803d; border: 1px solid #86efac; border-radius: 20px; letter-spacing: 0.05em; }
 
 .queue-scroll { padding: 0.6rem; max-height: calc(100vh - 200px); overflow-y: auto; }
+
+/* Mode daftar (Live / Riwayat) + datepicker riwayat — pola BedahView */
+.rt-leftmode { display: flex; gap: 4px; margin-bottom: 0.6rem; background: #f8fafc; border: 1.5px solid #DEE4EB; border-radius: 9px; padding: 3px; }
+.rt-lm-btn { flex: 1; height: 30px; font-size: 11.5px; font-weight: 600; border: none; border-radius: 6px; background: transparent; color: #475569; cursor: pointer; font-family: inherit; transition: all .13s; }
+.rt-lm-btn:hover { color: #1FAAE0; }
+.rt-lm-btn.a { background: #0E3A66; color: #fff; }
+.rt-history-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 0.6rem; padding: 6px 9px; background: #f0f9ff; border: 1.5px solid #DEE4EB; border-radius: 8px; }
+.rt-history-bar .pill-icon { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: #1FAAE0; stroke-width: 2; }
+.rt-history-date { flex: 1; height: 28px; font-size: 12px; border: 1.5px solid #DEE4EB; border-radius: 6px; padding: 0 8px; background: #fff; font-family: inherit; color: #1e293b; outline: none; }
+.rt-history-date:focus { border-color: #1FAAE0; }
+.rt-history-reload { height: 28px; width: 30px; font-size: 14px; border: 1.5px solid #DEE4EB; border-radius: 6px; background: #fff; color: #1FAAE0; cursor: pointer; flex: 0 0 auto; }
+.rt-history-reload:hover:not(:disabled) { border-color: #1FAAE0; }
+.rt-history-reload:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Stats bar */
 .stats-bar { display: flex; align-items: center; background: #f8fafc; border: 1px solid #DEE4EB; border-radius: 9px; padding: 8px 12px; margin-bottom: 0.65rem; }

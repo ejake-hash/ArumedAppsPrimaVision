@@ -28,8 +28,12 @@ class UserService
             $q->where('role_id', $filters['role_id']);
         }
 
-        if (isset($filters['is_active']) && $filters['is_active'] !== '') {
-            $q->where('is_active', (bool) $filters['is_active']);
+        // filter_var, bukan (bool): (bool) "false"/"0" (string) = TRUE di PHP → filter
+        // is_active=false malah menampilkan yang aktif. FILTER_NULL_ON_FAILURE → nilai
+        // tak terbaca diabaikan (tanpa filter).
+        $active = filter_var($filters['is_active'] ?? null, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($active !== null) {
+            $q->where('is_active', $active);
         }
 
         return $q->orderBy('name')->get()->map(fn ($u) => $this->format($u))->toArray();
@@ -118,6 +122,12 @@ class UserService
             $user->update(['employee_id' => $employee->id]);
         }
 
+        // Jangan clobber identitas medis (NIP/SIP/STR/profession) pegawai yang dipakai
+        // bersama akun lain — hanya pemilik tunggal employee_id yang boleh menulis.
+        if (User::where('employee_id', $user->employee_id)->where('id', '!=', $user->id)->exists()) {
+            return;
+        }
+
         Employee::where('id', $user->employee_id)->update($payload);
     }
 
@@ -149,6 +159,26 @@ class UserService
     {
         DB::transaction(function () use ($id, $data) {
             $user = User::findOrFail($id);
+
+            // Guard Superadmin terakhir: delete()/toggleAktif() sudah dijaga, tapi update()
+            // melewati keduanya. Men-demote role atau menonaktifkan Superadmin TERAKHIR →
+            // seluruh /rbac/* terkunci 403 (tak ada superadmin) atau akun tak bisa login lagi.
+            if ($user->isSuperadmin()) {
+                $demoting = false;
+                if (array_key_exists('role_id', $data) && $data['role_id']) {
+                    $newRole  = Role::find($data['role_id']);
+                    $demoting = $newRole && strtolower($newRole->name) !== 'superadmin';
+                }
+                $deactivating = array_key_exists('is_active', $data) && ! (bool) $data['is_active'];
+                if ($demoting || $deactivating) {
+                    $otherSuperadmin = User::where('id', '!=', $id)
+                        ->whereHas('role', fn ($q) => $q->where('name', 'superadmin'))
+                        ->exists();
+                    if (! $otherSuperadmin) {
+                        throw new \Exception('Tidak bisa mencabut/menonaktifkan Superadmin terakhir.', 422);
+                    }
+                }
+            }
 
             $payload = array_filter([
                 'name'        => $data['name']     ?? null,
@@ -185,7 +215,11 @@ class UserService
             // Sinkronkan nama ke employee tertaut: employees.name adalah nama
             // medis otoritatif yang dipakai Jadwal Dokter, RME, TTD, billing.
             // Tanpa ini, ganti nama di Data Pengguna tidak terlihat di sana.
-            if (! empty($data['name']) && $user->employee_id) {
+            // TAPI: jangan clobber bila employee dipakai bersama akun LAIN (validasi hanya
+            // cek exists, tak unik) — mengganti nama user B akan mengubah identitas medis
+            // dokter A. Hanya tulis bila user ini pemilik tunggal employee_id.
+            if (! empty($data['name']) && $user->employee_id
+                && ! User::where('employee_id', $user->employee_id)->where('id', '!=', $user->id)->exists()) {
                 Employee::where('id', $user->employee_id)->update(['name' => $data['name']]);
             }
 

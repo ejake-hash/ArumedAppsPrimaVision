@@ -11,11 +11,11 @@ const canDelete = computed(() => auth.can('keuangan.delete'))
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
-  { val: 'recap', label: 'Rekap Honor' },
   { val: 'laporan', label: 'Laporan' },
+  { val: 'recap', label: 'Rekap Honor' },
   { val: 'rules', label: 'Aturan Honor' },
 ]
-const activeTab = ref('recap')
+const activeTab = ref('laporan')
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 const toastMsg = ref('')
@@ -103,9 +103,9 @@ const payersWithData = (doc) =>
 // ═══════════════════════════════════════════════════════════════════════════
 // TAB 2 — LAPORAN OBAT FARMASI (pemakaian + pendapatan)
 // ═══════════════════════════════════════════════════════════════════════════
-const CAT_LABEL = { rawat_jalan: 'Rawat Jalan', pasca_bedah: 'Pasca Bedah', obat_bebas: 'Obat Bebas' }
-const CAT_COLOR = { rawat_jalan: '#0e7490', pasca_bedah: '#9333ea', obat_bebas: '#16a34a' }
-const CAT_KEYS = ['rawat_jalan', 'pasca_bedah', 'obat_bebas']
+const CAT_LABEL = { rawat_jalan: 'Rawat Jalan', rawat_inap: 'Rawat Inap', igd: 'IGD', pasca_bedah: 'Pasca Bedah', obat_bebas: 'Obat Bebas' }
+const CAT_COLOR = { rawat_jalan: '#0e7490', rawat_inap: '#2563eb', igd: '#dc2626', pasca_bedah: '#9333ea', obat_bebas: '#16a34a' }
+const CAT_KEYS = ['rawat_jalan', 'rawat_inap', 'igd', 'pasca_bedah', 'obat_bebas']
 
 const labPeriod = ref(thisMonth())
 const labPayer = ref('')
@@ -277,8 +277,8 @@ onMounted(() => {
   <div class="ku-page" @click="openFmt = false; openLabFmt = false">
     <header class="ku-head">
       <div>
-        <h1>Keuangan — Rekap Honor Dokter</h1>
-        <p class="sub">Jasa medis dokter per periode dari tagihan terealisasi, dipisah BPJS vs Umum/Asuransi.</p>
+        <h1>Keuangan</h1>
+        <p class="sub">Laporan pendapatan obat farmasi &amp; rekap honor (jasa medis) dokter per periode dari tagihan terealisasi.</p>
       </div>
     </header>
 
@@ -411,9 +411,7 @@ onMounted(() => {
           <span>Kategori (tabel)</span>
           <select v-model="labCategory">
             <option value="">Semua kategori</option>
-            <option value="rawat_jalan">Rawat Jalan</option>
-            <option value="pasca_bedah">Pasca Bedah</option>
-            <option value="obat_bebas">Obat Bebas</option>
+            <option v-for="k in CAT_KEYS" :key="k" :value="k">{{ CAT_LABEL[k] }}</option>
           </select>
         </label>
         <button class="btn primary" :disabled="loadingReport" @click="loadReport">
@@ -431,9 +429,10 @@ onMounted(() => {
       <template v-if="report">
         <div class="ku-summary">
           <div class="sum-box total"><span>Total Pendapatan Obat — {{ report.period_label }}</span><b>{{ rp(report.kpi.total) }}</b></div>
-          <div class="sum-box umum"><span>Rawat Jalan</span><b>{{ rp(report.kpi.rawat_jalan) }}</b></div>
-          <div class="sum-box pascabedah"><span>Pasca Bedah</span><b>{{ rp(report.kpi.pasca_bedah) }}</b></div>
-          <div class="sum-box bebas"><span>Obat Bebas</span><b>{{ rp(report.kpi.obat_bebas) }}</b></div>
+          <div v-for="k in CAT_KEYS" :key="k" class="sum-box" :style="{ background: CAT_COLOR[k] + '14' }">
+            <span><span class="dot" :style="{ background: CAT_COLOR[k] }"></span>{{ CAT_LABEL[k] }}</span>
+            <b>{{ rp(report.kpi[k]) }}</b>
+          </div>
         </div>
 
         <div class="chart-grid">
@@ -448,7 +447,7 @@ onMounted(() => {
           <div class="chart-card">
             <h3>Ringkasan Kategori</h3>
             <ul class="cat-legend">
-              <li v-for="k in ['rawat_jalan','pasca_bedah','obat_bebas']" :key="k">
+              <li v-for="k in CAT_KEYS" :key="k">
                 <span class="dot" :style="{ background: CAT_COLOR[k] }"></span>
                 {{ CAT_LABEL[k] }}
                 <b>{{ rp(report.kpi[k]) }}</b>
@@ -628,8 +627,8 @@ onMounted(() => {
 .sum-box { flex: 1; min-width: 180px; padding: 12px 16px; border-radius: 10px; display: flex; flex-direction: column; gap: 4px; }
 .sum-box span { font-size: .75rem; color: #64748b; }
 .sum-box b { font-size: 1.15rem; }
+.sum-box .dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
 .sum-box.umum { background: #f0fdfa; } .sum-box.bpjs { background: #eff6ff; } .sum-box.total { background: #fef3c7; }
-.sum-box.pascabedah { background: #faf5ff; } .sum-box.bebas { background: #f0fdf4; }
 
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
 .chart-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }

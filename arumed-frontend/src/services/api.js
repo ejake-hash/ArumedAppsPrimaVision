@@ -1250,6 +1250,7 @@ export const bedahApi = {
 /** Ruang Tindakan — stasiun laser YAG/PRP (gate ruang_tindakan.*). */
 export const ruangTindakanApi = {
   antrian:        ()         => api.get('/ruang-tindakan/antrian'),
+  history:        (tanggal)  => api.get('/ruang-tindakan/history', { params: { tanggal } }),
   panggil:        (id)       => api.put(`/ruang-tindakan/antrian/${id}/panggil`),
   lewati:         (id)       => api.put(`/ruang-tindakan/antrian/${id}/lewati`),
   mulai:          (scheduleId) => api.put(`/ruang-tindakan/jadwal/${scheduleId}/mulai`),

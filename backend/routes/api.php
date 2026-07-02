@@ -270,17 +270,22 @@ Route::prefix('v1')->group(function () {
 
             Route::prefix('bpjs')->group(function () {
                 Route::post('/cek-peserta',        [AdmisiController::class, 'bpjsCekPeserta']);
-                Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep']);
-                Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep']);
+                // MUTASI SEP (BPJS + state lokal) → WAJIB admisi.write, bukan admisi.read:
+                // tanpa ini role read-only (perawat/dokter/farmasi/penunjang) bisa
+                // menerbitkan/membatalkan SEP kunjungan mana pun (IDOR-by-SEP-number).
+                Route::post('/generate-sep',       [AdmisiController::class, 'bpjsGenerateSep'])->middleware('permission:admisi.write');
+                Route::post('/cancel-sep',         [AdmisiController::class, 'bpjsCancelSep'])->middleware('permission:admisi.write');
                 // Cetak/lihat SEP (read-only) DIPINDAH ke luar grup admisi.read agar
                 // bisa di-gate OR (admisi|perawat|dokter|bpjs) — lihat blok di bawah.
-                Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep']);
+                Route::put('/update-sep',          [AdmisiController::class, 'bpjsUpdateSep'])->middleware('permission:admisi.write');
                 Route::post('/cek-rujukan',        [AdmisiController::class, 'bpjsCekRujukan']);
                 Route::post('/cek-surat-kontrol',  [AdmisiController::class, 'bpjsCekSuratKontrol']);
                 // i-Care: URL viewer riwayat pelayanan peserta (informed consent di UI).
                 Route::post('/icare-riwayat',      [AdmisiController::class, 'bpjsIcareRiwayat']);
                 // Pre-flight kesiapan SEP sebelum pasien didaftarkan (wizard Konfirmasi).
                 Route::post('/preflight-sep',      [AdmisiController::class, 'bpjsPreflightSep']);
+                // Cek status sidik jari peserta (poli wajib-FP) sebelum Terbitkan SEP.
+                Route::post('/finger-status',      [AdmisiController::class, 'bpjsFingerStatus']);
                 // Diagnosa awal SEP: tarik dari rujukan FKTP / set manual (override).
                 Route::post('/tarik-diagnosa/{visitId}', [AdmisiController::class, 'bpjsTarikDiagnosa'])->middleware('permission:admisi.write');
                 Route::put('/diagnosa/{visitId}',        [AdmisiController::class, 'bpjsSetDiagnosa'])->middleware('permission:admisi.write');
@@ -636,6 +641,7 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------
         Route::prefix('ruang-tindakan')->middleware('permission:ruang_tindakan.read')->group(function () {
             Route::get('/antrian',              [RuangTindakanController::class, 'indexAntrian']);
+            Route::get('/history',              [RuangTindakanController::class, 'history']);
             Route::put('/antrian/{id}/panggil', [RuangTindakanController::class, 'panggilAntrian'])->middleware('permission:ruang_tindakan.write');
             Route::put('/antrian/{id}/lewati',  [RuangTindakanController::class, 'lewatiAntrian'])->middleware('permission:ruang_tindakan.write');
             Route::put('/jadwal/{id}/mulai',    [RuangTindakanController::class, 'mulaiTindakan'])->middleware('permission:ruang_tindakan.write');
@@ -1630,6 +1636,22 @@ Route::prefix('v1')->group(function () {
             Route::post('/vclaim/lpk',                      [IntegrasiController::class, 'vclaimInsertLpk']);
             Route::get('/vclaim/monitoring/{jenis}',        [IntegrasiController::class, 'vclaimMonitoring']);
             Route::get('/vclaim/referensi/{jenis}',         [IntegrasiController::class, 'vclaimReferensi']);
+            // Wiring UAT: edit rujukan keluar + lookup spesialistik/sarana (#13.2–13.4)
+            Route::get('/vclaim/rujukan/spesialistik',      [IntegrasiController::class, 'vclaimListSpesialistikRujukan']);
+            Route::get('/vclaim/rujukan/sarana',            [IntegrasiController::class, 'vclaimListSaranaRujukan']);
+            Route::put('/vclaim/rujukan',                   [IntegrasiController::class, 'vclaimUpdateRujukan'])->middleware('permission:integrasi.write');
+            // Wiring UAT: SEP internal — cari (#14.2) + hapus (#10)
+            Route::get('/vclaim/sep-internal/{noSep}',      [IntegrasiController::class, 'vclaimGetSepInternal']);
+            Route::delete('/vclaim/sep-internal',           [IntegrasiController::class, 'vclaimDeleteSepInternal'])->middleware('permission:integrasi.write');
+            // Wiring UAT: Rencana Kontrol/SPRI — jadwal spesialistik (#17.4) + jadwal dokter (#17.5) + list (#17.6) + hapus (#17.3)
+            Route::get('/vclaim/rencana-kontrol/spesialistik',  [IntegrasiController::class, 'vclaimListSpesialistikKontrol']);
+            Route::get('/vclaim/rencana-kontrol/jadwal-dokter', [IntegrasiController::class, 'vclaimJadwalDokterKontrol']);
+            Route::get('/vclaim/rencana-kontrol',           [IntegrasiController::class, 'vclaimListRencanaKontrol']);
+            Route::delete('/vclaim/rencana-kontrol',        [IntegrasiController::class, 'vclaimDeleteRencanaKontrol'])->middleware('permission:integrasi.write');
+            // Wiring UAT: SEP KLL suplesi (#6.2) + pengajuan/approval penjaminan (#11)
+            Route::get('/vclaim/sep-suplesi',               [IntegrasiController::class, 'vclaimGetSepSuplesi']);
+            Route::post('/vclaim/pengajuan-sep',            [IntegrasiController::class, 'vclaimPengajuanSep'])->middleware('permission:integrasi.write');
+            Route::post('/vclaim/aproval-sep',              [IntegrasiController::class, 'vclaimAprovalSep'])->middleware('permission:integrasi.write');
 
             // ---- ANTREAN live calls ----
             Route::post('/antrean/add',                     [IntegrasiController::class, 'antreanAdd']);
@@ -1642,6 +1664,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/antrean/ref-dokter',               [IntegrasiController::class, 'antreanRefDokter']);
             Route::get('/antrean/jadwal-hfis/{kodepoli}/{tanggal}', [IntegrasiController::class, 'antreanJadwalHfis']);
             Route::get('/antrean/ref-pasien-fp/{jenis}/{noidentitas}', [IntegrasiController::class, 'antreanRefPasienFp']);
+            // Wiring UAT Antrol (WSBPJS): referensi poli fingerprint + antrean per tgl/belum dilayani + sisa antrean
+            Route::get('/antrean/ref-poli-fp',              [IntegrasiController::class, 'antreanRefPoliFp']);
+            Route::post('/antrean/list',                    [IntegrasiController::class, 'antreanList']);
+            Route::post('/antrean/sisa',                    [IntegrasiController::class, 'antreanSisa']);
 
             // ---- Mapping Poli/DPJP BPJS (sinkron Jadwal Dokter) ----
             Route::get('/bpjs/poli-mapping',                [IntegrasiController::class, 'indexPoliMapping']);

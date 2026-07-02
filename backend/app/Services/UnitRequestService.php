@@ -199,8 +199,19 @@ class UnitRequestService
 
         $deliveryByItemId = collect($data['items'] ?? [])->keyBy('id');
 
-        $result = DB::transaction(function () use ($req, $deliveryByItemId, $destination) {
-            foreach ($req->items as $item) {
+        $result = DB::transaction(function () use ($id, $deliveryByItemId, $destination) {
+            // Kunci request + items DI DALAM txn. Tanpa lock, dua deliver() konkuren
+            // (double-click / 2 admin) sama-sama membaca qty_delivered lama di luar lock →
+            // keduanya lolos guard sisa lalu transfer stok penuh (stok gudang bocor 2x)
+            // sementara qty_delivered hanya naik sekali (lost update). Lock men-serialkan:
+            // deliver kedua menunggu commit pertama, membaca qty_delivered terbaru →
+            // remaining 0 → abort. Re-cek status APPROVED di bawah lock (bisa berubah).
+            $req = UnitRequest::whereKey($id)->lockForUpdate()->firstOrFail();
+            if ($req->status !== UnitRequest::STATUS_APPROVED) {
+                abort(422, 'Hanya request APPROVED yang bisa di-deliver (status berubah — muat ulang).');
+            }
+            $items = $req->items()->lockForUpdate()->get();
+            foreach ($items as $item) {
                 $row = $deliveryByItemId->get($item->id);
                 if (!$row) continue;
 

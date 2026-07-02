@@ -128,10 +128,13 @@ class AuthController extends Controller
         $validated = $request->validate([
             'current_password' => 'required|string',
             'pin'              => 'required|string|min:4|max:6|regex:/^\d+$/',
+            // Wajib saat MENGGANTI PIN yang sudah ada (verifikasi kepemilikan PIN, bukan
+            // sekadar password login yang bisa default/diketahui). Opsional saat set awal.
+            'current_pin'      => 'nullable|string',
         ]);
 
         try {
-            $this->service->changePin($validated['current_password'], $validated['pin']);
+            $this->service->changePin($validated['current_password'], $validated['pin'], $validated['current_pin'] ?? null);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

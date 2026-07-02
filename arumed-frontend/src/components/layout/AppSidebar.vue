@@ -63,7 +63,7 @@ async function submitChangePassword() {
 }
 
 // ─── PIN tanda tangan (khusus dokter) ───────────────────────────────────────
-const pinForm = reactive({ password: '', pin: '', confirm: '' })
+const pinForm = reactive({ password: '', current: '', pin: '', confirm: '' })
 const pinShow = reactive({ pin: false })
 
 async function submitChangePin() {
@@ -74,9 +74,11 @@ async function submitChangePin() {
 
   pwdSaving.value = true
   try {
-    await authApi.changePin({ current_password: pinForm.password, pin: pinForm.pin })
+    // current_pin wajib di BE bila PIN sudah pernah dibuat (verifikasi kepemilikan PIN,
+    // bukan sekadar password login). Kosong saat set awal → BE mengizinkan.
+    await authApi.changePin({ current_password: pinForm.password, current_pin: pinForm.current || undefined, pin: pinForm.pin })
     pwdOk.value = 'PIN tanda tangan berhasil diubah.'
-    pinForm.password = ''; pinForm.pin = ''; pinForm.confirm = ''
+    pinForm.password = ''; pinForm.current = ''; pinForm.pin = ''; pinForm.confirm = ''
   } catch (e) {
     pwdError.value = e.response?.data?.message ?? 'Gagal mengubah PIN.'
   } finally {
@@ -98,7 +100,7 @@ async function resetToDefault() {
       ? 'Password direset ke 888888 & PIN dikosongkan. Atur PIN baru bila perlu.'
       : 'Password direset ke 888888.'
     pwdForm.current = ''; pwdForm.next = ''; pwdForm.confirm = ''
-    pinForm.password = ''; pinForm.pin = ''; pinForm.confirm = ''
+    pinForm.password = ''; pinForm.current = ''; pinForm.pin = ''; pinForm.confirm = ''
   } catch (e) {
     pwdError.value = e.response?.data?.message ?? 'Gagal mereset kredensial.'
   } finally {
@@ -369,6 +371,11 @@ onMounted(async () => {
               <label>Password Saat Ini</label>
               <input type="password" v-model="pinForm.password"
                 class="pwd-input" autocomplete="current-password" placeholder="Konfirmasi dengan password" />
+            </div>
+            <div class="pwd-fg">
+              <label>PIN Saat Ini <span style="font-weight:400;opacity:.7">(kosongkan bila belum pernah membuat PIN)</span></label>
+              <input :type="pinShow.pin ? 'text' : 'password'" v-model="pinForm.current"
+                class="pwd-input" inputmode="numeric" maxlength="6" placeholder="Wajib bila mengganti PIN lama" />
             </div>
             <div class="pwd-fg">
               <label>PIN Baru</label>

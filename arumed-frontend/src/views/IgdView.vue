@@ -67,10 +67,36 @@ function emptyDispForm() {
   }
 }
 
-// CPPT (panel detail)
+// CPPT (panel detail) — timeline lintas-episode: backend (RanapService::cpptEntries via
+// IgdService) mengirim SELURUH CPPT pasien dari semua stasiun (IGD / Rawat Jalan / Rawat
+// Inap) + pemeriksaan dokter. Tiap entri bawa `source` (label stasiun), `is_current`,
+// `editable`, `entry_type`. Hanya entri kunjungan INI (editable) yang bisa diedit/verifikasi.
 const cpptList = ref([])
 const cpptForm = ref(emptyCpptForm())
 const cpptEditId = ref(null)
+const cpptExpanded = ref({})   // { [id]: true } — entri panjang di-expand
+const cpptPage = ref(1)
+
+// Warna per sumber/stasiun + label PPA.
+const CPPT_SRC_CLS = { IGD: 'src-igd', 'Rawat Jalan': 'src-rj', 'Rawat Inap': 'src-ri' }
+const PPA_LABEL = { DOKTER: 'Dokter', PERAWAT: 'Perawat', APOTEKER: 'Apoteker', GIZI: 'Ahli Gizi', FISIOTERAPIS: 'Fisioterapis', LAINNYA: 'PPA Lain' }
+
+// Pagination: 1 halaman = 1 (sumber, tanggal). Grup diurut tanggal terbaru→lama lalu sumber;
+// entri dalam grup ikut urutan backend (terbaru dulu). Halaman 1 = grup terbaru.
+const cpptGroups = computed(() => {
+  const map = new Map()
+  for (const e of cpptList.value) {
+    const date = e.at_date || (e.at ? String(e.at).slice(0, 10) : '—')
+    const key = `${e.source || 'Lainnya'}|${date}`
+    if (!map.has(key)) map.set(key, { key, source: e.source || 'Lainnya', date, entries: [] })
+    map.get(key).entries.push(e)
+  }
+  return [...map.values()].sort((a, b) =>
+    String(b.date).localeCompare(String(a.date)) || String(a.source).localeCompare(String(b.source)))
+})
+const cpptTotalPages = computed(() => Math.max(1, cpptGroups.value.length))
+const cpptCurrentGroup = computed(() => cpptGroups.value[Math.min(cpptPage.value, cpptTotalPages.value) - 1] || null)
+const cpptPaged = computed(() => cpptCurrentGroup.value?.entries || [])
 
 // Tindakan / obat picker
 const tindakanList = ref([])
@@ -216,6 +242,7 @@ async function loadSep(visitId) {
 }
 
 async function loadCppt(visitId) {
+  cpptPage.value = 1
   try {
     const { data } = await igdApi.cpptList(visitId)
     cpptList.value = data.data || []
@@ -418,6 +445,30 @@ async function submitRegisterNew() {
 // ---------------------------------------------------------------------------
 // CPPT
 // ---------------------------------------------------------------------------
+// Heuristik "panjang": total teks SOAP+instruksi+notes melebihi ambang → clamp + toggle.
+function isLongCppt(e) {
+  const len = [e.soap_s, e.soap_o, e.soap_a, e.soap_p, e.instruksi, e.notes]
+    .filter(Boolean).join(' ').length
+  return len > 360
+}
+function toggleExpand(id) { cpptExpanded.value = { ...cpptExpanded.value, [id]: !cpptExpanded.value[id] } }
+
+function fmtCpptDate(s) {
+  if (!s) return '—'
+  const d = new Date(String(s).length <= 10 ? s + 'T00:00:00' : String(s).replace(' ', 'T'))
+  return isNaN(d) ? s : d.toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+}
+function fmtCpptTime(s) {
+  if (!s) return ''
+  const d = new Date(String(s).replace(' ', 'T'))
+  return isNaN(d) ? '' : d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+}
+function fmtCpptDT(s) {
+  if (!s) return ''
+  const d = new Date(String(s).replace(' ', 'T'))
+  return isNaN(d) ? String(s) : d.toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
+}
+
 function startEditCppt(e) {
   cpptEditId.value = e.id
   cpptForm.value = {
@@ -1047,7 +1098,7 @@ onMounted(() => {
 
           <!-- CPPT (terintegrasi, masuk RME lintas-episode) -->
           <div class="det-section">
-            <div class="ds-title">CPPT — Catatan Perkembangan <span class="muted">({{ cpptList.length }} entri)</span></div>
+            <div class="ds-title">CPPT — Catatan Perkembangan Terintegrasi <span class="muted">(lintas stasiun · {{ cpptList.length }} entri)</span></div>
 
             <!-- form tambah/edit -->
             <div v-if="auth.can('igd.write')" class="cppt-form">
@@ -1072,27 +1123,72 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- timeline riwayat -->
-            <div v-if="!cpptList.length" class="muted" style="text-align:center; padding:.6rem;">Belum ada CPPT.</div>
-            <div v-for="e in cpptList" :key="e.id" class="cppt-item">
-              <div class="cppt-item-head">
-                <b>{{ e.by || '—' }}</b>
-                <span class="muted">{{ e.by_profession }} · {{ e.ppa_role }}</span>
-                <span class="muted" style="margin-left:auto;">{{ e.at ? new Date(e.at).toLocaleString('id-ID') : '' }}</span>
+            <!-- timeline lintas-episode: dikelompokkan per (stasiun, tanggal); 1 halaman = 1 grup -->
+            <div class="cppt-timeline">
+              <p v-if="!cpptList.length" class="muted" style="text-align:center; padding:.6rem;">Belum ada CPPT.</p>
+
+              <!-- header grup: label stasiun (IGD / Rawat Jalan / Rawat Inap) + tanggal -->
+              <div v-if="cpptCurrentGroup" class="cppt-group-head" :class="CPPT_SRC_CLS[cpptCurrentGroup.source] || 'src-other'">
+                <span class="cgh-src">{{ cpptCurrentGroup.source }}</span>
+                <span class="cgh-date">{{ fmtCpptDate(cpptCurrentGroup.date) }}</span>
+                <span class="cgh-count">{{ cpptCurrentGroup.entries.length }} catatan</span>
               </div>
-              <div class="cppt-item-soap">
-                <div v-if="e.soap_s"><span class="soap-l">S</span>{{ e.soap_s }}</div>
-                <div v-if="e.soap_o"><span class="soap-l">O</span>{{ e.soap_o }}</div>
-                <div v-if="e.soap_a"><span class="soap-l">A</span>{{ e.soap_a }}</div>
-                <div v-if="e.soap_p"><span class="soap-l">P</span>{{ e.soap_p }}</div>
-                <div v-if="e.instruksi"><span class="soap-l">I</span>{{ e.instruksi }}</div>
+
+              <div v-for="e in cpptPaged" :key="e.id" class="cppt-item" :class="['ppa-edge-' + (e.ppa_role || 'LAINNYA'), { 'cppt-history': e.is_current === false }]">
+                <div class="cppt-meta">
+                  <span v-if="e.entry_type === 'EXAM'" class="cppt-src src-exam" title="Catatan pemeriksaan dokter (read-only)">Pemeriksaan Dokter</span>
+                  <span class="ppa-badge" :class="'ppa-' + (e.ppa_role || 'LAINNYA')">{{ PPA_LABEL[e.ppa_role] || 'PPA Lain' }}</span>
+                  <strong>{{ e.by || '—' }}</strong>
+                  <span v-if="e.by_profession" class="muted">{{ e.by_profession }}</span>
+                  <span class="cppt-time">{{ fmtCpptTime(e.at) }}</span>
+                  <span v-if="e.edited_at" class="cppt-edited">(diedit)</span>
+                </div>
+
+                <div v-if="e.td_sistol || e.nadi || e.suhu || e.spo2 || e.kgd || e.pain_scale != null" class="cppt-ttv">
+                  <span v-if="e.td_sistol">TD {{ e.td_sistol }}/{{ e.td_diastol }}</span>
+                  <span v-if="e.nadi">N {{ e.nadi }}</span>
+                  <span v-if="e.suhu">S {{ e.suhu }}°C</span>
+                  <span v-if="e.respirasi">RR {{ e.respirasi }}</span>
+                  <span v-if="e.spo2">SpO₂ {{ e.spo2 }}%</span>
+                  <span v-if="e.kgd">KGD {{ e.kgd }}</span>
+                  <span v-if="e.pain_scale != null">Nyeri {{ e.pain_scale }}/10</span>
+                </div>
+                <div v-if="e.visus_od || e.visus_os || e.iop_od || e.iop_os" class="cppt-mata">
+                  <span v-if="e.visus_od || e.visus_os">👁 Visus OD {{ e.visus_od || '—' }} · OS {{ e.visus_os || '—' }}</span>
+                  <span v-if="e.iop_od || e.iop_os">TIO OD {{ e.iop_od || '—' }} · OS {{ e.iop_os || '—' }} mmHg<template v-if="e.iop_method"> ({{ e.iop_method }})</template></span>
+                </div>
+
+                <div class="cppt-soap" :class="{ clamped: isLongCppt(e) && !cpptExpanded[e.id] }">
+                  <p v-if="e.soap_s"><b>S:</b> {{ e.soap_s }}</p>
+                  <p v-if="e.soap_o"><b>O:</b> {{ e.soap_o }}</p>
+                  <p v-if="e.soap_a"><b>A:</b> {{ e.soap_a }}</p>
+                  <p v-if="e.soap_p"><b>P:</b> {{ e.soap_p }}</p>
+                  <p v-if="e.instruksi" class="cppt-instruksi"><b>Instruksi:</b> {{ e.instruksi }}</p>
+                  <p v-if="e.notes" class="cppt-notes-legacy">{{ e.notes }}</p>
+                </div>
+                <button v-if="isLongCppt(e)" class="btn-link cppt-toggle" @click="toggleExpand(e.id)">
+                  {{ cpptExpanded[e.id] ? '▲ Lebih sedikit' : '▼ Selengkapnya' }}
+                </button>
+
+                <div class="cppt-foot">
+                  <template v-if="e.editable">
+                    <span v-if="e.verified_at" class="cppt-verified">✓ Diverifikasi DPJP {{ e.verified_by }} · {{ fmtCpptDT(e.verified_at) }}</span>
+                    <span v-else class="cppt-unverified">Belum diverifikasi DPJP</span>
+                    <span v-if="auth.can('igd.write')" class="cppt-foot-actions">
+                      <button class="btn-link" @click="startEditCppt(e)">Edit</button>
+                      <button v-if="!e.verified_at" class="btn-link btn-verify" @click="verifyCppt(e.id)">Verifikasi</button>
+                    </span>
+                  </template>
+                  <span v-else-if="e.verified_at" class="cppt-verified">✓ Diverifikasi {{ e.verified_by }} · {{ fmtCpptDT(e.verified_at) }}</span>
+                  <span v-else class="cppt-readonly">Riwayat · read-only</span>
+                </div>
               </div>
-              <div class="cppt-item-foot">
-                <span v-if="e.verified_by" class="cppt-verified">✓ Diverifikasi: {{ e.verified_by }}</span>
-                <template v-if="auth.can('igd.write')">
-                  <button v-if="!e.verified_by" class="cppt-act" @click="verifyCppt(e.id)">Verifikasi DPJP</button>
-                  <button class="cppt-act" @click="startEditCppt(e)">Edit</button>
-                </template>
+
+              <!-- pager: 1 halaman = 1 (stasiun, tanggal) -->
+              <div v-if="cpptTotalPages > 1" class="cppt-pager">
+                <button class="btn btn-ghost btn-press btn-sm" :disabled="cpptPage <= 1" @click="cpptPage--">‹ Sebelumnya</button>
+                <span class="cppt-pager-info">Stasiun·tanggal {{ cpptPage }} / {{ cpptTotalPages }} · total {{ cpptList.length }} catatan</span>
+                <button class="btn btn-ghost btn-press btn-sm" :disabled="cpptPage >= cpptTotalPages" @click="cpptPage++">Berikutnya ›</button>
               </div>
             </div>
           </div>
@@ -1689,14 +1785,60 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--g
 .cppt-form { background: var(--gl); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
 .cppt-soap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .cppt-vital-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 5px; }
-.cppt-item { border: 1px solid var(--gb); border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; }
-.cppt-item-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--td); margin-bottom: 4px; flex-wrap: wrap; }
-.cppt-item-soap { font-size: 11.5px; line-height: 1.5; color: var(--td); }
-.cppt-item-soap .soap-l { display: inline-block; min-width: 18px; font-weight: 700; color: var(--gd); }
-.cppt-item-foot { display: flex; gap: 8px; align-items: center; margin-top: 5px; }
-.cppt-verified { font-size: 10.5px; color: #15803d; font-weight: 600; }
-.cppt-act { font-size: 10.5px; border: 1px solid var(--gb); background: var(--bc); border-radius: 5px; padding: 2px 8px; cursor: pointer; color: var(--tm); }
-.cppt-act:hover { border-color: var(--ga); color: var(--td); }
+/* Timeline CPPT lintas-episode — grup per (stasiun, tanggal), paginasi */
+.cppt-timeline { display: flex; flex-direction: column; gap: 6px; }
+.cppt-group-head { display: flex; align-items: center; gap: 10px; padding: 5px 9px; border-radius: 8px; margin: 2px 0 4px; font-size: 12px; border: 1px solid transparent; }
+.cppt-group-head .cgh-src { font-weight: 800; }
+.cppt-group-head .cgh-date { font-weight: 700; color: var(--td); }
+.cppt-group-head .cgh-count { margin-left: auto; font-size: 10.5px; color: var(--tm); font-variant-numeric: tabular-nums; }
+.cppt-group-head.src-igd { background: #fee2e2; color: #b91c1c; }
+.cppt-group-head.src-rj  { background: #e0f2fe; color: #0369a1; }
+.cppt-group-head.src-ri  { background: #ede9fe; color: #6d28d9; }
+.cppt-group-head.src-other { background: var(--gl); color: var(--tm); }
+
+.cppt-item { border: 1px solid var(--gb); border-left: 4px solid var(--ga); border-radius: 0 8px 8px 0; padding: 7px 9px; }
+.cppt-item.ppa-edge-DOKTER { border-left-color: #16a34a; }
+.cppt-item.ppa-edge-PERAWAT { border-left-color: #d97706; }
+.cppt-item.ppa-edge-REFRAKSIONIS { border-left-color: #0891b2; }
+.cppt-item.ppa-edge-APOTEKER { border-left-color: #7c3aed; }
+.cppt-item.cppt-history { background: var(--gl); }
+
+.cppt-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--td); flex-wrap: wrap; }
+.cppt-meta strong { color: var(--td); }
+.cppt-meta .muted { font-size: 10.5px; }
+.cppt-time { margin-left: auto; font-size: 10.5px; color: var(--tu); }
+.cppt-edited { color: #b45309; font-style: italic; font-size: 10.5px; }
+.ppa-badge { font-size: 9.5px; font-weight: 700; color: #fff; background: #64748b; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.ppa-badge.ppa-DOKTER { background: #16a34a; }
+.ppa-badge.ppa-PERAWAT { background: #d97706; }
+.ppa-badge.ppa-REFRAKSIONIS { background: #0891b2; }
+.ppa-badge.ppa-APOTEKER { background: #7c3aed; }
+.cppt-src { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 8px; border: 1px solid transparent; white-space: nowrap; }
+.cppt-src.src-exam { background: #eef2ff; color: #4338ca; border-color: #c7d2fe; }
+
+.cppt-ttv { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--gd); margin: 4px 0 2px; }
+.cppt-mata { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--gd); font-weight: 600; margin: 2px 0; }
+
+.cppt-soap { font-size: 11.5px; line-height: 1.5; color: var(--td); position: relative; }
+.cppt-soap p { margin: 2px 0; white-space: pre-wrap; }
+.cppt-soap p b { color: var(--gd); }
+.cppt-soap.clamped { max-height: 7.5em; overflow: hidden; }
+.cppt-soap.clamped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2.2em; background: linear-gradient(to bottom, rgba(255,255,255,0), var(--bc)); }
+.cppt-instruksi { color: #b45309; }
+.cppt-notes-legacy { color: var(--tm); font-style: italic; }
+.cppt-toggle { margin-top: 2px; }
+
+.cppt-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; font-size: 10.5px; }
+.cppt-verified { color: #15803d; font-weight: 600; }
+.cppt-unverified, .cppt-readonly { color: var(--tu); }
+.cppt-readonly { font-style: italic; }
+.cppt-foot-actions { margin-left: auto; display: flex; gap: 10px; }
+.btn-link { background: none; border: none; padding: 0; font-size: 10.5px; color: var(--gd); cursor: pointer; font-family: inherit; }
+.btn-link:hover { text-decoration: underline; }
+.btn-link.btn-verify { color: #15803d; font-weight: 600; }
+
+.cppt-pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--gb); }
+.cppt-pager-info { font-size: 11px; color: var(--tm); font-variant-numeric: tabular-nums; }
 
 .search-results { border: 1px solid var(--gb); border-radius: 7px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
 .sr-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border: none; border-bottom: 1px solid var(--gl); background: var(--bc); cursor: pointer; font-size: 12px; color: var(--td); }

@@ -81,11 +81,16 @@ class SatusehatService
         ]);
 
         try {
-            // Visit SELESAI hari ini yg belum/ gagal sync. PENDING|FAILED dikelompokkan
-            // dgn benar (where bersarang) agar filter tanggal+station tidak bocor.
+            // Visit SELESAI yg belum/gagal sync. JANGAN pakai whereDate('visit_date',today):
+            // visit_date = tanggal ADMISI, sedangkan RANAP/IGD multi-hari baru SELESAI
+            // beberapa hari kemudian → tak pernah cocok → encounter rawat inap (justru yang
+            // paling wajib dilaporkan) TAK PERNAH tersync otomatis. Basiskan pada kapan
+            // kunjungan menjadi LAYAK, yakni updated_at saat status → SELESAI, dengan
+            // lookback berbatas agar tak scan tak terbatas (backfill tetap jaring date-agnostik).
+            $lookbackDays = (int) config('satusehat.batch_lookback_days', 7);
             $visits = Visit::whereIn('satusehat_sync_status', ['PENDING', 'FAILED'])
-                ->whereDate('visit_date', today())
                 ->where('current_station', 'SELESAI')
+                ->where('updated_at', '>=', today()->subDays($lookbackDays))
                 ->with(['patient', 'doctorExamination.doctor', 'prescriptions.items.medication', 'prescriptions.prescribedBy', 'prescriptions.dispensedBy'])
                 ->get();
 
@@ -134,8 +139,11 @@ class SatusehatService
                 'total_sent'   => $sent,
                 'total_failed' => $failed,
                 'notes'        => $notes ?: null,
+                // Retry berikutnya jam 01.00 yang PASTI di masa depan. addHours(2)->setTime(1,0)
+                // bisa mendarat di MASA LALU (mis. batch jam 23.59 → +2j = 01.59 → setTime 01.00
+                // = 01.00 hari yang sama, sudah lewat). Pakai 01.00 besok bila 01.00 hari ini lewat.
                 'next_retry_at' => $status !== 'SUCCESS'
-                    ? now()->addHours(2)->setTime(1, 0)
+                    ? (now()->hour < 1 ? now()->setTime(1, 0) : now()->addDay()->setTime(1, 0))
                     : null,
             ]);
         } catch (\Throwable $e) {
@@ -534,7 +542,15 @@ class SatusehatService
             $result ? $sent++ : $failed++;
         }
 
-        $newStatus = $failed === 0 ? 'SUCCESS' : 'PARTIAL';
+        // JANGAN tandai SUCCESS bila TAK ADA yang benar-benar terkirim padahal masih ada
+        // visit gagal/di-skip (data tak lengkap). Dulu: semua visit di-skip → $failed=0 →
+        // SUCCESS + next_retry_at null → batch tampak beres & retry berhenti, padahal 0
+        // encounter terkirim (visit tetap FAILED). Pertahankan FAILED/PARTIAL agar tetap
+        // terlihat & terjadwal ulang sampai datanya dilengkapi (backfill/batchSync menyusul).
+        $skippedTotal = array_sum($skippedReasons);
+        $newStatus = ($sent === 0 && ($failed > 0 || $skippedTotal > 0))
+            ? 'FAILED'
+            : ($failed === 0 ? 'SUCCESS' : 'PARTIAL');
 
         // Timpa kalimat "Sebab gagal" & skip lama di notes (kalau ada) agar tidak
         // menumpuk antar-retry; sisakan catatan lain (mis. warning KFA).

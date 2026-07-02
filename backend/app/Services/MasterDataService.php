@@ -1379,15 +1379,12 @@ class MasterDataService
     public function updateObat(string $id, array $data): Medication
     {
         $data = $this->nullifyBlank($data);
-        // Jangan tulis kolom legacy stock; bila klien mengirim stok seed ke
-        // inventory_stocks (penyesuaian sebenarnya lewat opname/penerimaan).
-        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        // JANGAN seed stok dari form EDIT master: seedItemStock ADITIF → tiap simpan
+        // menambah stok lagi (inflasi diam-diam). Penyesuaian stok HANYA via opname/
+        // penerimaan. Kolom legacy 'stock' tetap di-unset (tak otoritatif).
         unset($data['stock']);
         $med = Medication::findOrFail($id);
         $med->update($data);
-        if ($stockQty > 0) {
-            $this->seedItemStock(\App\Models\InventoryStock::TYPE_MEDICATION, (string) $id, $stockQty, $data['expiry_date'] ?? null);
-        }
         $this->log(auth('api')->id(), 'UPDATE_OBAT', Medication::class, $id);
         return $med->fresh();
     }
@@ -1513,13 +1510,10 @@ class MasterDataService
     public function updateBhp(string $id, array $data): BhpItem
     {
         $data = $this->nullifyBlank($data);
-        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        // JANGAN seed stok dari form EDIT (aditif → inflasi tiap simpan). Stok via opname/penerimaan.
         unset($data['stock']);
         $bhp = BhpItem::findOrFail($id);
         $bhp->update($data);
-        if ($stockQty > 0) {
-            $this->seedItemStock(\App\Models\InventoryStock::TYPE_BHP, (string) $id, $stockQty, $data['expiry_date'] ?? null);
-        }
         $this->log(auth('api')->id(), 'UPDATE_BHP', BhpItem::class, $id);
         return $bhp->fresh();
     }
@@ -1584,17 +1578,13 @@ class MasterDataService
 
     public function updateIol(string $id, array $data): IolItem
     {
-        // Sama dgn storeIol: jangan tulis kolom legacy stock. Bila klien mengirim
-        // stok, seed/tambah ke inventory_stocks (bukan set ulang — penyesuaian stok
-        // sebenarnya lewat opname/penerimaan, bukan form master).
-        $stockQty = isset($data['stock']) ? (int) $data['stock'] : 0;
+        // JANGAN seed stok dari form EDIT: seedIolStock ADITIF → tiap simpan menambah
+        // stok lagi (inflasi). Penyesuaian stok IOL HANYA via opname/penerimaan. Kolom
+        // legacy 'stock' tetap di-unset (tak otoritatif).
         unset($data['stock']);
 
         $iol = IolItem::findOrFail($id);
         $iol->update($data);
-        if ($stockQty > 0) {
-            $this->seedIolStock($iol, $stockQty, $data['expiry_date'] ?? null);
-        }
         $this->log(auth('api')->id(), 'UPDATE_IOL', IolItem::class, $id);
         return $iol->fresh();
     }

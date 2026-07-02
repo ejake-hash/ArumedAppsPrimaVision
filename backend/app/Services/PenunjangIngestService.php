@@ -183,30 +183,24 @@ class PenunjangIngestService
                 ->whereHas('visit', fn ($q) => $q->where('patient_id', $patient->id))
                 ->get();
 
-            // Bila ambigu (≥2 order terbuka), persempit sesuai jenis exam Quantel:
-            if ($orders->count() > 1) {
-                // (a) cocokkan kode test persis (mis. BIOMETRI = BIOM).
-                if (! empty($meta['prefer_test_type'])) {
-                    $preferred = $orders->where('test_type', $meta['prefer_test_type']);
-                    if ($preferred->count() === 1) {
-                        return $preferred->first();
+            // Persempit sesuai jenis exam Quantel. BERLAKU walau hanya 1 order terbuka:
+            // tanpa ini, file (mis. biometri) yang order-satu-satunya terbuka berbeda tipe
+            // (mis. OCT) akan tetap terikat ke order salah tipe/visit. Bila ada preferensi
+            // tapi tak ada order yang cocok → set jadi kosong → Inbox (bukan salah-tempel).
+            // (a) cocokkan kode test persis (mis. BIOMETRI = BIOM).
+            if (! empty($meta['prefer_test_type'])) {
+                $orders = $orders->where('test_type', $meta['prefer_test_type'])->values();
+            }
+            // (b) cocokkan modalitas jenis (mis. USG = modalitas US selain Biometri).
+            if (! empty($meta['prefer_modality'])) {
+                $accession = app(AccessionService::class);
+                $exclude   = $meta['exclude_test_type'] ?? null;
+                $orders = $orders->filter(function ($o) use ($accession, $meta, $exclude) {
+                    if ($exclude && $o->test_type === $exclude) {
+                        return false;
                     }
-                }
-
-                // (b) cocokkan modalitas jenis (mis. USG = modalitas US selain Biometri).
-                if (! empty($meta['prefer_modality'])) {
-                    $accession = app(AccessionService::class);
-                    $exclude   = $meta['exclude_test_type'] ?? null;
-                    $preferred = $orders->filter(function ($o) use ($accession, $meta, $exclude) {
-                        if ($exclude && $o->test_type === $exclude) {
-                            return false;
-                        }
-                        return $accession->modalityFor($o->test_type) === $meta['prefer_modality'];
-                    });
-                    if ($preferred->count() === 1) {
-                        return $preferred->first();
-                    }
-                }
+                    return $accession->modalityFor($o->test_type) === $meta['prefer_modality'];
+                })->values();
             }
 
             return $orders->count() === 1 ? $orders->first() : null; // 0/≥2 → ambigu → Inbox

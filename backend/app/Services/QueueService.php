@@ -375,7 +375,9 @@ class QueueService
             // Pasien berikutnya = baris aktif dengan queue_sequence terkecil yang
             // masih lebih besar dari baris ini (kandidat layanan setelah ini).
             $next = Queue::byStation($queue->station)
-                ->whereDate('created_at', today())
+                // boardVisible (bukan hanya created_at hari ini): sertakan baris aktif
+                // lintas-hari yang tampil & terurut di papan → tukar urutan tak korup.
+                ->boardVisible()
                 ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
                 ->where('id', '!=', $queue->id)
                 ->where('queue_sequence', '>', $queue->queue_sequence)
@@ -423,7 +425,7 @@ class QueueService
                 ->findOrFail($queueId);
 
             $minSeq = Queue::byStation($queue->station)
-                ->whereDate('created_at', today())
+                ->boardVisible() // sertakan baris aktif lintas-hari (konsisten dgn papan)
                 ->whereIn('status', [Queue::STATUS_WAITING, Queue::STATUS_CALLED])
                 ->min('queue_sequence');
 
@@ -526,7 +528,20 @@ class QueueService
                 // (mis. [TRIASE, REFRAKSIONIS] → keduanya prefix "TR"). Kalau iya,
                 // generate SATU nomor antrean dan terapkan ke semua baris.
                 $prefixes = array_unique(array_map(fn ($s) => Queue::prefixFor($s), $nextStation));
-                $shared   = count($prefixes) === 1 ? $this->generateQueueNumber($nextStation[0]) : null;
+                $shared   = null;
+                if (count($prefixes) === 1) {
+                    $prefix = array_values($prefixes)[0];
+                    // Kunci range prefix (mis. TR = TRIASE+REFRAKSIONIS) SEBELUM generate
+                    // nomor shared: generateQueueNumber membaca MAX(queue_sequence) TANPA lock
+                    // & enqueue melewati lock saat sharedNumber diberikan (baris 191) → dua
+                    // advance konkuren / vs AntrolMobile::materializeVisit bisa membuat TR-NNN
+                    // KEMBAR. Lock ini men-serialkan pembacaan MAX (sejajar lock di enqueue).
+                    Queue::whereIn('station', Queue::SHARED_PREFIX_GROUPS[$prefix] ?? $nextStation)
+                        ->whereDate('created_at', today())
+                        ->lockForUpdate()
+                        ->get(['id']);
+                    $shared = $this->generateQueueNumber($nextStation[0]);
+                }
 
                 foreach ($nextStation as $st) {
                     $this->enqueue($visit->id, $st, $shared);
@@ -1125,6 +1140,12 @@ class QueueService
 
     private function broadcastQueueUpdate(Queue $queue, string $action = 'updated'): void
     {
+        // Channel per-station (admisi-queue/triase-queue) MASIH publik — belum ada auth
+        // broadcasting di app ini (semua channel publik). Karena itu payload WAJIB
+        // public-safe: no_rm (identifier rekam medis persisten) TIDAK PERNAH dibroadcast,
+        // dan nama HANYA saat status CALLED (yang memang diumumkan). Selaras dgn payload
+        // antrean-tv & formatLite(publicSafe). Data lengkap tetap via REST terautentikasi
+        // (fetchAntrian). Fix penuh (private channel + auth) dicatat sbg follow-up.
         $payload = [
             'id'             => $queue->id,
             'visit_id'       => $queue->visit_id,
@@ -1133,10 +1154,9 @@ class QueueService
             'queue_sequence' => $queue->queue_sequence,
             'status'         => $queue->status,
             'called_at'      => $queue->called_at?->toIso8601String(),
-            'patient'        => $queue->visit?->patient ? [
-                'no_rm' => $queue->visit->patient->no_rm,
-                'name'  => $queue->visit->patient->name,
-            ] : null,
+            'patient'        => ($queue->status === Queue::STATUS_CALLED && $queue->visit?->patient)
+                ? ['name' => $queue->visit->patient->name]
+                : null,
         ];
 
         // Per-station channel — dipakai view modul masing-masing (AdmisiView, PerawatView, RefraksionisView)

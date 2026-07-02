@@ -335,6 +335,116 @@ class IntegrasiController extends Controller
         ));
     }
 
+    /** PUT /integrasi/vclaim/rujukan  Body: { t_rujukan: {...}, visit_id? } — edit rujukan keluar [UAT #13.2]. */
+    public function vclaimUpdateRujukan(Request $request): JsonResponse
+    {
+        $v = $request->validate(['t_rujukan' => 'required|array', 'visit_id' => 'nullable|uuid']);
+
+        return $this->call(fn () => $this->service->vclaimUpdateRujukan($v['t_rujukan'], $v['visit_id'] ?? null));
+    }
+
+    /** GET /integrasi/vclaim/rujukan/spesialistik  Query: ppk, tglRujukan (Y-m-d) [UAT #13.3]. */
+    public function vclaimListSpesialistikRujukan(Request $request): JsonResponse
+    {
+        $v = $request->validate(['ppk' => 'required|string', 'tglRujukan' => 'required|date_format:Y-m-d']);
+
+        return $this->call(fn () => $this->service->vclaimListSpesialistikRujukan($v['ppk'], $v['tglRujukan']));
+    }
+
+    /** GET /integrasi/vclaim/rujukan/sarana  Query: ppk [UAT #13.4]. */
+    public function vclaimListSaranaRujukan(Request $request): JsonResponse
+    {
+        $v = $request->validate(['ppk' => 'required|string']);
+
+        return $this->call(fn () => $this->service->vclaimListSaranaRujukan($v['ppk']));
+    }
+
+    /** GET /integrasi/vclaim/sep-internal/{noSep} — cari SEP rujukan internal antar poli [UAT #14.2]. */
+    public function vclaimGetSepInternal(string $noSep): JsonResponse
+    {
+        return $this->call(fn () => $this->service->vclaimGetSepInternal($noSep));
+    }
+
+    /** DELETE /integrasi/vclaim/sep-internal  Body: { t_sep: {...}, visit_id? } [UAT #10]. */
+    public function vclaimDeleteSepInternal(Request $request): JsonResponse
+    {
+        $v = $request->validate(['t_sep' => 'required|array', 'visit_id' => 'nullable|uuid']);
+
+        return $this->call(fn () => $this->service->vclaimDeleteSepInternal($v['t_sep'], $v['visit_id'] ?? null));
+    }
+
+    /** DELETE /integrasi/vclaim/rencana-kontrol  Body: { no_surat_kontrol, user, visit_id? } [UAT #17.3]. */
+    public function vclaimDeleteRencanaKontrol(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'no_surat_kontrol' => 'required|string',
+            'user'             => 'required|string',
+            'visit_id'         => 'nullable|uuid',
+        ]);
+
+        return $this->call(fn () => $this->service->vclaimDeleteRencanaKontrol($v['no_surat_kontrol'], $v['user'], $v['visit_id'] ?? null));
+    }
+
+    /** GET /integrasi/vclaim/rencana-kontrol/spesialistik  Query: jnsKontrol(1|2), nomor, tgl (Y-m-d) [UAT #17.4]. */
+    public function vclaimListSpesialistikKontrol(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'jnsKontrol' => 'required|in:1,2',
+            'nomor'      => 'required|string',
+            'tgl'        => 'required|date_format:Y-m-d',
+        ]);
+
+        return $this->call(fn () => $this->service->vclaimListSpesialistikKontrol($v['jnsKontrol'], $v['nomor'], $v['tgl']));
+    }
+
+    /** GET /integrasi/vclaim/rencana-kontrol/jadwal-dokter  Query: jnsKontrol(1|2), kdPoli, tgl (Y-m-d) [UAT #17.5]. */
+    public function vclaimJadwalDokterKontrol(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'jnsKontrol' => 'required|in:1,2',
+            'kdPoli'     => 'required|string',
+            'tgl'        => 'required|date_format:Y-m-d',
+        ]);
+
+        return $this->call(fn () => $this->service->vclaimJadwalDokterKontrol($v['jnsKontrol'], $v['kdPoli'], $v['tgl']));
+    }
+
+    /** GET /integrasi/vclaim/rencana-kontrol  Query: tglAwal, tglAkhir (Y-m-d), filter(1 tgl kontrol|2 tgl entri) [UAT #17.6]. */
+    public function vclaimListRencanaKontrol(Request $request): JsonResponse
+    {
+        $v = $request->validate([
+            'tglAwal'  => 'required|date_format:Y-m-d',
+            'tglAkhir' => 'required|date_format:Y-m-d',
+            'filter'   => 'nullable|in:1,2',
+        ]);
+
+        return $this->call(fn () => $this->service->vclaimListRencanaKontrol($v['tglAwal'], $v['tglAkhir'], $v['filter'] ?? '1'));
+    }
+
+    /** GET /integrasi/vclaim/sep-suplesi  Query: noKartu, tglPelayanan (Y-m-d) — SEP induk KLL utk suplesi [UAT #6.2]. */
+    public function vclaimGetSepSuplesi(Request $request): JsonResponse
+    {
+        $v = $request->validate(['noKartu' => 'required|string', 'tglPelayanan' => 'required|date_format:Y-m-d']);
+
+        return $this->call(fn () => $this->service->vclaimGetSepSuplesi($v['noKartu'], $v['tglPelayanan']));
+    }
+
+    /** POST /integrasi/vclaim/pengajuan-sep  Body: { request: {...}, visit_id? } — pengajuan penjaminan backdate/finger [UAT #11.1]. */
+    public function vclaimPengajuanSep(Request $request): JsonResponse
+    {
+        $v = $request->validate(['request' => 'required|array', 'visit_id' => 'nullable|uuid']);
+
+        return $this->call(fn () => $this->service->vclaimPengajuanSep($v['request'], $v['visit_id'] ?? null));
+    }
+
+    /** POST /integrasi/vclaim/aproval-sep  Body: { request: {...}, visit_id? } — approval penjaminan finger [UAT #11.2]. */
+    public function vclaimAprovalSep(Request $request): JsonResponse
+    {
+        $v = $request->validate(['request' => 'required|array', 'visit_id' => 'nullable|uuid']);
+
+        return $this->call(fn () => $this->service->vclaimAprovalSep($v['request'], $v['visit_id'] ?? null));
+    }
+
     // =========================================================================
     // ANTREAN — LIVE CALLS
     // =========================================================================
@@ -398,6 +508,24 @@ class IntegrasiController extends Controller
         abort_unless(in_array($jenis, ['nik', 'noka'], true), 422, 'jenis harus nik atau noka');
 
         return $this->call(fn () => $this->service->antreanRefPasienFingerprint($jenis, $noidentitas));
+    }
+
+    /** GET /integrasi/antrean/ref-poli-fp — daftar poli wajib fingerprint (HFIS) [UAT Antrol Ref Poli FP]. */
+    public function antreanRefPoliFp(): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanRefPoliFingerprint());
+    }
+
+    /** POST /integrasi/antrean/list  Body: { kodepoli, kodedokter, hari, jampraktek, tanggalperiksa } — antrean per tgl/belum dilayani. */
+    public function antreanList(Request $request): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanList($request->except('visit_id')));
+    }
+
+    /** POST /integrasi/antrean/sisa  Body: params sisa antrean (WSBPJS). */
+    public function antreanSisa(Request $request): JsonResponse
+    {
+        return $this->call(fn () => $this->service->antreanSisa($request->except('visit_id')));
     }
 
     /** GET /integrasi/antrean/ref-poli — daftar poli HFIS-Antrean (untuk picker pemetaan). */

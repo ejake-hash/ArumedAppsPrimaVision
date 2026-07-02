@@ -1232,6 +1232,17 @@ class KlaimService
             }
         }
 
+        // Sukses tapi kode CBG TAK terbaca (bentuk respons tak dikenal) → jangan diam-diam
+        // no-op lalu lapor "berhasil" dgn tarif basi/kosong. Log raw agar shape baru bisa
+        // ditambahkan ke fallback parser; ubah jadi kegagalan eksplisit yang bisa didiagnosa.
+        if (($res['success'] ?? false) && ! $code) {
+            \Illuminate\Support\Facades\Log::warning('E-Klaim grouper: respons sukses tetapi kode CBG tidak terbaca', [
+                'claim' => $claim->id,
+                'raw'   => $res['raw'] ?? $res['data'] ?? null,
+            ]);
+            throw new \Exception('Grouper E-Klaim berhasil dipanggil tetapi kode CBG tidak dapat dibaca dari respons (bentuk respons tak dikenal).', 422);
+        }
+
         if ($update) {
             $claim->update($update);
         }
@@ -1764,14 +1775,38 @@ class KlaimService
                 ->pluck('icd9_code', 'id')->all();
         }
 
+        $negativeTotal = 0.0;
         foreach ($invoice->items as $it) {
             $amount = (float) ($it->net_price ?? $it->total_price ?? 0);
-            if ($amount <= 0) {
+            if ($amount == 0.0) {
+                continue;
+            }
+            if ($amount < 0) {
+                // Baris penyeimbang paket (DISKON_PAKET/DISKON_KONTROL, net_price negatif):
+                // paket bedah dimodelkan sbg baris komponen HARGA PENUH + satu baris diskon
+                // negatif yang menurunkan total ke harga jual paket. Bila baris negatif ini
+                // dibuang (dulu: skip $amount<=0), bucket tarif_rs menjumlahkan harga penuh →
+                // biaya RS OVER-STATED sebesar diskon paket, padahal total_billing yang
+                // dikirim ke E-Klaim memakai total bersih. Kumpulkan lalu sebar proporsional.
+                $negativeTotal += -$amount;
                 continue;
             }
             $icd9 = $it->item_type === 'TINDAKAN' ? ($tindakanIcd9[$it->reference_id] ?? null) : null;
             $bucket = $this->mapBillingToTarifBucket($it->item_type, (string) $it->category, $icd9);
             $buckets[$bucket] = ($buckets[$bucket] ?? 0) + $amount;
+        }
+
+        // Sebar diskon paket proporsional ke seluruh bucket positif sehingga
+        // sum(buckets) == total invoice bersih (harga paket) tanpa bucket negatif —
+        // menjaga tarif_rs konsisten dgn totalBiaya/total_billing yang dikirim ke E-Klaim.
+        if ($negativeTotal > 0) {
+            $positiveTotal = array_sum($buckets);
+            if ($positiveTotal > 0) {
+                $factor = max(0.0, 1.0 - min($negativeTotal, $positiveTotal) / $positiveTotal);
+                foreach ($buckets as $k => $v) {
+                    $buckets[$k] = $v * $factor;
+                }
+            }
         }
 
         // Bulatkan ke rupiah (E-Klaim menyimpan integer).

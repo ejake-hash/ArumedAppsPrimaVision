@@ -126,6 +126,16 @@ class AntrolMobileService
                 }
             }
 
+            // Re-cek kuota JKN DI DALAM lock. Cek pra-transaksi (baris 94) bisa dilewati
+            // dua booking konkuren yang sama-sama membaca sisa=1 → over-booking. Advisory
+            // lock (room:tanggal) men-serialkan booking, jadi re-read di sini melihat booking
+            // sebelumnya yang sudah commit & menolak kelebihan. (Asumsi room↔dokter 1:1 pada
+            // klinik ini sehingga domain lock = domain kuota poli/dokter.)
+            $kuotaLocked = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
+            if ($kuotaLocked['sisakuotajkn'] <= 0) {
+                return $this->fail('Kuota JKN untuk poli/dokter pada tanggal tersebut sudah penuh.');
+            }
+
             // Reservasi nomor DOKTER (D{room}-NNN) lewat sumber TERPADU — nomor yang
             // sama dipakai papan dokter & ditampilkan di Mobile JKN (anti-bingung,
             // aman utk poli ber-banyak dokter). Dipakai-ulang saat masuk stasiun DOKTER.
@@ -314,6 +324,13 @@ class AntrolMobileService
 
             // Enqueue TRIASE + REFRAKSIONIS paralel (pola registrasi loket).
             $qs = app(QueueService::class);
+            // Kunci range prefix TR SEBELUM generate nomor shared (sejajar advanceFromStation):
+            // generateQueueNumber baca MAX tanpa lock & enqueue melewati lock saat sharedNumber
+            // diberikan → materializeVisit vs advanceFromStation konkuren bisa membuat TR-NNN kembar.
+            Queue::whereIn('station', Queue::SHARED_PREFIX_GROUPS[Queue::prefixFor('TRIASE')] ?? ['TRIASE', 'REFRAKSIONIS'])
+                ->whereDate('created_at', today())
+                ->lockForUpdate()
+                ->get(['id']);
             $shared = $qs->generateQueueNumber('TRIASE');
             $qs->enqueue($visit->id, 'TRIASE', $shared);
             $qs->enqueue($visit->id, 'REFRAKSIONIS', $shared);
@@ -482,6 +499,13 @@ class AntrolMobileService
                     if ($dup) {
                         throw new \RuntimeException('Pasien sudah memiliki antrean aktif untuk dokter ini hari ini.');
                     }
+                }
+
+                // Re-cek kuota JKN DI DALAM lock (cek pra-txn baris 473 bisa dilewati booking
+                // konkuren → over-booking). Advisory lock men-serialkan; re-read menolak kelebihan.
+                $kuotaLocked = $this->kuota->ringkasanKuota($sched->poli_code, $sched->employee_id, $tanggal);
+                if ($kuotaLocked['sisakuotajkn'] <= 0) {
+                    throw new \RuntimeException('Kuota JKN untuk dokter ini hari ini sudah penuh.');
                 }
 
                 // Nomor DOKTER kanonik D{room}-NNN via sumber TERPADU — sama dengan
@@ -844,13 +868,30 @@ class AntrolMobileService
     /**
      * Tentukan jenis resep (Racikan / Non racikan) untuk dikirim/ditampilkan BPJS.
      *
-     * #TODO RACIKAN: model resep belum punya penanda racikan eksplisit. Untuk
-     * sekarang SELALU 'Non racikan' (mayoritas resep klinik mata). Saat menu
-     * racikan dibuat, cukup ubah SATU method ini (mis. cek Prescription->is_racikan
-     * atau PrescriptionItem compound) — A8/B10/B11 otomatis ikut.
+     * Model resep belum punya kolom penanda racikan eksplisit. Heuristik best-effort:
+     * tandai 'Racikan' bila apoteker/dokter menuliskan kata "racik" di catatan resep
+     * (pharmacy_note/notes) atau aturan pakai/catatan item. Default 'Non racikan'
+     * (mayoritas resep klinik mata). Bila kelak ada kolom is_racikan, ganti heuristik
+     * ini — A8/B10/B11 otomatis ikut karena semua memanggil method tunggal ini.
      */
     public function resolveJenisResep(string $visitId): string
     {
+        $prescriptions = \App\Models\Prescription::with('items:id,prescription_id,instructions,notes')
+            ->where('visit_id', $visitId)
+            ->get(['id', 'visit_id', 'notes', 'pharmacy_note']);
+
+        foreach ($prescriptions as $p) {
+            $blob = strtolower((string) $p->pharmacy_note . ' ' . (string) $p->notes);
+            if (str_contains($blob, 'racik')) {
+                return 'Racikan';
+            }
+            foreach ($p->items as $it) {
+                if (str_contains(strtolower((string) $it->instructions . ' ' . (string) $it->notes), 'racik')) {
+                    return 'Racikan';
+                }
+            }
+        }
+
         return 'Non racikan';
     }
 
@@ -899,9 +940,16 @@ class AntrolMobileService
 
         $dow = (int) Carbon::parse($tanggal, 'Asia/Jakarta')->format('N'); // 1=Sen..7=Min
 
+        // Pin ke MINGGU tanggal periksa. Tanpa filter week_start, booking untuk tanggal
+        // minggu depan salah me-resolve ke jadwal MINGGU INI (orderByDesc week_start),
+        // sehingga room/poli/jam/doctor_schedule_id yang tersimpan milik minggu yang salah
+        // (mis. per-minggu di-edit beda ruang / EKSEKUTIF-only) → prefix antrean & FK salah.
+        $weekStart = DoctorSchedule::weekStartFor($tanggal);
+
         $poliOpen = DoctorSchedule::where('poli_code', $poliCode)
             ->where('is_active', true)
             ->where('day_of_week', $dow)
+            ->where('week_start', $weekStart)
             ->exists();
         if (! $poliOpen) {
             return ['schedule' => null, 'error' => 'Pendaftaran ke Poli Ini Sedang Tutup'];
@@ -910,7 +958,8 @@ class AntrolMobileService
         $q = DoctorSchedule::with('employee')
             ->where('poli_code', $poliCode)
             ->where('is_active', true)
-            ->where('day_of_week', $dow);
+            ->where('day_of_week', $dow)
+            ->where('week_start', $weekStart);
 
         $employee = null;
         if ($kodeDokter !== null && $kodeDokter !== '') {

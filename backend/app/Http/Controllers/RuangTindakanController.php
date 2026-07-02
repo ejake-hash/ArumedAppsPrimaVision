@@ -20,6 +20,13 @@ class RuangTindakanController extends Controller
         return $this->ok($this->service->getPatientQueue());
     }
 
+    // GET /ruang-tindakan/history?tanggal=YYYY-MM-DD — riwayat pasien tindakan per tanggal
+    public function history(Request $request): JsonResponse
+    {
+        $tanggal = $request->query('tanggal') ?: now('Asia/Jakarta')->toDateString();
+        return $this->ok($this->service->getPatientHistory($tanggal));
+    }
+
     // PUT /ruang-tindakan/antrian/{id}/panggil
     public function panggilAntrian(string $id): JsonResponse
     {

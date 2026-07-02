@@ -349,8 +349,10 @@ class PenunjangService
     {
         $result = DiagnosticResult::findOrFail($id);
 
-        if (in_array($result->result_status, ['APPROVED'])) {
-            throw new \Exception('Hasil sudah di-approve, tidak bisa diubah.', 422);
+        // Hasil yang sudah difinalkan/di-review terkunci (integritas RM) — bukan hanya
+        // APPROVED yang tak pernah diset. finalizeResult menandai COMPLETED + reviewed_at.
+        if (in_array($result->result_status, ['COMPLETED', 'REVIEWED', 'APPROVED'], true) || $result->reviewed_at !== null) {
+            throw new \Exception('Hasil sudah difinalkan/dikunci, tidak bisa diubah.', 422);
         }
 
         $attrs = array_filter([
@@ -383,8 +385,11 @@ class PenunjangService
         $result = DiagnosticResult::with(['order.visit.patient'])->findOrFail($id);
         $order  = $result->order;
 
-        if ($result->result_status === 'APPROVED') {
-            throw new \Exception('Hasil sudah dikunci.', 422);
+        // Kunci pada status yang BENAR-BENAR diset finalize (COMPLETED/reviewed_at), bukan
+        // hanya APPROVED yang tak pernah diset di sini. Tanpa ini, finalize ulang men-trigger
+        // notifyDoctor + requeueToDokter + generateIolRecommendation berulang (efek samping ganda).
+        if (in_array($result->result_status, ['COMPLETED', 'REVIEWED', 'APPROVED'], true) || $result->reviewed_at !== null) {
+            throw new \Exception('Hasil sudah difinalkan/dikunci.', 422);
         }
 
         $user = auth('api')->user();
@@ -460,6 +465,18 @@ class PenunjangService
                 $eyeData = $data[$eye] ?? null;
 
                 if (! $eyeData || empty($eyeData['recommended_iol_power'])) {
+                    continue;
+                }
+
+                // JANGAN menimpa keputusan IOL FINAL/disetujui dokter. Biometri berbagi
+                // baris (visit_id, eye_side) dgn keputusan dokter (DokterService::decideIol).
+                // Bila dokter sudah memfinalkan (is_final) / menyetujui (is_approved),
+                // updateOrCreate akan MENIMPA power/type/brand-nya → lensa SALAH diminta ke
+                // gudang (BedahTerjadwalView). Saran mesin hanya mengisi baris draft.
+                $existing = IolRecommendation::where('visit_id', $visitId)
+                    ->where('eye_side', strtoupper($eye))
+                    ->first();
+                if ($existing && ($existing->is_final || $existing->is_approved)) {
                     continue;
                 }
 

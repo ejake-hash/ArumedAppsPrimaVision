@@ -118,7 +118,7 @@ class KeuanganController extends Controller
             'period'      => 'nullable|date_format:Y-m',
             'payer_group' => 'nullable|in:BPJS,UMUM',
             'bpjs_basis'  => 'nullable|in:finalized,paid',
-            'category'    => 'nullable|in:rawat_jalan,pasca_bedah,obat_bebas',
+            'category'    => 'nullable|in:rawat_jalan,rawat_inap,igd,pasca_bedah,obat_bebas',
         ]);
         return array_filter($validated, fn ($v) => $v !== null);
     }

@@ -41,7 +41,23 @@ class RuangTindakanService
 
     public function getPatientQueue(): array
     {
-        // Papan digerakkan SCHEDULE (bukan queue): SEMUA jadwal laser HARI INI tampil,
+        return $this->buildBoardForDate(today()->toDateString());
+    }
+
+    /**
+     * GET /ruang-tindakan/history?tanggal — riwayat pasien tindakan per tanggal.
+     * Shape identik dgn papan live (FE reuse selectPatient), tapi snapshot tanggal
+     * terpilih & tak ikut polling. Cermin BedahService::getSurgeryHistory.
+     */
+    public function getPatientHistory(string $date): array
+    {
+        return $this->buildBoardForDate($date);
+    }
+
+    /** Bangun papan tindakan (schedule-driven, RUANG_TINDAKAN) untuk satu tanggal. */
+    private function buildBoardForDate(string $date): array
+    {
+        // Papan digerakkan SCHEDULE (bukan queue): SEMUA jadwal laser TANGGAL tsb tampil,
         // walau queue station BEDAH belum terbentuk (mis. dokter simpan planning tapi
         // belum "Kirim ke Kasir"). Queue station BEDAH hanya pelengkap (tombol Panggil
         // + nomor antrean). Ini mencegah pasien laser same-day "hilang" dari papan dan
@@ -70,7 +86,7 @@ class RuangTindakanService
                 ->orderByDesc('created_at'),
         ])
             ->where('location_type', self::LOCATION)
-            ->whereDate('scheduled_date', today())
+            ->whereDate('scheduled_date', $date)
             ->orderBy('scheduled_time')
             ->orderBy('created_at')
             ->get();

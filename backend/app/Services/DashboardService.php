@@ -507,8 +507,11 @@ class DashboardService
     {
         $today = today();
 
+        // copy(): Carbon::today() MUTABLE — addDays(7) mengubah $today di tempat, sehingga
+        // filter surat kontrol di bawah (<= $today) ikut memakai +7 hari → surat kontrol
+        // yang MASIH berlaku (expired dalam 7 hari ke depan) salah dilaporkan "expired".
         $rujukanExpired = DB::table('bpjs_referrals_in')
-            ->where('tgl_expired', '<=', $today->addDays(7))
+            ->where('tgl_expired', '<=', $today->copy()->addDays(7))
             ->where('status', 'VALID')
             ->whereNull('deleted_at')
             ->select(['id', 'no_rujukan', 'tgl_expired', 'visit_id'])

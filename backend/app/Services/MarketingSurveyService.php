@@ -135,8 +135,11 @@ class MarketingSurveyService
         }
         usort($aspects, fn ($a, $b) => $a['avg'] <=> $b['avg']); // menaik → aspek terlemah di atas (bar horizontal)
 
-        // ── Distribusi skor (1..5) ──
-        $distribution = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        // ── Distribusi skor (1..N) ──
+        // Ukuran bucket mengikuti skor maksimum teramati (min 5): skala Likert 1–10 tak
+        // lagi membuang skor 6–10 (dulu hardcode 1..5 → total distribusi ≠ total responden).
+        $maxScore = max(5, (int) collect($rows)->max('score'));
+        $distribution = array_fill(1, $maxScore, 0);
         foreach ($rows as $r) {
             $s = (int) $r->score;
             if (isset($distribution[$s])) {

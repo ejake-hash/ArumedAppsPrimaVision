@@ -245,6 +245,7 @@ function buildRawData() {
 const oDerived = computed(() => {
   const parts = []
   const v = visus.value, r = refine.value, i = iop.value
+  const ph = pinhole.value, og = oldGlasses.value
   const has = (x) => x !== '' && x != null
   const signed = (x) => `${Number(x) >= 0 ? '+' : ''}${x}`
   // 0. Autoref tak terbaca (mesin "error") — penanda media keruh; hanya saat non-numerik.
@@ -252,8 +253,11 @@ const oDerived = computed(() => {
   if (arOd || arOs) parts.push(`Autoref tidak terbaca — OD ${arOd || '–'} / OS ${arOs || '–'}`)
   // 1. Visus awal (UCVA)
   if (has(v.ucva_od) || has(v.ucva_os)) parts.push(`Visus awal OD ${v.ucva_od || '–'} / OS ${v.ucva_os || '–'}`)
-  // 2. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
+  // 2. Pinhole (deteksi amblyopia)
+  if (has(ph.od) || has(ph.os)) parts.push(`Pinhole OD ${ph.od || '–'} / OS ${ph.os || '–'}`)
+  // 3. Refraksi subjektif S/C/X (tanpa ADD — ADD baris tersendiri)
   // Label berspasi "S -1.75 / C -0.75 / X 90" — seragam dgn RmeAggregator::fmtRx.
+  // SELALU tampil: kedua mata kosong → "(Kosong / Error)". JANGAN pernah ambil dari autoref.
   const scx = (s, c, a) => {
     const p = []
     if (has(s)) p.push(`S ${signed(s)}`)
@@ -262,18 +266,31 @@ const oDerived = computed(() => {
     return p.join(' / ')
   }
   const rxOd = scx(r.od_s, r.od_c, r.od_ax), rxOs = scx(r.os_s, r.os_c, r.os_ax)
-  if (rxOd || rxOs) parts.push(`Refraksi subjektif OD ${rxOd || '–'} | OS ${rxOs || '–'}`)
-  // 3. Visus akhir (BCVA)
+  parts.push((rxOd || rxOs)
+    ? `Refraksi subjektif OD ${rxOd || '–'} | OS ${rxOs || '–'}`
+    : 'Refraksi subjektif (Kosong / Error)')
+  // 4. Visus akhir (BCVA)
   if (has(v.bcva_od) || has(v.bcva_os)) parts.push(`Visus akhir OD ${v.bcva_od || '–'} / OS ${v.bcva_os || '–'}`)
-  // 4. ADD (adisi baca)
+  // 5. ADD (adisi baca)
   if (has(r.add_od) || has(r.add_os)) parts.push(`Add OD ${has(r.add_od) ? signed(r.add_od) : '–'} / OS ${has(r.add_os) ? signed(r.add_os) : '–'}`)
-  // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
+  // 6. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
   if (has(i.od) || has(i.os)) parts.push(`TIO OD ${i.od || '–'} / OS ${i.os || '–'} mmHg${i.method ? ` (${i.method})` : ''}`)
   iopExtra.value.forEach((x, idx) => {
     if (has(x.od) || has(x.os)) parts.push(`TIO #${idx + 2} OD ${x.od || '–'} / OS ${x.os || '–'} mmHg`)
   })
-  // 6. PD (pupillary distance) — paling bawah
+  // 7. PD (pupillary distance)
   if (has(r.pd)) parts.push(`PD ${r.pd} mm`)
+  // 8. Kacamata lama (S/C/X + ADD) + visus dengan kacamata lama
+  const ogEye = (eye) => {
+    const base = scx(og[`${eye}_s`], og[`${eye}_c`], og[`${eye}_ax`])
+    const add = has(og[`${eye}_add`]) ? `Add ${signed(og[`${eye}_add`])}` : ''
+    return [base, add].filter(Boolean).join(' / ')
+  }
+  const ogOd = ogEye('od'), ogOs = ogEye('os')
+  if (ogOd || ogOs) parts.push(`Kacamata lama OD ${ogOd || '–'} | OS ${ogOs || '–'}`)
+  if (has(og.od_visus) || has(og.os_visus)) parts.push(`Visus dgn kacamata lama OD ${og.od_visus || '–'} / OS ${og.os_visus || '–'}`)
+  // 9. Catatan klinis (teks bebas) — paling bawah
+  if (has(clinicalNotes.value)) parts.push(`Catatan: ${clinicalNotes.value}`)
   return parts.join('\n')
 })
 

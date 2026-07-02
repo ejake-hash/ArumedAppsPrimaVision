@@ -153,7 +153,7 @@ class AuthService
      *
      * @throws \Exception bila bukan dokter atau password salah
      */
-    public function changePin(string $currentPassword, string $newPin): void
+    public function changePin(string $currentPassword, string $newPin, ?string $currentPin = null): void
     {
         /** @var User $user */
         $user = auth('api')->user();
@@ -161,6 +161,22 @@ class AuthService
 
         if (! Hash::check($currentPassword, $user->password)) {
             throw new \Exception('Password tidak sesuai.', 422);
+        }
+
+        // Password default publik (888888) TIDAK cukup untuk mengelola PIN e-sign legal:
+        // ubah password default dulu. Tanpa ini, siapapun yang tahu username bisa login
+        // dgn 888888 lalu menetapkan PIN & menandatangani dokumen RM atas nama dokter.
+        if (Hash::check('888888', $user->password)) {
+            throw new \Exception('Ubah password default (888888) terlebih dahulu sebelum mengatur PIN tanda tangan.', 422);
+        }
+
+        // Bila PIN sudah pernah diset, WAJIB verifikasi PIN lama (bukan sekadar password) —
+        // PIN adalah satu-satunya kredensial e-sign legal. Password saja tak boleh cukup
+        // untuk menimpa PIN yang ada. Saat set awal (pin null), password sudah memadai.
+        if (! empty($user->pin)) {
+            if (empty($currentPin) || ! Hash::check($currentPin, $user->pin)) {
+                throw new \Exception('PIN lama tidak sesuai — masukkan PIN saat ini untuk menggantinya.', 422);
+            }
         }
 
         $user->update(['pin' => $newPin]);

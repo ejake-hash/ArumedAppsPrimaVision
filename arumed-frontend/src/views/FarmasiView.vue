@@ -1023,7 +1023,7 @@ function ranapIsDischarge(p) { return /obat pulang/i.test(p?.notes ?? '') }
 // Tombol/langkah "serah": antar ke ruangan vs serahkan ke pengambil.
 function ranapSerahLabel(p) { return ranapIsPickup(p) ? 'Serah ke Pengambil' : 'Serah ke Ruangan' }
 
-async function fetchRanapQueue() {
+async function fetchRanapQueue({ fromPoll = false } = {}) {
   ranapLoading.value = true
   try {
     const { data } = await farmasiApi.ranapList()
@@ -1037,7 +1037,8 @@ async function fetchRanapQueue() {
       if (fresh && fresh.status !== selRanap.value.status) selRanap.value = hydrateRx({ ...fresh }, selRanap.value)
     }
   } catch (err) {
-    toast('w', err.response?.data?.message ?? 'Gagal memuat permintaan rawat inap')
+    // Saat polling latar (tab lain) jangan spam toast tiap 8 dtk — cukup diam.
+    if (!fromPoll) toast('w', err.response?.data?.message ?? 'Gagal memuat permintaan rawat inap')
   } finally {
     ranapLoading.value = false
   }
@@ -1493,6 +1494,56 @@ async function saveEditStok() {
   } finally {
     savingStok.value = false
   }
+}
+
+// ─── Kartu Stok per obat (rincian obat KELUAR + SISA sekarang) ────────────────
+// Sumber data = endpoint per-obat: resep ter-dispense (RJ/Ranap/IGD/Bedah) +
+// penjualan bebas POS. Tidak ada ledger mutasi MASUK terpisah, jadi kartu ini
+// fokus pada SISA stok kini + rincian PENGELUARAN. "Sisa (est.)" = rekonstruksi
+// mundur dari stok kini (akurat bila tak ada penerimaan di sela — lihat catatan).
+const kartuStok = ref(null)        // { id, name, unit, stock, min_stock }
+const kartuRows = ref([])
+const kartuLoading = ref(false)
+const kartuJenis = ref('')         // filter sumber ('' = semua)
+
+async function openKartuStok(s) {
+  kartuStok.value = { id: s.id, name: s.name, unit: s.unit, stock: Number(s.stock ?? 0), min_stock: Number(s.min_stock ?? 0) }
+  kartuJenis.value = ''
+  kartuRows.value = []
+  kartuLoading.value = true
+  try {
+    const { data } = await farmasiApi.obatRiwayat(s.id, { limit: 500 })
+    kartuRows.value = data.data ?? []
+  } catch (err) {
+    toast('w', err.response?.data?.message ?? 'Gagal memuat kartu stok')
+  } finally {
+    kartuLoading.value = false
+  }
+}
+function closeKartuStok() { kartuStok.value = null; kartuRows.value = [] }
+
+const kartuJenisOptions = computed(() => Array.from(new Set(kartuRows.value.map((r) => r.sumber).filter(Boolean))))
+const kartuFiltered = computed(() =>
+  kartuJenis.value ? kartuRows.value.filter((r) => r.sumber === kartuJenis.value) : kartuRows.value,
+)
+const kartuTotalKeluar = computed(() => kartuFiltered.value.reduce((s, r) => s + Number(r.quantity || 0), 0))
+
+// Sisa SETELAH pemberian baris ke-idx (baris terurut terbaru→lama):
+// stok_kini + Σ qty baris yang LEBIH BARU dari baris ini.
+function kartuSisaSetelah(idx) {
+  let newer = 0
+  for (let i = 0; i < idx; i++) newer += Number(kartuFiltered.value[i]?.quantity || 0)
+  return Number(kartuStok.value?.stock ?? 0) + newer
+}
+function kartuPill(sumber) {
+  const m = { 'Rawat Jalan': 'jp-rajal', 'Rawat Inap': 'jp-ranap', 'IGD': 'jp-igd', 'Bedah': 'jp-bedah', 'Penjualan Bebas': 'jp-pos' }
+  return 'jp-pill ' + (m[sumber] || 'jp-rajal')
+}
+function kartuFmtDate(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' + formatTime(ts)
 }
 
 // ─── Stok Opname (rekonsiliasi fisik vs sistem) ──────────────────────────────
@@ -2133,27 +2184,112 @@ watch(() => pgTab.value, (t) => {
   if (t === 'riwayat' && !rpRows.value.length) fetchRiwayatPemberian(1)
 })
 
-// Antrean rawat jalan + permintaan rawat inap di-poll bersama (8s).
-function pollFarmasi() {
-  fetchQueue()
-  if (pgTab.value === 'ranap') fetchRanapQueue()
-  if (pgTab.value === 'verifikasi') fetchVerQueue({ fromPoll: true })
+// ─── Notifikasi kedatangan kerja baru (suara + popup) ────────────────────────
+// Jumlah antrean yang sedang menunggu dilayani, dipakai badge + deteksi kerja baru.
+const dispWaitingCount = computed(() => queue.value.filter((q) => rxStatusOf(q) !== 'done').length)
+
+// Toggle suara (persist localStorage). Default: nyala.
+const soundOn = ref(localStorage.getItem('farmasi_sound') !== '0')
+function toggleSound() {
+  soundOn.value = !soundOn.value
+  localStorage.setItem('farmasi_sound', soundOn.value ? '1' : '0')
+  if (soundOn.value) playChime()   // beep uji sekaligus buka kunci AudioContext
 }
 
-onMounted(() => {
-  fetchQueue()
-  fetchStok()
-  fetchRanapQueue()
-  fetchVerQueue()
+// Chime via Web Audio API (tanpa file aset). AudioContext dibuat/di-resume saat
+// ada gesture user (kebijakan autoplay browser) — lihat unlockAudioOnce di onMounted.
+let _audioCtx = null
+function ensureAudio() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    if (!_audioCtx) _audioCtx = new Ctx()
+    if (_audioCtx.state === 'suspended') _audioCtx.resume()
+  } catch { /* audio tak tersedia — abaikan */ }
+}
+function playChime() {
+  if (!soundOn.value) return
+  ensureAudio()
+  if (!_audioCtx) return
+  try {
+    const t0 = _audioCtx.currentTime
+    // Dua nada naik ("ding-dong") agar menarik perhatian di ruang Farmasi.
+    for (const [freq, off] of [[880, 0], [1319, 0.17]]) {
+      const osc = _audioCtx.createOscillator()
+      const gain = _audioCtx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      gain.gain.setValueAtTime(0.0001, t0 + off)
+      gain.gain.exponentialRampToValueAtTime(0.32, t0 + off + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.34)
+      osc.connect(gain).connect(_audioCtx.destination)
+      osc.start(t0 + off)
+      osc.stop(t0 + off + 0.36)
+    }
+  } catch { /* abaikan */ }
+}
+function unlockAudioOnce() { ensureAudio() }
+
+// Popup banner besar (beda dari toast kecil) — muncul saat kerja baru datang.
+const alertPopup = ref(null)   // { lines: string[], tab: string }
+let _alertTimer = null
+function showAlertPopup(lines, tab) {
+  alertPopup.value = { lines, tab }
+  clearTimeout(_alertTimer)
+  _alertTimer = setTimeout(() => (alertPopup.value = null), 9000)
+}
+function dismissAlertPopup() { clearTimeout(_alertTimer); alertPopup.value = null }
+function gotoAlertTab() { if (alertPopup.value?.tab) pgTab.value = alertPopup.value.tab; dismissAlertPopup() }
+
+// Bandingkan jumlah antar-poll; bila naik → bunyikan chime + tampilkan popup.
+const _prevCounts = { ver: null, disp: null, ranap: null }
+function detectNewWork() {
+  const ver = verPendingCount.value, disp = dispWaitingCount.value, ranap = ranapWaitingCount.value
+  const lines = []
+  if (_prevCounts.ver !== null) {
+    if (ver > _prevCounts.ver)     lines.push(`${ver - _prevCounts.ver} resep menunggu verifikasi`)
+    if (disp > _prevCounts.disp)   lines.push(`${disp - _prevCounts.disp} pasien di antrean dispensing`)
+    if (ranap > _prevCounts.ranap) lines.push(`${ranap - _prevCounts.ranap} permintaan obat rawat inap`)
+  }
+  _prevCounts.ver = ver; _prevCounts.disp = disp; _prevCounts.ranap = ranap
+  if (lines.length) {
+    playChime()
+    // Loncat ke tab yang PALING relevan (verifikasi > dispensing > ranap).
+    const tab = ver > 0 && lines.some((l) => l.includes('verifikasi')) ? 'verifikasi'
+      : lines.some((l) => l.includes('dispensing')) ? 'dispensing' : 'ranap'
+    showAlertPopup(lines, tab)
+  }
+}
+
+// Antrean RJ + verifikasi + rawat inap di-poll bersama (8s) SUPAYA notifikasi &
+// badge tetap hidup walau petugas sedang di tab lain. detectNewWork dipanggil
+// setelah ketiganya segar agar perbandingan jumlah akurat.
+async function pollFarmasi() {
+  await Promise.allSettled([
+    fetchQueue(),
+    fetchVerQueue({ fromPoll: true }),
+    fetchRanapQueue({ fromPoll: true }),
+  ])
+  detectNewWork()
+}
+
+onMounted(async () => {
+  await Promise.allSettled([fetchQueue(), fetchStok(), fetchRanapQueue(), fetchVerQueue()])
+  // Baseline jumlah = kondisi saat masuk (jangan bunyi utk antrean yang sudah ada).
+  _prevCounts.ver = verPendingCount.value
+  _prevCounts.disp = dispWaitingCount.value
+  _prevCounts.ranap = ranapWaitingCount.value
   _poll = setInterval(pollFarmasi, 8_000)
   connectInventoriWs()
   pollNotifs()
   _notifPoll = setInterval(pollNotifs, 10_000)
+  document.addEventListener('click', unlockAudioOnce, { once: true })
   document.addEventListener('click', closeNotifOnOutside)
 })
 onUnmounted(() => {
   if (_poll) clearInterval(_poll)
   if (_notifPoll) clearInterval(_notifPoll)
+  clearTimeout(_alertTimer)
   _channel?.unbind_all()
   _pusher?.disconnect()
   document.removeEventListener('click', closeNotifOnOutside)
@@ -2181,7 +2317,7 @@ function toast(type, msg) {
       <button :class="['nt', pgTab === 'dispensing' ? 'a' : '']" @click="pgTab = 'dispensing'">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 9h18M9 21V9"/></svg>
         Dispensing Rawat Jalan
-        <span class="ntbg alert">{{ queue.filter((q) => rxStatusOf(q) !== 'done').length }}</span>
+        <span v-if="dispWaitingCount" class="ntbg alert">{{ dispWaitingCount }}</span>
       </button>
       <button :class="['nt', pgTab === 'ranap' ? 'a' : '']" @click="pgTab = 'ranap'">
         <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4M9 9v.01M9 12v.01M9 15v.01M9 18v.01"/></svg>
@@ -2209,7 +2345,33 @@ function toast(type, msg) {
         <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Laporan
       </button>
+      <button
+        class="nt snd-toggle"
+        :class="{ off: !soundOn }"
+        :title="soundOn ? 'Notifikasi suara: AKTIF (klik untuk matikan)' : 'Notifikasi suara: MATI (klik untuk aktifkan)'"
+        @click="toggleSound"
+      >
+        <svg v-if="soundOn" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        <svg v-else viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+      </button>
     </div>
+
+    <!-- POPUP BANNER: kedatangan kerja baru (suara + pesan) -->
+    <transition name="pop">
+      <div v-if="alertPopup" class="new-work-pop" @click="gotoAlertTab">
+        <div class="nwp-ico">
+          <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </div>
+        <div class="nwp-body">
+          <div class="nwp-title">Pekerjaan baru masuk</div>
+          <div v-for="(l, i) in alertPopup.lines" :key="i" class="nwp-line">{{ l }}</div>
+          <div class="nwp-cta">Klik untuk membuka →</div>
+        </div>
+        <button class="nwp-x" title="Tutup" @click.stop="dismissAlertPopup">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </transition>
 
     <!-- DISPENSING -->
     <div v-if="pgTab === 'dispensing'" class="tab-pane">
@@ -3185,6 +3347,9 @@ function toast(type, msg) {
               <td class="muted">{{ s.batch_number ?? '—' }}</td>
               <td class="muted">{{ s.expiry_date ? new Date(s.expiry_date).toLocaleDateString('id-ID', { month: '2-digit', year: 'numeric' }) : '—' }}</td>
               <td class="c">
+                <button class="po-icon-btn" title="Kartu stok (riwayat keluar & sisa)" @click="openKartuStok(s)">
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                </button>
                 <button class="po-icon-btn" title="Koreksi stok" @click="openEditStok(s)">
                   <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
                 </button>
@@ -3449,7 +3614,10 @@ function toast(type, msg) {
                   <button v-if="s.status === 'PAID'" class="po-icon-btn" title="Cetak ulang struk" @click="posReprint(s.id)">
                     <svg viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                   </button>
-                  <button v-if="s.status !== 'CANCELLED'" class="po-icon-btn" title="Batalkan" @click="posCancel(s)">
+                  <!-- Hanya PENDING (belum dibayar) yang bisa dibatalkan. Penjualan PAID
+                       = terminal (batal me-restock tanpa membalik pembayaran → desync
+                       uang/stok); void kas harus lewat retur/refund. Selaras guard BE. -->
+                  <button v-if="s.status === 'PENDING'" class="po-icon-btn" title="Batalkan" @click="posCancel(s)">
                     <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </td>
@@ -3670,6 +3838,72 @@ function toast(type, msg) {
       </div>
     </div>
 
+    <!-- Modal Kartu Stok (riwayat obat keluar + sisa) -->
+    <div v-if="kartuStok" class="es-overlay" @click.self="closeKartuStok">
+      <div class="es-modal ks-modal">
+        <div class="es-head">
+          <h3>Kartu Stok — {{ kartuStok.name }}</h3>
+          <button class="es-x" @click="closeKartuStok" aria-label="Tutup">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="es-body">
+          <!-- Ringkasan: sisa sekarang + total keluar -->
+          <div class="ks-sum">
+            <div class="ks-box" :class="{ out: kartuStok.stock === 0, low: kartuStok.stock > 0 && kartuStok.stock <= kartuStok.min_stock }">
+              <span>Sisa Stok Sekarang</span><b>{{ kartuStok.stock }} <small>{{ kartuStok.unit || '' }}</small></b>
+            </div>
+            <div class="ks-box"><span>Total Keluar {{ kartuJenis ? `(${kartuJenis})` : '' }}</span><b>{{ kartuTotalKeluar }} <small>{{ kartuStok.unit || '' }}</small></b></div>
+            <div class="ks-box"><span>Jumlah Transaksi</span><b>{{ kartuFiltered.length }}</b></div>
+            <div class="ks-box"><span>Min. Stok</span><b>{{ kartuStok.min_stock }}</b></div>
+          </div>
+
+          <div class="ks-filter">
+            <label>Jenis pengeluaran</label>
+            <select v-model="kartuJenis" class="fi">
+              <option value="">Semua sumber</option>
+              <option v-for="j in kartuJenisOptions" :key="j" :value="j">{{ j }}</option>
+            </select>
+          </div>
+
+          <div class="ks-tbl-wrap">
+            <table class="po-table ks-tbl">
+              <thead>
+                <tr>
+                  <th style="width:150px">Tanggal</th>
+                  <th>Pasien / Tujuan</th>
+                  <th>Sumber</th>
+                  <th class="r">Keluar</th>
+                  <th class="r">Sisa (est.)</th>
+                  <th>Petugas</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="kartuLoading"><td colspan="6" class="po-state">Memuat kartu stok…</td></tr>
+                <tr v-else-if="!kartuFiltered.length"><td colspan="6" class="po-state">Belum ada pengeluaran obat ini.</td></tr>
+                <tr v-for="(r, i) in kartuFiltered" :key="i">
+                  <td class="muted">{{ kartuFmtDate(r.tanggal) }}</td>
+                  <td>{{ r.pasien || '—' }}<span v-if="r.no_rm" class="ks-rm"> · {{ r.no_rm }}</span></td>
+                  <td><span :class="kartuPill(r.sumber)">{{ r.sumber }}</span></td>
+                  <td class="r ks-out">−{{ r.quantity }}</td>
+                  <td class="r muted">{{ kartuSisaSetelah(i) }}</td>
+                  <td class="muted">{{ r.petugas || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="es-hint">
+            "Sisa (est.)" = perkiraan sisa setelah tiap pengeluaran, dihitung mundur dari stok saat ini.
+            Angka ini mengabaikan penerimaan/transfer masuk (belum dicatat sebagai mutasi), jadi bersifat estimasi.
+            Pengeluaran mencakup resep ter-serah (Rawat Jalan/Inap/IGD/Bedah) &amp; penjualan bebas (POS).
+          </p>
+        </div>
+        <div class="es-foot">
+          <button class="btn btn-secondary btn-sm" @click="closeKartuStok">Tutup</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal Pengkajian Resep Ranap (Permenkes 72/2016 · PKPO 5.1) -->
     <div v-if="showPengkajian" class="pk-overlay" @click.self="showPengkajian = false">
       <div class="pk-modal">
@@ -3725,6 +3959,26 @@ function toast(type, msg) {
 .nt svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .ntbg { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 20px; background: var(--gb); color: var(--tu); }
 .ntbg.alert { background: var(--eb); color: var(--et); }
+.snd-toggle { margin-left: auto; color: var(--ga); }
+.snd-toggle.off { color: var(--tu); }
+.snd-toggle svg { width: 16px; height: 16px; }
+
+/* Popup banner "kerja baru" */
+.new-work-pop { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 1001;
+  display: flex; align-items: flex-start; gap: 12px; min-width: 320px; max-width: 460px;
+  background: var(--bc); border: 1px solid var(--ga); border-left: 4px solid var(--ga);
+  border-radius: 12px; padding: 12px 14px; box-shadow: 0 12px 40px rgba(0,0,0,.22); cursor: pointer; }
+.nwp-ico { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--gl);
+  display: flex; align-items: center; justify-content: center; }
+.nwp-ico svg { width: 18px; height: 18px; fill: none; stroke: var(--ga); stroke-width: 2; stroke-linecap: round; }
+.nwp-body { flex: 1; min-width: 0; }
+.nwp-title { font-size: 13px; font-weight: 700; color: var(--td); }
+.nwp-line { font-size: 12px; color: var(--td); margin-top: 2px; }
+.nwp-cta { font-size: 11px; font-weight: 600; color: var(--ga); margin-top: 6px; }
+.nwp-x { flex: none; background: none; border: none; cursor: pointer; color: var(--tu); padding: 2px; }
+.nwp-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.pop-enter-active, .pop-leave-active { transition: opacity .25s, transform .25s; }
+.pop-enter-from, .pop-leave-to { opacity: 0; transform: translate(-50%, -12px); }
 
 .stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.6rem; }
 .stat-card { background: var(--bc); border: 1px solid var(--gb); border-radius: 11px; padding: 0.75rem; display: flex; align-items: center; gap: 9px; }
@@ -4148,6 +4402,25 @@ function toast(type, msg) {
 .es-input:focus { border-color: var(--ga); background: #fff; }
 .es-hint { font-size: 10.5px; color: var(--tu); margin: 12px 0 0; }
 .es-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--gb); }
+
+/* Kartu Stok */
+.ks-modal { max-width: 760px; }
+.ks-modal .es-body { max-height: 68vh; overflow: auto; }
+.ks-sum { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.ks-box { background: var(--bs); border: 1px solid var(--gb); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.ks-box span { font-size: 10.5px; color: var(--tu); font-weight: 600; }
+.ks-box b { font-size: 18px; color: var(--td); }
+.ks-box b small { font-size: 11px; font-weight: 500; color: var(--tu); }
+.ks-box.low { border-color: var(--ld); background: var(--lm); }
+.ks-box.out { border-color: var(--et); background: var(--eb); }
+.ks-filter { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ks-filter label { font-size: 11px; font-weight: 700; color: var(--tu); }
+.ks-filter .fi { width: 200px; }
+.ks-tbl-wrap { border: 1px solid var(--gb); border-radius: 10px; overflow: hidden; }
+.ks-tbl th, .ks-tbl td { font-size: 12px; }
+.ks-tbl .ks-out { color: var(--et); font-weight: 700; }
+.ks-rm { color: var(--tu); font-size: 11px; }
+@media (max-width: 640px) { .ks-sum { grid-template-columns: repeat(2, 1fr); } }
 
 .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 999; display: flex; flex-direction: column; gap: 6px; }
 .toast { padding: 9px 13px; border-radius: 10px; font-size: 12px; font-weight: 500; border: 1px solid; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); min-width: 230px; }

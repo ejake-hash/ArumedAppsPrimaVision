@@ -226,6 +226,15 @@ class PharmacySaleService
             if ($sale->status === PharmacySale::STATUS_CANCELLED) {
                 throw new \Exception('Penjualan ini sudah dibatalkan.', 422);
             }
+            // Penjualan LUNAS (PAID) = terminal — tak boleh dibatalkan langsung: cancel
+            // me-restock stok tapi TIDAK membalik pembayaran (paid_amount/change tetap,
+            // tanpa catatan refund) → stok bertambah hantu + revenue tetap terhitung
+            // (desync uang↔stok). Sejajar KasirService::cancelInvoice yang juga menolak
+            // invoice PAID. Hanya PENDING (channel KASIR, paid_amount=0) yang aman dibatalkan
+            // (melepas reserve stok). Void kas harus lewat jalur retur/refund yg mencatat pembalikan.
+            if ($sale->status === PharmacySale::STATUS_PAID) {
+                throw new \Exception('Penjualan sudah LUNAS — tidak bisa dibatalkan langsung. Gunakan jalur retur/refund agar pembayaran ikut dibalik.', 422);
+            }
 
             // Kembalikan stok ke unit FARMASI, jaga batch_no + expiry asli (dari consumed_batches).
             foreach ($sale->items as $item) {
@@ -244,6 +253,38 @@ class PharmacySaleService
 
             return $sale->fresh(['items.medication', 'soldBy', 'cancelledBy']);
         });
+    }
+
+    /**
+     * Reaper: batalkan penjualan PENDING (channel KASIR) yang menggantung > TTL jam.
+     * createPending() sudah MENGONSUMSI stok (reserve) tapi tanpa auto-release — bila
+     * kasir tak pernah settlePayment/cancel, stok fisik vs sistem drift & alert low-stock
+     * salah. cancel() (yang kini menolak PAID) me-restock via consumed_batches. Dipanggil
+     * scheduler pharmacy:release-stale-pending. Aman: hanya PENDING (paid_amount=0).
+     *
+     * @return array{released:int,failed:int,scanned:int}
+     */
+    public function releaseStalePending(int $ttlHours = 24): array
+    {
+        $cutoff = now()->subHours(max(1, $ttlHours));
+        $ids = PharmacySale::where('status', PharmacySale::STATUS_PENDING)
+            ->where('channel', PharmacySale::CHANNEL_KASIR)
+            ->where('created_at', '<', $cutoff)
+            ->pluck('id');
+
+        $released = 0;
+        $failed   = 0;
+        foreach ($ids as $id) {
+            try {
+                $this->cancel($id, "Auto-release: PENDING > {$ttlHours} jam tanpa pembayaran di kasir");
+                $released++;
+            } catch (\Throwable $e) {
+                $failed++;
+                \Illuminate\Support\Facades\Log::warning("release-stale-pending gagal sale {$id}: " . $e->getMessage());
+            }
+        }
+
+        return ['released' => $released, 'failed' => $failed, 'scanned' => $ids->count()];
     }
 
     // =========================================================================
@@ -316,7 +357,9 @@ class PharmacySaleService
                 throw new \Exception("Jumlah obat {$med->name} minimal 1.", 422);
             }
 
-            $onHand = $this->stockService->onHand('MEDICATION', $med->id, InventoryStock::LOC_FARMASI);
+            // excludeExpired: cek kecukupan HARUS mengabaikan batch kedaluwarsa agar cocok
+            // dgn consume() (kalau tidak: lolos di sini lalu gagal 422 "stok tak cukup").
+            $onHand = $this->stockService->onHand('MEDICATION', $med->id, InventoryStock::LOC_FARMASI, true);
             if ($onHand < $qty) {
                 throw new \Exception(
                     "Stok unit FARMASI untuk {$med->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$qty}.",

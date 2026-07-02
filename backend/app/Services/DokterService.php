@@ -620,8 +620,14 @@ class DokterService
     {
         $service = VisitService::findOrFail($id);
         $this->authorizeVisitOwnership($service->visit_id);
+        // Cermin sibling mutator (storeVisitServices/deleteVisitBhpUsage): blokir hapus bila
+        // invoice sudah PAID (chart vs kwitansi jadi tak konsisten), dan bangun ulang
+        // kwitansi utk invoice belum-bayar agar tindakan yang dihapus tak lagi ditagih.
+        $this->assertBillingNotCommitted($service->visit_id);
+        $visitId = $service->visit_id;
         $service->delete();
         $this->log(auth('api')->id(), 'DELETE_TINDAKAN', VisitService::class, $id);
+        $this->reconsolidateAfterDoctorRevision($visitId);
     }
 
     // ── BHP yang diinput DOKTER (Tab Tindakan) — paralel tindakan, ditagih lewat
@@ -1201,6 +1207,12 @@ class DokterService
 
             // Snapshot diskon (komponen PROCEDURE) — tanpa schedule (poli).
             $this->syncVisitPackageSnapshot($visit, $pkg->id, null);
+
+            // Bangun ulang kwitansi SETELAH snapshot diskon ada. storeVisitServices() di atas
+            // sudah reconsolidate, TAPI itu jalan SEBELUM snapshot dibuat → invoice sempat
+            // memuat harga tindakan PENUH tanpa diskon paket. Reconsolidate lagi di sini agar
+            // diskon paket langsung tercermin (jika tidak, pasien over-billed sampai revisi lain).
+            $this->reconsolidateAfterDoctorRevision($visit->id);
 
             $snap = VisitSurgeryPackage::with('items')
                 ->where('visit_id', $visit->id)
@@ -2431,7 +2443,12 @@ class DokterService
         if ($refraksi->visus_awal_od || $refraksi->visus_awal_os) {
             $parts[] = 'Visus awal OD ' . ($refraksi->visus_awal_od ?? '-') . ' / OS ' . ($refraksi->visus_awal_os ?? '-');
         }
-        // 2. Refraksi subjektif S/C/X (tanpa ADD)
+        // 2. Pinhole (deteksi amblyopia)
+        if ($refraksi->pinhole_od || $refraksi->pinhole_os) {
+            $parts[] = 'Pinhole OD ' . ($refraksi->pinhole_od ?? '-') . ' / OS ' . ($refraksi->pinhole_os ?? '-');
+        }
+        // 3. Refraksi subjektif S/C/X (tanpa ADD). SELALU tampil: kedua mata kosong →
+        // "(Kosong / Error)". JANGAN ambil dari autoref.
         $scx = function ($sph, $cyl, $axis) use ($sg) {
             if ($sph === null && $cyl === null && $axis === null) {
                 return '';
@@ -2444,20 +2461,20 @@ class DokterService
         };
         $rxOd = $scx($refraksi->refraksi_subjektif_od_sph, $refraksi->refraksi_subjektif_od_cyl, $refraksi->refraksi_subjektif_od_axis);
         $rxOs = $scx($refraksi->refraksi_subjektif_os_sph, $refraksi->refraksi_subjektif_os_cyl, $refraksi->refraksi_subjektif_os_axis);
-        if ($rxOd || $rxOs) {
-            $parts[] = 'Refraksi subjektif OD ' . ($rxOd ?: '-') . ' | OS ' . ($rxOs ?: '-');
-        }
-        // 3. Visus akhir (BCVA)
+        $parts[] = ($rxOd || $rxOs)
+            ? 'Refraksi subjektif OD ' . ($rxOd ?: '-') . ' | OS ' . ($rxOs ?: '-')
+            : 'Refraksi subjektif (Kosong / Error)';
+        // 4. Visus akhir (BCVA)
         if ($refraksi->visus_akhir_od || $refraksi->visus_akhir_os) {
             $parts[] = 'Visus akhir OD ' . ($refraksi->visus_akhir_od ?? '-') . ' / OS ' . ($refraksi->visus_akhir_os ?? '-');
         }
-        // 4. ADD (adisi baca)
+        // 5. ADD (adisi baca)
         $hasAdd = ($refraksi->add_power_od !== null && (float) $refraksi->add_power_od != 0.0)
             || ($refraksi->add_power_os !== null && (float) $refraksi->add_power_os != 0.0);
         if ($hasAdd) {
             $parts[] = 'Add OD ' . ($sg($refraksi->add_power_od) ?? '-') . ' / OS ' . ($sg($refraksi->add_power_os) ?? '-');
         }
-        // 5. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
+        // 6. IOP/TIO (+ pengukuran berulang #2, #3, … — metode bersama hanya di baris pertama)
         if ($refraksi->iop_od || $refraksi->iop_os) {
             $parts[] = 'TIO OD ' . ($refraksi->iop_od ?? '-') . ' / OS ' . ($refraksi->iop_os ?? '-') . ' mmHg' . ($refraksi->iop_method ? " ({$refraksi->iop_method})" : '');
         }
@@ -2468,10 +2485,30 @@ class DokterService
                 $parts[] = 'TIO #' . ($i + 2) . ' OD ' . ($od ?? '-') . ' / OS ' . ($os ?? '-') . ' mmHg';
             }
         }
-        // 6. PD (pupillary distance) — paling bawah
+        // 7. PD (pupillary distance)
         if ($refraksi->pd_distance !== null && $refraksi->pd_distance !== '') {
             $pd = rtrim(rtrim((string) $refraksi->pd_distance, '0'), '.');
             $parts[] = 'PD ' . $pd . ' mm';
+        }
+        // 8. Kacamata lama (S/C/X + ADD) + visus dengan kacamata lama
+        $ogFmt = function ($sph, $cyl, $axis, $add) use ($scx, $sg) {
+            $base = $scx($sph, $cyl, $axis);
+            if ($add !== null && (float) $add != 0.0) {
+                $base = ($base !== '' ? $base . ' / ' : '') . 'Add ' . $sg($add);
+            }
+            return $base;
+        };
+        $ogOd = $ogFmt($refraksi->old_glasses_od_sph, $refraksi->old_glasses_od_cyl, $refraksi->old_glasses_od_axis, $refraksi->old_glasses_add_od);
+        $ogOs = $ogFmt($refraksi->old_glasses_os_sph, $refraksi->old_glasses_os_cyl, $refraksi->old_glasses_os_axis, $refraksi->old_glasses_add_os);
+        if ($ogOd || $ogOs) {
+            $parts[] = 'Kacamata lama OD ' . ($ogOd ?: '-') . ' | OS ' . ($ogOs ?: '-');
+        }
+        if ($refraksi->old_glasses_visus_od || $refraksi->old_glasses_visus_os) {
+            $parts[] = 'Visus dgn kacamata lama OD ' . ($refraksi->old_glasses_visus_od ?? '-') . ' / OS ' . ($refraksi->old_glasses_visus_os ?? '-');
+        }
+        // 9. Catatan klinis (teks bebas) — paling bawah
+        if ($refraksi->clinical_notes !== null && trim((string) $refraksi->clinical_notes) !== '') {
+            $parts[] = 'Catatan: ' . trim((string) $refraksi->clinical_notes);
         }
         return implode("\n", $parts);
     }

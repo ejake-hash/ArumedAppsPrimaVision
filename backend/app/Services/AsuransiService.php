@@ -72,6 +72,14 @@ class AsuransiService
      */
     public function createVerifikasi(array $data, ?string $userId = null): InsuranceVerification
     {
+        // Jangan tandai VERIFIED tanpa menentukan cover (0 pun harus eksplisit diketik):
+        // pada visit COB, VERIFIED + covered_amount null membuat visit lolos ke kasir dgn
+        // cover 0 → porsi penjamin salah ditagih ke pasien.
+        if (($data['status'] ?? null) === InsuranceVerification::STATUS_VERIFIED
+            && ($data['covered_amount'] ?? null) === null) {
+            throw new \Exception('Tentukan nominal cover (isi 0 bila tidak ditanggung) sebelum menandai VERIFIED.', 422);
+        }
+
         return DB::transaction(function () use ($data, $userId) {
             $verif = InsuranceVerification::create([
                 'visit_id'           => $data['visit_id'],
@@ -94,7 +102,7 @@ class AsuransiService
             ]);
 
             $this->syncVisitStatus($verif->visit_id, $verif->status);
-            $this->syncCoveredToInvoice($verif);
+            $this->syncCoveredToInvoice($verif, array_key_exists('covered_amount', $data));
 
             if (in_array($verif->status, [
                 InsuranceVerification::STATUS_NEEDS_CLARIFICATION,
@@ -111,6 +119,14 @@ class AsuransiService
     {
         return DB::transaction(function () use ($verifId, $data, $userId) {
             $verif = InsuranceVerification::findOrFail($verifId);
+
+            // Jangan tandai VERIFIED tanpa cover terdefinisi (lihat createVerifikasi). Cover
+            // efektif = yang dikirim, atau nilai tersimpan bila key tak dikirim.
+            $effectiveCover = array_key_exists('covered_amount', $data)
+                ? $data['covered_amount'] : $verif->covered_amount;
+            if (($data['status'] ?? null) === InsuranceVerification::STATUS_VERIFIED && $effectiveCover === null) {
+                throw new \Exception('Tentukan nominal cover (isi 0 bila tidak ditanggung) sebelum menandai VERIFIED.', 422);
+            }
 
             // Hanya kolom yang BENAR-BENAR dikirim yang di-update (cek key presence),
             // BUKAN array_filter(!== null): array_filter membuang nilai 0/null/''
@@ -133,7 +149,7 @@ class AsuransiService
             }
 
             $verif->update($payload);
-            $this->syncCoveredToInvoice($verif->fresh());
+            $this->syncCoveredToInvoice($verif->fresh(), array_key_exists('covered_amount', $data));
 
             if (isset($data['status'])) {
                 $this->syncVisitStatus($verif->visit_id, $data['status']);
@@ -653,19 +669,28 @@ class AsuransiService
 
     /**
      * Sinkron nominal cover dari verifikasi ke billing_invoices.covered_amount.
-     * Hanya jika admin sudah menentukan covered_amount (bukan NULL).
      * Sisa pasien di kasir = total − covered − paid_amount.
+     *
+     * @param bool $coverProvided TRUE bila key 'covered_amount' BENAR-BENAR dikirim di
+     *   request (termasuk direset ke null/0). Membedakan "cover belum ditentukan" (field
+     *   tak dikirim → biarkan estimasi copay kasir) dari "cover ditarik/di-reset" (verifier
+     *   mengosongkan cover → HARUS menol-kan cover invoice). Tanpa pembedaan ini, menarik
+     *   coverage (covered_amount=null) tak pernah menghapus cover lama → pasien KURANG-tagih
+     *   sebesar cover yang menggantung.
      */
-    private function syncCoveredToInvoice(InsuranceVerification $verif): void
+    private function syncCoveredToInvoice(InsuranceVerification $verif, bool $coverProvided): void
     {
-        if ($verif->covered_amount === null) {
-            return; // Belum ditentukan — kasir pakai estimasi copay seperti biasa.
+        if (! $coverProvided) {
+            return; // Field tak dikirim — belum ditentukan, kasir pakai estimasi copay.
         }
 
         $invoice = BillingInvoice::where('visit_id', $verif->visit_id)->first();
         if (! $invoice || in_array($invoice->status, ['PAID', 'CANCELLED'], true)) {
             return; // Tidak ada invoice atau sudah final — jangan ubah.
         }
+
+        // null (reset/tarik coverage) diperlakukan sebagai 0 → cover invoice dinolkan.
+        $newCover = (float) ($verif->covered_amount ?? 0);
 
         // === COB: nominal cover dimuat ke baris coverage penjamin terkait, lalu
         // billing_invoices.covered_amount = Σ coverages (agregat). Tidak menimpa
@@ -677,7 +702,7 @@ class AsuransiService
                 ->first();
             if ($cov) {
                 $cov->update([
-                    'covered_amount'  => (float) $verif->covered_amount,
+                    'covered_amount'  => $newCover,
                     'verification_id' => $verif->id,
                 ]);
                 $sum = (float) BillingInvoiceCoverage::where('billing_invoice_id', $invoice->id)->sum('covered_amount');
@@ -691,8 +716,8 @@ class AsuransiService
         }
 
         // === Non-COB (perilaku lama): cover tunggal langsung ke invoice.
-        // Cover tidak boleh melebihi total tagihan.
-        $covered = min((float) $verif->covered_amount, (float) $invoice->total);
+        // Cover tidak boleh melebihi total tagihan; reset (0) menol-kan cover.
+        $covered = min($newCover, (float) $invoice->total);
 
         $invoice->update([
             'covered_amount' => $covered,
@@ -715,6 +740,26 @@ class AsuransiService
 
     private function syncVisitStatus(string $visitId, string $verifStatus): void
     {
+        // COB: status visit = AGREGAT seluruh penjamin (bukan last-write-wins). Tanpa ini,
+        // memverifikasi penjamin-1 setelah penjamin-2 sudah VERIFIED bisa membalik status
+        // visit (menyembunyikan visit yang penjamin-2-nya sudah beres, atau salah-VERIFIED
+        // saat penjamin-2 belum beres). Dipanggil dalam txn → baris baru sudah terlihat.
+        // Aturan: PENDING bila ada penjamin PENDING; ISSUE bila ada REJECTED/NEEDS_CLARIFICATION;
+        // VERIFIED hanya bila SEMUA penjamin (yang punya baris verifikasi) VERIFIED.
+        if (VisitCob::where('visit_id', $visitId)->where('is_active', true)->exists()) {
+            $statuses = collect($this->getVerifikasiAll($visitId))->pluck('status');
+            if ($statuses->isNotEmpty()) {
+                if ($statuses->contains(InsuranceVerification::STATUS_PENDING)) {
+                    $verifStatus = InsuranceVerification::STATUS_PENDING;
+                } elseif ($statuses->contains(InsuranceVerification::STATUS_REJECTED)
+                       || $statuses->contains(InsuranceVerification::STATUS_NEEDS_CLARIFICATION)) {
+                    $verifStatus = InsuranceVerification::STATUS_NEEDS_CLARIFICATION; // → ISSUE
+                } else {
+                    $verifStatus = InsuranceVerification::STATUS_VERIFIED;
+                }
+            }
+        }
+
         $visitStatus = self::VERIF_TO_VISIT_STATUS[$verifStatus] ?? 'ISSUE';
 
         Visit::where('id', $visitId)->update([

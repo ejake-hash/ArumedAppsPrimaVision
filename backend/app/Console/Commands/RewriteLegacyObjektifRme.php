@@ -204,7 +204,12 @@ class RewriteLegacyObjektifRme extends Command
         return implode("\n", $lines);
     }
 
-    /** Baris "Refraksi subjektif OD … | OS …" dari field terstruktur; fallback raw_data legacy. */
+    /**
+     * Baris "Refraksi subjektif OD … | OS …" dari kolom refraksi subjektif TERSTRUKTUR saja.
+     * TIDAK PERNAH mengambil dari autoref (nilai objektif mesin ≠ refraksi subjektif).
+     * Bila subjektif kosong → null; refraksiObjektif() sudah menuliskan baris
+     * "Refraksi subjektif (Kosong / Error)" sehingga sisipkanSubjektif tak perlu menyisip.
+     */
     private function subjektifLine(RefractionRecord $rec): ?string
     {
         // Format selaras fmtRx/memory: "S -1.00 / C -0.75 / X 150" (2 desimal, berspasi).
@@ -223,23 +228,8 @@ class RewriteLegacyObjektifRme extends Command
 
             return $p ? implode(' / ', $p) : null;
         };
-        $od = $fmt($rec->autoref_od_sph, $rec->autoref_od_cyl, $rec->autoref_od_axis);
-        $os = $fmt($rec->autoref_os_sph, $rec->autoref_os_cyl, $rec->autoref_os_axis);
-        if ($od === null && $os === null) {
-            // Parse gagal saat migrasi → string mentah app lama (apa adanya),
-            // kecuali placeholder/"Error" yang jelas bukan hasil ukur.
-            $raw = (array) ($rec->raw_data ?? []);
-            $bersih = function ($v) {
-                $v = is_string($v) ? trim($v) : null;
-                if ($v === null || $v === '' || strcasecmp($v, 'error') === 0 || $this->isPlaceholder($v)) {
-                    return null;
-                }
-
-                return $v;
-            };
-            $od = $bersih($raw['autoref_od'] ?? null);
-            $os = $bersih($raw['autoref_os'] ?? null);
-        }
+        $od = $fmt($rec->refraksi_subjektif_od_sph, $rec->refraksi_subjektif_od_cyl, $rec->refraksi_subjektif_od_axis);
+        $os = $fmt($rec->refraksi_subjektif_os_sph, $rec->refraksi_subjektif_os_cyl, $rec->refraksi_subjektif_os_axis);
         if ($od === null && $os === null) {
             return null;
         }
@@ -255,9 +245,15 @@ class RewriteLegacyObjektifRme extends Command
     {
         $out = [];
         foreach ($lines as $l) {
+            // Baris "Rx:" legacy dirakit dari autoref app lama → BUKAN refraksi subjektif.
+            // Jangan bawa nilainya; tandai subjektif kosong.
+            if (str_starts_with($l, 'Rx:')) {
+                $out[] = 'Refraksi subjektif (Kosong / Error)';
+                continue;
+            }
             $l = preg_replace(
-                ['/^Visus UCVA: /u', '/^Visus BCVA: /u', '/^IOP: OD /u', '/^Rx: OD /u'],
-                ['Visus awal ', 'Visus akhir ', 'TIO OD ', 'Refraksi subjektif OD '],
+                ['/^Visus UCVA: /u', '/^Visus BCVA: /u', '/^IOP: OD /u'],
+                ['Visus awal ', 'Visus akhir ', 'TIO OD '],
                 $l
             );
             // Netralkan nilai placeholder per-mata: "OD s-c-x / OS 6/9" → "OD – / OS 6/9".
@@ -278,15 +274,26 @@ class RewriteLegacyObjektifRme extends Command
         if (! $out) {
             return null;
         }
+        // Refraksi subjektif SELALU tampil (tak pernah dari autoref): bila tak ada → penanda kosong.
+        $adaSubjektif = false;
+        foreach ($out as $l) {
+            if (str_starts_with($l, 'Refraksi subjektif')) {
+                $adaSubjektif = true;
+                break;
+            }
+        }
+        if (! $adaSubjektif) {
+            $out[] = 'Refraksi subjektif (Kosong / Error)';
+        }
         // Urutkan ke struktur kanonik O refraksionis.
         $rank = function ($l) {
-            foreach (['Visus awal' => 1, 'Refraksi subjektif' => 2, 'Visus akhir' => 3, 'Add' => 4, 'TIO' => 5, 'PD' => 6] as $p => $r) {
+            foreach (['Visus awal' => 1, 'Pinhole' => 2, 'Refraksi subjektif' => 3, 'Visus akhir' => 4, 'Add' => 5, 'TIO' => 6, 'PD' => 7, 'Kacamata lama' => 8, 'Visus dgn kacamata' => 9, 'Catatan' => 10] as $p => $r) {
                 if (str_starts_with($l, $p)) {
                     return $r;
                 }
             }
 
-            return 9;
+            return 99;
         };
         usort($out, fn ($a, $b) => $rank($a) <=> $rank($b));
 

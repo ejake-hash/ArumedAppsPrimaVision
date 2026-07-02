@@ -57,3 +57,10 @@ Schedule::command('marketing:sync-google')
     ->dailyAt('05:00')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
+
+// Tiap jam — lepas penjualan obat PENDING (channel KASIR) yang menggantung > 24 jam
+// (kasir tak pernah settle/cancel) agar reserve stok dikembalikan & tak drift.
+Schedule::command('pharmacy:release-stale-pending')
+    ->hourly()
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();

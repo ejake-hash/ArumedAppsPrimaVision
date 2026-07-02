@@ -59,6 +59,17 @@ const pages = computed(() => {
 const currentPage = computed(() => pages.value[pageIdx.value] ?? pages.value[0] ?? null)
 const pageLabel = computed(() => (pageIdx.value === 0 ? 'Kunjungan terakhir' : 'Kunjungan sebelumnya'))
 
+// Stasiun asal yang muncul pada tanggal ini (dedup, urut kemunculan). Menegaskan
+// timeline ini LINTAS-EPISODE: satu tanggal bisa memuat >1 stasiun (mis. Poli + IGD).
+const pageStations = computed(() => {
+  const seen = []
+  for (const e of currentPage.value?.items ?? []) {
+    const ep = e.episode || 'RAJAL'
+    if (!seen.includes(ep)) seen.push(ep)
+  }
+  return seen
+})
+
 function epLabel(e) {
   return ({ RAJAL: 'Rawat Jalan', IGD: 'IGD', RANAP: 'Rawat Inap', POLI: 'Poli' })[e] ?? (e ?? '–')
 }
@@ -111,6 +122,9 @@ function closeLightbox() { lightbox.value = null }
         <div class="cpc-pager-info">
           <div class="cpc-pager-date">{{ fmtDate(currentPage.date) }}</div>
           <div class="cpc-pager-sub">{{ pageLabel }} · {{ currentPage.items.length }} entri</div>
+          <div v-if="pageStations.length" class="cpc-pager-stations">
+            <span v-for="ep in pageStations" :key="ep" class="cpc-ep" :class="'ep-' + ep" title="Stasiun asal">{{ epLabel(ep) }}</span>
+          </div>
         </div>
         <button class="cpc-pager-btn" title="Kunjungan lebih lama" :disabled="pageIdx >= pages.length - 1" @click="pageIdx++">›</button>
       </div>
@@ -120,7 +134,7 @@ function closeLightbox() { lightbox.value = null }
           <div class="cpc-item-head">
             <span class="cpc-ppa" :class="ppaClass(c.ppa_role)">{{ ppaLabel(c.ppa_role) || (c.kind === 'SOAP' ? 'Dokter' : 'PPA') }}</span>
             <span v-if="c.kind === 'ASESMEN'" class="cpc-kind-tag" title="Asesmen awal triase">Asesmen Awal</span>
-            <span class="cpc-ep" :class="'ep-' + c.episode">{{ epLabel(c.episode) }}</span>
+            <span class="cpc-ep" :class="'ep-' + c.episode" title="Stasiun asal CPPT">{{ epLabel(c.episode) }}</span>
             <span class="cpc-when">{{ fmtDT(c.datetime) }}</span>
           </div>
           <div v-if="c.author" class="cpc-by">{{ c.author }}</div>
@@ -204,6 +218,7 @@ function closeLightbox() { lightbox.value = null }
 .cpc-pager-info { flex: 1; text-align: center; min-width: 0; }
 .cpc-pager-date { font-size: 12.5px; font-weight: 700; color: #1e293b; }
 .cpc-pager-sub { font-size: 10.5px; color: #94a3b8; }
+.cpc-pager-stations { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; margin-top: 4px; }
 
 /* List */
 /* Tanpa batas tinggi / scroll dalam: entri tampil penuh; bila terlalu panjang
@@ -222,7 +237,12 @@ function closeLightbox() { lightbox.value = null }
 .cpc-ppa.ppa-refraksionis { background: #0891b2; }
 .cpc-ppa.ppa-apoteker { background: #7c3aed; }
 .cpc-kind-tag { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #fff7ed; color: #b45309; border: 1px solid #fed7aa; }
-.cpc-ep { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #eef2f7; color: #475569; }
+/* Chip STASIUN ASAL — warna per episode, konsisten dgn IGD/Ranap
+   (IGD merah · Rawat Inap ungu · Rawat Jalan/Poli biru). Menonjolkan asal lintas-episode. */
+.cpc-ep { font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #eef2f7; color: #475569; }
+.cpc-ep.ep-IGD { background: #fee2e2; color: #b91c1c; }
+.cpc-ep.ep-RANAP { background: #ede9fe; color: #6d28d9; }
+.cpc-ep.ep-RAJAL, .cpc-ep.ep-POLI { background: #e0f2fe; color: #0369a1; }
 .cpc-when { margin-left: auto; font-size: 10.5px; color: #94a3b8; }
 .cpc-by { font-size: 11px; color: #64748b; margin-top: 2px; }
 

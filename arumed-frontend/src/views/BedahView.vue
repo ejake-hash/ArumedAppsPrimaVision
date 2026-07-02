@@ -2071,6 +2071,11 @@ async function doBatalBedah() {
                     </span>
                   </div>
                   <div class="q-prosedur">{{ p.prosedur }}</div>
+                  <div class="q-dpjp" :title="p.dpjp ? `DPJP / Operator: ${p.dpjp}` : 'DPJP / Operator belum ditetapkan'">
+                    <svg viewBox="0 0 24 24" class="pill-icon"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    <span v-if="p.dpjp">DPJP: {{ p.dpjp }}</span>
+                    <span v-else class="q-dpjp-na">DPJP belum ditetapkan</span>
+                  </div>
                   <div class="q-tags">
                     <span class="pill pill-tgl-bedah" :title="`Tanggal bedah: ${fmtVisitDate(surgeryDateOf(p)) || '—'}`">
                       <svg viewBox="0 0 24 24" class="pill-icon"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -3692,6 +3697,10 @@ async function doBatalBedah() {
 .q-visit-date { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 10px; font-weight: 600; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 6px; white-space: nowrap; vertical-align: middle; }
 .q-visit-date .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
 .q-prosedur { font-size: 11px; color: var(--td); margin-top: 3px; font-weight: 500; }
+.q-dpjp { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; font-size: 10.5px; font-weight: 600; color: var(--td); max-width: 100%; }
+.q-dpjp .pill-icon { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; }
+.q-dpjp span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-dpjp-na { color: var(--tu); font-weight: 500; font-style: italic; }
 .q-tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
 
 /* Pill icon (PerawatView style) */

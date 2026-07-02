@@ -1224,10 +1224,15 @@ class AdmisiService
             // Buat insurance_verifications awal (status PENDING) supaya billing langsung
             // bisa lihat row-nya di tab "Verifikasi Pending". Data kartu fisik (policy_number,
             // member_name, member_card_number) sudah diinput petugas admisi dari kartu.
-            if ($needsTpaVerification && ! empty($data['insurer_id'])) {
+            // Target verifikasi: insurer visit, atau penjamin-2 COB bila primary BPJS
+            // (insurer_id null). Tanpa fallback ini, COB dgn primary BPJS TAK membuat baris
+            // verifikasi penjamin-2 → antrean Asuransi menampilkan insurer null & tak ada
+            // baris utk menautkan cover (porsi penjamin-2 bisa lolos tanpa diverifikasi).
+            $verifInsurerId = $data['insurer_id'] ?? ($data['cob']['penjamin2_insurer_id'] ?? null);
+            if ($needsTpaVerification && $verifInsurerId) {
                 \App\Models\InsuranceVerification::create([
                     'visit_id'           => $visit->id,
-                    'insurer_id'         => $data['insurer_id'],
+                    'insurer_id'         => $verifInsurerId,
                     'verified_by'        => null,
                     'status'             => 'PENDING',
                     'policy_number'      => $data['policy_number']      ?? null,
@@ -1445,6 +1450,34 @@ class AdmisiService
                 // Skenario A — pasien lama
                 $real = Patient::findOrFail($data['patient_id']);
 
+                // Cegah kunjungan rawat JALAN aktif GANDA — guard yang sama seperti
+                // registerVisit (≈baris 1163) TAPI kecualikan visit walk-in ini. Tanpa ini,
+                // mode "Pasien Lama" melewati guard: pasien yang sudah didaftar loket
+                // (visit aktif) lalu memilih tiket kiosk bisa punya 2 kunjungan RJ aktif →
+                // data visit rangkap, 2 antrean, risiko join/penagihan ke visit yang salah.
+                // Race-safe: berjalan dalam txn dgn $visit sudah lockForUpdate. RANAP
+                // dikecualikan (long-lived, boleh paralel dgn RJ).
+                $activeVisit = Visit::where('patient_id', $real->id)
+                    ->where('id', '!=', $visit->id)
+                    ->where('current_station', '!=', 'SELESAI')
+                    ->where(function ($q) {
+                        $q->where('jenis_pelayanan', '!=', 'RANAP')
+                          ->orWhereNull('jenis_pelayanan');
+                    })
+                    ->orderByDesc('created_at')
+                    ->lockForUpdate()
+                    ->first();
+                if ($activeVisit) {
+                    $regLabel = $activeVisit->no_registrasi ?? substr($activeVisit->id, 0, 8);
+                    $tgl      = optional($activeVisit->visit_date)->format('d/m/Y') ?? '-';
+                    throw new \Exception(
+                        "Pasien {$real->name} masih punya kunjungan aktif (No. {$regLabel}, tgl {$tgl}, di stasiun "
+                        . ($activeVisit->current_station ?? '-') . "). "
+                        . "Selesaikan atau batalkan kunjungan itu dulu sebelum mendaftarkan kunjungan baru.",
+                        422
+                    );
+                }
+
                 if (! empty($data['photo'])) {
                     $photoPath = $this->savePatientPhoto($data['photo'], $real->name);
                     $real->update(['photo_path' => $photoPath]);
@@ -1529,10 +1562,12 @@ class AdmisiService
             // Pre-op bedah (walk-in): pindahkan snapshot paket BEDAH ke kunjungan operasi ini.
             $this->movePreopPackageSnapshot($visit, $preop['visit_type'], $preop['surgery_schedule_id']);
 
-            if ($needsTpaVerificationWalkin && ! empty($data['insurer_id'])) {
+            // Target verifikasi: insurer visit, atau penjamin-2 COB bila primary BPJS (null).
+            $verifInsurerIdWalkin = $data['insurer_id'] ?? ($data['cob']['penjamin2_insurer_id'] ?? null);
+            if ($needsTpaVerificationWalkin && $verifInsurerIdWalkin) {
                 \App\Models\InsuranceVerification::create([
                     'visit_id'           => $visit->id,
-                    'insurer_id'         => $data['insurer_id'],
+                    'insurer_id'         => $verifInsurerIdWalkin,
                     'verified_by'        => null,
                     'status'             => 'PENDING',
                     'policy_number'      => $data['policy_number']      ?? null,
@@ -1586,6 +1621,15 @@ class AdmisiService
     public function ambilTiketUmumKiosk(): array
     {
         return DB::transaction(function () {
+            // Kunci range prefix ADMISI SEBELUM baca MAX(queue_sequence): generateQueueNumber
+            // tak mengunci, dan dua tap kiosk konkuren (terminal beda IP → throttle:kiosk
+            // per-IP tak men-serialkan) bisa mendapat A-NNN KEMBAR (tak ada unique constraint).
+            // Sejajar lock di QueueService::enqueue().
+            Queue::whereIn('station', Queue::SHARED_PREFIX_GROUPS[Queue::prefixFor('ADMISI')] ?? ['ADMISI'])
+                ->whereDate('created_at', today())
+                ->lockForUpdate()
+                ->get(['id']);
+
             // Generate nomor antrean ADMISI (yg jadi suffix nama placeholder)
             $queueData = $this->generateQueueNumber('ADMISI');
             $queueNumber = $queueData['queue_number']; // e.g. A-007
@@ -2205,6 +2249,11 @@ class AdmisiService
             'user'         => auth('api')->user()?->name ?? 'arumed',
         ];
 
+        // Gate sidik jari (poli wajib-FP, mis. Mata): pra-cek agar operator dapat pesan
+        // jelas sebelum BPJS menolak insert. Aktif hanya bila VCLAIM.configuration.fp_enabled
+        // (default OFF → tak ada regresi). IGD dikecualikan. UAT VClaim #16.
+        $this->assertFingerprintForSep($visit, (string) $kodePoli, $isIgd, (string) $data['bpjs_number']);
+
         $result = $this->vclaim->generateSep($tSep, $visit->id);
 
         $noSep = $result['response']['sep']['noSep'] ?? null;
@@ -2268,6 +2317,128 @@ class AdmisiService
         }
 
         return $result;
+    }
+
+    // =========================================================================
+    // SIDIK JARI (FINGER PRINT) — gate & status untuk SEP poli wajib-FP
+    // =========================================================================
+
+    /**
+     * Gate sidik jari untuk poli wajib-FP (Mata/Jantung/IRM/HD). BPJS sendiri menolak
+     * insert SEP poli-FP tanpa sidik jari tervalidasi; gate ini MEMPRA-CEK agar operator
+     * dapat pesan jelas alih-alih error mentah dari BPJS. IGD dikecualikan.
+     *
+     * @throws \Exception 422 bila sidik jari belum tervalidasi.
+     */
+    private function assertFingerprintForSep(Visit $visit, string $kodePoli, bool $isIgd, string $noKartu): void
+    {
+        if ($isIgd || $noKartu === '' || ! $this->fingerRequiredPoli($kodePoli)) {
+            return;
+        }
+        $st = $this->fingerprintStatus($noKartu);
+        if (! ($st['validated'] ?? false)) {
+            throw new \Exception(
+                'Sidik jari peserta belum tervalidasi di BPJS untuk hari ini. Lakukan perekaman/'
+                . 'validasi sidik jari (aplikasi FRISTA BPJS) terlebih dahulu sebelum menerbitkan SEP poli ini.',
+                422
+            );
+        }
+    }
+
+    /**
+     * Poli wajib sidik jari? Aktif via VCLAIM.configuration.fp_enabled (default OFF).
+     * VCLAIM.configuration.fp_poli_codes (array kode BPJS) mempersempit; kosong = SEMUA
+     * poli non-IGD (faskes mata: seluruh poli = poli mata wajib FP).
+     */
+    private function fingerRequiredPoli(string $kodePoli): bool
+    {
+        $cfg = IntegrationConfig::where('system_name', 'VCLAIM')->first()?->configuration ?? [];
+        if (! ($cfg['fp_enabled'] ?? false)) {
+            return false;
+        }
+        $codes = array_values(array_filter(array_map('strval', (array) ($cfg['fp_poli_codes'] ?? []))));
+        return empty($codes) || in_array($kodePoli, $codes, true);
+    }
+
+    /**
+     * Status sidik jari peserta di BPJS untuk hari ini (VClaim getFingerprint).
+     * response.kode "1" = terekam/valid; "0"/lainnya = belum (terverifikasi di BPJS dev,
+     * lih. AntrolMobileService::fingerprintValidated). DEFAULT AMAN: ragu/gagal = belum.
+     */
+    private function fingerprintStatus(string $noKartu): array
+    {
+        $tgl = now('Asia/Jakarta')->toDateString();
+        try {
+            $res  = $this->vclaim->getFingerprint($noKartu, $tgl);
+            $kode = (string) ($res['response']['kode'] ?? '0');
+
+            return [
+                'validated' => (($res['is_success'] ?? false) === true) && $kode === '1',
+                'kode'      => $kode,
+                'message'   => (string) ($res['response']['keterangan'] ?? $res['metaData']['message'] ?? ''),
+                'tgl'       => $tgl,
+            ];
+        } catch (\Throwable $e) {
+            return ['validated' => false, 'kode' => null, 'message' => $e->getMessage(), 'tgl' => $tgl];
+        }
+    }
+
+    /**
+     * Cek status sidik jari peserta untuk penerbitan SEP hari ini (tombol "Cek Sidik
+     * Jari" di Admisi sebelum Terbitkan SEP). Resolusi No. Kartu: request → pasien →
+     * (fallback) Cek Peserta by NIK. UAT VClaim #16.
+     */
+    public function bpjsFingerStatus(array $data): array
+    {
+        $this->assertBpjsEnabled('VCLAIM');
+
+        $visit   = Visit::with('patient')->findOrFail($data['visit_id']);
+        $noKartu = trim((string) ($data['bpjs_number'] ?? $visit->patient?->bpjs_number ?? ''));
+        if ($noKartu === '') {
+            $nik = trim((string) ($visit->patient?->nik ?? ''));
+            if ($nik !== '') {
+                try {
+                    $res     = $this->vclaim->checkPeserta($nik, 'nik');
+                    $noKartu = (string) ($res['response']['peserta']['noKartu'] ?? '');
+                } catch (\Throwable $e) {
+                    // biarkan kosong → pesan di bawah
+                }
+            }
+        }
+        if ($noKartu === '') {
+            throw new \Exception('No. Kartu BPJS pasien belum ada — lengkapi data pasien (Edit) dulu.', 422);
+        }
+
+        return $this->fingerprintStatus($noKartu) + ['no_kartu' => $noKartu];
+    }
+
+    /**
+     * Blok `jaminan` SEP (KLL / Jasa Raharja + suplesi) dari request. Default = BUKAN
+     * KLL (identik dgn hardcode lama → tak ada regresi). Dipakai insert & update SEP.
+     * UAT #6 (SEP KLL), #8.13 (update Non-KLL → KLL).
+     *   $data: laka_lantas (0=bukan,1=KLL,2=KDRT,dst), no_lp, tgl_kejadian,
+     *          keterangan_kejadian, suplesi (0/1), no_sep_suplesi,
+     *          kd_propinsi, kd_kabupaten, kd_kecamatan (lokasi laka).
+     */
+    private function buildJaminanBlock(array $data): array
+    {
+        return [
+            'lakaLantas' => (string) ($data['laka_lantas'] ?? '0'),
+            'noLP'       => (string) ($data['no_lp'] ?? ''),
+            'penjamin'   => [
+                'tglKejadian' => (string) ($data['tgl_kejadian'] ?? ''),
+                'keterangan'  => (string) ($data['keterangan_kejadian'] ?? ''),
+                'suplesi'     => [
+                    'suplesi'      => (string) ($data['suplesi'] ?? '0'),
+                    'noSepSuplesi' => (string) ($data['no_sep_suplesi'] ?? ''),
+                    'lokasiLaka'   => [
+                        'kdPropinsi'  => (string) ($data['kd_propinsi'] ?? ''),
+                        'kdKabupaten' => (string) ($data['kd_kabupaten'] ?? ''),
+                        'kdKecamatan' => (string) ($data['kd_kecamatan'] ?? ''),
+                    ],
+                ],
+            ],
+        ];
     }
 
     /**
@@ -2451,12 +2622,24 @@ class AdmisiService
     {
         $this->assertBpjsEnabled('VCLAIM');
 
+        // Resolusi visit pemilik SEP + validasi kepemilikan SEBELUM membatalkan di BPJS.
+        // Cegah IDOR-by-SEP-number: bila visit_id dikirim wajib cocok dgn pemilik no_sep,
+        // dan update lokal DISCOPE ke visit itu (bukan global where('no_sep') yang bisa
+        // melepaskan SEP kunjungan lain). Route juga di-gate permission:admisi.write.
+        $visit = Visit::where('no_sep', $data['no_sep'])->first();
+        if (! $visit) {
+            throw new \Exception('SEP tidak ditemukan pada kunjungan mana pun.', 404);
+        }
+        if (! empty($data['visit_id']) && $data['visit_id'] !== $visit->id) {
+            throw new \Exception('No. SEP tidak cocok dengan kunjungan yang dipilih.', 422);
+        }
+
         $user   = auth('api')->user()?->name ?? 'arumed';
         $result = $this->vclaim->cancelSep($data['no_sep'], $user);
 
-        // Sukses → kosongkan no_sep + snapshot SEP di visit terkait.
+        // Sukses → kosongkan no_sep + snapshot SEP HANYA pada visit pemilik.
         if (($result['is_success'] ?? false)) {
-            Visit::where('no_sep', $data['no_sep'])->update(['no_sep' => null, 'sep_data' => null]);
+            Visit::whereKey($visit->id)->where('no_sep', $data['no_sep'])->update(['no_sep' => null, 'sep_data' => null]);
         }
 
         return $result;
@@ -2590,6 +2773,20 @@ class AdmisiService
             $warnings[] = 'SEP kontrol — diagnosa & poli mengikuti surat kontrol; pastikan poli dokter sesuai surat kontrol.';
         }
 
+        // ── Sidik jari (finger print) untuk poli wajib-FP (mata) ────────────
+        // Hanya aktif bila VCLAIM.configuration.fp_enabled = true → default OFF, tak ada regresi.
+        $fingerOut = null;
+        if ($this->fingerRequiredPoli((string) $poliKodeBpjs)) {
+            $noKartuFp = trim((string) ($pesertaOut['noKartu'] ?? ($idType === 'nokartu' ? $identifier : '')));
+            if ($noKartuFp !== '') {
+                $fingerOut = $this->fingerprintStatus($noKartuFp);
+                if (! ($fingerOut['validated'] ?? false)) {
+                    $issues[] = 'Sidik jari peserta belum tervalidasi di BPJS — poli ini wajib finger print. '
+                        . 'Rekam sidik jari (aplikasi FRISTA) sebelum menerbitkan SEP.';
+                }
+            }
+        }
+
         return [
             'ready'    => empty($issues),
             'issues'   => $issues,
@@ -2597,6 +2794,7 @@ class AdmisiService
             'peserta'  => $pesertaOut,
             'rujukan'  => $rujukanOut,
             'diagnosa' => $diagOut,
+            'finger'   => $fingerOut,
             'poli'     => [
                 'nama'         => $poliNama,
                 'bpjsKode'     => $poliKodeBpjs,

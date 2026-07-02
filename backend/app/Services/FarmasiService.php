@@ -800,7 +800,9 @@ class FarmasiService
             if (! $item->medication) {
                 continue;
             }
-            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id, InventoryStock::LOC_FARMASI);
+            // excludeExpired: cocokkan predikat consume() — cek kecukupan tak boleh
+            // menghitung batch kedaluwarsa (kalau tidak, lolos di sini → gagal 422 di consume).
+            $onHand = $this->stockService->onHand('MEDICATION', $item->medication_id, InventoryStock::LOC_FARMASI, true);
             if ($onHand < $item->quantity) {
                 throw new \Exception(
                     "Stok unit FARMASI untuk {$item->medication->name} tidak mencukupi. Tersedia: {$onHand}, dibutuhkan: {$item->quantity}. Minta transfer dari gudang dulu.",
@@ -1338,6 +1340,16 @@ class FarmasiService
                 'visit_id'         => $visit->id,
                 'prescribed_by_id' => $employeeId,
                 'status'           => 'DISPENSING',
+                // Resep OTC = diserahkan apoteker TANPA order dokter → terverifikasi
+                // Farmasi menurut definisinya. WAJIB set verified_at/by di sini: gate
+                // tagihan Kasir hanya menagih resep verified_at != null (buildObatLines
+                // di KasirService). Tanpa ini, obat OTC diserahkan & stok terpotong tapi
+                // TAK PERNAH masuk invoice (kebocoran uang + stok). Dengan verified_at
+                // terisi, item ikut tertagih via consolidateBilling (invoice baru) MAUPUN
+                // syncVerifiedObatLines add-only (invoice DRAFT yang sudah ada, dipanggil
+                // getInvoiceByVisit saat kasir membuka tagihan).
+                'verified_at'      => now(),
+                'verified_by_id'   => $employeeId,
                 'notes'            => 'Pembelian obat tambahan (OTC) di apotek',
             ]);
 
@@ -1695,7 +1707,7 @@ class FarmasiService
             // kurang → minta transfer dari gudang dulu.
             foreach ($surgeryRequest->bhpItems as $item) {
                 if ($item->bhpItem) {
-                    $onHand = $this->stockService->onHand('BHP', $item->bhp_item_id, InventoryStock::LOC_BEDAH);
+                    $onHand = $this->stockService->onHand('BHP', $item->bhp_item_id, InventoryStock::LOC_BEDAH, true);
                     if ($onHand < $item->quantity) {
                         throw new \Exception(
                             "Stok unit BEDAH untuk BHP {$item->bhpItem->name} tidak mencukupi. Tersedia: {$onHand}. Minta transfer dari gudang dulu.",

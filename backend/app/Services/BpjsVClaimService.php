@@ -270,6 +270,36 @@ class BpjsVClaimService
         return $result;
     }
 
+    // ---- SEP KLL / Jasa Raharja — Suplesi ----
+
+    /** GET /sep/JasaRaharja/Suplesi/{noKartu}/tglPelayanan/{tgl} — daftar SEP induk KLL utk suplesi (UAT #6.2). */
+    public function getSepSuplesi(string $noKartu, string $tglPelayanan): array
+    {
+        return $this->client->request('GET', "/sep/JasaRaharja/Suplesi/{$noKartu}/tglPelayanan/{$tglPelayanan}");
+    }
+
+    // =========================================================================
+    // PENGAJUAN PENJAMINAN (backdate / finger) — UAT #11
+    // =========================================================================
+
+    /** POST /SEP/pengajuanSEP — ajukan penjaminan (backdate RITL/RJTL / tanpa finger). $data = node "request". */
+    public function pengajuanSep(array $data, ?string $visitId = null): array
+    {
+        $result = $this->client->request('POST', '/SEP/pengajuanSEP', ['request' => $data]);
+        $this->log($visitId, 'PENGAJUAN_SEP', $data, $result);
+
+        return $result;
+    }
+
+    /** POST /Sep/aprovalSEP — approval penjaminan (finger). $data = node "request". */
+    public function aprovalSep(array $data, ?string $visitId = null): array
+    {
+        $result = $this->client->request('POST', '/Sep/aprovalSEP', ['request' => $data]);
+        $this->log($visitId, 'APROVAL_SEP', $data, $result);
+
+        return $result;
+    }
+
     // =========================================================================
     // SURAT KONTROL / RENCANA KONTROL v2 / SPRI
     // =========================================================================

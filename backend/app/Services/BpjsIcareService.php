@@ -38,7 +38,7 @@ class BpjsIcareService
      *
      * @return array{url:?string, metaData:array, response:mixed, http_status:int, is_success:bool, raw:string}
      */
-    public function riwayatFkrtl(string $param, int $kodeDokter, ?string $visitId = null): array
+    public function riwayatFkrtl(string $param, int $kodeDokter, ?string $visitId = null, array $auditMeta = []): array
     {
         $result = $this->client->request('POST', '/api/rs/validate', [
             'param'      => $param,
@@ -50,7 +50,8 @@ class BpjsIcareService
             ? ($result['response']['url'] ?? null)
             : null;
 
-        $this->log($visitId, 'GET_RIWAYAT', ['param' => $param, 'kodedokter' => $kodeDokter], $result);
+        // Jejak audit akses PHI + bukti informed consent ikut tercatat di request_payload.
+        $this->log($visitId, 'GET_RIWAYAT', array_merge(['param' => $param, 'kodedokter' => $kodeDokter], $auditMeta), $result);
 
         return $result;
     }
@@ -61,13 +62,26 @@ class BpjsIcareService
      *
      * @return array{url:string, metaData:array}
      */
-    public function riwayatForVisit(string $visitId): array
+    public function riwayatForVisit(string $visitId, array $auditMeta = []): array
     {
         $visit = Visit::with(['patient', 'doctorSchedule.employee'])->findOrFail($visitId);
 
-        // param i-Care menerima no kartu BPJS (13) atau NIK (16).
-        $param = $visit->patient?->bpjs_number ?: $visit->patient?->nik;
-        if (! $param) {
+        // param i-Care = No. Kartu BPJS (13 digit) atau NIK (16 digit). Validasi panjang
+        // di sisi aplikasi (UAT i-Care #1.2.5–1.2.8) agar identitas ngawur ditolak sebelum
+        // menghit BPJS. Utamakan No. Kartu; fallback NIK.
+        $noKartu = trim((string) ($visit->patient?->bpjs_number ?? ''));
+        $nik     = trim((string) ($visit->patient?->nik ?? ''));
+        if ($noKartu !== '') {
+            if (! preg_match('/^\d{13}$/', $noKartu)) {
+                throw new \Exception('Nomor Kartu BPJS pasien harus 13 digit angka (untuk i-Care).', 422);
+            }
+            $param = $noKartu;
+        } elseif ($nik !== '') {
+            if (! preg_match('/^\d{16}$/', $nik)) {
+                throw new \Exception('NIK pasien harus 16 digit angka (untuk i-Care).', 422);
+            }
+            $param = $nik;
+        } else {
             throw new \Exception('Pasien tidak memiliki nomor kartu BPJS maupun NIK.', 422);
         }
 
@@ -79,7 +93,7 @@ class BpjsIcareService
             );
         }
 
-        $result = $this->riwayatFkrtl((string) $param, (int) $kodeDokter, $visitId);
+        $result = $this->riwayatFkrtl($param, (int) $kodeDokter, $visitId, $auditMeta);
 
         if (! ($result['is_success'] ?? false) || empty($result['url'])) {
             throw new \Exception(

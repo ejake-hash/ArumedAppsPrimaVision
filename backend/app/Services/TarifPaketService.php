@@ -406,6 +406,7 @@ class TarifPaketService
             ->where($fk, $itemId)
             ->where('insurer_id', $umumId)
             ->where('is_active', true)
+            ->whereNull('deleted_at') // query DB::table mentah tak auto-filter SoftDeletes
             ->value('price');
 
         return $price !== null ? (float) $price : 0.0;
@@ -500,7 +501,15 @@ class TarifPaketService
                 'sell_price'       => round((float) $pkg->total_base_price * (1 - $pct / 100), 2),
             ];
         } else {
-            $values = ['sell_price' => (float) $data['sell_price'], 'discount_percent' => null];
+            // Edit parsial tanpa sell_price JANGAN menol-kan harga tarif yang sudah ada
+            // (dulu (float)null = 0 → tarif jual 0 → billing salah). Hanya set bila dikirim;
+            // tarif baru tanpa harga → 0 (biar terlihat & bisa dibetulkan).
+            $values = ['discount_percent' => null];
+            if (array_key_exists('sell_price', $data) && $data['sell_price'] !== null) {
+                $values['sell_price'] = (float) $data['sell_price'];
+            } elseif (! $existing) {
+                $values['sell_price'] = 0.0;
+            }
         }
         $values['display_name'] = $data['display_name'] ?? null;
         $values['is_active']    = $data['is_active'] ?? true;
@@ -813,11 +822,52 @@ class TarifPaketService
         $updated         = 0;
         $itemsInserted   = 0;
         $itemsLookupFail = 0;
+        $skipped         = 0;
 
         foreach ($grouped as $group) {
             $existing = SurgeryPackage::whereRaw('LOWER(name) = ?', [mb_strtolower($group['name'])])->first();
 
-            DB::transaction(function () use ($group, $existing, &$created, &$updated, &$itemsInserted, &$itemsLookupFail, &$errors) {
+            DB::transaction(function () use ($group, $existing, &$created, &$updated, &$itemsInserted, &$itemsLookupFail, &$skipped, &$errors) {
+                // Tipe efektif utk guard komponen (paket baru default BEDAH; existing pakai
+                // tipe yang akan disetel = group ?? existing, samakan dgn header update).
+                $effectiveType = $existing
+                    ? ($group['package_type'] ?? $existing->package_type)
+                    : ($group['package_type'] ?? SurgeryPackage::TYPE_BEDAH);
+
+                // PRA-RESOLVE semua item SEBELUM menyentuh komposisi. Untuk paket EXISTING,
+                // bila ada item (yg lolos guard tipe) GAGAL lookup ke master, replacement
+                // DIBATALKAN agar komposisi lama tak terhapus/parsial diam-diam (mis. master
+                // di-rename/soft-delete → lookup null) — kalau tidak, total_base_price & diskon
+                // paket rusak tapi API tetap balas 200 (data loss senyap). Dulu: delete dulu,
+                // lalu skip item gagal → komposisi hilang.
+                $resolved = [];
+                $hadFail  = false;
+                foreach ($group['items'] as $itemRow) {
+                    // Paket PEMERIKSAAN boleh PROCEDURE + MEDICATION (samakan dgn guard addItem).
+                    if ($effectiveType === SurgeryPackage::TYPE_PEMERIKSAAN
+                        && ! in_array($itemRow['item_type'], [SurgeryPackageItem::TYPE_PROCEDURE, SurgeryPackageItem::TYPE_MEDICATION], true)) {
+                        $errors[] = "Baris {$itemRow['_line']}: paket PEMERIKSAAN hanya boleh Tindakan/Obat, item {$itemRow['item_type']} '{$itemRow['item_name']}' dilewati";
+                        continue;
+                    }
+
+                    $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name'], $itemRow['item_category'] ?? null);
+                    if (! $itemId) {
+                        $itemsLookupFail++;
+                        $errors[] = "Baris {$itemRow['_line']}: item {$itemRow['item_type']} '{$itemRow['item_name']}' tidak ditemukan di master";
+                        $hadFail = true;
+                        continue;
+                    }
+                    $resolved[] = ['row' => $itemRow, 'item_id' => $itemId];
+                }
+
+                // Paket EXISTING dgn item gagal lookup (atau tak ada item valid) → JANGAN
+                // ganti komposisi; pertahankan yang lama, tandai sebagai dilewati.
+                if ($existing && ($hadFail || empty($resolved))) {
+                    $errors[] = "Paket '{$group['name']}': ada item tidak dikenali — komposisi lama DIPERTAHANKAN (tidak diubah).";
+                    $skipped++;
+                    return;
+                }
+
                 if ($existing) {
                     $existing->update([
                         'category'     => $group['category'] ?? $existing->category,
@@ -826,7 +876,7 @@ class TarifPaketService
                         'description'  => $group['description'] ?? $existing->description,
                         'is_active'    => $group['is_active'],
                     ]);
-                    // Replace items
+                    // Replace items (aman: semua item sudah ter-resolve di atas).
                     $existing->items()->delete();
                     $pkg = $existing;
                     $updated++;
@@ -843,20 +893,9 @@ class TarifPaketService
                     $created++;
                 }
 
-                foreach ($group['items'] as $itemRow) {
-                    // Paket PEMERIKSAAN boleh PROCEDURE + MEDICATION (samakan dgn guard addItem).
-                    if ($pkg->package_type === SurgeryPackage::TYPE_PEMERIKSAAN
-                        && ! in_array($itemRow['item_type'], [SurgeryPackageItem::TYPE_PROCEDURE, SurgeryPackageItem::TYPE_MEDICATION], true)) {
-                        $errors[] = "Baris {$itemRow['_line']}: paket PEMERIKSAAN hanya boleh Tindakan/Obat, item {$itemRow['item_type']} '{$itemRow['item_name']}' dilewati";
-                        continue;
-                    }
-
-                    $itemId = $this->lookupItemIdByName($itemRow['item_type'], $itemRow['item_name'], $itemRow['item_category'] ?? null);
-                    if (! $itemId) {
-                        $itemsLookupFail++;
-                        $errors[] = "Baris {$itemRow['_line']}: item {$itemRow['item_type']} '{$itemRow['item_name']}' tidak ditemukan di master";
-                        continue;
-                    }
+                foreach ($resolved as $r) {
+                    $itemRow = $r['row'];
+                    $itemId  = $r['item_id'];
 
                     // Harga dari CSV (bila diisi & > 0) menang; kosong → snapshot master Buku Tarif.
                     $defaultPrice = ($itemRow['default_price'] ?? null) > 0
@@ -883,13 +922,14 @@ class TarifPaketService
         }
 
         $this->log(auth('api')->id(), 'IMPORT_PAKET_BEDAH_CSV', null, null,
-            "new:{$created} upd:{$updated} items:{$itemsInserted} lookup_fail:{$itemsLookupFail}");
+            "new:{$created} upd:{$updated} items:{$itemsInserted} lookup_fail:{$itemsLookupFail} skipped:{$skipped}");
 
         return [
             'created'           => $created,
             'updated'           => $updated,
             'items_inserted'    => $itemsInserted,
             'items_lookup_fail' => $itemsLookupFail,
+            'skipped'           => $skipped,
             'errors'            => $errors,
         ];
     }

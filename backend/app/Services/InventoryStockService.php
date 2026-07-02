@@ -112,11 +112,21 @@ class InventoryStockService
      * Total stok on-hand suatu item (semua batch) di `inventory_stocks`
      * pada satu lokasi (default gudang INVENTORI).
      */
-    public function onHand(string $type, string $itemId, string $location = InventoryStock::LOC_INVENTORI): float
+    public function onHand(string $type, string $itemId, string $location = InventoryStock::LOC_INVENTORI, bool $excludeExpired = false): float
     {
+        // $excludeExpired=true → cerminkan predikat consume() (batch expired dilewati),
+        // WAJIB dipakai cek kecukupan DISPENSING/penjualan supaya tidak lolos di sini lalu
+        // gagal 422 di dalam consume ("stok tidak cukup" padahal on-hand penuh tapi expired).
+        // Default false: total apa adanya untuk opname/laporan/pergerakan stok.
         return (float) InventoryStock::where('item_type', $type)
             ->where('item_id', $itemId)
             ->where('location', $location)
+            ->when($excludeExpired, function ($query) {
+                $query->where(function ($q) {
+                    $q->whereNull('expiry_date')
+                      ->orWhereDate('expiry_date', '>=', now('Asia/Jakarta')->toDateString());
+                });
+            })
             ->sum('qty_on_hand');
     }
 
@@ -217,7 +227,17 @@ class InventoryStockService
         ]);
 
         if ($expiryDate !== null) {
-            $stock->expiry_date = $expiryDate;
+            if (! $stock->exists || $stock->expiry_date === null) {
+                // Baris baru, atau baris lama belum ber-expiry → isi (melengkapi).
+                $stock->expiry_date = $expiryDate;
+            } elseif (\Illuminate\Support\Carbon::parse($stock->expiry_date)->toDateString()
+                   !== \Illuminate\Support\Carbon::parse($expiryDate)->toDateString()) {
+                // Batch_no sama tapi expiry BERBEDA: dulu expiry ditimpa utk SELURUH qty →
+                // stok lama near-expiry "berubah" jadi jauh → obat kedaluwarsa lolos
+                // FEFO/consume ke pasien & laporan expiry salah. Tolak agar operator
+                // merekonsiliasi (pakai batch_no berbeda / betulkan expiry) — jangan gabung.
+                abort(422, "Batch '{$batchNo}' sudah ada dgn tanggal kedaluwarsa berbeda. Gunakan batch_no berbeda atau betulkan tanggal kedaluwarsa (jangan gabungkan expiry berbeda dalam satu batch).");
+            }
         }
         $stock->qty_on_hand = (float) ($stock->qty_on_hand ?? 0) + $qty;
         $stock->last_received_at = now();

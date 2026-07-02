@@ -699,7 +699,12 @@ class BedahService
         // Gating lunak: Time Out (gerbang WHO sebelum insisi) wajib terisi sebelum
         // operasi diselesaikan — KECUALI tim mencatat alasan bypass darurat.
         $checklist  = $record->safety_checklist ?? [];
-        $timeOutOk  = ! empty($checklist['time_out']);
+        // Berbasis ISI (cermin FE timeOutComplete = Object.values().every(Boolean)): array
+        // Time Out tak boleh kosong DAN semua item WAJIB true. `! empty($checklist['time_out'])`
+        // saja lolos oleh submission array semua-false (item tak dicentang) → gerbang WHO bocor.
+        $to         = $checklist['time_out'] ?? null;
+        $timeOutOk  = is_array($to) && count($to) > 0
+            && collect($to)->every(fn ($v) => filter_var($v, FILTER_VALIDATE_BOOLEAN));
         $timeOutByp = ! empty($checklist['bypass']['time_out']);
         if (! $timeOutOk && ! $timeOutByp) {
             throw new \Exception('Time Out (checklist keselamatan) belum diisi. Lengkapi atau lewati dengan alasan darurat terlebih dahulu.', 422);
@@ -1847,7 +1852,14 @@ class BedahService
                     }
                 } else {
                     $stockConsumed = false;
-                    $warnings[] = 'Stok IOL tidak mencukupi — usage tetap dicatat, stok TIDAK terpotong otomatis. Lakukan penyesuaian stok manual bila perlu.';
+                    // Meski consume IOL BARU gagal (stok kurang), row usage akan DITIMPA ke IOL
+                    // baru → lensa LAMA tak lagi tereferensi. Tetap kembalikan stok lama, kalau
+                    // tidak 1 unit IOL lama yatim (tak ada usage yang menunjuknya) & tak bisa
+                    // dipulihkan lewat deleteIolUsage — bocor permanen dari inventori.
+                    if ($prev && $prev->iol_item_id && $prev->stock_consumed) {
+                        $this->restoreIolStock($prev->iol_item_id, $prev->expiry_date);
+                    }
+                    $warnings[] = 'Stok IOL baru tidak mencukupi — usage tetap dicatat, stok baru TIDAK terpotong otomatis. Stok IOL lama sudah dikembalikan.';
                 }
             }
 
